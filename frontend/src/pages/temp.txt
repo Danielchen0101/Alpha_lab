@@ -1,3 +1,0 @@
-﻿alculate Sharpe Ratio range for color scaling
-  const sharpeValues = results.map((r: OptimizationResult) => r.sharpeRatio);
-  const minSharpe = Math.m

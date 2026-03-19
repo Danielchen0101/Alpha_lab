@@ -16,17 +16,17 @@ def test_api():
             print(f"成功: {data.get('success')}")
             print(f"时间戳: {data.get('timestamp')}")
             print(f"耗时: {data.get('elapsed')}秒")
-            print(f"股票列表: {len(data.get('stocks', []))}支")
+            stocks = data.get('stocks', [])
+            print(f"股票列表: {len(stocks)}支")
             
             # 打印前3支股票
-            stocks = data.get('stocks', [])
             for i, stock in enumerate(stocks[:3]):
                 print(f"  股票{i+1}: {stock.get('symbol')} - {stock.get('name')} - ${stock.get('price')}")
         else:
             print(f"错误: {response.text}")
         
         print("\n=== 测试带symbols参数的请求 ===")
-        response2 = requests.get("http://127.0.0.1:8889/api/market/stocks?symbols=AAPL,MSFT,GOOGL", timeout=10)
+        response2 = requests.get("http://127.0.0.1:8889/api/market/stocks?symbols=AAPL,MSFT", timeout=10)
         print(f"状态码: {response2.status_code}")
         
         if response2.status_code == 200:

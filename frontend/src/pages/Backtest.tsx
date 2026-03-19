@@ -508,11 +508,11 @@ const Backtest: React.FC = () => {
   };
 
   const strategyOptions = [
-    { value: 'moving_average', label: 'Moving Average Crossover', type: 'real', description: 'Real calculation using Yahoo Finance data' },
-    { value: 'rsi', label: 'RSI Strategy', type: 'real', description: 'Real calculation using Yahoo Finance data' },
-    { value: 'macd', label: 'MACD Strategy', type: 'real', description: 'Real calculation using Yahoo Finance data' },
+    { value: 'moving_average', label: 'Moving Average Crossover', type: 'real', description: 'Real calculation using Finnhub data' },
+    { value: 'rsi', label: 'RSI Strategy', type: 'real', description: 'Real calculation using Finnhub data' },
+    { value: 'macd', label: 'MACD Strategy', type: 'real', description: 'Real calculation using Finnhub data' },
     { value: 'bollinger', label: 'Bollinger Bands', type: 'simulated', description: 'Simulated results (to be implemented)' },
-    { value: 'momentum', label: 'Momentum Strategy', type: 'real', description: 'Real calculation using Yahoo Finance data' },
+    { value: 'momentum', label: 'Momentum Strategy', type: 'real', description: 'Real calculation using Finnhub data' },
   ];
 
   const resultColumns = [

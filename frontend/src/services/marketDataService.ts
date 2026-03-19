@@ -237,7 +237,17 @@ export const getStocks = async (symbols?: string[], dashboard?: boolean): Promis
       params.dashboard = 'true';
     }
     
+    console.log(`[前端调试] 请求 /api/market/stocks, symbols=${symbols?.join(',') || '无'}, dashboard=${dashboard}`);
+    
     const response = await api.get('/market/stocks', { params });
+    
+    console.log(`[前端调试] 收到响应:`, {
+      status: response.status,
+      dataKeys: Object.keys(response.data),
+      hasStocks: !!response.data.stocks,
+      stocksCount: response.data.stocks?.length || 0,
+      responseStructure: response.data
+    });
     
     if (response.data && response.data.stocks) {
       const stocks = response.data.stocks.map((stock: any) => ({
@@ -251,12 +261,19 @@ export const getStocks = async (symbols?: string[], dashboard?: boolean): Promis
         timestamp: new Date().toISOString(),
       }));
       
+      console.log(`[前端调试] 成功处理 ${stocks.length} 支股票`);
       return stocks;
     }
     
+    console.warn(`[前端调试] 响应中没有 stocks 字段，返回空数组`);
     return [];
   } catch (error: any) {
-    console.error('Failed to fetch stocks:', error);
+    console.error('[前端调试] Failed to fetch stocks:', error);
+    console.error('[前端调试] 错误详情:', {
+      message: error.message,
+      response: error.response?.data,
+      status: error.response?.status
+    });
     throw new Error(error.response?.data?.error || error.message || 'Failed to fetch stocks');
   }
 };

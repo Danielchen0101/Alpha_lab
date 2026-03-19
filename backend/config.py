@@ -2,26 +2,9 @@
 API 配置 - 市场数据与交易执行分离架构
 """
 
-# ========== Polygon API 配置 (市场数据) ==========
-POLYGON_API_KEY = "Pb17vE12y3eH4ixU_P3or5W89TfFbN7E"
-POLYGON_BASE_URL = "https://api.polygon.io"
-
-# Polygon API 端点
-POLYGON_ENDPOINTS = {
-    # 实时报价
-    "ticker_details": "/v3/reference/tickers/{ticker}",
-    "ticker_news": "/v2/reference/news",
-    "aggregates": "/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from}/{to}",
-    "grouped_daily": "/v2/aggs/grouped/locale/us/market/stocks/{date}",
-    "daily_open_close": "/v1/open-close/{ticker}/{date}",
-    "previous_close": "/v2/aggs/ticker/{ticker}/prev",
-    "tickers": "/v3/reference/tickers",
-    # 技术指标
-    "sma": "/v1/indicators/sma/{ticker}",
-    "ema": "/v1/indicators/ema/{ticker}",
-    "macd": "/v1/indicators/macd/{ticker}",
-    "rsi": "/v1/indicators/rsi/{ticker}",
-}
+# ========== Finnhub API 配置 (市场数据) ==========
+FINNHUB_API_KEY = "d6qsdcpr01qgdhqc82hgd6qsdcpr01qgdhqc82i0"
+FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
 
 # ========== Alpaca API 配置 (交易执行) ==========
 ALPACA_API_KEY = "PK47HFNRVYZ7XZLLLYUULBIY4R"
@@ -44,7 +27,7 @@ ALPACA_ENDPOINTS = {
     # 持仓
     "positions": "/positions",
     "position": "/positions/{symbol_or_asset_id}",
-    # 市场数据 (Alpaca 也有，但我们用 Polygon)
+    # 市场数据
     "bars": "/bars",
     "latest_bars": "/bars/latest",
     "trades": "/trades",
@@ -67,7 +50,7 @@ TIMEFRAME_MAP = {
 
 # 数据源标记
 DATA_SOURCE = {
-    "market_data": "Polygon.io",
+    "market_data": "Finnhub",
     "trading": "Alpaca Markets",
 }
 

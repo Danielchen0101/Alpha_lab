@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Quant Backend - 正确版本
+Quant Backend - 统一返回结构版本
 """
 
 from flask import Flask, jsonify, request
@@ -20,6 +20,20 @@ CORS(app, origins=["http://localhost:3000", "http://localhost:3010"], supports_c
 
 # Market页面的默认股票
 MARKET_DEFAULT_SYMBOLS = ['AAPL', 'MSFT', 'GOOGL', 'TSLA', 'NVDA', 'AMZN', 'META', 'JPM', 'JNJ', 'V']
+
+# 候选股票池，用于动态筛选
+CANDIDATE_STOCKS = [
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "ADBE", "CRM", "ORCL",
+    "INTC", "AMD", "QCOM", "CSCO", "IBM", "TSM", "TSLA", "RIVN", "LCID",
+    "NIO", "LI", "XPEV", "JPM", "BAC", "WFC", "C", "GS", "MS", "V", "MA",
+    "AXP", "PYPL", "SQ", "JNJ", "UNH", "PFE", "MRK", "ABBV", "LLY", "TMO",
+    "DHR", "WMT", "PG", "KO", "PEP", "MCD", "SBUX", "NKE", "HD", "LOW",
+    "TGT", "COST", "CAT", "BA", "HON", "GE", "MMM", "XOM", "CVX", "COP",
+    "T", "VZ", "CMCSA", "DIS", "NFLX", "PARA", "WBD", "SPG", "PLD", "AMT"
+]
+
+# 必须包含的股票
+MUST_HAVE_STOCKS = ["AAPL", "TSLA", "NVDA"]
 
 # System startup time
 START_TIME = time.time()
@@ -189,7 +203,7 @@ def get_market_stocks():
         else:
             # 没有指定symbols
             if dashboard:
-                # Dashboard请求：返回固定列表
+                # Dashboard请求：返回固定列表（简化处理）
                 print(f"[路径] Dashboard路径: 使用固定列表")
                 symbols = MARKET_DEFAULT_SYMBOLS[:10]
             else:
@@ -231,7 +245,7 @@ def get_status():
     })
 
 if __name__ == '__main__':
-    print("Starting Quant Backend Server (正确版本)...")
+    print("Starting Quant Backend Server (统一结构版本)...")
     print("APIs:")
     print("  - /api/market/stocks: 统一返回结构")
     print("  - /api/status: 系统状态")

@@ -21,14 +21,7 @@ const DataSourceBadge: React.FC<DataSourceBadgeProps> = ({
   const getSourceInfo = (source: string) => {
     const lowerSource = source.toLowerCase();
     
-    if (lowerSource.includes('polygon')) {
-      return {
-        color: 'blue',
-        name: 'Polygon.io',
-        description: 'Market data provided by Polygon.io',
-        icon: '📊'
-      };
-    } else if (lowerSource.includes('alpaca')) {
+    if (lowerSource.includes('alpaca')) {
       return {
         color: 'green',
         name: 'Alpaca Markets',
@@ -41,13 +34,6 @@ const DataSourceBadge: React.FC<DataSourceBadgeProps> = ({
         name: 'Finnhub',
         description: 'Market data provided by Finnhub',
         icon: '📈'
-      };
-    } else if (lowerSource.includes('yahoo')) {
-      return {
-        color: 'orange',
-        name: 'Yahoo Finance',
-        description: 'Historical data provided by Yahoo Finance',
-        icon: '📅'
       };
     } else if (lowerSource.includes('simulated') || lowerSource.includes('fallback')) {
       return {

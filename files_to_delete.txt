@@ -1,0 +1,51 @@
+# 要删除的文件列表
+
+## 根目录
+- test_finnhub.py
+- test_timeframe.py
+
+## dev目录
+- dev/debug_backtest.py
+- dev/debug_strategy_returns.py
+
+## docs目录
+- docs/DEBUG_REPORT.md
+
+## frontend根目录
+- start_and_test.bat
+- SymbolAnalysis_new_backup.tsx
+- SymbolAnalysis_professional_backup.tsx
+- test-layout-fix.html
+- ui_debug.html
+
+## frontend/build目录
+- build/market_cap_demo.html
+- build/test_marketcap_data.html
+- build/test_market_cap.html
+
+## frontend/public目录
+- public/market_cap_demo.html
+- public/test_marketcap_data.html
+- public/test_market_cap.html
+
+## frontend/src目录
+- src/test-compare.html
+
+## frontend/src/pages目录
+- pages/Backtest.tsx.backup2
+- pages/Backtest.tsx.full
+- pages/temp.txt
+
+## frontend/src/services目录
+- services/request-fixed.ts
+
+## tests目录
+- tests/test_all.py
+- tests/test_api_response.py
+- tests/test_api_sync.py
+- tests/test_backtest.py
+- tests/test_direct.py
+- tests/test_extreme_case.py
+- tests/test_future_dates.py
+- tests/test_import.py
+- tests/test_profit_bug.py

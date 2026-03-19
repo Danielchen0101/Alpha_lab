@@ -3,8 +3,8 @@
  * 统一导出所有 API 服务
  */
 
-// 市场数据服务
-export * from './polygonApi';
+// 市场数据服务 - 导出 finnhubApi 对象和工具函数
+export { finnhubApi, formatPercent, safeNumber, safeToFixed, getDataSource, isRealData } from './finnhubApi';
 
 // 交易服务
 export * from './alpacaApi';
@@ -94,7 +94,7 @@ export interface OrderData {
 // 服务选择器
 export const getMarketService = () => {
   // 可以根据配置选择不同的市场数据服务
-  return import('./polygonApi').then(module => module.polygonApi);
+  return import('./finnhubApi').then(module => module.finnhubApi);
 };
 
 export const getTradingService = () => {

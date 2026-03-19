@@ -8,29 +8,9 @@ from dotenv import load_dotenv
 # 加载环境变量
 load_dotenv()
 
-# ========== Polygon.io 配置 ==========
-POLYGON_API_KEY = os.getenv('POLYGON_API_KEY')
-POLYGON_BASE_URL = os.getenv('POLYGON_BASE_URL', 'https://api.polygon.io')
-
-# Polygon API 端点
-POLYGON_ENDPOINTS = {
-    # 股票基本信息
-    "ticker_details": "/v3/reference/tickers/{ticker}",
-    "ticker_news": "/v2/reference/news",
-    "tickers": "/v3/reference/tickers",
-    
-    # 价格数据
-    "aggregates": "/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from}/{to}",
-    "grouped_daily": "/v2/aggs/grouped/locale/us/market/stocks/{date}",
-    "daily_open_close": "/v1/open-close/{ticker}/{date}",
-    "previous_close": "/v2/aggs/ticker/{ticker}/prev",
-    
-    # 技术指标
-    "sma": "/v1/indicators/sma/{ticker}",
-    "ema": "/v1/indicators/ema/{ticker}",
-    "macd": "/v1/indicators/macd/{ticker}",
-    "rsi": "/v1/indicators/rsi/{ticker}",
-}
+# ========== Finnhub 配置 ==========
+FINNHUB_API_KEY = os.getenv('FINNHUB_API_KEY', 'd6qsdcpr01qgdhqc82hgd6qsdcpr01qgdhqc82i0')
+FINNHUB_BASE_URL = os.getenv('FINNHUB_BASE_URL', 'https://finnhub.io/api/v1')
 
 # ========== Alpaca Markets 配置 ==========
 ALPACA_API_KEY = os.getenv('ALPACA_API_KEY')
@@ -57,16 +37,13 @@ ALPACA_ENDPOINTS = {
     "positions": "/positions",
     "position": "/positions/{symbol_or_asset_id}",
     
-    # 市场数据 (Alpaca 也有，但我们用 Polygon)
+    # 市场数据
     "bars": "/bars",
     "latest_bars": "/bars/latest",
     "trades": "/trades",
     "quotes": "/quotes",
     "snapshot": "/snapshots",
 }
-
-# ========== 其他 API 配置 ==========
-FINNHUB_API_KEY = os.getenv('FINNHUB_API_KEY')
 
 # ========== 通用配置 ==========
 # 默认股票列表
@@ -83,9 +60,8 @@ TIMEFRAME_MAP = {
 
 # 数据源标记
 DATA_SOURCE = {
-    "market_data": "Polygon.io",
+    "market_data": "Finnhub",
     "trading": "Alpaca Markets",
-    "finnhub": "Finnhub",
 }
 
 # 请求超时设置
@@ -100,8 +76,8 @@ def validate_config():
     """验证必要的配置是否存在"""
     errors = []
     
-    if not POLYGON_API_KEY:
-        errors.append("POLYGON_API_KEY 未配置")
+    if not FINNHUB_API_KEY:
+        errors.append("FINNHUB_API_KEY 未配置")
     
     if not ALPACA_API_KEY:
         errors.append("ALPACA_API_KEY 未配置")
