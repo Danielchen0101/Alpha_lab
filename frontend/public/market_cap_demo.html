@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Market Cap Column - Visual Demo</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        
+        .demo-container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        
+        h1 {
+            color: #1890ff;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+        
+        .comparison {
+            display: flex;
+            gap: 40px;
+            margin-bottom: 40px;
+        }
+        
+        .before, .after {
+            flex: 1;
+        }
+        
+        h2 {
+            color: #595959;
+            font-size: 18px;
+            margin-bottom: 15px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #e8e8e8;
+        }
+        
+        .before h2 {
+            color: #ff4d4f;
+        }
+        
+        .after h2 {
+            color: #52c41a;
+        }
+        
+        .table-demo {
+            border: 1px solid #e8e8e8;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        
+        .table-header {
+            display: flex;
+            background: #fafafa;
+            border-bottom: 2px solid #e8e8e8;
+            font-weight: 500;
+            color: #595959;
+            font-size: 13px;
+        }
+        
+        .table-row {
+            display: flex;
+            border-bottom: 1px solid #e8e8e8;
+        }
+        
+        .table-row:last-child {
+            border-bottom: none;
+        }
+        
+        .col-day-high, .col-market-cap, .col-change {
+            height: 40px;
+            display: flex;
+            align-items: center;
+            font-size: 14px;
+            font-weight: 600;
+            font-feature-settings: "tnum";
+        }
+        
+        /* BEFORE - 修改前 */
+        .before .col-day-high {
+            width: 134px; /* 110 + 12 + 12 */
+            padding: 0 12px;
+            color: #1f1f1f;
+        }
+        
+        .before .col-market-cap {
+            width: 149px; /* 125 + 12 + 12 */
+            padding: 0 12px;
+            color: #1f1f1f;
+            text-align: right;
+            justify-content: flex-end;
+        }
+        
+        .before .col-change {
+            width: 100px;
+            color: #52c41a;
+            text-align: center;
+            justify-content: center;
+        }
+        
+        /* AFTER - 修改后 */
+        .after .col-day-high {
+            width: 134px; /* 110 + 12 + 12 - 保持不变 */
+            padding: 0 12px;
+            color: #1f1f1f;
+        }
+        
+        .after .col-market-cap {
+            width: 118px; /* 110 + 6 + 2 - 显著变窄 */
+            padding: 0 6px 0 2px; /* 显著左移 */
+            color: #1f1f1f;
+            text-align: right;
+            justify-content: flex-end;
+            background: #f0f9ff; /* 高亮显示 */
+        }
+        
+        .after .col-change {
+            width: 100px;
+            color: #52c41a;
+            text-align: center;
+            justify-content: center;
+        }
+        
+        .header-cell {
+            padding: 10px;
+            display: flex;
+            align-items: center;
+            font-weight: 500;
+        }
+        
+        .before .header-market-cap {
+            width: 149px;
+            padding: 10px 12px;
+            text-align: right;
+            justify-content: flex-end;
+        }
+        
+        .after .header-market-cap {
+            width: 118px;
+            padding: 10px 6px 10px 2px; /* 表头也左移 */
+            text-align: right;
+            justify-content: flex-end;
+            background: #f0f9ff; /* 高亮显示 */
+        }
+        
+        .visual-guide {
+            margin-top: 30px;
+            padding: 15px;
+            background: #fafafa;
+            border-radius: 4px;
+            border-left: 4px solid #1890ff;
+        }
+        
+        .visual-guide h3 {
+            margin-top: 0;
+            color: #1890ff;
+        }
+        
+        .change-summary {
+            display: flex;
+            gap: 20px;
+            margin-top: 20px;
+            padding: 15px;
+            background: #fff7e6;
+            border-radius: 4px;
+            border: 1px solid #ffd591;
+        }
+        
+        .change-item {
+            flex: 1;
+        }
+        
+        .change-item h4 {
+            margin-top: 0;
+            color: #fa8c16;
+        }
+        
+        .arrow {
+            color: #1890ff;
+            font-weight: bold;
+            font-size: 18px;
+        }
+        
+        .highlight {
+            background: #fff2e8;
+            padding: 2px 6px;
+            border-radius: 2px;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div class="demo-container">
+        <h1>Market Cap 列显著左移 - 视觉对比演示</h1>
+        
+        <div class="comparison">
+            <div class="before">
+                <h2>修改前 (Before)</h2>
+                <div class="table-demo">
+                    <div class="table-header">
+                        <div class="header-cell col-day-high">Day High</div>
+                        <div class="header-cell header-market-cap">Market Cap</div>
+                        <div class="header-cell col-change">Change</div>
+                    </div>
+                    <div class="table-row">
+                        <div class="col-day-high">$399.41</div>
+                        <div class="col-market-cap">$2.97T</div>
+                        <div class="col-change">-0.14</div>
+                    </div>
+                    <div class="table-row">
+                        <div class="col-day-high">$181.93</div>
+                        <div class="col-market-cap">$4.42T</div>
+                        <div class="col-change">-0.70</div>
+                    </div>
+                    <div class="table-row">
+                        <div class="col-day-high">$399.27</div>
+                        <div class="col-market-cap">$1.50T</div>
+                        <div class="col-change">+0.94</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="after">
+                <h2>修改后 (After)</h2>
+                <div class="table-demo">
+                    <div class="table-header">
+                        <div class="header-cell col-day-high">Day High</div>
+                        <div class="header-cell header-market-cap">Market Cap</div>
+                        <div class="header-cell col-change">Change</div>
+                    </div>
+                    <div class="table-row">
+                        <div class="col-day-high">$399.41</div>
+                        <div class="col-market-cap">$2.97T</div>
+                        <div class="col-change">-0.14</div>
+                    </div>
+                    <div class="table-row">
+                        <div class="col-day-high">$181.93</div>
+                        <div class="col-market-cap">$4.42T</div>
+                        <div class="col-change">-0.70</div>
+                    </div>
+                    <div class="table-row">
+                        <div class="col-day-high">$399.27</div>
+                        <div class="col-market-cap">$1.50T</div>
+                        <div class="col-change">+0.94</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="visual-guide">
+            <h3>视觉变化指南</h3>
+            <p><span class="arrow">→</span> <strong>Market Cap 列整体显著左移</strong>（蓝色高亮区域）</p>
+            <p><span class="arrow">→</span> 现在更靠近左边的 <strong>Day High</strong> 列</p>
+            <p><span class="arrow">→</span> 右边的 <strong>Change</strong> 列保持不变</p>
+            <p><span class="arrow">→</span> 表头 "Market Cap" 和下面数据一起左移，保持垂直对齐</p>
+        </div>
+        
+        <div class="change-summary">
+            <div class="change-item">
+                <h4>列宽调整</h4>
+                <p><span class="highlight">125px → 110px</span>（减少15px）</p>
+                <p>现在与 Day High 列宽度相同</p>
+            </div>
+            <div class="change-item">
+                <h4>内边距调整</h4>
+                <p>左边距：<span class="highlight">12px → 2px</span>（减少10px）</p>
+                <p>右边距：<span class="highlight">12px → 6px</span>（减少6px）</p>
+            </div>
+            <div class="change-item">
+                <h4>总宽度变化</h4>
+                <p>之前：<span class="highlight">149px</span> (125+12+12)</p>
+                <p>之后：<span class="highlight">118px</span> (110+6+2)</p>
+                <p>减少：<span class="highlight">31px</span>（显著左移）</p>
+            </div>
+        </div>
+        
+        <div style="margin-top: 30px; padding: 15px; background: #f6ffed; border-radius: 4px; border: 1px solid #b7eb8f;">
+            <h3 style="color: #52c41a; margin-top: 0;">实际页面效果</h3>
+            <p>在真实的 Market 页面中，你会看到：</p>
+            <ol>
+                <li><strong>Market Cap 列明显更靠近 Day High 列</strong> - 间距减少31px</li>
+                <li><strong>表格更紧凑</strong> - 整体布局更合理</li>
+                <li><strong>保持专业对齐</strong> - 表头和数据仍然垂直对齐</li>
+                <li><strong>不影响其他列</strong> - Day High 和 Change 列保持不变</li>
+                <li><strong>肉眼可见的变化</strong> - 不再是微调，而是显著移动</li>
+            </ol>
+            <p style="margin-top: 15px; font-weight: 600; color: #237804;">
+                ✅ Market Cap 列现在应该显示为显著左移、更紧凑的专业金融表格样式
+            </p>
+        </div>
+    </div>
+</body>
+</html>

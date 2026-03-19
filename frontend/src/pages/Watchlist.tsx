@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Card, Table, Button, Input, Space, Alert, Empty, Tag, message, Statistic } from 'antd';
 import { PlusOutlined, PlayCircleOutlined, DeleteOutlined, EyeOutlined } from '@ant-design/icons';
 import { useLanguage } from '../contexts/LanguageContext';
+import marketDataService from '../services/marketDataService';
 
 const STORAGE_KEY = "quant_watchlist";
 
@@ -24,6 +25,7 @@ const Watchlist: React.FC = () => {
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [newSymbol, setNewSymbol] = useState('');
   const [loading, setLoading] = useState(false);
+  const [updating, setUpdating] = useState(false);
   const hasLoaded = React.useRef(false);
 
   // 安全的格式化函数
@@ -81,6 +83,58 @@ const Watchlist: React.FC = () => {
     };
   }, []);
 
+  // 更新watchlist中的股票数据
+  useEffect(() => {
+    const updateWatchlistData = async () => {
+      if (watchlist.length === 0 || updating) return;
+      
+      try {
+        setUpdating(true);
+        const symbols = watchlist.map(item => item.symbol);
+        if (symbols.length === 0) return;
+        
+        // 获取最新市场数据
+        const marketData = await marketDataService.getStocks(symbols);
+        
+        // 更新watchlist中的数据
+        setWatchlist(prev => {
+          return prev.map(item => {
+            const latestData = marketData.find(stock => stock.symbol === item.symbol);
+            if (latestData && !latestData.error) {
+              return {
+                ...item,
+                name: latestData.name || item.name,
+                price: latestData.price || item.price,
+                change: latestData.change || item.change,
+                changePercent: latestData.changePercent || item.changePercent,
+                volume: latestData.volume || item.volume,
+                marketCap: latestData.marketCap || item.marketCap,
+                sector: latestData.sector || item.sector
+              };
+            }
+            return item;
+          });
+        });
+      } catch (error) {
+        console.error('Failed to update watchlist data:', error);
+      } finally {
+        setUpdating(false);
+      }
+    };
+
+    // 初始加载时更新一次
+    if (watchlist.length > 0) {
+      updateWatchlistData();
+    }
+
+    // 每30秒更新一次数据
+    const intervalId = setInterval(updateWatchlistData, 30000);
+    
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [watchlist]);
+
   // Save watchlist to localStorage whenever it changes
   useEffect(() => {
     // Don't save on initial mount (empty array)
@@ -91,7 +145,7 @@ const Watchlist: React.FC = () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(watchlist));
   }, [watchlist]);
 
-  const handleAddSymbol = () => {
+  const handleAddSymbol = async () => {
     const symbol = newSymbol.trim().toUpperCase();
     
     if (!symbol) {
@@ -105,32 +159,73 @@ const Watchlist: React.FC = () => {
       return;
     }
 
-    // Check for duplicates using functional update to ensure consistency
-    setWatchlist(prevWatchlist => {
-      if (prevWatchlist.some(item => item.symbol === symbol)) {
-        message.warning(`${symbol} is already in your watchlist`);
-        return prevWatchlist;
-      }
+    // Check for duplicates
+    if (watchlist.some(item => item.symbol === symbol)) {
+      message.warning(`${symbol} is already in your watchlist`);
+      setNewSymbol('');
+      return;
+    }
+
+    try {
+      setLoading(true);
       
-      // 创建基本的股票信息（可以从 Market 页面添加时会有完整信息）
+      // 尝试获取股票数据
+      const stockData = await marketDataService.getStockData(symbol);
+      
+      if (stockData.error) {
+        // 如果获取失败，使用基本数据
+        const newItem: WatchlistItem = {
+          symbol: symbol,
+          name: `${symbol} Inc.`,
+          price: 0,
+          change: 0,
+          changePercent: 0,
+          volume: 0,
+          marketCap: 0,
+          sector: 'Unknown',
+          addedAt: new Date().toISOString()
+        };
+        
+        setWatchlist(prev => [...prev, newItem]);
+        message.warning(`Added ${symbol} to watchlist (limited info available)`);
+      } else {
+        // 使用获取到的完整数据
+        const newItem: WatchlistItem = {
+          symbol: stockData.symbol,
+          name: stockData.name || `${symbol} Inc.`,
+          price: stockData.price || 0,
+          change: stockData.change || 0,
+          changePercent: stockData.changePercent || 0,
+          volume: stockData.volume || 0,
+          marketCap: stockData.marketCap || 0,
+          sector: stockData.sector || 'Unknown',
+          addedAt: new Date().toISOString()
+        };
+        
+        setWatchlist(prev => [...prev, newItem]);
+        message.success(`Added ${symbol} to watchlist`);
+      }
+    } catch (error) {
+      console.error(`Failed to fetch data for ${symbol}:`, error);
+      // 出错时使用基本数据
       const newItem: WatchlistItem = {
         symbol: symbol,
         name: `${symbol} Inc.`,
-        price: 100 + Math.random() * 100,
-        change: (Math.random() - 0.5) * 10,
-        changePercent: (Math.random() - 0.5) * 5,
-        volume: Math.floor(Math.random() * 10000000),
-        marketCap: Math.floor(Math.random() * 1000000000),
-        sector: 'Technology',
+        price: 0,
+        change: 0,
+        changePercent: 0,
+        volume: 0,
+        marketCap: 0,
+        sector: 'Unknown',
         addedAt: new Date().toISOString()
       };
       
-      const updatedWatchlist = [...prevWatchlist, newItem];
-      message.success(`${symbol} added to watchlist`);
-      return updatedWatchlist;
-    });
-    
-    setNewSymbol('');
+      setWatchlist(prev => [...prev, newItem]);
+      message.warning(`Added ${symbol} to watchlist (data fetch failed)`);
+    } finally {
+      setLoading(false);
+      setNewSymbol('');
+    }
   };
 
   const handleRemoveSymbol = (symbolToRemove: string) => {

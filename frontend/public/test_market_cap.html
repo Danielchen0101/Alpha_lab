@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Market Cap Column Test</title>
+    <style>
+        /* Simulating Ant Design table styles */
+        .ant-table {
+            border: 1px solid #f0f0f0;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        
+        .ant-table-thead > tr > th {
+            background: #fafafa;
+            font-weight: 600;
+            padding: 16px;
+            text-align: left;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        
+        .ant-table-tbody > tr > td {
+            padding: 16px;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        
+        /* The actual market-cap-column styles from Market.tsx */
+        .market-cap-column {
+            text-align: right !important;
+            width: 110px !important;
+        }
+        .market-cap-column .ant-table-cell {
+            padding: 0 6px 0 2px !important;
+            text-align: right !important;
+            vertical-align: middle !important;
+            width: 110px !important;
+        }
+        .market-cap-column .ant-table-thead .ant-table-cell {
+            padding: 10px 6px 10px 2px !important;
+            text-align: right !important;
+            background-color: #fafafa !important;
+            border-bottom: 2px solid #e8e8e8 !important;
+            width: 110px !important;
+        }
+        .market-cap-column .ant-table-tbody > tr > td,
+        .market-cap-column .ant-table-thead > tr > th {
+            width: 110px !important;
+            min-width: 110px !important;
+            max-width: 110px !important;
+        }
+        
+        /* Comparison: Original column style (for reference) */
+        .original-column {
+            width: 120px;
+        }
+        .original-column .ant-table-cell {
+            padding: 0 8px 0 4px;
+            text-align: right;
+        }
+        .original-column .ant-table-thead .ant-table-cell {
+            padding: 10px 8px 10px 4px;
+            text-align: right;
+            background-color: #fafafa;
+            border-bottom: 2px solid #e8e8e8;
+        }
+    </style>
+</head>
+<body>
+    <h1>Market Cap Column Alignment Test</h1>
+    <p>This test shows the Market Cap column with the new left-shifted styling.</p>
+    
+    <h2>Before Fix (Original - width: 120px, padding: 0 8px 0 4px)</h2>
+    <table class="ant-table" style="width: 800px; margin-bottom: 40px;">
+        <thead>
+            <tr>
+                <th class="original-column ant-table-cell">Symbol</th>
+                <th class="original-column ant-table-cell">Price</th>
+                <th class="original-column ant-table-cell">Market Cap (Original)</th>
+                <th class="original-column ant-table-cell">Change</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td class="original-column ant-table-cell">AAPL</td>
+                <td class="original-column ant-table-cell">$173.21</td>
+                <td class="original-column ant-table-cell">$2.67T</td>
+                <td class="original-column ant-table-cell">+1.23%</td>
+            </tr>
+            <tr>
+                <td class="original-column ant-table-cell">MSFT</td>
+                <td class="original-column ant-table-cell">$407.81</td>
+                <td class="original-column ant-table-cell">$3.03T</td>
+                <td class="original-column ant-table-cell">+0.87%</td>
+            </tr>
+        </tbody>
+    </table>
+    
+    <h2>After Fix (Fixed - width: 110px, padding: 0 6px 0 2px)</h2>
+    <table class="ant-table" style="width: 800px;">
+        <thead>
+            <tr>
+                <th class="market-cap-column ant-table-cell">Symbol</th>
+                <th class="market-cap-column ant-table-cell">Price</th>
+                <th class="market-cap-column ant-table-cell">Market Cap (Fixed)</th>
+                <th class="market-cap-column ant-table-cell">Change</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td class="market-cap-column ant-table-cell">AAPL</td>
+                <td class="market-cap-column ant-table-cell">$173.21</td>
+                <td class="market-cap-column ant-table-cell">$2.67T</td>
+                <td class="market-cap-column ant-table-cell">+1.23%</td>
+            </tr>
+            <tr>
+                <td class="market-cap-column ant-table-cell">MSFT</td>
+                <td class="market-cap-column ant-table-cell">$407.81</td>
+                <td class="market-cap-column ant-table-cell">$3.03T</td>
+                <td class="market-cap-column ant-table-cell">+0.87%</td>
+            </tr>
+        </tbody>
+    </table>
+    
+    <div style="margin-top: 40px; padding: 20px; background: #f5f5f5; border-radius: 8px;">
+        <h3>Changes Summary:</h3>
+        <ul>
+            <li><strong>Column Width:</strong> Reduced from 120px to 110px</li>
+            <li><strong>Left Padding:</strong> Reduced from 4px to 2px (50% reduction)</li>
+            <li><strong>Right Padding:</strong> Reduced from 8px to 6px (25% reduction)</li>
+            <li><strong>Total Width Reduction:</strong> From 132px (120 + 4 + 8) to 118px (110 + 2 + 6) = 14px left shift</li>
+            <li><strong>Alignment:</strong> Text aligned right with <code>!important</code> rules</li>
+            <li><strong>Header Padding:</strong> Special padding for table header (10px 6px 10px 2px)</li>
+        </ul>
+        
+        <h3>Visual Effect:</h3>
+        <p>The Market Cap column should now appear <strong>visibly shifted to the left</strong> compared to other columns, with the data appearing directly under the "Market Cap" header.</p>
+    </div>
+</body>
+</html>

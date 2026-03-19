@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>图表修复测试</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .test-case {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+        }
+        .success {
+            color: green;
+            font-weight: bold;
+        }
+        .error {
+            color: red;
+            font-weight: bold;
+        }
+        .data-display {
+            background: #f5f5f5;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>Price Chart 修复测试</h1>
+    
+    <div class="test-case">
+        <h2>测试 1: 时间戳转换</h2>
+        <div id="timestamp-test"></div>
+    </div>
+    
+    <div class="test-case">
+        <h2>测试 2: 数据格式验证</h2>
+        <div id="data-format-test"></div>
+    </div>
+    
+    <div class="test-case">
+        <h2>测试 3: 图表数据流</h2>
+        <div id="chart-flow-test"></div>
+    </div>
+    
+    <div class="test-case">
+        <h2>修复总结</h2>
+        <div id="summary"></div>
+    </div>
+
+    <script>
+        // 测试数据
+        const mockApiData = {
+            symbol: "AAPL",
+            interval: "1day",
+            range: "1month",
+            count: 21,
+            source: "yahoo_real",
+            message: "Real historical data from yahoo_real",
+            data: [
+                {
+                    close: 261.7300109863281,
+                    high: 275.7200012207031,
+                    low: 260.17999267578125,
+                    open: 275.5899963378906,
+                    time: "2026-02-12T00:00:00-05:00",
+                    timestamp: 1770872400,
+                    volume: 81077200
+                },
+                {
+                    close: 255.77999877929688,
+                    high: 262.2300109863281,
+                    low: 255.4499969482422,
+                    open: 262.010009765625,
+                    time: "2026-02-13T00:00:00-05:00",
+                    timestamp: 1770958800,
+                    volume: 56290700
+                }
+            ]
+        };
+
+        // 测试 1: 时间戳转换
+        function testTimestampConversion() {
+            const testElement = document.getElementById('timestamp-test');
+            const item = mockApiData.data[0];
+            
+            // 错误的方式（修复前）
+            const dateWrong = new Date(item.timestamp);
+            // 正确的方式（修复后）
+            const dateCorrect = new Date(item.timestamp * 1000);
+            
+            let html = '<div class="data-display">';
+            html += `原始 timestamp: ${item.timestamp}<br>`;
+            html += `错误转换: new Date(${item.timestamp}) = ${dateWrong}<br>`;
+            html += `正确转换: new Date(${item.timestamp} * 1000) = ${dateCorrect}<br>`;
+            html += `时间字符串: ${item.time}<br>`;
+            html += `从 time 解析: ${new Date(item.time)}<br>`;
+            html += '</div>';
+            
+            if (dateCorrect.getFullYear() === 2026) {
+                html += '<div class="success">✓ 时间戳转换正确</div>';
+            } else {
+                html += '<div class="error">✗ 时间戳转换错误</div>';
+            }
+            
+            testElement.innerHTML = html;
+        }
+
+        // 测试 2: 数据格式验证
+        function testDataFormat() {
+            const testElement = document.getElementById('data-format-test');
+            const item = mockApiData.data[0];
+            
+            // 模拟前端转换逻辑
+            const formattedData = mockApiData.data.map(item => {
+                const timestampMs = item.timestamp * 1000;
+                const date = new Date(timestampMs);
+                
+                if (isNaN(date.getTime())) {
+                    return null;
+                }
+                
+                return {
+                    date: date.toLocaleDateString('en-US', { 
+                        month: 'short', 
+                        day: 'numeric'
+                    }),
+                    open: Number(item.open) || 0,
+                    high: Number(item.high) || 0,
+                    low: Number(item.low) || 0,
+                    close: Number(item.close) || 0,
+                    volume: Number(item.volume) || 0
+                };
+            }).filter(item => item !== null);
+            
+            let html = '<div class="data-display">';
+            html += '转换后数据:<br>';
+            html += JSON.stringify(formattedData, null, 2);
+            html += '</div>';
+            
+            const isValid = formattedData.length > 0 && 
+                           formattedData[0].date && 
+                           formattedData[0].open > 0;
+            
+            if (isValid) {
+                html += '<div class="success">✓ 数据格式正确</div>';
+                html += `<div>有效数据点: ${formattedData.length}</div>`;
+            } else {
+                html += '<div class="error">✗ 数据格式错误</div>';
+            }
+            
+            testElement.innerHTML = html;
+        }
+
+        // 测试 3: 图表数据流
+        function testChartFlow() {
+            const testElement = document.getElementById('chart-flow-test');
+            
+            // 模拟前端数据流
+            const apiResponse = mockApiData;
+            const hasData = apiResponse && apiResponse.data && apiResponse.data.length > 0;
+            const formattedData = hasData ? apiResponse.data.map(item => ({
+                date: new Date(item.timestamp * 1000).toLocaleDateString('en-US', { 
+                    month: 'short', 
+                    day: 'numeric'
+                }),
+                open: item.open,
+                high: item.high,
+                low: item.low,
+                close: item.close,
+                volume: item.volume
+            })) : [];
+            
+            let html = '<div>数据流测试:</div>';
+            html += '<div class="data-display">';
+            html += `API 响应有数据: ${hasData ? '是' : '否'}<br>`;
+            html += `数据点数量: ${apiResponse?.data?.length || 0}<br>`;
+            html += `转换后数量: ${formattedData.length}<br>`;
+            html += `图表应显示: ${formattedData.length > 0 ? '图表' : '空状态'}<br>`;
+            html += '</div>';
+            
+            if (hasData && formattedData.length > 0) {
+                html += '<div class="success">✓ 数据流正常，图表应渲染</div>';
+            } else if (!hasData) {
+                html += '<div class="error">✗ API 无数据</div>';
+            } else {
+                html += '<div class="error">✗ 数据转换失败</div>';
+            }
+            
+            testElement.innerHTML = html;
+        }
+
+        // 显示修复总结
+        function showSummary() {
+            const summaryElement = document.getElementById('summary');
+            
+            const fixes = [
+                '修复时间戳转换: new Date(timestamp * 1000)',
+                '添加数据验证: 检查日期有效性',
+                '修复图表渲染: 使用标准 Recharts 方式',
+                '添加调试日志: 便于问题排查'
+            ];
+            
+            let html = '<h3>修复内容:</h3><ul>';
+            fixes.forEach(fix => {
+                html += `<li>${fix}</li>`;
+            });
+            html += '</ul>';
+            
+            html += '<h3>预期结果:</h3>';
+            html += '<ul>';
+            html += '<li>Price Chart 显示真实 candlestick 图表</li>';
+            html += '<li>1W/1M/3M/1Y timeframe 切换有效</li>';
+            html += '<li>不再显示 "No historical data available"</li>';
+            html += '<li>图表基于真实 Yahoo Finance 数据</li>';
+            html += '</ul>';
+            
+            summaryElement.innerHTML = html;
+        }
+
+        // 运行所有测试
+        testTimestampConversion();
+        testDataFormat();
+        testChartFlow();
+        showSummary();
+    </script>
+</body>
+</html>

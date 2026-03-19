@@ -10,6 +10,8 @@ import Watchlist from './pages/Watchlist';
 import StrategyRanking from './pages/StrategyRanking';
 import ParameterOptimization from './pages/ParameterOptimization';
 import Analytics from './pages/Analytics';
+import SymbolAnalysis from './pages/SymbolAnalysis';
+import BacktestAnalysis from './pages/BacktestAnalysis';
 import LanguageTest from './pages/LanguageTest';
 import LanguageButtonPreview from './components/LanguageButtonPreview';
 import LanguageSwitcher from './components/LanguageSwitcher';
@@ -59,6 +61,8 @@ const App: React.FC = () => {
                     <Route path="/market" element={<Market />} />
                     <Route path="/backtest" element={<Backtest />} />
                     <Route path="/backtest/:id" element={<BacktestDetail />} />
+                    <Route path="/backtest-analysis" element={<BacktestAnalysis />} />
+                    <Route path="/analysis/:symbol" element={<SymbolAnalysis />} />
                     <Route path="/compare" element={<StrategyComparison />} />
                     <Route path="/optimize" element={<ParameterOptimization />} />
                     <Route path="/watchlist" element={<Watchlist />} />

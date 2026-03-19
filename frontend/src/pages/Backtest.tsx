@@ -5,6 +5,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { backtraderAPI } from '../services/api';
 import dayjs from 'dayjs';
 import TradingChart from '../components/TradingChart';
+import DataSourceBadge from '../components/DataSourceBadge';
 
 const { Option } = Select;
 const { RangePicker } = DatePicker;
@@ -2293,6 +2294,13 @@ const Backtest: React.FC = () => {
           </Card>
         </Col>
       </Row>
+      
+      {/* 数据来源标注 - 回测使用历史市场数据 */}
+      <DataSourceBadge 
+        source="Finnhub" 
+        position="bottom-left"
+        compact={true}
+      />
     </div>
   );
 };

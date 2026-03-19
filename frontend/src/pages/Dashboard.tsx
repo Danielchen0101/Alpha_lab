@@ -1,1246 +1,1759 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Row, Col, Statistic, Table, Tag, Progress, Alert, Button, Space, Spin, Empty, message } from 'antd';
-import { ArrowUpOutlined, ArrowDownOutlined, LineChartOutlined, PlayCircleOutlined, EyeOutlined, ReloadOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
-import { Server, Cpu, MemoryStick, TrendingUp, TrendingDown, Target, Award, BarChart3, LineChart, DollarSign, TrendingUp as TrendingUpIcon, TrendingDown as TrendingDownIcon, Building2, Hash, Search, PlayCircle, BarChart, RefreshCw, Layers, History, Trophy, Percent } from 'lucide-react';
+import { Card, Row, Col, Button, Spin, Alert, Empty, Tag, Typography, Space, Progress } from 'antd';
+import { ReloadOutlined, DashboardOutlined, RiseOutlined, FallOutlined, LineChartOutlined, EyeOutlined, PieChartOutlined, BarChartOutlined, ClockCircleOutlined, DatabaseOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { systemAPI, marketAPI, backtraderAPI } from '../services/api';
-import { useLanguage } from '../contexts/LanguageContext';
+import marketDataService, { StockData, formatCurrency, safeNumber } from '../services/marketDataService';
+import DataSourceBadge from '../components/DataSourceBadge';
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 
-interface Stock {
-  symbol: string;
+const { Title, Text } = Typography;
+
+interface MarketStats {
+  totalSymbols: number;
+  gainers: number;
+  losers: number;
+  avgChange: number;
+  totalMarketCap: number;
+  avgVolume: number;
+  totalVolume: number;
+  largestCapStock: { symbol: string; marketCap: number } | null;
+  largestMoveStock: { symbol: string; changePercent: number } | null;
+  sectorsCovered: number;
+}
+
+interface SectorData {
   name: string;
-  price: number;
-  change: number;
-  changePercent: number;
-  volume: number;
-  marketCap: number;
-  sector: string;
+  count: number;
+  percentage: number;
 }
 
-interface SystemStatus {
-  cpuUsage: number;
-  memoryUsage: number;
-  uptime: string;
-  lastUpdate: string;
+interface SectorData {
+  name: string;
+  count: number;
+  percentage: number;
 }
 
-interface BacktestHistoryItem {
-  backtestId: string;
-  status: 'running' | 'completed' | 'failed';
-  results?: {
-    totalReturn: number;
-    sharpeRatio: number;
-    maxDrawdown: number;
-    winRate: number;
-    trades: number;
-    annualizedReturn?: number;
-    profitLoss?: number;
-  };
-  parameters?: {
-    strategy: string;
-    symbols: string[];
-    period: string;
-    initialCapital: number;
-  };
-  createdAt?: string;
-  symbol?: string;
-  strategy?: string;
-  startDate?: string;
-  endDate?: string;
-  initialCapital?: number;
-  totalReturn?: number;
-  sharpeRatio?: number;
-  maxDrawdown?: number;
-  winRate?: number;
-  trades?: number;
-}
+const STORAGE_KEY = "quant_watchlist";
 
 const Dashboard: React.FC = () => {
-  const { t } = useLanguage();
-  
-  // 独立的状态管理 - 系统状态
-  const [systemData, setSystemData] = useState<SystemStatus | null>(null);
-  const [systemLoading, setSystemLoading] = useState(true);
-  const [systemError, setSystemError] = useState<string>('');
-
-  // 独立的状态管理 - 市场数据
-  const [marketData, setMarketData] = useState<Stock[]>([]);
-  const [marketLoading, setMarketLoading] = useState(true);
-  const [marketError, setMarketError] = useState<string>('');
-
-  // 独立的状态管理 - 回测历史
-  const [backtestData, setBacktestData] = useState<BacktestHistoryItem[]>([]);
-  const [backtestLoading, setBacktestLoading] = useState(false);
-  const [backtestError, setBacktestError] = useState<string>('');
-
-  // 缓存和重试状态
-  const [systemLastFetched, setSystemLastFetched] = useState<number>(0);
-  const [marketLastFetched, setMarketLastFetched] = useState<number>(0);
-  const [backtestLastFetched, setBacktestLastFetched] = useState<number>(0);
-  const [systemRetryCount, setSystemRetryCount] = useState<number>(0);
-  const [marketRetryCount, setMarketRetryCount] = useState<number>(0);
-  const [backtestRetryCount, setBacktestRetryCount] = useState<number>(0);
-
   const navigate = useNavigate();
+  const [marketData, setMarketData] = useState<StockData[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [lastFetched, setLastFetched] = useState<number | null>(null);
+  const [watchlist, setWatchlist] = useState<any[]>([]);
+  const [marketStats, setMarketStats] = useState<MarketStats>({ 
+    totalSymbols: 0, 
+    gainers: 0, 
+    losers: 0, 
+    avgChange: 0, 
+    totalMarketCap: 0, 
+    avgVolume: 0,
+    totalVolume: 0,
+    largestCapStock: null,
+    largestMoveStock: null,
+    sectorsCovered: 0
+  });
+  const [sectorData, setSectorData] = useState<SectorData[]>([]);
 
-  const safeToFixed = (value: any, decimals: number = 2): string => {
-    if (typeof value === 'number' && !isNaN(value)) {
-      return value.toFixed(decimals);
-    }
-    return '0.00';
-  };
-
-  const safeNumber = (value: any): number => {
-    if (typeof value === 'number' && !isNaN(value)) {
-      return value;
-    }
-    return 0;
-  };
-
-  const formatCurrency = (value: number): string => {
-    const safeValue = safeNumber(value);
-    if (safeValue >= 1e9) {
-      return `$${safeToFixed(safeValue / 1e9, 2)}B`;
-    } else if (safeValue >= 1e6) {
-      return `$${safeToFixed(safeValue / 1e6, 2)}M`;
-    }
-    return `$${safeToFixed(safeValue, 2)}`;
-  };
-
-  useEffect(() => {
-    // 独立获取各个模块的数据（使用缓存如果可用）
-    fetchSystemData();
-    fetchMarketData();
-    fetchBacktestHistory();
-  }, []);
-
-  // 独立获取系统状态（带重试机制）
-  const fetchSystemData = async (forceRefresh: boolean = false) => {
-    // 检查缓存：5秒内不重复请求，除非强制刷新
+  const fetchMarketData = async (forceRefresh = false) => {
+    // 缓存检查：如果60秒内有数据且不是强制刷新，则使用缓存
+    const CACHE_DURATION = 60 * 1000; // 60秒缓存
     const now = Date.now();
-    const cacheTime = 5000; // 5秒缓存
     
-    if (!forceRefresh && systemData && (now - systemLastFetched < cacheTime)) {
-      console.log('Using cached system data');
-      return;
+    if (!forceRefresh && lastFetched && (now - lastFetched) < CACHE_DURATION && marketData.length > 0) {
+      console.log(`Using cached data (last fetched: ${new Date(lastFetched).toLocaleTimeString()})`);
+      return; // 使用缓存数据，不发起新请求
     }
-
+    
     try {
-      setSystemLoading(true);
-      setSystemError('');
-      const response = await systemAPI.getSystemStatus();
-      if (response.data) {
-        setSystemData(response.data);
-        setSystemLastFetched(now);
-        setSystemRetryCount(0); // 重置重试计数
-      }
-    } catch (err) {
-      console.error('Failed to fetch system status:', err);
+      setLoading(true);
+      setError(''); // 明确清除错误状态
+      // Dashboard专用请求，使用轻量级模式
+      const stocks = await marketDataService.getStocks(undefined, true);
       
-      // 重试逻辑：最多重试2次
-      if (systemRetryCount < 2) {
-        setSystemRetryCount(prev => prev + 1);
-        setTimeout(() => {
-          console.log(`Retrying system data fetch (attempt ${systemRetryCount + 1})`);
-          fetchSystemData(true);
-        }, 1000 * (systemRetryCount + 1)); // 递增延迟：1秒, 2秒
+      // 检查是否获取到有效数据
+      if (!stocks || stocks.length === 0) {
+        setError('No market data available');
+        setMarketData([]);
+        setMarketStats({ 
+          totalSymbols: 0, 
+          gainers: 0, 
+          losers: 0, 
+          avgChange: 0, 
+          totalMarketCap: 0, 
+          avgVolume: 0,
+          totalVolume: 0,
+          largestCapStock: null,
+          largestMoveStock: null,
+          sectorsCovered: 0
+        });
+        setSectorData([]);
       } else {
-        setSystemError('Failed to load system status. Please try again.');
+        // 成功获取数据
+        setMarketData(stocks);
+        setLastFetched(Date.now());
+        calculateMarketStats(stocks);
       }
-    } finally {
-      setSystemLoading(false);
-    }
-  };
-
-  // 独立获取市场数据（带重试机制）
-  const fetchMarketData = async (forceRefresh: boolean = false) => {
-    // 检查缓存：10秒内不重复请求，除非强制刷新（市场数据变化较慢）
-    const now = Date.now();
-    const cacheTime = 10000; // 10秒缓存
-    
-    if (!forceRefresh && marketData.length > 0 && (now - marketLastFetched < cacheTime)) {
-      console.log('Using cached market data');
-      return;
-    }
-
-    try {
-      setMarketLoading(true);
-      setMarketError('');
-      const response = await marketAPI.getStocks();
-      if (response.data && response.data.stocks) {
-        const stocks = response.data.stocks;
-        // 取前5只股票作为最近活跃
-        setMarketData(stocks.slice(0, 5));
-        setMarketLastFetched(now);
-        setMarketRetryCount(0); // 重置重试计数
-      }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to fetch market data:', err);
+      const errorMessage = err.message || 'Failed to load market data';
+      setError(errorMessage);
       
-      // 重试逻辑：最多重试2次
-      if (marketRetryCount < 2) {
-        setMarketRetryCount(prev => prev + 1);
-        setTimeout(() => {
-          console.log(`Retrying market data fetch (attempt ${marketRetryCount + 1})`);
-          fetchMarketData(true);
-        }, 1000 * (marketRetryCount + 1)); // 递增延迟：1秒, 2秒
-      } else {
-        setMarketError('Failed to load market data. Please try again.');
-      }
+      // 清空数据，避免显示旧数据
+      setMarketData([]);
+      setMarketStats({ 
+        totalSymbols: 0, 
+        gainers: 0, 
+        losers: 0, 
+        avgChange: 0, 
+        totalMarketCap: 0, 
+        avgVolume: 0,
+        totalVolume: 0,
+        largestCapStock: null,
+        largestMoveStock: null,
+        sectorsCovered: 0
+      });
+      setSectorData([]);
     } finally {
-      setMarketLoading(false);
+      setLoading(false);
     }
   };
 
-  // 同时获取系统状态和市场数据（用于整体刷新）
-  const fetchDashboardData = () => {
-    fetchSystemData(true); // 强制刷新
-    fetchMarketData(true); // 强制刷新
+  const getChangePercent = (stock: StockData): number | null => {
+    if (stock.changePercent !== null && stock.changePercent !== undefined) return stock.changePercent;
+    if (stock.price !== null && stock.previousClose !== null && stock.previousClose !== 0) return ((stock.price - stock.previousClose) / stock.previousClose) * 100;
+    if (stock.change !== null && stock.previousClose !== null && stock.previousClose !== 0) return (stock.change / stock.previousClose) * 100;
+    return null;
   };
 
-  const fetchBacktestHistory = async (forceRefresh: boolean = false) => {
-    // 检查缓存：30秒内不重复请求，除非强制刷新（回测历史变化较慢）
-    const now = Date.now();
-    const cacheTime = 30000; // 30秒缓存
+  const formatChangePercent = (value: number | null): string => {
+    if (value === null) return '--';
+    const sign = value > 0 ? '+' : '';
+    return `${sign}${value.toFixed(2)}%`;
+  };
+
+  const formatVolume = (volume: number | null): string => {
+    // Finnhub quote API不提供成交量数据，所以volume总是0
+    // 明确告诉用户数据不可用，而不是显示'--'
+    if (volume === null || volume === undefined || volume === 0) return 'N/A';
+    const num = Number(volume);
+    if (isNaN(num) || num === 0) return 'N/A';
+    if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
+    if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
+    return num.toFixed(0);
+  };
+
+  const calculateMarketStats = (stocks: StockData[]) => {
+    const totalSymbols = stocks.length;
+    const validChanges = stocks.map(s => getChangePercent(s)).filter(change => change !== null) as number[];
+    const gainers = validChanges.filter(change => change > 0).length;
+    const losers = validChanges.filter(change => change < 0).length;
+    const avgChange = validChanges.length > 0 ? validChanges.reduce((sum, change) => sum + change, 0) / validChanges.length : 0;
     
-    if (!forceRefresh && backtestData.length > 0 && (now - backtestLastFetched < cacheTime)) {
-      console.log('Using cached backtest data');
-      return;
-    }
-
-    try {
-      setBacktestLoading(true);
-      setBacktestError('');
-      const response = await backtraderAPI.getBacktestHistory();
-      if (response.data && Array.isArray(response.data)) {
-        // 转换后端数据为前端需要的平铺结构
-        const historyData = response.data.map((item: any) => {
-          const symbol = item.parameters?.symbols?.[0] || 'Unknown';
-          const strategy = item.parameters?.strategy || 'Unknown';
-          const period = item.parameters?.period || '';
-          const [startDate, endDate] = period.split(' to ') || ['', ''];
-          
-          return {
-            backtestId: item.backtestId || '',
-            status: item.status || 'unknown',
-            results: item.results,
-            parameters: item.parameters,
-            createdAt: item.createdAt,
-            // 平铺字段用于显示
-            symbol: symbol,
-            strategy: strategy,
-            startDate: startDate,
-            endDate: endDate,
-            initialCapital: safeNumber(item.parameters?.initialCapital),
-            totalReturn: safeNumber(item.results?.totalReturn),
-            sharpeRatio: safeNumber(item.results?.sharpeRatio),
-            maxDrawdown: safeNumber(item.results?.maxDrawdown),
-            winRate: safeNumber(item.results?.winRate),
-            trades: safeNumber(item.results?.trades),
-            annualizedReturn: safeNumber(item.results?.annualizedReturn),
-            profitLoss: safeNumber(item.results?.profitLoss),
-          };
-        });
-        
-        // 按创建时间排序，最新的在前面
-        historyData.sort((a, b) => {
-          const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-          const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-          return dateB - dateA;
-        });
-        
-        setBacktestData(historyData);
-        setBacktestLastFetched(now);
-        setBacktestRetryCount(0); // 重置重试计数
-      }
-    } catch (err) {
-      console.error('Failed to fetch backtest history:', err);
+    // 调试：打印所有股票数据
+    console.log('=== 前端过滤调试开始 ===');
+    console.log(`总股票数: ${stocks.length}`);
+    
+    // 只考虑market cap有效且在合理范围内的股票
+    // 合理范围：小于20万亿美元（20,000,000,000,000）
+    const MAX_REASONABLE_MARKET_CAP = 20_000_000_000_000; // 20T
+    
+    const validStocks = stocks.filter(s => {
+      const symbol = s.symbol;
+      const currency = s.currency || 'USD'; // 默认USD
+      const marketCapRaw = s.marketCap;
       
-      // 重试逻辑：最多重试1次（回测接口可能不存在）
-      if (backtestRetryCount < 1) {
-        setBacktestRetryCount(prev => prev + 1);
-        setTimeout(() => {
-          console.log(`Retrying backtest history fetch (attempt ${backtestRetryCount + 1})`);
-          fetchBacktestHistory(true);
-        }, 2000); // 2秒后重试
-      } else {
-        setBacktestError('Failed to load backtest history. Please try again.');
-        // 如果接口不存在或出错，使用空数组
-        setBacktestData([]);
+      // 检查marketCap是否存在
+      if (marketCapRaw === null || marketCapRaw === undefined) {
+        console.log(`${symbol}: 被过滤 - marketCap为null/undefined`);
+        return false;
       }
-    } finally {
-      setBacktestLoading(false);
+      
+      const marketCap = safeNumber(marketCapRaw);
+      
+      // 检查是否在合理范围内（小于20T）
+      if (marketCap > MAX_REASONABLE_MARKET_CAP) {
+        const capTrillion = marketCap / 1_000_000_000_000;
+        console.log(`${symbol}: 被过滤 - marketCap=${marketCap} (${capTrillion.toFixed(2)}T) > 20T`);
+        return false;
+      }
+      
+      // 检查currency，如果不是USD，记录但不过滤
+      if (currency !== 'USD') {
+        console.log(`${symbol}: 警告 - currency='${currency}'不是USD，但允许参与计算`);
+      }
+      
+      console.log(`${symbol}: 通过过滤 - currency='${currency}', marketCap=${marketCap}`);
+      return true;
+    });
+    
+    // 为了兼容现有代码，重命名变量
+    const validUSDStocks = validStocks;
+    
+    // 计算Total Market Cap（只统计USD货币的股票）
+    const totalMarketCap = validUSDStocks.reduce((sum, s) => {
+      return sum + safeNumber(s.marketCap);
+    }, 0);
+    
+    const stocksWithVolume = stocks.filter(s => s.volume !== null && s.volume !== undefined);
+    const avgVolume = stocksWithVolume.length > 0 ? stocksWithVolume.reduce((sum, s) => sum + safeNumber(s.volume), 0) / stocksWithVolume.length : 0;
+    
+    // 新增指标：总交易量
+    const totalVolume = stocksWithVolume.reduce((sum, s) => sum + safeNumber(s.volume), 0);
+    
+    // 计算最大市值股票（只从USD货币的股票中选）
+    let largestCapStock: { symbol: string; marketCap: number } | null = null;
+    if (validUSDStocks.length > 0) {
+      const largest = validUSDStocks.reduce((max, stock) => {
+        const marketCap = safeNumber(stock.marketCap);
+        return marketCap > safeNumber(max.marketCap) ? stock : max;
+      }, validUSDStocks[0]);
+      
+      largestCapStock = {
+        symbol: largest.symbol,
+        marketCap: safeNumber(largest.marketCap)
+      };
+      
+      // 调试日志
+      console.log(`最大市值股票(USD): ${largest.symbol}, marketCap(美元): ${largestCapStock.marketCap}`);
+    }
+    
+    // 计算最大涨跌幅股票（按changePercent的绝对值）
+    let largestMoveStock: { symbol: string; changePercent: number } | null = null;
+    if (stocks.length > 0) {
+      const largestMove = stocks.reduce((max, stock) => {
+        const changePercent = getChangePercent(stock) || 0;
+        const maxChangePercent = getChangePercent(max) || 0;
+        return Math.abs(changePercent) > Math.abs(maxChangePercent) ? stock : max;
+      }, stocks[0]);
+      
+      const changePercent = getChangePercent(largestMove) || 0;
+      largestMoveStock = {
+        symbol: largestMove.symbol,
+        changePercent: changePercent
+      };
+      
+      // 调试日志
+      console.log(`最大涨跌幅股票: ${largestMove.symbol}, changePercent: ${changePercent}%`);
+    }
+    
+    // 调试日志
+    console.log(`总市值计算(USD): ${validUSDStocks.length}只有效USD市值数据, totalMarketCap(原始值): ${totalMarketCap}, 格式化: ${formatMarketCap(totalMarketCap)}`);
+    console.log(`每只USD股票marketCap(原始值):`, validUSDStocks.map(s => `${s.symbol}: ${safeNumber(s.marketCap)}`));
+    
+    // 检查单位问题：如果显示为M但应该是T，可能是值太小
+    const formattedTotal = formatMarketCap(totalMarketCap);
+    console.log(`格式化结果检查: ${formattedTotal}, 是否包含'M': ${formattedTotal.includes('M')}`);
+    
+    if (formattedTotal.includes('M') && totalMarketCap > 1e12) {
+      console.warn(`⚠️ 单位问题: totalMarketCap=${totalMarketCap} 应该显示为T级别，但显示为M级别`);
+      console.warn(`   可能原因: marketCap值太小，需要检查后端转换`);
+    }
+    
+    // 计算sector分布和sector数量
+    const sectorMap: Record<string, number> = {};
+    stocks.forEach(stock => {
+      const sector = stock.sector || stock.industry;
+      if (sector && sector !== 'Unknown' && sector !== 'None' && sector !== 'N/A') {
+        sectorMap[sector] = (sectorMap[sector] || 0) + 1;
+      }
+    });
+    
+    // 新增指标：覆盖的sector数量
+    const sectorsCovered = Object.keys(sectorMap).length;
+    
+    setMarketStats({ 
+      totalSymbols, 
+      gainers, 
+      losers, 
+      avgChange, 
+      totalMarketCap, 
+      avgVolume,
+      totalVolume,
+      largestCapStock,
+      largestMoveStock,
+      sectorsCovered
+    });
+    
+    if (Object.keys(sectorMap).length === 0) {
+      setSectorData([]);
+    } else {
+      const total = stocks.length;
+      const sectorArray: SectorData[] = Object.entries(sectorMap)
+        .map(([name, count]) => ({ 
+          name, 
+          count, 
+          percentage: total > 0 ? (count / total) * 100 : 0 
+        }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 6);
+      setSectorData(sectorArray);
     }
   };
 
-  const handleViewBacktest = (backtestId: string) => {
-    navigate(`/backtest?backtestId=${backtestId}`);
-    message.info('Loading backtest details...');
+  const getTopGainers = () => [...marketData].filter(s => { const change = getChangePercent(s); return change !== null && change > 0; }).sort((a, b) => { const changeA = getChangePercent(a) || 0; const changeB = getChangePercent(b) || 0; return changeB - changeA; });
+  const getTopLosers = () => [...marketData].filter(s => { const change = getChangePercent(s); return change !== null && change < 0; }).sort((a, b) => { const changeA = getChangePercent(a) || 0; const changeB = getChangePercent(b) || 0; return changeA - changeB; });
+  const getWatchlistData = () => {
+    // 从watchlist中获取symbol列表，然后从marketData中匹配完整信息
+    const watchlistSymbols = watchlist.map(item => item.symbol);
+    return marketData
+      .filter(stock => watchlistSymbols.includes(stock.symbol))
+      .slice(0, 8); // 最多显示8个
   };
-
-  const handleRunBacktest = () => {
-    navigate('/backtest');
-    message.info('Navigate to backtest page');
-  };
-
-  const handleViewMarket = () => {
-    navigate('/market');
-  };
-
-  const handleViewAnalysis = () => {
-    navigate('/analytics');
-  };
-
-  const stockColumns = [
-    {
-      title: (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <Hash size={14} color="#666" />
-          <span style={{ fontSize: '14px', fontWeight: '600', color: '#333' }}>SYMBOL</span>
-        </div>
-      ),
-      dataIndex: 'symbol',
-      key: 'symbol',
-      width: 90,
-      render: (symbol: string) => (
-        <div style={{ 
-          fontWeight: '600', 
-          fontSize: '14px',
-          color: '#333',
-          letterSpacing: '0.3px'
-        }}>
-          {symbol}
-        </div>
-      ),
-      align: 'left' as const,
-    },
-    {
-      title: (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <Building2 size={14} color="#666" />
-          <span style={{ fontSize: '14px', fontWeight: '600', color: '#333' }}>NAME</span>
-        </div>
-      ),
-      dataIndex: 'name',
-      key: 'name',
-      width: 140,
-      render: (name: string) => (
-        <div style={{ 
-          fontSize: '14px',
-          color: '#555',
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis'
-        }}>
-          {name}
-        </div>
-      ),
-      align: 'left' as const,
-    },
-    {
-      title: (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <DollarSign size={14} color="#666" />
-          <span style={{ fontSize: '14px', fontWeight: '600', color: '#333' }}>PRICE</span>
-        </div>
-      ),
-      dataIndex: 'price',
-      key: 'price',
-      width: 100,
-      render: (price: number) => (
-        <div style={{ 
-          textAlign: 'right',
-          fontFamily: "'Roboto Mono', monospace",
-          fontSize: '14px',
-          fontWeight: '500',
-          color: '#333'
-        }}>
-          ${safeToFixed(price, 2)}
-        </div>
-      ),
-      align: 'right' as const,
-    },
-    {
-      title: (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <TrendingUpIcon size={14} color="#666" />
-          <span style={{ fontSize: '14px', fontWeight: '600', color: '#333' }}>CHANGE %</span>
-        </div>
-      ),
-      dataIndex: 'changePercent',
-      key: 'changePercent',
-      width: 110,
-      render: (percent: number) => {
-        const safePercent = safeNumber(percent);
-        const isPositive = safePercent >= 0;
-        return (
-          <div style={{ 
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'flex-end',
-            gap: '4px'
-          }}>
-            {isPositive ? (
-              <TrendingUpIcon size={12} color="#34a853" />
-            ) : (
-              <TrendingDownIcon size={12} color="#ea4335" />
-            )}
-            <div style={{ 
-              fontFamily: "'Roboto Mono', monospace",
-              fontSize: '14px',
-              fontWeight: '600',
-              color: isPositive ? '#34a853' : '#ea4335',
-              textAlign: 'right'
-            }}>
-              {isPositive ? '+' : ''}{safeToFixed(safePercent, 2)}%
-            </div>
-          </div>
-        );
-      },
-      align: 'right' as const,
-    },
-    {
-      title: (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <TrendingUp size={14} color="#666" />
-          <span style={{ fontSize: '14px', fontWeight: '600', color: '#333' }}>MKT CAP</span>
-        </div>
-      ),
-      dataIndex: 'marketCap',
-      key: 'marketCap',
-      width: 110,
-      render: (cap: number) => (
-        <div style={{ 
-          textAlign: 'right',
-          fontFamily: "'Roboto Mono', monospace",
-          fontSize: '14px',
-          fontWeight: '500',
-          color: '#666'
-        }}>
-          {formatCurrency(cap)}
-        </div>
-      ),
-      align: 'right' as const,
-    },
-  ];
-
-  // 计算最佳夏普比率
-  const getBestSharpeRatio = () => {
-    if (backtestData.length === 0) return 0;
-    let bestSharpe = -Infinity;
-    backtestData.forEach(item => {
-      if (item.results?.sharpeRatio && item.results.sharpeRatio > bestSharpe) {
-        bestSharpe = item.results.sharpeRatio;
+  
+  const refresh = () => fetchMarketData(true); // 强制刷新，忽略缓存
+  
+  useEffect(() => { 
+    // 组件加载时清除所有错误状态
+    setError('');
+    fetchMarketData(); 
+    // 从localStorage加载watchlist
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          setWatchlist(parsed);
+        }
+      } catch (err) {
+        console.error('Failed to parse watchlist from localStorage:', err);
+        // watchlist解析失败不是关键错误，不设置全局error
       }
-    });
-    return bestSharpe === -Infinity ? 0 : bestSharpe;
-  };
-
-  // 计算平均收益率
-  const getAverageReturn = () => {
-    if (backtestData.length === 0) return 0;
-    let totalReturn = 0;
-    let count = 0;
-    backtestData.forEach(item => {
-      if (item.results?.totalReturn !== undefined) {
-        totalReturn += item.results.totalReturn;
-        count++;
+    }
+  }, []);
+  
+  // 监听localStorage变化，实现页面间watchlist同步
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY) {
+        if (e.newValue) {
+          try {
+            const parsed = JSON.parse(e.newValue);
+            if (Array.isArray(parsed)) {
+              setWatchlist(parsed);
+            }
+          } catch (err) {
+            console.error('Failed to parse watchlist from storage event:', err);
+          }
+        } else {
+          setWatchlist([]);
+        }
       }
-    });
-    return count > 0 ? totalReturn / count : 0;
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+    };
+  }, []);
+  
+  const handleSymbolClick = (symbol: string) => navigate(`/analyze/${symbol}`);
+  const handleManageWatchlist = () => navigate('/watchlist');
+
+  // 专业金融面板sector颜色映射函数
+  // 每个sector都有独特且稳定的颜色，donut图和legend颜色一一对应
+  const getSectorColor = (sectorName: string): string => {
+    const lowerName = sectorName.toLowerCase();
+    
+    // 1. 优先处理常见且重要的sector（根据你的要求）
+    // Technology - 蓝色，科技感
+    if (lowerName.includes('technology') || lowerName === 'tech') {
+      return '#1890ff';
+    }
+    // Semiconductors - 深蓝色，与Technology区分但相关
+    if (lowerName.includes('semiconductor')) {
+      return '#2f54eb';
+    }
+    // Banking - 绿色，金融稳定
+    if (lowerName.includes('banking') || lowerName === 'bank') {
+      return '#52c41a';
+    }
+    // Automobiles - 橙色，工业感
+    if (lowerName.includes('automobile') || lowerName.includes('auto')) {
+      return '#fa8c16';
+    }
+    // Financial Services - 青色，与Banking区分但相关
+    if (lowerName.includes('financial services') || lowerName.includes('financial')) {
+      return '#13c2c2';
+    }
+    
+    // 2. 其他常见sector
+    // Communications/Media - 紫色
+    if (lowerName.includes('communication') || lowerName.includes('media')) {
+      return '#722ed1';
+    }
+    // Retail/Consumer - 粉色
+    if (lowerName.includes('retail') || lowerName.includes('consumer')) {
+      return '#eb2f96';
+    }
+    // Healthcare - 亮粉色
+    if (lowerName.includes('health') || lowerName.includes('medical')) {
+      return '#f759ab';
+    }
+    // Energy - 红色橙色
+    if (lowerName.includes('energy') || lowerName.includes('oil') || lowerName.includes('gas')) {
+      return '#fa541c';
+    }
+    // Industrials - 中蓝色
+    if (lowerName.includes('industrial') || lowerName.includes('manufactur')) {
+      return '#597ef7';
+    }
+    // Real Estate - 亮紫色
+    if (lowerName.includes('real estate') || lowerName.includes('estate')) {
+      return '#9254de';
+    }
+    // Utilities - 亮绿色
+    if (lowerName.includes('utilit')) {
+      return '#a0d911';
+    }
+    // Materials - 深紫色
+    if (lowerName.includes('material')) {
+      return '#531dab';
+    }
+    // Information Technology - 天蓝色
+    if (lowerName.includes('information')) {
+      return '#69c0ff';
+    }
+    
+    // 3. 稳定颜色映射表 - 确保相同sector总是得到相同颜色
+    // 即使sector数量变化，颜色也不会随机重复
+    const stableColorMap: Record<string, string> = {
+      // 已定义的sector
+      'technology': '#1890ff',
+      'tech': '#1890ff',
+      'semiconductors': '#2f54eb',
+      'semiconductor': '#2f54eb',
+      'banking': '#52c41a',
+      'bank': '#52c41a',
+      'automobiles': '#fa8c16',
+      'automobile': '#fa8c16',
+      'auto': '#fa8c16',
+      'financial services': '#13c2c2',
+      'financial': '#13c2c2',
+      'communications': '#722ed1',
+      'communication': '#722ed1',
+      'media': '#722ed1',
+      'retail': '#eb2f96',
+      'consumer': '#eb2f96',
+      'healthcare': '#f759ab',
+      'health': '#f759ab',
+      'medical': '#f759ab',
+      'energy': '#fa541c',
+      'oil': '#fa541c',
+      'gas': '#fa541c',
+      'industrials': '#597ef7',
+      'industrial': '#597ef7',
+      'manufacturing': '#597ef7',
+      'real estate': '#9254de',
+      'estate': '#9254de',
+      'utilities': '#a0d911',
+      'utility': '#a0d911',
+      'materials': '#531dab',
+      'material': '#531dab',
+      'information technology': '#69c0ff',
+      'information': '#69c0ff',
+      
+      // 其他可能出现的sector
+      'telecommunications': '#7cb305',
+      'insurance': '#08979c',
+      'pharmaceuticals': '#d4380d',
+      'biotechnology': '#d46b08',
+      'software': '#096dd9',
+      'hardware': '#1d39c4',
+      'internet': '#10239e',
+      'e-commerce': '#c41d7f',
+      'entertainment': '#9e1068',
+      'transportation': '#ad8b00',
+      'logistics': '#ad6800',
+      'construction': '#5c3811',
+      'agriculture': '#389e0d',
+      'defense': '#003a8c',
+      'aerospace': '#00474f',
+    };
+    
+    // 首先检查精确匹配
+    if (stableColorMap[lowerName]) {
+      return stableColorMap[lowerName];
+    }
+    
+    // 然后检查包含关系
+    for (const [key, color] of Object.entries(stableColorMap)) {
+      if (lowerName.includes(key)) {
+        return color;
+      }
+    }
+    
+    // 最后，使用稳定的哈希算法确保相同sector总是得到相同颜色
+    const stableColors = [
+      '#1890ff', '#2f54eb', '#52c41a', '#fa8c16', '#13c2c2', '#722ed1', '#eb2f96',
+      '#f759ab', '#fa541c', '#597ef7', '#9254de', '#a0d911', '#531dab', '#69c0ff',
+      '#7cb305', '#08979c', '#d4380d', '#d46b08', '#096dd9', '#1d39c4'
+    ];
+    
+    // 稳定的哈希函数
+    let hash = 0;
+    for (let i = 0; i < sectorName.length; i++) {
+      hash = ((hash << 5) - hash) + sectorName.charCodeAt(i);
+      hash = hash & hash; // 转换为32位整数
+    }
+    hash = Math.abs(hash);
+    
+    return stableColors[hash % stableColors.length];
   };
 
-  const getLatestBacktest = () => {
-    if (backtestData.length === 0) return null;
-    return backtestData[0];
+  /**
+   * 格式化市值显示为缩写格式（如 $14.2T, $1.5B, $750M）
+   */
+  const formatMarketCap = (value: number | null | undefined): string => {
+    if (value === null || value === undefined || value === 0) return '--';
+    
+    const num = Number(value);
+    if (isNaN(num)) return '--';
+    
+    // 万亿 (Trillion) - 1万亿 = 1e12
+    if (num >= 1e12) {
+      const trillions = num / 1e12;
+      // 对于万亿级别，显示1位小数，除非是整数
+      return `$${trillions.toFixed(trillions >= 100 ? 0 : trillions >= 10 ? 1 : 2)}T`;
+    }
+    
+    // 十亿 (Billion) - 10亿 = 1e9
+    if (num >= 1e9) {
+      const billions = num / 1e9;
+      // 对于十亿级别，显示1位小数
+      return `$${billions.toFixed(billions >= 100 ? 0 : billions >= 10 ? 1 : 2)}B`;
+    }
+    
+    // 百万 (Million) - 1百万 = 1e6
+    if (num >= 1e6) {
+      const millions = num / 1e6;
+      return `$${millions.toFixed(millions >= 10 ? 0 : 1)}M`;
+    }
+    
+    // 千 (Thousand)
+    if (num >= 1e3) {
+      const thousands = num / 1e3;
+      return `$${thousands.toFixed(thousands >= 10 ? 0 : 1)}K`;
+    }
+    
+    // 小于1000
+    return `$${num.toFixed(2)}`;
   };
 
-  const latestBacktest = getLatestBacktest();
+  const StatCard = ({ title, value, icon, color = '#1890ff', suffix = '', formatValue = (v: any) => v, valueColor }: { title: string; value: any; icon: React.ReactNode; color?: string; suffix?: string; formatValue?: (v: any) => string; valueColor?: string }) => (
+    <Card 
+      hoverable 
+      style={{ 
+        height: '116px', 
+        borderRadius: '10px', 
+        border: '1px solid #e8e8e8',
+        borderTop: '1px solid #f5f5f5',
+        boxShadow: '0 2px 10px rgba(0,0,0,0.05), 0 1px 4px rgba(0,0,0,0.04)',
+        background: '#ffffff',
+        transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+        cursor: 'pointer',
+        position: 'relative',
+        overflow: 'hidden',
+        '&:hover': {
+          transform: 'translateY(-3px)',
+          boxShadow: '0 8px 24px rgba(0,0,0,0.10), 0 4px 12px rgba(0,0,0,0.06)',
+          borderColor: '#d4d4d4',
+        },
+        '&:active': {
+          transform: 'translateY(-1px)',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.05)',
+        }
+      } as any}
+      bodyStyle={{ 
+        padding: '22px 18px', 
+        height: '100%', 
+        display: 'flex', 
+        flexDirection: 'column', 
+        justifyContent: 'center',
+        position: 'relative',
+        zIndex: 1
+      }}
+    >
+      {/* 底部强调线 - 非常克制 */}
+      <div style={{
+        position: 'absolute',
+        bottom: 0,
+        left: 0,
+        right: 0,
+        height: '2px',
+        background: `linear-gradient(90deg, ${color}20 0%, ${color}10 50%, transparent 100%)`,
+        opacity: 0.6,
+        transition: 'all 0.25s ease',
+        '&:hover': {
+          opacity: 0.9,
+          height: '3px',
+        }
+      } as any} />
+      
+      {/* 标题行 - 恢复正常易读样式 */}
+      <div style={{ 
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: '8px'
+      }}>
+        <Text type="secondary" style={{ 
+          fontSize: '12px',  // 恢复正常大小
+          color: '#595959',  // 恢复正常颜色
+          fontWeight: 500,   // 恢复正常字重
+          letterSpacing: 'normal',  // 恢复正常字距
+          textTransform: 'none',    // 取消全大写
+          fontFamily: 'inherit'     // 使用继承字体
+        }}>
+          {title}
+        </Text>
+        <span style={{ 
+          color: '#bfbfbf',  // 恢复原颜色
+          fontSize: '12px',  // 恢复原大小
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          opacity: 0.7       // 恢复原透明度
+        }}>
+          {icon}
+        </span>
+      </div>
+      
+      {/* 数值 - 专业金融仪表板风格 */}
+      <div style={{ 
+        fontSize: '24px',    // 减小字号，更克制
+        fontWeight: 600,     // 减轻字重，不要太重
+        color: valueColor || '#1a1a1a',    // 使用valueColor或默认颜色
+        lineHeight: 1.1,     // 略微增加行高
+        textAlign: 'left',
+        fontFeatureSettings: '"tnum", "ss01", "zero"',  // 添加zero特征
+        letterSpacing: '-0.3px',  // 减少负间距
+        marginTop: '6px',    // 增加间距，更协调
+        fontFamily: "'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",  // 专业字体
+        textShadow: '0 1px 1px rgba(0,0,0,0.02)'  // 微妙阴影增加层次感
+      }}>
+        {formatValue(value)}{suffix}
+      </div>
+    </Card>
+  );
 
   return (
-    <div>
-      <h1 style={{ marginBottom: 24, fontSize: '28px', fontWeight: '600' }}>
-        <LineChartOutlined /> {t.dashboard.title}
-      </h1>
-      <div style={{ color: '#666', fontSize: '16px', marginBottom: '24px' }}>
-        {t.dashboard.subtitle}
-      </div>
-
-      {/* 系统状态模块 - 优化版 */}
-      <Row gutter={[16, 16]} style={{ marginBottom: 24, alignItems: 'stretch' }}>
-        {/* 卡片1: Total Strategies */}
-        <Col span={6} style={{ display: 'flex' }}>
-          <Card 
-            size="small"
-            style={{ width: '100%', minHeight: '140px' }}
-            styles={{
-              body: { 
-                padding: '16px',
-                display: 'flex',
-                flexDirection: 'column',
-                height: '100%'
-              }
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', marginBottom: '12px', flexShrink: 0 }}>
-              <div style={{ 
-                background: 'rgba(66, 133, 244, 0.1)', 
-                borderRadius: '8px',
-                padding: '8px',
-                marginRight: '12px'
-              }}>
-                <Layers size={20} color="#4285f4" />
-              </div>
-              <div>
-                <div style={{ fontSize: '14px', color: '#666', fontWeight: '500' }}>Total Strategies</div>
-                <div style={{ 
-                  fontSize: '22px', 
-                  fontWeight: '600',
-                  color: '#4285f4'
-                }}>
-                  3
-                </div>
-              </div>
-            </div>
-            <div style={{ flex: 1, minHeight: '20px' }}></div>
-            <div style={{ fontSize: '11px', color: '#888', marginTop: 'auto', flexShrink: 0 }}>
-              Active: moving_average, RSI, MACD
-            </div>
-          </Card>
-        </Col>
-
-        {/* 卡片2: Backtests Run */}
-        <Col span={6} style={{ display: 'flex' }}>
-          <Card 
-            size="small"
-            style={{ width: '100%', minHeight: '140px' }}
-            styles={{
-              body: { 
-                padding: '16px',
-                display: 'flex',
-                flexDirection: 'column',
-                height: '100%'
-              }
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', marginBottom: '12px', flexShrink: 0 }}>
-              <div style={{ 
-                background: 'rgba(52, 168, 83, 0.1)', 
-                borderRadius: '8px',
-                padding: '8px',
-                marginRight: '12px'
-              }}>
-                <History size={20} color="#34a853" />
-              </div>
-              <div>
-                <div style={{ fontSize: '14px', color: '#666', fontWeight: '500' }}>Backtests Run</div>
-                <div style={{ 
-                  fontSize: '22px', 
-                  fontWeight: '600',
-                  color: '#34a853'
-                }}>
-                  {backtestData.length}
-                </div>
-              </div>
-            </div>
-            <div style={{ flex: 1, minHeight: '20px' }}></div>
-            <div style={{ fontSize: '11px', color: '#888', marginTop: 'auto', flexShrink: 0 }}>
-              Last 30 days: {backtestData.length}
-            </div>
-          </Card>
-        </Col>
-
-        {/* 卡片3: Best Sharpe Ratio */}
-        <Col span={6} style={{ display: 'flex' }}>
-          <Card 
-            size="small"
-            style={{ width: '100%', minHeight: '140px' }}
-            styles={{
-              body: { 
-                padding: '16px',
-                display: 'flex',
-                flexDirection: 'column',
-                height: '100%'
-              }
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', marginBottom: '12px', flexShrink: 0 }}>
-              <div style={{ 
-                background: 'rgba(251, 188, 5, 0.1)', 
-                borderRadius: '8px',
-                padding: '8px',
-                marginRight: '12px'
-              }}>
-                <Trophy size={20} color="#fbbc05" />
-              </div>
-              <div>
-                <div style={{ fontSize: '14px', color: '#666', fontWeight: '500' }}>Best Sharpe Ratio</div>
-                <div style={{ 
-                  fontSize: '22px', 
-                  fontWeight: '600',
-                  color: '#fbbc05'
-                }}>
-                  {safeToFixed(getBestSharpeRatio(), 2)}
-                </div>
-              </div>
-            </div>
-            <div style={{ flex: 1, minHeight: '20px' }}></div>
-            <div style={{ fontSize: '11px', color: '#888', marginTop: 'auto', flexShrink: 0 }}>
-              From {backtestData.length} backtests
-            </div>
-          </Card>
-        </Col>
-
-        {/* 卡片4: Avg Return */}
-        <Col span={6} style={{ display: 'flex' }}>
-          <Card 
-            size="small"
-            style={{ width: '100%', minHeight: '140px' }}
-            styles={{
-              body: { 
-                padding: '16px',
-                display: 'flex',
-                flexDirection: 'column',
-                height: '100%'
-              }
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', marginBottom: '12px', flexShrink: 0 }}>
-              <div style={{ 
-                background: getAverageReturn() >= 0 ? 'rgba(52, 168, 83, 0.1)' : 'rgba(234, 67, 53, 0.1)', 
-                borderRadius: '8px',
-                padding: '8px',
-                marginRight: '12px'
-              }}>
-                <Percent size={20} color={getAverageReturn() >= 0 ? '#34a853' : '#ea4335'} />
-              </div>
-              <div>
-                <div style={{ fontSize: '14px', color: '#666', fontWeight: '500' }}>Avg Return</div>
-                <div style={{ 
-                  fontSize: '22px', 
-                  fontWeight: '600',
-                  color: getAverageReturn() >= 0 ? '#34a853' : '#ea4335'
-                }}>
-                  {getAverageReturn() >= 0 ? '+' : ''}{safeToFixed(getAverageReturn(), 2)}%
-                </div>
-              </div>
-            </div>
-            <div style={{ flex: 1, minHeight: '20px' }}></div>
-            <div style={{ fontSize: '11px', color: '#888', marginTop: 'auto', flexShrink: 0 }}>
-              Across all backtests
-            </div>
-          </Card>
-        </Col>
-      </Row>
-
-      {/* 市场活动模块 - 优化版 */}
-      <Row gutter={[16, 16]}>
-        <Col span={12}>
-          <Card 
-            title={
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div style={{ 
-                  background: 'rgba(66, 133, 244, 0.1)', 
-                  borderRadius: '6px',
-                  padding: '4px'
-                }}>
-                  <TrendingUp size={16} color="#4285f4" />
-                </div>
-                <span style={{ fontSize: '18px', fontWeight: '600', color: '#333' }}>
-                  Recent Market Activity
-                </span>
-              </div>
-            }
-            extra={
-              <Button 
-                type="text" 
-                icon={<ReloadOutlined />} 
-                onClick={() => fetchMarketData(true)}
-                size="small"
-                loading={marketLoading}
-                style={{ 
-                  color: '#666',
-                  fontWeight: '500'
-                }}
-              >
-                Refresh
-              </Button>
-            }
-            styles={{
-              body: { padding: '0' }
-            }}
-          >
-            {marketLoading ? (
-              <div style={{ 
-                textAlign: 'center', 
-                padding: '48px 24px',
-                background: '#fafafa'
-              }}>
-                <Spin size="large" />
-                <div style={{ 
-                  marginTop: '16px', 
-                  fontSize: '14px', 
-                  color: '#666',
-                  fontWeight: '500'
-                }}>
-                  Loading market data...
-                </div>
-                <div style={{ 
-                  marginTop: '8px', 
-                  fontSize: '12px', 
-                  color: '#999'
-                }}>
-                  Fetching real-time stock prices
-                </div>
-              </div>
-            ) : marketError ? (
-              <div style={{ 
-                textAlign: 'center', 
-                padding: '40px 24px',
-                background: '#fafafa'
-              }}>
-                <ExclamationCircleOutlined style={{ 
-                  color: '#ea4335', 
-                  fontSize: '32px', 
-                  marginBottom: '16px' 
-                }} />
-                <div style={{ 
-                  fontSize: '14px', 
-                  color: '#ea4335',
-                  fontWeight: '600',
-                  marginBottom: '8px'
-                }}>
-                  Failed to load market data
-                </div>
-                <div style={{ 
-                  fontSize: '12px', 
-                  color: '#999',
-                  marginBottom: '20px',
-                  maxWidth: '300px',
-                  margin: '0 auto 20px'
-                }}>
-                  Unable to connect to market data service. Please check your connection.
-                </div>
-                <Button 
-                  type="primary" 
-                  onClick={() => fetchMarketData(true)} 
-                  icon={<ReloadOutlined />}
-                  size="middle"
-                >
-                  Retry Connection
-                </Button>
-              </div>
-            ) : marketData.length > 0 ? (
-              <>
-                <div style={{ 
-                  background: '#f8f9fa',
-                  borderBottom: '1px solid #f0f0f0',
-                  padding: '12px 16px'
-                }}>
-                  <div style={{ 
-                    display: 'flex', 
-                    justifyContent: 'space-between',
-                    alignItems: 'center'
-                  }}>
-                    <div style={{ fontSize: '12px', color: '#666' }}>
-                      Showing {marketData.length} active stocks
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#999' }}>
-                      Real-time data
-                    </div>
-                  </div>
-                </div>
-                <Table
-                  columns={stockColumns}
-                  dataSource={marketData}
-                  rowKey="symbol"
-                  pagination={false}
-                  size="middle"
-                  onRow={(record) => ({
-                    onClick: () => navigate('/market'),
-                    style: { 
-                      cursor: 'pointer',
-                      background: '#fff'
-                    }
-                  })}
-                  rowClassName={() => 'market-table-row'}
-                  style={{ 
-                    border: 'none',
-                    borderRadius: '0'
-                  }}
-                  components={{
-                    header: {
-                      cell: (props: any) => (
-                        <th {...props} style={{ 
-                          ...props.style,
-                          background: '#f8f9fa',
-                          borderBottom: '2px solid #e8e8e8',
-                          padding: '12px 16px',
-                          fontWeight: '600'
-                        }} />
-                      ),
-                    },
-                    body: {
-                      cell: (props: any) => (
-                        <td {...props} style={{ 
-                          ...props.style,
-                          padding: '12px 16px',
-                          borderBottom: '1px solid #f5f5f5'
-                        }} />
-                      ),
-                    },
-                  }}
-                />
-                <div style={{ 
-                  padding: '16px',
-                  borderTop: '1px solid #f0f0f0',
-                  background: '#fafafa',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center'
-                }}>
-                  <div style={{ fontSize: '12px', color: '#666' }}>
-                    Click any row to view detailed analysis
-                  </div>
-                  <Button 
-                    type="primary" 
-                    onClick={handleViewMarket}
-                    size="small"
-                    style={{ 
-                      fontWeight: '500',
-                      background: '#4285f4',
-                      borderColor: '#4285f4'
-                    }}
-                  >
-                    View Full Market Dashboard
-                  </Button>
-                </div>
-              </>
-            ) : (
-              <div style={{ 
-                textAlign: 'center', 
-                padding: '48px 24px',
-                background: '#fafafa'
-              }}>
-                <Empty
-                  image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  description={
-                    <div>
-                      <div style={{ 
-                        fontSize: '14px', 
-                        color: '#666',
-                        fontWeight: '600',
-                        marginBottom: '8px'
-                      }}>
-                        No recent market data
-                      </div>
-                      <div style={{ 
-                        fontSize: '12px', 
-                        color: '#999',
-                        marginBottom: '20px'
-                      }}>
-                        Market data service is currently unavailable
-                      </div>
-                    </div>
-                  }
-                />
-                <Button 
-                  type="primary" 
-                  onClick={handleViewMarket}
-                  size="middle"
-                  style={{ marginTop: '16px' }}
-                >
-                  Go to Market Overview
-                </Button>
-              </div>
-            )}
-          </Card>
-        </Col>
-        
-        {/* 回测结果模块 */}
-        <Col span={12}>
-          <Card 
-            title="Latest Backtest Result" 
-            extra={
-              <Space>
-                <Button 
-                  type="text" 
-                  icon={<ReloadOutlined />} 
-                  onClick={() => fetchBacktestHistory(true)}
-                  loading={backtestLoading}
-                  size="small"
-                />
-                <Button 
-                  type="primary" 
-                  size="small"
-                  icon={<PlayCircleOutlined />}
-                  onClick={handleRunBacktest}
-                >
-                  New Backtest
-                </Button>
-              </Space>
-            }
-          >
-            {backtestLoading ? (
-              <div style={{ textAlign: 'center', padding: '20px' }}>
-                <Spin />
-              </div>
-            ) : backtestError ? (
-              <Empty
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description={
-                  <div>
-                    <div style={{ color: '#ff4d4f', marginBottom: '8px' }}>Failed to load backtest history</div>
-                    <Button type="primary" onClick={() => fetchBacktestHistory(true)} icon={<ReloadOutlined />}>
-                      Retry
-                    </Button>
-                  </div>
-                }
-              />
-            ) : latestBacktest ? (
-              <div>
-                {/* 基本信息行 */}
-                <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
-                  <Col span={12}>
-                    <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}>
-                      <div style={{ 
-                        background: 'rgba(66, 133, 244, 0.1)', 
-                        borderRadius: '6px',
-                        padding: '4px',
-                        marginRight: '10px'
-                      }}>
-                        <Target size={14} color="#4285f4" />
-                      </div>
-                      <div>
-                        <div style={{ fontSize: '24px', fontWeight: '600', color: '#333' }}>
-                          {latestBacktest.symbol || 'Unknown'}
-                        </div>
-                        <div style={{ fontSize: '16px', color: '#666' }}>
-                          {latestBacktest.strategy || 'Unknown'} Strategy
-                        </div>
-                      </div>
-                    </div>
-                    <div style={{ fontSize: '16px', color: '#666', lineHeight: '1.6' }}>
-                      <div>Period: {latestBacktest.startDate} to {latestBacktest.endDate}</div>
-                      <div>Capital: ${safeNumber(latestBacktest.initialCapital).toLocaleString()}</div>
-                    </div>
-                  </Col>
-                  <Col span={12}>
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-                      <div style={{
-                        background: latestBacktest.status === 'completed' ? 'rgba(52, 168, 83, 0.1)' : 
-                                   latestBacktest.status === 'running' ? 'rgba(66, 133, 244, 0.1)' : 'rgba(234, 67, 53, 0.1)',
-                        borderRadius: '12px',
-                        padding: '4px 12px',
-                        fontSize: '11px',
-                        fontWeight: '600',
-                        color: latestBacktest.status === 'completed' ? '#34a853' : 
-                               latestBacktest.status === 'running' ? '#4285f4' : '#ea4335',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.5px'
-                      }}>
-                        {latestBacktest.status || 'UNKNOWN'}
-                      </div>
-                    </div>
-                    
-                    {/* 强化 Total Return 主指标 */}
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: '16px', color: '#666', marginBottom: '4px' }}>Total Return</div>
-                      <div style={{ 
-                        fontSize: '32px', 
-                        fontWeight: '700',
-                        color: safeNumber(latestBacktest.totalReturn) >= 0 ? '#34a853' : '#ea4335',
-                        lineHeight: '1.2'
-                      }}>
-                        {safeNumber(latestBacktest.totalReturn) >= 0 ? '+' : ''}{safeToFixed(safeNumber(latestBacktest.totalReturn), 2)}%
-                      </div>
-                      <div style={{ 
-                        fontSize: '15px', 
-                        color: safeNumber(latestBacktest.totalReturn) >= 0 ? '#34a853' : '#ea4335',
-                        marginTop: '4px'
-                      }}>
-                        {safeNumber(latestBacktest.totalReturn) >= 0 ? 'Profit' : 'Loss'}
-                      </div>
-                    </div>
-                  </Col>
-                </Row>
-                
-                {/* 三个关键指标行 - 统一排版 */}
-                <div style={{ 
-                  background: '#f8f9fa', 
-                  borderRadius: '8px',
-                  padding: '16px',
-                  marginBottom: '20px'
-                }}>
-                  <div style={{ fontSize: '16px', color: '#666', fontWeight: '600', marginBottom: '12px' }}>
-                    Performance Metrics
-                  </div>
-                  <Row gutter={[16, 8]}>
-                    <Col span={8}>
-                      <div style={{ display: 'flex', alignItems: 'center', marginBottom: '4px' }}>
-                        <div style={{ marginRight: '8px' }}>
-                          <LineChart size={14} color={safeNumber(latestBacktest.sharpeRatio) >= 1 ? '#34a853' : 
-                                                      safeNumber(latestBacktest.sharpeRatio) >= 0 ? '#faad14' : '#ea4335'} />
-                        </div>
-                        <div style={{ fontSize: '14px', color: '#666' }}>Sharpe</div>
-                      </div>
-                      <div style={{ 
-                        fontSize: '24px', 
-                        fontWeight: '600',
-                        color: safeNumber(latestBacktest.sharpeRatio) >= 1 ? '#34a853' : 
-                               safeNumber(latestBacktest.sharpeRatio) >= 0 ? '#faad14' : '#ea4335'
-                      }}>
-                        {safeToFixed(safeNumber(latestBacktest.sharpeRatio), 2)}
-                      </div>
-                    </Col>
-                    <Col span={8}>
-                      <div style={{ display: 'flex', alignItems: 'center', marginBottom: '4px' }}>
-                        <div style={{ marginRight: '8px' }}>
-                          <TrendingDown size={14} color="#ea4335" />
-                        </div>
-                        <div style={{ fontSize: '14px', color: '#666' }}>Max DD</div>
-                      </div>
-                      <div style={{ 
-                        fontSize: '24px', 
-                        fontWeight: '600',
-                        color: '#ea4335'
-                      }}>
-                        {safeToFixed(safeNumber(latestBacktest.maxDrawdown), 2)}%
-                      </div>
-                    </Col>
-                    <Col span={8}>
-                      <div style={{ display: 'flex', alignItems: 'center', marginBottom: '4px' }}>
-                        <div style={{ marginRight: '8px' }}>
-                          <Award size={14} color={safeNumber(latestBacktest.winRate) >= 60 ? '#34a853' : 
-                                                  safeNumber(latestBacktest.winRate) >= 40 ? '#faad14' : '#ea4335'} />
-                        </div>
-                        <div style={{ fontSize: '14px', color: '#666' }}>Win Rate</div>
-                      </div>
-                      <div style={{ 
-                        fontSize: '24px', 
-                        fontWeight: '600',
-                        color: safeNumber(latestBacktest.winRate) >= 60 ? '#34a853' : 
-                               safeNumber(latestBacktest.winRate) >= 40 ? '#faad14' : '#ea4335'
-                      }}>
-                        {safeToFixed(safeNumber(latestBacktest.winRate), 1)}%
-                      </div>
-                    </Col>
-                  </Row>
-                </div>
-                
-                {/* 按钮区 - 更整齐专业 */}
-                <div style={{ 
-                  display: 'flex', 
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  paddingTop: '16px',
-                  borderTop: '1px solid #f0f0f0'
-                }}>
-                  <div style={{ fontSize: '13px', color: '#888' }}>
-                    Backtest ID: {latestBacktest.backtestId?.substring(0, 8) || 'N/A'}
-                  </div>
-                  <Space>
-                    <Button 
-                      type="primary"
-                      size="small"
-                      icon={<EyeOutlined />}
-                      onClick={() => latestBacktest.backtestId && handleViewBacktest(latestBacktest.backtestId)}
-                      style={{ 
-                        background: '#4285f4',
-                        borderColor: '#4285f4',
-                        fontWeight: '500',
-                        fontSize: '14px'
-                      }}
-                    >
-                      View Details
-                    </Button>
-                    <Button 
-                      type="default"
-                      size="small"
-                      icon={<BarChart3 size={14} />}
-                      onClick={() => latestBacktest.backtestId && navigate(`/analytics?backtestId=${latestBacktest.backtestId}`)}
-                      style={{ fontWeight: '500', fontSize: '14px' }}
-                    >
-                      Analyze
-                    </Button>
-                  </Space>
-                </div>
-              </div>
-            ) : (
-              <Empty
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description={
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: '14px', color: '#666', marginBottom: '8px' }}>No backtest history yet</div>
-                    <div style={{ fontSize: '12px', color: '#999', marginBottom: '16px' }}>
-                      Run your first backtest to see results here
-                    </div>
-                    <Button 
-                      type="primary" 
-                      onClick={handleRunBacktest}
-                      icon={<PlayCircleOutlined />}
-                      style={{ fontWeight: '500' }}
-                    >
-                      Run First Backtest
-                    </Button>
-                  </div>
-                }
-              />
-            )}
-          </Card>
-        </Col>
-      </Row>
-
-      {/* 快速操作 - 优化版 */}
-      <Row gutter={[16, 16]} style={{ marginTop: 24 }}>
+    <div style={{ padding: '20px 28px', width: '100%', maxWidth: 'none', margin: 0 }}>
+      <Row gutter={[16, 16]} style={{ marginBottom: '32px' }}>
         <Col span={24}>
-          <Card 
-            title={
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div style={{ 
-                  background: 'rgba(66, 133, 244, 0.1)', 
-                  borderRadius: '6px',
-                  padding: '4px'
-                }}>
-                  <PlayCircle size={16} color="#4285f4" />
-                </div>
-                <span style={{ fontSize: '16px', fontWeight: '600', color: '#333' }}>
-                  Quick Actions
-                </span>
-              </div>
-            }
-            styles={{
-              body: { padding: '20px 24px' }
-            }}
-          >
-            <Row gutter={[20, 16]}>
-              <Col span={6}>
-                <Button 
-                  type="default" 
-                  block
-                  icon={<Search size={16} />}
-                  onClick={handleViewMarket}
-                  style={{ 
-                    height: '44px',
-                    fontSize: '14px',
-                    fontWeight: '500',
-                    color: '#333',
-                    borderColor: '#d9d9d9',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '8px'
-                  }}
-                >
-                  Browse Market
-                </Button>
-                <div style={{ 
-                  fontSize: '12px', 
-                  color: '#666', 
-                  marginTop: '8px',
-                  textAlign: 'center'
-                }}>
-                  Explore stocks & trends
-                </div>
+          <Card style={{ padding: '16px 20px', borderRadius: '10px' }} bodyStyle={{ padding: 0 }}>
+            <Row align="middle" justify="space-between">
+              <Col>
+                <Space align="center" size={12}>
+                  <DashboardOutlined style={{ fontSize: '24px', color: '#1890ff' }} />
+                  <Space direction="vertical" size={4}>
+                    <Title level={3} style={{ margin: 0, fontWeight: 600, fontSize: '20px' }}>Dashboard</Title>
+                    <Text type="secondary" style={{ fontSize: '12px', color: '#8c8c8c' }}>Real-time market overview</Text>
+                  </Space>
+                </Space>
               </Col>
-              <Col span={6}>
-                <Button 
-                  type="default" 
-                  block
-                  icon={<PlayCircle size={16} />}
-                  onClick={handleRunBacktest}
-                  style={{ 
-                    height: '44px',
-                    fontSize: '14px',
-                    fontWeight: '500',
-                    color: '#333',
-                    borderColor: '#d9d9d9',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '8px'
-                  }}
-                >
-                  Run Backtest
-                </Button>
-                <div style={{ 
-                  fontSize: '12px', 
-                  color: '#666', 
-                  marginTop: '8px',
-                  textAlign: 'center'
-                }}>
-                  Test strategies
-                </div>
-              </Col>
-              <Col span={6}>
-                <Button 
-                  type="default" 
-                  block
-                  icon={<BarChart size={16} />}
-                  onClick={handleViewAnalysis}
-                  style={{ 
-                    height: '44px',
-                    fontSize: '14px',
-                    fontWeight: '500',
-                    color: '#333',
-                    borderColor: '#d9d9d9',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '8px'
-                  }}
-                >
-                  View Analytics
-                </Button>
-                <div style={{ 
-                  fontSize: '12px', 
-                  color: '#666', 
-                  marginTop: '8px',
-                  textAlign: 'center'
-                }}>
-                  Performance insights
-                </div>
-              </Col>
-              <Col span={6}>
-                <Button 
-                  type="default" 
-                  block
-                  icon={<RefreshCw size={16} />}
-                  onClick={fetchDashboardData}
-                  style={{ 
-                    height: '44px',
-                    fontSize: '14px',
-                    fontWeight: '500',
-                    color: '#333',
-                    borderColor: '#d9d9d9',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '8px'
-                  }}
-                >
-                  Refresh Dashboard
-                </Button>
-                <div style={{ 
-                  fontSize: '12px', 
-                  color: '#666', 
-                  marginTop: '8px',
-                  textAlign: 'center'
-                }}>
-                  Update all data
-                </div>
+              <Col>
+                <Space align="center" size={12}>
+                  <Space size={8}>
+                    <Text type="secondary" style={{ fontSize: '12px', color: '#8c8c8c' }}>
+                      <ClockCircleOutlined style={{ marginRight: '4px', fontSize: '11px' }} />
+                      {lastFetched ? new Date(lastFetched).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Never'}
+                    </Text>
+                    <Button type="primary" icon={<ReloadOutlined />} onClick={refresh} loading={loading} size="small">Refresh</Button>
+                  </Space>
+                  <DataSourceBadge source="Finnhub" />
+                </Space>
               </Col>
             </Row>
+          </Card>
+        </Col>
+      </Row>
+
+      {loading && (
+        <Row justify="center" style={{ marginBottom: '24px' }}>
+          <Col>
+            <Spin size="large" tip="Loading market data..." />
+          </Col>
+        </Row>
+      )}
+
+      {error && (
+        <Row style={{ marginBottom: '24px' }}>
+          <Col span={24}>
+            <Alert message="Error Loading Data" description={error} type="error" showIcon closable onClose={() => setError('')} />
+          </Col>
+        </Row>
+      )}
+
+      <div style={{ 
+        display: 'flex', 
+        flexWrap: 'wrap', 
+        gap: '12px', 
+        marginBottom: '24px',
+        marginLeft: '-6px',
+        marginRight: '-6px'
+      }}>
+        <div style={{ flex: '1 1 0', minWidth: '180px', padding: '0 6px' }}>
+          <StatCard title="Total Symbols" value={marketStats.totalSymbols} icon={<DatabaseOutlined />} color="#595959" />
+        </div>
+        <div style={{ flex: '1 1 0', minWidth: '180px', padding: '0 6px' }}>
+          <StatCard title="Market Gainers" value={marketStats.gainers} icon={<RiseOutlined />} color="#52c41a" valueColor="#52c41a" />
+        </div>
+        <div style={{ flex: '1 1 0', minWidth: '180px', padding: '0 6px' }}>
+          <StatCard title="Market Losers" value={marketStats.losers} icon={<FallOutlined />} color="#ff4d4f" valueColor="#ff4d4f" />
+        </div>
+        <div style={{ flex: '1 1 0', minWidth: '180px', padding: '0 6px' }}>
+          <StatCard title="Average Change" value={marketStats.avgChange} icon={<LineChartOutlined />} color={marketStats.avgChange > 0 ? '#52c41a' : marketStats.avgChange < 0 ? '#ff4d4f' : '#595959'} valueColor={marketStats.avgChange > 0 ? '#52c41a' : marketStats.avgChange < 0 ? '#ff4d4f' : '#595959'} suffix="%" formatValue={(v) => v > 0 ? `+${v.toFixed(2)}` : v.toFixed(2)} />
+        </div>
+        <div style={{ flex: '1 1 0', minWidth: '180px', padding: '0 6px' }}>
+          <StatCard title="Total Market Cap" value={marketStats.totalMarketCap} icon={<BarChartOutlined />} color="#1d39c4" formatValue={formatMarketCap} />
+        </div>
+        <div style={{ flex: '1 1 0', minWidth: '180px', padding: '0 6px' }}>
+          {/* 自定义 Largest Move 卡片 */}
+          <Card 
+            hoverable 
+            style={{ 
+              height: '116px', 
+              borderRadius: '10px', 
+              border: '1px solid #e8e8e8',
+              borderTop: '1px solid #f5f5f5',
+              boxShadow: '0 2px 10px rgba(0,0,0,0.05), 0 1px 4px rgba(0,0,0,0.04)',
+              background: '#ffffff',
+              transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+              cursor: 'pointer',
+              position: 'relative',
+              overflow: 'hidden',
+              '&:hover': {
+                transform: 'translateY(-3px)',
+                boxShadow: '0 8px 25px rgba(0,0,0,0.1), 0 4px 12px rgba(0,0,0,0.06)',
+                borderColor: '#d9d9d9'
+              }
+            } as any}
+            onClick={() => {
+              if (marketStats.largestMoveStock) {
+                // 点击时跳转到该股票详情
+                navigate(`/market?symbol=${marketStats.largestMoveStock.symbol}`);
+              }
+            }}
+          >
+            {/* 标题行 */}
             <div style={{ 
-              marginTop: '20px',
-              paddingTop: '16px',
-              borderTop: '1px solid #f0f0f0',
-              fontSize: '12px',
-              color: '#999',
-              textAlign: 'center'
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: '8px'
             }}>
-              Click any action to navigate or refresh dashboard data
+              <Text type="secondary" style={{ 
+                fontSize: '12px',
+                color: '#595959',
+                fontWeight: 500,
+                letterSpacing: 'normal',
+                textTransform: 'none',
+                fontFamily: 'inherit'
+              }}>
+                Largest Move
+              </Text>
+              <span style={{ 
+                color: '#bfbfbf',
+                fontSize: '12px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                opacity: 0.7
+              }}>
+                <LineChartOutlined />
+              </span>
             </div>
+            
+            {/* 内容区域 */}
+            <div style={{ 
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'flex-start',
+              justifyContent: 'center',
+              height: 'calc(100% - 28px)'
+            }}>
+              {/* 股票代码 - 大字体 */}
+              <div style={{ 
+                fontSize: '18px',
+                fontWeight: 600,
+                lineHeight: '24px',
+                color: '#262626',
+                marginBottom: '4px'
+              }}>
+                {marketStats.largestMoveStock ? marketStats.largestMoveStock.symbol : '--'}
+              </div>
+              
+              {/* 涨跌幅 - 根据涨跌显示颜色 */}
+              {marketStats.largestMoveStock && (
+                <div style={{ 
+                  fontSize: '14px',
+                  fontWeight: 500,
+                  lineHeight: '20px',
+                  color: marketStats.largestMoveStock.changePercent > 0 ? '#52c41a' : marketStats.largestMoveStock.changePercent < 0 ? '#ff4d4f' : '#595959'
+                }}>
+                  {marketStats.largestMoveStock.changePercent > 0 ? '+' : ''}{marketStats.largestMoveStock.changePercent.toFixed(2)}%
+                </div>
+              )}
+            </div>
+          </Card>
+        </div>
+        <div style={{ flex: '1 1 0', minWidth: '180px', padding: '0 6px' }}>
+          {/* 自定义 Largest Cap 卡片，优化 typography 和 spacing */}
+          <Card 
+            hoverable 
+            style={{ 
+              height: '116px', 
+              borderRadius: '10px', 
+              border: '1px solid #e8e8e8',
+              borderTop: '1px solid #f5f5f5',
+              boxShadow: '0 2px 10px rgba(0,0,0,0.05), 0 1px 4px rgba(0,0,0,0.04)',
+              background: '#ffffff',
+              transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+              cursor: 'pointer',
+              position: 'relative',
+              overflow: 'hidden',
+              '&:hover': {
+                transform: 'translateY(-3px)',
+                boxShadow: '0 8px 24px rgba(0,0,0,0.10), 0 4px 12px rgba(0,0,0,0.06)',
+                borderColor: '#d4d4d4',
+              },
+              '&:active': {
+                transform: 'translateY(-1px)',
+                boxShadow: '0 4px 16px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.05)',
+              }
+            } as any}
+            bodyStyle={{ 
+              padding: '22px 18px', 
+              height: '100%', 
+              display: 'flex', 
+              flexDirection: 'column', 
+              justifyContent: 'center',
+              position: 'relative',
+              zIndex: 1
+            }}
+          >
+            {/* 底部强调线 */}
+            <div style={{
+              position: 'absolute',
+              bottom: 0,
+              left: 0,
+              right: 0,
+              height: '2px',
+              background: `linear-gradient(90deg, #59595920 0%, #59595910 50%, transparent 100%)`,
+              opacity: 0.6,
+              transition: 'all 0.25s ease',
+              '&:hover': {
+                opacity: 0.9,
+                height: '3px',
+              }
+            } as any} />
+            
+            {/* 标题行 - 增大标签，更明显 */}
+            <div style={{ 
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: '10px'  // 增加间距
+            }}>
+              <Text type="secondary" style={{ 
+                fontSize: '13px',  // 增大标签字体
+                color: '#404040',  // 稍微深一点，更明显
+                fontWeight: 600,   // 加重字重
+                letterSpacing: '0.1px',
+                textTransform: 'none',
+                fontFamily: 'inherit'
+              }}>
+                Largest Cap
+              </Text>
+              <span style={{ 
+                color: '#bfbfbf',
+                fontSize: '12px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                opacity: 0.7
+              }}>
+                <DatabaseOutlined />
+              </span>
+            </div>
+            
+            {/* 数值行 - 减小数据字体，优化间距 */}
+            <div style={{ 
+              display: 'flex',
+              alignItems: 'baseline',
+              gap: '6px',  // NVDA 和 $4.4T 之间的自然间距
+              marginTop: '4px'  // 减少顶部间距
+            }}>
+              {/* 股票代码 */}
+              <div style={{ 
+                fontSize: '20px',  // 减小字体
+                fontWeight: 600,
+                color: '#1a1a1a',
+                lineHeight: 1.1,
+                fontFeatureSettings: '"tnum", "ss01", "zero"',
+                letterSpacing: '-0.2px',
+                fontFamily: "'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+                textShadow: '0 1px 1px rgba(0,0,0,0.02)'
+              }}>
+                {marketStats.largestCapStock ? marketStats.largestCapStock.symbol : '--'}
+              </div>
+              
+              {/* 市值 - 更小字体，作为补充信息 */}
+              {marketStats.largestCapStock && (
+                <div style={{ 
+                  fontSize: '14px',  // 明显小于股票代码
+                  fontWeight: 500,
+                  color: '#595959',   // 更中性颜色
+                  lineHeight: 1.1,
+                  fontFeatureSettings: '"tnum", "ss01"',
+                  letterSpacing: 'normal',
+                  fontFamily: "'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+                  opacity: 0.9
+                }}>
+                  {formatMarketCap(marketStats.largestCapStock.marketCap)}
+                </div>
+              )}
+            </div>
+          </Card>
+        </div>
+      </div>
+
+      <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
+        <Col xs={24} lg={12} xl={12}>
+          <Card 
+            title={<Space><RiseOutlined style={{ color: '#52c41a' }} /><Text strong>Top Gainers</Text></Space>} 
+            size="small" 
+            style={{ 
+              height: '320px',
+              display: 'flex',
+              flexDirection: 'column',
+              width: '100%'
+            }}
+            bodyStyle={{ 
+              padding: '16px 20px', 
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden'
+            }}
+          >
+            {getTopGainers().length === 0 ? (
+              <div style={{ 
+                display: 'flex', 
+                flexDirection: 'column', 
+                alignItems: 'center', 
+                justifyContent: 'center', 
+                flex: 1,
+                height: '100%',
+                padding: '20px'
+              }}>
+                <Text type="secondary" style={{ fontSize: '12px', color: '#8c8c8c', textAlign: 'center', lineHeight: 1.4 }}>
+                  No advancing stocks<br />in current market session
+                </Text>
+              </div>
+            ) : (
+              <div style={{ 
+                flex: 1,
+                overflowY: 'auto',
+                paddingRight: '8px',
+                marginRight: '-8px'
+              }}>
+                {/* 显示前8条，如果超过8条则添加提示 */}
+                {getTopGainers().slice(0, 8).map((stock) => {
+                  const changePercent = getChangePercent(stock);
+                  return (
+                    <div key={stock.symbol} style={{ 
+                      padding: '10px 0', 
+                      borderBottom: '1px solid #f5f5f5', 
+                      cursor: 'pointer',
+                      transition: 'background-color 0.2s ease',
+                      '&:hover': {
+                        backgroundColor: '#fafafa'
+                      }
+                    } as any} onClick={() => handleSymbolClick(stock.symbol)}>
+                      <Row justify="space-between" align="middle" style={{ width: '100%' }}>
+                        <Col style={{ flex: 1, minWidth: 0, paddingRight: '12px' }}>
+                          <Space direction="vertical" size={1} style={{ width: '100%' }}>
+                            <Text strong style={{ fontSize: '16px', fontWeight: 700, letterSpacing: '-0.2px' }} ellipsis>{stock.symbol}</Text>
+                            <Text type="secondary" style={{ fontSize: '10px', color: '#8c8c8c', fontWeight: 400 }} ellipsis>{stock.name || 'N/A'}</Text>
+                          </Space>
+                        </Col>
+                        <Col style={{ flexShrink: 0 }}>
+                          <Space align="center" size={8}>
+                            <Text strong style={{ fontSize: '16px', fontWeight: 700, whiteSpace: 'nowrap', fontFeatureSettings: '"tnum"' }}>${safeNumber(stock.price).toFixed(2)}</Text>
+                            <Tag color="green" style={{ 
+                              margin: 0, 
+                              fontSize: '10px', 
+                              padding: '2px 8px',
+                              fontWeight: 500,
+                              borderRadius: '10px',
+                              minWidth: '55px',
+                              textAlign: 'center'
+                            }}>{formatChangePercent(changePercent)}</Tag>
+                          </Space>
+                        </Col>
+                      </Row>
+                    </div>
+                  );
+                })}
+                
+                {/* 如果超过8条，显示提示 */}
+                {getTopGainers().length > 8 && (
+                  <div style={{ 
+                    padding: '12px 0', 
+                    textAlign: 'center',
+                    borderTop: '1px solid #f5f5f5',
+                    marginTop: '8px'
+                  }}>
+                    <Text type="secondary" style={{ fontSize: '11px', color: '#8c8c8c' }}>
+                      +{getTopGainers().length - 8} more gainers (scroll to see all)
+                    </Text>
+                    <div style={{ fontSize: '10px', color: '#bfbfbf', marginTop: '2px' }}>
+                      Total: {getTopGainers().length} gainers
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </Card>
+        </Col>
+        <Col xs={24} lg={12} xl={12}>
+          <Card 
+            title={<Space><FallOutlined style={{ color: '#ff4d4f' }} /><Text strong>Top Losers</Text></Space>} 
+            size="small" 
+            style={{ 
+              height: '320px',
+              display: 'flex',
+              flexDirection: 'column',
+              width: '100%'
+            }}
+            bodyStyle={{ 
+              padding: '16px 20px', 
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden'
+            }}
+          >
+            {getTopLosers().length === 0 ? (
+              <div style={{ 
+                display: 'flex', 
+                flexDirection: 'column', 
+                alignItems: 'center', 
+                justifyContent: 'center', 
+                flex: 1,
+                height: '100%'
+              }}>
+                <Text type="secondary" style={{ fontSize: '13px' }}>No losers in current market</Text>
+              </div>
+            ) : (
+              <div style={{ 
+                flex: 1,
+                overflowY: 'auto',
+                paddingRight: '8px',
+                marginRight: '-8px'
+              }}>
+                {/* 显示前8条，如果超过8条则添加提示 */}
+                {getTopLosers().slice(0, 8).map((stock) => {
+                  const changePercent = getChangePercent(stock);
+                  return (
+                    <div key={stock.symbol} style={{ 
+                      padding: '10px 0', 
+                      borderBottom: '1px solid #f5f5f5', 
+                      cursor: 'pointer',
+                      transition: 'background-color 0.2s ease',
+                      '&:hover': {
+                        backgroundColor: '#fafafa'
+                      }
+                    } as any} onClick={() => handleSymbolClick(stock.symbol)}>
+                      <Row justify="space-between" align="middle" style={{ width: '100%' }}>
+                        <Col style={{ flex: 1, minWidth: 0, paddingRight: '12px' }}>
+                          <Space direction="vertical" size={1} style={{ width: '100%' }}>
+                            <Text strong style={{ fontSize: '16px', fontWeight: 700, letterSpacing: '-0.2px' }} ellipsis>{stock.symbol}</Text>
+                            <Text type="secondary" style={{ fontSize: '10px', color: '#8c8c8c', fontWeight: 400 }} ellipsis>{stock.name || 'N/A'}</Text>
+                          </Space>
+                        </Col>
+                        <Col style={{ flexShrink: 0 }}>
+                          <Space align="center" size={8}>
+                            <Text strong style={{ fontSize: '16px', fontWeight: 700, whiteSpace: 'nowrap', fontFeatureSettings: '"tnum"' }}>${safeNumber(stock.price).toFixed(2)}</Text>
+                            <Tag color="red" style={{ 
+                              margin: 0, 
+                              fontSize: '10px', 
+                              padding: '2px 8px',
+                              fontWeight: 500,
+                              borderRadius: '10px',
+                              minWidth: '55px',
+                              textAlign: 'center'
+                            }}>{formatChangePercent(changePercent)}</Tag>
+                          </Space>
+                        </Col>
+                      </Row>
+                    </div>
+                  );
+                })}
+                
+                {/* 如果超过8条，显示提示 */}
+                {getTopLosers().length > 8 && (
+                  <div style={{ 
+                    padding: '12px 0', 
+                    textAlign: 'center',
+                    borderTop: '1px solid #f5f5f5',
+                    marginTop: '8px'
+                  }}>
+                    <Text type="secondary" style={{ fontSize: '11px', color: '#8c8c8c' }}>
+                      +{getTopLosers().length - 8} more losers (scroll to see all)
+                    </Text>
+                    <div style={{ fontSize: '10px', color: '#bfbfbf', marginTop: '2px' }}>
+                      Total: {getTopLosers().length} losers
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </Card>
+        </Col>
+      </Row>
+
+      <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
+        <Col xs={24} lg={10} xl={10}>
+          <Card 
+            title={<Space><PieChartOutlined /><Text strong style={{ fontSize: '15px', fontWeight: 600 }}>Sector Distribution</Text></Space>} 
+            size="small" 
+            style={{ height: '300px' }}
+            bodyStyle={{ 
+              padding: '16px',
+              height: '100%',
+              display: 'flex',
+              flexDirection: 'column'
+            }}
+          >
+            {sectorData.length === 0 ? (
+              <div style={{ 
+                display: 'flex', 
+                flexDirection: 'column', 
+                alignItems: 'center', 
+                justifyContent: 'center', 
+                flex: 1,
+                height: '100%'
+              }}>
+                <Text type="secondary" style={{ fontSize: '13px' }}>No sector data available</Text>
+              </div>
+            ) : (
+              <div style={{ 
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'row',
+                gap: '20px',
+                height: '100%',
+                justifyContent: 'center',
+                alignItems: 'flex-start',
+                paddingTop: '8px'
+              }}>
+                {/* 左侧：优化后的环形图 */}
+                <div style={{ flex: '0 0 130px', display: 'flex', alignItems: 'center', justifyContent: 'center', paddingTop: '4px' }}>
+                  <div style={{ position: 'relative', width: '120px', height: '120px' }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={sectorData.slice(0, 5)}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={40}
+                          outerRadius={55}
+                          paddingAngle={1}
+                          dataKey="percentage"
+                        >
+                          {sectorData.slice(0, 5).map((sector, index) => (
+                            <Cell key={`cell-${index}`} fill={getSectorColor(sector.name)} />
+                          ))}
+                        </Pie>
+                        <Tooltip 
+                          formatter={(value: any) => [`${Number(value).toFixed(1)}%`, 'Weight']}
+                          labelFormatter={(label) => `Sector: ${label}`}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                    {/* 中心显示总数 */}
+                    <div style={{ 
+                      position: 'absolute',
+                      top: '50%',
+                      left: '50%',
+                      transform: 'translate(-50%, -50%)',
+                      textAlign: 'center',
+                      pointerEvents: 'none'
+                    }}>
+                      <div style={{ fontSize: '18px', fontWeight: 600, color: '#1f1f1f', lineHeight: 1.2 }}>
+                        {marketStats.totalSymbols}
+                      </div>
+                      <div style={{ fontSize: '10px', color: '#8c8c8c', marginTop: '2px' }}>
+                        Symbols
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                
+                {/* 右侧：优化后的sector列表 */}
+                <div style={{ flex: 1, height: '100%', display: 'flex', flexDirection: 'column' }}>
+                  <div style={{ 
+                    display: 'flex', 
+                    flexDirection: 'column', 
+                    height: '100%',
+                    justifyContent: 'flex-start',
+                    paddingTop: '4px'
+                  }}>
+                    {sectorData.slice(0, 5).map((sector, index) => {
+                      const sectorColor = getSectorColor(sector.name);
+                      return (
+                        <div key={sector.name} style={{ 
+                          display: 'flex', 
+                          alignItems: 'center',
+                          height: '36px',
+                          padding: '0 4px',
+                          borderBottom: index < Math.min(sectorData.length, 5) - 1 ? '1px solid #f5f5f5' : 'none'
+                        }}>
+                          {/* 颜色标识 */}
+                          <div style={{ 
+                            width: '12px', 
+                            height: '12px', 
+                            borderRadius: '2px',
+                            backgroundColor: sectorColor,
+                            marginRight: '12px',
+                            flexShrink: 0
+                          }} />
+                          
+                          {/* sector名称 - 左对齐 */}
+                          <div style={{ flex: 1, minWidth: 0, marginRight: '16px' }}>
+                            <Text style={{ 
+                              fontSize: '14px', 
+                              fontWeight: 500,
+                              color: '#1f1f1f',
+                              lineHeight: '36px'
+                            }} ellipsis>
+                              {sector.name}
+                            </Text>
+                          </div>
+                          
+                          {/* 权重百分比 - 右对齐 */}
+                          <div style={{ 
+                            width: '70px', 
+                            textAlign: 'right',
+                            marginRight: '16px'
+                          }}>
+                            <Text style={{ 
+                              fontSize: '14px', 
+                              fontWeight: 600,
+                              color: '#1f1f1f',
+                              lineHeight: '36px'
+                            }}>
+                              {sector.percentage.toFixed(1)}%
+                            </Text>
+                          </div>
+                          
+                          {/* 股票数量 - 右对齐，有适当右边距 */}
+                          <div style={{ 
+                            width: '50px', 
+                            textAlign: 'right',
+                            paddingRight: '8px'
+                          }}>
+                            <Text type="secondary" style={{ 
+                              fontSize: '13px', 
+                              color: '#595959',
+                              fontWeight: 400,
+                              lineHeight: '36px'
+                            }}>
+                              {sector.count}
+                            </Text>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    
+                    {/* 如果超过5个sector，显示Other */}
+                    {sectorData.length > 5 && (
+                      <div style={{ 
+                        display: 'flex', 
+                        alignItems: 'center',
+                        height: '36px',
+                        padding: '0 4px',
+                        marginTop: '4px',
+                        borderTop: '1px solid #f5f5f5'
+                      }}>
+                        <div style={{ 
+                          width: '12px', 
+                          height: '12px', 
+                          borderRadius: '2px',
+                          backgroundColor: '#d9d9d9',
+                          marginRight: '12px',
+                          flexShrink: 0
+                        }} />
+                        
+                        <div style={{ flex: 1, minWidth: 0, marginRight: '16px' }}>
+                          <Text style={{ 
+                            fontSize: '14px', 
+                            fontWeight: 500,
+                            color: '#8c8c8c',
+                            lineHeight: '36px'
+                          }}>
+                            Other
+                          </Text>
+                        </div>
+                        
+                        <div style={{ 
+                          width: '70px', 
+                          textAlign: 'right',
+                          marginRight: '16px'
+                        }}>
+                          <Text style={{ 
+                            fontSize: '14px', 
+                            fontWeight: 600,
+                            color: '#8c8c8c',
+                            lineHeight: '36px'
+                          }}>
+                            {sectorData.slice(5).reduce((sum, s) => sum + s.percentage, 0).toFixed(1)}%
+                          </Text>
+                        </div>
+                        
+                        <div style={{ 
+                          width: '50px', 
+                          textAlign: 'right',
+                          paddingRight: '8px'
+                        }}>
+                          <Text type="secondary" style={{ 
+                            fontSize: '13px', 
+                            color: '#8c8c8c',
+                            fontWeight: 400,
+                            lineHeight: '36px'
+                          }}>
+                            {sectorData.slice(5).reduce((sum, s) => sum + s.count, 0)}
+                          </Text>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </Card>
+        </Col>
+        <Col xs={24} lg={8} xl={7}>
+          <Card 
+            title={<Space><BarChartOutlined /><Text strong style={{ fontSize: '15px', fontWeight: 600 }}>Market Breadth</Text></Space>} 
+            size="small" 
+            style={{ height: '300px' }}
+            bodyStyle={{ 
+              padding: '16px',
+              height: '100%',
+              display: 'flex',
+              flexDirection: 'column'
+            }}
+          >
+            <div style={{ 
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'center',
+              paddingTop: '8px'
+            }}>
+              {/* 上半部分：紧凑的三列统计 */}
+              <div style={{ 
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '24px'
+              }}>
+                {/* Advancing */}
+                <div style={{ flex: 1, textAlign: 'center' }}>
+                  <div style={{ 
+                    fontSize: '32px', 
+                    fontWeight: 700, 
+                    color: '#52c41a',
+                    lineHeight: 1,
+                    marginBottom: '4px'
+                  }}>
+                    {marketStats.gainers}
+                  </div>
+                  <Text type="secondary" style={{ 
+                    fontSize: '11px', 
+                    color: '#8c8c8c',
+                    fontWeight: 500,
+                    letterSpacing: '0.3px'
+                  }}>
+                    Advancing
+                  </Text>
+                </div>
+                
+                {/* Declining */}
+                <div style={{ flex: 1, textAlign: 'center' }}>
+                  <div style={{ 
+                    fontSize: '32px', 
+                    fontWeight: 700, 
+                    color: '#ff4d4f',
+                    lineHeight: 1,
+                    marginBottom: '4px'
+                  }}>
+                    {marketStats.losers}
+                  </div>
+                  <Text type="secondary" style={{ 
+                    fontSize: '11px', 
+                    color: '#8c8c8c',
+                    fontWeight: 500,
+                    letterSpacing: '0.3px'
+                  }}>
+                    Declining
+                  </Text>
+                </div>
+                
+                {/* Flat */}
+                <div style={{ flex: 1, textAlign: 'center' }}>
+                  <div style={{ 
+                    fontSize: '32px', 
+                    fontWeight: 700, 
+                    color: '#666',
+                    lineHeight: 1,
+                    marginBottom: '4px'
+                  }}>
+                    {marketStats.totalSymbols - marketStats.gainers - marketStats.losers}
+                  </div>
+                  <Text type="secondary" style={{ 
+                    fontSize: '11px', 
+                    color: '#8c8c8c',
+                    fontWeight: 500,
+                    letterSpacing: '0.3px'
+                  }}>
+                    Flat
+                  </Text>
+                </div>
+              </div>
+              
+              {/* 下半部分：摘要信息区 */}
+              <div style={{ 
+                textAlign: 'center',
+                paddingTop: '16px',
+                borderTop: '1px solid #f0f0f0'
+              }}>
+                {/* 市场状态标签 */}
+                <div style={{ marginBottom: '8px' }}>
+                  <Text type="secondary" style={{ 
+                    fontSize: '11px', 
+                    color: '#8c8c8c',
+                    fontWeight: 500,
+                    letterSpacing: '0.3px'
+                  }}>
+                    Market Status
+                  </Text>
+                  <Tag 
+                    color={marketStats.avgChange > 0.5 ? 'green' : marketStats.avgChange < -0.5 ? 'red' : 'default'}
+                    style={{ 
+                      fontSize: '11px',
+                      padding: '3px 10px',
+                      marginLeft: '6px',
+                      fontWeight: 600,
+                      borderRadius: '12px',
+                      height: '24px',
+                      lineHeight: '18px'
+                    }}
+                  >
+                    {marketStats.avgChange > 0.5 ? 'Bullish' : marketStats.avgChange < -0.5 ? 'Bearish' : 'Neutral'}
+                  </Tag>
+                </div>
+                
+                {/* Average Change */}
+                <div>
+                  <Text type="secondary" style={{ 
+                    fontSize: '12px', 
+                    color: '#8c8c8c',
+                    fontWeight: 500,
+                    marginRight: '8px'
+                  }}>
+                    Average Change
+                  </Text>
+                  <Text strong style={{ 
+                    fontSize: '18px', 
+                    color: marketStats.avgChange > 0 ? '#52c41a' : marketStats.avgChange < 0 ? '#ff4d4f' : '#666',
+                    fontWeight: 600
+                  }}>
+                    {marketStats.avgChange > 0 ? '+' : ''}{marketStats.avgChange.toFixed(2)}%
+                  </Text>
+                </div>
+              </div>
+            </div>
+          </Card>
+        </Col>
+        <Col xs={24} lg={6} xl={7}>
+          <Card 
+            title={<Space><EyeOutlined /><Text strong style={{ fontSize: '15px', fontWeight: 600 }}>System Status</Text></Space>} 
+            size="small" 
+            style={{ height: '300px' }}
+            bodyStyle={{ 
+              padding: '16px',
+              height: '100%',
+              display: 'flex',
+              flexDirection: 'column'
+            }}
+          >
+            <div style={{ 
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'center'
+            }}>
+              {/* 状态列表 - 专业状态面板 */}
+              <div style={{ 
+                display: 'flex', 
+                flexDirection: 'column'
+              }}>
+                {/* Market Data */}
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  alignItems: 'center',
+                  height: '40px',
+                  borderBottom: '1px solid #f0f0f0'
+                }}>
+                  <Space align="center" size={10}>
+                    <div style={{ 
+                      width: '12px', 
+                      height: '12px', 
+                      borderRadius: '50%', 
+                      backgroundColor: '#52c41a',
+                      boxShadow: '0 0 0 3px #52c41a15'
+                    }} />
+                    <Text style={{ fontSize: '14px', fontWeight: 600, color: '#1f1f1f' }}>Market Data</Text>
+                  </Space>
+                  <div style={{ 
+                    fontSize: '12px', 
+                    fontWeight: 600, 
+                    color: '#ffffff',
+                    backgroundColor: '#52c41a',
+                    padding: '5px 14px',
+                    borderRadius: '12px',
+                    width: '80px',
+                    textAlign: 'center',
+                    letterSpacing: '0.3px',
+                    boxSizing: 'border-box'
+                  }}>LIVE</div>
+                </div>
+                
+                {/* Quote Feed */}
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  alignItems: 'center',
+                  height: '40px',
+                  borderBottom: '1px solid #f0f0f0'
+                }}>
+                  <Text style={{ fontSize: '14px', fontWeight: 500, color: '#595959' }}>Quote Feed</Text>
+                  <div style={{ 
+                    fontSize: '12px', 
+                    fontWeight: 600, 
+                    color: '#ffffff',
+                    backgroundColor: '#52c41a',
+                    padding: '5px 14px',
+                    borderRadius: '12px',
+                    width: '80px',
+                    textAlign: 'center',
+                    letterSpacing: '0.3px',
+                    boxSizing: 'border-box'
+                  }}>HEALTHY</div>
+                </div>
+                
+                {/* Broker Connection */}
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  alignItems: 'center',
+                  height: '40px',
+                  borderBottom: '1px solid #f0f0f0'
+                }}>
+                  <Text style={{ fontSize: '14px', fontWeight: 500, color: '#595959' }}>Broker Connection</Text>
+                  <div style={{ 
+                    fontSize: '12px', 
+                    fontWeight: 600, 
+                    color: '#595959',
+                    backgroundColor: '#f5f5f5',
+                    padding: '5px 14px',
+                    borderRadius: '12px',
+                    width: '80px',
+                    textAlign: 'center',
+                    letterSpacing: '0.3px',
+                    border: '1px solid #e8e8e8',
+                    boxSizing: 'border-box'
+                  }}>PAPER</div>
+                </div>
+                
+                {/* Symbols Loaded */}
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  alignItems: 'center',
+                  height: '40px'
+                }}>
+                  <Text style={{ fontSize: '14px', fontWeight: 500, color: '#595959' }}>Symbols Loaded</Text>
+                  <Text strong style={{ 
+                    fontSize: '18px', 
+                    fontWeight: 700, 
+                    color: '#1f1f1f',
+                    fontFeatureSettings: '"tnum"'
+                  }}>{marketStats.totalSymbols}</Text>
+                </div>
+              </div>
+              
+              {/* 底部信息 - 简洁版本 */}
+              <div style={{ 
+                marginTop: '24px',
+                paddingTop: '16px',
+                borderTop: '1px solid #f0f0f0'
+              }}>
+                <Row justify="space-between" align="middle">
+                  <Col>
+                    <DataSourceBadge source="Finnhub" />
+                  </Col>
+                  <Col>
+                    <Text type="secondary" style={{ 
+                      fontSize: '12px', 
+                      color: '#8c8c8c', 
+                      fontWeight: 500,
+                      paddingRight: '4px'
+                    }}>
+                      {lastFetched ? new Date(lastFetched).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Never'}
+                    </Text>
+                  </Col>
+                </Row>
+              </div>
+            </div>
+          </Card>
+        </Col>
+      </Row>
+
+      <Row gutter={[20, 20]} style={{ marginBottom: '24px' }}>
+        <Col span={24}>
+          <Card title={<Space><EyeOutlined /><Text strong style={{ fontSize: '15px', fontWeight: 600 }}>Watchlist Snapshot</Text></Space>} extra={<Button type="link" size="small" onClick={handleManageWatchlist} style={{ fontSize: '12px', fontWeight: 500 }}>Manage Watchlist</Button>}>
+            {watchlist.length === 0 ? (
+              <Empty description="Watchlist is empty. Add stocks from Market page or click 'Manage Watchlist'." image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            ) : getWatchlistData().length === 0 ? (
+              <Empty description="Watchlist stocks not found in current market data. Try refreshing." image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            ) : (
+              <Row gutter={[16, 16]}>
+                {getWatchlistData().map((stock) => {
+                  const changePercent = getChangePercent(stock);
+                  return (
+                    <Col xs={24} sm={12} md={8} lg={6} xl={4} xxl={3} key={stock.symbol}>
+                      <Card size="small" hoverable onClick={() => handleSymbolClick(stock.symbol)} style={{ cursor: 'pointer', height: '140px' }} bodyStyle={{ padding: '12px' }}>
+                        {/* 完整一体化信息卡 */}
+                        <div style={{ 
+                          display: 'flex', 
+                          flexDirection: 'column', 
+                          height: '100%',
+                          justifyContent: 'space-between'
+                        }}>
+                          {/* 顶部区域：Symbol + 涨跌badge */}
+                          <div style={{ 
+                            display: 'flex', 
+                            justifyContent: 'space-between', 
+                            alignItems: 'flex-start',
+                            marginBottom: '8px'
+                          }}>
+                            <Text strong style={{ 
+                              fontSize: '16px', 
+                              fontWeight: 700, 
+                              letterSpacing: '-0.2px',
+                              lineHeight: 1.2
+                            }} ellipsis>{stock.symbol}</Text>
+                            <Tag color={changePercent === null ? 'default' : changePercent > 0 ? 'green' : 'red'} style={{ 
+                              margin: 0, 
+                              fontSize: '10px', 
+                              padding: '2px 8px',
+                              fontWeight: 600,
+                              borderRadius: '10px',
+                              minWidth: '50px',
+                              textAlign: 'center',
+                              flexShrink: 0
+                            }}>
+                              {formatChangePercent(changePercent)}
+                            </Tag>
+                          </div>
+                          
+                          {/* 中部区域：公司名 + 价格 */}
+                          <div style={{ 
+                            flex: 1,
+                            display: 'flex', 
+                            flexDirection: 'column',
+                            justifyContent: 'center',
+                            marginBottom: '8px'
+                          }}>
+                            <Text type="secondary" style={{ 
+                              fontSize: '11px', 
+                              color: '#595959',
+                              fontWeight: 500,
+                              lineHeight: 1.2,
+                              marginBottom: '6px'
+                            }} ellipsis>{stock.name || 'N/A'}</Text>
+                            <Text strong style={{ 
+                              fontSize: '20px', 
+                              color: '#1890ff', 
+                              fontWeight: 700,
+                              fontFeatureSettings: '"tnum"',
+                              lineHeight: 1
+                            }}>${safeNumber(stock.price).toFixed(2)}</Text>
+                          </div>
+                          
+                          {/* 底部区域：Volume + Market Cap - 往上提，去掉分割线 */}
+                          <div>
+                            <div style={{ 
+                              display: 'flex', 
+                              justifyContent: 'space-between',
+                              alignItems: 'flex-end'
+                            }}>
+                              {/* CHANGE 列 - 显示涨跌额，而不是百分比 */}
+                              <div style={{ flex: 1 }}>
+                                <div style={{ 
+                                  fontSize: '9px', 
+                                  color: '#8c8c8c', 
+                                  fontWeight: 600, 
+                                  letterSpacing: '0.4px', 
+                                  textTransform: 'uppercase',
+                                  marginBottom: '2px'
+                                }}>CHANGE</div>
+                                <div style={{ 
+                                  fontSize: '11px', 
+                                  color: stock.change && stock.change > 0 ? '#237804' : stock.change && stock.change < 0 ? '#a8071a' : '#595959',
+                                  fontWeight: 500,
+                                  fontFeatureSettings: '"tnum"'
+                                }}>
+                                  {stock.change !== null && stock.change !== undefined 
+                                    ? (stock.change > 0 ? '+' : '') + stock.change.toFixed(2)
+                                    : '--'}
+                                </div>
+                              </div>
+                              
+                              {/* Market Cap 列 */}
+                              <div style={{ flex: 1, textAlign: 'right' }}>
+                                <div style={{ 
+                                  fontSize: '9px', 
+                                  color: '#8c8c8c', 
+                                  fontWeight: 600, 
+                                  letterSpacing: '0.4px', 
+                                  textTransform: 'uppercase',
+                                  marginBottom: '2px'
+                                }}>MKT CAP</div>
+                                <div style={{ 
+                                  fontSize: '11px', 
+                                  color: '#595959', 
+                                  fontWeight: 500,
+                                  fontFeatureSettings: '"tnum"'
+                                }}>{formatMarketCap(stock.marketCap)}</div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </Card>
+                    </Col>
+                  );
+                })}
+              </Row>
+            )}
           </Card>
         </Col>
       </Row>

@@ -66,7 +66,13 @@ export const systemAPI = {
 // Market API
 export const marketAPI = {
   getStocks: () => api.get('/market/stocks'),
-  getStockHistory: (symbol: string) => api.get(`/market/history/${symbol}`),
+  getStockData: (symbol: string) => api.get(`/market/stock/${symbol}`),
+  getStockHistory: (symbol: string, interval?: string, range?: string) => {
+    const params: any = {};
+    if (interval) params.interval = interval;
+    if (range) params.range = range;
+    return api.get(`/market/history/${symbol}`, { params });
+  },
 };
 
 // Backtrader API

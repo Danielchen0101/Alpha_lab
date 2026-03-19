@@ -1,0 +1,17 @@
+﻿
+> quant-dashboard@1.0.0 build
+> react-scripts build
+
+Creating an optimized production build...
+Failed to compile.
+
+TS2531: Object is possibly 'null'.
+  [0m [90m 101 |[39m     
+   [90m 102 |[39m     [36mconst[39m stocksWithMarketCap [33m=[39m stocks[33m.[39mfilter(s [33m=>[39m s[33m.[39mmarketCap [33m!==[39m [36mnull[39m [33m&&[39m s[33m.[39mmarketCap [33m!==[39m undefined)[33m;[39m
+  [31m[1m>[22m[39m[90m 103 |[39m     [36mconst[39m totalMarketCap [33m=[39m stocksWithMarketCap[33m.[39mreduce((sum[33m,[39m s) [33m=>[39m sum [33m+[39m safeNumber(s[33m.[39mmarketCap)[33m,[39m [35m0[39m)[33m;[39m
+   [90m     |[39m                                                                         [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+   [90m 104 |[39m     
+   [90m 105 |[39m     [36mconst[39m stocksWithVolume [33m=[39m stocks[33m.[39mfilter(s [33m=>[39m s[33m.[39mvolume [33m!==[39m [36mnull[39m [33m&&[39m s[33m.[39mvolume [33m!==[39m undefined)[33m;[39m
+   [90m 106 |[39m     [36mconst[39m avgVolume [33m=[39m stocksWithVolume[33m.[39mlength [33m>[39m [35m0[39m [33m?[39m stocksWithVolume[33m.[39mreduce((sum[33m,[39m s) [33m=>[39m sum [33m+[39m safeNumber(s[33m.[39mvolume)[33m,[39m [35m0[39m) [33m/[39m stocksWithVolume[33m.[39mlength [33m:[39m [35m0[39m[33m;[39m[0m
+
+

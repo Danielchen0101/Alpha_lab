@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Market Cap Data Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .success {
+            background-color: #d4edda;
+            border-color: #c3e6cb;
+        }
+        .error {
+            background-color: #f8d7da;
+            border-color: #f5c6cb;
+        }
+        .info {
+            background-color: #d1ecf1;
+            border-color: #bee5eb;
+        }
+        code {
+            background-color: #f8f9fa;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 10px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        .test-button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 10px 0;
+        }
+        .test-button:hover {
+            background-color: #0056b3;
+        }
+        #result {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>Market Cap Data Test</h1>
+    
+    <div class="test-section info">
+        <h3>测试目的</h3>
+        <p>验证Market Cap数据的单位转换是否正确：</p>
+        <ol>
+            <li>检查后端API返回的原始market cap值</li>
+            <li>验证单位转换逻辑（百万→美元）</li>
+            <li>测试formatMarketCap函数是否正确格式化</li>
+            <li>确认显示为T/B/M中的正确单位</li>
+        </ol>
+    </div>
+    
+    <div class="test-section">
+        <h3>测试步骤</h3>
+        <button class="test-button" onclick="testMarketCapData()">运行Market Cap数据测试</button>
+        <div id="result">
+            <h4>测试结果</h4>
+            <div id="test-output"></div>
+        </div>
+    </div>
+    
+    <div class="test-section info">
+        <h3>预期结果</h3>
+        <table>
+            <tr>
+                <th>股票</th>
+                <th>原始marketCap值</th>
+                <th>转换后值</th>
+                <th>预期显示</th>
+            </tr>
+            <tr>
+                <td>AAPL</td>
+                <td>~3,732,386.24 (百万)</td>
+                <td>~3.73e12 (美元)</td>
+                <td><code>$3.73T</code></td>
+            </tr>
+            <tr>
+                <td>MSFT</td>
+                <td>~2,965,870.53 (百万)</td>
+                <td>~2.97e12 (美元)</td>
+                <td><code>$2.97T</code></td>
+            </tr>
+            <tr>
+                <td>NVDA</td>
+                <td>~4,420,899.03 (百万)</td>
+                <td>~4.42e12 (美元)</td>
+                <td><code>$4.42T</code></td>
+            </tr>
+            <tr>
+                <td>GOOGL</td>
+                <td>~3,754,891.23 (百万)</td>
+                <td>~3.75e12 (美元)</td>
+                <td><code>$3.75T</code></td>
+            </tr>
+        </table>
+    </div>
+    
+    <div class="test-section info">
+        <h3>formatMarketCap函数逻辑</h3>
+        <pre><code>const formatMarketCap = (value: number | null | undefined): string => {
+  if (value === null || value === undefined || value === 0) return '--';
+  
+  const num = Number(value);
+  if (isNaN(num)) return '--';
+  
+  // 万亿 (Trillion) - 1万亿 = 1e12
+  if (num >= 1e12) {
+    const trillions = num / 1e12;
+    return `$${trillions.toFixed(trillions >= 100 ? 0 : trillions >= 10 ? 1 : 2)}T`;
+  }
+  
+  // 十亿 (Billion) - 10亿 = 1e9
+  if (num >= 1e9) {
+    const billions = num / 1e9;
+    return `$${billions.toFixed(billions >= 100 ? 0 : billions >= 10 ? 1 : 2)}B`;
+  }
+  
+  // 百万 (Million) - 1百万 = 1e6
+  if (num >= 1e6) {
+    const millions = num / 1e6;
+    return `$${millions.toFixed(millions >= 10 ? 0 : 1)}M`;
+  }
+  
+  // 其他情况
+  return `$${num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};</code></pre>
+    </div>
+    
+    <script>
+        async function testMarketCapData() {
+            const output = document.getElementById('test-output');
+            const resultDiv = document.getElementById('result');
+            output.innerHTML = '<p>正在测试...</p>';
+            resultDiv.style.display = 'block';
+            
+            try {
+                // 测试API端点
+                const response = await fetch('http://127.0.0.1:8889/api/market/stocks?dashboard=true');
+                const data = await response.json();
+                
+                if (!data.success) {
+                    output.innerHTML = `<div class="error">API请求失败: ${data.message || '未知错误'}</div>`;
+                    return;
+                }
+                
+                const stocks = data.data || [];
+                let html = `<table>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>原始marketCap</th>
+                        <th>格式化显示</th>
+                        <th>单位判断</th>
+                        <th>状态</th>
+                    </tr>`;
+                
+                // 模拟formatMarketCap函数
+                function formatMarketCap(value) {
+                    if (value === null || value === undefined || value === 0) return '--';
+                    
+                    const num = Number(value);
+                    if (isNaN(num)) return '--';
+                    
+                    // 万亿 (Trillion) - 1万亿 = 1e12
+                    if (num >= 1e12) {
+                        const trillions = num / 1e12;
+                        return `$${trillions.toFixed(trillions >= 100 ? 0 : trillions >= 10 ? 1 : 2)}T`;
+                    }
+                    
+                    // 十亿 (Billion) - 10亿 = 1e9
+                    if (num >= 1e9) {
+                        const billions = num / 1e9;
+                        return `$${billions.toFixed(billions >= 100 ? 0 : billions >= 10 ? 1 : 2)}B`;
+                    }
+                    
+                    // 百万 (Million) - 1百万 = 1e6
+                    if (num >= 1e6) {
+                        const millions = num / 1e6;
+                        return `$${millions.toFixed(millions >= 10 ? 0 : 1)}M`;
+                    }
+                    
+                    return `$${num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                }
+                
+                let hasError = false;
+                stocks.forEach(stock => {
+                    const formatted = formatMarketCap(stock.marketCap);
+                    let unit = 'Unknown';
+                    let status = '✅';
+                    
+                    if (formatted.includes('T')) unit = 'Trillion (T)';
+                    else if (formatted.includes('B')) unit = 'Billion (B)';
+                    else if (formatted.includes('M')) unit = 'Million (M)';
+                    
+                    // 检查大市值股票是否错误显示为M
+                    if (stock.marketCap > 1e12 && formatted.includes('M')) {
+                        status = '❌ ERROR: 应为T但显示为M';
+                        hasError = true;
+                    } else if (stock.marketCap > 1e9 && stock.marketCap < 1e12 && formatted.includes('M')) {
+                        status = '❌ ERROR: 应为B但显示为M';
+                        hasError = true;
+                    }
+                    
+                    html += `<tr>
+                        <td>${stock.symbol}</td>
+                        <td>${stock.marketCap ? stock.marketCap.toLocaleString('en-US') : 'null'}</td>
+                        <td><code>${formatted}</code></td>
+                        <td>${unit}</td>
+                        <td>${status}</td>
+                    </tr>`;
+                });
+                
+                html += '</table>';
+                
+                if (hasError) {
+                    html += `<div class="error">
+                        <h4>发现问题！</h4>
+                        <p>部分股票的market cap单位显示错误。可能的原因：</p>
+                        <ol>
+                            <li>后端单位转换不正确（没有乘以1,000,000）</li>
+                            <li>formatMarketCap函数逻辑错误</li>
+                            <li>数据源问题（Finnhub返回的值太小）</li>
+                        </ol>
+                    </div>`;
+                } else {
+                    html += `<div class="success">
+                        <h4>测试通过！</h4>
+                        <p>所有股票的market cap单位显示正确。</p>
+                    </div>`;
+                }
+                
+                output.innerHTML = html;
+                
+            } catch (error) {
+                output.innerHTML = `<div class="error">
+                    <h4>测试失败</h4>
+                    <p>错误信息: ${error.message}</p>
+                    <p>请确保后端API正在运行（端口8889）。</p>
+                </div>`;
+            }
+        }
+    </script>
+</body>
+</html>
