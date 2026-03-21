@@ -182,14 +182,14 @@ const Backtest: React.FC = () => {
     fetchBacktestHistory();
   }, [location, form]);
 
-  const safeToFixed = (value: any, decimals: number = 2): string => {
+  const safeToFixed = (value: unknown, decimals: number = 2): string => {
     if (typeof value === 'number' && !isNaN(value)) {
       return value.toFixed(decimals);
     }
     return '0.00';
   };
 
-  const safeNumber = (value: any): number => {
+  const safeNumber = (value: unknown): number => {
     if (typeof value === 'number' && !isNaN(value)) {
       return value;
     }
@@ -374,7 +374,22 @@ const Backtest: React.FC = () => {
     return symbols;
   };
 
-  const handleRunBacktest = async (values: any) => {
+  interface BacktestFormValues {
+    symbol: string;
+    strategy: string;
+    dateRange: [dayjs.Dayjs, dayjs.Dayjs];
+    initialCapital: number;
+    shortMaPeriod?: number;
+    longMaPeriod?: number;
+    rsiPeriod?: number;
+    rsiOversold?: number;
+    rsiOverbought?: number;
+    macdFast?: number;
+    macdSlow?: number;
+    macdSignal?: number;
+  }
+
+  const handleRunBacktest = async (values: BacktestFormValues) => {
     setLoading(true);
     setError('');
     setBacktestResult(null); // 清除旧结果，开始新的回测
@@ -1582,28 +1597,33 @@ const Backtest: React.FC = () => {
                                   marginBottom: '8px'
                                 }}
                               >
-                                {equityCurveData.map((point, index) => {
-                                  const prices = equityCurveData.map((p) => p.equity);
+                                {(() => {
+                                  // 性能优化：预先计算所有价格，避免在每次循环中重复计算
+                                  const prices = equityCurveData.map(p => p.equity);
                                   const maxPrice = Math.max(...prices);
                                   const minPrice = Math.min(...prices);
                                   const range = maxPrice - minPrice;
-                                  const price = point.equity;
-                                  const heightPercent = range === 0 ? 50 : ((price - minPrice) / range) * 100;
-
-                                  return (
-                                    <div
-                                      key={index}
-                                      style={{
-                                        width: '8%',
-                                        height: `${Math.max(heightPercent, 5)}%`,
-                                        backgroundColor: price >= equityCurveData[0].equity ? '#3f8600' : '#cf1322',
-                                        borderRadius: '2px',
-                                        position: 'relative'
-                                      }}
-                                      title={`${point.date}: $${safeToFixed(price, 2)}`}
-                                    />
-                                  );
-                                })}
+                                  const firstEquity = equityCurveData[0]?.equity || 0;
+                                  
+                                  return equityCurveData.map((point, index) => {
+                                    const price = point.equity;
+                                    const heightPercent = range === 0 ? 50 : ((price - minPrice) / range) * 100;
+                                    
+                                    return (
+                                      <div
+                                        key={index}
+                                        style={{
+                                          width: '8%',
+                                          height: `${Math.max(heightPercent, 5)}%`,
+                                          backgroundColor: price >= firstEquity ? '#3f8600' : '#cf1322',
+                                          borderRadius: '2px',
+                                          position: 'relative'
+                                        }}
+                                        title={`${point.date}: $${safeToFixed(price, 2)}`}
+                                      />
+                                    );
+                                  });
+                                })()}
                               </div>
 
                               <div

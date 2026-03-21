@@ -76,6 +76,102 @@ import traceback
 
 app = Flask(__name__)
 
+# API调用监控
+class APIMonitor:
+    def __init__(self):
+        self.counters = {
+            'total_requests': 0,
+            'by_endpoint': {},
+            'external_calls': {
+                'finnhub': 0,
+                'twelvedata': 0,
+                'other': 0
+            },
+            'timestamps': []
+        }
+    
+    def log_request(self, endpoint, method='GET'):
+        """记录API请求"""
+        from datetime import datetime
+        
+        self.counters['total_requests'] += 1
+        
+        if endpoint not in self.counters['by_endpoint']:
+            self.counters['by_endpoint'][endpoint] = 0
+        self.counters['by_endpoint'][endpoint] += 1
+        
+        timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        self.counters['timestamps'].append({
+            'time': timestamp,
+            'endpoint': endpoint,
+            'method': method
+        })
+        
+        print(f"\n[API监控] [{timestamp}] {method} {endpoint}")
+    
+    def log_external_call(self, api_name):
+        """记录外部API调用"""
+        if api_name not in self.counters['external_calls']:
+            self.counters['external_calls'][api_name] = 0
+        self.counters['external_calls'][api_name] += 1
+        
+        print(f"[API监控]   → 调用外部API: {api_name} (累计: {self.counters['external_calls'][api_name]})")
+    
+    def print_summary(self):
+        """打印统计摘要"""
+        print("\n" + "="*80)
+        print("API调用统计摘要")
+        print("="*80)
+        
+        print(f"\n总请求数: {self.counters['total_requests']}")
+        
+        print("\n按端点统计:")
+        for endpoint, count in sorted(self.counters['by_endpoint'].items(), key=lambda x: x[1], reverse=True):
+            print(f"  - {endpoint}: {count}次")
+        
+        print("\n外部API调用:")
+        for api_name, count in self.counters['external_calls'].items():
+            if count > 0:
+                print(f"  - {api_name}: {count}次")
+        
+        total_external = sum(self.counters['external_calls'].values())
+        print(f"\n总外部API调用次数: {total_external}")
+        print(f"Twelve Data credit消耗: {self.counters['external_calls'].get('twelvedata', 0)}")
+        print(f"Finnhub credit消耗: {self.counters['external_calls'].get('finnhub', 0)}")
+
+# 创建全局监控实例
+api_monitor = APIMonitor()
+
+# 添加请求前钩子
+@app.before_request
+def before_request():
+    """记录所有请求"""
+    import time
+    from flask import request
+    
+    # 记录请求开始时间
+    request.start_time = time.time()
+    
+    # 记录API调用
+    endpoint = request.path
+    if request.args:
+        endpoint = f"{endpoint}?{'&'.join([f'{k}={v}' for k, v in request.args.items()])}"
+    
+    api_monitor.log_request(endpoint, request.method)
+
+# 添加请求后钩子
+@app.after_request
+def after_request(response):
+    """记录请求耗时"""
+    import time
+    from flask import request
+    
+    if hasattr(request, 'start_time'):
+        elapsed = time.time() - request.start_time
+        print(f"[API监控]  请求耗时: {elapsed:.3f}秒, 状态码: {response.status_code}")
+    
+    return response
+
 
 
 
@@ -466,6 +562,9 @@ def get_finnhub_quote(symbol):
 
 
 
+        # 记录外部API调用
+        api_monitor.log_external_call('finnhub')
+        
         response = requests.get(quote_url, params=params, timeout=10)  # 增加超时时间
 
 
@@ -618,6 +717,9 @@ def get_finnhub_profile(symbol):
 
 
 
+        # 记录外部API调用
+        api_monitor.log_external_call('finnhub')
+        
         response = requests.get(profile_url, params=params, timeout=5)
 
 
@@ -1683,6 +1785,10 @@ def get_twelvedata_history(symbol, interval, range_param):
 
 
     print(f"[函数入口 #{call_id}] get_twelvedata_history被调用: symbol={symbol}, interval={interval}, range={range_param} - 修复版v2")
+    print(f"[调试] TWELVEDATA_API_KEY: {TWELVEDATA_API_KEY[:8]}... (长度: {len(TWELVEDATA_API_KEY)})")
+    
+    # 明确导入datetime模块，避免局部变量冲突
+    from datetime import datetime as dt_class, timedelta
 
 
 
@@ -1834,15 +1940,15 @@ def get_twelvedata_history(symbol, interval, range_param):
 
 
 
-            from datetime import datetime, timedelta
 
 
 
-            end_date = datetime.now() + timedelta(days=1)  # 到明天，确保覆盖今天
+
+            end_date = dt_class.now() + timedelta(days=1)  # 到明天，确保覆盖今天
 
 
 
-            start_date = datetime.now() - timedelta(days=366)  # 去年的今天减一天
+            start_date = dt_class.now() - timedelta(days=366)  # 去年的今天减一天
 
 
 
@@ -1891,22 +1997,17 @@ def get_twelvedata_history(symbol, interval, range_param):
 
 
         elif range_param == '3month':
-
-
-
             twelvedata_interval = '1day'
-
-
-
             outputsize = 100  # 请求稍多一点数据
-
-
-
-            start_str = None
-
-
-
-            end_str = None
+            
+            # 设置3个月时间范围：从3个月前到今天
+            end_date = dt_class.now()
+            start_date = end_date - timedelta(days=100)  # 稍微多取几天确保覆盖3个月
+            
+            start_str = start_date.strftime('%Y-%m-%d')
+            end_str = end_date.strftime('%Y-%m-%d')
+            
+            print(f"[Twelve Data] 3 Months时间范围: {start_str} 到 {end_str}")
 
 
 
@@ -2039,9 +2140,9 @@ def get_twelvedata_history(symbol, interval, range_param):
 
 
         try:
-
-
-
+            # 记录外部API调用
+            api_monitor.log_external_call('twelvedata')
+            
             response = requests.get(url, params=params, timeout=15)
 
 
@@ -2094,14 +2195,22 @@ def get_twelvedata_history(symbol, interval, range_param):
 
 
 
+            # 更健壮的数据字段检查（处理大小写和不同字段名）
+            values = None
             if 'values' in data:
-
-
-
                 values = data['values']
-
-
-
+                print(f"[Twelve Data] 使用小写'values'字段")
+            elif 'Values' in data:
+                values = data['Values']
+                print(f"[Twelve Data] 使用大写'Values'字段")
+            elif 'data' in data:
+                values = data['data']
+                print(f"[Twelve Data] 使用'data'字段")
+            elif 'Data' in data:
+                values = data['Data']
+                print(f"[Twelve Data] 使用'Data'字段")
+            
+            if values is not None:
                 print(f"[Twelve Data] 原始数据点数: {len(values)} (请求: {outputsize})")
 
 
@@ -2119,335 +2228,111 @@ def get_twelvedata_history(symbol, interval, range_param):
 
 
             else:
-
-
-
-                print(f"[Twelve Data] 错误: 响应中没有'values'字段")
-
-
-
+                # 如果没有找到数据字段
+                print(f"[Twelve Data] 错误: 响应中没有找到数据字段")
                 print(f"[Twelve Data] 完整响应: {data}")
+                return [], False, "Twelve Data (无数据)"
 
+            # 分析原始数据分钟分布
+            minute_counts = {}
+            for item in values[:50]:  # 只分析前50个用于调试
+                datetime_str = item.get('datetime', '')
+                if ':' in datetime_str:
+                    time_part = datetime_str.split(' ')[1] if ' ' in datetime_str else datetime_str
+                    minute = time_part.split(':')[1]
+                    minute_counts[minute] = minute_counts.get(minute, 0) + 1
 
+            print(f"[Twelve Data] 原始数据分钟分布: {minute_counts}")
+            print(f"[Twelve Data] 包含:00数据: {'00' in minute_counts}")
+            print(f"[Twelve Data] 包含:30数据: {'30' in minute_counts}")
 
-                
+            # 修复版：简化处理，确保处理所有数据点
+            formatted_data = []
+            success_count = 0
+            error_count = 0
 
-
-
-                # 分析原始数据分钟分布
-
-
-
-                minute_counts = {}
-
-
-
-                for item in values[:50]:  # 只分析前50个用于调试
-
-
-
+            for i, item in enumerate(values):
+                try:
                     datetime_str = item.get('datetime', '')
-
-
-
-                    if ':' in datetime_str:
-
-
-
-                        time_part = datetime_str.split(' ')[1] if ' ' in datetime_str else datetime_str
-
-
-
-                        minute = time_part.split(':')[1]
-
-
-
-                        minute_counts[minute] = minute_counts.get(minute, 0) + 1
-
-
-
-                
-
-
-
-                print(f"[Twelve Data] 原始数据分钟分布: {minute_counts}")
-
-
-
-                print(f"[Twelve Data] 包含:00数据: {'00' in minute_counts}")
-
-
-
-                print(f"[Twelve Data] 包含:30数据: {'30' in minute_counts}")
-
-
-
-                
-
-
-
-                # 修复版：简化处理，确保处理所有数据点
-
-
-
-                formatted_data = []
-
-
-
-                success_count = 0
-
-
-
-                error_count = 0
-
-
-
-                
-
-
-
-                for i, item in enumerate(values):
-
-
-
-                    try:
-
-
-
-                        datetime_str = item.get('datetime', '')
-
-
-
-                        
-
-
-
-                        # 正确解析时间戳 - 简化版（直接解析为UTC）
-
-
-
-                        timestamp = 0
-
-
-
-                        if datetime_str:
-
-
-
-                            try:
-
-
-
-                                # 直接解析为UTC时间戳
-
-
-
-                                # Twelve Data返回的时间字符串已经是UTC格式
-
-
-
-                                dt = datetime.strptime(datetime_str, '%Y-%m-%d %H:%M:%S')
-
-
-
-                                # 转换为时间戳（假设是UTC时间）
-
-
-
+                    
+                    # 正确解析时间戳 - 根据interval使用不同格式
+                    timestamp = 0
+                    
+                    if datetime_str:
+                        try:
+                            # 根据interval选择时间格式
+                            # 日线数据: '2025-12-11' 格式
+                            # 分钟/小时数据: '2025-12-11 09:30:00' 格式
+                            if interval == 'D' or twelvedata_interval == '1day':
+                                # 日线数据格式
+                                dt = dt_class.strptime(datetime_str, '%Y-%m-%d')
                                 timestamp = int(dt.timestamp())
-
-
-
-                                
-
-
-
-                                # 调试日志
-
-
-
                                 if i < 3:  # 只打印前3个
-
-
-
-                                    print(f"[Twelve Data] 解析时间 {i}: {datetime_str} -> dt={dt}, timestamp={timestamp}")
-
-
-
-                            except Exception as e:
-
-
-
-                                print(f"[Twelve Data] 时间解析失败: {datetime_str}, 错误: {e}")
-
-
-
-                                # 使用当前时间作为后备
-
-
-
-                                timestamp = int(time.time())
-
-
-
-                        else:
-
-
-
-                            # 如果没有时间字符串，使用当前时间
-
-
-
+                                    print(f"[Twelve Data] 解析日线时间 {i}: {datetime_str} -> dt={dt}, timestamp={timestamp}")
+                            else:
+                                # 分钟/小时数据格式
+                                dt = dt_class.strptime(datetime_str, '%Y-%m-%d %H:%M:%S')
+                                timestamp = int(dt.timestamp())
+                                if i < 3:  # 只打印前3个
+                                    print(f"[Twelve Data] 解析分钟时间 {i}: {datetime_str} -> dt={dt}, timestamp={timestamp}")
+                        
+                        except Exception as e:
+                            print(f"[Twelve Data] 时间解析失败: {datetime_str}, 错误: {e}")
+                            # 使用当前时间作为后备
                             timestamp = int(time.time())
-
-
-
-                        
-
-
-
-                        # 简化数值转换函数
-
-
-
-                        def safe_convert(value, default=0, type_func=float):
-
-
-
-                            try:
-
-
-
-                                if value is None or value == '':
-
-
-
-                                    return default
-
-
-
-                                return type_func(value)
-
-
-
-                            except:
-
-
-
+                    
+                    else:
+                        # 如果没有时间字符串，使用当前时间
+                        timestamp = int(time.time())
+                    
+                    # 简化数值转换函数
+                    def safe_convert(value, default=0, type_func=float):
+                        try:
+                            if value is None or value == '':
                                 return default
-
-
-
-                        
-
-
-
-                        formatted_data.append({
-
-
-
-                            "timestamp": timestamp,
-
-
-
-                            "time": datetime_str,
-
-
-
-                            "open": safe_convert(item.get('open'), 0, float),
-
-
-
-                            "high": safe_convert(item.get('high'), 0, float),
-
-
-
-                            "low": safe_convert(item.get('low'), 0, float),
-
-
-
-                            "close": safe_convert(item.get('close'), 0, float),
-
-
-
-                            "volume": safe_convert(item.get('volume'), 0, int)
-
-
-
-                        })
-
-
-
-                        success_count += 1
-
-
-
-                    except Exception as e:
-
-
-
-                        error_count += 1
-
-
-
-                        if error_count <= 3:
-
-
-
-                            print(f"[Twelve Data] 处理第 {i+1} 个数据点失败: {e}")
-
-
-
-                        continue
-
-
-
+                            return type_func(value)
+                        except:
+                            return default
+                    
+                    formatted_data.append({
+                        "timestamp": timestamp,
+                        "time": datetime_str,
+                        "open": safe_convert(item.get('open'), 0, float),
+                        "high": safe_convert(item.get('high'), 0, float),
+                        "low": safe_convert(item.get('low'), 0, float),
+                        "close": safe_convert(item.get('close'), 0, float),
+                        "volume": safe_convert(item.get('volume'), 0, int)
+                    })
+                    
+                    success_count += 1
                 
+                except Exception as e:
+                    error_count += 1
+                    if error_count <= 3:
+                        print(f"[Twelve Data] 处理第 {i+1} 个数据点失败: {e}")
+                    continue
 
 
 
-                print(f"[Twelve Data] 处理结果: 成功 {success_count}, 失败 {error_count}")
-
-
-
+            
+            print(f"[Twelve Data] 处理结果: 成功 {success_count}, 失败 {error_count}")
+            
+            # 反转数据顺序（最新的在最后）
+            formatted_data = list(reversed(formatted_data))
+            
+            # 处理后的数据调试
+            print(f"[Twelve Data] 处理后数据点数: {len(formatted_data)}")
+            
+            if formatted_data:
+                # 分析处理后的分钟分布
+                processed_minute_counts = {}
                 
-
-
-
-                # 反转数据顺序（最新的在最后）
-
-
-
-                formatted_data = list(reversed(formatted_data))
-
-
-
-                
-
-
-
-                # 处理后的数据调试
-
-
-
-                print(f"[Twelve Data] 处理后数据点数: {len(formatted_data)}")
-
-
-
-                
-
-
-
-                if formatted_data:
-                    # 分析处理后的分钟分布
-                    processed_minute_counts = {}
-
-                    for item in formatted_data[:100]:  # 只分析前100个
-                        time_str = item.get('time', '')
-                        if ':' in time_str:
-                            time_part = time_str.split(' ')[1] if ' ' in time_str else time_str
-                            minute = time_part.split(':')[1]
-                            processed_minute_counts[minute] = processed_minute_counts.get(minute, 0) + 1
+                for item in formatted_data[:100]:  # 只分析前100个
+                    time_str = item.get('time', '')
+                    if ':' in time_str:
+                        time_part = time_str.split(' ')[1] if ' ' in time_str else time_str
+                        minute = time_part.split(':')[1]
+                        processed_minute_counts[minute] = processed_minute_counts.get(minute, 0) + 1
 
                     print(f"[Twelve Data] 处理后分钟分布: {processed_minute_counts}")
 
@@ -3322,4 +3207,10 @@ if __name__ == '__main__':
 
 
 
+    # 添加关闭时的监控摘要打印
+    import atexit
+    atexit.register(api_monitor.print_summary)
+    
+    print("\n[API监控] 监控已启用，应用关闭时将显示API调用统计")
+    
     app.run(host='127.0.0.1', port=8889, debug=False, use_reloader=False)

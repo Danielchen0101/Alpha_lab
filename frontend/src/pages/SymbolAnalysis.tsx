@@ -67,12 +67,12 @@ interface ChartDataPoint {
 }
 
 // 1 Week专用：生成每天3个标签的ticks数组 (09:30, 12:00, 16:00)
-const get1WeekTicks = (chartData: ChartDataPoint[]): string[] => {
+const get1WeekTicks = (chartData: ChartDataPoint[], getNewYorkTimeComponents: (date: Date) => { hour: number, minute: number }): string[] => {
   const ticks: string[] = [];
   
   if (chartData.length === 0) return ticks;
   
-  console.log('[1 Week] ====== get1WeekTicks 开始（3小时间隔版v2） ======');
+  console.log('[1 Week] ====== get1WeekTicks 开始（关键时间点版） ======');
   console.log('[1 Week] 输入chartData点数:', chartData.length);
   
   // 1. 按时间排序数据
@@ -82,50 +82,111 @@ const get1WeekTicks = (chartData: ChartDataPoint[]): string[] => {
   
   if (sortedData.length === 0) return ticks;
   
-  // 2. 获取第一个数据点的时间（应该是3/13 09:30）
+  // 2. 获取第一个数据点的时间
   const firstDate = new Date(sortedData[0].date);
   console.log(`[1 Week] 第一个数据点: ${firstDate.toISOString()} -> ${firstDate.getUTCMonth() + 1}/${firstDate.getUTCDate()} ${firstDate.getUTCHours()}:${firstDate.getUTCMinutes().toString().padStart(2, '0')}`);
   
-  // 3. 计算3小时间隔（毫秒）
-  const THREE_HOURS_MS = 3 * 60 * 60 * 1000;
+  // 3. 定义关键时间点：9:30, 12:30, 15:30
+  const keyTimes = [
+    { hour: 9, minute: 30 },  // 9:30
+    { hour: 12, minute: 30 }, // 12:30
+    { hour: 15, minute: 30 }  // 15:30
+  ];
   
-  // 4. 从第一个数据点开始，每3小时找一个最接近的数据点
-  let currentTime = firstDate.getTime();
-  const lastTime = new Date(sortedData[sortedData.length - 1].date).getTime();
+  // 4. 收集所有交易日
+  const tradingDays = new Set<string>();
+  sortedData.forEach(point => {
+    const date = new Date(point.date);
+    const dayKey = `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
+    tradingDays.add(dayKey);
+  });
   
-  console.log(`[1 Week] 时间范围: ${new Date(currentTime).toISOString()} 到 ${new Date(lastTime).toISOString()}`);
+  console.log(`[1 Week] 交易日数量: ${tradingDays.size}`);
   
-  while (currentTime <= lastTime) {
-    // 查找最接近当前时间的数据点
-    let closestPoint: ChartDataPoint | null = null;
-    let minDiff = Infinity;
+  // 5. 直接筛选数据点：找出纽约时间为09:30, 12:30, 15:30的点
+  console.log(`[1 Week] 直接筛选数据点，查找纽约时间09:30, 12:30, 15:30`);
+  
+  // 定义关键时间点（只显示这三个）
+  const targetTimes = [
+    { hour: 9, minute: 30 },  // 09:30
+    { hour: 12, minute: 30 }, // 12:30
+    { hour: 15, minute: 30 }  // 15:30
+  ];
+  
+  // 特别排除16:00，即使它存在也不作为X轴标签
+  const excludeTimes = [
+    { hour: 16, minute: 0 }  // 16:00
+  ];
+  
+  // 按交易日分组，确保每个交易日最多3个标签
+  const dayGroups: Record<string, Array<{date: string, nyTime: {hour: number, minute: number}}>> = {};
+  
+  // 先按交易日分组
+  sortedData.forEach(point => {
+    const pointDate = new Date(point.date);
+    const nyTime = getNewYorkTimeComponents(pointDate);
     
-    for (const point of sortedData) {
-      const pointTime = new Date(point.date).getTime();
-      const diff = Math.abs(pointTime - currentTime);
+    // 创建交易日键（纽约时间）
+    const nyFormatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric'
+    });
+    const dayKey = nyFormatter.format(pointDate);
+    
+    if (!dayGroups[dayKey]) {
+      dayGroups[dayKey] = [];
+    }
+    dayGroups[dayKey].push({date: point.date, nyTime});
+  });
+  
+  // 为每个交易日选择最多3个关键时间点
+  Object.keys(dayGroups).forEach(dayKey => {
+    const points = dayGroups[dayKey];
+    console.log(`[1 Week] 交易日 ${dayKey}: ${points.length}个数据点`);
+    
+    // 找出09:30, 12:30, 15:30的点
+    targetTimes.forEach(targetTime => {
+      const matchingPoint = points.find(p => 
+        p.nyTime.hour === targetTime.hour && p.nyTime.minute === targetTime.minute
+      );
       
-      // 允许30分钟内的误差（因为数据是30分钟间隔）
-      if (diff <= 30 * 60 * 1000 && diff < minDiff) {
-        minDiff = diff;
-        closestPoint = point;
+      if (matchingPoint) {
+        // 检查是否已添加（避免重复）
+        if (!ticks.includes(matchingPoint.date)) {
+          ticks.push(matchingPoint.date);
+          console.log(`[1 Week] 找到关键时间点: ${matchingPoint.date} -> 纽约${targetTime.hour.toString().padStart(2, '0')}:${targetTime.minute.toString().padStart(2, '0')}`);
+        }
+      } else {
+        console.log(`[1 Week] 交易日 ${dayKey} 缺少 ${targetTime.hour.toString().padStart(2, '0')}:${targetTime.minute.toString().padStart(2, '0')}`);
       }
+    });
+    
+    // 检查是否有16:00点（但不作为标签）
+    const has1600 = points.some(p => p.nyTime.hour === 16 && p.nyTime.minute === 0);
+    if (has1600) {
+      console.log(`[1 Week] 交易日 ${dayKey} 有16:00数据点（不作为X轴标签）`);
+    }
+  });
+  
+  // 如果找到的标签太少，添加第一个和最后一个数据点作为fallback
+  if (ticks.length < 3 && sortedData.length > 0) {
+    if (!ticks.includes(sortedData[0].date)) {
+      ticks.push(sortedData[0].date);
+      const firstNyTime = getNewYorkTimeComponents(new Date(sortedData[0].date));
+      console.log(`[1 Week] 添加第一个数据点作为fallback: 纽约${firstNyTime.hour.toString().padStart(2, '0')}:${firstNyTime.minute.toString().padStart(2, '0')}`);
     }
     
-    if (closestPoint) {
-      // 检查是否已添加（避免重复）
-      if (!ticks.includes(closestPoint.date)) {
-        ticks.push(closestPoint.date);
-        
-        const tickDate = new Date(closestPoint.date);
-        console.log(`[1 Week] 添加标签: ${tickDate.getUTCMonth() + 1}/${tickDate.getUTCDate()} ${String(tickDate.getUTCHours()).padStart(2, '0')}:${String(tickDate.getUTCMinutes()).padStart(2, '0')} (目标: ${new Date(currentTime).getUTCHours()}:${new Date(currentTime).getUTCMinutes().toString().padStart(2, '0')})`);
-      }
-    } else {
-      console.log(`[1 Week] 未找到接近 ${new Date(currentTime).getUTCHours()}:${new Date(currentTime).getUTCMinutes().toString().padStart(2, '0')} 的数据点`);
+    if (!ticks.includes(sortedData[sortedData.length - 1].date)) {
+      ticks.push(sortedData[sortedData.length - 1].date);
+      const lastNyTime = getNewYorkTimeComponents(new Date(sortedData[sortedData.length - 1].date));
+      console.log(`[1 Week] 添加最后一个数据点作为fallback: 纽约${lastNyTime.hour.toString().padStart(2, '0')}:${lastNyTime.minute.toString().padStart(2, '0')}`);
     }
-    
-    // 增加3小时
-    currentTime += THREE_HOURS_MS;
   }
+  
+  // 6. 确保按时间排序
+  ticks.sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
   
   console.log('[1 Week] 生成的ticks数量:', ticks.length);
   console.log('[1 Week] === get1WeekTicks 完整输出 ===');
@@ -134,13 +195,13 @@ const get1WeekTicks = (chartData: ChartDataPoint[]): string[] => {
     console.log(`  ${i+1}: ${date.toISOString()} -> ${date.getUTCMonth() + 1}/${date.getUTCDate()} ${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}`);
   }
   
-  // 5. 确保至少有一个tick（使用第一个数据点）
+  // 7. 确保至少有一个tick（使用第一个数据点）
   if (ticks.length === 0 && sortedData.length > 0) {
     ticks.push(sortedData[0].date);
     console.log(`[1 Week] 无ticks，添加第一个数据点作为默认`);
   }
   
-  console.log('[1 Week] ====== get1WeekTicks 结束（3小时间隔版v2） ======');
+  console.log('[1 Week] ====== get1WeekTicks 结束（关键时间点版） ======');
   return ticks;
 };
 
@@ -155,8 +216,8 @@ const SymbolAnalysis: React.FC = () => {
     try {
       console.log(`[Finnhub] 尝试获取 ${symbol} 的收盘价`);
       
-      // 调用后端API获取Finnhub数据
-      const response = await fetch(`/api/stock/quote?symbol=${symbol}`);
+      // 调用后端API获取Finnhub数据 - 使用实际存在的接口 /api/market/stock/<symbol>
+      const response = await fetch(`/api/market/stock/${symbol}`);
       if (!response.ok) {
         console.error(`[Finnhub] API请求失败: ${response.status}`);
         return null;
@@ -165,8 +226,8 @@ const SymbolAnalysis: React.FC = () => {
       const data = await response.json();
       console.log(`[Finnhub] 收到数据:`, data);
       
-      // Finnhub返回的字段可能是 c (当前价格) 或 pc (前收盘价)
-      const closingPrice = data.c || data.pc || data.close;
+      // 后端返回的字段是 price (当前价格)
+      const closingPrice = data.price || data.c || data.pc || data.close;
       if (closingPrice) {
         console.log(`[Finnhub] 获取到收盘价: ${closingPrice}`);
         return Number(closingPrice);
@@ -181,6 +242,96 @@ const SymbolAnalysis: React.FC = () => {
   };
 
   const [loading, setLoading] = useState(true);
+
+  // 计算纽约时间与UTC的偏移（小时），自动处理夏令时
+  const getNewYorkUTCOffset = (date: Date) => {
+    // 使用Intl.DateTimeFormat获取时区偏移
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      timeZoneName: 'short'
+    });
+    
+    const parts = formatter.formatToParts(date);
+    const timeZoneName = parts.find(p => p.type === 'timeZoneName')?.value || '';
+    
+    // EST = UTC-5, EDT = UTC-4
+    if (timeZoneName.includes('EDT')) {
+      return -4; // 夏令时
+    } else {
+      return -5; // 标准时间
+    }
+  };
+
+  // 格式化时间为纽约时间（只用于显示，不修改Date对象）
+  const formatAsNewYorkTime = (date: Date, includeDate: boolean = true) => {
+    // 使用Intl.DateTimeFormat直接格式化显示，不修改Date对象
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      year: includeDate ? 'numeric' : undefined,
+      month: includeDate ? 'numeric' : undefined,
+      day: includeDate ? 'numeric' : undefined,
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false
+    });
+    
+    return formatter.format(date);
+  };
+
+  // 获取纽约时间的各个组件（用于比较和筛选）
+  const getNewYorkTimeComponents = (date: Date) => {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false
+    });
+    
+    const parts = formatter.formatToParts(date);
+    const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0');
+    const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0');
+    
+    return { hour, minute };
+  };
+
+  // 调试函数：检查1 Week数据时间点
+  const debug1WeekData = (chartData: ChartDataPoint[]) => {
+    console.log('[1 Week 调试] === 开始分析数据时间点 ===');
+    
+    // 按日期分组
+    const dateGroups: Record<string, Array<{time: string, date: Date}>> = {};
+    
+    chartData.forEach((point, index) => {
+      const date = new Date(point.date);
+      const nyTime = getNewYorkTimeComponents(date);
+      const nyDateStr = formatAsNewYorkTime(date, true);
+      const dateKey = nyDateStr.split(',')[0]; // 提取日期部分
+      const timeStr = `${nyTime.hour.toString().padStart(2, '0')}:${nyTime.minute.toString().padStart(2, '0')}`;
+      
+      if (!dateGroups[dateKey]) {
+        dateGroups[dateKey] = [];
+      }
+      dateGroups[dateKey].push({time: timeStr, date: date});
+    });
+    
+    // 输出每个日期的数据点
+    Object.keys(dateGroups).forEach(dateKey => {
+      const points = dateGroups[dateKey];
+      console.log(`  ${dateKey}: ${points.length}个点`);
+      
+      // 检查关键时间点
+      const keyTimes = ['09:30', '12:30', '15:30'];
+      keyTimes.forEach(keyTime => {
+        const hasKeyTime = points.some(p => p.time === keyTime);
+        console.log(`    ${hasKeyTime ? '✅' : '❌'} ${keyTime}`);
+      });
+      
+      // 显示所有时间点
+      console.log(`    时间点: ${points.map(p => p.time).join(', ')}`);
+    });
+    
+    console.log('[1 Week 调试] === 分析完成 ===');
+  };
   const [stockData, setStockData] = useState<StockData | null>(null);
   const [backtestHistory, setBacktestHistory] = useState<BacktestHistoryItem[]>([]);
   const [backtestLoading, setBacktestLoading] = useState(false);
@@ -243,10 +394,14 @@ const SymbolAnalysis: React.FC = () => {
       console.log('1. timeframe:', selectedTimeframe);
       console.log('2. 返回bars数量:', response.count);
       console.log('3. 数据源:', response.dataSource);
+      console.log('4. 原始数据条数:', response.data?.length || 0);
+      
       if (response.data && response.data.length > 0) {
         const firstBar = response.data[0];
         const lastBar = response.data[response.data.length - 1];
-        console.log('4. 第一根bar时间:', new Date(firstBar.timestamp * 1000).toISOString(), {
+        console.log('5. 最早日期:', firstBar.time || new Date(firstBar.timestamp * 1000).toISOString());
+        console.log('6. 最晚日期:', lastBar.time || new Date(lastBar.timestamp * 1000).toISOString());
+        console.log('7. 第一根bar时间:', new Date(firstBar.timestamp * 1000).toISOString(), {
           open: firstBar.open,
           high: firstBar.high,
           low: firstBar.low,
@@ -299,8 +454,40 @@ const SymbolAnalysis: React.FC = () => {
       setHistoricalData(response.data);
       setDataSource(response.dataSource || 'Finnhub');
 
+      // 保存原始历史数据
+      setHistoricalData(response.data);
+      
+      // 调试：记录原始数据信息
+      console.log(`[Analyze] ====== 原始数据信息 ======`);
+      console.log(`[Analyze] 后端返回条数: ${response.data?.length || 0}`);
+      console.log(`[Analyze] 数据源: ${response.dataSource || '未知'}`);
+      console.log(`[Analyze] 当前timeframe: ${selectedTimeframe}`);
+      
+      if (response.data && response.data.length > 0) {
+        // 显示前3个和后3个数据点
+        console.log(`[Analyze] 前3个数据点:`);
+        response.data.slice(0, 3).forEach((item, index) => {
+          console.log(`  ${index+1}. time: "${item.time}", timestamp: ${item.timestamp}`);
+        });
+        
+        console.log(`[Analyze] 后3个数据点:`);
+        response.data.slice(-3).forEach((item, index) => {
+          const pos = response.data.length - 3 + index;
+          console.log(`  ${pos+1}. time: "${item.time}", timestamp: ${item.timestamp}`);
+        });
+        
+        // 计算日期范围
+        const dates = response.data.map(item => item.time || new Date(item.timestamp * 1000).toISOString().split('T')[0]);
+        dates.sort();
+        console.log(`[Analyze] 最早日期: ${dates[0]}`);
+        console.log(`[Analyze] 最晚日期: ${dates[dates.length - 1]}`);
+      } else {
+        console.log(`[Analyze] ⚠️ 警告: 后端返回空数据`);
+      }
+      
       // 转换为图表数据格式 - 修复：优先使用time字段，避免错误的时间戳
-      const formattedData = response.data.map((item: HistoricalDataPoint) => {
+      console.log(`[Analyze] ====== 开始数据转换 ======`);
+      const formattedData = response.data.map((item: HistoricalDataPoint, index) => {
         let date: Date;
         
         // 优先使用time字段（包含正确的日期字符串）
@@ -313,6 +500,7 @@ const SymbolAnalysis: React.FC = () => {
             
             if (!isNaN(date.getTime())) {
               // 成功解析time字段
+              console.log(`[Analyze] 转换 ${index+1}: 使用time字段 "${item.time}" -> ${date.toISOString()}`);
               return {
                 date: date.toISOString(), // 使用ISO字符串
                 open: Number(item.open) || 0,
@@ -346,24 +534,193 @@ const SymbolAnalysis: React.FC = () => {
         };
       }).filter((item): item is ChartDataPoint => item !== null);
 
-      // === 1 Week 专用：基于后端完整30分钟数据重新处理 ===
-      let processedData = formattedData;
-      if (selectedTimeframe === '1W' && processedData.length > 0) {
+      // 调试：记录转换后的数据
+      console.log(`[Analyze] ====== 数据转换结果 ======`);
+      console.log(`[Analyze] 原始数据条数: ${response.data?.length || 0}`);
+      console.log(`[Analyze] 转换后图表数据条数: ${formattedData.length}`);
+      console.log(`[Analyze] historicalData条数: ${response.data?.length || 0}`);
+      
+      // 3 Months特殊处理：如果转换后为空，尝试简单转换
+      if (selectedTimeframe === '3M' && formattedData.length === 0 && response.data && response.data.length > 0) {
+        console.log(`[Analyze] ⚠️ 3 Months数据转换失败，尝试简单转换`);
+        
+        // 简单转换：只使用close价格，日期使用索引
+        const simpleFormattedData = response.data.map((item: HistoricalDataPoint, index) => {
+          const date = new Date();
+          date.setDate(date.getDate() - (response.data.length - index - 1));
+          
+          return {
+            date: date.toISOString(),
+            open: Number(item.open) || 0,
+            high: Number(item.high) || 0,
+            low: Number(item.low) || 0,
+            close: Number(item.close) || 0,
+            volume: Number(item.volume) || 0
+          } as ChartDataPoint;
+        });
+        
+        console.log(`[Analyze] 简单转换后条数: ${simpleFormattedData.length}`);
+        formattedData.push(...simpleFormattedData);
+      }
+      
+      if (formattedData.length > 0) {
+        console.log(`[Analyze] 转换后前3个数据点:`);
+        formattedData.slice(0, 3).forEach((item, index) => {
+          console.log(`  ${index+1}. date: ${item.date}, close: ${item.close}`);
+        });
+        
+        console.log(`[Analyze] 转换后后3个数据点:`);
+        formattedData.slice(-3).forEach((item, index) => {
+          const pos = formattedData.length - 3 + index;
+          console.log(`  ${pos+1}. date: ${item.date}, close: ${item.close}`);
+        });
+      } else {
+        console.log(`[Analyze] ⚠️ 警告: 数据转换后为空`);
+        
+        // 调试转换失败的原因
+        if (response.data && response.data.length > 0) {
+          console.log(`[Analyze] 调试转换失败:`);
+          response.data.slice(0, 3).forEach((item, index) => {
+            console.log(`  原始数据 ${index+1}:`, {
+              time: item.time,
+              timestamp: item.timestamp,
+              open: item.open,
+              close: item.close
+            });
+          });
+        }
+      }
+
+      // 根据timeframe处理数据
+      let chartDataToSet = formattedData;
+      
+      if (selectedTimeframe === '3M') {
+        // === 3 Months 专用：调整日期范围，收紧到最近3个月 ===
+        console.log(`[3 Months] ====== 开始调整日期范围 ======`);
+        console.log(`[3 Months] 1. 原始formattedData条数: ${formattedData.length}`);
+        
+        if (formattedData.length > 0) {
+          // 计算最近3个月的日期（90天前）
+          const today = new Date();
+          const threeMonthsAgo = new Date(today);
+          threeMonthsAgo.setDate(today.getDate() - 90);
+          
+          console.log(`[3 Months] 2. 今天: ${today.toISOString().split('T')[0]}`);
+          console.log(`[3 Months] 3. 3个月前: ${threeMonthsAgo.toISOString().split('T')[0]}`);
+          
+          // 过滤出最近3个月的数据
+          const recentData = formattedData.filter(item => {
+            const itemDate = new Date(item.date);
+            return itemDate >= threeMonthsAgo;
+          });
+          
+          console.log(`[3 Months] 4. 过滤后数据条数: ${recentData.length}`);
+          
+          if (recentData.length > 0) {
+            // 使用过滤后的数据
+            chartDataToSet = recentData;
+            
+            const firstDate = new Date(chartDataToSet[0].date);
+            const lastDate = new Date(chartDataToSet[chartDataToSet.length - 1].date);
+            
+            console.log(`[3 Months] 5. 调整后数据范围: ${firstDate.toISOString().split('T')[0]} 到 ${lastDate.toISOString().split('T')[0]}`);
+            console.log(`[3 Months] 6. 总天数: ${chartDataToSet.length}个交易日`);
+            console.log(`[3 Months] 7. 收紧天数: ${formattedData.length - recentData.length}天`);
+          } else {
+            // 如果没有最近3个月的数据，使用原始数据但显示警告
+            console.log(`[3 Months] ⚠️ 警告: 没有最近3个月的数据，使用原始数据`);
+            chartDataToSet = formattedData;
+          }
+        } else {
+          console.log(`[3 Months] ⚠️ 警告: formattedData为空，图表将显示"No historical data available"`);
+        }
+        console.log(`[3 Months] ====== 日期范围调整完成 ======`);
+      } else if (selectedTimeframe === '1M') {
+        // === 1 Month 专用：调整日期范围，收紧到最近1个月 ===
+        console.log(`[1 Month] ====== 开始调整日期范围 ======`);
+        console.log(`[1 Month] 1. 原始formattedData条数: ${formattedData.length}`);
+        
+        if (formattedData.length > 0) {
+          // 计算最近1个月的日期（30天前）
+          const today = new Date();
+          const oneMonthAgo = new Date(today);
+          oneMonthAgo.setDate(today.getDate() - 30);
+          
+          console.log(`[1 Month] 2. 今天: ${today.toISOString().split('T')[0]}`);
+          console.log(`[1 Month] 3. 1个月前: ${oneMonthAgo.toISOString().split('T')[0]}`);
+          
+          // 过滤出最近1个月的数据
+          const recentData = formattedData.filter(item => {
+            const itemDate = new Date(item.date);
+            return itemDate >= oneMonthAgo;
+          });
+          
+          console.log(`[1 Month] 4. 过滤后数据条数: ${recentData.length}`);
+          
+          if (recentData.length > 0) {
+            // 使用过滤后的数据
+            chartDataToSet = recentData;
+            
+            const firstDate = new Date(chartDataToSet[0].date);
+            const lastDate = new Date(chartDataToSet[chartDataToSet.length - 1].date);
+            
+            console.log(`[1 Month] 5. 调整后数据范围: ${firstDate.toISOString().split('T')[0]} 到 ${lastDate.toISOString().split('T')[0]}`);
+            console.log(`[1 Month] 6. 总天数: ${chartDataToSet.length}个交易日`);
+            console.log(`[1 Month] 7. 收紧天数: ${formattedData.length - recentData.length}天`);
+          } else {
+            // 如果没有最近1个月的数据，使用原始数据但显示警告
+            console.log(`[1 Month] ⚠️ 警告: 没有最近1个月的数据，使用原始数据`);
+            chartDataToSet = formattedData;
+          }
+        } else {
+          console.log(`[1 Month] ⚠️ 警告: formattedData为空，图表将显示"No historical data available"`);
+        }
+        console.log(`[1 Month] ====== 日期范围调整完成 ======`);
+      } else if (selectedTimeframe === '1W' && formattedData.length > 0) {
+        // === 1 Week 专用：基于后端完整30分钟数据重新处理 ===
         console.log('[1 Week] ====== 开始处理1 Week数据（修复版） ======');
         console.log('[1 Week] 后端返回原始数据点数:', formattedData.length);
+        
+        let processedData = formattedData;
         
         // 1. 后端返回的是倒序数据（最新的在前面），反转成正序
         const reversedData = [...formattedData].reverse();
         
-        // 2. 目标：从3/13 09:30开始，到今天16:00结束
-        const targetStartDate = new Date('2026-03-13T09:30:00.000Z'); // 3/13 09:30 UTC
+        // 2. 目标：从最近的上一个交易日（2026-03-13）09:30开始，到今天16:00结束
         const today = new Date();
-        const targetEndDate = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 16, 0, 0, 0); // 今天16:00 UTC
+        
+        // 计算最近的上一个交易日（2026-03-13）
+        // 今天：2026-03-21（周六），上一个交易日是周五2026-03-20
+        // 但根据要求，1 Week应该从2026-03-13开始（一周前最近的上一个交易日）
+        const oneWeekAgo = new Date(today);
+        oneWeekAgo.setDate(today.getDate() - 7);
+        
+        // 找到最近的上一个交易日（跳过周末）
+        let targetStartDate = new Date(oneWeekAgo);
+        // 如果oneWeekAgo是周六或周日，调整到周五
+        const dayOfWeek = targetStartDate.getDay(); // 0=周日, 1=周一, ..., 6=周六
+        if (dayOfWeek === 0) { // 周日
+          targetStartDate.setDate(targetStartDate.getDate() - 2); // 调整到周五
+        } else if (dayOfWeek === 6) { // 周六
+          targetStartDate.setDate(targetStartDate.getDate() - 1); // 调整到周五
+        }
+        
+        // 设置开始时间为09:30 UTC
+        targetStartDate.setUTCHours(9, 30, 0, 0);
+        
+        // 结束时间为今天16:00 UTC
+        const targetEndDate = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 16, 0, 0, 0);
         
         console.log('[1 Week] 目标时间范围:', 
           `${targetStartDate.getUTCMonth() + 1}/${targetStartDate.getUTCDate()} ${targetStartDate.getUTCHours()}:${targetStartDate.getUTCMinutes().toString().padStart(2, '0')} - ` +
           `${targetEndDate.getUTCMonth() + 1}/${targetEndDate.getUTCDate()} ${targetEndDate.getUTCHours()}:${targetEndDate.getUTCMinutes().toString().padStart(2, '0')}`
         );
+        console.log('[1 Week] 起始日期计算:', {
+          today: today.toISOString().split('T')[0],
+          oneWeekAgo: oneWeekAgo.toISOString().split('T')[0],
+          targetStartDate: targetStartDate.toISOString(),
+          targetStartDateLocal: `${targetStartDate.getUTCMonth() + 1}/${targetStartDate.getUTCDate()} ${targetStartDate.getUTCHours()}:${targetStartDate.getUTCMinutes().toString().padStart(2, '0')} UTC`
+        });
         
         // 3. 过滤出目标时间范围内的数据
         const filteredData = reversedData.filter(item => {
@@ -376,12 +733,52 @@ const SymbolAnalysis: React.FC = () => {
         // 4. 按时间排序（确保正序）
         filteredData.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
         
-        // 5. 检查是否缺少今天的16:00收盘价
+        // 5. 检查是否缺少今天的16:00收盘价（纽约时间）
+        // 注意：16:00是纽约时间，需要转换为UTC时间
         const todayDate = new Date();
-        todayDate.setUTCHours(16, 0, 0, 0);
+        // 纽约时间16:00 = UTC时间20:00 (EDT) 或 21:00 (EST)
+        // 使用formatAsNewYorkTime来获取正确的UTC时间
+        const nyFormatter = new Intl.DateTimeFormat('en-US', {
+          timeZone: 'America/New_York',
+          year: 'numeric',
+          month: 'numeric',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: 'numeric',
+          hour12: false
+        });
+        
+        // 创建纽约时间16:00的日期
+        const nyDateStr = nyFormatter.format(todayDate);
+        const nyParts = nyDateStr.split(', ');
+        const nyDateOnly = nyParts[0]; // 日期部分
+        const nyTimeOnly = nyParts[1]; // 时间部分
+        
+        // 创建纽约时间16:00的Date对象
+        const ny1600Date = new Date(`${nyDateOnly}T16:00:00`);
+        // 使用Intl.DateTimeFormat将纽约时间转换为UTC时间
+        const utcFormatter = new Intl.DateTimeFormat('en-US', {
+          timeZone: 'UTC',
+          year: 'numeric',
+          month: 'numeric',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: 'numeric',
+          hour12: false
+        });
+        
+        const utc1600Str = utcFormatter.format(ny1600Date);
+        const utc1600Parts = utc1600Str.split(', ');
+        const utc1600Date = new Date(`${utc1600Parts[0]}T${utc1600Parts[1]}`);
+        
+        console.log(`[1 Week] 纽约时间16:00: ${nyDateOnly} 16:00`);
+        console.log(`[1 Week] 对应的UTC时间: ${utc1600Date.toISOString()}`);
+        
+        // 检查是否已经有16:00数据点（允许5分钟误差）
         const hasToday1600 = filteredData.some(item => {
           const date = new Date(item.date);
-          return date.getTime() === todayDate.getTime();
+          const diff = Math.abs(date.getTime() - utc1600Date.getTime());
+          return diff <= 5 * 60 * 1000; // 5分钟误差
         });
         
         if (!hasToday1600) {
@@ -391,7 +788,7 @@ const SymbolAnalysis: React.FC = () => {
             if (finnhubPrice !== null) {
               console.log(`[1 Week] 使用Finnhub收盘价补充今天16:00: ${finnhubPrice}`);
               filteredData.push({
-                date: todayDate.toISOString(),
+                date: utc1600Date.toISOString(),
                 open: finnhubPrice,
                 high: finnhubPrice,
                 low: finnhubPrice,
@@ -400,10 +797,13 @@ const SymbolAnalysis: React.FC = () => {
               });
               // 重新排序
               filteredData.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+              console.log(`[1 Week] 补充16:00数据点后总数: ${filteredData.length}`);
             }
           } catch (error) {
             console.error('[1 Week] 补充Finnhub收盘价失败:', error);
           }
+        } else {
+          console.log('[1 Week] 已存在16:00数据点');
         }
         
         // 6. 使用过滤后的数据
@@ -426,35 +826,37 @@ const SymbolAnalysis: React.FC = () => {
         }
         
         console.log('[1 Week] ====== 1 Week数据处理完成（修复版） ======');
+        chartDataToSet = processedData;
       }
 
-      console.log(`Formatted chart data:`, formattedData.length, 'points');
+      // 设置图表数据
+      console.log(`Formatted chart data:`, chartDataToSet.length, 'points');
       
       // 调试日志：图表最终数据
       console.log('=== 图表最终数据 ===');
-      console.log('1. chartData.length:', formattedData.length);
-      if (formattedData.length > 0) {
+      console.log('1. chartData.length:', chartDataToSet.length);
+      if (chartDataToSet.length > 0) {
         console.log('2. 第一条数据:', {
-          date: formattedData[0].date,
-          open: formattedData[0].open,
-          close: formattedData[0].close,
-          volume: formattedData[0].volume
+          date: chartDataToSet[0].date,
+          open: chartDataToSet[0].open,
+          close: chartDataToSet[0].close,
+          volume: chartDataToSet[0].volume
         });
         console.log('3. 最后一条数据:', {
-          date: formattedData[formattedData.length - 1].date,
-          open: formattedData[formattedData.length - 1].open,
-          close: formattedData[formattedData.length - 1].close,
-          volume: formattedData[formattedData.length - 1].volume
+          date: chartDataToSet[chartDataToSet.length - 1].date,
+          open: chartDataToSet[chartDataToSet.length - 1].open,
+          close: chartDataToSet[chartDataToSet.length - 1].close,
+          volume: chartDataToSet[chartDataToSet.length - 1].volume
         });
         console.log('4. 数据时间范围:', {
-          firstDate: processedData[0].date,
-          lastDate: processedData[processedData.length - 1].date,
-          totalBars: processedData.length
+          firstDate: chartDataToSet[0].date,
+          lastDate: chartDataToSet[chartDataToSet.length - 1].date,
+          totalBars: chartDataToSet.length
         });
       }
 
       // 计算技术指标 - 使用所有有效的close值
-      const closePrices = processedData.map(d => d.close);
+      const closePrices = chartDataToSet.map(d => d.close);
       
       // 计算移动平均线（基于close价格）
       const sma20 = calculateSMA(closePrices, 20);
@@ -464,7 +866,7 @@ const SymbolAnalysis: React.FC = () => {
       const rsi = calculateRSI(closePrices, 14);
 
       // 添加技术指标到图表数据
-      const chartDataWithIndicators = processedData.map((item, index) => ({
+      const chartDataWithIndicators = chartDataToSet.map((item, index) => ({
         ...item,
         sma20: !isNaN(sma20[index]) ? sma20[index] : undefined,
         sma50: !isNaN(sma50[index]) ? sma50[index] : undefined,
@@ -496,6 +898,11 @@ const SymbolAnalysis: React.FC = () => {
           sma20: d.sma20,
           sma50: d.sma50
         })));
+      }
+      
+      console.log(`[Analyze] 设置chartData: ${chartDataWithIndicators.length}条数据`);
+      if (chartDataWithIndicators.length === 0) {
+        console.log(`[Analyze] ⚠️ 警告: chartDataWithIndicators为空，图表将显示"No historical data available"`);
       }
       
       setChartData(chartDataWithIndicators);
@@ -750,34 +1157,47 @@ const SymbolAnalysis: React.FC = () => {
       const ticks: string[] = [];
       
       try {
-        // 获取第一个数据点的日期
+        // 获取数据范围
         const firstDate = new Date(chartData[0].date);
-        const firstDateStr = chartData[0].date;
+        const lastDate = new Date(chartData[chartData.length - 1].date);
+        const totalDays = Math.round((lastDate.getTime() - firstDate.getTime()) / (24 * 60 * 60 * 1000));
+        
+        console.log(`[3 Months] 数据范围: ${firstDate.toISOString().split('T')[0]} 到 ${lastDate.toISOString().split('T')[0]}`);
+        console.log(`[3 Months] 总天数: ${totalDays}天, 数据点数: ${chartData.length}`);
         
         // 规则1: 第一个点总是显示标签
-        ticks.push(firstDateStr);
-        console.log(`[3 Months] 添加第一个点: ${firstDateStr}`);
+        ticks.push(chartData[0].date);
+        console.log(`[3 Months] 添加第一个点: ${firstDate.toISOString().split('T')[0]}`);
         
-        // 计算预期的14天倍数日期
-        const totalDays = 90; // 3个月约90天
+        // 根据总天数动态决定标签间隔
+        let intervalDays;
+        if (totalDays <= 60) {
+          intervalDays = 10; // 小于60天，每10天一个标签
+        } else if (totalDays <= 90) {
+          intervalDays = 15; // 60-90天，每15天一个标签
+        } else {
+          intervalDays = 20; // 超过90天，每20天一个标签
+        }
+        
+        console.log(`[3 Months] 使用标签间隔: ${intervalDays}天`);
+        
+        // 计算预期的间隔日期
         const expectedDayDiffs = [];
-        
-        for (let day = 14; day < totalDays; day += 14) {
+        for (let day = intervalDays; day < totalDays; day += intervalDays) {
           expectedDayDiffs.push(day);
         }
         
-        console.log(`[3 Months] 预期的14天倍数: ${expectedDayDiffs.join(', ')}天`);
+        console.log(`[3 Months] 预期的间隔日期: ${expectedDayDiffs.join(', ')}天`);
         
-        // 为每个预期的14天倍数找到最接近的交易日
+        // 为每个预期的间隔找到最接近的交易日
         for (const expectedDayDiff of expectedDayDiffs) {
           // 计算目标日期
           const targetDate = new Date(firstDate.getTime() + expectedDayDiff * 24 * 60 * 60 * 1000);
-          const targetDateStr = targetDate.toISOString().split('T')[0]; // YYYY-MM-DD格式
+          const targetDateStr = targetDate.toISOString().split('T')[0];
           
           // 在chartData中查找最接近的日期
           let closestDate = null;
           let closestDiff = Infinity;
-          let closestIndex = -1;
           
           for (let i = 0; i < chartData.length; i++) {
             const currentDate = new Date(chartData[i].date);
@@ -786,20 +1206,14 @@ const SymbolAnalysis: React.FC = () => {
             if (diff < closestDiff) {
               closestDiff = diff;
               closestDate = chartData[i].date;
-              closestIndex = i;
             }
           }
           
-          // 如果找到接近的日期（在3天内），并且还没有添加过
-          if (closestDate && closestDiff <= 3 * 24 * 60 * 60 * 1000 && !ticks.includes(closestDate)) {
+          // 如果找到接近的日期（在5天内），并且还没有添加过
+          if (closestDate && closestDiff <= 5 * 24 * 60 * 60 * 1000 && !ticks.includes(closestDate)) {
             ticks.push(closestDate);
             const d = new Date(closestDate);
-            console.log(`[3 Months] 添加第${expectedDayDiff}天附近点: ${d.getUTCMonth() + 1}/${d.getUTCDate()} (原始目标: ${targetDateStr})`);
-          } else if (closestDate && !ticks.includes(closestDate)) {
-            // 即使超过3天也添加，但记录警告
-            ticks.push(closestDate);
-            const d = new Date(closestDate);
-            console.log(`[3 Months] 警告: 添加第${expectedDayDiff}天附近点: ${d.getUTCMonth() + 1}/${d.getUTCDate()} (距离目标${Math.round(closestDiff/(24*60*60*1000))}天)`);
+            console.log(`[3 Months] 添加第${expectedDayDiff}天附近点: ${d.toISOString().split('T')[0]} (目标: ${targetDateStr})`);
           }
         }
         
@@ -807,21 +1221,30 @@ const SymbolAnalysis: React.FC = () => {
         const lastDateStr = chartData[chartData.length - 1].date;
         if (!ticks.includes(lastDateStr)) {
           ticks.push(lastDateStr);
-          const lastDate = new Date(lastDateStr);
-          console.log(`[3 Months] 添加最后一个点: ${lastDate.getUTCMonth() + 1}/${lastDate.getUTCDate()}`);
+          console.log(`[3 Months] 添加最后一个点: ${lastDate.toISOString().split('T')[0]}`);
         }
         
         // 确保ticks按日期排序
         ticks.sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
         
-        // 移除可能的重复项 - 使用Array.from兼容旧版TypeScript
+        // 如果标签太少，添加中间点
+        if (ticks.length < 4 && chartData.length > 10) {
+          const middleIndex = Math.floor(chartData.length / 2);
+          const middleDate = chartData[middleIndex].date;
+          if (!ticks.includes(middleDate)) {
+            ticks.push(middleDate);
+            const d = new Date(middleDate);
+            console.log(`[3 Months] 添加中间点: ${d.toISOString().split('T')[0]}`);
+            ticks.sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+          }
+        }
+        
+        // 移除可能的重复项
         const uniqueTicks = Array.from(new Set(ticks));
         
         console.log(`[3 Months] 生成 ${uniqueTicks.length} 个ticks:`, uniqueTicks.map(t => {
           const d = new Date(t);
-          const month = d.getUTCMonth() + 1;
-          const day = d.getUTCDate();
-          return `${month.toString().padStart(2, '0')}/${day.toString().padStart(2, '0')}`;
+          return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
         }));
         
         return uniqueTicks;
@@ -846,13 +1269,8 @@ const SymbolAnalysis: React.FC = () => {
         const dayStr = day.toString().padStart(2, '0');
         const formatted = `${monthStr}/${dayStr}`;
         
-        // 详细调试：记录所有信息
-        console.log(`[3 Months] formatXAxisTick详细调试:`);
-        console.log(`  输入值: ${value}`);
-        console.log(`  解析的日期: ${date.toISOString()}`);
-        console.log(`  月/日: ${month}/${day}`);
-        console.log(`  格式化结果: ${formatted} (两位数字)`);
-        console.log(`  字符串长度: ${formatted.length} (总是5个字符)`);
+        // 简洁调试：只记录格式化结果
+        console.log(`[3 Months X轴标签] ${value} -> ${formatted}`);
         
         return formatted;  // 格式: 月/日 (两位数字)
       } catch (e) {
@@ -884,15 +1302,28 @@ const SymbolAnalysis: React.FC = () => {
         const totalDayDiff = Math.floor(totalTimeDiff / (1000 * 60 * 60 * 24));
         
         console.log(`[1 Month] 总天数跨度: ${totalDayDiff}天`);
+        console.log(`[1 Month] 数据条数: ${chartData.length}个交易日`);
         
-        // 找出每7天的点
+        // 动态决定标签间隔
+        let intervalDays;
+        if (chartData.length <= 15) {
+          intervalDays = 3; // 少于15个交易日，每3天一个标签
+        } else if (chartData.length <= 25) {
+          intervalDays = 5; // 15-25个交易日，每5天一个标签
+        } else {
+          intervalDays = 7; // 多于25个交易日，每7天一个标签
+        }
+        
+        console.log(`[1 Month] 使用标签间隔: 每${intervalDays}天一个标签`);
+        
+        // 找出每intervalDays天的点
         for (let i = 1; i < chartData.length; i++) {
           const currentDate = new Date(chartData[i].date);
           const timeDiff = currentDate.getTime() - firstDate.getTime();
           const dayDiff = Math.floor(timeDiff / (1000 * 60 * 60 * 24));
           
-          // 规则2: 每7天显示一个标签
-          if (dayDiff % 7 === 0 && dayDiff > 0) {
+          // 规则2: 每intervalDays天显示一个标签
+          if (dayDiff % intervalDays === 0 && dayDiff > 0) {
             if (!ticks.includes(chartData[i].date)) {
               ticks.push(chartData[i].date);
               console.log(`[1 Month] 添加第${dayDiff}天点: ${chartData[i].date}`);
@@ -905,6 +1336,17 @@ const SymbolAnalysis: React.FC = () => {
         if (!ticks.includes(lastDateStr)) {
           ticks.push(lastDateStr);
           console.log(`[1 Month] 添加最后一个点: ${lastDateStr}`);
+        }
+        
+        // 如果标签太少（少于3个），添加中间点
+        if (ticks.length < 3 && chartData.length > 5) {
+          const middleIndex = Math.floor(chartData.length / 2);
+          const middleDate = chartData[middleIndex].date;
+          if (!ticks.includes(middleDate)) {
+            ticks.push(middleDate);
+            const d = new Date(middleDate);
+            console.log(`[1 Month] 添加中间点: ${d.toISOString().split('T')[0]}`);
+          }
         }
         
         // 确保ticks按日期排序
@@ -938,7 +1380,8 @@ const SymbolAnalysis: React.FC = () => {
         // 注意：月份和日期不需要补零，保持自然格式
         const formatted = `${month}/${day}`;
         
-        console.log(`[1 Month] formatXAxisTick: ${value} -> ${formatted}`);
+        // 简洁调试
+        console.log(`[1 Month X轴标签] ${value} -> ${formatted}`);
         
         return formatted;  // 格式: 月/日
       } catch (e) {
@@ -1002,21 +1445,23 @@ const SymbolAnalysis: React.FC = () => {
           // 显示格式: 09:30, 10:00, 10:30, 11:00, ...
           return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
         } else if (selectedTimeframe === '1W') {
-          // === 1 WEEK X-AXIS：每天显示3个标签 (09:30, 12:00, 16:00) ===
-          // 数据是30分钟间隔，X轴显示关键时间点
-          // get1WeekTicks函数确保返回这3个时间点的数据
+          // === 1 WEEK X-AXIS：每天显示3个关键时间点标签 (09:30, 12:30, 15:30) ===
+          // 使用纽约时间显示，但不显示年份
           
-          const month = date.getUTCMonth() + 1;  // UTC月份
-          const day = date.getUTCDate();         // UTC日期
-          const hour = date.getUTCHours();       // UTC小时
-          const minute = date.getUTCMinutes();   // UTC分钟
+          // 使用Intl.DateTimeFormat格式化纽约时间（只显示月/日 时:分）
+          const nyFormatter = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/New_York',
+            month: 'numeric',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: 'numeric',
+            hour12: false
+          });
           
-          // 调试日志
-          console.log(`[1 Week formatXAxisTick] 输入: ${value}, 输出: ${month}/${day} ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`);
+          const formatted = nyFormatter.format(date);
+          console.log(`[1 Week X轴标签] ${value} -> 纽约时间: ${formatted}`);
           
-          // 显示格式: M/D HH:MM (例如: 3/13 09:30, 3/13 12:00, 3/13 16:00)
-          // 注意：月份和日期不补零，保持自然格式
-          return `${month}/${day} ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+          return formatted;
         } else {
           // 其他timeframe: 显示日期 (MM/DD)
           // 根据数据点密度决定显示哪些标签
@@ -1103,7 +1548,7 @@ const SymbolAnalysis: React.FC = () => {
             fontSize: '11px'
           }}>
             {isDaily || isWeekly
-              ? `${date.getUTCFullYear()}/${String(date.getUTCMonth() + 1).padStart(2, '0')}/${String(date.getUTCDate()).padStart(2, '0')} ${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}`
+              ? `${formatAsNewYorkTime(date, true)} (NY)`
               : selectedTimeframe === '1Y' || selectedTimeframe === '3M' || selectedTimeframe === '1M'
                 ? `${date.getUTCFullYear()}/${date.getUTCMonth() + 1}/${date.getUTCDate()}`
                 : `${date.getUTCMonth() + 1}/${date.getUTCDate()}`
@@ -1221,13 +1666,16 @@ const SymbolAnalysis: React.FC = () => {
       });
       
       // 生成并验证ticks
-      const weekTicks = get1WeekTicks(chartData);
+      const weekTicks = get1WeekTicks(chartData, getNewYorkTimeComponents);
       console.log('[1 Week 页面调试] get1WeekTicks返回ticks数量:', weekTicks.length);
       console.log('[1 Week 页面调试] ticks列表:');
       for (let i = 0; i < weekTicks.length; i++) {
         const date = new Date(weekTicks[i]);
         console.log(`  ${i+1}. ${date.getUTCMonth() + 1}/${date.getUTCDate()} ${date.getUTCHours()}:${date.getUTCMinutes().toString().padStart(2, '0')}`);
       }
+      
+      // 调试：检查chartData中的时间点（使用纽约时间）
+      debug1WeekData(chartData);
     }
 
     return (
@@ -1262,7 +1710,7 @@ const SymbolAnalysis: React.FC = () => {
             interval={0} // 总是显示所有ticks，不自动省略
             // 传入明确的ticks数组
             ticks={
-              selectedTimeframe === '1W' ? get1WeekTicks(chartData) :
+              selectedTimeframe === '1W' ? get1WeekTicks(chartData, getNewYorkTimeComponents) :
               selectedTimeframe === '1M' ? get1MonthTicks(chartData) :
               selectedTimeframe === '3M' ? get3MonthsTicks(chartData) :
               selectedTimeframe === '1Y' ? monthPoints.map(p => p.date) :
@@ -1502,6 +1950,7 @@ const SymbolAnalysis: React.FC = () => {
   // 当 timeframe 改变时重新加载历史数据
   useEffect(() => {
     if (symbol) {
+      console.log(`[SymbolAnalysis] timeframe切换: ${selectedTimeframe}, 重新加载数据`);
       loadHistoricalPrices();
     }
   }, [selectedTimeframe]);
