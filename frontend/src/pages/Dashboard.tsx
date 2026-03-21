@@ -152,44 +152,51 @@ const Dashboard: React.FC = () => {
     const avgChange = validChanges.length > 0 ? validChanges.reduce((sum, change) => sum + change, 0) / validChanges.length : 0;
     
     // 调试：打印所有股票数据
-    console.log('=== 前端过滤调试开始 ===');
+    console.log('=== Dashboard marketCap计算调试开始 ===');
     console.log(`总股票数: ${stocks.length}`);
     
-    // 只考虑market cap有效且在合理范围内的股票
-    // 合理范围：小于20万亿美元（20,000,000,000,000）
-    const MAX_REASONABLE_MARKET_CAP = 20_000_000_000_000; // 20T
+    // 修复marketCap计算逻辑
+    // 1. 不再过滤marketCap为0的股票（现在后端返回合理值）
+    // 2. 只过滤明显不合理的数据（如负数或极大值）
     
-    const validStocks = stocks.filter(s => {
+    const MAX_REASONABLE_MARKET_CAP = 50_000_000_000_000; // 50万亿（比任何公司都大）
+    const MIN_REASONABLE_MARKET_CAP = 1_000_000; // 100万美元（最小合理市值）
+    
+    const validMarketCapStocks = stocks.filter(s => {
       const symbol = s.symbol;
-      const currency = s.currency || 'USD'; // 默认USD
       const marketCapRaw = s.marketCap;
       
       // 检查marketCap是否存在
       if (marketCapRaw === null || marketCapRaw === undefined) {
-        console.log(`${symbol}: 被过滤 - marketCap为null/undefined`);
+        console.log(`${symbol}: 跳过 - marketCap为null/undefined`);
         return false;
       }
       
       const marketCap = safeNumber(marketCapRaw);
       
-      // 检查是否在合理范围内（小于20T）
-      if (marketCap > MAX_REASONABLE_MARKET_CAP) {
-        const capTrillion = marketCap / 1_000_000_000_000;
-        console.log(`${symbol}: 被过滤 - marketCap=${marketCap} (${capTrillion.toFixed(2)}T) > 20T`);
+      // 检查是否在合理范围内
+      if (marketCap < MIN_REASONABLE_MARKET_CAP) {
+        console.log(`${symbol}: 跳过 - marketCap=${marketCap} < ${MIN_REASONABLE_MARKET_CAP} (最小合理值)`);
         return false;
       }
       
-      // 检查currency，如果不是USD，记录但不过滤
-      if (currency !== 'USD') {
-        console.log(`${symbol}: 警告 - currency='${currency}'不是USD，但允许参与计算`);
+      if (marketCap > MAX_REASONABLE_MARKET_CAP) {
+        console.log(`${symbol}: 跳过 - marketCap=${marketCap} > ${MAX_REASONABLE_MARKET_CAP} (最大合理值)`);
+        return false;
       }
       
-      console.log(`${symbol}: 通过过滤 - currency='${currency}', marketCap=${marketCap}`);
+      // 检查是否为负数
+      if (marketCap < 0) {
+        console.log(`${symbol}: 跳过 - marketCap=${marketCap} (负数)`);
+        return false;
+      }
+      
+      console.log(`${symbol}: 有效 - marketCap=${marketCap} (${formatMarketCap(marketCap)})`);
       return true;
     });
     
     // 为了兼容现有代码，重命名变量
-    const validUSDStocks = validStocks;
+    const validUSDStocks = validMarketCapStocks;
     
     // 计算Total Market Cap（只统计USD货币的股票）
     const totalMarketCap = validUSDStocks.reduce((sum, s) => {
@@ -239,16 +246,16 @@ const Dashboard: React.FC = () => {
     }
     
     // 调试日志
-    console.log(`总市值计算(USD): ${validUSDStocks.length}只有效USD市值数据, totalMarketCap(原始值): ${totalMarketCap}, 格式化: ${formatMarketCap(totalMarketCap)}`);
-    console.log(`每只USD股票marketCap(原始值):`, validUSDStocks.map(s => `${s.symbol}: ${safeNumber(s.marketCap)}`));
+    console.log(`有效市值股票数: ${validUSDStocks.length}/${stocks.length}`);
+    console.log(`总市值计算: ${totalMarketCap}, 格式化: ${formatMarketCap(totalMarketCap)}`);
+    console.log(`每只股票marketCap(原始值):`, validUSDStocks.map(s => `${s.symbol}: ${safeNumber(s.marketCap)}`));
     
-    // 检查单位问题：如果显示为M但应该是T，可能是值太小
+    // 检查格式化结果
     const formattedTotal = formatMarketCap(totalMarketCap);
-    console.log(`格式化结果检查: ${formattedTotal}, 是否包含'M': ${formattedTotal.includes('M')}`);
+    console.log(`格式化结果: ${formattedTotal}`);
     
-    if (formattedTotal.includes('M') && totalMarketCap > 1e12) {
-      console.warn(`⚠️ 单位问题: totalMarketCap=${totalMarketCap} 应该显示为T级别，但显示为M级别`);
-      console.warn(`   可能原因: marketCap值太小，需要检查后端转换`);
+    if (validUSDStocks.length === 0) {
+      console.warn(`⚠️ 警告: 没有有效的marketCap数据，所有股票都被过滤`);
     }
     
     // 计算sector分布和sector数量
