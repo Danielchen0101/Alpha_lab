@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Table, Tag, Input, Select, Button, Row, Col, Statistic, Space, Alert, message, Empty, Spin } from 'antd';
+import { Card, Table, Tag, Input, Select, Button, Row, Col, Statistic, Space, Alert, message, Empty, Spin, Skeleton } from 'antd';
 import { SearchOutlined, LineChartOutlined, PlayCircleOutlined, BarChartOutlined, ReloadOutlined, EyeOutlined, StarOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import marketDataService, { StockData, formatCurrency, formatPercent, safeNumber, safeToFixed } from '../services/marketDataService';
@@ -704,10 +704,10 @@ const Market: React.FC = () => {
             </Row>
 
             {loading ? (
-              <div style={{ textAlign: 'center', padding: '40px' }}>
-                <Spin size="large" />
-                <div style={{ marginTop: '16px' }}>Loading market data...</div>
-              </div>
+              // 表格骨架屏
+              <Card>
+                <Skeleton active paragraph={{ rows: 10 }} />
+              </Card>
             ) : filteredStocks.length === 0 ? (
               <Empty
                 description="No stocks found matching your criteria"

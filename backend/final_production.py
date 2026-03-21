@@ -131,8 +131,21 @@ def get_finnhub_quote(symbol):
         traceback.print_exc()
         return None
 
+# Profile数据内存缓存
+_profile_cache = {}
+_PROFILE_CACHE_TTL = 24 * 60 * 60  # 24小时缓存
+
 def get_finnhub_profile(symbol):
-    """从Finnhub获取股票profile信息（包含market cap）"""
+    """从Finnhub获取股票profile信息（包含market cap）- 简化日志版本"""
+    now = time.time()
+    
+    # 检查缓存
+    if symbol in _profile_cache:
+        cached_data, timestamp = _profile_cache[symbol]
+        if now - timestamp < _PROFILE_CACHE_TTL:
+            return cached_data  # 静默返回缓存
+    
+    # 缓存未命中，请求API
     try:
         profile_url = "https://finnhub.io/api/v1/stock/profile2"
         params = {
@@ -140,22 +153,49 @@ def get_finnhub_profile(symbol):
             'token': FINNHUB_API_KEY
         }
         
-        print(f"[Finnhub Profile] 开始请求 {symbol}...")
-        response = requests.get(profile_url, params=params, timeout=10)  # 增加超时时间
+        response = requests.get(profile_url, params=params, timeout=5)
         
-        print(f"[Finnhub Profile] {symbol} 响应状态: {response.status_code}")
         if response.status_code == 200:
             data = response.json()
-            print(f"[Finnhub Profile] {symbol}: 成功获取数据, marketCapitalization={data.get('marketCapitalization')}, shareOutstanding={data.get('shareOutstanding')}")
+            # 更新缓存
+            _profile_cache[symbol] = (data, now)
             return data
         else:
-            print(f"[Finnhub] {symbol} profile请求失败: {response.status_code}, 响应: {response.text[:100]}")
+            # 只记录错误
+            print(f"[Finnhub Error] {symbol} profile请求失败: {response.status_code}")
             return None
     except Exception as e:
-        print(f"[Finnhub] {symbol} profile异常: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"[Finnhub Error] {symbol} profile异常: {e}")
         return None
+
+def get_finnhub_profiles_concurrent(symbols):
+    """并发获取多个股票的profile数据 - 简化日志版本"""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
+    if not symbols:
+        return {}
+    
+    profiles = {}
+    
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        # 提交所有任务
+        future_to_symbol = {
+            executor.submit(get_finnhub_profile, symbol): symbol 
+            for symbol in symbols
+        }
+        
+        # 收集结果
+        for future in as_completed(future_to_symbol):
+            symbol = future_to_symbol[future]
+            try:
+                profile_data = future.result(timeout=6)
+                if profile_data:
+                    profiles[symbol] = profile_data
+            except Exception as e:
+                # 只记录错误
+                print(f"[Profile Concurrent Error] {symbol} 获取失败: {e}")
+    
+    return profiles
 
 def get_finnhub_stock_data(symbol):
     """从Finnhub获取完整的股票数据（结合quote和profile）"""
@@ -231,6 +271,138 @@ def get_finnhub_stock_data(symbol):
             "industry": STOCK_SECTORS.get(symbol.upper(), "Technology"),
             "dataSource": "Finnhub (获取失败，使用降级数据)"
         }
+
+def get_finnhub_stock_data_batch(symbols):
+    """批量获取股票数据 - 优化性能"""
+    if not symbols:
+        return []
+    
+    print(f"[Finnhub] 批量获取 {len(symbols)} 支股票数据")
+    
+    # 批量获取quote数据
+    quotes = {}
+    try:
+        symbols_str = ','.join(symbols)
+        url = f"{FINNHUB_BASE_URL}/quote"
+        params = {'symbol': symbols_str, 'token': FINNHUB_API_KEY}
+        
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        # 处理批量返回的数据
+        if isinstance(data, list):
+            # 如果是数组，每个元素对应一个股票
+            for i, quote_data in enumerate(data):
+                if i < len(symbols):
+                    quotes[symbols[i]] = quote_data
+        elif isinstance(data, dict):
+            # 如果是字典，可能只返回一个股票的数据
+            if len(symbols) == 1:
+                quotes[symbols[0]] = data
+            else:
+                print(f"[Finnhub] 批量API返回字典格式，但请求了多个股票")
+    except Exception as e:
+        print(f"[Finnhub] 批量获取quote失败: {e}")
+    
+    # 并发获取profile数据
+    profiles = get_finnhub_profiles_concurrent(symbols)
+    
+    # 处理每个股票的数据
+    stocks = []
+    for symbol in symbols:
+        try:
+            quote_data = quotes.get(symbol)
+            if not quote_data:
+                # 如果没有批量数据，回退到单股票获取
+                quote_data = get_finnhub_quote(symbol)
+            
+            profile_data = profiles.get(symbol)
+            
+            if quote_data:
+                current_price = safe_float(quote_data.get('c', 0))
+                previous_close = safe_float(quote_data.get('pc', 0))
+                change = current_price - previous_close
+                change_percent = calculate_change_percent(current_price, previous_close)
+                
+                # 计算market cap
+                market_cap = 0
+                if profile_data:
+                    profile_market_cap = safe_float(profile_data.get('marketCapitalization', 0))
+                    if profile_market_cap > 0:
+                        market_cap = profile_market_cap * 1_000_000
+                
+                # 获取公司名称和行业
+                company_name = None
+                if profile_data and profile_data.get('name'):
+                    company_name = profile_data.get('name')
+                else:
+                    company_name = STOCK_NAMES.get(symbol.upper(), f"{symbol.upper()} Inc.")
+                
+                industry = None
+                if profile_data and profile_data.get('finnhubIndustry'):
+                    industry = profile_data.get('finnhubIndustry')
+                else:
+                    industry = STOCK_SECTORS.get(symbol.upper(), "Technology")
+                
+                stocks.append({
+                    "symbol": symbol.upper(),
+                    "name": company_name,
+                    "price": round(current_price, 2),
+                    "change": round(change, 2),
+                    "changePercent": round(change_percent, 2),
+                    "open": round(safe_float(quote_data.get('o', 0)), 2),
+                    "dayHigh": round(safe_float(quote_data.get('h', 0)), 2),
+                    "dayLow": round(safe_float(quote_data.get('l', 0)), 2),
+                    "volume": safe_int(quote_data.get('v', 0)),
+                    "marketCap": market_cap,
+                    "currency": "USD",
+                    "exchange": "NASDAQ",
+                    "industry": industry,
+                    "dataSource": "Finnhub (批量quote + 并发profile)"
+                })
+            else:
+                # 降级数据
+                stocks.append({
+                    "symbol": symbol.upper(),
+                    "name": STOCK_NAMES.get(symbol.upper(), f"{symbol.upper()} Inc."),
+                    "price": 0,
+                    "change": 0,
+                    "changePercent": 0,
+                    "open": 0,
+                    "dayHigh": 0,
+                    "dayLow": 0,
+                    "volume": 0,
+                    "marketCap": 0,
+                    "currency": "USD",
+                    "exchange": "NASDAQ",
+                    "industry": STOCK_SECTORS.get(symbol.upper(), "Technology"),
+                    "dataSource": "Finnhub (获取失败)"
+                })
+                
+        except Exception as e:
+            print(f"[Finnhub] 处理 {symbol} 数据失败: {e}")
+            # 添加降级数据
+            stocks.append({
+                "symbol": symbol.upper(),
+                "name": STOCK_NAMES.get(symbol.upper(), f"{symbol.upper()} Inc."),
+                "price": 0,
+                "change": 0,
+                "changePercent": 0,
+                "open": 0,
+                "dayHigh": 0,
+                "dayLow": 0,
+                "volume": 0,
+                "marketCap": 0,
+                "currency": "USD",
+                "exchange": "NASDAQ",
+                "industry": STOCK_SECTORS.get(symbol.upper(), "Technology"),
+                "dataSource": "Finnhub (异常)"
+            })
+    
+    print(f"[Finnhub] 批量处理完成，返回 {len(stocks)} 支股票")
+    return stocks
 
 # 全局调用计数器
 _twelvedata_call_count = 0
@@ -462,33 +634,38 @@ def get_market_stocks():
         
         print(f"[API] 获取 {len(symbols)} 支股票数据")
         
-        stocks = []
-        
-        for symbol in symbols:
-            try:
-                print(f"[API] 开始获取 {symbol} 数据...")
-                stock_data = get_finnhub_stock_data(symbol)
-                stocks.append(stock_data)
-                print(f"[API] {symbol}: ${stock_data['price']:.2f} ({stock_data['changePercent']:.2f}%)")
-            except Exception as e:
-                print(f"[API] 获取 {symbol} 数据失败: {e}")
-                # 添加降级数据
-                stocks.append({
-                    "symbol": symbol.upper(),
-                    "name": STOCK_NAMES.get(symbol.upper(), f"{symbol.upper()} Inc."),
-                    "price": 0,
-                    "change": 0,
-                    "changePercent": 0,
-                    "open": 0,
-                    "dayHigh": 0,
-                    "dayLow": 0,
-                    "volume": 0,
-                    "marketCap": 0,
-                    "currency": "USD",
-                    "exchange": "NASDAQ",
-                    "industry": STOCK_SECTORS.get(symbol.upper(), "Technology"),
-                    "dataSource": "降级数据 (Finnhub获取失败)"
-                })
+        # 使用批量获取优化性能
+        if len(symbols) > 1:
+            print(f"[API] 使用批量获取模式")
+            stocks = get_finnhub_stock_data_batch(symbols)
+        else:
+            print(f"[API] 使用单股票获取模式")
+            stocks = []
+            for symbol in symbols:
+                try:
+                    print(f"[API] 开始获取 {symbol} 数据...")
+                    stock_data = get_finnhub_stock_data(symbol)
+                    stocks.append(stock_data)
+                    print(f"[API] {symbol}: ${stock_data['price']:.2f} ({stock_data['changePercent']:.2f}%)")
+                except Exception as e:
+                    print(f"[API] 获取 {symbol} 数据失败: {e}")
+                    # 添加降级数据
+                    stocks.append({
+                        "symbol": symbol.upper(),
+                        "name": STOCK_NAMES.get(symbol.upper(), f"{symbol.upper()} Inc."),
+                        "price": 0,
+                        "change": 0,
+                        "changePercent": 0,
+                        "open": 0,
+                        "dayHigh": 0,
+                        "dayLow": 0,
+                        "volume": 0,
+                        "marketCap": 0,
+                        "currency": "USD",
+                        "exchange": "NASDAQ",
+                        "industry": STOCK_SECTORS.get(symbol.upper(), "Technology"),
+                        "dataSource": "降级数据 (Finnhub获取失败)"
+                    })
         
         response_data = {
             "stocks": stocks,
