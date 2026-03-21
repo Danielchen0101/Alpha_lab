@@ -41,7 +41,7 @@ if errorlevel 1 (
 )
 
 echo   启动后端API...
-start cmd /k "cd backend && call venv\Scripts\activate && python app.py"
+start cmd /k "cd backend && call venv\Scripts\activate && python start_quant_backend.py"
 
 echo.
 echo 🎨 2. 启动前端开发服务器...

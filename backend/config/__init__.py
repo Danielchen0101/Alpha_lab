@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ========== Finnhub 配置 ==========
-FINNHUB_API_KEY = os.getenv('FINNHUB_API_KEY', 'd6qsdcpr01qgdhqc82hgd6qsdcpr01qgdhqc82i0')
+FINNHUB_API_KEY = os.getenv('FINNHUB_API_KEY', 'd6v2q09r01qig546aus0d6v2q09r01qig546ausg')
 FINNHUB_BASE_URL = os.getenv('FINNHUB_BASE_URL', 'https://finnhub.io/api/v1')
 
 # ========== Alpaca Markets 配置 ==========

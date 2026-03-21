@@ -2439,26 +2439,77 @@ def get_twelvedata_history(symbol, interval, range_param):
 
 
                 if formatted_data:
+
+
+
                     # 分析处理后的分钟分布
+
+
+
                     processed_minute_counts = {}
 
+
+
                     for item in formatted_data[:100]:  # 只分析前100个
+
+
+
                         time_str = item.get('time', '')
+
+
+
                         if ':' in time_str:
+
+
+
                             time_part = time_str.split(' ')[1] if ' ' in time_str else time_str
+
+
+
                             minute = time_part.split(':')[1]
+
+
+
                             processed_minute_counts[minute] = processed_minute_counts.get(minute, 0) + 1
+
+
+
+                    
+
+
 
                     print(f"[Twelve Data] 处理后分钟分布: {processed_minute_counts}")
 
+
+
+                    
+
+
+
                     # 打印前10个点
+
+
+
                     print(f"[Twelve Data] 处理后前10个点:")
+
+
+
                     for i, item in enumerate(formatted_data[:10]):
+
+
+
                         print(f"  {i+1}. {item.get('time')}")
 
-                    return formatted_data, True, f"Twelve Data {range_param}图表数据（修复版）"
-                else:
-                    return [], False, "Twelve Data (数据结构错误)"
+
+
+                
+
+
+
+                return formatted_data, True, f"Twelve Data {range_param}图表数据（修复版）"
+
+            else:\n
+                return [], False, "Twelve Data (数据结构错误)"
 
 
 

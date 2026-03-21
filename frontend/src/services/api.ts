@@ -1,9 +1,13 @@
 import axios from 'axios';
 
-// 使用相对路径，依赖 CRA 代理配置
-// 开发模式下：/api/* → http://127.0.0.1:8889/api/*
-// 生产模式下：需要配置正确的后端地址
-const API_BASE_URL = '/api';
+// 使用相对路径，依赖React代理
+// 开发环境：/api/* → http://127.0.0.1:8889/api/* (通过package.json proxy)
+// 生产环境：通过环境变量REACT_APP_API_BASE_URL配置
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '/api';
+
+// 调试：输出环境变量
+console.log('[api.ts调试] API_BASE_URL:', API_BASE_URL);
+console.log('[api.ts调试] REACT_APP_API_BASE_URL:', process.env.REACT_APP_API_BASE_URL);
 
 const api = axios.create({
   baseURL: API_BASE_URL,

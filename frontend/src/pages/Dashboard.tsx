@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Card, Row, Col, Button, Spin, Alert, Empty, Tag, Typography, Space, Progress } from 'antd';
 import { ReloadOutlined, DashboardOutlined, RiseOutlined, FallOutlined, LineChartOutlined, EyeOutlined, PieChartOutlined, BarChartOutlined, ClockCircleOutlined, DatabaseOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
@@ -27,10 +27,22 @@ interface SectorData {
   percentage: number;
 }
 
-interface SectorData {
-  name: string;
-  count: number;
-  percentage: number;
+// 函数声明：提升到组件顶部，避免暂时性死区
+function getChangePercent(stock: StockData): number | null {
+  // 调试：检查stock对象
+  console.log(`[调试] getChangePercent for ${stock.symbol}:`, {
+    changePercent: stock.changePercent,
+    change: stock.change,
+    price: stock.price,
+    previousClose: stock.previousClose,
+    hasChangePercent: stock.changePercent !== null && stock.changePercent !== undefined,
+    hasChange: stock.change !== null && stock.change !== undefined
+  });
+  
+  if (stock.changePercent !== null && stock.changePercent !== undefined) return stock.changePercent;
+  if (stock.price !== null && stock.previousClose !== null && stock.previousClose !== 0) return ((stock.price - stock.previousClose) / stock.previousClose) * 100;
+  if (stock.change !== null && stock.previousClose !== null && stock.previousClose !== 0) return (stock.change / stock.previousClose) * 100;
+  return null;
 }
 
 const STORAGE_KEY = "quant_watchlist";
@@ -42,90 +54,183 @@ const Dashboard: React.FC = () => {
   const [error, setError] = useState('');
   const [lastFetched, setLastFetched] = useState<number | null>(null);
   const [watchlist, setWatchlist] = useState<any[]>([]);
-  const [marketStats, setMarketStats] = useState<MarketStats>({ 
-    totalSymbols: 0, 
-    gainers: 0, 
-    losers: 0, 
-    avgChange: 0, 
-    totalMarketCap: 0, 
-    avgVolume: 0,
-    totalVolume: 0,
-    largestCapStock: null,
-    largestMoveStock: null,
-    sectorsCovered: 0
-  });
+  // marketStats现在由useMemo计算，见下方
   const [sectorData, setSectorData] = useState<SectorData[]>([]);
 
-  const fetchMarketData = async (forceRefresh = false) => {
-    // 缓存检查：如果60秒内有数据且不是强制刷新，则使用缓存
-    const CACHE_DURATION = 60 * 1000; // 60秒缓存
-    const now = Date.now();
-    
-    if (!forceRefresh && lastFetched && (now - lastFetched) < CACHE_DURATION && marketData.length > 0) {
-      console.log(`Using cached data (last fetched: ${new Date(lastFetched).toLocaleTimeString()})`);
-      return; // 使用缓存数据，不发起新请求
-    }
-    
-    try {
-      setLoading(true);
-      setError(''); // 明确清除错误状态
-      // Dashboard专用请求，使用轻量级模式
-      const stocks = await marketDataService.getStocks(undefined, true);
-      
-      // 检查是否获取到有效数据
-      if (!stocks || stocks.length === 0) {
-        setError('No market data available');
-        setMarketData([]);
-        setMarketStats({ 
-          totalSymbols: 0, 
-          gainers: 0, 
-          losers: 0, 
-          avgChange: 0, 
-          totalMarketCap: 0, 
-          avgVolume: 0,
-          totalVolume: 0,
-          largestCapStock: null,
-          largestMoveStock: null,
-          sectorsCovered: 0
-        });
-        setSectorData([]);
-      } else {
-        // 成功获取数据
-        setMarketData(stocks);
-        setLastFetched(Date.now());
-        calculateMarketStats(stocks);
-      }
-    } catch (err: any) {
-      console.error('Failed to fetch market data:', err);
-      const errorMessage = err.message || 'Failed to load market data';
-      setError(errorMessage);
-      
-      // 清空数据，避免显示旧数据
-      setMarketData([]);
-      setMarketStats({ 
-        totalSymbols: 0, 
-        gainers: 0, 
-        losers: 0, 
-        avgChange: 0, 
-        totalMarketCap: 0, 
+  // 添加请求锁，防止重复请求
+  const [isFetching, setIsFetching] = useState(false);
+
+  // 使用useMemo优化市场统计计算，只在marketData变化时重新计算
+  const marketStats = useMemo(() => {
+    if (marketData.length === 0) {
+      return {
+        totalSymbols: 0,
+        gainers: 0,
+        losers: 0,
+        avgChange: 0,
+        totalMarketCap: 0,
         avgVolume: 0,
         totalVolume: 0,
         largestCapStock: null,
         largestMoveStock: null,
         sectorsCovered: 0
+      };
+    }
+
+    const totalSymbols = marketData.length;
+    const validChanges = marketData.map(s => getChangePercent(s)).filter(change => change !== null) as number[];
+    const gainers = validChanges.filter(change => change > 0).length;
+    const losers = validChanges.filter(change => change < 0).length;
+    const avgChange = validChanges.length > 0 ? validChanges.reduce((sum, change) => sum + change, 0) / validChanges.length : 0;
+
+    // 简化marketCap计算 - 假设后端返回合理值
+    const validMarketCapStocks = marketData.filter(s => {
+      const marketCap = safeNumber(s.marketCap);
+      return marketCap !== null && marketCap !== undefined && marketCap > 0;
+    });
+
+    const totalMarketCap = validMarketCapStocks.reduce((sum, s) => sum + safeNumber(s.marketCap || 0), 0);
+
+    // 找到最大市值的股票
+    const largestCapStock = validMarketCapStocks.length > 0
+      ? validMarketCapStocks.reduce((max, s) =>
+          safeNumber(s.marketCap || 0) > safeNumber(max.marketCap || 0) ? s : max
+        )
+      : null;
+
+    // 找到最大涨跌幅的股票
+    const largestMoveStock = marketData.length > 0
+      ? marketData.reduce((max, s) => {
+          const change = getChangePercent(s);
+          const maxChange = getChangePercent(max);
+          return (change !== null && maxChange !== null && Math.abs(change) > Math.abs(maxChange)) ? s : max;
+        })
+      : null;
+
+    // 计算成交量
+    const validVolumeStocks = marketData.filter(s => safeNumber(s.volume) > 0);
+    const totalVolume = validVolumeStocks.reduce((sum, s) => sum + safeNumber(s.volume || 0), 0);
+    const avgVolume = validVolumeStocks.length > 0 ? totalVolume / validVolumeStocks.length : 0;
+
+    // 计算覆盖的行业数量
+    const sectors = new Set(marketData.map(s => s.sector).filter(Boolean));
+    const sectorsCovered = sectors.size;
+
+    // 计算sector分布
+    const sectorMap: Record<string, number> = {};
+    marketData.forEach(stock => {
+      const sector = stock.sector || stock.industry;
+      if (sector && sector !== 'Unknown' && sector !== 'None' && sector !== 'N/A') {
+        sectorMap[sector] = (sectorMap[sector] || 0) + 1;
+      }
+    });
+
+    // 更新sectorData
+    if (Object.keys(sectorMap).length === 0) {
+      setSectorData([]);
+    } else {
+      const total = marketData.length;
+      const sectorArray: SectorData[] = Object.entries(sectorMap)
+        .map(([name, count]) => ({
+          name,
+          count,
+          percentage: total > 0 ? (count / total) * 100 : 0
+        }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 6);
+      setSectorData(sectorArray);
+    }
+
+    return {
+      totalSymbols,
+      gainers,
+      losers,
+      avgChange,
+      totalMarketCap,
+      avgVolume,
+      totalVolume,
+      largestCapStock: largestCapStock ? {
+        symbol: largestCapStock.symbol,
+        marketCap: safeNumber(largestCapStock.marketCap || 0)
+      } : null,
+      largestMoveStock: largestMoveStock ? {
+        symbol: largestMoveStock.symbol,
+        changePercent: getChangePercent(largestMoveStock) || 0
+      } : null,
+      sectorsCovered
+    };
+  }, [marketData]);
+
+  // 移除旧的marketStats状态，改用useMemo计算
+  // const [marketStats, setMarketStats] = useState<MarketStats>({ ... });
+
+  const fetchMarketData = async (forceRefresh = false) => {
+    // 如果已经在请求中，直接返回
+    if (isFetching && !forceRefresh) {
+      console.log('[Dashboard优化] 请求已在进行中，跳过重复请求');
+      return;
+    }
+
+    // 缓存检查：如果60秒内有数据且不是强制刷新，则使用缓存
+    const CACHE_DURATION = 60 * 1000; // 60秒缓存
+    const now = Date.now();
+
+    if (!forceRefresh && lastFetched && (now - lastFetched) < CACHE_DURATION && marketData.length > 0) {
+      console.log(`[Dashboard优化] 使用缓存数据 (上次获取: ${new Date(lastFetched).toLocaleTimeString()})`);
+      return; // 使用缓存数据，不发起新请求
+    }
+
+    try {
+      setIsFetching(true);
+      setLoading(true);
+      setError(''); // 明确清除错误状态
+
+      console.log('[Dashboard优化] 开始获取市场数据...');
+      console.log('[Dashboard优化] 调用 marketDataService.getStocks(undefined, true)');
+
+      // Dashboard专用请求，使用轻量级模式
+      const stocks = await marketDataService.getStocks(undefined, true);
+
+      // 检查是否获取到有效数据
+      if (!stocks || stocks.length === 0) {
+        setError('No market data available');
+        setMarketData([]);
+        // marketStats会自动更新（因为依赖marketData）
+        setSectorData([]);
+      } else {
+        // 成功获取数据
+        console.log('[Dashboard调试] 成功获取数据:', {
+          股票数量: stocks.length,
+          第一个股票: stocks[0]?.symbol,
+          数据示例: stocks.slice(0, 2)
+        });
+        setMarketData(stocks);
+        setLastFetched(Date.now());
+        // calculateMarketStats(stocks); // 改为使用useMemo自动计算
+      }
+    } catch (err: any) {
+      console.error('[Dashboard调试] 获取市场数据失败:', err);
+      console.error('[Dashboard调试] 错误详情:', {
+        message: err.message,
+        stack: err.stack,
+        response: err.response?.data,
+        status: err.response?.status,
+        config: err.config
       });
+      const errorMessage = err.message || 'Failed to load market data';
+      setError(errorMessage);
+
+      // 清空数据，避免显示旧数据
+      setMarketData([]);
+      // marketStats会自动更新（因为依赖marketData）
       setSectorData([]);
     } finally {
+      setIsFetching(false);
       setLoading(false);
     }
   };
 
-  const getChangePercent = (stock: StockData): number | null => {
-    if (stock.changePercent !== null && stock.changePercent !== undefined) return stock.changePercent;
-    if (stock.price !== null && stock.previousClose !== null && stock.previousClose !== 0) return ((stock.price - stock.previousClose) / stock.previousClose) * 100;
-    if (stock.change !== null && stock.previousClose !== null && stock.previousClose !== 0) return (stock.change / stock.previousClose) * 100;
-    return null;
-  };
+  // getChangePercent函数已移动到组件顶部，见下方
 
   const formatChangePercent = (value: number | null): string => {
     if (value === null) return '--';
@@ -144,163 +249,39 @@ const Dashboard: React.FC = () => {
     return num.toFixed(0);
   };
 
-  const calculateMarketStats = (stocks: StockData[]) => {
-    const totalSymbols = stocks.length;
-    const validChanges = stocks.map(s => getChangePercent(s)).filter(change => change !== null) as number[];
-    const gainers = validChanges.filter(change => change > 0).length;
-    const losers = validChanges.filter(change => change < 0).length;
-    const avgChange = validChanges.length > 0 ? validChanges.reduce((sum, change) => sum + change, 0) / validChanges.length : 0;
-    
-    // 调试：打印所有股票数据
-    console.log('=== Dashboard marketCap计算调试开始 ===');
-    console.log(`总股票数: ${stocks.length}`);
-    
-    // 修复marketCap计算逻辑
-    // 1. 不再过滤marketCap为0的股票（现在后端返回合理值）
-    // 2. 只过滤明显不合理的数据（如负数或极大值）
-    
-    const MAX_REASONABLE_MARKET_CAP = 50_000_000_000_000; // 50万亿（比任何公司都大）
-    const MIN_REASONABLE_MARKET_CAP = 1_000_000; // 100万美元（最小合理市值）
-    
-    const validMarketCapStocks = stocks.filter(s => {
-      const symbol = s.symbol;
-      const marketCapRaw = s.marketCap;
-      
-      // 检查marketCap是否存在
-      if (marketCapRaw === null || marketCapRaw === undefined) {
-        console.log(`${symbol}: 跳过 - marketCap为null/undefined`);
-        return false;
-      }
-      
-      const marketCap = safeNumber(marketCapRaw);
-      
-      // 检查是否在合理范围内
-      if (marketCap < MIN_REASONABLE_MARKET_CAP) {
-        console.log(`${symbol}: 跳过 - marketCap=${marketCap} < ${MIN_REASONABLE_MARKET_CAP} (最小合理值)`);
-        return false;
-      }
-      
-      if (marketCap > MAX_REASONABLE_MARKET_CAP) {
-        console.log(`${symbol}: 跳过 - marketCap=${marketCap} > ${MAX_REASONABLE_MARKET_CAP} (最大合理值)`);
-        return false;
-      }
-      
-      // 检查是否为负数
-      if (marketCap < 0) {
-        console.log(`${symbol}: 跳过 - marketCap=${marketCap} (负数)`);
-        return false;
-      }
-      
-      console.log(`${symbol}: 有效 - marketCap=${marketCap} (${formatMarketCap(marketCap)})`);
-      return true;
+  // calculateMarketStats函数已由useMemo替代，见上方marketStats计算
+
+  const getTopGainers = () => {
+    console.log(`[调试] getTopGainers: marketData长度=${marketData.length}`);
+    const gainers = [...marketData].filter(s => {
+      const change = getChangePercent(s);
+      const isGainer = change !== null && change > 0;
+      console.log(`[调试] ${s.symbol}: change=${change}, isGainer=${isGainer}`);
+      return isGainer;
+    }).sort((a, b) => {
+      const changeA = getChangePercent(a) || 0;
+      const changeB = getChangePercent(b) || 0;
+      return changeB - changeA;
     });
-    
-    // 为了兼容现有代码，重命名变量
-    const validUSDStocks = validMarketCapStocks;
-    
-    // 计算Total Market Cap（只统计USD货币的股票）
-    const totalMarketCap = validUSDStocks.reduce((sum, s) => {
-      return sum + safeNumber(s.marketCap);
-    }, 0);
-    
-    const stocksWithVolume = stocks.filter(s => s.volume !== null && s.volume !== undefined);
-    const avgVolume = stocksWithVolume.length > 0 ? stocksWithVolume.reduce((sum, s) => sum + safeNumber(s.volume), 0) / stocksWithVolume.length : 0;
-    
-    // 新增指标：总交易量
-    const totalVolume = stocksWithVolume.reduce((sum, s) => sum + safeNumber(s.volume), 0);
-    
-    // 计算最大市值股票（只从USD货币的股票中选）
-    let largestCapStock: { symbol: string; marketCap: number } | null = null;
-    if (validUSDStocks.length > 0) {
-      const largest = validUSDStocks.reduce((max, stock) => {
-        const marketCap = safeNumber(stock.marketCap);
-        return marketCap > safeNumber(max.marketCap) ? stock : max;
-      }, validUSDStocks[0]);
-      
-      largestCapStock = {
-        symbol: largest.symbol,
-        marketCap: safeNumber(largest.marketCap)
-      };
-      
-      // 调试日志
-      console.log(`最大市值股票(USD): ${largest.symbol}, marketCap(美元): ${largestCapStock.marketCap}`);
-    }
-    
-    // 计算最大涨跌幅股票（按changePercent的绝对值）
-    let largestMoveStock: { symbol: string; changePercent: number } | null = null;
-    if (stocks.length > 0) {
-      const largestMove = stocks.reduce((max, stock) => {
-        const changePercent = getChangePercent(stock) || 0;
-        const maxChangePercent = getChangePercent(max) || 0;
-        return Math.abs(changePercent) > Math.abs(maxChangePercent) ? stock : max;
-      }, stocks[0]);
-      
-      const changePercent = getChangePercent(largestMove) || 0;
-      largestMoveStock = {
-        symbol: largestMove.symbol,
-        changePercent: changePercent
-      };
-      
-      // 调试日志
-      console.log(`最大涨跌幅股票: ${largestMove.symbol}, changePercent: ${changePercent}%`);
-    }
-    
-    // 调试日志
-    console.log(`有效市值股票数: ${validUSDStocks.length}/${stocks.length}`);
-    console.log(`总市值计算: ${totalMarketCap}, 格式化: ${formatMarketCap(totalMarketCap)}`);
-    console.log(`每只股票marketCap(原始值):`, validUSDStocks.map(s => `${s.symbol}: ${safeNumber(s.marketCap)}`));
-    
-    // 检查格式化结果
-    const formattedTotal = formatMarketCap(totalMarketCap);
-    console.log(`格式化结果: ${formattedTotal}`);
-    
-    if (validUSDStocks.length === 0) {
-      console.warn(`⚠️ 警告: 没有有效的marketCap数据，所有股票都被过滤`);
-    }
-    
-    // 计算sector分布和sector数量
-    const sectorMap: Record<string, number> = {};
-    stocks.forEach(stock => {
-      const sector = stock.sector || stock.industry;
-      if (sector && sector !== 'Unknown' && sector !== 'None' && sector !== 'N/A') {
-        sectorMap[sector] = (sectorMap[sector] || 0) + 1;
-      }
-    });
-    
-    // 新增指标：覆盖的sector数量
-    const sectorsCovered = Object.keys(sectorMap).length;
-    
-    setMarketStats({ 
-      totalSymbols, 
-      gainers, 
-      losers, 
-      avgChange, 
-      totalMarketCap, 
-      avgVolume,
-      totalVolume,
-      largestCapStock,
-      largestMoveStock,
-      sectorsCovered
-    });
-    
-    if (Object.keys(sectorMap).length === 0) {
-      setSectorData([]);
-    } else {
-      const total = stocks.length;
-      const sectorArray: SectorData[] = Object.entries(sectorMap)
-        .map(([name, count]) => ({ 
-          name, 
-          count, 
-          percentage: total > 0 ? (count / total) * 100 : 0 
-        }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 6);
-      setSectorData(sectorArray);
-    }
+    console.log(`[调试] getTopGainers结果:`, gainers.map(g => ({symbol: g.symbol, changePercent: g.changePercent})));
+    return gainers;
   };
 
-  const getTopGainers = () => [...marketData].filter(s => { const change = getChangePercent(s); return change !== null && change > 0; }).sort((a, b) => { const changeA = getChangePercent(a) || 0; const changeB = getChangePercent(b) || 0; return changeB - changeA; });
-  const getTopLosers = () => [...marketData].filter(s => { const change = getChangePercent(s); return change !== null && change < 0; }).sort((a, b) => { const changeA = getChangePercent(a) || 0; const changeB = getChangePercent(b) || 0; return changeA - changeB; });
+  const getTopLosers = () => {
+    console.log(`[调试] getTopLosers: marketData长度=${marketData.length}`);
+    const losers = [...marketData].filter(s => {
+      const change = getChangePercent(s);
+      const isLoser = change !== null && change < 0;
+      console.log(`[调试] ${s.symbol}: change=${change}, isLoser=${isLoser}`);
+      return isLoser;
+    }).sort((a, b) => {
+      const changeA = getChangePercent(a) || 0;
+      const changeB = getChangePercent(b) || 0;
+      return changeA - changeB;
+    });
+    console.log(`[调试] getTopLosers结果:`, losers.map(l => ({symbol: l.symbol, changePercent: l.changePercent})));
+    return losers;
+  };
   const getWatchlistData = () => {
     // 从watchlist中获取symbol列表，然后从marketData中匹配完整信息
     const watchlistSymbols = watchlist.map(item => item.symbol);
@@ -308,13 +289,18 @@ const Dashboard: React.FC = () => {
       .filter(stock => watchlistSymbols.includes(stock.symbol))
       .slice(0, 8); // 最多显示8个
   };
-  
+
   const refresh = () => fetchMarketData(true); // 强制刷新，忽略缓存
-  
-  useEffect(() => { 
+
+  useEffect(() => {
     // 组件加载时清除所有错误状态
     setError('');
-    fetchMarketData(); 
+
+    // 延迟加载数据，让用户先看到页面框架
+    const loadTimer = setTimeout(() => {
+      fetchMarketData();
+    }, 100); // 100ms延迟，足够渲染初始界面
+
     // 从localStorage加载watchlist
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
@@ -328,8 +314,13 @@ const Dashboard: React.FC = () => {
         // watchlist解析失败不是关键错误，不设置全局error
       }
     }
+
+    // 清理定时器
+    return () => {
+      clearTimeout(loadTimer);
+    };
   }, []);
-  
+
   // 监听localStorage变化，实现页面间watchlist同步
   useEffect(() => {
     const handleStorageChange = (e: StorageEvent) => {
@@ -354,7 +345,7 @@ const Dashboard: React.FC = () => {
       window.removeEventListener('storage', handleStorageChange);
     };
   }, []);
-  
+
   const handleSymbolClick = (symbol: string) => navigate(`/analyze/${symbol}`);
   const handleManageWatchlist = () => navigate('/watchlist');
 
@@ -362,7 +353,7 @@ const Dashboard: React.FC = () => {
   // 每个sector都有独特且稳定的颜色，donut图和legend颜色一一对应
   const getSectorColor = (sectorName: string): string => {
     const lowerName = sectorName.toLowerCase();
-    
+
     // 1. 优先处理常见且重要的sector（根据你的要求）
     // Technology - 蓝色，科技感
     if (lowerName.includes('technology') || lowerName === 'tech') {
@@ -384,7 +375,7 @@ const Dashboard: React.FC = () => {
     if (lowerName.includes('financial services') || lowerName.includes('financial')) {
       return '#13c2c2';
     }
-    
+
     // 2. 其他常见sector
     // Communications/Media - 紫色
     if (lowerName.includes('communication') || lowerName.includes('media')) {
@@ -422,7 +413,7 @@ const Dashboard: React.FC = () => {
     if (lowerName.includes('information')) {
       return '#69c0ff';
     }
-    
+
     // 3. 稳定颜色映射表 - 确保相同sector总是得到相同颜色
     // 即使sector数量变化，颜色也不会随机重复
     const stableColorMap: Record<string, string> = {
@@ -460,7 +451,7 @@ const Dashboard: React.FC = () => {
       'material': '#531dab',
       'information technology': '#69c0ff',
       'information': '#69c0ff',
-      
+
       // 其他可能出现的sector
       'telecommunications': '#7cb305',
       'insurance': '#08979c',
@@ -478,26 +469,26 @@ const Dashboard: React.FC = () => {
       'defense': '#003a8c',
       'aerospace': '#00474f',
     };
-    
+
     // 首先检查精确匹配
     if (stableColorMap[lowerName]) {
       return stableColorMap[lowerName];
     }
-    
+
     // 然后检查包含关系
     for (const [key, color] of Object.entries(stableColorMap)) {
       if (lowerName.includes(key)) {
         return color;
       }
     }
-    
+
     // 最后，使用稳定的哈希算法确保相同sector总是得到相同颜色
     const stableColors = [
       '#1890ff', '#2f54eb', '#52c41a', '#fa8c16', '#13c2c2', '#722ed1', '#eb2f96',
       '#f759ab', '#fa541c', '#597ef7', '#9254de', '#a0d911', '#531dab', '#69c0ff',
       '#7cb305', '#08979c', '#d4380d', '#d46b08', '#096dd9', '#1d39c4'
     ];
-    
+
     // 稳定的哈希函数
     let hash = 0;
     for (let i = 0; i < sectorName.length; i++) {
@@ -505,7 +496,7 @@ const Dashboard: React.FC = () => {
       hash = hash & hash; // 转换为32位整数
     }
     hash = Math.abs(hash);
-    
+
     return stableColors[hash % stableColors.length];
   };
 
@@ -514,46 +505,46 @@ const Dashboard: React.FC = () => {
    */
   const formatMarketCap = (value: number | null | undefined): string => {
     if (value === null || value === undefined || value === 0) return '--';
-    
+
     const num = Number(value);
     if (isNaN(num)) return '--';
-    
+
     // 万亿 (Trillion) - 1万亿 = 1e12
     if (num >= 1e12) {
       const trillions = num / 1e12;
       // 对于万亿级别，显示1位小数，除非是整数
       return `$${trillions.toFixed(trillions >= 100 ? 0 : trillions >= 10 ? 1 : 2)}T`;
     }
-    
+
     // 十亿 (Billion) - 10亿 = 1e9
     if (num >= 1e9) {
       const billions = num / 1e9;
       // 对于十亿级别，显示1位小数
       return `$${billions.toFixed(billions >= 100 ? 0 : billions >= 10 ? 1 : 2)}B`;
     }
-    
+
     // 百万 (Million) - 1百万 = 1e6
     if (num >= 1e6) {
       const millions = num / 1e6;
       return `$${millions.toFixed(millions >= 10 ? 0 : 1)}M`;
     }
-    
+
     // 千 (Thousand)
     if (num >= 1e3) {
       const thousands = num / 1e3;
       return `$${thousands.toFixed(thousands >= 10 ? 0 : 1)}K`;
     }
-    
+
     // 小于1000
     return `$${num.toFixed(2)}`;
   };
 
   const StatCard = ({ title, value, icon, color = '#1890ff', suffix = '', formatValue = (v: any) => v, valueColor }: { title: string; value: any; icon: React.ReactNode; color?: string; suffix?: string; formatValue?: (v: any) => string; valueColor?: string }) => (
-    <Card 
-      hoverable 
-      style={{ 
-        height: '116px', 
-        borderRadius: '10px', 
+    <Card
+      hoverable
+      style={{
+        height: '116px',
+        borderRadius: '10px',
         border: '1px solid #e8e8e8',
         borderTop: '1px solid #f5f5f5',
         boxShadow: '0 2px 10px rgba(0,0,0,0.05), 0 1px 4px rgba(0,0,0,0.04)',
@@ -572,11 +563,11 @@ const Dashboard: React.FC = () => {
           boxShadow: '0 4px 16px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.05)',
         }
       } as any}
-      bodyStyle={{ 
-        padding: '22px 18px', 
-        height: '100%', 
-        display: 'flex', 
-        flexDirection: 'column', 
+      bodyStyle={{
+        padding: '22px 18px',
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
         justifyContent: 'center',
         position: 'relative',
         zIndex: 1
@@ -597,15 +588,15 @@ const Dashboard: React.FC = () => {
           height: '3px',
         }
       } as any} />
-      
+
       {/* 标题行 - 恢复正常易读样式 */}
-      <div style={{ 
+      <div style={{
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
         marginBottom: '8px'
       }}>
-        <Text type="secondary" style={{ 
+        <Text type="secondary" style={{
           fontSize: '12px',  // 恢复正常大小
           color: '#595959',  // 恢复正常颜色
           fontWeight: 500,   // 恢复正常字重
@@ -615,7 +606,7 @@ const Dashboard: React.FC = () => {
         }}>
           {title}
         </Text>
-        <span style={{ 
+        <span style={{
           color: '#bfbfbf',  // 恢复原颜色
           fontSize: '12px',  // 恢复原大小
           display: 'flex',
@@ -626,9 +617,9 @@ const Dashboard: React.FC = () => {
           {icon}
         </span>
       </div>
-      
+
       {/* 数值 - 专业金融仪表板风格 */}
-      <div style={{ 
+      <div style={{
         fontSize: '24px',    // 减小字号，更克制
         fontWeight: 600,     // 减轻字重，不要太重
         color: valueColor || '#1a1a1a',    // 使用valueColor或默认颜色
@@ -693,10 +684,10 @@ const Dashboard: React.FC = () => {
         </Row>
       )}
 
-      <div style={{ 
-        display: 'flex', 
-        flexWrap: 'wrap', 
-        gap: '12px', 
+      <div style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: '12px',
         marginBottom: '24px',
         marginLeft: '-6px',
         marginRight: '-6px'
@@ -718,11 +709,11 @@ const Dashboard: React.FC = () => {
         </div>
         <div style={{ flex: '1 1 0', minWidth: '180px', padding: '0 6px' }}>
           {/* 自定义 Largest Move 卡片 */}
-          <Card 
-            hoverable 
-            style={{ 
-              height: '116px', 
-              borderRadius: '10px', 
+          <Card
+            hoverable
+            style={{
+              height: '116px',
+              borderRadius: '10px',
               border: '1px solid #e8e8e8',
               borderTop: '1px solid #f5f5f5',
               boxShadow: '0 2px 10px rgba(0,0,0,0.05), 0 1px 4px rgba(0,0,0,0.04)',
@@ -745,13 +736,13 @@ const Dashboard: React.FC = () => {
             }}
           >
             {/* 标题行 */}
-            <div style={{ 
+            <div style={{
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
               marginBottom: '8px'
             }}>
-              <Text type="secondary" style={{ 
+              <Text type="secondary" style={{
                 fontSize: '12px',
                 color: '#595959',
                 fontWeight: 500,
@@ -761,7 +752,7 @@ const Dashboard: React.FC = () => {
               }}>
                 Largest Move
               </Text>
-              <span style={{ 
+              <span style={{
                 color: '#bfbfbf',
                 fontSize: '12px',
                 display: 'flex',
@@ -772,9 +763,9 @@ const Dashboard: React.FC = () => {
                 <LineChartOutlined />
               </span>
             </div>
-            
+
             {/* 内容区域 */}
-            <div style={{ 
+            <div style={{
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'flex-start',
@@ -782,7 +773,7 @@ const Dashboard: React.FC = () => {
               height: 'calc(100% - 28px)'
             }}>
               {/* 股票代码 - 大字体 */}
-              <div style={{ 
+              <div style={{
                 fontSize: '18px',
                 fontWeight: 600,
                 lineHeight: '24px',
@@ -791,10 +782,10 @@ const Dashboard: React.FC = () => {
               }}>
                 {marketStats.largestMoveStock ? marketStats.largestMoveStock.symbol : '--'}
               </div>
-              
+
               {/* 涨跌幅 - 根据涨跌显示颜色 */}
               {marketStats.largestMoveStock && (
-                <div style={{ 
+                <div style={{
                   fontSize: '14px',
                   fontWeight: 500,
                   lineHeight: '20px',
@@ -808,11 +799,11 @@ const Dashboard: React.FC = () => {
         </div>
         <div style={{ flex: '1 1 0', minWidth: '180px', padding: '0 6px' }}>
           {/* 自定义 Largest Cap 卡片，优化 typography 和 spacing */}
-          <Card 
-            hoverable 
-            style={{ 
-              height: '116px', 
-              borderRadius: '10px', 
+          <Card
+            hoverable
+            style={{
+              height: '116px',
+              borderRadius: '10px',
               border: '1px solid #e8e8e8',
               borderTop: '1px solid #f5f5f5',
               boxShadow: '0 2px 10px rgba(0,0,0,0.05), 0 1px 4px rgba(0,0,0,0.04)',
@@ -831,11 +822,11 @@ const Dashboard: React.FC = () => {
                 boxShadow: '0 4px 16px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.05)',
               }
             } as any}
-            bodyStyle={{ 
-              padding: '22px 18px', 
-              height: '100%', 
-              display: 'flex', 
-              flexDirection: 'column', 
+            bodyStyle={{
+              padding: '22px 18px',
+              height: '100%',
+              display: 'flex',
+              flexDirection: 'column',
               justifyContent: 'center',
               position: 'relative',
               zIndex: 1
@@ -856,15 +847,15 @@ const Dashboard: React.FC = () => {
                 height: '3px',
               }
             } as any} />
-            
+
             {/* 标题行 - 增大标签，更明显 */}
-            <div style={{ 
+            <div style={{
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
               marginBottom: '10px'  // 增加间距
             }}>
-              <Text type="secondary" style={{ 
+              <Text type="secondary" style={{
                 fontSize: '13px',  // 增大标签字体
                 color: '#404040',  // 稍微深一点，更明显
                 fontWeight: 600,   // 加重字重
@@ -874,7 +865,7 @@ const Dashboard: React.FC = () => {
               }}>
                 Largest Cap
               </Text>
-              <span style={{ 
+              <span style={{
                 color: '#bfbfbf',
                 fontSize: '12px',
                 display: 'flex',
@@ -885,16 +876,16 @@ const Dashboard: React.FC = () => {
                 <DatabaseOutlined />
               </span>
             </div>
-            
+
             {/* 数值行 - 减小数据字体，优化间距 */}
-            <div style={{ 
+            <div style={{
               display: 'flex',
               alignItems: 'baseline',
               gap: '6px',  // NVDA 和 $4.4T 之间的自然间距
               marginTop: '4px'  // 减少顶部间距
             }}>
               {/* 股票代码 */}
-              <div style={{ 
+              <div style={{
                 fontSize: '20px',  // 减小字体
                 fontWeight: 600,
                 color: '#1a1a1a',
@@ -906,10 +897,10 @@ const Dashboard: React.FC = () => {
               }}>
                 {marketStats.largestCapStock ? marketStats.largestCapStock.symbol : '--'}
               </div>
-              
+
               {/* 市值 - 更小字体，作为补充信息 */}
               {marketStats.largestCapStock && (
-                <div style={{ 
+                <div style={{
                   fontSize: '14px',  // 明显小于股票代码
                   fontWeight: 500,
                   color: '#595959',   // 更中性颜色
@@ -929,17 +920,17 @@ const Dashboard: React.FC = () => {
 
       <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
         <Col xs={24} lg={12} xl={12}>
-          <Card 
-            title={<Space><RiseOutlined style={{ color: '#52c41a' }} /><Text strong>Top Gainers</Text></Space>} 
-            size="small" 
-            style={{ 
+          <Card
+            title={<Space><RiseOutlined style={{ color: '#52c41a' }} /><Text strong>Top Gainers</Text></Space>}
+            size="small"
+            style={{
               height: '320px',
               display: 'flex',
               flexDirection: 'column',
               width: '100%'
             }}
-            bodyStyle={{ 
-              padding: '16px 20px', 
+            bodyStyle={{
+              padding: '16px 20px',
               flex: 1,
               display: 'flex',
               flexDirection: 'column',
@@ -947,11 +938,11 @@ const Dashboard: React.FC = () => {
             }}
           >
             {getTopGainers().length === 0 ? (
-              <div style={{ 
-                display: 'flex', 
-                flexDirection: 'column', 
-                alignItems: 'center', 
-                justifyContent: 'center', 
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
                 flex: 1,
                 height: '100%',
                 padding: '20px'
@@ -961,7 +952,7 @@ const Dashboard: React.FC = () => {
                 </Text>
               </div>
             ) : (
-              <div style={{ 
+              <div style={{
                 flex: 1,
                 overflowY: 'auto',
                 paddingRight: '8px',
@@ -971,9 +962,9 @@ const Dashboard: React.FC = () => {
                 {getTopGainers().slice(0, 8).map((stock) => {
                   const changePercent = getChangePercent(stock);
                   return (
-                    <div key={stock.symbol} style={{ 
-                      padding: '10px 0', 
-                      borderBottom: '1px solid #f5f5f5', 
+                    <div key={stock.symbol} style={{
+                      padding: '10px 0',
+                      borderBottom: '1px solid #f5f5f5',
                       cursor: 'pointer',
                       transition: 'background-color 0.2s ease',
                       '&:hover': {
@@ -990,9 +981,9 @@ const Dashboard: React.FC = () => {
                         <Col style={{ flexShrink: 0 }}>
                           <Space align="center" size={8}>
                             <Text strong style={{ fontSize: '16px', fontWeight: 700, whiteSpace: 'nowrap', fontFeatureSettings: '"tnum"' }}>${safeNumber(stock.price).toFixed(2)}</Text>
-                            <Tag color="green" style={{ 
-                              margin: 0, 
-                              fontSize: '10px', 
+                            <Tag color="green" style={{
+                              margin: 0,
+                              fontSize: '10px',
                               padding: '2px 8px',
                               fontWeight: 500,
                               borderRadius: '10px',
@@ -1005,11 +996,11 @@ const Dashboard: React.FC = () => {
                     </div>
                   );
                 })}
-                
+
                 {/* 如果超过8条，显示提示 */}
                 {getTopGainers().length > 8 && (
-                  <div style={{ 
-                    padding: '12px 0', 
+                  <div style={{
+                    padding: '12px 0',
                     textAlign: 'center',
                     borderTop: '1px solid #f5f5f5',
                     marginTop: '8px'
@@ -1027,17 +1018,17 @@ const Dashboard: React.FC = () => {
           </Card>
         </Col>
         <Col xs={24} lg={12} xl={12}>
-          <Card 
-            title={<Space><FallOutlined style={{ color: '#ff4d4f' }} /><Text strong>Top Losers</Text></Space>} 
-            size="small" 
-            style={{ 
+          <Card
+            title={<Space><FallOutlined style={{ color: '#ff4d4f' }} /><Text strong>Top Losers</Text></Space>}
+            size="small"
+            style={{
               height: '320px',
               display: 'flex',
               flexDirection: 'column',
               width: '100%'
             }}
-            bodyStyle={{ 
-              padding: '16px 20px', 
+            bodyStyle={{
+              padding: '16px 20px',
               flex: 1,
               display: 'flex',
               flexDirection: 'column',
@@ -1045,18 +1036,18 @@ const Dashboard: React.FC = () => {
             }}
           >
             {getTopLosers().length === 0 ? (
-              <div style={{ 
-                display: 'flex', 
-                flexDirection: 'column', 
-                alignItems: 'center', 
-                justifyContent: 'center', 
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
                 flex: 1,
                 height: '100%'
               }}>
                 <Text type="secondary" style={{ fontSize: '13px' }}>No losers in current market</Text>
               </div>
             ) : (
-              <div style={{ 
+              <div style={{
                 flex: 1,
                 overflowY: 'auto',
                 paddingRight: '8px',
@@ -1066,9 +1057,9 @@ const Dashboard: React.FC = () => {
                 {getTopLosers().slice(0, 8).map((stock) => {
                   const changePercent = getChangePercent(stock);
                   return (
-                    <div key={stock.symbol} style={{ 
-                      padding: '10px 0', 
-                      borderBottom: '1px solid #f5f5f5', 
+                    <div key={stock.symbol} style={{
+                      padding: '10px 0',
+                      borderBottom: '1px solid #f5f5f5',
                       cursor: 'pointer',
                       transition: 'background-color 0.2s ease',
                       '&:hover': {
@@ -1085,9 +1076,9 @@ const Dashboard: React.FC = () => {
                         <Col style={{ flexShrink: 0 }}>
                           <Space align="center" size={8}>
                             <Text strong style={{ fontSize: '16px', fontWeight: 700, whiteSpace: 'nowrap', fontFeatureSettings: '"tnum"' }}>${safeNumber(stock.price).toFixed(2)}</Text>
-                            <Tag color="red" style={{ 
-                              margin: 0, 
-                              fontSize: '10px', 
+                            <Tag color="red" style={{
+                              margin: 0,
+                              fontSize: '10px',
                               padding: '2px 8px',
                               fontWeight: 500,
                               borderRadius: '10px',
@@ -1100,11 +1091,11 @@ const Dashboard: React.FC = () => {
                     </div>
                   );
                 })}
-                
+
                 {/* 如果超过8条，显示提示 */}
                 {getTopLosers().length > 8 && (
-                  <div style={{ 
-                    padding: '12px 0', 
+                  <div style={{
+                    padding: '12px 0',
                     textAlign: 'center',
                     borderTop: '1px solid #f5f5f5',
                     marginTop: '8px'
@@ -1125,11 +1116,11 @@ const Dashboard: React.FC = () => {
 
       <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
         <Col xs={24} lg={10} xl={10}>
-          <Card 
-            title={<Space><PieChartOutlined /><Text strong style={{ fontSize: '15px', fontWeight: 600 }}>Sector Distribution</Text></Space>} 
-            size="small" 
+          <Card
+            title={<Space><PieChartOutlined /><Text strong style={{ fontSize: '15px', fontWeight: 600 }}>Sector Distribution</Text></Space>}
+            size="small"
             style={{ height: '300px' }}
-            bodyStyle={{ 
+            bodyStyle={{
               padding: '16px',
               height: '100%',
               display: 'flex',
@@ -1137,18 +1128,18 @@ const Dashboard: React.FC = () => {
             }}
           >
             {sectorData.length === 0 ? (
-              <div style={{ 
-                display: 'flex', 
-                flexDirection: 'column', 
-                alignItems: 'center', 
-                justifyContent: 'center', 
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
                 flex: 1,
                 height: '100%'
               }}>
                 <Text type="secondary" style={{ fontSize: '13px' }}>No sector data available</Text>
               </div>
             ) : (
-              <div style={{ 
+              <div style={{
                 flex: 1,
                 display: 'flex',
                 flexDirection: 'row',
@@ -1176,14 +1167,14 @@ const Dashboard: React.FC = () => {
                             <Cell key={`cell-${index}`} fill={getSectorColor(sector.name)} />
                           ))}
                         </Pie>
-                        <Tooltip 
+                        <Tooltip
                           formatter={(value: any) => [`${Number(value).toFixed(1)}%`, 'Weight']}
                           labelFormatter={(label) => `Sector: ${label}`}
                         />
                       </PieChart>
                     </ResponsiveContainer>
                     {/* 中心显示总数 */}
-                    <div style={{ 
+                    <div style={{
                       position: 'absolute',
                       top: '50%',
                       left: '50%',
@@ -1200,12 +1191,12 @@ const Dashboard: React.FC = () => {
                     </div>
                   </div>
                 </div>
-                
+
                 {/* 右侧：优化后的sector列表 */}
                 <div style={{ flex: 1, height: '100%', display: 'flex', flexDirection: 'column' }}>
-                  <div style={{ 
-                    display: 'flex', 
-                    flexDirection: 'column', 
+                  <div style={{
+                    display: 'flex',
+                    flexDirection: 'column',
                     height: '100%',
                     justifyContent: 'flex-start',
                     paddingTop: '4px'
@@ -1213,27 +1204,27 @@ const Dashboard: React.FC = () => {
                     {sectorData.slice(0, 5).map((sector, index) => {
                       const sectorColor = getSectorColor(sector.name);
                       return (
-                        <div key={sector.name} style={{ 
-                          display: 'flex', 
+                        <div key={sector.name} style={{
+                          display: 'flex',
                           alignItems: 'center',
                           height: '36px',
                           padding: '0 4px',
                           borderBottom: index < Math.min(sectorData.length, 5) - 1 ? '1px solid #f5f5f5' : 'none'
                         }}>
                           {/* 颜色标识 */}
-                          <div style={{ 
-                            width: '12px', 
-                            height: '12px', 
+                          <div style={{
+                            width: '12px',
+                            height: '12px',
                             borderRadius: '2px',
                             backgroundColor: sectorColor,
                             marginRight: '12px',
                             flexShrink: 0
                           }} />
-                          
+
                           {/* sector名称 - 左对齐 */}
                           <div style={{ flex: 1, minWidth: 0, marginRight: '16px' }}>
-                            <Text style={{ 
-                              fontSize: '14px', 
+                            <Text style={{
+                              fontSize: '14px',
                               fontWeight: 500,
                               color: '#1f1f1f',
                               lineHeight: '36px'
@@ -1241,15 +1232,15 @@ const Dashboard: React.FC = () => {
                               {sector.name}
                             </Text>
                           </div>
-                          
+
                           {/* 权重百分比 - 右对齐 */}
-                          <div style={{ 
-                            width: '70px', 
+                          <div style={{
+                            width: '70px',
                             textAlign: 'right',
                             marginRight: '16px'
                           }}>
-                            <Text style={{ 
-                              fontSize: '14px', 
+                            <Text style={{
+                              fontSize: '14px',
                               fontWeight: 600,
                               color: '#1f1f1f',
                               lineHeight: '36px'
@@ -1257,15 +1248,15 @@ const Dashboard: React.FC = () => {
                               {sector.percentage.toFixed(1)}%
                             </Text>
                           </div>
-                          
+
                           {/* 股票数量 - 右对齐，有适当右边距 */}
-                          <div style={{ 
-                            width: '50px', 
+                          <div style={{
+                            width: '50px',
                             textAlign: 'right',
                             paddingRight: '8px'
                           }}>
-                            <Text type="secondary" style={{ 
-                              fontSize: '13px', 
+                            <Text type="secondary" style={{
+                              fontSize: '13px',
                               color: '#595959',
                               fontWeight: 400,
                               lineHeight: '36px'
@@ -1276,29 +1267,29 @@ const Dashboard: React.FC = () => {
                         </div>
                       );
                     })}
-                    
+
                     {/* 如果超过5个sector，显示Other */}
                     {sectorData.length > 5 && (
-                      <div style={{ 
-                        display: 'flex', 
+                      <div style={{
+                        display: 'flex',
                         alignItems: 'center',
                         height: '36px',
                         padding: '0 4px',
                         marginTop: '4px',
                         borderTop: '1px solid #f5f5f5'
                       }}>
-                        <div style={{ 
-                          width: '12px', 
-                          height: '12px', 
+                        <div style={{
+                          width: '12px',
+                          height: '12px',
                           borderRadius: '2px',
                           backgroundColor: '#d9d9d9',
                           marginRight: '12px',
                           flexShrink: 0
                         }} />
-                        
+
                         <div style={{ flex: 1, minWidth: 0, marginRight: '16px' }}>
-                          <Text style={{ 
-                            fontSize: '14px', 
+                          <Text style={{
+                            fontSize: '14px',
                             fontWeight: 500,
                             color: '#8c8c8c',
                             lineHeight: '36px'
@@ -1306,14 +1297,14 @@ const Dashboard: React.FC = () => {
                             Other
                           </Text>
                         </div>
-                        
-                        <div style={{ 
-                          width: '70px', 
+
+                        <div style={{
+                          width: '70px',
                           textAlign: 'right',
                           marginRight: '16px'
                         }}>
-                          <Text style={{ 
-                            fontSize: '14px', 
+                          <Text style={{
+                            fontSize: '14px',
                             fontWeight: 600,
                             color: '#8c8c8c',
                             lineHeight: '36px'
@@ -1321,14 +1312,14 @@ const Dashboard: React.FC = () => {
                             {sectorData.slice(5).reduce((sum, s) => sum + s.percentage, 0).toFixed(1)}%
                           </Text>
                         </div>
-                        
-                        <div style={{ 
-                          width: '50px', 
+
+                        <div style={{
+                          width: '50px',
                           textAlign: 'right',
                           paddingRight: '8px'
                         }}>
-                          <Text type="secondary" style={{ 
-                            fontSize: '13px', 
+                          <Text type="secondary" style={{
+                            fontSize: '13px',
                             color: '#8c8c8c',
                             fontWeight: 400,
                             lineHeight: '36px'
@@ -1345,18 +1336,18 @@ const Dashboard: React.FC = () => {
           </Card>
         </Col>
         <Col xs={24} lg={8} xl={7}>
-          <Card 
-            title={<Space><BarChartOutlined /><Text strong style={{ fontSize: '15px', fontWeight: 600 }}>Market Breadth</Text></Space>} 
-            size="small" 
+          <Card
+            title={<Space><BarChartOutlined /><Text strong style={{ fontSize: '15px', fontWeight: 600 }}>Market Breadth</Text></Space>}
+            size="small"
             style={{ height: '300px' }}
-            bodyStyle={{ 
+            bodyStyle={{
               padding: '16px',
               height: '100%',
               display: 'flex',
               flexDirection: 'column'
             }}
           >
-            <div style={{ 
+            <div style={{
               flex: 1,
               display: 'flex',
               flexDirection: 'column',
@@ -1364,7 +1355,7 @@ const Dashboard: React.FC = () => {
               paddingTop: '8px'
             }}>
               {/* 上半部分：紧凑的三列统计 */}
-              <div style={{ 
+              <div style={{
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
@@ -1372,17 +1363,17 @@ const Dashboard: React.FC = () => {
               }}>
                 {/* Advancing */}
                 <div style={{ flex: 1, textAlign: 'center' }}>
-                  <div style={{ 
-                    fontSize: '32px', 
-                    fontWeight: 700, 
+                  <div style={{
+                    fontSize: '32px',
+                    fontWeight: 700,
                     color: '#52c41a',
                     lineHeight: 1,
                     marginBottom: '4px'
                   }}>
                     {marketStats.gainers}
                   </div>
-                  <Text type="secondary" style={{ 
-                    fontSize: '11px', 
+                  <Text type="secondary" style={{
+                    fontSize: '11px',
                     color: '#8c8c8c',
                     fontWeight: 500,
                     letterSpacing: '0.3px'
@@ -1390,20 +1381,20 @@ const Dashboard: React.FC = () => {
                     Advancing
                   </Text>
                 </div>
-                
+
                 {/* Declining */}
                 <div style={{ flex: 1, textAlign: 'center' }}>
-                  <div style={{ 
-                    fontSize: '32px', 
-                    fontWeight: 700, 
+                  <div style={{
+                    fontSize: '32px',
+                    fontWeight: 700,
                     color: '#ff4d4f',
                     lineHeight: 1,
                     marginBottom: '4px'
                   }}>
                     {marketStats.losers}
                   </div>
-                  <Text type="secondary" style={{ 
-                    fontSize: '11px', 
+                  <Text type="secondary" style={{
+                    fontSize: '11px',
                     color: '#8c8c8c',
                     fontWeight: 500,
                     letterSpacing: '0.3px'
@@ -1411,20 +1402,20 @@ const Dashboard: React.FC = () => {
                     Declining
                   </Text>
                 </div>
-                
+
                 {/* Flat */}
                 <div style={{ flex: 1, textAlign: 'center' }}>
-                  <div style={{ 
-                    fontSize: '32px', 
-                    fontWeight: 700, 
+                  <div style={{
+                    fontSize: '32px',
+                    fontWeight: 700,
                     color: '#666',
                     lineHeight: 1,
                     marginBottom: '4px'
                   }}>
                     {marketStats.totalSymbols - marketStats.gainers - marketStats.losers}
                   </div>
-                  <Text type="secondary" style={{ 
-                    fontSize: '11px', 
+                  <Text type="secondary" style={{
+                    fontSize: '11px',
                     color: '#8c8c8c',
                     fontWeight: 500,
                     letterSpacing: '0.3px'
@@ -1433,26 +1424,26 @@ const Dashboard: React.FC = () => {
                   </Text>
                 </div>
               </div>
-              
+
               {/* 下半部分：摘要信息区 */}
-              <div style={{ 
+              <div style={{
                 textAlign: 'center',
                 paddingTop: '16px',
                 borderTop: '1px solid #f0f0f0'
               }}>
                 {/* 市场状态标签 */}
                 <div style={{ marginBottom: '8px' }}>
-                  <Text type="secondary" style={{ 
-                    fontSize: '11px', 
+                  <Text type="secondary" style={{
+                    fontSize: '11px',
                     color: '#8c8c8c',
                     fontWeight: 500,
                     letterSpacing: '0.3px'
                   }}>
                     Market Status
                   </Text>
-                  <Tag 
+                  <Tag
                     color={marketStats.avgChange > 0.5 ? 'green' : marketStats.avgChange < -0.5 ? 'red' : 'default'}
-                    style={{ 
+                    style={{
                       fontSize: '11px',
                       padding: '3px 10px',
                       marginLeft: '6px',
@@ -1465,19 +1456,19 @@ const Dashboard: React.FC = () => {
                     {marketStats.avgChange > 0.5 ? 'Bullish' : marketStats.avgChange < -0.5 ? 'Bearish' : 'Neutral'}
                   </Tag>
                 </div>
-                
+
                 {/* Average Change */}
                 <div>
-                  <Text type="secondary" style={{ 
-                    fontSize: '12px', 
+                  <Text type="secondary" style={{
+                    fontSize: '12px',
                     color: '#8c8c8c',
                     fontWeight: 500,
                     marginRight: '8px'
                   }}>
                     Average Change
                   </Text>
-                  <Text strong style={{ 
-                    fontSize: '18px', 
+                  <Text strong style={{
+                    fontSize: '18px',
                     color: marketStats.avgChange > 0 ? '#52c41a' : marketStats.avgChange < 0 ? '#ff4d4f' : '#666',
                     fontWeight: 600
                   }}>
@@ -1489,49 +1480,49 @@ const Dashboard: React.FC = () => {
           </Card>
         </Col>
         <Col xs={24} lg={6} xl={7}>
-          <Card 
-            title={<Space><EyeOutlined /><Text strong style={{ fontSize: '15px', fontWeight: 600 }}>System Status</Text></Space>} 
-            size="small" 
+          <Card
+            title={<Space><EyeOutlined /><Text strong style={{ fontSize: '15px', fontWeight: 600 }}>System Status</Text></Space>}
+            size="small"
             style={{ height: '300px' }}
-            bodyStyle={{ 
+            bodyStyle={{
               padding: '16px',
               height: '100%',
               display: 'flex',
               flexDirection: 'column'
             }}
           >
-            <div style={{ 
+            <div style={{
               flex: 1,
               display: 'flex',
               flexDirection: 'column',
               justifyContent: 'center'
             }}>
               {/* 状态列表 - 专业状态面板 */}
-              <div style={{ 
-                display: 'flex', 
+              <div style={{
+                display: 'flex',
                 flexDirection: 'column'
               }}>
                 {/* Market Data */}
-                <div style={{ 
-                  display: 'flex', 
-                  justifyContent: 'space-between', 
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
                   alignItems: 'center',
                   height: '40px',
                   borderBottom: '1px solid #f0f0f0'
                 }}>
                   <Space align="center" size={10}>
-                    <div style={{ 
-                      width: '12px', 
-                      height: '12px', 
-                      borderRadius: '50%', 
+                    <div style={{
+                      width: '12px',
+                      height: '12px',
+                      borderRadius: '50%',
                       backgroundColor: '#52c41a',
                       boxShadow: '0 0 0 3px #52c41a15'
                     }} />
                     <Text style={{ fontSize: '14px', fontWeight: 600, color: '#1f1f1f' }}>Market Data</Text>
                   </Space>
-                  <div style={{ 
-                    fontSize: '12px', 
-                    fontWeight: 600, 
+                  <div style={{
+                    fontSize: '12px',
+                    fontWeight: 600,
                     color: '#ffffff',
                     backgroundColor: '#52c41a',
                     padding: '5px 14px',
@@ -1542,19 +1533,19 @@ const Dashboard: React.FC = () => {
                     boxSizing: 'border-box'
                   }}>LIVE</div>
                 </div>
-                
+
                 {/* Quote Feed */}
-                <div style={{ 
-                  display: 'flex', 
-                  justifyContent: 'space-between', 
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
                   alignItems: 'center',
                   height: '40px',
                   borderBottom: '1px solid #f0f0f0'
                 }}>
                   <Text style={{ fontSize: '14px', fontWeight: 500, color: '#595959' }}>Quote Feed</Text>
-                  <div style={{ 
-                    fontSize: '12px', 
-                    fontWeight: 600, 
+                  <div style={{
+                    fontSize: '12px',
+                    fontWeight: 600,
                     color: '#ffffff',
                     backgroundColor: '#52c41a',
                     padding: '5px 14px',
@@ -1565,19 +1556,19 @@ const Dashboard: React.FC = () => {
                     boxSizing: 'border-box'
                   }}>HEALTHY</div>
                 </div>
-                
+
                 {/* Broker Connection */}
-                <div style={{ 
-                  display: 'flex', 
-                  justifyContent: 'space-between', 
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
                   alignItems: 'center',
                   height: '40px',
                   borderBottom: '1px solid #f0f0f0'
                 }}>
                   <Text style={{ fontSize: '14px', fontWeight: 500, color: '#595959' }}>Broker Connection</Text>
-                  <div style={{ 
-                    fontSize: '12px', 
-                    fontWeight: 600, 
+                  <div style={{
+                    fontSize: '12px',
+                    fontWeight: 600,
                     color: '#595959',
                     backgroundColor: '#f5f5f5',
                     padding: '5px 14px',
@@ -1589,26 +1580,26 @@ const Dashboard: React.FC = () => {
                     boxSizing: 'border-box'
                   }}>PAPER</div>
                 </div>
-                
+
                 {/* Symbols Loaded */}
-                <div style={{ 
-                  display: 'flex', 
-                  justifyContent: 'space-between', 
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
                   alignItems: 'center',
                   height: '40px'
                 }}>
                   <Text style={{ fontSize: '14px', fontWeight: 500, color: '#595959' }}>Symbols Loaded</Text>
-                  <Text strong style={{ 
-                    fontSize: '18px', 
-                    fontWeight: 700, 
+                  <Text strong style={{
+                    fontSize: '18px',
+                    fontWeight: 700,
                     color: '#1f1f1f',
                     fontFeatureSettings: '"tnum"'
                   }}>{marketStats.totalSymbols}</Text>
                 </div>
               </div>
-              
+
               {/* 底部信息 - 简洁版本 */}
-              <div style={{ 
+              <div style={{
                 marginTop: '24px',
                 paddingTop: '16px',
                 borderTop: '1px solid #f0f0f0'
@@ -1618,9 +1609,9 @@ const Dashboard: React.FC = () => {
                     <DataSourceBadge source="Finnhub" />
                   </Col>
                   <Col>
-                    <Text type="secondary" style={{ 
-                      fontSize: '12px', 
-                      color: '#8c8c8c', 
+                    <Text type="secondary" style={{
+                      fontSize: '12px',
+                      color: '#8c8c8c',
                       fontWeight: 500,
                       paddingRight: '4px'
                     }}>
@@ -1649,28 +1640,28 @@ const Dashboard: React.FC = () => {
                     <Col xs={24} sm={12} md={8} lg={6} xl={4} xxl={3} key={stock.symbol}>
                       <Card size="small" hoverable onClick={() => handleSymbolClick(stock.symbol)} style={{ cursor: 'pointer', height: '140px' }} bodyStyle={{ padding: '12px' }}>
                         {/* 完整一体化信息卡 */}
-                        <div style={{ 
-                          display: 'flex', 
-                          flexDirection: 'column', 
+                        <div style={{
+                          display: 'flex',
+                          flexDirection: 'column',
                           height: '100%',
                           justifyContent: 'space-between'
                         }}>
                           {/* 顶部区域：Symbol + 涨跌badge */}
-                          <div style={{ 
-                            display: 'flex', 
-                            justifyContent: 'space-between', 
+                          <div style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
                             alignItems: 'flex-start',
                             marginBottom: '8px'
                           }}>
-                            <Text strong style={{ 
-                              fontSize: '16px', 
-                              fontWeight: 700, 
+                            <Text strong style={{
+                              fontSize: '16px',
+                              fontWeight: 700,
                               letterSpacing: '-0.2px',
                               lineHeight: 1.2
                             }} ellipsis>{stock.symbol}</Text>
-                            <Tag color={changePercent === null ? 'default' : changePercent > 0 ? 'green' : 'red'} style={{ 
-                              margin: 0, 
-                              fontSize: '10px', 
+                            <Tag color={changePercent === null ? 'default' : changePercent > 0 ? 'green' : 'red'} style={{
+                              margin: 0,
+                              fontSize: '10px',
                               padding: '2px 8px',
                               fontWeight: 600,
                               borderRadius: '10px',
@@ -1681,73 +1672,73 @@ const Dashboard: React.FC = () => {
                               {formatChangePercent(changePercent)}
                             </Tag>
                           </div>
-                          
+
                           {/* 中部区域：公司名 + 价格 */}
-                          <div style={{ 
+                          <div style={{
                             flex: 1,
-                            display: 'flex', 
+                            display: 'flex',
                             flexDirection: 'column',
                             justifyContent: 'center',
                             marginBottom: '8px'
                           }}>
-                            <Text type="secondary" style={{ 
-                              fontSize: '11px', 
+                            <Text type="secondary" style={{
+                              fontSize: '11px',
                               color: '#595959',
                               fontWeight: 500,
                               lineHeight: 1.2,
                               marginBottom: '6px'
                             }} ellipsis>{stock.name || 'N/A'}</Text>
-                            <Text strong style={{ 
-                              fontSize: '20px', 
-                              color: '#1890ff', 
+                            <Text strong style={{
+                              fontSize: '20px',
+                              color: '#1890ff',
                               fontWeight: 700,
                               fontFeatureSettings: '"tnum"',
                               lineHeight: 1
                             }}>${safeNumber(stock.price).toFixed(2)}</Text>
                           </div>
-                          
+
                           {/* 底部区域：Volume + Market Cap - 往上提，去掉分割线 */}
                           <div>
-                            <div style={{ 
-                              display: 'flex', 
+                            <div style={{
+                              display: 'flex',
                               justifyContent: 'space-between',
                               alignItems: 'flex-end'
                             }}>
                               {/* CHANGE 列 - 显示涨跌额，而不是百分比 */}
                               <div style={{ flex: 1 }}>
-                                <div style={{ 
-                                  fontSize: '9px', 
-                                  color: '#8c8c8c', 
-                                  fontWeight: 600, 
-                                  letterSpacing: '0.4px', 
+                                <div style={{
+                                  fontSize: '9px',
+                                  color: '#8c8c8c',
+                                  fontWeight: 600,
+                                  letterSpacing: '0.4px',
                                   textTransform: 'uppercase',
                                   marginBottom: '2px'
                                 }}>CHANGE</div>
-                                <div style={{ 
-                                  fontSize: '11px', 
+                                <div style={{
+                                  fontSize: '11px',
                                   color: stock.change && stock.change > 0 ? '#237804' : stock.change && stock.change < 0 ? '#a8071a' : '#595959',
                                   fontWeight: 500,
                                   fontFeatureSettings: '"tnum"'
                                 }}>
-                                  {stock.change !== null && stock.change !== undefined 
+                                  {stock.change !== null && stock.change !== undefined
                                     ? (stock.change > 0 ? '+' : '') + stock.change.toFixed(2)
                                     : '--'}
                                 </div>
                               </div>
-                              
+
                               {/* Market Cap 列 */}
                               <div style={{ flex: 1, textAlign: 'right' }}>
-                                <div style={{ 
-                                  fontSize: '9px', 
-                                  color: '#8c8c8c', 
-                                  fontWeight: 600, 
-                                  letterSpacing: '0.4px', 
+                                <div style={{
+                                  fontSize: '9px',
+                                  color: '#8c8c8c',
+                                  fontWeight: 600,
+                                  letterSpacing: '0.4px',
                                   textTransform: 'uppercase',
                                   marginBottom: '2px'
                                 }}>MKT CAP</div>
-                                <div style={{ 
-                                  fontSize: '11px', 
-                                  color: '#595959', 
+                                <div style={{
+                                  fontSize: '11px',
+                                  color: '#595959',
                                   fontWeight: 500,
                                   fontFeatureSettings: '"tnum"'
                                 }}>{formatMarketCap(stock.marketCap)}</div>

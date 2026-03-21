@@ -72,75 +72,118 @@ const get1WeekTicks = (chartData: ChartDataPoint[]): string[] => {
   
   if (chartData.length === 0) return ticks;
   
-  console.log('[1 Week] ====== get1WeekTicks 开始（3小时间隔版v2） ======');
+  console.log('[1 Week] ====== get1WeekTicks 开始（修复版） ======');
   console.log('[1 Week] 输入chartData点数:', chartData.length);
   
-  // 1. 按时间排序数据
-  const sortedData = [...chartData].sort((a, b) => 
-    new Date(a.date).getTime() - new Date(b.date).getTime()
-  );
+  // 1. 按日期分组数据
+  const dataByDate: { [dateKey: string]: ChartDataPoint[] } = {};
   
-  if (sortedData.length === 0) return ticks;
-  
-  // 2. 获取第一个数据点的时间（应该是3/13 09:30）
-  const firstDate = new Date(sortedData[0].date);
-  console.log(`[1 Week] 第一个数据点: ${firstDate.toISOString()} -> ${firstDate.getUTCMonth() + 1}/${firstDate.getUTCDate()} ${firstDate.getUTCHours()}:${firstDate.getUTCMinutes().toString().padStart(2, '0')}`);
-  
-  // 3. 计算3小时间隔（毫秒）
-  const THREE_HOURS_MS = 3 * 60 * 60 * 1000;
-  
-  // 4. 从第一个数据点开始，每3小时找一个最接近的数据点
-  let currentTime = firstDate.getTime();
-  const lastTime = new Date(sortedData[sortedData.length - 1].date).getTime();
-  
-  console.log(`[1 Week] 时间范围: ${new Date(currentTime).toISOString()} 到 ${new Date(lastTime).toISOString()}`);
-  
-  while (currentTime <= lastTime) {
-    // 查找最接近当前时间的数据点
-    let closestPoint: ChartDataPoint | null = null;
-    let minDiff = Infinity;
+  for (const point of chartData) {
+    const date = new Date(point.date);
+    const dateKey = `${date.getUTCFullYear()}-${(date.getUTCMonth() + 1).toString().padStart(2, '0')}-${date.getUTCDate().toString().padStart(2, '0')}`;
     
-    for (const point of sortedData) {
-      const pointTime = new Date(point.date).getTime();
-      const diff = Math.abs(pointTime - currentTime);
+    if (!dataByDate[dateKey]) {
+      dataByDate[dateKey] = [];
+    }
+    dataByDate[dateKey].push(point);
+  }
+  
+  console.log('[1 Week] 按日期分组结果:');
+  Object.keys(dataByDate).sort().forEach(dateKey => {
+    console.log(`  ${dateKey}: ${dataByDate[dateKey].length}个点`);
+  });
+  
+  // 2. 对每个交易日，查找3个关键时间点
+  const targetTimes = [
+    { hour: 9, minute: 30, label: '09:30' },
+    { hour: 12, minute: 0, label: '12:00' },
+    { hour: 16, minute: 0, label: '16:00' }
+  ];
+  
+  // 按日期排序
+  const sortedDates = Object.keys(dataByDate).sort();
+  
+  for (const dateKey of sortedDates) {
+    const dayData = dataByDate[dateKey];
+    const dateParts = dateKey.split('-');
+    const year = parseInt(dateParts[0]);
+    const month = parseInt(dateParts[1]) - 1; // JavaScript月份是0-based
+    const day = parseInt(dateParts[2]);
+    
+    console.log(`[1 Week] 处理日期 ${dateKey}:`);
+    
+    for (const targetTime of targetTimes) {
+      // 创建目标时间
+      const targetDate = new Date(Date.UTC(year, month, day, targetTime.hour, targetTime.minute, 0, 0));
       
-      // 允许30分钟内的误差（因为数据是30分钟间隔）
-      if (diff <= 30 * 60 * 1000 && diff < minDiff) {
-        minDiff = diff;
-        closestPoint = point;
+      // 查找匹配的数据点
+      let foundPoint: ChartDataPoint | null = null;
+      
+      // 首先尝试精确匹配
+      for (const point of dayData) {
+        const pointDate = new Date(point.date);
+        if (pointDate.getTime() === targetDate.getTime()) {
+          foundPoint = point;
+          break;
+        }
+      }
+      
+      // 如果没有找到精确匹配，对于16:00，尝试查找补充的Finnhub数据
+      if (!foundPoint && targetTime.hour === 16 && targetTime.minute === 0) {
+        // 查找是否有补充的16:00数据（可能是Finnhub补充的）
+        for (const point of dayData) {
+          const pointDate = new Date(point.date);
+          if (pointDate.getUTCHours() === 16 && pointDate.getUTCMinutes() === 0) {
+            foundPoint = point;
+            console.log(`  找到补充的16:00数据`);
+            break;
+          }
+        }
+      }
+      
+      // 如果还没有找到，对于16:00，退到当天最后一个点（通常是15:30）
+      if (!foundPoint && targetTime.hour === 16 && targetTime.minute === 0) {
+        if (dayData.length > 0) {
+          // 按时间排序，取最后一个点
+          const sortedDayData = [...dayData].sort((a, b) => 
+            new Date(a.date).getTime() - new Date(b.date).getTime()
+          );
+          foundPoint = sortedDayData[sortedDayData.length - 1];
+          console.log(`  16:00未找到，使用当天最后一个点: ${new Date(foundPoint.date).getUTCHours()}:${new Date(foundPoint.date).getUTCMinutes().toString().padStart(2, '0')}`);
+        }
+      }
+      
+      // 如果找到点，添加到ticks
+      if (foundPoint) {
+        ticks.push(foundPoint.date);
+        console.log(`  添加 ${targetTime.label}: ${foundPoint.date}`);
+      } else {
+        console.log(`  未找到 ${targetTime.label} 的数据点`);
       }
     }
-    
-    if (closestPoint) {
-      // 检查是否已添加（避免重复）
-      if (!ticks.includes(closestPoint.date)) {
-        ticks.push(closestPoint.date);
-        
-        const tickDate = new Date(closestPoint.date);
-        console.log(`[1 Week] 添加标签: ${tickDate.getUTCMonth() + 1}/${tickDate.getUTCDate()} ${String(tickDate.getUTCHours()).padStart(2, '0')}:${String(tickDate.getUTCMinutes()).padStart(2, '0')} (目标: ${new Date(currentTime).getUTCHours()}:${new Date(currentTime).getUTCMinutes().toString().padStart(2, '0')})`);
-      }
-    } else {
-      console.log(`[1 Week] 未找到接近 ${new Date(currentTime).getUTCHours()}:${new Date(currentTime).getUTCMinutes().toString().padStart(2, '0')} 的数据点`);
-    }
-    
-    // 增加3小时
-    currentTime += THREE_HOURS_MS;
   }
   
   console.log('[1 Week] 生成的ticks数量:', ticks.length);
   console.log('[1 Week] === get1WeekTicks 完整输出 ===');
   for (let i = 0; i < ticks.length; i++) {
     const date = new Date(ticks[i]);
-    console.log(`  ${i+1}: ${date.toISOString()} -> ${date.getUTCMonth() + 1}/${date.getUTCDate()} ${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}`);
+    console.log(`  ${i+1}. ${date.getUTCMonth() + 1}/${date.getUTCDate()} ${date.getUTCHours()}:${date.getUTCMinutes().toString().padStart(2, '0')}`);
   }
   
-  // 5. 确保至少有一个tick（使用第一个数据点）
-  if (ticks.length === 0 && sortedData.length > 0) {
-    ticks.push(sortedData[0].date);
-    console.log(`[1 Week] 无ticks，添加第一个数据点作为默认`);
+  // 额外调试：检查ticks是否包含正确的时间点
+  console.log('[1 Week] === ticks时间点验证 ===');
+  const expectedTimes = ['09:30', '12:00', '16:00', '15:30'];
+  for (let i = 0; i < ticks.length; i++) {
+    const date = new Date(ticks[i]);
+    const timeStr = `${date.getUTCHours().toString().padStart(2, '0')}:${date.getUTCMinutes().toString().padStart(2, '0')}`;
+    const dateStr = `${date.getUTCMonth() + 1}/${date.getUTCDate()}`;
+    
+    if (!expectedTimes.includes(timeStr)) {
+      console.log(`  ⚠️ ${dateStr} ${timeStr} 不是预期的09:30、12:00、16:00或15:30`);
+    }
   }
   
-  console.log('[1 Week] ====== get1WeekTicks 结束（3小时间隔版v2） ======');
+  console.log('[1 Week] ====== get1WeekTicks 结束（修复版） ======');
   return ticks;
 };
 

@@ -18,6 +18,8 @@ const Market: React.FC = () => {
   const [sortField, setSortField] = useState<string>('symbol');
   const [sortOrder, setSortOrder] = useState<'ascend' | 'descend'>('ascend');
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [lastFetched, setLastFetched] = useState<number | null>(null);
+  const [isFetching, setIsFetching] = useState(false);
   const [searching, setSearching] = useState(false);
   const [watchlist, setWatchlist] = useState<any[]>([]);
   const navigate = useNavigate();
@@ -65,7 +67,11 @@ const Market: React.FC = () => {
 
   // 初始化加载数据
   useEffect(() => {
-    fetchMarketData();
+    // 延迟加载数据，让用户先看到页面框架
+    const loadTimer = setTimeout(() => {
+      fetchMarketData();
+    }, 100); // 100ms延迟，足够渲染初始界面
+    
     // 从localStorage加载watchlist
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
@@ -78,6 +84,11 @@ const Market: React.FC = () => {
         console.error('Failed to parse watchlist from localStorage:', err);
       }
     }
+    
+    // 清理定时器
+    return () => {
+      clearTimeout(loadTimer);
+    };
   }, []);
 
   // 过滤和排序股票
@@ -155,11 +166,27 @@ const Market: React.FC = () => {
   };
 
   const fetchMarketData = async () => {
+    // 如果已经在请求中，直接返回
+    if (isFetching) {
+      console.log('[Market优化] 请求已在进行中，跳过重复请求');
+      return;
+    }
+    
+    // 缓存检查：如果30秒内有数据，则使用缓存
+    const CACHE_DURATION = 30 * 1000; // 30秒缓存（Market数据更新更频繁）
+    const now = Date.now();
+    
+    if (lastFetched && (now - lastFetched) < CACHE_DURATION && stocks.length > 0) {
+      console.log(`[Market优化] 使用缓存数据 (上次获取: ${new Date(lastFetched).toLocaleTimeString()})`);
+      return; // 使用缓存数据，不发起新请求
+    }
+    
     try {
+      setIsFetching(true);
       setLoading(true);
       setError('');
       
-      console.log('正在从 Finnhub 获取市场数据...');
+      console.log('[Market优化] 正在从 Finnhub 获取市场数据...');
       const stockData = await marketDataService.getStocks(DEFAULT_SYMBOLS);
       
       if (stockData.length > 0) {
@@ -177,6 +204,7 @@ const Market: React.FC = () => {
         } else {
           setStocks(validStocks);
           setLastUpdated(new Date());
+          setLastFetched(Date.now()); // 更新缓存时间
           message.success(`已加载 ${validStocks.length} 只股票数据 (来源: ${stockData[0]?.dataSource || 'Finnhub'})`);
         }
       } else {
@@ -189,6 +217,7 @@ const Market: React.FC = () => {
       setError(`获取市场数据失败: ${errorMessage}`);
       message.error('获取市场数据失败');
     } finally {
+      setIsFetching(false);
       setLoading(false);
     }
   };

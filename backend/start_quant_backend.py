@@ -202,7 +202,7 @@ TWELVEDATA_API_KEY = '8b847a1ef2aa47a68d3f992bd0275f0c'
 
 
 
-FINNHUB_API_KEY = 'd6qsdcpr01qgdhqc82hgd6qsdcpr01qgdhqc82i0'
+FINNHUB_API_KEY = 'd6v2q09r01qig546aus0d6v2q09r01qig546ausg'
 
 
 
@@ -3310,7 +3310,7 @@ if __name__ == '__main__':
 
 
 
-    print(f"端口: 8890")
+    print(f"端口: 8889")
 
 
 
@@ -3322,4 +3322,4 @@ if __name__ == '__main__':
 
 
 
-    app.run(host='127.0.0.1', port=8890, debug=False, use_reloader=False)
+    app.run(host='127.0.0.1', port=8889, debug=False, use_reloader=False)

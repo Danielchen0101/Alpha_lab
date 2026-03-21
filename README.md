@@ -95,24 +95,42 @@ def get_finnhub_profiles_concurrent(symbols):
 
 ## Quick Start
 
-### 1. Frontend Setup
+### 1. Backend Setup
+确保Python 3.8+已安装，然后：
+```bash
+cd backend
+pip install -r requirements.txt
+python quant_backend_main.py
+```
+后端将启动在 http://localhost:8890
+
+**注意**：当前主后端文件为`quant_backend_main.py`（统一入口，修复所有语法错误）
+
+### 2. Frontend Setup
+确保Node.js 16+已安装，然后：
 ```bash
 cd frontend
 npm install
 npm start
 ```
-Frontend will start at http://localhost:3000
+前端将启动在 http://localhost:3000
 
-### 2. Backend Setup
-确保Python 3.8+已安装，然后：
+### 3. 使用启动脚本（推荐）
 ```bash
-cd backend
-pip install -r requirements.txt
-python final_production.py
-```
-后端将启动在 http://localhost:8890
+# 启动后端
+scripts\start_backend.bat
 
-**注意**：当前主后端文件为`final_production.py`（包含所有性能优化）
+# 启动前端  
+scripts\start_frontend.bat
+
+# 或一键启动全平台
+scripts\start_platform.bat
+```
+
+### 4. 访问平台
+- 前端界面: http://localhost:3000
+- 后端API: http://localhost:8890
+- API状态检查: http://localhost:8890/api/system/status
 
 Detailed Python installation guide: [PYTHON_SETUP.md](./docs/PYTHON_SETUP.md)
 

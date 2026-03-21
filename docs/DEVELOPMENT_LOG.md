@@ -1,5 +1,33 @@
 # 开发日志 - Development Log
 
+## 2026-03-21 - 后端启动问题修复与统一入口
+
+### 问题发现
+1. **文件丢失**: `start_quant_backend.py`在commit 85c01b6中被删除
+2. **编码问题**: `final_production.py`有UTF-8编码乱码导致语法错误
+3. **启动混乱**: 多个后端文件，没有统一入口
+
+### 解决方案
+1. **创建统一入口**: `quant_backend_main.py` - 干净、无语法错误的主后端
+2. **修复编码**: 重新创建文件，确保UTF-8编码正确
+3. **简化结构**: 只保留核心功能，移除冗余代码
+
+### 当前后端文件状态
+- **主后端文件**: `quant_backend_main.py` (端口8890) - 统一入口
+- **简单后端**: `simple_backend.py` - 仅用于测试/备用
+- **旧版本**: `final_production.py`, `backend_with_marketcap.py` - 存档
+- **工具文件**: `config.py` - 配置
+
+### 启动方式
+```bash
+# 主后端（推荐）
+cd backend
+python quant_backend_main.py
+
+# 或使用启动脚本
+scripts\start_backend.bat
+```
+
 ## 2026-03-21 - Dashboard/Market性能优化与代码简化
 
 ### 优化背景

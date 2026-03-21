@@ -6,8 +6,16 @@
 
 import axios from 'axios';
 
-// 使用相对路径，让React代理处理
+// 使用相对路径，依赖React代理
+// 开发环境：/api/* → http://127.0.0.1:8889/api/* (通过package.json proxy)
+// 生产环境：通过环境变量REACT_APP_API_BASE_URL配置
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '/api';
+
+// 调试：输出环境变量
+console.log('[调试] API_BASE_URL:', API_BASE_URL);
+console.log('[调试] REACT_APP_API_BASE_URL:', process.env.REACT_APP_API_BASE_URL);
+console.log('[调试] REACT_APP_API_URL:', process.env.REACT_APP_API_URL);
+console.log('[调试] NODE_ENV:', process.env.NODE_ENV);
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -16,6 +24,53 @@ const api = axios.create({
     'Content-Type': 'application/json',
   },
 });
+
+// 添加请求拦截器用于调试
+api.interceptors.request.use(
+  (config) => {
+    console.log('[axios请求拦截器] 请求配置:', {
+      url: config.url,
+      baseURL: config.baseURL,
+      method: config.method,
+      params: config.params,
+      headers: config.headers,
+      完整URL: (config.baseURL || '') + (config.url || '')
+    });
+    return config;
+  },
+  (error) => {
+    console.error('[axios请求拦截器] 请求错误:', error);
+    return Promise.reject(error);
+  }
+);
+
+// 添加响应拦截器用于调试
+api.interceptors.response.use(
+  (response) => {
+    console.log('[axios响应拦截器] 响应成功:', {
+      status: response.status,
+      statusText: response.statusText,
+      url: response.config.url,
+      dataKeys: Object.keys(response.data)
+    });
+    return response;
+  },
+  (error) => {
+    console.error('[axios响应拦截器] 响应错误:', {
+      message: error.message,
+      code: error.code,
+      response: error.response?.data,
+      status: error.response?.status,
+      config: error.config ? {
+        url: error.config.url,
+        baseURL: error.config.baseURL,
+        method: error.config.method,
+        params: error.config.params
+      } : '无配置信息'
+    });
+    return Promise.reject(error);
+  }
+);
 
 // ========== Type Definitions ==========
 
@@ -242,7 +297,15 @@ export const getStocks = async (symbols?: string[], dashboard?: boolean): Promis
       params.dashboard = 'true';
     }
     
-    console.log(`[前端调试] 请求 /api/market/stocks, symbols=${symbols?.join(',') || '无'}, dashboard=${dashboard}`);
+    console.log(`[marketDataService调试] 开始请求股票数据`);
+    console.log(`[marketDataService调试] 参数: symbols=${symbols?.join(',') || '无'}, dashboard=${dashboard}`);
+    console.log(`[marketDataService调试] api实例配置:`, {
+      baseURL: api.defaults.baseURL,
+      timeout: api.defaults.timeout,
+      headers: api.defaults.headers
+    });
+    console.log(`[marketDataService调试] 完整请求URL: ${api.defaults.baseURL}/market/stocks`);
+    console.log(`[marketDataService调试] 请求参数:`, params);
     
     const response = await api.get('/market/stocks', { params });
     
