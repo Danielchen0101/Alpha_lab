@@ -868,12 +868,38 @@ const SymbolAnalysis: React.FC = () => {
       // 根据timeframe处理数据
       let chartDataToSet = formattedData;
       
+      // 为1 Month、3 Months、1 Year数据添加排序，确保时间顺序：旧 -> 新
+      if (selectedTimeframe === '1M' || selectedTimeframe === '3M' || selectedTimeframe === '1Y') {
+        console.log(`[${selectedTimeframe}] ====== 开始排序数据（确保时间顺序：旧 -> 新） ======`);
+        console.log(`[${selectedTimeframe}] 排序前数据条数: ${chartDataToSet.length}`);
+        
+        if (chartDataToSet.length > 0) {
+          // 按时间升序排序（旧 -> 新）
+          chartDataToSet = [...chartDataToSet].sort((a, b) => {
+            return new Date(a.date).getTime() - new Date(b.date).getTime();
+          });
+          
+          console.log(`[${selectedTimeframe}] 已按时间正序排序（最早在前，最新在后）`);
+          
+          // 验证排序结果
+          if (chartDataToSet.length > 1) {
+            const firstDate = new Date(chartDataToSet[0].date);
+            const lastDate = new Date(chartDataToSet[chartDataToSet.length - 1].date);
+            console.log(`[${selectedTimeframe}] 排序验证:`);
+            console.log(`  - 第一个数据点: ${firstDate.toISOString().split('T')[0]}`);
+            console.log(`  - 最后一个数据点: ${lastDate.toISOString().split('T')[0]}`);
+            console.log(`  - 顺序: ${firstDate < lastDate ? '✅ 旧 -> 新' : '❌ 新 -> 旧'}`);
+          }
+        }
+        console.log(`[${selectedTimeframe}] ====== 数据排序完成 ======`);
+      }
+      
       if (selectedTimeframe === '3M') {
         // === 3 Months 专用：调整日期范围，收紧到最近3个月 ===
         console.log(`[3 Months] ====== 开始调整日期范围 ======`);
         console.log(`[3 Months] 1. 原始formattedData条数: ${formattedData.length}`);
         
-        if (formattedData.length > 0) {
+        if (chartDataToSet.length > 0) {
           // 计算最近3个月的日期（90天前）
           const today = new Date();
           const threeMonthsAgo = new Date(today);
@@ -882,8 +908,8 @@ const SymbolAnalysis: React.FC = () => {
           console.log(`[3 Months] 2. 今天: ${today.toISOString().split('T')[0]}`);
           console.log(`[3 Months] 3. 3个月前: ${threeMonthsAgo.toISOString().split('T')[0]}`);
           
-          // 过滤出最近3个月的数据
-          const recentData = formattedData.filter(item => {
+          // 过滤出最近3个月的数据（使用已排序的chartDataToSet）
+          const recentData = chartDataToSet.filter(item => {
             const itemDate = new Date(item.date);
             return itemDate >= threeMonthsAgo;
           });
@@ -914,7 +940,7 @@ const SymbolAnalysis: React.FC = () => {
         console.log(`[1 Month] ====== 开始调整日期范围 ======`);
         console.log(`[1 Month] 1. 原始formattedData条数: ${formattedData.length}`);
         
-        if (formattedData.length > 0) {
+        if (chartDataToSet.length > 0) {
           // 计算最近1个月的日期（30天前）
           const today = new Date();
           const oneMonthAgo = new Date(today);
@@ -923,8 +949,8 @@ const SymbolAnalysis: React.FC = () => {
           console.log(`[1 Month] 2. 今天: ${today.toISOString().split('T')[0]}`);
           console.log(`[1 Month] 3. 1个月前: ${oneMonthAgo.toISOString().split('T')[0]}`);
           
-          // 过滤出最近1个月的数据
-          const recentData = formattedData.filter(item => {
+          // 过滤出最近1个月的数据（使用已排序的chartDataToSet）
+          const recentData = chartDataToSet.filter(item => {
             const itemDate = new Date(item.date);
             return itemDate >= oneMonthAgo;
           });
