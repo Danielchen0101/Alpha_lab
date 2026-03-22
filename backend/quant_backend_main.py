@@ -22,7 +22,7 @@ app = Flask(__name__)
 FINNHUB_API_KEY = "d6v2q09r01qig546aus0d6v2q09r01qig546ausg"
 print(f"[配置] 使用Finnhub API Key: {FINNHUB_API_KEY[:10]}...")
 
-TWELVEDATA_API_KEY = "8b847a1ef2aa47a68d3f992bd0275f0c"
+TWELVEDATA_API_KEY = "3541c054d16843cb8e4b2ccefa456a01"
 
 # ==================== 工具函数 ====================
 def get_finnhub_stock_data(symbol):
@@ -155,17 +155,31 @@ def get_twelvedata_history(symbol, range_param="1day", interval="1min"):
         
         outputsize = outputsize_map.get(range_param, 100)
         
+        # 映射interval到Twelve Data支持的格式
+        interval_map = {
+            "1": "1min",
+            "5": "5min",
+            "15": "15min",
+            "30": "30min",
+            "60": "1h",
+            "D": "1day",
+            "W": "1week",
+            "M": "1month"
+        }
+        
+        twelvedata_interval = interval_map.get(interval, interval)
+        
         # 构建API URL
         url = f"https://api.twelvedata.com/time_series"
         params = {
             "symbol": symbol,
-            "interval": interval,
+            "interval": twelvedata_interval,
             "outputsize": outputsize,
             "apikey": TWELVEDATA_API_KEY,
             "format": "JSON"
         }
         
-        print(f"[Twelve Data] 请求: {symbol}, range={range_param}, interval={interval}, outputsize={outputsize}")
+        print(f"[Twelve Data] 请求: {symbol}, range={range_param}, interval={interval}->{twelvedata_interval}, outputsize={outputsize}")
         
         response = requests.get(url, params=params, timeout=30)
         

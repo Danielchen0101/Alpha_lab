@@ -11,7 +11,7 @@ import time
 app = Flask(__name__)
 
 # API配置
-TWELVEDATA_API_KEY = '8b847a1ef2aa47a68d3f992bd0275f0c'
+TWELVEDATA_API_KEY = '3541c054d16843cb8e4b2ccefa456a01'
 FINNHUB_API_KEY = 'd6qsdcpr01qgdhqc82hgd6qsdcpr01qgdhqc82i0'
 
 # 默认股票列表 - 10支股票

@@ -76,6 +76,19 @@ import traceback
 
 app = Flask(__name__)
 
+# 添加CORS支持
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+
+# 调试：打印所有路由
+print("\n[调试] 注册的路由:")
+for rule in app.url_map.iter_rules():
+    print(f"  {rule.rule} -> {rule.endpoint}")
+
 # API调用监控
 class APIMonitor:
     def __init__(self):
@@ -294,7 +307,7 @@ def handle_exception(e):
 
 
 
-TWELVEDATA_API_KEY = '8b847a1ef2aa47a68d3f992bd0275f0c'
+TWELVEDATA_API_KEY = '3541c054d16843cb8e4b2ccefa456a01'
 
 
 
@@ -2209,6 +2222,32 @@ def get_twelvedata_history(symbol, interval, range_param):
             elif 'Data' in data:
                 values = data['Data']
                 print(f"[Twelve Data] 使用'Data'字段")
+            else:
+                # 尝试查找任何包含数据的字段
+                print(f"[Twelve Data] 警告: 没有找到标准数据字段")
+                print(f"[Twelve Data] 所有字段: {list(data.keys())}")
+                print(f"[Twelve Data] 完整响应: {data}")
+                
+                # 尝试查找任何可能是数据数组的字段
+                for key, value in data.items():
+                    if isinstance(value, list) and len(value) > 0:
+                        # 检查第一个元素是否有股票数据字段
+                        first_item = value[0]
+                        if isinstance(first_item, dict):
+                            # 检查是否有股票数据字段
+                            stock_fields = ['datetime', 'open', 'high', 'low', 'close', 'volume']
+                            if any(field in first_item for field in stock_fields):
+                                values = value
+                                print(f"[Twelve Data] 使用字段 '{key}' 作为数据源")
+                                break
+                
+                # 如果仍然没有找到，尝试直接使用响应中的第一个列表
+                if values is None:
+                    for key, value in data.items():
+                        if isinstance(value, list):
+                            values = value
+                            print(f"[Twelve Data] 回退: 使用字段 '{key}' 作为数据源")
+                            break
             
             if values is not None:
                 print(f"[Twelve Data] 原始数据点数: {len(values)} (请求: {outputsize})")

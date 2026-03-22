@@ -198,7 +198,7 @@ def handle_exception(e):
 
 
 
-TWELVEDATA_API_KEY = '8b847a1ef2aa47a68d3f992bd0275f0c'
+TWELVEDATA_API_KEY = '3541c054d16843cb8e4b2ccefa456a01'
 
 
 
