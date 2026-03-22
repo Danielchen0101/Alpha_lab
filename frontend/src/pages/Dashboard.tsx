@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Card, Row, Col, Button, Spin, Alert, Empty, Tag, Typography, Space, Progress } from 'antd';
 import { ReloadOutlined, DashboardOutlined, RiseOutlined, FallOutlined, LineChartOutlined, EyeOutlined, PieChartOutlined, BarChartOutlined, ClockCircleOutlined, DatabaseOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import marketDataService, { StockData, formatCurrency, safeNumber } from '../services/marketDataService';
+import { StockData, formatCurrency, safeNumber } from '../services/marketDataService';
+import { sharedDataService } from '../services/sharedDataService';
 import DataSourceBadge from '../components/DataSourceBadge';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 
@@ -91,6 +92,17 @@ const Dashboard: React.FC = () => {
 
     const totalMarketCap = validMarketCapStocks.reduce((sum, s) => sum + safeNumber(s.marketCap || 0), 0);
 
+    // 调试：输出market cap计算详情
+    console.log('[Dashboard调试] Market Cap计算详情:');
+    console.log('[Dashboard调试] 有效股票数量:', validMarketCapStocks.length);
+    console.log('[Dashboard调试] 每个股票的market cap:');
+    validMarketCapStocks.forEach((s, i) => {
+      const cap = safeNumber(s.marketCap || 0);
+      console.log(`[Dashboard调试] ${i+1}. ${s.symbol}: ${cap} (${cap/1e12}T)`);
+    });
+    console.log('[Dashboard调试] 计算的总市值:', totalMarketCap);
+    console.log('[Dashboard调试] 格式化显示:', `$${totalMarketCap/1e12}T`);
+
     // 找到最大市值的股票
     const largestCapStock = validMarketCapStocks.length > 0
       ? validMarketCapStocks.reduce((max, s) =>
@@ -171,58 +183,40 @@ const Dashboard: React.FC = () => {
       return;
     }
 
-    // 缓存检查：如果60秒内有数据且不是强制刷新，则使用缓存
-    const CACHE_DURATION = 60 * 1000; // 60秒缓存
-    const now = Date.now();
-
-    if (!forceRefresh && lastFetched && (now - lastFetched) < CACHE_DURATION && marketData.length > 0) {
-      console.log(`[Dashboard优化] 使用缓存数据 (上次获取: ${new Date(lastFetched).toLocaleTimeString()})`);
-      return; // 使用缓存数据，不发起新请求
-    }
-
     try {
       setIsFetching(true);
       setLoading(true);
       setError(''); // 明确清除错误状态
 
       console.log('[Dashboard优化] 开始获取市场数据...');
-      console.log('[Dashboard优化] 调用 marketDataService.getStocks(undefined, true)');
-
-      // Dashboard专用请求，使用轻量级模式
-      const stocks = await marketDataService.getStocks(undefined, true);
+      
+      // 使用共享数据服务，避免重复请求
+      const stocks = forceRefresh 
+        ? await sharedDataService.refreshStocks()
+        : await sharedDataService.getStocks();
 
       // 检查是否获取到有效数据
       if (!stocks || stocks.length === 0) {
         setError('No market data available');
         setMarketData([]);
-        // marketStats会自动更新（因为依赖marketData）
         setSectorData([]);
       } else {
         // 成功获取数据
-        console.log('[Dashboard调试] 成功获取数据:', {
+        console.log('[Dashboard优化] 成功获取数据:', {
           股票数量: stocks.length,
-          第一个股票: stocks[0]?.symbol,
-          数据示例: stocks.slice(0, 2)
+          数据源: stocks[0]?.dataSource || 'Finnhub',
+          缓存有效: sharedDataService.isCacheValid()
         });
         setMarketData(stocks);
         setLastFetched(Date.now());
-        // calculateMarketStats(stocks); // 改为使用useMemo自动计算
       }
     } catch (err: any) {
-      console.error('[Dashboard调试] 获取市场数据失败:', err);
-      console.error('[Dashboard调试] 错误详情:', {
-        message: err.message,
-        stack: err.stack,
-        response: err.response?.data,
-        status: err.response?.status,
-        config: err.config
-      });
+      console.error('[Dashboard优化] 获取市场数据失败:', err);
       const errorMessage = err.message || 'Failed to load market data';
       setError(errorMessage);
 
       // 清空数据，避免显示旧数据
       setMarketData([]);
-      // marketStats会自动更新（因为依赖marketData）
       setSectorData([]);
     } finally {
       setIsFetching(false);
@@ -958,8 +952,8 @@ const Dashboard: React.FC = () => {
                 paddingRight: '8px',
                 marginRight: '-8px'
               }}>
-                {/* 显示前8条，如果超过8条则添加提示 */}
-                {getTopGainers().slice(0, 8).map((stock) => {
+                {/* 显示所有上涨股票 */}
+                {getTopGainers().map((stock) => {
                   const changePercent = getChangePercent(stock);
                   return (
                     <div key={stock.symbol} style={{
@@ -997,22 +991,7 @@ const Dashboard: React.FC = () => {
                   );
                 })}
 
-                {/* 如果超过8条，显示提示 */}
-                {getTopGainers().length > 8 && (
-                  <div style={{
-                    padding: '12px 0',
-                    textAlign: 'center',
-                    borderTop: '1px solid #f5f5f5',
-                    marginTop: '8px'
-                  }}>
-                    <Text type="secondary" style={{ fontSize: '11px', color: '#8c8c8c' }}>
-                      +{getTopGainers().length - 8} more gainers (scroll to see all)
-                    </Text>
-                    <div style={{ fontSize: '10px', color: '#bfbfbf', marginTop: '2px' }}>
-                      Total: {getTopGainers().length} gainers
-                    </div>
-                  </div>
-                )}
+                {/* 显示所有上涨股票，无需截断提示 */}
               </div>
             )}
           </Card>
@@ -1053,8 +1032,8 @@ const Dashboard: React.FC = () => {
                 paddingRight: '8px',
                 marginRight: '-8px'
               }}>
-                {/* 显示前8条，如果超过8条则添加提示 */}
-                {getTopLosers().slice(0, 8).map((stock) => {
+                {/* 显示所有下跌股票，如果超过8条则添加滚动提示 */}
+                {getTopLosers().map((stock) => {
                   const changePercent = getChangePercent(stock);
                   return (
                     <div key={stock.symbol} style={{
@@ -1092,22 +1071,7 @@ const Dashboard: React.FC = () => {
                   );
                 })}
 
-                {/* 如果超过8条，显示提示 */}
-                {getTopLosers().length > 8 && (
-                  <div style={{
-                    padding: '12px 0',
-                    textAlign: 'center',
-                    borderTop: '1px solid #f5f5f5',
-                    marginTop: '8px'
-                  }}>
-                    <Text type="secondary" style={{ fontSize: '11px', color: '#8c8c8c' }}>
-                      +{getTopLosers().length - 8} more losers (scroll to see all)
-                    </Text>
-                    <div style={{ fontSize: '10px', color: '#bfbfbf', marginTop: '2px' }}>
-                      Total: {getTopLosers().length} losers
-                    </div>
-                  </div>
-                )}
+                {/* 显示所有下跌股票，无需截断提示 */}
               </div>
             )}
           </Card>

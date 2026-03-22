@@ -3,6 +3,7 @@ import { Card, Table, Tag, Input, Select, Button, Row, Col, Statistic, Space, Al
 import { SearchOutlined, LineChartOutlined, PlayCircleOutlined, BarChartOutlined, ReloadOutlined, EyeOutlined, StarOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import marketDataService, { StockData, formatCurrency, formatPercent, safeNumber, safeToFixed } from '../services/marketDataService';
+import { sharedDataService } from '../services/sharedDataService';
 import { useLanguage } from '../contexts/LanguageContext';
 import DataSourceBadge from '../components/DataSourceBadge';
 
@@ -26,8 +27,8 @@ const Market: React.FC = () => {
 
   const STORAGE_KEY = "quant_watchlist";
 
-  // 默认股票列表
-  const DEFAULT_SYMBOLS = ['AAPL', 'MSFT', 'GOOGL', 'TSLA', 'NVDA', 'AMZN', 'META', 'JPM', 'JNJ', 'V'];
+  // 默认股票列表（与后端保持一致，优先主流科技股）
+  const DEFAULT_SYMBOLS = ['AAPL', 'TSLA', 'AMD', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NFLX', 'INTC'];
 
   // 格式化市值函数（与Dashboard一致）
   const formatMarketCap = (value: number | null | undefined): string => {
@@ -172,28 +173,21 @@ const Market: React.FC = () => {
       return;
     }
     
-    // 缓存检查：如果30秒内有数据，则使用缓存
-    const CACHE_DURATION = 30 * 1000; // 30秒缓存（Market数据更新更频繁）
-    const now = Date.now();
-    
-    if (lastFetched && (now - lastFetched) < CACHE_DURATION && stocks.length > 0) {
-      console.log(`[Market优化] 使用缓存数据 (上次获取: ${new Date(lastFetched).toLocaleTimeString()})`);
-      return; // 使用缓存数据，不发起新请求
-    }
-    
     try {
       setIsFetching(true);
       setLoading(true);
       setError('');
       
-      console.log('[Market优化] 正在从 Finnhub 获取市场数据...');
-      const stockData = await marketDataService.getStocks(DEFAULT_SYMBOLS);
+      console.log('[Market优化] 正在获取市场数据...');
+      
+      // 使用共享数据服务
+      const stockData = await sharedDataService.getStocks();
       
       if (stockData.length > 0) {
-        console.log('=== 市场数据加载成功 ===');
-        console.log('数据来源:', stockData[0]?.dataSource || 'Finnhub');
-        console.log('股票数量:', stockData.length);
-        console.log('第一个股票:', stockData[0]);
+        console.log('[Market优化] 市场数据加载成功');
+        console.log('[Market优化] 数据来源:', stockData[0]?.dataSource || 'Finnhub');
+        console.log('[Market优化] 股票数量:', stockData.length);
+        console.log('[Market优化] 缓存有效:', sharedDataService.isCacheValid());
         
         // 过滤掉有错误的股票
         const validStocks = stockData.filter(stock => !stock.error);
@@ -204,7 +198,7 @@ const Market: React.FC = () => {
         } else {
           setStocks(validStocks);
           setLastUpdated(new Date());
-          setLastFetched(Date.now()); // 更新缓存时间
+          setLastFetched(Date.now());
           message.success(`已加载 ${validStocks.length} 只股票数据 (来源: ${stockData[0]?.dataSource || 'Finnhub'})`);
         }
       } else {
@@ -212,7 +206,7 @@ const Market: React.FC = () => {
         message.error('数据格式错误');
       }
     } catch (err: any) {
-      console.error('从 Finnhub 获取市场数据失败:', err);
+      console.error('[Market优化] 获取市场数据失败:', err);
       const errorMessage = err.message || '未知错误';
       setError(`获取市场数据失败: ${errorMessage}`);
       message.error('获取市场数据失败');
