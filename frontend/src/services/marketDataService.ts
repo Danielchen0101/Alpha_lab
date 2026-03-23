@@ -85,6 +85,7 @@ export interface StockData {
   sector: string | null;
   industry: string | null;
   currency: string;
+  dayOpen?: number | null;
   dayHigh: number | null;
   dayLow: number | null;
   previousClose: number | null;
@@ -95,6 +96,8 @@ export interface StockData {
   dividendYield?: number | null;
   yearHigh?: number | null;
   yearLow?: number | null;
+  beta?: number | null;
+  earningsDate?: string | null;
 }
 
 export interface HistoricalDataPoint {

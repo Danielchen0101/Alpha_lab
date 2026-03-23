@@ -5740,6 +5740,47 @@ const SymbolAnalysis: React.FC = () => {
                     fontWeight: '500',
                     marginBottom: '4px'
                   }}>
+                    Beta
+                  </div>
+                  <div style={{
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    color: '#1f1f1f',
+                    fontFeatureSettings: '"tnum"'
+                  }}>
+                    {stockData.beta !== undefined && stockData.beta !== null ? safeToFixed(stockData.beta, 2) : 'N/A'}
+                  </div>
+                </div>
+              </Col>
+
+              <Col span={12}>
+                <div style={{ marginBottom: '16px' }}>
+                  <div style={{
+                    fontSize: '12px',
+                    color: '#8c8c8c',
+                    fontWeight: '500',
+                    marginBottom: '4px'
+                  }}>
+                    Earnings Date
+                  </div>
+                  <div style={{
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    color: '#1f1f1f'
+                  }}>
+                    {stockData.earningsDate || 'N/A'}
+                  </div>
+                </div>
+              </Col>
+
+              <Col span={12}>
+                <div style={{ marginBottom: '16px' }}>
+                  <div style={{
+                    fontSize: '12px',
+                    color: '#8c8c8c',
+                    fontWeight: '500',
+                    marginBottom: '4px'
+                  }}>
                     Data Source
                   </div>
                   <div style={{
@@ -5748,6 +5789,27 @@ const SymbolAnalysis: React.FC = () => {
                     color: '#1f1f1f'
                   }}>
                     {dataSource}
+                  </div>
+                </div>
+              </Col>
+
+              <Col span={12}>
+                <div style={{ marginBottom: '16px' }}>
+                  <div style={{
+                    fontSize: '12px',
+                    color: '#8c8c8c',
+                    fontWeight: '500',
+                    marginBottom: '4px'
+                  }}>
+                    52W High
+                  </div>
+                  <div style={{
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    color: '#389e0d',
+                    fontFeatureSettings: '"tnum"'
+                  }}>
+                    {stockData.yearHigh !== undefined && stockData.yearHigh !== null ? `$${safeToFixed(stockData.yearHigh, 2)}` : 'N/A'}
                   </div>
                 </div>
               </Col>
@@ -5777,70 +5839,20 @@ const SymbolAnalysis: React.FC = () => {
                 New Backtest
             </Button>
           }>
-            {backtestLoading ? (
-              <div style={{ textAlign: 'center', padding: '20px' }}>
-                <Spin size="small" />
-              </div>
-            ) : backtestHistory.length === 0 ? (
-              <Empty
-                description="No backtest history"
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-                style={{ padding: '20px 0' }}
-              />
-            ) : (
-              <Table
-                dataSource={backtestHistory}
-                rowKey="backtestId"
-                size="small"
-                pagination={false}
-                columns={[
-                  {
-                    title: 'Strategy',
-                    dataIndex: 'strategy',
-                    key: 'strategy',
-                    width: 150,
-                    render: (strategy: string) => (
-                      <div style={{ fontSize: '12px' }}>{strategy}</div>
-                    ),
-                  },
-                  {
-                    title: 'Return',
-                    dataIndex: ['results', 'totalReturn'],
-                    key: 'return',
-                    width: 80,
-                    render: (value: number) => {
-                      const isPositive = value > 0;
-                      return (
-                        <Tag color={isPositive ? 'green' : 'red'}>
-                          {isPositive ? '+' : ''}{safeToFixed(value, 1)}%
-                        </Tag>
-                      );
-                    },
-                  },
-                  {
-                    title: 'Sharpe',
-                    dataIndex: ['results', 'sharpeRatio'],
-                    key: 'sharpe',
-                    width: 70,
-                    render: (value: number) => safeToFixed(value, 2),
-                  },
-                  {
-                    title: 'Actions',
-                    key: 'actions',
-                    width: 60,
-                    render: (_: any, record: BacktestHistoryItem) => (
-                      <Button
-                        type="link"
-                        size="small"
-                        onClick={() => handleViewBacktest(record.backtestId)}
-                      >
-                        View
-                      </Button>
-                    ),
-                  },
-                ]}
-              />
-            )}
+            <Empty
+              description={
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: '14px', color: '#595959', marginBottom: '8px' }}>
+                    No backtest history yet
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#8c8c8c' }}>
+                    Run your first backtest to see results here
+                  </div>
+                </div>
+              }
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              style={{ padding: '40px 0' }}
+            />
           </Card>
         </Col>
       </Row>

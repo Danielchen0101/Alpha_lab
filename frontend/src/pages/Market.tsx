@@ -369,7 +369,7 @@ const Market: React.FC = () => {
       title: 'Symbol',
       dataIndex: 'symbol',
       key: 'symbol',
-      width: 130,
+      width: 120,
       sorter: true,
       render: (symbol: string, record: StockData) => (
         <div>
@@ -384,66 +384,53 @@ const Market: React.FC = () => {
       title: 'Price',
       dataIndex: 'price',
       key: 'price',
-      width: 120,
+      width: 105,
       sorter: true,
       render: (price: number | null) => {
         return (
           <div style={{ 
-            fontWeight: '700', 
-            fontSize: '16px', 
+            fontWeight: '800', 
+            fontSize: '17px', 
             fontFeatureSettings: '"tnum"',
             textAlign: 'center',
-            lineHeight: '40px'
+            lineHeight: '40px',
+            color: '#1f1f1f',
+            letterSpacing: '-0.2px'
           }}>
             {price !== null ? `$${safeToFixed(price, 2)}` : '--'}
           </div>
         );
       },
     },
-
     {
-      title: 'Day Low',
-      dataIndex: 'dayLow',
-      key: 'dayLow',
-      width: 110,
-      sorter: true,
-      render: (dayLow: number | null) => {
-        // 只读取dayLow字段，如果没有真实数据就显示--
-        if (dayLow === null || dayLow === 0) return <div style={{ fontSize: '13px', fontWeight: 500, color: '#8c8c8c' }}>--</div>;
-        return <div style={{ fontSize: '14px', fontWeight: 600, color: '#1f1f1f', fontFeatureSettings: '"tnum"', paddingLeft: '12px', paddingRight: '12px' }}>${safeToFixed(dayLow, 2)}</div>;
-      },
-    },
-    {
-      title: 'Day High',
+      title: 'Price High',
       dataIndex: 'dayHigh',
       key: 'dayHigh',
-      width: 110,
+      width: 95,
       sorter: true,
       render: (dayHigh: number | null) => {
         // 只读取dayHigh字段，如果没有真实数据就显示--
-        if (dayHigh === null || dayHigh === 0) return <div style={{ fontSize: '13px', fontWeight: 500, color: '#8c8c8c' }}>--</div>;
-        return <div style={{ fontSize: '14px', fontWeight: 600, color: '#1f1f1f', fontFeatureSettings: '"tnum"', paddingLeft: '12px', paddingRight: '12px' }}>${safeToFixed(dayHigh, 2)}</div>;
+        if (dayHigh === null || dayHigh === 0) return <div style={{ fontSize: '13px', fontWeight: 500, color: '#bfbfbf', textAlign: 'center', lineHeight: '40px' }}>--</div>;
+        return <div style={{ fontSize: '14px', fontWeight: 600, color: '#595959', fontFeatureSettings: '"tnum"', textAlign: 'center', lineHeight: '40px' }}>${safeToFixed(dayHigh, 2)}</div>;
       },
     },
     {
-      title: 'Market Cap',
-      dataIndex: 'marketCap',
-      key: 'marketCap',
-      width: 110,  // 显著减少宽度：120 → 110（与Day High相同）
+      title: 'Price Low',
+      dataIndex: 'dayLow',
+      key: 'dayLow',
+      width: 95,
       sorter: true,
-      align: 'right' as const,
-      className: 'market-cap-column',
-      render: (marketCap: number | null) => {
-        const formatted = formatMarketCap(marketCap);
-        return <div style={{ fontSize: '14px', fontWeight: 600, color: '#1f1f1f', fontFeatureSettings: '"tnum"', lineHeight: '40px' }}>{formatted}</div>;
+      render: (dayLow: number | null) => {
+        // 只读取dayLow字段，如果没有真实数据就显示--
+        if (dayLow === null || dayLow === 0) return <div style={{ fontSize: '13px', fontWeight: 500, color: '#bfbfbf', textAlign: 'center', lineHeight: '40px' }}>--</div>;
+        return <div style={{ fontSize: '14px', fontWeight: 600, color: '#595959', fontFeatureSettings: '"tnum"', textAlign: 'center', lineHeight: '40px' }}>${safeToFixed(dayLow, 2)}</div>;
       },
     },
-
     {
       title: 'Change',
       dataIndex: 'change',
       key: 'change',
-      width: 100,
+      width: 90,
       sorter: true,
       render: (change: number | null) => {
         const value = safeNumber(change);
@@ -452,14 +439,14 @@ const Market: React.FC = () => {
         
         return (
           <div style={{ 
-            fontSize: '15px', 
-            fontWeight: 600, 
+            fontSize: '16px', 
+            fontWeight: 700, 
             color: isPositive ? '#52c41a' : isNegative ? '#ff4d4f' : '#666',
             fontFeatureSettings: '"tnum"',
             textAlign: 'center',
             lineHeight: '40px'
           }}>
-            {value !== 0 ? `${value > 0 ? '+' : ''}${safeToFixed(value, 2)}` : '0.00'}
+            {value !== 0 ? `$${value > 0 ? '+' : ''}${safeToFixed(value, 2)}` : '$0.00'}
           </div>
         );
       },
@@ -468,7 +455,7 @@ const Market: React.FC = () => {
       title: 'Change %',
       dataIndex: 'changePercent',
       key: 'changePercent',
-      width: 100,
+      width: 90,
       sorter: true,
       render: (changePercent: number | null) => {
         const value = safeNumber(changePercent);
@@ -476,30 +463,51 @@ const Market: React.FC = () => {
         const isNegative = value < 0;
         
         return (
-          <Tag 
-            color={isPositive ? 'green' : isNegative ? 'red' : 'default'}
-            style={{ 
-              margin: 0,
-              fontSize: '11px',
-              padding: '2px 6px',
-              fontWeight: 600,
-              borderRadius: '6px',
-              textAlign: 'center',
-              display: 'inline-block',
-              lineHeight: '16px',
-              minWidth: '60px'
-            }}
-          >
-            {value !== 0 ? `${value > 0 ? '+' : ''}${safeToFixed(value, 2)}%` : '0.00%'}
-          </Tag>
+          <div style={{ 
+            display: 'flex', 
+            justifyContent: 'center', 
+            alignItems: 'center',
+            height: '40px'
+          }}>
+            <Tag 
+              color={isPositive ? 'green' : isNegative ? 'red' : 'default'}
+              style={{ 
+                margin: 0,
+                fontSize: '12px',
+                padding: '4px 10px',
+                fontWeight: 700,
+                borderRadius: '8px',
+                textAlign: 'center',
+                display: 'inline-block',
+                lineHeight: '16px',
+                minWidth: '65px',
+                border: 'none'
+              }}
+            >
+              {value !== 0 ? `${value > 0 ? '+' : ''}${safeToFixed(value, 2)}%` : '0.00%'}
+            </Tag>
+          </div>
         );
+      },
+    },
+    {
+      title: 'Market Cap',
+      dataIndex: 'marketCap',
+      key: 'marketCap',
+      width: 105,
+      sorter: true,
+      align: 'center' as const,
+      className: 'market-cap-column',
+      render: (marketCap: number | null) => {
+        const formatted = formatMarketCap(marketCap);
+        return <div style={{ fontSize: '13px', fontWeight: 600, color: '#595959', fontFeatureSettings: '"tnum"', lineHeight: '40px', textAlign: 'center' }}>{formatted}</div>;
       },
     },
     {
       title: 'Sector',
       dataIndex: 'sector',
       key: 'sector',
-      width: 125,
+      width: 95,
       sorter: true,
       render: (sector: string | null) => (
         <Tag 
@@ -524,7 +532,7 @@ const Market: React.FC = () => {
     {
       title: 'Actions',
       key: 'actions',
-      width: 150,
+      width: 125,
       render: (_: any, record: StockData) => (
         <Space size={2} style={{ justifyContent: 'center', width: '100%' }}>
           <Button
@@ -564,31 +572,48 @@ const Market: React.FC = () => {
     }
   };
 
-  // Market Cap列专用样式 - 显著左移
+  // Market Cap列专用样式 - 居中对齐
   const marketCapColumnStyle = `
+    /* 强制Market Cap列及其所有子元素 */
+    .market-cap-column,
+    .market-cap-column * {
+      box-sizing: border-box !important;
+    }
+    
+    /* 列容器 */
     .market-cap-column {
-      text-align: right !important;
-      width: 110px !important;  /* 强制列宽 */
+      text-align: center !important;
+      width: 105px !important;
+      min-width: 105px !important;
+      max-width: 105px !important;
     }
-    .market-cap-column .ant-table-cell {
-      padding: 0 6px 0 2px !important;  /* 显著左移：右6px，左2px */
-      text-align: right !important;
-      vertical-align: middle !important;
-      width: 110px !important;
-    }
-    .market-cap-column .ant-table-thead .ant-table-cell {
-      padding: 10px 6px 10px 2px !important;  /* 表头显著左移 */
-      text-align: right !important;
+    
+    /* 表头单元格 - 居中对齐 */
+    .market-cap-column .ant-table-thead > tr > th.ant-table-cell {
+      padding: 10px 8px !important;
+      text-align: center !important;
       background-color: #fafafa !important;
       border-bottom: 2px solid #e8e8e8 !important;
-      width: 110px !important;
+      width: 105px !important;
+      min-width: 105px !important;
+      max-width: 105px !important;
     }
-    /* 确保表格容器不限制列宽 */
-    .market-cap-column .ant-table-tbody > tr > td,
-    .market-cap-column .ant-table-thead > tr > th {
-      width: 110px !important;
-      min-width: 110px !important;
-      max-width: 110px !important;
+    
+    /* 数据单元格 - 居中对齐 */
+    .market-cap-column .ant-table-tbody > tr > td.ant-table-cell {
+      padding: 0 8px !important;
+      text-align: center !important;
+      vertical-align: middle !important;
+      width: 105px !important;
+      min-width: 105px !important;
+      max-width: 105px !important;
+    }
+    
+    /* 单元格内部内容 */
+    .market-cap-column .ant-table-cell > div,
+    .market-cap-column .ant-table-cell .ant-table-cell-content {
+      text-align: center !important;
+      width: 100% !important;
     }
   `;
 

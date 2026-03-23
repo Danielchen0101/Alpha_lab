@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, Table, Button, Input, Space, Alert, Empty, Tag, message, Statistic } from 'antd';
-import { PlusOutlined, PlayCircleOutlined, DeleteOutlined, EyeOutlined } from '@ant-design/icons';
+import { PlusOutlined, PlayCircleOutlined, DeleteOutlined, EyeOutlined, LineChartOutlined } from '@ant-design/icons';
 import { useLanguage } from '../contexts/LanguageContext';
 import marketDataService from '../services/marketDataService';
 
@@ -17,6 +17,8 @@ interface WatchlistItem {
   marketCap: number;
   sector: string;
   addedAt: string;
+  dayHigh?: number;
+  dayLow?: number;
 }
 
 const Watchlist: React.FC = () => {
@@ -26,6 +28,7 @@ const Watchlist: React.FC = () => {
   const [newSymbol, setNewSymbol] = useState('');
   const [loading, setLoading] = useState(false);
   const [updating, setUpdating] = useState(false);
+  const [sortedInfo, setSortedInfo] = useState<any>({});
   const hasLoaded = React.useRef(false);
 
   // 安全的格式化函数
@@ -109,7 +112,9 @@ const Watchlist: React.FC = () => {
                 changePercent: latestData.changePercent || item.changePercent,
                 volume: latestData.volume || item.volume,
                 marketCap: latestData.marketCap || item.marketCap,
-                sector: latestData.sector || item.sector
+                sector: latestData.sector || item.sector,
+                dayHigh: latestData.dayHigh !== undefined && latestData.dayHigh !== null ? latestData.dayHigh : item.dayHigh,
+                dayLow: latestData.dayLow !== undefined && latestData.dayLow !== null ? latestData.dayLow : item.dayLow
               };
             }
             return item;
@@ -199,6 +204,8 @@ const Watchlist: React.FC = () => {
           volume: stockData.volume || 0,
           marketCap: stockData.marketCap || 0,
           sector: stockData.sector || 'Unknown',
+          dayHigh: stockData.dayHigh !== undefined && stockData.dayHigh !== null ? stockData.dayHigh : undefined,
+          dayLow: stockData.dayLow !== undefined && stockData.dayLow !== null ? stockData.dayLow : undefined,
           addedAt: new Date().toISOString()
         };
         
@@ -217,6 +224,8 @@ const Watchlist: React.FC = () => {
         volume: 0,
         marketCap: 0,
         sector: 'Unknown',
+        dayHigh: undefined,
+        dayLow: undefined,
         addedAt: new Date().toISOString()
       };
       
@@ -241,11 +250,29 @@ const Watchlist: React.FC = () => {
     navigate(`/backtest?symbol=${symbol}`);
   };
 
+  const handleAnalyze = (symbol: string) => {
+    // Navigate to analyze page with symbol pre-filled
+    navigate(`/analysis/${symbol}`);
+  };
+
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       handleAddSymbol();
     }
   };
+
+  // 处理表格排序变化
+  const handleTableChange = (pagination: any, filters: any, sorter: any) => {
+    setSortedInfo(sorter);
+  };
+
+  // 计算统计信息
+  const totalSymbols = watchlist.length;
+  const gainers = watchlist.filter(item => item.changePercent > 0).length;
+  const losers = watchlist.filter(item => item.changePercent < 0).length;
+  const avgChange = watchlist.length > 0 
+    ? watchlist.reduce((sum, item) => sum + (item.changePercent || 0), 0) / watchlist.length 
+    : 0;
 
   const columns = [
     {
@@ -253,6 +280,7 @@ const Watchlist: React.FC = () => {
       dataIndex: 'symbol',
       key: 'symbol',
       width: 100,
+      sorter: (a: WatchlistItem, b: WatchlistItem) => a.symbol.localeCompare(b.symbol),
       render: (symbol: string) => (
         <Tag color="blue" style={{ fontSize: '14px', fontWeight: 'bold' }}>
           {symbol}
@@ -263,47 +291,126 @@ const Watchlist: React.FC = () => {
       title: 'Name',
       dataIndex: 'name',
       key: 'name',
-      width: 150,
+      width: 140,
+      ellipsis: true,
     },
     {
       title: 'Price',
       dataIndex: 'price',
       key: 'price',
-      width: 100,
-      render: (price: number) => `$${safeToFixed(price, 2)}`,
+      width: 95,
+      sorter: (a: WatchlistItem, b: WatchlistItem) => (a.price || 0) - (b.price || 0),
+      render: (price: number) => (
+        <div style={{ fontWeight: '600', fontFeatureSettings: '"tnum"' }}>
+          {price !== null && price !== undefined ? `$${safeToFixed(price, 2)}` : '--'}
+        </div>
+      ),
+    },
+    {
+      title: 'Change',
+      dataIndex: 'change',
+      key: 'change',
+      width: 95,
+      sorter: (a: WatchlistItem, b: WatchlistItem) => (a.change || 0) - (b.change || 0),
+      render: (change: number) => {
+        const safeChange = typeof change === 'number' && !isNaN(change) ? change : 0;
+        const color = safeChange >= 0 ? '#52c41a' : '#ff4d4f';
+        return (
+          <div style={{ color, fontWeight: '600', fontFeatureSettings: '"tnum"' }}>
+            {safeChange >= 0 ? '+' : ''}${safeToFixed(safeChange, 2)}
+          </div>
+        );
+      },
     },
     {
       title: 'Change %',
       dataIndex: 'changePercent',
       key: 'changePercent',
-      width: 100,
+      width: 95,
+      sorter: (a: WatchlistItem, b: WatchlistItem) => (a.changePercent || 0) - (b.changePercent || 0),
       render: (percent: number) => {
         const safePercent = typeof percent === 'number' && !isNaN(percent) ? percent : 0;
-        const color = safePercent >= 0 ? '#3f8600' : '#cf1322';
+        const color = safePercent >= 0 ? '#52c41a' : '#ff4d4f';
         return (
-          <span style={{ color, fontWeight: 'bold' }}>
+          <Tag 
+            color={safePercent >= 0 ? 'green' : 'red'}
+            style={{ 
+              fontWeight: '600',
+              fontSize: '12px',
+              padding: '2px 8px',
+              borderRadius: '6px',
+              border: 'none'
+            }}
+          >
             {safePercent >= 0 ? '+' : ''}{safeToFixed(safePercent, 2)}%
-          </span>
+          </Tag>
         );
       },
+    },
+    {
+      title: 'Day High',
+      dataIndex: 'dayHigh',
+      key: 'dayHigh',
+      width: 95,
+      render: (dayHigh: number) => (
+        <div style={{ fontSize: '13px', color: '#595959', fontFeatureSettings: '"tnum"' }}>
+          {dayHigh !== null && dayHigh !== undefined ? `$${safeToFixed(dayHigh, 2)}` : '--'}
+        </div>
+      ),
+    },
+    {
+      title: 'Day Low',
+      dataIndex: 'dayLow',
+      key: 'dayLow',
+      width: 95,
+      render: (dayLow: number) => (
+        <div style={{ fontSize: '13px', color: '#595959', fontFeatureSettings: '"tnum"' }}>
+          {dayLow !== null && dayLow !== undefined ? `$${safeToFixed(dayLow, 2)}` : '--'}
+        </div>
+      ),
     },
     {
       title: 'Sector',
       dataIndex: 'sector',
       key: 'sector',
-      width: 120,
+      width: 110,
+      ellipsis: true,
     },
     {
       title: 'Actions',
       key: 'actions',
-      width: 200,
+      width: 220,
       render: (_: any, record: WatchlistItem) => (
-        <Space size="small">
+        <div style={{ display: 'flex', gap: '6px', justifyContent: 'center' }}>
           <Button
             type="primary"
+            icon={<LineChartOutlined />}
+            onClick={() => handleAnalyze(record.symbol)}
+            size="small"
+            style={{ 
+              fontSize: '12px', 
+              padding: '0 10px', 
+              height: '28px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
+          >
+            Analyze
+          </Button>
+          <Button
+            type="default"
             icon={<PlayCircleOutlined />}
             onClick={() => handleRunBacktest(record.symbol)}
             size="small"
+            style={{ 
+              fontSize: '12px', 
+              padding: '0 10px', 
+              height: '28px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
           >
             Backtest
           </Button>
@@ -313,15 +420,44 @@ const Watchlist: React.FC = () => {
             icon={<DeleteOutlined />}
             onClick={() => handleRemoveSymbol(record.symbol)}
             size="small"
+            style={{ 
+              fontSize: '12px', 
+              padding: '0 8px', 
+              height: '28px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
           >
             Remove
           </Button>
-        </Space>
+        </div>
       ),
     },
   ];
 
-  const dataSource = watchlist.map(item => ({
+  // 应用排序
+  let sortedDataSource = [...watchlist];
+  if (sortedInfo.columnKey) {
+    sortedDataSource.sort((a, b) => {
+      const aValue = a[sortedInfo.columnKey as keyof WatchlistItem];
+      const bValue = b[sortedInfo.columnKey as keyof WatchlistItem];
+      
+      if (typeof aValue === 'number' && typeof bValue === 'number') {
+        return sortedInfo.order === 'descend' ? bValue - aValue : aValue - bValue;
+      }
+      
+      if (typeof aValue === 'string' && typeof bValue === 'string') {
+        return sortedInfo.order === 'descend' 
+          ? bValue.localeCompare(aValue) 
+          : aValue.localeCompare(bValue);
+      }
+      
+      return 0;
+    });
+  }
+
+  const dataSource = sortedDataSource.map(item => ({
     key: item.symbol,
     ...item
   }));
@@ -329,18 +465,18 @@ const Watchlist: React.FC = () => {
   return (
     <div style={{ padding: '24px' }}>
       {/* Header */}
-      <div style={{ marginBottom: '24px' }}>
-        <h1 style={{ marginBottom: '8px' }}>{t.watchlist.title}</h1>
-        <div style={{ color: '#666', fontSize: '14px' }}>
-          {t.watchlist.subtitle}
+      <div style={{ marginBottom: '20px' }}>
+        <h1 style={{ marginBottom: '4px', fontSize: '24px', fontWeight: '700', color: '#1f1f1f' }}>Watchlist</h1>
+        <div style={{ color: '#8c8c8c', fontSize: '13px' }}>
+          Monitor and analyze your selected stocks
         </div>
       </div>
 
       {/* Add Symbol Form */}
-      <Card style={{ marginBottom: '24px' }}>
+      <Card style={{ marginBottom: '16px', padding: '16px' }}>
         <Space direction="vertical" style={{ width: '100%' }}>
-          <div style={{ fontSize: '14px', fontWeight: '500', marginBottom: '8px' }}>
-            Add New Symbol
+          <div style={{ fontSize: '13px', fontWeight: '600', marginBottom: '8px', color: '#1f1f1f' }}>
+            Add Symbol to Watchlist
           </div>
           <Space.Compact style={{ width: '100%' }}>
             <Input
@@ -348,33 +484,88 @@ const Watchlist: React.FC = () => {
               value={newSymbol}
               onChange={(e) => setNewSymbol(e.target.value.toUpperCase())}
               onKeyPress={handleKeyPress}
-              style={{ maxWidth: '300px' }}
+              style={{ maxWidth: '280px', fontSize: '13px' }}
             />
             <Button
               type="primary"
               icon={<PlusOutlined />}
               onClick={handleAddSymbol}
               loading={loading}
+              style={{ fontSize: '13px' }}
             >
-              Add Symbol
+              Add
             </Button>
           </Space.Compact>
-          <div style={{ fontSize: '12px', color: '#666', marginTop: '8px' }}>
+          <div style={{ fontSize: '11px', color: '#8c8c8c', marginTop: '6px' }}>
             Enter 1-5 uppercase letters. Example: AAPL, MSFT, TSLA, NVDA
           </div>
         </Space>
       </Card>
 
+      {/* Watchlist Summary */}
+      {watchlist.length > 0 && (
+        <Card style={{ marginBottom: '16px', padding: '16px', borderRadius: '8px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div style={{ display: 'flex', gap: '40px' }}>
+              <div>
+                <div style={{ fontSize: '11px', color: '#8c8c8c', marginBottom: '4px', letterSpacing: '0.3px' }}>TOTAL SYMBOLS</div>
+                <div style={{ fontSize: '20px', fontWeight: '700', color: '#1f1f1f' }}>{totalSymbols}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '11px', color: '#8c8c8c', marginBottom: '4px', letterSpacing: '0.3px' }}>GAINERS</div>
+                <div style={{ fontSize: '20px', fontWeight: '700', color: '#52c41a' }}>{gainers}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '11px', color: '#8c8c8c', marginBottom: '4px', letterSpacing: '0.3px' }}>LOSERS</div>
+                <div style={{ fontSize: '20px', fontWeight: '700', color: '#ff4d4f' }}>{losers}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '11px', color: '#8c8c8c', marginBottom: '4px', letterSpacing: '0.3px' }}>AVG CHANGE</div>
+                <div style={{ 
+                  fontSize: '20px', 
+                  fontWeight: '700', 
+                  color: avgChange >= 0 ? '#52c41a' : '#ff4d4f' 
+                }}>
+                  {avgChange >= 0 ? '+' : ''}{safeToFixed(avgChange, 2)}%
+                </div>
+              </div>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: '11px', color: '#8c8c8c', marginBottom: '4px', letterSpacing: '0.3px' }}>LAST UPDATED</div>
+              <div style={{ fontSize: '13px', fontWeight: '500', color: '#595959' }}>
+                {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
+
       {/* Watchlist Table */}
-      <Card title={`Watchlist (${watchlist.length} stocks)`}>
+      <Card 
+        title={
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: '16px', fontWeight: '600', color: '#1f1f1f' }}>
+              Watchlist ({watchlist.length} {watchlist.length === 1 ? 'stock' : 'stocks'})
+            </span>
+            {watchlist.length > 0 && (
+              <div style={{ fontSize: '12px', color: '#8c8c8c' }}>
+                Click column headers to sort
+              </div>
+            )}
+          </div>
+        }
+        style={{ borderRadius: '8px' }}
+      >
         {watchlist.length > 0 ? (
           <Table
             columns={columns}
             dataSource={dataSource}
             pagination={false}
             size="middle"
-            bordered
-            scroll={{ x: 800 }}
+            bordered={false}
+            scroll={{ x: 950 }}
+            onChange={handleTableChange}
+            style={{ marginTop: '-8px' }}
           />
         ) : (
           <Empty
@@ -402,17 +593,20 @@ const Watchlist: React.FC = () => {
       </Card>
 
       {/* Quick Tips */}
-      <Card style={{ marginTop: '24px' }}>
-        <div style={{ fontSize: '14px', fontWeight: '500', marginBottom: '12px' }}>
-          💡 Quick Tips
-        </div>
-        <ul style={{ margin: 0, paddingLeft: '20px', color: '#666', fontSize: '13px' }}>
-          <li>Click "Run Backtest" to quickly test strategies on any symbol</li>
-          <li>Your watchlist is saved automatically in your browser</li>
-          <li>Popular symbols: AAPL, MSFT, GOOGL, AMZN, TSLA, NVDA, META</li>
-          <li>You can add up to 20 symbols to your watchlist</li>
-        </ul>
-      </Card>
+      {watchlist.length > 0 && (
+        <Card style={{ marginTop: '20px', padding: '16px', borderRadius: '8px', background: '#fafafa' }}>
+          <div style={{ fontSize: '12px', fontWeight: '600', marginBottom: '8px', color: '#595959', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ fontSize: '14px' }}>💡</span>
+            <span>Quick Tips</span>
+          </div>
+          <ul style={{ margin: 0, paddingLeft: '18px', color: '#8c8c8c', fontSize: '12px', lineHeight: '1.6' }}>
+            <li>Click <strong>Analyze</strong> for detailed technical analysis</li>
+            <li>Click <strong>Backtest</strong> to test trading strategies</li>
+            <li>Click column headers to sort the table</li>
+            <li>Watchlist is saved automatically in your browser</li>
+          </ul>
+        </Card>
+      )}
     </div>
   );
 };
