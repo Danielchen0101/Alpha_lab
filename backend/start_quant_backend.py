@@ -91,7 +91,7 @@ def get_twelvedata_history(symbol, interval, range_param):
         
         # 根据range设置outputsize
         outputsize_map = {
-            '1day': 500,   # 1分钟数据需要500个点
+            '1day': 390,   # 1分钟数据，390个点（6.5小时×60分钟，覆盖9:30-15:30）
             '1week': 300,
             '1month': 30,
             '3month': 90,
@@ -151,7 +151,10 @@ def get_twelvedata_history(symbol, interval, range_param):
                 "volume": safe_float(item.get('volume', 0))
             })
         
-        print(f"[Twelve Data] 成功获取 {len(historical_data)} 个数据点")
+        # 确保数据按时间升序排序（旧 -> 新）
+        historical_data.sort(key=lambda x: x['timestamp'])
+        
+        print(f"[Twelve Data] 成功获取 {len(historical_data)} 个数据点，已按时间升序排序")
         return historical_data, True, "Twelve Data实时数据"
         
     except Exception as e:

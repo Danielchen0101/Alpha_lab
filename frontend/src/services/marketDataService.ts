@@ -138,9 +138,9 @@ export interface SearchResult {
 // ========== Timeframe Configuration ==========
 
 export const TIMEFRAMES: Record<string, { interval: string; range: string; dataPoints: number; label: string }> = {
-  '1D': { interval: '30', range: '1day', dataPoints: 14, label: '1 Day' },     // 30分钟粒度，约14个数据点（9:30-16:00，每30分钟一个）
+  '1D': { interval: '1min', range: '1day', dataPoints: 390, label: '1 Day' },  // 1分钟粒度，390个数据点（9:30-15:30，6.5小时×60分钟）
   '1W': { interval: '60', range: '1week', dataPoints: 40, label: '1 Week' },   // 60分钟粒度，约40个数据点（一周5天，每天6.5小时）
-  '1M': { interval: 'D', range: '1month', dataPoints: 20, label: '1 Month' },  // 日线粒度，约20个数据点
+  '1M': { interval: 'D', range: '2month', dataPoints: 40, label: '1 Month' },  // 日线粒度，约40个数据点（2个月，为RSI提供预热数据）
   '3M': { interval: 'D', range: '3month', dataPoints: 60, label: '3 Months' }, // 日线粒度，约60个数据点
   '1Y': { interval: 'D', range: '1year', dataPoints: 252, label: '1 Year' },   // 日线粒度，约252个数据点
 };
