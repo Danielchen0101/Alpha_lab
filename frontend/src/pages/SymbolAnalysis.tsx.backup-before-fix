@@ -3626,9 +3626,8 @@ const SymbolAnalysis: React.FC = () => {
         </Row>
       </Card>
 
-      {/* 核心指标卡片 - 第一行 */}
+      {/* 价格信息卡片 - 更专业 */}
       <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
-        {/* Day High */}
         <Col xs={24} sm={12} md={4}>
           <Card
             size="small"
@@ -3662,7 +3661,6 @@ const SymbolAnalysis: React.FC = () => {
           </Card>
         </Col>
 
-        {/* Day Low */}
         <Col xs={24} sm={12} md={4}>
           <Card
             size="small"
@@ -3696,7 +3694,6 @@ const SymbolAnalysis: React.FC = () => {
           </Card>
         </Col>
 
-        {/* Prev Close */}
         <Col xs={24} sm={12} md={4}>
           <Card
             size="small"
@@ -3730,7 +3727,6 @@ const SymbolAnalysis: React.FC = () => {
           </Card>
         </Col>
 
-        {/* Market Cap */}
         <Col xs={24} sm={12} md={4}>
           <Card
             size="small"
@@ -3761,7 +3757,7 @@ const SymbolAnalysis: React.FC = () => {
           </Card>
         </Col>
 
-        {/* 52W High */}
+        {/* 新增：52 Week High */}
         <Col xs={24} sm={12} md={4}>
           <Card
             size="small"
@@ -3790,9 +3786,12 @@ const SymbolAnalysis: React.FC = () => {
                 lineHeight: '1.2'
               }}>
                 {(() => {
+                  // 从chartData计算52周高点
                   if (chartData.length === 0) return '--';
+                  
                   const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
                   if (dataToUse.length === 0) return '--';
+                  
                   const fiftyTwoWeekHigh = Math.max(...dataToUse.map(d => d.high));
                   return `$${safeToFixed(fiftyTwoWeekHigh, 2)}`;
                 })()}
@@ -3800,11 +3799,8 @@ const SymbolAnalysis: React.FC = () => {
             </div>
           </Card>
         </Col>
-      </Row>
 
-      {/* 核心指标卡片 - 第二行 */}
-      <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
-        {/* 52W Low */}
+        {/* 新增：52 Week Low */}
         <Col xs={24} sm={12} md={4}>
           <Card
             size="small"
@@ -3833,9 +3829,12 @@ const SymbolAnalysis: React.FC = () => {
                 lineHeight: '1.2'
               }}>
                 {(() => {
+                  // 从chartData计算52周低点
                   if (chartData.length === 0) return '--';
+                  
                   const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
                   if (dataToUse.length === 0) return '--';
+                  
                   const fiftyTwoWeekLow = Math.min(...dataToUse.map(d => d.low));
                   return `$${safeToFixed(fiftyTwoWeekLow, 2)}`;
                 })()}
@@ -3843,8 +3842,11 @@ const SymbolAnalysis: React.FC = () => {
             </div>
           </Card>
         </Col>
+      </Row>
 
-        {/* Volume */}
+      {/* 第二行：成交量信息卡片 */}
+      <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
+        {/* 新增：Volume */}
         <Col xs={24} sm={12} md={4}>
           <Card
             size="small"
@@ -3891,7 +3893,7 @@ const SymbolAnalysis: React.FC = () => {
           </Card>
         </Col>
 
-        {/* Avg Volume */}
+        {/* 新增：Avg Volume (需要数据源支持) */}
         <Col xs={24} sm={12} md={4}>
           <Card
             size="small"
@@ -3919,7 +3921,7 @@ const SymbolAnalysis: React.FC = () => {
                 fontFeatureSettings: '"tnum"',
                 lineHeight: '1.2'
               }}>
-                N/A
+                --
               </div>
               <div style={{
                 fontSize: '9px',
@@ -3927,7 +3929,7 @@ const SymbolAnalysis: React.FC = () => {
                 fontStyle: 'italic',
                 marginTop: '4px'
               }}>
-                Not available from current data source
+                Data not available
               </div>
             </div>
           </Card>
@@ -4024,7 +4026,70 @@ const SymbolAnalysis: React.FC = () => {
           </Card>
         </Col>
 
-        {/* Rel Volume */}
+        {/* 占位卡片，保持布局平衡 */}
+        <Col xs={24} sm={12} md={4}>
+          <Card
+            size="small"
+            style={{
+              border: '1px solid #f0f0f0',
+              boxShadow: '0 1px 4px rgba(0,0,0,0.02)',
+              background: 'transparent',
+              borderStyle: 'dashed'
+            }}
+          >
+            <div style={{ padding: '10px', textAlign: 'center' }}>
+              <div style={{
+                fontSize: '11px',
+                color: '#bfbfbf',
+                fontWeight: '500',
+                marginBottom: '6px'
+              }}>
+                More Metrics
+              </div>
+              <div style={{
+                fontSize: '14px',
+                color: '#d9d9d9',
+                fontStyle: 'italic'
+              }}>
+                Coming soon
+              </div>
+            </div>
+          </Card>
+        </Col>
+
+        {/* 占位卡片，保持布局平衡 */}
+        <Col xs={24} sm={12} md={4}>
+          <Card
+            size="small"
+            style={{
+              border: '1px solid #f0f0f0',
+              boxShadow: '0 1px 4px rgba(0,0,0,0.02)',
+              background: 'transparent',
+              borderStyle: 'dashed'
+            }}
+          >
+            <div style={{ padding: '10px', textAlign: 'center' }}>
+              <div style={{
+                fontSize: '11px',
+                color: '#bfbfbf',
+                fontWeight: '500',
+                marginBottom: '6px'
+              }}>
+                More Metrics
+              </div>
+              <div style={{
+                fontSize: '14px',
+                color: '#d9d9d9',
+                fontStyle: 'italic'
+              }}>
+                Coming soon
+              </div>
+            </div>
+          </Card>
+        </Col>
+      </Row>
+
+        {/* 新增：Relative Volume (需要数据源支持) */}
         <Col xs={24} sm={12} md={4}>
           <Card
             size="small"
@@ -4052,7 +4117,7 @@ const SymbolAnalysis: React.FC = () => {
                 fontFeatureSettings: '"tnum"',
                 lineHeight: '1.2'
               }}>
-                N/A
+                --
               </div>
               <div style={{
                 fontSize: '9px',
@@ -4060,12 +4125,9 @@ const SymbolAnalysis: React.FC = () => {
                 fontStyle: 'italic',
                 marginTop: '4px'
               }}>
-                Not available from current data source
+                Data not available
               </div>
             </div>
-          </Card>
-        </Col>
-      </Row>
 
 
       {/* 图表区域 - 强化 */}
@@ -4230,1094 +4292,6 @@ const SymbolAnalysis: React.FC = () => {
         </Col>
       </Row>
 
-      {/* Signal Summary - 信号摘要 */}
-      <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
-        <Col span={24}>
-          <Card
-            title={
-              <span style={{ fontSize: '16px', fontWeight: '600', color: '#1f1f1f' }}>
-                Signal Summary
-              </span>
-            }
-            style={{
-              border: '1px solid #e8e8e8',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.04)'
-            }}
-            bodyStyle={{ padding: '20px' }}
-          >
-            <Row gutter={[24, 16]}>
-              {/* Trend Bias */}
-              <Col xs={24} sm={12} md={8}>
-                <div style={{
-                  padding: '16px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '8px',
-                  background: '#fafafa'
-                }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#595959',
-                    fontWeight: '600',
-                    marginBottom: '8px',
-                    display: 'flex',
-                    alignItems: 'center'
-                  }}>
-                    <LineChartOutlined style={{ marginRight: '8px', fontSize: '12px' }} />
-                    Trend Bias
-                  </div>
-                  <div style={{
-                    fontSize: '18px',
-                    fontWeight: '700',
-                    marginBottom: '4px'
-                  }}>
-                    {(() => {
-                      if (!stockData.price || chartData.length === 0) return 'N/A';
-                      
-                      const lastData = chartData[chartData.length - 1];
-                      const price = stockData.price;
-                      const sma20 = lastData?.sma20;
-                      const sma50 = lastData?.sma50;
-                      const rsi = lastData?.rsi;
-                      
-                      // 如果有完整的SMA20和SMA50数据，使用完整判断
-                      if (sma20 !== undefined && sma50 !== undefined) {
-                        const priceVsSMA20 = price > sma20;
-                        const priceVsSMA50 = price > sma50;
-                        const sma20VsSMA50 = sma20 > sma50;
-                        
-                        const bullishCount = [priceVsSMA20, priceVsSMA50, sma20VsSMA50].filter(Boolean).length;
-                        
-                        if (bullishCount >= 2) {
-                          return (
-                            <span style={{ color: '#52c41a' }}>
-                              <ArrowUpOutlined style={{ marginRight: '6px' }} />
-                              Bullish
-                            </span>
-                          );
-                        } else if (bullishCount <= 1) {
-                          return (
-                            <span style={{ color: '#ff4d4f' }}>
-                              <ArrowDownOutlined style={{ marginRight: '6px' }} />
-                              Bearish
-                            </span>
-                          );
-                        } else {
-                          return (
-                            <span style={{ color: '#8c8c8c' }}>
-                              Neutral
-                            </span>
-                          );
-                        }
-                      }
-                      
-                      // 简化判断：基于已有信息
-                      let bullishSignals = 0;
-                      let bearishSignals = 0;
-                      
-                      // 1. Price vs SMA20 (如果可用)
-                      if (sma20 !== undefined) {
-                        if (price > sma20) bullishSignals++;
-                        else if (price < sma20) bearishSignals++;
-                      }
-                      
-                      // 2. RSI State (如果可用)
-                      if (rsi !== undefined && !isNaN(rsi)) {
-                        if (rsi >= 70) bearishSignals++; // 超买视为看跌信号
-                        else if (rsi <= 30) bullishSignals++; // 超卖视为看涨信号
-                      }
-                      
-                      // 3. 52W Position (简化判断)
-                      if (chartData.length > 0) {
-                        const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                        if (dataToUse.length > 0) {
-                          const fiftyTwoWeekHigh = Math.max(...dataToUse.map(d => d.high));
-                          const fiftyTwoWeekLow = Math.min(...dataToUse.map(d => d.low));
-                          if (fiftyTwoWeekHigh !== fiftyTwoWeekLow) {
-                            const rangePosition = ((price - fiftyTwoWeekLow) / (fiftyTwoWeekHigh - fiftyTwoWeekLow)) * 100;
-                            if (rangePosition >= 80) bearishSignals++; // 接近52周高点视为看跌信号
-                            else if (rangePosition <= 20) bullishSignals++; // 接近52周低点视为看涨信号
-                          }
-                        }
-                      }
-                      
-                      // 综合判断
-                      if (bullishSignals > bearishSignals) {
-                        return (
-                          <span style={{ color: '#52c41a', opacity: 0.8 }}>
-                            <ArrowUpOutlined style={{ marginRight: '6px' }} />
-                            Weak Bullish
-                          </span>
-                        );
-                      } else if (bearishSignals > bullishSignals) {
-                        return (
-                          <span style={{ color: '#ff4d4f', opacity: 0.8 }}>
-                            <ArrowDownOutlined style={{ marginRight: '6px' }} />
-                            Weak Bearish
-                          </span>
-                        );
-                      } else {
-                        return (
-                          <span style={{ color: '#8c8c8c' }}>
-                            Neutral
-                          </span>
-                        );
-                      }
-                    })()}
-                  </div>
-                  <div style={{
-                    fontSize: '11px',
-                    color: '#8c8c8c',
-                    lineHeight: '1.4'
-                  }}>
-                    {(() => {
-                      if (!stockData.price || chartData.length === 0) return 'No data';
-                      
-                      const lastData = chartData[chartData.length - 1];
-                      const sma20 = lastData?.sma20;
-                      const sma50 = lastData?.sma50;
-                      
-                      if (sma20 !== undefined && sma50 !== undefined) {
-                        return 'Macro trend direction based on moving average alignment';
-                      } else {
-                        return 'Provisional macro trend assessment';
-                      }
-                    })()}
-                  </div>
-                </div>
-              </Col>
-
-              {/* RSI State */}
-              <Col xs={24} sm={12} md={8}>
-                <div style={{
-                  padding: '16px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '8px',
-                  background: '#fafafa'
-                }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#595959',
-                    fontWeight: '600',
-                    marginBottom: '8px',
-                    display: 'flex',
-                    alignItems: 'center'
-                  }}>
-                    <LineChartOutlined style={{ marginRight: '8px', fontSize: '12px' }} />
-                    RSI State
-                  </div>
-                  <div style={{
-                    fontSize: '18px',
-                    fontWeight: '700',
-                    marginBottom: '4px'
-                  }}>
-                    {(() => {
-                      if (chartData.length === 0) return '--';
-                      
-                      const lastData = chartData[chartData.length - 1];
-                      const rsi = lastData?.rsi;
-                      
-                      if (rsi === undefined || isNaN(rsi)) return 'N/A';
-                      
-                      if (rsi >= 70) {
-                        return (
-                          <span style={{ color: '#cf1322' }}>
-                            Overbought
-                          </span>
-                        );
-                      } else if (rsi <= 30) {
-                        return (
-                          <span style={{ color: '#389e0d' }}>
-                            Oversold
-                          </span>
-                        );
-                      } else {
-                        return (
-                          <span style={{ color: '#8c8c8c' }}>
-                            Neutral
-                          </span>
-                        );
-                      }
-                    })()}
-                  </div>
-                  <div style={{
-                    fontSize: '11px',
-                    color: '#8c8c8c',
-                    lineHeight: '1.4'
-                  }}>
-                    {(() => {
-                      if (chartData.length === 0) return 'N/A';
-                      
-                      const lastData = chartData[chartData.length - 1];
-                      const rsi = lastData?.rsi;
-                      
-                      if (rsi === undefined || isNaN(rsi)) return 'Not calculated';
-                      
-                      return `RSI: ${safeToFixed(rsi, 1)}`;
-                    })()}
-                  </div>
-                </div>
-              </Col>
-
-              {/* 52W Position */}
-              <Col xs={24} sm={12} md={8}>
-                <div style={{
-                  padding: '16px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '8px',
-                  background: '#fafafa'
-                }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#595959',
-                    fontWeight: '600',
-                    marginBottom: '8px',
-                    display: 'flex',
-                    alignItems: 'center'
-                  }}>
-                    <LineChartOutlined style={{ marginRight: '8px', fontSize: '12px' }} />
-                    52W Position
-                  </div>
-                  <div style={{
-                    fontSize: '18px',
-                    fontWeight: '700',
-                    marginBottom: '4px'
-                  }}>
-                    {(() => {
-                      if (chartData.length === 0 || !stockData.price) return 'N/A';
-                      
-                      const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                      if (dataToUse.length === 0) return 'N/A';
-                      
-                      const fiftyTwoWeekHigh = Math.max(...dataToUse.map(d => d.high));
-                      const fiftyTwoWeekLow = Math.min(...dataToUse.map(d => d.low));
-                      const currentPrice = stockData.price;
-                      
-                      if (fiftyTwoWeekHigh === fiftyTwoWeekLow) return 'No range';
-                      
-                      const rangePosition = ((currentPrice - fiftyTwoWeekLow) / (fiftyTwoWeekHigh - fiftyTwoWeekLow)) * 100;
-                      
-                      if (rangePosition >= 80) {
-                        return (
-                          <span style={{ color: '#52c41a' }}>
-                            Upper range
-                          </span>
-                        );
-                      } else if (rangePosition <= 20) {
-                        return (
-                          <span style={{ color: '#ff4d4f' }}>
-                            Lower range
-                          </span>
-                        );
-                      } else {
-                        return (
-                          <span style={{ color: '#fa8c16' }}>
-                            Middle range
-                          </span>
-                        );
-                      }
-                    })()}
-                  </div>
-                  <div style={{
-                    fontSize: '11px',
-                    color: '#8c8c8c',
-                    lineHeight: '1.4'
-                  }}>
-                    {(() => {
-                      if (chartData.length === 0 || !stockData.price) return 'N/A';
-                      
-                      const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                      if (dataToUse.length === 0) return 'N/A';
-                      
-                      const fiftyTwoWeekHigh = Math.max(...dataToUse.map(d => d.high));
-                      const fiftyTwoWeekLow = Math.min(...dataToUse.map(d => d.low));
-                      const currentPrice = stockData.price;
-                      
-                      if (fiftyTwoWeekHigh === fiftyTwoWeekLow) return 'Flat range';
-                      
-                      const rangePosition = ((currentPrice - fiftyTwoWeekLow) / (fiftyTwoWeekHigh - fiftyTwoWeekLow)) * 100;
-                      return `${safeToFixed(rangePosition, 1)}% of 52W range`;
-                    })()}
-                  </div>
-                </div>
-              </Col>
-
-              {/* Price vs SMA20 */}
-              <Col xs={24} sm={12} md={6}>
-                <div style={{
-                  padding: '16px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '8px',
-                  background: '#fafafa'
-                }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#595959',
-                    fontWeight: '600',
-                    marginBottom: '8px'
-                  }}>
-                    Price vs SMA20
-                  </div>
-                  <div style={{
-                    fontSize: '18px',
-                    fontWeight: '700',
-                    marginBottom: '4px'
-                  }}>
-                    {(() => {
-                      if (!stockData.price || chartData.length === 0) return '--';
-                      
-                      const lastData = chartData[chartData.length - 1];
-                      const price = stockData.price;
-                      const sma20 = lastData?.sma20;
-                      
-                      if (sma20 === undefined || isNaN(sma20)) return 'No SMA20';
-                      
-                      const diff = price - sma20;
-                      const diffPercent = (diff / sma20) * 100;
-                      
-                      if (diff > 0) {
-                        return (
-                          <span style={{ color: '#52c41a' }}>
-                            Above (+{safeToFixed(diffPercent, 2)}%)
-                          </span>
-                        );
-                      } else if (diff < 0) {
-                        return (
-                          <span style={{ color: '#ff4d4f' }}>
-                            Below ({safeToFixed(diffPercent, 2)}%)
-                          </span>
-                        );
-                      } else {
-                        return (
-                          <span style={{ color: '#8c8c8c' }}>
-                            Equal
-                          </span>
-                        );
-                      }
-                    })()}
-                  </div>
-                  <div style={{
-                    fontSize: '11px',
-                    color: '#8c8c8c',
-                    lineHeight: '1.4'
-                  }}>
-                    {(() => {
-                      if (!stockData.price || chartData.length === 0) return 'N/A';
-                      
-                      const lastData = chartData[chartData.length - 1];
-                      const price = stockData.price;
-                      const sma20 = lastData?.sma20;
-                      
-                      if (sma20 === undefined || isNaN(sma20)) return 'SMA20: N/A';
-                      
-                      return `Price: $${safeToFixed(price, 2)} | SMA20: $${safeToFixed(sma20, 2)}`;
-                    })()}
-                  </div>
-                </div>
-              </Col>
-
-              {/* Price vs SMA50 */}
-              <Col xs={24} sm={12} md={6}>
-                <div style={{
-                  padding: '16px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '8px',
-                  background: '#fafafa'
-                }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#595959',
-                    fontWeight: '600',
-                    marginBottom: '8px'
-                  }}>
-                    Price vs SMA50
-                  </div>
-                  <div style={{
-                    fontSize: '18px',
-                    fontWeight: '700',
-                    marginBottom: '4px'
-                  }}>
-                    {(() => {
-                      if (!stockData.price || chartData.length === 0) return 'N/A';
-                      
-                      const lastData = chartData[chartData.length - 1];
-                      const price = stockData.price;
-                      const sma50 = lastData?.sma50;
-                      
-                      if (sma50 === undefined || isNaN(sma50)) return 'Need 50 periods';
-                      
-                      const diff = price - sma50;
-                      const diffPercent = (diff / sma50) * 100;
-                      
-                      if (diff > 0) {
-                        return (
-                          <span style={{ color: '#52c41a' }}>
-                            Above (+{safeToFixed(diffPercent, 2)}%)
-                          </span>
-                        );
-                      } else if (diff < 0) {
-                        return (
-                          <span style={{ color: '#ff4d4f' }}>
-                            Below ({safeToFixed(diffPercent, 2)}%)
-                          </span>
-                        );
-                      } else {
-                        return (
-                          <span style={{ color: '#8c8c8c' }}>
-                            Equal
-                          </span>
-                        );
-                      }
-                    })()}
-                  </div>
-                  <div style={{
-                    fontSize: '11px',
-                    color: '#8c8c8c',
-                    lineHeight: '1.4'
-                  }}>
-                    {(() => {
-                      if (!stockData.price || chartData.length === 0) return 'N/A';
-                      
-                      const lastData = chartData[chartData.length - 1];
-                      const price = stockData.price;
-                      const sma50 = lastData?.sma50;
-                      
-                      if (sma50 === undefined || isNaN(sma50)) return 'SMA50: N/A';
-                      
-                      return `Price: $${safeToFixed(price, 2)} | SMA50: $${safeToFixed(sma50, 2)}`;
-                    })()}
-                  </div>
-                </div>
-              </Col>
-
-              {/* SMA20 vs SMA50 */}
-              <Col xs={24} sm={12} md={6}>
-                <div style={{
-                  padding: '16px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '8px',
-                  background: '#fafafa'
-                }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#595959',
-                    fontWeight: '600',
-                    marginBottom: '8px'
-                  }}>
-                    SMA20 vs SMA50
-                  </div>
-                  <div style={{
-                    fontSize: '18px',
-                    fontWeight: '700',
-                    marginBottom: '4px'
-                  }}>
-                    {(() => {
-                      if (chartData.length === 0) return '--';
-                      
-                      const lastData = chartData[chartData.length - 1];
-                      const sma20 = lastData?.sma20;
-                      const sma50 = lastData?.sma50;
-                      
-                      if (sma20 === undefined || isNaN(sma20) || sma50 === undefined || isNaN(sma50)) {
-                        return 'Not enough data';
-                      }
-                      
-                      const diff = sma20 - sma50;
-                      const diffPercent = (diff / sma50) * 100;
-                      
-                      if (diff > 0) {
-                        return (
-                          <span style={{ color: '#52c41a' }}>
-                            SMA20 &gt; SMA50
-                          </span>
-                        );
-                      } else if (diff < 0) {
-                        return (
-                          <span style={{ color: '#ff4d4f' }}>
-                            SMA20 &lt; SMA50
-                          </span>
-                        );
-                      } else {
-                        return (
-                          <span style={{ color: '#8c8c8c' }}>
-                            Equal
-                          </span>
-                        );
-                      }
-                    })()}
-                  </div>
-                  <div style={{
-                    fontSize: '11px',
-                    color: '#8c8c8c',
-                    lineHeight: '1.4'
-                  }}>
-                    {(() => {
-                      if (chartData.length === 0) return 'N/A';
-                      
-                      const lastData = chartData[chartData.length - 1];
-                      const sma20 = lastData?.sma20;
-                      const sma50 = lastData?.sma50;
-                      
-                      if (sma20 === undefined || isNaN(sma20) || sma50 === undefined || isNaN(sma50)) {
-                        return 'Not enough data';
-                      }
-                      
-                      const diff = sma20 - sma50;
-                      const diffPercent = (diff / sma50) * 100;
-                      
-                      return `Diff: ${safeToFixed(diffPercent, 2)}%`;
-                    })()}
-                  </div>
-                </div>
-              </Col>
-            </Row>
-          </Card>
-        </Col>
-      </Row>
-
-      {/* Trade Setup - 交易设置 (研究+决策) */}
-      <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
-        <Col span={24}>
-          <Card
-            title={
-              <span style={{ fontSize: '16px', fontWeight: '600', color: '#1f1f1f' }}>
-                Trade Setup Analysis
-              </span>
-            }
-            style={{
-              border: '1px solid #e8e8e8',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.04)'
-            }}
-            bodyStyle={{ padding: '20px' }}
-          >
-            <Row gutter={[24, 24]}>
-              {/* Support / Resistance - 支撑位/压力位 */}
-              <Col xs={24} sm={12} md={6}>
-                <div style={{
-                  padding: '16px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '8px',
-                  background: '#fafafa'
-                }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#595959',
-                    fontWeight: '600',
-                    marginBottom: '12px',
-                    display: 'flex',
-                    alignItems: 'center'
-                  }}>
-                    <LineChartOutlined style={{ marginRight: '8px', fontSize: '12px' }} />
-                    Support / Resistance
-                  </div>
-                  
-                  <div style={{ marginBottom: '16px' }}>
-                    <div style={{
-                      fontSize: '11px',
-                      color: '#8c8c8c',
-                      marginBottom: '4px'
-                    }}>
-                      Key Support Levels
-                    </div>
-                    <div style={{
-                      fontSize: '14px',
-                      fontWeight: '600',
-                      color: '#389e0d'
-                    }}>
-                      {(() => {
-                        if (!stockData.price || chartData.length === 0) return 'N/A';
-                        
-                        const currentPrice = stockData.price;
-                        const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                        
-                        if (dataToUse.length === 0) return 'No data';
-                        
-                        // 基于近期低点计算支撑位
-                        const recentLows = dataToUse.slice(-20).map(d => d.low);
-                        const support1 = Math.min(...recentLows) * 0.98; // 近期低点下方2%
-                        const support2 = Math.min(...recentLows) * 0.95; // 近期低点下方5%
-                        
-                        return (
-                          <div>
-                            <div>S1: ${safeToFixed(support1, 2)}</div>
-                            <div>S2: ${safeToFixed(support2, 2)}</div>
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  </div>
-                  
-                  <div>
-                    <div style={{
-                      fontSize: '11px',
-                      color: '#8c8c8c',
-                      marginBottom: '4px'
-                    }}>
-                      Key Resistance Levels
-                    </div>
-                    <div style={{
-                      fontSize: '14px',
-                      fontWeight: '600',
-                      color: '#cf1322'
-                    }}>
-                      {(() => {
-                        if (!stockData.price || chartData.length === 0) return 'N/A';
-                        
-                        const currentPrice = stockData.price;
-                        const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                        
-                        if (dataToUse.length === 0) return 'No data';
-                        
-                        // 基于近期高点计算压力位
-                        const recentHighs = dataToUse.slice(-20).map(d => d.high);
-                        const resistance1 = Math.max(...recentHighs) * 1.02; // 近期高点上方2%
-                        const resistance2 = Math.max(...recentHighs) * 1.05; // 近期高点上方5%
-                        
-                        return (
-                          <div>
-                            <div>R1: ${safeToFixed(resistance1, 2)}</div>
-                            <div>R2: ${safeToFixed(resistance2, 2)}</div>
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  </div>
-                  
-                  <div style={{
-                    fontSize: '10px',
-                    color: '#8c8c8c',
-                    marginTop: '12px',
-                    fontStyle: 'italic',
-                    borderTop: '1px solid #f0f0f0',
-                    paddingTop: '8px'
-                  }}>
-                    Derived from recent swing highs/lows in {selectedTimeframe} timeframe
-                  </div>
-                </div>
-              </Col>
-
-              {/* Entry / Stop / Target - 入场/止损/目标 */}
-              <Col xs={24} sm={12} md={6}>
-                <div style={{
-                  padding: '16px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '8px',
-                  background: '#fafafa'
-                }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#595959',
-                    fontWeight: '600',
-                    marginBottom: '12px',
-                    display: 'flex',
-                    alignItems: 'center'
-                  }}>
-                    <LineChartOutlined style={{ marginRight: '8px', fontSize: '12px' }} />
-                    Reference Entry / Stop / Target
-                  </div>
-                  
-                  <div style={{ marginBottom: '12px' }}>
-                    <div style={{
-                      fontSize: '11px',
-                      color: '#8c8c8c',
-                      marginBottom: '4px'
-                    }}>
-                      Entry Price
-                    </div>
-                    <div style={{
-                      fontSize: '16px',
-                      fontWeight: '700',
-                      color: '#1890ff'
-                    }}>
-                      {(() => {
-                        if (!stockData.price) return 'N/A';
-                        
-                        const currentPrice = stockData.price;
-                        // 基于当前价格给出参考入场点
-                        const entryPrice = currentPrice * 0.995; // 当前价格下方0.5%
-                        
-                        return `$${safeToFixed(entryPrice, 2)}`;
-                      })()}
-                    </div>
-                  </div>
-                  
-                  <div style={{ marginBottom: '12px' }}>
-                    <div style={{
-                      fontSize: '11px',
-                      color: '#8c8c8c',
-                      marginBottom: '4px'
-                    }}>
-                      Stop Loss
-                    </div>
-                    <div style={{
-                      fontSize: '14px',
-                      fontWeight: '600',
-                      color: '#cf1322'
-                    }}>
-                      {(() => {
-                        if (!stockData.price || chartData.length === 0) return 'N/A';
-                        
-                        const currentPrice = stockData.price;
-                        const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                        
-                        if (dataToUse.length === 0) return 'No data';
-                        
-                        // 基于近期低点计算止损位
-                        const recentLows = dataToUse.slice(-10).map(d => d.low);
-                        const stopLoss = Math.min(...recentLows) * 0.98; // 近期低点下方2%
-                        
-                        return `$${safeToFixed(stopLoss, 2)}`;
-                      })()}
-                    </div>
-                  </div>
-                  
-                  <div>
-                    <div style={{
-                      fontSize: '11px',
-                      color: '#8c8c8c',
-                      marginBottom: '4px'
-                    }}>
-                      Target Price
-                    </div>
-                    <div style={{
-                      fontSize: '14px',
-                      fontWeight: '600',
-                      color: '#389e0d'
-                    }}>
-                      {(() => {
-                        if (!stockData.price || chartData.length === 0) return 'N/A';
-                        
-                        const currentPrice = stockData.price;
-                        const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                        
-                        if (dataToUse.length === 0) return 'No data';
-                        
-                        // 基于近期高点计算目标位
-                        const recentHighs = dataToUse.slice(-20).map(d => d.high);
-                        const targetPrice = Math.max(...recentHighs) * 1.03; // 近期高点上方3%
-                        
-                        return `$${safeToFixed(targetPrice, 2)}`;
-                      })()}
-                    </div>
-                  </div>
-                  
-                  <div style={{
-                    fontSize: '10px',
-                    color: '#8c8c8c',
-                    marginTop: '12px',
-                    fontStyle: 'italic',
-                    borderTop: '1px solid #f0f0f0',
-                    paddingTop: '8px'
-                  }}>
-                    Reference values derived from recent price action - For planning only
-                  </div>
-                </div>
-              </Col>
-
-              {/* Trade Bias / Setup - 交易偏倚/设置 */}
-              <Col xs={24} sm={12} md={6}>
-                <div style={{
-                  padding: '16px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '8px',
-                  background: '#fafafa'
-                }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#595959',
-                    fontWeight: '600',
-                    marginBottom: '12px',
-                    display: 'flex',
-                    alignItems: 'center'
-                  }}>
-                    <LineChartOutlined style={{ marginRight: '8px', fontSize: '12px' }} />
-                    Trade Setup Bias
-                  </div>
-                  
-                  <div style={{
-                    fontSize: '18px',
-                    fontWeight: '700',
-                    marginBottom: '12px',
-                    textAlign: 'center'
-                  }}>
-                    {(() => {
-                      if (!stockData.price || chartData.length === 0) return 'N/A';
-                      
-                      const lastData = chartData[chartData.length - 1];
-                      const currentPrice = stockData.price;
-                      const sma20 = lastData?.sma20;
-                      const sma50 = lastData?.sma50;
-                      const rsi = lastData?.rsi;
-                      
-                      // 收集信号
-                      let longSignals = 0;
-                      let shortSignals = 0;
-                      
-                      // 1. Price vs SMA20
-                      if (sma20 !== undefined) {
-                        if (currentPrice > sma20) longSignals++;
-                        else if (currentPrice < sma20) shortSignals++;
-                      }
-                      
-                      // 2. Price vs SMA50
-                      if (sma50 !== undefined) {
-                        if (currentPrice > sma50) longSignals++;
-                        else if (currentPrice < sma50) shortSignals++;
-                      }
-                      
-                      // 3. RSI状态
-                      if (rsi !== undefined && !isNaN(rsi)) {
-                        if (rsi <= 30) longSignals++; // 超卖 -> 看涨
-                        else if (rsi >= 70) shortSignals++; // 超买 -> 看跌
-                      }
-                      
-                      // 4. 52周位置
-                      if (chartData.length > 0) {
-                        const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                        if (dataToUse.length > 0) {
-                          const fiftyTwoWeekHigh = Math.max(...dataToUse.map(d => d.high));
-                          const fiftyTwoWeekLow = Math.min(...dataToUse.map(d => d.low));
-                          if (fiftyTwoWeekHigh !== fiftyTwoWeekLow) {
-                            const rangePosition = ((currentPrice - fiftyTwoWeekLow) / (fiftyTwoWeekHigh - fiftyTwoWeekLow)) * 100;
-                            if (rangePosition <= 20) longSignals++; // 接近52周低点 -> 看涨
-                            else if (rangePosition >= 80) shortSignals++; // 接近52周高点 -> 看跌
-                          }
-                        }
-                      }
-                      
-                      // 判断交易设置偏倚
-                      if (longSignals > shortSignals + 1) {
-                        return (
-                          <span style={{ color: '#52c41a' }}>
-                            <ArrowUpOutlined style={{ marginRight: '8px' }} />
-                            Bullish Setup
-                          </span>
-                        );
-                      } else if (shortSignals > longSignals + 1) {
-                        return (
-                          <span style={{ color: '#cf1322' }}>
-                            <ArrowDownOutlined style={{ marginRight: '8px' }} />
-                            Bearish Setup
-                          </span>
-                        );
-                      } else {
-                        return (
-                          <span style={{ color: '#8c8c8c' }}>
-                            Neutral / No Clear Setup
-                          </span>
-                        );
-                      }
-                    })()}
-                  </div>
-                  
-                  <div style={{
-                    fontSize: '11px',
-                    color: '#8c8c8c',
-                    marginBottom: '8px'
-                  }}>
-                    {(() => {
-                      if (!stockData.price || chartData.length === 0) return 'No data';
-                      
-                      const lastData = chartData[chartData.length - 1];
-                      const currentPrice = stockData.price;
-                      const sma20 = lastData?.sma20;
-                      const sma50 = lastData?.sma50;
-                      const rsi = lastData?.rsi;
-                      
-                      let signals = [];
-                      
-                      if (sma20 !== undefined) {
-                        signals.push(`Price ${currentPrice > sma20 ? '>' : '<'} SMA20`);
-                      }
-                      
-                      if (sma50 !== undefined) {
-                        signals.push(`Price ${currentPrice > sma50 ? '>' : '<'} SMA50`);
-                      }
-                      
-                      if (rsi !== undefined && !isNaN(rsi)) {
-                        if (rsi <= 30) signals.push('RSI Oversold');
-                        else if (rsi >= 70) signals.push('RSI Overbought');
-                        else signals.push(`RSI ${safeToFixed(rsi, 1)}`);
-                      }
-                      
-                      return signals.join(' • ');
-                    })()}
-                  </div>
-                  
-                  <div style={{
-                    fontSize: '10px',
-                    color: '#8c8c8c',
-                    fontStyle: 'italic'
-                  }}>
-                    Current trade setup assessment based on technical confluence
-                  </div>
-                </div>
-              </Col>
-
-              {/* Risk / Reward - 风险/回报 */}
-              <Col xs={24} sm={12} md={6}>
-                <div style={{
-                  padding: '16px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '8px',
-                  background: '#fafafa'
-                }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#595959',
-                    fontWeight: '600',
-                    marginBottom: '12px',
-                    display: 'flex',
-                    alignItems: 'center'
-                  }}>
-                    <LineChartOutlined style={{ marginRight: '8px', fontSize: '12px' }} />
-                    Risk / Reward
-                  </div>
-                  
-                  <div style={{ marginBottom: '16px' }}>
-                    <div style={{
-                      fontSize: '11px',
-                      color: '#8c8c8c',
-                      marginBottom: '4px'
-                    }}>
-                      Risk per Share
-                    </div>
-                    <div style={{
-                      fontSize: '14px',
-                      fontWeight: '600',
-                      color: '#cf1322'
-                    }}>
-                      {(() => {
-                        if (!stockData.price || chartData.length === 0) return 'N/A';
-                        
-                        const currentPrice = stockData.price;
-                        const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                        
-                        if (dataToUse.length === 0) return 'No data';
-                        
-                        // 计算风险（入场价-止损价）
-                        const recentLows = dataToUse.slice(-10).map(d => d.low);
-                        const stopLoss = Math.min(...recentLows) * 0.98;
-                        const entryPrice = currentPrice * 0.995;
-                        const riskPerShare = entryPrice - stopLoss;
-                        
-                        return `$${safeToFixed(riskPerShare, 2)}`;
-                      })()}
-                    </div>
-                  </div>
-                  
-                  <div style={{ marginBottom: '16px' }}>
-                    <div style={{
-                      fontSize: '11px',
-                      color: '#8c8c8c',
-                      marginBottom: '4px'
-                    }}>
-                      Reward per Share
-                    </div>
-                    <div style={{
-                      fontSize: '14px',
-                      fontWeight: '600',
-                      color: '#389e0d'
-                    }}>
-                      {(() => {
-                        if (!stockData.price || chartData.length === 0) return 'N/A';
-                        
-                        const currentPrice = stockData.price;
-                        const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                        
-                        if (dataToUse.length === 0) return 'No data';
-                        
-                        // 计算回报（目标价-入场价）
-                        const recentHighs = dataToUse.slice(-20).map(d => d.high);
-                        const targetPrice = Math.max(...recentHighs) * 1.03;
-                        const entryPrice = currentPrice * 0.995;
-                        const rewardPerShare = targetPrice - entryPrice;
-                        
-                        return `$${safeToFixed(rewardPerShare, 2)}`;
-                      })()}
-                    </div>
-                  </div>
-                  
-                  <div>
-                    <div style={{
-                      fontSize: '11px',
-                      color: '#8c8c8c',
-                      marginBottom: '4px'
-                    }}>
-                      Risk/Reward Ratio
-                    </div>
-                    <div style={{
-                      fontSize: '16px',
-                      fontWeight: '700',
-                      color: (() => {
-                        if (!stockData.price || chartData.length === 0) return '#8c8c8c';
-                        
-                        const currentPrice = stockData.price;
-                        const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                        
-                        if (dataToUse.length === 0) return '#8c8c8c';
-                        
-                        // 计算风险回报比
-                        const recentLows = dataToUse.slice(-10).map(d => d.low);
-                        const recentHighs = dataToUse.slice(-20).map(d => d.high);
-                        const stopLoss = Math.min(...recentLows) * 0.98;
-                        const targetPrice = Math.max(...recentHighs) * 1.03;
-                        const entryPrice = currentPrice * 0.995;
-                        
-                        const risk = entryPrice - stopLoss;
-                        const reward = targetPrice - entryPrice;
-                        
-                        if (risk <= 0) return '#8c8c8c';
-                        
-                        const ratio = reward / risk;
-                        
-                        if (ratio >= 2) return '#52c41a'; // 良好
-                        if (ratio >= 1) return '#fa8c16'; // 一般
-                        return '#cf1322'; // 较差
-                      })()
-                    }}>
-                      {(() => {
-                        if (!stockData.price || chartData.length === 0) return 'N/A';
-                        
-                        const currentPrice = stockData.price;
-                        const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                        
-                        if (dataToUse.length === 0) return 'No data';
-                        
-                        // 计算风险回报比
-                        const recentLows = dataToUse.slice(-10).map(d => d.low);
-                        const recentHighs = dataToUse.slice(-20).map(d => d.high);
-                        const stopLoss = Math.min(...recentLows) * 0.98;
-                        const targetPrice = Math.max(...recentHighs) * 1.03;
-                        const entryPrice = currentPrice * 0.995;
-                        
-                        const risk = entryPrice - stopLoss;
-                        const reward = targetPrice - entryPrice;
-                        
-                        if (risk <= 0) return 'Invalid';
-                        
-                        const ratio = reward / risk;
-                        return `${safeToFixed(ratio, 2)}:1`;
-                      })()}
-                    </div>
-                  </div>
-                  
-                  <div style={{
-                    fontSize: '10px',
-                    color: '#8c8c8c',
-                    marginTop: '12px',
-                    fontStyle: 'italic',
-                    borderTop: '1px solid #f0f0f0',
-                    paddingTop: '8px'
-                  }}>
-                    Calculated from reference entry/stop/target levels based on support/resistance
-                  </div>
-                </div>
-              </Col>
-            </Row>
-          </Card>
-        </Col>
-      </Row>
-
       {/* 技术指标 - 更充实 */}
       <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
         <Col span={24}>
@@ -5395,7 +4369,7 @@ const SymbolAnalysis: React.FC = () => {
                             lineHeight: '1.2',
                             marginBottom: '12px'
                           }}>
-                            {stockData.price !== null ? `$${safeToFixed(stockData.price, 2)}` : 'N/A'}
+                            {stockData.price !== null ? `$${safeToFixed(stockData.price, 2)}` : '--'}
                           </div>
                           <div style={{
                             fontSize: '11px',
@@ -5439,11 +4413,11 @@ const SymbolAnalysis: React.FC = () => {
                             marginBottom: '12px'
                           }}>
                             {(() => {
-                              if (chartData.length === 0) return 'N/A';
+                              if (chartData.length === 0) return '--';
                               const lastData = chartData[chartData.length - 1];
                               return lastData?.sma20 !== undefined
                                 ? `$${safeToFixed(lastData.sma20, 2)}`
-                                : 'N/A';
+                                : '--';
                             })()}
                           </div>
                           <div style={{
@@ -5488,11 +4462,11 @@ const SymbolAnalysis: React.FC = () => {
                             marginBottom: '12px'
                           }}>
                             {(() => {
-                              if (chartData.length === 0) return 'N/A';
+                              if (chartData.length === 0) return '--';
                               const lastData = chartData[chartData.length - 1];
                               return lastData?.sma50 !== undefined
                                 ? `$${safeToFixed(lastData.sma50, 2)}`
-                                : 'N/A';
+                                : '--';
                             })()}
                           </div>
                           <div style={{
@@ -5508,6 +4482,259 @@ const SymbolAnalysis: React.FC = () => {
                     </Col>
                   </Row>
 
+                  {/* 第二行：MA Signals 区块 */}
+                  <div style={{ marginTop: '32px' }}>
+                    <div style={{
+                      fontSize: '16px',
+                      fontWeight: '600',
+                      color: '#1f1f1f',
+                      marginBottom: '16px',
+                      paddingBottom: '8px',
+                      borderBottom: '1px solid #f0f0f0'
+                    }}>
+                      MA Signals
+                    </div>
+                    
+                    <Row gutter={[16, 16]}>
+                      <Col span={12}>
+                        <Card
+                          size="small"
+                          style={{
+                            border: '1px solid #f0f0f0',
+                            borderRadius: '6px',
+                            background: '#fafafa'
+                          }}
+                        >
+                          <div style={{ padding: '16px' }}>
+                            <div style={{
+                              fontSize: '13px',
+                              color: '#595959',
+                              fontWeight: '500',
+                              marginBottom: '8px'
+                            }}>
+                              Price vs SMA20
+                            </div>
+                            <div style={{
+                              fontSize: '16px',
+                              fontWeight: '600',
+                              color: '#1f1f1f'
+                            }}>
+                              {(() => {
+                                if (chartData.length === 0 || !stockData.price) return '--';
+                                const lastData = chartData[chartData.length - 1];
+                                if (!lastData || lastData.sma20 === undefined) return '--';
+                                
+                                const price = stockData.price;
+                                const sma20 = lastData.sma20;
+                                const diff = price - sma20;
+                                const diffPercent = (diff / sma20) * 100;
+                                
+                                if (diff > 0) {
+                                  return (
+                                    <span style={{ color: '#52c41a' }}>
+                                      Above (+{safeToFixed(diffPercent, 2)}%)
+                                    </span>
+                                  );
+                                } else if (diff < 0) {
+                                  return (
+                                    <span style={{ color: '#ff4d4f' }}>
+                                      Below ({safeToFixed(diffPercent, 2)}%)
+                                    </span>
+                                  );
+                                } else {
+                                  return (
+                                    <span style={{ color: '#8c8c8c' }}>
+                                      Equal (0.00%)
+                                    </span>
+                                  );
+                                }
+                              })()}
+                            </div>
+                          </div>
+                        </Card>
+                      </Col>
+                      
+                      <Col span={12}>
+                        <Card
+                          size="small"
+                          style={{
+                            border: '1px solid #f0f0f0',
+                            borderRadius: '6px',
+                            background: '#fafafa'
+                          }}
+                        >
+                          <div style={{ padding: '16px' }}>
+                            <div style={{
+                              fontSize: '13px',
+                              color: '#595959',
+                              fontWeight: '500',
+                              marginBottom: '8px'
+                            }}>
+                              Price vs SMA50
+                            </div>
+                            <div style={{
+                              fontSize: '16px',
+                              fontWeight: '600',
+                              color: '#1f1f1f'
+                            }}>
+                              {(() => {
+                                if (chartData.length === 0 || !stockData.price) return '--';
+                                const lastData = chartData[chartData.length - 1];
+                                if (!lastData || lastData.sma50 === undefined) return '--';
+                                
+                                const price = stockData.price;
+                                const sma50 = lastData.sma50;
+                                const diff = price - sma50;
+                                const diffPercent = (diff / sma50) * 100;
+                                
+                                if (diff > 0) {
+                                  return (
+                                    <span style={{ color: '#52c41a' }}>
+                                      Above (+{safeToFixed(diffPercent, 2)}%)
+                                    </span>
+                                  );
+                                } else if (diff < 0) {
+                                  return (
+                                    <span style={{ color: '#ff4d4f' }}>
+                                      Below ({safeToFixed(diffPercent, 2)}%)
+                                    </span>
+                                  );
+                                } else {
+                                  return (
+                                    <span style={{ color: '#8c8c8c' }}>
+                                      Equal (0.00%)
+                                    </span>
+                                  );
+                                }
+                              })()}
+                            </div>
+                          </div>
+                        </Card>
+                      </Col>
+                      
+                      <Col span={12}>
+                        <Card
+                          size="small"
+                          style={{
+                            border: '1px solid #f0f0f0',
+                            borderRadius: '6px',
+                            background: '#fafafa'
+                          }}
+                        >
+                          <div style={{ padding: '16px' }}>
+                            <div style={{
+                              fontSize: '13px',
+                              color: '#595959',
+                              fontWeight: '500',
+                              marginBottom: '8px'
+                            }}>
+                              SMA20 vs SMA50
+                            </div>
+                            <div style={{
+                              fontSize: '16px',
+                              fontWeight: '600',
+                              color: '#1f1f1f'
+                            }}>
+                              {(() => {
+                                if (chartData.length === 0) return '--';
+                                const lastData = chartData[chartData.length - 1];
+                                if (!lastData || lastData.sma20 === undefined || lastData.sma50 === undefined) return '--';
+                                
+                                const sma20 = lastData.sma20;
+                                const sma50 = lastData.sma50;
+                                const diff = sma20 - sma50;
+                                const diffPercent = (diff / sma50) * 100;
+                                
+                                if (diff > 0) {
+                                  return (
+                                    <span style={{ color: '#52c41a' }}>
+                                      Above (+{safeToFixed(diffPercent, 2)}%)
+                                    </span>
+                                  );
+                                } else if (diff < 0) {
+                                  return (
+                                    <span style={{ color: '#ff4d4f' }}>
+                                      Below ({safeToFixed(diffPercent, 2)}%)
+                                    </span>
+                                  );
+                                } else {
+                                  return (
+                                    <span style={{ color: '#8c8c8c' }}>
+                                      Equal (0.00%)
+                                    </span>
+                                  );
+                                }
+                              })()}
+                            </div>
+                          </div>
+                        </Card>
+                      </Col>
+                      
+                      <Col span={12}>
+                        <Card
+                          size="small"
+                          style={{
+                            border: '1px solid #f0f0f0',
+                            borderRadius: '6px',
+                            background: '#fafafa'
+                          }}
+                        >
+                          <div style={{ padding: '16px' }}>
+                            <div style={{
+                              fontSize: '13px',
+                              color: '#595959',
+                              fontWeight: '500',
+                              marginBottom: '8px'
+                            }}>
+                              Trend Bias
+                            </div>
+                            <div style={{
+                              fontSize: '16px',
+                              fontWeight: '600'
+                            }}>
+                              {(() => {
+                                if (chartData.length === 0) return '--';
+                                const lastData = chartData[chartData.length - 1];
+                                if (!lastData || lastData.sma20 === undefined || lastData.sma50 === undefined) return '--';
+                                
+                                const price = stockData.price || 0;
+                                const sma20 = lastData.sma20;
+                                const sma50 = lastData.sma50;
+                                
+                                // 综合判断趋势偏倚
+                                const priceVsSMA20 = price > sma20;
+                                const priceVsSMA50 = price > sma50;
+                                const sma20VsSMA50 = sma20 > sma50;
+                                
+                                const bullishCount = [priceVsSMA20, priceVsSMA50, sma20VsSMA50].filter(Boolean).length;
+                                
+                                if (bullishCount >= 2) {
+                                  return (
+                                    <span style={{ color: '#52c41a' }}>
+                                      <ArrowUpOutlined /> Bullish
+                                    </span>
+                                  );
+                                } else if (bullishCount <= 1) {
+                                  return (
+                                    <span style={{ color: '#ff4d4f' }}>
+                                      <ArrowDownOutlined /> Bearish
+                                    </span>
+                                  );
+                                } else {
+                                  return (
+                                    <span style={{ color: '#8c8c8c' }}>
+                                      Neutral
+                                    </span>
+                                  );
+                                }
+                              })()}
+                            </div>
+                          </div>
+                        </Card>
+                      </Col>
+                    </Row>
+                  </div>
+
                   {/* 第三行：Notes / Data Availability 区块 */}
                   <div style={{ marginTop: '32px' }}>
                     <div style={{
@@ -5518,7 +4745,7 @@ const SymbolAnalysis: React.FC = () => {
                       paddingBottom: '8px',
                       borderBottom: '1px solid #f0f0f0'
                     }}>
-                      Data Status
+                      Notes & Data Availability
                     </div>
                     
                     <Card
@@ -5542,7 +4769,7 @@ const SymbolAnalysis: React.FC = () => {
                                   <div style={{ color: '#ff4d4f', fontWeight: '500', marginBottom: '8px' }}>
                                     ⚠️ No data available
                                   </div>
-                                  <div>Load chart data to see moving average analysis.</div>
+                                  <div>Please load chart data to see moving average analysis.</div>
                                 </div>
                               );
                             }
