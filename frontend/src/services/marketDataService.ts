@@ -176,7 +176,8 @@ export const formatPercent = (value: number | null | undefined): string => {
   const num = Number(value);
   if (isNaN(num)) return '--';
   
-  return `${num >= 0 ? '+' : ''}${num.toFixed(2)}%`;
+  if (num === 0) return '0.00%';
+  return `${num > 0 ? '+' : '-'}${Math.abs(num).toFixed(2)}%`;
 };
 
 /**

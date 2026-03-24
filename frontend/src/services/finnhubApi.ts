@@ -112,8 +112,9 @@ export const formatPercent = (value: number | null | undefined): string => {
   const num = Number(value);
   if (isNaN(num)) return '--';
   
-  const sign = num >= 0 ? '+' : '';
-  return `${sign}${num.toFixed(2)}%`;
+  if (num === 0) return '0.00%';
+  const sign = num > 0 ? '+' : '-';
+  return `${sign}${Math.abs(num).toFixed(2)}%`;
 };
 
 // 安全数字转换

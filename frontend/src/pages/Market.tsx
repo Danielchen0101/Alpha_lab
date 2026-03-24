@@ -446,7 +446,7 @@ const Market: React.FC = () => {
             textAlign: 'center',
             lineHeight: '40px'
           }}>
-            {value !== 0 ? `$${value > 0 ? '+' : ''}${safeToFixed(value, 2)}` : '$0.00'}
+            {value !== 0 ? `${value > 0 ? '+' : '-'}$${safeToFixed(Math.abs(value), 2)}` : '$0.00'}
           </div>
         );
       },
@@ -484,7 +484,7 @@ const Market: React.FC = () => {
                 border: 'none'
               }}
             >
-              {value !== 0 ? `${value > 0 ? '+' : ''}${safeToFixed(value, 2)}%` : '0.00%'}
+              {value !== 0 ? `${value > 0 ? '+' : '-'}${safeToFixed(Math.abs(value), 2)}%` : '0.00%'}
             </Tag>
           </div>
         );

@@ -44,9 +44,13 @@ const TradeLogTable: React.FC<TradeLogTableProps> = ({ data }) => {
 
   // Format percentage
   const formatPercent = (value: number): string => {
-    const sign = value > 0 ? '+' : '';
-    return `${sign}${value.toFixed(2)}%`;
-  };
+  if (value === undefined || value === null || isNaN(value)) {
+    return "N/A";
+  }
+  if (value === 0) return "0.00%";
+  const sign = value > 0 ? "+" : "-";
+  return `${sign}${Math.abs(value).toFixed(2)}%`;
+};
 
   // Table columns
   const columns = [

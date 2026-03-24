@@ -39,6 +39,74 @@ const Watchlist: React.FC = () => {
     return '0.00';
   };
 
+  // 生成监控signal信号
+  const getSignal = (item: WatchlistItem): string => {
+    const changePercent = item.changePercent || 0;
+    const price = item.price || 0;
+    const dayHigh = item.dayHigh || 0;
+    const dayLow = item.dayLow || 0;
+    
+    // 1. Bullish - 强势上涨
+    if (changePercent > 5) return 'Bullish';
+    
+    // 2. Bearish - 强势下跌
+    if (changePercent < -5) return 'Bearish';
+    
+    // 3. Oversold - 超卖信号（大幅下跌后接近日内低点）
+    if (changePercent < -3 && dayLow > 0 && price > 0 && price > dayLow && (price - dayLow) / price < 0.02) {
+      return 'Oversold';
+    }
+    
+    // 4. Near support - 接近支撑位（接近日内低点）
+    if (dayLow > 0 && price > 0 && price > dayLow && (price - dayLow) / price < 0.015) {
+      return 'Near support';
+    }
+    
+    // 5. 如果价格变化很小，返回"No clear setup"
+    if (Math.abs(changePercent) < 1) {
+      return 'No clear setup';
+    }
+    
+    // 默认返回"No clear setup"
+    return 'No clear setup';
+  };
+
+  // 格式化市值函数（与Market页面一致）
+  const formatMarketCap = (value: number | null | undefined): string => {
+    if (value === null || value === undefined || value === 0) return '--';
+    
+    const num = Number(value);
+    if (isNaN(num)) return '--';
+    
+    // 万亿 (Trillion) - 1万亿 = 1e12
+    if (num >= 1e12) {
+      const trillions = num / 1e12;
+      // 对于万亿级别，显示2位小数
+      return `$${trillions.toFixed(2)}T`;
+    }
+    
+    // 十亿 (Billion) - 10亿 = 1e9
+    if (num >= 1e9) {
+      const billions = num / 1e9;
+      // 对于十亿级别，显示2位小数
+      return `$${billions.toFixed(2)}B`;
+    }
+    
+    // 百万 (Million) - 1百万 = 1e6
+    if (num >= 1e6) {
+      const millions = num / 1e6;
+      return `$${millions.toFixed(2)}M`;
+    }
+    
+    // 千 (Thousand) - 1千 = 1e3
+    if (num >= 1e3) {
+      const thousands = num / 1e3;
+      return `$${thousands.toFixed(2)}K`;
+    }
+    
+    return `$${num.toFixed(2)}`;
+  };
+
   // Load watchlist from localStorage on component mount and listen for changes
   useEffect(() => {
     // Prevent double loading in React Strict Mode
@@ -279,29 +347,53 @@ const Watchlist: React.FC = () => {
       title: 'Symbol',
       dataIndex: 'symbol',
       key: 'symbol',
-      width: 100,
+      width: 90,
+      fixed: 'left' as const,
       sorter: (a: WatchlistItem, b: WatchlistItem) => a.symbol.localeCompare(b.symbol),
-      render: (symbol: string) => (
-        <Tag color="blue" style={{ fontSize: '14px', fontWeight: 'bold' }}>
-          {symbol}
-        </Tag>
+      render: (symbol: string, record: WatchlistItem) => (
+        <div>
+          <div style={{ 
+            fontWeight: '800', 
+            fontSize: '15px', 
+            letterSpacing: '-0.2px',
+            color: '#1f1f1f',
+            lineHeight: '1.1'
+          }}>
+            {symbol}
+          </div>
+          <div style={{ 
+            fontSize: '10px', 
+            color: '#bfbfbf', 
+            fontWeight: 400, 
+            marginTop: '1px',
+            lineHeight: '1.2',
+            maxWidth: '100px',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            opacity: 0.7
+          }}>
+            {record.name || symbol}
+          </div>
+        </div>
       ),
-    },
-    {
-      title: 'Name',
-      dataIndex: 'name',
-      key: 'name',
-      width: 140,
-      ellipsis: true,
     },
     {
       title: 'Price',
       dataIndex: 'price',
       key: 'price',
-      width: 95,
+      width: 90,
+      align: 'center' as const,
       sorter: (a: WatchlistItem, b: WatchlistItem) => (a.price || 0) - (b.price || 0),
       render: (price: number) => (
-        <div style={{ fontWeight: '600', fontFeatureSettings: '"tnum"' }}>
+        <div style={{ 
+          fontWeight: '800', 
+          fontSize: '16px', 
+          fontFeatureSettings: '"tnum"',
+          color: '#1f1f1f',
+          textAlign: 'center',
+          lineHeight: '40px'
+        }}>
           {price !== null && price !== undefined ? `$${safeToFixed(price, 2)}` : '--'}
         </div>
       ),
@@ -311,13 +403,23 @@ const Watchlist: React.FC = () => {
       dataIndex: 'change',
       key: 'change',
       width: 95,
+      align: 'center' as const,
       sorter: (a: WatchlistItem, b: WatchlistItem) => (a.change || 0) - (b.change || 0),
       render: (change: number) => {
         const safeChange = typeof change === 'number' && !isNaN(change) ? change : 0;
-        const color = safeChange >= 0 ? '#52c41a' : '#ff4d4f';
+        const isPositive = safeChange > 0;
+        const isNegative = safeChange < 0;
+        
         return (
-          <div style={{ color, fontWeight: '600', fontFeatureSettings: '"tnum"' }}>
-            {safeChange >= 0 ? '+' : ''}${safeToFixed(safeChange, 2)}
+          <div style={{ 
+            fontSize: '16px', 
+            fontWeight: 800, 
+            color: isPositive ? '#52c41a' : isNegative ? '#ff4d4f' : '#666',
+            fontFeatureSettings: '"tnum"',
+            textAlign: 'center',
+            lineHeight: '40px'
+          }}>
+            {safeChange !== 0 ? `${isPositive ? '+' : '-'}$${safeToFixed(Math.abs(safeChange), 2)}` : '$0.00'}
           </div>
         );
       },
@@ -326,24 +428,39 @@ const Watchlist: React.FC = () => {
       title: 'Change %',
       dataIndex: 'changePercent',
       key: 'changePercent',
-      width: 95,
+      width: 100,
+      align: 'center' as const,
       sorter: (a: WatchlistItem, b: WatchlistItem) => (a.changePercent || 0) - (b.changePercent || 0),
       render: (percent: number) => {
         const safePercent = typeof percent === 'number' && !isNaN(percent) ? percent : 0;
-        const color = safePercent >= 0 ? '#52c41a' : '#ff4d4f';
+        const isPositive = safePercent > 0;
+        const isNegative = safePercent < 0;
+        
         return (
-          <Tag 
-            color={safePercent >= 0 ? 'green' : 'red'}
-            style={{ 
-              fontWeight: '600',
-              fontSize: '12px',
-              padding: '2px 8px',
-              borderRadius: '6px',
-              border: 'none'
-            }}
-          >
-            {safePercent >= 0 ? '+' : ''}{safeToFixed(safePercent, 2)}%
-          </Tag>
+          <div style={{ 
+            display: 'flex', 
+            justifyContent: 'center', 
+            alignItems: 'center',
+            height: '40px'
+          }}>
+            <Tag 
+              color={isPositive ? 'green' : isNegative ? 'red' : 'default'}
+              style={{ 
+                margin: 0,
+                fontSize: '13px',
+                padding: '4px 10px',
+                fontWeight: 800,
+                borderRadius: '6px',
+                textAlign: 'center',
+                display: 'inline-block',
+                lineHeight: '16px',
+                minWidth: '70px',
+                border: 'none'
+              }}
+            >
+              {safePercent !== 0 ? `${isPositive ? '+' : '-'}${safeToFixed(Math.abs(safePercent), 2)}%` : '0.00%'}
+            </Tag>
+          </div>
         );
       },
     },
@@ -351,9 +468,17 @@ const Watchlist: React.FC = () => {
       title: 'Day High',
       dataIndex: 'dayHigh',
       key: 'dayHigh',
-      width: 95,
+      width: 90,
+      align: 'center' as const,
       render: (dayHigh: number) => (
-        <div style={{ fontSize: '13px', color: '#595959', fontFeatureSettings: '"tnum"' }}>
+        <div style={{ 
+          fontSize: '14px', 
+          fontWeight: 700, 
+          color: '#595959', 
+          fontFeatureSettings: '"tnum"',
+          textAlign: 'center',
+          lineHeight: '40px'
+        }}>
           {dayHigh !== null && dayHigh !== undefined ? `$${safeToFixed(dayHigh, 2)}` : '--'}
         </div>
       ),
@@ -362,10 +487,38 @@ const Watchlist: React.FC = () => {
       title: 'Day Low',
       dataIndex: 'dayLow',
       key: 'dayLow',
-      width: 95,
+      width: 90,
+      align: 'center' as const,
       render: (dayLow: number) => (
-        <div style={{ fontSize: '13px', color: '#595959', fontFeatureSettings: '"tnum"' }}>
+        <div style={{ 
+          fontSize: '14px', 
+          fontWeight: 700, 
+          color: '#595959', 
+          fontFeatureSettings: '"tnum"',
+          textAlign: 'center',
+          lineHeight: '40px'
+        }}>
           {dayLow !== null && dayLow !== undefined ? `$${safeToFixed(dayLow, 2)}` : '--'}
+        </div>
+      ),
+    },
+    {
+      title: 'Market Cap',
+      dataIndex: 'marketCap',
+      key: 'marketCap',
+      width: 100,
+      align: 'center' as const,
+      sorter: (a: WatchlistItem, b: WatchlistItem) => (a.marketCap || 0) - (b.marketCap || 0),
+      render: (marketCap: number | null) => (
+        <div style={{ 
+          fontSize: '13px', 
+          fontWeight: 700, 
+          color: '#595959', 
+          fontFeatureSettings: '"tnum"',
+          textAlign: 'center',
+          lineHeight: '40px'
+        }}>
+          {formatMarketCap(marketCap)}
         </div>
       ),
     },
@@ -373,15 +526,114 @@ const Watchlist: React.FC = () => {
       title: 'Sector',
       dataIndex: 'sector',
       key: 'sector',
-      width: 110,
-      ellipsis: true,
+      width: 95,
+      align: 'center' as const,
+      render: (sector: string | null) => (
+        <Tag 
+          color="default" 
+          style={{ 
+            margin: 0,
+            fontSize: '11px',
+            padding: '3px 8px',
+            fontWeight: 600,
+            borderRadius: '4px',
+            backgroundColor: '#f5f5f5',
+            color: '#595959',
+            border: '1px solid #e8e8e8',
+            display: 'inline-block',
+            lineHeight: '14px',
+            maxWidth: '85px',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap'
+          }}
+        >
+          {sector || 'Other'}
+        </Tag>
+      ),
+    },
+    {
+      title: 'Signal',
+      key: 'signal',
+      width: 100,
+      align: 'center' as const,
+      render: (_: any, record: WatchlistItem) => {
+        const signal = getSignal(record);
+        
+        // 根据signal类型设置颜色和样式
+        let color = 'default';
+        let bgColor = '#f5f5f5';
+        let textColor = '#595959';
+        
+        switch(signal) {
+          case 'Bullish':
+            color = 'green';
+            bgColor = '#f6ffed';
+            textColor = '#52c41a';
+            break;
+          case 'Bearish':
+            color = 'red';
+            bgColor = '#fff2f0';
+            textColor = '#ff4d4f';
+            break;
+          case 'Near support':
+            color = 'blue';
+            bgColor = '#e6f7ff';
+            textColor = '#1890ff';
+            break;
+          case 'Oversold':
+            color = 'purple';
+            bgColor = '#f9f0ff';
+            textColor = '#722ed1';
+            break;
+          case 'No clear setup':
+            color = 'default';
+            bgColor = '#fafafa';
+            textColor = '#8c8c8c';
+            break;
+          default:
+            color = 'default';
+            bgColor = '#f5f5f5';
+            textColor = '#bfbfbf';
+        }
+        
+        return (
+          <Tag 
+            color={color}
+            style={{ 
+              margin: 0,
+              fontSize: '12px',
+              padding: '4px 8px',
+              fontWeight: 700,
+              borderRadius: '5px',
+              backgroundColor: bgColor,
+              color: textColor,
+              border: 'none',
+              display: 'inline-block',
+              lineHeight: '14px',
+              minWidth: '80px',
+              textAlign: 'center'
+            }}
+          >
+            {signal}
+          </Tag>
+        );
+      },
     },
     {
       title: 'Actions',
       key: 'actions',
       width: 220,
+      fixed: 'right' as const,
+      align: 'center' as const,
       render: (_: any, record: WatchlistItem) => (
-        <div style={{ display: 'flex', gap: '6px', justifyContent: 'center' }}>
+        <div style={{ 
+          display: 'flex', 
+          gap: '6px', 
+          justifyContent: 'center',
+          height: '40px',
+          alignItems: 'center'
+        }}>
           <Button
             type="primary"
             icon={<LineChartOutlined />}
@@ -390,10 +642,12 @@ const Watchlist: React.FC = () => {
             style={{ 
               fontSize: '12px', 
               padding: '0 10px', 
-              height: '28px',
+              height: '30px',
+              minWidth: '75px',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'center'
+              justifyContent: 'center',
+              fontWeight: '600'
             }}
           >
             Analyze
@@ -406,16 +660,19 @@ const Watchlist: React.FC = () => {
             style={{ 
               fontSize: '12px', 
               padding: '0 10px', 
-              height: '28px',
+              height: '30px',
+              minWidth: '75px',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'center'
+              justifyContent: 'center',
+              fontWeight: '600',
+              borderColor: '#d9d9d9'
             }}
           >
             Backtest
           </Button>
           <Button
-            type="text"
+            type="default"
             danger
             icon={<DeleteOutlined />}
             onClick={() => handleRemoveSymbol(record.symbol)}
@@ -423,14 +680,15 @@ const Watchlist: React.FC = () => {
             style={{ 
               fontSize: '12px', 
               padding: '0 8px', 
-              height: '28px',
+              height: '30px',
+              minWidth: '30px',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'center'
+              justifyContent: 'center',
+              fontWeight: '600',
+              borderColor: '#ffa39e'
             }}
-          >
-            Remove
-          </Button>
+          />
         </div>
       ),
     },
@@ -502,42 +760,61 @@ const Watchlist: React.FC = () => {
         </Space>
       </Card>
 
-      {/* Watchlist Summary */}
+      {/* Watchlist Summary - Tight Professional Bar */}
       {watchlist.length > 0 && (
-        <Card style={{ marginBottom: '16px', padding: '16px', borderRadius: '8px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div style={{ display: 'flex', gap: '40px' }}>
-              <div>
-                <div style={{ fontSize: '11px', color: '#8c8c8c', marginBottom: '4px', letterSpacing: '0.3px' }}>TOTAL SYMBOLS</div>
-                <div style={{ fontSize: '20px', fontWeight: '700', color: '#1f1f1f' }}>{totalSymbols}</div>
-              </div>
-              <div>
-                <div style={{ fontSize: '11px', color: '#8c8c8c', marginBottom: '4px', letterSpacing: '0.3px' }}>GAINERS</div>
-                <div style={{ fontSize: '20px', fontWeight: '700', color: '#52c41a' }}>{gainers}</div>
-              </div>
-              <div>
-                <div style={{ fontSize: '11px', color: '#8c8c8c', marginBottom: '4px', letterSpacing: '0.3px' }}>LOSERS</div>
-                <div style={{ fontSize: '20px', fontWeight: '700', color: '#ff4d4f' }}>{losers}</div>
-              </div>
-              <div>
-                <div style={{ fontSize: '11px', color: '#8c8c8c', marginBottom: '4px', letterSpacing: '0.3px' }}>AVG CHANGE</div>
-                <div style={{ 
-                  fontSize: '20px', 
-                  fontWeight: '700', 
-                  color: avgChange >= 0 ? '#52c41a' : '#ff4d4f' 
-                }}>
-                  {avgChange >= 0 ? '+' : ''}{safeToFixed(avgChange, 2)}%
-                </div>
-              </div>
-            </div>
-            <div style={{ textAlign: 'right' }}>
-              <div style={{ fontSize: '11px', color: '#8c8c8c', marginBottom: '4px', letterSpacing: '0.3px' }}>LAST UPDATED</div>
-              <div style={{ fontSize: '13px', fontWeight: '500', color: '#595959' }}>
-                {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </div>
+        <div style={{ 
+          marginBottom: '16px', 
+          padding: '10px 14px', 
+          borderRadius: '6px',
+          background: '#f8f9fa',
+          border: '1px solid #e8e8e8',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '24px',
+          flexWrap: 'nowrap',
+          overflowX: 'auto',
+          whiteSpace: 'nowrap'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <div style={{ fontSize: '9px', color: '#8c8c8c', letterSpacing: '0.6px', textTransform: 'uppercase', fontWeight: '700' }}>TOTAL</div>
+            <div style={{ fontSize: '16px', fontWeight: '800', color: '#1f1f1f', marginLeft: '2px' }}>{totalSymbols}</div>
+          </div>
+          
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <div style={{ fontSize: '9px', color: '#8c8c8c', letterSpacing: '0.6px', textTransform: 'uppercase', fontWeight: '700' }}>GAINERS</div>
+            <div style={{ fontSize: '16px', fontWeight: '800', color: '#52c41a', marginLeft: '2px' }}>{gainers}</div>
+          </div>
+          
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <div style={{ fontSize: '9px', color: '#8c8c8c', letterSpacing: '0.6px', textTransform: 'uppercase', fontWeight: '700' }}>LOSERS</div>
+            <div style={{ fontSize: '16px', fontWeight: '800', color: '#ff4d4f', marginLeft: '2px' }}>{losers}</div>
+          </div>
+          
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <div style={{ fontSize: '9px', color: '#8c8c8c', letterSpacing: '0.6px', textTransform: 'uppercase', fontWeight: '700' }}>AVG Δ</div>
+            <div style={{ 
+              fontSize: '16px', 
+              fontWeight: '800', 
+              color: avgChange >= 0 ? '#52c41a' : '#ff4d4f',
+              marginLeft: '2px'
+            }}>
+              {avgChange !== 0 ? `${avgChange > 0 ? '+' : '-'}${safeToFixed(Math.abs(avgChange), 2)}%` : '0.00%'}
             </div>
           </div>
-        </Card>
+          
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginLeft: 'auto' }}>
+            <div style={{ fontSize: '9px', color: '#8c8c8c', letterSpacing: '0.6px', textTransform: 'uppercase', fontWeight: '700' }}>UPDATED</div>
+            <div style={{ 
+              fontSize: '11px', 
+              fontWeight: '700', 
+              color: '#595959',
+              fontFamily: 'monospace',
+              marginLeft: '2px'
+            }}>
+              {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Watchlist Table */}
@@ -563,7 +840,7 @@ const Watchlist: React.FC = () => {
             pagination={false}
             size="middle"
             bordered={false}
-            scroll={{ x: 950 }}
+            scroll={{ x: 1250 }}
             onChange={handleTableChange}
             style={{ marginTop: '-8px' }}
           />
@@ -592,20 +869,34 @@ const Watchlist: React.FC = () => {
         )}
       </Card>
 
-      {/* Quick Tips */}
+      {/* Quick Tips - Minimal Helper */}
       {watchlist.length > 0 && (
-        <Card style={{ marginTop: '20px', padding: '16px', borderRadius: '8px', background: '#fafafa' }}>
-          <div style={{ fontSize: '12px', fontWeight: '600', marginBottom: '8px', color: '#595959', display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <span style={{ fontSize: '14px' }}>💡</span>
-            <span>Quick Tips</span>
+        <div style={{ 
+          marginTop: '10px', 
+          padding: '8px 10px', 
+          borderRadius: '4px', 
+          background: '#fafafa',
+          border: '1px solid #f0f0f0',
+          fontSize: '10px',
+          color: '#8c8c8c',
+          lineHeight: '1.4'
+        }}>
+          <div style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '4px',
+            marginBottom: '2px'
+          }}>
+            <span style={{ fontSize: '10px', opacity: 0.5 }}>💡</span>
+            <span style={{ fontWeight: '500', color: '#8c8c8c' }}>Quick Tips</span>
           </div>
-          <ul style={{ margin: 0, paddingLeft: '18px', color: '#8c8c8c', fontSize: '12px', lineHeight: '1.6' }}>
-            <li>Click <strong>Analyze</strong> for detailed technical analysis</li>
-            <li>Click <strong>Backtest</strong> to test trading strategies</li>
-            <li>Click column headers to sort the table</li>
-            <li>Watchlist is saved automatically in your browser</li>
-          </ul>
-        </Card>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+            <span>• <span style={{ fontWeight: '500', color: '#595959' }}>Analyze</span> for technicals</span>
+            <span>• <span style={{ fontWeight: '500', color: '#595959' }}>Backtest</span> strategies</span>
+            <span>• Click headers to sort</span>
+            <span>• Auto-saves in browser</span>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -16,8 +16,9 @@ const safeNumber = (value: any): number => {
 
 const formatPercent = (value: number): string => {
   const safeValue = safeNumber(value);
-  const sign = safeValue >= 0 ? '+' : '';
-  return `${sign}${safeValue.toFixed(2)}%`;
+  if (safeValue === 0) return '0.00%';
+  const sign = safeValue > 0 ? '+' : '-';
+  return `${sign}${Math.abs(safeValue).toFixed(2)}%`;
 };
 
 const ParameterOptimization: React.FC = () => {

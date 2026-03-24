@@ -9,12 +9,13 @@ interface OptimizationResultsTableProps {
 const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ results }) => {
   // Helper function to format percentages
   const formatPercent = (value: number): string => {
-    if (value === undefined || value === null || isNaN(value)) {
-      return 'N/A';
-    }
-    const sign = value >= 0 ? '+' : '';
-    return `${sign}${value.toFixed(2)}%`;
-  };
+  if (value === undefined || value === null || isNaN(value)) {
+    return "N/A";
+  }
+  if (value === 0) return "0.00%";
+  const sign = value > 0 ? "+" : "-";
+  return `${sign}${Math.abs(value).toFixed(2)}%`;
+};
 
   const columns = [
     {

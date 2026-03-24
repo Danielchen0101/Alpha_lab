@@ -17,8 +17,9 @@ const safeToFixed = (value: any, decimals: number = 2): string => {
 
 const formatPercent = (value: number): string => {
   const safeValue = safeNumber(value);
-  const sign = safeValue >= 0 ? '+' : '';
-  return `${sign}${safeToFixed(safeValue, 2)}%`;
+  if (safeValue === 0) return '0.00%';
+  const sign = safeValue > 0 ? '+' : '-';
+  return `${sign}${safeToFixed(Math.abs(safeValue), 2)}%`;
 };
 
 interface RankingItem {
