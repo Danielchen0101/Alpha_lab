@@ -98,13 +98,31 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
   });
 
   // Find min and max for better Y-axis scaling (price chart)
-  const prices = data.map(d => d.close).filter(Boolean);
-  const minPrice = Math.min(...prices);
-  const maxPrice = Math.max(...prices);
-  const pricePadding = (maxPrice - minPrice) * 0.1; // 10% padding
+  // 修复：不过滤Boolean，而是过滤有效的数值，并处理空数组和相等的情况
+  const prices = data.map(d => d.close).filter(price => typeof price === 'number' && !isNaN(price));
+  
+  let minPrice, maxPrice, pricePadding;
+  
+  if (prices.length === 0) {
+    // 如果没有有效数据，使用默认范围
+    minPrice = 0;
+    maxPrice = 100;
+    pricePadding = 10;
+  } else {
+    minPrice = Math.min(...prices);
+    maxPrice = Math.max(...prices);
+    
+    // 如果minPrice和maxPrice相等，添加基于价格的padding
+    if (minPrice === maxPrice) {
+      pricePadding = Math.abs(minPrice) * 0.1; // 使用价格的10%作为padding
+    } else {
+      pricePadding = (maxPrice - minPrice) * 0.1; // 10% padding
+    }
+  }
 
   // Find min and max for volume Y-axis scaling
-  const volumes = data.map(d => d.volume || 0).filter(Boolean);
+  // 修复：不过滤Boolean，而是过滤有效的数值
+  const volumes = data.map(d => d.volume || 0).filter(volume => typeof volume === 'number' && !isNaN(volume));
   const maxVolume = volumes.length > 0 ? Math.max(...volumes) : 0;
   const volumePadding = maxVolume * 0.1; // 10% padding
 
@@ -121,12 +139,35 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
   console.log(`TradingChart Debug: Buy signals: ${buySignals.length}`);
   console.log(`TradingChart Debug: Sell signals: ${sellSignals.length}`);
   console.log(`TradingChart Debug: Has signals: ${hasSignals}`);
+  
+  // 添加价格计算调试
+  console.log(`TradingChart Debug: Price calculation:`);
+  console.log(`  prices array length: ${prices.length}`);
+  console.log(`  minPrice: ${minPrice}`);
+  console.log(`  maxPrice: ${maxPrice}`);
+  console.log(`  pricePadding: ${pricePadding}`);
+  console.log(`  Y-axis domain: [${minPrice - pricePadding}, ${maxPrice + pricePadding}]`);
+  
+  // 添加volume计算调试
+  console.log(`TradingChart Debug: Volume calculation:`);
+  console.log(`  volumes array length: ${volumes.length}`);
+  console.log(`  maxVolume: ${maxVolume}`);
+  console.log(`  volumePadding: ${volumePadding}`);
+  
+  // 检查前几条数据
+  if (data.length > 0) {
+    console.log(`TradingChart Debug: First data item:`, data[0]);
+    if (data.length > 1) {
+      console.log(`TradingChart Debug: Second data item:`, data[1]);
+    }
+    console.log(`TradingChart Debug: Last data item:`, data[data.length - 1]);
+  }
 
-  // Calculate chart heights with optimized proportions
-  const priceChartHeight = (hasVolumeData && showVolume) ? height * 0.65 : height * 0.8;
+  // Calculate chart heights with optimized proportions - Price Chart更突出，Volume Chart更高
+  const priceChartHeight = (hasVolumeData && showVolume) ? height * 0.65 : height * 0.85;
   const volumeChartHeight = (hasVolumeData && showVolume) ? height * 0.35 : 0;
 
-  // Format date for X-axis - 修复时区问题
+  // Format date for X-axis - 优化版本
   const formatDate = (dateStr: string) => {
     try {
       // 手动解析YYYY-MM-DD格式，避免时区偏移
@@ -150,8 +191,48 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
     }
   };
 
-  // Custom tooltip component with offset to avoid covering data points
-  const CustomTooltip = ({ active, payload, label }: any) => {
+  // 生成大约12个均匀分布的日期刻度
+  const generateDateTicks = (data: ChartDataItem[], targetTickCount: number = 12): string[] => {
+    if (data.length === 0) return [];
+    
+    // 如果数据点少于目标刻度数，返回所有日期
+    if (data.length <= targetTickCount) {
+      return data.map(item => item.date);
+    }
+    
+    // 计算步长
+    const step = Math.floor(data.length / targetTickCount);
+    const ticks: string[] = [];
+    
+    // 从第一个数据点开始，每隔step个点取一个日期
+    for (let i = 0; i < data.length; i += step) {
+      ticks.push(data[i].date);
+      // 如果已经达到或超过目标刻度数，停止
+      if (ticks.length >= targetTickCount) break;
+    }
+    
+    // 确保最后一个日期总是包含在内
+    if (ticks[ticks.length - 1] !== data[data.length - 1].date) {
+      ticks[ticks.length - 1] = data[data.length - 1].date;
+    }
+    
+    return ticks;
+  };
+
+  // 获取统一的日期刻度
+  const dateTicks = generateDateTicks(data, 12);
+  
+  // 智能X轴刻度格式化 - 只显示在刻度数组中的日期
+  const smartTickFormatter = (value: string) => {
+    // 如果这个日期在刻度数组中，显示它
+    if (dateTicks.includes(value)) {
+      return formatDate(value);
+    }
+    return '';
+  };
+
+  // 专业交易图表Tooltip
+  const ProfessionalTooltip = ({ active, payload, label }: any) => {
     if (active && payload && payload.length) {
       // Find the data point
       const dataPoint = chartData.find(item => item.date === label);
@@ -159,56 +240,157 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
 
       return (
         <div style={{
-          backgroundColor: 'white',
-          padding: '12px',
-          border: '1px solid #e8e8e8',
-          borderRadius: '4px',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
-          transform: 'translate(-50%, -100%)', // Offset to avoid covering data point
-          marginTop: '-10px' // Additional offset
+          backgroundColor: 'rgba(255, 255, 255, 0.95)',
+          padding: '16px',
+          border: '1px solid #d9d9d9',
+          borderRadius: '6px',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+          backdropFilter: 'blur(4px)',
+          minWidth: '200px',
+          transform: 'translate(-50%, -100%)',
+          marginTop: '-12px'
         }}>
-          <p style={{ margin: 0, fontWeight: 'bold', color: '#333' }}>
-            Date: {label}
-          </p>
-          <p style={{ margin: '4px 0 0 0', color: '#666' }}>
-            Close Price: <span style={{ fontWeight: 'bold', color: '#1890ff' }}>
-              ${dataPoint.close.toFixed(2)}
-            </span>
-          </p>
-          
-          {dataPoint.sma20 !== undefined && (
-            <p style={{ margin: '2px 0 0 0', color: '#666' }}>
-              SMA 20: <span style={{ fontWeight: 'bold', color: '#52c41a' }}>
-                ${dataPoint.sma20.toFixed(2)}
-              </span>
-            </p>
-          )}
-          
-          {dataPoint.sma50 !== undefined && (
-            <p style={{ margin: '2px 0 0 0', color: '#666' }}>
-              SMA 50: <span style={{ fontWeight: 'bold', color: '#fa8c16' }}>
-                ${dataPoint.sma50.toFixed(2)}
-              </span>
-            </p>
-          )}
-          
-          {dataPoint.volume !== undefined && dataPoint.volume > 0 && (
-            <p style={{ margin: '2px 0 0 0', color: '#666' }}>
-              Volume: <span style={{ fontWeight: 'bold' }}>
-                {formatVolume(dataPoint.volume)}
-              </span>
-            </p>
-          )}
-          
-          {dataPoint.signal !== 0 && (
-            <p style={{ 
-              margin: '4px 0 0 0', 
-              fontWeight: 'bold',
-              color: dataPoint.signal === 1 ? '#52c41a' : '#f5222d'
+          {/* 标题区域 */}
+          <div style={{ 
+            marginBottom: '12px', 
+            paddingBottom: '8px',
+            borderBottom: '1px solid #f0f0f0'
+          }}>
+            <div style={{ 
+              fontSize: '13px', 
+              fontWeight: '600', 
+              color: '#333',
+              marginBottom: '4px'
             }}>
-              Signal: {dataPoint.signal === 1 ? 'BUY' : 'SELL'}
-            </p>
-          )}
+              {label}
+            </div>
+            <div style={{ 
+              fontSize: '11px', 
+              color: '#666',
+              display: 'flex',
+              alignItems: 'center'
+            }}>
+              <span style={{
+                display: 'inline-block',
+                width: '8px',
+                height: '8px',
+                backgroundColor: '#1890ff',
+                borderRadius: '50%',
+                marginRight: '6px'
+              }}></span>
+              Trading Data
+            </div>
+          </div>
+          
+          {/* 价格信息 */}
+          <div style={{ marginBottom: '10px' }}>
+            <div style={{ 
+              fontSize: '12px', 
+              color: '#666',
+              marginBottom: '4px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}>
+              <span>Price</span>
+              <span style={{ 
+                fontWeight: '600', 
+                color: '#1890ff',
+                fontSize: '13px'
+              }}>
+                ${dataPoint.close.toLocaleString('en-US', {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2
+                })}
+              </span>
+            </div>
+            
+            {dataPoint.sma20 !== undefined && (
+              <div style={{ 
+                fontSize: '11px', 
+                color: '#666',
+                marginBottom: '3px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center'
+              }}>
+                <span style={{ color: '#52c41a' }}>SMA 20</span>
+                <span style={{ fontWeight: '500' }}>
+                  ${dataPoint.sma20.toLocaleString('en-US', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2
+                  })}
+                </span>
+              </div>
+            )}
+            
+            {dataPoint.sma50 !== undefined && (
+              <div style={{ 
+                fontSize: '11px', 
+                color: '#666',
+                marginBottom: '3px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center'
+              }}>
+                <span style={{ color: '#fa8c16' }}>SMA 50</span>
+                <span style={{ fontWeight: '500' }}>
+                  ${dataPoint.sma50.toLocaleString('en-US', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2
+                  })}
+                </span>
+              </div>
+            )}
+          </div>
+          
+          {/* 交易量和信号 */}
+          <div>
+            {dataPoint.volume !== undefined && dataPoint.volume > 0 && (
+              <div style={{ 
+                fontSize: '11px', 
+                color: '#666',
+                marginBottom: '6px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center'
+              }}>
+                <span>Volume</span>
+                <span style={{ fontWeight: '500' }}>
+                  {formatVolume(dataPoint.volume)}
+                </span>
+              </div>
+            )}
+            
+            {dataPoint.signal !== 0 && (
+              <div style={{ 
+                padding: '6px 10px',
+                backgroundColor: dataPoint.signal === 1 ? 'rgba(82, 196, 26, 0.1)' : 'rgba(245, 34, 45, 0.1)',
+                borderRadius: '4px',
+                border: `1px solid ${dataPoint.signal === 1 ? 'rgba(82, 196, 26, 0.3)' : 'rgba(245, 34, 45, 0.3)'}`,
+                marginTop: '8px'
+              }}>
+                <div style={{ 
+                  fontSize: '11px', 
+                  fontWeight: '600',
+                  color: dataPoint.signal === 1 ? '#52c41a' : '#f5222d',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}>
+                  <span style={{
+                    display: 'inline-block',
+                    width: '6px',
+                    height: '6px',
+                    backgroundColor: dataPoint.signal === 1 ? '#52c41a' : '#f5222d',
+                    borderRadius: '50%',
+                    marginRight: '6px'
+                  }}></span>
+                  {dataPoint.signal === 1 ? 'BUY SIGNAL' : 'SELL SIGNAL'}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       );
     }
@@ -339,32 +521,32 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
       }}>
         <h4 style={{ margin: 0, color: '#333' }}>Price Chart with Trading Signals</h4>
         
-        {/* Chart Controls - Compact version */}
+        {/* Chart Controls - 专业交易平台风格 */}
         <div style={{ 
           display: 'flex',
           alignItems: 'center',
-          padding: '4px 8px',
-          backgroundColor: '#f8f9fa',
-          borderRadius: '6px',
-          border: '1px solid #e9ecef',
-          fontSize: '12px'
+          padding: '2px 6px',
+          backgroundColor: '#f5f5f5',
+          borderRadius: '4px',
+          border: '1px solid #d9d9d9',
+          fontSize: '11px'
         }}>
-          <Space direction="horizontal" size="small">
+          <Space direction="horizontal" size={4}>
             <Checkbox 
               checked={showClosePrice} 
               onChange={(e) => setShowClosePrice(e.target.checked)}
-              style={{ fontSize: '12px' }}
+              style={{ fontSize: '11px', marginRight: '2px' }}
             >
-              Price
+              <span style={{ color: '#1890ff', fontWeight: '500' }}>Price</span>
             </Checkbox>
             
             {hasSMA20 && (
               <Checkbox 
                 checked={showSMA20} 
                 onChange={(e) => setShowSMA20(e.target.checked)}
-                style={{ fontSize: '12px' }}
+                style={{ fontSize: '11px', marginRight: '2px' }}
               >
-                SMA20
+                <span style={{ color: '#52c41a' }}>SMA20</span>
               </Checkbox>
             )}
             
@@ -372,9 +554,9 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               <Checkbox 
                 checked={showSMA50} 
                 onChange={(e) => setShowSMA50(e.target.checked)}
-                style={{ fontSize: '12px' }}
+                style={{ fontSize: '11px', marginRight: '2px' }}
               >
-                SMA50
+                <span style={{ color: '#fa8c16' }}>SMA50</span>
               </Checkbox>
             )}
             
@@ -382,9 +564,9 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               <Checkbox 
                 checked={showSignals} 
                 onChange={(e) => setShowSignals(e.target.checked)}
-                style={{ fontSize: '12px' }}
+                style={{ fontSize: '11px', marginRight: '2px' }}
               >
-                Signals
+                <span style={{ color: '#666' }}>Signals</span>
               </Checkbox>
             )}
             
@@ -392,9 +574,9 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               <Checkbox 
                 checked={showVolume} 
                 onChange={(e) => setShowVolume(e.target.checked)}
-                style={{ fontSize: '12px' }}
+                style={{ fontSize: '11px' }}
               >
-                Volume
+                <span style={{ color: '#666' }}>Volume</span>
               </Checkbox>
             )}
           </Space>
@@ -409,61 +591,87 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
             data={chartData}
-            margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
+            margin={{ top: 10, right: 25, left: 25, bottom: 10 }}
           >
-            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
             <XAxis 
               dataKey="date" 
-              tick={{ fontSize: 12 }}
-              tickFormatter={formatDate}
+              tick={{ fontSize: 10, fill: '#666' }}
+              tickFormatter={smartTickFormatter}
+              axisLine={{ stroke: '#d9d9d9' }}
+              tickLine={{ stroke: '#d9d9d9' }}
+              height={35}
+              // 使用统一的日期刻度
+              ticks={dateTicks}
             />
             <YAxis 
               domain={[minPrice - pricePadding, maxPrice + pricePadding]}
-              tick={{ fontSize: 12 }}
-              tickFormatter={(value) => `$${value.toFixed(2)}`}
+              tick={{ fontSize: 10, fill: '#666' }}
+              tickFormatter={(value) => {
+                // 专业的价格格式：整数部分逗号分隔，两位小数
+                return `$${value.toLocaleString('en-US', {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2
+                })}`;
+              }}
+              axisLine={{ stroke: '#d9d9d9' }}
+              tickLine={{ stroke: '#d9d9d9' }}
+              width={65}
+              // 给价格留出更多空白，看起来更专业
+              padding={{ top: 20, bottom: 20 }}
             />
             <Tooltip 
-              content={<CustomTooltip />}
-              offset={10} // Add offset to tooltip
+              content={<ProfessionalTooltip />}
+              offset={12}
+              cursor={{ stroke: '#d9d9d9', strokeWidth: 1, strokeDasharray: '3 3' }}
             />
             <Legend wrapperStyle={{ paddingTop: '10px' }} />
             
-            {/* Price line */}
+            {/* Price line - 更突出，专业交易图表风格 */}
             {showClosePrice && (
               <Line
                 type="monotone"
                 dataKey="close"
                 stroke="#1890ff"
-                strokeWidth={2}
-                dot={false}
-                name="Close Price"
-                activeDot={{ r: 6 }}
+                strokeWidth={3}
+                dot={false} // 去掉静态点，只在hover时显示
+                name="Price"
+                activeDot={{ 
+                  r: 6, 
+                  stroke: '#1890ff', 
+                  strokeWidth: 2, 
+                  fill: 'white',
+                  strokeOpacity: 0.8
+                }}
+                connectNulls={true}
               />
             )}
             
-            {/* SMA20 line */}
+            {/* SMA20 line - 辅助线，更细 */}
             {showSMA20 && hasSMA20 && (
               <Line
                 type="monotone"
                 dataKey="sma20"
                 stroke="#52c41a"
-                strokeWidth={1.5}
-                strokeDasharray="5 5"
+                strokeWidth={1.2}
+                strokeDasharray="3 3"
                 dot={false}
                 name="SMA 20"
+                connectNulls={true}
               />
             )}
             
-            {/* SMA50 line */}
+            {/* SMA50 line - 辅助线，更细 */}
             {showSMA50 && hasSMA50 && (
               <Line
                 type="monotone"
                 dataKey="sma50"
                 stroke="#fa8c16"
-                strokeWidth={1.5}
-                strokeDasharray="5 5"
+                strokeWidth={1.2}
+                strokeDasharray="3 3"
                 dot={false}
                 name="SMA 50"
+                connectNulls={true}
               />
             )}
             
@@ -493,30 +701,69 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
       {/* Volume Chart (only if we have volume data and it's enabled) */}
       {hasVolumeData && showVolume && (
         <div style={{ 
-          height: '120px',  // Reduced height for better hierarchy
-          marginBottom: '24px'  // Spacing before parameters
+          height: volumeChartHeight,
+          marginTop: '20px',
+          marginBottom: '20px'
         }}>
-          <h5 style={{ marginBottom: '12px', color: '#666', fontSize: '14px' }}>Volume Chart</h5>
+          <div style={{ 
+            display: 'flex', 
+            justifyContent: 'space-between', 
+            alignItems: 'center',
+            marginBottom: '6px',
+            padding: '0 4px'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center' }}>
+              <div style={{
+                width: '12px',
+                height: '12px',
+                backgroundColor: '#95de64',
+                marginRight: '6px',
+                borderRadius: '2px'
+              }}></div>
+              <h5 style={{ 
+                margin: 0, 
+                color: '#666', 
+                fontSize: '12px', 
+                fontWeight: '600',
+                letterSpacing: '0.5px'
+              }}>VOLUME</h5>
+            </div>
+            <span style={{ 
+              fontSize: '10px', 
+              color: '#999',
+              backgroundColor: '#f5f5f5',
+              padding: '2px 6px',
+              borderRadius: '3px'
+            }}>Trading Volume</span>
+          </div>
           <ResponsiveContainer width="100%" height="100%">
             <BarChart
               data={chartData}
-              margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
+              margin={{ top: 5, right: 25, left: 25, bottom: 10 }}
             >
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
               <XAxis 
                 dataKey="date" 
-                tick={{ fontSize: 10 }}
-                tickFormatter={formatDate}
-                interval="preserveStartEnd"
-                minTickGap={20}
+                tick={{ fontSize: 9, fill: '#666' }}
+                tickFormatter={smartTickFormatter}
+                axisLine={{ stroke: '#d9d9d9' }}
+                tickLine={{ stroke: '#d9d9d9' }}
+                height={25}
+                // 使用统一的日期刻度
+                ticks={dateTicks}
               />
               <YAxis 
-                tick={{ fontSize: 10 }}
+                tick={{ fontSize: 9, fill: '#666' }}
                 tickFormatter={(value) => {
                   if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
                   if (value >= 1000) return `${(value / 1000).toFixed(0)}K`;
                   return value;
                 }}
+                axisLine={{ stroke: '#d9d9d9' }}
+                tickLine={{ stroke: '#d9d9d9' }}
+                width={45}
+                // 给Volume Chart的Y轴也留出适当空白
+                padding={{ top: 10, bottom: 10 }}
               />
               <Tooltip 
                 formatter={(value: any) => [formatVolume(value), 'Volume']}
@@ -524,14 +771,21 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                 offset={10}
               />
               
-              {/* Volume bars with dynamic colors */}
+              {/* Volume bars with dynamic colors - 更明显的柱子 */}
               <Bar
                 dataKey="volumeDisplay"
                 name="Volume"
                 fill="#999"  // Default color
+                barSize={12} // 稍微宽一点的柱子
+                radius={[2, 2, 0, 0]} // 圆角顶部
               >
                 {chartData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={entry.volumeColor || '#999'} />
+                  <Cell 
+                    key={`cell-${index}`} 
+                    fill={entry.volumeColor || '#999'}
+                    stroke={entry.volumeColor || '#999'}
+                    strokeWidth={0.5}
+                  />
                 ))}
               </Bar>
             </BarChart>

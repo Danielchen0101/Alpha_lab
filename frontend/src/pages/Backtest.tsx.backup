@@ -19,7 +19,7 @@ interface BacktestConfig {
   initialCapital: number;
 }
 
-// 交易项类型定�?
+// 交易项类型定义
 interface TradeItem {
   tradeId?: number;
   entryDate: string;
@@ -63,7 +63,7 @@ interface BacktestResult {
       sma50?: number;
       volume?: number;
     }>;
-    // 后端返回的额外交易统计字�?
+    // 后端返回的额外交易统计字段
     avgWin?: number;
     avgLoss?: number;
     // 交易列表（新增）
@@ -155,7 +155,7 @@ const Backtest: React.FC = () => {
   const [showSavedStrategies, setShowSavedStrategies] = useState(false);
   const [portfolioSymbols, setPortfolioSymbols] = useState<string[]>([]);
 
-  // 设置默认日期范围（最�?年）使用 dayjs
+  // 设置默认日期范围（最近1年）使用 dayjs
   const defaultDateRange = () => {
     const end = dayjs();
     const start = dayjs().subtract(1, 'year');
@@ -183,7 +183,7 @@ const Backtest: React.FC = () => {
         initialCapital: location.state.initialCapital || 100000
       });
     } else {
-      // 设置默认�?
+      // 设置默认值
       form.setFieldsValue({
         dateRange: defaultDateRange(),
         initialCapital: 100000,
@@ -281,7 +281,7 @@ const Backtest: React.FC = () => {
     loadSavedStrategies();
   }, []);
 
-  // 保存策略�?localStorage
+  // 保存策略到 localStorage
   const saveCurrentStrategy = () => {
     try {
       const formValues = form.getFieldsValue();
@@ -303,7 +303,7 @@ const Backtest: React.FC = () => {
           symbol: formValues.symbol,
           dateRange: formValues.dateRange,
           initialCapital: formValues.initialCapital,
-          // 根据策略类型保存对应的参�?
+          // 根据策略类型保存对应的参数
           ...(formValues.strategy === 'moving_average' && {
             shortMaPeriod: formValues.shortMaPeriod,
             longMaPeriod: formValues.longMaPeriod
@@ -331,7 +331,7 @@ const Backtest: React.FC = () => {
     }
   };
 
-  // 加载策略到表�?
+  // 加载策略到表单
   const loadStrategy = (strategy: any) => {
     try {
       const config = strategy.config;
@@ -375,7 +375,7 @@ const Backtest: React.FC = () => {
     }
   };
 
-  // 解析 symbol 并更�?portfolio 状�?
+  // 解析 symbol 并更新 portfolio 状态
   const parseSymbols = (symbolInput: string) => {
     const symbols = symbolInput
       .split(',')
@@ -406,51 +406,51 @@ const Backtest: React.FC = () => {
   const handleRunBacktest = async (values: BacktestFormValues) => {
     setLoading(true);
     setError('');
-    setBacktestResult(null); // 清除旧结果，开始新的回�?
+    setBacktestResult(null); // 清除旧结果，开始新的回测
     
     try {
       // 解析多个 symbol，支持逗号分隔
       const symbols = parseSymbols(values.symbol);
       
-      // 检查解析结�?
+      // 检查解析结果
       console.log('Parsed symbols:', symbols);
       
-      // 保持向后兼容：如果只有一�?symbol，使用原来的逻辑
+      // 保持向后兼容：如果只有一个 symbol，使用原来的逻辑
       const symbol = symbols.length === 1 ? symbols[0] : symbols.join(',');
       const strategy = values.strategy;
       
-      // 构建基础配置 - 升级�?symbols 数组，同时保�?symbol 字段向后兼容
+      // 构建基础配置 - 升级到 symbols 数组，同时保持 symbol 字段向后兼容
       const config: any = {
         strategy: strategy,
         startDate: values.dateRange[0].format('YYYY-MM-DD'),
         endDate: values.dateRange[1].format('YYYY-MM-DD'),
         initialCapital: values.initialCapital,
-        symbols: symbols, // 新增：发�?symbols 数组
-        dataMode: values.dataMode || 'simulated', // 新增：数据模�?
+        symbols: symbols, // 新增：发送 symbols 数组
+        dataMode: values.dataMode || 'simulated', // 新增：数据模式
       };
       
-      // 保持向后兼容：如果只有一�?symbol，同时设�?symbol 字段
+      // 保持向后兼容：如果只有一个 symbol，同时设置 symbol 字段
       if (symbols.length === 1) {
-        config.symbol = symbols[0]; // 单股票模式保�?symbol 字段
+        config.symbol = symbols[0]; // 单股票模式保持 symbol 字段
       } else {
         config.symbol = symbol; // 多股票模式：symbol 字段为逗号分隔的字符串
       }
       
-      // 根据策略类型添加对应的参�?
+      // 根据策略类型添加对应的参数
       if (strategy === 'moving_average') {
         config.parameters = {
           shortMaPeriod: values.shortMaPeriod || 20,
           longMaPeriod: values.longMaPeriod || 50,
         };
       } else if (strategy === 'rsi') {
-        // RSI 策略参数（预留结构，后端暂未实现�?
+        // RSI 策略参数（预留结构，后端暂未实现）
         config.parameters = {
           rsiPeriod: values.rsiPeriod || 14,
           rsiOversold: values.rsiOversold || 30,
           rsiOverbought: values.rsiOverbought || 70,
         };
       } else if (strategy === 'macd') {
-        // MACD 策略参数（预留结构，后端暂未实现�?
+        // MACD 策略参数（预留结构，后端暂未实现）
         config.parameters = {
           macdFast: values.macdFast || 12,
           macdSlow: values.macdSlow || 26,
@@ -468,13 +468,13 @@ const Backtest: React.FC = () => {
       if (response.data) {
         const result = response.data;
         
-        // 检查后端是否同步返回完整结果（主要检查results字段�?
+        // 检查后端是否同步返回完整结果（主要检查results字段）
         if (result.results) {
           // 后端已同步返回完整结果，直接使用
           setBacktestResult(result);
           setLoading(false);
           
-          // 如果有status字段，根据状态显示相应消�?
+          // 如果有status字段，根据状态显示相应消息
           if (result.status === 'completed') {
             message.success('Backtest completed successfully!');
           } else if (result.status === 'failed') {
@@ -485,7 +485,7 @@ const Backtest: React.FC = () => {
             message.success('Backtest completed!');
           }
           
-          // 滚动到结果区�?
+          // 滚动到结果区域
           setTimeout(() => {
             resultsRef.current?.scrollIntoView({ behavior: 'smooth' });
           }, 100);
@@ -493,7 +493,7 @@ const Backtest: React.FC = () => {
           // 刷新历史记录
           fetchBacktestHistory();
         } else if (result.backtestId) {
-          // 兼容旧版本：后端返回�?backtestId 但没有完整结�?
+          // 兼容旧版本：后端返回了 backtestId 但没有完整结果
           // 这种情况下可能需要轮询，但根据当前修改，后端应该总是返回完整结果
           setBacktestResult(null);
           setError('Backtest started but results not available immediately. Please try again.');
@@ -525,7 +525,7 @@ const Backtest: React.FC = () => {
       const response = await backtraderAPI.getBacktestResults(backtestId);
       if (response.data) {
         setBacktestResult(response.data);
-        // 滚动到结果区�?
+        // 滚动到结果区域
         setTimeout(() => {
           resultsRef.current?.scrollIntoView({ behavior: 'smooth' });
         }, 100);
@@ -588,7 +588,7 @@ const Backtest: React.FC = () => {
           const suffix = record.metric.includes('$') ? '' : '%';
           return <span style={{ color, fontWeight: 'bold' }}>{prefix}{safeToFixed(safeValue, 2)}{suffix}</span>;
         } else if (record.metric === 'Expectancy') {
-          // Expectancy 显示逻辑：Portfolio 模式显示金额，单股票模式显示百分�?
+          // Expectancy 显示逻辑：Portfolio 模式显示金额，单股票模式显示百分比
           const isPortfolioMode = backtestResult?.parameters?.symbols && backtestResult.parameters.symbols.length > 1;
           const color = safeValue >= 0 ? '#3f8600' : '#cf1322';
           
@@ -603,11 +603,11 @@ const Backtest: React.FC = () => {
             return <span style={{ color, fontWeight: 'bold' }}>{prefix}{safeToFixed(safeValue, 2)}%</span>;
           }
         } else if (record.metric === 'Volatility') {
-          // Volatility 使用百分比格�?
+          // Volatility 使用百分比格式
           const color = safeValue < 20 ? '#3f8600' : safeValue < 40 ? '#faad14' : '#cf1322';
           return <span style={{ color, fontWeight: 'bold' }}>{safeToFixed(safeValue, 2)}%</span>;
         } else if (record.metric === 'Exposure') {
-          // Exposure 使用百分比格�?
+          // Exposure 使用百分比格式
           const color = safeValue > 80 ? '#3f8600' : safeValue > 50 ? '#faad14' : '#cf1322';
           return <span style={{ color, fontWeight: 'bold' }}>{safeToFixed(safeValue, 1)}%</span>;
         } else if (record.metric === 'Sharpe Ratio' || record.metric === 'Calmar Ratio' || record.metric === 'Sortino Ratio' || record.metric === 'Profit Factor') {
@@ -855,12 +855,8 @@ const Backtest: React.FC = () => {
     { 
       key: 'profitFactor', 
       metric: 'Profit Factor', 
-      value: (() => {
-        const pf = safeNumber(backtestResult.results?.profitFactor);
-        // 当Profit Factor为99.00时，表示无限大（没有亏损交易），显示为N/A
-        return Math.abs(pf - 99.00) < 0.01 ? 'N/A' : pf;
-      })(), 
-      description: 'Gross profit divided by gross loss (higher is better). N/A indicates no losing trades.' 
+      value: safeNumber(backtestResult.results?.profitFactor), 
+      description: 'Gross profit divided by gross loss (higher is better)' 
     },
     { 
       key: 'expectancy', 
@@ -904,7 +900,7 @@ const Backtest: React.FC = () => {
     // 确保endDate在startDate之后
     if (endDate.getTime() <= startDate.getTime()) {
       endDate = new Date(startDate);
-      endDate.setFullYear(endDate.getFullYear() + 1); // 默认1�?
+      endDate.setFullYear(endDate.getFullYear() + 1); // 默认1年
     }
     
     // 计算交易天数
@@ -920,18 +916,18 @@ const Backtest: React.FC = () => {
       const currentDate = new Date(startDate.getTime());
       currentDate.setDate(currentDate.getDate() + i);
       
-      // 基于总收益率和交易次数模拟波�?
+      // 基于总收益率和交易次数模拟波动
       if (i === 0) {
         // 第一天：初始资金
         currentEquity = initialCapital;
       } else if (i === daysDiff) {
-        // 最后一天：最终资�?
+        // 最后一天：最终资金
         currentEquity = finalEquity;
       } else {
-        // 中间日期：模拟波�?
+        // 中间日期：模拟波动
         const progress = i / daysDiff;
         
-        // 基础线性增�?
+        // 基础线性增长
         const linearEquity = initialCapital + (finalEquity - initialCapital) * progress;
         
         // 添加波动（基于交易次数和最大回撤）
@@ -943,11 +939,11 @@ const Backtest: React.FC = () => {
         
         currentEquity = linearEquity * randomFactor * tradeImpact;
         
-        // 确保不低于最大回撤限�?
+        // 确保不低于最大回撤限制
         const minEquity = initialCapital * (1 - maxDrawdown / 100);
         currentEquity = Math.max(currentEquity, minEquity);
         
-        // 确保不高于合理上�?
+        // 确保不高于合理上限
         const maxEquity = initialCapital * (1 + Math.abs(totalReturn) * 1.5 / 100);
         currentEquity = Math.min(currentEquity, maxEquity);
       }
@@ -958,7 +954,7 @@ const Backtest: React.FC = () => {
       });
     }
     
-    // 如果数据点太多，抽样显示（最�?00个点�?
+    // 如果数据点太多，抽样显示（最多100个点）
     if (curve.length > 100) {
       const sampleStep = Math.ceil(curve.length / 100);
       return curve.filter((_, index) => index % sampleStep === 0 || index === curve.length - 1);
@@ -991,12 +987,12 @@ const Backtest: React.FC = () => {
     // 计算每笔交易的目标P&L（确保总和一致）
     const targetPnlPerTrade = averagePnl;
     
-    // 生成交易数据，确保总P&L与回测结果一�?
+    // 生成交易数据，确保总P&L与回测结果一致
     const trades = [];
     const basePrice = 150.0;
     const baseDate = new Date();
     
-    // 先为每笔交易分配目标P&L（确保总和为totalPnl�?
+    // 先为每笔交易分配目标P&L（确保总和为totalPnl）
     const targetPnls = [];
     let remainingPnl = totalPnl;
     
@@ -1007,7 +1003,7 @@ const Backtest: React.FC = () => {
       } else {
         // 随机分配P&L，但确保总和正确
         const maxPnl = Math.abs(remainingPnl) * 2; // 允许波动
-        const randomPnl = (Math.random() * maxPnl - maxPnl/2) * 0.5; // 围绕平均值波�?
+        const randomPnl = (Math.random() * maxPnl - maxPnl/2) * 0.5; // 围绕平均值波动
         
         // 确保盈利交易有正P&L，亏损交易有负P&L
         let targetPnl;
@@ -1024,7 +1020,7 @@ const Backtest: React.FC = () => {
       }
     }
     
-    // 生成每笔交易的详细信�?
+    // 生成每笔交易的详细信息
     for (let i = 0; i < expectedTrades; i++) {
       const isWin = i < winningTrades;
       const targetPnl = targetPnls[i];
@@ -1032,7 +1028,7 @@ const Backtest: React.FC = () => {
       tradeDate.setDate(tradeDate.getDate() - (expectedTrades - i));
       
       // 随机决定交易方向
-      const isBuy = Math.random() > 0.5; // 50%概率是BUY�?0%是SELL
+      const isBuy = Math.random() > 0.5; // 50%概率是BUY，50%是SELL
       const action = isBuy ? 'BUY' : 'SELL';
       
       // 生成入场价格
@@ -1049,10 +1045,10 @@ const Backtest: React.FC = () => {
         exitPrice = entryPrice - (targetPnl / quantity);
       }
       
-      // 确保出场价格为正�?
+      // 确保出场价格为正数
       exitPrice = Math.max(exitPrice, 0.01);
       
-      // 计算实际收益�?
+      // 计算实际收益率
       let actualPnl;
       let returnPct;
       
@@ -1088,7 +1084,7 @@ const Backtest: React.FC = () => {
     const generatedWinRate = (trades.filter(t => t.pnl > 0).length / expectedTrades) * 100;
     const generatedAvgPnl = generatedTotalPnl / expectedTrades;
     
-    // 验证数据一致�?
+    // 验证数据一致性
     console.log('Trade data consistency check:', {
       expectedTrades: expectedTrades,
       generatedTrades: trades.length,
@@ -1122,7 +1118,7 @@ const Backtest: React.FC = () => {
     };
   };
 
-  // 计算Equity Curve的Y轴刻�?- 更规整的版本
+  // 计算Equity Curve的Y轴刻度 - 更规整的版本
   const calculateEquityTicks = (): number[] => {
     if (equityCurveData.length === 0) return [];
     
@@ -1160,7 +1156,7 @@ const Backtest: React.FC = () => {
       }
     }
     
-    // 确保至少�?个刻�?
+    // 确保至少有3个刻度
     if (ticks.length < 3) {
       const mid = (min + max) / 2;
       const midRounded = Math.round(mid / step) * step;
@@ -1174,7 +1170,7 @@ const Backtest: React.FC = () => {
 
   const equityTicks = calculateEquityTicks();
 
-  // 计算Drawdown Chart的Y轴刻�?- 更贴近数据的版本
+  // 计算Drawdown Chart的Y轴刻度 - 更贴近数据的版本
   const calculateDrawdownTicks = (drawdownData: Array<{drawdown: number}>): number[] => {
     if (drawdownData.length === 0) return [0, -5, -10, -15, -20, -25, -30];
     
@@ -1182,9 +1178,9 @@ const Backtest: React.FC = () => {
     const minDrawdown = Math.min(...drawdownValues);
     const maxDrawdown = Math.abs(minDrawdown);
     
-    // 根据实际最大回撤动态调整刻�?
+    // 根据实际最大回撤动态调整刻度
     if (maxDrawdown < 5) {
-      // 很小回撤：每1%一个刻�?
+      // 很小回撤：每1%一个刻度
       const maxTick = Math.ceil(maxDrawdown) + 1;
       const ticks: number[] = [0];
       for (let i = 1; i <= maxTick; i++) {
@@ -1192,7 +1188,7 @@ const Backtest: React.FC = () => {
       }
       return ticks;
     } else if (maxDrawdown < 10) {
-      // 小回撤：�?%一个刻�?
+      // 小回撤：每2%一个刻度
       const maxTick = Math.ceil(maxDrawdown / 2) * 2 + 2;
       const ticks: number[] = [0];
       for (let i = 2; i <= maxTick; i += 2) {
@@ -1200,42 +1196,14 @@ const Backtest: React.FC = () => {
       }
       return ticks;
     } else if (maxDrawdown < 20) {
-      // 中等回撤：每5%一个刻�?
+      // 中等回撤：每5%一个刻度
       const maxTick = Math.ceil(maxDrawdown / 5) * 5 + 5;
       return [0, -5, -10, -15, -20].filter(tick => tick >= -maxTick);
     } else {
-      // 大回撤：�?0%一个刻�?
+      // 大回撤：每10%一个刻度
       const maxTick = Math.ceil(maxDrawdown / 10) * 10 + 10;
       return [0, -10, -20, -30, -40, -50].filter(tick => tick >= -maxTick);
     }
-  };
-
-  // 生成大约12个均匀分布的日期刻度
-  const generateDateTicks = (data: Array<{date: string}>, targetTickCount: number = 12): string[] => {
-    if (data.length === 0) return [];
-    
-    // 如果数据点少于目标刻度数，返回所有日期
-    if (data.length <= targetTickCount) {
-      return data.map(item => item.date);
-    }
-    
-    // 计算步长
-    const step = Math.floor(data.length / targetTickCount);
-    const ticks: string[] = [];
-    
-    // 从第一个数据点开始，每隔step个点取一个日期
-    for (let i = 0; i < data.length; i += step) {
-      ticks.push(data[i].date);
-      // 如果已经达到或超过目标刻度数，停止
-      if (ticks.length >= targetTickCount) break;
-    }
-    
-    // 确保最后一个日期总是包含在内
-    if (ticks[ticks.length - 1] !== data[data.length - 1].date) {
-      ticks[ticks.length - 1] = data[data.length - 1].date;
-    }
-    
-    return ticks;
   };
 
   return (
@@ -1740,134 +1708,11 @@ const Backtest: React.FC = () => {
               )}
             </Card>
           )}
-        </Col>
-        
-        <Col span={8}>
-          <Card 
-            title="Recent Backtests" 
-            extra={
-              <Space>
-                {selectedBacktests.length > 0 && (
-                  <Button 
-                    type="primary" 
-                    size="small"
-                    onClick={() => navigate(`/compare?ids=${selectedBacktests.join(',')}`)}
-                  >
-                    Compare ({selectedBacktests.length})
-                  </Button>
-                )}
-                <Button 
-                  type="text" 
-                  icon={<ReloadOutlined />} 
-                  onClick={fetchBacktestHistory}
-                  loading={historyLoading}
-                  size="small"
-                />
-              </Space>
-            }
-          >
-            {historyLoading ? (
-              <div style={{ textAlign: 'center', padding: '40px' }}>
-                <Spin />
-              </div>
-            ) : backtestHistory.length > 0 ? (
-              <Table
-                columns={historyColumns}
-                dataSource={backtestHistory}
-                rowKey="backtestId"
-                pagination={{ pageSize: 5, simple: true }}
-                size="small"
-                scroll={{ y: 300 }}
-              />
-            ) : (
-              <Empty
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description="No backtest history yet"
-              >
-                <Button type="primary" onClick={() => {
-                  form.setFieldsValue({
-                    symbol: 'AAPL',
-                    strategy: 'moving_average',
-                    initialCapital: 100000,
-                    dateRange: defaultDateRange()
-                  });
-                  message.info('AAPL example loaded');
-                }}>
-                  Try AAPL Example
-                </Button>
-              </Empty>
-            )}
-          </Card>
           
-          <Card 
-            title="Quick Actions" 
-            style={{ marginTop: 16 }}
-          >
-            <Space direction="vertical" style={{ width: '100%' }}>
-              <Button 
-                type="default" 
-                block
-                onClick={() => navigate('/market')}
-                icon={<LineChartOutlined />}
-              >
-                Browse Market
-              </Button>
-              <Button 
-                type="default" 
-                block
-                onClick={() => {
-                  form.setFieldsValue({
-                    symbol: 'AAPL',
-                    strategy: 'moving_average',
-                    initialCapital: 100000,
-                    dateRange: defaultDateRange()
-                  });
-                  message.info('AAPL example loaded');
-                }}
-              >
-                Load AAPL Example
-              </Button>
-              <Button 
-                type="default" 
-                block
-                onClick={() => {
-                  form.setFieldsValue({
-                    symbol: 'MSFT',
-                    strategy: 'rsi',
-                    initialCapital: 50000,
-                    dateRange: defaultDateRange()
-                  });
-                  message.info('MSFT example loaded');
-                }}
-              >
-                Load MSFT Example
-              </Button>
-              <Button 
-                type="default" 
-                block
-                onClick={() => {
-                  form.setFieldsValue({
-                    symbol: 'TSLA',
-                    strategy: 'momentum',
-                    initialCapital: 75000,
-                    dateRange: defaultDateRange()
-                  });
-                  message.info('TSLA example loaded');
-                }}
-              >
-                Load TSLA Example
-              </Button>
-            </Space>
-          </Card>
-        </Col>
-      </Row>
-
-      
-      {backtestResult && (
-        <Row style={{ marginTop: 16, width: '100%' }}>
-          <Col span={24}>
-            <div ref={resultsRef}>
-              <Card title="Backtest Results" style={{ width: '100%' }}>
+          {backtestResult && (
+            <div style={{ width: 'calc(100% + 33.33%)', marginLeft: '-16px', position: 'relative' }}>
+              <div ref={resultsRef}>
+                <Card title="Backtest Results" style={{ marginTop: 16, width: '100%' }}>
                 {/* Top Summary Cards */}
                 {backtestResult?.results && (
                   <div style={{ marginBottom: '24px' }}>
@@ -2053,11 +1898,7 @@ const Backtest: React.FC = () => {
  <Card size="small" style={{ textAlign: 'center' }}>
  <Statistic
  title="Profit Factor"
- value={(() => {
-   const pf = backtestResult.results.profitFactor || 0;
-   // 当Profit Factor为99.00时，表示无限大（没有亏损交易），显示为N/A
-   return Math.abs(pf - 99.00) < 0.01 ? 'N/A' : pf;
- })()}
+ value={backtestResult.results.profitFactor || 0}
  precision={2}
  valueStyle={{
  color:
@@ -2093,27 +1934,22 @@ const Backtest: React.FC = () => {
                       label: 'Charts',
                       children: (
                         <>
-                          <div
-                            style={{
-                              background: '#fafafa',
-                              borderRadius: '8px',
-                              padding: '24px',
-                              position: 'relative'
-                            }}
-                          >
-                            <h4 style={{ marginBottom: '16px' }}>Equity Curve</h4>
-                            {equityCurveData.length > 0 ? (
-                              <div
-                                style={{
-                                  height: '350px',
-                                  position: 'relative'
-                                }}
-                              >
-                                <ResponsiveContainer width="100%" height="100%">
-                                  <AreaChart
-                                    data={equityCurveData}
-                                    margin={{ top: 10, right: 10, left: 0, bottom: 20 }}
-                                  >
+                          <h4>Equity Curve</h4>
+                          {equityCurveData.length > 0 ? (
+                            <div
+                              style={{
+                                height: '250px',
+                                background: '#fafafa',
+                                borderRadius: '8px',
+                                padding: '16px',
+                                position: 'relative'
+                              }}
+                            >
+                              <ResponsiveContainer width="100%" height="100%">
+                                <AreaChart
+                                  data={equityCurveData}
+                                  margin={{ top: 10, right: 10, left: 0, bottom: 20 }}
+                                >
                                   <defs>
                                     <linearGradient id="colorEquity" x1="0" y1="0" x2="0" y2="1">
                                       <stop offset="5%" stopColor="#3f8600" stopOpacity={0.1}/>
@@ -2133,17 +1969,23 @@ const Backtest: React.FC = () => {
                                     dataKey="date" 
                                     tick={{ fontSize: 11 }}
                                     tickFormatter={(value) => {
-                                      // 简化日期显示格式：显示为 M/D
+                                      // 统一日期显示格式：显示为 M/D，如 4/1、4/15、5/1
                                       try {
+                                        // 先尝试直接解析日期字符串
                                         let dateObj;
                                         
-                                        if (typeof value === 'string' && value.includes('-')) {
-                                          const parts = value.split('-');
-                                          if (parts.length >= 3) {
-                                            const year = parseInt(parts[0], 10);
-                                            const month = parseInt(parts[1], 10);
-                                            const day = parseInt(parts[2], 10);
-                                            dateObj = new Date(year, month - 1, day);
+                                        if (typeof value === 'string') {
+                                          // 如果是YYYY-MM-DD格式
+                                          if (value.includes('-')) {
+                                            const parts = value.split('-');
+                                            if (parts.length >= 3) {
+                                              const year = parseInt(parts[0], 10);
+                                              const month = parseInt(parts[1], 10);
+                                              const day = parseInt(parts[2], 10);
+                                              dateObj = new Date(year, month - 1, day);
+                                            } else {
+                                              dateObj = new Date(value);
+                                            }
                                           } else {
                                             dateObj = new Date(value);
                                           }
@@ -2151,13 +1993,21 @@ const Backtest: React.FC = () => {
                                           dateObj = new Date(value);
                                         }
                                         
+                                        // 检查日期是否有效
                                         if (isNaN(dateObj.getTime())) {
                                           return '';
                                         }
                                         
                                         const month = dateObj.getMonth() + 1;
                                         const day = dateObj.getDate();
-                                        return `${month}/${day}`;
+                                        
+                                        // 显示规则：每月的1号、10号、20号，或者跨月时显示1号
+                                        // 这样对于30天数据，显示：4/1、4/10、4/20、5/1
+                                        if (day === 1 || day === 10 || day === 20) {
+                                          return `${month}/${day}`;
+                                        }
+                                        
+                                        return '';
                                       } catch (error) {
                                         console.warn('日期解析错误:', value, error);
                                         return '';
@@ -2165,15 +2015,16 @@ const Backtest: React.FC = () => {
                                     }}
                                     axisLine={{ stroke: '#d9d9d9' }}
                                     tickLine={false}
-                                    // 使用自定义刻度显示大约12个日期点
-                                    ticks={generateDateTicks(equityCurveData, 12)}
+                                    // 优化间隔控制：显示更整齐的标签
+                                    interval="preserveStartEnd"
+                                    minTickGap={30}
                                   />
                                   <YAxis 
                                     tick={{ fontSize: 11 }}
                                     axisLine={{ stroke: '#d9d9d9' }}
                                     tickLine={false}
                                     tickFormatter={(value) => {
-                                      // 更规整的金额格式�?
+                                      // 更规整的金额格式化
                                       if (value >= 1000000) {
                                         return `$${(value / 1000000).toFixed(1)}M`;
                                       } else if (value >= 100000) {
@@ -2185,7 +2036,7 @@ const Backtest: React.FC = () => {
                                       }
                                     }}
                                     domain={['dataMin', 'dataMax']}
-                                    // 计算规整的刻�?
+                                    // 计算规整的刻度
                                     allowDecimals={false}
                                     // 使用预先计算好的刻度数组
                                     ticks={equityTicks}
@@ -2202,7 +2053,7 @@ const Backtest: React.FC = () => {
                                     labelFormatter={(label) => {
                                       // 修复Tooltip中的日期显示
                                       if (typeof label === 'string' && label.includes('-')) {
-                                        // 如果是YYYY-MM-DD格式，直接显�?
+                                        // 如果是YYYY-MM-DD格式，直接显示
                                         return `Date: ${label}`;
                                       }
                                       // 其他格式尝试转换
@@ -2212,7 +2063,7 @@ const Backtest: React.FC = () => {
                                           return `Date: ${date.toISOString().split('T')[0]}`;
                                         }
                                       } catch (e) {
-                                        // 转换失败，显示原始�?
+                                        // 转换失败，显示原始值
                                       }
                                       return `Date: ${label}`;
                                     }}
@@ -2245,7 +2096,7 @@ const Backtest: React.FC = () => {
                                     isAnimationActive={true}
                                     animationDuration={1000}
                                   />
-                                  {/* 添加一条细线标记初始资�?*/}
+                                  {/* 添加一条细线标记初始资金 */}
                                   {equityCurveData.length > 0 && (
                                     <Line
                                       type="linear"
@@ -2299,17 +2150,20 @@ const Backtest: React.FC = () => {
                             </div>
                           )}
 
-                          <Divider style={{ margin: '24px 0' }} />
+                          <Divider />
 
-                          <h4 style={{ marginBottom: '16px' }}>Drawdown Chart</h4>
+                          <h4>Drawdown Chart</h4>
                           {equityCurveData.length > 0 ? (
                             <div
                               style={{
-                                height: '300px',
+                                height: '200px',
+                                background: '#fafafa',
+                                borderRadius: '8px',
+                                padding: '16px',
                                 position: 'relative'
                               }}
                             >
-                              {/* 计算最大回撤数�?*/}
+                              {/* 计算最大回撤数据 */}
                               {(() => {
                                 // 计算每个点的回撤
                                 const drawdownData: Array<{date: string, drawdown: number, equity: number, peak: number}> = [];
@@ -2330,25 +2184,22 @@ const Backtest: React.FC = () => {
                                 // 使用后端返回的最大回撤值（确保一致性）
                                 const backendMaxDrawdown = Math.abs(safeNumber(backtestResult?.results?.maxDrawdown) || 0);
                                 
-                                // 计算图表中的最大回撤（用于显示�?
+                                // 计算图表中的最大回撤（用于显示）
                                 const chartMaxDrawdown = Math.max(...drawdownData.map(d => d.drawdown));
                                 const maxDrawdownPoint = drawdownData.find(d => d.drawdown === chartMaxDrawdown);
                                 
-                                // 优先使用后端值，如果后端值为0则使用图表计算�?
+                                // 优先使用后端值，如果后端值为0则使用图表计算值
                                 const displayMaxDrawdown = backendMaxDrawdown > 0 ? backendMaxDrawdown : chartMaxDrawdown;
                                 
-                                // 准备图表数据 - 将drawdown转换为负值用于图表显�?
+                                // 准备图表数据 - 将drawdown转换为负值用于图表显示
                                 const chartData = drawdownData.map(item => ({
                                   date: item.date,
-                                  drawdown: -item.drawdown, // 转换为负值，显示�?以下
-                                  rawDrawdown: item.drawdown // 保留原始正值用于显�?
+                                  drawdown: -item.drawdown, // 转换为负值，显示在0以下
+                                  rawDrawdown: item.drawdown // 保留原始正值用于显示
                                 }));
                                 
-                                // 计算Drawdown Chart的Y轴刻�?
+                                // 计算Drawdown Chart的Y轴刻度
                                 const drawdownTicks = calculateDrawdownTicks(drawdownData);
-                                
-                                // 为X轴生成日期刻度
-                                const dateTicks = generateDateTicks(drawdownData, 12);
                                 
                                 return (
                                   <>
@@ -2372,17 +2223,23 @@ const Backtest: React.FC = () => {
                                           dataKey="date" 
                                           tick={{ fontSize: 11 }}
                                           tickFormatter={(value) => {
-                                            // 简化日期显示格式：显示为 M/D
+                                            // 统一日期显示格式：显示为 M/D，如 4/1、4/15、5/1
                                             try {
+                                              // 先尝试直接解析日期字符串
                                               let dateObj;
                                               
-                                              if (typeof value === 'string' && value.includes('-')) {
-                                                const parts = value.split('-');
-                                                if (parts.length >= 3) {
-                                                  const year = parseInt(parts[0], 10);
-                                                  const month = parseInt(parts[1], 10);
-                                                  const day = parseInt(parts[2], 10);
-                                                  dateObj = new Date(year, month - 1, day);
+                                              if (typeof value === 'string') {
+                                                // 如果是YYYY-MM-DD格式
+                                                if (value.includes('-')) {
+                                                  const parts = value.split('-');
+                                                  if (parts.length >= 3) {
+                                                    const year = parseInt(parts[0], 10);
+                                                    const month = parseInt(parts[1], 10);
+                                                    const day = parseInt(parts[2], 10);
+                                                    dateObj = new Date(year, month - 1, day);
+                                                  } else {
+                                                    dateObj = new Date(value);
+                                                  }
                                                 } else {
                                                   dateObj = new Date(value);
                                                 }
@@ -2390,13 +2247,21 @@ const Backtest: React.FC = () => {
                                                 dateObj = new Date(value);
                                               }
                                               
+                                              // 检查日期是否有效
                                               if (isNaN(dateObj.getTime())) {
                                                 return '';
                                               }
                                               
                                               const month = dateObj.getMonth() + 1;
                                               const day = dateObj.getDate();
-                                              return `${month}/${day}`;
+                                              
+                                              // 显示规则：每月的1号、10号、20号，或者跨月时显示1号
+                                              // 这样对于30天数据，显示：4/1、4/10、4/20、5/1
+                                              if (day === 1 || day === 10 || day === 20) {
+                                                return `${month}/${day}`;
+                                              }
+                                              
+                                              return '';
                                             } catch (error) {
                                               console.warn('日期解析错误:', value, error);
                                               return '';
@@ -2404,15 +2269,16 @@ const Backtest: React.FC = () => {
                                           }}
                                           axisLine={{ stroke: '#d9d9d9' }}
                                           tickLine={false}
-                                          // 使用自定义刻度显示大约12个日期点
-                                          ticks={dateTicks}
+                                          // 优化间隔控制：显示更整齐的标签
+                                          interval="preserveStartEnd"
+                                          minTickGap={30}
                                         />
                                         <YAxis 
                                           tick={{ fontSize: 11 }}
                                           axisLine={{ stroke: '#d9d9d9' }}
                                           tickLine={false}
                                           tickFormatter={(value) => {
-                                            // 显示为负百分比，�?-5%, -10%
+                                            // 显示为负百分比，如 -5%, -10%
                                             return `${value.toFixed(0)}%`;
                                           }}
                                           domain={['dataMin', 0]} // 强制Y轴从负值到0
@@ -2421,14 +2287,14 @@ const Backtest: React.FC = () => {
                                         />
                                         <Tooltip
                                           formatter={(value: number) => {
-                                            // value是负值，转换为正值显�?
+                                            // value是负值，转换为正值显示
                                             const positiveValue = Math.abs(value);
                                             return [`${positiveValue.toFixed(2)}%`, 'Drawdown'];
                                           }}
                                           labelFormatter={(label) => {
                                             // 修复Tooltip中的日期显示
                                             if (typeof label === 'string' && label.includes('-')) {
-                                              // 如果是YYYY-MM-DD格式，直接显�?
+                                              // 如果是YYYY-MM-DD格式，直接显示
                                               return `Date: ${label}`;
                                             }
                                             // 其他格式尝试转换
@@ -2438,7 +2304,7 @@ const Backtest: React.FC = () => {
                                                 return `Date: ${date.toISOString().split('T')[0]}`;
                                               }
                                             } catch (e) {
-                                              // 转换失败，显示原始�?
+                                              // 转换失败，显示原始值
                                             }
                                             return `Date: ${label}`;
                                           }}
@@ -2472,7 +2338,7 @@ const Backtest: React.FC = () => {
                                           isAnimationActive={true}
                                           animationDuration={800}
                                         />
-                                        {/* 添加0基准�?*/}
+                                        {/* 添加0基准线 */}
                                         <Line
                                           type="linear"
                                           dataKey={() => 0}
@@ -2504,7 +2370,7 @@ const Backtest: React.FC = () => {
                                       </AreaChart>
                                     </ResponsiveContainer>
                                     
-                                    {/* 显示最大回撤信�?*/}
+                                    {/* 显示最大回撤信息 */}
                                     <div style={{ 
                                       display: 'flex', 
                                       justifyContent: 'space-between', 
@@ -2549,11 +2415,10 @@ const Backtest: React.FC = () => {
                               No drawdown data available
                             </div>
                           )}
-                        </div>
 
-                        <Divider />
+                          <Divider />
 
-                        <h4>Trading Chart</h4>
+                          <h4>Trading Chart</h4>
                           {backtestResult?.parameters?.symbols && backtestResult.parameters.symbols.length > 1 ? (
                             // Portfolio 模式：不显示 Trading Chart
                             <Empty 
@@ -2575,7 +2440,7 @@ const Backtest: React.FC = () => {
                             <>
                               {(() => {
                                 const chartData = backtestResult.results.chartData;
-                                console.log('🔍 [Backtest.tsx] TradingChart渲染 - 父组件数�?', {
+                                console.log('🔍 [Backtest.tsx] TradingChart渲染 - 父组件数据:', {
                                   hasChartData: !!chartData,
                                   chartDataLength: chartData?.length,
                                   chartDataFirstItem: chartData?.[0],
@@ -2592,7 +2457,7 @@ const Backtest: React.FC = () => {
                               />
                             </>
                           ) : (
-                            // 单股票模式但没有 chartData - 优化空状�?
+                            // 单股票模式但没有 chartData - 优化空状态
                             <div style={{ 
                               textAlign: 'center', 
                               padding: '40px 20px',
@@ -2693,7 +2558,7 @@ const Backtest: React.FC = () => {
                                 
                                 let tradeData;
                                 
-                                // 优先使用后端返回的tradesList（如果存在且有效�?
+                                // 优先使用后端返回的tradesList（如果存在且有效）
                                 let useRealData = false;
                                 let tradeDataFromBackend = null;
                                 
@@ -2701,7 +2566,7 @@ const Backtest: React.FC = () => {
                                   console.log('Using backend trades list:', realTradesList.length, 'trades');
                                   useRealData = true;
                                   
-                                  // 计算后端数据的统�?
+                                  // 计算后端数据的统计
                                   let winningTrades = 0;
                                   let losingTrades = 0;
                                   let totalPnl = 0;
@@ -2841,7 +2706,7 @@ const Backtest: React.FC = () => {
                                               marginTop: '2px',
                                               fontWeight: '500'
                                             }}>
-                                              {tradeData.winRate ? `${tradeData.winRate.toFixed(1)}%` : (tradeData.tradeCount > 0 ? `${((tradeData.winningTrades / tradeData.tradeCount) * 100).toFixed(1)}%` : '0%')}
+                                              {tradeData.tradeCount > 0 ? `${((tradeData.winningTrades / tradeData.tradeCount) * 100).toFixed(1)}%` : '0%'}
                                             </div>
                                           </div>
                                         </Col>
@@ -2902,7 +2767,7 @@ const Backtest: React.FC = () => {
                                       </Row>
                                     </div>
                                   
-                                  {/* Trade Table - 升级为完整交易记�?*/}
+                                  {/* Trade Table - 升级为完整交易记录 */}
                                   <Table
                                     columns={[
                                       {
@@ -3130,7 +2995,7 @@ const Backtest: React.FC = () => {
                                           fontSize: '10px',
                                           fontWeight: 'bold'
                                         }}>
-                                          {tradeData.isRealData ? '实盘' : '模拟'}
+                                          {tradeData.isRealData ? '✓' : 'ℹ'}
                                         </span>
                                         <div>
                                           <strong style={{ color: '#212529' }}>Trade Log Summary</strong>
@@ -3191,7 +3056,7 @@ const Backtest: React.FC = () => {
                                 </Row>
                               </Card>
                               
-                              {/* Backtest Summary - 优化为更紧凑的摘�?*/}
+                              {/* Backtest Summary - 优化为更紧凑的摘要 */}
                               <Card 
                                 title="Backtest Summary" 
                                 size="small" 
@@ -3205,7 +3070,7 @@ const Backtest: React.FC = () => {
                                   <Col span={8}>
                                     <div style={{ fontSize: '12px', color: '#6c757d', marginBottom: '2px' }}>Period</div>
                                     <div style={{ fontSize: '14px', fontWeight: '600' }}>
-                                      {backtestResult.parameters?.startDate || 'N/A'} �?{backtestResult.parameters?.endDate || 'N/A'}
+                                      {backtestResult.parameters?.startDate || 'N/A'} → {backtestResult.parameters?.endDate || 'N/A'}
                                     </div>
                                   </Col>
                                   <Col span={8}>
@@ -3421,10 +3286,126 @@ const Backtest: React.FC = () => {
                 </Row>
               </Card>
             </div>
-          </Col>
-        </Row>
-      )}
+          </div>
+          )}
+        </Col>
         
+        <Col span={8}>
+          <Card 
+            title="Recent Backtests" 
+            extra={
+              <Space>
+                {selectedBacktests.length > 0 && (
+                  <Button 
+                    type="primary" 
+                    size="small"
+                    onClick={() => navigate(`/compare?ids=${selectedBacktests.join(',')}`)}
+                  >
+                    Compare ({selectedBacktests.length})
+                  </Button>
+                )}
+                <Button 
+                  type="text" 
+                  icon={<ReloadOutlined />} 
+                  onClick={fetchBacktestHistory}
+                  loading={historyLoading}
+                  size="small"
+                />
+              </Space>
+            }
+          >
+            {historyLoading ? (
+              <div style={{ textAlign: 'center', padding: '40px' }}>
+                <Spin />
+              </div>
+            ) : backtestHistory.length > 0 ? (
+              <Table
+                columns={historyColumns}
+                dataSource={backtestHistory}
+                rowKey="backtestId"
+                pagination={{ pageSize: 5, simple: true }}
+                size="small"
+                scroll={{ y: 300 }}
+              />
+            ) : (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="No backtest history yet"
+              >
+                <Button type="primary" onClick={() => {
+                  form.setFieldsValue({
+                    symbol: 'AAPL',
+                    strategy: 'moving_average',
+                    initialCapital: 100000,
+                    dateRange: defaultDateRange()
+                  });
+                  message.info('AAPL example loaded');
+                }}>
+                  Try AAPL Example
+                </Button>
+              </Empty>
+            )}
+          </Card>
+          
+          <Card title="Quick Actions" style={{ marginTop: 16 }}>
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <Button 
+                type="default" 
+                block
+                onClick={() => navigate('/market')}
+                icon={<LineChartOutlined />}
+              >
+                Browse Market
+              </Button>
+              <Button 
+                type="default" 
+                block
+                onClick={() => {
+                  form.setFieldsValue({
+                    symbol: 'AAPL',
+                    strategy: 'moving_average',
+                    initialCapital: 100000,
+                    dateRange: defaultDateRange()
+                  });
+                  message.info('AAPL example loaded');
+                }}
+              >
+                Load AAPL Example
+              </Button>
+              <Button 
+                type="default" 
+                block
+                onClick={() => {
+                  form.setFieldsValue({
+                    symbol: 'MSFT',
+                    strategy: 'rsi',
+                    initialCapital: 50000,
+                    dateRange: defaultDateRange()
+                  });
+                  message.info('MSFT example loaded');
+                }}
+              >
+                Load MSFT Example
+              </Button>
+              <Button 
+                type="default" 
+                block
+                onClick={() => {
+                  form.setFieldsValue({
+                    symbol: 'TSLA',
+                    strategy: 'momentum',
+                    initialCapital: 75000,
+                    dateRange: defaultDateRange()
+                  });
+                  message.info('TSLA example loaded');
+                }}
+              >
+                Load TSLA Example
+              </Button>
+            </Space>
+          </Card>
+        </Col>
+      </Row>
       
       {/* 数据来源标注 - 回测使用历史市场数据 */}
       <DataSourceBadge 

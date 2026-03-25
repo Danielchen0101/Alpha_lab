@@ -1,0 +1,36 @@
+前端字段绑定代码（从Backtest.tsx提取）：
+
+1. Avg P&L per Trade:
+   key: 'avgReturnPerTrade', 
+   metric: 'Avg P&L per Trade', 
+   value: `$${safeNumber(backtestResult.results?.avgReturnPerTrade).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 
+   description: 'Average profit/loss per trade (dollar amount)'
+
+2. Win Rate:
+   key: 'winRate', 
+   metric: 'Win Rate', 
+   value: safeNumber(backtestResult.results?.winRate), 
+   description: 'Percentage of winning trades'
+
+3. Profit Factor:
+   key: 'profitFactor', 
+   metric: 'Profit Factor', 
+   value: safeNumber(backtestResult.results?.profitFactor), 
+   description: 'Gross profit divided by gross loss (higher is better)'
+
+4. Expectancy:
+   key: 'expectancy', 
+   metric: 'Expectancy', 
+   value: safeNumber(backtestResult.results?.expectancy), 
+   description: 'Expected return per trade based on win rate and average win/loss'
+
+5. Calmar Ratio:
+   key: 'calmarRatio', 
+   metric: 'Calmar Ratio', 
+   value: safeNumber(backtestResult.results?.calmarRatio), 
+   description: 'Return vs max drawdown (higher is better)'
+
+Overview卡片中的Profit Factor绑定：
+title="Profit Factor"
+value={backtestResult.results.profitFactor || 0}
+precision={2}

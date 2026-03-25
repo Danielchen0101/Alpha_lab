@@ -855,12 +855,8 @@ const Backtest: React.FC = () => {
     { 
       key: 'profitFactor', 
       metric: 'Profit Factor', 
-      value: (() => {
-        const pf = safeNumber(backtestResult.results?.profitFactor);
-        // 当Profit Factor为99.00时，表示无限大（没有亏损交易），显示为N/A
-        return Math.abs(pf - 99.00) < 0.01 ? 'N/A' : pf;
-      })(), 
-      description: 'Gross profit divided by gross loss (higher is better). N/A indicates no losing trades.' 
+      value: safeNumber(backtestResult.results?.profitFactor), 
+      description: 'Gross profit divided by gross loss (higher is better)' 
     },
     { 
       key: 'expectancy', 
@@ -1210,34 +1206,6 @@ const Backtest: React.FC = () => {
     }
   };
 
-  // 生成大约12个均匀分布的日期刻度
-  const generateDateTicks = (data: Array<{date: string}>, targetTickCount: number = 12): string[] => {
-    if (data.length === 0) return [];
-    
-    // 如果数据点少于目标刻度数，返回所有日期
-    if (data.length <= targetTickCount) {
-      return data.map(item => item.date);
-    }
-    
-    // 计算步长
-    const step = Math.floor(data.length / targetTickCount);
-    const ticks: string[] = [];
-    
-    // 从第一个数据点开始，每隔step个点取一个日期
-    for (let i = 0; i < data.length; i += step) {
-      ticks.push(data[i].date);
-      // 如果已经达到或超过目标刻度数，停止
-      if (ticks.length >= targetTickCount) break;
-    }
-    
-    // 确保最后一个日期总是包含在内
-    if (ticks[ticks.length - 1] !== data[data.length - 1].date) {
-      ticks[ticks.length - 1] = data[data.length - 1].date;
-    }
-    
-    return ticks;
-  };
-
   return (
     <div>
       <h1 style={{ marginBottom: 24 }}>Strategy Backtest</h1>
@@ -1255,7 +1223,7 @@ const Backtest: React.FC = () => {
       )}
       
       <Row gutter={[16, 16]}>
-        <Col span={16}>
+        <Col span={24}>
           <Card title="Backtest Configuration">
             <Form
               form={form}
@@ -1741,125 +1709,6 @@ const Backtest: React.FC = () => {
             </Card>
           )}
         </Col>
-        
-        <Col span={8}>
-          <Card 
-            title="Recent Backtests" 
-            extra={
-              <Space>
-                {selectedBacktests.length > 0 && (
-                  <Button 
-                    type="primary" 
-                    size="small"
-                    onClick={() => navigate(`/compare?ids=${selectedBacktests.join(',')}`)}
-                  >
-                    Compare ({selectedBacktests.length})
-                  </Button>
-                )}
-                <Button 
-                  type="text" 
-                  icon={<ReloadOutlined />} 
-                  onClick={fetchBacktestHistory}
-                  loading={historyLoading}
-                  size="small"
-                />
-              </Space>
-            }
-          >
-            {historyLoading ? (
-              <div style={{ textAlign: 'center', padding: '40px' }}>
-                <Spin />
-              </div>
-            ) : backtestHistory.length > 0 ? (
-              <Table
-                columns={historyColumns}
-                dataSource={backtestHistory}
-                rowKey="backtestId"
-                pagination={{ pageSize: 5, simple: true }}
-                size="small"
-                scroll={{ y: 300 }}
-              />
-            ) : (
-              <Empty
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description="No backtest history yet"
-              >
-                <Button type="primary" onClick={() => {
-                  form.setFieldsValue({
-                    symbol: 'AAPL',
-                    strategy: 'moving_average',
-                    initialCapital: 100000,
-                    dateRange: defaultDateRange()
-                  });
-                  message.info('AAPL example loaded');
-                }}>
-                  Try AAPL Example
-                </Button>
-              </Empty>
-            )}
-          </Card>
-          
-          <Card 
-            title="Quick Actions" 
-            style={{ marginTop: 16 }}
-          >
-            <Space direction="vertical" style={{ width: '100%' }}>
-              <Button 
-                type="default" 
-                block
-                onClick={() => navigate('/market')}
-                icon={<LineChartOutlined />}
-              >
-                Browse Market
-              </Button>
-              <Button 
-                type="default" 
-                block
-                onClick={() => {
-                  form.setFieldsValue({
-                    symbol: 'AAPL',
-                    strategy: 'moving_average',
-                    initialCapital: 100000,
-                    dateRange: defaultDateRange()
-                  });
-                  message.info('AAPL example loaded');
-                }}
-              >
-                Load AAPL Example
-              </Button>
-              <Button 
-                type="default" 
-                block
-                onClick={() => {
-                  form.setFieldsValue({
-                    symbol: 'MSFT',
-                    strategy: 'rsi',
-                    initialCapital: 50000,
-                    dateRange: defaultDateRange()
-                  });
-                  message.info('MSFT example loaded');
-                }}
-              >
-                Load MSFT Example
-              </Button>
-              <Button 
-                type="default" 
-                block
-                onClick={() => {
-                  form.setFieldsValue({
-                    symbol: 'TSLA',
-                    strategy: 'momentum',
-                    initialCapital: 75000,
-                    dateRange: defaultDateRange()
-                  });
-                  message.info('TSLA example loaded');
-                }}
-              >
-                Load TSLA Example
-              </Button>
-            </Space>
-          </Card>
-        </Col>
       </Row>
 
       
@@ -2053,11 +1902,7 @@ const Backtest: React.FC = () => {
  <Card size="small" style={{ textAlign: 'center' }}>
  <Statistic
  title="Profit Factor"
- value={(() => {
-   const pf = backtestResult.results.profitFactor || 0;
-   // 当Profit Factor为99.00时，表示无限大（没有亏损交易），显示为N/A
-   return Math.abs(pf - 99.00) < 0.01 ? 'N/A' : pf;
- })()}
+ value={backtestResult.results.profitFactor || 0}
  precision={2}
  valueStyle={{
  color:
@@ -2093,27 +1938,22 @@ const Backtest: React.FC = () => {
                       label: 'Charts',
                       children: (
                         <>
-                          <div
-                            style={{
-                              background: '#fafafa',
-                              borderRadius: '8px',
-                              padding: '24px',
-                              position: 'relative'
-                            }}
-                          >
-                            <h4 style={{ marginBottom: '16px' }}>Equity Curve</h4>
-                            {equityCurveData.length > 0 ? (
-                              <div
-                                style={{
-                                  height: '350px',
-                                  position: 'relative'
-                                }}
-                              >
-                                <ResponsiveContainer width="100%" height="100%">
-                                  <AreaChart
-                                    data={equityCurveData}
-                                    margin={{ top: 10, right: 10, left: 0, bottom: 20 }}
-                                  >
+                          <h4>Equity Curve</h4>
+                          {equityCurveData.length > 0 ? (
+                            <div
+                              style={{
+                                height: '250px',
+                                background: '#fafafa',
+                                borderRadius: '8px',
+                                padding: '16px',
+                                position: 'relative'
+                              }}
+                            >
+                              <ResponsiveContainer width="100%" height="100%">
+                                <AreaChart
+                                  data={equityCurveData}
+                                  margin={{ top: 10, right: 10, left: 0, bottom: 20 }}
+                                >
                                   <defs>
                                     <linearGradient id="colorEquity" x1="0" y1="0" x2="0" y2="1">
                                       <stop offset="5%" stopColor="#3f8600" stopOpacity={0.1}/>
@@ -2133,17 +1973,23 @@ const Backtest: React.FC = () => {
                                     dataKey="date" 
                                     tick={{ fontSize: 11 }}
                                     tickFormatter={(value) => {
-                                      // 简化日期显示格式：显示为 M/D
+                                      // 统一日期显示格式：显示为 M/D，如 4/1�?/15�?/1
                                       try {
+                                        // 先尝试直接解析日期字符串
                                         let dateObj;
                                         
-                                        if (typeof value === 'string' && value.includes('-')) {
-                                          const parts = value.split('-');
-                                          if (parts.length >= 3) {
-                                            const year = parseInt(parts[0], 10);
-                                            const month = parseInt(parts[1], 10);
-                                            const day = parseInt(parts[2], 10);
-                                            dateObj = new Date(year, month - 1, day);
+                                        if (typeof value === 'string') {
+                                          // 如果是YYYY-MM-DD格式
+                                          if (value.includes('-')) {
+                                            const parts = value.split('-');
+                                            if (parts.length >= 3) {
+                                              const year = parseInt(parts[0], 10);
+                                              const month = parseInt(parts[1], 10);
+                                              const day = parseInt(parts[2], 10);
+                                              dateObj = new Date(year, month - 1, day);
+                                            } else {
+                                              dateObj = new Date(value);
+                                            }
                                           } else {
                                             dateObj = new Date(value);
                                           }
@@ -2151,13 +1997,21 @@ const Backtest: React.FC = () => {
                                           dateObj = new Date(value);
                                         }
                                         
+                                        // 检查日期是否有�?
                                         if (isNaN(dateObj.getTime())) {
                                           return '';
                                         }
                                         
                                         const month = dateObj.getMonth() + 1;
                                         const day = dateObj.getDate();
-                                        return `${month}/${day}`;
+                                        
+                                        // 显示规则：每月的1号�?0号�?0号，或者跨月时显示1�?
+                                        // 这样对于30天数据，显示�?/1�?/10�?/20�?/1
+                                        if (day === 1 || day === 10 || day === 20) {
+                                          return `${month}/${day}`;
+                                        }
+                                        
+                                        return '';
                                       } catch (error) {
                                         console.warn('日期解析错误:', value, error);
                                         return '';
@@ -2165,8 +2019,9 @@ const Backtest: React.FC = () => {
                                     }}
                                     axisLine={{ stroke: '#d9d9d9' }}
                                     tickLine={false}
-                                    // 使用自定义刻度显示大约12个日期点
-                                    ticks={generateDateTicks(equityCurveData, 12)}
+                                    // 优化间隔控制：显示更整齐的标�?
+                                    interval="preserveStartEnd"
+                                    minTickGap={30}
                                   />
                                   <YAxis 
                                     tick={{ fontSize: 11 }}
@@ -2299,13 +2154,16 @@ const Backtest: React.FC = () => {
                             </div>
                           )}
 
-                          <Divider style={{ margin: '24px 0' }} />
+                          <Divider />
 
-                          <h4 style={{ marginBottom: '16px' }}>Drawdown Chart</h4>
+                          <h4>Drawdown Chart</h4>
                           {equityCurveData.length > 0 ? (
                             <div
                               style={{
-                                height: '300px',
+                                height: '200px',
+                                background: '#fafafa',
+                                borderRadius: '8px',
+                                padding: '16px',
                                 position: 'relative'
                               }}
                             >
@@ -2347,9 +2205,6 @@ const Backtest: React.FC = () => {
                                 // 计算Drawdown Chart的Y轴刻�?
                                 const drawdownTicks = calculateDrawdownTicks(drawdownData);
                                 
-                                // 为X轴生成日期刻度
-                                const dateTicks = generateDateTicks(drawdownData, 12);
-                                
                                 return (
                                   <>
                                     <ResponsiveContainer width="100%" height="100%">
@@ -2372,17 +2227,23 @@ const Backtest: React.FC = () => {
                                           dataKey="date" 
                                           tick={{ fontSize: 11 }}
                                           tickFormatter={(value) => {
-                                            // 简化日期显示格式：显示为 M/D
+                                            // 统一日期显示格式：显示为 M/D，如 4/1�?/15�?/1
                                             try {
+                                              // 先尝试直接解析日期字符串
                                               let dateObj;
                                               
-                                              if (typeof value === 'string' && value.includes('-')) {
-                                                const parts = value.split('-');
-                                                if (parts.length >= 3) {
-                                                  const year = parseInt(parts[0], 10);
-                                                  const month = parseInt(parts[1], 10);
-                                                  const day = parseInt(parts[2], 10);
-                                                  dateObj = new Date(year, month - 1, day);
+                                              if (typeof value === 'string') {
+                                                // 如果是YYYY-MM-DD格式
+                                                if (value.includes('-')) {
+                                                  const parts = value.split('-');
+                                                  if (parts.length >= 3) {
+                                                    const year = parseInt(parts[0], 10);
+                                                    const month = parseInt(parts[1], 10);
+                                                    const day = parseInt(parts[2], 10);
+                                                    dateObj = new Date(year, month - 1, day);
+                                                  } else {
+                                                    dateObj = new Date(value);
+                                                  }
                                                 } else {
                                                   dateObj = new Date(value);
                                                 }
@@ -2390,13 +2251,21 @@ const Backtest: React.FC = () => {
                                                 dateObj = new Date(value);
                                               }
                                               
+                                              // 检查日期是否有�?
                                               if (isNaN(dateObj.getTime())) {
                                                 return '';
                                               }
                                               
                                               const month = dateObj.getMonth() + 1;
                                               const day = dateObj.getDate();
-                                              return `${month}/${day}`;
+                                              
+                                              // 显示规则：每月的1号�?0号�?0号，或者跨月时显示1�?
+                                              // 这样对于30天数据，显示�?/1�?/10�?/20�?/1
+                                              if (day === 1 || day === 10 || day === 20) {
+                                                return `${month}/${day}`;
+                                              }
+                                              
+                                              return '';
                                             } catch (error) {
                                               console.warn('日期解析错误:', value, error);
                                               return '';
@@ -2404,8 +2273,9 @@ const Backtest: React.FC = () => {
                                           }}
                                           axisLine={{ stroke: '#d9d9d9' }}
                                           tickLine={false}
-                                          // 使用自定义刻度显示大约12个日期点
-                                          ticks={dateTicks}
+                                          // 优化间隔控制：显示更整齐的标�?
+                                          interval="preserveStartEnd"
+                                          minTickGap={30}
                                         />
                                         <YAxis 
                                           tick={{ fontSize: 11 }}
@@ -2549,11 +2419,10 @@ const Backtest: React.FC = () => {
                               No drawdown data available
                             </div>
                           )}
-                        </div>
 
-                        <Divider />
+                          <Divider />
 
-                        <h4>Trading Chart</h4>
+                          <h4>Trading Chart</h4>
                           {backtestResult?.parameters?.symbols && backtestResult.parameters.symbols.length > 1 ? (
                             // Portfolio 模式：不显示 Trading Chart
                             <Empty 
@@ -2841,7 +2710,7 @@ const Backtest: React.FC = () => {
                                               marginTop: '2px',
                                               fontWeight: '500'
                                             }}>
-                                              {tradeData.winRate ? `${tradeData.winRate.toFixed(1)}%` : (tradeData.tradeCount > 0 ? `${((tradeData.winningTrades / tradeData.tradeCount) * 100).toFixed(1)}%` : '0%')}
+                                              {tradeData.tradeCount > 0 ? `${((tradeData.winningTrades / tradeData.tradeCount) * 100).toFixed(1)}%` : '0%'}
                                             </div>
                                           </div>
                                         </Col>
