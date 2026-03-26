@@ -54,8 +54,19 @@ const App: React.FC = () => {
               <Header style={{ padding: '0 24px', background: '#fff', display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
                 <LanguageSwitcher />
               </Header>
-              <Content style={{ margin: '24px 16px 0', overflow: 'initial' }}>
-                <div style={{ padding: 24, background: '#fff', borderRadius: 8 }}>
+              <Content style={{ 
+                margin: '24px 16px 0', 
+                overflowY: 'auto', 
+                overflowX: 'hidden',
+                height: 'calc(100vh - 112px)',
+                minHeight: 0,
+              }}>
+                <div style={{ 
+                  padding: 24, 
+                  background: '#fff', 
+                  borderRadius: 8, 
+                  minHeight: '100%',
+                }}>
                   <Routes>
                     <Route path="/" element={<Dashboard />} />
                     <Route path="/market" element={<Market />} />

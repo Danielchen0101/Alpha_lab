@@ -134,7 +134,7 @@ export default {
 
   // Strategy Comparison page
   comparison: {
-    title: 'Automated Quant Platform - Strategy Comparison',
+    title: 'Strategy Comparison',
     subtitle: 'Multi-strategy performance comparison analysis',
     parameterComparison: 'Parameter Comparison',
     performanceComparison: 'Performance Metrics Comparison',

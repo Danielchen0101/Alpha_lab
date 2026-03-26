@@ -163,9 +163,9 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
     console.log(`TradingChart Debug: Last data item:`, data[data.length - 1]);
   }
 
-  // Calculate chart heights with explicit pixel values - 显著增加Volume Chart高度
-  const priceChartHeight = (hasVolumeData && showVolume) ? 350 : 450; // Price Chart稍微减少：350px（有Volume时）或450px（无Volume时）
-  const volumeChartHeight = (hasVolumeData && showVolume) ? 280 : 0; // Volume Chart显著增加：280px，确保真正展开
+  // Calculate chart heights with explicit pixel values - 高度再平衡：Price Chart稍微收一点，Volume Chart明显加高
+  const priceChartHeight = (hasVolumeData && showVolume) ? 360 : 460; // Price Chart稍微收一点：360px（有Volume时）或460px（无Volume时）
+  const volumeChartHeight = (hasVolumeData && showVolume) ? 220 : 0; // Volume Chart明显加高：220px，确保真正展开
 
   // Format date for X-axis - 优化版本
   const formatDate = (dateStr: string) => {
@@ -726,9 +726,9 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
     <div style={{ 
       border: '1px solid #e8e8e8', 
       borderRadius: '8px', 
-      padding: '32px', // 进一步增加内边距
+      padding: '28px', // 显著增加内边距，让整体更舒展
       backgroundColor: '#fff',
-      minHeight: Math.max(height, 700), // 显著增加外层容器高度，至少700px
+      minHeight: Math.max(height, 600), // 显著增加外层容器高度，至少600px
       display: 'flex',
       flexDirection: 'column'
     }}>
@@ -815,7 +815,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
       {/* Price Chart */}
       <div style={{ 
         height: priceChartHeight, 
-        marginBottom: (hasVolumeData && showVolume) ? '20px' : '0',  // 减少间距：20px，让两个图更紧凑
+        marginBottom: (hasVolumeData && showVolume) ? '24px' : '0',  // 稍微减少间距：24px，让两个图更紧凑
         flex: '0 0 auto'  // 固定高度，不自动扩展
       }}>
         <ResponsiveContainer width="100%" height="100%">
@@ -1001,7 +1001,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
           <ResponsiveContainer width="100%" height="100%">
             <BarChart
               data={chartData}
-              margin={{ top: 8, right: 30, left: 30, bottom: 15 }}
+              margin={{ top: 5, right: 25, left: 25, bottom: 10 }}
             >
               <CartesianGrid strokeDasharray="3 3" stroke="#f8f8f8" vertical={false} />
               <XAxis 
@@ -1056,8 +1056,8 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                 dataKey="volumeDisplay"
                 name="Volume"
                 fill="#999"  // Default color
-                barSize={14} // 减少柱子宽度，避免太挤
-                radius={[3, 3, 0, 0]} // 减少圆角
+                barSize={18} // 进一步增加柱子宽度，避免太细太挤
+                radius={[5, 5, 0, 0]} // 增加圆角
               >
                 {chartData.map((entry, index) => (
                   <Cell 
@@ -1065,22 +1065,18 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                     className="volume-bar-cell"
                     fill={entry.volumeColor || '#999'}
                     stroke={entry.volumeColor || '#999'}
-                    strokeWidth={0.8} // 减少边框宽度
+                    strokeWidth={1.2} // 增加边框宽度
                     style={{
-                      transition: 'all 0.2s ease',
+                      transition: 'opacity 0.2s ease',
                       cursor: 'pointer'
                     }}
                     onMouseEnter={(e) => {
                       const target = e.target as HTMLElement;
-                      target.style.opacity = '0.6';
-                      target.style.strokeWidth = '2';
-                      target.style.filter = 'brightness(1.1)';
+                      target.style.opacity = '0.7';
                     }}
                     onMouseLeave={(e) => {
                       const target = e.target as HTMLElement;
                       target.style.opacity = '1';
-                      target.style.strokeWidth = '0.8';
-                      target.style.filter = 'brightness(1)';
                     }}
                   />
                 ))}

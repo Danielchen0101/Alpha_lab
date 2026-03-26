@@ -163,9 +163,9 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
     console.log(`TradingChart Debug: Last data item:`, data[data.length - 1]);
   }
 
-  // Calculate chart heights with explicit pixel values - 显著增加Volume Chart高度
-  const priceChartHeight = (hasVolumeData && showVolume) ? 350 : 450; // Price Chart稍微减少：350px（有Volume时）或450px（无Volume时）
-  const volumeChartHeight = (hasVolumeData && showVolume) ? 280 : 0; // Volume Chart显著增加：280px，确保真正展开
+  // Calculate chart heights with optimized proportions - Price Chart更突出，Volume Chart更高
+  const priceChartHeight = (hasVolumeData && showVolume) ? height * 0.60 : height * 0.80; // Price Chart稍微降低，给Volume更多空间
+  const volumeChartHeight = (hasVolumeData && showVolume) ? height * 0.40 : 0; // Volume Chart增加高度
 
   // Format date for X-axis - 优化版本
   const formatDate = (dateStr: string) => {
@@ -191,238 +191,29 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
     }
   };
 
-  // 生成每月一个自然代表日的日期刻度，确保2月日期点更自然
-  const generateDateTicks = (data: ChartDataItem[], targetTickCount: number = 13): string[] => {
+  // 生成大约12个均匀分布的日期刻度
+  const generateDateTicks = (data: ChartDataItem[], targetTickCount: number = 12): string[] => {
     if (data.length === 0) return [];
     
-    // 如果数据点很少，返回所有日期
-    if (data.length <= 8) {
+    // 如果数据点少于目标刻度数，返回所有日期
+    if (data.length <= targetTickCount) {
       return data.map(item => item.date);
     }
     
-    // 按月份分组数据，选择每月最接近15号的日期作为代表
-    const monthMap = new Map<string, Array<{date: string, day: number}>>();
-    
-    data.forEach(item => {
-      try {
-        const dateObj = new Date(item.date);
-        const year = dateObj.getFullYear();
-        const month = dateObj.getMonth(); // 0-11
-        const day = dateObj.getDate();
-        const key = `${year}-${month.toString().padStart(2, '0')}`;
-        
-        if (!monthMap.has(key)) {
-          monthMap.set(key, []);
-        }
-        monthMap.get(key)!.push({date: item.date, day});
-      } catch {
-        // 忽略解析错误的日期
-      }
-    });
-    
-    // 按时间顺序排序月份
-    const monthKeys = Array.from(monthMap.keys()).sort();
-    
+    // 计算步长
+    const step = Math.floor(data.length / targetTickCount);
     const ticks: string[] = [];
     
-    // 总是包含第一个日期
-    ticks.push(data[0].date);
-    
-    // 为每个月份选择一个代表日期（尽量选择月中日期）
-    for (const monthKey of monthKeys) {
-      // 跳过第一个月（已包含第一个日期）
-      const firstDate = new Date(data[0].date);
-      const firstYear = firstDate.getFullYear();
-      const firstMonth = firstDate.getMonth();
-      const currentDate = new Date(monthKey + '-01');
-      
-      if (firstYear === currentDate.getFullYear() && firstMonth === currentDate.getMonth()) {
-        continue;
-      }
-      
-      const monthData = monthMap.get(monthKey)!;
-      
-      // 选择最接近15号的日期作为代表
-      let bestDate = monthData[0].date;
-      let bestDistance = Math.abs(monthData[0].day - 15);
-      
-      for (const item of monthData) {
-        const distance = Math.abs(item.day - 15);
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          bestDate = item.date;
-        }
-      }
-      
-      ticks.push(bestDate);
+    // 从第一个数据点开始，每隔step个点取一个日期
+    for (let i = 0; i < data.length; i += step) {
+      ticks.push(data[i].date);
+      // 如果已经达到或超过目标刻度数，停止
+      if (ticks.length >= targetTickCount) break;
     }
     
-    // 总是包含最后一个日期
-    const lastDate = data[data.length - 1].date;
-    if (ticks[ticks.length - 1] !== lastDate) {
-      ticks.push(lastDate);
-    }
-    
-    // 如果ticks数量太多，进行适当修剪（但确保包含首尾和重要月份）
-    if (ticks.length > targetTickCount) {
-      const importantTicks = new Set<string>();
-      
-      // 总是包含第一个和最后一个
-      importantTicks.add(ticks[0]);
-      importantTicks.add(ticks[ticks.length - 1]);
-      
-      // 特别确保包含2月和5月日期
-      const importantMonths = [1, 4]; // 2月(1)和5月(4)
-      const importantMonthTicks = ticks.filter(date => {
-        try {
-          const dateObj = new Date(date);
-          return importantMonths.includes(dateObj.getMonth());
-        } catch {
-          return false;
-        }
-      });
-      
-      importantMonthTicks.forEach(tick => importantTicks.add(tick));
-      
-      // 均匀选择其他月份的日期
-      const otherTicks = ticks.filter(tick => !importantTicks.has(tick));
-      const otherStep = Math.max(1, Math.floor(otherTicks.length / (targetTickCount - importantTicks.size)));
-      
-      for (let i = 0; i < otherTicks.length; i += otherStep) {
-        importantTicks.add(otherTicks[i]);
-        if (importantTicks.size >= targetTickCount) break;
-      }
-      
-      // 特别检查：如果5月仍然没有包含，强制添加一个5月日期
-      const hasMay = Array.from(importantTicks).some(date => {
-        try {
-          return new Date(date).getMonth() === 4; // 5月
-        } catch {
-          return false;
-        }
-      });
-      
-      if (!hasMay) {
-        // 查找所有5月日期
-        const mayDates: string[] = [];
-        data.forEach(item => {
-          try {
-            const dateObj = new Date(item.date);
-            if (dateObj.getMonth() === 4) { // 5月
-              mayDates.push(item.date);
-            }
-          } catch {
-            // 忽略解析错误
-          }
-        });
-        
-        if (mayDates.length > 0) {
-          // 选择最接近5月15号的日期
-          let bestMayDate = mayDates[0];
-          let bestMayDistance = 31;
-          
-          mayDates.forEach(date => {
-            try {
-              const day = new Date(date).getDate();
-              const distance = Math.abs(day - 15);
-              if (distance < bestMayDistance) {
-                bestMayDistance = distance;
-                bestMayDate = date;
-              }
-            } catch {
-              // 忽略解析错误
-            }
-          });
-          
-          // 找到插入位置（按时间顺序）
-          const insertIndex = Array.from(importantTicks).findIndex(tick => {
-            try {
-              return new Date(tick) > new Date(bestMayDate);
-            } catch {
-              return false;
-            }
-          });
-          
-          if (insertIndex !== -1) {
-            const ticksArray = Array.from(importantTicks);
-            ticksArray.splice(insertIndex, 0, bestMayDate);
-            return ticksArray.sort((a, b) => {
-              try {
-                return new Date(a).getTime() - new Date(b).getTime();
-              } catch {
-                return 0;
-              }
-            });
-          }
-        }
-      }
-      
-      return Array.from(importantTicks).sort((a, b) => {
-        try {
-          return new Date(a).getTime() - new Date(b).getTime();
-        } catch {
-          return 0;
-        }
-      });
-    }
-    
-    // 即使ticks数量不多，也检查5月是否包含
-    const hasMay = ticks.some(date => {
-      try {
-        return new Date(date).getMonth() === 4; // 5月
-      } catch {
-        return false;
-      }
-    });
-    
-    if (!hasMay) {
-      // 查找所有5月日期
-      const mayDates: string[] = [];
-      data.forEach(item => {
-        try {
-          const dateObj = new Date(item.date);
-          if (dateObj.getMonth() === 4) { // 5月
-            mayDates.push(item.date);
-          }
-        } catch {
-          // 忽略解析错误
-        }
-      });
-      
-      if (mayDates.length > 0) {
-        // 选择最接近5月15号的日期
-        let bestMayDate = mayDates[0];
-        let bestMayDistance = 31;
-        
-        mayDates.forEach(date => {
-          try {
-            const day = new Date(date).getDate();
-            const distance = Math.abs(day - 15);
-            if (distance < bestMayDistance) {
-              bestMayDistance = distance;
-              bestMayDate = date;
-            }
-          } catch {
-            // 忽略解析错误
-          }
-        });
-        
-        // 找到插入位置（按时间顺序）
-        const insertIndex = ticks.findIndex(tick => {
-          try {
-            return new Date(tick) > new Date(bestMayDate);
-          } catch {
-            return false;
-          }
-        });
-        
-        if (insertIndex !== -1) {
-          ticks.splice(insertIndex, 0, bestMayDate);
-        } else if (ticks.length < targetTickCount + 2) {
-          // 如果找不到合适位置，添加到倒数第二位置（最后一个日期之前）
-          ticks.splice(ticks.length - 1, 0, bestMayDate);
-        }
-      }
+    // 确保最后一个日期总是包含在内
+    if (ticks[ticks.length - 1] !== data[data.length - 1].date) {
+      ticks[ticks.length - 1] = data[data.length - 1].date;
     }
     
     return ticks;
@@ -462,24 +253,24 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
         }}>
           {/* 标题区域 - 更紧凑 */}
           <div style={{ 
-            marginBottom: '14px'
+            marginBottom: '12px'
           }}>
             <div style={{ 
-              fontSize: '14px', // 增大字号
+              fontSize: '12px', 
               fontWeight: '700', 
               color: '#333',
-              marginBottom: '3px',
-              letterSpacing: '0.4px'
+              marginBottom: '2px',
+              letterSpacing: '0.3px'
             }}>
               {label}
             </div>
             <div style={{ 
-              fontSize: '11px', // 增大字号
+              fontSize: '10px', 
               color: '#8c8c8c',
               display: 'flex',
               alignItems: 'center',
               textTransform: 'uppercase',
-              letterSpacing: '0.6px'
+              letterSpacing: '0.5px'
             }}>
               <span style={{
                 display: 'inline-block',
@@ -726,51 +517,47 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
     <div style={{ 
       border: '1px solid #e8e8e8', 
       borderRadius: '8px', 
-      padding: '32px', // 进一步增加内边距
+      padding: '20px',
       backgroundColor: '#fff',
-      minHeight: Math.max(height, 700), // 显著增加外层容器高度，至少700px
-      display: 'flex',
-      flexDirection: 'column'
+      minHeight: height
     }}>
       {/* Header with Chart Controls - Optimized position */}
       <div style={{ 
         display: 'flex', 
         justifyContent: 'space-between', 
         alignItems: 'center', 
-        marginBottom: '24px', // 增加间距：24px
-        padding: '0 4px' // 减少内边距，让标题更靠近边缘
+        marginBottom: '20px',
+        padding: '0 8px' // Added padding to keep distance from edges
       }}>
-        <h4 style={{ margin: 0, color: '#333', fontSize: '18px', fontWeight: '600' }}>Price Chart with Trading Signals</h4>
+        <h4 style={{ margin: 0, color: '#333' }}>Price Chart with Trading Signals</h4>
         
-        {/* Chart Controls - 更紧凑利落的专业交易平台风格 */}
+        {/* Chart Controls - 专业交易平台风格 */}
         <div style={{ 
           display: 'flex',
           alignItems: 'center',
-          padding: '6px 14px',
+          padding: '3px 8px',
           backgroundColor: '#f8f9fa',
-          borderRadius: '8px',
+          borderRadius: '6px',
           border: '1px solid #e9ecef',
-          fontSize: '11px',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.08)'
+          fontSize: '10px',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
         }}>
-          <Space direction="horizontal" size={10}>
+          <Space direction="horizontal" size={6}>
             <Checkbox 
               checked={showClosePrice} 
               onChange={(e) => setShowClosePrice(e.target.checked)}
-              style={{ fontSize: '11px', marginRight: '0', padding: '0' }}
+              style={{ fontSize: '10px', marginRight: '0' }}
             >
-              <span style={{ color: '#1890ff', fontWeight: '700', letterSpacing: '0.5px' }}>PRICE</span>
+              <span style={{ color: '#1890ff', fontWeight: '600' }}>PRICE</span>
             </Checkbox>
-            
-            <div style={{ width: '1px', height: '12px', backgroundColor: '#dee2e6', margin: '0 2px' }}></div>
             
             {hasSMA20 && (
               <Checkbox 
                 checked={showSMA20} 
                 onChange={(e) => setShowSMA20(e.target.checked)}
-                style={{ fontSize: '9px', marginRight: '0', padding: '0' }}
+                style={{ fontSize: '10px', marginRight: '0' }}
               >
-                <span style={{ color: '#52c41a', opacity: 0.9, fontWeight: '500' }}>SMA20</span>
+                <span style={{ color: '#52c41a', opacity: 0.8 }}>SMA20</span>
               </Checkbox>
             )}
             
@@ -778,35 +565,30 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               <Checkbox 
                 checked={showSMA50} 
                 onChange={(e) => setShowSMA50(e.target.checked)}
-                style={{ fontSize: '9px', marginRight: '0', padding: '0' }}
+                style={{ fontSize: '10px', marginRight: '0' }}
               >
-                <span style={{ color: '#fa8c16', opacity: 0.9, fontWeight: '500' }}>SMA50</span>
+                <span style={{ color: '#fa8c16', opacity: 0.8 }}>SMA50</span>
               </Checkbox>
             )}
-            
-            <div style={{ width: '1px', height: '12px', backgroundColor: '#dee2e6', margin: '0 2px' }}></div>
             
             {hasSignals && (
               <Checkbox 
                 checked={showSignals} 
                 onChange={(e) => setShowSignals(e.target.checked)}
-                style={{ fontSize: '9px', marginRight: '0', padding: '0' }}
+                style={{ fontSize: '10px', marginRight: '0' }}
               >
-                <span style={{ color: '#666', opacity: 0.9, fontWeight: '500' }}>SIGNALS</span>
+                <span style={{ color: '#666', opacity: 0.8 }}>SIGNALS</span>
               </Checkbox>
             )}
             
             {hasVolumeData && (
-              <>
-                <div style={{ width: '1px', height: '12px', backgroundColor: '#dee2e6', margin: '0 2px' }}></div>
-                <Checkbox 
-                  checked={showVolume} 
-                  onChange={(e) => setShowVolume(e.target.checked)}
-                  style={{ fontSize: '9px', padding: '0' }}
-                >
-                  <span style={{ color: '#666', opacity: 0.9, fontWeight: '500' }}>VOLUME</span>
-                </Checkbox>
-              </>
+              <Checkbox 
+                checked={showVolume} 
+                onChange={(e) => setShowVolume(e.target.checked)}
+                style={{ fontSize: '10px' }}
+              >
+                <span style={{ color: '#666', opacity: 0.8 }}>VOLUME</span>
+              </Checkbox>
             )}
           </Space>
         </div>
@@ -815,8 +597,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
       {/* Price Chart */}
       <div style={{ 
         height: priceChartHeight, 
-        marginBottom: (hasVolumeData && showVolume) ? '20px' : '0',  // 减少间距：20px，让两个图更紧凑
-        flex: '0 0 auto'  // 固定高度，不自动扩展
+        marginBottom: (hasVolumeData && showVolume) ? '32px' : '0'  // Increased spacing
       }}>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
@@ -826,17 +607,17 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
             <CartesianGrid strokeDasharray="3 3" stroke="#f8f8f8" vertical={false} />
             <XAxis 
               dataKey="date" 
-              tick={{ fontSize: 11, fill: '#666' }} // 增大字号
+              tick={{ fontSize: 10, fill: '#666' }}
               tickFormatter={smartTickFormatter}
               axisLine={{ stroke: '#d9d9d9' }}
               tickLine={{ stroke: '#d9d9d9' }}
-              height={38}
+              height={35}
               // 使用统一的日期刻度
               ticks={dateTicks}
             />
             <YAxis 
               domain={[minPrice - pricePadding, maxPrice + pricePadding]}
-              tick={{ fontSize: 11, fill: '#666' }} // 增大字号
+              tick={{ fontSize: 10, fill: '#666' }}
               tickFormatter={(value) => {
                 // 专业的价格格式：整数部分逗号分隔，两位小数
                 return `$${value.toLocaleString('en-US', {
@@ -846,25 +627,16 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               }}
               axisLine={{ stroke: '#d9d9d9' }}
               tickLine={{ stroke: '#d9d9d9' }}
-              width={70}
+              width={65}
               // 给价格留出更多空白，看起来更专业
-              padding={{ top: 22, bottom: 22 }}
+              padding={{ top: 20, bottom: 20 }}
             />
             <Tooltip 
               content={<ProfessionalTooltip />}
               offset={12}
               cursor={{ stroke: '#d9d9d9', strokeWidth: 1, strokeDasharray: '3 3' }}
             />
-            <Legend 
-              wrapperStyle={{ 
-                paddingTop: '3px', 
-                paddingBottom: '3px',
-                fontSize: '10px',
-                marginTop: '-4px' // 更靠近图表
-              }}
-              iconSize={8}
-              iconType="plainline"
-            />
+            <Legend wrapperStyle={{ paddingTop: '10px' }} />
             
             {/* Price line - 更突出，专业交易图表风格 */}
             {showClosePrice && (
@@ -943,79 +715,63 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
       {hasVolumeData && showVolume && (
         <div style={{ 
           height: volumeChartHeight,
-          marginTop: '0',  // 去掉顶部间距，因为Price Chart已经有底部间距
-          marginBottom: '20px', // 稍微减少底部间距：20px，让整体更紧凑
-          flex: '0 0 auto'  // 固定高度，不自动扩展
+          marginTop: '20px',
+          marginBottom: '20px'
         }}>
           <div style={{ 
             display: 'flex', 
             justifyContent: 'space-between', 
             alignItems: 'center',
-            marginBottom: '12px',
-            padding: '8px 14px',
-            backgroundColor: '#f8f9fa',
-            borderRadius: '8px',
-            border: '1px solid #e9ecef',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.04)'
+            marginBottom: '8px',
+            padding: '0 8px'
           }}>
             <div style={{ display: 'flex', alignItems: 'center' }}>
               <div style={{
-                width: '14px',
-                height: '14px',
+                width: '10px',
+                height: '10px',
                 backgroundColor: '#95de64',
-                marginRight: '12px',
-                borderRadius: '4px',
-                boxShadow: '0 2px 6px rgba(0,0,0,0.12)'
+                marginRight: '8px',
+                borderRadius: '2px',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
               }}></div>
-              <div>
-                <h5 style={{ 
-                  margin: 0, 
-                  color: '#495057', 
-                  fontSize: '14px', // 增大字号
-                  fontWeight: '700',
-                  letterSpacing: '0.6px',
-                  textTransform: 'uppercase',
-                  marginBottom: '3px'
-                }}>VOLUME CHART</h5>
-                <div style={{ 
-                  fontSize: '11px', // 增大字号
-                  color: '#6c757d',
-                  fontWeight: '500',
-                  letterSpacing: '0.3px'
-                }}>Trading Volume • Green=Up, Red=Down</div>
-              </div>
+              <h5 style={{ 
+                margin: 0, 
+                color: '#595959', 
+                fontSize: '11px', 
+                fontWeight: '700',
+                letterSpacing: '0.8px',
+                textTransform: 'uppercase'
+              }}>VOLUME CHART</h5>
             </div>
-            <div style={{ 
-              fontSize: '11px', // 增大字号
-              color: '#495057',
-              fontWeight: '600',
-              padding: '5px 12px',
-              backgroundColor: 'white',
-              borderRadius: '6px',
-              border: '1px solid #dee2e6',
-              boxShadow: '0 2px 4px rgba(0,0,0,0.08)'
-            }}>
-              VOLUME
-            </div>
+            <span style={{ 
+              fontSize: '9px', 
+              color: '#8c8c8c',
+              backgroundColor: '#f8f9fa',
+              padding: '3px 8px',
+              borderRadius: '4px',
+              border: '1px solid #e9ecef',
+              fontWeight: '500',
+              letterSpacing: '0.3px'
+            }}>Trading Volume</span>
           </div>
           <ResponsiveContainer width="100%" height="100%">
             <BarChart
               data={chartData}
-              margin={{ top: 8, right: 30, left: 30, bottom: 15 }}
+              margin={{ top: 5, right: 25, left: 25, bottom: 10 }}
             >
               <CartesianGrid strokeDasharray="3 3" stroke="#f8f8f8" vertical={false} />
               <XAxis 
                 dataKey="date" 
-                tick={{ fontSize: 10, fill: '#666' }} // 增大字号
+                tick={{ fontSize: 9, fill: '#666' }}
                 tickFormatter={smartTickFormatter}
                 axisLine={{ stroke: '#d9d9d9' }}
                 tickLine={{ stroke: '#d9d9d9' }}
-                height={28}
+                height={25}
                 // 使用统一的日期刻度
                 ticks={dateTicks}
               />
               <YAxis 
-                tick={{ fontSize: 10, fill: '#666' }} // 增大字号
+                tick={{ fontSize: 9, fill: '#666' }}
                 tickFormatter={(value) => {
                   if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
                   if (value >= 1000) return `${(value / 1000).toFixed(0)}K`;
@@ -1023,65 +779,30 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                 }}
                 axisLine={{ stroke: '#d9d9d9' }}
                 tickLine={{ stroke: '#d9d9d9' }}
-                width={55} // 增加宽度，避免标签被裁剪
+                width={50} // 增加宽度，避免标签被裁剪
                 // 给Volume Chart的Y轴也留出适当空白
-                padding={{ top: 18, bottom: 18 }} // 增加padding
+                padding={{ top: 15, bottom: 15 }} // 增加padding
               />
               <Tooltip 
-                formatter={(value: any, name: any, props: any) => {
-                  const entry = props.payload;
-                  const isUp = entry.volumeColor === '#95de64';
-                  const direction = isUp ? 'Up' : 'Down';
-                  return [`${formatVolume(value)} (${direction})`, 'Volume'];
-                }}
+                formatter={(value: any) => [formatVolume(value), 'Volume']}
                 labelFormatter={(label) => `Date: ${label}`}
-                offset={12}
-                contentStyle={{ 
-                  fontSize: '12px', // 增大字号
-                  padding: '10px',
-                  borderRadius: '6px',
-                  border: '1px solid #dee2e6',
-                  backgroundColor: 'rgba(255, 255, 255, 0.95)'
-                }}
-                cursor={{ 
-                  stroke: '#1890ff', 
-                  strokeWidth: 1, 
-                  strokeDasharray: '3 3',
-                  opacity: 0.6
-                }}
+                offset={10}
               />
               
-              {/* Volume bars with dynamic colors - 更专业明显的柱子 */}
+              {/* Volume bars with dynamic colors - 更明显的柱子 */}
               <Bar
                 dataKey="volumeDisplay"
                 name="Volume"
                 fill="#999"  // Default color
-                barSize={14} // 减少柱子宽度，避免太挤
-                radius={[3, 3, 0, 0]} // 减少圆角
+                barSize={14} // 增加柱子宽度
+                radius={[3, 3, 0, 0]} // 增加圆角
               >
                 {chartData.map((entry, index) => (
                   <Cell 
                     key={`cell-${index}`} 
-                    className="volume-bar-cell"
                     fill={entry.volumeColor || '#999'}
                     stroke={entry.volumeColor || '#999'}
-                    strokeWidth={0.8} // 减少边框宽度
-                    style={{
-                      transition: 'all 0.2s ease',
-                      cursor: 'pointer'
-                    }}
-                    onMouseEnter={(e) => {
-                      const target = e.target as HTMLElement;
-                      target.style.opacity = '0.6';
-                      target.style.strokeWidth = '2';
-                      target.style.filter = 'brightness(1.1)';
-                    }}
-                    onMouseLeave={(e) => {
-                      const target = e.target as HTMLElement;
-                      target.style.opacity = '1';
-                      target.style.strokeWidth = '0.8';
-                      target.style.filter = 'brightness(1)';
-                    }}
+                    strokeWidth={0.8} // 增加边框宽度
                   />
                 ))}
               </Bar>

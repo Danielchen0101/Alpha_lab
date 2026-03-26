@@ -1,6 +1,6 @@
 ﻿import React, { useState, useEffect, useRef } from 'react';
 import { Card, Form, Input, InputNumber, Button, Select, DatePicker, Row, Col, Statistic, Table, Tag, Alert, Space, Divider, message, Empty, Spin, Progress, Tabs, Checkbox } from 'antd';
-import { PlayCircleOutlined, HistoryOutlined, LineChartOutlined, ArrowUpOutlined, ArrowDownOutlined, ReloadOutlined, EyeOutlined, SaveOutlined, FolderOpenOutlined, DeleteOutlined, CheckCircleOutlined } from '@ant-design/icons';
+import { PlayCircleOutlined, HistoryOutlined, LineChartOutlined, ArrowUpOutlined, ArrowDownOutlined, ReloadOutlined, EyeOutlined, SaveOutlined, FolderOpenOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { backtraderAPI } from '../services/api';
 import dayjs from 'dayjs';
@@ -17,25 +17,6 @@ interface BacktestConfig {
   startDate: string;
   endDate: string;
   initialCapital: number;
-}
-
-interface BacktestFormValues {
-  symbol: string;
-  strategy: string;
-  dateRange: [dayjs.Dayjs, dayjs.Dayjs];
-  initialCapital: number;
-  dataMode: string;
-  shortMaPeriod?: number;
-  longMaPeriod?: number;
-  rsiPeriod?: number;
-  rsiOversold?: number;
-  rsiOverbought?: number;
-  macdFast?: number;
-  macdSlow?: number;
-  macdSignal?: number;
-  bollingerPeriod?: number;
-  bollingerStdDev?: number;
-  momentumPeriod?: number;
 }
 
 // 交易项类型定�?
@@ -520,18 +501,11 @@ const Backtest: React.FC = () => {
 
   // 解析 symbol 并更�?portfolio 状�?
   const parseSymbols = (symbolInput: string) => {
-    // 清理输入：去除前后空格，处理空输入
-    const cleanedInput = symbolInput.trim();
-    if (!cleanedInput) {
-      setPortfolioSymbols([]);
-      return [];
-    }
-    
-    // 分割多个symbol（支持逗号分隔）
-    const symbols = cleanedInput
+    const symbols = symbolInput
       .split(',')
       .map((s: string) => s.trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      .map((s: string) => s.toUpperCase());
     
     setPortfolioSymbols(symbols);
     return symbols;
@@ -556,30 +530,16 @@ const Backtest: React.FC = () => {
   const handleRunBacktest = async (values: BacktestFormValues) => {
     setLoading(true);
     setError('');
-    setBacktestResult(null); // 清除旧结果，开始新的回测
+    setBacktestResult(null); // 清除旧结果，开始新的回�?
     
     try {
-      // 清理symbol输入
-      const cleanedSymbolInput = values.symbol.trim();
-      if (!cleanedSymbolInput) {
-        setError('请输入股票代码或公司名');
-        setLoading(false);
-        return;
-      }
-      
       // 解析多个 symbol，支持逗号分隔
-      const symbols = parseSymbols(cleanedSymbolInput);
+      const symbols = parseSymbols(values.symbol);
       
-      // 检查解析结果
+      // 检查解析结�?
       console.log('Parsed symbols:', symbols);
       
-      if (symbols.length === 0) {
-        setError('请输入有效的股票代码或公司名');
-        setLoading(false);
-        return;
-      }
-      
-      // 保持向后兼容：如果只有一个symbol，使用原来的逻辑
+      // 保持向后兼容：如果只有一�?symbol，使用原来的逻辑
       const symbol = symbols.length === 1 ? symbols[0] : symbols.join(',');
       const strategy = values.strategy;
       
@@ -590,7 +550,7 @@ const Backtest: React.FC = () => {
         endDate: values.dateRange[1].format('YYYY-MM-DD'),
         initialCapital: values.initialCapital,
         symbols: symbols, // 新增：发�?symbols 数组
-        dataMode: 'real', // 固定使用真实数据
+        dataMode: values.dataMode || 'simulated', // 新增：数据模�?
       };
       
       // 保持向后兼容：如果只有一�?symbol，同时设�?symbol 字段
@@ -619,17 +579,6 @@ const Backtest: React.FC = () => {
           macdFast: values.macdFast || 12,
           macdSlow: values.macdSlow || 26,
           macdSignal: values.macdSignal || 9,
-        };
-      } else if (strategy === 'bollinger') {
-        // Bollinger Bands 策略参数
-        config.parameters = {
-          bollingerPeriod: (values as any).bollingerPeriod || 20,
-          bollingerStdDev: (values as any).bollingerStdDev || 2,
-        };
-      } else if (strategy === 'momentum') {
-        // Momentum 策略参数
-        config.parameters = {
-          momentumPeriod: (values as any).momentumPeriod || 10,
         };
       } else {
         // 其他策略暂时不传参数
@@ -794,93 +743,6 @@ const Backtest: React.FC = () => {
       console.error('Error loading backtest:', err);
       message.error('Failed to load backtest results');
     }
-  };
-
-  // 查看历史回测结果
-  const handleViewBacktest = (record: BacktestHistoryItem) => {
-    try {
-      console.log('Viewing backtest:', record.backtestId);
-      
-      // 从历史记录中查找完整结果
-      const currentHistory = loadLocalBacktestHistory();
-      const foundRecord = currentHistory.find(item => item.backtestId === record.backtestId);
-      
-      if (foundRecord) {
-        // 创建完整的BacktestResult对象
-        const backtestResult: BacktestResult = {
-          backtestId: foundRecord.backtestId,
-          status: foundRecord.status as 'running' | 'completed' | 'failed',
-          results: {
-            totalReturn: foundRecord.totalReturn || 0,
-            sharpeRatio: foundRecord.sharpeRatio || 0,
-            maxDrawdown: foundRecord.maxDrawdown || 0,
-            winRate: foundRecord.winRate || 0,
-            trades: foundRecord.trades || 0,
-            annualizedReturn: foundRecord.annualizedReturn || 0,
-            profitLoss: foundRecord.profitLoss || 0,
-            calmarRatio: 0,
-            avgReturnPerTrade: 0,
-            avgWin: 0,
-            avgLoss: 0,
-            profitFactor: 0,
-            expectancy: 0,
-            chartData: [],
-            equityCurve: [],
-            tradesList: []
-          },
-          parameters: foundRecord.parameters || {
-            strategy: foundRecord.strategy || 'Unknown',
-            symbols: foundRecord.symbol ? [foundRecord.symbol] : ['Unknown'],
-            period: foundRecord.startDate && foundRecord.endDate ? `${foundRecord.startDate} to ${foundRecord.endDate}` : 'Unknown',
-            initialCapital: foundRecord.initialCapital || 100000,
-            startDate: foundRecord.startDate || '',
-            endDate: foundRecord.endDate || ''
-          },
-          createdAt: foundRecord.createdAt
-        };
-        
-        // 设置回测结果
-        setBacktestResult(backtestResult);
-        
-        // 滚动到结果区域
-        setTimeout(() => {
-          resultsRef.current?.scrollIntoView({ behavior: 'smooth' });
-        }, 100);
-        
-        message.success(`Loaded backtest: ${foundRecord.symbol} - ${foundRecord.strategy}`);
-      } else {
-        // 如果没有找到，尝试从后端API加载
-        if (record.backtestId && !record.backtestId.startsWith('local_')) {
-          loadBacktestResult(record.backtestId);
-        } else {
-          message.warning('Backtest data not found in local storage');
-        }
-      }
-    } catch (err) {
-      console.error('Error viewing backtest:', err);
-      message.error('Failed to load backtest results');
-    }
-  };
-
-  const handleCompare = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-
-    const selectedItems = backtestHistory.filter(item =>
-      selectedBacktests.includes(item.backtestId)
-    );
-
-    if (selectedItems.length === 0) return;
-
-    sessionStorage.setItem('compareBacktests', JSON.stringify(selectedItems));
-
-    navigate('/compare', {
-      state: {
-        selectedBacktests: selectedItems,
-        selectedBacktestIds: selectedBacktests,
-        from: 'recent-backtests',
-      },
-    });
   };
 
   const strategyOptions = [
@@ -1080,7 +942,7 @@ const Backtest: React.FC = () => {
           type="link"
           size="small"
           icon={<EyeOutlined />}
-          onClick={() => handleViewBacktest(record)}
+          onClick={() => record.backtestId && navigate(`/backtest/${record.backtestId}`)}
           disabled={!record.backtestId}
         >
           View
@@ -1328,13 +1190,13 @@ const Backtest: React.FC = () => {
     { 
       key: 'dataMode', 
       metric: 'Data Mode', 
-      value: backtestResult.parameters?.dataModeDisplay || 'Real Data', 
+      value: backtestResult.parameters?.dataModeDisplay || (backtestResult.parameters?.dataMode === 'real' ? 'Real Data' : 'Simulated Data'), 
       description: 'Data mode used for backtest' 
     },
     { 
       key: 'dataSource', 
       metric: 'Data Source', 
-      value: backtestResult.parameters?.dataSource || 'Financial APIs', 
+      value: backtestResult.parameters?.dataSource || (backtestResult.parameters?.dataMode === 'real' ? 'Finnhub' : 'Simulated'), 
       description: 'Source of data used for backtest' 
     },
     { 
@@ -1940,7 +1802,7 @@ const Backtest: React.FC = () => {
               initialValues={{
                 symbol: '',
                 strategy: 'moving_average',
-                dataMode: 'real',
+                dataMode: 'simulated',
                 initialCapital: 100000,
                 // Moving Average parameters
                 shortMaPeriod: 20,
@@ -1961,10 +1823,10 @@ const Backtest: React.FC = () => {
                     label="Stock Symbol"
                     name="symbol"
                     rules={[{ required: true, message: 'Please enter stock symbol' }]}
-                    help="输入股票代码（如AAPL, TSLA）或公司名（如Apple, Tesla）"
+                    help="e.g., AAPL, MSFT, GOOGL, TSLA"
                   >
                     <Input 
-                      placeholder="输入股票代码或公司名" 
+                      placeholder="Enter stock symbol" 
                       size="large"
                       prefix={<LineChartOutlined />}
                       onChange={(e) => {
@@ -1972,8 +1834,7 @@ const Backtest: React.FC = () => {
                       }}
                       onBlur={(e) => {
                         if (e.target.value) {
-                          // 只清理空格，不自动转大写（因为可能是公司名）
-                          const value = e.target.value.trim();
+                          const value = e.target.value.toUpperCase();
                           form.setFieldsValue({ symbol: value });
                           parseSymbols(value);
                         }
@@ -2040,17 +1901,24 @@ const Backtest: React.FC = () => {
                     </Select>
                   </Form.Item>
                 </Col>
+                <Col span={8}>
+                  <Form.Item
+                    label="Data Mode"
+                    name="dataMode"
+                    initialValue="simulated"
+                    rules={[{ required: true, message: 'Please select data mode' }]}
+                    help="Real Data uses Finnhub API, Simulated Data uses generated data"
+                  >
+                    <Select 
+                      size="large" 
+                      placeholder="Select data mode"
+                    >
+                      <Option value="real">Real Data (Finnhub)</Option>
+                      <Option value="simulated">Simulated Data</Option>
+                    </Select>
+                  </Form.Item>
+                </Col>
               </Row>
-              
-              {/* Data Source信息 - 固定为Real Data */}
-              <div style={{ marginBottom: '16px', padding: '12px', background: '#f6ffed', border: '1px solid #b7eb8f', borderRadius: '6px' }}>
-                <div style={{ display: 'flex', alignItems: 'center' }}>
-                  <CheckCircleOutlined style={{ color: '#52c41a', marginRight: '8px', fontSize: '16px' }} />
-                  <span style={{ fontWeight: '500', color: '#135200' }}>
-                    Backtests use real historical data from Finnhub, with Twelve Data as fallback.
-                  </span>
-                </div>
-              </div>
               
               {/* Strategy Parameters Panel - Dynamic based on selected strategy */}
               <div style={{ marginBottom: '16px', padding: '16px', background: '#fafafa', borderRadius: '8px' }}>
@@ -2236,78 +2104,8 @@ const Backtest: React.FC = () => {
                   </Row>
                 )}
                 
-                {/* Bollinger Bands Strategy Parameters */}
-                {selectedStrategy === 'bollinger' && (
-                  <Row gutter={16}>
-                    <Col span={12}>
-                      <Form.Item
-                        label="Period"
-                        name="bollingerPeriod"
-                        initialValue={20}
-                        rules={[
-                          { required: true, message: 'Please enter Bollinger Period' },
-                          { type: 'number', min: 5, max: 100, message: 'Must be between 5 and 100' },
-                        ]}
-                        help="Default: 20"
-                      >
-                        <InputNumber
-                          min={5}
-                          max={100}
-                          size="large"
-                          style={{ width: '100%' }}
-                        />
-                      </Form.Item>
-                    </Col>
-                    <Col span={12}>
-                      <Form.Item
-                        label="Standard Deviation"
-                        name="bollingerStdDev"
-                        initialValue={2}
-                        rules={[
-                          { required: true, message: 'Please enter Standard Deviation' },
-                          { type: 'number', min: 1, max: 5, message: 'Must be between 1 and 5' },
-                        ]}
-                        help="Default: 2"
-                      >
-                        <InputNumber
-                          min={1}
-                          max={5}
-                          step={0.1}
-                          size="large"
-                          style={{ width: '100%' }}
-                        />
-                      </Form.Item>
-                    </Col>
-                  </Row>
-                )}
-
-                {/* Momentum Strategy Parameters */}
-                {selectedStrategy === 'momentum' && (
-                  <Row gutter={16}>
-                    <Col span={12}>
-                      <Form.Item
-                        label="Period"
-                        name="momentumPeriod"
-                        initialValue={10}
-                        rules={[
-                          { required: true, message: 'Please enter Momentum Period' },
-                          { type: 'number', min: 1, max: 50, message: 'Must be between 1 and 50' },
-                        ]}
-                        help="Default: 10"
-                      >
-                        <InputNumber
-                          min={1}
-                          max={50}
-                          size="large"
-                          style={{ width: '100%' }}
-                        />
-                      </Form.Item>
-                    </Col>
-                  </Row>
-                )}
-
                 {/* Other Strategies - Placeholder */}
-                {!['moving_average', 'rsi', 'macd', 'bollinger', 'momentum'].includes(selectedStrategy) && (
+                {!['moving_average', 'rsi', 'macd'].includes(selectedStrategy) && (
                   <div style={{ textAlign: 'center', padding: '20px', color: '#999' }}>
                     No specific parameters required for this strategy.
                   </div>
@@ -2491,7 +2289,7 @@ const Backtest: React.FC = () => {
                   <Button 
                     type="primary" 
                     size="small"
-                    onClick={handleCompare}
+                    onClick={() => navigate(`/compare?ids=${selectedBacktests.join(',')}`)}
                   >
                     Compare ({selectedBacktests.length})
                   </Button>
@@ -4069,11 +3867,12 @@ const Backtest: React.FC = () => {
                                       fontWeight: '700',
                                       color: backtestResult.parameters?.dataMode === 'real' ? '#52c41a' : '#fa8c16',
                                       padding: '6px 10px',
-                                      background: '#f6ffed',
+                                      background: backtestResult.parameters?.dataMode === 'real' ? '#f6ffed' : '#fff7e6',
                                       borderRadius: '6px',
-                                      border: `1px solid #b7eb8f`
+                                      border: `1px solid ${backtestResult.parameters?.dataMode === 'real' ? '#b7eb8f' : '#ffd591'}`
                                     }}>
-                                      {backtestResult.parameters?.dataModeDisplay || 'Real Data'}
+                                      {backtestResult.parameters?.dataModeDisplay || 
+                                       (backtestResult.parameters?.dataMode === 'real' ? 'Real Data' : 'Simulated Data')}
                                     </div>
                                   </Col>
                                 </Row>
