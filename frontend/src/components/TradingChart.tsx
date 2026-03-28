@@ -1,6 +1,15 @@
 import React, { useState } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Scatter, BarChart, Bar, ResponsiveContainer, Cell } from 'recharts';
 import { Checkbox, Space, Card, Row, Col } from 'antd';
+import { 
+  parseDateSafe, 
+  formatDateForChart, 
+  formatDateToYYYYMMDD, 
+  filterValidDates, 
+  sortByDateAsc,
+  getTooltipDate,
+  debugDates 
+} from '../utils/dateUtils';
 
 interface ChartDataItem {
   date: string;
@@ -99,7 +108,80 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
 
   // Find min and max for better Y-axis scaling (price chart)
   // 修复：不过滤Boolean，而是过滤有效的数值，并处理空数组和相等的情况
-  const prices = data.map(d => d.close).filter(price => typeof price === 'number' && !isNaN(price));
+
+  
+  // 验证和过滤数据
+  const validData = filterValidDates(data);
+  const sortedData = sortByDateAsc(validData);
+  
+  // 调试：打印日期信息
+  debugDates(data, 'TradingChart原始数据');
+  debugDates(sortedData, 'TradingChart处理后的数据');
+  
+  // 调试：检查volume字段
+  console.log('=== TradingChart Volume 字段检查 ===');
+  console.log(`原始数据长度: ${data.length}`);
+  console.log(`处理后数据长度: ${sortedData.length}`);
+  
+  // 检查前5个点的volume
+  console.log('前5个点的volume字段:');
+  data.slice(0, 5).forEach((item, index) => {
+    console.log(`  [${index}] date: ${item.date}, volume: ${item.volume}, volume类型: ${typeof item.volume}, volume存在: ${'volume' in item}`);
+  });
+  
+  // 检查后5个点的volume
+  if (data.length > 5) {
+    console.log('后5个点的volume字段:');
+    data.slice(-5).forEach((item, index) => {
+      const actualIndex = data.length - 5 + index;
+      console.log(`  [${actualIndex}] date: ${item.date}, volume: ${item.volume}, volume类型: ${typeof item.volume}, volume存在: ${'volume' in item}`);
+    });
+  }
+  
+  // 统计有volume字段的数据点
+  const hasVolumeCount = data.filter(d => 'volume' in d).length;
+  const hasValidVolumeCount = data.filter(d => d.volume !== undefined && d.volume !== null && d.volume > 0).length;
+  console.log(`有volume字段的数据点: ${hasVolumeCount}/${data.length}`);
+  console.log(`有有效volume值(>0)的数据点: ${hasValidVolumeCount}/${data.length}`);
+  
+  // 创建统一的排序数据，包含所有需要的字段
+  // 1. 先排序原始数据
+  const sortedDataWithVolume = sortByDateAsc(data);
+  
+  // 2. 为排序后的数据添加volumeDisplay字段
+  const unifiedChartData = sortedDataWithVolume.map((item, index) => {
+    // Calculate volume color based on price movement
+    let volumeColor = '#cccccc';
+    if (item.volume !== undefined && item.volume > 0) {
+      if (index === 0) {
+        volumeColor = '#cccccc';
+      } else {
+        const currentClose = item.close;
+        const prevClose = sortedDataWithVolume[index - 1].close;
+        volumeColor = currentClose >= prevClose ? '#95de64' : '#ff7875';
+      }
+    }
+
+    // Enhanced signal data
+    const signalType = item.signal === 1 ? 'BUY' : item.signal === -1 ? 'SELL' : null;
+    const signalColor = item.signal === 1 ? '#52c41a' : '#f5222d';
+
+    return {
+      ...item,
+      buySignal: item.signal === 1 ? item.close : null,
+      sellSignal: item.signal === -1 ? item.close : null,
+      signalType,
+      signalColor,
+      volumeColor,
+      volumeDisplay: item.volume || 0,
+    };
+  });
+  
+  // 使用统一的数据
+  const processedChartData = unifiedChartData;
+  
+  // 重新计算基于处理后的数据
+  const prices = processedChartData.map(d => d.close).filter(price => typeof price === 'number' && !isNaN(price));
   
   let minPrice, maxPrice, pricePadding;
   
@@ -121,21 +203,20 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
   }
 
   // Find min and max for volume Y-axis scaling
-  // 修复：不过滤Boolean，而是过滤有效的数值
-  const volumes = data.map(d => d.volume || 0).filter(volume => typeof volume === 'number' && !isNaN(volume));
+  const volumes = processedChartData.map(d => d.volume || 0).filter(volume => typeof volume === 'number' && !isNaN(volume));
   const maxVolume = volumes.length > 0 ? Math.max(...volumes) : 0;
   const volumePadding = maxVolume * 0.1; // 10% padding
 
   // Check if we have data to decide what to show
-  const hasVolumeData = data.some(d => d.volume !== undefined && d.volume > 0);
-  const hasSMA20 = data.some(d => d.sma20 !== undefined);
-  const hasSMA50 = data.some(d => d.sma50 !== undefined);
-  const hasSignals = data.some(d => d.signal !== 0);
+  const hasVolumeData = processedChartData.some(d => d.volume !== undefined && d.volume > 0);
+  const hasSMA20 = processedChartData.some(d => d.sma20 !== undefined);
+  const hasSMA50 = processedChartData.some(d => d.sma50 !== undefined);
+  const hasSignals = processedChartData.some(d => d.signal !== 0);
   
   // Debug: Check signal data
-  const buySignals = data.filter(d => d.signal === 1);
-  const sellSignals = data.filter(d => d.signal === -1);
-  console.log(`TradingChart Debug: Total data points: ${data.length}`);
+  const buySignals = processedChartData.filter(d => d.signal === 1);
+  const sellSignals = processedChartData.filter(d => d.signal === -1);
+  console.log(`TradingChart Debug: 原始数据点: ${data.length}, 有效数据点: ${processedChartData.length}`);
   console.log(`TradingChart Debug: Buy signals: ${buySignals.length}`);
   console.log(`TradingChart Debug: Sell signals: ${sellSignals.length}`);
   console.log(`TradingChart Debug: Has signals: ${hasSignals}`);
@@ -167,28 +248,9 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
   const priceChartHeight = (hasVolumeData && showVolume) ? 350 : 450; // Price Chart稍微减少：350px（有Volume时）或450px（无Volume时）
   const volumeChartHeight = (hasVolumeData && showVolume) ? 280 : 0; // Volume Chart显著增加：280px，确保真正展开
 
-  // Format date for X-axis - 优化版本
+  // Format date for X-axis - 使用统一的日期格式化函数
   const formatDate = (dateStr: string) => {
-    try {
-      // 手动解析YYYY-MM-DD格式，避免时区偏移
-      let month, day;
-      
-      if (typeof dateStr === 'string' && dateStr.includes('-')) {
-        // 如果是YYYY-MM-DD格式，直接解析
-        const parts = dateStr.split('-');
-        if (parts.length === 3) {
-          month = parseInt(parts[1], 10);
-          day = parseInt(parts[2], 10);
-          return `${month}/${day}`;
-        }
-      }
-      
-      // 备用方案：使用Date对象
-      const date = new Date(dateStr);
-      return `${date.getMonth() + 1}/${date.getDate()}`;
-    } catch {
-      return dateStr;
-    }
+    return formatDateForChart(dateStr);
   };
 
   // 生成每月一个自然代表日的日期刻度，确保2月日期点更自然
@@ -204,20 +266,18 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
     const monthMap = new Map<string, Array<{date: string, day: number}>>();
     
     data.forEach(item => {
-      try {
-        const dateObj = new Date(item.date);
-        const year = dateObj.getFullYear();
-        const month = dateObj.getMonth(); // 0-11
-        const day = dateObj.getDate();
-        const key = `${year}-${month.toString().padStart(2, '0')}`;
-        
-        if (!monthMap.has(key)) {
-          monthMap.set(key, []);
-        }
-        monthMap.get(key)!.push({date: item.date, day});
-      } catch {
-        // 忽略解析错误的日期
+      const dateObj = parseDateSafe(item.date);
+      if (!dateObj) return;
+      
+      const year = dateObj.getFullYear();
+      const month = dateObj.getMonth(); // 0-11
+      const day = dateObj.getDate();
+      const key = `${year}-${month.toString().padStart(2, '0')}`;
+      
+      if (!monthMap.has(key)) {
+        monthMap.set(key, []);
       }
+      monthMap.get(key)!.push({date: item.date, day});
     });
     
     // 按时间顺序排序月份
@@ -226,18 +286,24 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
     const ticks: string[] = [];
     
     // 总是包含第一个日期
-    ticks.push(data[0].date);
+    if (data.length > 0) {
+      ticks.push(data[0].date);
+    }
     
     // 为每个月份选择一个代表日期（尽量选择月中日期）
     for (const monthKey of monthKeys) {
       // 跳过第一个月（已包含第一个日期）
-      const firstDate = new Date(data[0].date);
-      const firstYear = firstDate.getFullYear();
-      const firstMonth = firstDate.getMonth();
-      const currentDate = new Date(monthKey + '-01');
-      
-      if (firstYear === currentDate.getFullYear() && firstMonth === currentDate.getMonth()) {
-        continue;
+      if (ticks.length > 0) {
+        const firstDate = parseDateSafe(ticks[0]);
+        if (firstDate) {
+          const firstYear = firstDate.getFullYear();
+          const firstMonth = firstDate.getMonth();
+          const currentDate = parseDateSafe(monthKey + '-01');
+          
+          if (currentDate && firstYear === currentDate.getFullYear() && firstMonth === currentDate.getMonth()) {
+            continue;
+          }
+        }
       }
       
       const monthData = monthMap.get(monthKey)!;
@@ -258,9 +324,11 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
     }
     
     // 总是包含最后一个日期
-    const lastDate = data[data.length - 1].date;
-    if (ticks[ticks.length - 1] !== lastDate) {
-      ticks.push(lastDate);
+    if (data.length > 0) {
+      const lastDate = data[data.length - 1].date;
+      if (ticks.length === 0 || ticks[ticks.length - 1] !== lastDate) {
+        ticks.push(lastDate);
+      }
     }
     
     // 如果ticks数量太多，进行适当修剪（但确保包含首尾和重要月份）
@@ -429,7 +497,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
   };
 
   // 获取统一的日期刻度
-  const dateTicks = generateDateTicks(data, 12);
+  const dateTicks = generateDateTicks(processedChartData, 12);
   
   // 智能X轴刻度格式化 - 只显示在刻度数组中的日期
   const smartTickFormatter = (value: string) => {
@@ -443,8 +511,11 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
   // 专业交易图表Tooltip
   const ProfessionalTooltip = ({ active, payload, label }: any) => {
     if (active && payload && payload.length) {
+      // 使用统一的tooltip日期获取函数
+      const displayDate = getTooltipDate(payload, label);
+      
       // Find the data point
-      const dataPoint = chartData.find(item => item.date === label);
+      const dataPoint = processedChartData.find(item => item.date === label);
       if (!dataPoint) return null;
 
       return (
@@ -471,7 +542,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               marginBottom: '3px',
               letterSpacing: '0.4px'
             }}>
-              {label}
+              {displayDate}
             </div>
             <div style={{ 
               fontSize: '11px', // 增大字号
@@ -820,7 +891,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
       }}>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
-            data={chartData}
+            data={processedChartData}
             margin={{ top: 10, right: 25, left: 25, bottom: 10 }}
           >
             <CartesianGrid strokeDasharray="3 3" stroke="#f8f8f8" vertical={false} />
@@ -1000,7 +1071,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
           </div>
           <ResponsiveContainer width="100%" height="100%">
             <BarChart
-              data={chartData}
+              data={processedChartData}
               margin={{ top: 8, right: 30, left: 30, bottom: 15 }}
             >
               <CartesianGrid strokeDasharray="3 3" stroke="#f8f8f8" vertical={false} />
@@ -1059,7 +1130,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                 barSize={14} // 减少柱子宽度，避免太挤
                 radius={[3, 3, 0, 0]} // 减少圆角
               >
-                {chartData.map((entry, index) => (
+                {processedChartData.map((entry, index) => (
                   <Cell 
                     key={`cell-${index}`} 
                     className="volume-bar-cell"

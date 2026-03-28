@@ -167,18 +167,9 @@ def safe_float(value, default=0.0):
     except (ValueError, TypeError):
         return float(default)
 
-def get_cache_key(symbol, data_type='quote', **kwargs):
+def get_cache_key(symbol, data_type='quote'):
     """生成缓存键"""
-    base_key = f"{symbol}_{data_type}"
-    
-    # 为历史数据添加额外参数
-    if data_type == 'history':
-        if 'start_date' in kwargs and 'end_date' in kwargs:
-            return f"{base_key}_{kwargs['start_date']}_{kwargs['end_date']}"
-        elif 'range' in kwargs:
-            return f"{base_key}_{kwargs['range']}"
-    
-    return base_key
+    return f"{symbol}_{data_type}"
 
 def parse_and_validate_stock_input(user_input):
     """
@@ -239,25 +230,10 @@ def parse_and_validate_stock_input(user_input):
     return None, False, f"无效的股票代码或公司名: '{user_input}'。请检查输入是否正确。"
 
 def get_twelvedata_history(symbol, interval, range_param):
-    """从Twelve Data获取历史数据（带缓存）"""
+    """从Twelve Data获取历史数据"""
     print(f"[Twelve Data] 获取历史数据: {symbol}, interval={interval}, range={range_param}")
     
     try:
-        # 检查缓存
-        cache_key = get_cache_key(symbol, 'history', range=range_param)
-        cached = stock_cache.get(cache_key)
-        if cached is not None:
-            print(f"[Twelve Data] 使用缓存数据 (range模式)")
-            return cached, True, f"Twelve Data缓存数据 (range: {range_param})"
-        
-        # 检查错误缓存
-        for error_code in [429, 520, 503]:  # 常见的API错误码
-            error_cache_key = f"{cache_key}_error_{error_code}"
-            error_cached = stock_cache.get(error_cache_key)
-            if error_cached is not None:
-                print(f"[Twelve Data] 使用错误缓存 (错误码: {error_code})")
-                return None, False, f"Twelve Data API错误缓存 (错误码: {error_code})"
-        
         # 构建API URL
         url = "https://api.twelvedata.com/time_series"
         params = {
@@ -286,9 +262,6 @@ def get_twelvedata_history(symbol, interval, range_param):
         
         if response.status_code != 200:
             print(f"[Twelve Data] HTTP错误: {response.status_code}")
-            # 缓存错误结果，避免重复调用
-            error_cache_key = f"{cache_key}_error_{response.status_code}"
-            stock_cache.set(error_cache_key, [], ttl=60)  # 错误缓存60秒
             return None, False, f"Twelve Data API HTTP错误: {response.status_code}"
         
         data = response.json()
@@ -322,19 +295,6 @@ def get_twelvedata_history(symbol, interval, range_param):
                 print(f"[Twelve Data] 时间解析错误: {datetime_str}, 错误: {e}")
                 timestamp = 0
             
-            # 如果datetime为空，尝试使用其他字段或生成默认日期
-            if not datetime_str:
-                # 尝试使用其他可能的日期字段
-                datetime_str = item.get('date', item.get('time', ''))
-                if not datetime_str:
-                    # 如果还是没有，生成一个基于索引的日期
-                    # 从今天开始往前推
-                    from datetime import datetime, timedelta
-                    base_date = datetime.now() - timedelta(days=len(data['values']) - idx)
-                    datetime_str = base_date.strftime("%Y-%m-%d")
-                    timestamp = int(base_date.timestamp())
-                    print(f"[Twelve Data] 生成默认日期: {datetime_str}")
-            
             historical_data.append({
                 "datetime": datetime_str,
                 "time": datetime_str,
@@ -350,11 +310,6 @@ def get_twelvedata_history(symbol, interval, range_param):
         historical_data.sort(key=lambda x: x['timestamp'])
         
         print(f"[Twelve Data] 成功获取 {len(historical_data)} 个数据点，已按时间升序排序")
-        
-        # 设置缓存
-        stock_cache.set(cache_key, historical_data)
-        print(f"[Twelve Data] 已缓存数据 (range模式)，键: {cache_key}")
-        
         return historical_data, True, "Twelve Data实时数据"
         
     except Exception as e:
@@ -362,25 +317,10 @@ def get_twelvedata_history(symbol, interval, range_param):
         return None, False, f"Twelve Data异常: {str(e)}"
 
 def get_twelvedata_history_with_dates(symbol, interval, start_date, end_date):
-    """从Twelve Data获取指定日期范围的历史数据（带缓存）"""
+    """从Twelve Data获取指定日期范围的历史数据"""
     print(f"[Twelve Data] 获取指定日期范围历史数据: {symbol}, interval={interval}, start={start_date}, end={end_date}")
     
     try:
-        # 检查缓存
-        cache_key = get_cache_key(symbol, 'history', start_date=start_date, end_date=end_date)
-        cached = stock_cache.get(cache_key)
-        if cached is not None:
-            print(f"[Twelve Data] 使用缓存数据")
-            return cached, True, f"Twelve Data缓存数据 ({start_date} 到 {end_date})"
-        
-        # 检查错误缓存
-        for error_code in [429, 520, 503]:  # 常见的API错误码
-            error_cache_key = f"{cache_key}_error_{error_code}"
-            error_cached = stock_cache.get(error_cache_key)
-            if error_cached is not None:
-                print(f"[Twelve Data] 使用错误缓存 (错误码: {error_code})")
-                return None, False, f"Twelve Data API错误缓存 (错误码: {error_code})"
-        
         # 构建API URL - 使用start_date和end_date参数
         url = "https://api.twelvedata.com/time_series"
         params = {
@@ -398,9 +338,6 @@ def get_twelvedata_history_with_dates(symbol, interval, start_date, end_date):
         
         if response.status_code != 200:
             print(f"[Twelve Data] HTTP错误: {response.status_code}")
-            # 缓存错误结果，避免重复调用
-            error_cache_key = f"{cache_key}_error_{response.status_code}"
-            stock_cache.set(error_cache_key, [], ttl=60)  # 错误缓存60秒
             return None, False, f"Twelve Data API HTTP错误: {response.status_code}"
         
         data = response.json()
@@ -416,57 +353,21 @@ def get_twelvedata_history_with_dates(symbol, interval, start_date, end_date):
         
         # 转换数据格式
         historical_data = []
-        print(f"[Twelve Data] API返回数据条数: {len(data['values'])}")
-        
-        # 调试：检查API返回的数据顺序
-        print(f"[Twelve Data] 调试：检查API返回数据顺序")
-        print(f"  前5条数据的datetime字段:")
-        for idx in range(min(5, len(data['values']))):
-            item = data['values'][idx]
-            print(f"    [{idx}] datetime='{item.get('datetime', 'N/A')}'")
-        
-        if len(data['values']) > 5:
-            print(f"  后5条数据的datetime字段:")
-            for idx in range(max(0, len(data['values'])-5), len(data['values'])):
-                item = data['values'][idx]
-                print(f"    [{idx}] datetime='{item.get('datetime', 'N/A')}'")
-        
-        for idx, item in enumerate(data['values']):
+        for item in data['values']:
             datetime_str = item.get('datetime', '')
             timestamp = 0
             
-            # 调试：打印原始数据
-            if idx < 5:  # 只打印前5条
-                print(f"[Twelve Data] 原始数据[{idx}]: datetime='{datetime_str}', item keys: {list(item.keys())}")
-            
             # 解析时间戳
             try:
-                if datetime_str:
-                    if ' ' in datetime_str:
-                        # 包含时间的格式
-                        timestamp = int(datetime.strptime(datetime_str, "%Y-%m-%d %H:%M:%S").timestamp())
-                    else:
-                        # 只有日期的格式
-                        timestamp = int(datetime.strptime(datetime_str, "%Y-%m-%d").timestamp())
-                    print(f"[Twelve Data] 时间解析成功[{idx}]: {datetime_str} -> timestamp={timestamp}")
+                if ' ' in datetime_str:
+                    # 包含时间的格式
+                    timestamp = int(datetime.strptime(datetime_str, "%Y-%m-%d %H:%M:%S").timestamp())
                 else:
-                    print(f"[Twelve Data] 警告[{idx}]: datetime字段为空!")
+                    # 只有日期的格式
+                    timestamp = int(datetime.strptime(datetime_str, "%Y-%m-%d").timestamp())
             except Exception as e:
-                print(f"[Twelve Data] 时间解析错误[{idx}]: datetime='{datetime_str}', 错误: {e}")
+                print(f"[Twelve Data] 时间解析错误: {datetime_str}, 错误: {e}")
                 timestamp = 0
-            
-            # 如果datetime为空，尝试使用其他字段或生成默认日期
-            if not datetime_str:
-                # 尝试使用其他可能的日期字段
-                datetime_str = item.get('date', item.get('time', ''))
-                if not datetime_str:
-                    # 如果还是没有，生成一个基于索引的日期
-                    # 从今天开始往前推
-                    from datetime import datetime, timedelta
-                    base_date = datetime.now() - timedelta(days=len(data['values']) - idx)
-                    datetime_str = base_date.strftime("%Y-%m-%d")
-                    timestamp = int(base_date.timestamp())
-                    print(f"[Twelve Data] 生成默认日期[{idx}]: {datetime_str}")
             
             historical_data.append({
                 "datetime": datetime_str,
@@ -500,77 +401,11 @@ def get_twelvedata_history_with_dates(symbol, interval, start_date, end_date):
             return None, False, f"Twelve Data数据点不足: {data_count}个数据点，至少需要{min_data_points}个"
         
         print(f"[Twelve Data] 数据点足够: {data_count} >= {min_data_points}")
-        
-        # 设置缓存
-        stock_cache.set(cache_key, historical_data)
-        print(f"[Twelve Data] 已缓存数据，键: {cache_key}")
-        
         return historical_data, True, f"Twelve Data数据 ({start_date} 到 {end_date}, {data_count}个数据点)"
         
     except Exception as e:
         print(f"[Twelve Data] 异常: {e}")
         return None, False, f"Twelve Data异常: {str(e)}"
-
-# ==================== Twelve Data 报价接口 ====================
-def fetch_twelvedata_quote(symbol):
-    """从Twelve Data获取股票报价（带缓存）"""
-    cache_key = f"{symbol}_twelvedata_quote"
-    
-    # 检查缓存
-    cached = stock_cache.get(cache_key)
-    if cached is not None:
-        return cached, None
-    
-    try:
-        url = "https://api.twelvedata.com/quote"
-        params = {
-            'symbol': symbol.upper(),
-            'apikey': TWELVEDATA_API_KEY,
-            'source': 'docs'
-        }
-        
-        print(f"[Twelve Data Quote] 获取报价: {symbol}")
-        response = requests.get(url, params=params, timeout=10)
-        
-        if response.status_code != 200:
-            print(f"[Twelve Data Quote] HTTP错误: {response.status_code}")
-            # 缓存错误结果60秒
-            error_cache_key = f"{cache_key}_error_{response.status_code}"
-            stock_cache.set(error_cache_key, {}, ttl=60)
-            return None, f"Twelve Data Quote HTTP错误: {response.status_code}"
-        
-        data = response.json()
-        
-        # 检查API错误
-        if 'code' in data and data['code'] != 200:
-            error_msg = data.get('message', '未知错误')
-            print(f"[Twelve Data Quote] API错误: {error_msg}")
-            return None, f"Twelve Data Quote API错误: {error_msg}"
-        
-        # 解析数据
-        result = {
-            'price': safe_float(data.get('close'), 0),
-            'change': safe_float(data.get('change'), 0),
-            'changePercent': safe_float(data.get('percent_change'), 0),
-            'dayHigh': safe_float(data.get('high'), 0),
-            'dayLow': safe_float(data.get('low'), 0),
-            'open': safe_float(data.get('open'), 0),
-            'previousClose': safe_float(data.get('previous_close'), 0),
-            'volume': safe_float(data.get('volume'), 0),
-            'name': data.get('name', ''),
-            'currency': data.get('currency', 'USD'),
-            'exchange': data.get('exchange', 'NASDAQ'),
-            'marketCap': safe_float(data.get('market_cap'), 0)
-        }
-        
-        # 设置缓存
-        stock_cache.set(cache_key, result)
-        print(f"[Twelve Data Quote] 获取成功: {symbol}, 价格: {result['price']}")
-        return result, None
-        
-    except Exception as e:
-        print(f"[Twelve Data Quote] 异常: {e}")
-        return None, f"Twelve Data Quote异常: {str(e)}"
 
 def get_finnhub_history(symbol, start_date, end_date):
     """
@@ -738,47 +573,13 @@ def run_simple_backtest(historical_data, strategy, initial_capital, parameters=N
         closes = [float(item['close']) for item in historical_data]
         dates = [item['timestamp'] for item in historical_data]
         
-        # 确保数据按时间排序（最早的在前） - 修复：改为正序
-        print(f"[Backtest] 调试: dates[0]={dates[0]}, dates[-1]={dates[-1]}, dates[0] > dates[-1]={dates[0] > dates[-1]}")
-        
-        # 检查historical_data的日期顺序
-        if len(historical_data) > 1:
-            first_date = historical_data[0].get('datetime', 'N/A')
-            last_date = historical_data[-1].get('datetime', 'N/A')
-            print(f"[Backtest] 调试: historical_data[0].datetime={first_date}, historical_data[-1].datetime={last_date}")
-            
-            # 根据日期字符串判断是否需要反转
-            # 如果第一个日期 > 最后一个日期（按字符串比较），说明是降序
-            print(f"[Backtest] 调试: first_date={first_date}, last_date={last_date}, first_date > last_date={first_date > last_date}")
-            if first_date > last_date:
-                print(f"[Backtest] 需要反转数据: {first_date} > {last_date}")
-                closes.reverse()
-                dates.reverse()
-                historical_data.reverse()  # 同时反转historical_data以保持一致性
-                print(f"[Backtest] 已反转数据")
-                
-                # 反转后再次检查
-                new_first_date = historical_data[0].get('datetime', 'N/A')
-                new_last_date = historical_data[-1].get('datetime', 'N/A')
-                print(f"[Backtest] 反转后: historical_data[0].datetime={new_first_date}, historical_data[-1].datetime={new_last_date}")
-            else:
-                print(f"[Backtest] 数据已经是升序，无需反转")
-        else:
-            print(f"[Backtest] 数据不足，无法判断顺序")
+        # 确保数据按时间排序（最新的在前）
+        if len(dates) > 1 and dates[0] < dates[-1]:
+            # 如果数据是倒序的（最新的在后），反转
+            closes.reverse()
+            dates.reverse()
         
         print(f"[Backtest] 价格数据范围: {dates[0]} 到 {dates[-1]}, 价格: {closes[0]:.2f} - {closes[-1]:.2f}")
-        print(f"[Backtest] 数据顺序: 最早日期={datetime.fromtimestamp(dates[0]).strftime('%Y-%m-%d')}, 最新日期={datetime.fromtimestamp(dates[-1]).strftime('%Y-%m-%d')}")
-        
-        # 调试：打印historical_data的真实日期
-        print(f"[Backtest] 调试: historical_data长度={len(historical_data)}")
-        for i in range(min(15, len(historical_data))):
-            item = historical_data[i]
-            print(f"[Backtest] 调试: historical_data[{i}] datetime={item.get('datetime', 'N/A')}, timestamp={item.get('timestamp', 'N/A')}, close={item.get('close', 'N/A')}")
-        
-        # 调试：打印dates数组
-        print(f"[Backtest] 调试: dates数组前15个值:")
-        for i in range(min(15, len(dates))):
-            print(f"  dates[{i}] = {dates[i]}, datetime.fromtimestamp = {datetime.fromtimestamp(dates[i]) if dates[i] and dates[i] > 0 else '无效'}")
         
         # 生成chartData和tradesList
         chart_data = []
@@ -788,12 +589,12 @@ def run_simple_backtest(historical_data, strategy, initial_capital, parameters=N
         position = 0  # 0: 无持仓, 1: 多头持仓, -1: 空头持仓
         entry_price = 0
         entry_date = None
-        entry_day_index = -1  # 记录开仓时的天数索引
         trade_id = 1
         
-        # 权益曲线相关状态
+        # 策略权益曲线
         equity_curve = []
-        cumulative_pnl = 0  # 累计已实现盈亏
+        current_equity = initial_capital
+        position_size = 0  # 持仓数量
         in_position_days = 0  # 持仓天数（用于计算exposure）
         
         print(f"[Backtest] 开始生成交易数据，数据点数量: {len(dates)}")
@@ -921,8 +722,7 @@ def run_simple_backtest(historical_data, strategy, initial_capital, parameters=N
                                     # MACD信号
                                     if macd_line > signal_line and macd_line > 0:
                                         signal = 1  # 买入信号
-                                    elif macd_line < signal_line and macd_line < 0:
-                                        signal = -1  # 卖出信号
+                                    elif macd_line < signal_line and macd_line < 0
         
         # 生成chartData和tradesList
         chart_data = []
@@ -1113,30 +913,20 @@ def run_simple_backtest(historical_data, strategy, initial_capital, parameters=N
                     volume = int(float(volume_item['volume']))
             
             # 处理交易逻辑
-            # 使用真实的历史数据日期
-            if i < len(historical_data) and historical_data[i].get("datetime"):
-                current_date = historical_data[i]["datetime"]
-            elif i < len(dates) and dates[i] and dates[i] > 0:
-                current_date = datetime.fromtimestamp(dates[i]).strftime("%Y-%m-%d")
-            else:
-                current_date = "N/A"
+            current_date = datetime.fromtimestamp(date).strftime("%Y-%m-%d") if isinstance(date, (int, float)) else str(date)
             
             # 如果有信号且与当前持仓方向相反，则平仓并开新仓
             if signal != 0 and signal != position:
                 print(f"[Backtest] 交易信号: day={i}, signal={signal}, position={position}, price={close}")
                 
                 # 如果有持仓，先平仓
-                if position != 0 and entry_price > 0 and entry_date and entry_day_index >= 0:
+                if position != 0 and entry_price > 0 and entry_date:
                     # 计算平仓盈亏
                     exit_price = close
                     pnl = (exit_price - entry_price) * position * 100  # 假设每手100股
                     return_pct = ((exit_price - entry_price) / entry_price) * 100 * position
-                    holding_days = i - entry_day_index  # 实际持仓天数
                     
-                    print(f"[Backtest] 平仓交易: entry={entry_price}, exit={exit_price}, pnl={pnl}, holding_days={holding_days}")
-                    
-                    # 更新累计已实现盈亏
-                    cumulative_pnl += pnl
+                    print(f"[Backtest] 平仓交易: entry={entry_price}, exit={exit_price}, pnl={pnl}")
                     
                     trades_list.append({
                         "tradeId": trade_id,
@@ -1148,19 +938,15 @@ def run_simple_backtest(historical_data, strategy, initial_capital, parameters=N
                         "position": position,
                         "pnl": round(pnl, 2),
                         "returnPct": round(return_pct, 2),
-                        "holdingPeriod": holding_days  # 实际持仓天数
+                        "holdingPeriod": 1  # 简化：假设持有1天
                     })
                     trade_id += 1
-                    
-                    # 更新持仓天数
-                    in_position_days += holding_days
                 
                 # 开新仓
                 position = signal
                 entry_price = close
                 entry_date = current_date
-                entry_day_index = i  # 记录开仓时的天数索引
-                print(f"[Backtest] 开新仓: position={position}, entry_price={entry_price}, day_index={i}")
+                print(f"[Backtest] 开新仓: position={position}, entry_price={entry_price}")
             
             chart_item = {
                 "date": current_date,
@@ -1175,36 +961,14 @@ def run_simple_backtest(historical_data, strategy, initial_capital, parameters=N
                 chart_item["sma50"] = round(sma50, 2)
             
             chart_data.append(chart_item)
-            
-            # 计算当前权益
-            # 未实现盈亏（如果有持仓）
-            unrealized_pnl = 0
-            if position != 0 and entry_price > 0:
-                unrealized_pnl = (close - entry_price) * position * 100
-            
-            # 当前权益 = 初始资本 + 累计已实现盈亏 + 未实现盈亏
-            current_equity = initial_capital + cumulative_pnl + unrealized_pnl
-            equity_curve.append(current_equity)
         
         # 最后一天平掉所有持仓
-        if position != 0 and entry_price > 0 and entry_date and entry_day_index >= 0 and len(dates) > 0:
+        if position != 0 and entry_price > 0 and entry_date and len(dates) > 0:
             last_close = closes[-1]
-            print(f"[Backtest] 调试未平仓头寸: dates[-1]={dates[-1]}, type={type(dates[-1])}, dates[-1] > 0={dates[-1] > 0 if isinstance(dates[-1], (int, float)) else 'N/A'}")
-            if isinstance(dates[-1], (int, float)) and dates[-1] > 0:
-                last_date = datetime.fromtimestamp(dates[-1]).strftime("%Y-%m-%d")
-                print(f"[Backtest] 有效日期: dates[-1]={dates[-1]} -> last_date={last_date}")
-            else:
-                last_date = "N/A"  # 无效日期，返回N/A而不是epoch日期
-                print(f"[Backtest] 无效日期: dates[-1]={dates[-1]}，返回last_date={last_date}")
+            last_date = datetime.fromtimestamp(dates[-1]).strftime("%Y-%m-%d") if isinstance(dates[-1], (int, float)) else str(dates[-1])
             
             pnl = (last_close - entry_price) * position * 100
             return_pct = ((last_close - entry_price) / entry_price) * 100 * position
-            # 对于未平仓头寸，holding_days应该是从开仓到最后数据点的天数
-            holding_days = len(dates) - 1 - entry_day_index  # 从开仓到最后一天的持仓天数
-            print(f"[Backtest] 未平仓头寸: entry_day_index={entry_day_index}, len(dates)={len(dates)}, holding_days={holding_days}")
-            
-            # 更新累计已实现盈亏
-            cumulative_pnl += pnl
             
             trades_list.append({
                 "tradeId": trade_id,
@@ -1216,240 +980,86 @@ def run_simple_backtest(historical_data, strategy, initial_capital, parameters=N
                 "position": position,
                 "pnl": round(pnl, 2),
                 "returnPct": round(return_pct, 2),
-                "holdingPeriod": holding_days  # 实际持仓天数
+                "holdingPeriod": len(trades_list) + 1  # 简化：假设持有到最后
             })
-            
-            # 更新持仓天数
-            in_position_days += holding_days
-            
-            # 更新最后一天的权益（平仓后未实现盈亏为0）
-            current_equity = initial_capital + cumulative_pnl
-            if len(equity_curve) > 0:
-                equity_curve[-1] = current_equity
         
-        # ==================== 基于权益曲线计算基础指标 ====================
-        import numpy as np
-        
-        # Total Return 和 Profit/Loss
-        final_equity = equity_curve[-1] if equity_curve else initial_capital
-        total_return = ((final_equity - initial_capital) / initial_capital) * 100
-        profit_loss = final_equity - initial_capital
-        
-        # 计算日收益率序列（基于权益曲线）
-        equity_daily_returns = []
-        for i in range(1, len(equity_curve)):
-            daily_return = (equity_curve[i] - equity_curve[i-1]) / equity_curve[i-1]
-            equity_daily_returns.append(daily_return)
-        
-        # Annualized Return
-        if len(equity_daily_returns) > 0:
-            cumulative_return = (final_equity / initial_capital) - 1
-            days = len(equity_daily_returns)
-            annualized_return = ((1 + cumulative_return) ** (252 / days) - 1) * 100 if days > 0 else 0
-        else:
-            annualized_return = 0
-        
-        # Max Drawdown (基于权益曲线)
-        max_drawdown = 0.0
-        peak = equity_curve[0] if equity_curve else initial_capital
-        for equity in equity_curve:
-            if equity > peak:
-                peak = equity
-            drawdown = (peak - equity) / peak * 100
-            if drawdown > max_drawdown:
-                max_drawdown = drawdown
-        
-        # Volatility (年化，基于权益收益率)
-        if len(equity_daily_returns) > 1:
-            daily_volatility = np.std(equity_daily_returns)
-            annualized_volatility = daily_volatility * np.sqrt(252) * 100
-        else:
-            annualized_volatility = 0
-        
-        # Sharpe Ratio (假设无风险利率为0)
-        if annualized_volatility > 0:
-            sharpe_ratio = (annualized_return / 100) / (annualized_volatility / 100)
-        else:
-            sharpe_ratio = 0
-        
-        # Sortino Ratio (使用下行波动率，添加分母保护)
-        if len(equity_daily_returns) > 1:
-            negative_returns = [r for r in equity_daily_returns if r < 0]
-            if len(negative_returns) > 1:
-                downside_volatility = np.std(negative_returns) * np.sqrt(252) * 100
-                # 添加最小下行波动率保护 (0.1%)
-                min_downside_volatility = 0.1  # 0.1%
-                effective_downside_volatility = max(downside_volatility, min_downside_volatility)
-                
-                if effective_downside_volatility > 0:
-                    sortino_ratio = (annualized_return / 100) / (effective_downside_volatility / 100)
-                else:
-                    sortino_ratio = 99.0 if annualized_return > 0 else 0.0
-            else:
-                # 下行收益率不足，使用最小下行波动率
-                min_downside_volatility = 0.1  # 0.1%
-                sortino_ratio = (annualized_return / 100) / (min_downside_volatility / 100) if annualized_return > 0 else 0.0
-        else:
-            sortino_ratio = 0
-        
-        # Calmar Ratio
-        if max_drawdown > 0:
-            calmar_ratio = (annualized_return / 100) / (max_drawdown / 100)
-        else:
-            calmar_ratio = 99.0 if annualized_return > 0 else 0.0
-        
-        # 3. 基于实际交易计算交易统计指标
+        # 基于trades_list计算真实的统计指标
         real_trades = len(trades_list)
+        winning_trades = sum(1 for trade in trades_list if trade.get('pnl', 0) > 0)
+        losing_trades = sum(1 for trade in trades_list if trade.get('pnl', 0) < 0)
+        total_pnl = sum(trade.get('pnl', 0) for trade in trades_list)
         
+        # 更新统计指标以匹配真实的交易数据
         if real_trades > 0:
-            # Win Rate
-            winning_trades = sum(1 for trade in trades_list if trade.get('pnl', 0) > 0)
-            losing_trades = sum(1 for trade in trades_list if trade.get('pnl', 0) < 0)
-            win_rate = (winning_trades / real_trades) * 100
-            
-            # Avg P&L per Trade
-            total_pnl = sum(trade.get('pnl', 0) for trade in trades_list)
-            avg_return_per_trade = total_pnl / real_trades
-            
-            # Profit Factor
-            winning_trades_pnl = sum(trade.get('pnl', 0) for trade in trades_list if trade.get('pnl', 0) > 0)
-            losing_trades_pnl = sum(trade.get('pnl', 0) for trade in trades_list if trade.get('pnl', 0) < 0)
-            
-            if abs(losing_trades_pnl) > 0:
-                profit_factor = abs(winning_trades_pnl / losing_trades_pnl)
+            # 修复当只有1笔交易时的逻辑
+            if real_trades == 1:
+                if total_pnl > 0:
+                    real_win_rate = 100.0  # 盈利交易，胜率100%
+                else:
+                    real_win_rate = 0.0    # 亏损交易，胜率0%
+                real_avg_return_per_trade = total_pnl  # 平均盈亏等于总盈亏
+                real_profit_loss = total_pnl
+                
+                # 只有1笔交易时的Profit Factor和Expectancy
+                if total_pnl > 0:
+                    real_profit_factor = 99.0  # 表示无限大
+                    real_expectancy_pct = (total_pnl / initial_capital) * 100 if initial_capital > 0 else 0
+                else:
+                    real_profit_factor = 0.0
+                    real_expectancy_pct = (total_pnl / initial_capital) * 100 if initial_capital > 0 else 0
             else:
-                profit_factor = 99.0 if winning_trades_pnl > 0 else 0.0
-            
-            # Expectancy
-            if winning_trades > 0:
-                avg_win = winning_trades_pnl / winning_trades
-            else:
-                avg_win = 0
-            
-            if losing_trades > 0:
-                avg_loss = losing_trades_pnl / losing_trades  # 负值
-            else:
-                avg_loss = 0
-            
-            win_rate_decimal = win_rate / 100
-            loss_rate_decimal = 1 - win_rate_decimal
-            expectancy_dollar = (win_rate_decimal * avg_win) + (loss_rate_decimal * avg_loss)
-            expectancy_pct = (expectancy_dollar / initial_capital) * 100 if initial_capital > 0 else 0
+                # 多笔交易的正常计算
+                real_win_rate = (winning_trades / real_trades) * 100
+                real_avg_return_per_trade = total_pnl / real_trades
+                real_profit_loss = total_pnl
+                
+                # 基于实际交易数据计算Profit Factor和Expectancy
+                winning_trades_pnl = sum(trade.get('pnl', 0) for trade in trades_list if trade.get('pnl', 0) > 0)
+                losing_trades_pnl = sum(trade.get('pnl', 0) for trade in trades_list if trade.get('pnl', 0) < 0)
+                
+                # 计算Profit Factor：总盈利 / 总亏损（绝对值）
+                if abs(losing_trades_pnl) > 0:
+                    real_profit_factor = abs(winning_trades_pnl / losing_trades_pnl)
+                else:
+                    real_profit_factor = 99.0 if winning_trades_pnl > 0 else 0.0
+                
+                # 计算Expectancy：平均每笔交易的预期收益
+                # Expectancy = (Win% × Avg Win) - (Loss% × Avg Loss)
+                avg_win = winning_trades_pnl / winning_trades if winning_trades > 0 else 0
+                avg_loss = losing_trades_pnl / losing_trades if losing_trades > 0 else 0
+                win_rate_decimal = real_win_rate / 100
+                loss_rate_decimal = 1 - win_rate_decimal
+                real_expectancy = (win_rate_decimal * avg_win) + (loss_rate_decimal * avg_loss)  # 美元金额
+                
+                # 转换为百分比（相对于初始资本）
+                real_expectancy_pct = (real_expectancy / initial_capital) * 100 if initial_capital > 0 else 0
         else:
-            # 没有交易时的默认值
-            win_rate = 0.0
-            avg_return_per_trade = 0.0
-            profit_factor = 0.0
-            expectancy_pct = 0.0
+            real_win_rate = win_rate
+            real_avg_return_per_trade = avg_return_per_trade
+            real_profit_loss = profit_loss
+            real_profit_factor = profit_factor
+            real_expectancy_pct = expectancy
         
-        # 4. Exposure (基于实际持仓天数)
-        total_days = len(dates)
-        exposure = (in_position_days / total_days) * 100 if total_days > 0 else 0
-        
-        # 5. 构建最终结果
         results = {
             "totalReturn": round(total_return, 2),
-            "profitLoss": round(profit_loss, 2),
-            "annualizedReturn": round(annualized_return, 2),
-            "maxDrawdown": round(max_drawdown, 2),
-            "volatility": round(annualized_volatility, 2),
             "sharpeRatio": round(sharpe_ratio, 2),
-            "sortinoRatio": round(sortino_ratio, 2),
+            "maxDrawdown": round(-max_drawdown, 2),  # 负值表示损失
+            "winRate": round(real_win_rate, 1),
+            "trades": real_trades if real_trades > 0 else trades,
+            "annualizedReturn": round(annualized_return, 2),
+            "profitLoss": round(real_profit_loss, 2),
             "calmarRatio": round(calmar_ratio, 2),
-            "winRate": round(win_rate, 1),
-            "trades": real_trades,
-            "avgReturnPerTrade": round(avg_return_per_trade, 2),
-            "profitFactor": round(profit_factor, 2),
-            "expectancy": round(expectancy_pct, 2),
+            "avgReturnPerTrade": round(real_avg_return_per_trade, 2),
+            "volatility": round(annualized_volatility, 2),
+            "sortinoRatio": round(sortino_ratio, 2),
+            "profitFactor": round(real_profit_factor, 2),
+            "expectancy": round(real_expectancy_pct, 2),
             "exposure": round(exposure, 1),
             "chartData": chart_data,
             "tradesList": trades_list
         }
         
-        # 调试：打印真实数据
-        print("\n=== [Backtest] 真实数据调试 ===")
-        
-        # 1. historical_data 前15个点
-        print("\n1. historical_data 前15个点:")
-        for i in range(min(15, len(historical_data))):
-            item = historical_data[i]
-            print(f"  [{i}] datetime={item.get('datetime', 'N/A')}, timestamp={item.get('timestamp', 'N/A')}, close={item.get('close', 'N/A')}, volume={item.get('volume', 'N/A')}")
-        
-        # 2. chart_data 前15个点
-        print("\n2. chart_data 前15个点:")
-        for i in range(min(15, len(chart_data))):
-            item = chart_data[i]
-            print(f"  [{i}] date={item.get('date', 'N/A')}, close={item.get('close', 'N/A')}, volume={item.get('volume', 'N/A')}")
-        
-        # 3. equity_curve 前15个点和后15个点
-        print("\n3. equity_curve 数据:")
-        print(f"  总长度: {len(equity_curve)}")
-        print("  前15个点:")
-        for i in range(min(15, len(equity_curve))):
-            print(f"  [{i}] equity={equity_curve[i]}")
-        
-        if len(equity_curve) > 15:
-            print("  后15个点:")
-            for i in range(max(0, len(equity_curve)-15), len(equity_curve)):
-                print(f"  [{i}] equity={equity_curve[i]}")
-        
-        print("\n=== [Backtest] 生成equityCurve ===")
-        
-        # 使用真实的历史数据日期
-        equityCurve_list = []
-        
-        print(f"\n=== [Backtest] 构建equityCurve ===")
-        print(f"equity_curve长度: {len(equity_curve)}")
-        print(f"historical_data长度: {len(historical_data)}")
-        print(f"dates长度: {len(dates)}")
-        
-        # 关键修复：检查并处理数据顺序问题
-        # 假设：Twelve Data API返回的数据是降序的（最新的在前）
-        # 但equity_curve是按时间顺序计算的（从最早到最新）
-        # 所以我们需要匹配日期和equity的顺序
-        
-        # 方案1：反转historical_data，使其与equity_curve顺序匹配
-        reversed_historical_data = list(reversed(historical_data)) if historical_data else []
-        
-        print(f"原始historical_data顺序（前5个）: {[h.get('datetime', 'N/A') for h in historical_data[:5]]}")
-        print(f"反转后顺序（前5个）: {[h.get('datetime', 'N/A') for h in reversed_historical_data[:5]]}")
-        
-        for i, equity in enumerate(equity_curve):
-            # 方案1：使用反转后的historical_data
-            if i < len(reversed_historical_data) and reversed_historical_data[i].get("datetime"):
-                date_str = reversed_historical_data[i]["datetime"]
-                date_source = "reversed_historical_data"
-            # 方案2：使用原始historical_data但从末尾开始
-            elif (len(historical_data) - 1 - i) >= 0 and historical_data[len(historical_data) - 1 - i].get("datetime"):
-                date_str = historical_data[len(historical_data) - 1 - i]["datetime"]
-                date_source = "historical_data_reverse_index"
-            # 方案3：使用dates数组（如果dates是按时间顺序的）
-            elif i < len(dates) and dates[i] and dates[i] > 0:
-                date_str = datetime.fromtimestamp(dates[i]).strftime("%Y-%m-%d")
-                date_source = "dates"
-            else:
-                date_str = "N/A"
-                date_source = "none"
-            
-            equityCurve_list.append({
-                "date": date_str,
-                "equity": round(equity, 2)
-            })
-            
-            # 只打印前10个和后10个点
-            if i < 10 or i >= len(equity_curve) - 10:
-                print(f"  equityCurve[{i}]: date={date_str} (来源: {date_source}), equity={round(equity, 2)}")
-        
-        results["equityCurve"] = equityCurve_list
-        
-        # 调试equityCurve日期
-        print(f"[Backtest] 调试: equity_curve长度={len(equity_curve)}")
-        print(f"[Backtest] 调试: dates长度={len(dates)}")
-        for i in range(min(10, len(equity_curve))):
-            date_str = f"2025-01-{min(i+1, 31):02d}"
-            print(f"[Backtest] 调试: equityCurve[{i}] date={date_str}, equity={equity_curve[i]}, min(i+1,31)={min(i+1, 31)}")
-        
-        print(f"[Backtest] 回测结果计算完成: totalReturn={results['totalReturn']}%, trades={results['trades']}, tradesList count={len(trades_list)}, equityCurve points={len(equity_curve)}")
+        print(f"[Backtest] 回测结果计算完成: totalReturn={results['totalReturn']}%, trades={results['trades']}, tradesList count={len(trades_list)}")
         return results
         
     except Exception as e:
@@ -1871,76 +1481,78 @@ def get_stock_detail(symbol):
             'INTC': 'Technology'
         }
         
-        # 使用Twelve Data获取股票报价（带降级处理）
-        quote_data, quote_error = fetch_twelvedata_quote(symbol)
+        # 使用优化版的API调用（带缓存）
+        quote_data, quote_error = fetch_finnhub_quote(symbol)
         
-        # 降级处理：如果Twelve Data失败，使用静态数据
         if quote_error or not quote_data:
-            print(f"[股票详情接口] Twelve Data报价失败，使用降级数据: {quote_error}")
-            
-            # 静态股票数据
-            static_stock_data = {
-                'AAPL': {'price': 182.63, 'change': 1.25, 'changePercent': 0.69},
-                'MSFT': {'price': 420.72, 'change': 2.34, 'changePercent': 0.56},
-                'TSLA': {'price': 175.79, 'change': -1.23, 'changePercent': -0.69},
-                'GOOGL': {'price': 151.34, 'change': 0.89, 'changePercent': 0.59},
-                'AMZN': {'price': 178.21, 'change': 1.45, 'changePercent': 0.82},
-                'NVDA': {'price': 950.02, 'change': 15.34, 'changePercent': 1.64},
-                'META': {'price': 485.75, 'change': 3.21, 'changePercent': 0.66},
-                'NFLX': {'price': 615.41, 'change': 2.89, 'changePercent': 0.47},
-                'AMD': {'price': 164.32, 'change': 1.23, 'changePercent': 0.75},
-                'INTC': {'price': 44.12, 'change': 0.23, 'changePercent': 0.52}
-            }
-            
-            symbol_upper = symbol.upper()
-            if symbol_upper in static_stock_data:
-                quote_data = static_stock_data[symbol_upper]
-                data_source = "静态数据 (Twelve Data失败)"
-                success = True
-            else:
-                quote_data = {'price': None, 'change': None, 'changePercent': None}
-                data_source = "数据不可用"
-                success = False
-        else:
-            data_source = "Twelve Data"
-            success = True
+            elapsed = time.time() - start_time
+            return jsonify({
+                "symbol": symbol.upper(),
+                "name": STOCK_NAMES.get(symbol.upper(), f"{symbol.upper()} Inc."),
+                "price": None,
+                "change": None,
+                "changePercent": None,
+                "dayHigh": None,
+                "dayLow": None,
+                "open": None,
+                "previousClose": None,
+                "marketCap": None,
+                "currency": "USD",
+                "exchange": "NASDAQ",
+                "industry": STOCK_SECTORS.get(symbol.upper(), "Technology"),
+                "sector": STOCK_SECTORS.get(symbol.upper(), "Technology"),
+                "dataSource": "Finnhub (API错误)",
+                "responseTime": round(elapsed, 3),
+                "timestamp": int(time.time()),
+                "error": quote_error or "未获取到数据"
+            }), 500
         
-        # 即使数据部分失败，也返回200状态码，让前端能处理
+        # 解析报价数据
+        current_price = safe_float(quote_data.get('c'), 0)
+        change_amount = safe_float(quote_data.get('d'), 0)
+        change_percent = safe_float(quote_data.get('dp'), 0)
+        day_high = safe_float(quote_data.get('h'), 0)
+        day_low = safe_float(quote_data.get('l'), 0)
+        open_price = safe_float(quote_data.get('o'), 0)
+        previous_close = safe_float(quote_data.get('pc'), 0)
+        
+        # 获取profile数据（包含市值）- 使用优化版本
+        profile_data, profile_error = fetch_finnhub_profile(symbol)
+        market_cap = None
+        
+        if profile_data and not profile_error:
+            raw_market_cap = safe_float(profile_data.get('marketCapitalization'), 0)
+            if raw_market_cap > 0:
+                market_cap = raw_market_cap * 1000000  # 百万转换为实际数值
+        
         elapsed = time.time() - start_time
         
-        # 构建响应数据
-        response_data = {
+        stock_data = {
             "symbol": symbol.upper(),
             "name": STOCK_NAMES.get(symbol.upper(), f"{symbol.upper()} Inc."),
-            "price": quote_data.get('price'),
-            "change": quote_data.get('change'),
-            "changePercent": quote_data.get('changePercent'),
-            "dayHigh": quote_data.get('dayHigh'),
-            "dayLow": quote_data.get('dayLow'),
-            "open": quote_data.get('open'),
-            "previousClose": quote_data.get('previousClose'),
-            "marketCap": quote_data.get('marketCap'),
-            "currency": quote_data.get('currency', 'USD'),
-            "exchange": quote_data.get('exchange', 'NASDAQ'),
+            "price": current_price if current_price > 0 else None,
+            "change": change_amount,
+            "changePercent": change_percent,
+            "dayHigh": day_high if day_high > 0 else None,
+            "dayLow": day_low if day_low > 0 else None,
+            "open": open_price if open_price > 0 else None,
+            "previousClose": previous_close if previous_close > 0 else None,
+            "marketCap": market_cap,
+            "currency": "USD",
+            "exchange": "NASDAQ",
             "industry": STOCK_SECTORS.get(symbol.upper(), "Technology"),
             "sector": STOCK_SECTORS.get(symbol.upper(), "Technology"),
-            "dataSource": data_source,
+            "dataSource": "Finnhub",
             "responseTime": round(elapsed, 3),
-            "timestamp": int(time.time()),
-            "success": success
+            "timestamp": int(time.time())
         }
         
-        # 如果有错误信息，添加到响应中
-        if quote_error and not success:
-            response_data["error"] = f"股票信息获取失败: {quote_error}"
-        
-        print(f"[股票详情接口] 处理完成: {symbol}, 价格: {quote_data.get('price')}, 数据源: {data_source}, 成功: {success}")
-        return jsonify(response_data), 200
+        print(f"[股票详情接口] 返回数据: {symbol}, 价格: {current_price}, 响应时间: {round(elapsed, 3)}s")
+        return jsonify(stock_data), 200
         
     except Exception as e:
         elapsed = time.time() - start_time if 'start_time' in locals() else 0
         print(f"[股票详情接口] 异常: {e}")
-        # 即使异常也返回200，让前端能处理
         return jsonify({
             "symbol": symbol.upper(),
             "name": f"{symbol.upper()} Inc.",
@@ -1956,12 +1568,11 @@ def get_stock_detail(symbol):
             "exchange": "NASDAQ",
             "industry": "Technology",
             "sector": "Technology",
-            "dataSource": "服务异常",
+            "dataSource": "Finnhub (异常)",
             "responseTime": round(elapsed, 3),
             "timestamp": int(time.time()),
-            "success": False,
-            "error": f"服务器异常: {str(e)[:100]}"
-        }), 200
+            "error": str(e)
+        }), 500
 
 @app.route('/api/status', methods=['GET'])
 @app.route('/status', methods=['GET'])
@@ -1995,31 +1606,26 @@ def clear_cache():
 @app.route('/backtest/run', methods=['POST'])
 @app.route('/api/backtest/run', methods=['POST'])
 def run_backtest():
-    """运行回测 - 优化版，添加详细耗时日志"""
-    total_start = time.time()
-    
+    """运行回测 - 简单实现修复404错误"""
     try:
         data = request.get_json()
         print(f"[Backtest] 收到回测请求: {data}")
         
         # 提取配置
         user_input = data.get('symbol', 'AAPL')
-        strategy = data.get('strategy', 'moving_average')
+        strategy = data.get('strategy', 'moving_average')  # 改为与前端匹配的值
         start_date = data.get('startDate', '2024-01-01')
         end_date = data.get('endDate', '2024-12-31')
         initial_capital = data.get('initialCapital', 10000)
-        data_mode = data.get('dataMode', 'real')
-        parameters = data.get('parameters', {})
+        data_mode = data.get('dataMode', 'real')  # 只支持real data模式
+        parameters = data.get('parameters', {})  # 新增：策略参数
         
-        # 生成backtest ID
+        # 生成唯一的backtest ID
         import uuid
         backtest_id = str(uuid.uuid4())[:8]
         
-        print(f"[Backtest] 开始处理，ID: {backtest_id}")
-        
-        # 阶段1: symbol验证
-        stage1_start = time.time()
-        print(f"[Backtest] 阶段1: 验证股票输入")
+        # 1. 首先验证和解析股票输入
+        print(f"[Backtest] 验证股票输入: '{user_input}'")
         symbol, valid, validation_message = parse_and_validate_stock_input(user_input)
         
         if not valid:
@@ -2037,7 +1643,6 @@ def run_backtest():
                     "strategy": strategy,
                     "startDate": start_date,
                     "endDate": end_date,
-                    "period": f"{start_date} to {end_date}",  # 添加period字段
                     "initialCapital": initial_capital,
                     "dataMode": "real",
                     "dataModeDisplay": "Real Data",
@@ -2045,72 +1650,71 @@ def run_backtest():
                 }
             }), 200
         
-        stage1_time = time.time() - stage1_start
-        print(f"[Backtest] 阶段1完成，耗时: {stage1_time:.2f}秒")
+        print(f"[Backtest] 股票输入有效: {validation_message}")
         
         # 只支持真实数据模式
         print(f"[Backtest] 使用真实数据模式")
         
-        # 阶段2: 获取历史数据
-        stage2_start = time.time()
-        print(f"[Backtest] 阶段2: 获取历史数据")
-        
-        # 只使用Twelve Data获取历史数据
+        # 尝试获取真实历史数据 - 优先Finnhub，然后Twelve Data
         historical_data = None
         data_source = None
         data_mode_display = "Real Data"
         data_source_note = ""
         
-        # 使用日线数据
-        interval = "1day"
-        
-        # 1. 先尝试Twelve Data日期范围API
-        print(f"[Backtest] 尝试Twelve Data获取历史数据: {symbol}, start={start_date}, end={end_date}")
-        historical_data, success, data_source_note = get_twelvedata_history_with_dates(
-            symbol, interval, start_date, end_date
-        )
+        # 1. 先尝试Finnhub
+        print(f"[Backtest] 尝试Finnhub获取历史数据: {symbol}, start={start_date}, end={end_date}")
+        historical_data, success, data_source_note = get_finnhub_history(symbol, start_date, end_date)
         
         if success and historical_data:
-            data_source = "Twelve Data"
-            print(f"[Backtest] Twelve Data日期范围API获取成功: {len(historical_data)} 个数据点")
+            data_source = "Finnhub"
+            print(f"[Backtest] Finnhub获取成功: {len(historical_data)} 个数据点")
         else:
-            # 2. 如果日期范围API失败，尝试使用range参数方法作为备选
-            print(f"[Backtest] Twelve Data日期范围API失败，尝试使用range参数方法")
-            # 计算日期范围对应的range参数
-            try:
-                from datetime import datetime
-                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-                end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-                days_diff = (end_dt - start_dt).days
-                
-                if days_diff <= 7:
-                    range_param = "1week"
-                elif days_diff <= 30:
-                    range_param = "1month"
-                elif days_diff <= 90:
-                    range_param = "3month"
-                else:
-                    range_param = "1year"
+            # 2. Finnhub失败，尝试Twelve Data
+            print(f"[Backtest] Finnhub失败，尝试Twelve Data: {symbol}, start={start_date}, end={end_date}")
+            
+            # 使用日线数据
+            interval = "1day"
+            
+            # 调用新的日期范围数据获取函数
+            historical_data, success, data_source_note = get_twelvedata_history_with_dates(
+                symbol, interval, start_date, end_date
+            )
+            
+            # 如果日期范围API失败，尝试使用旧的range参数方法作为备选
+            if not success or not historical_data:
+                print(f"[Backtest] Twelve Data日期范围API失败，尝试使用range参数方法")
+                # 计算日期范围对应的range参数
+                try:
+                    from datetime import datetime
+                    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+                    days_diff = (end_dt - start_dt).days
                     
-                print(f"[Backtest] 计算range参数: {range_param} (天数: {days_diff})")
-                historical_data, success, data_source_note = get_twelvedata_history(symbol, interval, range_param)
-            except Exception as date_err:
-                print(f"[Backtest] 计算range参数失败: {date_err}")
+                    if days_diff <= 7:
+                        range_param = "1week"
+                    elif days_diff <= 30:
+                        range_param = "1month"
+                    elif days_diff <= 90:
+                        range_param = "3month"
+                    else:
+                        range_param = "1year"
+                        
+                    print(f"[Backtest] 计算range参数: {range_param} (天数: {days_diff})")
+                    historical_data, success, data_source_note = get_twelvedata_history(symbol, interval, range_param)
+                except Exception as date_err:
+                    print(f"[Backtest] 计算range参数失败: {date_err}")
             
             if success and historical_data:
-                data_source = "Twelve Data (range fallback)"
-                print(f"[Backtest] Twelve Data range参数方法获取成功: {len(historical_data)} 个数据点")
-        
-        stage2_time = time.time() - stage2_start
-        print(f"[Backtest] 阶段2完成，耗时: {stage2_time:.2f}秒，数据点: {len(historical_data) if historical_data else 0}")
+                data_source = "Twelve Data"
+                print(f"[Backtest] Twelve Data获取成功: {len(historical_data)} 个数据点")
         
         # 检查是否获取到足够的数据
         if not historical_data or len(historical_data) == 0:
-            print(f"[Backtest] 无法获取真实历史数据，Twelve Data数据源失败")
+            print(f"[Backtest] 无法获取真实历史数据，两个数据源都失败")
             # 返回明确的错误信息
             return jsonify({
                 "success": False,
-                "error": f"无法从Twelve Data获取历史数据。请检查股票代码和日期范围。\n错误详情: {data_source_note}",
+                "error": f"无法获取真实历史数据。请检查股票代码和日期范围。\n错误详情: {data_source_note}",
                 "backtestId": backtest_id,
                 "results": None,
                 "chartData": None,
@@ -2120,7 +1724,6 @@ def run_backtest():
                     "strategy": strategy,
                     "startDate": start_date,
                     "endDate": end_date,
-                    "period": f"{start_date} to {end_date}",  # 添加period字段
                     "initialCapital": initial_capital,
                     "dataMode": "real",
                     "dataModeDisplay": "Real Data",
@@ -2152,7 +1755,6 @@ def run_backtest():
                     "strategy": strategy,
                     "startDate": start_date,
                     "endDate": end_date,
-                    "period": f"{start_date} to {end_date}",  # 添加period字段
                     "initialCapital": initial_capital,
                     "dataMode": "real",
                     "dataModeDisplay": "Real Data",
@@ -2163,16 +1765,10 @@ def run_backtest():
         # 如果获取到真实数据，继续处理
         print(f"[Backtest] 成功获取真实历史数据，数据源: {data_source}")
         
-        # 阶段3: 回测计算
-        stage3_start = time.time()
-        print(f"[Backtest] 阶段3: 回测计算")
-        
         try:
             # 基于真实数据进行回测计算
             results = run_simple_backtest(historical_data, strategy, initial_capital, parameters)
             
-            stage3_time = time.time() - stage3_start
-            print(f"[Backtest] 阶段3完成，耗时: {stage3_time:.2f}秒")
             print(f"[Backtest] 真实数据回测完成: totalReturn={results.get('totalReturn', 0)}%")
             
         except Exception as e:
@@ -2197,10 +1793,6 @@ def run_backtest():
             }
             data_source = f"{data_source} (异常: {str(e)[:50]})"
         
-        # 阶段4: 准备响应
-        stage4_start = time.time()
-        print(f"[Backtest] 阶段4: 准备响应")
-        
         # 构建最终的回测结果
         result = {
             "success": True,
@@ -2214,7 +1806,6 @@ def run_backtest():
                 "strategy": strategy,
                 "startDate": start_date,
                 "endDate": end_date,
-                "period": f"{start_date} to {end_date}",  # 添加period字段
                 "initialCapital": initial_capital,
                 "dataMode": "real",
                 "dataModeDisplay": "Real Data",
@@ -2222,22 +1813,10 @@ def run_backtest():
             }
         }
         
-        stage4_time = time.time() - stage4_start
-        total_time = time.time() - total_start
-        
-        print(f"[Backtest] 阶段4完成，耗时: {stage4_time:.2f}秒")
-        print(f"[Backtest] 总耗时: {total_time:.2f}秒")
-        print(f"[Backtest] 各阶段耗时:")
-        print(f"  阶段1 (验证): {stage1_time:.2f}秒")
-        print(f"  阶段2 (数据): {stage2_time:.2f}秒")
-        print(f"  阶段3 (计算): {stage3_time:.2f}秒")
-        print(f"  阶段4 (响应): {stage4_time:.2f}秒")
-        
         return jsonify(result), 200
         
     except Exception as e:
-        total_time = time.time() - total_start
-        print(f"[Backtest] 全局异常，总耗时: {total_time:.2f}秒，错误: {e}")
+        print(f"[Backtest] 全局异常: {e}")
         return jsonify({
             "success": False,
             "error": f"Backtest failed: {str(e)}",
@@ -2250,7 +1829,6 @@ def run_backtest():
                 "strategy": strategy,
                 "startDate": start_date,
                 "endDate": end_date,
-                "period": f"{start_date} to {end_date}",  # 添加period字段
                 "initialCapital": initial_capital,
                 "dataMode": "real",
                 "dataModeDisplay": "Real Data",
@@ -2285,19 +1863,53 @@ def get_backtest_history():
 @app.route('/backtest/results/<backtest_id>', methods=['GET'])
 @app.route('/api/backtest/results/<backtest_id>', methods=['GET'])
 def get_backtest_results(backtest_id):
-    """获取回测结果 - 真实实现"""
+    """获取回测结果 - 简单实现"""
     try:
         print(f"[Backtest] 获取回测结果: {backtest_id}")
         
-        # 不再返回模拟数据
-        # 如果没有真实存储结果，返回错误信息
-        return jsonify({
-            "success": False,
-            "error": "回测结果未保存。请重新运行回测获取最新结果。",
+        # 创建模拟结果（与run_backtest返回的结构一致）
+        result = {
             "backtestId": backtest_id,
-            "status": "not_found",
-            "message": "历史回测结果未保存。请使用 /backtest/run 重新运行回测。"
-        }), 200
+            "status": "completed",
+            "results": {
+                "totalReturn": 15.5,
+                "sharpeRatio": 1.2,
+                "maxDrawdown": -8.3,
+                "winRate": 58.7,
+                "trades": 24,
+                "annualizedReturn": 74.9,  # 修复：90天获得15.5%收益，年化约74.9%
+                "profitLoss": 15500,  # 修复：$100,000 × 15.5% = $15,500
+                "calmarRatio": 2.19,
+                "avgReturnPerTrade": 64.58,  # 修复：$15,500 ÷ 24 = $64.58
+                "volatility": 12.5,
+                "sortinoRatio": 1.8,
+                "profitFactor": 1.6,
+                "expectancy": 1.5,
+                "exposure": 45.2
+            },
+            "parameters": {
+                "symbols": ["AAPL"],
+                "strategy": "moving_average",  # 改为与前端匹配的值
+                "startDate": "2024-01-01",
+                "endDate": "2024-12-31",
+                "initialCapital": 10000,
+                "period": "2024-01-01 to 2024-12-31",
+                "dataMode": "simulated",
+                "dataModeDisplay": "Simulated Data",
+                "dataSource": "Simulated"
+            },
+            "config": {
+                "symbol": "AAPL",
+                "strategy": "moving_average",
+                "startDate": "2024-01-01",
+                "endDate": "2024-12-31",
+                "initialCapital": 10000,
+                "dataMode": "simulated"
+            },
+            "timestamp": int(time.time())
+        }
+        
+        return jsonify(result), 200
         
     except Exception as e:
         print(f"[Backtest Results] 异常: {e}")
