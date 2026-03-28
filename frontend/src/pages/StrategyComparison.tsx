@@ -8,37 +8,60 @@ import { backtraderAPI } from "../services/api";
 interface ParameterData {
   key: string;
   parameter: string;
-  backtest1: string | React.ReactNode;
-  backtest2: string | React.ReactNode;
-  empty: string;
-  winner?: React.ReactNode; // 添加winner字段
+  [key: string]: any; // 动态backtest字段
 }
 
 interface MetricData {
   key: string;
   metric: string;
-  backtest1: string;
-  backtest2: string;
-  winner: React.ReactNode;
+  [key: string]: any; // 动态backtest字段和winner字段
 }
 
-// Backtest识别色常量
-const BACKTEST_COLORS = {
-  backtest1: {
-    primary: '#1890ff',      // 蓝色系
+// Backtest识别色常量 - 支持多个backtest
+const BACKTEST_COLORS = [
+  {
+    primary: '#1890ff',      // 蓝色系 - Backtest 1
     light: '#e6f7ff',        // 浅蓝
     border: '#91d5ff',       // 边框蓝
     text: '#0050b3',         // 深蓝文字
     bg: '#f0f9ff',           // 背景浅蓝
   },
-  backtest2: {
-    primary: '#722ed1',      // 紫色系
+  {
+    primary: '#722ed1',      // 紫色系 - Backtest 2
     light: '#f9f0ff',        // 浅紫
     border: '#d3adf7',       // 边框紫
     text: '#531dab',         // 深紫文字
     bg: '#f9f0ff',           // 背景浅紫
   },
-};
+  {
+    primary: '#52c41a',      // 绿色系 - Backtest 3
+    light: '#f6ffed',        // 浅绿
+    border: '#b7eb8f',       // 边框绿
+    text: '#389e0d',         // 深绿文字
+    bg: '#f6ffed',           // 背景浅绿
+  },
+  {
+    primary: '#fa8c16',      // 橙色系 - Backtest 4
+    light: '#fff7e6',        // 浅橙
+    border: '#ffd591',       // 边框橙
+    text: '#d46b08',         // 深橙文字
+    bg: '#fff7e6',           // 背景浅橙
+  },
+  {
+    primary: '#f5222d',      // 红色系 - Backtest 5
+    light: '#fff1f0',        // 浅红
+    border: '#ffa39e',       // 边框红
+    text: '#cf1322',         // 深红文字
+    bg: '#fff1f0',           // 背景浅红
+  },
+  {
+    primary: '#13c2c2',      // 青色系 - Backtest 6
+    light: '#e6fffb',        // 浅青
+    border: '#87e8de',       // 边框青
+    text: '#08979c',         // 深青文字
+    bg: '#e6fffb',           // 背景浅青
+  },
+];
 
 // 真实的backtest结果接口
 interface RealBacktestResult {
@@ -120,7 +143,7 @@ const renderBacktestHeader = (
   align: 'left' | 'right' = 'left',
   backtestIndex: number = 1
 ) => {
-  const colors = backtestIndex === 1 ? BACKTEST_COLORS.backtest1 : BACKTEST_COLORS.backtest2;
+  const colors = BACKTEST_COLORS[(backtestIndex - 1) % BACKTEST_COLORS.length];
   
   return (
     <CellContainer align={align} header>
@@ -226,7 +249,7 @@ const StatusTag: React.FC<{ status: 'completed' | 'running' | 'failed' }> = ({ s
 
 // 优化的WinnerTag组件
 const WinnerTag: React.FC<{ position: number }> = ({ position }) => {
-  const colors = position === 1 ? BACKTEST_COLORS.backtest1 : BACKTEST_COLORS.backtest2;
+  const colors = BACKTEST_COLORS[(position - 1) % BACKTEST_COLORS.length];
   
   return (
     <div style={{
@@ -268,23 +291,22 @@ const SummaryCard: React.FC<{
     }}>
       <div style={{
         fontSize: '13px',
-        color: '#404040',
-        fontWeight: 700,
-        marginBottom: '14px',
+        color: '#595959',
+        fontWeight: 600,
+        marginBottom: '12px',
         textTransform: 'uppercase',
         letterSpacing: '0.5px',
       }}>
         {title}
       </div>
       <div style={{
-        fontSize: '26px',
-        fontWeight: 800,
+        fontSize: '24px',
+        fontWeight: 700,
         color: color,
-        lineHeight: 1.1,
-        letterSpacing: '-0.5px',
+        lineHeight: 1.2,
       }}>
         {value}
-        {unit && <span style={{ fontSize: '16px', color: '#737373', marginLeft: '4px', fontWeight: 600 }}>{unit}</span>}
+        {unit && <span style={{ fontSize: '16px', color: '#8c8c8c', marginLeft: '4px', fontWeight: 500 }}>{unit}</span>}
       </div>
     </div>
   );
@@ -339,11 +361,8 @@ const StrategyComparison: React.FC = () => {
           comparisonBacktests = [comparisonBacktests[0], { ...comparisonBacktests[0], backtestId: comparisonBacktests[0].backtestId + '_copy' }];
         }
         
-        // 限制最多对比2个（保持UI一致性）
-        if (comparisonBacktests.length > 2) {
-          console.log(`有${comparisonBacktests.length}个backtest，只取前2个进行对比`);
-          comparisonBacktests = comparisonBacktests.slice(0, 2);
-        }
+        // 支持任意数量的backtest对比
+        console.log(`有${comparisonBacktests.length}个backtest用于对比`);
         
         setBacktestResults(comparisonBacktests);
         console.log('最终用于对比的backtests:', comparisonBacktests);
@@ -421,230 +440,280 @@ const StrategyComparison: React.FC = () => {
     );
   }
 
-  // 参数对比表格数据 - 基于真实backtest数据生成
-  const parameterData: ParameterData[] = [
-    { 
-      key: '1', 
-      parameter: 'Symbol', 
-      backtest1: backtestResults[0]?.parameters?.symbol || 'N/A', 
-      backtest2: backtestResults[1]?.parameters?.symbol || 'N/A',
-      empty: '',
-      winner: null // Symbol不评winner
-    },
-    { 
-      key: '2', 
-      parameter: 'Strategy', 
-      backtest1: backtestResults[0]?.parameters?.strategy || 'N/A', 
-      backtest2: backtestResults[1]?.parameters?.strategy || 'N/A',
-      empty: '',
-      winner: null // Strategy不评winner
-    },
-    { 
-      key: '3', 
-      parameter: 'Period', 
-      backtest1: backtestResults[0] ? `${backtestResults[0].parameters.startDate} to ${backtestResults[0].parameters.endDate}` : 'N/A', 
-      backtest2: backtestResults[1] ? `${backtestResults[1].parameters.startDate} to ${backtestResults[1].parameters.endDate}` : 'N/A',
-      empty: '',
-      winner: null // Period通常不评winner
-    },
-    { 
-      key: '4', 
-      parameter: 'Initial Capital', 
-      backtest1: backtestResults[0] ? `$${backtestResults[0].parameters.initialCapital.toLocaleString()}` : 'N/A', 
-      backtest2: backtestResults[1] ? `$${backtestResults[1].parameters.initialCapital.toLocaleString()}` : 'N/A',
-      empty: '',
-      winner: null // Initial Capital不评winner
-    },
-    { 
-      key: '5', 
-      parameter: 'Data Source', 
-      backtest1: backtestResults[0]?.parameters?.dataSource || 'Twelve Data', 
-      backtest2: backtestResults[1]?.parameters?.dataSource || 'Twelve Data',
-      empty: '',
-      winner: null // Data Source不评winner
-    },
-    { 
-      key: '6', 
-      parameter: 'Data Mode', 
-      backtest1: backtestResults[0]?.parameters?.dataMode || 'Live', 
-      backtest2: backtestResults[1]?.parameters?.dataMode || 'Live',
-      empty: '',
-      winner: null // Data Mode不评winner
-    },
-    { 
-      key: '7', 
-      parameter: 'Created At', 
-      backtest1: backtestResults[0]?.timestamp ? new Date(backtestResults[0].timestamp).toLocaleDateString() : 'N/A', 
-      backtest2: backtestResults[1]?.timestamp ? new Date(backtestResults[1].timestamp).toLocaleDateString() : 'N/A',
-      empty: '',
-      winner: null // Created At不评winner
-    },
-    { 
-      key: '8', 
-      parameter: 'Backtest ID', 
-      backtest1: backtestResults[0]?.backtestId?.substring(0, 8) || 'N/A', 
-      backtest2: backtestResults[1]?.backtestId?.substring(0, 8) || 'N/A',
-      empty: '',
-      winner: null // Backtest ID不评winner
-    },
-    { 
-      key: '9', 
-      parameter: 'Status', 
-      backtest1: <StatusTag status={backtestResults[0]?.status as any || 'completed'} />, 
-      backtest2: <StatusTag status={backtestResults[1]?.status as any || 'completed'} />,
-      empty: '',
-      winner: backtestResults[0] && backtestResults[1] ? 
-        (() => {
-          const statusOrder: Record<string, number> = { 'completed': 3, 'running': 2, 'failed': 1 };
-          const status1 = backtestResults[0].status || 'completed';
-          const status2 = backtestResults[1].status || 'completed';
-          return statusOrder[status1] > statusOrder[status2] ? 
-            <WinnerTag position={1} /> : 
-            statusOrder[status1] < statusOrder[status2] ? 
-            <WinnerTag position={2} /> : 
-            null;
-        })() : null
-    },
-  ];
+  // 动态生成参数对比表格数据
+  const generateParameterData = (): ParameterData[] => {
+    const parameters = [
+      { key: '1', parameter: 'Symbol' },
+      { key: '2', parameter: 'Strategy' },
+      { key: '3', parameter: 'Period' },
+      { key: '4', parameter: 'Initial Capital' },
+      { key: '5', parameter: 'Data Source' },
+      { key: '6', parameter: 'Data Mode' },
+      { key: '7', parameter: 'Created At' },
+      { key: '8', parameter: 'Backtest ID' },
+      { key: '9', parameter: 'Status' },
+    ];
 
-  // 性能指标对比表格数据 - 基于真实backtest结果生成
-  const metricData: MetricData[] = [
-    { 
-      key: '1', 
-      metric: 'Profit / Loss', 
-      backtest1: backtestResults[0]?.results?.profitLoss ? 
-        `${backtestResults[0].results.profitLoss >= 0 ? '+' : ''}$${Math.abs(backtestResults[0].results.profitLoss).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'N/A', 
-      backtest2: backtestResults[1]?.results?.profitLoss ? 
-        `${backtestResults[1].results.profitLoss >= 0 ? '+' : ''}$${Math.abs(backtestResults[1].results.profitLoss).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'N/A', 
-      winner: <WinnerTag position={backtestResults[0]?.results?.profitLoss > backtestResults[1]?.results?.profitLoss ? 1 : 2} />
-    },
-    { 
-      key: '2', 
-      metric: 'Total Return', 
-      backtest1: backtestResults[0]?.results?.totalReturn ? 
-        `${backtestResults[0].results.totalReturn >= 0 ? '+' : ''}${backtestResults[0].results.totalReturn.toFixed(2)}%` : 'N/A', 
-      backtest2: backtestResults[1]?.results?.totalReturn ? 
-        `${backtestResults[1].results.totalReturn >= 0 ? '+' : ''}${backtestResults[1].results.totalReturn.toFixed(2)}%` : 'N/A', 
-      winner: <WinnerTag position={backtestResults[0]?.results?.totalReturn > backtestResults[1]?.results?.totalReturn ? 1 : 2} />
-    },
-    { 
-      key: '3', 
-      metric: 'Sharpe Ratio', 
-      backtest1: backtestResults[0]?.results?.sharpeRatio ? backtestResults[0].results.sharpeRatio.toFixed(2) : 'N/A', 
-      backtest2: backtestResults[1]?.results?.sharpeRatio ? backtestResults[1].results.sharpeRatio.toFixed(2) : 'N/A', 
-      winner: <WinnerTag position={backtestResults[0]?.results?.sharpeRatio > backtestResults[1]?.results?.sharpeRatio ? 1 : 2} />
-    },
-    { 
-      key: '4', 
-      metric: 'Max Drawdown', 
-      backtest1: backtestResults[0]?.results?.maxDrawdown ? `${backtestResults[0].results.maxDrawdown.toFixed(2)}%` : 'N/A', 
-      backtest2: backtestResults[1]?.results?.maxDrawdown ? `${backtestResults[1].results.maxDrawdown.toFixed(2)}%` : 'N/A', 
-      winner: <WinnerTag position={backtestResults[0]?.results?.maxDrawdown < backtestResults[1]?.results?.maxDrawdown ? 1 : 2} />
-    },
-    { 
-      key: '5', 
-      metric: 'Win Rate', 
-      backtest1: backtestResults[0]?.results?.winRate ? `${backtestResults[0].results.winRate.toFixed(1)}%` : 'N/A', 
-      backtest2: backtestResults[1]?.results?.winRate ? `${backtestResults[1].results.winRate.toFixed(1)}%` : 'N/A', 
-      winner: <WinnerTag position={backtestResults[0]?.results?.winRate > backtestResults[1]?.results?.winRate ? 1 : 2} />
-    },
-    { 
-      key: '6', 
-      metric: 'Trades', 
-      backtest1: backtestResults[0]?.results?.trades ? backtestResults[0].results.trades.toString() : 'N/A', 
-      backtest2: backtestResults[1]?.results?.trades ? backtestResults[1].results.trades.toString() : 'N/A', 
-      winner: <WinnerTag position={backtestResults[0]?.results?.trades > backtestResults[1]?.results?.trades ? 1 : 2} />
-    },
-    { 
-      key: '7', 
-      metric: 'Annualized Return', 
-      backtest1: backtestResults[0]?.results?.annualizedReturn !== undefined ? 
-        `${backtestResults[0].results.annualizedReturn >= 0 ? '+' : ''}${backtestResults[0].results.annualizedReturn.toFixed(2)}%` : 'N/A', 
-      backtest2: backtestResults[1]?.results?.annualizedReturn !== undefined ? 
-        `${backtestResults[1].results.annualizedReturn >= 0 ? '+' : ''}${backtestResults[1].results.annualizedReturn.toFixed(2)}%` : 'N/A', 
-      winner: <WinnerTag position={
-        (backtestResults[0]?.results?.annualizedReturn || 0) > (backtestResults[1]?.results?.annualizedReturn || 0) ? 1 : 2
-      } />
-    },
-    { 
-      key: '8', 
-      metric: 'Sortino Ratio', 
-      backtest1: backtestResults[0]?.results?.sortinoRatio !== undefined ? backtestResults[0].results.sortinoRatio.toFixed(2) : 'N/A', 
-      backtest2: backtestResults[1]?.results?.sortinoRatio !== undefined ? backtestResults[1].results.sortinoRatio.toFixed(2) : 'N/A', 
-      winner: <WinnerTag position={
-        (backtestResults[0]?.results?.sortinoRatio || 0) > (backtestResults[1]?.results?.sortinoRatio || 0) ? 1 : 2
-      } />
-    },
-    { 
-      key: '9', 
-      metric: 'Volatility', 
-      backtest1: backtestResults[0]?.results?.volatility !== undefined ? `${backtestResults[0].results.volatility.toFixed(2)}%` : 'N/A', 
-      backtest2: backtestResults[1]?.results?.volatility !== undefined ? `${backtestResults[1].results.volatility.toFixed(2)}%` : 'N/A', 
-      winner: <WinnerTag position={
-        (backtestResults[0]?.results?.volatility || Infinity) < (backtestResults[1]?.results?.volatility || Infinity) ? 1 : 2
-      } />
-    },
-    { 
-      key: '10', 
-      metric: 'Profit Factor', 
-      backtest1: backtestResults[0]?.results?.profitFactor !== undefined ? backtestResults[0].results.profitFactor.toFixed(2) : 'N/A', 
-      backtest2: backtestResults[1]?.results?.profitFactor !== undefined ? backtestResults[1].results.profitFactor.toFixed(2) : 'N/A', 
-      winner: <WinnerTag position={
-        (backtestResults[0]?.results?.profitFactor || 0) > (backtestResults[1]?.results?.profitFactor || 0) ? 1 : 2
-      } />
-    },
-    { 
-      key: '11', 
-      metric: 'Exposure', 
-      backtest1: backtestResults[0]?.results?.exposure !== undefined ? `${backtestResults[0].results.exposure.toFixed(1)}%` : 'N/A', 
-      backtest2: backtestResults[1]?.results?.exposure !== undefined ? `${backtestResults[1].results.exposure.toFixed(1)}%` : 'N/A', 
-      winner: <WinnerTag position={
-        (backtestResults[0]?.results?.exposure || 0) > (backtestResults[1]?.results?.exposure || 0) ? 1 : 2
-      } />
-    },
-    { 
-      key: '12', 
-      metric: 'Expectancy', 
-      backtest1: backtestResults[0]?.results?.expectancy !== undefined ? 
-        `${backtestResults[0].results.expectancy >= 0 ? '+' : ''}$${Math.abs(backtestResults[0].results.expectancy).toFixed(2)}` : 'N/A', 
-      backtest2: backtestResults[1]?.results?.expectancy !== undefined ? 
-        `${backtestResults[1].results.expectancy >= 0 ? '+' : ''}$${Math.abs(backtestResults[1].results.expectancy).toFixed(2)}` : 'N/A', 
-      winner: <WinnerTag position={
-        (backtestResults[0]?.results?.expectancy || 0) > (backtestResults[1]?.results?.expectancy || 0) ? 1 : 2
-      } />
-    },
-    { 
-      key: '13', 
-      metric: 'Calmar Ratio', 
-      backtest1: backtestResults[0]?.results?.calmarRatio !== undefined ? backtestResults[0].results.calmarRatio.toFixed(2) : 'N/A', 
-      backtest2: backtestResults[1]?.results?.calmarRatio !== undefined ? backtestResults[1].results.calmarRatio.toFixed(2) : 'N/A', 
-      winner: <WinnerTag position={
-        (backtestResults[0]?.results?.calmarRatio || 0) > (backtestResults[1]?.results?.calmarRatio || 0) ? 1 : 2
-      } />
-    },
-    { 
-      key: '14', 
-      metric: 'Avg Return per Trade', 
-      backtest1: backtestResults[0]?.results?.avgReturnPerTrade !== undefined ? 
-        `${backtestResults[0].results.avgReturnPerTrade >= 0 ? '+' : ''}$${Math.abs(backtestResults[0].results.avgReturnPerTrade).toFixed(2)}` : 'N/A', 
-      backtest2: backtestResults[1]?.results?.avgReturnPerTrade !== undefined ? 
-        `${backtestResults[1].results.avgReturnPerTrade >= 0 ? '+' : ''}$${Math.abs(backtestResults[1].results.avgReturnPerTrade).toFixed(2)}` : 'N/A', 
-      winner: <WinnerTag position={
-        (backtestResults[0]?.results?.avgReturnPerTrade || 0) > (backtestResults[1]?.results?.avgReturnPerTrade || 0) ? 1 : 2
-      } />
-    },
-    { 
-      key: '15', 
-      metric: 'Buy & Hold Return', 
-      backtest1: backtestResults[0]?.results?.buyHoldReturn !== undefined ? 
-        `${backtestResults[0].results.buyHoldReturn >= 0 ? '+' : ''}${backtestResults[0].results.buyHoldReturn.toFixed(2)}%` : 'N/A', 
-      backtest2: backtestResults[1]?.results?.buyHoldReturn !== undefined ? 
-        `${backtestResults[1].results.buyHoldReturn >= 0 ? '+' : ''}${backtestResults[1].results.buyHoldReturn.toFixed(2)}%` : 'N/A', 
-      winner: <WinnerTag position={
-        (backtestResults[0]?.results?.buyHoldReturn || 0) > (backtestResults[1]?.results?.buyHoldReturn || 0) ? 1 : 2
-      } />
-    },
-  ];
+    return parameters.map(param => {
+      const row: ParameterData = {
+        key: param.key,
+        parameter: param.parameter,
+      };
+
+      // 为每个backtest添加对应的值
+      backtestResults.forEach((backtest, index) => {
+        const fieldName = `backtest${index + 1}`;
+        
+        switch(param.parameter) {
+          case 'Symbol':
+            row[fieldName] = backtest?.parameters?.symbol || 'N/A';
+            break;
+          case 'Strategy':
+            row[fieldName] = backtest?.parameters?.strategy || 'N/A';
+            break;
+          case 'Period':
+            row[fieldName] = backtest ? `${backtest.parameters.startDate} to ${backtest.parameters.endDate}` : 'N/A';
+            break;
+          case 'Initial Capital':
+            row[fieldName] = backtest ? `$${backtest.parameters.initialCapital.toLocaleString()}` : 'N/A';
+            break;
+          case 'Data Source':
+            row[fieldName] = backtest?.parameters?.dataSource || 'Twelve Data';
+            break;
+          case 'Data Mode':
+            row[fieldName] = backtest?.parameters?.dataMode || 'Live';
+            break;
+          case 'Created At':
+            row[fieldName] = backtest?.timestamp ? new Date(backtest.timestamp).toLocaleDateString() : 'N/A';
+            break;
+          case 'Backtest ID':
+            row[fieldName] = backtest?.backtestId?.substring(0, 8) || 'N/A';
+            break;
+          case 'Status':
+            row[fieldName] = <StatusTag status={backtest?.status as any || 'completed'} />;
+            break;
+          default:
+            row[fieldName] = 'N/A';
+        }
+      });
+
+      return row;
+    });
+  };
+
+  const parameterData = generateParameterData();
+
+  // 动态生成性能指标对比表格数据，支持多backtest的winner判定
+  const generateMetricData = (): MetricData[] => {
+    const metrics = [
+      { 
+        key: '1', 
+        metric: 'Profit / Loss',
+        getValue: (backtest: RealBacktestResult | null) => 
+          backtest?.results?.profitLoss ? 
+            `${backtest.results.profitLoss >= 0 ? '+' : ''}$${Math.abs(backtest.results.profitLoss).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'N/A',
+        higherIsBetter: true
+      },
+      { 
+        key: '2', 
+        metric: 'Total Return',
+        getValue: (backtest: RealBacktestResult | null) => 
+          backtest?.results?.totalReturn ? 
+            `${backtest.results.totalReturn >= 0 ? '+' : ''}${backtest.results.totalReturn.toFixed(2)}%` : 'N/A',
+        higherIsBetter: true
+      },
+      { 
+        key: '3', 
+        metric: 'Sharpe Ratio',
+        getValue: (backtest: RealBacktestResult | null) => 
+          backtest?.results?.sharpeRatio ? backtest.results.sharpeRatio.toFixed(2) : 'N/A',
+        higherIsBetter: true
+      },
+      { 
+        key: '4', 
+        metric: 'Max Drawdown',
+        getValue: (backtest: RealBacktestResult | null) => 
+          backtest?.results?.maxDrawdown ? `${backtest.results.maxDrawdown.toFixed(2)}%` : 'N/A',
+        higherIsBetter: false
+      },
+      { 
+        key: '5', 
+        metric: 'Win Rate',
+        getValue: (backtest: RealBacktestResult | null) => 
+          backtest?.results?.winRate ? `${backtest.results.winRate.toFixed(1)}%` : 'N/A',
+        higherIsBetter: true
+      },
+      { 
+        key: '6', 
+        metric: 'Trades',
+        getValue: (backtest: RealBacktestResult | null) => 
+          backtest?.results?.trades ? backtest.results.trades.toString() : 'N/A',
+        higherIsBetter: true
+      },
+      { 
+        key: '7', 
+        metric: 'Annualized Return',
+        getValue: (backtest: RealBacktestResult | null) => 
+          backtest?.results?.annualizedReturn !== undefined ? 
+            `${backtest.results.annualizedReturn >= 0 ? '+' : ''}${backtest.results.annualizedReturn.toFixed(2)}%` : 'N/A',
+        higherIsBetter: true
+      },
+      { 
+        key: '8', 
+        metric: 'Sortino Ratio',
+        getValue: (backtest: RealBacktestResult | null) => 
+          backtest?.results?.sortinoRatio !== undefined ? backtest.results.sortinoRatio.toFixed(2) : 'N/A',
+        higherIsBetter: true
+      },
+      { 
+        key: '9', 
+        metric: 'Volatility',
+        getValue: (backtest: RealBacktestResult | null) => 
+          backtest?.results?.volatility !== undefined ? `${backtest.results.volatility.toFixed(2)}%` : 'N/A',
+        higherIsBetter: false
+      },
+      { 
+        key: '10', 
+        metric: 'Profit Factor',
+        getValue: (backtest: RealBacktestResult | null) => 
+          backtest?.results?.profitFactor !== undefined ? backtest.results.profitFactor.toFixed(2) : 'N/A',
+        higherIsBetter: true
+      },
+      { 
+        key: '11', 
+        metric: 'Exposure',
+        getValue: (backtest: RealBacktestResult | null) => 
+          backtest?.results?.exposure !== undefined ? `${backtest.results.exposure.toFixed(1)}%` : 'N/A',
+        higherIsBetter: true
+      },
+      { 
+        key: '12', 
+        metric: 'Expectancy',
+        getValue: (backtest: RealBacktestResult | null) => 
+          backtest?.results?.expectancy !== undefined ? 
+            `${backtest.results.expectancy >= 0 ? '+' : ''}$${Math.abs(backtest.results.expectancy).toFixed(2)}` : 'N/A',
+        higherIsBetter: true
+      },
+      { 
+        key: '13', 
+        metric: 'Calmar Ratio',
+        getValue: (backtest: RealBacktestResult | null) => 
+          backtest?.results?.calmarRatio !== undefined ? backtest.results.calmarRatio.toFixed(2) : 'N/A',
+        higherIsBetter: true
+      },
+      { 
+        key: '14', 
+        metric: 'Avg Return per Trade',
+        getValue: (backtest: RealBacktestResult | null) => 
+          backtest?.results?.avgReturnPerTrade !== undefined ? 
+            `${backtest.results.avgReturnPerTrade >= 0 ? '+' : ''}$${Math.abs(backtest.results.avgReturnPerTrade).toFixed(2)}` : 'N/A',
+        higherIsBetter: true
+      },
+      { 
+        key: '15', 
+        metric: 'Buy & Hold Return',
+        getValue: (backtest: RealBacktestResult | null) => 
+          backtest?.results?.buyHoldReturn !== undefined ? 
+            `${backtest.results.buyHoldReturn >= 0 ? '+' : ''}${backtest.results.buyHoldReturn.toFixed(2)}%` : 'N/A',
+        higherIsBetter: true
+      },
+    ];
+
+    return metrics.map(metricConfig => {
+      const row: MetricData = {
+        key: metricConfig.key,
+        metric: metricConfig.metric,
+      };
+
+      // 为每个backtest添加对应的值
+      backtestResults.forEach((backtest, index) => {
+        const fieldName = `backtest${index + 1}`;
+        row[fieldName] = metricConfig.getValue(backtest);
+      });
+
+      // 计算winner（在所有backtest中找出最优者）
+      if (backtestResults.length > 0) {
+        let bestIndex = 0;
+        let bestValue = metricConfig.higherIsBetter ? -Infinity : Infinity;
+        
+        backtestResults.forEach((backtest, index) => {
+          let value: number | null = null;
+          
+          // 根据指标类型提取数值
+          switch(metricConfig.metric) {
+            case 'Profit / Loss':
+              value = backtest?.results?.profitLoss || 0;
+              break;
+            case 'Total Return':
+              value = backtest?.results?.totalReturn || 0;
+              break;
+            case 'Sharpe Ratio':
+              value = backtest?.results?.sharpeRatio || 0;
+              break;
+            case 'Max Drawdown':
+              value = backtest?.results?.maxDrawdown || 0;
+              break;
+            case 'Win Rate':
+              value = backtest?.results?.winRate || 0;
+              break;
+            case 'Trades':
+              value = backtest?.results?.trades || 0;
+              break;
+            case 'Annualized Return':
+              value = backtest?.results?.annualizedReturn || 0;
+              break;
+            case 'Sortino Ratio':
+              value = backtest?.results?.sortinoRatio || 0;
+              break;
+            case 'Volatility':
+              value = backtest?.results?.volatility || 0;
+              break;
+            case 'Profit Factor':
+              value = backtest?.results?.profitFactor || 0;
+              break;
+            case 'Exposure':
+              value = backtest?.results?.exposure || 0;
+              break;
+            case 'Expectancy':
+              value = backtest?.results?.expectancy || 0;
+              break;
+            case 'Calmar Ratio':
+              value = backtest?.results?.calmarRatio || 0;
+              break;
+            case 'Avg Return per Trade':
+              value = backtest?.results?.avgReturnPerTrade || 0;
+              break;
+            case 'Buy & Hold Return':
+              value = backtest?.results?.buyHoldReturn || 0;
+              break;
+          }
+          
+          if (value !== null) {
+            if (metricConfig.higherIsBetter) {
+              if (value > bestValue) {
+                bestValue = value;
+                bestIndex = index;
+              }
+            } else {
+              if (value < bestValue) {
+                bestValue = value;
+                bestIndex = index;
+              }
+            }
+          }
+        });
+        
+        // 只有当有有效数据时才显示winner
+        if (bestValue !== -Infinity && bestValue !== Infinity) {
+          row.winner = <WinnerTag position={bestIndex + 1} />;
+        }
+      }
+
+      return row;
+    });
+  };
+
+  const metricData = generateMetricData();
 
   // 构建Backtest列的函数 - 使用统一的renderer
   const buildBacktestColumn = (index: number, mode: 'parameter' | 'metric') => {
@@ -685,7 +754,7 @@ const StrategyComparison: React.FC = () => {
     ),
   });
 
-  // 参数对比表格列定义 - 4列
+  // 参数对比表格列定义 - 动态列（无Winner列）
   const parameterColumns: ColumnsType<ParameterData> = [
     {
       title: (
@@ -701,12 +770,11 @@ const StrategyComparison: React.FC = () => {
       align: 'left' as const,
       render: (text: string) => renderLabelCell(text, 'left'),
     },
-    // 使用展开运算符
+    // 使用展开运算符 - 动态生成backtest列
     ...backtestResults.map((_, index) => buildBacktestColumn(index, 'parameter')),
-    buildEmptyColumn(),
   ];
 
-  // 性能指标对比表格列定义 - 4列
+  // 性能指标对比表格列定义 - 动态列（有Winner列）
   const metricColumns: ColumnsType<MetricData> = [
     {
       title: (
@@ -722,10 +790,20 @@ const StrategyComparison: React.FC = () => {
       align: 'left' as const,
       render: (text: string) => renderLabelCell(text, 'left'),
     },
-    // 使用展开运算符
+    // 使用展开运算符 - 动态生成backtest列
     ...backtestResults.map((_, index) => buildBacktestColumn(index, 'metric')),
     buildEmptyColumn(),
   ];
+
+  // 计算表格总宽度，用于横向滚动
+  const calculateTableWidth = () => {
+    const labelWidth = LABEL_COL_WIDTH;
+    const backtestWidth = BACKTEST_COL_WIDTH * backtestResults.length;
+    const winnerWidth = WINNER_COL_WIDTH;
+    return labelWidth + backtestWidth + winnerWidth;
+  };
+
+  const tableWidth = calculateTableWidth();
 
   // 计算summary数据
   const getUniqueValues = (arr: (string | undefined)[]): string[] => {
@@ -854,6 +932,7 @@ const StrategyComparison: React.FC = () => {
           size="middle"
           bordered={false}
           tableLayout="fixed"
+          scroll={{ x: LABEL_COL_WIDTH + (BACKTEST_COL_WIDTH * backtestResults.length) }}
           rowClassName={(record, index) => index % 2 === 0 ? "parameter-row-even" : "parameter-row-odd"}
           style={{ fontSize: "14px" }}
         />
@@ -900,6 +979,7 @@ const StrategyComparison: React.FC = () => {
           size="middle"
           bordered={false}
           tableLayout="fixed"
+          scroll={{ x: tableWidth }}
           rowClassName={(record, index) => index % 2 === 0 ? "metric-row-even" : "metric-row-odd"}
           style={{ fontSize: "14px" }}
         />
