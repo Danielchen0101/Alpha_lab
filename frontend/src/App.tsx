@@ -10,6 +10,7 @@ import Watchlist from './pages/Watchlist';
 import StrategyRanking from './pages/StrategyRanking';
 import ParameterOptimization from './pages/ParameterOptimization';
 import Analytics from './pages/Analytics';
+import Portfolio from './pages/Portfolio';
 import SymbolAnalysis from './pages/SymbolAnalysis';
 import BacktestAnalysis from './pages/BacktestAnalysis';
 import LanguageTest from './pages/LanguageTest';
@@ -79,7 +80,7 @@ const App: React.FC = () => {
                     <Route path="/watchlist" element={<Watchlist />} />
                     <Route path="/ranking" element={<StrategyRanking />} />
                     <Route path="/analytics" element={<Analytics />} />
-                    <Route path="/profile" element={<div>Profile Page (Coming Soon)</div>} />
+                    <Route path="/portfolio" element={<Portfolio />} />
                     <Route path="/language-test" element={<LanguageTest />} />
                     <Route path="/button-preview" element={<LanguageButtonPreview />} />
                   </Routes>

@@ -38,7 +38,7 @@ export default {
     strategyRanking: 'Strategy Ranking',
     analytics: 'Analytics',
     watchlist: 'Watchlist',
-    profile: 'Profile',
+    portfolio: 'Portfolio',
     parameterOptimization: 'Parameter Optimization',
   },
 
@@ -209,8 +209,8 @@ export default {
 
   // Parameter Optimization page
   optimization: {
-    title: 'Automated Quant Platform - Parameter Optimization',
-    subtitle: 'Find the best parameters for Moving Average strategy by testing multiple combinations',
+    title: 'Strategy Parameter',
+    subtitle: 'Search for the best strategy parameters by testing multiple combinations.',
     runOptimization: 'Run Optimization',
     optimizationResults: 'Optimization Results',
     statistics: 'Statistics',

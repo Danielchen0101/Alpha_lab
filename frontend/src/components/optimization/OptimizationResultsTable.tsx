@@ -147,6 +147,7 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
         showSizeChanger: true,
         showQuickJumper: true,
         showTotal: (total, range) => `${range[0]}-${range[1]} of ${total} combinations`,
+        style: { marginBottom: 0 }
       }}
       size="middle"
       scroll={{ x: 800 }}
@@ -154,6 +155,10 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
       rowClassName={(record, index) => 
         index === 0 ? 'top-rank-row' : index === 1 ? 'second-rank-row' : index === 2 ? 'third-rank-row' : ''
       }
+      style={{
+        borderRadius: '8px',
+        overflow: 'hidden'
+      }}
     />
   );
 };

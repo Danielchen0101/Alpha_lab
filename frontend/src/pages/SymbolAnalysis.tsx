@@ -1364,8 +1364,8 @@ const SymbolAnalysis: React.FC = () => {
       // 根据timeframe处理数据
       let chartDataToSet = formattedData;
       
-      // 为1 Month、3 Months、1 Year数据添加排序，确保时间顺序：旧 -> 新
-      if (selectedTimeframe === '1M' || selectedTimeframe === '3M' || selectedTimeframe === '1Y') {
+      // 为1 Day、1 Month、3 Months、1 Year数据添加排序，确保时间顺序：旧 -> 新
+      if (selectedTimeframe === '1D' || selectedTimeframe === '1M' || selectedTimeframe === '3M' || selectedTimeframe === '1Y') {
         console.log(`[${selectedTimeframe}] ====== 开始排序数据（确保时间顺序：旧 -> 新） ======`);
         console.log(`[${selectedTimeframe}] 排序前数据条数: ${chartDataToSet.length}`);
         
@@ -1382,9 +1382,18 @@ const SymbolAnalysis: React.FC = () => {
             const firstDate = new Date(chartDataToSet[0].date);
             const lastDate = new Date(chartDataToSet[chartDataToSet.length - 1].date);
             console.log(`[${selectedTimeframe}] 排序验证:`);
-            console.log(`  - 第一个数据点: ${firstDate.toISOString().split('T')[0]}`);
-            console.log(`  - 最后一个数据点: ${lastDate.toISOString().split('T')[0]}`);
+            console.log(`  - 第一个数据点: ${firstDate.toISOString()}`);
+            console.log(`  - 最后一个数据点: ${lastDate.toISOString()}`);
             console.log(`  - 顺序: ${firstDate < lastDate ? '✅ 旧 -> 新' : '❌ 新 -> 旧'}`);
+            
+            // 特别为1 Day显示时间
+            if (selectedTimeframe === '1D') {
+              const firstHour = firstDate.getUTCHours();
+              const firstMinute = firstDate.getUTCMinutes();
+              const lastHour = lastDate.getUTCHours();
+              const lastMinute = lastDate.getUTCMinutes();
+              console.log(`[1 Day] 时间范围: ${firstHour}:${String(firstMinute).padStart(2, '0')} -> ${lastHour}:${String(lastMinute).padStart(2, '0')} (UTC)`);
+            }
           }
         }
         console.log(`[${selectedTimeframe}] ====== 数据排序完成 ======`);

@@ -38,7 +38,7 @@ export default {
     strategyRanking: '策略排名',
     analytics: '分析',
     watchlist: '观察列表',
-    profile: '个人资料',
+    portfolio: '投资组合',
     parameterOptimization: '参数优化',
   },
 
@@ -209,8 +209,8 @@ export default {
 
   // 参数优化页面
   optimization: {
-    title: '自动化量化平台 - 参数优化',
-    subtitle: '通过测试多种参数组合，为移动平均策略寻找最佳参数',
+    title: '策略参数',
+    subtitle: '通过测试多种参数组合，搜索最佳策略参数。',
     runOptimization: '运行优化',
     optimizationResults: '优化结果',
     statistics: '统计信息',

@@ -10,7 +10,8 @@ import {
   UnorderedListOutlined, 
   SwapOutlined, 
   RocketOutlined,
-  AreaChartOutlined 
+  AreaChartOutlined,
+  PieChartOutlined 
 } from '@ant-design/icons';
 import { useLanguage } from '../contexts/LanguageContext';
 import styles from './NavigationMenu.module.css';
@@ -47,7 +48,7 @@ const NavigationMenu: React.FC = () => {
         {createMenuItem('6', <SwapOutlined />, t.navigation.strategyComparison, '/compare')}
         {createMenuItem('7', <TrophyOutlined />, t.navigation.strategyRanking, '/ranking')}
         {createMenuItem('8', <AreaChartOutlined />, t.navigation.analytics, '/analytics')}
-        {createMenuItem('9', <UserOutlined />, t.navigation.profile, '/profile')}
+        {createMenuItem('9', <PieChartOutlined />, t.navigation.portfolio, '/portfolio')}
       </Menu>
     </div>
   );

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Card, Form, Input, InputNumber, Button, Select, Alert, Row, Col } from 'antd';
 import { RocketOutlined, DownloadOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import { backtraderAPI } from '../services/api';
 import { useLanguage } from '../contexts/LanguageContext';
 import OptimizationHeatmap, { OptimizationResult } from '../components/optimization/OptimizationHeatmap';
@@ -23,6 +24,7 @@ const formatPercent = (value: number): string => {
 
 const ParameterOptimization: React.FC = () => {
   const { t } = useLanguage();
+  const navigate = useNavigate();
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [optimizationResults, setOptimizationResults] = useState<OptimizationResult[]>([]);
@@ -184,12 +186,26 @@ const ParameterOptimization: React.FC = () => {
       if (response.data && response.data.success) {
         // Show success message with backtest ID
         const backtestId = response.data.backtestId;
-        setSuccess(`Backtest started successfully! Backtest ID: ${backtestId}. You can view the results on the Backtest page.`);
+        setSuccess(`Backtest started successfully! Backtest ID: ${backtestId}. Redirecting to Backtest page...`);
         setError(null); // Clear any previous error
         
         // Log the best parameters used
         console.log(`Backtest started with best parameters: Short MA=${bestCombination.short_ma}, Long MA=${bestCombination.long_ma}`);
         console.log(`Backtest ID: ${backtestId}`);
+        
+        // Navigate to Backtest page with best parameters
+        setTimeout(() => {
+          navigate('/backtest', {
+            state: {
+              symbol: config.symbol,
+              strategy: config.strategy,
+              initialCapital: config.initialCapital,
+              parameters: config.parameters,
+              backtestId: backtestId,
+              fromOptimization: true
+            }
+          });
+        }, 1500); // Wait 1.5 seconds to show success message
       } else {
         setError(response.data?.error || 'Failed to run backtest with best parameters');
         setSuccess(null); // Clear success on error
@@ -390,20 +406,35 @@ const ParameterOptimization: React.FC = () => {
   };
 
   return (
-    <div style={{ padding: '24px' }}>
+    <div style={{ padding: '32px 32px', maxWidth: '1500px', margin: '0 auto' }}>
       {/* Header */}
-      <div style={{ marginBottom: '24px' }}>
-        <h1 style={{ marginBottom: '8px' }}>
-          <RocketOutlined style={{ marginRight: '12px', color: '#1890ff' }} />
-          {t.optimization.title}
-        </h1>
-        <div style={{ color: '#666', fontSize: '14px' }}>
+      <div style={{ marginBottom: '36px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
+          <RocketOutlined style={{ marginRight: '24px', color: '#1890ff', fontSize: '28px' }} />
+          <h1 style={{ margin: 0, fontSize: '28px', fontWeight: '600', color: '#1f1f1f' }}>
+            {t.optimization.title}
+          </h1>
+        </div>
+        <div style={{ 
+          color: '#595959', 
+          fontSize: '16px', 
+          lineHeight: '1.5',
+          marginLeft: '48px',
+          maxWidth: '1100px'
+        }}>
           {t.optimization.subtitle}
         </div>
       </div>
 
       {/* Optimization Form */}
-      <Card style={{ marginBottom: '24px' }}>
+      <Card 
+        style={{ 
+          marginBottom: '44px', 
+          borderRadius: '12px',
+          boxShadow: '0 6px 16px rgba(0, 0, 0, 0.1)',
+          border: '2px solid #f0f0f0'
+        }}
+      >
         <Form
           form={form}
           layout="vertical"
@@ -422,61 +453,124 @@ const ParameterOptimization: React.FC = () => {
             longMaStep: 25
           }}
         >
-          <Row gutter={[16, 16]}>
-            <Col span={6}>
-              <Form.Item
-                label={t.optimization.symbol || "Symbol"}
-                name="symbol"
-                rules={[{ required: true, message: 'Please select a symbol' }]}
-              >
-                <Input placeholder="e.g., AAPL" style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={6}>
-              <Form.Item
-                label={t.optimization.strategy || "Strategy"}
-                name="strategy"
-              >
-                <Select disabled>
-                  <Select.Option value="moving_average">Moving Average</Select.Option>
-                </Select>
-              </Form.Item>
-            </Col>
-            <Col span={6}>
-              <Form.Item
-                label={t.optimization.period || "Period"}
-                name="period"
-              >
-                <Select>
-                  <Select.Option value="3m">3 Months</Select.Option>
-                  <Select.Option value="6m">6 Months</Select.Option>
-                  <Select.Option value="1y">1 Year</Select.Option>
-                </Select>
-              </Form.Item>
-            </Col>
-            <Col span={6}>
-              <Form.Item
-                label={t.optimization.initialCapital || "Initial Capital"}
-                name="initial_capital"
-              >
-                <InputNumber
-                  style={{ width: '100%' }}
-                  min={1000}
-                  max={1000000}
-                  step={10000}
-                  formatter={value => `$ ${value}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
-                />
-              </Form.Item>
-            </Col>
-          </Row>
+          {/* Basic Parameters Section */}
+          <div style={{ 
+            marginBottom: '32px', 
+            paddingBottom: '36px',
+            borderBottom: '2px solid #f0f0f0'
+          }}>
+            <h3 style={{ 
+              marginBottom: '32px', 
+              fontSize: '16px', 
+              fontWeight: '600',
+              color: '#1f1f1f'
+            }}>
+              Basic Parameters
+            </h3>
+            <Row gutter={[36, 16]}>
+              <Col span={6}>
+                <Form.Item
+                  label={<span style={{ fontWeight: '500', color: '#262626' }}>{t.optimization.symbol || "Symbol"}</span>}
+                  name="symbol"
+                  rules={[{ required: true, message: 'Please select a symbol' }]}
+                >
+                  <Input 
+                    placeholder="e.g., AAPL" 
+                    style={{ width: '100%' }}
+                    size="large"
+                  />
+                </Form.Item>
+              </Col>
+              <Col span={6}>
+                <Form.Item
+                  label={<span style={{ fontWeight: '500', color: '#262626' }}>{t.optimization.strategy || "Strategy"}</span>}
+                  name="strategy"
+                >
+                  <Select 
+                    disabled
+                    size="large"
+                    style={{ width: '100%' }}
+                  >
+                    <Select.Option value="moving_average">Moving Average</Select.Option>
+                  </Select>
+                </Form.Item>
+              </Col>
+              <Col span={6}>
+                <Form.Item
+                  label={<span style={{ fontWeight: '500', color: '#262626' }}>{t.optimization.period || "Period"}</span>}
+                  name="period"
+                >
+                  <Select
+                    size="large"
+                    style={{ width: '100%' }}
+                  >
+                    <Select.Option value="3m">3 Months</Select.Option>
+                    <Select.Option value="6m">6 Months</Select.Option>
+                    <Select.Option value="1y">1 Year</Select.Option>
+                  </Select>
+                </Form.Item>
+              </Col>
+              <Col span={6}>
+                <Form.Item
+                  label={<span style={{ fontWeight: '500', color: '#262626' }}>{t.optimization.initialCapital || "Initial Capital"}</span>}
+                  name="initial_capital"
+                >
+                  <InputNumber
+                    style={{ width: '100%' }}
+                    size="large"
+                    min={1000}
+                    max={1000000}
+                    step={10000}
+                    formatter={value => `$ ${value}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                  />
+                </Form.Item>
+              </Col>
+            </Row>
+          </div>
 
           {/* Short MA Parameters */}
-          <div style={{ marginBottom: '24px', padding: '16px', background: '#fafafa', borderRadius: '8px' }}>
-            <h4 style={{ marginBottom: '12px' }}>Short MA Parameters</h4>
-            <Row gutter={[16, 16]}>
+          <div style={{ 
+            marginBottom: '32px', 
+            padding: '28px', 
+            background: '#fafbff',
+            borderRadius: '12px',
+            border: '2px solid #e6f4ff'
+          }}>
+            <div style={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              marginBottom: '28px' 
+            }}>
+              <div style={{
+                width: '4px',
+                height: '20px',
+                background: '#1890ff',
+                borderRadius: '4px',
+                marginRight: '20px'
+              }} />
+              <h4 style={{ 
+                margin: 0, 
+                fontSize: '16px', 
+                fontWeight: '600',
+                color: '#1f1f1f'
+              }}>
+                Short MA Parameters
+              </h4>
+              <span style={{
+                marginLeft: '20px',
+                fontSize: '12px',
+                color: '#8c8c8c',
+                background: '#f0f0f0',
+                padding: '2px 8px',
+                borderRadius: '12px'
+              }}>
+                Fast Moving Average
+              </span>
+            </div>
+            <Row gutter={[36, 16]}>
               <Col span={8}>
                 <Form.Item
-                  label="Start"
+                  label={<span style={{ fontWeight: '500', color: '#262626' }}>Start</span>}
                   name="shortMaStart"
                   initialValue={5}
                   rules={[
@@ -492,7 +586,7 @@ const ParameterOptimization: React.FC = () => {
                       },
                     }),
                   ]}
-                  help="Starting value for Short MA"
+                  help={<span style={{ fontSize: '12px', color: '#8c8c8c' }}>Starting value for Short MA</span>}
                 >
                   <InputNumber
                     min={1}
@@ -504,7 +598,7 @@ const ParameterOptimization: React.FC = () => {
               </Col>
               <Col span={8}>
                 <Form.Item
-                  label="End"
+                  label={<span style={{ fontWeight: '500', color: '#262626' }}>End</span>}
                   name="shortMaEnd"
                   initialValue={50}
                   rules={[
@@ -520,7 +614,7 @@ const ParameterOptimization: React.FC = () => {
                       },
                     }),
                   ]}
-                  help="Ending value for Short MA"
+                  help={<span style={{ fontSize: '12px', color: '#8c8c8c' }}>Ending value for Short MA</span>}
                 >
                   <InputNumber
                     min={1}
@@ -532,14 +626,14 @@ const ParameterOptimization: React.FC = () => {
               </Col>
               <Col span={8}>
                 <Form.Item
-                  label="Step"
+                  label={<span style={{ fontWeight: '500', color: '#262626' }}>Step</span>}
                   name="shortMaStep"
                   initialValue={5}
                   rules={[
                     { required: true, message: 'Please enter step value' },
                     { type: 'number', min: 1, message: 'Must be greater than 0' },
                   ]}
-                  help="Step size for Short MA"
+                  help={<span style={{ fontSize: '12px', color: '#8c8c8c' }}>Step size for Short MA</span>}
                 >
                   <InputNumber
                     min={1}
@@ -553,12 +647,48 @@ const ParameterOptimization: React.FC = () => {
           </div>
           
           {/* Long MA Parameters */}
-          <div style={{ marginBottom: '24px', padding: '16px', background: '#fafafa', borderRadius: '8px' }}>
-            <h4 style={{ marginBottom: '12px' }}>Long MA Parameters</h4>
-            <Row gutter={[16, 16]}>
+          <div style={{ 
+            marginBottom: '32px', 
+            padding: '28px', 
+            background: '#f6ffed',
+            borderRadius: '12px',
+            border: '2px solid #d9f7be'
+          }}>
+            <div style={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              marginBottom: '28px' 
+            }}>
+              <div style={{
+                width: '4px',
+                height: '20px',
+                background: '#52c41a',
+                borderRadius: '4px',
+                marginRight: '20px'
+              }} />
+              <h4 style={{ 
+                margin: 0, 
+                fontSize: '16px', 
+                fontWeight: '600',
+                color: '#1f1f1f'
+              }}>
+                Long MA Parameters
+              </h4>
+              <span style={{
+                marginLeft: '20px',
+                fontSize: '12px',
+                color: '#8c8c8c',
+                background: '#f0f0f0',
+                padding: '2px 8px',
+                borderRadius: '12px'
+              }}>
+                Slow Moving Average
+              </span>
+            </div>
+            <Row gutter={[36, 16]}>
               <Col span={8}>
                 <Form.Item
-                  label="Start"
+                  label={<span style={{ fontWeight: '500', color: '#262626' }}>Start</span>}
                   name="longMaStart"
                   initialValue={50}
                   rules={[
@@ -583,7 +713,7 @@ const ParameterOptimization: React.FC = () => {
                       },
                     }),
                   ]}
-                  help="Starting value for Long MA"
+                  help={<span style={{ fontSize: '12px', color: '#8c8c8c' }}>Starting value for Long MA</span>}
                 >
                   <InputNumber
                     min={1}
@@ -595,7 +725,7 @@ const ParameterOptimization: React.FC = () => {
               </Col>
               <Col span={8}>
                 <Form.Item
-                  label="End"
+                  label={<span style={{ fontWeight: '500', color: '#262626' }}>End</span>}
                   name="longMaEnd"
                   initialValue={200}
                   rules={[
@@ -611,7 +741,7 @@ const ParameterOptimization: React.FC = () => {
                       },
                     }),
                   ]}
-                  help="Ending value for Long MA"
+                  help={<span style={{ fontSize: '12px', color: '#8c8c8c' }}>Ending value for Long MA</span>}
                 >
                   <InputNumber
                     min={1}
@@ -623,14 +753,14 @@ const ParameterOptimization: React.FC = () => {
               </Col>
               <Col span={8}>
                 <Form.Item
-                  label="Step"
+                  label={<span style={{ fontWeight: '500', color: '#262626' }}>Step</span>}
                   name="longMaStep"
                   initialValue={25}
                   rules={[
                     { required: true, message: 'Please enter step value' },
                     { type: 'number', min: 1, message: 'Must be greater than 0' },
                   ]}
-                  help="Step size for Long MA"
+                  help={<span style={{ fontSize: '12px', color: '#8c8c8c' }}>Step size for Long MA</span>}
                 >
                   <InputNumber
                     min={1}
@@ -643,20 +773,74 @@ const ParameterOptimization: React.FC = () => {
             </Row>
           </div>
 
-          <Form.Item>
-            <Button
-              type="primary"
-              htmlType="submit"
-              loading={loading}
-              icon={<RocketOutlined />}
-              size="large"
-              disabled={exceedsLimit}
-            >
-              {t.optimization.runOptimization}
-            </Button>
-            <span style={{ marginLeft: '12px', fontSize: '12px', color: '#666' }}>
-              Will test {shortCount} Short MA × {longCount} Long MA = {totalCombinations} combinations{exceedsLimit ? ` (Maximum allowed: ${MAX_COMBINATIONS})` : ''}
-            </span>
+          <Form.Item style={{ marginBottom: 0 }}>
+            <div style={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'space-between',
+              paddingTop: '32px',
+              borderTop: '2px solid #f0f0f0'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center' }}>
+                <Button
+                  type="primary"
+                  htmlType="submit"
+                  loading={loading}
+                  icon={<RocketOutlined />}
+                  size="large"
+                  disabled={exceedsLimit}
+                  style={{
+                    height: '52px',
+                    padding: '0 40px',
+                    fontSize: '16px',
+                    fontWeight: '500',
+                    borderRadius: '12px',
+                    boxShadow: '0 4px 12px rgba(24, 144, 255, 0.3)'
+                  }}
+                >
+                  {t.optimization.runOptimization}
+                </Button>
+                <div style={{ marginLeft: '28px' }}>
+                  <div style={{ 
+                    fontSize: '14px', 
+                    fontWeight: '500',
+                    color: exceedsLimit ? '#ff4d4f' : '#262626',
+                    marginBottom: '6px'
+                  }}>
+                    {shortCount} Short MA × {longCount} Long MA = {totalCombinations} combinations
+                  </div>
+                  {exceedsLimit ? (
+                    <div style={{ 
+                      fontSize: '12px', 
+                      color: '#ff4d4f',
+                      display: 'flex',
+                      alignItems: 'center'
+                    }}>
+                      <span style={{ marginRight: '4px' }}>⚠️</span>
+                      Maximum allowed: {MAX_COMBINATIONS}
+                    </div>
+                  ) : (
+                    <div style={{ 
+                      fontSize: '12px', 
+                      color: '#8c8c8c',
+                      display: 'flex',
+                      alignItems: 'center'
+                    }}>
+                      <span style={{ marginRight: '4px' }}>📊</span>
+                      {totalCombinations} parameter combinations will be tested
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div style={{ 
+                fontSize: '12px', 
+                color: '#8c8c8c',
+                textAlign: 'right'
+              }}>
+                <div>Optimization will test all parameter combinations</div>
+                <div>Results will be ranked by Sharpe Ratio</div>
+              </div>
+            </div>
           </Form.Item>
         </Form>
       </Card>
@@ -668,7 +852,10 @@ const ParameterOptimization: React.FC = () => {
           description={success}
           type="success"
           showIcon
-          style={{ marginBottom: '24px' }}
+          style={{ 
+            marginBottom: '36px',
+            borderRadius: '12px'
+          }}
         />
       )}
       
@@ -679,7 +866,10 @@ const ParameterOptimization: React.FC = () => {
           description={error}
           type="error"
           showIcon
-          style={{ marginBottom: '24px' }}
+          style={{ 
+            marginBottom: '36px',
+            borderRadius: '12px'
+          }}
         />
       )}
 
@@ -687,21 +877,48 @@ const ParameterOptimization: React.FC = () => {
       {optimizationResults.length > 0 && (
         <>
           {/* Best Combination Summary */}
-          <OptimizationSummary 
-            results={optimizationResults}
-            totalCombinations={stats.totalCombinations}
-            validCombinations={stats.validCombinations}
-          />
+          <Card 
+            style={{ 
+              marginBottom: '36px', 
+              borderRadius: '12px',
+              boxShadow: '0 6px 16px rgba(0, 0, 0, 0.1)',
+              border: '2px solid #f0f0f0'
+            }}
+          >
+            <OptimizationSummary 
+              results={optimizationResults}
+              totalCombinations={stats.totalCombinations}
+              validCombinations={stats.validCombinations}
+            />
+          </Card>
           
           {/* Run Backtest with Best Parameters Button */}
           {optimizationResults.length > 0 && (
-            <Card style={{ marginBottom: '24px', background: '#f6ffed', border: '1px solid #b7eb8f' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Card style={{ 
+              marginBottom: '36px', 
+              background: 'linear-gradient(135deg, #f6ffed 0%, #e6ffd9 100%)',
+              border: '2px solid #b7eb8f',
+              borderRadius: '12px'
+            }}>
+              <div style={{ 
+                display: 'flex', 
+                justifyContent: 'space-between', 
+                alignItems: 'center',
+                padding: '24px'
+              }}>
                 <div>
-                  <div style={{ fontSize: '16px', fontWeight: '600', color: '#389e0d', marginBottom: '4px' }}>
-                    🚀 Run Backtest with Best Parameters
+                  <div style={{ 
+                    fontSize: '16px', 
+                    fontWeight: '600', 
+                    color: '#389e0d', 
+                    marginBottom: '12px',
+                    display: 'flex',
+                    alignItems: 'center'
+                  }}>
+                    <PlayCircleOutlined style={{ marginRight: '16px' }} />
+                    Run Backtest with Best Parameters
                   </div>
-                  <div style={{ fontSize: '12px', color: '#666' }}>
+                  <div style={{ fontSize: '14px', color: '#595959' }}>
                     Run a detailed backtest using the best combination found by optimization.
                   </div>
                 </div>
@@ -711,7 +928,16 @@ const ParameterOptimization: React.FC = () => {
                   onClick={runBacktestWithBestParams}
                   loading={loading}
                   size="large"
-                  style={{ background: '#389e0d', borderColor: '#389e0d' }}
+                  style={{ 
+                    background: '#389e0d', 
+                    borderColor: '#389e0d',
+                    height: '52px',
+                    padding: '0 40px',
+                    fontSize: '16px',
+                    fontWeight: '500',
+                    borderRadius: '12px',
+                    boxShadow: '0 4px 12px rgba(56, 158, 13, 0.3)'
+                  }}
                 >
                   Run Backtest
                 </Button>
@@ -720,34 +946,73 @@ const ParameterOptimization: React.FC = () => {
           )}
 
           {/* Optimization Heatmap */}
-          <Card style={{ marginBottom: '24px' }}>
-            <h3 style={{ marginBottom: '16px' }}>Optimization Heatmap</h3>
-            <div style={{ 
-              background: 'white',
-              borderRadius: '8px',
-              padding: '20px',
-              border: '1px solid #e8e8e8',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center'
-            }}>
-              <div style={{ marginBottom: '16px', fontSize: '12px', color: '#666', textAlign: 'center' }}>
-                X-axis: Short MA (fast), Y-axis: Long MA (slow). Color represents Sharpe Ratio.
+          <Card style={{ 
+            marginBottom: '36px',
+            borderRadius: '12px',
+            boxShadow: '0 6px 16px rgba(0, 0, 0, 0.1)',
+            border: '2px solid #f0f0f0'
+          }}>
+            <div style={{ padding: '28px' }}>
+              <h3 style={{ 
+                marginBottom: '28px', 
+                fontSize: '18px', 
+                fontWeight: '600',
+                color: '#1f1f1f'
+              }}>
+                Optimization Heatmap
+              </h3>
+              <div style={{ 
+                background: 'white',
+                borderRadius: '12px',
+                padding: '28px',
+                border: '2px solid #e8e8e8',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center'
+              }}>
+                <div style={{ 
+                  marginBottom: '28px', 
+                  fontSize: '14px', 
+                  color: '#595959', 
+                  textAlign: 'center',
+                  maxWidth: '800px'
+                }}>
+                  <div>X-axis: Short MA (fast period), Y-axis: Long MA (slow period)</div>
+                  <div>Color intensity represents Sharpe Ratio (darker = better)</div>
+                </div>
+                <OptimizationHeatmap results={optimizationResults} />
               </div>
-              <OptimizationHeatmap results={optimizationResults} />
             </div>
           </Card>
 
           {/* Optimization Results Table */}
           <Card 
-            title="Optimization Results"
+            style={{ 
+              borderRadius: '12px',
+              boxShadow: '0 6px 16px rgba(0, 0, 0, 0.1)',
+              border: '2px solid #f0f0f0'
+            }}
+            title={
+              <div style={{ 
+                fontSize: '18px', 
+                fontWeight: '600',
+                color: '#1f1f1f'
+              }}>
+                Optimization Results
+              </div>
+            }
             extra={
               <Button
                 type="default"
                 icon={<DownloadOutlined />}
                 onClick={exportToCSV}
                 disabled={optimizationResults.length === 0}
-                size="middle"
+                size="large"
+                style={{
+                  borderRadius: '12px',
+                  fontWeight: '500',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
+                }}
               >
                 Export CSV
               </Button>

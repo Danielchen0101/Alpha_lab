@@ -225,7 +225,7 @@ const Backtest: React.FC = () => {
     try {
       setHistoryLoading(true);
       const response = await backtraderAPI.getBacktestHistory();
-      if (response.data && Array.isArray(response.data)) {
+      if (response.data && response.data.history && Array.isArray(response.data.history)) {
         // 转换后端数据为前端需要的平铺结构
         const historyData = response.data.map((item: any) => {
           const symbol = item.parameters?.symbols?.[0] || 'Unknown';

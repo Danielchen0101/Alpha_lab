@@ -108,8 +108,8 @@ const BacktestDetail: React.FC = () => {
       console.log('History API response:', historyResponse.data);
       console.log('Looking for backtestId:', id);
       
-      if (historyResponse.data && Array.isArray(historyResponse.data)) {
-        const history = historyResponse.data;
+      if (historyResponse.data && historyResponse.data.history && Array.isArray(historyResponse.data.history)) {
+        const history = historyResponse.data.history;
         console.log('History length:', history.length);
         console.log('History backtestIds:', history.map((item: any) => item.backtestId));
         

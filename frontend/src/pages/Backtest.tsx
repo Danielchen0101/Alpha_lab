@@ -10,6 +10,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import {
   parseDateSafe,
   formatDateForChart,
+  formatDateForChartWithYear,
   formatDateToYYYYMMDD,
   filterValidDates,
   sortByDateAsc,
@@ -209,12 +210,20 @@ const Backtest: React.FC = () => {
 
     // 从location state获取symbol（从Market页面跳转时）
     if (location.state && location.state.symbol) {
-      form.setFieldsValue({
+      const formValues: any = {
         symbol: location.state.symbol.toUpperCase(),
         strategy: location.state.strategy || 'moving_average',
         dateRange: defaultDateRange(),
         initialCapital: location.state.initialCapital || 100000
-      });
+      };
+      
+      // 如果是从Optimization页面跳转，设置最佳参数
+      if (location.state.fromOptimization && location.state.parameters) {
+        formValues.shortMaPeriod = location.state.parameters.shortMaPeriod;
+        formValues.longMaPeriod = location.state.parameters.longMaPeriod;
+      }
+      
+      form.setFieldsValue(formValues);
     } else {
       // 设置默认�?
       form.setFieldsValue({
@@ -435,9 +444,9 @@ const Backtest: React.FC = () => {
       // 然后尝试从后端API获取历史记录
       try {
         const response = await backtraderAPI.getBacktestHistory();
-        if (response.data && Array.isArray(response.data)) {
+        if (response.data && response.data.history && Array.isArray(response.data.history)) {
           // 转换后端数据为前端需要的平铺结构
-          const apiHistoryData = response.data.map((item: any) => {
+          const apiHistoryData = response.data.history.map((item: any) => {
             const symbol = item.parameters?.symbols?.[0] || 'Unknown';
             const strategy = item.parameters?.strategy || 'Unknown';
             const period = item.parameters?.period || '';
@@ -467,7 +476,7 @@ const Backtest: React.FC = () => {
 
           // 合并本地和后端历史记录，去重（基于backtestId）
           const apiHistoryMap = new Map();
-          apiHistoryData.forEach(item => {
+          apiHistoryData.forEach((item: any) => {
             if (item.backtestId) {
               apiHistoryMap.set(item.backtestId, item);
             }
@@ -1365,6 +1374,147 @@ const Backtest: React.FC = () => {
     }
   };
 
+  // 生成权益曲线数据 - 确保按日期升序排序，并修正equity数值顺序
+  const generateEquityCurveData = () => {
+    if (backtestResult?.results?.equityCurve && backtestResult.results.equityCurve.length > 0) {
+      // 使用后端返回的真实权益曲线数据
+      console.log('[Equity Curve] 使用后端返回的真实权益曲线数据，点数:', backtestResult.results.equityCurve.length);
+      
+      // 关键修复：equity数值顺序修正
+      // 问题：后端返回的equityCurve可能是倒序的（从最终资金到初始资金）
+      // 但日期顺序是正确的，所以我们需要：
+      // 1. 按日期升序排序
+      // 2. 将equity数值反向重新配对到同一组日期上
+      
+      const rawData = backtestResult.results.equityCurve;
+      
+      // 首先按日期升序排序
+      const sortedByDate = sortByDateAsc(rawData);
+      
+      // 调试：打印排序后的前5个和后5个点
+      console.log('[Equity Curve] 按日期排序后的数据:');
+      console.log('前5个点:');
+      sortedByDate.slice(0, 5).forEach((item, index) => {
+        console.log(`  [${index}] date: "${item.date}", equity: ${item.equity}`);
+      });
+      console.log('后5个点:');
+      sortedByDate.slice(-5).forEach((item, index) => {
+        const actualIndex = sortedByDate.length - 5 + index;
+        console.log(`  [${actualIndex}] date: "${item.date}", equity: ${item.equity}`);
+      });
+      
+      // 检查是否需要修正equity数值顺序
+      const firstEquity = sortedByDate[0]?.equity || 0;
+      const lastEquity = sortedByDate[sortedByDate.length - 1]?.equity || 0;
+      const initialCapital = safeNumber(backtestResult.parameters?.initialCapital) || 100000;
+      
+      console.log('[Equity Curve] 顺序检查:');
+      console.log(`  第一个点equity: ${firstEquity}`);
+      console.log(`  最后一个点equity: ${lastEquity}`);
+      console.log(`  初始资金: ${initialCapital}`);
+      
+      // 基于totalReturn与首尾equity方向判断是否需要修正
+      // 情况1: totalReturn为正，但图上显示从高到低（方向反了）
+      // 情况2: totalReturn为负，但图上显示从低到高（方向反了）
+      const totalReturn = backtestResult.results.totalReturn || 0;
+      const needsFix = 
+        (totalReturn > 0 && firstEquity > lastEquity) ||  // 收益为正，但equity从高到低
+        (totalReturn < 0 && firstEquity < lastEquity);    // 收益为负，但equity从低到高
+      
+      let fixedData = sortedByDate;
+      
+      if (needsFix) {
+        console.log('[Equity Curve] ⚠️ 检测到equity数值顺序反了，进行修正...');
+        
+        // 提取equity数值并反转
+        const equities = sortedByDate.map(item => item.equity);
+        const reversedEquities = [...equities].reverse();
+        
+        // 创建修正后的数据：保持日期顺序不变，但equity数值反转
+        fixedData = sortedByDate.map((item, index) => ({
+          date: item.date,
+          equity: reversedEquities[index]
+        }));
+        
+        console.log('[Equity Curve] ✅ equity数值顺序已修正');
+        console.log(`  修正后第一个点equity: ${fixedData[0]?.equity}`);
+        console.log(`  修正后最后一个点equity: ${fixedData[fixedData.length - 1]?.equity}`);
+      } else {
+        console.log('[Equity Curve] ✅ equity数值顺序正确，无需修正');
+      }
+      
+      // 验证修正后的数据一致性
+      const expectedFinalEquity = initialCapital * (1 + totalReturn / 100);
+      
+      const fixedFirstEquity = fixedData[0]?.equity || 0;
+      const fixedLastEquity = fixedData[fixedData.length - 1]?.equity || 0;
+      const fixedFirstDate = fixedData[0]?.date;
+      const fixedLastDate = fixedData[fixedData.length - 1]?.date;
+      
+      console.log('[Equity Curve] 修正后数据验证:');
+      console.log('  Total Return:', totalReturn, '%');
+      console.log('  Initial Capital:', initialCapital);
+      console.log('  Expected Final Equity:', expectedFinalEquity.toFixed(2));
+      console.log('  第一个点 (修正后):', { date: fixedFirstDate, equity: fixedFirstEquity });
+      console.log('  最后一个点 (修正后):', { date: fixedLastDate, equity: fixedLastEquity });
+      
+      // 验证修正后的数据方向与Total Return是否一致
+      if (totalReturn > 0 && fixedFirstEquity > fixedLastEquity) {
+        console.error('[Equity Curve] ⚠️ 修正后数据不一致: Total Return为正(+' + totalReturn + '%)，但equity从' + fixedFirstEquity + '下降到' + fixedLastEquity);
+      } else if (totalReturn < 0 && fixedFirstEquity < fixedLastEquity) {
+        console.error('[Equity Curve] ⚠️ 修正后数据不一致: Total Return为负(' + totalReturn + '%)，但equity从' + fixedFirstEquity + '上升到' + fixedLastEquity);
+      } else {
+        console.log('[Equity Curve] ✅ 修正后数据方向与Total Return一致');
+      }
+      
+      return fixedData;
+    }
+
+    // 不再生成模拟数据
+    console.warn('[Equity Curve] 后端未返回权益曲线数据，无法生成图表');
+    return [];
+  };
+
+  // 生成权益曲线数据并计算相关指标
+  const equityCurveData = sortByDateAsc(generateEquityCurveData());
+  
+  // 调试：验证equityCurveData的日期和数值配对
+  console.log('=== Equity Curve Data 验证 ===');
+  console.log(`总点数: ${equityCurveData.length}`);
+  
+  if (equityCurveData.length > 0) {
+    console.log('前10个点:');
+    equityCurveData.slice(0, 10).forEach((item, index) => {
+      console.log(`  [${index}] date: "${item.date}", equity: ${item.equity}`);
+    });
+    
+    console.log('后10个点:');
+    equityCurveData.slice(-10).forEach((item, index) => {
+      const actualIndex = equityCurveData.length - 10 + index;
+      console.log(`  [${actualIndex}] date: "${item.date}", equity: ${item.equity}`);
+    });
+    
+    console.log(`第一个点: date="${equityCurveData[0]?.date}", equity=${equityCurveData[0]?.equity}`);
+    console.log(`最后一个点: date="${equityCurveData[equityCurveData.length - 1]?.date}", equity=${equityCurveData[equityCurveData.length - 1]?.equity}`);
+    
+    // 验证日期是否升序
+    let isAscending = true;
+    let prevDate = null;
+    for (let i = 0; i < equityCurveData.length; i++) {
+      const currentDate = parseDateSafe(equityCurveData[i].date);
+      if (currentDate && prevDate && currentDate.getTime() < prevDate.getTime()) {
+        console.log(`❌ 日期顺序错误: 第${i-1}个点(${prevDate.toISOString()}) > 第${i}个点(${currentDate.toISOString()})`);
+        isAscending = false;
+      }
+      if (currentDate) prevDate = currentDate;
+    }
+    console.log(`日期顺序: ${isAscending ? '✅ 升序' : '❌ 非升序'}`);
+  }
+  
+  const startEquity = equityCurveData[0]?.equity || 0;
+  const currentEquity = equityCurveData[equityCurveData.length - 1]?.equity || 0;
+  const calculatedTotalReturn = startEquity > 0 ? ((currentEquity - startEquity) / startEquity) * 100 : 0;
+
   // 统一的统计计算函数 - 从tradeData计算所有指标
   const calculateUnifiedStats = () => {
     if (!backtestResult?.results) {
@@ -1400,7 +1550,8 @@ const Backtest: React.FC = () => {
       const totalPnl = realTradesList.reduce((sum: number, t: any) => sum + (t.pnl || 0), 0);
       const avgPnl = totalTrades > 0 ? totalPnl / totalTrades : 0;
       const winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0;
-      const totalReturn = (totalPnl / initialCapital) * 100;
+      // 使用外部定义的calculatedTotalReturn（已经计算好）
+      const totalReturn = calculatedTotalReturn;
 
       // 计算Profit Factor
       const grossProfit = realTradesList
@@ -1544,7 +1695,8 @@ const Backtest: React.FC = () => {
       totalPnl: backtestResult.results.profitLoss || 0,
       avgPnl: backtestResult.results.avgReturnPerTrade || 0,
       winRate: backtestResult.results.winRate || 0,
-      totalReturn: backtestResult.results.totalReturn || 0,
+      // 使用外部定义的calculatedTotalReturn（已经计算好）
+      totalReturn: calculatedTotalReturn,
       profitFactor: backtestResult.results.profitFactor || 0,
       grossProfit: 0,
       grossLoss: 0,
@@ -1673,21 +1825,36 @@ const Backtest: React.FC = () => {
       description: 'Percentage of time the strategy held positions'
     },
   ] : [];
-
-  // 生成权益曲线数据 - 仅使用后端返回的真实数据
-  const generateEquityCurveData = () => {
-    if (backtestResult?.results?.equityCurve && backtestResult.results.equityCurve.length > 0) {
-      // 使用后端返回的真实权益曲线数据
-      console.log('[Equity Curve] 使用后端返回的真实权益曲线数据，点数:', backtestResult.results.equityCurve.length);
-      return backtestResult.results.equityCurve;
+  
+  // 计算Drawdown序列（与图表内部计算保持一致）
+  const calculateDrawdownFromEquity = (equityData: Array<{date: string, equity: number}>) => {
+    const drawdownData: Array<{date: string, drawdown: number, equity: number, peak: number}> = [];
+    let peak = equityData.length > 0 ? equityData[0].equity : 0;
+    
+    for (let i = 0; i < equityData.length; i++) {
+      const currentEquity = equityData[i].equity;
+      peak = Math.max(peak, currentEquity);
+      const drawdown = peak > 0 ? ((peak - currentEquity) / peak) * 100 : 0;
+      drawdownData.push({
+        date: equityData[i].date,
+        drawdown: drawdown,
+        equity: currentEquity,
+        peak: peak
+      });
     }
-
-    // 不再生成模拟数据
-    console.warn('[Equity Curve] 后端未返回权益曲线数据，无法生成图表');
-    return [];
+    
+    return drawdownData;
   };
-
-  const equityCurveData = generateEquityCurveData();
+  
+  const drawdownData = calculateDrawdownFromEquity(equityCurveData);
+  
+  // 计算Max Drawdown（正数，表示亏损百分比）
+  const calculatedMaxDrawdown = drawdownData.length > 0 ? 
+    Math.max(...drawdownData.map(d => d.drawdown)) : 0;
+  
+  // 当前Drawdown（正数，表示当前亏损百分比）
+  const currentDrawdown = drawdownData.length > 0 ? 
+    drawdownData[drawdownData.length - 1].drawdown : 0;
 
   // 调试：检查equityCurveData的日期和顺序
   useEffect(() => {
@@ -1745,6 +1912,65 @@ const Backtest: React.FC = () => {
           console.log('❌ 后端数据顺序错误：不是升序排列');
           console.log('⚠️ 注意：前端已移除排序逻辑，顺序问题需在后端修复');
         }
+      }
+    }
+    
+    // 新增：打印Equity Curve数据首尾和ticks
+    console.log('=== 【1. Equity Curve 数据首尾】 ===');
+    console.log(`equityCurveData[0].date: "${equityCurveData[0]?.date || 'N/A'}"`);
+    console.log(`equityCurveData[${equityCurveData.length - 1}].date: "${equityCurveData[equityCurveData.length - 1]?.date || 'N/A'}"`);
+    
+    // 检查数据本身是否按日期升序
+    console.log('=== 【Equity Curve 数据顺序验证】 ===');
+    let dataIsAscending = true;
+    let prevDataDate: Date | null = null;
+    
+    for (let i = 0; i < Math.min(10, equityCurveData.length); i++) {
+      const dateStr = equityCurveData[i].date;
+      const date = parseDateSafe(dateStr);
+      console.log(`  data[${i}]: "${dateStr}" -> ${date ? date.toISOString() : 'INVALID DATE'}`);
+      if (date) {
+        if (prevDataDate && date.getTime() < prevDataDate.getTime()) {
+          console.log(`  ❌ data顺序错误: data[${i-1}] > data[${i}]`);
+          dataIsAscending = false;
+        }
+        prevDataDate = date;
+      }
+    }
+    
+    if (dataIsAscending) {
+      console.log('✅ equityCurveData按时间升序排列');
+    } else {
+      console.log('❌ equityCurveData不是按时间升序排列');
+    }
+    
+    const equityTicksArray = generateUniformDateTicks(equityCurveData, 12);
+    console.log('=== 【3. Equity Curve ticks 完整数组】 ===');
+    console.log('generateUniformDateTicks(equityCurveData, 12):', equityTicksArray);
+    console.log('ticks长度:', equityTicksArray.length);
+    
+    // 检查ticks是否按时间升序
+    if (equityTicksArray.length > 0) {
+      console.log('=== 【Equity ticks 顺序验证】 ===');
+      let prevTickDate: Date | null = null;
+      let ticksAreAscending = true;
+      
+      for (let i = 0; i < equityTicksArray.length; i++) {
+        const tickDate = parseDateSafe(equityTicksArray[i]);
+        if (tickDate) {
+          console.log(`  ticks[${i}]: "${equityTicksArray[i]}" -> ${tickDate.toISOString()}`);
+          if (prevTickDate && tickDate.getTime() < prevTickDate.getTime()) {
+            console.log(`  ❌ ticks顺序错误: ticks[${i-1}] > ticks[${i}]`);
+            ticksAreAscending = false;
+          }
+          prevTickDate = tickDate;
+        }
+      }
+      
+      if (ticksAreAscending) {
+        console.log('✅ ticks按时间升序排列');
+      } else {
+        console.log('❌ ticks不是按时间升序排列');
       }
     }
   }, [equityCurveData]);
@@ -1986,167 +2212,54 @@ const Backtest: React.FC = () => {
 
   const equityTicks = calculateEquityTicks();
 
+  // 获取数据的起始年份（用于判断是否跨年）
+  const getStartYear = (data: Array<{date: string}>): number | undefined => {
+    if (data.length === 0) return undefined;
+    const validData = sortByDateAsc(filterValidDates(data));
+    if (validData.length === 0) return undefined;
+    const firstDate = parseDateSafe(validData[0].date);
+    return firstDate ? firstDate.getFullYear() : undefined;
+  };
+
   // 计算Drawdown Chart的Y轴刻度 - 固定显示6个百分比刻度
   const calculateDrawdownTicks = (drawdownData: Array<{drawdown: number}>): number[] => {
     // 始终返回固定的6个百分比刻度：0%, -2%, -4%, -6%, -8%, -10%
     return [0, -0.02, -0.04, -0.06, -0.08, -0.10];
   };  // 生成均匀分布的日期刻度（简单可靠版本）
-  // Generate month-anchored date ticks - guarantees all months have representation
+  // 生成简单均匀分布的日期刻度 - 确保按时间顺序
   const generateUniformDateTicks = (data: Array<{date: string}>, targetTickCount: number = 12): string[] => {
     if (data.length === 0) return [];
 
-    // 过滤无效日期
-    const validData = filterValidDates(data);
+    // 过滤无效日期并确保按日期升序排序
+    const validData = sortByDateAsc(filterValidDates(data));
     if (validData.length === 0) return [];
 
-    // If data points are few, return all dates
-    if (validData.length <= 8) {
+    // 如果数据点很少，返回所有日期
+    if (validData.length <= targetTickCount) {
       return validData.map(item => item.date);
     }
 
-    // Calculate time span of data using safe date parsing
-    const dates = validData.map(item => parseDateSafe(item.date)).filter(date => date !== null) as Date[];
-    if (dates.length === 0) return [];
-
-    const startDate = dates[0];
-    const endDate = dates[dates.length - 1];
-    const totalDays = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
-
-    // For short-term data (< 60 days), use simple uniform distribution
-    if (totalDays <= 60) {
-      const step = Math.max(1, Math.floor(data.length / Math.min(targetTickCount, 8)));
-      const ticks: string[] = [];
-      ticks.push(data[0].date);
-
-      for (let i = step; i < data.length - step; i += step) {
-        if (ticks.length >= Math.min(targetTickCount, 8) - 1) break;
-        ticks.push(data[i].date);
-      }
-
-      if (ticks[ticks.length - 1] !== data[data.length - 1].date) {
-        ticks.push(data[data.length - 1].date);
-      }
-
-      return ticks;
-    }
-
-    // For long-term data (> 60 days), use month-anchor algorithm
-    // Group data by month using safe date parsing
-    const monthMap = new Map<string, Array<{date: string, dayOfMonth: number}>>();
-
-    validData.forEach((item) => {
-      const date = parseDateSafe(item.date);
-      if (!date) return;
-
-      const year = date.getFullYear();
-      const month = date.getMonth(); // 0-11
-      const key = `${year}-${month.toString().padStart(2, '0')}`;
-      const dayOfMonth = date.getDate();
-
-      if (!monthMap.has(key)) {
-        monthMap.set(key, []);
-      }
-      monthMap.get(key)!.push({date: item.date, dayOfMonth});
-    });
-
-    // Sort months chronologically
-    const monthKeys = Array.from(monthMap.keys()).sort();
-
+    // 简单均匀分布：选择等间隔的点
+    const step = Math.max(1, Math.floor(validData.length / targetTickCount));
     const ticks: string[] = [];
-
-    // Always include start date
-    ticks.push(data[0].date);
-
-    // For each month (except first and last), select a representative point
-    for (let i = 0; i < monthKeys.length; i++) {
-      const monthKey = monthKeys[i];
-
-      // Skip first and last months (already included at start/end)
-      if (i === 0 || i === monthKeys.length - 1) continue;
-
-      const monthData = monthMap.get(monthKey)!;
-
-      // Select the data point closest to the 15th of the month
-      let bestPoint = monthData[0];
-      let bestDistance = Math.abs(bestPoint.dayOfMonth - 15);
-
-      for (const point of monthData) {
-        const distance = Math.abs(point.dayOfMonth - 15);
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          bestPoint = point;
-        }
-      }
-
-      ticks.push(bestPoint.date);
+    
+    // 总是包含第一个点（最早日期）
+    ticks.push(validData[0].date);
+    
+    // 选择中间的点
+    for (let i = step; i < validData.length - step; i += step) {
+      if (ticks.length >= targetTickCount - 1) break;
+      ticks.push(validData[i].date);
     }
-
-    // Always include end date
-    ticks.push(data[data.length - 1].date);
-
-    // If too many ticks (multi-year data), limit but maintain month coverage
-    if (ticks.length > 20) {
-      const limitedTicks: string[] = [];
-      limitedTicks.push(ticks[0]); // Start
-
-      // Group by year, keep at most 3 points per year
-      const yearMap = new Map<number, string[]>();
-      for (let i = 1; i < ticks.length - 1; i++) {
-        const date = new Date(ticks[i]);
-        const year = date.getFullYear();
-        if (!yearMap.has(year)) {
-          yearMap.set(year, []);
-        }
-        yearMap.get(year)!.push(ticks[i]);
-      }
-
-      // Keep at most 3 points per year (prefer mid-month points)
-      yearMap.forEach((yearTicks, year) => {
-        if (yearTicks.length <= 3) {
-          limitedTicks.push(...yearTicks);
-        } else {
-          // Select points closest to middle of Jan, May, Sep
-          const selected: string[] = [];
-          const targetMonths = [0, 4, 8]; // Jan, May, Sep (0-based)
-
-          for (const targetMonth of targetMonths) {
-            const monthTicks = yearTicks.filter(t => new Date(t).getMonth() === targetMonth);
-            if (monthTicks.length > 0) {
-              // Select point closest to 15th of the month
-              let best = monthTicks[0];
-              let bestDist = Math.abs(new Date(best).getDate() - 15);
-              for (const tick of monthTicks) {
-                const dist = Math.abs(new Date(tick).getDate() - 15);
-                if (dist < bestDist) {
-                  bestDist = dist;
-                  best = tick;
-                }
-              }
-              selected.push(best);
-            }
-          }
-
-          // If not enough, add points from other months
-          if (selected.length < 3) {
-            const remaining = yearTicks.filter(t => !selected.includes(t));
-            selected.push(...remaining.slice(0, 3 - selected.length));
-          }
-
-          limitedTicks.push(...selected.slice(0, 3));
-        }
-      });
-
-      limitedTicks.push(ticks[ticks.length - 1]); // End
-      return limitedTicks;
+    
+    // 总是包含最后一个点（最晚日期）
+    if (ticks[ticks.length - 1] !== validData[validData.length - 1].date) {
+      ticks.push(validData[validData.length - 1].date);
     }
-
-    // Debug output
-    console.log('Generated month-anchored date ticks:', ticks.map(t => {
-      const d = new Date(t);
-      return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
-    }));
-
-    return ticks;
+    
+    // 确保ticks按时间顺序排列（理论上已经是，但再次确认）
+    const sortedTicks = sortByDateAsc(ticks.map(date => ({date})));
+    return sortedTicks.map(item => item.date);
   };
 
   return (
@@ -2595,7 +2708,7 @@ const Backtest: React.FC = () => {
 
               <Form.Item>
                 <Row gutter={8}>
-                  <Col span={12}>
+                  <Col span={8}>
                     <Button
                       type="default"
                       size="large"
@@ -2607,7 +2720,7 @@ const Backtest: React.FC = () => {
                       Save Strategy
                     </Button>
                   </Col>
-                  <Col span={12}>
+                  <Col span={8}>
                     <Button
                       type="default"
                       size="large"
@@ -2617,6 +2730,34 @@ const Backtest: React.FC = () => {
                       disabled={loading}
                     >
                       {showSavedStrategies ? 'Hide Saved' : 'View Saved'}
+                    </Button>
+                  </Col>
+                  <Col span={8}>
+                    <Button
+                      type="primary"
+                      size="large"
+                      icon={<PlayCircleOutlined />}
+                      style={{ width: '100%' }}
+                      onClick={() => {
+                        // 保存当前参数到Paper Trading
+                        const formValues = form.getFieldsValue();
+                        if (formValues.strategy === 'moving_average') {
+                          const backtestParams = {
+                            strategy: 'MA_CROSSOVER',
+                            symbol: formValues.symbol,
+                            shortMaPeriod: formValues.shortMaPeriod || 20,
+                            longMaPeriod: formValues.longMaPeriod || 50,
+                            timestamp: new Date().toISOString()
+                          };
+                          localStorage.setItem('quant_last_backtest_params', JSON.stringify(backtestParams));
+                          message.success('Parameters saved for Paper Trading');
+                        } else {
+                          message.info('Only MA Crossover parameters can be saved for Paper Trading');
+                        }
+                      }}
+                      disabled={loading}
+                    >
+                      Save for Paper Trading
                     </Button>
                   </Col>
                 </Row>
@@ -2890,7 +3031,7 @@ const Backtest: React.FC = () => {
                         <Card size="small" style={{ textAlign: 'center' }}>
                           <Statistic
                             title="Max Drawdown"
-                            value={backtestResult.results.maxDrawdown || 0}
+                            value={calculatedMaxDrawdown}
                             precision={2}
                             suffix="%"
                             valueStyle={{
@@ -3023,7 +3164,7 @@ const Backtest: React.FC = () => {
  <Card size="small" style={{ textAlign: 'center' }}>
  <Statistic
  title="Max Drawdown"
- value={backtestResult.results.maxDrawdown || 0}
+ value={calculatedMaxDrawdown}
  precision={2}
  suffix="%"
  valueStyle={{
@@ -3126,6 +3267,14 @@ const Backtest: React.FC = () => {
                                   position: 'relative'
                                 }}
                               >
+                                {/* 调试：打印真实数据 */}
+                                {(() => {
+                                  console.log('[Equity Curve] total points:', equityCurveData.length);
+                                  console.log('[Equity Curve] first 10:', equityCurveData.slice(0, 10));
+                                  console.log('[Equity Curve] last 20:', equityCurveData.slice(-20));
+                                  return null;
+                                })()}
+                                
                                 <ResponsiveContainer width="100%" height="100%">
                                   <AreaChart
                                     data={equityCurveData}
@@ -3150,12 +3299,13 @@ const Backtest: React.FC = () => {
                                     dataKey="date"
                                     tick={{ fontSize: 11 }}
                                     tickFormatter={(value) => {
-                                      // 使用统一的日期格式化函数
-                                      return formatDateForChart(value);
+                                      // 使用带年份的日期格式化函数，处理跨年显示
+                                      const startYear = getStartYear(equityCurveData);
+                                      return formatDateForChartWithYear(value, startYear);
                                     }}
                                     axisLine={{ stroke: '#d9d9d9' }}
                                     tickLine={false}
-                                    // 使用均匀分布的日期刻度
+                                    // 使用均匀分布的日期刻度（基于排序后的数据）
                                     ticks={generateUniformDateTicks(equityCurveData, 12)}
                                   />
                                   <YAxis
@@ -3326,31 +3476,31 @@ const Backtest: React.FC = () => {
                             >
                               {/* 计算最大回撤数�?*/}
                               {(() => {
+                                // 关键修复：确保equityCurveData按日期升序排序
+                                const sortedEquityData = sortByDateAsc(equityCurveData);
+                                
                                 // 计算每个点的回撤
                                 const drawdownData: Array<{date: string, drawdown: number, equity: number, peak: number}> = [];
-                                let peak = equityCurveData[0].equity;
+                                let peak = sortedEquityData[0].equity;
 
-                                for (let i = 0; i < equityCurveData.length; i++) {
-                                  const currentEquity = equityCurveData[i].equity;
+                                for (let i = 0; i < sortedEquityData.length; i++) {
+                                  const currentEquity = sortedEquityData[i].equity;
                                   peak = Math.max(peak, currentEquity);
                                   const drawdown = ((peak - currentEquity) / peak) * 100;
                                   drawdownData.push({
-                                    date: equityCurveData[i].date,
+                                    date: sortedEquityData[i].date,
                                     drawdown: drawdown,
                                     equity: currentEquity,
                                     peak: peak
                                   });
                                 }
 
-                                // 使用后端返回的最大回撤值（确保一致性）
-                                const backendMaxDrawdown = Math.abs(safeNumber(backtestResult?.results?.maxDrawdown) || 0);
-
-                                // 计算图表中的最大回撤（用于显示�?
+                                // 计算图表中的最大回撤（必须从图表数据推导，确保一致性）
                                 const chartMaxDrawdown = Math.max(...drawdownData.map(d => d.drawdown));
                                 const maxDrawdownPoint = drawdownData.find(d => d.drawdown === chartMaxDrawdown);
 
-                                // 优先使用后端值，如果后端值为0则使用图表计算�?
-                                const displayMaxDrawdown = backendMaxDrawdown > 0 ? backendMaxDrawdown : chartMaxDrawdown;
+                                // 使用图表计算的最大回撤（确保与图表一致）
+                                const displayMaxDrawdown = chartMaxDrawdown;
 
                                 // 调试：检查maxDrawdownPoint
                                 console.log('Max Drawdown Point Debug:', {
@@ -3389,18 +3539,34 @@ const Backtest: React.FC = () => {
                                   });
                                 }
 
+                                // 确保drawdownData按日期升序排序
+                                const sortedDrawdownData = sortByDateAsc(drawdownData);
+                                
                                 // 计算最小drawdown（用于Y轴domain）
-                                const minDrawdown = Math.min(...drawdownData.map(d => d.drawdown));
+                                const minDrawdown = Math.min(...sortedDrawdownData.map(d => d.drawdown));
 
                                 // 准备图表数据 - 将drawdown转换为负值用于图表显�?
-                                const chartData = drawdownData.map(item => ({
+                                const chartData = sortedDrawdownData.map(item => ({
                                   date: item.date,
                                   drawdown: -item.drawdown, // 转换为负值，显示�?以下
                                   rawDrawdown: item.drawdown // 保留原始正值用于显�?
                                 }));
 
+                                // 调试：查看chartData的前5个值
+                                console.log('=== Drawdown Chart Data 调试 ===');
+                                console.log('chartData长度:', chartData.length);
+                                console.log('前5个chartData值:');
+                                chartData.slice(0, 5).forEach((item, index) => {
+                                  console.log(`  [${index}] date: ${item.date}, drawdown: ${item.drawdown}, rawDrawdown: ${item.rawDrawdown}`);
+                                });
+                                console.log('后5个chartData值:');
+                                chartData.slice(-5).forEach((item, index) => {
+                                  const actualIndex = chartData.length - 5 + index;
+                                  console.log(`  [${actualIndex}] date: ${item.date}, drawdown: ${item.drawdown}, rawDrawdown: ${item.rawDrawdown}`);
+                                });
+
                                 // 调试：打印前5个drawdown真实值
-                                console.log('前5个drawdown真实值:', drawdownData.slice(0, 5).map(d => ({
+                                console.log('前5个drawdown真实值:', sortedDrawdownData.slice(0, 5).map(d => ({
                                   date: d.date,
                                   drawdown: d.drawdown,
                                   equity: d.equity,
@@ -3409,11 +3575,79 @@ const Backtest: React.FC = () => {
                                 console.log('前5个chartData值:', chartData.slice(0, 5));
 
                                 // 计算Drawdown Chart的Y轴刻�?
-                                const drawdownTicks = calculateDrawdownTicks(drawdownData);
-
+                                const drawdownTicks = calculateDrawdownTicks(sortedDrawdownData);
+                                
                                 // 为X轴生成均匀分布的日期刻度
-                                const dateTicks = generateUniformDateTicks(drawdownData, 12);
+                                const dateTicks = generateUniformDateTicks(sortedDrawdownData, 12);
+                                
+                                // 获取Drawdown数据的起始年份
+                                const drawdownStartYear = getStartYear(sortedDrawdownData);
+                                
+                                // 新增：打印Drawdown数据首尾和ticks
+                                console.log('=== 【2. Drawdown 数据首尾】 ===');
+                                console.log(`原始drawdownData[0].date: "${drawdownData[0]?.date || 'N/A'}"`);
+                                console.log(`原始drawdownData[${drawdownData.length - 1}].date: "${drawdownData[drawdownData.length - 1]?.date || 'N/A'}"`);
+                                console.log(`排序后sortedDrawdownData[0].date: "${sortedDrawdownData[0]?.date || 'N/A'}"`);
+                                console.log(`排序后sortedDrawdownData[${sortedDrawdownData.length - 1}].date: "${sortedDrawdownData[sortedDrawdownData.length - 1]?.date || 'N/A'}"`);
+                                
+                                // 检查Drawdown数据本身是否按日期升序
+                                console.log('=== 【Drawdown 数据顺序验证】 ===');
+                                let drawdownDataIsAscending = true;
+                                let prevDrawdownDate: Date | null = null;
+                                
+                                for (let i = 0; i < Math.min(10, sortedDrawdownData.length); i++) {
+                                  const dateStr = sortedDrawdownData[i].date;
+                                  const date = parseDateSafe(dateStr);
+                                  console.log(`  sortedDrawdownData[${i}]: "${dateStr}" -> ${date ? date.toISOString() : 'INVALID DATE'}`);
+                                  if (date) {
+                                    if (prevDrawdownDate && date.getTime() < prevDrawdownDate.getTime()) {
+                                      console.log(`  ❌ sortedDrawdownData顺序错误: sortedDrawdownData[${i-1}] > sortedDrawdownData[${i}]`);
+                                      drawdownDataIsAscending = false;
+                                    }
+                                    prevDrawdownDate = date;
+                                  }
+                                }
+                                
+                                if (drawdownDataIsAscending) {
+                                  console.log('✅ sortedDrawdownData按时间升序排列');
+                                } else {
+                                  console.log('❌ sortedDrawdownData不是按时间升序排列');
+                                }
+                                
+                                console.log('=== 【4. Drawdown ticks 完整数组】 ===');
+                                console.log('dateTicks:', dateTicks);
+                                console.log('dateTicks长度:', dateTicks.length);
+                                
+                                // 检查ticks是否按时间升序
+                                if (dateTicks.length > 0) {
+                                  console.log('=== 【Drawdown ticks 顺序验证】 ===');
+                                  let prevTickDate: Date | null = null;
+                                  let ticksAreAscending = true;
+                                  
+                                  for (let i = 0; i < dateTicks.length; i++) {
+                                    const tickDate = parseDateSafe(dateTicks[i]);
+                                    if (tickDate) {
+                                      console.log(`  dateTicks[${i}]: "${dateTicks[i]}" -> ${tickDate.toISOString()}`);
+                                      if (prevTickDate && tickDate.getTime() < prevTickDate.getTime()) {
+                                        console.log(`  ❌ dateTicks顺序错误: dateTicks[${i-1}] > dateTicks[${i}]`);
+                                        ticksAreAscending = false;
+                                      }
+                                      prevTickDate = tickDate;
+                                    }
+                                  }
+                                  
+                                  if (ticksAreAscending) {
+                                    console.log('✅ dateTicks按时间升序排列');
+                                  } else {
+                                    console.log('❌ dateTicks不是按时间升序排列');
+                                  }
+                                }
 
+                                // 调试：打印Drawdown真实数据
+                                console.log('[Drawdown] total points:', sortedDrawdownData.length);
+                                console.log('[Drawdown] first 10:', sortedDrawdownData.slice(0, 10));
+                                console.log('[Drawdown] last 20:', sortedDrawdownData.slice(-20));
+                                
                                 return (
                                   <>
                                     <ResponsiveContainer width="100%" height="100%">
@@ -3436,8 +3670,8 @@ const Backtest: React.FC = () => {
                                           dataKey="date"
                                           tick={{ fontSize: 11 }}
                                           tickFormatter={(value) => {
-                                            // 使用统一的日期格式化函数
-                                            return formatDateForChart(value);
+                                            // 使用带年份的日期格式化函数，处理跨年显示
+                                            return formatDateForChartWithYear(value, drawdownStartYear);
                                           }}
                                           axisLine={{ stroke: '#d9d9d9' }}
                                           tickLine={false}
@@ -3557,12 +3791,12 @@ const Backtest: React.FC = () => {
                                         )}
                                       </div>
                                       <div>
-                                        <span style={{ fontWeight: '500' }}>Current: </span>
+                                        <span style={{ fontWeight: '500' }}>Current Drawdown: </span>
                                         <span style={{
                                           fontWeight: '500',
-                                          color: chartData.length > 0 && chartData[chartData.length - 1].drawdown === 0 ? '#3f8600' : '#cf1322'
+                                          color: chartData.length > 0 && chartData[chartData.length - 1].rawDrawdown === 0 ? '#3f8600' : '#cf1322'
                                         }}>
-                                          {chartData.length > 0 ? `${chartData[chartData.length - 1].drawdown.toFixed(2)}%` : '0.00%'}
+                                          {chartData.length > 0 ? chartData[chartData.length - 1].rawDrawdown.toFixed(2) + '%' : '0.00%'}
                                         </span>
                                       </div>
                                     </div>

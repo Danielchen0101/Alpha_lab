@@ -107,6 +107,35 @@ export function formatDateForChart(dateValue: any): string {
 }
 
 /**
+ * 格式化日期为图表显示格式，处理跨年情况
+ * 规则：
+ * 1. 如果年份相同，只显示月/日
+ * 2. 如果年份不同，显示年/月/日
+ * 3. 可以传入参考年份，用于判断是否跨年
+ * @param dateValue 日期值
+ * @param referenceYear 参考年份（可选）
+ * @returns 格式化后的日期字符串
+ */
+export function formatDateForChartWithYear(dateValue: any, referenceYear?: number): string {
+  const date = parseDateSafe(dateValue);
+  if (!date) {
+    return '';
+  }
+  
+  const year = date.getFullYear();
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  
+  // 如果有参考年份且年份相同，只显示月/日
+  if (referenceYear !== undefined && year === referenceYear) {
+    return `${month}/${day}`;
+  }
+  
+  // 否则显示年/月/日
+  return `${year}/${month}/${day}`;
+}
+
+/**
  * 验证日期数据，过滤无效日期
  * @param data 数据数组
  * @param dateField 日期字段名，默认为'date'

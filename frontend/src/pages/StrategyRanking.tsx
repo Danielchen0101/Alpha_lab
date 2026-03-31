@@ -53,8 +53,8 @@ const StrategyRanking: React.FC = () => {
     
     try {
       const historyResponse = await backtraderAPI.getBacktestHistory();
-      if (historyResponse.data && Array.isArray(historyResponse.data)) {
-        const history = historyResponse.data;
+      if (historyResponse.data && historyResponse.data.history && Array.isArray(historyResponse.data.history)) {
+        const history = historyResponse.data.history;
         
         // Transform history data to ranking items
         const rankingItems: RankingItem[] = history
@@ -83,14 +83,19 @@ const StrategyRanking: React.FC = () => {
               createdAt: item.createdAt,
             };
           })
-          .sort((a, b) => b.totalReturn - a.totalReturn); // 默认按totalReturn降序排序
+          .sort((a: RankingItem, b: RankingItem) => b.totalReturn - a.totalReturn); // 默认按totalReturn降序排序
         
         setRankingData(rankingItems);
         
         // Debug log
         console.log(`Loaded ${rankingItems.length} ranking items`);
+        
+        // 如果没有数据，设置空数组（页面会显示empty state）
+        if (rankingItems.length === 0) {
+          console.log('No backtest data available for ranking');
+        }
       } else {
-        setError('Failed to load backtest history data');
+        setError('Failed to load backtest history data: Invalid response format');
       }
     } catch (err: any) {
       setError(err.message || 'Failed to load ranking data');

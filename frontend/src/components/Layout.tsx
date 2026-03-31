@@ -9,6 +9,7 @@ import {
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  PieChartOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation } from 'react-router-dom';
 
@@ -40,9 +41,9 @@ const AppLayout: React.FC<LayoutProps> = ({ children }) => {
       label: 'Analytics',
     },
     {
-      key: '/profile',
-      icon: <UserOutlined />,
-      label: 'Profile',
+      key: '/portfolio',
+      icon: <PieChartOutlined />,
+      label: 'Portfolio',
     },
   ];
 

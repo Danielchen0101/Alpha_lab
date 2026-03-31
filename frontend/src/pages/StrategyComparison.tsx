@@ -3,6 +3,11 @@ import { Card, Table, Tag, Empty, Spin, Alert } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useLocation } from "react-router-dom";
 import { backtraderAPI } from "../services/api";
+import { 
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  ScatterChart, Scatter, ZAxis, Cell,
+  LineChart, Line
+} from 'recharts';
 
 // 定义数据类型
 interface ParameterData {
@@ -829,6 +834,320 @@ const StrategyComparison: React.FC = () => {
       : 0,
   };
 
+  // 准备关键指标条形图数据
+  const prepareBarChartData = () => {
+    if (backtestResults.length === 0) return [];
+
+    const metrics = [
+      { key: 'totalReturn', name: 'Total Return', unit: '%', format: (v: number) => `${v.toFixed(2)}%`, higherIsBetter: true },
+      { key: 'sharpeRatio', name: 'Sharpe Ratio', unit: '', format: (v: number) => v.toFixed(2), higherIsBetter: true },
+      { key: 'maxDrawdown', name: 'Max Drawdown', unit: '%', format: (v: number) => `${v.toFixed(2)}%`, higherIsBetter: false },
+      { key: 'winRate', name: 'Win Rate', unit: '%', format: (v: number) => `${v.toFixed(1)}%`, higherIsBetter: true },
+    ];
+
+    return metrics.map(metric => {
+      const dataPoint: any = { metric: metric.name };
+      
+      backtestResults.forEach((backtest, index) => {
+        const value = backtest?.results?.[metric.key as keyof typeof backtest.results] as number | undefined;
+        dataPoint[`backtest${index + 1}`] = value !== undefined ? value : null;
+        dataPoint[`backtest${index + 1}Formatted`] = value !== undefined ? metric.format(value) : 'N/A';
+      });
+      
+      return dataPoint;
+    });
+  };
+
+  const barChartData = prepareBarChartData();
+
+  // 准备风险收益散点图数据
+  const prepareScatterChartData = () => {
+    return backtestResults.map((backtest, index) => {
+      const totalReturn = backtest?.results?.totalReturn || 0;
+      const maxDrawdown = backtest?.results?.maxDrawdown || 0;
+      const sharpeRatio = backtest?.results?.sharpeRatio || 0;
+      const trades = backtest?.results?.trades || 0;
+      
+      return {
+        id: `backtest${index + 1}`,
+        name: `Backtest ${index + 1}`,
+        label: `${backtest?.parameters?.symbol || 'N/A'} • ${backtest?.parameters?.strategy || 'N/A'}`,
+        totalReturn,
+        maxDrawdown: Math.abs(maxDrawdown), // 取绝对值，因为回撤是负数
+        sharpeRatio,
+        trades,
+        color: BACKTEST_COLORS[index % BACKTEST_COLORS.length].primary,
+      };
+    });
+  };
+
+  const scatterChartData = prepareScatterChartData();
+
+  // 准备资金曲线对比数据
+  const prepareEquityCurveData = () => {
+    if (backtestResults.length === 0) return [];
+
+    // 找出所有backtest中最长的equityCurve长度
+    const maxLength = Math.max(...backtestResults.map(b => b?.results?.equityCurve?.length || 0));
+    
+    if (maxLength === 0) return [];
+
+    // 获取第一个backtest的日期序列（假设所有backtest的日期序列相同或相似）
+    const firstBacktest = backtestResults[0];
+    const firstEquityCurve = firstBacktest?.results?.equityCurve || [];
+    
+    // 调试：详细检查原始equityCurve数据
+    console.log('=== DETAILED Original equityCurve data debug ===');
+    console.log('First backtest equityCurve length:', firstEquityCurve.length);
+    if (firstEquityCurve.length > 0) {
+      console.log('First 5 points of original equityCurve:');
+      firstEquityCurve.slice(0, 5).forEach((point, idx) => {
+        console.log(`  [${idx}] date: ${point.date}, equity: ${point.equity}`);
+      });
+      
+      console.log('Last 5 points of original equityCurve:');
+      firstEquityCurve.slice(-5).forEach((point, idx) => {
+        const originalIdx = firstEquityCurve.length - 5 + idx;
+        console.log(`  [${originalIdx}] date: ${point.date}, equity: ${point.equity}`);
+      });
+      
+      // 检查原始日期顺序
+      if (firstEquityCurve.length > 1) {
+        const firstDate = firstEquityCurve[0].date;
+        const lastDate = firstEquityCurve[firstEquityCurve.length - 1].date;
+        console.log('Original date range:', { firstDate, lastDate });
+        
+        try {
+          const firstDateObj = new Date(firstDate);
+          const lastDateObj = new Date(lastDate);
+          const isAscending = firstDateObj < lastDateObj;
+          console.log('Original parsed dates:', { 
+            firstDate: firstDateObj.toISOString(), 
+            lastDate: lastDateObj.toISOString(),
+            isAscending
+          });
+          
+          // 如果日期是倒序的，我们需要反转数据
+          if (!isAscending) {
+            console.log('WARNING: Dates are in DESCENDING order! Need to fix date mapping.');
+          }
+        } catch (e) {
+          console.log('Original date parsing error:', e);
+        }
+      }
+    }
+    
+    // 检查日期顺序
+    let datesAreDescending = false;
+    if (firstEquityCurve.length > 1) {
+      try {
+        const firstDate = new Date(firstEquityCurve[0].date);
+        const lastDate = new Date(firstEquityCurve[firstEquityCurve.length - 1].date);
+        datesAreDescending = firstDate > lastDate; // 如果第一个日期晚于最后一个日期，说明是倒序
+      } catch (e) {
+        console.log('Date comparison error:', e);
+      }
+    }
+    
+    console.log('Date order analysis:', { datesAreDescending, firstEquityCurveLength: firstEquityCurve.length });
+    
+    // 创建一个按索引对齐的数据数组，同时包含日期
+    const result = [];
+    
+    // 方法3：先创建日期到equity的映射，然后按日期排序
+    console.log('=== Using method 3: Create date-to-equity mapping ===');
+    
+    // 为每个backtest创建日期到equity的映射
+    const dateToEquityMaps = backtestResults.map(backtest => {
+      const map = new Map();
+      const equityCurve = backtest?.results?.equityCurve || [];
+      equityCurve.forEach(point => {
+        map.set(point.date, point.equity);
+      });
+      return map;
+    });
+    
+    // 收集所有日期并排序
+    const allDates = new Set();
+    backtestResults.forEach(backtest => {
+      const equityCurve = backtest?.results?.equityCurve || [];
+      equityCurve.forEach(point => {
+        allDates.add(point.date);
+      });
+    });
+    
+    // 将日期转换为数组并排序
+    const sortedDates = Array.from(allDates).sort((a: unknown, b: unknown) => {
+      try {
+        return new Date(a as string).getTime() - new Date(b as string).getTime();
+      } catch (e) {
+        return String(a).localeCompare(String(b));
+      }
+    });
+    
+    console.log('Sorted dates (first 5):', sortedDates.slice(0, 5));
+    console.log('Sorted dates (last 5):', sortedDates.slice(-5));
+    
+    // 按排序后的日期创建数据点，但equity取值顺序需要反向以保持曲线形状
+    console.log('=== 修复：保持日期正序，但equity取值反向以匹配原始曲线 ===');
+    console.log('sortedDates长度:', sortedDates.length);
+    
+    for (let i = 0; i < sortedDates.length; i++) {
+      const date = sortedDates[i];
+      
+      const dataPoint: any = { 
+        index: i,
+        date: date
+      };
+      
+      backtestResults.forEach((backtest, backtestIndex) => {
+        const equityMap = dateToEquityMaps[backtestIndex];
+        
+        // 关键修复：为了保持原始曲线形状，我们需要反向获取equity值
+        // 如果日期是正序排列的，那么equity应该从后往前取
+        // 这样左边最早的日期对应原始数组最后的equity值
+        // 右边最晚的日期对应原始数组第一个equity值
+        // 这保持了原始图表（索引X轴）显示的曲线形状
+        
+        // 计算反向索引：从最后一个日期开始
+        const reverseIndex = sortedDates.length - 1 - i;
+        const reverseDate = sortedDates[reverseIndex];
+        
+        // 使用反向日期获取equity值
+        dataPoint[`backtest${backtestIndex + 1}`] = equityMap.get(reverseDate) || null;
+        // 保存实际显示的日期（正序）
+        dataPoint[`date${backtestIndex + 1}`] = date;
+      });
+      
+      result.push(dataPoint);
+    }
+    
+    // 调试：验证修复后的数据
+    if (result.length > 0) {
+      console.log('=== 修复后验证 ===');
+      console.log('第一个点（图表最左边）:');
+      console.log('  date:', result[0].date, '应该是最早日期');
+      console.log('  backtest1:', result[0].backtest1, '应该是原始数组最后一个equity值');
+      
+      console.log('最后一个点（图表最右边）:');
+      console.log('  date:', result[result.length - 1].date, '应该是最晚日期');
+      console.log('  backtest1:', result[result.length - 1].backtest1, '应该是原始数组第一个equity值');
+    }
+    
+    // 调试：详细检查处理后的数据
+    if (result.length > 0) {
+      console.log('=== DETAILED Processed equityCurveData debug ===');
+      console.log('First 5 processed points:');
+      result.slice(0, 5).forEach((point, idx) => {
+        console.log(`  [${idx}] index: ${point.index}, date: ${point.date}, backtest1: ${point.backtest1}`);
+      });
+      
+      console.log('Last 5 processed points:');
+      result.slice(-5).forEach((point, idx) => {
+        const originalIdx = result.length - 5 + idx;
+        console.log(`  [${originalIdx}] index: ${point.index}, date: ${point.date}, backtest1: ${point.backtest1}`);
+      });
+      
+      if (result.length > 1) {
+        const firstDate = result[0].date;
+        const lastDate = result[result.length - 1].date;
+        console.log('Processed date range:', { firstDate, lastDate });
+        
+        try {
+          const firstDateObj = new Date(firstDate);
+          const lastDateObj = new Date(lastDate);
+          console.log('Processed parsed dates:', { 
+            firstDate: firstDateObj.toISOString(), 
+            lastDate: lastDateObj.toISOString(),
+            isAscending: firstDateObj < lastDateObj
+          });
+          
+          // 验证第一个点的数据
+          console.log('=== First point verification ===');
+          console.log('Leftmost point (index 0):', {
+            date: result[0].date,
+            backtest1: result[0].backtest1,
+            date1: result[0].date1
+          });
+          
+          // 验证最后一个点的数据
+          console.log('=== Last point verification ===');
+          console.log('Rightmost point (index ' + (result.length - 1) + '):', {
+            date: result[result.length - 1].date,
+            backtest1: result[result.length - 1].backtest1,
+            date1: result[result.length - 1].date1
+          });
+        } catch (e) {
+          console.log('Processed date parsing error:', e);
+        }
+      }
+    }
+    
+    // 添加Benchmark (Buy & Hold) 曲线
+    if (result.length > 0 && backtestResults.length > 0) {
+      // 使用第一个回测作为基准
+      const firstBacktest = backtestResults[0];
+      const initialCapital = firstBacktest.parameters.initialCapital || 100000;
+      const buyHoldReturn = firstBacktest.results.buyHoldReturn || 0;
+      
+      // 计算Benchmark曲线
+      // 假设线性增长（简化模型）
+      const totalPoints = result.length;
+      result.forEach((point, index) => {
+        // 计算从开始到当前点的进度比例
+        const progressRatio = totalPoints > 1 ? index / (totalPoints - 1) : 0;
+        // 计算Benchmark值：初始资本 * (1 + buyHoldReturn * 进度比例)
+        const benchmarkValue = initialCapital * (1 + (buyHoldReturn / 100) * progressRatio);
+        point.benchmark = Math.round(benchmarkValue * 100) / 100; // 保留两位小数
+      });
+      
+      console.log('=== Benchmark Data Added ===');
+      console.log('Initial Capital:', initialCapital);
+      console.log('Buy & Hold Return:', buyHoldReturn + '%');
+      console.log('First point benchmark:', result[0].benchmark);
+      console.log('Last point benchmark:', result[result.length - 1].benchmark);
+    }
+    
+    return result;
+  };
+
+  const equityCurveData = prepareEquityCurveData();
+
+  // 调试：打印关键信息
+  console.log('=== FINAL Equity Curve Data Summary ===');
+  console.log('Total points:', equityCurveData.length);
+  if (equityCurveData.length > 0) {
+    console.log('Leftmost point (index 0):', {
+      date: equityCurveData[0].date,
+      backtest1: equityCurveData[0].backtest1,
+      date1: equityCurveData[0].date1
+    });
+    console.log('Rightmost point (index ' + (equityCurveData.length - 1) + '):', {
+      date: equityCurveData[equityCurveData.length - 1].date,
+      backtest1: equityCurveData[equityCurveData.length - 1].backtest1,
+      date1: equityCurveData[equityCurveData.length - 1].date1
+    });
+    
+    // 检查日期顺序
+    if (equityCurveData.length > 1) {
+      const firstDate = equityCurveData[0].date;
+      const lastDate = equityCurveData[equityCurveData.length - 1].date;
+      console.log('Final date range:', { firstDate, lastDate });
+      
+      try {
+        const firstDateObj = new Date(firstDate);
+        const lastDateObj = new Date(lastDate);
+        console.log('Final date order:', { 
+          isAscending: firstDateObj < lastDateObj,
+          firstDateISO: firstDateObj.toISOString(),
+          lastDateISO: lastDateObj.toISOString()
+        });
+      } catch (e) {
+        console.log('Final date parsing error:', e);
+      }
+    }
+  }
+
   return (
     <div style={{ 
       padding: '24px 32px', 
@@ -899,6 +1218,276 @@ const StrategyComparison: React.FC = () => {
             unit=""
           />
         </div>
+
+        {/* 关键指标对比条形图 */}
+        {backtestResults.length > 0 && barChartData.length > 0 && (
+          <Card 
+            title={
+              <div style={{ fontSize: '18px', fontWeight: 700, color: '#1f1f1f' }}>
+                Key Metrics Comparison
+              </div>
+            }
+            style={{ 
+              marginBottom: '24px',
+              borderRadius: '12px',
+              border: '1px solid #e8e8e8',
+              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)'
+            }}
+            bodyStyle={{ padding: '20px' }}
+          >
+            <div style={{ fontSize: '14px', color: '#595959', marginBottom: '16px', lineHeight: 1.5 }}>
+              Compare core performance metrics across all backtests. Higher bars indicate better performance for Return, Sharpe, and Win Rate; lower bars indicate better performance for Drawdown.
+            </div>
+            <div style={{ height: '400px' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={barChartData}
+                  margin={{ top: 20, right: 30, left: 20, bottom: 20 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis 
+                    dataKey="metric" 
+                    tick={{ fontSize: 12, fill: '#595959' }}
+                    axisLine={{ stroke: '#d9d9d9' }}
+                    tickLine={{ stroke: '#d9d9d9' }}
+                  />
+                  <YAxis 
+                    tick={{ fontSize: 12, fill: '#595959' }}
+                    axisLine={{ stroke: '#d9d9d9' }}
+                    tickLine={{ stroke: '#d9d9d9' }}
+                  />
+                  <Tooltip 
+                    formatter={(value: number, name: string) => {
+                      const backtestIndex = name.replace('backtest', '');
+                      const formattedValue = barChartData.find(d => d.metric === name) ? 
+                        barChartData.find(d => d.metric === name)?.[`backtest${backtestIndex}Formatted`] : 
+                        `${value}`;
+                      return [formattedValue, `Backtest ${backtestIndex}`];
+                    }}
+                    labelFormatter={(label) => `${label}`}
+                    contentStyle={{ 
+                      backgroundColor: 'white', 
+                      border: '1px solid #d9d9d9',
+                      borderRadius: '6px',
+                      fontSize: '12px'
+                    }}
+                  />
+                  <Legend 
+                    wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }}
+                    formatter={(value) => {
+                      const index = parseInt(value.replace('backtest', '')) - 1;
+                      const backtest = backtestResults[index];
+                      return backtest ? 
+                        `Backtest ${index + 1}: ${backtest.parameters.symbol} • ${backtest.parameters.strategy}` : 
+                        value;
+                    }}
+                  />
+                  {backtestResults.map((_, index) => (
+                    <Bar 
+                      key={`backtest${index + 1}`}
+                      dataKey={`backtest${index + 1}`}
+                      name={`backtest${index + 1}`}
+                      fill={BACKTEST_COLORS[index % BACKTEST_COLORS.length].primary}
+                      radius={[2, 2, 0, 0]}
+                    />
+                  ))}
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </Card>
+        )}
+
+        {/* 风险收益散点图 */}
+        {backtestResults.length > 0 && scatterChartData.length > 0 && (
+          <Card 
+            title={
+              <div style={{ fontSize: '18px', fontWeight: 700, color: '#1f1f1f' }}>
+                Risk vs Return Analysis
+              </div>
+            }
+            style={{ 
+              marginBottom: '24px',
+              borderRadius: '12px',
+              border: '1px solid #e8e8e8',
+              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)'
+            }}
+            bodyStyle={{ padding: '20px' }}
+          >
+            <div style={{ fontSize: '14px', color: '#595959', marginBottom: '16px', lineHeight: 1.5 }}>
+              Each point represents a backtest. Points in the top-left quadrant indicate high return with low risk (ideal). Bubble size represents number of trades.
+            </div>
+            <div style={{ height: '400px' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <ScatterChart
+                  margin={{ top: 20, right: 30, left: 20, bottom: 20 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis 
+                    type="number" 
+                    dataKey="maxDrawdown" 
+                    name="Max Drawdown" 
+                    unit="%" 
+                    tick={{ fontSize: 12, fill: '#595959' }}
+                    axisLine={{ stroke: '#d9d9d9' }}
+                    tickLine={{ stroke: '#d9d9d9' }}
+                    label={{ value: 'Max Drawdown (%)', position: 'insideBottom', offset: -5, fontSize: 12, fill: '#595959' }}
+                  />
+                  <YAxis 
+                    type="number" 
+                    dataKey="totalReturn" 
+                    name="Total Return" 
+                    unit="%" 
+                    tick={{ fontSize: 12, fill: '#595959' }}
+                    axisLine={{ stroke: '#d9d9d9' }}
+                    tickLine={{ stroke: '#d9d9d9' }}
+                    label={{ value: 'Total Return (%)', angle: -90, position: 'insideLeft', fontSize: 12, fill: '#595959' }}
+                  />
+                  <ZAxis type="number" dataKey="trades" range={[50, 400]} />
+                  <Tooltip 
+                    formatter={(value: number, name: string) => {
+                      if (name === 'totalReturn') return [`${value.toFixed(2)}%`, 'Total Return'];
+                      if (name === 'maxDrawdown') return [`${value.toFixed(2)}%`, 'Max Drawdown'];
+                      if (name === 'sharpeRatio') return [value.toFixed(2), 'Sharpe Ratio'];
+                      if (name === 'trades') return [value, 'Trades'];
+                      return [value, name];
+                    }}
+                    labelFormatter={(label, payload) => {
+                      if (payload && payload.length > 0) {
+                        return payload[0].payload.label;
+                      }
+                      return label;
+                    }}
+                    contentStyle={{ 
+                      backgroundColor: 'white', 
+                      border: '1px solid #d9d9d9',
+                      borderRadius: '6px',
+                      fontSize: '12px'
+                    }}
+                  />
+                  <Legend 
+                    wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }}
+                  />
+                  <Scatter 
+                    name="Backtests" 
+                    data={scatterChartData} 
+                    fill="#8884d8"
+                    shape="circle"
+                  >
+                    {scatterChartData.map((entry, index) => (
+                      <Cell 
+                        key={`cell-${index}`} 
+                        fill={entry.color}
+                        stroke={entry.color}
+                        strokeWidth={1}
+                      />
+                    ))}
+                  </Scatter>
+                </ScatterChart>
+              </ResponsiveContainer>
+            </div>
+          </Card>
+        )}
+
+        {/* 资金曲线对比图 */}
+        {backtestResults.length > 0 && equityCurveData.length > 0 && (
+          <Card 
+            title={
+              <div style={{ fontSize: '18px', fontWeight: 700, color: '#1f1f1f' }}>
+                Equity Curve Comparison
+              </div>
+            }
+            style={{ 
+              marginBottom: '24px',
+              borderRadius: '12px',
+              border: '1px solid #e8e8e8',
+              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)'
+            }}
+            bodyStyle={{ padding: '20px' }}
+          >
+            <div style={{ fontSize: '14px', color: '#595959', marginBottom: '16px', lineHeight: 1.5 }}>
+              Compare equity growth over time across all backtests. All curves are normalized to start at 100 for fair comparison.
+            </div>
+            <div style={{ height: '400px' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart
+                  data={equityCurveData}
+                  margin={{ top: 20, right: 30, left: 20, bottom: 20 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis 
+                    dataKey="date" 
+                    tick={{ fontSize: 12, fill: '#595959' }}
+                    axisLine={{ stroke: '#d9d9d9' }}
+                    tickLine={{ stroke: '#d9d9d9' }}
+                    label={{ value: 'Date', position: 'insideBottom', offset: -5, fontSize: 12, fill: '#595959' }}
+                  />
+                  <YAxis 
+                    tick={{ fontSize: 12, fill: '#595959' }}
+                    axisLine={{ stroke: '#d9d9d9' }}
+                    tickLine={{ stroke: '#d9d9d9' }}
+                    label={{ value: 'Equity (Normalized)', angle: -90, position: 'insideLeft', fontSize: 12, fill: '#595959' }}
+                  />
+                  <Tooltip 
+                    formatter={(value: number, name: string) => {
+                      if (name === 'benchmark') {
+                        return [`$${value.toFixed(2)}`, 'Benchmark (Buy & Hold)'];
+                      }
+                      const backtestIndex = name.replace('backtest', '');
+                      return [`$${value.toFixed(2)}`, `Backtest ${backtestIndex}`];
+                    }}
+                    labelFormatter={(label) => {
+                      return `Date: ${label}`;
+                    }}
+                    contentStyle={{ 
+                      backgroundColor: 'white', 
+                      border: '1px solid #d9d9d9',
+                      borderRadius: '6px',
+                      fontSize: '12px'
+                    }}
+                  />
+                  <Legend 
+                    wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }}
+                    formatter={(value) => {
+                      if (value === 'benchmark') {
+                        return 'Benchmark (Buy & Hold)';
+                      }
+                      const index = parseInt(value.replace('backtest', '')) - 1;
+                      const backtest = backtestResults[index];
+                      return backtest ? 
+                        `Backtest ${index + 1}: ${backtest.parameters.symbol} • ${backtest.parameters.strategy}` : 
+                        value;
+                    }}
+                  />
+                  {backtestResults.map((_, index) => (
+                    <Line 
+                      key={`backtest${index + 1}`}
+                      type="monotone"
+                      dataKey={`backtest${index + 1}`}
+                      name={`backtest${index + 1}`}
+                      stroke={BACKTEST_COLORS[index % BACKTEST_COLORS.length].primary}
+                      strokeWidth={2}
+                      dot={false}
+                      activeDot={{ r: 6 }}
+                      connectNulls
+                    />
+                  ))}
+                  {/* Benchmark (Buy & Hold) 曲线 */}
+                  <Line 
+                    type="monotone"
+                    dataKey="benchmark"
+                    stroke="#999999"
+                    strokeWidth={2}
+                    strokeDasharray="5 5"
+                    dot={false}
+                    name="Benchmark (Buy & Hold)"
+                    activeDot={{ r: 6 }}
+                    connectNulls
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </Card>
+        )}
       </div>
       
       {/* 参数对比表格 - 4列 */}

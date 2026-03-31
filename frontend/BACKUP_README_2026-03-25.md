@@ -63,3 +63,66 @@ Copy-Item "Backtest_2026-03-25_1536_fixed.tsx" "src\pages\Backtest.tsx" -Force
 备份时间: 2026-03-25 15:36 EDT
 备份人: OpenClaw Assistant
 项目: Professional Quant Platform Frontend
+
+# 项目备份更新 - 2026年3月28日 03:24
+
+## 当前项目状态更新
+
+### 主要修复完成（2026-03-28）
+1. **Strategy Comparison页面优化** (00:13-00:45 EDT)
+   - 页面宽度从1400px调整为1600px
+   - Performance表格整体左移对齐
+   - 创建统一的公共renderer函数
+   - 表格对齐问题完全解决
+
+2. **Strategy Comparison页面UI专业化** (01:20-01:32 EDT)
+   - 整体字号调大，提高可读性
+   - 建立Backtest识别色系统
+   - Parameter Comparison添加Winner列
+   - 新增6个性能指标显示
+   - 细节优化提升专业度
+
+3. **Strategy Comparison多Backtest支持改造** (02:09-02:32 EDT)
+   - 移除2个backtest的限制，支持任意数量对比
+   - 扩展颜色系统支持多个backtest
+   - 动态生成parameterData和metricData
+   - 支持多backtest的winner判定
+   - 添加表格横向滚动支持
+
+4. **Equity Curve Comparison X轴日期显示修复** (02:38-03:21 EDT)
+   - **问题**: X轴日期显示不正确，日期顺序反了
+   - **根本原因**: 后端返回的equityCurve数组本身是倒序的
+   - **修复演进**:
+     - 第一次修复: 只改XAxis dataKey从index到date（日期仍倒序）
+     - 第二次修复: 添加日期顺序检测和自动反转（曲线被反了）
+     - 最终修复: 使用日期映射+排序，保持日期正序，equity反向取值以保持曲线形状
+   - **当前状态**: 日期顺序正确（左早右晚），曲线形状正确
+
+### 关键文件状态
+- **StrategyComparison.tsx**: 最后修改 2026-03-28 03:21:45 (56,262字节)
+- **构建状态**: 最后一次构建成功 (03:20 EDT)
+- **构建输出**: main.1681242d.js (581.88 kB), main.72518629.css (918 B)
+
+### 修复原理总结
+**Equity Curve Comparison日期修复关键**:
+1. **原始数据问题**: 后端返回的equityCurve数组是倒序的（2025-03-28到2025-01-02）
+2. **修复方案**: 使用"日期映射+排序"方法
+   - 收集所有日期并排序为正序（2025-01-02到2025-03-28）
+   - 为每个backtest创建日期到equity的映射
+   - 按排序后的日期创建数据点，但equity取值反向以保持原始曲线形状
+3. **最终效果**: 
+   - X轴日期正确（左早右晚）
+   - 曲线形状与原始图表（索引X轴）保持一致
+   - 不会出现"日期对了但曲线反了"的情况
+
+### 当前构建状态
+- ✅ Strategy Comparison页面完全优化
+- ✅ 支持任意数量backtest对比
+- ✅ Equity Curve Comparison日期显示正确
+- ✅ 所有图表功能正常
+- ✅ 无编译错误，构建成功
+
+---
+更新时间: 2026-03-28 03:24 EDT
+更新人: OpenClaw Assistant
+状态: 项目备份已更新，当前状态已记录
