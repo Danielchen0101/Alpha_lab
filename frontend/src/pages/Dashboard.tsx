@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Card, Row, Col, Button, Spin, Alert, Empty, Tag, Typography, Space, Progress } from 'antd';
-import { ReloadOutlined, DashboardOutlined, RiseOutlined, FallOutlined, LineChartOutlined, EyeOutlined, PieChartOutlined, BarChartOutlined, ClockCircleOutlined, DatabaseOutlined } from '@ant-design/icons';
+import { ReloadOutlined, DashboardOutlined, RiseOutlined, FallOutlined, LineChartOutlined, EyeOutlined, PieChartOutlined, BarChartOutlined, ClockCircleOutlined, DatabaseOutlined, ExperimentOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { StockData, formatCurrency, safeNumber } from '../services/marketDataService';
 import { sharedDataService } from '../services/sharedDataService';
 import DataSourceBadge from '../components/DataSourceBadge';
+import ExperimentRankingCard from '../components/ExperimentRankingCard';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 
 const { Title, Text } = Typography;
@@ -1588,6 +1589,68 @@ const Dashboard: React.FC = () => {
           </Card>
         </Col>
       </Row>
+
+      {/* Preset Performance Summary - 只在有数据时显示 */}
+      {(() => {
+        // 检查是否有实验数据
+        try {
+          const sessionHistoryStr = localStorage.getItem('quant_session_history');
+          const hasExperimentData = sessionHistoryStr && JSON.parse(sessionHistoryStr).length > 0;
+          
+          if (!hasExperimentData) {
+            // 没有数据时显示小而清楚的空状态
+            return (
+              <Row gutter={[20, 20]} style={{ marginBottom: '24px' }}>
+                <Col span={24}>
+                  <Card 
+                    title={
+                      <div style={{ display: 'flex', alignItems: 'center' }}>
+                        <ExperimentOutlined style={{ marginRight: '8px', color: '#1890ff' }} />
+                        <span>Experiment Results</span>
+                      </div>
+                    }
+                    size="small"
+                    style={{ backgroundColor: '#fafafa' }}
+                  >
+                    <div style={{ textAlign: 'center', padding: '20px' }}>
+                      <div style={{ marginBottom: '8px', color: '#666' }}>
+                        No experiment data yet
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#999', lineHeight: '1.4' }}>
+                        Run paper trading or preset batch experiments to generate ranking results
+                      </div>
+                      <div style={{ marginTop: '12px' }}>
+                        <Button 
+                          type="link" 
+                          size="small"
+                          onClick={() => {
+                            // 导航到 Portfolio 页面开始实验
+                            navigate('/portfolio');
+                          }}
+                        >
+                          Start Paper Trading
+                        </Button>
+                      </div>
+                    </div>
+                  </Card>
+                </Col>
+              </Row>
+            );
+          }
+          
+          // 有数据时显示正常组件
+          return (
+            <Row gutter={[20, 20]} style={{ marginBottom: '24px' }}>
+              <Col span={24}>
+                <ExperimentRankingCard compact={true} />
+              </Col>
+            </Row>
+          );
+        } catch (error) {
+          console.error('Error checking experiment data:', error);
+          return null;
+        }
+      })()}
 
       <Row gutter={[20, 20]} style={{ marginBottom: '24px' }}>
         <Col span={24}>

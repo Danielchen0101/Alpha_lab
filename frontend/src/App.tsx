@@ -8,6 +8,7 @@ import BacktestDetail from './pages/BacktestDetail';
 import StrategyComparison from './pages/StrategyComparison';
 import Watchlist from './pages/Watchlist';
 import StrategyRanking from './pages/StrategyRanking';
+import ExperimentRanking from './pages/ExperimentRanking';
 import ParameterOptimization from './pages/ParameterOptimization';
 import Analytics from './pages/Analytics';
 import Portfolio from './pages/Portfolio';
@@ -79,6 +80,7 @@ const App: React.FC = () => {
                     <Route path="/optimize" element={<ParameterOptimization />} />
                     <Route path="/watchlist" element={<Watchlist />} />
                     <Route path="/ranking" element={<StrategyRanking />} />
+                    <Route path="/experiment-ranking" element={<ExperimentRanking />} />
                     <Route path="/analytics" element={<Analytics />} />
                     <Route path="/portfolio" element={<Portfolio />} />
                     <Route path="/language-test" element={<LanguageTest />} />

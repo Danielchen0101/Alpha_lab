@@ -36,6 +36,7 @@ export default {
     backtest: '回测',
     strategyComparison: '策略比较',
     strategyRanking: '策略排名',
+    experimentRanking: '实验排名',
     analytics: '分析',
     watchlist: '观察列表',
     portfolio: '投资组合',

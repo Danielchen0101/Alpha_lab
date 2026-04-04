@@ -36,6 +36,7 @@ export default {
     backtest: 'Backtest',
     strategyComparison: 'Strategy Comparison',
     strategyRanking: 'Strategy Ranking',
+    experimentRanking: 'Experiment Ranking',
     analytics: 'Analytics',
     watchlist: 'Watchlist',
     portfolio: 'Portfolio',
