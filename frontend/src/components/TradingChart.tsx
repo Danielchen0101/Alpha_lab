@@ -89,14 +89,15 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
     }
 
     // Enhanced signal data with tooltip text
-    const signalType = item.signal === 1 ? 'BUY' : item.signal === -1 ? 'SELL' : null;
-    const signalColor = item.signal === 1 ? '#52c41a' : '#f5222d';
+    const signalType = item.signal === 1 ? 'BUY' : item.signal === -1 ? 'SELL' : item.signal === -2 ? 'FORCED LIQUIDATION' : null;
+    const signalColor = item.signal === 1 ? '#52c41a' : item.signal === -1 ? '#f5222d' : item.signal === -2 ? '#fa8c16' : null;
 
     return {
       ...item,
       // Enhanced signal data
       buySignal: item.signal === 1 ? item.close : null,
       sellSignal: item.signal === -1 ? item.close : null,
+      forcedLiquidationSignal: item.signal === -2 ? item.close : null,
       signalType,
       signalColor,
       // Add volume color for styling
@@ -697,6 +698,122 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
     return volume.toString();
   };
 
+  // Volume Chart Tooltip - 使用统一的日期格式化
+  const VolumeTooltip = ({ active, payload, label }: any) => {
+    if (active && payload && payload.length) {
+      // 使用统一的tooltip日期获取函数
+      const displayDate = getTooltipDate(payload, label);
+      
+      // Find the data point
+      const dataPoint = processedChartData.find(item => item.date === label);
+      if (!dataPoint) return null;
+
+      const isUp = dataPoint.volumeColor === '#95de64';
+      const direction = isUp ? 'Up' : 'Down';
+      const directionColor = isUp ? '#52c41a' : '#f5222d';
+
+      return (
+        <div style={{
+          backgroundColor: 'rgba(255, 255, 255, 0.98)',
+          padding: '14px',
+          border: '1px solid #e8e8e8',
+          borderRadius: '8px',
+          boxShadow: '0 6px 16px rgba(0,0,0,0.12)',
+          backdropFilter: 'blur(8px)',
+          minWidth: '200px',
+          transform: 'translate(-50%, -100%)',
+          marginTop: '-10px',
+          borderTop: `3px solid ${directionColor}`
+        }}>
+          {/* 标题区域 */}
+          <div style={{ 
+            marginBottom: '14px'
+          }}>
+            <div style={{ 
+              fontSize: '14px',
+              fontWeight: '700', 
+              color: '#333',
+              marginBottom: '3px',
+              letterSpacing: '0.4px'
+            }}>
+              {displayDate}
+            </div>
+            <div style={{ 
+              fontSize: '11px',
+              color: '#8c8c8c',
+              display: 'flex',
+              alignItems: 'center',
+              textTransform: 'uppercase',
+              letterSpacing: '0.6px'
+            }}>
+              <span style={{
+                display: 'inline-block',
+                width: '6px',
+                height: '6px',
+                backgroundColor: directionColor,
+                borderRadius: '50%',
+                marginRight: '6px'
+              }}></span>
+              VOLUME DATA
+            </div>
+          </div>
+          
+          {/* 交易量信息 */}
+          <div style={{ 
+            fontSize: '11px', 
+            color: '#595959',
+            marginBottom: '6px',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            paddingBottom: '4px',
+            borderBottom: '1px solid #f0f0f0'
+          }}>
+            <span style={{ fontWeight: '600' }}>VOLUME</span>
+            <span style={{ 
+              fontWeight: '700', 
+              color: '#1890ff',
+              fontSize: '13px'
+            }}>
+              {formatVolume(dataPoint.volume || 0)}
+            </span>
+          </div>
+          
+          {/* 价格方向指示器 */}
+          <div style={{ 
+            padding: '8px 10px',
+            backgroundColor: isUp ? 'rgba(82, 196, 26, 0.12)' : 'rgba(245, 34, 45, 0.12)',
+            borderRadius: '6px',
+            border: `2px solid ${isUp ? 'rgba(82, 196, 26, 0.4)' : 'rgba(245, 34, 45, 0.4)'}`,
+            marginTop: '8px'
+          }}>
+            <div style={{ 
+              fontSize: '11px', 
+              fontWeight: '700',
+              color: directionColor,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              letterSpacing: '0.5px'
+            }}>
+              <span style={{
+                display: 'inline-block',
+                width: '8px',
+                height: '8px',
+                backgroundColor: directionColor,
+                borderRadius: '50%',
+                marginRight: '8px',
+                boxShadow: `0 0 8px ${isUp ? 'rgba(82, 196, 26, 0.6)' : 'rgba(245, 34, 45, 0.6)'}`
+              }}></span>
+              {isUp ? 'PRICE UP' : 'PRICE DOWN'}
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return null;
+  };
+
   // Format currency
   const formatCurrency = (amount: number): string => {
     return new Intl.NumberFormat('en-US', {
@@ -1099,21 +1216,8 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                 padding={{ top: 18, bottom: 18 }} // 增加padding
               />
               <Tooltip 
-                formatter={(value: any, name: any, props: any) => {
-                  const entry = props.payload;
-                  const isUp = entry.volumeColor === '#95de64';
-                  const direction = isUp ? 'Up' : 'Down';
-                  return [`${formatVolume(value)} (${direction})`, 'Volume'];
-                }}
-                labelFormatter={(label) => `Date: ${label}`}
+                content={<VolumeTooltip />}
                 offset={12}
-                contentStyle={{ 
-                  fontSize: '12px', // 增大字号
-                  padding: '10px',
-                  borderRadius: '6px',
-                  border: '1px solid #dee2e6',
-                  backgroundColor: 'rgba(255, 255, 255, 0.95)'
-                }}
                 cursor={{ 
                   stroke: '#1890ff', 
                   strokeWidth: 1, 

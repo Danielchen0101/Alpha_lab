@@ -6,12 +6,14 @@ interface OptimizationSummaryProps {
   results: OptimizationResult[];
   totalCombinations?: number;
   validCombinations?: number;
+  strategy?: string;
 }
 
 const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({ 
   results, 
   totalCombinations, 
-  validCombinations 
+  validCombinations,
+  strategy = 'moving_average'
 }) => {
   // Calculate statistics
   const stats = {
@@ -32,7 +34,24 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
       ) : null
   };
 
-  // Helper function to format percentages
+  // Safe formatting functions
+  const safeToFixed = (value: any, digits: number = 2): string => {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) {
+      return 'N/A';
+    }
+    return Number(value).toFixed(digits);
+  };
+
+  const safePercent = (value: any): string => {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) {
+      return "N/A";
+    }
+    if (value === 0) return "0.00%";
+    const sign = value > 0 ? "+" : "-";
+    return `${sign}${Math.abs(value).toFixed(2)}%`;
+  };
+
+  // Helper function to format percentages (deprecated, use safePercent instead)
   const formatPercent = (value: number): string => {
   if (value === undefined || value === null || isNaN(value)) {
     return "N/A";
@@ -41,6 +60,56 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
   const sign = value > 0 ? "+" : "-";
   return `${sign}${Math.abs(value).toFixed(2)}%`;
 };
+
+  // Get parameter display configuration based on strategy
+  const getStrategyConfig = () => {
+    switch (strategy) {
+      case 'rsi':
+        return {
+          param1: { key: 'rsi_period', label: 'RSI Period' },
+          param2: { key: 'oversold', label: 'Oversold' },
+          param3: { key: 'overbought', label: 'Overbought' },
+          pairLabel: 'RSI Parameters',
+          hasThirdParam: true,
+          isSingleParam: false
+        };
+      case 'macd':
+        return {
+          param1: { key: 'fast', label: 'Fast MA' },
+          param2: { key: 'slow', label: 'Slow MA' },
+          param3: { key: 'signal', label: 'Signal MA' },
+          pairLabel: 'MACD Parameters',
+          hasThirdParam: true,
+          isSingleParam: false
+        };
+      case 'bollinger':
+        return {
+          param1: { key: 'period', label: 'Period' },
+          param2: { key: 'std_dev', label: 'Std Dev' },
+          pairLabel: 'Bollinger Parameters',
+          hasThirdParam: false,
+          isSingleParam: false
+        };
+      case 'momentum':
+        return {
+          param1: { key: 'momentum_period', label: 'Momentum Period' },
+          param2: null, // Momentum has only one parameter
+          pairLabel: 'Momentum Parameter',
+          hasThirdParam: false,
+          isSingleParam: true // Flag for single parameter strategies
+        };
+      default: // moving_average
+        return {
+          param1: { key: 'short_ma', label: 'Short MA' },
+          param2: { key: 'long_ma', label: 'Long MA' },
+          pairLabel: 'MA Pair',
+          hasThirdParam: false,
+          isSingleParam: false
+        };
+    }
+  };
+
+  const strategyConfig = getStrategyConfig();
 
   return (
     <div style={{ padding: '24px' }}>
@@ -105,7 +174,7 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
             border: '1px solid #d9f7be'
           }}>
             <div style={{ fontSize: '28px', fontWeight: '600', color: '#3f8600', marginBottom: '8px' }}>
-              {formatPercent(stats.bestReturn)}
+              {safePercent(stats.bestReturn)}
             </div>
             <div style={{ fontSize: '14px', fontWeight: '500', color: '#262626' }}>
               Best Return
@@ -121,7 +190,7 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
             border: '1px solid #ffccc7'
           }}>
             <div style={{ fontSize: '28px', fontWeight: '600', color: '#cf1322', marginBottom: '8px' }}>
-              {formatPercent(stats.worstReturn)}
+              {safePercent(stats.worstReturn)}
             </div>
             <div style={{ fontSize: '14px', fontWeight: '500', color: '#262626' }}>
               Worst Return
@@ -137,7 +206,7 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
             border: '1px solid #ffd591'
           }}>
             <div style={{ fontSize: '28px', fontWeight: '600', color: '#fa8c16', marginBottom: '8px' }}>
-              {formatPercent(stats.avgReturn)}
+              {safePercent(stats.avgReturn)}
             </div>
             <div style={{ fontSize: '14px', fontWeight: '500', color: '#262626' }}>
               Average Return
@@ -153,7 +222,7 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
             border: '1px solid #d3adf7'
           }}>
             <div style={{ fontSize: '28px', fontWeight: '600', color: '#722ed1', marginBottom: '8px' }}>
-              {stats.bestSharpeRatio !== undefined && stats.bestSharpeRatio !== null && !isNaN(stats.bestSharpeRatio) ? stats.bestSharpeRatio.toFixed(2) : 'N/A'}
+              {safeToFixed(stats.bestSharpeRatio, 2)}
             </div>
             <div style={{ fontSize: '14px', fontWeight: '500', color: '#262626' }}>
               Best Sharpe
@@ -183,7 +252,7 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
             Best Combination (by Sharpe Ratio)
           </div>
           <Row gutter={[24, 16]}>
-            <Col span={4}>
+            <Col span={strategyConfig.isSingleParam ? 6 : (strategyConfig.hasThirdParam ? 3 : 4)}>
               <div style={{ 
                 textAlign: 'center',
                 padding: '12px',
@@ -192,30 +261,50 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
                 border: '1px solid #e8e8e8'
               }}>
                 <div style={{ fontSize: '20px', fontWeight: '600', color: '#1890ff', marginBottom: '4px' }}>
-                  {stats.bestCombinationBySharpe.short_ma}
+                  {safeToFixed(stats.bestCombinationBySharpe[strategyConfig.param1.key], 0)}
                 </div>
                 <div style={{ fontSize: '12px', fontWeight: '500', color: '#262626' }}>
-                  Best Short MA
+                  {strategyConfig.param1.label}
                 </div>
               </div>
             </Col>
-            <Col span={4}>
-              <div style={{ 
-                textAlign: 'center',
-                padding: '12px',
-                background: 'white',
-                borderRadius: '8px',
-                border: '1px solid #e8e8e8'
-              }}>
-                <div style={{ fontSize: '20px', fontWeight: '600', color: '#1890ff', marginBottom: '4px' }}>
-                  {stats.bestCombinationBySharpe.long_ma}
+            {!strategyConfig.isSingleParam && strategyConfig.param2 && (
+              <Col span={strategyConfig.hasThirdParam ? 3 : 4}>
+                <div style={{ 
+                  textAlign: 'center',
+                  padding: '12px',
+                  background: 'white',
+                  borderRadius: '8px',
+                  border: '1px solid #e8e8e8'
+                }}>
+                  <div style={{ fontSize: '20px', fontWeight: '600', color: '#1890ff', marginBottom: '4px' }}>
+                    {safeToFixed(stats.bestCombinationBySharpe[strategyConfig.param2.key], 0)}
+                  </div>
+                  <div style={{ fontSize: '12px', fontWeight: '500', color: '#262626' }}>
+                    {strategyConfig.param2.label}
+                  </div>
                 </div>
-                <div style={{ fontSize: '12px', fontWeight: '500', color: '#262626' }}>
-                  Best Long MA
+              </Col>
+            )}
+            {strategyConfig.hasThirdParam && strategyConfig.param3 && (
+              <Col span={3}>
+                <div style={{ 
+                  textAlign: 'center',
+                  padding: '12px',
+                  background: 'white',
+                  borderRadius: '8px',
+                  border: '1px solid #e8e8e8'
+                }}>
+                  <div style={{ fontSize: '20px', fontWeight: '600', color: '#1890ff', marginBottom: '4px' }}>
+                    {safeToFixed(stats.bestCombinationBySharpe[strategyConfig.param3.key], 0)}
+                  </div>
+                  <div style={{ fontSize: '12px', fontWeight: '500', color: '#262626' }}>
+                    {strategyConfig.param3.label}
+                  </div>
                 </div>
-              </div>
-            </Col>
-            <Col span={4}>
+              </Col>
+            )}
+            <Col span={strategyConfig.hasThirdParam ? 3 : 4}>
               <div style={{ 
                 textAlign: 'center',
                 padding: '12px',
@@ -224,8 +313,7 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
                 border: '1px solid #e8e8e8'
               }}>
                 <div style={{ fontSize: '20px', fontWeight: '600', color: '#722ed1', marginBottom: '4px' }}>
-                  {stats.bestCombinationBySharpe.sharpeRatio !== undefined && stats.bestCombinationBySharpe.sharpeRatio !== null && !isNaN(stats.bestCombinationBySharpe.sharpeRatio) ? 
-                    stats.bestCombinationBySharpe.sharpeRatio.toFixed(2) : 'N/A'}
+                  {safeToFixed(stats.bestCombinationBySharpe?.sharpeRatio, 2)}
                 </div>
                 <div style={{ fontSize: '12px', fontWeight: '500', color: '#262626' }}>
                   Sharpe Ratio
@@ -241,7 +329,7 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
                 border: '1px solid #e8e8e8'
               }}>
                 <div style={{ fontSize: '20px', fontWeight: '600', color: '#3f8600', marginBottom: '4px' }}>
-                  {formatPercent(stats.bestCombinationBySharpe.totalReturn)}
+                  {safePercent(stats.bestCombinationBySharpe?.totalReturn)}
                 </div>
                 <div style={{ fontSize: '12px', fontWeight: '500', color: '#262626' }}>
                   Total Return
@@ -257,8 +345,7 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
                 border: '1px solid #e8e8e8'
               }}>
                 <div style={{ fontSize: '20px', fontWeight: '600', color: '#cf1322', marginBottom: '4px' }}>
-                  {stats.bestCombinationBySharpe.maxDrawdown !== undefined && stats.bestCombinationBySharpe.maxDrawdown !== null && !isNaN(stats.bestCombinationBySharpe.maxDrawdown) ? 
-                    stats.bestCombinationBySharpe.maxDrawdown.toFixed(2) + '%' : 'N/A'}
+                  {safeToFixed(stats.bestCombinationBySharpe?.maxDrawdown, 2)}%
                 </div>
                 <div style={{ fontSize: '12px', fontWeight: '500', color: '#262626' }}>
                   Max Drawdown
@@ -274,8 +361,7 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
                 border: '1px solid #e8e8e8'
               }}>
                 <div style={{ fontSize: '20px', fontWeight: '600', color: '#fa8c16', marginBottom: '4px' }}>
-                  {stats.bestCombinationBySharpe.winRate !== undefined && stats.bestCombinationBySharpe.winRate !== null && !isNaN(stats.bestCombinationBySharpe.winRate) ? 
-                    stats.bestCombinationBySharpe.winRate.toFixed(1) + '%' : 'N/A'}
+                  {safeToFixed(stats.bestCombinationBySharpe?.winRate, 1)}%
                 </div>
                 <div style={{ fontSize: '12px', fontWeight: '500', color: '#262626' }}>
                   Win Rate
@@ -316,10 +402,25 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
                 border: '1px solid #e8e8e8'
               }}>
                 <div style={{ fontSize: '18px', fontWeight: '600', color: '#1890ff', marginBottom: '4px' }}>
-                  {stats.bestCombinationByReturn.short_ma}/{stats.bestCombinationByReturn.long_ma}
+                  {strategyConfig.isSingleParam ? (
+                    <>{safeToFixed(stats.bestCombinationByReturn[strategyConfig.param1.key], 0)}</>
+                  ) : strategyConfig.hasThirdParam && strategyConfig.param3 ? (
+                    <>
+                      {safeToFixed(stats.bestCombinationByReturn[strategyConfig.param1.key], 0)}/
+                      {safeToFixed(stats.bestCombinationByReturn[strategyConfig.param2.key], 0)}/
+                      {safeToFixed(stats.bestCombinationByReturn[strategyConfig.param3.key], 0)}
+                    </>
+                  ) : strategyConfig.param2 ? (
+                    <>
+                      {safeToFixed(stats.bestCombinationByReturn[strategyConfig.param1.key], 0)}/
+                      {safeToFixed(stats.bestCombinationByReturn[strategyConfig.param2.key], 0)}
+                    </>
+                  ) : (
+                    <>{safeToFixed(stats.bestCombinationByReturn[strategyConfig.param1.key], 0)}</>
+                  )}
                 </div>
                 <div style={{ fontSize: '12px', fontWeight: '500', color: '#262626' }}>
-                  MA Pair
+                  {strategyConfig.pairLabel}
                 </div>
               </div>
             </Col>
@@ -332,7 +433,7 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
                 border: '1px solid #e8e8e8'
               }}>
                 <div style={{ fontSize: '18px', fontWeight: '600', color: '#3f8600', marginBottom: '4px' }}>
-                  {formatPercent(stats.bestCombinationByReturn.totalReturn)}
+                  {safePercent(stats.bestCombinationByReturn?.totalReturn)}
                 </div>
                 <div style={{ fontSize: '12px', fontWeight: '500', color: '#262626' }}>
                   Return
@@ -348,8 +449,7 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
                 border: '1px solid #e8e8e8'
               }}>
                 <div style={{ fontSize: '18px', fontWeight: '600', color: '#722ed1', marginBottom: '4px' }}>
-                  {stats.bestCombinationByReturn.sharpeRatio !== undefined && stats.bestCombinationByReturn.sharpeRatio !== null && !isNaN(stats.bestCombinationByReturn.sharpeRatio) ? 
-                    stats.bestCombinationByReturn.sharpeRatio.toFixed(2) : 'N/A'}
+                  {safeToFixed(stats.bestCombinationByReturn?.sharpeRatio, 2)}
                 </div>
                 <div style={{ fontSize: '12px', fontWeight: '500', color: '#262626' }}>
                   Sharpe
@@ -365,8 +465,7 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
                 border: '1px solid #e8e8e8'
               }}>
                 <div style={{ fontSize: '18px', fontWeight: '600', color: '#cf1322', marginBottom: '4px' }}>
-                  {stats.bestCombinationByReturn.maxDrawdown !== undefined && stats.bestCombinationByReturn.maxDrawdown !== null && !isNaN(stats.bestCombinationByReturn.maxDrawdown) ? 
-                    stats.bestCombinationByReturn.maxDrawdown.toFixed(2) + '%' : 'N/A'}
+                  {safeToFixed(stats.bestCombinationByReturn?.maxDrawdown, 2)}%
                 </div>
                 <div style={{ fontSize: '12px', fontWeight: '500', color: '#262626' }}>
                   Max DD

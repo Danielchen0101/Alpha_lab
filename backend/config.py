@@ -3,8 +3,12 @@ API 配置 - 市场数据与交易执行分离架构
 """
 
 # ========== Finnhub API 配置 (市场数据) ==========
-FINNHUB_API_KEY = "d6qsdcpr01qgdhqc82hgd6qsdcpr01qgdhqc82i0"
+FINNHUB_API_KEY = "d7apg21r01qtpbh9ck9gd7apg21r01qtpbh9cka0"
 FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
+
+# ========== Twelve Data API 配置 (历史数据) ==========
+TWELVEDATA_API_KEY = "8b847a1ef2aa47a68d3f992bd0275f0c"  # 有效API密钥
+TWELVEDATA_BASE_URL = "https://api.twelvedata.com"
 
 # ========== Alpaca API 配置 (交易执行) ==========
 ALPACA_API_KEY = "PK47HFNRVYZ7XZLLLYUULBIY4R"

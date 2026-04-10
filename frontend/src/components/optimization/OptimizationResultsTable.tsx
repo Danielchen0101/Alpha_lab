@@ -4,10 +4,28 @@ import { OptimizationResult } from './OptimizationHeatmap';
 
 interface OptimizationResultsTableProps {
   results: OptimizationResult[];
+  strategy?: string;
 }
 
-const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ results }) => {
-  // Helper function to format percentages
+const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ results, strategy = 'moving_average' }) => {
+  // Safe formatting functions
+  const safeToFixed = (value: any, digits: number = 2): string => {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) {
+      return 'N/A';
+    }
+    return Number(value).toFixed(digits);
+  };
+
+  const safePercent = (value: any): string => {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) {
+      return "N/A";
+    }
+    if (value === 0) return "0.00%";
+    const sign = value > 0 ? "+" : "-";
+    return `${sign}${Math.abs(value).toFixed(2)}%`;
+  };
+
+  // Helper function to format percentages (deprecated, use safePercent instead)
   const formatPercent = (value: number): string => {
   if (value === undefined || value === null || isNaN(value)) {
     return "N/A";
@@ -16,6 +34,148 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
   const sign = value > 0 ? "+" : "-";
   return `${sign}${Math.abs(value).toFixed(2)}%`;
 };
+
+  // Get parameter columns based on strategy
+  const getParameterColumns = () => {
+    switch (strategy) {
+      case 'rsi':
+        return [
+          {
+            title: 'RSI Period',
+            dataIndex: 'rsi_period',
+            key: 'rsi_period',
+            width: 90,
+            render: (value: number) => (
+              <Tag color="blue" style={{ fontWeight: 'bold' }}>
+                {value}
+              </Tag>
+            ),
+          },
+          {
+            title: 'Oversold',
+            dataIndex: 'oversold',
+            key: 'oversold',
+            width: 90,
+            render: (value: number) => (
+              <Tag color="orange" style={{ fontWeight: 'bold' }}>
+                {value}
+              </Tag>
+            ),
+          },
+          {
+            title: 'Overbought',
+            dataIndex: 'overbought',
+            key: 'overbought',
+            width: 90,
+            render: (value: number) => (
+              <Tag color="red" style={{ fontWeight: 'bold' }}>
+                {value}
+              </Tag>
+            ),
+          },
+        ];
+      case 'macd':
+        return [
+          {
+            title: 'Fast MA',
+            dataIndex: 'fast',
+            key: 'fast',
+            width: 90,
+            render: (value: number) => (
+              <Tag color="blue" style={{ fontWeight: 'bold' }}>
+                {value}
+              </Tag>
+            ),
+          },
+          {
+            title: 'Slow MA',
+            dataIndex: 'slow',
+            key: 'slow',
+            width: 90,
+            render: (value: number) => (
+              <Tag color="green" style={{ fontWeight: 'bold' }}>
+                {value}
+              </Tag>
+            ),
+          },
+          {
+            title: 'Signal MA',
+            dataIndex: 'signal',
+            key: 'signal',
+            width: 90,
+            render: (value: number) => (
+              <Tag color="purple" style={{ fontWeight: 'bold' }}>
+                {value}
+              </Tag>
+            ),
+          },
+        ];
+      case 'bollinger':
+        return [
+          {
+            title: 'Period',
+            dataIndex: 'period',
+            key: 'period',
+            width: 90,
+            render: (value: number) => (
+              <Tag color="blue" style={{ fontWeight: 'bold' }}>
+                {value}
+              </Tag>
+            ),
+          },
+          {
+            title: 'Std Dev',
+            dataIndex: 'std_dev',
+            key: 'std_dev',
+            width: 90,
+            render: (value: number) => (
+              <Tag color="cyan" style={{ fontWeight: 'bold' }}>
+                {safeToFixed(value, 1)}
+              </Tag>
+            ),
+          },
+        ];
+      case 'momentum':
+        return [
+          {
+            title: 'Momentum Period',
+            dataIndex: 'momentum_period',
+            key: 'momentum_period',
+            width: 110,
+            render: (value: number) => (
+              <Tag color="blue" style={{ fontWeight: 'bold' }}>
+                {value}
+              </Tag>
+            ),
+          },
+        ];
+      default: // moving_average
+        return [
+          {
+            title: 'Short MA',
+            dataIndex: 'short_ma',
+            key: 'short_ma',
+            width: 90,
+            render: (value: number) => (
+              <Tag color="blue" style={{ fontWeight: 'bold' }}>
+                {value}
+              </Tag>
+            ),
+          },
+          {
+            title: 'Long MA',
+            dataIndex: 'long_ma',
+            key: 'long_ma',
+            width: 90,
+            render: (value: number) => (
+              <Tag color="green" style={{ fontWeight: 'bold' }}>
+                {value}
+              </Tag>
+            ),
+          },
+        ];
+    }
+  };
 
   const columns = [
     {
@@ -36,28 +196,7 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
         </div>
       ),
     },
-    {
-      title: 'Short MA',
-      dataIndex: 'short_ma',
-      key: 'short_ma',
-      width: 90,
-      render: (value: number) => (
-        <Tag color="blue" style={{ fontWeight: 'bold' }}>
-          {value}
-        </Tag>
-      ),
-    },
-    {
-      title: 'Long MA',
-      dataIndex: 'long_ma',
-      key: 'long_ma',
-      width: 90,
-      render: (value: number) => (
-        <Tag color="green" style={{ fontWeight: 'bold' }}>
-          {value}
-        </Tag>
-      ),
-    },
+    ...getParameterColumns(),
     {
       title: 'Total Return',
       dataIndex: 'totalReturn',
@@ -99,7 +238,7 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
         const color = value >= 1 ? '#3f8600' : value >= 0 ? '#fa8c16' : '#cf1322';
         return (
           <span style={{ color, fontWeight: 'bold' }}>
-            {value !== undefined && value !== null && !isNaN(value) ? value.toFixed(2) : 'N/A'}
+            {safeToFixed(value, 2)}
           </span>
         );
       },
@@ -119,7 +258,7 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
         }
         return (
           <span style={{ color, fontWeight: 'bold' }}>
-            {value !== undefined && value !== null && !isNaN(value) ? value.toFixed(1) + '%' : 'N/A'}
+            {safeToFixed(value, 1)}%
           </span>
         );
       },

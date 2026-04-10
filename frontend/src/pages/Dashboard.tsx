@@ -31,19 +31,26 @@ interface SectorData {
 
 // 函数声明：提升到组件顶部，避免暂时性死区
 function getChangePercent(stock: StockData): number | null {
-  // 调试：检查stock对象
-  console.log(`[调试] getChangePercent for ${stock.symbol}:`, {
-    changePercent: stock.changePercent,
-    change: stock.change,
-    price: stock.price,
-    previousClose: stock.previousClose,
-    hasChangePercent: stock.changePercent !== null && stock.changePercent !== undefined,
-    hasChange: stock.change !== null && stock.change !== undefined
-  });
+  // 如果股票数据无效，返回null
+  if (!stock || stock.price === null || stock.price === undefined) {
+    return null;
+  }
   
-  if (stock.changePercent !== null && stock.changePercent !== undefined) return stock.changePercent;
-  if (stock.price !== null && stock.previousClose !== null && stock.previousClose !== 0) return ((stock.price - stock.previousClose) / stock.previousClose) * 100;
-  if (stock.change !== null && stock.previousClose !== null && stock.previousClose !== 0) return (stock.change / stock.previousClose) * 100;
+  // 优先使用changePercent
+  if (stock.changePercent !== null && stock.changePercent !== undefined) {
+    return stock.changePercent;
+  }
+  
+  // 如果有price和previousClose，计算changePercent
+  if (stock.price !== null && stock.previousClose !== null && stock.previousClose !== 0) {
+    return ((stock.price - stock.previousClose) / stock.previousClose) * 100;
+  }
+  
+  // 如果有change和previousClose，计算changePercent
+  if (stock.change !== null && stock.previousClose !== null && stock.previousClose !== 0) {
+    return (stock.change / stock.previousClose) * 100;
+  }
+  
   return null;
 }
 
@@ -679,6 +686,20 @@ const Dashboard: React.FC = () => {
         </Row>
       )}
 
+      {/* 显示API调用失败的消息 */}
+      {!loading && !error && marketData.length > 0 && marketData.every(stock => stock.price === null) && (
+        <Row style={{ marginBottom: '24px' }}>
+          <Col span={24}>
+            <Alert 
+              message="API Connection Issue" 
+              description="Unable to fetch real-time market data. Please check your API configuration. Displaying empty data instead of simulated data." 
+              type="warning" 
+              showIcon 
+            />
+          </Col>
+        </Row>
+      )}
+
       <div style={{
         display: 'flex',
         flexWrap: 'wrap',
@@ -943,7 +964,9 @@ const Dashboard: React.FC = () => {
                 padding: '20px'
               }}>
                 <Text type="secondary" style={{ fontSize: '12px', color: '#8c8c8c', textAlign: 'center', lineHeight: 1.4 }}>
-                  No advancing stocks<br />in current market session
+                  {marketData.length === 0 ? 'No market data available' : 
+                   marketData.every(stock => stock.price === null) ? 'Real-time data unavailable' : 
+                   'No advancing stocks in current market session'}
                 </Text>
               </div>
             ) : (
@@ -1024,7 +1047,11 @@ const Dashboard: React.FC = () => {
                 flex: 1,
                 height: '100%'
               }}>
-                <Text type="secondary" style={{ fontSize: '13px' }}>No losers in current market</Text>
+                <Text type="secondary" style={{ fontSize: '13px' }}>
+                  {marketData.length === 0 ? 'No market data available' : 
+                   marketData.every(stock => stock.price === null) ? 'Real-time data unavailable' : 
+                   'No losers in current market'}
+                </Text>
               </div>
             ) : (
               <div style={{
@@ -1101,7 +1128,11 @@ const Dashboard: React.FC = () => {
                 flex: 1,
                 height: '100%'
               }}>
-                <Text type="secondary" style={{ fontSize: '13px' }}>No sector data available</Text>
+                <Text type="secondary" style={{ fontSize: '13px' }}>
+                  {marketData.length === 0 ? 'No market data available' : 
+                   marketData.every(stock => stock.sector === null || stock.sector === '') ? 'Sector data unavailable' : 
+                   'No sector data available'}
+                </Text>
               </div>
             ) : (
               <div style={{
@@ -1489,14 +1520,14 @@ const Dashboard: React.FC = () => {
                     fontSize: '12px',
                     fontWeight: 600,
                     color: '#ffffff',
-                    backgroundColor: '#52c41a',
+                    backgroundColor: marketData.length > 0 && !marketData.every(stock => stock.price === null) ? '#52c41a' : '#faad14',
                     padding: '5px 14px',
                     borderRadius: '12px',
                     width: '80px',
                     textAlign: 'center',
                     letterSpacing: '0.3px',
                     boxSizing: 'border-box'
-                  }}>LIVE</div>
+                  }}>{marketData.length > 0 && !marketData.every(stock => stock.price === null) ? 'LIVE' : 'OFFLINE'}</div>
                 </div>
 
                 {/* Quote Feed */}
@@ -1512,14 +1543,14 @@ const Dashboard: React.FC = () => {
                     fontSize: '12px',
                     fontWeight: 600,
                     color: '#ffffff',
-                    backgroundColor: '#52c41a',
+                    backgroundColor: marketData.length > 0 && !marketData.every(stock => stock.price === null) ? '#52c41a' : '#ff4d4f',
                     padding: '5px 14px',
                     borderRadius: '12px',
                     width: '80px',
                     textAlign: 'center',
                     letterSpacing: '0.3px',
                     boxSizing: 'border-box'
-                  }}>HEALTHY</div>
+                  }}>{marketData.length > 0 && !marketData.every(stock => stock.price === null) ? 'HEALTHY' : 'ERROR'}</div>
                 </div>
 
                 {/* Broker Connection */}

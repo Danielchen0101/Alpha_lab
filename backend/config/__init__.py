@@ -9,8 +9,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ========== Finnhub 配置 ==========
-FINNHUB_API_KEY = os.getenv('FINNHUB_API_KEY', 'd6v2q09r01qig546aus0d6v2q09r01qig546ausg')
+FINNHUB_API_KEY = os.getenv('FINNHUB_API_KEY', 'd7apg21r01qtpbh9ck9gd7apg21r01qtpbh9cka0')
 FINNHUB_BASE_URL = os.getenv('FINNHUB_BASE_URL', 'https://finnhub.io/api/v1')
+
+# ========== Twelve Data 配置 ==========
+TWELVEDATA_API_KEY = os.getenv('TWELVEDATA_API_KEY', '8b847a1ef2aa47a68d3f992bd0275f0c')
+TWELVEDATA_BASE_URL = os.getenv('TWELVEDATA_BASE_URL', 'https://api.twelvedata.com')
 
 # ========== Alpaca Markets 配置 ==========
 ALPACA_API_KEY = os.getenv('ALPACA_API_KEY')
@@ -46,8 +50,25 @@ ALPACA_ENDPOINTS = {
 }
 
 # ========== 通用配置 ==========
-# 默认股票列表
-DEFAULT_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "TSLA", "NVDA", "AMZN", "META", "JPM", "JNJ", "V"]
+# 默认股票列表 - 混合行业候选池
+DEFAULT_SYMBOLS = [
+    # Technology (必须包含的)
+    "AAPL",  # Apple Inc. - Technology
+    "NVDA",  # NVIDIA Corporation - Technology/Semiconductors
+    
+    # Automotive
+    "TSLA",  # Tesla Inc. - Automotive
+    
+    # 其他行业 - 确保多样性
+    "JPM",   # JPMorgan Chase & Co. - Financial Services
+    "JNJ",   # Johnson & Johnson - Healthcare
+    "XOM",   # Exxon Mobil Corporation - Energy
+    "WMT",   # Walmart Inc. - Consumer Defensive
+    "UNH",   # UnitedHealth Group Incorporated - Healthcare
+    "V",     # Visa Inc. - Financial Services
+    "PG",    # Procter & Gamble Company - Consumer Defensive
+    "HD"     # Home Depot Inc. - Consumer Cyclical
+]
 
 # 时间框架映射
 TIMEFRAME_MAP = {

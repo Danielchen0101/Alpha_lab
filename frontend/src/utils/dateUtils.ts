@@ -45,7 +45,17 @@ export function parseDateSafe(dateValue: any): Date | null {
       }
     } else if (typeof dateValue === 'number') {
       // 如果是时间戳
-      date = new Date(dateValue);
+      // 判断是秒时间戳还是毫秒时间戳
+      // Unix秒时间戳通常大于1,000,000,000（2001年之后）
+      // Unix毫秒时间戳通常大于1,000,000,000,000
+      if (dateValue > 1000000000 && dateValue < 1000000000000) {
+        // 看起来像秒时间戳（在1e9和1e12之间）
+        // 乘以1000转换为毫秒
+        date = new Date(dateValue * 1000);
+      } else {
+        // 可能是毫秒时间戳或其他
+        date = new Date(dateValue);
+      }
     } else if (dateValue instanceof Date) {
       // 已经是Date对象
       date = dateValue;

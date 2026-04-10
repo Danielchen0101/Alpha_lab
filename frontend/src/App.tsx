@@ -8,9 +8,11 @@ import BacktestDetail from './pages/BacktestDetail';
 import StrategyComparison from './pages/StrategyComparison';
 import Watchlist from './pages/Watchlist';
 import StrategyRanking from './pages/StrategyRanking';
-import ExperimentRanking from './pages/ExperimentRanking';
-import ParameterOptimization from './pages/ParameterOptimization';
+import ParameterOptimization from './pages/ParameterOptimization.jsx';
 import Analytics from './pages/Analytics';
+
+import LocalPaperTrading from './pages/LocalPaperTrading';
+import AITrading from './pages/AITrading';
 import Portfolio from './pages/Portfolio';
 import SymbolAnalysis from './pages/SymbolAnalysis';
 import BacktestAnalysis from './pages/BacktestAnalysis';
@@ -80,8 +82,9 @@ const App: React.FC = () => {
                     <Route path="/optimize" element={<ParameterOptimization />} />
                     <Route path="/watchlist" element={<Watchlist />} />
                     <Route path="/ranking" element={<StrategyRanking />} />
-                    <Route path="/experiment-ranking" element={<ExperimentRanking />} />
+                    <Route path="/local-paper-trading" element={<LocalPaperTrading />} />
                     <Route path="/analytics" element={<Analytics />} />
+                    <Route path="/ai-trading" element={<AITrading />} />
                     <Route path="/portfolio" element={<Portfolio />} />
                     <Route path="/language-test" element={<LanguageTest />} />
                     <Route path="/button-preview" element={<LanguageButtonPreview />} />

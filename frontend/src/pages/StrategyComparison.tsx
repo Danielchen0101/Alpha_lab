@@ -445,6 +445,29 @@ const StrategyComparison: React.FC = () => {
     );
   }
 
+  // 获取策略特定参数
+  const getStrategyParameters = (backtest: RealBacktestResult | null) => {
+    if (!backtest?.parameters) return 'N/A';
+    
+    const params = backtest.parameters;
+    const strategy = params.strategy || '';
+    
+    switch(strategy) {
+      case 'moving_average':
+        return `MA(${params.short_ma || params.shortMaPeriod || 'N/A'}, ${params.long_ma || params.longMaPeriod || 'N/A'})`;
+      case 'rsi':
+        return `RSI(${params.rsi_period || params.rsiPeriod || 'N/A'}, ${params.oversold || params.rsiOversold || 'N/A'}-${params.overbought || params.rsiOverbought || 'N/A'})`;
+      case 'macd':
+        return `MACD(${params.fast || params.macdFast || 'N/A'}, ${params.slow || params.macdSlow || 'N/A'}, ${params.signal || params.macdSignal || 'N/A'})`;
+      case 'bollinger':
+        return `BB(${params.period || params.bollingerPeriod || 'N/A'}, ${params.std_dev || params.bollingerStdDev || 'N/A'})`;
+      case 'momentum':
+        return `MOM(${params.momentum_period || params.momentumPeriod || 'N/A'})`;
+      default:
+        return 'N/A';
+    }
+  };
+
   // 动态生成参数对比表格数据
   const generateParameterData = (): ParameterData[] => {
     const parameters = [
@@ -457,6 +480,8 @@ const StrategyComparison: React.FC = () => {
       { key: '7', parameter: 'Created At' },
       { key: '8', parameter: 'Backtest ID' },
       { key: '9', parameter: 'Status' },
+      // 策略特定参数
+      { key: '10', parameter: 'Strategy Parameters' },
     ];
 
     return parameters.map(param => {
@@ -496,6 +521,9 @@ const StrategyComparison: React.FC = () => {
             break;
           case 'Status':
             row[fieldName] = <StatusTag status={backtest?.status as any || 'completed'} />;
+            break;
+          case 'Strategy Parameters':
+            row[fieldName] = getStrategyParameters(backtest);
             break;
           default:
             row[fieldName] = 'N/A';
@@ -884,6 +912,27 @@ const StrategyComparison: React.FC = () => {
   const scatterChartData = prepareScatterChartData();
 
   // 准备资金曲线对比数据
+  // 格式化Unix时间戳为可读日期
+  const formatUnixTimestamp = (timestamp: any) => {
+    if (!timestamp) return 'N/A';
+    try {
+      // 如果timestamp是字符串，尝试转换为数字
+      const ts = typeof timestamp === 'string' ? parseInt(timestamp, 10) : timestamp;
+      // 如果timestamp是秒，转换为毫秒
+      const date = new Date(ts * 1000);
+      return date.toLocaleDateString('en-US', { 
+        year: 'numeric', 
+        month: 'short', 
+        day: 'numeric' 
+      });
+    } catch (e) {
+      console.error('Date formatting error:', e, 'timestamp:', timestamp);
+      return String(timestamp);
+    }
+  };
+
+
+
   const prepareEquityCurveData = () => {
     if (backtestResults.length === 0) return [];
 
@@ -988,8 +1037,7 @@ const StrategyComparison: React.FC = () => {
     console.log('Sorted dates (first 5):', sortedDates.slice(0, 5));
     console.log('Sorted dates (last 5):', sortedDates.slice(-5));
     
-    // 按排序后的日期创建数据点，但equity取值顺序需要反向以保持曲线形状
-    console.log('=== 修复：保持日期正序，但equity取值反向以匹配原始曲线 ===');
+    console.log('=== 修复：保持日期正序，equity也按正序获取 ===');
     console.log('sortedDates长度:', sortedDates.length);
     
     for (let i = 0; i < sortedDates.length; i++) {
@@ -997,26 +1045,17 @@ const StrategyComparison: React.FC = () => {
       
       const dataPoint: any = { 
         index: i,
-        date: date
+        // 修复：将Unix时间戳转换为可读日期字符串
+        date: formatUnixTimestamp(date)
       };
       
       backtestResults.forEach((backtest, backtestIndex) => {
         const equityMap = dateToEquityMaps[backtestIndex];
         
-        // 关键修复：为了保持原始曲线形状，我们需要反向获取equity值
-        // 如果日期是正序排列的，那么equity应该从后往前取
-        // 这样左边最早的日期对应原始数组最后的equity值
-        // 右边最晚的日期对应原始数组第一个equity值
-        // 这保持了原始图表（索引X轴）显示的曲线形状
-        
-        // 计算反向索引：从最后一个日期开始
-        const reverseIndex = sortedDates.length - 1 - i;
-        const reverseDate = sortedDates[reverseIndex];
-        
-        // 使用反向日期获取equity值
-        dataPoint[`backtest${backtestIndex + 1}`] = equityMap.get(reverseDate) || null;
-        // 保存实际显示的日期（正序）
-        dataPoint[`date${backtestIndex + 1}`] = date;
+        // 修复：使用正序日期获取equity值，保持时间顺序
+        dataPoint[`backtest${backtestIndex + 1}`] = equityMap.get(date) || null;
+        // 保存原始时间戳用于排序
+        dataPoint[`timestamp${backtestIndex + 1}`] = date;
       });
       
       result.push(dataPoint);
@@ -1027,11 +1066,11 @@ const StrategyComparison: React.FC = () => {
       console.log('=== 修复后验证 ===');
       console.log('第一个点（图表最左边）:');
       console.log('  date:', result[0].date, '应该是最早日期');
-      console.log('  backtest1:', result[0].backtest1, '应该是原始数组最后一个equity值');
+      console.log('  backtest1:', result[0].backtest1, '应该对应最早日期的equity值');
       
       console.log('最后一个点（图表最右边）:');
       console.log('  date:', result[result.length - 1].date, '应该是最晚日期');
-      console.log('  backtest1:', result[result.length - 1].backtest1, '应该是原始数组第一个equity值');
+      console.log('  backtest1:', result[result.length - 1].backtest1, '应该对应最晚日期的equity值');
     }
     
     // 调试：详细检查处理后的数据
@@ -1420,6 +1459,7 @@ const StrategyComparison: React.FC = () => {
                     axisLine={{ stroke: '#d9d9d9' }}
                     tickLine={{ stroke: '#d9d9d9' }}
                     label={{ value: 'Date', position: 'insideBottom', offset: -5, fontSize: 12, fill: '#595959' }}
+                    // 修复：X轴已经显示格式化后的日期，不需要再次格式化
                   />
                   <YAxis 
                     tick={{ fontSize: 12, fill: '#595959' }}

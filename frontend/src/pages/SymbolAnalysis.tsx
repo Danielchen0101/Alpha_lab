@@ -417,7 +417,7 @@ const getProfessional1DayTicks = (chartData: ChartDataPoint[]): string[] => {
     return [];
   }
   
-  console.log('[专业X轴] 1 Day: 生成30分钟间隔时间标签 (09:30-16:00)');
+  console.log('[专业X轴] 1 Day: 生成每小时时间标签 (09:30-15:30)');
   
   const ticks: string[] = [];
   const firstDate = new Date(chartData[0].date);
@@ -425,11 +425,9 @@ const getProfessional1DayTicks = (chartData: ChartDataPoint[]): string[] => {
   const month = firstDate.getUTCMonth();
   const day = firstDate.getUTCDate();
   
-  // 定义所有30分钟间隔的时间点 (09:30 - 16:00)
+  // 定义每小时一次的时间点 (09:30 - 15:30)，更清晰不拥挤
   const timePoints = [
-    '09:30', '10:00', '10:30', '11:00', '11:30',
-    '12:00', '12:30', '13:00', '13:30', '14:00',
-    '14:30', '15:00', '15:30', '16:00'
+    '09:30', '10:30', '11:30', '12:30', '13:30', '14:30', '15:30'
   ];
   
   // 生成所有时间点的UTC时间
@@ -451,7 +449,7 @@ const getProfessional1WeekTicks = (chartData: ChartDataPoint[]): string[] => {
     return [];
   }
   
-  console.log('[1 Week X轴] ====== 生成交易日日期标签 (每个交易日一个日期) ======');
+  console.log('[1 Week X轴] ====== 生成清晰跨天日期标签 (月/日格式) ======');
   console.log('[1 Week X轴] 输入数据点数量:', chartData.length);
   
   const ticks: string[] = [];
@@ -2437,7 +2435,7 @@ const SymbolAnalysis: React.FC = () => {
         // 根据时间范围显示不同的专业格式
         switch (selectedTimeframe) {
           case '1D':
-            // 1 Day: 显示30分钟间隔的时间标签 (HH:MM)
+            // 1 Day: 显示每小时时间标签 (HH:30)
             // 使用纽约时间（EDT）
             const utcHour = date.getUTCHours();
             const minute = date.getUTCMinutes();
@@ -2445,21 +2443,19 @@ const SymbolAnalysis: React.FC = () => {
             // UTC时间转换为纽约时间（EDT，-4小时）
             const nyHour = (utcHour - 4 + 24) % 24;
             
-            // 只显示30分钟间隔的标签
-            if (minute === 0 || minute === 30) {
-              return `${String(nyHour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-            }
-            return '';
+            // 显示所有我们生成的时间标签（都是30分钟，如09:30, 10:30等）
+            return `${String(nyHour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
             
           case '1W':
-            // 1 Week: 只显示日期格式 (如: 3/16)
-            // 使用纽约时间
-            const nyDate = new Date(date.getTime() - 4 * 60 * 60 * 1000); // UTC转EDT
-            const month = nyDate.getMonth() + 1; // 月份 (1-12)
-            const day = nyDate.getDate(); // 日期 (1-31)
+            // 1 Week: 显示清晰的跨天日期格式 (如: 3/16)
+            // 使用纽约时间（EDT）
+            const utcHourW = date.getUTCHours();
+            const nyHourW = (utcHourW - 4 + 24) % 24;
+            const monthW = date.getUTCMonth() + 1; // 月份 (1-12)
+            const dayW = date.getUTCDate(); // 日期 (1-31)
             
-            // 只显示日期，不显示时间
-            return `${month}/${day}`;
+            // 显示月/日格式，让用户一眼看出是跨多天数据
+            return `${monthW}/${dayW}`;
             
           case '1M':
             // 1 Month: 显示日期节点，使用智能选择的日期标签
@@ -3133,33 +3129,23 @@ const SymbolAnalysis: React.FC = () => {
                 // 根据时间范围显示不同的专业格式
                 switch (selectedTimeframe) {
                   case '1D':
-                    // 1 Day: 显示30分钟间隔的时间标签 (HH:MM)
+                    // 1 Day: 显示每小时时间标签 (HH:30)，与主图保持一致
                     const utcHour = date.getUTCHours();
                     const minute = date.getUTCMinutes();
                     const nyHour = (utcHour - 4 + 24) % 24;
                     
-                    // 只显示30分钟间隔的标签
-                    if (minute === 0 || minute === 30) {
-                      return `${String(nyHour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-                    }
-                    return '';
+                    // 显示所有我们生成的时间标签（都是30分钟，如09:30, 10:30等）
+                    return `${String(nyHour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
                     
                   case '1W':
-                    // 1 Week: 只显示纽约时间的日期格式 (如: 3/16)
-                    // 使用统一的纽约时间格式化函数，但只显示日期部分
-                    const nyDate = new Date(date.getTime());
-                    const formatter = new Intl.DateTimeFormat('en-US', {
-                      timeZone: 'America/New_York',
-                      month: 'numeric',
-                      day: 'numeric'
-                    });
+                    // 1 Week: 显示清晰的跨天日期格式 (如: 3/16)，与主图保持一致
+                    const utcHourW = date.getUTCHours();
+                    const nyHourW = (utcHourW - 4 + 24) % 24;
+                    const monthW = date.getUTCMonth() + 1; // 月份 (1-12)
+                    const dayW = date.getUTCDate(); // 日期 (1-31)
                     
-                    const parts = formatter.formatToParts(nyDate);
-                    const month = parts.find(p => p.type === 'month')?.value || '';
-                    const day = parts.find(p => p.type === 'day')?.value || '';
-                    
-                    // 只显示日期，不显示时间
-                    return `${month}/${day}`;
+                    // 显示月/日格式，让用户一眼看出是跨多天数据
+                    return `${monthW}/${dayW}`;
                     
                   case '1M':
                     // 1 Month: 显示日期节点，使用与主图相同的格式化逻辑

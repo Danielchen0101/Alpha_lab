@@ -1,5 +1,6 @@
 import React from 'react';
 import { Table } from 'antd';
+import { formatDateToYYYYMMDD } from '../utils/dateUtils';
 
 interface TradeItem {
   entryDate: string;
@@ -60,11 +61,13 @@ const TradeLogTable: React.FC<TradeLogTableProps> = ({ data }) => {
       key: 'entryDate',
       sorter: (a: TradeItem, b: TradeItem) => a.entryDate.localeCompare(b.entryDate),
       defaultSortOrder: 'ascend' as const,
+      render: (date: string) => formatDateToYYYYMMDD(date) || date,
     },
     {
       title: 'Exit Date',
       dataIndex: 'exitDate',
       key: 'exitDate',
+      render: (date: string) => date ? formatDateToYYYYMMDD(date) : 'N/A',
     },
     {
       title: 'Entry Price',

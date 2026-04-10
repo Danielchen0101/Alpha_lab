@@ -39,32 +39,52 @@ const Watchlist: React.FC = () => {
     return '0.00';
   };
 
-  // 生成监控signal信号
+  // 生成稳定的监控signal信号
   const getSignal = (item: WatchlistItem): string => {
     const changePercent = item.changePercent || 0;
     const price = item.price || 0;
     const dayHigh = item.dayHigh || 0;
     const dayLow = item.dayLow || 0;
     
-    // 1. Bullish - 强势上涨
-    if (changePercent > 5) return 'Bullish';
+    // 检查数据是否有效
+    if (!price || price <= 0 || !dayHigh || !dayLow || dayHigh <= 0 || dayLow <= 0) {
+      return 'Data unavailable';
+    }
     
-    // 2. Bearish - 强势下跌
-    if (changePercent < -5) return 'Bearish';
+    // 1. Bullish - 强势上涨（需要显著上涨）
+    if (changePercent > 7) return 'Bullish';
     
-    // 3. Oversold - 超卖信号（大幅下跌后接近日内低点）
-    if (changePercent < -3 && dayLow > 0 && price > 0 && price > dayLow && (price - dayLow) / price < 0.02) {
+    // 2. Bearish - 强势下跌（需要显著下跌）
+    if (changePercent < -7) return 'Bearish';
+    
+    // 3. Oversold - 超卖信号（大幅下跌且接近日内低点）
+    if (changePercent < -5 && (price - dayLow) / price < 0.015) {
       return 'Oversold';
     }
     
-    // 4. Near support - 接近支撑位（接近日内低点）
-    if (dayLow > 0 && price > 0 && price > dayLow && (price - dayLow) / price < 0.015) {
+    // 4. Near support - 接近支撑位（接近日内低点，但变化不大）
+    if (Math.abs(changePercent) < 3 && (price - dayLow) / price < 0.01) {
       return 'Near support';
     }
     
-    // 5. 如果价格变化很小，返回"No clear setup"
-    if (Math.abs(changePercent) < 1) {
+    // 5. Near resistance - 接近阻力位（接近日内高点）
+    if (Math.abs(changePercent) < 3 && (dayHigh - price) / price < 0.01) {
+      return 'Near resistance';
+    }
+    
+    // 6. 如果价格变化很小，返回"No clear setup"
+    if (Math.abs(changePercent) < 2) {
       return 'No clear setup';
+    }
+    
+    // 7. 中等上涨
+    if (changePercent > 2) {
+      return 'Mild bullish';
+    }
+    
+    // 8. 中等下跌
+    if (changePercent < -2) {
+      return 'Mild bearish';
     }
     
     // 默认返回"No clear setup"
@@ -200,8 +220,8 @@ const Watchlist: React.FC = () => {
       updateWatchlistData();
     }
 
-    // 每30秒更新一次数据
-    const intervalId = setInterval(updateWatchlistData, 30000);
+    // 每60秒更新一次数据（减少刷新频率，避免数字频繁跳动）
+    const intervalId = setInterval(updateWatchlistData, 60000);
     
     return () => {
       clearInterval(intervalId);

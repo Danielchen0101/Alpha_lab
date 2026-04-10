@@ -68,6 +68,7 @@ interface TradeItem {
 interface BacktestResult {
   backtestId: string;
   status: 'running' | 'completed' | 'failed';
+  success?: boolean; // 添加success字段
   results: {
     totalReturn: number;
     sharpeRatio: number;
@@ -101,6 +102,7 @@ interface BacktestResult {
   parameters: {
     strategy: string;
     symbols: string[];
+    symbol?: string; // 兼容单股票模式
     period: string;
     initialCapital: number;
     // 数据模式参数
@@ -116,6 +118,8 @@ interface BacktestResult {
     macdFast?: number;
     macdSlow?: number;
     macdSignal?: number;
+    // 策略参数对象
+    parameters?: Record<string, any>;
     // 日期参数
     startDate?: string;
     endDate?: string;
@@ -144,6 +148,18 @@ interface BacktestHistoryItem {
       sma50?: number;
       volume?: number;
     }>;
+    // 完整的回测结果数据
+    equityCurve?: Array<{ date: string; equity: number }>;
+    tradesList?: TradeItem[];
+    volatility?: number;
+    sortinoRatio?: number;
+    profitFactor?: number;
+    expectancy?: number;
+    exposure?: number;
+    calmarRatio?: number;
+    avgReturnPerTrade?: number;
+    avgWin?: number;
+    avgLoss?: number;
   };
   parameters?: {
     strategy: string;
@@ -154,6 +170,10 @@ interface BacktestHistoryItem {
     dataMode?: string;
     dataModeDisplay?: string;
     dataSource?: string;
+    // 原始参数
+    startDate?: string;
+    endDate?: string;
+    [key: string]: any; // 允许其他策略特定参数
   };
   createdAt?: string;
   symbol?: string;
@@ -185,6 +205,7 @@ const Backtest: React.FC = () => {
   const [savedStrategies, setSavedStrategies] = useState<any[]>([]);
   const [showSavedStrategies, setShowSavedStrategies] = useState(false);
   const [portfolioSymbols, setPortfolioSymbols] = useState<string[]>([]);
+  const [showConsistencyDetails, setShowConsistencyDetails] = useState(false);
 
   // 请求ID管理，防止竞争条件
   const requestIdRef = useRef<string>('');
@@ -397,7 +418,7 @@ const Backtest: React.FC = () => {
 
       const historyItem: BacktestHistoryItem = {
         backtestId: backtestResult.backtestId || `local_${Date.now()}`,
-        status: backtestResult.status || 'completed',
+        status: backtestResult.success ? 'completed' : 'failed',
         results: backtestResult.results,
         parameters: backtestResult.parameters,
         createdAt: new Date().toISOString(),
@@ -1007,27 +1028,37 @@ const Backtest: React.FC = () => {
       const foundRecord = currentHistory.find(item => item.backtestId === record.backtestId);
 
       if (foundRecord) {
-        // 创建完整的BacktestResult对象
+        // 从历史记录中提取完整的results数据
+        const historyResults = foundRecord.results || {};
+        
+        // 创建完整的BacktestResult对象，使用历史记录中的真实数据
         const backtestResult: BacktestResult = {
           backtestId: foundRecord.backtestId,
           status: foundRecord.status as 'running' | 'completed' | 'failed',
+          success: foundRecord.status === 'completed',
           results: {
-            totalReturn: foundRecord.totalReturn || 0,
-            sharpeRatio: foundRecord.sharpeRatio || 0,
-            maxDrawdown: foundRecord.maxDrawdown || 0,
-            winRate: foundRecord.winRate || 0,
-            trades: foundRecord.trades || 0,
-            annualizedReturn: foundRecord.annualizedReturn || 0,
-            profitLoss: foundRecord.profitLoss || 0,
-            calmarRatio: 0,
-            avgReturnPerTrade: 0,
-            avgWin: 0,
-            avgLoss: 0,
-            profitFactor: 0,
-            expectancy: 0,
-            chartData: [],
-            equityCurve: [],
-            tradesList: []
+            // 使用历史记录中的真实数据，而不是硬编码的0
+            totalReturn: (historyResults as any).totalReturn || foundRecord.totalReturn || 0,
+            sharpeRatio: (historyResults as any).sharpeRatio || foundRecord.sharpeRatio || 0,
+            maxDrawdown: (historyResults as any).maxDrawdown || foundRecord.maxDrawdown || 0,
+            winRate: (historyResults as any).winRate || foundRecord.winRate || 0,
+            trades: (historyResults as any).trades || foundRecord.trades || 0,
+            annualizedReturn: (historyResults as any).annualizedReturn || foundRecord.annualizedReturn || 0,
+            profitLoss: (historyResults as any).profitLoss || foundRecord.profitLoss || 0,
+            // 从历史记录中提取完整的图表和交易数据
+            chartData: (historyResults as any).chartData || [],
+            equityCurve: (historyResults as any).equityCurve || [],
+            tradesList: (historyResults as any).tradesList || [],
+            // 其他指标，如果有的话
+            volatility: (historyResults as any).volatility || 0,
+            sortinoRatio: (historyResults as any).sortinoRatio || 0,
+            profitFactor: (historyResults as any).profitFactor || 0,
+            expectancy: (historyResults as any).expectancy || 0,
+            exposure: (historyResults as any).exposure || 0,
+            calmarRatio: (historyResults as any).calmarRatio || 0,
+            avgReturnPerTrade: (historyResults as any).avgReturnPerTrade || 0,
+            avgWin: (historyResults as any).avgWin || 0,
+            avgLoss: (historyResults as any).avgLoss || 0
           },
           parameters: foundRecord.parameters || {
             strategy: foundRecord.strategy || 'Unknown',
@@ -1035,10 +1066,23 @@ const Backtest: React.FC = () => {
             period: foundRecord.startDate && foundRecord.endDate ? `${foundRecord.startDate} to ${foundRecord.endDate}` : 'Unknown',
             initialCapital: foundRecord.initialCapital || 100000,
             startDate: foundRecord.startDate || '',
-            endDate: foundRecord.endDate || ''
+            endDate: foundRecord.endDate || '',
+            // 保留其他参数
+            dataMode: (foundRecord.parameters as any)?.dataMode || 'real',
+            dataModeDisplay: (foundRecord.parameters as any)?.dataModeDisplay || 'Real Data',
+            dataSource: (foundRecord.parameters as any)?.dataSource || 'Twelve Data'
           },
           createdAt: foundRecord.createdAt
         };
+
+        console.log('Loaded backtest result from history:', {
+          backtestId: backtestResult.backtestId,
+          totalReturn: backtestResult.results.totalReturn,
+          sharpeRatio: backtestResult.results.sharpeRatio,
+          trades: backtestResult.results.trades,
+          chartDataLength: backtestResult.results.chartData?.length || 0,
+          tradesListLength: backtestResult.results.tradesList?.length || 0
+        });
 
         // 设置回测结果
         setBacktestResult(backtestResult);
@@ -1360,8 +1404,14 @@ const Backtest: React.FC = () => {
     if (!entryDate || !exitDate) return 1;
 
     try {
-      const entry = new Date(entryDate);
-      const exit = new Date(exitDate);
+      // 使用统一的日期解析函数
+      const entry = parseDateSafe(entryDate);
+      const exit = parseDateSafe(exitDate);
+
+      if (!entry || !exit) {
+        console.warn('计算持仓天数失败: 日期解析无效', { entryDate, exitDate });
+        return 1;
+      }
 
       // 计算天数差
       const timeDiff = exit.getTime() - entry.getTime();
@@ -1533,181 +1583,42 @@ const Backtest: React.FC = () => {
         avgWin: 0,
         avgLoss: 0,
         expectancy: 0,
+        annualizedReturn: 0,
+        sharpeRatio: 0,
+        sortinoRatio: 0,
         initialCapital: 100000,
         isRealData: false
       };
     }
 
-    // 尝试从不同位置获取交易数据
-    const realTradesList = backtestResult.results.tradesList || [];
+    // 使用后端返回的权威结果，不重新计算
     const initialCapital = safeNumber(backtestResult.parameters?.initialCapital) || 100000;
-
-    // 如果有真实交易数据，使用真实数据计算
-    if (realTradesList && realTradesList.length > 0) {
-      const totalTrades = realTradesList.length;
-      const winningTrades = realTradesList.filter((t: any) => t.pnl > 0).length;
-      const losingTrades = realTradesList.filter((t: any) => t.pnl < 0).length;
-      const totalPnl = realTradesList.reduce((sum: number, t: any) => sum + (t.pnl || 0), 0);
-      const avgPnl = totalTrades > 0 ? totalPnl / totalTrades : 0;
-      const winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0;
-      // 使用外部定义的calculatedTotalReturn（已经计算好）
-      const totalReturn = calculatedTotalReturn;
-
-      // 计算Profit Factor
-      const grossProfit = realTradesList
-        .filter((t: any) => t.pnl > 0)
-        .reduce((sum: number, t: any) => sum + t.pnl, 0);
-      const grossLoss = Math.abs(realTradesList
-        .filter((t: any) => t.pnl < 0)
-        .reduce((sum: number, t: any) => sum + t.pnl, 0));
-      const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : 99.00; // 99.00表示无限大
-
-      // 计算Expectancy
-      // Expectancy = (Win Rate × Avg Win) - (Loss Rate × Avg Loss)
-      const avgWin = winningTrades > 0 ? grossProfit / winningTrades : 0;
-      const avgLoss = losingTrades > 0 ? grossLoss / losingTrades : 0;
-      const winRateDecimal = winRate / 100;
-      const lossRateDecimal = 1 - winRateDecimal;
-      const expectancy = (winRateDecimal * avgWin) - (lossRateDecimal * avgLoss);
-
-      // 计算Annualized Return
-      // 年化收益率 = ((1 + totalReturn/100)^(365/days) - 1) * 100
-      let annualizedReturn = 0;
-      if (backtestResult?.parameters?.startDate && backtestResult?.parameters?.endDate) {
-        try {
-          const startDate = new Date(backtestResult.parameters.startDate);
-          const endDate = new Date(backtestResult.parameters.endDate);
-          const daysDiff = Math.max(1, Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)));
-
-          if (daysDiff > 0 && totalReturn !== 0) {
-            const totalReturnDecimal = totalReturn / 100;
-            const years = daysDiff / 365;
-            annualizedReturn = ((Math.pow(1 + totalReturnDecimal, 1/years) - 1) * 100);
-          }
-        } catch (error) {
-          console.error('Error calculating annualized return:', error);
-          annualizedReturn = totalReturn; // 如果计算失败，使用总回报
-        }
-      } else {
-        // 如果没有日期信息，使用总回报
-        annualizedReturn = totalReturn;
-      }
-
-      // 计算Sharpe Ratio和Sortino Ratio
-      let sharpeRatio = 0;
-      let sortinoRatio = 0;
-
-      // 尝试从equityCurve计算收益序列
-      if (backtestResult?.results?.equityCurve && backtestResult.results.equityCurve.length > 1) {
-        try {
-          const equityCurve = backtestResult.results.equityCurve;
-          const returns: number[] = [];
-
-          // 计算每日收益（百分比）
-          for (let i = 1; i < equityCurve.length; i++) {
-            const prevEquity = equityCurve[i-1].equity;
-            const currEquity = equityCurve[i].equity;
-            if (prevEquity > 0) {
-              const dailyReturn = ((currEquity - prevEquity) / prevEquity) * 100;
-              returns.push(dailyReturn);
-            }
-          }
-
-          if (returns.length > 0) {
-            // 计算平均收益
-            const meanReturn = returns.reduce((sum, r) => sum + r, 0) / returns.length;
-
-            // 计算标准差（总波动率）
-            const variance = returns.reduce((sum, r) => sum + Math.pow(r - meanReturn, 2), 0) / returns.length;
-            const stdDev = Math.sqrt(variance);
-
-            // 计算下行偏差（只考虑负收益）
-            const downsideReturns = returns.filter(r => r < 0);
-            const downsideVariance = downsideReturns.length > 0
-              ? downsideReturns.reduce((sum, r) => sum + Math.pow(r, 2), 0) / downsideReturns.length
-              : 0;
-            const downsideDev = Math.sqrt(downsideVariance);
-
-            // 假设无风险利率为0%（简化）
-            const riskFreeRate = 0;
-
-            // 计算Sharpe Ratio（年化）
-            if (stdDev > 0) {
-              // 年化因子：假设每日数据，年化因子为√252
-              const annualizationFactor = Math.sqrt(252);
-              sharpeRatio = ((meanReturn - riskFreeRate) / stdDev) * annualizationFactor;
-            }
-
-            // 计算Sortino Ratio（年化）
-            if (downsideDev > 0) {
-              // 年化因子：假设每日数据，年化因子为√252
-              const annualizationFactor = Math.sqrt(252);
-              sortinoRatio = ((meanReturn - riskFreeRate) / downsideDev) * annualizationFactor;
-            }
-          }
-        } catch (error) {
-          console.error('Error calculating Sharpe/Sortino ratios:', error);
-          // 如果计算失败，使用后端提供的值
-          sharpeRatio = backtestResult.results.sharpeRatio || 0;
-          sortinoRatio = backtestResult.results.sortinoRatio || 0;
-        }
-      } else {
-        // 如果没有equityCurve，使用后端提供的值
-        sharpeRatio = backtestResult.results.sharpeRatio || 0;
-        sortinoRatio = backtestResult.results.sortinoRatio || 0;
-      }
-
-      // 如果总回报是负数，确保Sharpe和Sortino也是负数或接近0
-      if (totalReturn < 0 && sharpeRatio > 0) {
-        sharpeRatio = -Math.abs(sharpeRatio);
-      }
-      if (totalReturn < 0 && sortinoRatio > 0) {
-        sortinoRatio = -Math.abs(sortinoRatio);
-      }
-
-      return {
-        totalTrades,
-        winningTrades,
-        losingTrades,
-        totalPnl,
-        avgPnl,
-        winRate,
-        totalReturn,
-        profitFactor,
-        grossProfit,
-        grossLoss,
-        avgWin,
-        avgLoss,
-        expectancy,
-        annualizedReturn,
-        sharpeRatio,
-        sortinoRatio,
-        initialCapital,
-        isRealData: true
-      };
-    }
-
-    // 如果没有真实交易数据，使用results中的值
+    const results = backtestResult.results;
+    
+    // 直接从后端结果获取所有指标，不重新计算
     return {
-      totalTrades: backtestResult.results.tradesList?.length || backtestResult.results.trades || 0,
-      winningTrades: 0,
-      losingTrades: 0,
-      totalPnl: backtestResult.results.profitLoss || 0,
-      avgPnl: backtestResult.results.avgReturnPerTrade || 0,
-      winRate: backtestResult.results.winRate || 0,
-      // 使用外部定义的calculatedTotalReturn（已经计算好）
-      totalReturn: calculatedTotalReturn,
-      profitFactor: backtestResult.results.profitFactor || 0,
-      grossProfit: 0,
-      grossLoss: 0,
-      avgWin: 0,
-      avgLoss: 0,
-      expectancy: backtestResult.results.expectancy || 0,
-      annualizedReturn: backtestResult.results.annualizedReturn || backtestResult.results.totalReturn || 0,
-      sharpeRatio: backtestResult.results.sharpeRatio || 0,
-      sortinoRatio: backtestResult.results.sortinoRatio || 0,
+      totalTrades: results.trades || 0,
+      winningTrades: 0, // 如果需要可以计算，但使用后端winRate
+      losingTrades: 0,  // 如果需要可以计算，但使用后端winRate
+      totalPnl: results.profitLoss || 0,
+      avgPnl: results.avgReturnPerTrade || 0,
+      winRate: results.winRate || 0,
+      totalReturn: results.totalReturn || 0,
+      profitFactor: results.profitFactor, // 保留null/undefined
+      grossProfit: 0, // 不重新计算
+      grossLoss: 0,   // 不重新计算
+      avgWin: results.avgWin || 0,
+      avgLoss: results.avgLoss || 0,
+      expectancy: results.expectancy || 0,
+      annualizedReturn: results.annualizedReturn || 0,
+      sharpeRatio: results.sharpeRatio || 0,
+      sortinoRatio: results.sortinoRatio || 0,
+      maxDrawdown: results.maxDrawdown || 0, // 添加maxDrawdown字段
+      calmarRatio: results.calmarRatio || 0, // 添加calmarRatio字段
+      volatility: results.volatility || 0,   // 添加volatility字段
+      exposure: results.exposure || 0,       // 添加exposure字段
       initialCapital,
-      isRealData: false
+      isRealData: true
     };
   };
 
@@ -1737,92 +1648,92 @@ const Backtest: React.FC = () => {
     {
       key: 'status',
       metric: 'Status',
-      value: backtestResult.status,
+      value: backtestResult.success ? 'Completed' : 'Failed',
       description: 'Current backtest status'
     },
     {
       key: 'totalReturn',
       metric: 'Total Return',
-      value: safeToFixed(unifiedStats.totalReturn, 2),
+      value: safeToFixed(backtestResult.results?.totalReturn || 0, 2),
       description: 'Total return over the period'
     },
     {
       key: 'annualizedReturn',
       metric: 'Annualized Return',
-      value: safeToFixed(unifiedStats.annualizedReturn, 2),
+      value: safeToFixed(backtestResult.results?.annualizedReturn || 0, 2),
       description: 'Annualized return (CAGR)'
     },
     {
       key: 'profitLoss',
       metric: 'Profit / Loss',
-      value: formatMoney(unifiedStats.totalPnl),
+      value: formatMoney(backtestResult.results?.profitLoss || 0),
       description: `Profit/Loss amount (from $${safeNumber(backtestResult.parameters?.initialCapital).toLocaleString()})`
     },
     {
       key: 'sharpeRatio',
       metric: 'Sharpe Ratio',
-      value: safeToFixed(unifiedStats.sharpeRatio, 2),
-      description: 'Risk-adjusted return (higher is better)'
+      value: safeToFixed(backtestResult.results?.sharpeRatio || 0, 2),
+      description: 'Annualized Sharpe ratio (risk-free rate = 0%)'
     },
     {
       key: 'calmarRatio',
       metric: 'Calmar Ratio',
-      value: safeNumber(backtestResult.results?.calmarRatio),
+      value: safeNumber(backtestResult.results?.calmarRatio || 0),
       description: 'Return vs max drawdown (higher is better)'
     },
     {
       key: 'maxDrawdown',
       metric: 'Max Drawdown',
-      value: safeNumber(backtestResult.results?.maxDrawdown),
+      value: safeNumber(backtestResult.results?.maxDrawdown || 0),
       description: 'Maximum loss from a peak'
     },
     {
       key: 'winRate',
       metric: 'Win Rate',
-      value: safeToFixed(unifiedStats.winRate, 1),
+      value: safeToFixed(backtestResult.results?.winRate || 0, 1),
       description: 'Percentage of winning trades'
     },
     {
       key: 'trades',
       metric: 'Trades',
-      value: unifiedStats.totalTrades,
+      value: backtestResult.results?.trades || 0,
       description: 'Total number of trades executed'
     },
     {
       key: 'avgReturnPerTrade',
       metric: 'Avg P&L per Trade',
-      value: formatMoney(unifiedStats.avgPnl),
+      value: formatMoney(backtestResult.results?.avgReturnPerTrade || 0),
       description: 'Average profit/loss per trade (dollar amount)'
     },
     {
       key: 'volatility',
       metric: 'Volatility',
-      value: safeNumber(backtestResult.results?.volatility),
-      description: 'Annualized volatility of strategy returns'
+      value: safeNumber(backtestResult.results?.volatility || 0),
+      description: 'Daily volatility of strategy returns (percentage)'
     },
     {
       key: 'sortinoRatio',
       metric: 'Sortino Ratio',
-      value: safeToFixed(unifiedStats.sortinoRatio, 2),
-      description: 'Risk-adjusted return considering only downside volatility'
+      value: safeToFixed(backtestResult.results?.sortinoRatio || 0, 2),
+      description: 'Annualized Sortino ratio (downside risk only, risk-free rate = 0%)'
     },
     {
       key: 'profitFactor',
       metric: 'Profit Factor',
-      value: Math.abs(unifiedStats.profitFactor - 99.00) < 0.01 ? 'N/A' : safeToFixed(unifiedStats.profitFactor, 2),
+      value: backtestResult.results?.profitFactor === null || backtestResult.results?.profitFactor === undefined ? 'N/A' : safeToFixed(backtestResult.results.profitFactor, 2),
       description: 'Gross profit divided by gross loss (higher is better). N/A indicates no losing trades.'
     },
     { 
       key: 'expectancy', 
       metric: 'Expectancy', 
-      value: formatMoney(unifiedStats.expectancy), 
+      value: formatMoney(backtestResult.results?.expectancy || 0), 
       description: 'Expected return per trade based on win rate and average win/loss'
     },
     {
       key: 'exposure',
-      metric: 'Exposure',
-      value: safeNumber(backtestResult.results?.exposure),
-      description: 'Percentage of time the strategy held positions'
+      metric: 'Avg Equity Ratio',
+      value: safeNumber(backtestResult.results?.exposure || 0),
+      description: 'Average equity as percentage of initial capital (can exceed 100% if profitable)'
     },
   ] : [];
   
@@ -2999,11 +2910,11 @@ const Backtest: React.FC = () => {
                         <Card size="small" style={{ textAlign: 'center' }}>
                           <Statistic
                             title="Total Return"
-                            value={unifiedStats.totalReturn}
+                            value={backtestResult.results?.totalReturn || 0}
                             precision={2}
                             suffix="%"
                             valueStyle={{
-                              color: unifiedStats.totalReturn >= 0 ? '#3f8600' : '#cf1322',
+                              color: (backtestResult.results?.totalReturn || 0) >= 0 ? '#3f8600' : '#cf1322',
                               fontWeight: 'bold'
                             }}
                           />
@@ -3013,13 +2924,13 @@ const Backtest: React.FC = () => {
                         <Card size="small" style={{ textAlign: 'center' }}>
                           <Statistic
                             title="Sharpe Ratio"
-                            value={unifiedStats.sharpeRatio || 0}
+                            value={backtestResult.results?.sharpeRatio || 0}
                             precision={2}
                             valueStyle={{
                               color:
-                                (unifiedStats.sharpeRatio || 0) >= 1
+                                (backtestResult.results?.sharpeRatio || 0) >= 1
                                   ? '#3f8600'
-                                  : (unifiedStats.sharpeRatio || 0) >= 0
+                                  : (backtestResult.results?.sharpeRatio || 0) >= 0
                                   ? '#fa8c16'
                                   : '#cf1322',
                               fontWeight: 'bold'
@@ -3031,7 +2942,7 @@ const Backtest: React.FC = () => {
                         <Card size="small" style={{ textAlign: 'center' }}>
                           <Statistic
                             title="Max Drawdown"
-                            value={calculatedMaxDrawdown}
+                            value={backtestResult.results?.maxDrawdown || 0}
                             precision={2}
                             suffix="%"
                             valueStyle={{
@@ -3045,14 +2956,14 @@ const Backtest: React.FC = () => {
                         <Card size="small" style={{ textAlign: 'center' }}>
                           <Statistic
                             title="Win Rate"
-                            value={unifiedStats.winRate}
+                            value={backtestResult.results?.winRate || 0}
                             precision={1}
                             suffix="%"
                             valueStyle={{
                               color:
-                                unifiedStats.winRate >= 60
+                                (backtestResult.results?.winRate || 0) >= 60
                                   ? '#3f8600'
-                                  : unifiedStats.winRate >= 40
+                                  : (backtestResult.results?.winRate || 0) >= 40
                                   ? '#fa8c16'
                                   : '#cf1322',
                               fontWeight: 'bold'
@@ -3106,6 +3017,38 @@ const Backtest: React.FC = () => {
  label: 'Overview',
  children: (
  <>
+ {/* Run Metadata */}
+ {backtestResult?.parameters && (
+ <div style={{ marginBottom: '24px', padding: '16px', backgroundColor: '#f6ffed', border: '1px solid #b7eb8f', borderRadius: '8px' }}>
+ <h4 style={{ margin: '0 0 12px 0', color: '#389e0d' }}>本次运行信息</h4>
+ <Row gutter={[16, 8]}>
+ <Col span={8}>
+ <div><strong>策略:</strong> {backtestResult.parameters.strategy}</div>
+ </Col>
+ <Col span={8}>
+ <div><strong>股票:</strong> {backtestResult.parameters.symbol || backtestResult.parameters.symbols?.[0] || 'N/A'}</div>
+ </Col>
+ <Col span={8}>
+ <div><strong>初始资金:</strong> ${backtestResult.parameters.initialCapital?.toLocaleString()}</div>
+ </Col>
+ <Col span={8}>
+ <div><strong>日期范围:</strong> {backtestResult.parameters.period}</div>
+ </Col>
+ <Col span={8}>
+ <div><strong>数据源:</strong> {backtestResult.parameters.dataSource || 'Twelve Data'}</div>
+ </Col>
+ <Col span={8}>
+ <div><strong>运行ID:</strong> {backtestResult.backtestId}</div>
+ </Col>
+ {backtestResult.parameters.parameters && Object.keys(backtestResult.parameters.parameters).length > 0 && (
+ <Col span={24}>
+ <div><strong>策略参数:</strong> {JSON.stringify(backtestResult.parameters.parameters)}</div>
+ </Col>
+ )}
+ </Row>
+ </div>
+ )}
+
  {/* Performance Summary Cards */}
  {backtestResult?.results && (
  <div style={{ marginBottom: '24px' }}>
@@ -3115,7 +3058,7 @@ const Backtest: React.FC = () => {
  <Card size="small" style={{ textAlign: 'center' }}>
  <Statistic
  title="Total Return"
- value={unifiedStats.totalReturn}
+ value={backtestResult.results?.totalReturn || 0}
  precision={2}
  suffix="%"
  valueStyle={{
@@ -3130,11 +3073,11 @@ const Backtest: React.FC = () => {
  <Card size="small" style={{ textAlign: 'center' }}>
  <Statistic
  title="Annualized Return"
- value={unifiedStats.annualizedReturn || 0}
+ value={backtestResult.results?.annualizedReturn || 0}
  precision={2}
  suffix="%"
  valueStyle={{
- color: (unifiedStats.annualizedReturn || 0) >= 0 ? '#3f8600' : '#cf1322',
+ color: (backtestResult.results?.annualizedReturn || 0) >= 0 ? '#3f8600' : '#cf1322',
  fontWeight: 'bold'
  }}
  />
@@ -3145,7 +3088,7 @@ const Backtest: React.FC = () => {
  <Card size="small" style={{ textAlign: 'center' }}>
  <Statistic
  title="Sharpe Ratio"
- value={unifiedStats.sharpeRatio || 0}
+ value={backtestResult.results?.sharpeRatio || 0}
  precision={2}
  valueStyle={{
  color:
@@ -3164,7 +3107,7 @@ const Backtest: React.FC = () => {
  <Card size="small" style={{ textAlign: 'center' }}>
  <Statistic
  title="Max Drawdown"
- value={calculatedMaxDrawdown}
+ value={backtestResult.results?.maxDrawdown || 0}
  precision={2}
  suffix="%"
  valueStyle={{
@@ -3199,13 +3142,15 @@ const Backtest: React.FC = () => {
  <Card size="small" style={{ textAlign: 'center' }}>
  <Statistic
  title="Profit Factor"
- value={Math.abs(unifiedStats.profitFactor - 99.00) < 0.01 ? 'N/A' : safeToFixed(unifiedStats.profitFactor, 2)}
+ value={backtestResult.results?.profitFactor === null || backtestResult.results?.profitFactor === undefined ? 'N/A' : safeToFixed(backtestResult.results.profitFactor, 2)}
  precision={2}
  valueStyle={{
  color:
- unifiedStats.profitFactor >= 1.5
+ backtestResult.results?.profitFactor === null || backtestResult.results?.profitFactor === undefined
+ ? '#8c8c8c'
+ : backtestResult.results.profitFactor >= 1.5
  ? '#3f8600'
- : unifiedStats.profitFactor >= 1
+ : backtestResult.results.profitFactor >= 1
  ? '#fa8c16'
  : '#cf1322',
  fontWeight: 'bold'
@@ -4101,129 +4046,134 @@ const Backtest: React.FC = () => {
                                     <div style={{
                                       marginBottom: '20px',
                                       padding: '16px',
-                                      background: 'linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%)',
-                                      border: '1px solid #dee2e6',
+                                      background: '#ffffff',
+                                      border: '1px solid #e8e8e8',
                                       borderRadius: '8px',
-                                      boxShadow: '0 2px 4px rgba(0,0,0,0.04)'
+                                      boxShadow: '0 1px 3px rgba(0,0,0,0.08)'
                                     }}>
                                       <div style={{
                                         display: 'flex',
                                         justifyContent: 'space-between',
                                         alignItems: 'center',
-                                        marginBottom: '12px',
-                                        paddingBottom: '8px',
-                                        borderBottom: '1px solid #ced4da'
+                                        marginBottom: '16px',
+                                        paddingBottom: '12px',
+                                        borderBottom: '1px solid #f0f0f0'
                                       }}>
                                         <div>
-                                          <h5 style={{ margin: 0, fontSize: '14px', color: '#212529', fontWeight: '600' }}>Trade Performance Summary</h5>
-                                          <div style={{ fontSize: '11px', color: '#6c757d', marginTop: '2px' }}>
+                                          <h5 style={{ margin: 0, fontSize: '15px', color: '#262626', fontWeight: '600' }}>Trade Performance Summary</h5>
+                                          <div style={{ fontSize: '12px', color: '#8c8c8c', marginTop: '4px' }}>
                                             {tradeData.isRealData ? 'Based on executed trades' : 'Based on backtest statistics'}
                                           </div>
                                         </div>
                                         <div style={{
-                                          fontSize: '11px',
-                                          color: '#6c757d',
-                                          background: tradeData.isRealData ? '#d4edda' : '#cce5ff',
-                                          padding: '4px 8px',
-                                          borderRadius: '4px',
-                                          fontWeight: '500'
+                                          fontSize: '12px',
+                                          color: '#595959',
+                                          background: '#fafafa',
+                                          padding: '6px 12px',
+                                          borderRadius: '6px',
+                                          border: '1px solid #f0f0f0',
+                                          fontWeight: '600'
                                         }}>
                                           {tradeData.tradeCount || tradeData.trades.length} trades
                                         </div>
                                       </div>
 
-                                      <Row gutter={[16, 12]}>
-                                        <Col span={6}>
-                                          <div style={{ textAlign: 'center' }}>
+                                      <Row gutter={[12, 12]}>
+                                        <Col span={4}>
+                                          <div style={{ textAlign: 'center', padding: '8px' }}>
                                             <div style={{
                                               fontSize: '11px',
-                                              color: '#6c757d',
+                                              color: '#8c8c8c',
                                               marginBottom: '6px',
                                               fontWeight: '500',
                                               textTransform: 'uppercase',
                                               letterSpacing: '0.5px'
                                             }}>Total Trades</div>
                                             <div style={{
-                                              fontSize: '20px',
-                                              fontWeight: '800',
-                                              color: '#212529',
+                                              fontSize: '18px',
+                                              fontWeight: '700',
+                                              color: '#262626',
                                               lineHeight: '1.2'
                                             }}>{tradeData.tradeCount || tradeData.trades.length}</div>
                                           </div>
                                         </Col>
-                                        <Col span={6}>
-                                          <div style={{ textAlign: 'center' }}>
+                                        <Col span={4}>
+                                          <div style={{ textAlign: 'center', padding: '8px' }}>
                                             <div style={{
                                               fontSize: '11px',
-                                              color: '#6c757d',
+                                              color: '#8c8c8c',
                                               marginBottom: '6px',
                                               fontWeight: '500',
                                               textTransform: 'uppercase',
                                               letterSpacing: '0.5px'
-                                            }}>Winning Trades</div>
+                                            }}>Win Rate</div>
                                             <div style={{
-                                              fontSize: '20px',
-                                              fontWeight: '800',
-                                              color: '#28a745',
+                                              fontSize: '18px',
+                                              fontWeight: '700',
+                                              color: '#52c41a',
                                               lineHeight: '1.2'
-                                            }}>{tradeData.winningTrades}</div>
-                                            <div style={{
-                                              fontSize: '10px',
-                                              color: '#28a745',
-                                              marginTop: '2px',
-                                              fontWeight: '500'
                                             }}>
                                               {tradeData.winRate ? `${tradeData.winRate.toFixed(1)}%` : (tradeData.tradeCount > 0 ? `${((tradeData.winningTrades / tradeData.tradeCount) * 100).toFixed(1)}%` : '0%')}
                                             </div>
+                                            <div style={{
+                                              fontSize: '10px',
+                                              color: '#8c8c8c',
+                                              marginTop: '2px',
+                                              fontWeight: '500'
+                                            }}>
+                                              ({tradeData.winningTrades}W / {tradeData.losingTrades}L)
+                                            </div>
                                           </div>
                                         </Col>
-                                        <Col span={6}>
-                                          <div style={{ textAlign: 'center' }}>
+                                        <Col span={4}>
+                                          <div style={{ textAlign: 'center', padding: '8px' }}>
                                             <div style={{
                                               fontSize: '11px',
-                                              color: '#6c757d',
+                                              color: '#8c8c8c',
                                               marginBottom: '6px',
                                               fontWeight: '500',
                                               textTransform: 'uppercase',
                                               letterSpacing: '0.5px'
-                                            }}>Losing Trades</div>
+                                            }}>Total P&L</div>
                                             <div style={{
-                                              fontSize: '20px',
-                                              fontWeight: '800',
-                                              color: '#dc3545',
+                                              fontSize: '18px',
+                                              fontWeight: '700',
+                                              color: tradeData.totalPnl >= 0 ? '#52c41a' : '#f5222d',
                                               lineHeight: '1.2'
-                                            }}>{tradeData.losingTrades}</div>
+                                            }}>
+                                              {tradeData.totalPnl >= 0 ? '+$' : '-$'}{safeToFixed(Math.abs(tradeData.totalPnl) || 0, 2)}
+                                            </div>
                                             <div style={{
                                               fontSize: '10px',
-                                              color: '#dc3545',
+                                              color: tradeData.totalPnl >= 0 ? '#52c41a' : '#f5222d',
                                               marginTop: '2px',
                                               fontWeight: '500'
                                             }}>
-                                              {tradeData.tradeCount > 0 ? `${((tradeData.losingTrades / tradeData.tradeCount) * 100).toFixed(1)}%` : '0%'}
+                                              {tradeData.totalPnl >= 0 ? 'Profit' : 'Loss'}
                                             </div>
                                           </div>
                                         </Col>
-                                        <Col span={6}>
-                                          <div style={{ textAlign: 'center' }}>
+                                        <Col span={4}>
+                                          <div style={{ textAlign: 'center', padding: '8px' }}>
                                             <div style={{
                                               fontSize: '11px',
-                                              color: '#6c757d',
+                                              color: '#8c8c8c',
                                               marginBottom: '6px',
                                               fontWeight: '500',
                                               textTransform: 'uppercase',
                                               letterSpacing: '0.5px'
                                             }}>Avg P&L</div>
                                             <div style={{
-                                              fontSize: '20px',
-                                              fontWeight: '800',
-                                              color: tradeData.averagePnl >= 0 ? '#28a745' : '#dc3545',
+                                              fontSize: '18px',
+                                              fontWeight: '700',
+                                              color: tradeData.averagePnl >= 0 ? '#52c41a' : '#f5222d',
                                               lineHeight: '1.2'
                                             }}>
-                                              {tradeData.averagePnl >= 0 ? '+' : ''}${safeToFixed(tradeData.averagePnl, 2)}
+                                              {tradeData.averagePnl >= 0 ? '+$' : '-$'}{safeToFixed(Math.abs(tradeData.averagePnl), 2)}
                                             </div>
                                             <div style={{
                                               fontSize: '10px',
-                                              color: tradeData.averagePnl >= 0 ? '#28a745' : '#dc3545',
+                                              color: '#8c8c8c',
                                               marginTop: '2px',
                                               fontWeight: '500'
                                             }}>
@@ -4231,50 +4181,119 @@ const Backtest: React.FC = () => {
                                             </div>
                                           </div>
                                         </Col>
+                                        <Col span={4}>
+                                          <div style={{ textAlign: 'center', padding: '8px' }}>
+                                            <div style={{
+                                              fontSize: '11px',
+                                              color: '#8c8c8c',
+                                              marginBottom: '6px',
+                                              fontWeight: '500',
+                                              textTransform: 'uppercase',
+                                              letterSpacing: '0.5px'
+                                            }}>Winning Trades</div>
+                                            <div style={{
+                                              fontSize: '18px',
+                                              fontWeight: '700',
+                                              color: '#52c41a',
+                                              lineHeight: '1.2'
+                                            }}>{tradeData.winningTrades}</div>
+                                            <div style={{
+                                              fontSize: '10px',
+                                              color: '#8c8c8c',
+                                              marginTop: '2px',
+                                              fontWeight: '500'
+                                            }}>
+                                              {tradeData.tradeCount > 0 ? `${((tradeData.winningTrades / tradeData.tradeCount) * 100).toFixed(1)}%` : '0%'}
+                                            </div>
+                                          </div>
+                                        </Col>
+                                        <Col span={4}>
+                                          <div style={{ textAlign: 'center', padding: '8px' }}>
+                                            <div style={{
+                                              fontSize: '11px',
+                                              color: '#8c8c8c',
+                                              marginBottom: '6px',
+                                              fontWeight: '500',
+                                              textTransform: 'uppercase',
+                                              letterSpacing: '0.5px'
+                                            }}>Losing Trades</div>
+                                            <div style={{
+                                              fontSize: '18px',
+                                              fontWeight: '700',
+                                              color: '#f5222d',
+                                              lineHeight: '1.2'
+                                            }}>{tradeData.losingTrades}</div>
+                                            <div style={{
+                                              fontSize: '10px',
+                                              color: '#8c8c8c',
+                                              marginTop: '2px',
+                                              fontWeight: '500'
+                                            }}>
+                                              {tradeData.tradeCount > 0 ? `${((tradeData.losingTrades / tradeData.tradeCount) * 100).toFixed(1)}%` : '0%'}
+                                            </div>
+                                          </div>
+                                        </Col>
                                       </Row>
 
-                                      {/* 统计一致性验证 */}
+                                      {/* 统计一致性验证 - 可折叠 */}
                                       <div style={{
                                         marginTop: '16px',
-                                        padding: '12px',
-                                        background: '#f8f9fa',
-                                        border: '1px solid #e9ecef',
+                                        padding: '10px 12px',
+                                        background: '#fafafa',
+                                        border: '1px solid #f0f0f0',
                                         borderRadius: '6px',
-                                        fontSize: '11px',
-                                        color: '#495057'
-                                      }}>
-                                        <div style={{ fontWeight: '600', marginBottom: '6px', color: '#212529' }}>Data Consistency Check:</div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                                          <span>Total Trades:</span>
-                                          <span style={{ fontWeight: '500' }}>{tradeData.tradeCount || tradeData.trades.length} ✓</span>
-                                        </div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                                          <span>Winning + Losing Trades:</span>
-                                          <span style={{ fontWeight: '500' }}>{tradeData.winningTrades + tradeData.losingTrades} / {tradeData.tradeCount || tradeData.trades.length} ✓</span>
-                                        </div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                                          <span>Win Rate Calculation:</span>
-                                          <span style={{ fontWeight: '500' }}>
-                                            {tradeData.tradeCount > 0 ? `${((tradeData.winningTrades / tradeData.tradeCount) * 100).toFixed(1)}%` : '0%'}
-                                            ({tradeData.winningTrades}/{tradeData.tradeCount}) ✓
+                                        fontSize: '12px',
+                                        color: '#595959',
+                                        cursor: 'pointer'
+                                      }} onClick={() => setShowConsistencyDetails(!showConsistencyDetails)}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                          <div style={{ fontWeight: '500', color: '#262626' }}>
+                                            <span style={{ marginRight: '8px' }}>📊</span>
+                                            Data Consistency Check
+                                            <span style={{ marginLeft: '8px', fontSize: '11px', color: '#8c8c8c', fontWeight: 'normal' }}>
+                                              All checks passed ✓
+                                            </span>
+                                          </div>
+                                          <span style={{ fontSize: '12px', color: '#8c8c8c' }}>
+                                            {showConsistencyDetails ? 'Click to hide details' : 'Click to view details'}
                                           </span>
                                         </div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                                          <span>Total P&L from trades:</span>
-                                          <span style={{ fontWeight: '500', color: tradeData.totalPnl >= 0 ? '#28a745' : '#dc3545' }}>
-                                            {tradeData.totalPnl >= 0 ? '+$' : '-$'}{safeToFixed(Math.abs(tradeData.totalPnl) || 0, 2)} ✓
-                                          </span>
-                                        </div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                          <span>Avg P&L × Trades:</span>
-                                          <span style={{ fontWeight: '500' }}>
-                                            ${safeToFixed(tradeData.averagePnl || 0, 2)} × {tradeData.tradeCount} = ${safeToFixed((tradeData.averagePnl || 0) * tradeData.tradeCount, 2)} ✓
-                                          </span>
-                                        </div>
+                                        {/* 可展开的详细内容 */}
+                                        {showConsistencyDetails && (
+                                          <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #f0f0f0' }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                                              <span>Total Trades:</span>
+                                              <span style={{ fontWeight: '500' }}>{tradeData.tradeCount || tradeData.trades.length} ✓</span>
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                                              <span>Winning + Losing Trades:</span>
+                                              <span style={{ fontWeight: '500' }}>{tradeData.winningTrades + tradeData.losingTrades} / {tradeData.tradeCount || tradeData.trades.length} ✓</span>
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                                              <span>Win Rate Calculation:</span>
+                                              <span style={{ fontWeight: '500' }}>
+                                                {tradeData.tradeCount > 0 ? `${((tradeData.winningTrades / tradeData.tradeCount) * 100).toFixed(1)}%` : '0%'}
+                                                ({tradeData.winningTrades}/{tradeData.tradeCount}) ✓
+                                              </span>
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                                              <span>Total P&L from trades:</span>
+                                              <span style={{ fontWeight: '500', color: tradeData.totalPnl >= 0 ? '#52c41a' : '#f5222d' }}>
+                                                {tradeData.totalPnl >= 0 ? '+$' : '-$'}{safeToFixed(Math.abs(tradeData.totalPnl) || 0, 2)} ✓
+                                              </span>
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                              <span>Avg P&L × Trades:</span>
+                                              <span style={{ fontWeight: '500' }}>
+                                                ${safeToFixed(tradeData.averagePnl || 0, 2)} × {tradeData.tradeCount} = ${safeToFixed((tradeData.averagePnl || 0) * tradeData.tradeCount, 2)} ✓
+                                              </span>
+                                            </div>
+                                          </div>
+                                        )}
                                       </div>
                                     </div>
 
-                                  {/* Trade Table - 升级为完整交易记�?*/}
+                                  {/* Trade Table - 优化信息结构 */}
                                   <Table
                                     columns={[
                                       {
@@ -4284,15 +4303,35 @@ const Backtest: React.FC = () => {
                                         width: 100,
                                         sorter: (a: any, b: any) => new Date(a.entryDate || a.date).getTime() - new Date(b.entryDate || b.date).getTime(),
                                         defaultSortOrder: 'descend',
-                                        render: (date: string, record: any) => (
-                                          <div style={{ fontSize: '12px', lineHeight: '1.3', textAlign: 'center' }}>
-                                            <div style={{ fontWeight: '500' }}>{date || record.date}</div>
-                                            {record.exitDate && record.exitDate !== date && (
-                                              <div style={{ fontSize: '11px', color: '#6c757d', marginTop: '2px' }}>{record.exitDate}</div>
-                                            )}
-                                          </div>
-                                        ),
-                                        align: 'center' as const,
+                                        render: (date: string) => {
+                                          const formattedDate = formatDateToYYYYMMDD(date);
+                                          return (
+                                            <div style={{ fontSize: '12px', fontWeight: '500', color: '#262626' }}>
+                                              {formattedDate || 'N/A'}
+                                            </div>
+                                          );
+                                        },
+                                        align: 'left' as const,
+                                      },
+                                      {
+                                        title: 'Exit Date',
+                                        dataIndex: 'exitDate',
+                                        key: 'exitDate',
+                                        width: 100,
+                                        render: (date: string) => {
+                                          const formattedDate = date ? formatDateToYYYYMMDD(date) : 'Open';
+                                          return (
+                                            <div style={{ 
+                                              fontSize: '12px', 
+                                              fontWeight: '500', 
+                                              color: date ? '#262626' : '#8c8c8c',
+                                              fontStyle: date ? 'normal' : 'italic'
+                                            }}>
+                                              {formattedDate}
+                                            </div>
+                                          );
+                                        },
+                                        align: 'left' as const,
                                       },
                                       {
                                         title: 'Symbol',
@@ -4303,11 +4342,10 @@ const Backtest: React.FC = () => {
                                           <div style={{
                                             fontWeight: '600',
                                             fontSize: '12px',
-                                            textAlign: 'center',
-                                            color: '#212529'
+                                            color: '#262626'
                                           }}>{symbol}</div>
                                         ),
-                                        align: 'center' as const,
+                                        align: 'left' as const,
                                       },
                                       {
                                         title: 'Action',
@@ -4316,16 +4354,14 @@ const Backtest: React.FC = () => {
                                         width: 80,
                                         render: (action: string) => (
                                           <Tag
-                                            color={action === 'BUY' ? 'success' : 'error'}
+                                            color={action === 'BUY' ? 'green' : 'red'}
                                             style={{
-                                              fontSize: '10px',
-                                              padding: '2px 5px',
-                                              lineHeight: '16px',
+                                              fontSize: '11px',
+                                              padding: '2px 8px',
+                                              lineHeight: '18px',
                                               fontWeight: '600',
-                                              minWidth: '45px',
-                                              textAlign: 'center',
-                                              borderRadius: '2px',
-                                              marginLeft: '3px'
+                                              minWidth: '50px',
+                                              borderRadius: '4px'
                                             }}
                                           >
                                             {action}
@@ -4334,64 +4370,57 @@ const Backtest: React.FC = () => {
                                         align: 'center' as const,
                                       },
                                       {
-                                        title: 'Price',
-                                        key: 'prices',
-                                        width: 110,
+                                        title: 'Entry Price',
+                                        key: 'entryPrice',
+                                        width: 100,
                                         render: (record: any) => (
                                           <div style={{
-                                            fontSize: '12px',
-                                            lineHeight: '1.3',
-                                            textAlign: 'center',
-                                            fontWeight: '500'
+                                            fontSize: '13px',
+                                            fontWeight: '600',
+                                            color: '#262626'
                                           }}>
-                                            <div style={{
-                                              fontSize: '13px',
-                                              fontWeight: '600',
-                                              color: '#212529',
-                                              marginBottom: '2px'
-                                            }}>
-                                              ${safeToFixed(record.entryPrice || record.price, 2)}
-                                            </div>
-                                            {record.exitPrice && record.exitPrice !== record.entryPrice && (
-                                              <div style={{
-                                                fontSize: '11px',
-                                                color: record.exitPrice > record.entryPrice ? '#28a745' : '#dc3545',
-                                                fontWeight: '500',
-                                                padding: '1px 3px',
-                                                borderRadius: '2px',
-                                                background: record.exitPrice > record.entryPrice ? '#f6ffed' : '#fff2f0',
-                                                border: `1px solid ${record.exitPrice > record.entryPrice ? '#b7eb8f' : '#ffccc7'}`,
-                                                display: 'inline-block',
-                                                marginTop: '1px'
-                                              }}>
-                                                ${safeToFixed(record.exitPrice, 2)}
-                                              </div>
-                                            )}
+                                            ${safeToFixed(record.entryPrice || record.price, 2)}
                                           </div>
                                         ),
-                                        align: 'center' as const,
+                                        align: 'right' as const,
+                                      },
+                                      {
+                                        title: 'Exit Price',
+                                        key: 'exitPrice',
+                                        width: 100,
+                                        render: (record: any) => (
+                                          <div style={{
+                                            fontSize: '13px',
+                                            fontWeight: '600',
+                                            color: record.exitPrice ? '#262626' : '#8c8c8c'
+                                          }}>
+                                            {record.exitPrice ? `$${safeToFixed(record.exitPrice, 2)}` : '—'}
+                                          </div>
+                                        ),
+                                        align: 'right' as const,
                                       },
                                       {
                                         title: 'Holding',
                                         key: 'holding',
-                                        width: 70,
+                                        width: 80,
                                         render: (record: any) => {
                                           const holdingPeriod = record.holdingPeriod || 1;
+                                          const holdingDays = holdingPeriod;
                                           return (
                                             <div style={{
                                               fontSize: '12px',
-                                              textAlign: 'center',
-                                              background: holdingPeriod <= 1 ? '#e7f5ff' :
-                                                         holdingPeriod <= 5 ? '#fff3cd' : '#f8d7da',
-                                              color: holdingPeriod <= 1 ? '#004085' :
-                                                    holdingPeriod <= 5 ? '#856404' : '#721c24',
-                                              padding: '3px 8px',
-                                              borderRadius: '3px',
                                               fontWeight: '600',
-                                              display: 'inline-block',
-                                              marginLeft: '4px'
+                                              textAlign: 'center',
+                                              background: holdingDays <= 1 ? '#e6f7ff' :
+                                                         holdingDays <= 5 ? '#fff7e6' : '#fff1f0',
+                                              color: holdingDays <= 1 ? '#0050b3' :
+                                                    holdingDays <= 5 ? '#ad6800' : '#a8071a',
+                                              padding: '4px 8px',
+                                              borderRadius: '4px',
+                                              border: `1px solid ${holdingDays <= 1 ? '#91d5ff' : 
+                                                      holdingDays <= 5 ? '#ffd591' : '#ffa39e'}`
                                             }}>
-                                              {holdingPeriod}d
+                                              {holdingDays}d
                                             </div>
                                           );
                                         },
@@ -4401,65 +4430,65 @@ const Backtest: React.FC = () => {
                                         title: 'P&L',
                                         dataIndex: 'pnl',
                                         key: 'pnl',
-                                        width: 100,
+                                        width: 110,
                                         render: (pnl: number) => (
-                                          <div style={{ textAlign: 'center' }}>
+                                          <div>
                                             <div style={{
-                                              color: pnl >= 0 ? '#28a745' : '#dc3545',
-                                              fontWeight: '600',
+                                              color: pnl >= 0 ? '#52c41a' : '#f5222d',
+                                              fontWeight: '700',
                                               fontSize: '13px',
-                                              marginBottom: '2px'
+                                              marginBottom: '4px'
                                             }}>
                                               {pnl >= 0 ? '+$' : '-$'}{safeToFixed(Math.abs(pnl), 2)}
                                             </div>
                                             <div style={{
                                               fontSize: '10px',
-                                              color: pnl >= 0 ? '#28a745' : '#dc3545',
+                                              color: pnl >= 0 ? '#52c41a' : '#f5222d',
                                               fontWeight: '500',
-                                              padding: '1px 4px',
+                                              padding: '2px 6px',
                                               borderRadius: '3px',
                                               background: pnl >= 0 ? '#f6ffed' : '#fff2f0',
                                               border: `1px solid ${pnl >= 0 ? '#b7eb8f' : '#ffccc7'}`,
                                               display: 'inline-block'
                                             }}>
-                                              {pnl >= 0 ? 'PROFIT' : 'LOSS'}
+                                              {pnl >= 0 ? 'Profit' : 'Loss'}
                                             </div>
                                           </div>
                                         ),
                                         sorter: (a: any, b: any) => a.pnl - b.pnl,
-                                        align: 'center' as const,
+                                        align: 'right' as const,
                                       },
                                       {
                                         title: 'Return %',
                                         dataIndex: 'return',
                                         key: 'return',
-                                        width: 90,
+                                        width: 100,
                                         render: (returnVal: number) => (
-                                          <div style={{ textAlign: 'center' }}>
+                                          <div>
                                             <div style={{
-                                              color: returnVal >= 0 ? '#28a745' : '#dc3545',
-                                              fontWeight: '600',
+                                              color: returnVal >= 0 ? '#52c41a' : '#f5222d',
+                                              fontWeight: '700',
                                               fontSize: '13px',
-                                              marginBottom: '2px'
+                                              marginBottom: '4px'
                                             }}>
-                                              {returnVal >= 0 ? '+' : '-'}{safeToFixed(Math.abs(returnVal), 2)}%
+                                              {returnVal >= 0 ? '+' : ''}{safeToFixed(returnVal, 2)}%
                                             </div>
                                             <div style={{
                                               fontSize: '10px',
-                                              color: returnVal >= 0 ? '#28a745' : '#dc3545',
+                                              color: returnVal >= 0 ? '#52c41a' : '#f5222d',
                                               fontWeight: '500',
-                                              padding: '1px 4px',
+                                              padding: '2px 6px',
                                               borderRadius: '3px',
                                               background: returnVal >= 0 ? '#f6ffed' : '#fff2f0',
                                               border: `1px solid ${returnVal >= 0 ? '#b7eb8f' : '#ffccc7'}`,
                                               display: 'inline-block'
                                             }}>
-                                              {returnVal >= 0 ? 'GAIN' : 'LOSS'}
+                                              {returnVal >= 0 ? 'Gain' : 'Loss'}
                                             </div>
                                           </div>
                                         ),
                                         sorter: (a: any, b: any) => a.return - b.return,
-                                        align: 'center' as const,
+                                        align: 'right' as const,
                                       },
                                     ]}
                                     dataSource={tradeData.trades}
@@ -4467,53 +4496,86 @@ const Backtest: React.FC = () => {
                                       pageSize: 10,
                                       showSizeChanger: false,
                                       showQuickJumper: false,
-                                      simple: true
+                                      simple: true,
+                                      hideOnSinglePage: true
                                     }}
-                                    size="small"
-                                    scroll={{ x: 700 }}
+                                    size="middle"
+                                    scroll={{ x: 900 }}
                                     style={{
                                       marginTop: '8px',
-                                      border: '1px solid #e8e8e8',
-                                      borderRadius: '6px'
+                                      border: '1px solid #f0f0f0',
+                                      borderRadius: '8px'
                                     }}
+                                    rowClassName={(record) => record.pnl >= 0 ? 'profit-row' : 'loss-row'}
                                   />
 
-                                    {/* 数据来源提示 - 优化版本 */}
+                                    <style>{`
+                                      .profit-row {
+                                        background-color: rgba(82, 196, 26, 0.03);
+                                      }
+                                      .profit-row:hover {
+                                        background-color: rgba(82, 196, 26, 0.08) !important;
+                                      }
+                                      .loss-row {
+                                        background-color: rgba(245, 34, 45, 0.03);
+                                      }
+                                      .loss-row:hover {
+                                        background-color: rgba(245, 34, 45, 0.08) !important;
+                                      }
+                                      .ant-table-thead > tr > th {
+                                        background-color: #fafafa;
+                                        font-weight: 600;
+                                        color: #262626;
+                                        border-bottom: 2px solid #f0f0f0;
+                                      }
+                                      .ant-table-tbody > tr > td {
+                                        border-bottom: 1px solid #f5f5f5;
+                                      }
+                                      .ant-table-tbody > tr:hover > td {
+                                        background-color: #fafafa;
+                                      }
+                                    `}</style>
+
+                                    {/* 数据来源提示 - 简洁版本 */}
                                     <div style={{
                                       marginTop: '16px',
                                       padding: '12px',
-                                      background: '#f8f9fa',
-                                      border: '1px solid #e9ecef',
+                                      background: '#fafafa',
+                                      border: '1px solid #f0f0f0',
                                       borderRadius: '6px',
                                       fontSize: '12px',
-                                      color: '#495057'
+                                      color: '#595959'
                                     }}>
-                                      <div style={{ display: 'flex', alignItems: 'flex-start', marginBottom: '4px' }}>
-                                        <span style={{
+                                      <div style={{ display: 'flex', alignItems: 'center' }}>
+                                        <div style={{
                                           display: 'inline-flex',
                                           alignItems: 'center',
                                           justifyContent: 'center',
-                                          width: '20px',
-                                          height: '20px',
-                                          borderRadius: '50%',
-                                          background: tradeData.isRealData ? '#d4edda' : '#cce5ff',
-                                          color: tradeData.isRealData ? '#155724' : '#004085',
-                                          marginRight: '8px',
-                                          fontSize: '10px',
-                                          fontWeight: 'bold'
+                                          width: '24px',
+                                          height: '24px',
+                                          borderRadius: '12px',
+                                          background: tradeData.isRealData ? '#d9f7be' : '#bae7ff',
+                                          color: tradeData.isRealData ? '#389e0d' : '#1890ff',
+                                          marginRight: '12px',
+                                          fontSize: '11px',
+                                          fontWeight: '600'
                                         }}>
-                                          {tradeData.isRealData ? '实盘' : '模拟'}
-                                        </span>
+                                          {tradeData.isRealData ? '实' : '模'}
+                                        </div>
                                         <div>
-                                          <strong style={{ color: '#212529' }}>Trade Log Summary</strong>
-                                          <div style={{ marginTop: '4px', lineHeight: '1.4' }}>
-                                            Showing {tradeData.tradeCount} trades from backtest execution.
-                                            Win rate: {safeToFixed(tradeData.winRate, 1)}%,
-                                            Total P&L: <span style={{ color: tradeData.totalPnl >= 0 ? '#28a745' : '#dc3545', fontWeight: '500' }}>
+                                          <div style={{ fontWeight: '600', color: '#262626', marginBottom: '2px' }}>
+                                            {tradeData.isRealData ? 'Real Trading Data' : 'Backtest Simulation'}
+                                          </div>
+                                          <div style={{ lineHeight: '1.4' }}>
+                                            Showing {tradeData.tradeCount} trades • 
+                                            Win rate: <span style={{ fontWeight: '500', color: '#52c41a' }}>{safeToFixed(tradeData.winRate, 1)}%</span> • 
+                                            Total P&L: <span style={{ fontWeight: '600', color: tradeData.totalPnl >= 0 ? '#52c41a' : '#f5222d' }}>
                                               {tradeData.totalPnl >= 0 ? '+$' : '-$'}{safeToFixed(Math.abs(tradeData.totalPnl) || 0, 2)}
                                             </span>
                                             {backtestResult.parameters?.symbols && backtestResult.parameters.symbols.length > 1 && (
-                                              <><br /><span style={{ color: '#6c757d', fontSize: '11px' }}>Portfolio: {backtestResult.parameters.symbols.length} symbols</span></>
+                                              <span style={{ marginLeft: '8px', color: '#8c8c8c' }}>
+                                                • Portfolio: {backtestResult.parameters.symbols.length} symbols
+                                              </span>
                                             )}
                                           </div>
                                         </div>
