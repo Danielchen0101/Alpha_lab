@@ -782,7 +782,7 @@ const Backtest: React.FC = () => {
       const TEST_MODE = false; // 设置为false禁用测试模式，使用真实后端数据
       let result = response.data;
 
-      if (TEST_MODE && (!result || !result.results || !result.results.tradesList || result.results.tradesList.length <= 1)) {
+      if (TEST_MODE && (!result.result || !result.result.results || !result.result.results.tradesList || result.result.results.tradesList.length <= 1)) {
         console.log('=== TEST MODE: Simulating backend response with realistic trades ===');
 
         // 生成14个交易，覆盖整个回测周期
@@ -836,39 +836,45 @@ const Backtest: React.FC = () => {
           initialCapital
         });
 
+        // 模拟后端响应结构：{ result: { results: {...} }, success: true }
         result = {
           ...result,
-          results: {
-            ...result?.results,
-            trades: totalTrades, // 14个交易
-            tradesList: simulatedTrades,
-            winRate: winRate, // 50.0%
-            profitLoss: totalPnl, // 15500
-            avgReturnPerTrade: avgPnl, // 1107.14
-            totalReturn: totalReturn // 15.50%
-          }
+          result: {
+            ...result.result,
+            results: {
+              ...result.result?.results,
+              trades: totalTrades, // 14个交易
+              tradesList: simulatedTrades,
+              winRate: winRate, // 50.0%
+              profitLoss: totalPnl, // 15500
+              avgReturnPerTrade: avgPnl, // 1107.14
+              totalReturn: totalReturn // 15.50%
+            }
+          },
+          success: true
         };
-        console.log('Test data generated with', result.results.tradesList.length, 'trades');
+        console.log('Test data generated with', result.result.results.tradesList.length, 'trades');
       }
 
       if (result) {
         // 调试：检查后端返回的数据结构
         console.log('=== BACKEND RESPONSE DEBUG ===');
         console.log('Full response:', result);
-        console.log('Results:', result.results);
-        console.log('Trades count:', result.results?.trades);
-        console.log('Trades list:', result.results?.tradesList);
-        console.log('Trades list length:', result.results?.tradesList?.length || 0);
+        console.log('Result field:', result.result);
+        console.log('Results inside result:', result.result?.results);
+        console.log('Trades count:', result.result?.results?.trades);
+        console.log('Trades list:', result.result?.results?.tradesList);
+        console.log('Trades list length:', result.result?.results?.tradesList?.length || 0);
 
-        // 检查后端是否同步返回完整结果（主要检查results字段�?
-        if (result.results) {
+        // 检查后端是否同步返回完整结果（主要检查result.results字段）
+        if (result.result?.results) {
           // 调试：打印后端返回的equityCurve数据
           console.log('=== 后端返回的 equityCurve 数据 ===');
-          console.log('equityCurve长度:', result.results?.equityCurve?.length || 0);
+          console.log('equityCurve长度:', result.result?.results?.equityCurve?.length || 0);
 
-          if (result.results?.equityCurve && result.results.equityCurve.length > 0) {
+          if (result.result?.results?.equityCurve && result.result.results.equityCurve.length > 0) {
             console.log('前10个点:');
-            result.results.equityCurve.slice(0, 10).forEach((item: any, index: number) => {
+            result.result.results.equityCurve.slice(0, 10).forEach((item: any, index: number) => {
               console.log(`  [${index}]`, {
                 date: item.date,
                 dateType: typeof item.date,
@@ -881,10 +887,10 @@ const Backtest: React.FC = () => {
               });
             });
 
-            if (result.results.equityCurve.length > 10) {
+            if (result.result.results.equityCurve.length > 10) {
               console.log('后10个点:');
-              result.results.equityCurve.slice(-10).forEach((item: any, index: number) => {
-                const actualIndex = result.results.equityCurve.length - 10 + index;
+              result.result.results.equityCurve.slice(-10).forEach((item: any, index: number) => {
+                const actualIndex = result.result.results.equityCurve.length - 10 + index;
                 console.log(`  [${actualIndex}]`, {
                   date: item.date,
                   dateType: typeof item.date,
@@ -899,16 +905,21 @@ const Backtest: React.FC = () => {
             }
 
             // 统计无效日期
-            const invalidDates = result.results.equityCurve.filter((item: any) =>
+            const invalidDates = result.result.results.equityCurve.filter((item: any) =>
               item.date === 0 || item.date === '0' ||
               item.date === null || item.date === undefined ||
               item.date === '' || parseDateSafe(item.date) === null
             );
-            console.log(`无效日期数量: ${invalidDates.length}/${result.results.equityCurve.length}`);
+            console.log(`无效日期数量: ${invalidDates.length}/${result.result.results.equityCurve.length}`);
           }
 
           // 后端已同步返回完整结果，直接使用
-          setBacktestResult(result);
+          // 合并result.result和success/status字段
+          const mergedResult = {
+            ...result.result,
+            success: result.success !== undefined ? result.success : (result.status === 'completed')
+          };
+          setBacktestResult(mergedResult);
           setLoading(false);
 
           // 如果有status字段，根据状态显示相应消�?
@@ -928,8 +939,8 @@ const Backtest: React.FC = () => {
           }, 100);
 
           // 保存到历史记录
-          if (result) {
-            addToBacktestHistory(result);
+          if (mergedResult) {
+            addToBacktestHistory(mergedResult);
           }
 
           // 刷新历史记录
@@ -987,11 +998,11 @@ const Backtest: React.FC = () => {
       if (response.data) {
         // 调试：打印从API加载的equityCurve数据
         console.log('=== 从API加载的 equityCurve 数据 ===');
-        console.log('equityCurve长度:', response.data.results?.equityCurve?.length || 0);
+        console.log('equityCurve长度:', response.data.result?.results?.equityCurve?.length || 0);
 
-        if (response.data.results?.equityCurve && response.data.results.equityCurve.length > 0) {
+        if (response.data.result?.results?.equityCurve && response.data.result.results.equityCurve.length > 0) {
           console.log('前10个点:');
-          response.data.results.equityCurve.slice(0, 10).forEach((item: any, index: number) => {
+          response.data.result.results.equityCurve.slice(0, 10).forEach((item: any, index: number) => {
             console.log(`  [${index}]`, {
               date: item.date,
               dateType: typeof item.date,
@@ -1005,7 +1016,12 @@ const Backtest: React.FC = () => {
           });
         }
 
-        setBacktestResult(response.data);
+        // 合并result和success字段
+        const mergedResult = {
+          ...response.data.result,
+          success: response.data.success !== undefined ? response.data.success : true
+        };
+        setBacktestResult(mergedResult);
         // 滚动到结果区�?
         setTimeout(() => {
           resultsRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -1070,7 +1086,7 @@ const Backtest: React.FC = () => {
             // 保留其他参数
             dataMode: (foundRecord.parameters as any)?.dataMode || 'real',
             dataModeDisplay: (foundRecord.parameters as any)?.dataModeDisplay || 'Real Data',
-            dataSource: (foundRecord.parameters as any)?.dataSource || 'Twelve Data'
+            dataSource: (foundRecord.parameters as any)?.dataSource || 'Alpaca'
           },
           createdAt: foundRecord.createdAt
         };
@@ -2306,7 +2322,7 @@ const Backtest: React.FC = () => {
                 <div style={{ display: 'flex', alignItems: 'center' }}>
                   <CheckCircleOutlined style={{ color: '#52c41a', marginRight: '8px', fontSize: '16px' }} />
                   <span style={{ fontWeight: '500', color: '#135200' }}>
-                    Backtests use real historical data from Twelve Data API.
+                    Backtests use real historical data from Alpaca Markets API.
                   </span>
                 </div>
               </div>
@@ -5107,7 +5123,7 @@ const Backtest: React.FC = () => {
 
       {/* 数据来源标注 - 回测使用历史市场数据 */}
       <DataSourceBadge
-        source="Twelve Data"
+        source="Alpaca"
         position="bottom-left"
         compact={true}
       />

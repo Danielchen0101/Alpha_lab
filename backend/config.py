@@ -6,14 +6,14 @@ API 配置 - 市场数据与交易执行分离架构
 FINNHUB_API_KEY = "d7apg21r01qtpbh9ck9gd7apg21r01qtpbh9cka0"
 FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
 
-# ========== Twelve Data API 配置 (历史数据) ==========
-TWELVEDATA_API_KEY = "8b847a1ef2aa47a68d3f992bd0275f0c"  # 有效API密钥
-TWELVEDATA_BASE_URL = "https://api.twelvedata.com"
+# ========== Twelve Data API 配置 (历史数据) - 已弃用 ==========
+# TWELVEDATA_API_KEY = "8b847a1ef2aa47a68d3f992bd0275f0c"  # 有效API密钥 - 已弃用
+# TWELVEDATA_BASE_URL = "https://api.twelvedata.com"  # 已弃用
 
 # ========== Alpaca API 配置 (交易执行) ==========
-ALPACA_API_KEY = "PK47HFNRVYZ7XZLLLYUULBIY4R"
-ALPACA_API_SECRET = "6CgiJaMDvref9uoHRUph8qMyBKJyHbRxPrGHgKYq2T5g"
-ALPACA_BASE_URL = "https://paper-api.alpaca.markets/v2"
+ALPACA_API_KEY = "AKPI2LWKQ2IZQ4JPGTXVCTXEKO"
+ALPACA_API_SECRET = "B31d4ygh47ovhi1wQwqBCNYHLAD8pMCH62fyBE3eZcRG"
+ALPACA_BASE_URL = "https://api.alpaca.markets"  # 用户提供的新API endpoint
 
 # Alpaca API 端点
 ALPACA_ENDPOINTS = {

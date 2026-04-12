@@ -532,26 +532,33 @@ const ParameterOptimization = () => {
       
       if (response.data && response.data.success) {
         // Save optimization results
-        setOptimizationResults(response.data.results || []);
+        // 注意: 后端返回结构是 {success: true, result: {results: [...], summary: {...}}}
+        const result = response.data.result || {};
+        setOptimizationResults(result.results || []);
         
         // Save stats
-        if (response.data.summary) {
+        if (result.summary) {
           setStats({
-            totalCombinations: response.data.summary.totalCombinations || 0,
-            validCombinations: response.data.summary.validCombinations || 0,
-            bestReturn: response.data.summary.bestTotalReturn || 0,
-            worstReturn: response.data.summary.worstTotalReturn || 0,
-            avgReturn: response.data.summary.avgTotalReturn || 0,
-            bestSharpeRatio: response.data.summary.bestSharpeRatio || 0
+            totalCombinations: result.summary.totalCombinations || 0,
+            validCombinations: result.summary.validCombinations || 0,
+            bestReturn: result.summary.bestTotalReturn || 0,
+            worstReturn: result.summary.worstTotalReturn || 0,
+            avgReturn: result.summary.avgTotalReturn || 0,
+            bestSharpeRatio: result.summary.bestSharpeRatio || 0
           });
         }
         
-        setSuccess(`Optimization completed! Found ${response.data.results?.length || 0} valid combinations.`);
+        setSuccess(`Optimization completed! Found ${result.results?.length || 0} valid combinations.`);
       } else {
-        setError(response.data?.error || 'Optimization failed');
+        // 错误处理: 可能在后端的result.error中
+        const errorMsg = response.data?.result?.error || response.data?.error || 'Optimization failed';
+        setError(errorMsg);
       }
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Failed to run optimization');
+      // 错误可能在后端的result.error中，或者直接在error字段中
+      const errorData = err.response?.data;
+      const errorMsg = errorData?.result?.error || errorData?.error || err.message || 'Failed to run optimization';
+      setError(errorMsg);
     } finally {
       setLoading(false);
     }

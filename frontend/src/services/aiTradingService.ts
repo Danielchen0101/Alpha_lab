@@ -1,16 +1,37 @@
 import api from './api';
 
 export interface AIDecision {
-  action: 'BUY' | 'SELL' | 'HOLD' | 'CANCEL';
+  // 核心动作字段
+  action: 'BUY' | 'SELL' | 'HOLD' | 'ERROR' | 'CANCEL' | 'SKIP';
+  signalAction?: 'BUY' | 'SELL' | 'HOLD' | 'SKIP';
+  executionAction?: 'BUY' | 'SELL' | 'HOLD' | 'ERROR' | 'CANCEL' | 'SKIP';
+  
+  // 股票标识
   symbol: string;
+  
+  // 数量相关字段（兼容新旧格式）
   qty: number;
+  recommendedQty?: number;
+  positionSize?: number;
+  
+  // 订单详情
   orderType?: string;
   timeInForce?: string;
   limitPrice?: number;
   stopPrice?: number;
+  
+  // 分析和置信度
   confidence?: number;
   reason?: string;
+  reasonSummary?: string;
+  reasoningFull?: string;
+  riskNote?: string;
+  whyNotOtherActions?: string;
+  
+  // 风险标记
   riskFlags?: string[];
+  
+  // 市场摘要
   marketSummary?: {
     marketRegime: string;
     trend: string;
@@ -21,6 +42,8 @@ export interface AIDecision {
     resistance: number;
     timestamp: string;
   };
+  
+  // 策略模式
   strategyMode?: {
     mode: string;
     marketRegime: string;
@@ -29,11 +52,26 @@ export interface AIDecision {
     adaptationEnabled: boolean;
     confidence: number;
   };
+  
+  // 验证结果
   validationResult?: {
     is_valid: boolean;
     message: string;
   };
+  
+  // 执行相关
   executable?: boolean;
+  
+  // 价格目标
+  entry?: string;
+  stopLoss?: string;
+  takeProfit?: string;
+  
+  // 风险和时间框架
+  riskLevel?: string;
+  timeFrame?: string;
+  
+  // 原始数据
   rawDecisionJson?: string;
 }
 
