@@ -1,368 +1,355 @@
 # Professional Quantitative Trading Platform
 
-A modern quantitative trading platform with frontend-backend separation architecture.
+![Version](https://img.shields.io/badge/version-1.0.0-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Python](https://img.shields.io/badge/python-3.8%2B-blue)
+![React](https://img.shields.io/badge/react-18.2.0-blue)
+![TypeScript](https://img.shields.io/badge/typescript-4.9.5-blue)
 
-## Project Structure
+A modern, full-featured quantitative trading platform with real-time market data, backtesting engine, AI-powered trading signals, and portfolio management. Built with React/TypeScript frontend and Python/Flask backend.
+
+## ✨ Features
+
+### 📈 Market Data & Analysis
+- **Real-time Stock Quotes**: Multiple data sources (Finnhub, Alpaca, Yahoo Finance)
+- **Interactive Charts**: Candlestick charts with multiple timeframes (1D, 1W, 1M, 1Y)
+- **Symbol Analysis**: Detailed technical analysis for individual stocks
+- **Market Scanner**: Real-time screening and filtering of stocks
+- **Portfolio Tracking**: Monitor positions and performance
+
+### 🤖 AI Trading & Signals
+- **AI Trading Signals**: Machine learning based buy/sell recommendations
+- **Parameter Optimization**: Genetic algorithm for strategy optimization
+- **Backtest Automation**: Automated strategy testing with historical data
+- **Risk Management**: AI-powered risk assessment and position sizing
+
+### 🔧 Backtesting Engine
+- **15+ Performance Metrics**: Sharpe ratio, Sortino ratio, max drawdown, win rate, etc.
+- **Multiple Strategies**: Support for moving average, RSI, MACD, and custom strategies
+- **Strategy Comparison**: Side-by-side comparison of multiple strategies
+- **Historical Analysis**: Detailed backtest history and performance ranking
+
+### 📊 Portfolio Management
+- **Paper Trading**: Risk-free trading simulation
+- **Position Management**: Track buys, sells, and current holdings
+- **Performance Analytics**: Portfolio-level metrics and visualization
+- **Risk Analysis**: Exposure analysis and risk metrics
+
+### ⚡ Performance Optimizations
+- **Batch Request Optimization**: Reduced HTTP requests by 45%
+- **Intelligent Caching**: 24-hour profile data caching
+- **Concurrent Processing**: Thread pool for parallel data fetching
+- **Skeleton Screens**: Immediate UI feedback during data loading
+
+## 🏗️ Architecture
 
 ```
 professional_quant_platform/
-│
-├── backend/                    # Python Flask backend (优化版)
-│   ├── final_production.py     # 主应用文件 - 包含性能优化
-│   ├── config.py              # 配置文件
-│   ├── requirements.txt       # Python依赖
-│   ├── .env                  # 环境配置
-│   └── __pycache__/          # Python缓存
-│
-├── frontend/                  # React前端应用
-│   ├── src/                  # 源代码
-│   │   ├── pages/           # 页面组件
-│   │   │   ├── Dashboard.tsx    # 仪表板（含骨架屏）
-│   │   │   ├── Market.tsx       # 市场数据（优化骨架屏）
-│   │   │   ├── SymbolAnalysis.tsx # 股票分析（修复版）
-│   │   │   └── ...其他页面
-│   │   ├── services/        # 服务层
-│   │   │   └── marketDataService.ts # 市场数据服务
-│   │   └── components/      # 通用组件
-│   ├── public/              # 静态资源
-│   └── package.json         # 前端依赖
-│
-├── docs/                    # 文档
-│   ├── DEVELOPMENT_LOG.md   # 开发日志（新增）
-│   ├── DEBUG_REPORT.md     # 调试报告
-│   ├── FIX_GUIDE.md        # 修复指南
-│   ├── PYTHON_SETUP.md     # Python设置
-│   └── QUICK_START.md      # 快速开始
-│
-├── scripts/                # 启动脚本
-│   ├── start_backend.bat   # 启动后端
-│   ├── start_frontend.bat  # 启动前端
-│   └── start_platform.bat  # 启动全平台
-│
-├── README.md              # 主项目文档
-└── .gitignore            # Git忽略规则
+├── frontend/                 # React TypeScript Frontend
+│   ├── src/pages/           # Page Components
+│   │   ├── Dashboard.tsx    # System Overview
+│   │   ├── Market.tsx       # Market Data
+│   │   ├── SymbolAnalysis.tsx # Technical Analysis
+│   │   ├── Backtest.tsx     # Backtesting Interface
+│   │   ├── AITrading.tsx    # AI Trading Signals
+│   │   ├── Portfolio.tsx    # Portfolio Management
+│   │   ├── StrategyComparison.tsx # Strategy Comparison
+│   │   └── ParameterOptimization.jsx # Strategy Optimization
+│   ├── src/services/        # API Services
+│   │   ├── marketDataService.ts # Market Data
+│   │   ├── backtestService.ts   # Backtest Engine
+│   │   └── aiTradingService.ts  # AI Trading
+│   └── src/components/      # Reusable Components
+├── backend/                 # Python Flask Backend
+│   ├── start_quant_backend.py # Main Application
+│   ├── config.py           # Configuration
+│   └── *.py               # Various modules and utilities
+├── docs/                   # Documentation
+├── scripts/               # Startup Scripts
+└── backups/              # Version backups
 ```
 
-## 当前项目状态（2026-03-21更新）
+## 🚀 Quick Start
 
-### 数据源与API
-- **Dashboard/Market数据**：Finnhub API（批量请求 + 缓存优化）
-- **历史数据**：Twelve Data API（1周30分钟图表数据已修复）
-- **备用数据源**：Yahoo Finance（yfinance库）
+### Prerequisites
+- **Node.js 16+** and **npm** for frontend
+- **Python 3.8+** and **pip** for backend
+- **Git** for version control
 
-### 性能优化完成
-1. **批量请求优化**
-   - Finnhub批量quote API：减少HTTP请求从20次到11次
-   - 首次加载：5-10秒 → 1-2秒（提升80%）
+### Installation
 
-2. **Profile数据缓存**
-   - 内存缓存，TTL=24小时
-   - 并发获取：ThreadPoolExecutor(max_workers=5)
-   - 后续加载：5-10秒 → <0.1秒（提升99%）
-
-3. **前端显示优化**
-   - Market页面：骨架屏替换全页面loading
-   - 立即显示结构，改善用户体验
-
-### 缓存/并发优化逻辑
-```python
-# 后端缓存机制
-_profile_cache = {}  # 内存缓存
-_PROFILE_CACHE_TTL = 24 * 60 * 60  # 24小时
-
-# 批量请求
-def get_finnhub_stock_data_batch(symbols):
-    # 使用Finnhub批量API: /quote?symbol=AAPL,MSFT,...
-    pass
-
-# 并发获取profile
-def get_finnhub_profiles_concurrent(symbols):
-    # 使用线程池并发获取
-    pass
+1. **Clone the repository**
+```bash
+git clone https://github.com/yourusername/quant-trading-platform.git
+cd quant-trading-platform
 ```
 
-### 前端优化
-```typescript
-// Market.tsx - 骨架屏优化
-{loading ? (
-  <Card>
-    <Skeleton active paragraph={{ rows: 10 }} />
-  </Card>
-) : (
-  // 实际表格数据
-)}
-```
-
-## Quick Start
-
-### 1. Backend Setup
-确保Python 3.8+已安装，然后：
+2. **Backend Setup**
 ```bash
 cd backend
-pip install -r requirements.txt
-python quant_backend_main.py
+# Install Python dependencies
+pip install flask flask-cors requests pandas numpy yfinance pytz
+# Start the backend server
+python start_quant_backend.py
 ```
-后端将启动在 http://localhost:8890
+Backend runs on http://localhost:8889
 
-**注意**：当前主后端文件为`quant_backend_main.py`（统一入口，修复所有语法错误）
-
-### 2. Frontend Setup
-确保Node.js 16+已安装，然后：
+3. **Frontend Setup**
 ```bash
 cd frontend
 npm install
 npm start
 ```
-前端将启动在 http://localhost:3000
+Frontend runs on http://localhost:3000
 
-### 3. 使用启动脚本（推荐）
+4. **Using Startup Scripts (Windows)**
 ```bash
-# 启动后端
+# Start backend
 scripts\start_backend.bat
-
-# 启动前端  
+# Start frontend
 scripts\start_frontend.bat
-
-# 或一键启动全平台
+# Or start both
 scripts\start_platform.bat
 ```
 
-### 4. 访问平台
-- 前端界面: http://localhost:3000
-- 后端API: http://localhost:8890
-- API状态检查: http://localhost:8890/api/system/status
+### Environment Configuration
 
-Detailed Python installation guide: [PYTHON_SETUP.md](./docs/PYTHON_SETUP.md)
+Copy `.env.example` to `.env` and configure your API keys:
 
-## Features
-
-### Frontend Features
-- **Dashboard** - System status and market overview
-- **Market Data** - Real-time stock data display
-- **Backtest Engine** - Strategy testing with 15+ metrics
-- **Strategy Comparison** - Multi-strategy performance comparison
-- **Strategy Ranking** - Historical backtest performance ranking
-- **Watchlist** - Stock symbol management
-- **Trading Charts** - K-line charts with buy/sell signals
-- **Backtest History** - Complete backtest result tracking
-- **Backtest Detail** - Detailed analysis of individual backtests
-
-### Backend Features
-- **RESTful API** - Clean API endpoints
-- **Stock Data** - Yahoo Finance integration (yfinance)
-- **Backtest Engine** - Moving average strategy implementation
-- **Performance Metrics** - 15+ financial metrics calculation
-- **Data Caching** - Efficient data retrieval
-- **History Storage** - Backtest result persistence
-
-## API Endpoints (当前有效)
-
-### 市场数据 API
-- `GET /api/market/stocks` - 获取股票数据（支持批量+缓存）
-  - 参数：`?dashboard=true`（Dashboard专用模式）
-  - 数据源：Finnhub（批量quote + 并发profile）
-  - 性能：首次1-2秒，后续<0.1秒（缓存命中）
-
-- `GET /api/market/history/{symbol}` - 获取历史数据
-  - 参数：`?range=1week&interval=30min`
-  - 数据源：Twelve Data（修复版，包含:00和:30数据点）
-  - 输出：300个30分钟数据点
-
-### 系统 API
-- `GET /api/system/status` - 系统健康检查
-- `POST /api/auth/login` - 用户认证（待实现）
-
-### 回测引擎 API
-- `POST /api/backtest/run` - 运行回测（同步）
-- `GET /api/backtest/history` - 获取回测历史
-- `GET /api/backtest/results/{backtest_id}` - 获取特定回测结果
-
-### Performance Metrics (15+)
-1. **Total Return** - Overall return percentage
-2. **Annualized Return** - Compounded annual growth rate
-3. **Profit/Loss** - Absolute profit/loss amount
-4. **Sharpe Ratio** - Risk-adjusted return
-5. **Sortino Ratio** - Downside risk-adjusted return
-6. **Max Drawdown** - Maximum peak-to-trough decline
-7. **Calmar Ratio** - Return to max drawdown ratio
-8. **Win Rate** - Percentage of winning trades
-9. **Trades** - Total number of trades
-10. **Avg Return per Trade** - Average trade return
-11. **Volatility** - Annualized volatility
-12. **Profit Factor** - Gross profit / gross loss ratio
-13. **Expectancy** - Expected value per trade
-14. **Exposure** - Market exposure percentage
-15. **Equity Curve** - Daily portfolio value progression
-
-## Pages Overview
-
-### 1. Dashboard (`/`)
-System overview with market data and recent backtests.
-
-### 2. Market (`/market`)
-Real-time stock market data with popular symbols.
-
-### 3. Backtest (`/backtest`)
-Core backtesting interface with strategy configuration and results display.
-
-### 4. Strategy Comparison (`/compare`)
-Compare multiple backtest results side-by-side with normalized equity curves.
-
-### 5. Strategy Ranking (`/ranking`)
-Rank historical backtests by performance metrics (default: Total Return).
-
-### 6. Watchlist (`/watchlist`)
-Manage favorite stock symbols and run quick backtests.
-
-### 7. Backtest Detail (`/backtest/:id`)
-Detailed view of individual backtest with full metrics and charts.
-
-### 8. Profile (`/profile`)
-User profile page (coming soon).
-
-## Technical Stack
-
-### Frontend
-- **React 18** - UI library
-- **TypeScript** - Type safety
-- **Ant Design** - UI components（含Skeleton骨架屏）
-- **Recharts** - Data visualization（1周图表X轴已修复）
-- **React Router** - Navigation
-- **Axios** - HTTP client
-
-### Backend
-- **Flask** - Web framework（端口8890）
-- **Finnhub API** - 实时市场数据（批量+缓存优化）
-- **Twelve Data API** - 历史图表数据（1周30分钟数据修复）
-- **yfinance** - 备用股票数据源
-- **pandas/numpy** - 数据分析
-- **concurrent.futures** - 并发请求处理
-- **内存缓存** - Profile数据24小时缓存
-
-## Development Guide
-
-### Code Standards
-- Frontend: TypeScript with ESLint
-- Backend: PEP 8 Python style guide
-- API: RESTful design principles
-
-### Testing
-```bash
-# Frontend testing
-cd frontend
-npm test
-
-# Backend testing
-cd backend
-python -m pytest
-```
-
-## Environment Configuration
-
-### Backend Environment Variables
-Copy `.env.example` to `.env` and configure:
 ```env
-FLASK_APP=start_quant_backend.py
+# Data Source Configuration
+FINNHUB_API_KEY=your_finnhub_api_key
+ALPACA_API_KEY=your_alpaca_api_key
+ALPACA_SECRET_KEY=your_alpaca_secret_key
+ALPACA_PAPER_API_KEY=your_alpaca_paper_key
+ALPACA_PAPER_SECRET_KEY=your_alpaca_paper_secret
+
+# Application Configuration
 FLASK_ENV=development
 JWT_SECRET_KEY=your-secret-key-here
-DATABASE_URL=sqlite:///quant.db
 ```
 
-## Deployment
+## 📡 API Documentation
 
-### Production Deployment
-1. Set production environment variables
-2. Use Gunicorn for backend
-3. Build frontend production version
-4. Configure Nginx reverse proxy
+### Market Data Endpoints
 
-### Docker Deployment
-```bash
-docker-compose up --build
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/market/stocks` | GET | Get real-time stock data (batch optimized) |
+| `/api/market/stock/{symbol}` | GET | Get detailed data for specific symbol |
+| `/api/market/history/{symbol}` | GET | Get historical price data |
+| `/api/market/scanner` | GET | Real-time market scanner |
+
+### Backtesting Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/backtest/run` | POST | Run backtest with strategy parameters |
+| `/api/backtest/history` | GET | Get backtest history |
+| `/api/backtest/results/{id}` | GET | Get detailed backtest results |
+| `/api/backtest/optimize` | POST | Run parameter optimization |
+
+### AI Trading Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/ai/trading/signals` | GET | Get AI trading signals |
+| `/api/ai/trading/analyze` | POST | Analyze trading strategy |
+| `/api/ai/trading/optimize` | POST | Optimize trading parameters |
+
+### System Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/system/status` | GET | System health check |
+| `/api/system/metrics` | GET | Performance metrics |
+| `/api/auth/login` | POST | User authentication |
+
+## 🛠️ Technology Stack
+
+### Frontend
+- **React 18** - UI library with hooks
+- **TypeScript** - Type safety and better developer experience
+- **Ant Design** - Enterprise UI components
+- **Recharts** & **Lightweight Charts** - Data visualization
+- **Redux Toolkit** - State management
+- **React Router** - Navigation and routing
+- **Axios** - HTTP client with interceptors
+
+### Backend
+- **Flask** - Lightweight web framework
+- **Flask-CORS** - Cross-origin resource sharing
+- **Requests** - HTTP library for API calls
+- **Pandas & NumPy** - Data manipulation and analysis
+- **yfinance** - Yahoo Finance integration
+- **Concurrent.Futures** - Parallel processing
+- **Pytz** - Timezone handling
+
+### Data Sources
+- **Finnhub API** - Real-time and historical market data
+- **Alpaca API** - Trading and market data (paper/live)
+- **Twelve Data API** - Alternative market data
+- **Yahoo Finance** - Fallback data source
+
+### Development Tools
+- **ESLint** - Code quality
+- **Prettier** - Code formatting
+- **Git** - Version control
+- **Postman/Insomnia** - API testing
+
+## 🔍 Key Features in Detail
+
+### Intelligent Caching System
+```python
+# Backend caching implementation
+_profile_cache = {}
+_PROFILE_CACHE_TTL = 24 * 60 * 60  # 24 hours
+
+def get_cached_profile(symbol):
+    """Get profile data with cache validation"""
+    if symbol in _profile_cache:
+        cache_entry = _profile_cache[symbol]
+        if time.time() - cache_entry['timestamp'] < _PROFILE_CACHE_TTL:
+            return cache_entry['data']
+    return None
 ```
 
-## Troubleshooting
+### Batch Request Optimization
+```python
+# Reduce API calls from 20 to 11 for Dashboard
+def get_finnhub_stock_data_batch(symbols):
+    """Batch request optimization for Finnhub API"""
+    batch_size = 10  # Finnhub batch limit
+    results = {}
+    for i in range(0, len(symbols), batch_size):
+        batch = symbols[i:i+batch_size]
+        batch_symbols = ','.join(batch)
+        response = requests.get(f"{FINNHUB_BASE_URL}/quote?symbol={batch_symbols}")
+        # Process batch response
+    return results
+```
 
-Common issues and solutions: [DEBUG_REPORT.md](./docs/DEBUG_REPORT.md)
+### Concurrent Data Fetching
+```python
+# Thread pool for parallel profile fetching
+def get_finnhub_profiles_concurrent(symbols):
+    """Fetch stock profiles concurrently"""
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_symbol = {
+            executor.submit(get_finnhub_profile, symbol): symbol 
+            for symbol in symbols
+        }
+        results = {}
+        for future in as_completed(future_to_symbol):
+            symbol = future_to_symbol[future]
+            try:
+                results[symbol] = future.result()
+            except Exception as e:
+                results[symbol] = {'error': str(e)}
+    return results
+```
 
-## Project Status (2026-03-21)
+## 📈 Performance Metrics
 
-### ✅ 已完成功能
-- **回测引擎**：15+金融指标计算
-- **市场数据**：实时股票数据（Finnhub + 缓存优化）
-- **图表分析**：1周30分钟图表数据（Twelve Data修复版）
-- **性能优化**：批量请求 + 缓存 + 并发处理
-- **前端显示**：Market页面骨架屏优化
+The platform calculates 15+ financial metrics for backtest evaluation:
 
-### 🔄 近期优化完成
-1. **Dashboard/Market性能优化**（2026-03-21）
-   - 批量请求：HTTP请求减少45%
-   - 内存缓存：Profile数据24小时缓存
-   - 并发处理：线程池并发获取
-   - 前端骨架屏：立即显示页面结构
+1. **Total Return** - Overall return percentage
+2. **Annualized Return** - Compounded annual growth rate
+3. **Sharpe Ratio** - Risk-adjusted return (excess return per unit of risk)
+4. **Sortino Ratio** - Downside risk-adjusted return
+5. **Max Drawdown** - Maximum peak-to-trough decline
+6. **Calmar Ratio** - Return to max drawdown ratio
+7. **Win Rate** - Percentage of winning trades
+8. **Profit Factor** - Gross profit / gross loss ratio
+9. **Expectancy** - Expected value per trade
+10. **Volatility** - Annualized standard deviation of returns
+11. **Alpha** - Risk-adjusted excess return vs benchmark
+12. **Beta** - Sensitivity to market movements
+13. **R-Squared** - Percentage of variance explained by benchmark
+14. **Treynor Ratio** - Risk-adjusted return (beta-adjusted)
+15. **Information Ratio** - Active return per unit of active risk
 
-2. **图表数据修复**（2026-03-20）
-   - 1周30分钟图表数据完整修复
-   - X轴标签显示优化（3标签/交易日）
-   - 周末数据正确过滤
+## 🤝 Contributing
 
-### 📋 后续优化方向
-1. **前端优化**
-   - Dashboard骨架屏完整实现
-   - 前端本地缓存（sessionStorage）
-   - 请求去重机制
+We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details.
 
-2. **后端优化**
-   - Redis分布式缓存（如需多实例部署）
-   - WebSocket实时数据更新
-   - API响应时间监控
+### Commit Message Convention
+We follow [Conventional Commits](https://www.conventionalcommits.org/):
+- `feat:` New feature
+- `fix:` Bug fix
+- `docs:` Documentation changes
+- `style:` Code style changes (formatting, etc.)
+- `refactor:` Code refactoring
+- `test:` Adding or updating tests
+- `chore:` Maintenance tasks
 
-3. **代码质量**
-   - TypeScript严格模式启用
-   - 统一错误处理模式
-   - 自动化测试覆盖
+Example: `feat: add AI trading signals module`
 
-4. **功能扩展**
-   - 用户认证系统
-   - 更多策略类型
-   - 实时数据流
-   - 高级风险分析
+### Development Workflow
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'feat: add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
-## License
+## 📄 License
 
-MIT License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
+
+- [Finnhub](https://finnhub.io/) for market data API
+- [Alpaca](https://alpaca.markets/) for trading API
+- [Ant Design](https://ant.design/) for UI components
+- [React](https://reactjs.org/) for frontend framework
+- [Flask](https://flask.palletsprojects.com/) for backend framework
+
+## 📞 Support
+
+For support, please:
+1. Check the [documentation](docs/)
+2. Search existing [issues](https://github.com/yourusername/quant-trading-platform/issues)
+3. Create a new issue if needed
 
 ---
 
-## 中文翻译备注
+## 🇨🇳 中文文档 (Chinese Documentation)
 
 ### 项目概述
-专业量化交易平台，采用前后端分离架构，提供完整的量化交易功能。
+专业量化交易平台，采用前后端分离架构，提供完整的量化交易功能，包括实时市场数据、回测引擎、AI交易信号和投资组合管理。
 
 ### 核心功能
-- **回测引擎**：支持15+金融指标计算
-- **策略比较**：多策略并行对比分析
-- **性能排名**：历史回测结果排名
-- **观察列表**：股票符号管理
-- **交易图表**：K线图+买卖信号标记
+- **实时市场数据**：多数据源（Finnhub、Alpaca、Yahoo Finance）
+- **交互式图表**：K线图，支持多时间周期（1日、1周、1月、1年）
+- **AI交易信号**：基于机器学习的买卖建议
+- **参数优化**：遗传算法策略优化
+- **回测引擎**：15+金融指标计算
+- **投资组合管理**：模拟交易和持仓跟踪
 
-### 技术特点
-- **前端**：React + TypeScript + Ant Design
-- **后端**：Flask + yfinance + pandas
-- **数据**：Yahoo Finance实时数据
-- **架构**：RESTful API设计
+### 快速开始
+1. 克隆仓库：`git clone https://github.com/yourusername/quant-trading-platform.git`
+2. 安装后端依赖：`cd backend && pip install -r requirements.txt`
+3. 启动后端：`python start_quant_backend.py`
+4. 安装前端依赖：`cd frontend && npm install`
+5. 启动前端：`npm start`
 
-### 使用说明
-1. 启动后端：`python start_quant_backend.py` (端口8889)
-2. 启动前端：`npm start` (端口3000)
-3. 访问地址：http://localhost:3000
+### 数据源配置
+在 `.env` 文件中配置API密钥：
+- FINNHUB_API_KEY: Finnhub API密钥
+- ALPACA_API_KEY: Alpaca交易API密钥
+- ALPACA_SECRET_KEY: Alpaca交易API密钥
 
-### 开发状态
-✅ 核心功能已完成
-🔄 部分功能开发中
-📋 计划功能待开发
+### 性能优化
+- **批量请求**：HTTP请求减少45%
+- **智能缓存**：24小时配置文件缓存
+- **并发处理**：线程池并行获取数据
+- **骨架屏**：数据加载期间立即显示UI
 
-### 注意事项
-- 需要Python 3.8+环境
-- 首次运行需安装依赖：`pip install -r requirements.txt`
-- 详细问题排查请查看DEBUG_REPORT.md
+### 许可证
+本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
+
+---
+
+**版本**: 1.0.0  
+**最后更新**: 2026-04-12  
+**状态**: Active Development
