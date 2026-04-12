@@ -1,6 +1,6 @@
 # Professional Quantitative Trading Platform
 
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
+![Version](https://img.shields.io/badge/version-1.7.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
 ![React](https://img.shields.io/badge/react-18.2.0-blue)
@@ -350,6 +350,6 @@ For support, please:
 
 ---
 
-**版本**: 1.0.0  
+**版本**: 1.7.0  
 **最后更新**: 2026-04-12  
 **状态**: Active Development
