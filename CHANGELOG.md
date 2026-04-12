@@ -5,7 +5,7 @@ All notable changes to the Professional Quantitative Trading Platform will be do
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.7.0] - 2026-04-12
 
 ### Added
 - Market scanner feature for real-time stock screening
@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Portfolio management with paper trading simulation
 - Strategy comparison interface for multiple backtest results
 - Interactive candlestick charts with multiple timeframes
+- Professional documentation and project templates
+- Version mapping system for all backup directories
 
 ### Changed
 - Optimized batch requests for market data (45% reduction in HTTP calls)
@@ -21,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enhanced frontend performance with skeleton screens
 - Improved error handling and user feedback
 - Updated API documentation and examples
+- Updated project version from 1.0.0 to 1.7.0
 
 ### Fixed
 - Resolved 1D chart data issue on non-trading days
