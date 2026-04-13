@@ -1,20 +1,20 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Card, Typography, Space, Statistic, Row, Col, 
   Button, Divider, Table, Tag, Select, Form, Input, 
-  message, Progress, Empty, Badge, Alert, Tooltip, Collapse
+  message, Progress, Empty, Badge, Alert, Tooltip, Collapse, Modal
 } from 'antd';
 import { 
   DollarOutlined, LineChartOutlined, PieChartOutlined, BarChartOutlined,
   SettingOutlined, PlayCircleOutlined, PauseCircleOutlined, 
   ThunderboltOutlined, CheckCircleOutlined, ClockCircleOutlined,
   RobotOutlined, CloseCircleOutlined, ExclamationCircleOutlined,
-  ArrowUpOutlined, ArrowDownOutlined, MinusOutlined,
-  SortDescendingOutlined, SortAscendingOutlined,
-  CaretDownOutlined, CaretRightOutlined
+  ArrowUpOutlined, ArrowDownOutlined, ArrowRightOutlined, MinusOutlined,
+  SortDescendingOutlined, SortAscendingOutlined
 } from '@ant-design/icons';
 import aiTradingService, { AIProviderConfig } from '../services/aiTradingService';
 import { backtraderAPI, marketAPI } from '../services/api';
+import api from '../services/api';
 import marketDataService from '../services/marketDataService';
 import alpacaBrokerService, { AlpacaAccount, AlpacaPosition, AlpacaOrder } from '../services/alpacaBrokerService';
 
@@ -63,18 +63,12 @@ const Portfolio: React.FC = () => {
   
   // Market Scanner 状态
   const [marketScannerStatus, setMarketScannerStatus] = useState({
-    status: 'stopped' as 'stopped' | 'running' | 'scheduled' | 'rate_limited' | 'waiting_to_resume',
+    status: 'stopped' as 'stopped' | 'running' | 'scheduled',
     lastScanTime: null as string | null,
     nextScanTime: null as string | null,
     progress: 0,
     totalSymbols: 0,
-    scannedSymbols: 0, // 已扫描的股票数量
-    rateLimitInfo: null as { 
-      waitSeconds: number, 
-      resumeTime: string, 
-      scannedSymbols: string[], // 已扫描的股票symbol列表
-      remainingSymbols: string[] // 剩余的股票symbol列表
-    } | null
+    scannedSymbols: 0
   });
   const [marketScannerResults, setMarketScannerResults] = useState<any[]>([]);
   const [marketScannerSummary, setMarketScannerSummary] = useState({
@@ -93,407 +87,16 @@ const Portfolio: React.FC = () => {
   });
   const [marketScannerAutoEnabled, setMarketScannerAutoEnabled] = useState(false);
   const marketScannerTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const [expandedScannerRows, setExpandedScannerRows] = useState<Set<string>>(new Set());
+  
+  // View Detail 状态
+  const [detailModalVisible, setDetailModalVisible] = useState(false);
+  const [selectedSymbolDetail, setSelectedSymbolDetail] = useState<any>(null);
+  
+  // 展开行状态
+  const [expandedRows, setExpandedRows] = useState<string[]>([]);
   
   // Step 5: 自动扫描定时器
   const autoScanTimerRef = useRef<NodeJS.Timeout | null>(null);
-
-  // 处理Market Scanner行的展开/收起
-  const handleScannerRowExpand = (symbol: string) => {
-    const newExpanded = new Set(expandedScannerRows);
-    if (newExpanded.has(symbol)) {
-      newExpanded.delete(symbol);
-    } else {
-      newExpanded.add(symbol);
-    }
-    setExpandedScannerRows(newExpanded);
-  };
-
-  // 渲染Market Scanner行的展开详情
-  const renderScannerRowDetail = (record: any) => {
-    const isAI = record.analysisSource === 'deepseek';
-    const isRuleBased = record.analysisSource === 'rule_based';
-    const sectorSource = record.sectorSource || 'unknown';
-    
-    // Sector来源描述
-    const sectorSourceMap: Record<string, string> = {
-      'finnhub_profile': 'Finnhub Profile (官方数据)',
-      'profile': 'Company Profile (官方数据)',
-      'inferred': '系统推断 (基于股票特征和新闻)',
-      'deepseek_inferred': 'DeepSeek AI推断',
-      'unknown': '来源未知',
-      'error': '数据获取错误'
-    };
-    
-    // 数据来源描述
-    const dataSource = record.dataSource || 'unknown';
-    const dataSourceMap: Record<string, string> = {
-      'Alpaca': 'Alpaca API (实时市场数据)',
-      'Finnhub': 'Finnhub API (市场数据)',
-      'Alpaca+Finnhub (volume)': 'Alpaca API + Finnhub Volume',
-      'Failed': '数据获取失败',
-      'unknown': '未知来源'
-    };
-    
-    return (
-      <div style={{ 
-        padding: '16px 24px', 
-        background: '#fafafa',
-        borderRadius: '8px',
-        border: '1px solid #e8e8e8',
-        margin: '8px 0'
-      }}>
-        {/* 标题 */}
-        <div style={{ 
-          display: 'flex', 
-          justifyContent: 'space-between', 
-          alignItems: 'center',
-          marginBottom: '16px'
-        }}>
-          <div style={{ fontSize: '16px', fontWeight: '600', color: '#1f1f1f' }}>
-            📊 {record.symbol} - 扫描详情
-          </div>
-          <div style={{ fontSize: '12px', color: '#666' }}>
-            {new Date(record.timestamp * 1000).toLocaleString()}
-          </div>
-        </div>
-        
-        {/* 四列布局 */}
-        <div style={{ 
-          display: 'grid', 
-          gridTemplateColumns: '1fr 1fr', 
-          gap: '20px',
-          marginBottom: '20px'
-        }}>
-          {/* 左列: Scanner Reasoning 和 News Detail */}
-          <div>
-            {/* A. Scanner Reasoning */}
-            <div style={{ marginBottom: '16px' }}>
-              <div style={{ fontSize: '14px', fontWeight: '600', marginBottom: '8px', color: '#1f1f1f' }}>
-                A. Scanner Reasoning
-              </div>
-              <div style={{ 
-                background: '#fff', 
-                padding: '12px', 
-                borderRadius: '6px',
-                border: '1px solid #f0f0f0',
-                fontSize: '13px',
-                lineHeight: 1.5,
-                color: '#333'
-              }}>
-                {record.scannerReason || 'No analysis available'}
-              </div>
-              <div style={{ marginTop: '8px', fontSize: '12px', color: '#666' }}>
-                <span style={{ 
-                  display: 'inline-block',
-                  padding: '2px 6px',
-                  borderRadius: '4px',
-                  backgroundColor: isAI ? '#1890ff15' : (isRuleBased ? '#faad1415' : '#f0f0f0'),
-                  color: isAI ? '#1890ff' : (isRuleBased ? '#fa8c16' : '#8c8c8c'),
-                  fontWeight: '600'
-                }}>
-                  {isAI ? '🤖 AI Analysis' : (isRuleBased ? '⚙️ Rule-Based Analysis' : 'Unknown Analysis Source')}
-                </span>
-                <span style={{ marginLeft: '12px', color: '#8c8c8c' }}>
-                  Confidence: {(record.trendConfidence * 100).toFixed(0)}%
-                </span>
-              </div>
-            </div>
-            
-            {/* B. News Detail */}
-            <div>
-              <div style={{ fontSize: '14px', fontWeight: '600', marginBottom: '8px', color: '#1f1f1f' }}>
-                B. News Detail
-              </div>
-              <div style={{ 
-                background: '#fff', 
-                padding: '12px', 
-                borderRadius: '6px',
-                border: '1px solid #f0f0f0',
-                fontSize: '13px'
-              }}>
-                <div style={{ marginBottom: '8px' }}>
-                  <span style={{ fontWeight: '600', color: '#333' }}>Top Catalyst:</span>
-                  <span style={{ marginLeft: '8px', color: '#555' }}>{record.topCatalyst || 'No recent catalyst'}</span>
-                </div>
-                <div style={{ marginBottom: '8px' }}>
-                  <span style={{ fontWeight: '600', color: '#333' }}>News Sentiment:</span>
-                  <span style={{ 
-                    marginLeft: '8px',
-                    display: 'inline-block',
-                    padding: '2px 8px',
-                    borderRadius: '4px',
-                    backgroundColor: record.newsSentiment === 'Positive' ? '#52c41a15' : 
-                                    record.newsSentiment === 'Negative' ? '#ff4d4f15' : 
-                                    record.newsSentiment === 'No recent news' ? '#d9d9d915' :
-                                    '#faad1415',
-                    color: record.newsSentiment === 'Positive' ? '#52c41a' : 
-                           record.newsSentiment === 'Negative' ? '#ff4d4f' : 
-                           record.newsSentiment === 'No recent news' ? '#8c8c8c' :
-                           '#faad14',
-                    fontWeight: '600'
-                  }}>
-                    {record.newsSentiment || 'No recent news'}
-                  </span>
-                </div>
-                <div>
-                  <span style={{ fontWeight: '600', color: '#333' }}>Event Risk:</span>
-                  <span style={{ 
-                    marginLeft: '8px',
-                    display: 'inline-block',
-                    padding: '2px 8px',
-                    borderRadius: '4px',
-                    backgroundColor: record.eventRisk === 'High' ? '#ff4d4f15' : 
-                                    record.eventRisk === 'Medium' ? '#faad1415' : 
-                                    '#52c41a15',
-                    color: record.eventRisk === 'High' ? '#ff4d4f' : 
-                           record.eventRisk === 'Medium' ? '#fa8c16' : 
-                           '#52c41a',
-                    fontWeight: '600'
-                  }}>
-                    {record.eventRisk || 'Low'}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-          
-          {/* 右列: Scanner Inputs 和 Data Provenance */}
-          <div>
-            {/* C. Scanner Inputs / Parameters */}
-            <div style={{ marginBottom: '16px' }}>
-              <div style={{ fontSize: '14px', fontWeight: '600', marginBottom: '8px', color: '#1f1f1f' }}>
-                C. Scanner Inputs / Parameters
-              </div>
-              <div style={{ 
-                background: '#fff', 
-                padding: '12px', 
-                borderRadius: '6px',
-                border: '1px solid #f0f0f0',
-                fontSize: '13px'
-              }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                  <div>
-                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '2px' }}>Current Price</div>
-                    <div style={{ fontSize: '14px', fontWeight: '600', color: '#1f1f1f' }}>
-                      ${record.price ? record.price.toFixed(2) : '0.00'}
-                    </div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '2px' }}>Change %</div>
-                    <div style={{ 
-                      fontSize: '14px', 
-                      fontWeight: '600',
-                      color: record.changePct > 0 ? '#52c41a' : 
-                             record.changePct < 0 ? '#ff4d4f' : '#8c8c8c'
-                    }}>
-                      {record.changePct ? record.changePct.toFixed(2) + '%' : '0.00%'}
-                    </div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '2px' }}>Volume</div>
-                    <div style={{ fontSize: '14px', fontWeight: '600', color: '#1f1f1f' }}>
-                      {record.hasValidVolume ? (record.volume / 1000000).toFixed(1) + 'M' : 'N/A'}
-                    </div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '2px' }}>Relative Volume</div>
-                    <div style={{ fontSize: '14px', fontWeight: '600', color: '#1f1f1f' }}>
-                      {record.relativeVolume || 'Normal'}
-                    </div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '2px' }}>Trend Score</div>
-                    <div style={{ fontSize: '14px', fontWeight: '600', color: '#1f1f1f' }}>
-                      {record.trendScore ? record.trendScore.toFixed(0) + '/100' : 'N/A'}
-                    </div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '2px' }}>Trend Confidence</div>
-                    <div style={{ fontSize: '14px', fontWeight: '600', color: '#1f1f1f' }}>
-                      {(record.trendConfidence * 100).toFixed(0)}%
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-            
-            {/* D. Data Provenance */}
-            <div>
-              <div style={{ fontSize: '14px', fontWeight: '600', marginBottom: '8px', color: '#1f1f1f' }}>
-                D. Data Provenance
-              </div>
-              <div style={{ 
-                background: '#fff', 
-                padding: '12px', 
-                borderRadius: '6px',
-                border: '1px solid #f0f0f0',
-                fontSize: '13px'
-              }}>
-                {/* 细粒度的数据来源信息 */}
-                <div style={{ marginBottom: '6px' }}>
-                  <span style={{ fontWeight: '600', color: '#333', width: '120px', display: 'inline-block' }}>Price Source:</span>
-                  <span style={{ color: '#555' }}>
-                    {record.priceSource || record.dataProvenance?.priceSource || 'Unknown'}
-                  </span>
-                </div>
-                <div style={{ marginBottom: '6px' }}>
-                  <span style={{ fontWeight: '600', color: '#333', width: '120px', display: 'inline-block' }}>Change Source:</span>
-                  <span style={{ color: '#555' }}>
-                    {record.dataProvenance?.changeSource || 'Unknown'}
-                  </span>
-                </div>
-                <div style={{ marginBottom: '6px' }}>
-                  <span style={{ fontWeight: '600', color: '#333', width: '120px', display: 'inline-block' }}>Volume Source:</span>
-                  <span style={{ color: '#555' }}>
-                    {record.volumeSource || record.dataProvenance?.volumeSource || 'Unknown'}
-                    {!record.hasValidVolume && <span style={{ marginLeft: '6px', color: '#ff4d4f', fontSize: '11px' }}>(No volume data)</span>}
-                  </span>
-                </div>
-                <div style={{ marginBottom: '6px' }}>
-                  <span style={{ fontWeight: '600', color: '#333', width: '120px', display: 'inline-block' }}>Company Name Source:</span>
-                  <span style={{ color: '#555' }}>
-                    {record.dataProvenance?.companyNameSource || 'Unknown'}
-                  </span>
-                </div>
-                <div style={{ marginBottom: '6px' }}>
-                  <span style={{ fontWeight: '600', color: '#333', width: '120px', display: 'inline-block' }}>Sector Source:</span>
-                  <span style={{ color: '#555' }}>
-                    {record.sectorSource || record.dataProvenance?.sectorSource || 'unknown'}
-                    {record.sector === 'Unknown' && <span style={{ marginLeft: '6px', color: '#ff4d4f', fontSize: '11px' }}>(Unknown sector)</span>}
-                  </span>
-                </div>
-                <div style={{ marginBottom: '6px' }}>
-                  <span style={{ fontWeight: '600', color: '#333', width: '120px', display: 'inline-block' }}>News Source:</span>
-                  <span style={{ color: '#555' }}>
-                    {record.dataProvenance?.newsSource || 'Finnhub'}
-                    {!record.hasNews && record.newsSentiment === 'No recent news' && <span style={{ marginLeft: '6px', color: '#faad14', fontSize: '11px' }}>(No recent news)</span>}
-                  </span>
-                </div>
-                <div style={{ marginBottom: '6px' }}>
-                  <span style={{ fontWeight: '600', color: '#333', width: '120px', display: 'inline-block' }}>Analysis Source:</span>
-                  <span style={{ color: '#555' }}>
-                    {record.analysisSource || record.dataProvenance?.analysisSource || 'Unknown'}
-                  </span>
-                </div>
-                <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #f0f0f0' }}>
-                  <span style={{ fontWeight: '600', color: '#333' }}>Primary Data Source:</span>
-                  <span style={{ marginLeft: '8px', color: '#555' }}>
-                    {dataSourceMap[dataSource] || dataSource}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        
-        {/* 底部总结 */}
-        <div style={{ 
-          display: 'flex', 
-          justifyContent: 'space-between',
-          padding: '12px',
-          background: '#fff',
-          borderRadius: '6px',
-          border: '1px solid #f0f0f0',
-          fontSize: '12px',
-          color: '#666'
-        }}>
-          <div>
-            <span style={{ fontWeight: '600', color: '#333' }}>Trend:</span>
-            <span style={{ 
-              marginLeft: '8px',
-              display: 'inline-block',
-              padding: '2px 8px',
-              borderRadius: '4px',
-              backgroundColor: getTrendColor(record.trendLabel),
-              color: '#fff',
-              fontWeight: '600'
-            }}>
-              {record.trendLabel || 'Neutral'}
-            </span>
-          </div>
-          <div>
-            <span style={{ fontWeight: '600', color: '#333' }}>Analysis Time:</span>
-            <span style={{ marginLeft: '8px' }}>{new Date(record.timestamp * 1000).toLocaleTimeString()}</span>
-          </div>
-          <div>
-            <span style={{ fontWeight: '600', color: '#333' }}>Last Updated:</span>
-            <span style={{ marginLeft: '8px' }}>{new Date().toLocaleDateString()}</span>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-
-  // 过滤和排序后的市场扫描结果
-  const filteredAndSortedScannerResults = useMemo(() => {
-    if (!marketScannerResults || marketScannerResults.length === 0) {
-      return [];
-    }
-
-    let filteredResults = [...marketScannerResults];
-    
-    // 应用趋势过滤
-    const { trendFilter } = marketScannerFilters;
-    if (trendFilter !== 'all') {
-      filteredResults = filteredResults.filter(item => {
-        const label = item.trendLabel || '';
-        switch (trendFilter) {
-          case 'bullish':
-            return label.includes('Bullish');
-          case 'bearish':
-            return label.includes('Bearish');
-          case 'neutral':
-            return label === 'Neutral';
-          case 'strong':
-            return label.includes('Strong');
-          default:
-            return true;
-        }
-      });
-    }
-    
-    // 应用排序
-    const { sortBy, sortOrder } = marketScannerFilters;
-    filteredResults.sort((a, b) => {
-      let aValue: any = 0;
-      let bValue: any = 0;
-      
-      switch (sortBy) {
-        case 'trendScore':
-          aValue = a.trendScore || 0;
-          bValue = b.trendScore || 0;
-          break;
-        case 'volume':
-          aValue = a.volume || 0;
-          bValue = b.volume || 0;
-          break;
-        case 'changePct':
-          aValue = a.changePct || 0;
-          bValue = b.changePct || 0;
-          break;
-        case 'newsSentiment':
-          // 新闻情绪排序：Positive > Mixed > Negative
-          const sentimentOrder = { 'Positive': 3, 'Mixed': 2, 'Negative': 1, '': 0 };
-          aValue = sentimentOrder[a.newsSentiment as keyof typeof sentimentOrder] || 0;
-          bValue = sentimentOrder[b.newsSentiment as keyof typeof sentimentOrder] || 0;
-          break;
-        default:
-          aValue = 0;
-          bValue = 0;
-      }
-      
-      // 应用排序顺序
-      if (sortOrder === 'desc') {
-        return bValue - aValue;
-      } else {
-        return aValue - bValue;
-      }
-    });
-    
-    return filteredResults;
-  }, [marketScannerResults, marketScannerFilters]);
 
   // Step 3: 加载 AI 配置（接入真实配置系统）
   useEffect(() => {
@@ -671,15 +274,53 @@ const Portfolio: React.FC = () => {
     }
   };
 
+  // Step 4: 保存 AI 配置到后端
+  const handleSaveConfig = async () => {
+    setSavingConfig(true);
+    try {
+      // 获取当前表单值
+      const values = await aiConfigForm.validateFields();
+      
+      // 构建配置对象
+      const config = {
+        provider: values.provider || 'DeepSeek',
+        model: values.model || 'deepseek-chat',
+        apiKey: values.apiKey || '',
+        baseUrl: values.baseUrl || 'https://api.deepseek.com'
+      };
+      
+      console.log('保存 AI 配置到后端:', config);
+      
+      // 调用后端保存配置接口
+      const response = await api.post('/api/ai/provider/config', config);
+      
+      if (response.data?.success) {
+        message.success('AI 配置保存成功');
+        // 更新本地状态
+        setAiConfig(config);
+        console.log('AI 配置已保存到后端:', response.data.config);
+      } else {
+        message.error(`AI 配置保存失败: ${response.data?.message || '未知错误'}`);
+        console.error('配置保存失败，响应:', response.data);
+      }
+    } catch (error: any) {
+      console.error('保存 AI 配置失败:', error);
+      message.error(`保存 AI 配置失败: ${error.message || '未知错误'}`);
+    } finally {
+      setSavingConfig(false);
+    }
+  };
+
   // Market Scanner 函数
   const runMarketScanner = async (): Promise<void> => {
     setMarketScannerStatus(prev => ({ ...prev, status: 'running', progress: 0 }));
     setMarketScannerResults([]);
     
     try {
-      console.log('开始市场扫描（使用真实后端API）...');
+      console.log('开始市场扫描...');
       
       // 1. 获取可交易股票列表（实用版全美股universe）
+      // 这里使用Alpaca的活跃可交易股票列表
       const tradingSymbols = await getTradingUniverse();
       
       if (!tradingSymbols || tradingSymbols.length === 0) {
@@ -691,179 +332,24 @@ const Portfolio: React.FC = () => {
           'JPM', 'XOM', 'WMT', 'HD', 'JNJ',
           'PG', 'KO', 'PEP', 'V', 'MA'
         ];
-        await runRealMarketScan(defaultSymbols);
+        await scanSymbols(defaultSymbols);
       } else {
         // 限制扫描数量，避免太重
-        const symbolsToScan = tradingSymbols.slice(0, 50);
-        await runRealMarketScan(symbolsToScan);
+        const symbolsToScan = tradingSymbols.slice(0, 100);
+        await scanSymbols(symbolsToScan);
       }
       
-    } catch (error: unknown) {
+      // 更新最后扫描时间
+      const now = new Date().toISOString();
+      setMarketScannerStatus(prev => ({ ...prev, status: 'stopped', lastScanTime: now }));
+      
+      console.log('市场扫描完成');
+      
+    } catch (error) {
       console.error('市场扫描失败:', error);
       setMarketScannerStatus(prev => ({ ...prev, status: 'stopped' }));
       message.error('市场扫描失败');
     }
-  };
-
-  const runRealMarketScan = async (symbols: string[]): Promise<void> => {
-    try {
-      console.log(`调用后端市场扫描API，扫描 ${symbols.length} 只股票`);
-      
-      // 检查是否有恢复信息
-      const resumeInfo = marketScannerStatus.rateLimitInfo ? {
-        scanned_symbols: marketScannerStatus.rateLimitInfo.scannedSymbols || [],
-        remaining_symbols: marketScannerStatus.rateLimitInfo.remainingSymbols || []
-      } : null;
-      
-      // 调用新的后端市场扫描API
-      const response = await fetch('/api/ai/market/scanner', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          symbols: symbols,
-          maxSymbols: 50,
-          resumeInfo: resumeInfo
-        })
-      });
-      
-      if (!response.ok) {
-        // 检查是否是速率限制错误 (429)
-        if (response.status === 429) {
-          const errorData = await response.json().catch(() => ({}));
-          handleRateLimitError({
-            error: 'rate_limited',
-            wait_seconds: 60,
-            scanned_results: [],
-            scanned_count: 0,
-            scanned_symbols: symbols.slice(0, Math.floor(symbols.length / 2)), // 假设扫描了一半
-            remaining_symbols: symbols.slice(Math.floor(symbols.length / 2)),
-            message: 'Alpaca API速率限制 (429)'
-          });
-          return;
-        }
-        throw new Error(`API请求失败: ${response.status} ${response.statusText}`);
-      }
-      
-      const data = await response.json();
-      
-      // 检查是否为速率限制错误
-      if (data.error === 'rate_limited' || data.error_type === 'alpaca_rate_limit') {
-        console.log('收到速率限制错误，处理恢复逻辑...');
-        handleRateLimitError(data);
-        return;
-      }
-      
-      if (!data.success) {
-        throw new Error(data.message || '市场扫描API返回失败');
-      }
-      
-      // 处理结果
-      const results = data.results || [];
-      const summary = data.summary || {};
-      
-      console.log(`市场扫描完成，获取到 ${results.length} 个结果`);
-      
-      // 更新结果和摘要
-      setMarketScannerResults(results);
-      setMarketScannerSummary({
-        universeScanned: summary.universeScanned || results.length,
-        bullishCount: summary.bullishCount || 0,
-        bearishCount: summary.bearishCount || 0,
-        neutralCount: summary.neutralCount || 0,
-        strongTrendCount: summary.strongTrendCount || 0,
-        newsRiskCount: summary.newsRiskCount || 0,
-        lastScanTime: new Date().toISOString()
-      });
-      
-      // 更新状态 - 清除速率限制信息
-      const now = new Date().toISOString();
-      setMarketScannerStatus(prev => ({ 
-        ...prev, 
-        status: 'stopped', 
-        lastScanTime: now,
-        totalSymbols: symbols.length,
-        scannedSymbols: results.length,
-        progress: 100,
-        rateLimitInfo: null  // 清除速率限制信息
-      }));
-      
-      console.log('市场扫描完成（使用真实后端API）');
-      message.success(`市场扫描完成，分析了 ${results.length} 只股票`);
-      
-    } catch (error: unknown) {
-      console.error('真实市场扫描失败:', error);
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      message.error(`市场扫描失败: ${errorMessage}`);
-      
-      // 作为后备，使用本地模拟扫描
-      console.log('回退到本地模拟扫描...');
-      await scanSymbols(symbols.slice(0, 20));
-    }
-  };
-
-  // 处理速率限制错误的辅助函数
-  const handleRateLimitError = (errorData: any) => {
-    console.log('处理速率限制错误:', errorData);
-    
-    const waitSeconds = errorData.wait_seconds || 60;
-    const scannedResults = errorData.scanned_results || [];
-    const scannedCount = errorData.scanned_count || scannedResults.length;
-    const scannedSymbols = errorData.scanned_symbols || [];
-    const remainingSymbols = errorData.remaining_symbols || [];
-    const resumeAfter = errorData.resume_after || Date.now() + (waitSeconds * 1000);
-    
-    // 如果有部分扫描结果，更新结果
-    if (scannedResults.length > 0) {
-      setMarketScannerResults(prev => [...prev, ...scannedResults]);
-      
-      // 更新摘要
-      const bullishCount = scannedResults.filter((r: any) => 'Bullish' in (r.trendLabel || '')).length;
-      const bearishCount = scannedResults.filter((r: any) => 'Bearish' in (r.trendLabel || '')).length;
-      const neutralCount = scannedResults.filter((r: any) => (r.trendLabel || '') === 'Neutral').length;
-      
-      setMarketScannerSummary(prev => ({
-        ...prev,
-        universeScanned: prev.universeScanned + scannedResults.length,
-        bullishCount: prev.bullishCount + bullishCount,
-        bearishCount: prev.bearishCount + bearishCount,
-        neutralCount: prev.neutralCount + neutralCount,
-        lastScanTime: new Date().toISOString()
-      }));
-    }
-    
-    // 更新状态为速率限制
-    setMarketScannerStatus(prev => ({
-      ...prev,
-      status: 'rate_limited',
-      scannedSymbols: prev.scannedSymbols + scannedCount,
-      progress: scannedCount > 0 ? Math.min(95, Math.round((scannedCount / (scannedCount + remainingSymbols.length)) * 100)) : prev.progress,
-      rateLimitInfo: {
-        waitSeconds,
-        resumeTime: new Date(resumeAfter).toISOString(),
-        scannedSymbols: scannedSymbols,
-        remainingSymbols: remainingSymbols
-      }
-    }));
-    
-    // 显示消息
-    message.warning(`Alpaca API速率限制，等待 ${waitSeconds} 秒后继续剩余 ${remainingSymbols.length} 只股票`);
-    
-    // 设置定时器恢复扫描
-    setTimeout(() => {
-      console.log('速率限制等待结束，恢复扫描剩余股票...');
-      if (remainingSymbols.length > 0) {
-        setMarketScannerStatus(prev => ({ ...prev, status: 'waiting_to_resume' }));
-        message.info(`恢复扫描剩余 ${remainingSymbols.length} 只股票`);
-        // 稍后调用恢复扫描（避免状态更新竞争）
-        setTimeout(() => {
-          runRealMarketScan(remainingSymbols);
-        }, 1000);
-      } else {
-        setMarketScannerStatus(prev => ({ ...prev, status: 'stopped', rateLimitInfo: null }));
-      }
-    }, waitSeconds * 1000);
   };
 
   const getTradingUniverse = async (): Promise<string[]> => {
@@ -882,7 +368,7 @@ const Portfolio: React.FC = () => {
         'PG', 'KO', 'PEP', 'CL', 'PM',
         'DIS', 'NFLX', 'CMCSA', 'T', 'VZ'
       ];
-    } catch (error: unknown) {
+    } catch (error) {
       console.error('获取交易股票列表失败:', error);
       return [];
     }
@@ -904,32 +390,48 @@ const Portfolio: React.FC = () => {
         // 获取股票数据
         const stockData = await marketDataService.getStockData(symbol);
         
-        // 获取新闻数据（如果有）
+        // 获取新闻数据（真实API）
         const newsData = await getStockNews(symbol);
         
-        // 计算趋势分数和标签
+        // 获取公司名（真实API）
+        const companyName = await getCompanyName(symbol);
+        
+        // 计算趋势分数和标签（真实AI分析）
         const trendAnalysis = await analyzeTrend(symbol, stockData, newsData);
         
-        // 添加到结果
+        // 添加到结果 - 使用从AI分析返回的新字段
         results.push({
           symbol,
+          companyName: trendAnalysis.companyName || companyName, // 优先使用AI分析返回的公司名
           trendLabel: trendAnalysis.trendLabel,
           trendScore: trendAnalysis.trendScore,
           trendConfidence: trendAnalysis.trendConfidence,
-          price: stockData.price || 0,
-          changePct: stockData.changePercent || 0,
-          volume: stockData.volume || 0,
+          price: stockData.price || null,
+          changePct: stockData.changePercent || null,
+          volume: stockData.volume || null,
           relativeVolume: calculateRelativeVolume(stockData.volume, symbol),
-          newsSentiment: newsData.sentiment,
-          eventRisk: newsData.eventRisk,
-          sector: stockData.sector || 'Unknown',
+          newsSentiment: trendAnalysis.newsSentiment || newsData.sentiment,
+          eventRisk: trendAnalysis.eventRisk || newsData.eventRisk,
+          sector: trendAnalysis.sector || stockData.sector || null,
           scannerReason: trendAnalysis.scannerReason,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          // 6个维度的分数
+          trendScoreDetail: trendAnalysis.trendScoreDetail,
+          momentumScore: trendAnalysis.momentumScore,
+          volumeScore: trendAnalysis.volumeScore,
+          volatilityScore: trendAnalysis.volatilityScore,
+          structureScore: trendAnalysis.structureScore,
+          newsScore: trendAnalysis.newsScore,
+          // AI推理
+          aiReasoning: trendAnalysis.aiReasoning,
+          // 新闻数据
+          topNews: trendAnalysis.topNews || newsData.topNews,
+          dataSource: stockData.dataSource || 'Unknown'
         });
         
         console.log(`扫描 ${symbol}: ${trendAnalysis.trendLabel} (${trendAnalysis.trendScore})`);
         
-      } catch (error: unknown) {
+      } catch (error) {
         console.error(`扫描 ${symbol} 失败:`, error);
         // 继续扫描下一个
       }
@@ -943,56 +445,144 @@ const Portfolio: React.FC = () => {
     updateScannerSummary(results);
   };
 
+  const getCompanyName = async (symbol: string): Promise<string> => {
+    try {
+      // 从marketDataService获取真实公司名
+      const stockData = await marketDataService.getStockData(symbol);
+      if (stockData?.name) {
+        return stockData.name;
+      }
+      // 如果API没有返回公司名，返回symbol
+      return symbol;
+    } catch (error) {
+      console.warn(`无法获取${symbol}的公司名:`, error);
+      // 不返回假数据，返回symbol
+      return symbol;
+    }
+  };
+
   const getStockNews = async (symbol: string): Promise<any> => {
     try {
-      // 这里应该调用新闻API
-      // 暂时返回模拟数据
-      const sentiments = ['Positive', 'Mixed', 'Negative'];
-      const risks = ['Low', 'Medium', 'High'];
+      console.log(`[DEBUG] 开始获取 ${symbol} 新闻`);
       
+      // 调用新的新闻接口
+      const response = await api.get(`/api/market/news/${symbol}`);
+      
+      console.log(`[DEBUG] ${symbol} 新闻响应:`, response.data);
+      
+      if (response.data?.success) {
+        const newsData = response.data;
+        console.log(`[DEBUG] ${symbol} 新闻获取成功:`, newsData);
+        
+        return {
+          sentiment: newsData.sentiment || null,
+          eventRisk: newsData.eventRisk || null,
+          topCatalyst: newsData.topNews?.title || null,
+          newsItems: newsData.news || [],
+          source: newsData.source || null,
+          topNews: newsData.topNews || null,
+          newsCount: newsData.newsCount || 0,
+          hasNews: newsData.hasNews || false
+        };
+      } else {
+        console.error(`[DEBUG] ${symbol} 新闻获取失败:`, response.data?.error);
+        // 返回空数据
+        return {
+          sentiment: null,
+          eventRisk: null,
+          topCatalyst: null,
+          newsItems: [],
+          source: null,
+          topNews: null,
+          newsCount: 0,
+          hasNews: false
+        };
+      }
+      
+    } catch (error: any) {
+      console.error(`[DEBUG] 获取 ${symbol} 新闻异常:`, error.message, error.response?.data);
+      // 返回空数据，而不是模拟数据
       return {
-        sentiment: sentiments[Math.floor(Math.random() * sentiments.length)],
-        eventRisk: risks[Math.floor(Math.random() * risks.length)],
-        topCatalyst: 'No strong recent news context'
-      };
-    } catch (error) {
-      console.error(`获取 ${symbol} 新闻失败:`, error);
-      return {
-        sentiment: 'Mixed',
-        eventRisk: 'Low',
-        topCatalyst: 'No news data available'
+        sentiment: null,
+        eventRisk: null,
+        topCatalyst: null,
+        newsItems: [],
+        source: null,
+        topNews: null,
+        newsCount: 0,
+        hasNews: false
       };
     }
   };
 
   const analyzeTrend = async (symbol: string, stockData: any, newsData: any): Promise<any> => {
-    // 这里实现真正的趋势分析逻辑
-    // 基于价格、成交量、新闻等计算趋势
-    
-    // 模拟趋势分数计算
-    const baseScore = 50 + (Math.random() * 50 - 25); // 50 ± 25
-    const newsBonus = newsData.sentiment === 'Positive' ? 15 : newsData.sentiment === 'Negative' ? -15 : 0;
-    const volumeBonus = (stockData.volume || 0) > 10000000 ? 10 : 0;
-    
-    const trendScore = Math.max(0, Math.min(100, baseScore + newsBonus + volumeBonus));
-    const trendConfidence = 0.5 + (Math.random() * 0.5); // 0.5-1.0
-    
-    const trendLabel = getTrendLabel(trendScore);
-    const scannerReason = generateScannerReason(symbol, trendScore, newsData, stockData);
-    
-    return {
-      trendLabel,
-      trendScore,
-      trendConfidence,
-      scannerReason
-    };
+    try {
+      console.log(`[DEBUG] 开始AI分析 ${symbol}`, { stockData, newsData });
+      
+      // 调用新的单只股票AI分析接口
+      const response = await api.post('/api/ai/analyze/single', {
+        symbol: symbol
+      });
+      
+      console.log(`[DEBUG] AI分析 ${symbol} 响应:`, response.data);
+      
+      if (response.data?.success) {
+        const result = response.data;
+        console.log(`[DEBUG] AI分析 ${symbol} 成功:`, result);
+        
+        // 从新的AI分析接口提取数据
+        return {
+          trendLabel: result.trend || null,
+          trendScore: result.overallScore || null,
+          trendConfidence: result.confidence || null,
+          scannerReason: result.scannerReason || null,
+          // 6维度分数
+          trendScoreDetail: result.trendScore || null,
+          momentumScore: result.momentumScore || null,
+          volumeScore: result.volumeScore || null,
+          volatilityScore: result.volatilityScore || null,
+          structureScore: result.structureScore || null,
+          newsScore: result.newsScore || null,
+          // 新增字段
+          aiReasoning: result.aiReasoning || null,
+          newsSentiment: result.newsSentiment || null,
+          eventRisk: result.eventRisk || null,
+          topNews: result.topNews || null,
+          companyName: result.companyName || null,
+          sector: result.sector || null
+        };
+      } else {
+        console.error(`[DEBUG] AI分析 ${symbol} 失败:`, response.data?.error);
+        throw new Error(response.data?.error || 'AI analysis failed');
+      }
+    } catch (error: any) {
+      console.error(`[DEBUG] AI分析 ${symbol} 异常:`, error.message, error.response?.data);
+      // AI分析失败时，返回空数据而不是假数据
+      return {
+        trendLabel: null,
+        trendScore: null,
+        trendConfidence: null,
+        scannerReason: null,
+        trendScoreDetail: null,
+        momentumScore: null,
+        volumeScore: null,
+        volatilityScore: null,
+        structureScore: null,
+        newsScore: null,
+        aiReasoning: null,
+        newsSentiment: null,
+        eventRisk: null,
+        topNews: null,
+        companyName: null,
+        sector: null
+      };
+    }
   };
 
-  const calculateRelativeVolume = (volume: number | null, symbol: string): string => {
-    // 这里应该计算相对于平均成交量的比例
-    // 暂时返回模拟值
-    const levels = ['Low', 'Normal', 'High', 'Very High'];
-    return levels[Math.floor(Math.random() * levels.length)];
+  const calculateRelativeVolume = (volume: number | null, symbol: string): string | null => {
+    // 基于真实成交量计算相对成交量
+    // 暂时返回null，等待真实平均成交量数据
+    return null;
   };
 
   const getTrendLabel = (score: number): string => {
@@ -1014,16 +604,9 @@ const Portfolio: React.FC = () => {
     }
   };
 
-  const generateScannerReason = (symbol: string, score: number, newsData: any, stockData: any): string => {
-    const reasons = [
-      `Price above key moving averages with positive momentum`,
-      `Strong volume participation supports current trend`,
-      `Mixed technical signals with no clear direction`,
-      `Negative news pressure outweighs technical strength`,
-      `Breakout above resistance level with confirmation`,
-      `Consolidation pattern forming, awaiting catalyst`
-    ];
-    return reasons[Math.floor(Math.random() * reasons.length)];
+  const generateScannerReason = (symbol: string, score: number, newsData: any, stockData: any): string | null => {
+    // 不再使用模板句子，返回null让AI分析提供真实reasoning
+    return null;
   };
 
   const updateScannerSummary = (results: any[]): void => {
@@ -1083,6 +666,128 @@ const Portfolio: React.FC = () => {
   };
 
   // Step 4: 获取候选股票符号 - 扩展股票池：科技股 + 非科技股
+  // 展开行相关函数
+  const toggleRowExpand = (symbol: string) => {
+    setExpandedRows(prev => 
+      prev.includes(symbol) 
+        ? prev.filter(s => s !== symbol)
+        : [...prev, symbol]
+    );
+  };
+
+  const renderDetailPanel = (record: any) => {
+    return (
+      <div style={{ padding: '16px', backgroundColor: '#fafafa', borderRadius: '8px' }}>
+        <Row gutter={[16, 16]}>
+          <Col span={8}>
+            <Card size="small" title="Basic Info" style={{ height: '100%' }}>
+              <div>
+                <div><strong>Symbol:</strong> {record.symbol}</div>
+                <div><strong>Company:</strong> {record.companyName}</div>
+                <div><strong>Sector:</strong> {record.sector || 'Unknown'}</div>
+                <div><strong>Price:</strong> ${record.price?.toFixed(2) || '--'}</div>
+                <div><strong>Change:</strong> 
+                  <span style={{ color: record.changePct >= 0 ? '#52c41a' : '#ff4d4f' }}>
+                    {record.changePct?.toFixed(2) || '0.00'}%
+                  </span>
+                </div>
+                <div><strong>Volume:</strong> {record.volume ? (record.volume / 1000000).toFixed(1) + 'M' : '--'}</div>
+                <div><strong>Relative Volume:</strong> {record.relativeVolume || 'Normal'}</div>
+              </div>
+            </Card>
+          </Col>
+          <Col span={8}>
+            <Card size="small" title="Trend Analysis" style={{ height: '100%' }}>
+              <div>
+                <div><strong>Trend:</strong> 
+                  <span style={{ 
+                    display: 'inline-block',
+                    padding: '2px 8px',
+                    borderRadius: '10px',
+                    backgroundColor: `${getTrendColor(record.trendLabel)}15`,
+                    border: `1px solid ${getTrendColor(record.trendLabel)}`,
+                    color: getTrendColor(record.trendLabel),
+                    fontWeight: '600',
+                    fontSize: '11px',
+                    marginLeft: '8px'
+                  }}>
+                    {record.trendLabel}
+                  </span>
+                </div>
+                <div><strong>Overall Score:</strong> {record.trendScore?.toFixed(0) || '--'}/100</div>
+                <div><strong>Confidence:</strong> {record.trendConfidence ? `${(record.trendConfidence * 100).toFixed(0)}%` : '--'}</div>
+                <div><strong>6-Dimension Scores:</strong></div>
+                <div style={{ fontSize: '12px', marginTop: '4px' }}>
+                  <div>• Trend: {record.trendScoreDetail?.toFixed(0) || '--'}/100</div>
+                  <div>• Momentum: {record.momentumScore?.toFixed(0) || '--'}/100</div>
+                  <div>• Volume: {record.volumeScore?.toFixed(0) || '--'}/100</div>
+                  <div>• Volatility: {record.volatilityScore?.toFixed(0) || '--'}/100</div>
+                  <div>• Structure: {record.structureScore?.toFixed(0) || '--'}/100</div>
+                  <div>• News: {record.newsScore?.toFixed(0) || '--'}/100</div>
+                </div>
+              </div>
+            </Card>
+          </Col>
+          <Col span={8}>
+            <Card size="small" title="News & Analysis" style={{ height: '100%' }}>
+              <div>
+                <div><strong>News Sentiment:</strong> 
+                  <span style={{ 
+                    display: 'inline-block',
+                    padding: '2px 6px',
+                    borderRadius: '6px',
+                    backgroundColor: record.newsSentiment === 'Positive' ? '#52c41a15' : 
+                                   record.newsSentiment === 'Negative' ? '#ff4d4f15' : '#faad1415',
+                    color: record.newsSentiment === 'Positive' ? '#52c41a' : 
+                           record.newsSentiment === 'Negative' ? '#ff4d4f' : '#faad14',
+                    marginLeft: '8px'
+                  }}>
+                    {record.newsSentiment || 'Mixed'}
+                  </span>
+                </div>
+                <div><strong>Event Risk:</strong> {record.eventRisk || 'N/A'}</div>
+                <div><strong>AI Reasoning:</strong></div>
+                <div style={{ fontSize: '12px', color: '#666', marginTop: '8px', lineHeight: 1.4 }}>
+                  {record.aiReasoning || record.scannerReason || 'AI reasoning unavailable'}
+                </div>
+                
+                {/* 真实新闻显示 */}
+                <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid #f0f0f0' }}>
+                  <div><strong>Top News:</strong></div>
+                  {record.topNews ? (
+                    <div style={{ fontSize: '12px', color: '#333', marginTop: '6px' }}>
+                      <div style={{ fontWeight: '500' }}>{record.topNews.title}</div>
+                      {record.topNews.source && (
+                        <div style={{ fontSize: '11px', color: '#666', marginTop: '2px' }}>
+                          Source: {record.topNews.source}
+                          {record.topNews.published && ` • ${new Date(record.topNews.published).toLocaleDateString()}`}
+                        </div>
+                      )}
+                      {record.topNews.summary && (
+                        <div style={{ fontSize: '11px', color: '#666', marginTop: '4px', lineHeight: 1.3 }}>
+                          {record.topNews.summary}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: '11px', color: '#999', marginTop: '6px' }}>
+                      No recent news available
+                    </div>
+                  )}
+                </div>
+                
+                <div style={{ fontSize: '11px', color: '#999', marginTop: '12px' }}>
+                  <div><strong>Scan Time:</strong> {new Date(record.timestamp).toLocaleString()}</div>
+                  <div><strong>Data Source:</strong> {record.dataSource || 'N/A'}</div>
+                </div>
+              </div>
+            </Card>
+          </Col>
+        </Row>
+      </div>
+    );
+  };
+
   const getCandidateSymbols = async (): Promise<{symbols: string[], source: string, scanType: string}> => {
     try {
       console.log('开始扩展股票池扫描...');
@@ -2041,7 +1746,114 @@ const Portfolio: React.FC = () => {
         </Card>
       </div>
       
-
+      {/* 2. Scan Control */}
+      <div style={{ marginBottom: 24 }}>
+        <Title level={4}>
+          <ClockCircleOutlined style={{ marginRight: '8px' }} />
+          Scan Control
+        </Title>
+        <Card>
+          <Row gutter={16} align="middle">
+            <Col span={6}>
+              <div style={{ marginBottom: '8px' }}>
+                <Text strong>Scan Interval:</Text>
+              </div>
+              <Select 
+                value={scanInterval} 
+                onChange={setScanInterval}
+                style={{ width: '100%' }}
+                disabled={isAutoScanEnabled}
+              >
+                <Option value="5">5 minutes</Option>
+                <Option value="15">15 minutes</Option>
+              </Select>
+            </Col>
+            
+            <Col span={18}>
+              <Space size="middle">
+                <Button
+                  type="primary"
+                  icon={<PlayCircleOutlined />}
+                  onClick={handleStartAutoScan}
+                  disabled={isAutoScanEnabled}
+                >
+                  Start Auto Scan
+                </Button>
+                
+                <Button
+                  danger
+                  icon={<PauseCircleOutlined />}
+                  onClick={handleStopAutoScan}
+                  disabled={!isAutoScanEnabled}
+                >
+                  Stop Auto Scan
+                </Button>
+                
+                <Button
+                  icon={<ThunderboltOutlined />}
+                  onClick={handleRunNow}
+                >
+                  Run Now
+                </Button>
+              </Space>
+            </Col>
+          </Row>
+          
+          <Divider style={{ margin: '16px 0' }} />
+          
+          {/* Status Display */}
+          <Row gutter={16}>
+            <Col span={8}>
+              <div style={{ marginBottom: '8px' }}>
+                <Text strong>Status:</Text>
+              </div>
+              <Badge 
+                status={scanStatus.status === 'running' ? 'processing' : 'default'} 
+                text={
+                  <Text strong style={{ 
+                    color: scanStatus.status === 'running' ? '#52c41a' : '#8c8c8c' 
+                  }}>
+                    {scanStatus.status === 'running' ? 'RUNNING' : 'STOPPED'}
+                  </Text>
+                }
+              />
+            </Col>
+            
+            <Col span={8}>
+              <div style={{ marginBottom: '8px' }}>
+                <Text strong>Last Run:</Text>
+              </div>
+              <Text type="secondary">
+                {scanStatus.lastRun 
+                  ? new Date(scanStatus.lastRun).toLocaleString() 
+                  : 'Never'}
+              </Text>
+            </Col>
+            
+            <Col span={8}>
+              <div style={{ marginBottom: '8px' }}>
+                <Text strong>Next Run:</Text>
+              </div>
+              <Text type="secondary">
+                {scanStatus.nextRun 
+                  ? new Date(scanStatus.nextRun).toLocaleString() 
+                  : 'Not scheduled'}
+              </Text>
+            </Col>
+          </Row>
+          
+          {isScanInProgress && (
+            <div style={{ marginTop: '16px' }}>
+              <Progress 
+                percent={scanStatus.progress} 
+                size="small" 
+                status="active"
+                format={() => `Scanning in progress...`}
+              />
+            </div>
+          )}
+        </Card>
+      </div>
       
       {/* 2. Market Scanner */}
       <div style={{ marginBottom: 24 }}>
@@ -2106,23 +1918,12 @@ const Portfolio: React.FC = () => {
                 <Text strong>Status:</Text>
               </div>
               <Badge 
-                status={
-                  marketScannerStatus.status === 'running' ? 'processing' :
-                  marketScannerStatus.status === 'rate_limited' ? 'warning' :
-                  marketScannerStatus.status === 'waiting_to_resume' ? 'processing' : 'default'
-                } 
+                status={marketScannerStatus.status === 'running' ? 'processing' : 'default'} 
                 text={
                   <Text strong style={{ 
-                    color: 
-                      marketScannerStatus.status === 'running' ? '#52c41a' :
-                      marketScannerStatus.status === 'rate_limited' ? '#faad14' :
-                      marketScannerStatus.status === 'waiting_to_resume' ? '#1890ff' : '#8c8c8c'
+                    color: marketScannerStatus.status === 'running' ? '#52c41a' : '#8c8c8c' 
                   }}>
-                    {
-                      marketScannerStatus.status === 'running' ? 'SCANNING' :
-                      marketScannerStatus.status === 'rate_limited' ? 'RATE LIMITED' :
-                      marketScannerStatus.status === 'waiting_to_resume' ? 'RESUMING' : 'STOPPED'
-                    }
+                    {marketScannerStatus.status === 'running' ? 'SCANNING' : 'STOPPED'}
                   </Text>
                 }
               />
@@ -2173,147 +1974,79 @@ const Portfolio: React.FC = () => {
             </div>
           )}
           
-          {marketScannerStatus.status === 'rate_limited' && marketScannerStatus.rateLimitInfo && (
-            <div style={{ marginBottom: '16px', padding: '12px', backgroundColor: '#fffbe6', border: '1px solid #ffe58f', borderRadius: '6px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
-                <ExclamationCircleOutlined style={{ color: '#faad14', marginRight: '8px' }} />
-                <Text strong style={{ color: '#d48806' }}>Alpaca API Rate Limit Reached</Text>
-              </div>
-              <Text type="secondary" style={{ fontSize: '13px', display: 'block', marginBottom: '8px' }}>
-                已扫描 {marketScannerStatus.scannedSymbols} 只股票，剩余 {marketScannerStatus.rateLimitInfo.remainingSymbols?.length || 0} 只。
-                等待 {marketScannerStatus.rateLimitInfo.waitSeconds || 60} 秒后自动恢复...
-              </Text>
-              <div style={{ display: 'flex', alignItems: 'center' }}>
-                <ClockCircleOutlined style={{ color: '#8c8c8c', marginRight: '8px', fontSize: '12px' }} />
-                <Text type="secondary" style={{ fontSize: '12px' }}>
-                  恢复时间: {new Date(marketScannerStatus.rateLimitInfo.resumeTime).toLocaleTimeString()}
-                </Text>
-              </div>
-            </div>
-          )}
-          
-          {marketScannerStatus.status === 'waiting_to_resume' && (
-            <div style={{ marginBottom: '16px', padding: '12px', backgroundColor: '#e6f7ff', border: '1px solid #91d5ff', borderRadius: '6px' }}>
-              <div style={{ display: 'flex', alignItems: 'center' }}>
-                <ClockCircleOutlined style={{ color: '#1890ff', marginRight: '8px' }} />
-                <Text strong style={{ color: '#0050b3' }}>准备恢复扫描...</Text>
-              </div>
-              <Text type="secondary" style={{ fontSize: '13px', marginTop: '4px' }}>
-                正在恢复扫描剩余股票，请稍候...
-              </Text>
-            </div>
-          )}
-          
           {/* Scanner Summary */}
           {marketScannerSummary.universeScanned > 0 && (
             <Card 
               size="small" 
               style={{ 
-                marginBottom: 20, 
-                border: '1px solid #e8e8e8',
-                borderRadius: '8px',
-                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.06)',
-                background: 'linear-gradient(to bottom, #ffffff, #fafafa)'
+                marginBottom: 16, 
+                border: '1px solid #f0f0f0',
+                boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)'
               }}
-              bodyStyle={{ padding: '20px' }}
+              bodyStyle={{ padding: '16px' }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                 <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                    <BarChartOutlined style={{ color: '#1890ff', fontSize: '18px' }} />
-                    <Text strong style={{ fontSize: '18px', color: '#1f1f1f' }}>Market Scan Summary</Text>
-                  </div>
-                  <div style={{ fontSize: '12px', color: '#8c8c8c', marginTop: 2 }}>
-                    Last scan: {marketScannerSummary.lastScanTime 
+                  <Text strong style={{ fontSize: '16px' }}>Market Scan Summary</Text>
+                  <div style={{ fontSize: '12px', color: '#666', marginTop: 2 }}>
+                    {marketScannerSummary.lastScanTime 
                       ? new Date(marketScannerSummary.lastScanTime).toLocaleString() 
                       : 'Not scanned'}
                   </div>
                 </div>
-                <div style={{ textAlign: 'right' }}>
-                  <Tag color="blue" style={{ fontWeight: '600', fontSize: '11px', padding: '2px 8px' }}>FULL MARKET SCAN</Tag>
-                  <div style={{ fontSize: '11px', color: '#8c8c8c', marginTop: 4 }}>
-                    {marketScannerSummary.universeScanned} symbols
-                  </div>
-                </div>
+                <Tag color="blue">Full Market Scan</Tag>
               </div>
               
-              <Divider style={{ margin: '16px 0', borderColor: '#f0f0f0' }} />
+              <Divider style={{ margin: '12px 0' }} />
               
-              <Row gutter={[20, 16]}>
+              <Row gutter={[16, 16]}>
                 <Col span={4}>
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: '24px', fontWeight: '700', color: '#1890ff', marginBottom: 4 }}>
-                      {marketScannerSummary.universeScanned}
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#595959', fontWeight: '500', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                      Universe
-                    </div>
-                  </div>
+                  <Statistic
+                    title="Universe Scanned"
+                    value={marketScannerSummary.universeScanned}
+                    valueStyle={{ color: '#1890ff', fontSize: '20px', fontWeight: 'bold' }}
+                    prefix={<BarChartOutlined />}
+                  />
                 </Col>
                 <Col span={4}>
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: '24px', fontWeight: '700', color: '#52c41a', marginBottom: 4 }}>
-                      {marketScannerSummary.bullishCount}
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#595959', fontWeight: '500', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                      Bullish
-                    </div>
-                    <div style={{ fontSize: '10px', color: '#8c8c8c', marginTop: 2 }}>
-                      {marketScannerSummary.universeScanned > 0 ? `${((marketScannerSummary.bullishCount / marketScannerSummary.universeScanned) * 100).toFixed(1)}%` : '0%'}
-                    </div>
-                  </div>
+                  <Statistic
+                    title="Bullish"
+                    value={marketScannerSummary.bullishCount}
+                    valueStyle={{ color: '#52c41a', fontSize: '20px', fontWeight: 'bold' }}
+                    prefix={<ArrowUpOutlined />}
+                  />
                 </Col>
                 <Col span={4}>
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: '24px', fontWeight: '700', color: '#ff4d4f', marginBottom: 4 }}>
-                      {marketScannerSummary.bearishCount}
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#595959', fontWeight: '500', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                      Bearish
-                    </div>
-                    <div style={{ fontSize: '10px', color: '#8c8c8c', marginTop: 2 }}>
-                      {marketScannerSummary.universeScanned > 0 ? `${((marketScannerSummary.bearishCount / marketScannerSummary.universeScanned) * 100).toFixed(1)}%` : '0%'}
-                    </div>
-                  </div>
+                  <Statistic
+                    title="Bearish"
+                    value={marketScannerSummary.bearishCount}
+                    valueStyle={{ color: '#ff4d4f', fontSize: '20px', fontWeight: 'bold' }}
+                    prefix={<ArrowDownOutlined />}
+                  />
                 </Col>
                 <Col span={4}>
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: '24px', fontWeight: '700', color: '#faad14', marginBottom: 4 }}>
-                      {marketScannerSummary.neutralCount}
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#595959', fontWeight: '500', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                      Neutral
-                    </div>
-                    <div style={{ fontSize: '10px', color: '#8c8c8c', marginTop: 2 }}>
-                      {marketScannerSummary.universeScanned > 0 ? `${((marketScannerSummary.neutralCount / marketScannerSummary.universeScanned) * 100).toFixed(1)}%` : '0%'}
-                    </div>
-                  </div>
+                  <Statistic
+                    title="Neutral"
+                    value={marketScannerSummary.neutralCount}
+                    valueStyle={{ color: '#faad14', fontSize: '20px', fontWeight: 'bold' }}
+                    prefix={<MinusOutlined />}
+                  />
                 </Col>
                 <Col span={4}>
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: '24px', fontWeight: '700', color: '#722ed1', marginBottom: 4 }}>
-                      {marketScannerSummary.strongTrendCount}
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#595959', fontWeight: '500', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                      Strong Trend
-                    </div>
-                    <div style={{ fontSize: '10px', color: '#8c8c8c', marginTop: 2 }}>
-                      {marketScannerSummary.strongTrendCount > 0 ? 'Active' : 'None'}
-                    </div>
-                  </div>
+                  <Statistic
+                    title="Strong Trend"
+                    value={marketScannerSummary.strongTrendCount}
+                    valueStyle={{ color: '#722ed1', fontSize: '20px', fontWeight: 'bold' }}
+                    prefix={<ThunderboltOutlined />}
+                  />
                 </Col>
                 <Col span={4}>
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: '24px', fontWeight: '700', color: '#fa8c16', marginBottom: 4 }}>
-                      {marketScannerSummary.newsRiskCount}
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#595959', fontWeight: '500', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                      News Risk
-                    </div>
-                    <div style={{ fontSize: '10px', color: '#8c8c8c', marginTop: 2 }}>
-                      {marketScannerSummary.newsRiskCount > 0 ? 'High Risk' : 'Low Risk'}
-                    </div>
-                  </div>
+                  <Statistic
+                    title="News Risk"
+                    value={marketScannerSummary.newsRiskCount}
+                    valueStyle={{ color: '#fa8c16', fontSize: '20px', fontWeight: 'bold' }}
+                    prefix={<ExclamationCircleOutlined />}
+                  />
                 </Col>
               </Row>
             </Card>
@@ -2323,7 +2056,7 @@ const Portfolio: React.FC = () => {
           {marketScannerResults.length > 0 && (
             <div style={{ marginTop: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                <Text strong style={{ fontSize: '14px' }}>Top Market Trends ({filteredAndSortedScannerResults.length} symbols)</Text>
+                <Text strong style={{ fontSize: '14px' }}>Top Market Trends ({marketScannerResults.length} symbols)</Text>
                 <Space size="small">
                   <Select 
                     value={marketScannerFilters.trendFilter}
@@ -2361,58 +2094,39 @@ const Portfolio: React.FC = () => {
               <Table 
                 columns={[
                   { 
+                    title: '', 
+                    key: 'expand',
+                    width: 40,
+                    render: (_, record: any) => (
+                      <Button 
+                        type="text" 
+                        size="small"
+                        icon={expandedRows.includes(record.symbol) ? <ArrowDownOutlined /> : <ArrowRightOutlined />}
+                        onClick={() => toggleRowExpand(record.symbol)}
+                        style={{ padding: 0, width: 24, height: 24 }}
+                      />
+                    )
+                  },
+                  { 
                     title: 'Symbol', 
                     dataIndex: 'symbol', 
                     key: 'symbol',
-                    width: 120,
-                    render: (symbol: string, record: any) => {
-                      const isExpanded = expandedScannerRows.has(symbol);
-                      return (
-                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
-                          <Button
-                            type="text"
-                            size="small"
-                            onClick={() => handleScannerRowExpand(symbol)}
-                            style={{ 
-                              padding: '0 4px', 
-                              minWidth: '24px',
-                              height: '24px',
-                              fontSize: '10px',
-                              color: isExpanded ? '#1890ff' : '#8c8c8c'
-                            }}
-                            icon={isExpanded ? <CaretDownOutlined /> : <CaretRightOutlined />}
-                          />
-                          <div>
-                            <Button 
-                              type="link" 
-                              onClick={() => handleSymbolClick(symbol)}
-                              style={{ padding: 0, fontWeight: 'bold', fontSize: '12px' }}
-                            >
-                              {symbol}
-                            </Button>
-                            <div style={{ 
-                              fontSize: '10px', 
-                              color: '#666', 
-                              marginTop: 2,
-                              lineHeight: 1.2,
-                              maxWidth: '90px',
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              whiteSpace: 'nowrap'
-                            }}>
-                              {record.companyName || 'Loading...'}
-                            </div>
-                          </div>
+                    width: 150,
+                    render: (symbol: string, record: any) => (
+                      <div>
+                        <div style={{ fontWeight: 'bold', fontSize: '14px' }}>{symbol}</div>
+                        <div style={{ fontSize: '11px', color: '#666', marginTop: '2px' }}>
+                          {record.companyName || `${symbol} Corporation`}
                         </div>
-                      );
-                    }
+                      </div>
+                    )
                   },
                   { 
                     title: 'Trend', 
                     dataIndex: 'trendLabel', 
                     key: 'trendLabel',
-                    width: 120,
-                    render: (label: string, record: any) => {
+                    width: 100,
+                    render: (label: string) => {
                       const color = getTrendColor(label);
                       return (
                         <div style={{
@@ -2435,25 +2149,54 @@ const Portfolio: React.FC = () => {
                     title: 'Score', 
                     dataIndex: 'trendScore', 
                     key: 'trendScore',
-                    width: 80,
-                    render: (score: number, record: any) => (
-                      <div style={{ textAlign: 'center' }}>
-                        <Text strong style={{ fontSize: '12px' }}>{score.toFixed(0)}</Text>
-                        <div style={{ fontSize: '10px', color: '#666' }}>
-                          {record.trendConfidence ? `${(record.trendConfidence * 100).toFixed(0)}%` : 'N/A'}
+                    width: 120,
+                    render: (score: number, record: any) => {
+                      const hasScore = score !== null && score !== undefined;
+                      const hasConfidence = record.trendConfidence !== null && record.trendConfidence !== undefined;
+                      
+                      return (
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <Text strong style={{ fontSize: '14px' }}>
+                              {hasScore ? score.toFixed(0) : 'N/A'}
+                            </Text>
+                            <div style={{ fontSize: '11px', color: '#666' }}>
+                              {hasScore ? '/100' : ''}
+                            </div>
+                          </div>
+                          <div style={{ fontSize: '10px', color: '#666', marginTop: 2 }}>
+                            {hasConfidence ? `Conf: ${(record.trendConfidence * 100).toFixed(0)}%` : 'Conf: N/A'}
+                          </div>
+                          {hasScore && (
+                            <div style={{ 
+                              width: '100%', 
+                              height: 4, 
+                              backgroundColor: '#f0f0f0', 
+                              borderRadius: 2,
+                              marginTop: 4,
+                              overflow: 'hidden'
+                            }}>
+                              <div style={{ 
+                                width: `${score}%`, 
+                                height: '100%', 
+                                backgroundColor: score >= 70 ? '#52c41a' : score >= 40 ? '#faad14' : '#ff4d4f',
+                                borderRadius: 2
+                              }} />
+                            </div>
+                          )}
                         </div>
-                      </div>
-                    )
+                      );
+                    }
                   },
                   { 
                     title: 'Price', 
                     dataIndex: 'price', 
                     key: 'price',
-                    width: 90,
+                    width: 100,
                     render: (price: number, record: any) => (
                       <div>
                         <Text strong style={{ fontSize: '12px' }}>
-                          ${price?.toFixed(2) || 'N/A'}
+                          ${price?.toFixed(2) || '--'}
                         </Text>
                         <div style={{ 
                           fontSize: '10px', 
@@ -2472,7 +2215,7 @@ const Portfolio: React.FC = () => {
                     render: (volume: number, record: any) => (
                       <div>
                         <div style={{ fontSize: '11px' }}>
-                          {volume ? (volume / 1000000).toFixed(1) + 'M' : 'N/A'}
+                          {volume ? (volume / 1000000).toFixed(1) + 'M' : '--'}
                         </div>
                         <div style={{ fontSize: '10px', color: '#666' }}>
                           {record.relativeVolume || 'Normal'}
@@ -2486,26 +2229,33 @@ const Portfolio: React.FC = () => {
                     key: 'newsSentiment',
                     width: 90,
                     render: (sentiment: string, record: any) => {
+                      const hasSentiment = sentiment !== null && sentiment !== undefined;
+                      const hasRisk = record.eventRisk !== null && record.eventRisk !== undefined;
+                      
                       let color = '#8c8c8c';
                       if (sentiment === 'Positive') color = '#52c41a';
                       if (sentiment === 'Negative') color = '#ff4d4f';
                       if (sentiment === 'Mixed') color = '#faad14';
                       
                       return (
-                        <div style={{ textAlign: 'center' }}>
-                          <div style={{
-                            display: 'inline-block',
-                            padding: '2px 6px',
-                            borderRadius: '6px',
-                            backgroundColor: `${color}15`,
-                            color: color,
-                            fontSize: '10px',
-                            fontWeight: '500'
-                          }}>
-                            {sentiment}
-                          </div>
+                        <div>
+                          {hasSentiment ? (
+                            <div style={{
+                              display: 'inline-block',
+                              padding: '2px 6px',
+                              borderRadius: '6px',
+                              backgroundColor: `${color}15`,
+                              color: color,
+                              fontSize: '10px',
+                              fontWeight: '500'
+                            }}>
+                              {sentiment}
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: '10px', color: '#999' }}>N/A</div>
+                          )}
                           <div style={{ fontSize: '9px', color: '#666', marginTop: 2 }}>
-                            Risk: {record.eventRisk || 'Low'}
+                            {hasRisk ? `Risk: ${record.eventRisk}` : 'Risk: N/A'}
                           </div>
                         </div>
                       );
@@ -2515,139 +2265,55 @@ const Portfolio: React.FC = () => {
                     title: 'Sector', 
                     dataIndex: 'sector', 
                     key: 'sector',
-                    width: 120,
-                    render: (sector: string, record: any) => {
-                      const sectorSource = record.sectorSource || 'unknown';
-                      let sourceBadge = null;
-                      let sourceColor = '#8c8c8c';
-                      
-                      if (sectorSource === 'finnhub_profile' || sectorSource === 'profile') {
-                        sourceBadge = 'Official';
-                        sourceColor = '#52c41a';
-                      } else if (sectorSource === 'inferred') {
-                        sourceBadge = 'Inferred';
-                        sourceColor = '#faad14';
-                      } else if (sectorSource === 'deepseek_inferred') {
-                        sourceBadge = 'AI-Inferred';
-                        sourceColor = '#1890ff';
-                      } else if (sectorSource === 'error') {
-                        sourceBadge = 'Error';
-                        sourceColor = '#ff4d4f';
-                      }
-                      
-                      return (
-                        <div>
-                          <div style={{ 
-                            fontSize: '11px',
-                            color: '#1f1f1f',
-                            whiteSpace: 'nowrap',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            fontWeight: sector !== 'Unknown' ? '500' : 'normal'
-                          }}>
-                            {sector !== 'Unknown' ? sector : 'Unknown'}
-                          </div>
-                          {sourceBadge && sector !== 'Unknown' && (
-                            <div style={{ 
-                              fontSize: '9px', 
-                              color: sourceColor,
-                              marginTop: 2,
-                              fontWeight: '600'
-                            }}>
-                              {sourceBadge}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    }
+                    width: 100,
+                    render: (sector: string) => (
+                      <div style={{ fontSize: '11px', color: '#666' }}>
+                        {sector || 'Unknown'}
+                      </div>
+                    )
                   },
                   { 
-                    title: 'Scanner Reason', 
-                    dataIndex: 'scannerReason', 
-                    key: 'scannerReason',
-                    width: 220,
+                    title: 'AI Reasoning', 
+                    dataIndex: 'aiReasoning', 
+                    key: 'aiReasoning',
+                    width: 200,
                     render: (reason: string, record: any) => {
-                      const isAI = record.analysisSource === 'deepseek';
-                      const isRuleBased = record.analysisSource === 'rule_based';
+                      const displayReason = reason || record.scannerReason;
                       return (
-                        <div>
-                          <div style={{ 
-                            fontSize: '10px', 
-                            marginBottom: 2,
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 4
-                          }}>
-                            {isAI && (
-                              <span style={{
-                                display: 'inline-block',
-                                padding: '1px 4px',
-                                borderRadius: '3px',
-                                backgroundColor: '#1890ff15',
-                                color: '#1890ff',
-                                fontSize: '9px',
-                                fontWeight: '600',
-                                border: '1px solid #1890ff30'
-                              }}>
-                                🤖 AI
-                              </span>
-                            )}
-                            {isRuleBased && (
-                              <span style={{
-                                display: 'inline-block',
-                                padding: '1px 4px',
-                                borderRadius: '3px',
-                                backgroundColor: '#faad1415',
-                                color: '#fa8c16',
-                                fontSize: '9px',
-                                fontWeight: '600',
-                                border: '1px solid #faad1430'
-                              }}>
-                                ⚙️ Rule
-                              </span>
-                            )}
-                            {!isAI && !isRuleBased && (
-                              <span style={{
-                                display: 'inline-block',
-                                padding: '1px 4px',
-                                borderRadius: '3px',
-                                backgroundColor: '#f0f0f0',
-                                color: '#8c8c8c',
-                                fontSize: '9px',
-                                fontWeight: '600'
-                              }}>
-                                Source Unknown
-                              </span>
-                            )}
-                          </div>
-                          <div style={{ 
-                            fontSize: '11px', 
-                            lineHeight: 1.3,
-                            maxHeight: '2.6em',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            display: '-webkit-box',
-                            WebkitLineClamp: 2,
-                            WebkitBoxOrient: 'vertical',
-                            color: '#1f1f1f'
-                          }}>
-                            {reason}
-                          </div>
+                        <div style={{ 
+                          fontSize: '11px', 
+                          lineHeight: 1.3,
+                          maxHeight: '2.6em',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          display: '-webkit-box',
+                          WebkitLineClamp: 2,
+                          WebkitBoxOrient: 'vertical',
+                          color: displayReason ? '#333' : '#999'
+                        }}>
+                          {displayReason || 'AI reasoning unavailable'}
                         </div>
                       );
                     }
                   }
                 ]}
-                dataSource={filteredAndSortedScannerResults}
-                expandable={{
-                  expandedRowKeys: Array.from(expandedScannerRows),
-                  onExpand: (expanded, record) => handleScannerRowExpand(record.symbol),
-                  expandedRowRender: renderScannerRowDetail
-                }}
+                dataSource={marketScannerResults}
                 rowKey="symbol"
                 size="small"
                 pagination={{ pageSize: 10, size: 'small' }}
-                scroll={{ x: 800 }}
+                scroll={{ x: 1200 }}
+                expandable={{
+                  expandedRowRender: (record: any) => renderDetailPanel(record),
+                  rowExpandable: (record: any) => true,
+                  expandedRowKeys: expandedRows,
+                  onExpand: (expanded, record) => {
+                    if (expanded) {
+                      setExpandedRows(prev => [...prev, record.symbol]);
+                    } else {
+                      setExpandedRows(prev => prev.filter(s => s !== record.symbol));
+                    }
+                  }
+                }}
               />
             </div>
           )}
@@ -2670,116 +2336,6 @@ const Portfolio: React.FC = () => {
           <RobotOutlined style={{ marginRight: '8px' }} />
           AI Recommendations
         </Title>
-        
-        {/* Scan Control - Now part of AI Recommendations */}
-        <div style={{ marginBottom: 24 }}>
-          <Title level={4}>
-            <ClockCircleOutlined style={{ marginRight: '8px' }} />
-            Scan Control
-          </Title>
-          <Card>
-            <Row gutter={16} align="middle">
-              <Col span={6}>
-                <div style={{ marginBottom: '8px' }}>
-                  <Text strong>Scan Interval:</Text>
-                </div>
-                <Select 
-                  value={scanInterval} 
-                  onChange={setScanInterval}
-                  style={{ width: '100%' }}
-                  disabled={isAutoScanEnabled}
-                >
-                  <Option value="5">5 minutes</Option>
-                  <Option value="15">15 minutes</Option>
-                </Select>
-              </Col>
-              
-              <Col span={18}>
-                <Space size="middle">
-                  <Button
-                    type="primary"
-                    icon={<PlayCircleOutlined />}
-                    onClick={handleStartAutoScan}
-                    disabled={isAutoScanEnabled}
-                  >
-                    Start Auto Scan
-                  </Button>
-                  
-                  <Button
-                    danger
-                    icon={<PauseCircleOutlined />}
-                    onClick={handleStopAutoScan}
-                    disabled={!isAutoScanEnabled}
-                  >
-                    Stop Auto Scan
-                  </Button>
-                  
-                  <Button
-                    icon={<ThunderboltOutlined />}
-                    onClick={handleRunNow}
-                  >
-                    Run Now
-                  </Button>
-                </Space>
-              </Col>
-            </Row>
-            
-            <Divider style={{ margin: '16px 0' }} />
-            
-            {/* Status Display */}
-            <Row gutter={16}>
-              <Col span={8}>
-                <div style={{ marginBottom: '8px' }}>
-                  <Text strong>Status:</Text>
-                </div>
-                <Badge 
-                  status={scanStatus.status === 'running' ? 'processing' : 'default'} 
-                  text={
-                    <Text strong style={{ 
-                      color: scanStatus.status === 'running' ? '#52c41a' : '#8c8c8c' 
-                    }}>
-                      {scanStatus.status === 'running' ? 'RUNNING' : 'STOPPED'}
-                    </Text>
-                  }
-                />
-              </Col>
-              
-              <Col span={8}>
-                <div style={{ marginBottom: '8px' }}>
-                  <Text strong>Last Run:</Text>
-                </div>
-                <Text type="secondary">
-                  {scanStatus.lastRun 
-                    ? new Date(scanStatus.lastRun).toLocaleString() 
-                    : 'Never'}
-                </Text>
-              </Col>
-              
-              <Col span={8}>
-                <div style={{ marginBottom: '8px' }}>
-                  <Text strong>Next Run:</Text>
-                </div>
-                <Text type="secondary">
-                  {scanStatus.nextRun 
-                    ? new Date(scanStatus.nextRun).toLocaleString() 
-                    : 'Not scheduled'}
-                </Text>
-              </Col>
-            </Row>
-            
-            {isScanInProgress && (
-              <div style={{ marginTop: '16px' }}>
-                <Progress 
-                  percent={scanStatus.progress} 
-                  size="small" 
-                  status="active"
-                  format={() => `Scanning in progress...`}
-                />
-              </div>
-            )}
-          </Card>
-        </div>
-
         <Card>
           {/* 错误显示区域 */}
           {scanErrors.length > 0 && (
