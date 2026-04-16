@@ -20,6 +20,7 @@ export interface StockData {
   change: number | null;
   changePercent: number | null;
   volume: number | null;
+  avgVolume?: number | null;  // 后端返回的是avgVolume字段
   marketCap: number | null;
   sector: string | null;
   industry: string | null;

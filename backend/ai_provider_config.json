@@ -1,0 +1,7 @@
+{
+  "provider": "DeepSeek",
+  "apiKey": "sk-6ebc2094e72742a8aa36ddbab154c1c9",
+  "baseURL": "https://api.deepseek.com",
+  "model": "deepseek-chat",
+  "baseUrl": "https://api.deepseek.com"
+}

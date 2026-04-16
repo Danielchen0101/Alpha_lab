@@ -4732,22 +4732,25 @@ def ai_provider_config():
 
 
 
-            # 确保返回baseUrl字段（前端期望）
+            response = {
+
+                'success': True,
+
+                            # 确保返回baseUrl字段（前端期望）
             config_to_return = dict(ai_provider_config_state)
             if 'baseURL' in config_to_return and 'baseUrl' not in config_to_return:
                 config_to_return['baseUrl'] = config_to_return['baseURL']
-            
-            response = {
-                'success': True,
-                'config': config_to_return,
+            'config': config_to_return,
+
                 'message': '配置保存成功'
+
             }
 
             print('返回响应:', response)
 
-            # 保存配置到文件
-            save_ai_config_to_file()
-            return jsonify(response)
+                    # 保存配置到文件
+        save_ai_config_to_file()
+        return jsonify(response)
 
     except Exception as e:
 
@@ -10199,19 +10202,9 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
 1. 成交量状态判断 (Volume Status): 基于当前成交量、平均成交量、相对成交量，判断成交量状态为 Low / Normal / High
 
-2. 详细推理 (Detailed Reasoning): 提供详细的英文分析，必须基于具体数据：
-   - 价格变动分析: 基于具体的价格和涨跌幅数据
-   - 趋势结构分析: 基于价格走势和技术形态
-   - 动量分析: 基于近期价格变动和动能指标
-   - 成交量分析: 基于当前成交量状态和异常情况
-   - 新闻催化剂分析: 基于新闻情绪和事件影响
-   - 风险评估: 基于波动率和事件风险
-   每只股票的分析必须体现其独特性，不要使用模板化的语言。
+2. 详细推理 (Detailed Reasoning): 提供详细的英文分析，覆盖价格变动、趋势结构、动量、成交量、新闻催化剂、风险等方面
 
-3. 简洁推理 (Concise Reasoning): 提供简洁的英文摘要（1-2行），用于主表显示。必须包含：
-   - 主要趋势方向
-   - 关键驱动因素
-   - 风险提示
+3. 简洁推理 (Concise Reasoning): 提供简洁的英文摘要，用于主表显示
 
 
 
@@ -10317,7 +10310,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
             json=payload,
 
-            timeout=30  # 增加超时时间到30秒，给AI更多时间分析
+            timeout=15
 
         )
 
@@ -17645,17 +17638,26 @@ def get_stock_news(symbol):
 
             print(f'[新闻接口] 没有找到新闻，返回空数据')
 
-            print(f'[新闻接口] 没有找到新闻，返回空数据')
             return jsonify({
+
                 'success': True,
+
                 'symbol': symbol_upper,
+
                 'sentiment': 'Neutral',
+
                 'eventRisk': 'Low',
+
                 'topNews': None,
+
                 'news': [],
+
                 'source': 'none',
+
                 'hasNews': False,
+
                 'newsCount': 0
+
             })
 
         
@@ -18202,12 +18204,6 @@ def ai_analyze_single():
 
                 'aiReasoning': None,  # AI分析失败，返回null
 
-                'volumeStatus': None,  # AI分析失败，返回null
-
-                'conciseReasoning': None,  # AI分析失败，返回null
-
-                'detailedReasoning': None,  # AI分析失败，返回null
-
                 'newsSentiment': news_data.get('sentiment') if news_data else None,
 
                 'eventRisk': news_data.get('eventRisk') if news_data else None,
@@ -18335,12 +18331,6 @@ def ai_analyze_single():
                     'structureScore': ai_analysis.get('structureScore', 50),
 
                     'newsScore': ai_analysis.get('newsScore', 50),
-
-                    'volumeStatus': ai_analysis.get('volumeStatus', None),  # AI判断的成交量状态
-
-                    'conciseReasoning': ai_analysis.get('conciseReasoning', ai_analysis.get('scannerReason', 'AI analysis completed')),  # 简洁推理
-
-                    'detailedReasoning': ai_analysis.get('detailedReasoning', ai_analysis.get('aiReasoning', ai_analysis.get('scannerReason', 'Detailed AI analysis'))),  # 详细推理
 
                     'scannerReason': ai_analysis.get('scannerReason', 'AI analysis based on market data'),
 

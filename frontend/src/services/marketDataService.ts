@@ -81,6 +81,7 @@ export interface StockData {
   change: number | null;
   changePercent: number | null;
   volume: number | null;
+  avgVolume?: number | null;  // 后端返回的是avgVolume字段
   marketCap: number | null;
   sector: string | null;
   industry: string | null;
@@ -366,6 +367,7 @@ export const getStockData = async (symbol: string): Promise<StockData> => {
         dayHigh: stock.dayHigh !== undefined ? stock.dayHigh : null,
         dayLow: stock.dayLow !== undefined ? stock.dayLow : null,
         previousClose: stock.previousClose !== undefined ? stock.previousClose : null,
+        avgVolume: stock.avgVolume !== undefined ? stock.avgVolume : null,  // ✅ 新增：处理avgVolume
         yearHigh: stock.yearHigh !== undefined ? stock.yearHigh : null,  // ✅ 新增：处理yearHigh
         yearLow: stock.yearLow !== undefined ? stock.yearLow : null,    // ✅ 新增：处理yearLow
         dataSource: stock.dataSource || 'Finnhub',

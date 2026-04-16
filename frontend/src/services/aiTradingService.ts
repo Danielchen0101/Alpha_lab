@@ -626,7 +626,7 @@ class AITradingService {
       console.log('Placing Alpaca order:', orderData);
       
       // 调用后端下单接口
-      const response = await api.post('/api/ai/alpaca/orders', orderData);
+      const response = await api.post('/ai/alpaca/orders', orderData);
       
       console.log('Order response:', response.data);
       return response.data;
@@ -642,7 +642,7 @@ class AITradingService {
   // Block 1: AI Provider Configuration
   async testProviderConnection(config: AIProviderConfig): Promise<AIProviderTestResponse> {
     try {
-      const response = await api.post('/api/ai/provider/test', config);
+      const response = await api.post('/ai/provider/test', config);
       return response.data;
     } catch (error: any) {
       console.error('Test provider connection error:', error);
@@ -657,7 +657,7 @@ class AITradingService {
   async saveProviderConfig(config: AIProviderConfig): Promise<AIProviderConfigResponse> {
     try {
       console.log('saveProviderConfig 调用，配置:', config);
-      const response = await api.post('/api/ai/provider/config', config);
+      const response = await api.post('/ai/provider/config', config);
       console.log('Save provider config response:', response.data);
       console.log('response.data.success:', response.data.success);
       console.log('response.data.message:', response.data.message);
@@ -690,7 +690,7 @@ class AITradingService {
 
   async getProviderConfig(): Promise<AIProviderConfigResponse> {
     try {
-      const response = await api.get('/api/ai/provider/config');
+      const response = await api.get('/ai/provider/config');
       console.log('getProviderConfig response:', response.data);
       
       // Backend 返回的 config 可能包含 baseURL（大写），但前端接口期望 baseUrl（小写）
@@ -700,7 +700,7 @@ class AITradingService {
         provider: backendConfig.provider || 'DeepSeek',
         apiKey: backendConfig.apiKey || '',
         // 处理 baseURL/baseUrl 字段名不一致问题
-        baseUrl: backendConfig.baseUrl || backendConfig.baseURL || 'https://api.deepseek.com/v1',
+        baseUrl: backendConfig.baseUrl || backendConfig.baseURL || 'https://api.deepseek.com',
         model: backendConfig.model || 'deepseek-chat'
       };
       
@@ -715,7 +715,7 @@ class AITradingService {
         config: {
           provider: 'DeepSeek',
           apiKey: '',
-          baseUrl: 'https://api.deepseek.com/v1',
+          baseUrl: 'https://api.deepseek.com',
           model: 'deepseek-chat'
         }
       };

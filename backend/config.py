@@ -11,9 +11,9 @@ FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
 # TWELVEDATA_BASE_URL = "https://api.twelvedata.com"  # 已弃用
 
 # ========== Alpaca API 配置 (交易执行) ==========
-ALPACA_API_KEY = "AKPI2LWKQ2IZQ4JPGTXVCTXEKO"
-ALPACA_API_SECRET = "B31d4ygh47ovhi1wQwqBCNYHLAD8pMCH62fyBE3eZcRG"
-ALPACA_BASE_URL = "https://api.alpaca.markets"  # 用户提供的新API endpoint
+ALPACA_API_KEY = "AKOQQPZNXXOAYAZKDWF7LV4E3D"
+ALPACA_API_SECRET = "93oAgKVTjHjkyzA1fZpHeW4wUkwaYZvzEohcMe5dgXMP"
+ALPACA_BASE_URL = "https://api.alpaca.markets"  # 真实交易API endpoint
 
 # Alpaca API 端点
 ALPACA_ENDPOINTS = {

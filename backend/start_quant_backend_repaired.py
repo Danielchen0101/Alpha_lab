@@ -180,38 +180,29 @@ except ImportError as e:
 
 ai_provider_config_state = {
 
-    'provider': 'DeepSeek',
+    'provider': '',  # 用户必须配置
 
-    'apiKey': 'sk-83365246617844178bf8d1e121b7279f',  # 硬编码API密钥用于测试
+    'apiKey': '',  # 用户必须配置，无硬编码默认值
 
-    'baseURL': 'https://api.deepseek.com',
+    'baseURL': '',   # 用户必须配置
 
-    'model': 'deepseek-chat'
+    'model': ''      # 用户必须配置
 
 }
 
 # AI配置持久化
 import json
 import os
+AI_CONFIG_FILE = os.path.expanduser('~/.openclaw/ai_config.json')
 
-AI_CONFIG_FILE = 'ai_provider_config.json'
-
-def save_ai_config_to_file():
+def save_ai_config_to_file(config):
     """保存AI配置到文件"""
     try:
-        config_to_save = dict(ai_provider_config_state)
-        # 确保字段一致性
-        if 'baseUrl' in config_to_save and 'baseURL' not in config_to_save:
-            config_to_save['baseURL'] = config_to_save['baseUrl']
-        elif 'baseURL' in config_to_save and 'baseUrl' not in config_to_save:
-            config_to_save['baseUrl'] = config_to_save['baseURL']
-        
+        os.makedirs(os.path.dirname(AI_CONFIG_FILE), exist_ok=True)
         with open(AI_CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(config_to_save, f, indent=2)
-        print(f'[AI配置] 配置已保存到文件: {AI_CONFIG_FILE}')
+            json.dump(config, f, indent=2)
         return True
-    except Exception as e:
-        print(f'[AI配置] 保存配置到文件失败: {e}')
+    except:
         return False
 
 def load_ai_config_from_file():
@@ -219,25 +210,25 @@ def load_ai_config_from_file():
     try:
         if os.path.exists(AI_CONFIG_FILE):
             with open(AI_CONFIG_FILE, 'r', encoding='utf-8') as f:
-                saved_config = json.load(f)
-            
-            # 更新内存配置
-            for key in ['provider', 'apiKey', 'baseURL', 'baseUrl', 'model']:
-                if key in saved_config:
-                    ai_provider_config_state[key] = saved_config[key]
-            
-            print(f'[AI配置] 从文件加载配置成功: {AI_CONFIG_FILE}')
-            return True
-        else:
-            print(f'[AI配置] 配置文件不存在: {AI_CONFIG_FILE}')
-            return False
-    except Exception as e:
-        print(f'[AI配置] 从文件加载配置失败: {e}')
-        return False
+                return json.load(f)
+    except:
+        pass
+    return {}
+
+def get_effective_ai_config():
+    """获取有效的AI配置"""
+    config = dict(ai_provider_config_state)
+    if not config.get('apiKey'):
+        file_config = load_ai_config_from_file()
+        if file_config:
+            ai_provider_config_state.update(file_config)
+            config.update(file_config)
+    return config
 
 # 启动时加载配置
-load_ai_config_from_file()
-
+_startup_config = load_ai_config_from_file()
+if _startup_config:
+    ai_provider_config_state.update(_startup_config)
 
 
 
@@ -4671,6 +4662,7 @@ def get_mock_response(message):
 
 
 @app.route('/api/ai/provider/config', methods=['GET', 'POST'])
+@app.route('/ai/provider/config', methods=['GET', 'POST'])  # 兼容无前缀版本
 
 def ai_provider_config():
 
@@ -4678,21 +4670,14 @@ def ai_provider_config():
 
         if request.method == 'GET':
 
-            # 返回硬编码的配置，确保API密钥不为空
-
-            config_to_return = dict(ai_provider_config_state)
-
-            if not config_to_return.get('apiKey'):
-
-                config_to_return['apiKey'] = 'sk-83365246617844178bf8d1e121b7279f'
-
+            # 使用统一配置函数获取当前配置
+            effective_config = get_effective_ai_config()
             
-
             return jsonify({
 
                 'success': True,
 
-                'config': config_to_return
+                'config': effective_config
 
             })
 
@@ -4708,45 +4693,79 @@ def ai_provider_config():
 
 
 
-            # 更新所有配置字段
-
+            # 验证配置字段
+            SUPPORTED_PROVIDERS = ['DeepSeek', 'OpenAI', 'Claude']
+            PROVIDER_MODELS = {
+                'DeepSeek': ['deepseek-chat', 'deepseek-coder'],
+                'OpenAI': ['gpt-4', 'gpt-3.5-turbo'],
+                'Claude': ['claude-3-opus', 'claude-3-sonnet']
+            }
+            
+            # 验证provider
             if 'provider' in data:
+                provider = data['provider'].strip()
+                if not provider:
+                    return jsonify({
+                        'success': False,
+                        'message': 'provider不能为空',
+                        'config': ai_provider_config_state
+                    })
+                
+                if provider not in SUPPORTED_PROVIDERS:
+                    return jsonify({
+                        'success': False,
+                        'message': f'不支持的provider: {provider}。支持的provider: {", ".join(SUPPORTED_PROVIDERS)}',
+                        'config': ai_provider_config_state
+                    })
+                
+                ai_provider_config_state['provider'] = provider
 
-                ai_provider_config_state['provider'] = data['provider']
+            # 验证model
+            if 'model' in data:
+                model = data['model'].strip()
+                if not model:
+                    return jsonify({
+                        'success': False,
+                        'message': 'model不能为空',
+                        'config': ai_provider_config_state
+                    })
+                
+                current_provider = ai_provider_config_state.get('provider', '')
+                if current_provider:  # 如果provider已设置，验证model
+                    supported_models = PROVIDER_MODELS.get(current_provider, [])
+                    if model not in supported_models:
+                        return jsonify({
+                            'success': False,
+                            'message': f'不支持的model: {model}。{current_provider}支持的model: {", ".join(supported_models)}',
+                            'config': ai_provider_config_state
+                        })
+                
+                ai_provider_config_state['model'] = model
 
+            # 更新其他字段
             if 'apiKey' in data:
-
                 ai_provider_config_state['apiKey'] = data['apiKey']
 
             if 'baseUrl' in data:
-
                 ai_provider_config_state['baseURL'] = data['baseUrl']
 
             if 'baseURL' in data:  # 也支持大写
-
                 ai_provider_config_state['baseURL'] = data['baseURL']
 
-            if 'model' in data:
-
-                ai_provider_config_state['model'] = data['model']
 
 
-
-            # 确保返回baseUrl字段（前端期望）
-            config_to_return = dict(ai_provider_config_state)
-            if 'baseURL' in config_to_return and 'baseUrl' not in config_to_return:
-                config_to_return['baseUrl'] = config_to_return['baseURL']
-            
             response = {
+
                 'success': True,
-                'config': config_to_return,
+
+                'config': ai_provider_config_state,
+
                 'message': '配置保存成功'
+
             }
 
             print('返回响应:', response)
 
-            # 保存配置到文件
-            save_ai_config_to_file()
             return jsonify(response)
 
     except Exception as e:
@@ -4762,25 +4781,72 @@ def ai_provider_config():
 def ai_provider_test():
 
     print('=== AI Provider Test 请求 ===')
+    print(f'请求数据: {request.get_json()}')
 
     try:
 
         data = request.get_json()
-
         api_key = data.get('apiKey', '')
+        
+        print(f'解析的apiKey: {api_key[:10]}... (长度: {len(api_key)})')
+        print(f'provider: {data.get("provider")}')
+        print(f'baseUrl: {data.get("baseUrl")}')
+        print(f'baseURL: {data.get("baseURL")}')
+        print(f'model: {data.get("model")}')
 
-
-
-        if not api_key or api_key.startswith('sk-') and len(api_key) < 30:
-
+        # 1. 验证provider
+        SUPPORTED_PROVIDERS = ['DeepSeek', 'OpenAI', 'Claude']
+        provider = data.get('provider', '').strip()
+        if not provider:
             return jsonify({
-
                 'success': False,
-
-                'message': 'API 密钥无效或未提供',
-
+                'message': 'provider未提供',
                 'valid': False
+            })
+        
+        if provider not in SUPPORTED_PROVIDERS:
+            return jsonify({
+                'success': False,
+                'message': f'不支持的provider: {provider}。支持的provider: {", ".join(SUPPORTED_PROVIDERS)}',
+                'valid': False
+            })
 
+        # 2. 验证model
+        PROVIDER_MODELS = {
+            'DeepSeek': ['deepseek-chat', 'deepseek-coder'],
+            'OpenAI': ['gpt-4', 'gpt-3.5-turbo'],
+            'Claude': ['claude-3-opus', 'claude-3-sonnet']
+        }
+        model = data.get('model', '').strip()
+        if not model:
+            return jsonify({
+                'success': False,
+                'message': 'model未提供',
+                'valid': False
+            })
+        
+        supported_models = PROVIDER_MODELS.get(provider, [])
+        if model not in supported_models:
+            return jsonify({
+                'success': False,
+                'message': f'不支持的model: {model}。{provider}支持的model: {", ".join(supported_models)}',
+                'valid': False
+            })
+
+        # 3. 验证apiKey（基本格式检查）
+        if not api_key:
+            return jsonify({
+                'success': False,
+                'message': 'API密钥未提供',
+                'valid': False
+            })
+        
+        # 对于sk-开头的key，检查最小长度
+        if api_key.startswith('sk-') and len(api_key) < 30:
+            return jsonify({
+                'success': False,
+                'message': 'API密钥格式可能无效（长度太短）',
+                'valid': False
             })
 
 
@@ -4806,25 +4872,23 @@ def ai_provider_test():
 
 
         try:
+            # 构建测试请求
+            test_url = f'{base_url}/chat/completions'
+            test_payload = {
+                'model': data.get('model', 'deepseek-chat'),
+                'messages': [{'role': 'user', 'content': 'Hello'}],
+                'max_tokens': 10
+            }
+            
+            print(f'测试URL: {test_url}')
+            print(f'测试payload: {test_payload}')
+            print(f'请求头Authorization: Bearer {api_key[:10]}...')
 
             test_response = requests.post(
-
-                f'{base_url}/chat/completions',
-
+                test_url,
                 headers=headers,
-
-                json={
-
-                    'model': data.get('model', 'deepseek-chat'),
-
-                    'messages': [{'role': 'user', 'content': 'Hello'}],
-
-                    'max_tokens': 10
-
-                },
-
+                json=test_payload,
                 timeout=10
-
             )
 
 
@@ -4842,6 +4906,9 @@ def ai_provider_test():
                 })
 
             else:
+                print(f'API测试失败，状态码: {test_response.status_code}')
+                print(f'API响应头: {dict(test_response.headers)}')
+                print(f'API响应文本: {test_response.text[:500]}')
 
                 return jsonify({
 
@@ -10021,7 +10088,34 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
     
 
-    try:
+    
+        # 使用统一配置入口
+        effective_config = get_effective_ai_config()
+        api_key = effective_config.get('apiKey', '')
+        base_url = effective_config.get('baseURL', '')
+        model = effective_config.get('model', '')
+        provider = effective_config.get('provider', '')
+        
+        print(f'[DeepSeek分析] 使用配置 - provider: {provider}, apiKey: {api_key[:10]}..., baseURL: {base_url}, model: {model}')
+        
+        # 检查配置是否完整
+        if not api_key or not provider:
+            print(f'[DeepSeek分析] AI配置不完整，无法进行分析')
+            return {
+                'trendLabel': None,
+                'trendScore': None,
+                'trendConfidence': None,
+                'scannerReason': None,
+                'trendScoreDetail': None,
+                'momentumScore': None,
+                'volumeScore': None,
+                'volatilityScore': None,
+                'structureScore': None,
+                'newsScore': None,
+                'aiReasoning': 'AI配置不完整，请先在AI Configuration中配置provider和apiKey',
+                'provenance': {'aiAnalysis': 'config_missing'}
+            }
+try:
 
         print(f'[DeepSeek分析] 开始分析 {symbol}')
 
@@ -10199,19 +10293,9 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
 1. 成交量状态判断 (Volume Status): 基于当前成交量、平均成交量、相对成交量，判断成交量状态为 Low / Normal / High
 
-2. 详细推理 (Detailed Reasoning): 提供详细的英文分析，必须基于具体数据：
-   - 价格变动分析: 基于具体的价格和涨跌幅数据
-   - 趋势结构分析: 基于价格走势和技术形态
-   - 动量分析: 基于近期价格变动和动能指标
-   - 成交量分析: 基于当前成交量状态和异常情况
-   - 新闻催化剂分析: 基于新闻情绪和事件影响
-   - 风险评估: 基于波动率和事件风险
-   每只股票的分析必须体现其独特性，不要使用模板化的语言。
+2. 详细推理 (Detailed Reasoning): 提供详细的英文分析，覆盖价格变动、趋势结构、动量、成交量、新闻催化剂、风险等方面
 
-3. 简洁推理 (Concise Reasoning): 提供简洁的英文摘要（1-2行），用于主表显示。必须包含：
-   - 主要趋势方向
-   - 关键驱动因素
-   - 风险提示
+3. 简洁推理 (Concise Reasoning): 提供简洁的英文摘要，用于主表显示
 
 
 
@@ -10309,17 +10393,25 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         
 
+        print("calling provider with payload =", {
+            "url": f'{base_url}/chat/completions',
+            "model": payload.get("model"),
+            "messages_count": len(payload.get("messages", [])),
+            "max_tokens": payload.get("max_tokens")
+        })
+        
+        start_time = time.time()
         response = requests.post(
-
             f'{base_url}/chat/completions',
-
             headers=headers,
-
             json=payload,
-
-            timeout=30  # 增加超时时间到30秒，给AI更多时间分析
-
+            timeout=15
         )
+        elapsed_ms = (time.time() - start_time) * 1000
+        
+        print("provider status =", response.status_code)
+        print("provider body =", response.text[:1000])
+        print(f"provider elapsed ms = {elapsed_ms:.0f}")
 
         
 
@@ -17645,17 +17737,26 @@ def get_stock_news(symbol):
 
             print(f'[新闻接口] 没有找到新闻，返回空数据')
 
-            print(f'[新闻接口] 没有找到新闻，返回空数据')
             return jsonify({
+
                 'success': True,
+
                 'symbol': symbol_upper,
+
                 'sentiment': 'Neutral',
+
                 'eventRisk': 'Low',
+
                 'topNews': None,
+
                 'news': [],
+
                 'source': 'none',
+
                 'hasNews': False,
+
                 'newsCount': 0
+
             })
 
         
@@ -17830,48 +17931,31 @@ def ai_analyze_single():
 
     """单只股票AI分析接口 - 使用用户配置的AI provider进行真实分析"""
 
-    print(f'=== 单只股票AI分析请求 ===')
-
-    start_time = time.time()
-
+    print(f'=== AI ANALYZE START ===')
     
-
     try:
-
         data = request.get_json()
-
-        if not data:
-
-            return jsonify({
-
-                'success': False,
-
-                'error': 'No JSON data provided',
-
-                'timestamp': int(time.time())
-
-            }), 400
-
+        symbol = data.get('symbol') if data else None
+        symbol_upper = symbol.upper() if symbol else 'UNKNOWN'
         
-
-        symbol = data.get('symbol')
+        print(f"=== AI ANALYZE START {symbol_upper} ===")
+        print("request.json =", data)
+        
+        if not data:
+            return jsonify({
+                'success': False,
+                'error': 'No JSON data provided',
+                'timestamp': int(time.time())
+            }), 400
 
         if not symbol:
-
             return jsonify({
-
                 'success': False,
-
                 'error': 'Symbol is required',
-
                 'timestamp': int(time.time())
-
             }), 400
 
-        
-
         symbol_upper = symbol.upper()
-
         print(f'[AI分析接口] 分析股票: {symbol_upper}')
 
         
@@ -18121,10 +18205,17 @@ def ai_analyze_single():
         # 4. 使用用户配置的AI provider进行真实分析
 
         print(f'[AI分析接口] 使用AI配置进行分析')
+        
+        # 获取有效的AI配置
+        effective_config = get_effective_ai_config()
+        print(f"effective ai config =", {
+            "provider": effective_config.get("provider"),
+            "model": effective_config.get("model"),
+            "baseUrl": effective_config.get("baseURL"),
+            "apiKey_len": len(effective_config.get("apiKey") or "")
+        })
 
-        print(f'[AI分析接口] 当前AI配置状态: {ai_provider_config_state}')
-
-        ai_config = ai_provider_config_state
+        ai_config = effective_config
 
         
 
@@ -18150,7 +18241,9 @@ def ai_analyze_single():
 
             company_info = {}
 
-        
+        print("stock_data =", market_data)
+        print("news_data =", news_data)
+        print("company_info =", company_info)
 
         print(f'[AI分析接口] 调用函数: analyze_trend_with_deepseek({symbol_upper}, {type(market_data)}, {type(news_data)}, {type(company_info)})')
 
@@ -18161,7 +18254,7 @@ def ai_analyze_single():
         try:
 
             # 直接调用AI分析函数
-
+            print("calling analyze_trend_with_deepseek...")
             ai_analysis = analyze_trend_with_deepseek(symbol_upper, market_data, news_data, company_info)
 
         except Exception as e:
@@ -18201,12 +18294,6 @@ def ai_analyze_single():
                 'scannerReason': None,
 
                 'aiReasoning': None,  # AI分析失败，返回null
-
-                'volumeStatus': None,  # AI分析失败，返回null
-
-                'conciseReasoning': None,  # AI分析失败，返回null
-
-                'detailedReasoning': None,  # AI分析失败，返回null
 
                 'newsSentiment': news_data.get('sentiment') if news_data else None,
 
@@ -18335,12 +18422,6 @@ def ai_analyze_single():
                     'structureScore': ai_analysis.get('structureScore', 50),
 
                     'newsScore': ai_analysis.get('newsScore', 50),
-
-                    'volumeStatus': ai_analysis.get('volumeStatus', None),  # AI判断的成交量状态
-
-                    'conciseReasoning': ai_analysis.get('conciseReasoning', ai_analysis.get('scannerReason', 'AI analysis completed')),  # 简洁推理
-
-                    'detailedReasoning': ai_analysis.get('detailedReasoning', ai_analysis.get('aiReasoning', ai_analysis.get('scannerReason', 'Detailed AI analysis'))),  # 详细推理
 
                     'scannerReason': ai_analysis.get('scannerReason', 'AI analysis based on market data'),
 
@@ -18485,8 +18566,9 @@ def ai_analyze_single():
                     'message': 'Analysis completed using local rules (AI analysis failed)'
 
                 }
-
         
+        print("final trend_analysis =", response_data)
+        print(f"=== AI ANALYZE END {symbol_upper} ===")
 
         return jsonify(response_data)
 
