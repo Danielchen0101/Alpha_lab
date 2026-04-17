@@ -23,7 +23,7 @@ jobs:
     - name: Install frontend dependencies
       run: |
         cd frontend
-        npm ci
+        npm install
     
     - name: Run frontend tests
       run: |
@@ -78,7 +78,7 @@ jobs:
     - name: Install dependencies
       run: |
         cd frontend
-        npm ci
+        npm install
     
     - name: Run ESLint
       run: |
