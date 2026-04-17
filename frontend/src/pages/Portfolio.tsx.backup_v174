@@ -488,9 +488,18 @@ const Portfolio: React.FC = () => {
   };
 
   // 处理单个symbol的函数
-  const processSingleSymbol = async (symbol: string): Promise<any> => {
+  const processSingleSymbol = async (symbol: string, globalIndex: number, totalSymbols: number): Promise<any> => {
     try {
       console.log(`[${symbol}] === 开始处理symbol ===`);
+      console.log(`[${symbol}] 全局索引: ${globalIndex + 1}/${totalSymbols}`);
+      
+      // 更新进度
+      console.log(`[${symbol}] 更新进度...`);
+      setMarketScannerStatus(prev => ({ 
+        ...prev, 
+        scannedSymbols: globalIndex + 1, 
+        progress: Math.round(((globalIndex + 1) / totalSymbols) * 100) 
+      }));
       
       // 获取股票数据
       console.log(`[${symbol}] 开始获取stockData...`);
@@ -615,7 +624,7 @@ const Portfolio: React.FC = () => {
     }
   };
 
-    const scanSymbols = async (symbols: string[]): Promise<void> => {
+  const scanSymbols = async (symbols: string[]): Promise<void> => {
     try {
       console.log('=== scanSymbols 开始执行（小并发滑动窗口） ===');
       console.log('总symbols数:', symbols.length);
@@ -624,7 +633,7 @@ const Portfolio: React.FC = () => {
       const totalSymbols = symbols.length;
       const RENDER_BATCH_SIZE = 10; // 每10个完整结果渲染一批
       
-      // 并发配置（按照用户要求）
+      // 并发配置
       const CONCURRENT_CONFIG = {
         windowSize: 3,           // 滑动窗口大小：同时处理3个symbols
         marketDataConcurrent: 3, // 市场数据并发数
@@ -684,7 +693,7 @@ const Portfolio: React.FC = () => {
           // 处理单个symbol
           const result = await processSingleSymbol(symbol);
           
-          // 严格校验数据（按照用户要求的校验规则）
+          // 严格校验数据
           const validation = validateSymbolData(result);
           
           if (validation.valid) {
@@ -805,7 +814,7 @@ const Portfolio: React.FC = () => {
         // 等待一小段时间，避免CPU占用过高
         await new Promise(resolve => setTimeout(resolve, 100));
         
-        // 更新进度状态（按照用户要求的进度条规则）
+        // 更新进度状态
         const progressPercent = Math.round((totalProcessed / totalSymbols) * 100);
         const validatedProgress = `${totalValidated}/${RENDER_BATCH_SIZE}`;
         
@@ -833,7 +842,7 @@ const Portfolio: React.FC = () => {
           startProcessing(symbol, 0);
         }
         
-        // 检查是否需要渲染（收集到10个完整结果就渲染）
+        // 检查是否需要渲染
         if (validatedBuffer.length >= RENDER_BATCH_SIZE) {
           renderValidatedBatch();
         }
@@ -873,6 +882,439 @@ const Portfolio: React.FC = () => {
       }));
     }
   };
+          
+          try {
+            console.log(`[${symbol}] === 开始处理symbol ${i+1}/${batchSymbols.length} (尝试 ${attemptNum}/${MAX_RETRIES+1}) ===`);
+            console.log(`[${symbol}] 全局索引: ${globalIndex + 1}/${totalSymbols}`);
+            
+            // 更新进度 - 扫描中/重试中
+            const statusText = retryCount > 0 ? 'retrying' : 'scanning';
+            console.log(`[${symbol}] 更新进度: ${statusText}...`);
+            setMarketScannerStatus(prev => ({ 
+              ...prev, 
+              scannedSymbols: globalIndex + 1, 
+              progress: Math.round(((globalIndex + 1) / totalSymbols) * 100),
+              currentSymbol: symbol,
+              currentStatus: statusText,
+              currentBatch: batchNum,
+              batchProgress: `${i+1}/${batchSymbols.length}`,
+              retryAttempt: retryCount
+            }));
+          
+          // 获取股票数据
+          console.log(`[${symbol}] 开始获取stockData...`);
+          const stockData = await marketDataService.getStockData(symbol);
+          console.log(`[${symbol}] stockData获取完成:`, {
+            hasPrice: !!stockData?.price,
+            price: stockData?.price,
+            hasVolume: !!stockData?.volume,
+            volume: stockData?.volume,
+            changePct: stockData?.changePct,
+            changePercent: stockData?.changePercent
+          });
+          
+          // 获取新闻数据（真实API）
+          console.log(`[${symbol}] 开始获取newsData...`);
+          const newsData = await getStockNews(symbol);
+          console.log(`[${symbol}] newsData获取完成:`, {
+            hasSentiment: !!newsData?.sentiment,
+            sentiment: newsData?.sentiment,
+            hasTopNews: !!newsData?.topNews,
+            topNews: newsData?.topNews
+          });
+          
+          // 获取公司名（真实API）
+          console.log(`[${symbol}] 开始获取companyName...`);
+          const companyName = await getCompanyName(symbol);
+          console.log(`[${symbol}] companyName获取完成:`, companyName);
+          
+          // 计算趋势分数和标签（真实AI分析）
+          console.log(`[${symbol}] 开始analyzeTrend...`);
+          const trendAnalysis = await analyzeTrend(symbol, stockData, newsData);
+          console.log(`[${symbol}] analyzeTrend完成:`, {
+            hasTrendLabel: !!trendAnalysis.trendLabel,
+            trendLabel: trendAnalysis.trendLabel,
+            hasTrendScore: !!trendAnalysis.trendScore,
+            trendScore: trendAnalysis.trendScore,
+            hasAiReasoning: !!trendAnalysis.aiReasoning
+          });
+          
+          // 创建结果对象
+          const result = {
+            symbol,
+            companyName: trendAnalysis.companyName || companyName,
+            trendLabel: trendAnalysis.trendLabel,
+            trendScore: trendAnalysis.trendScore || trendAnalysis.overallScore || null,
+            trendConfidence: trendAnalysis.trendConfidence || trendAnalysis.confidence || null,
+            price: stockData.price || null,
+            changePct: stockData.changePct || stockData.changePercent || null, // 使用changePct字段
+            changePercent: stockData.changePercent || null, // 保留原字段
+            volume: stockData.volume || null,
+            marketCap: stockData.marketCap || null,
+            newsSentiment: trendAnalysis.newsSentiment || newsData.sentiment,
+            eventRisk: trendAnalysis.eventRisk || newsData.eventRisk,
+            topNews: trendAnalysis.topNews || newsData.topNews,
+            sector: stockData.sector || trendAnalysis.sector,
+            scannerReason: trendAnalysis.scannerReason,
+            trendScoreDetail: trendAnalysis.trendScoreDetail,
+            momentumScore: trendAnalysis.momentumScore,
+            volumeScore: trendAnalysis.volumeScore,
+            volatilityScore: trendAnalysis.volatilityScore,
+            structureScore: trendAnalysis.structureScore,
+            newsScore: trendAnalysis.newsScore,
+            aiReasoning: trendAnalysis.aiReasoning,
+            detailedReasoning: trendAnalysis.detailedReasoning,
+            conciseReasoning: trendAnalysis.conciseReasoning,
+            volumeStatus: trendAnalysis.volumeStatus,
+            analysisStatus: 'success',
+            analysisError: null,
+            timestamp: new Date().toISOString()
+          };
+          
+          console.log(`[${symbol}] 处理成功:`, {
+            trendLabel: result.trendLabel,
+            changePct: result.changePct,
+            sector: result.sector
+          });
+          
+          // 数据完整性校验
+          console.log(`[${symbol}] 开始数据完整性校验...`);
+          const validation = validateSymbolData(result);
+          
+          if (validation.valid) {
+            console.log(`[${symbol}] ✅ 数据完整性校验通过`);
+            
+            // 将结果加入当前batch buffer
+            currentBatchBuffer.push(result);
+            console.log(`[${symbol}] 已加入batch buffer, 当前buffer大小: ${currentBatchBuffer.length}`);
+            
+            // 更新进度 - 已验证
+            console.log(`[${symbol}] 更新进度: Validated`);
+            setMarketScannerStatus(prev => ({ 
+              ...prev, 
+              currentStatus: 'validated',
+              currentSymbol: symbol
+            }));
+            
+            symbolResult = result;
+            validationPassed = true;
+            
+          } else {
+            console.warn(`[${symbol}] ❌ 数据完整性校验失败:`, validation.error);
+            console.warn(`[${symbol}] 缺失字段:`, validation.missingFields);
+            
+            if (retryCount < MAX_RETRIES) {
+              // 准备重试
+              retryCount++;
+              console.log(`[${symbol}] 准备第 ${retryCount} 次重试...`);
+              
+              // 更新进度 - 重试中
+              setMarketScannerStatus(prev => ({ 
+                ...prev, 
+                currentStatus: 'retrying',
+                retryAttempt: retryCount
+              }));
+              
+              // 等待1秒后重试
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              continue; // 继续重试循环
+            } else {
+              // 达到最大重试次数，标记为失败
+              console.error(`[${symbol}] 已达到最大重试次数 (${MAX_RETRIES})，标记为失败`);
+              
+              const failedResult = {
+                ...result,
+                analysisStatus: 'failed',
+                analysisError: `数据不完整: ${validation.error}`,
+                validationFailed: true,
+                missingFields: validation.missingFields,
+                retryAttempts: retryCount
+              };
+              
+              // 失败结果也加入buffer，但标记为失败
+              currentBatchBuffer.push(failedResult);
+              
+              // 更新进度 - 失败
+              console.log(`[${symbol}] 更新进度: Failed (数据不完整)`);
+              setMarketScannerStatus(prev => ({ 
+                ...prev, 
+                currentStatus: 'failed',
+                currentSymbol: symbol
+              }));
+              
+              symbolResult = failedResult;
+              validationPassed = true; // 跳出循环，但结果是失败的
+            }
+          }
+          
+          } catch (error: any) {
+            console.error(`[${symbol}] 扫描失败 (尝试 ${attemptNum}):`, error);
+            
+            if (retryCount < MAX_RETRIES) {
+              // 准备重试
+              retryCount++;
+              console.log(`[${symbol}] 准备第 ${retryCount} 次重试 (扫描失败)...`);
+              
+              // 更新进度 - 重试中
+              setMarketScannerStatus(prev => ({ 
+                ...prev, 
+                currentStatus: 'retrying',
+                retryAttempt: retryCount
+              }));
+              
+              // 等待1秒后重试
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              continue; // 继续重试循环
+            } else {
+              // 达到最大重试次数，标记为失败
+              console.error(`[${symbol}] 已达到最大重试次数 (${MAX_RETRIES})，标记为失败`);
+              
+              const failedResult = {
+                symbol,
+                companyName: null,
+                trendLabel: null,
+                trendScore: null,
+                trendConfidence: null,
+                price: null,
+                changePct: null,
+                changePercent: null,
+                volume: null,
+                marketCap: null,
+                newsSentiment: null,
+                eventRisk: null,
+                topNews: null,
+                sector: null,
+                scannerReason: null,
+                trendScoreDetail: null,
+                momentumScore: null,
+                volumeScore: null,
+                volatilityScore: null,
+                structureScore: null,
+                newsScore: null,
+                aiReasoning: null,
+                detailedReasoning: null,
+                conciseReasoning: null,
+                volumeStatus: null,
+                analysisStatus: 'failed',
+                analysisError: error?.message || 'Unknown error',
+                timestamp: new Date().toISOString(),
+                retryAttempts: retryCount,
+                lastAttempt: attemptNum
+              };
+              
+              console.warn(`[${symbol}] 处理失败:`, {
+                analysisStatus: 'failed',
+                analysisError: error?.message,
+                retryAttempts: retryCount
+              });
+              
+              // 失败结果也加入buffer
+              currentBatchBuffer.push(failedResult);
+              
+              // 更新进度 - 失败
+              console.log(`[${symbol}] 更新进度: Failed (扫描错误)`);
+              setMarketScannerStatus(prev => ({ 
+                ...prev, 
+                currentStatus: 'failed',
+                currentSymbol: symbol
+              }));
+              
+              symbolResult = failedResult;
+              validationPassed = true; // 跳出循环，但结果是失败的
+            }
+          }
+        } // end of while loop
+        
+        // 记录最终结果
+        if (symbolResult) {
+          console.log(`[${symbol}] 最终结果:`, {
+            status: symbolResult.analysisStatus,
+            validationPassed,
+            retryAttempts: retryCount
+          });
+        }
+      } // end of for loop (symbols)
+      // 将当前batch buffer的结果加入batchResults
+      batchResults.push(...currentBatchBuffer);
+      
+      // 6. 统计当前批次结果
+      const successCount = batchResults.filter(r => r.analysisStatus === 'success').length;
+      const failedCount = batchResults.filter(r => r.analysisStatus === 'failed').length;
+      console.log(`批次 ${batchNum} 结果: success=${successCount}, failed=${failedCount}`);
+      
+      // 7. Batch级别最终校验
+      console.log(`=== 批次 ${batchNum} 开始batch级别最终校验 ===`);
+      
+      // 检查batch中是否有失败的结果
+      const failedResults = batchResults.filter(r => r.analysisStatus === 'failed');
+      const incompleteResults = batchResults.filter(r => r.validationFailed === true);
+      
+      // 检查数据完整性
+      let batchValidationPassed = true;
+      let batchValidationErrors: string[] = [];
+      
+      // 检查1: 是否有失败的结果
+      if (failedResults.length > 0) {
+        batchValidationPassed = false;
+        batchValidationErrors.push(`有 ${failedResults.length} 个失败的结果`);
+        console.warn(`批次 ${batchNum} 校验失败: 包含失败结果`, failedResults.map(r => r.symbol));
+      }
+      
+      // 检查2: 是否有数据不完整的结果
+      if (incompleteResults.length > 0) {
+        batchValidationPassed = false;
+        batchValidationErrors.push(`有 ${incompleteResults.length} 个数据不完整的结果`);
+        console.warn(`批次 ${batchNum} 校验失败: 包含数据不完整结果`, incompleteResults.map(r => r.symbol));
+      }
+      
+      // 检查3: 检查每个成功结果的完整性
+      const successResults = batchResults.filter(r => r.analysisStatus === 'success');
+      for (const result of successResults) {
+        const validation = validateSymbolData(result);
+        if (!validation.valid) {
+          batchValidationPassed = false;
+          batchValidationErrors.push(`${result.symbol}: ${validation.error}`);
+          console.warn(`批次 ${batchNum} 校验失败: ${result.symbol} 数据不完整`, validation.missingFields);
+        }
+      }
+      
+      // 检查4: 是否有空对象或假成功结果
+      const fakeSuccessResults = batchResults.filter(r => 
+        r.analysisStatus === 'success' && 
+        (!r.trendLabel && !r.trendScore && !r.aiReasoning)
+      );
+      if (fakeSuccessResults.length > 0) {
+        batchValidationPassed = false;
+        batchValidationErrors.push(`有 ${fakeSuccessResults.length} 个假成功结果`);
+        console.warn(`批次 ${batchNum} 校验失败: 包含假成功结果`, fakeSuccessResults.map(r => r.symbol));
+      }
+      
+      // 更新进度 - batch校验状态
+      console.log(`批次 ${batchNum} 校验结果: ${batchValidationPassed ? '通过' : '失败'}`);
+      if (!batchValidationPassed) {
+        console.warn(`批次 ${batchNum} 校验错误:`, batchValidationErrors);
+        setMarketScannerStatus(prev => ({ 
+          ...prev, 
+          currentStatus: 'validating',
+          currentSymbol: `Batch ${batchNum} validation failed`
+        }));
+      } else {
+        setMarketScannerStatus(prev => ({ 
+          ...prev, 
+          currentStatus: 'validating',
+          currentSymbol: `Batch ${batchNum} validation passed`
+        }));
+      }
+      
+      // 8. 批次完成后追加到UI（只有校验通过才渲染）
+      console.log(`=== 批次 ${batchNum} 开始追加到UI ===`);
+      console.log(`批次结果数量: ${batchResults.length}, 校验通过: ${batchValidationPassed}`);
+      
+      if (batchResults.length > 0 && batchValidationPassed) {
+        try {
+          console.log(`追加批次 ${batchNum} 结果到UI...`);
+          
+          // 更新进度 - 渲染中
+          setMarketScannerStatus(prev => ({ 
+            ...prev, 
+            currentStatus: 'rendering',
+            currentSymbol: `Rendering batch ${batchNum}`
+          }));
+          
+          // 使用函数式更新确保追加正确
+          setMarketScannerResults(prevResults => {
+            const newResults = [...prevResults, ...batchResults];
+            console.log(`追加后结果数量: ${newResults.length}`);
+            return newResults;
+          });
+          
+          console.log(`更新批次 ${batchNum} 的summary...`);
+          // 更新summary
+          setMarketScannerSummary(prev => ({
+            ...prev,
+            universeScanned: prev.universeScanned + batchResults.length,
+            bullishCount: prev.bullishCount + batchResults.filter(r => r.trendLabel?.includes('Bullish')).length,
+            bearishCount: prev.bullishCount + batchResults.filter(r => r.trendLabel?.includes('Bearish')).length,
+            neutralCount: prev.neutralCount + batchResults.filter(r => r.trendLabel === 'Neutral').length
+          }));
+          
+          console.log(`批次 ${batchNum} UI更新完成`);
+          
+          // 更新进度 - 渲染完成
+          setMarketScannerStatus(prev => ({ 
+            ...prev, 
+            currentStatus: 'completed',
+            currentSymbol: `Batch ${batchNum} rendered`
+          }));
+          
+        } catch (error: any) {
+          console.error(`=== 批次 ${batchNum} UI更新异常 ===`);
+          console.error('异常详情:', error?.message, error?.stack);
+          
+          // 更新进度 - 渲染失败
+          setMarketScannerStatus(prev => ({ 
+            ...prev, 
+            currentStatus: 'failed',
+            currentSymbol: `Batch ${batchNum} render failed`
+          }));
+        }
+      } else if (batchResults.length > 0 && !batchValidationPassed) {
+        console.warn(`批次 ${batchNum} 校验失败，不渲染到UI`);
+        console.warn(`失败原因:`, batchValidationErrors);
+        
+        // 更新进度 - 校验失败
+        setMarketScannerStatus(prev => ({ 
+          ...prev, 
+          currentStatus: 'failed',
+          currentSymbol: `Batch ${batchNum} validation failed`
+        }));
+      }
+      
+      console.log(`第 ${batchNum} 批完成，已处理 ${batchIndex + batchSymbols.length}/${totalSymbols} 个symbols`);
+      
+      // 8. 如果不是最后一批，等待一小段时间
+      if (batchIndex + BATCH_SIZE < symbols.length) {
+        await new Promise(resolve => setTimeout(resolve, 300)); // 给UI更新一点时间
+      }
+    }
+
+    // 所有批次处理完成
+    console.log(`所有批次完成，共处理 ${symbols.length} 个symbols`);
+    
+    // 获取最终结果统计
+    const finalResults = marketScannerResults; // 使用当前状态中的结果
+    
+    console.log(`最终结果统计:`, {
+      total: finalResults.length,
+      success: finalResults.filter(r => r.analysisStatus === 'success').length,
+      failed: finalResults.filter(r => r.analysisStatus === 'failed').length,
+      pending: finalResults.filter(r => r.analysisStatus === 'pending').length
+    });
+    
+    // 扫描成功完成，更新状态为stopped（正常结束）
+    setMarketScannerStatus(prev => ({ 
+      ...prev, 
+      status: 'stopped',
+      error: null
+    }));
+    
+  } catch (error: any) {
+    console.error('=== scanSymbols 外层catch捕获异常 ===');
+    console.error('异常消息:', error?.message);
+    console.error('异常堆栈:', error?.stack);
+    console.error('完整异常对象:', error);
+    
+    // 不抛出异常，让扫描"完成"而不是"失败"
+    // 更新状态为stopped，但记录错误（与runMarketScanner的catch不同，这里不显示错误消息）
+    setMarketScannerStatus(prev => ({ 
+      ...prev, 
+      status: 'stopped',
+      error: error?.message || '扫描过程发生错误'
+    }));
+    
+    console.warn('扫描过程发生错误，但已处理的数据仍然保留');
+  }
+};
 
   const getCompanyName = async (symbol: string): Promise<string> => {
     try {
@@ -1370,17 +1812,9 @@ const Portfolio: React.FC = () => {
                     </div>
                   </div>
                   <div>
-                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Data Sources</div>
-                    <div style={{ fontSize: '11px', fontWeight: '600', color: '#333', lineHeight: '1.4' }}>
-                      {record.provenance ? (
-                        <div>
-                          <div>Market: {record.provenance.marketData || 'N/A'}</div>
-                          <div>News: {record.provenance.news || 'N/A'}</div>
-                          <div>AI: {record.provenance.aiAnalysis || 'N/A'}</div>
-                        </div>
-                      ) : (
-                        'N/A'
-                      )}
+                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Data Source</div>
+                    <div style={{ fontSize: '13px', fontWeight: '600', color: '#333' }}>
+                      {record.dataSource || 'N/A'}
                     </div>
                   </div>
                 </div>

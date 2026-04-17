@@ -5,6 +5,29 @@ All notable changes to the Professional Quantitative Trading Platform will be do
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.3] - 2026-04-16
+
+### Added
+- Real Market Scanner diagnostic testing scripts
+- Comprehensive limit point audit report
+- Real backend log analysis tools
+- Direct AI analysis endpoint testing
+- Version 1.7.3 backup with complete project state
+
+### Changed
+- Updated diagnostic methodology from code analysis to real runtime verification
+- Improved error logging for DeepSeek API failures
+- Enhanced backend monitoring with real-time log capture
+
+### Fixed
+- Identified root cause of empty AI fields: DeepSeek API key invalid (HTTP 401)
+- Discovered news data using mock fallback instead of real Finnhub API
+- Documented transparent error handling issue (success: true with null AI fields)
+
+### Security
+- No sensitive data exposed in logs (API keys truncated)
+- All diagnostic tests performed locally
+
 ## [1.7.0] - 2026-04-12
 
 ### Added

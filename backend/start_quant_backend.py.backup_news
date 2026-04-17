@@ -6,66 +6,6 @@
 
 from flask import Flask, request, jsonify
 
-# ===== 安全打印辅助函数 =====
-def safe_print(text, max_length=500):
-    """安全打印，避免编码错误"""
-    try:
-        if isinstance(text, (dict, list)):
-            text_str = str(text)
-        else:
-            text_str = str(text)
-        
-        # 截断并清理特殊字符
-        safe_text = text_str[:max_length]
-        # 移除可能导致编码问题的字符
-        safe_text = ''.join(c for c in safe_text if ord(c) < 128 or c in '，。！？；：""')
-        
-        print(safe_text + ('...' if len(text_str) > max_length else ''))
-    except:
-        print(f'[安全打印] 无法打印内容: {type(text)}')
-
-
-def safe_print_dict(data, prefix=''):
-    """安全打印字典"""
-    if not isinstance(data, dict):
-        safe_print(f'{prefix}{data}')
-        return
-    
-    print(f'{prefix}{{')
-    for key, value in list(data.items())[:10]:  # 只打印前10个键值对
-        if isinstance(value, dict):
-            print(f'{prefix}  {key}: {{...}}')
-        elif isinstance(value, list):
-            print(f'{prefix}  {key}: [{len(value)} items]')
-        else:
-            safe_print(f'{prefix}  {key}: {value}')
-    if len(data) > 10:
-        print(f'{prefix}  ... and {len(data)-10} more items')
-    print(f'{prefix}}}')
-
-
-def safe_print_news(news_data, prefix=''):
-    """安全打印新闻数据"""
-    if not news_data:
-        print(f'{prefix}No news data')
-        return
-    
-    if isinstance(news_data, list):
-        print(f'{prefix}News list with {len(news_data)} items')
-        for i, item in enumerate(news_data[:3]):  # 只打印前3条
-            if isinstance(item, dict):
-                headline = item.get('headline', 'No headline')
-                source = item.get('source', 'Unknown')
-                safe_print(f'{prefix}  [{i+1}] {headline[:50]}... ({source})')
-    elif isinstance(news_data, dict):
-        safe_print_dict(news_data, prefix)
-    else:
-        safe_print(f'{prefix}{news_data}')
-
-# ===== 安全打印辅助函数结束 =====
-
-
-
 from flask_cors import CORS
 
 import time
@@ -9808,57 +9748,6 @@ def get_stock_data_for_scanner(symbol):
             'scannerReason': f'数据获取失败: {str(e)[:100]}'
 
         }
-
-def fetch_finnhub_news(symbol):
-    """从Finnhub获取股票新闻"""
-    try:
-        print(f'[Finnhub新闻] 获取 {symbol} 新闻')
-        
-        # 检查API密钥
-        if not FINNHUB_API_KEY:
-            print(f'[Finnhub新闻] Finnhub API密钥未配置')
-            return None
-        
-        # 调用Finnhub News API
-        import requests
-        from datetime import datetime, timedelta
-        
-        # 设置时间范围（最近7天）
-        to_date = datetime.utcnow()
-        from_date = to_date - timedelta(days=7)
-        
-        # 格式化日期
-        from_str = from_date.strftime('%Y-%m-%d')
-        to_str = to_date.strftime('%Y-%m-%d')
-        
-        # 构建API URL
-        url = f'{FINNHUB_BASE_URL}/company-news'
-        params = {
-            'symbol': symbol,
-            'from': from_str,
-            'to': to_str,
-            'token': FINNHUB_API_KEY
-        }
-        
-        print(f'[Finnhub新闻] 请求URL: {url}')
-        print(f'[Finnhub新闻] 参数: {params}')
-        
-        # 发送请求
-        response = requests.get(url, params=params, timeout=10)
-        
-        if response.status_code == 200:
-            news_data = response.json()
-            print(f'[Finnhub新闻] 获取到 {len(news_data)} 条新闻')
-            return news_data
-        else:
-            print(f'[Finnhub新闻] API请求失败: {response.status_code}')
-            print(f'[Finnhub新闻] 响应: {response.text[:200]}')
-            return None
-            
-    except Exception as e:
-        print(f'[Finnhub新闻] 获取新闻时出错: {str(e)}')
-        return None
-
 
 
 

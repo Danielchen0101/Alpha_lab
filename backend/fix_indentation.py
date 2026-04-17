@@ -1,72 +1,55 @@
+#!/usr/bin/env python3
 """
-修复analyze_trend_with_deepseek函数的缩进错误
+修复缩进错误
 """
-
-import re
 
 def fix_indentation():
-    with open('start_quant_backend_repaired.py', 'r', encoding='utf-8') as f:
-        content = f.read()
+    """修复缩进错误"""
+    input_file = 'start_quant_backend_fixed.py'
+    output_file = 'start_quant_backend_fixed_indent.py'
     
-    # 查找analyze_trend_with_deepseek函数
-    pattern = r'def analyze_trend_with_deepseek\(symbol, stock_data, news_data, profile_data, technical_indicators=None, structured_news=None\):.*?(?=\n\ndef|\n@app|\Z)'
-    match = re.search(pattern, content, re.DOTALL)
+    with open(input_file, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
     
-    if not match:
-        print("未找到analyze_trend_with_deepseek函数")
-        return
-    
-    func_text = match.group(0)
-    print(f"找到函数，长度: {len(func_text)} 字符")
-    
-    # 查找缩进错误的位置
-    lines = func_text.split('\n')
+    # 查找有问题的区域（大约第9790行）
     for i, line in enumerate(lines):
-        if 'DeepSeek API' in line and '调用失败' in line:
-            print(f"第{i+1}行可能有缩进问题: {line[:50]}...")
-            # 检查前一行
-            if i > 0:
-                print(f"前一行: {lines[i-1][:50]}...")
-            # 检查后一行
-            if i < len(lines) - 1:
-                print(f"后一行: {lines[i+1][:50]}...")
+        if i >= 9780 and i <= 9800:
+            print(f"Line {i+1}: {repr(line[:50])}")
     
-    # 简单修复：重新缩进整个函数
+    # 修复：删除第9790-9800行的多余代码
+    # 这些是analyze_news_for_stock函数中残留的代码
     fixed_lines = []
-    in_try_block = False
-    indent_level = 0
+    in_bad_section = False
     
-    for line in lines:
-        # 检测try块
-        if 'try:' in line:
-            in_try_block = True
-            indent_level = 4
-        elif 'except' in line and line.strip().startswith('except'):
-            in_try_block = False
-            indent_level = 0
+    for i, line in enumerate(lines):
+        line_num = i + 1
         
-        # 修复缩进
-        if in_try_block and line.strip() and not line.startswith(' ' * indent_level):
-            fixed_line = ' ' * indent_level + line.lstrip()
-            fixed_lines.append(fixed_line)
-            print(f"修复缩进: {line[:30]}... -> {fixed_line[:30]}...")
-        else:
-            fixed_lines.append(line)
+        # 跳过有问题的行
+        if line_num >= 9790 and line_num <= 9800:
+            if 'medium_risk_keywords' in line or 'risk_level' in line or 'for keyword in' in line:
+                print(f"跳过第{line_num}行: {line[:50].strip()}")
+                continue
+        
+        fixed_lines.append(line)
     
-    fixed_func = '\n'.join(fixed_lines)
+    # 保存修复后的文件
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.writelines(fixed_lines)
     
-    # 替换原函数
-    new_content = content[:match.start()] + fixed_func + content[match.end():]
+    print(f"\n修复完成，保存为: {output_file}")
+    print(f"原始行数: {len(lines)}")
+    print(f"修复后行数: {len(fixed_lines)}")
     
-    # 保存备份
-    with open('start_quant_backend_repaired.py.backup', 'w', encoding='utf-8') as f:
-        f.write(content)
+    # 测试语法
+    import subprocess
+    result = subprocess.run(['py', '-m', 'py_compile', output_file], 
+                          capture_output=True, text=True)
     
-    # 写入修复后的文件
-    with open('start_quant_backend_repaired.py', 'w', encoding='utf-8') as f:
-        f.write(new_content)
-    
-    print("缩进修复完成，已创建备份文件")
+    if result.returncode == 0:
+        print("语法检查: 通过")
+    else:
+        print("语法检查: 失败")
+        print(f"错误: {result.stderr[:200]}")
 
 if __name__ == '__main__':
     fix_indentation()

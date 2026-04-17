@@ -176,18 +176,37 @@ except ImportError as e:
 
 
 
-# AI Provider 配置状态
+# AI Provider 配置状态 - 从配置文件读取
+def load_ai_config():
+    """从配置文件加载AI配置"""
+    import json
+    import os
+    
+    config_file = 'ai_provider_config.json'
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            print(f"[AI配置] 从配置文件加载: {config_file}")
+            return config
+        except Exception as e:
+            print(f"[AI配置] 加载配置文件失败: {str(e)}")
+    
+    # 默认配置
+    return {
+        'provider': 'DeepSeek',
+        'apiKey': '',
+        'baseURL': 'https://api.deepseek.com',
+        'model': 'deepseek-chat'
+    }
 
+# 初始化AI配置
+ai_config = load_ai_config()
 ai_provider_config_state = {
-
-    'provider': 'DeepSeek',
-
-    'apiKey': 'sk-83365246617844178bf8d1e121b7279f',  # 硬编码API密钥用于测试
-
-    'baseURL': 'https://api.deepseek.com',
-
-    'model': 'deepseek-chat'
-
+    'provider': ai_config.get('provider', 'DeepSeek'),
+    'apiKey': ai_config.get('apiKey', ''),  # 从配置文件读取
+    'baseURL': ai_config.get('baseURL', 'https://api.deepseek.com'),
+    'model': ai_config.get('model', 'deepseek-chat')
 }
 
 
@@ -9693,142 +9712,80 @@ def get_stock_data_for_scanner(symbol):
 
 
 def analyze_news_for_stock(symbol):
-
-    """分析股票的新闻数据 - 返回模拟数据用于测试"""
-
+    """分析股票的新闻数据 - 使用真实Finnhub API"""
     try:
-
         symbol_upper = symbol.upper()
-
         
-
-        # 直接返回模拟新闻数据，跳过API调用
-
-        print(f'[新闻分析] 返回模拟新闻数据: {symbol_upper}')
-
+        print(f'[新闻分析] 开始获取真实新闻数据: {symbol_upper}')
         
-
-        # 根据股票符号返回不同的模拟数据
-
-        if symbol_upper == 'AAPL':
-
-            return {
-
-                'sentiment': 'Positive',
-
-                'eventRisk': 'Low',
-
-                'topCatalyst': 'Strong quarterly earnings beat estimates',
-
-                'newsCount': 3,
-
-                'newsSource': 'Mock',
-
-                'hasNews': True,
-
-                'newsSummary': 'Apple reported strong quarterly earnings with iPhone sales exceeding expectations. Analysts have raised price targets following the results.'
-
-            }
-
-        elif symbol_upper == 'MSFT':
-
-            return {
-
-                'sentiment': 'Positive',
-
-                'eventRisk': 'Low',
-
-                'topCatalyst': 'Azure cloud growth accelerates',
-
-                'newsCount': 2,
-
-                'newsSource': 'Mock',
-
-                'hasNews': True,
-
-                'newsSummary': 'Microsoft reported strong cloud revenue growth with Azure accelerating. New AI features announced for Windows and Office.'
-
-            }
-
-        elif symbol_upper == 'TSLA':
-
-            return {
-
-                'sentiment': 'Mixed',
-
-                'eventRisk': 'Medium',
-
-                'topCatalyst': 'Q1 deliveries miss estimates',
-
-                'newsCount': 2,
-
-                'newsSource': 'Mock',
-
-                'hasNews': True,
-
-                'newsSummary': 'Tesla Q1 deliveries missed analyst estimates, but company announced refreshed Model Y with longer range.'
-
-            }
-
-        else:
-
-            return {
-
-                'sentiment': 'Neutral',
-
-                'eventRisk': 'Low',
-
-                'topCatalyst': 'Quarterly results reported',
-
-                'newsCount': 1,
-
-                'newsSource': 'Mock',
-
-                'hasNews': True,
-
-                'newsSummary': f'{symbol_upper} reported quarterly earnings with mixed results.'
-
-            }
-
+        # 调用真实Finnhub API
+        finnhub_news = fetch_finnhub_news(symbol_upper)
         
-
-        # 分析新闻情绪
-
-        sentiment_scores = []
-
-        event_risk_levels = []
-
-        catalysts = []
-
-        
-
-        for news in news_items:
-
-            # 使用Finnhub提供的情感分数
-
-            sentiment_score = news.get('sentiment_score', 0)
-
-            sentiment_scores.append(sentiment_score)
-
+        if finnhub_news and isinstance(finnhub_news, list) and len(finnhub_news) > 0:
+            print(f'[新闻分析] 获取到 {len(finnhub_news)} 条真实新闻')
             
-
-            # 根据新闻标题和内容判断事件风险
-
-            headline = news.get('headline', '').lower()
-
-            summary = news.get('summary', '').lower()
-
+            # 分析新闻情绪
+            sentiment_scores = []
+            valid_news = []
             
-
-            # 判断高风险事件
-
-            high_risk_keywords = ['earnings miss', 'guidance cut', 'lawsuit', 'investigation', 'recall', 'warning', 'downgrade']
-
-            medium_risk_keywords = ['earnings', 'guidance', 'analyst', 'upgrade', 'downgrade', 'target']
-
+            for news_item in finnhub_news[:10]:  # 最多分析10条新闻
+                try:
+                    sentiment = news_item.get('sentiment', 0)
+                    if isinstance(sentiment, (int, float)):
+                        sentiment_scores.append(sentiment)
+                        valid_news.append(news_item)
+                except:
+                    continue
             
-
-            risk_level = 'Low'
+            if sentiment_scores:
+                avg_sentiment = sum(sentiment_scores) / len(sentiment_scores)
+                if avg_sentiment > 0.1:
+                    sentiment_label = 'Positive'
+                elif avg_sentiment < -0.1:
+                    sentiment_label = 'Negative'
+                else:
+                    sentiment_label = 'Neutral'
+                
+                # 获取最重要的新闻
+                top_news = None
+                if valid_news:
+                    # 按相关性排序
+                    sorted_news = sorted(valid_news, key=lambda x: abs(x.get('sentiment', 0)), reverse=True)
+                    top_news = sorted_news[0].get('headline', 'No headline') if sorted_news else 'No news'
+                
+                return {
+                    'sentiment': sentiment_label,
+                    'eventRisk': 'Low' if abs(avg_sentiment) < 0.3 else 'Medium',
+                    'topCatalyst': top_news or 'No significant news',
+                    'newsCount': len(valid_news),
+                    'newsSource': 'Finnhub',
+                    'hasNews': True,
+                    'newsSummary': f'Found {len(valid_news)} news items with average sentiment {avg_sentiment:.2f}'
+                }
+        
+        # 如果没有新闻或分析失败
+        print(f'[新闻分析] 无真实新闻数据: {symbol_upper}')
+        return {
+            'sentiment': 'Neutral',
+            'eventRisk': 'Low',
+            'topCatalyst': 'No recent news available',
+            'newsCount': 0,
+            'newsSource': 'None',
+            'hasNews': False,
+            'newsSummary': 'No recent news data available from Finnhub'
+        }
+        
+    except Exception as e:
+        print(f'[新闻分析] 新闻分析异常: {str(e)}')
+        return {
+            'sentiment': 'Neutral',
+            'eventRisk': 'Low',
+            'topCatalyst': f'News analysis error: {str(e)[:50]}',
+            'newsCount': 0,
+            'newsSource': 'Error',
+            'hasNews': False,
+            'newsSummary': f'Error analyzing news: {str(e)[:100]}'
+        }
 
             for keyword in high_risk_keywords:
 
@@ -18112,73 +18069,76 @@ def ai_analyze_single():
 
             print(f'[AI分析接口] 调用analyze_trend_with_deepseek时发生错误: {e}')
 
-            print(f'[AI分析接口] AI分析失败，返回null数据')
+            print(f'[AI分析接口] AI分析失败，尝试本地规则降级分析')
 
             
 
-            # AI分析失败时返回null数据，不生成本地规则数据
-
-            response_data = {
-
-                'success': True,
-
-                'symbol': symbol_upper,
-
-                'trend': None,  # AI分析失败，返回null
-
-                'overallScore': None,  # AI分析失败，返回null
-
-                'confidence': None,  # AI分析失败，返回null
-
-                'trendScore': None,
-
-                'momentumScore': None,
-
-                'volumeScore': None,
-
-                'volatilityScore': None,
-
-                'structureScore': None,
-
-                'newsScore': None,
-
-                'scannerReason': None,
-
-                'aiReasoning': None,  # AI分析失败，返回null
-
-                'newsSentiment': news_data.get('sentiment') if news_data else None,
-
-                'eventRisk': news_data.get('eventRisk') if news_data else None,
-
-                'topNews': news_data.get('topCatalyst') if news_data else None,
-
-                'companyName': company_info.get('name') if company_info else None,  # 如果没有公司信息，返回null
-
-                'sector': company_info.get('finnhubIndustry') if company_info else None,  # 如果没有行业信息，返回null
-
-                'provenance': {
-
-                    'marketData': 'alpaca' if market_data and market_data.get('dataSource') == 'Alpaca' else 'finnhub' if market_data else 'none',
-
-                    'companyInfo': 'finnhub' if company_info else 'none',
-
-                    'news': 'finnhub' if news_data else 'none',
-
-                    'aiAnalysis': 'failed'  # AI分析失败
-
-                },
-
-                'timestamp': int(time.time()),
-
-                'responseTime': round(time.time() - start_time, 3),
-
-                'message': 'AI analysis failed - no local rules fallback'
-
-            }
-
-            
-
-            print(f'[AI分析接口] AI分析失败，返回null数据: {response_data}')
+            # AI分析失败时尝试本地规则降级分析
+            try:
+                print(f'[AI分析接口] 开始本地规则降级分析')
+                local_analysis = analyze_trend_locally(symbol_upper, market_data, news_data, company_info)
+                
+                print(f'[AI分析接口] 本地规则分析成功: {local_analysis}')
+                
+                # 使用本地规则分析结果，但明确标记为降级
+                response_data = {
+                    'success': True,  # 降级分析成功
+                    'symbol': symbol_upper,
+                    'trend': local_analysis.get('trend', 'Neutral'),
+                    'overallScore': local_analysis.get('overallScore', 50),
+                    'confidence': local_analysis.get('confidence', 0.5),
+                    'trendScore': local_analysis.get('trendScore', 50),
+                    'momentumScore': local_analysis.get('momentumScore', 50),
+                    'volumeScore': local_analysis.get('volumeScore', 50),
+                    'volatilityScore': local_analysis.get('volatilityScore', 50),
+                    'structureScore': local_analysis.get('structureScore', 50),
+                    'newsScore': local_analysis.get('newsScore', 50),
+                    'scannerReason': local_analysis.get('scannerReason', 'Local rules analysis'),
+                    'aiReasoning': local_analysis.get('aiReasoning', 'AI analysis failed, using local rules fallback'),
+                    'newsSentiment': news_data.get('sentiment') if news_data else None,
+                    'eventRisk': news_data.get('eventRisk') if news_data else None,
+                    'topNews': news_data.get('topCatalyst') if news_data else None,
+                    'companyName': company_info.get('name') if company_info else None,
+                    'sector': company_info.get('finnhubIndustry') if company_info else None,
+                    'provenance': {
+                        'marketData': 'alpaca' if market_data and market_data.get('dataSource') == 'Alpaca' else 'finnhub' if market_data else 'none',
+                        'companyInfo': 'finnhub' if company_info else 'none',
+                        'news': 'finnhub' if news_data else 'none',
+                        'aiAnalysis': 'local_fallback'  # 明确标记为本地降级
+                    },
+                    'fallback': True,  # 明确标记为降级
+                    'fallbackReason': f'AI analysis failed: {str(e)[:100]}',
+                    'originalProvider': ai_config.get('provider', 'DeepSeek'),
+                    'timestamp': int(time.time()),
+                    'responseTime': round(time.time() - start_time, 3),
+                    'message': 'AI analysis failed, using local rules fallback'
+                }
+                
+                print(f'[AI分析接口] 本地规则降级分析成功，返回降级数据')
+                
+            except Exception as local_error:
+                print(f'[AI分析接口] 本地规则降级分析也失败: {local_error}')
+                
+                # 本地降级也失败，返回明确的错误信息
+                response_data = {
+                    'success': False,  # 明确标记为失败
+                    'symbol': symbol_upper,
+                    'error': f'AI analysis failed: {str(e)[:100]}',
+                    'stage': 'ai_request',
+                    'provider': ai_config.get('provider', 'DeepSeek'),
+                    'hasAiData': False,  # 明确标记没有AI数据
+                    'provenance': {
+                        'marketData': 'alpaca' if market_data and market_data.get('dataSource') == 'Alpaca' else 'finnhub' if market_data else 'none',
+                        'companyInfo': 'finnhub' if company_info else 'none',
+                        'news': 'finnhub' if news_data else 'none',
+                        'aiAnalysis': 'failed'  # AI分析失败
+                    },
+                    'timestamp': int(time.time()),
+                    'responseTime': round(time.time() - start_time, 3),
+                    'message': 'AI analysis failed - both DeepSeek API and local fallback failed'
+                }
+                
+                print(f'[AI分析接口] AI分析完全失败，返回错误信息: {response_data}')
 
         else:
 

@@ -2,10 +2,6 @@ import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { Card, Row, Col, Statistic, Table, Typography, Progress, Tag, Button, message, Popconfirm, Input, InputNumber, Select, Radio, Form } from 'antd';
 import { ArrowUpOutlined, ArrowDownOutlined, PieChartOutlined, DollarOutlined, WalletOutlined, LineChartOutlined, PlusOutlined, MinusOutlined, ReloadOutlined, PlayCircleOutlined, PauseCircleOutlined, FolderOpenOutlined } from '@ant-design/icons';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-
-const { Title, Text } = Typography;
-
-// 导入Paper Trading Engine
 import {
   executePaperTrade,
   handleStrategySignal,
@@ -30,6 +26,8 @@ import {
   type EquityHistory,
   type PriceHistory,
 } from '../utils/paperTradingEngine';
+
+const { Title, Text } = Typography;
 
 const LocalPaperTrading: React.FC = () => {
   // 初始状态

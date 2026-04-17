@@ -1370,17 +1370,9 @@ const Portfolio: React.FC = () => {
                     </div>
                   </div>
                   <div>
-                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Data Sources</div>
-                    <div style={{ fontSize: '11px', fontWeight: '600', color: '#333', lineHeight: '1.4' }}>
-                      {record.provenance ? (
-                        <div>
-                          <div>Market: {record.provenance.marketData || 'N/A'}</div>
-                          <div>News: {record.provenance.news || 'N/A'}</div>
-                          <div>AI: {record.provenance.aiAnalysis || 'N/A'}</div>
-                        </div>
-                      ) : (
-                        'N/A'
-                      )}
+                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Data Source</div>
+                    <div style={{ fontSize: '13px', fontWeight: '600', color: '#333' }}>
+                      {record.dataSource || 'N/A'}
                     </div>
                   </div>
                 </div>

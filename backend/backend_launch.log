@@ -1,0 +1,10 @@
+﻿py :   File "C:\Users\kexuc\.openclaw\workspace\professional_quant_platform\backend\start_quant_backend_fixed.py", line
+ 9790
+所在位置 行:1 字符: 78
++ ... quant_platform\backend"; py start_quant_backend_fixed.py 2>&1 | Out-F ...
++                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (  File "C:\User....py", line 9790:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+    for keyword in high_risk_keywords:
+IndentationError: unexpected indent
