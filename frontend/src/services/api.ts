@@ -17,6 +17,15 @@ const api = axios.create({
   },
 });
 
+// 为scanner AI分析创建专用实例，没有timeout限制
+const scannerApi = axios.create({
+  baseURL: API_BASE_URL,
+  // 不设置timeout，让scanner可以等待AI分析完成
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
 // 添加请求拦截器用于调试（仅记录优化请求）
 api.interceptors.request.use(
   (config) => {
@@ -97,4 +106,5 @@ export const userAPI = {
   updateProfile: (profileData: any) => api.put('/user/profile', profileData),
 };
 
+export { scannerApi };
 export default api;

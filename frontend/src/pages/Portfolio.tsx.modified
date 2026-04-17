@@ -1,0 +1,29 @@
+// 简化的并发控制函数
+async function limitConcurrency<T>(tasks: (() => Promise<T>)[], concurrency: number): Promise<T[]> {
+  const results: T[] = [];
+  const executing: Promise<void>[] = [];
+  
+  for (const task of tasks) {
+    // 如果达到并发限制，等待一个任务完成
+    if (executing.length >= concurrency) {
+      await Promise.race(executing);
+    }
+    
+    // 创建并执行任务
+    const p = task().then(result => {
+      results.push(result);
+      // 任务完成后从执行数组中移除
+      const index = executing.indexOf(p);
+      if (index > -1) {
+        executing.splice(index, 1);
+      }
+    });
+    
+    executing.push(p);
+  }
+  
+  // 等待所有剩余任务完成
+  await Promise.all(executing);
+  
+  return results;
+}

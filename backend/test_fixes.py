@@ -1,108 +1,185 @@
 #!/usr/bin/env python3
 """
-测试修复效果
+测试修复后的三个字段：percent change, sector, news
 """
-import requests
-import json
-import time
 
-# 测试数据
-payload = {
-    "symbol": "AAPL",
-    "strategy": "moving_average",
-    "startDate": "2025-10-01",
-    "endDate": "2026-04-10",
-    "initialCapital": 100000,
-    "shortMaRange": {
-        "start": 5,
-        "end": 15,
-        "step": 5
-    },
-    "longMaRange": {
-        "start": 20,
-        "end": 40,
-        "step": 10
-    }
-}
-
-print("=== 测试修复效果 ===")
-
-# 启动后端
-import subprocess
+import sys
 import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-print("启动后端服务...")
-backend_process = subprocess.Popen(
-    ["py", "start_quant_backend.py"],
-    cwd=os.getcwd(),
-    stdout=subprocess.PIPE,
-    stderr=subprocess.PIPE,
-    text=True
+# 导入修复后的后端模块
+from start_quant_backend_repaired import (
+    get_stock_data_for_scanner,
+    fetch_finnhub_profile,
+    analyze_news_for_stock
 )
 
-# 等待后端启动
-time.sleep(5)
-
-try:
-    print("\n发送优化请求...")
-    response = requests.post(
-        "http://127.0.0.1:8892/api/backtest/optimize",
-        json=payload,
-        timeout=30
-    )
+def test_percent_change():
+    """测试percent change字段"""
+    print("=" * 80)
+    print("测试 1: Percent Change 字段")
+    print("=" * 80)
     
-    if response.status_code == 200:
-        data = response.json()
-        results = data.get('results', [])
-        
-        print(f"获取到 {len(results)} 个结果")
-        
-        # 检查最大回撤是否相同
-        max_dd_values = [r.get('maxDrawdown') for r in results]
-        unique_max_dd = set(max_dd_values)
-        
-        print(f"\n1. 最大回撤分析:")
-        print(f"   - 总结果数: {len(results)}")
-        print(f"   - 唯一最大回撤值: {len(unique_max_dd)} 个")
-        print(f"   - 最大回撤值分布: {sorted(list(unique_max_dd))[:5]}...")
-        
-        # 检查排名顺序
-        ranks = [r.get('rank') for r in results]
-        is_sorted = all(ranks[i] <= ranks[i+1] for i in range(len(ranks)-1))
-        
-        print(f"\n2. 排名顺序分析:")
-        print(f"   - 排名列表: {ranks[:10]}...")
-        print(f"   - 是否按顺序排列: {'✅ 是' if is_sorted else '❌ 否'}")
-        
-        # 检查夏普比率是否按降序排列
-        sharpe_values = [r.get('sharpeRatio') for r in results]
-        is_sharpe_descending = all(sharpe_values[i] >= sharpe_values[i+1] for i in range(len(sharpe_values)-1))
-        
-        print(f"\n3. 夏普比率排序分析:")
-        print(f"   - 前5个夏普比率: {sharpe_values[:5]}")
-        print(f"   - 是否按降序排列: {'✅ 是' if is_sharpe_descending else '❌ 否'}")
-        
-        # 检查参数组合
-        print(f"\n4. 参数组合分析:")
-        for i, result in enumerate(results[:3]):
-            print(f"   结果 {i+1}:")
-            print(f"     - Rank: {result.get('rank')}")
-            print(f"     - Short MA: {result.get('short_ma')}")
-            print(f"     - Long MA: {result.get('long_ma')}")
-            print(f"     - Total Return: {result.get('totalReturn')}%")
-            print(f"     - Sharpe Ratio: {result.get('sharpeRatio')}")
-            print(f"     - Max Drawdown: {result.get('maxDrawdown')}%")
-            print(f"     - Trades: {result.get('trades')}")
+    # 测试多个symbol
+    test_symbols = ['AAPL', 'MSFT', 'GOOGL', 'TSLA']
+    
+    for symbol in test_symbols:
+        print(f"\n测试 {symbol}:")
+        try:
+            stock_data, news_data, profile_data, analysis_result = get_stock_data_for_scanner(symbol)
             
-    else:
-        print(f"错误: {response.status_code}")
-        print(f"响应内容: {response.text}")
-        
-except Exception as e:
-    print(f"请求异常: {str(e)}")
+            print(f"  stock_data keys: {list(stock_data.keys())}")
+            print(f"  changePercent: {stock_data.get('changePercent')}")
+            print(f"  changePct: {stock_data.get('changePct')}")
+            print(f"  changeSource: {stock_data.get('changeSource')}")
+            
+            # 检查两个字段是否存在且值相同
+            if 'changePercent' in stock_data and 'changePct' in stock_data:
+                if stock_data['changePercent'] == stock_data['changePct']:
+                    print(f"  ✅ changePercent 和 changePct 字段都存在且值相同")
+                else:
+                    print(f"  ⚠️ changePercent 和 changePct 值不同")
+            elif 'changePct' in stock_data:
+                print(f"  ✅ changePct 字段存在: {stock_data['changePct']}")
+            else:
+                print(f"  ❌ changePct 字段不存在")
+                
+        except Exception as e:
+            print(f"  ❌ 测试失败: {e}")
+
+def test_sector():
+    """测试sector字段"""
+    print("\n" + "=" * 80)
+    print("测试 2: Sector 字段")
+    print("=" * 80)
     
-finally:
-    # 停止后端
-    print("\n停止后端服务...")
-    backend_process.terminate()
-    backend_process.wait()
+    test_symbols = ['AAPL', 'MSFT', 'GOOGL', 'TSLA']
+    
+    for symbol in test_symbols:
+        print(f"\n测试 {symbol}:")
+        try:
+            # 直接调用fetch_finnhub_profile
+            profile_data, error = fetch_finnhub_profile(symbol)
+            
+            if error:
+                print(f"  ❌ Finnhub profile API错误: {error}")
+                continue
+                
+            if profile_data:
+                print(f"  Finnhub返回的profile数据:")
+                print(f"    name: {profile_data.get('name')}")
+                print(f"    sector: {profile_data.get('sector')}")
+                print(f"    finnhubSector: {profile_data.get('finnhubSector')}")
+                print(f"    marketCapitalization: {profile_data.get('marketCapitalization')}")
+                
+                if profile_data.get('sector') or profile_data.get('finnhubSector'):
+                    sector = profile_data.get('sector') or profile_data.get('finnhubSector')
+                    print(f"  ✅ 获取到sector: {sector}")
+                else:
+                    print(f"  ⚠️ profile数据中没有sector字段")
+            else:
+                print(f"  ❌ 没有获取到profile数据")
+                
+        except Exception as e:
+            print(f"  ❌ 测试失败: {e}")
+
+def test_news():
+    """测试news字段"""
+    print("\n" + "=" * 80)
+    print("测试 3: News 字段")
+    print("=" * 80)
+    
+    test_symbols = ['AAPL', 'MSFT', 'GOOGL', 'TSLA']
+    
+    for symbol in test_symbols:
+        print(f"\n测试 {symbol}:")
+        try:
+            news_data = analyze_news_for_stock(symbol)
+            
+            print(f"  news_data keys: {list(news_data.keys())}")
+            print(f"  sentiment: {news_data.get('sentiment')}")
+            print(f"  eventRisk: {news_data.get('eventRisk')}")
+            print(f"  topCatalyst: {news_data.get('topCatalyst')}")
+            print(f"  newsCount: {news_data.get('newsCount')}")
+            print(f"  newsSource: {news_data.get('newsSource')}")
+            print(f"  hasNews: {news_data.get('hasNews')}")
+            
+            # 检查是否来自Finnhub
+            if news_data.get('newsSource', '').startswith('Finnhub'):
+                print(f"  ✅ News数据来自Finnhub")
+            else:
+                print(f"  ⚠️ News数据来源不是Finnhub: {news_data.get('newsSource')}")
+                
+        except Exception as e:
+            print(f"  ❌ 测试失败: {e}")
+
+def test_scanner_integration():
+    """测试完整的scanner集成"""
+    print("\n" + "=" * 80)
+    print("测试 4: 完整Scanner集成")
+    print("=" * 80)
+    
+    test_symbols = ['AAPL', 'MSFT']
+    
+    for symbol in test_symbols:
+        print(f"\n测试完整scanner链路 {symbol}:")
+        try:
+            stock_data, news_data, profile_data, analysis_result = get_stock_data_for_scanner(symbol)
+            
+            print(f"  1. Stock Data:")
+            print(f"     price: {stock_data.get('price')}")
+            print(f"     changePercent: {stock_data.get('changePercent')}")
+            print(f"     changePct: {stock_data.get('changePct')}")
+            print(f"     volume: {stock_data.get('volume')}")
+            
+            print(f"  2. Profile Data:")
+            print(f"     name: {profile_data.get('name')}")
+            print(f"     sector: {profile_data.get('sector')}")
+            print(f"     finnhubSector: {profile_data.get('finnhubSector')}")
+            
+            print(f"  3. News Data:")
+            print(f"     sentiment: {news_data.get('sentiment')}")
+            print(f"     eventRisk: {news_data.get('eventRisk')}")
+            print(f"     topCatalyst: {news_data.get('topCatalyst')}")
+            print(f"     newsSource: {news_data.get('newsSource')}")
+            
+            # 验证所有字段都存在
+            issues = []
+            if not stock_data.get('changePct'):
+                issues.append("changePct字段为空")
+            if not profile_data.get('sector'):
+                issues.append("sector字段为空")
+            if not news_data.get('newsSource', '').startswith('Finnhub'):
+                issues.append("news不是来自Finnhub")
+                
+            if issues:
+                print(f"  ⚠️ 存在问题: {', '.join(issues)}")
+            else:
+                print(f"  ✅ 所有字段正常")
+                
+        except Exception as e:
+            print(f"  ❌ 测试失败: {e}")
+
+def main():
+    """主测试函数"""
+    print("修复后字段测试")
+    print("=" * 80)
+    
+    # 测试percent change
+    test_percent_change()
+    
+    # 测试sector
+    test_sector()
+    
+    # 测试news
+    test_news()
+    
+    # 测试完整集成
+    test_scanner_integration()
+    
+    print("\n" + "=" * 80)
+    print("测试完成")
+    print("=" * 80)
+
+if __name__ == "__main__":
+    main()

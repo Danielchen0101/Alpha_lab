@@ -9746,272 +9746,104 @@ def get_stock_data_for_scanner(symbol):
 
 
 def analyze_news_for_stock(symbol):
-
-    """分析股票的新闻数据 - 返回模拟数据用于测试"""
-
+    """分析股票的新闻数据 - 使用真实Finnhub API"""
     try:
-
         symbol_upper = symbol.upper()
-
         
-
-        # 直接返回模拟新闻数据，跳过API调用
-
-        print(f'[新闻分析] 返回模拟新闻数据: {symbol_upper}')
-
+        print(f'[新闻分析] 开始获取真实新闻数据: {symbol_upper}')
         
-
-        # 根据股票符号返回不同的模拟数据
-
-        if symbol_upper == 'AAPL':
-
+        # 调用真实Finnhub API
+        finnhub_news = fetch_finnhub_news(symbol_upper)
+        
+        if finnhub_news and isinstance(finnhub_news, list) and len(finnhub_news) > 0:
+            print(f'[新闻分析] 获取到 {len(finnhub_news)} 条真实新闻')
+            
+            # 分析新闻情绪
+            sentiment_scores = []
+            valid_news = []
+            
+            for news_item in finnhub_news[:10]:  # 最多分析10条新闻
+                try:
+                    sentiment = news_item.get('sentiment', 0)
+                    if isinstance(sentiment, (int, float)):
+                        sentiment_scores.append(sentiment)
+                    
+                    # 提取关键信息
+                    headline = news_item.get('headline', '')
+                    summary = news_item.get('summary', headline)
+                    url = news_item.get('url', '')
+                    
+                    if headline:
+                        valid_news.append({
+                            'headline': headline,
+                            'summary': summary,
+                            'url': url,
+                            'sentiment': sentiment
+                        })
+                except Exception as e:
+                    print(f'[新闻分析] 处理新闻条目时出错: {str(e)}')
+                    continue
+            
+            # 计算平均情绪
+            avg_sentiment = sum(sentiment_scores) / len(sentiment_scores) if sentiment_scores else 0
+            
+            # 确定情绪标签
+            if avg_sentiment > 0.2:
+                sentiment_label = 'Positive'
+            elif avg_sentiment < -0.2:
+                sentiment_label = 'Negative'
+            else:
+                sentiment_label = 'Neutral'
+            
+            # 确定事件风险
+            if abs(avg_sentiment) > 0.5:
+                event_risk = 'High'
+            elif abs(avg_sentiment) > 0.3:
+                event_risk = 'Medium'
+            else:
+                event_risk = 'Low'
+            
+            # 提取主要催化剂
+            top_catalyst = ''
+            if valid_news:
+                # 使用情绪最强的新闻作为主要催化剂
+                sorted_news = sorted(valid_news, key=lambda x: abs(x.get('sentiment', 0)), reverse=True)
+                top_news = sorted_news[0]
+                top_catalyst = top_news.get('headline', '')[:100]
+            
             return {
-
-                'sentiment': 'Positive',
-
-                'eventRisk': 'Low',
-
-                'topCatalyst': 'Strong quarterly earnings beat estimates',
-
-                'newsCount': 3,
-
-                'newsSource': 'Mock',
-
+                'sentiment': sentiment_label,
+                'eventRisk': event_risk,
+                'topCatalyst': top_catalyst,
+                'newsCount': len(valid_news),
+                'newsSource': 'Finnhub',
                 'hasNews': True,
-
-                'newsSummary': 'Apple reported strong quarterly earnings with iPhone sales exceeding expectations. Analysts have raised price targets following the results.'
-
+                'newsSummary': f'基于{len(valid_news)}条新闻分析，平均情绪得分: {avg_sentiment:.2f}',
+                'rawNews': valid_news[:5]  # 返回前5条新闻供参考
             }
-
-        elif symbol_upper == 'MSFT':
-
-            return {
-
-                'sentiment': 'Positive',
-
-                'eventRisk': 'Low',
-
-                'topCatalyst': 'Azure cloud growth accelerates',
-
-                'newsCount': 2,
-
-                'newsSource': 'Mock',
-
-                'hasNews': True,
-
-                'newsSummary': 'Microsoft reported strong cloud revenue growth with Azure accelerating. New AI features announced for Windows and Office.'
-
-            }
-
-        elif symbol_upper == 'TSLA':
-
-            return {
-
-                'sentiment': 'Mixed',
-
-                'eventRisk': 'Medium',
-
-                'topCatalyst': 'Q1 deliveries miss estimates',
-
-                'newsCount': 2,
-
-                'newsSource': 'Mock',
-
-                'hasNews': True,
-
-                'newsSummary': 'Tesla Q1 deliveries missed analyst estimates, but company announced refreshed Model Y with longer range.'
-
-            }
-
         else:
-
+            print(f'[新闻分析] 未获取到新闻数据，返回中性分析')
             return {
-
                 'sentiment': 'Neutral',
-
                 'eventRisk': 'Low',
-
-                'topCatalyst': 'Quarterly results reported',
-
-                'newsCount': 1,
-
-                'newsSource': 'Mock',
-
-                'hasNews': True,
-
-                'newsSummary': f'{symbol_upper} reported quarterly earnings with mixed results.'
-
+                'topCatalyst': 'No recent news available',
+                'newsCount': 0,
+                'newsSource': 'None',
+                'hasNews': False,
+                'newsSummary': 'No recent news available from Finnhub'
             }
-
-        
-
-        # 分析新闻情绪
-
-        sentiment_scores = []
-
-        event_risk_levels = []
-
-        catalysts = []
-
-        
-
-        for news in news_items:
-
-            # 使用Finnhub提供的情感分数
-
-            sentiment_score = news.get('sentiment_score', 0)
-
-            sentiment_scores.append(sentiment_score)
-
             
-
-            # 根据新闻标题和内容判断事件风险
-
-            headline = news.get('headline', '').lower()
-
-            summary = news.get('summary', '').lower()
-
-            
-
-            # 判断高风险事件
-
-            high_risk_keywords = ['earnings miss', 'guidance cut', 'lawsuit', 'investigation', 'recall', 'warning', 'downgrade']
-
-            medium_risk_keywords = ['earnings', 'guidance', 'analyst', 'upgrade', 'downgrade', 'target']
-
-            
-
-            risk_level = 'Low'
-
-            for keyword in high_risk_keywords:
-
-                if keyword in headline or keyword in summary:
-
-                    risk_level = 'High'
-
-                    break
-
-            
-
-            if risk_level == 'Low':
-
-                for keyword in medium_risk_keywords:
-
-                    if keyword in headline or keyword in summary:
-
-                        risk_level = 'Medium'
-
-                        break
-
-            
-
-            event_risk_levels.append(risk_level)
-
-            
-
-            # 识别主要催化剂
-
-            catalyst_keywords = ['earnings', 'guidance', 'analyst', 'upgrade', 'downgrade', 'target price', 'product launch', 'merger', 'acquisition']
-
-            for keyword in catalyst_keywords:
-
-                if keyword in headline or keyword in summary:
-
-                    catalysts.append(news.get('headline', 'News catalyst'))
-
-                    break
-
-        
-
-        # 计算平均情感分数
-
-        avg_sentiment = sum(sentiment_scores) / len(sentiment_scores) if sentiment_scores else 0
-
-        
-
-        # 确定整体情绪
-
-        if avg_sentiment > 0.1:
-
-            sentiment = 'Positive'
-
-        elif avg_sentiment < -0.1:
-
-            sentiment = 'Negative'
-
-        else:
-
-            sentiment = 'Mixed'
-
-        
-
-        # 确定事件风险（取最高风险级别）
-
-        event_risk = 'Low'
-
-        if 'High' in event_risk_levels:
-
-            event_risk = 'High'
-
-        elif 'Medium' in event_risk_levels:
-
-            event_risk = 'Medium'
-
-        
-
-        # 确定主要催化剂
-
-        top_catalyst = catalysts[0] if catalysts else news_items[0].get('headline', 'Recent news activity')
-
-        if len(top_catalyst) > 100:
-
-            top_catalyst = top_catalyst[:100] + '...'
-
-        
-
-        return {
-
-            'sentiment': sentiment,
-
-            'eventRisk': event_risk,
-
-            'topCatalyst': top_catalyst,
-
-            'newsCount': len(news_items),
-
-            'avgSentimentScore': avg_sentiment,
-
-            'newsSource': 'Finnhub',
-
-            'hasNews': True
-
-        }
-
-        
-
     except Exception as e:
-
-        print(f'分析 {symbol} 新闻失败: {str(e)}')
-
+        print(f'[新闻分析] 分析新闻时出错: {str(e)}')
         return {
-
-            'sentiment': 'News analysis failed',
-
+            'sentiment': 'Neutral',
             'eventRisk': 'Low',
-
-            'topCatalyst': 'News analysis failed',
-
+            'topCatalyst': f'News analysis error: {str(e)[:50]}',
             'newsCount': 0,
-
-            'newsSource': 'error',
-
-            'hasNews': False
-
+            'newsSource': 'Error',
+            'hasNews': False,
+            'newsSummary': f'Error analyzing news: {str(e)[:100]}'
         }
-
-
-
-
 
 def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
@@ -10315,9 +10147,9 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
             headers=headers,
 
-            json=payload,
+            json=payload
 
-            timeout=30  # 增加超时时间到30秒，给AI更多时间分析
+            # 移除timeout，让AI分析可以自由完成，不人为限制时间
 
         )
 
@@ -11134,6 +10966,7 @@ def ai_trading_environment():
 
 
 @app.route('/api/status', methods=['GET'])
+@app.route('/system/status', methods=['GET'])
 
 def get_status():
 
@@ -11152,8 +10985,6 @@ def get_status():
 @app.route('/api/market/stocks', methods=['GET'])
 
 @app.route('/market/stocks', methods=['GET'])
-
-@app.route('/api/market/stocks', methods=['GET'])
 
 def get_market_stocks():
 

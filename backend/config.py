@@ -60,3 +60,26 @@ DATA_SOURCE = {
 
 # 请求超时设置
 REQUEST_TIMEOUT = 10  # 秒
+
+# ==================== API速率限制配置 ====================
+# Alpaca免费层限制
+ALPACA_RATE_LIMIT = {
+    'historical_bars_per_minute': 200,  # 历史数据每分钟200次调用
+    'snapshots_per_minute': 200,        # 快照每分钟200次调用
+    'websocket_symbols': 30,            # WebSocket最多30个符号
+    'requests_per_second': 10           # 每秒最多10次请求
+}
+
+# Finnhub免费层限制
+FINNHUB_RATE_LIMIT = {
+    'calls_per_minute': 60,             # 每分钟60次调用
+    'calls_per_second': 30,             # 每秒最多30次调用（突发限制）
+    'news_calls_per_minute': 30         # 新闻API每分钟30次调用
+}
+
+# AI分析配置
+AI_ANALYSIS_CONFIG = {
+    'timeout_seconds': 60,              # AI分析超时时间（秒）
+    'max_concurrent_calls': 5,          # 最大并发AI调用数
+    'retry_attempts': 2                 # 失败重试次数
+}

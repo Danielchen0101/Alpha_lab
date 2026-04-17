@@ -14,12 +14,99 @@ import {
 } from '@ant-design/icons';
 import aiTradingService, { AIProviderConfig } from '../services/aiTradingService';
 import { backtraderAPI, marketAPI } from '../services/api';
-import api from '../services/api';
+import api, { scannerApi } from '../services/api';
 import marketDataService from '../services/marketDataService';
 import alpacaBrokerService, { AlpacaAccount, AlpacaPosition, AlpacaOrder } from '../services/alpacaBrokerService';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
+
+// AI分析结果类型定义 - V3格式
+interface AIAnalysisResult {
+  // 基础字段
+  success: boolean;
+  symbol: string;
+  
+  // V1/V2兼容字段
+  trend?: string | null;
+  overallScore?: number | null;
+  confidence?: number | null;
+  trendScore?: number | null;
+  momentumScore?: number | null;
+  volumeScore?: number | null;
+  volatilityScore?: number | null;
+  structureScore?: number | null;
+  newsScore?: number | null;
+  scannerReason?: string | null;
+  aiReasoning?: string | null;
+  newsSentiment?: string | null;
+  eventRisk?: string | null;
+  topNews?: string | null;
+  companyName?: string | null;
+  sector?: string | null;
+  volumeStatus?: string | null;
+  conciseReasoning?: string | null;
+  detailedReasoning?: string | null;
+  
+  // V3增强字段
+  trendLabel?: string | null;
+  momentumLabel?: string | null;
+  volatilityLabel?: string | null;
+  volumeLabel?: 'low' | 'normal' | 'high' | null;
+  structureLabel?: 'uptrend' | 'downtrend' | 'sideways' | 'breakout' | 'high-volatility' | null;
+  newsLabel?: 'positive' | 'neutral' | 'negative' | null;
+  riskLevel?: 'low' | 'medium' | 'high' | null;
+  conciseReason?: string | null;
+  
+  // 数据源信息
+  provenance?: {
+    marketData?: string;
+    companyInfo?: string;
+    news?: string;
+    aiAnalysis?: string;
+  };
+}
+
+// 趋势分析结果类型
+interface TrendAnalysis {
+  // 核心趋势字段
+  trendLabel: string | null;
+  trendScore: number | null;
+  trendConfidence: number | null;
+  scannerReason: string | null;
+  
+  // 6维度分数
+  trendScoreDetail: number | null;
+  momentumScore: number | null;
+  volumeScore: number | null;
+  volatilityScore: number | null;
+  structureScore: number | null;
+  newsScore: number | null;
+  
+  // V2兼容字段
+  volumeStatus: string | null;
+  conciseReasoning: string | null;
+  detailedReasoning: string | null;
+  aiReasoning: string | null;
+  newsSentiment: string | null;
+  eventRisk: string | null;
+  topNews: string | null;
+  companyName: string | null;
+  sector: string | null;
+  
+  // V3字段
+  momentumLabel?: string | null;
+  volatilityLabel?: string | null;
+  volumeLabel?: 'low' | 'normal' | 'high' | null;
+  structureLabel?: 'uptrend' | 'downtrend' | 'sideways' | 'breakout' | 'high-volatility' | null;
+  newsLabel?: 'positive' | 'neutral' | 'negative' | null;
+  riskLevel?: 'low' | 'medium' | 'high' | null;
+  
+  // 新增字段（实际使用中）
+  overallScore?: number | null;
+  confidence?: number | null;
+  conciseReason?: string | null;
+}
 
 const Portfolio: React.FC = () => {
   // AI Agent 状态 - Step 2: 只做 UI，不接真实逻辑
@@ -393,6 +480,143 @@ const Portfolio: React.FC = () => {
     }
   };
 
+  // 处理单个symbol的函数
+  const processSingleSymbol = async (symbol: string, globalIndex: number, totalSymbols: number): Promise<any> => {
+    try {
+      console.log(`[${symbol}] === 开始处理symbol ===`);
+      console.log(`[${symbol}] 全局索引: ${globalIndex + 1}/${totalSymbols}`);
+      
+      // 更新进度
+      console.log(`[${symbol}] 更新进度...`);
+      setMarketScannerStatus(prev => ({ 
+        ...prev, 
+        scannedSymbols: globalIndex + 1, 
+        progress: Math.round(((globalIndex + 1) / totalSymbols) * 100) 
+      }));
+      
+      // 获取股票数据
+      console.log(`[${symbol}] 开始获取stockData...`);
+      const stockData = await marketDataService.getStockData(symbol);
+      console.log(`[${symbol}] stockData获取完成:`, {
+        hasPrice: !!stockData?.price,
+        price: stockData?.price,
+        hasVolume: !!stockData?.volume,
+        volume: stockData?.volume,
+        changePct: stockData?.changePct,
+        changePercent: stockData?.changePercent
+      });
+      
+      // 获取新闻数据（真实API）
+      console.log(`[${symbol}] 开始获取newsData...`);
+      const newsData = await getStockNews(symbol);
+      console.log(`[${symbol}] newsData获取完成:`, {
+        hasSentiment: !!newsData?.sentiment,
+        sentiment: newsData?.sentiment,
+        hasTopNews: !!newsData?.topNews,
+        topNews: newsData?.topNews
+      });
+      
+      // 获取公司名（真实API）
+      console.log(`[${symbol}] 开始获取companyName...`);
+      const companyName = await getCompanyName(symbol);
+      console.log(`[${symbol}] companyName获取完成:`, companyName);
+      
+      // 计算趋势分数和标签（真实AI分析）
+      console.log(`[${symbol}] 开始analyzeTrend...`);
+      const trendAnalysis = await analyzeTrend(symbol, stockData, newsData);
+      console.log(`[${symbol}] analyzeTrend完成:`, {
+        hasTrendLabel: !!trendAnalysis.trendLabel,
+        trendLabel: trendAnalysis.trendLabel,
+        hasTrendScore: !!trendAnalysis.trendScore,
+        trendScore: trendAnalysis.trendScore,
+        hasAiReasoning: !!trendAnalysis.aiReasoning
+      });
+      
+      // 创建结果对象
+      const result = {
+        symbol,
+        companyName: trendAnalysis.companyName || companyName,
+        trendLabel: trendAnalysis.trendLabel,
+        trendScore: trendAnalysis.trendScore || trendAnalysis.overallScore || null,
+        trendConfidence: trendAnalysis.trendConfidence || trendAnalysis.confidence || null,
+        price: stockData.price || null,
+        changePct: stockData.changePct || stockData.changePercent || null, // 使用changePct字段
+        changePercent: stockData.changePercent || null, // 保留原字段
+        volume: stockData.volume || null,
+        marketCap: stockData.marketCap || null,
+        newsSentiment: trendAnalysis.newsSentiment || newsData.sentiment,
+        eventRisk: trendAnalysis.eventRisk || newsData.eventRisk,
+        topNews: trendAnalysis.topNews || newsData.topNews,
+        sector: stockData.sector || trendAnalysis.sector,
+        scannerReason: trendAnalysis.scannerReason,
+        trendScoreDetail: trendAnalysis.trendScoreDetail,
+        momentumScore: trendAnalysis.momentumScore,
+        volumeScore: trendAnalysis.volumeScore,
+        volatilityScore: trendAnalysis.volatilityScore,
+        structureScore: trendAnalysis.structureScore,
+        newsScore: trendAnalysis.newsScore,
+        aiReasoning: trendAnalysis.aiReasoning,
+        detailedReasoning: trendAnalysis.detailedReasoning,
+        conciseReasoning: trendAnalysis.conciseReasoning,
+        volumeStatus: trendAnalysis.volumeStatus,
+        analysisStatus: 'success',
+        analysisError: null,
+        timestamp: new Date().toISOString()
+      };
+      
+      console.log(`[${symbol}] 处理成功:`, {
+        trendLabel: result.trendLabel,
+        trendScore: result.trendScore,
+        changePct: result.changePct,
+        sector: result.sector
+      });
+      
+      return result;
+      
+    } catch (error: any) {
+      console.error(`扫描 ${symbol} 失败:`, error);
+      
+      // 创建失败结果
+      const failedResult = {
+        symbol,
+        companyName: null,
+        trendLabel: null,
+        trendScore: null,
+        trendConfidence: null,
+        price: null,
+        changePct: null,
+        changePercent: null,
+        volume: null,
+        marketCap: null,
+        newsSentiment: null,
+        eventRisk: null,
+        topNews: null,
+        sector: null,
+        scannerReason: null,
+        trendScoreDetail: null,
+        momentumScore: null,
+        volumeScore: null,
+        volatilityScore: null,
+        structureScore: null,
+        newsScore: null,
+        aiReasoning: null,
+        detailedReasoning: null,
+        conciseReasoning: null,
+        volumeStatus: null,
+        analysisStatus: 'failed',
+        analysisError: error?.message || 'Unknown error',
+        timestamp: new Date().toISOString()
+      };
+      
+      console.warn(`[${symbol}] 处理失败:`, {
+        analysisStatus: 'failed',
+        analysisError: error?.message
+      });
+      
+      return failedResult;
+    }
+  };
+
   const scanSymbols = async (symbols: string[]): Promise<void> => {
     try {
       console.log('=== scanSymbols 开始执行 ===');
@@ -404,57 +628,22 @@ const Portfolio: React.FC = () => {
       
       setMarketScannerStatus(prev => ({ ...prev, totalSymbols, scannedSymbols: 0 }));
       
-      // 1. 预分配完整rows：为所有symbols创建基础row
-      console.log('=== 开始预分配完整rows ===');
-      const allResults: any[] = symbols.map(symbol => ({
-      symbol,
-      companyName: null,
-      trendLabel: null,
-      trendScore: null,
-      trendConfidence: null,
-      price: null,
-      changePct: null,
-      volume: null,
-      dayHigh: null,
-      dayLow: null,
-      previousClose: null,
-      newsSentiment: null,
-      eventRisk: null,
-      sector: null,
-      scannerReason: null,
-      timestamp: new Date().toISOString(),
-      trendScoreDetail: null,
-      momentumScore: null,
-      volumeScore: null,
-      volatilityScore: null,
-      structureScore: null,
-      newsScore: null,
-      volumeStatus: null,
-      aiReasoning: null,
-      conciseReasoning: null,
-      detailedReasoning: null,
-      topNews: null,
-      dataSource: 'Unknown',
-      analysisStatus: 'pending', // 新增：分析状态
-      analysisError: null // 新增：错误信息
-    }));
+      // 1. 不再预分配所有rows，改为逐步追加
+      console.log('=== 开始逐步追加渲染 ===');
+      setMarketScannerResults([]); // 清空结果，从头开始
     
-    // 初始更新UI，显示所有symbols（状态为pending）
-    setMarketScannerResults([...allResults]);
-    
-    // 2. 将symbols分成每批10个
-    console.log('=== 开始批次循环 ===');
+    // 2. 将symbols分成每批10个，逐步处理
+    console.log('=== 开始批次循环（逐步追加） ===');
     for (let batchIndex = 0; batchIndex < symbols.length; batchIndex += BATCH_SIZE) {
       const batchSymbols = symbols.slice(batchIndex, batchIndex + BATCH_SIZE);
+      const batchNum = Math.floor(batchIndex / BATCH_SIZE) + 1;
       
-      console.log(`=== 开始处理第 ${Math.floor(batchIndex / BATCH_SIZE) + 1} 批 ===`);
+      console.log(`=== 开始处理第 ${batchNum} 批 ===`);
       console.log(`批次索引: ${batchIndex}, 批次symbols数: ${batchSymbols.length}`);
       console.log('批次symbols列表:', batchSymbols);
       
-      // 检查是否包含NVDA
-      if (batchSymbols.includes('NVDA')) {
-        console.log('⚠️ 当前批次包含 NVDA，开始详细追踪');
-      }
+      // 为当前批次创建结果数组
+      const batchResults: any[] = [];
       
       // 3. 处理当前批次（并行处理以提高效率）
       console.log('=== 开始创建batchPromises ===');
@@ -480,7 +669,9 @@ const Portfolio: React.FC = () => {
             hasPrice: !!stockData?.price,
             price: stockData?.price,
             hasVolume: !!stockData?.volume,
-            volume: stockData?.volume
+            volume: stockData?.volume,
+            changePct: stockData?.changePct,
+            changePercent: stockData?.changePercent
           });
           
           // 获取新闻数据（真实API）
@@ -509,160 +700,200 @@ const Portfolio: React.FC = () => {
             hasAiReasoning: !!trendAnalysis.aiReasoning
           });
           
-          // 调试：检查trendAnalysis对象
-          console.log(`[DEBUG] ${symbol} trendAnalysis对象:`, {
-            hasTrendLabel: !!trendAnalysis.trendLabel,
+          // 创建结果对象
+          const result = {
+            symbol,
+            companyName: trendAnalysis.companyName || companyName,
             trendLabel: trendAnalysis.trendLabel,
-            hasTrendScore: !!trendAnalysis.trendScore,
-            trendScore: trendAnalysis.trendScore,
-            hasTrendConfidence: !!trendAnalysis.trendConfidence,
-            trendConfidence: trendAnalysis.trendConfidence,
-            hasVolumeStatus: !!trendAnalysis.volumeStatus,
-            volumeStatus: trendAnalysis.volumeStatus,
-            hasConciseReasoning: !!trendAnalysis.conciseReasoning,
-            conciseReasoning: trendAnalysis.conciseReasoning,
-            hasDetailedReasoning: !!trendAnalysis.detailedReasoning,
+            trendScore: trendAnalysis.trendScore || trendAnalysis.overallScore || null,
+            trendConfidence: trendAnalysis.trendConfidence || trendAnalysis.confidence || null,
+            price: stockData.price || null,
+            changePct: stockData.changePct || stockData.changePercent || null, // 使用changePct字段
+            changePercent: stockData.changePercent || null, // 保留原字段
+            volume: stockData.volume || null,
+            marketCap: stockData.marketCap || null,
+            newsSentiment: trendAnalysis.newsSentiment || newsData.sentiment,
+            eventRisk: trendAnalysis.eventRisk || newsData.eventRisk,
+            topNews: trendAnalysis.topNews || newsData.topNews,
+            sector: stockData.sector || trendAnalysis.sector,
+            scannerReason: trendAnalysis.scannerReason,
+            trendScoreDetail: trendAnalysis.trendScoreDetail,
+            momentumScore: trendAnalysis.momentumScore,
+            volumeScore: trendAnalysis.volumeScore,
+            volatilityScore: trendAnalysis.volatilityScore,
+            structureScore: trendAnalysis.structureScore,
+            newsScore: trendAnalysis.newsScore,
+            aiReasoning: trendAnalysis.aiReasoning,
             detailedReasoning: trendAnalysis.detailedReasoning,
-            hasAiReasoning: !!trendAnalysis.aiReasoning,
-            aiReasoning: trendAnalysis.aiReasoning
+            conciseReasoning: trendAnalysis.conciseReasoning,
+            volumeStatus: trendAnalysis.volumeStatus,
+            analysisStatus: 'success',
+            analysisError: null,
+            timestamp: new Date().toISOString()
+          };
+          
+          console.log(`[${symbol}] 处理成功:`, {
+            trendLabel: result.trendLabel,
+            changePct: result.changePct,
+            sector: result.sector
           });
           
-          // 4. 找到对应的row并更新
-          console.log(`[${symbol}] 开始更新row...`);
-          const rowIndex = allResults.findIndex(r => r.symbol === symbol);
-          console.log(`[${symbol}] row索引: ${rowIndex}`);
-          
-          if (rowIndex !== -1) {
-            console.log(`[MERGE DEBUG] symbol =`, symbol);
-            console.log(`[MERGE DEBUG] stockData =`, stockData);
-            console.log(`[MERGE DEBUG] newsData =`, newsData);
-            console.log(`[MERGE DEBUG] trendAnalysis =`, trendAnalysis);
-            console.log(`[MERGE DEBUG] row before =`, allResults[rowIndex]);
-            
-            console.log(`[${symbol}] 更新row数据...`);
-            const mergedRow = {
-              ...allResults[rowIndex],
-              companyName: trendAnalysis.companyName || companyName,
-              trendLabel: trendAnalysis.trendLabel,
-              trendScore: trendAnalysis.trendScore || trendAnalysis.overallScore || null,
-              trendConfidence: trendAnalysis.trendConfidence || trendAnalysis.confidence || null,
-              price: stockData.price || null,
-              changePercent: stockData.changePercent || null,
-              volume: stockData.volume || null,
-              marketCap: stockData.marketCap || null,
-              newsSentiment: trendAnalysis.newsSentiment || newsData.sentiment,
-              eventRisk: trendAnalysis.eventRisk || newsData.eventRisk,
-              topNews: trendAnalysis.topNews || newsData.topNews,
-              sector: trendAnalysis.sector,
-              scannerReason: trendAnalysis.scannerReason,
-              trendScoreDetail: trendAnalysis.trendScoreDetail,
-              momentumScore: trendAnalysis.momentumScore,
-              volumeScore: trendAnalysis.volumeScore,
-              volatilityScore: trendAnalysis.volatilityScore,
-              structureScore: trendAnalysis.structureScore,
-              newsScore: trendAnalysis.newsScore,
-              aiReasoning: trendAnalysis.aiReasoning,
-              detailedReasoning: trendAnalysis.detailedReasoning,
-              conciseReasoning: trendAnalysis.conciseReasoning,
-              volumeStatus: trendAnalysis.volumeStatus,
-              analysisStatus: 'success',
-              analysisError: null,
-              timestamp: new Date().toISOString()
-            };
-            
-            console.log(`[MERGE DEBUG] row after =`, mergedRow);
-            allResults[rowIndex] = mergedRow;
-            
-            console.log(`[DEBUG] ${symbol} 更新成功:`, {
-              trendLabel: trendAnalysis.trendLabel,
-              trendScore: trendAnalysis.trendScore || trendAnalysis.overallScore,
-              analysisStatus: 'success'
-            });
-          }
+          return result;
           
         } catch (error: any) {
           console.error(`扫描 ${symbol} 失败:`, error);
           
-          // 5. 失败时更新对应的row
-          const rowIndex = allResults.findIndex(r => r.symbol === symbol);
-          if (rowIndex !== -1) {
-            allResults[rowIndex] = {
-              ...allResults[rowIndex],
-              analysisStatus: 'failed',
-              analysisError: error?.message || 'Unknown error',
-              timestamp: new Date().toISOString()
-            };
-            
-            console.warn(`[DEBUG] ${symbol} 更新失败:`, {
-              analysisStatus: 'failed',
-              analysisError: error?.message
-            });
-          }
+          // 创建失败结果
+          const failedResult = {
+            symbol,
+            companyName: null,
+            trendLabel: null,
+            trendScore: null,
+            trendConfidence: null,
+            price: null,
+            changePct: null,
+            changePercent: null,
+            volume: null,
+            marketCap: null,
+            newsSentiment: null,
+            eventRisk: null,
+            topNews: null,
+            sector: null,
+            scannerReason: null,
+            trendScoreDetail: null,
+            momentumScore: null,
+            volumeScore: null,
+            volatilityScore: null,
+            structureScore: null,
+            newsScore: null,
+            aiReasoning: null,
+            detailedReasoning: null,
+            conciseReasoning: null,
+            volumeStatus: null,
+            analysisStatus: 'failed',
+            analysisError: error?.message || 'Unknown error',
+            timestamp: new Date().toISOString()
+          };
+          
+          console.warn(`[${symbol}] 处理失败:`, {
+            analysisStatus: 'failed',
+            analysisError: error?.message
+          });
+          
+          return failedResult;
         }
-        
-        // 小延迟避免请求过快
-        await new Promise(resolve => setTimeout(resolve, 100));
       });
       
       // 6. 等待当前批次所有promises完成
-      console.log(`=== 批次 ${Math.floor(batchIndex / BATCH_SIZE) + 1} 等待Promise.allSettled ===`);
+      console.log(`=== 批次 ${batchNum} 等待Promise.allSettled ===`);
       console.log('batchPromises数量:', batchPromises.length);
       
       try {
         const results = await Promise.allSettled(batchPromises);
-        console.log(`=== 批次 ${Math.floor(batchIndex / BATCH_SIZE) + 1} Promise.allSettled 完成 ===`);
+        console.log(`=== 批次 ${batchNum} Promise.allSettled 完成 ===`);
         
-        // 统计结果
-        const fulfilled = results.filter(r => r.status === 'fulfilled').length;
-        const rejected = results.filter(r => r.status === 'rejected').length;
-        console.log(`批次结果: fulfilled=${fulfilled}, rejected=${rejected}`);
-        
-        // 打印被reject的promise
+        // 处理结果
         results.forEach((result, index) => {
-          if (result.status === 'rejected') {
+          if (result.status === 'fulfilled') {
+            batchResults.push(result.value);
+          } else {
             console.error(`Promise ${index} (${batchSymbols[index]}) 被reject:`, result.reason);
+            // 添加失败结果
+            batchResults.push({
+              symbol: batchSymbols[index],
+              companyName: null,
+              trendLabel: null,
+              trendScore: null,
+              trendConfidence: null,
+              price: null,
+              changePct: null,
+              changePercent: null,
+              volume: null,
+              marketCap: null,
+              newsSentiment: null,
+              eventRisk: null,
+              topNews: null,
+              sector: null,
+              scannerReason: null,
+              trendScoreDetail: null,
+              momentumScore: null,
+              volumeScore: null,
+              volatilityScore: null,
+              structureScore: null,
+              newsScore: null,
+              aiReasoning: null,
+              detailedReasoning: null,
+              conciseReasoning: null,
+              volumeStatus: null,
+              analysisStatus: 'failed',
+              analysisError: result.reason?.message || 'Unknown error',
+              timestamp: new Date().toISOString()
+            });
           }
         });
         
-      } catch (error: any) {
-        console.error(`=== 批次 ${Math.floor(batchIndex / BATCH_SIZE) + 1} Promise.allSettled 异常 ===`);
-        console.error('异常详情:', error?.message, error?.stack);
-        throw error; // 重新抛出，让外层catch捕获
-      }
-      
-      // 7. 批次完成后立即更新UI（保持原始顺序）
-      console.log(`=== 批次 ${Math.floor(batchIndex / BATCH_SIZE) + 1} 开始更新UI ===`);
-      console.log('allResults长度:', allResults.length);
-      console.log('allResults前5个:', allResults.slice(0, 5).map(r => ({ symbol: r.symbol, trendLabel: r.trendLabel })));
-      
-      try {
-        console.log('调用 setMarketScannerResults...');
-        setMarketScannerResults([...allResults]);
-        console.log('setMarketScannerResults 调用完成');
+        // 统计结果
+        const successCount = batchResults.filter(r => r.analysisStatus === 'success').length;
+        const failedCount = batchResults.filter(r => r.analysisStatus === 'failed').length;
+        console.log(`批次 ${batchNum} 结果: success=${successCount}, failed=${failedCount}`);
         
-        console.log('调用 updateScannerSummary...');
-        updateScannerSummary(allResults);
-        console.log('updateScannerSummary 调用完成');
       } catch (error: any) {
-        console.error('=== UI更新异常 ===');
-        console.error('setMarketScannerResults/updateScannerSummary 异常:', error?.message, error?.stack);
-        throw error; // 重新抛出
+        console.error(`=== 批次 ${batchNum} Promise.allSettled 异常 ===`);
+        console.error('异常详情:', error?.message, error?.stack);
+        // 继续处理，不抛出异常
       }
       
-      console.log(`第 ${Math.floor(batchIndex / BATCH_SIZE) + 1} 批完成，已处理 ${batchIndex + batchSymbols.length}/${totalSymbols} 个symbols`);
+      // 7. 批次完成后追加到UI
+      console.log(`=== 批次 ${batchNum} 开始追加到UI ===`);
+      console.log(`批次结果数量: ${batchResults.length}`);
       
-      // 8. 如果不是最后一批，等待一小段时间让UI更新
+      if (batchResults.length > 0) {
+        try {
+          console.log(`追加批次 ${batchNum} 结果到UI...`);
+          // 使用函数式更新确保追加正确
+          setMarketScannerResults(prevResults => {
+            const newResults = [...prevResults, ...batchResults];
+            console.log(`追加后结果数量: ${newResults.length}`);
+            return newResults;
+          });
+          
+          console.log(`更新批次 ${batchNum} 的summary...`);
+          // 更新summary
+          setMarketScannerSummary(prev => ({
+            ...prev,
+            universeScanned: prev.universeScanned + batchResults.length,
+            bullishCount: prev.bullishCount + batchResults.filter(r => r.trendLabel?.includes('Bullish')).length,
+            bearishCount: prev.bearishCount + batchResults.filter(r => r.trendLabel?.includes('Bearish')).length,
+            neutralCount: prev.neutralCount + batchResults.filter(r => r.trendLabel === 'Neutral').length
+          }));
+          
+          console.log(`批次 ${batchNum} UI更新完成`);
+          
+        } catch (error: any) {
+          console.error(`=== 批次 ${batchNum} UI更新异常 ===`);
+          console.error('异常详情:', error?.message, error?.stack);
+        }
+      }
+      
+      console.log(`第 ${batchNum} 批完成，已处理 ${batchIndex + batchSymbols.length}/${totalSymbols} 个symbols`);
+      
+      // 8. 如果不是最后一批，等待一小段时间
       if (batchIndex + BATCH_SIZE < symbols.length) {
-        await new Promise(resolve => setTimeout(resolve, 500)); // 给UI更新一点时间
+        await new Promise(resolve => setTimeout(resolve, 300)); // 给UI更新一点时间
       }
     }
+
+    // 所有批次处理完成
+    console.log(`所有批次完成，共处理 ${symbols.length} 个symbols`);
     
-    console.log(`所有批次完成，共处理 ${allResults.length} 个symbols`);
+    // 获取最终结果统计
+    const finalResults = marketScannerResults; // 使用当前状态中的结果
+    
     console.log(`最终结果统计:`, {
-      total: allResults.length,
-      success: allResults.filter(r => r.analysisStatus === 'success').length,
-      failed: allResults.filter(r => r.analysisStatus === 'failed').length,
-      pending: allResults.filter(r => r.analysisStatus === 'pending').length
+      total: finalResults.length,
+      success: finalResults.filter(r => r.analysisStatus === 'success').length,
+      failed: finalResults.filter(r => r.analysisStatus === 'failed').length,
+      pending: finalResults.filter(r => r.analysisStatus === 'pending').length
     });
     
     // 扫描成功完成，更新状态为stopped（正常结束）
@@ -765,15 +996,21 @@ const Portfolio: React.FC = () => {
     }
   };
 
-  const analyzeTrend = async (symbol: string, stockData: any, newsData: any): Promise<any> => {
+  const analyzeTrend = async (symbol: string, stockData: any, newsData: any): Promise<TrendAnalysis> => {
     try {
+      console.log(`[AI DEBUG] ====== 开始AI分析 ${symbol} ======`);
       console.log(`[AI DEBUG] symbol before analyze =`, symbol);
       console.log(`[AI DEBUG] request payload =`, { symbol });
+      const requestStartTime = Date.now();
       
-      // 调用新的单只股票AI分析接口
-      const response = await api.post('/ai/analyze/single', {
+      // 调用新的单只股票AI分析接口 - 使用scanner专用api（无timeout限制）
+      const response = await scannerApi.post('/ai/analyze/single', {
         symbol: symbol
       });
+      
+      const requestEndTime = Date.now();
+      const requestDuration = requestEndTime - requestStartTime;
+      console.log(`[AI DEBUG] API请求耗时: ${requestDuration}ms`);
       
       console.log(`[AI DEBUG] raw analyze response =`, response.data);
       console.log(`[AI DEBUG] response status =`, response.status);
@@ -781,75 +1018,131 @@ const Portfolio: React.FC = () => {
       
       if (response.data?.success) {
         const result = response.data;
-        console.log(`[DEBUG] AI分析 ${symbol} 成功:`, result);
+        console.log(`[AI DEBUG] AI分析 ${symbol} 成功:`, {
+          trendLabel: result.trendLabel,
+          trendScore: result.trendScore,
+          overallScore: result.overallScore,
+          aiReasoning: result.aiReasoning ? '有' : '无'
+        });
         
-        // 调试：检查关键字段
-        console.log(`[DEBUG] AI分析 ${symbol} - trend字段:`, result.trend);
+        // 调试：检查关键字段 - V3格式
+        console.log(`[DEBUG] AI分析 ${symbol} - trendLabel字段:`, result.trendLabel);
+        console.log(`[DEBUG] AI分析 ${symbol} - trendScore字段:`, result.trendScore);
+        console.log(`[DEBUG] AI分析 ${symbol} - momentumLabel字段:`, result.momentumLabel);
+        console.log(`[DEBUG] AI分析 ${symbol} - momentumScore字段:`, result.momentumScore);
+        console.log(`[DEBUG] AI分析 ${symbol} - volatilityLabel字段:`, result.volatilityLabel);
+        console.log(`[DEBUG] AI分析 ${symbol} - volatilityScore字段:`, result.volatilityScore);
+        console.log(`[DEBUG] AI分析 ${symbol} - volumeLabel字段:`, result.volumeLabel);
+        console.log(`[DEBUG] AI分析 ${symbol} - volumeScore字段:`, result.volumeScore);
+        console.log(`[DEBUG] AI分析 ${symbol} - structureLabel字段:`, result.structureLabel);
+        console.log(`[DEBUG] AI分析 ${symbol} - structureScore字段:`, result.structureScore);
+        console.log(`[DEBUG] AI分析 ${symbol} - newsLabel字段:`, result.newsLabel);
+        console.log(`[DEBUG] AI分析 ${symbol} - newsScore字段:`, result.newsScore);
+        console.log(`[DEBUG] AI分析 ${symbol} - riskLevel字段:`, result.riskLevel);
         console.log(`[DEBUG] AI分析 ${symbol} - overallScore字段:`, result.overallScore);
-        console.log(`[DEBUG] AI分析 ${symbol} - confidence字段:`, result.confidence);
         console.log(`[DEBUG] AI分析 ${symbol} - aiReasoning字段:`, result.aiReasoning);
-        console.log(`[DEBUG] AI分析 ${symbol} - newsSentiment字段:`, result.newsSentiment);
-        console.log(`[DEBUG] AI分析 ${symbol} - eventRisk字段:`, result.eventRisk);
-        console.log(`[DEBUG] AI分析 ${symbol} - topNews字段:`, result.topNews);
+        console.log(`[DEBUG] AI分析 ${symbol} - conciseReason字段:`, result.conciseReason);
+        
+        // 向后兼容：检查V2格式字段
+        console.log(`[DEBUG] AI分析 ${symbol} - trend字段(V2):`, result.trend);
+        console.log(`[DEBUG] AI分析 ${symbol} - confidence字段(V2):`, result.confidence);
+        console.log(`[DEBUG] AI分析 ${symbol} - newsSentiment字段(V2):`, result.newsSentiment);
+        console.log(`[DEBUG] AI分析 ${symbol} - eventRisk字段(V2):`, result.eventRisk);
+        console.log(`[DEBUG] AI分析 ${symbol} - volumeStatus字段(V2):`, result.volumeStatus);
+        console.log(`[DEBUG] AI分析 ${symbol} - conciseReasoning字段(V2):`, result.conciseReasoning);
+        console.log(`[DEBUG] AI分析 ${symbol} - detailedReasoning字段(V2):`, result.detailedReasoning);
+        console.log(`[DEBUG] AI分析 ${symbol} - scannerReason字段(V2):`, result.scannerReason);
         console.log(`[DEBUG] AI分析 ${symbol} - companyName字段:`, result.companyName);
         console.log(`[DEBUG] AI分析 ${symbol} - sector字段:`, result.sector);
         
-        // 从新的AI分析接口提取数据 - 只返回真实数据，没有fake fallback
-        console.log(`[DEBUG] AI分析 ${symbol} - volumeStatus字段:`, result.volumeStatus);
-        console.log(`[DEBUG] AI分析 ${symbol} - conciseReasoning字段:`, result.conciseReasoning);
-        console.log(`[DEBUG] AI分析 ${symbol} - detailedReasoning字段:`, result.detailedReasoning);
-        
-        const trendAnalysis = {
-          trendLabel: result.trend || null,
-          trendScore: result.overallScore || null,
-          trendConfidence: result.confidence || null,
-          scannerReason: result.scannerReason || null,
-          // 6维度分数
-          trendScoreDetail: result.trendScore || null,
+        // 构建trendAnalysis对象 - 优先使用V3格式，回退到V2格式
+        const trendAnalysis: TrendAnalysis = {
+          // V3字段
+          trendLabel: result.trendLabel || result.trend || null,
+          trendScore: result.trendScore || result.overallScore || null,
+          momentumLabel: result.momentumLabel || null,
           momentumScore: result.momentumScore || null,
-          volumeScore: result.volumeScore || null,
+          volatilityLabel: result.volatilityLabel || null,
           volatilityScore: result.volatilityScore || null,
+          volumeLabel: (result.volumeLabel as 'low' | 'normal' | 'high') || result.volumeStatus || null,
+          volumeScore: result.volumeScore || null,
+          structureLabel: result.structureLabel || null,
           structureScore: result.structureScore || null,
+          newsLabel: (result.newsLabel as 'positive' | 'neutral' | 'negative') || result.newsSentiment || null,
           newsScore: result.newsScore || null,
-          // 新增字段
-          volumeStatus: result.volumeStatus || null,  // 添加volumeStatus
-          conciseReasoning: result.conciseReasoning || null,  // 添加conciseReasoning
-          detailedReasoning: result.detailedReasoning || null,  // 添加detailedReasoning
+          riskLevel: (result.riskLevel as 'low' | 'medium' | 'high') || result.eventRisk || null,
+          
+          // V2兼容字段
+          trendConfidence: result.confidence || null,
+          scannerReason: result.scannerReason || result.conciseReason || null,
+          trendScoreDetail: result.trendScore || null,
+          volumeStatus: result.volumeStatus || result.volumeLabel || null,
+          conciseReasoning: result.conciseReasoning || result.conciseReason || null,
+          detailedReasoning: result.detailedReasoning || result.aiReasoning || null,
           aiReasoning: result.aiReasoning || null,
-          newsSentiment: result.newsSentiment || null,
-          eventRisk: result.eventRisk || null,
+          newsSentiment: result.newsSentiment || result.newsLabel || null,
+          eventRisk: result.eventRisk || result.riskLevel || null,
           topNews: result.topNews || null,
           companyName: result.companyName || null,
-          sector: result.sector || null
+          sector: result.sector || null,
+          
+          // 确保所有字段都有值
+          overallScore: result.overallScore || result.trendScore || null,
+          conciseReason: result.conciseReason || result.conciseReasoning || null
         };
         
-        console.log(`[AI DEBUG] normalized trendAnalysis =`, {
+        console.log(`[AI DEBUG] normalized trendAnalysis (V3) =`, {
           symbol,
+          // V3核心字段
           trendLabel: trendAnalysis.trendLabel,
           trendScore: trendAnalysis.trendScore,
-          trendConfidence: trendAnalysis.trendConfidence,
-          volumeStatus: trendAnalysis.volumeStatus,
-          aiReasoning: trendAnalysis.aiReasoning
+          momentumLabel: trendAnalysis.momentumLabel,
+          momentumScore: trendAnalysis.momentumScore,
+          volumeLabel: trendAnalysis.volumeLabel,
+          volumeScore: trendAnalysis.volumeScore,
+          newsLabel: trendAnalysis.newsLabel,
+          newsScore: trendAnalysis.newsScore,
+          riskLevel: trendAnalysis.riskLevel,
+          overallScore: trendAnalysis.overallScore,
+          // 关键推理字段
+          aiReasoning: trendAnalysis.aiReasoning,
+          conciseReason: trendAnalysis.conciseReason
         });
         
+        console.log(`[AI DEBUG] ====== AI分析 ${symbol} 完成 (成功) ======`);
         return trendAnalysis;
       } else {
         // 后端返回success: false，返回null数据
-        console.warn(`[DEBUG] AI分析 ${symbol} 后端返回success: false，返回null数据`);
-        console.warn(`[DEBUG] AI分析 ${symbol} 错误信息:`, response.data?.error);
+        console.warn(`[AI DEBUG] AI分析 ${symbol} 后端返回success: false，返回null数据`);
+        console.warn(`[AI DEBUG] AI分析 ${symbol} 错误信息:`, response.data?.error);
+        console.log(`[AI DEBUG] ====== AI分析 ${symbol} 完成 (失败: success=false) ======`);
         
-        // 返回null数据，不伪造任何值
+        // 返回null数据，不伪造任何值 - 包含所有V3字段
         return {
+          // V3字段
           trendLabel: null,
           trendScore: null,
+          momentumLabel: null,
+          momentumScore: null,
+          volatilityLabel: null,
+          volatilityScore: null,
+          volumeLabel: null,
+          volumeScore: null,
+          structureLabel: null,
+          structureScore: null,
+          newsLabel: null,
+          newsScore: null,
+          riskLevel: null,
+          overallScore: null,
+          conciseReason: null,
+          
+          // V2兼容字段
           trendConfidence: null,
           scannerReason: null,
           trendScoreDetail: null,
-          momentumScore: null,
-          volumeScore: null,
-          volatilityScore: null,
-          structureScore: null,
-          newsScore: null,
+          volumeStatus: null,
+          conciseReasoning: null,
+          detailedReasoning: null,
           aiReasoning: null,
           newsSentiment: null,
           eventRisk: null,
@@ -859,19 +1152,36 @@ const Portfolio: React.FC = () => {
         };
       }
     } catch (error: any) {
-      console.error(`[DEBUG] AI分析 ${symbol} 异常:`, error.message, error.response?.data);
-      // AI分析失败时，返回null数据，不伪造任何值
+      console.error(`[AI DEBUG] AI分析 ${symbol} 异常:`, error.message, error.response?.data);
+      console.error(`[AI DEBUG] 异常类型:`, error.constructor.name);
+      console.error(`[AI DEBUG] 异常堆栈:`, error.stack);
+      console.log(`[AI DEBUG] ====== AI分析 ${symbol} 完成 (异常) ======`);
+      // AI分析失败时，返回null数据，不伪造任何值 - 包含所有V3字段
       return {
+        // V3字段
         trendLabel: null,
         trendScore: null,
+        momentumLabel: null,
+        momentumScore: null,
+        volatilityLabel: null,
+        volatilityScore: null,
+        volumeLabel: null,
+        volumeScore: null,
+        structureLabel: null,
+        structureScore: null,
+        newsLabel: null,
+        newsScore: null,
+        riskLevel: null,
+        overallScore: null,
+        conciseReason: null,
+        
+        // V2兼容字段
         trendConfidence: null,
         scannerReason: null,
         trendScoreDetail: null,
-        momentumScore: null,
-        volumeScore: null,
-        volatilityScore: null,
-        structureScore: null,
-        newsScore: null,
+        volumeStatus: null,
+        conciseReasoning: null,
+        detailedReasoning: null,
         aiReasoning: null,
         newsSentiment: null,
         eventRisk: null,
@@ -1028,11 +1338,11 @@ const Portfolio: React.FC = () => {
                     </div>
                     <div style={{ 
                       fontSize: '12px', 
-                      color: record.changePct >= 0 ? '#52c41a' : '#ff4d4f',
+                      color: record.changePercent >= 0 ? '#52c41a' : '#ff4d4f',
                       fontWeight: '600'
                     }}>
-                      {record.changePct !== null && record.changePct !== undefined ? 
-                        `${record.changePct >= 0 ? '+' : ''}${record.changePct.toFixed(2)}%` : 'N/A'}
+                      {record.changePercent !== null && record.changePercent !== undefined ? 
+                        `${record.changePercent >= 0 ? '+' : ''}${record.changePercent.toFixed(2)}%` : 'N/A'}
                     </div>
                   </div>
                 </div>
@@ -2172,15 +2482,6 @@ const Portfolio: React.FC = () => {
       
       <Divider />
       
-      {/* ==================== AI Stock Recommendation Agent ==================== */}
-      <div style={{ marginBottom: 24 }}>
-        <Title level={3}>
-          <ThunderboltOutlined style={{ marginRight: '8px' }} />
-          AI Stock Recommendation Agent
-        </Title>
-        <Text type="secondary">Configure AI provider, set up automatic scanning, and view AI-generated stock recommendations</Text>
-      </div>
-      
       {/* 1. AI Configuration */}
       <div style={{ marginBottom: 24 }}>
         <Title level={4}>
@@ -2285,115 +2586,6 @@ const Portfolio: React.FC = () => {
               </Button>
             </div>
           </Form>
-        </Card>
-      </div>
-      
-      {/* 2. Scan Control */}
-      <div style={{ marginBottom: 24 }}>
-        <Title level={4}>
-          <ClockCircleOutlined style={{ marginRight: '8px' }} />
-          Scan Control
-        </Title>
-        <Card>
-          <Row gutter={16} align="middle">
-            <Col span={6}>
-              <div style={{ marginBottom: '8px' }}>
-                <Text strong>Scan Interval:</Text>
-              </div>
-              <Select 
-                value={scanInterval} 
-                onChange={setScanInterval}
-                style={{ width: '100%' }}
-                disabled={isAutoScanEnabled}
-              >
-                <Option value="5">5 minutes</Option>
-                <Option value="15">15 minutes</Option>
-              </Select>
-            </Col>
-            
-            <Col span={18}>
-              <Space size="middle">
-                <Button
-                  type="primary"
-                  icon={<PlayCircleOutlined />}
-                  onClick={handleStartAutoScan}
-                  disabled={isAutoScanEnabled}
-                >
-                  Start Auto Scan
-                </Button>
-                
-                <Button
-                  danger
-                  icon={<PauseCircleOutlined />}
-                  onClick={handleStopAutoScan}
-                  disabled={!isAutoScanEnabled}
-                >
-                  Stop Auto Scan
-                </Button>
-                
-                <Button
-                  icon={<ThunderboltOutlined />}
-                  onClick={handleRunNow}
-                >
-                  Run Now
-                </Button>
-              </Space>
-            </Col>
-          </Row>
-          
-          <Divider style={{ margin: '16px 0' }} />
-          
-          {/* Status Display */}
-          <Row gutter={16}>
-            <Col span={8}>
-              <div style={{ marginBottom: '8px' }}>
-                <Text strong>Status:</Text>
-              </div>
-              <Badge 
-                status={scanStatus.status === 'running' ? 'processing' : 'default'} 
-                text={
-                  <Text strong style={{ 
-                    color: scanStatus.status === 'running' ? '#52c41a' : '#8c8c8c' 
-                  }}>
-                    {scanStatus.status === 'running' ? 'RUNNING' : 'STOPPED'}
-                  </Text>
-                }
-              />
-            </Col>
-            
-            <Col span={8}>
-              <div style={{ marginBottom: '8px' }}>
-                <Text strong>Last Run:</Text>
-              </div>
-              <Text type="secondary">
-                {scanStatus.lastRun 
-                  ? new Date(scanStatus.lastRun).toLocaleString() 
-                  : 'Never'}
-              </Text>
-            </Col>
-            
-            <Col span={8}>
-              <div style={{ marginBottom: '8px' }}>
-                <Text strong>Next Run:</Text>
-              </div>
-              <Text type="secondary">
-                {scanStatus.nextRun 
-                  ? new Date(scanStatus.nextRun).toLocaleString() 
-                  : 'Not scheduled'}
-              </Text>
-            </Col>
-          </Row>
-          
-          {isScanInProgress && (
-            <div style={{ marginTop: '16px' }}>
-              <Progress 
-                percent={scanStatus.progress} 
-                size="small" 
-                status="active"
-                format={() => `Scanning in progress...`}
-              />
-            </div>
-          )}
         </Card>
       </div>
       
@@ -3124,6 +3316,115 @@ const Portfolio: React.FC = () => {
           AI Recommendations
         </Title>
         <Card>
+          {/* Scan Control - 移动到此处 */}
+          <div style={{ marginBottom: 24 }}>
+            <Title level={5}>
+              <ClockCircleOutlined style={{ marginRight: '8px' }} />
+              Scan Control
+            </Title>
+            <Card>
+              <Row gutter={16} align="middle">
+                <Col span={6}>
+                  <div style={{ marginBottom: '8px' }}>
+                    <Text strong>Scan Interval:</Text>
+                  </div>
+                  <Select 
+                    value={scanInterval} 
+                    onChange={setScanInterval}
+                    style={{ width: '100%' }}
+                    disabled={isAutoScanEnabled}
+                  >
+                    <Option value="5">5 minutes</Option>
+                    <Option value="15">15 minutes</Option>
+                  </Select>
+                </Col>
+                
+                <Col span={18}>
+                  <Space size="middle">
+                    <Button
+                      type="primary"
+                      icon={<PlayCircleOutlined />}
+                      onClick={handleStartAutoScan}
+                      disabled={isAutoScanEnabled}
+                    >
+                      Start Auto Scan
+                    </Button>
+                    
+                    <Button
+                      danger
+                      icon={<PauseCircleOutlined />}
+                      onClick={handleStopAutoScan}
+                      disabled={!isAutoScanEnabled}
+                    >
+                      Stop Auto Scan
+                    </Button>
+                    
+                    <Button
+                      icon={<ThunderboltOutlined />}
+                      onClick={handleRunNow}
+                    >
+                      Run Now
+                    </Button>
+                  </Space>
+                </Col>
+              </Row>
+              
+              <Divider style={{ margin: '16px 0' }} />
+              
+              {/* Status Display */}
+              <Row gutter={16}>
+                <Col span={8}>
+                  <div style={{ marginBottom: '8px' }}>
+                    <Text strong>Status:</Text>
+                  </div>
+                  <Badge 
+                    status={scanStatus.status === 'running' ? 'processing' : 'default'} 
+                    text={
+                      <Text strong style={{ 
+                        color: scanStatus.status === 'running' ? '#52c41a' : '#8c8c8c' 
+                      }}>
+                        {scanStatus.status === 'running' ? 'RUNNING' : 'STOPPED'}
+                      </Text>
+                    }
+                  />
+                </Col>
+                
+                <Col span={8}>
+                  <div style={{ marginBottom: '8px' }}>
+                    <Text strong>Last Run:</Text>
+                  </div>
+                  <Text type="secondary">
+                    {scanStatus.lastRun 
+                      ? new Date(scanStatus.lastRun).toLocaleString() 
+                      : 'Never'}
+                  </Text>
+                </Col>
+                
+                <Col span={8}>
+                  <div style={{ marginBottom: '8px' }}>
+                    <Text strong>Next Run:</Text>
+                  </div>
+                  <Text type="secondary">
+                    {scanStatus.nextRun 
+                      ? new Date(scanStatus.nextRun).toLocaleString() 
+                      : 'Not scheduled'}
+                  </Text>
+                </Col>
+              </Row>
+              
+              {isScanInProgress && (
+                <div style={{ marginTop: '16px' }}>
+                  <Progress 
+                    percent={scanStatus.progress} 
+                    size="small" 
+                    status="active"
+                    format={() => `Scanning in progress...`}
+                  />
+                </div>
+              )}
+            </Card>
+          </div>
+          
           {/* 错误显示区域 */}
           {scanErrors.length > 0 && (
             <div style={{ marginBottom: 16 }}>

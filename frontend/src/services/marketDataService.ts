@@ -80,6 +80,7 @@ export interface StockData {
   price: number | null;
   change: number | null;
   changePercent: number | null;
+  changePct?: number | null;  // 新增：前端scanner使用的字段名
   volume: number | null;
   avgVolume?: number | null;  // 后端返回的是avgVolume字段
   marketCap: number | null;
@@ -370,6 +371,8 @@ export const getStockData = async (symbol: string): Promise<StockData> => {
         avgVolume: stock.avgVolume !== undefined ? stock.avgVolume : null,  // ✅ 新增：处理avgVolume
         yearHigh: stock.yearHigh !== undefined ? stock.yearHigh : null,  // ✅ 新增：处理yearHigh
         yearLow: stock.yearLow !== undefined ? stock.yearLow : null,    // ✅ 新增：处理yearLow
+        // 确保changePct字段存在，优先使用后端返回的changePct，否则使用changePercent
+        changePct: stock.changePct !== undefined ? stock.changePct : (stock.changePercent !== undefined ? stock.changePercent : null),
         dataSource: stock.dataSource || 'Finnhub',
         timestamp: new Date().toISOString(),
       } as StockData;
