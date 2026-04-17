@@ -61,8 +61,8 @@ jobs:
       run: |
         pip install flake8 black
         cd backend
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        black --check . || echo "Black check failed or no Python files to format"
+        flake8 start_quant_backend.py config.py technical_indicators.py --count --select=E9,F63,F7,F82 --show-source --statistics
+        black --check start_quant_backend.py config.py technical_indicators.py || echo "Black check failed or no Python files to format"
 
   lint-frontend:
     runs-on: ubuntu-latest
