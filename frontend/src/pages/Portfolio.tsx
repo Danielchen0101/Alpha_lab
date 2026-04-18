@@ -185,6 +185,10 @@ const Portfolio: React.FC = () => {
   });
   const [marketScannerAutoEnabled, setMarketScannerAutoEnabled] = useState(false);
   const marketScannerTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // 新增：Market Scanner 自动扫描相关的 ref
+  const marketScannerAutoEnabledRef = useRef(false);
+  const marketScannerStopRequestedRef = useRef(false);
+  const marketScannerIsScanningRef = useRef(false);
   
   // 展开行状态
   const [expandedRows, setExpandedRows] = useState<string[]>([]);
@@ -222,8 +226,14 @@ const Portfolio: React.FC = () => {
   useEffect(() => {
     return () => {
       clearAutoScanTimer();
+      clearMarketScannerTimer();
     };
   }, []);
+
+  // 同步 Market Scanner 自动扫描状态到 ref
+  useEffect(() => {
+    marketScannerAutoEnabledRef.current = marketScannerAutoEnabled;
+  }, [marketScannerAutoEnabled]);
 
   const loadAiConfig = async () => {
     try {
@@ -388,6 +398,10 @@ const Portfolio: React.FC = () => {
   const runMarketScanner = async (): Promise<void> => {
     // 重置停止标记
     stopRequestedRef.current = false;
+    marketScannerStopRequestedRef.current = false;
+    
+    // 设置扫描状态 ref
+    marketScannerIsScanningRef.current = true;
     
     // 设置详细状态
     setDetailedScanStatus(prev => ({
@@ -427,7 +441,7 @@ const Portfolio: React.FC = () => {
       }
       
       // 检查是否被停止
-      if (stopRequestedRef.current) {
+      if (stopRequestedRef.current || marketScannerStopRequestedRef.current) {
         console.log('扫描被用户停止');
         setDetailedScanStatus(prev => ({
           ...prev,
@@ -435,6 +449,7 @@ const Portfolio: React.FC = () => {
           statusMessage: 'Scan stopped by user'
         }));
         setMarketScannerStatus(prev => ({ ...prev, status: 'stopped' }));
+        marketScannerIsScanningRef.current = false;
         return;
       }
       
@@ -448,11 +463,14 @@ const Portfolio: React.FC = () => {
       }));
       setMarketScannerStatus(prev => ({ ...prev, status: 'stopped', lastScanTime: now }));
       
+      // 清除扫描状态 ref
+      marketScannerIsScanningRef.current = false;
+      
       console.log('市场扫描完成');
       
-      // 如果自动扫描开启，安排下一轮
-      if (isAutoScanEnabledRef.current) {
-        scheduleNextAutoScan();
+      // 如果 Market Scanner 自动扫描开启，安排下一轮
+      if (marketScannerAutoEnabledRef.current && !marketScannerStopRequestedRef.current) {
+        scheduleNextMarketScannerAutoScan();
       }
       
     } catch (error: any) {
@@ -479,6 +497,8 @@ const Portfolio: React.FC = () => {
         statusMessage: `Error: ${error.message || 'Unknown error'}`
       }));
       setMarketScannerStatus(prev => ({ ...prev, status: 'stopped' }));
+      // 清除扫描状态 ref
+      marketScannerIsScanningRef.current = false;
       message.error('市场扫描失败');
     }
   };
@@ -646,6 +666,16 @@ const Portfolio: React.FC = () => {
       const validation = validateSymbolData(result);
       if (!validation.valid) {
         console.warn(`[${symbol}] 关键字段缺失，需要重试。缺失关键字段: ${validation.missingFields.join(', ')}`);
+        console.log(`[${symbol}] 详细字段状态:`, {
+          symbol: result.symbol,
+          price: result.price,
+          changePct: result.changePct,
+          changePercent: result.changePercent,
+          volume: result.volume,
+          trendLabel: result.trendLabel,
+          trendScore: result.trendScore,
+          aiReasoning: result.aiReasoning
+        });
         
         // 如果还有重试次数，抛出错误以触发重试
         if (retryCount < 2) { // 最多重试2次（加上当前这次共3次）
@@ -1382,6 +1412,57 @@ const Portfolio: React.FC = () => {
     }
   };
 
+  // 统一的 trend badge 渲染函数
+  const renderTrendBadge = (label: string) => {
+    if (!label) {
+      return (
+        <div style={{
+          display: 'inline-block',
+          padding: '4px 12px',
+          borderRadius: '12px',
+          backgroundColor: '#f5f5f5',
+          border: '1px solid #d9d9d9',
+          color: '#8c8c8c',
+          fontWeight: '600',
+          fontSize: '11px',
+          textAlign: 'center',
+          minWidth: '80px',
+          height: '24px',
+          lineHeight: '16px',
+          boxSizing: 'border-box'
+        }}>
+          N/A
+        </div>
+      );
+    }
+    
+    const color = getTrendColor(label);
+    const isStrong = label.includes('Strong');
+    
+    return (
+      <div style={{
+        display: 'inline-block',
+        padding: '4px 12px',
+        borderRadius: '12px',
+        backgroundColor: `${color}15`,
+        border: `1.5px solid ${color}`,
+        color: color,
+        fontWeight: isStrong ? '700' : '600',
+        fontSize: '11px',
+        textAlign: 'center',
+        minWidth: '80px',
+        height: '24px',
+        lineHeight: '16px',
+        boxSizing: 'border-box',
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis'
+      }}>
+        {label}
+      </div>
+    );
+  };
+
   const generateScannerReason = (symbol: string, score: number, newsData: any, stockData: any): string | null => {
     // 不再使用模板句子，返回null让AI分析提供真实reasoning
     return null;
@@ -1406,6 +1487,86 @@ const Portfolio: React.FC = () => {
     });
   };
 
+  // 获取过滤和排序后的结果
+  const getFilteredAndSortedResults = (): any[] => {
+    if (!marketScannerResults || marketScannerResults.length === 0) {
+      return [];
+    }
+    
+    // 1. 先过滤
+    let filteredResults = [...marketScannerResults];
+    
+    if (marketScannerFilters.trendFilter !== 'all') {
+      switch (marketScannerFilters.trendFilter) {
+        case 'bullish':
+          filteredResults = filteredResults.filter(r => 
+            r.trendLabel === 'Bullish' || r.trendLabel === 'Strong Bullish'
+          );
+          break;
+        case 'bearish':
+          filteredResults = filteredResults.filter(r => 
+            r.trendLabel === 'Bearish' || r.trendLabel === 'Strong Bearish'
+          );
+          break;
+        case 'neutral':
+          filteredResults = filteredResults.filter(r => r.trendLabel === 'Neutral');
+          break;
+        case 'strong':
+          filteredResults = filteredResults.filter(r => 
+            r.trendLabel === 'Strong Bullish' || r.trendLabel === 'Strong Bearish'
+          );
+          break;
+      }
+    }
+    
+    // 2. 再排序
+    const sortField = marketScannerFilters.sortBy;
+    const sortOrder = marketScannerFilters.sortOrder;
+    
+    filteredResults.sort((a, b) => {
+      let aValue = a[sortField];
+      let bValue = b[sortField];
+      
+      // 处理特殊字段
+      if (sortField === 'trendScore') {
+        aValue = a.trendScore || a.overallScore || 0;
+        bValue = b.trendScore || b.overallScore || 0;
+      } else if (sortField === 'changePct') {
+        aValue = a.changePct || a.changePercent || 0;
+        bValue = b.changePct || b.changePercent || 0;
+      } else if (sortField === 'volume') {
+        aValue = a.volume || 0;
+        bValue = b.volume || 0;
+      } else if (sortField === 'newsSentiment') {
+        // 将新闻情绪映射为数值进行排序
+        const sentimentMap: Record<string, number> = {
+          'Positive': 3,
+          'Neutral': 2,
+          'Negative': 1,
+          'Mixed': 2
+        };
+        aValue = sentimentMap[a.newsSentiment] || 0;
+        bValue = sentimentMap[b.newsSentiment] || 0;
+      }
+      
+      // 处理空值
+      if (aValue === null || aValue === undefined) aValue = sortOrder === 'desc' ? -Infinity : Infinity;
+      if (bValue === null || bValue === undefined) bValue = sortOrder === 'desc' ? -Infinity : Infinity;
+      
+      // 数值比较
+      if (typeof aValue === 'number' && typeof bValue === 'number') {
+        return sortOrder === 'desc' ? bValue - aValue : aValue - bValue;
+      }
+      
+      // 字符串比较
+      const aStr = String(aValue || '');
+      const bStr = String(bValue || '');
+      return sortOrder === 'desc' ? bStr.localeCompare(aStr) : aStr.localeCompare(bStr);
+    });
+    
+    return filteredResults;
+  };
+
   const clearMarketScannerTimer = (): void => {
     if (marketScannerTimerRef.current) {
       clearTimeout(marketScannerTimerRef.current);
@@ -1413,25 +1574,140 @@ const Portfolio: React.FC = () => {
     }
   };
 
-  const handleStartMarketScannerAuto = (): void => {
-    setMarketScannerAutoEnabled(true);
-    runMarketScanner();
+  // 安排下一次 Market Scanner 自动扫描
+  const scheduleNextMarketScannerAutoScan = (): void => {
+    // 只在 Market Scanner 自动扫描启用时安排下一次
+    if (!marketScannerAutoEnabledRef.current || marketScannerStopRequestedRef.current) {
+      console.log('Market Scanner 自动扫描未启用或已停止，不安排下一次扫描');
+      setDetailedScanStatus(prev => ({
+        ...prev,
+        nextScanAt: null,
+        statusMessage: 'Auto scan not enabled or stopped'
+      }));
+      return;
+    }
     
-    // 设置30分钟自动扫描
-    marketScannerTimerRef.current = setTimeout(() => {
-      if (marketScannerAutoEnabled) {
-        runMarketScanner();
+    clearMarketScannerTimer(); // 先清理旧的定时器
+    
+    // 使用硬编码的30分钟间隔（与 UI 下拉框一致）
+    const intervalMinutes = 30;
+    const intervalMs = intervalMinutes * 60 * 1000;
+    
+    // 计算下一次扫描时间
+    const now = new Date();
+    const nextScanTime = new Date(now.getTime() + intervalMs);
+    const nextScanAt = nextScanTime.toISOString();
+    
+    console.log(`安排下一次 Market Scanner 自动扫描，间隔 ${intervalMinutes} 分钟，时间: ${nextScanTime.toLocaleString()}`);
+    
+    // 更新详细状态
+    setDetailedScanStatus(prev => ({
+      ...prev,
+      currentStatus: 'waiting_next_scan',
+      nextScanAt: nextScanAt,
+      statusMessage: `Next scan at ${nextScanTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`
+    }));
+    
+    // 更新 Market Scanner 状态
+    setMarketScannerStatus(prev => ({
+      ...prev,
+      nextScanTime: nextScanAt
+    }));
+    
+    marketScannerTimerRef.current = setTimeout(async () => {
+      try {
+        console.log(`Market Scanner 自动扫描定时器触发，间隔 ${intervalMinutes} 分钟`);
+        
+        // 检查是否还在自动扫描模式
+        if (!marketScannerAutoEnabledRef.current || marketScannerStopRequestedRef.current) {
+          console.log('Market Scanner 自动扫描已关闭或停止，跳过本次扫描');
+          return;
+        }
+        
+        // 检查是否已经在扫描中
+        if (marketScannerIsScanningRef.current) {
+          console.log('Market Scanner 扫描已在运行中，等待当前扫描完成');
+          // 重新安排下一次扫描
+          scheduleNextMarketScannerAutoScan();
+          return;
+        }
+        
+        // 执行扫描
+        await runMarketScanner();
+      } catch (error) {
+        console.error('Market Scanner 自动扫描执行失败:', error);
+        const errorMessage = error instanceof Error ? error.message : 
+                            typeof error === 'string' ? error : 
+                            'Unknown error';
+        setDetailedScanStatus(prev => ({
+          ...prev,
+          currentStatus: 'error',
+          statusMessage: `Auto scan failed: ${errorMessage}`
+        }));
+      } finally {
+        // 无论扫描是否成功或跳过，如果自动扫描仍然启用，都安排下一次
+        if (marketScannerAutoEnabledRef.current && !marketScannerStopRequestedRef.current) {
+          scheduleNextMarketScannerAutoScan();
+        }
       }
-    }, 30 * 60 * 1000);
+    }, intervalMs);
+  };
+
+  const handleStartMarketScannerAuto = (): void => {
+    // 防止重复启动
+    if (marketScannerAutoEnabled) {
+      message.warning('Market Scanner 自动扫描已在运行中');
+      return;
+    }
+    
+    // 重置停止标记
+    marketScannerStopRequestedRef.current = false;
+    
+    // 启用自动扫描
+    setMarketScannerAutoEnabled(true);
+    marketScannerAutoEnabledRef.current = true;
+    
+    // 更新状态
+    setDetailedScanStatus(prev => ({
+      ...prev,
+      currentStatus: 'waiting_next_scan',
+      statusMessage: 'Auto scan started, starting first scan...'
+    }));
+    
+    // 立即开始第一轮扫描
+    runMarketScanner();
   };
 
   const handleStopMarketScannerAuto = (): void => {
+    // 设置停止标记
+    marketScannerStopRequestedRef.current = true;
+    
+    // 禁用自动扫描
     setMarketScannerAutoEnabled(false);
+    marketScannerAutoEnabledRef.current = false;
+    
+    // 清理定时器
     clearMarketScannerTimer();
+    
+    // 更新状态
+    setDetailedScanStatus(prev => ({
+      ...prev,
+      currentStatus: 'stopped',
+      nextScanAt: null,
+      statusMessage: 'Scan stopped by user'
+    }));
+    
+    // 更新 Market Scanner 状态
+    setMarketScannerStatus(prev => ({
+      ...prev,
+      nextScanTime: null
+    }));
+    
+    message.success('已停止 Market Scanner 自动扫描');
   };
 
   const handleRunMarketScannerNow = (): void => {
-    if (marketScannerStatus.status === 'running') {
+    if (marketScannerIsScanningRef.current) {
       message.warning('扫描正在进行中');
       return;
     }
@@ -1623,20 +1899,7 @@ const Portfolio: React.FC = () => {
                 {/* 趋势标签 */}
                 <div>
                   <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Trend</div>
-                  {record.trendLabel ? (
-                    <div style={{
-                      display: 'inline-block',
-                      padding: '4px 12px',
-                      borderRadius: '12px',
-                      backgroundColor: `${getTrendColor(record.trendLabel)}20`,
-                      border: `1.5px solid ${getTrendColor(record.trendLabel)}`,
-                      color: getTrendColor(record.trendLabel),
-                      fontWeight: '700',
-                      fontSize: '12px'
-                    }}>
-                      {record.trendLabel}
-                    </div>
-                  ) : (
+                  {record.trendLabel ? renderTrendBadge(record.trendLabel) : (
                     <div style={{ fontSize: '12px', color: '#999' }}>N/A</div>
                   )}
                 </div>
@@ -2945,35 +3208,35 @@ const Portfolio: React.FC = () => {
               <div style={{ marginBottom: '8px' }}>
                 <Text strong>Status:</Text>
               </div>
-              <Badge 
-                status={
-                  detailedScanStatus.currentStatus === 'scanning' ? 'processing' :
-                  detailedScanStatus.currentStatus === 'completed' ? 'success' :
-                  detailedScanStatus.currentStatus === 'error' ? 'error' :
-                  detailedScanStatus.currentStatus === 'stopped' ? 'warning' : 'default'
-                } 
-                text={
-                  <Text strong style={{ 
-                    color: detailedScanStatus.currentStatus === 'scanning' ? '#52c41a' :
-                           detailedScanStatus.currentStatus === 'completed' ? '#1890ff' :
-                           detailedScanStatus.currentStatus === 'error' ? '#ff4d4f' :
-                           detailedScanStatus.currentStatus === 'stopped' ? '#faad14' : '#8c8c8c'
-                  }}>
-                    {detailedScanStatus.currentStatus === 'scanning' ? 'SCANNING' :
-                     detailedScanStatus.currentStatus === 'waiting_next_scan' ? 'WAITING' :
-                     detailedScanStatus.currentStatus === 'completed' ? 'COMPLETED' :
-                     detailedScanStatus.currentStatus === 'error' ? 'ERROR' :
-                     detailedScanStatus.currentStatus === 'stopped' ? 'STOPPED' : 'IDLE'}
-                  </Text>
-                }
-              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Badge 
+                  status={
+                    detailedScanStatus.currentStatus === 'scanning' ? 'processing' :
+                    detailedScanStatus.currentStatus === 'completed' ? 'success' :
+                    detailedScanStatus.currentStatus === 'error' ? 'error' :
+                    detailedScanStatus.currentStatus === 'stopped' ? 'warning' : 'default'
+                  } 
+                />
+                <Text strong style={{ 
+                  color: detailedScanStatus.currentStatus === 'scanning' ? '#52c41a' :
+                         detailedScanStatus.currentStatus === 'completed' ? '#1890ff' :
+                         detailedScanStatus.currentStatus === 'error' ? '#ff4d4f' :
+                         detailedScanStatus.currentStatus === 'stopped' ? '#faad14' : '#8c8c8c'
+                }}>
+                  {detailedScanStatus.currentStatus === 'scanning' ? 'SCANNING' :
+                   detailedScanStatus.currentStatus === 'waiting_next_scan' ? 'WAITING' :
+                   detailedScanStatus.currentStatus === 'completed' ? 'COMPLETED' :
+                   detailedScanStatus.currentStatus === 'error' ? 'ERROR' :
+                   detailedScanStatus.currentStatus === 'stopped' ? 'STOPPED' : 'IDLE'}
+                </Text>
+              </div>
             </Col>
             
             <Col span={6}>
               <div style={{ marginBottom: '8px' }}>
                 <Text strong>Last Scan:</Text>
               </div>
-              <Text type="secondary">
+              <Text type="secondary" style={{ fontSize: '13px' }}>
                 {detailedScanStatus.lastScanAt 
                   ? `${formatTimeDisplay(detailedScanStatus.lastScanAt)}` 
                   : 'Never'}
@@ -2984,9 +3247,11 @@ const Portfolio: React.FC = () => {
               <div style={{ marginBottom: '8px' }}>
                 <Text strong>Next Scan:</Text>
               </div>
-              <Text type="secondary">
-                {detailedScanStatus.nextScanAt 
-                  ? `${formatTimeDisplay(detailedScanStatus.nextScanAt)}` 
+              <Text type="secondary" style={{ fontSize: '13px' }}>
+                {marketScannerStatus.nextScanTime 
+                  ? `${formatTimeDisplay(marketScannerStatus.nextScanTime)}` 
+                  : detailedScanStatus.nextScanAt
+                  ? `${formatTimeDisplay(detailedScanStatus.nextScanAt)}`
                   : 'Not scheduled'}
               </Text>
             </Col>
@@ -2995,9 +3260,9 @@ const Portfolio: React.FC = () => {
               <div style={{ marginBottom: '8px' }}>
                 <Text strong>Progress:</Text>
               </div>
-              <Text type="secondary">
+              <Text type="secondary" style={{ fontSize: '13px' }}>
                 {detailedScanStatus.currentStatus === 'scanning' 
-                  ? `${detailedScanStatus.processedCount}/${detailedScanStatus.totalCount} symbols (${detailedScanStatus.percent}%)` 
+                  ? `${detailedScanStatus.processedCount}/${detailedScanStatus.totalCount} symbols` 
                   : detailedScanStatus.currentStatus === 'completed' ? 'Completed' :
                     detailedScanStatus.currentStatus === 'stopped' ? 'Stopped' : 'Idle'}
               </Text>
@@ -3011,18 +3276,18 @@ const Portfolio: React.FC = () => {
                 fontSize: '12px', 
                 fontWeight: '600', 
                 color: '#333', 
-                marginBottom: '4px',
+                marginBottom: '8px',
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center'
               }}>
                 <span>
-                  {detailedScanStatus.currentStatus === 'scanning' ? 'SCANNING' : 
-                   detailedScanStatus.currentStatus === 'stopped' ? 'STOPPED' :
-                   detailedScanStatus.currentStatus === 'completed' ? 'COMPLETED' :
-                   detailedScanStatus.currentStatus === 'error' ? 'ERROR' : 'WAITING'}
+                  {detailedScanStatus.currentStatus === 'scanning' ? 'SCANNING IN PROGRESS' : 
+                   detailedScanStatus.currentStatus === 'stopped' ? 'SCAN STOPPED' :
+                   detailedScanStatus.currentStatus === 'completed' ? 'SCAN COMPLETED' :
+                   detailedScanStatus.currentStatus === 'error' ? 'SCAN ERROR' : 'WAITING FOR NEXT SCAN'}
                 </span>
-                <span style={{ color: '#666', fontWeight: 'normal' }}>
+                <span style={{ color: '#666', fontWeight: 'normal', fontSize: '11px' }}>
                   {detailedScanStatus.percent}% complete
                 </span>
               </div>
@@ -3034,31 +3299,54 @@ const Portfolio: React.FC = () => {
                 status={detailedScanStatus.currentStatus === 'scanning' ? 'active' : 
                        detailedScanStatus.currentStatus === 'stopped' ? 'exception' :
                        detailedScanStatus.currentStatus === 'completed' ? 'success' : 'normal'}
+                strokeColor={
+                  detailedScanStatus.currentStatus === 'scanning' ? '#52c41a' :
+                  detailedScanStatus.currentStatus === 'completed' ? '#1890ff' :
+                  detailedScanStatus.currentStatus === 'error' ? '#ff4d4f' : '#faad14'
+                }
               />
               
               {/* 详细信息 */}
               <div style={{ 
                 fontSize: '11px', 
                 color: '#666', 
-                marginTop: '4px',
-                lineHeight: '1.4'
+                marginTop: '8px',
+                lineHeight: '1.4',
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: '8px'
               }}>
                 <div>
-                  {detailedScanStatus.processedCount} / {detailedScanStatus.totalCount} symbols
-                  {detailedScanStatus.validatedCount > 0 && ` • Validated: ${detailedScanStatus.validatedCount}`}
-                  {detailedScanStatus.retryCount > 0 && ` • Retries: ${detailedScanStatus.retryCount}`}
+                  <div style={{ fontWeight: '500', color: '#333', marginBottom: '2px' }}>Progress</div>
+                  <div>{detailedScanStatus.processedCount} / {detailedScanStatus.totalCount} symbols</div>
                 </div>
-                {detailedScanStatus.activeSymbols.length > 0 && (
-                  <div style={{ marginTop: '2px' }}>
-                    Currently scanning: {detailedScanStatus.activeSymbols.join(', ')}
-                  </div>
-                )}
-                {detailedScanStatus.statusMessage && (
-                  <div style={{ marginTop: '2px', fontStyle: 'italic' }}>
-                    {detailedScanStatus.statusMessage}
-                  </div>
-                )}
+                <div>
+                  <div style={{ fontWeight: '500', color: '#333', marginBottom: '2px' }}>Validated</div>
+                  <div>{detailedScanStatus.validatedCount} symbols</div>
+                </div>
+                <div>
+                  <div style={{ fontWeight: '500', color: '#333', marginBottom: '2px' }}>Retries</div>
+                  <div>{detailedScanStatus.retryCount}</div>
+                </div>
+                <div>
+                  <div style={{ fontWeight: '500', color: '#333', marginBottom: '2px' }}>Status</div>
+                  <div>{detailedScanStatus.statusMessage || 'Ready'}</div>
+                </div>
               </div>
+              {detailedScanStatus.activeSymbols.length > 0 && (
+                <div style={{ 
+                  fontSize: '11px', 
+                  color: '#333', 
+                  marginTop: '8px',
+                  padding: '6px',
+                  backgroundColor: '#f6ffed',
+                  borderRadius: '4px',
+                  border: '1px solid #b7eb8f'
+                }}>
+                  <div style={{ fontWeight: '500', marginBottom: '2px' }}>Currently Scanning:</div>
+                  <div>{detailedScanStatus.activeSymbols.join(', ')}</div>
+                </div>
+              )}
             </div>
           )}
           
@@ -3144,7 +3432,7 @@ const Portfolio: React.FC = () => {
           {marketScannerResults.length > 0 && (
             <div style={{ marginTop: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                <Text strong style={{ fontSize: '14px' }}>Top Market Trends ({marketScannerResults.length} symbols)</Text>
+                <Text strong style={{ fontSize: '14px' }}>Top Market Trends ({getFilteredAndSortedResults().length} symbols)</Text>
                 <Space size="small">
                   <Select 
                     value={marketScannerFilters.trendFilter}
@@ -3175,6 +3463,7 @@ const Portfolio: React.FC = () => {
                     size="small" 
                     icon={marketScannerFilters.sortOrder === 'desc' ? <SortDescendingOutlined /> : <SortAscendingOutlined />}
                     onClick={() => setMarketScannerFilters(prev => ({ ...prev, sortOrder: prev.sortOrder === 'desc' ? 'asc' : 'desc' }))}
+                    type={marketScannerFilters.sortOrder === 'desc' ? 'primary' : 'default'}
                   />
                 </Space>
               </div>
@@ -3214,61 +3503,7 @@ const Portfolio: React.FC = () => {
                     dataIndex: 'trendLabel', 
                     key: 'trendLabel',
                     width: 120,
-                    render: (label: string, record: any) => {
-                      // 调试：检查渲染时读取的字段
-                      if (record.symbol === 'AAPL' || record.symbol === 'META') {
-                        console.log(`[DEBUG RENDER] ${record.symbol} Trend渲染 - label:`, label);
-                        console.log(`[DEBUG RENDER] ${record.symbol} 完整record:`, {
-                          trendLabel: record.trendLabel,
-                          trendScore: record.trendScore,
-                          trendConfidence: record.trendConfidence,
-                          volumeStatus: record.volumeStatus,
-                          conciseReasoning: record.conciseReasoning,
-                          aiReasoning: record.aiReasoning
-                        });
-                      }
-                      
-                      if (!label) {
-                        return (
-                          <div style={{
-                            display: 'inline-block',
-                            padding: '4px 12px',
-                            borderRadius: '12px',
-                            backgroundColor: '#f5f5f5',
-                            border: '1px solid #d9d9d9',
-                            color: '#8c8c8c',
-                            fontWeight: '600',
-                            fontSize: '11px',
-                            textAlign: 'center',
-                            minWidth: '80px'
-                          }}>
-                            N/A
-                          </div>
-                        );
-                      }
-                      
-                      const color = getTrendColor(label);
-                      const isStrong = label.includes('Strong');
-                      
-                      return (
-                        <div style={{
-                          display: 'inline-block',
-                          padding: isStrong ? '5px 14px' : '4px 12px',
-                          borderRadius: '12px',
-                          backgroundColor: `${color}15`,
-                          border: `2px solid ${color}`,
-                          color: color,
-                          fontWeight: isStrong ? '800' : '700',
-                          fontSize: isStrong ? '12px' : '11px',
-                          textAlign: 'center',
-                          boxShadow: '0 2px 4px rgba(0,0,0,0.08)',
-                          minWidth: '80px',
-                          transition: 'all 0.2s ease'
-                        }}>
-                          {label}
-                        </div>
-                      );
-                    }
+                    render: (label: string) => renderTrendBadge(label)
                   },
                   { 
                     title: 'Score', 
@@ -3630,7 +3865,7 @@ const Portfolio: React.FC = () => {
                     }
                   }
                 ]}
-                dataSource={marketScannerResults}
+                dataSource={getFilteredAndSortedResults()}
                 rowKey="symbol"
                 size="small"
                 pagination={{ pageSize: 10, size: 'small' }}
