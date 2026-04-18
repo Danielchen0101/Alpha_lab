@@ -2,10 +2,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Card, Typography, Space, Statistic, Row, Col, 
   Button, Divider, Table, Tag, Select, Form, Input, 
-  message, Progress, Empty, Badge, Alert, Tooltip, Collapse, Modal
+  message, Progress, Empty, Badge, Alert, Tooltip
 } from 'antd';
 import { 
-  DollarOutlined, LineChartOutlined, PieChartOutlined, BarChartOutlined,
+  LineChartOutlined, BarChartOutlined,
   SettingOutlined, PlayCircleOutlined, PauseCircleOutlined, 
   ThunderboltOutlined, CheckCircleOutlined, ClockCircleOutlined,
   RobotOutlined, CloseCircleOutlined, ExclamationCircleOutlined,
@@ -16,7 +16,7 @@ import aiTradingService, { AIProviderConfig } from '../services/aiTradingService
 import { backtraderAPI, marketAPI } from '../services/api';
 import api, { scannerApi } from '../services/api';
 import marketDataService from '../services/marketDataService';
-import alpacaBrokerService, { AlpacaAccount, AlpacaPosition, AlpacaOrder } from '../services/alpacaBrokerService';
+import alpacaBrokerService, { AlpacaPosition, AlpacaOrder } from '../services/alpacaBrokerService';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -98,6 +98,14 @@ interface TrendAnalysis {
   momentumLabel?: string | null;
   volatilityLabel?: string | null;
   volumeLabel?: 'low' | 'normal' | 'high' | null;
+  
+  // 数据来源
+  provenance?: {
+    marketData: string;
+    companyInfo: string;
+    news: string;
+    aiAnalysis: string;
+  } | null;
   structureLabel?: 'uptrend' | 'downtrend' | 'sideways' | 'breakout' | 'high-volatility' | null;
   newsLabel?: 'positive' | 'neutral' | 'negative' | null;
   riskLevel?: 'low' | 'medium' | 'high' | null;
@@ -142,11 +150,7 @@ const Portfolio: React.FC = () => {
   const [savingConfig, setSavingConfig] = useState(false);
   
   // Alpaca Paper Trading 真实账户状态
-  const [alpacaAccount, setAlpacaAccount] = useState<AlpacaAccount | null>(null);
-  const [alpacaPositions, setAlpacaPositions] = useState<AlpacaPosition[]>([]);
   const [alpacaOrders, setAlpacaOrders] = useState<any[]>([]);
-  const [isLoadingAccount, setIsLoadingAccount] = useState(false);
-  const [accountLoadError, setAccountLoadError] = useState<string | null>(null);
   
   // Market Scanner 状态
   const [marketScannerStatus, setMarketScannerStatus] = useState({
@@ -158,7 +162,7 @@ const Portfolio: React.FC = () => {
     scannedSymbols: 0,
     // 新增字段用于详细进度显示
     currentSymbol: null as string | null,
-    currentStatus: null as 'initializing' | 'scanning' | 'retrying' | 'validating' | 'validated' | 'queued' | 'queued_for_retry' | 'rendering' | 'completed' | 'failed' | 'error' | 'idle' | null,
+    currentStatus: null as 'initializing' | 'scanning' | 'retrying' | 'validating' | 'validated' | 'queued' | 'queued_for_retry' | 'rendering' | 'completed' | 'failed' | 'error' | 'idle' | 'stopped' | null,
     currentBatch: null as number | null,
     batchProgress: null as string | null,
     retryAttempt: 0,
@@ -182,19 +186,36 @@ const Portfolio: React.FC = () => {
   const [marketScannerAutoEnabled, setMarketScannerAutoEnabled] = useState(false);
   const marketScannerTimerRef = useRef<NodeJS.Timeout | null>(null);
   
-  // View Detail 状态
-  const [detailModalVisible, setDetailModalVisible] = useState(false);
-  const [selectedSymbolDetail, setSelectedSymbolDetail] = useState<any>(null);
-  
   // 展开行状态
   const [expandedRows, setExpandedRows] = useState<string[]>([]);
   
   // Step 5: 自动扫描定时器
   const autoScanTimerRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // 扫描控制标记
+  const stopRequestedRef = useRef(false);
+  const activeSymbolsRef = useRef<string[]>([]);
+  const retryCountRef = useRef<number>(0);
+  const validatedCountRef = useRef<number>(0);
+  
+  // 详细扫描状态
+  const [detailedScanStatus, setDetailedScanStatus] = useState({
+    currentStatus: 'idle' as 'idle' | 'scanning' | 'waiting_next_scan' | 'stopped' | 'completed' | 'error',
+    processedCount: 0,
+    totalCount: 0,
+    percent: 0,
+    activeSymbols: [] as string[],
+    retryCount: 0,
+    validatedCount: 0,
+    lastScanAt: null as string | null,
+    nextScanAt: null as string | null,
+    statusMessage: '' as string
+  });
 
   // Step 3: 加载 AI 配置（接入真实配置系统）
   useEffect(() => {
     loadAiConfig();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Step 5: 组件卸载时清理定时器
@@ -254,25 +275,20 @@ const Portfolio: React.FC = () => {
 
   // 加载 Alpaca Paper Trading 真实账户数据
   const loadAlpacaAccount = async () => {
-    setIsLoadingAccount(true);
-    setAccountLoadError(null);
     try {
       console.log('开始加载 Alpaca Paper Trading 账户数据...');
       
       // 获取账户信息 - 直接使用导入的alpacaBrokerService实例
       const account = await alpacaBrokerService.getAccount();
-      setAlpacaAccount(account);
       console.log('Alpaca 账户数据加载成功:', account);
       
       // 获取持仓信息
       let positions: AlpacaPosition[] = [];
       try {
         positions = await alpacaBrokerService.getPositions();
-        setAlpacaPositions(positions);
         console.log(`Alpaca 持仓数据加载成功: ${positions.length} 个持仓`);
       } catch (positionsError) {
         console.warn('获取持仓数据失败:', positionsError);
-        setAlpacaPositions([]);
       }
       
       // 获取订单信息
@@ -294,13 +310,10 @@ const Portfolio: React.FC = () => {
     } catch (error: any) {
       console.error('加载 Alpaca 账户数据失败:', error);
       const errorMessage = error.response?.data?.error?.message || error.message || '未知错误';
-      setAccountLoadError(errorMessage);
       message.error(`Alpaca 账户数据加载失败: ${errorMessage}`);
       
       // 返回null表示失败
       return null;
-    } finally {
-      setIsLoadingAccount(false);
     }
   };
 
@@ -371,53 +384,30 @@ const Portfolio: React.FC = () => {
     }
   };
 
-  // Step 4: 保存 AI 配置到后端
-  const handleSaveConfig = async () => {
-    setSavingConfig(true);
-    try {
-      // 获取当前表单值
-      const values = await aiConfigForm.validateFields();
-      
-      // 构建配置对象
-      const config = {
-        provider: values.provider || 'DeepSeek',
-        model: values.model || 'deepseek-chat',
-        apiKey: values.apiKey || '',
-        baseUrl: values.baseUrl || 'https://api.deepseek.com'
-      };
-      
-      console.log('保存 AI 配置到后端:', config);
-      
-      // 调用后端保存配置接口
-      const response = await api.post('/ai/provider/config', config);
-      
-      if (response.data?.success) {
-        message.success('AI 配置保存成功');
-        // 更新本地状态
-        setAiConfig(config);
-        console.log('AI 配置已保存到后端:', response.data.config);
-      } else {
-        message.error(`AI 配置保存失败: ${response.data?.message || '未知错误'}`);
-        console.error('配置保存失败，响应:', response.data);
-      }
-    } catch (error: any) {
-      console.error('保存 AI 配置失败:', error);
-      message.error(`保存 AI 配置失败: ${error.message || '未知错误'}`);
-    } finally {
-      setSavingConfig(false);
-    }
-  };
-
   // Market Scanner 函数
   const runMarketScanner = async (): Promise<void> => {
+    // 重置停止标记
+    stopRequestedRef.current = false;
+    
+    // 设置详细状态
+    setDetailedScanStatus(prev => ({
+      ...prev,
+      currentStatus: 'scanning',
+      processedCount: 0,
+      percent: 0,
+      activeSymbols: [],
+      retryCount: 0,
+      validatedCount: 0,
+      statusMessage: 'Starting scan...'
+    }));
+    
     setMarketScannerStatus(prev => ({ ...prev, status: 'running', progress: 0 }));
     setMarketScannerResults([]);
     
     try {
       console.log('开始市场扫描...');
       
-      // 1. 获取可交易股票列表（实用版全美股universe）
-      // 这里使用Alpaca的活跃可交易股票列表
+      // 1. 获取固定50个symbol universe (30个科技股 + 20个非科技股)
       const tradingSymbols = await getTradingUniverse();
       
       if (!tradingSymbols || tradingSymbols.length === 0) {
@@ -431,16 +421,39 @@ const Portfolio: React.FC = () => {
         ];
         await scanSymbols(defaultSymbols);
       } else {
-        // 限制扫描数量，避免太重
-        const symbolsToScan = tradingSymbols.slice(0, 100);
-        await scanSymbols(symbolsToScan);
+        // 使用完整的50个symbol universe
+        console.log(`开始扫描固定universe: ${tradingSymbols.length}个symbol`);
+        await scanSymbols(tradingSymbols);
       }
       
-      // 更新最后扫描时间
+      // 检查是否被停止
+      if (stopRequestedRef.current) {
+        console.log('扫描被用户停止');
+        setDetailedScanStatus(prev => ({
+          ...prev,
+          currentStatus: 'stopped',
+          statusMessage: 'Scan stopped by user'
+        }));
+        setMarketScannerStatus(prev => ({ ...prev, status: 'stopped' }));
+        return;
+      }
+      
+      // 扫描完成，更新最后扫描时间
       const now = new Date().toISOString();
+      setDetailedScanStatus(prev => ({
+        ...prev,
+        currentStatus: 'completed',
+        lastScanAt: now,
+        statusMessage: 'Scan completed'
+      }));
       setMarketScannerStatus(prev => ({ ...prev, status: 'stopped', lastScanTime: now }));
       
       console.log('市场扫描完成');
+      
+      // 如果自动扫描开启，安排下一轮
+      if (isAutoScanEnabledRef.current) {
+        scheduleNextAutoScan();
+      }
       
     } catch (error: any) {
       console.error('=== 市场扫描失败 - 外层catch捕获的完整错误 ===');
@@ -460,6 +473,11 @@ const Portfolio: React.FC = () => {
         console.error('请求方法:', error?.config?.method);
       }
       
+      setDetailedScanStatus(prev => ({
+        ...prev,
+        currentStatus: 'error',
+        statusMessage: `Error: ${error.message || 'Unknown error'}`
+      }));
       setMarketScannerStatus(prev => ({ ...prev, status: 'stopped' }));
       message.error('市场扫描失败');
     }
@@ -467,20 +485,63 @@ const Portfolio: React.FC = () => {
 
   const getTradingUniverse = async (): Promise<string[]> => {
     try {
-      // 这里应该调用后端API获取Alpaca可交易股票列表
-      // 暂时返回一个实用股票列表
-      return [
-        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META',
-        'TSLA', 'NVDA', 'AMD', 'AVGO', 'INTC',
-        'JPM', 'XOM', 'WMT', 'HD', 'JNJ',
-        'PG', 'KO', 'PEP', 'V', 'MA',
-        'BAC', 'C', 'GS', 'JPM', 'WFC',
-        'XOM', 'CVX', 'COP', 'SLB', 'EOG',
-        'WMT', 'TGT', 'COST', 'HD', 'LOW',
-        'JNJ', 'PFE', 'MRK', 'ABT', 'UNH',
-        'PG', 'KO', 'PEP', 'CL', 'PM',
-        'DIS', 'NFLX', 'CMCSA', 'T', 'VZ'
+      // 固定50个symbol universe：30个科技股 + 20个非科技股
+      
+      // 1. 科技股 (30个) - 必须包含：AAPL, TSLA, NVDA, AMD, RKLB, SNDK
+      const techStocks = [
+        // 必须包含的科技股 (6个)
+        'AAPL', 'TSLA', 'NVDA', 'AMD', 'RKLB', 'SNDK',
+        
+        // 其他热门科技股 (24个)
+        'MSFT', 'GOOGL', 'AMZN', 'META', 'AVGO', 'INTC',
+        'QCOM', 'TXN', 'MU', 'AMAT', 'LRCX', 'KLAC',
+        'ASML', 'ADBE', 'CRM', 'ORCL', 'IBM', 'CSCO',
+        'ACN', 'NOW', 'SNOW', 'DDOG', 'CRWD', 'ZS'
       ];
+      
+      // 2. 非科技股 (20个) - 不能包含科技股
+      const nonTechStocks = [
+        // 金融 (5个)
+        'JPM', 'BAC', 'WFC', 'GS', 'C',
+        
+        // 医疗 (4个)
+        'JNJ', 'UNH', 'PFE', 'MRK',
+        
+        // 消费 (4个)
+        'WMT', 'PG', 'KO', 'PEP',
+        
+        // 工业 (3个)
+        'CAT', 'HON', 'BA',
+        
+        // 能源 (2个)
+        'XOM', 'CVX',
+        
+        // 材料 (1个)
+        'LIN',
+        
+        // 公用事业 (1个)
+        'NEE'
+      ];
+      
+      // 3. 合并并确保总数正好50个
+      const allStocks = [...techStocks, ...nonTechStocks];
+      
+      // 验证数量
+      if (techStocks.length !== 30) {
+        console.error(`科技股数量错误: ${techStocks.length}, 应为30个`);
+      }
+      if (nonTechStocks.length !== 20) {
+        console.error(`非科技股数量错误: ${nonTechStocks.length}, 应为20个`);
+      }
+      if (allStocks.length !== 50) {
+        console.error(`总股票数量错误: ${allStocks.length}, 应为50个`);
+      }
+      
+      console.log(`固定universe生成完成: ${techStocks.length}个科技股 + ${nonTechStocks.length}个非科技股 = ${allStocks.length}个symbol`);
+      console.log(`科技股: ${techStocks.slice(0, 10).join(', ')}${techStocks.length > 10 ? '...' : ''}`);
+      console.log(`非科技股: ${nonTechStocks.slice(0, 10).join(', ')}${nonTechStocks.length > 10 ? '...' : ''}`);
+      
+      return allStocks;
     } catch (error) {
       console.error('获取交易股票列表失败:', error);
       return [];
@@ -488,20 +549,23 @@ const Portfolio: React.FC = () => {
   };
 
   // 处理单个symbol的函数
-  const processSingleSymbol = async (symbol: string): Promise<any> => {
+  // eslint-disable-next-line no-unreachable
+  const processSingleSymbol = async (symbol: string, retryCount: number = 0): Promise<any> => {
     try {
-      console.log(`[${symbol}] === 开始处理symbol ===`);
+      console.log(`[${symbol}] === 开始处理symbol (第${retryCount + 1}次尝试) ===`);
       
       // 获取股票数据
       console.log(`[${symbol}] 开始获取stockData...`);
       const stockData = await marketDataService.getStockData(symbol);
       console.log(`[${symbol}] stockData获取完成:`, {
-        hasPrice: !!stockData?.price,
+        hasPrice: stockData?.price !== null && stockData?.price !== undefined,
         price: stockData?.price,
-        hasVolume: !!stockData?.volume,
+        hasVolume: stockData?.volume !== null && stockData?.volume !== undefined,
         volume: stockData?.volume,
         changePct: stockData?.changePct,
-        changePercent: stockData?.changePercent
+        changePercent: stockData?.changePercent,
+        dayHigh: stockData?.dayHigh,
+        dayLow: stockData?.dayLow
       });
       
       // 获取新闻数据（真实API）
@@ -542,6 +606,8 @@ const Portfolio: React.FC = () => {
         changePercent: stockData.changePercent || null, // 保留原字段
         volume: stockData.volume || null,
         marketCap: stockData.marketCap || null,
+        dayHigh: stockData.dayHigh || null, // 添加dayHigh
+        dayLow: stockData.dayLow || null,   // 添加dayLow
         newsSentiment: trendAnalysis.newsSentiment || newsData.sentiment,
         eventRisk: trendAnalysis.eventRisk || newsData.eventRisk,
         topNews: trendAnalysis.topNews || newsData.topNews,
@@ -557,8 +623,15 @@ const Portfolio: React.FC = () => {
         detailedReasoning: trendAnalysis.detailedReasoning,
         conciseReasoning: trendAnalysis.conciseReasoning,
         volumeStatus: trendAnalysis.volumeStatus,
-        analysisStatus: 'success',
-        analysisError: null,
+        provenance: trendAnalysis.provenance || { // 添加provenance字段
+          marketData: stockData.dataSource || 'Unknown',
+          companyInfo: 'Unknown',
+          news: 'Unknown',
+          aiAnalysis: 'Unknown'
+        },
+        dataSource: stockData.dataSource || 'Unknown', // 添加dataSource字段
+        analysisStatus: 'success' as 'success' | 'partial' | 'failed',
+        analysisError: null as string | null,
         timestamp: new Date().toISOString()
       };
       
@@ -568,6 +641,22 @@ const Portfolio: React.FC = () => {
         changePct: result.changePct,
         sector: result.sector
       });
+      
+      // 检查数据完整性
+      const validation = validateSymbolData(result);
+      if (!validation.valid) {
+        console.warn(`[${symbol}] 关键字段缺失，需要重试。缺失关键字段: ${validation.missingFields.join(', ')}`);
+        
+        // 如果还有重试次数，抛出错误以触发重试
+        if (retryCount < 2) { // 最多重试2次（加上当前这次共3次）
+          throw new Error(`关键字段缺失，需要重试。缺失字段: ${validation.missingFields.join(', ')}`);
+        } else {
+          console.error(`[${symbol}] 已达到最大重试次数(3)，关键字段仍缺失`);
+          // 即使关键字段缺失，也返回结果，但标记为部分成功
+          result.analysisStatus = 'partial' as 'partial';
+          (result as any).analysisError = `关键字段缺失: ${validation.missingFields.join(', ')}`;
+        }
+      }
       
       return result;
       
@@ -601,7 +690,7 @@ const Portfolio: React.FC = () => {
         detailedReasoning: null,
         conciseReasoning: null,
         volumeStatus: null,
-        analysisStatus: 'failed',
+        analysisStatus: 'failed' as 'failed',
         analysisError: error?.message || 'Unknown error',
         timestamp: new Date().toISOString()
       };
@@ -623,6 +712,18 @@ const Portfolio: React.FC = () => {
       
       const totalSymbols = symbols.length;
       const RENDER_BATCH_SIZE = 10; // 每10个完整结果渲染一批
+      
+      // 更新详细状态
+      setDetailedScanStatus(prev => ({
+        ...prev,
+        totalCount: totalSymbols,
+        processedCount: 0,
+        percent: 0,
+        activeSymbols: [],
+        retryCount: 0,
+        validatedCount: 0,
+        statusMessage: `Starting scan of ${totalSymbols} symbols`
+      }));
       
       // 并发配置（按照用户要求）
       const CONCURRENT_CONFIG = {
@@ -664,6 +765,12 @@ const Portfolio: React.FC = () => {
       
       // 单个symbol处理函数
       const startProcessing = async (symbol: string, retryCount: number, lastError?: string) => {
+        // 检查停止标记
+        if (stopRequestedRef.current) {
+          console.log(`[${symbol}] 停止请求已收到，跳过处理`);
+          return;
+        }
+        
         processingSlots.add(symbol);
         totalProcessed++;
         
@@ -681,15 +788,15 @@ const Portfolio: React.FC = () => {
         }
         
         try {
-          // 处理单个symbol
-          const result = await processSingleSymbol(symbol);
+          // 处理单个symbol，传递重试计数
+          const result = await processSingleSymbol(symbol, retryCount);
           
           // 严格校验数据（按照用户要求的校验规则）
           const validation = validateSymbolData(result);
           
-          if (validation.valid) {
-            // 校验通过，加入validatedBuffer
-            console.log(`[${symbol}] ✅ 数据校验通过`);
+          if (validation.valid && result.analysisStatus !== 'partial') {
+            // 校验通过且数据完整，加入validatedBuffer
+            console.log(`[${symbol}] ✅ 数据校验通过 (第${retryCount + 1}次尝试)`);
             validatedBuffer.push(result);
             totalValidated++;
             
@@ -735,9 +842,13 @@ const Portfolio: React.FC = () => {
         } catch (error: any) {
           console.error(`[${symbol}] 处理异常:`, error);
           
+          // 检查是否是数据不完整错误
+          const isDataIncompleteError = error.message?.includes('数据不完整');
+          
           if (retryCount < CONCURRENT_CONFIG.maxRetries) {
             // 准备重试
             console.log(`[${symbol}] 准备重试异常 (${retryCount + 1}/${CONCURRENT_CONFIG.maxRetries})`);
+            console.log(`[${symbol}] 错误类型: ${isDataIncompleteError ? '数据不完整' : '其他错误'}`);
             
             retryQueue.push({
               symbol,
@@ -748,6 +859,8 @@ const Portfolio: React.FC = () => {
           } else {
             // 超过最大重试次数，标记失败
             console.warn(`[${symbol}] ❌ 超过最大重试次数，标记失败: ${error.message}`);
+            console.log(`[${symbol}] 最终状态: ${isDataIncompleteError ? '数据仍不完整' : '处理失败'}`);
+            
             failedSymbols.push({
               symbol,
               error: error.message || 'Unknown error'
@@ -802,19 +915,39 @@ const Portfolio: React.FC = () => {
       // 4. 主处理循环
       console.log('=== 开始主处理循环 ===');
       while (processingSlots.size > 0 || pendingSymbols.length > 0 || retryQueue.length > 0) {
+        // 检查停止标记
+        if (stopRequestedRef.current) {
+          console.log('检测到停止请求，退出扫描循环');
+          break;
+        }
+        
         // 等待一小段时间，避免CPU占用过高
         await new Promise(resolve => setTimeout(resolve, 100));
         
         // 更新进度状态（按照用户要求的进度条规则）
         const progressPercent = Math.round((totalProcessed / totalSymbols) * 100);
         const validatedProgress = `${totalValidated}/${RENDER_BATCH_SIZE}`;
+        const activeSymbols = Array.from(processingSlots);
+        
+        // 更新详细状态
+        setDetailedScanStatus(prev => ({
+          ...prev,
+          processedCount: totalProcessed,
+          percent: progressPercent,
+          activeSymbols: activeSymbols,
+          retryCount: totalRetries,
+          validatedCount: totalValidated,
+          statusMessage: activeSymbols.length > 0 
+            ? `Scanning: ${activeSymbols.join(', ')}` 
+            : 'Processing queue...'
+        }));
         
         setMarketScannerStatus(prev => ({
           ...prev,
           progress: progressPercent,
           scannedSymbols: totalProcessed,
           currentStatus: processingSlots.size > 0 ? 'scanning' : 'idle',
-          currentSymbol: Array.from(processingSlots).join(', ') || 'Waiting...',
+          currentSymbol: activeSymbols.join(', ') || 'Waiting...',
           batchProgress: validatedProgress,
           retryAttempt: totalRetries
         }));
@@ -953,19 +1086,64 @@ const Portfolio: React.FC = () => {
   const validateSymbolData = (data: any): { valid: boolean; missingFields: string[]; error?: string } => {
     const missingFields: string[] = [];
     
-    // API数据检查
-    if (!data?.symbol) missingFields.push('symbol');
-    if (!data?.price && data?.price !== 0) missingFields.push('price');
-    if (data?.changePct === undefined && data?.changePercent === undefined) missingFields.push('changePct/changePercent');
-    if (!data?.volume && data?.volume !== 0) missingFields.push('volume');
+    // 辅助函数：检查真正的空值（null/undefined/空字符串），0是有效值
+    const isReallyEmpty = (value: any): boolean => {
+      return value === null || value === undefined || value === '';
+    };
     
-    // AI数据检查
-    if (!data?.trendLabel) missingFields.push('trendLabel');
-    if (data?.overallScore === undefined && data?.trendScore === undefined) missingFields.push('overallScore/trendScore');
-    if (!data?.aiReasoning) missingFields.push('aiReasoning');
+    // ========== 关键字段（缺了才重扫） ==========
+    // 1. symbol - 必须存在且非空
+    if (isReallyEmpty(data?.symbol)) missingFields.push('symbol');
     
-    // 至少一个有效的AI判断字段
-    const hasValidAIField = data?.trendLabel || data?.trendScore !== undefined || data?.aiReasoning;
+    // 2. price - 必须存在，0是有效价格
+    if (isReallyEmpty(data?.price)) missingFields.push('price');
+    
+    // 3. changePct/changePercent - 必须存在，0是有效涨跌幅
+    if (isReallyEmpty(data?.changePct) && isReallyEmpty(data?.changePercent)) {
+      missingFields.push('changePct/changePercent');
+    }
+    
+    // 4. volume - 必须存在，0是有效成交量
+    if (isReallyEmpty(data?.volume)) missingFields.push('volume');
+    
+    // 5. trendLabel - 必须存在且非空
+    if (isReallyEmpty(data?.trendLabel)) missingFields.push('trendLabel');
+    
+    // 6. overallScore/trendScore - 必须存在，0是有效分数
+    if (isReallyEmpty(data?.overallScore) && isReallyEmpty(data?.trendScore)) {
+      missingFields.push('overallScore/trendScore');
+    }
+    
+    // 7. aiReasoning - 必须存在且非空
+    if (isReallyEmpty(data?.aiReasoning)) missingFields.push('aiReasoning');
+    
+    // ========== 非关键增强字段（只记录，不触发重扫） ==========
+    const enhancementFields: string[] = [];
+    
+    // 价格范围字段
+    if (isReallyEmpty(data?.dayHigh)) enhancementFields.push('dayHigh');
+    if (isReallyEmpty(data?.dayLow)) enhancementFields.push('dayLow');
+    
+    // 新闻相关字段
+    if (isReallyEmpty(data?.newsSentiment)) enhancementFields.push('newsSentiment');
+    if (isReallyEmpty(data?.eventRisk)) enhancementFields.push('eventRisk');
+    
+    // 6维度分数字段
+    if (isReallyEmpty(data?.momentumScore)) enhancementFields.push('momentumScore');
+    if (isReallyEmpty(data?.volumeScore)) enhancementFields.push('volumeScore');
+    if (isReallyEmpty(data?.volatilityScore)) enhancementFields.push('volatilityScore');
+    if (isReallyEmpty(data?.structureScore)) enhancementFields.push('structureScore');
+    if (isReallyEmpty(data?.newsScore)) enhancementFields.push('newsScore');
+    
+    // 记录增强字段缺失情况（只记录，不影响验证结果）
+    if (enhancementFields.length > 0) {
+      console.log(`[${data?.symbol}] 增强字段缺失（不影响验证）: ${enhancementFields.join(', ')}`);
+    }
+    
+    // 至少一个有效的AI判断字段（非空）
+    const hasValidAIField = !isReallyEmpty(data?.trendLabel) || 
+                           !isReallyEmpty(data?.trendScore) || 
+                           !isReallyEmpty(data?.aiReasoning);
     
     // provenance检查（如果有的话）
     const hasProvenance = data?.provenance || data?.source;
@@ -979,7 +1157,7 @@ const Portfolio: React.FC = () => {
     return {
       valid,
       missingFields,
-      error: valid ? undefined : `Missing fields: ${missingFields.join(', ')}${!hasValidAIField ? ' (no valid AI field)' : ''}`
+      error: valid ? undefined : `Missing critical fields: ${missingFields.join(', ')}${!hasValidAIField ? ' (no valid AI field)' : ''}`
     };
   };
 
@@ -1276,6 +1454,47 @@ const Portfolio: React.FC = () => {
     );
   };
 
+  // 格式化新闻日期函数
+  const formatNewsDate = (timestamp: any): string => {
+    if (!timestamp) return 'Time unavailable';
+    
+    try {
+      // 检查是否是数字（Unix时间戳）
+      const num = Number(timestamp);
+      if (!isNaN(num)) {
+        // 判断是秒时间戳（10位）还是毫秒时间戳（13位）
+        const timestampMs = num < 10000000000 ? num * 1000 : num;
+        const date = new Date(timestampMs);
+        
+        // 检查日期是否有效（不是1970年）
+        if (date.getFullYear() < 1971) {
+          return 'Time unavailable';
+        }
+        
+        return date.toLocaleDateString('en-US', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric'
+        });
+      }
+      
+      // 如果不是数字，尝试直接解析
+      const date = new Date(timestamp);
+      if (isNaN(date.getTime()) || date.getFullYear() < 1971) {
+        return 'Time unavailable';
+      }
+      
+      return date.toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric'
+      });
+    } catch (error) {
+      console.error('Error formatting news date:', error, timestamp);
+      return 'Time unavailable';
+    }
+  };
+
   const renderDetailPanel = (record: any) => {
     return (
       <div style={{ padding: '20px', backgroundColor: '#f8f9fa', borderRadius: '10px', border: '1px solid #e8e8e8' }}>
@@ -1354,7 +1573,7 @@ const Portfolio: React.FC = () => {
                 <div>
                   <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Volume</div>
                   <div style={{ fontSize: '14px', fontWeight: '600', color: '#333' }}>
-                    {record.volume ? (record.volume / 1000000).toFixed(1) + 'M' : '--'}
+                    {record.volume ? marketDataService.formatVolume(record.volume) : '--'}
                   </div>
                   <div style={{ fontSize: '11px', color: record.volumeStatus ? '#666' : '#999', marginTop: '2px' }}>
                     Status: {record.volumeStatus || 'N/A'}
@@ -1577,10 +1796,12 @@ const Portfolio: React.FC = () => {
                         <div style={{ fontSize: '12px', fontWeight: '600', color: '#333', marginBottom: '4px' }}>
                           {record.topNews.title || 'No title available'}
                         </div>
-                        {record.topNews.source && (
+                        {(record.topNews.source || record.topNews.publisher) && (
                           <div style={{ fontSize: '11px', color: '#666' }}>
-                            Source: {record.topNews.source}
-                            {record.topNews.published && ` • ${new Date(record.topNews.published).toLocaleDateString()}`}
+                            {record.topNews.source && `Data Source: ${record.topNews.source}`}
+                            {record.topNews.publisher && record.topNews.source && ` • `}
+                            {record.topNews.publisher && `Publisher: ${record.topNews.publisher}`}
+                            {record.topNews.published && ` • ${formatNewsDate(record.topNews.published)}`}
                           </div>
                         )}
                         {record.topNews.summary && (
@@ -1719,11 +1940,27 @@ const Portfolio: React.FC = () => {
     return nextRunTime.toISOString();
   };
 
+  // 格式化时间显示
+  const formatTimeDisplay = (isoString: string | null): string => {
+    if (!isoString) return 'N/A';
+    try {
+      const date = new Date(isoString);
+      return date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    } catch (error) {
+      return 'Invalid time';
+    }
+  };
+
   // Step 5: 安排下一次自动扫描
   const scheduleNextAutoScan = () => {
     // 只在自动扫描启用时安排下一次 - 使用 ref 获取最新值
     if (!isAutoScanEnabledRef.current) {
       console.log('自动扫描未启用，不安排下一次扫描');
+      setDetailedScanStatus(prev => ({
+        ...prev,
+        nextScanAt: null,
+        statusMessage: 'Auto scan not enabled'
+      }));
       return;
     }
     
@@ -1732,16 +1969,51 @@ const Portfolio: React.FC = () => {
     const intervalMinutes = parseInt(scanInterval);
     const intervalMs = intervalMinutes * 60 * 1000;
     
-    console.log(`安排下一次自动扫描，间隔 ${intervalMinutes} 分钟`);
+    // 计算下一次扫描时间
+    const now = new Date();
+    const nextScanTime = new Date(now.getTime() + intervalMs);
+    const nextScanAt = nextScanTime.toISOString();
+    
+    console.log(`安排下一次自动扫描，间隔 ${intervalMinutes} 分钟，时间: ${nextScanTime.toLocaleString()}`);
+    
+    // 更新详细状态
+    setDetailedScanStatus(prev => ({
+      ...prev,
+      currentStatus: 'waiting_next_scan',
+      nextScanAt: nextScanAt,
+      statusMessage: `Next scan at ${nextScanTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`
+    }));
     
     autoScanTimerRef.current = setTimeout(async () => {
       try {
         console.log(`自动扫描定时器触发，间隔 ${intervalMinutes} 分钟`);
         
+        // 检查是否还在自动扫描模式
+        if (!isAutoScanEnabledRef.current) {
+          console.log('自动扫描已关闭，跳过本次扫描');
+          return;
+        }
+        
+        // 检查是否已经在扫描中
+        if (detailedScanStatus.currentStatus === 'scanning') {
+          console.log('扫描已在运行中，等待当前扫描完成');
+          // 重新安排下一次扫描
+          scheduleNextAutoScan();
+          return;
+        }
+        
         // 执行扫描
-        await runAiScanOnce(true);
+        await runMarketScanner();
       } catch (error) {
         console.error('自动扫描执行失败:', error);
+        const errorMessage = error instanceof Error ? error.message : 
+                            typeof error === 'string' ? error : 
+                            'Unknown error';
+        setDetailedScanStatus(prev => ({
+          ...prev,
+          currentStatus: 'error',
+          statusMessage: `Auto scan failed: ${errorMessage}`
+        }));
       } finally {
         // 无论扫描是否成功或跳过，如果自动扫描仍然启用，都安排下一次
         if (isAutoScanEnabledRef.current) {
@@ -1767,12 +2039,22 @@ const Portfolio: React.FC = () => {
       return;
     }
     
+    // 重置停止标记
+    stopRequestedRef.current = false;
+    
     // 清理旧的定时器
     clearAutoScanTimer();
     
     // 启用自动扫描模式
     setIsAutoScanEnabled(true);
     isAutoScanEnabledRef.current = true; // 同步更新ref
+    
+    // 更新详细状态
+    setDetailedScanStatus(prev => ({
+      ...prev,
+      currentStatus: 'waiting_next_scan',
+      statusMessage: 'Auto scan started, scheduling first scan...'
+    }));
     
     // 更新状态为 scheduled（等待第一次扫描）
     setScanStatus(prev => ({
@@ -1785,11 +2067,14 @@ const Portfolio: React.FC = () => {
     message.success(`已启动自动扫描，间隔 ${scanInterval} 分钟`);
     
     // 立即执行第一次扫描，扫描完成后会自动安排下一次
-    runAiScanOnce(true);
+    runMarketScanner();
   };
 
   // Step 5: 停止自动扫描
   const handleStopAutoScan = () => {
+    // 设置停止标记
+    stopRequestedRef.current = true;
+    
     // 禁用自动扫描模式
     setIsAutoScanEnabled(false);
     isAutoScanEnabledRef.current = false; // 同步更新ref
@@ -1797,16 +2082,30 @@ const Portfolio: React.FC = () => {
     // 清理定时器
     clearAutoScanTimer();
     
+    // 更新详细状态
+    setDetailedScanStatus(prev => ({
+      ...prev,
+      currentStatus: 'stopped',
+      nextScanAt: null,
+      statusMessage: 'Scan stopped by user'
+    }));
+    
     // 更新状态
-    // 注意：不改变 isScanInProgress，让当前扫描正常完成
     setScanStatus(prev => ({
       ...prev,
       status: 'stopped',
       nextRun: null,
-      // 保持 progress 不变，如果正在扫描中
     }));
     
-    message.success('已停止自动扫描');
+    // 更新市场扫描器状态
+    setMarketScannerStatus(prev => ({
+      ...prev,
+      status: 'stopped',
+      currentStatus: 'stopped',
+      currentSymbol: 'Stopped by user'
+    }));
+    
+    message.success('已停止自动扫描，当前扫描将立即停止');
   };
 
   // Step 5: 统一的扫描入口函数
@@ -2647,12 +2946,24 @@ const Portfolio: React.FC = () => {
                 <Text strong>Status:</Text>
               </div>
               <Badge 
-                status={marketScannerStatus.status === 'running' ? 'processing' : 'default'} 
+                status={
+                  detailedScanStatus.currentStatus === 'scanning' ? 'processing' :
+                  detailedScanStatus.currentStatus === 'completed' ? 'success' :
+                  detailedScanStatus.currentStatus === 'error' ? 'error' :
+                  detailedScanStatus.currentStatus === 'stopped' ? 'warning' : 'default'
+                } 
                 text={
                   <Text strong style={{ 
-                    color: marketScannerStatus.status === 'running' ? '#52c41a' : '#8c8c8c' 
+                    color: detailedScanStatus.currentStatus === 'scanning' ? '#52c41a' :
+                           detailedScanStatus.currentStatus === 'completed' ? '#1890ff' :
+                           detailedScanStatus.currentStatus === 'error' ? '#ff4d4f' :
+                           detailedScanStatus.currentStatus === 'stopped' ? '#faad14' : '#8c8c8c'
                   }}>
-                    {marketScannerStatus.status === 'running' ? 'SCANNING' : 'STOPPED'}
+                    {detailedScanStatus.currentStatus === 'scanning' ? 'SCANNING' :
+                     detailedScanStatus.currentStatus === 'waiting_next_scan' ? 'WAITING' :
+                     detailedScanStatus.currentStatus === 'completed' ? 'COMPLETED' :
+                     detailedScanStatus.currentStatus === 'error' ? 'ERROR' :
+                     detailedScanStatus.currentStatus === 'stopped' ? 'STOPPED' : 'IDLE'}
                   </Text>
                 }
               />
@@ -2663,8 +2974,8 @@ const Portfolio: React.FC = () => {
                 <Text strong>Last Scan:</Text>
               </div>
               <Text type="secondary">
-                {marketScannerStatus.lastScanTime 
-                  ? new Date(marketScannerStatus.lastScanTime).toLocaleString() 
+                {detailedScanStatus.lastScanAt 
+                  ? `${formatTimeDisplay(detailedScanStatus.lastScanAt)}` 
                   : 'Never'}
               </Text>
             </Col>
@@ -2674,8 +2985,8 @@ const Portfolio: React.FC = () => {
                 <Text strong>Next Scan:</Text>
               </div>
               <Text type="secondary">
-                {marketScannerStatus.nextScanTime 
-                  ? new Date(marketScannerStatus.nextScanTime).toLocaleString() 
+                {detailedScanStatus.nextScanAt 
+                  ? `${formatTimeDisplay(detailedScanStatus.nextScanAt)}` 
                   : 'Not scheduled'}
               </Text>
             </Col>
@@ -2685,32 +2996,69 @@ const Portfolio: React.FC = () => {
                 <Text strong>Progress:</Text>
               </div>
               <Text type="secondary">
-                {marketScannerStatus.status === 'running' 
-                  ? `${marketScannerStatus.scannedSymbols}/${marketScannerStatus.totalSymbols} symbols` 
-                  : 'Idle'}
+                {detailedScanStatus.currentStatus === 'scanning' 
+                  ? `${detailedScanStatus.processedCount}/${detailedScanStatus.totalCount} symbols (${detailedScanStatus.percent}%)` 
+                  : detailedScanStatus.currentStatus === 'completed' ? 'Completed' :
+                    detailedScanStatus.currentStatus === 'stopped' ? 'Stopped' : 'Idle'}
               </Text>
             </Col>
           </Row>
           
-          {marketScannerStatus.status === 'running' && (
+          {(marketScannerStatus.status === 'running' || detailedScanStatus.currentStatus === 'scanning') && (
             <div style={{ marginBottom: '16px' }}>
+              {/* 状态标题 */}
+              <div style={{ 
+                fontSize: '12px', 
+                fontWeight: '600', 
+                color: '#333', 
+                marginBottom: '4px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center'
+              }}>
+                <span>
+                  {detailedScanStatus.currentStatus === 'scanning' ? 'SCANNING' : 
+                   detailedScanStatus.currentStatus === 'stopped' ? 'STOPPED' :
+                   detailedScanStatus.currentStatus === 'completed' ? 'COMPLETED' :
+                   detailedScanStatus.currentStatus === 'error' ? 'ERROR' : 'WAITING'}
+                </span>
+                <span style={{ color: '#666', fontWeight: 'normal' }}>
+                  {detailedScanStatus.percent}% complete
+                </span>
+              </div>
+              
+              {/* 进度条 */}
               <Progress 
-                percent={marketScannerStatus.progress} 
+                percent={detailedScanStatus.percent} 
                 size="small" 
-                status="active"
-                format={() => {
-                  const baseText = `Scanning... ${marketScannerStatus.progress}%`;
-                  if (marketScannerStatus.currentSymbol) {
-                    const statusText = marketScannerStatus.currentStatus ? ` (${marketScannerStatus.currentStatus})` : '';
-                    const batchText = marketScannerStatus.currentBatch ? ` | Batch ${marketScannerStatus.currentBatch}` : '';
-                    const progressText = marketScannerStatus.batchProgress ? ` [${marketScannerStatus.batchProgress}]` : '';
-                    const retryText = marketScannerStatus.retryAttempt > 0 ? ` | Retry ${marketScannerStatus.retryAttempt}/${marketScannerStatus.maxRetryAttempts}` : '';
-                    
-                    return `${baseText} | ${marketScannerStatus.currentSymbol}${statusText}${batchText}${progressText}${retryText}`;
-                  }
-                  return baseText;
-                }}
+                status={detailedScanStatus.currentStatus === 'scanning' ? 'active' : 
+                       detailedScanStatus.currentStatus === 'stopped' ? 'exception' :
+                       detailedScanStatus.currentStatus === 'completed' ? 'success' : 'normal'}
               />
+              
+              {/* 详细信息 */}
+              <div style={{ 
+                fontSize: '11px', 
+                color: '#666', 
+                marginTop: '4px',
+                lineHeight: '1.4'
+              }}>
+                <div>
+                  {detailedScanStatus.processedCount} / {detailedScanStatus.totalCount} symbols
+                  {detailedScanStatus.validatedCount > 0 && ` • Validated: ${detailedScanStatus.validatedCount}`}
+                  {detailedScanStatus.retryCount > 0 && ` • Retries: ${detailedScanStatus.retryCount}`}
+                </div>
+                {detailedScanStatus.activeSymbols.length > 0 && (
+                  <div style={{ marginTop: '2px' }}>
+                    Currently scanning: {detailedScanStatus.activeSymbols.join(', ')}
+                  </div>
+                )}
+                {detailedScanStatus.statusMessage && (
+                  <div style={{ marginTop: '2px', fontStyle: 'italic' }}>
+                    {detailedScanStatus.statusMessage}
+                  </div>
+                )}
+              </div>
             </div>
           )}
           
@@ -3118,7 +3466,7 @@ const Portfolio: React.FC = () => {
                       return (
                         <div>
                           <div style={{ fontSize: '11px', fontWeight: '600', color: '#333' }}>
-                            {(volume / 1000000).toFixed(1)}M
+                            {marketDataService.formatVolume(volume)}
                           </div>
                           <div style={{ 
                             fontSize: '10px', 

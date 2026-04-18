@@ -183,6 +183,34 @@ export const formatPercent = (value: number | null | undefined): string => {
 };
 
 /**
+ * Format volume with K/M/B units
+ * Rules:
+ * - < 1,000 → original value
+ * - < 1,000,000 → K (thousands)
+ * - < 1,000,000,000 → M (millions)
+ * - >= 1,000,000,000 → B (billions)
+ */
+export const formatVolume = (value: number | null | undefined): string => {
+  if (value === null || value === undefined) return '--';
+  
+  const num = Number(value);
+  if (isNaN(num)) return '--';
+  
+  // Handle negative volume (shouldn't happen, but just in case)
+  const absValue = Math.abs(num);
+  
+  if (absValue < 1000) {
+    return num.toString();
+  } else if (absValue < 1000000) {
+    return `${(num / 1000).toFixed(1)}K`;
+  } else if (absValue < 1000000000) {
+    return `${(num / 1000000).toFixed(1)}M`;
+  } else {
+    return `${(num / 1000000000).toFixed(1)}B`;
+  }
+};
+
+/**
  * Safe number conversion (returns 0 for null/undefined/NaN)
  */
 export const safeNumber = (value: any): number => {
@@ -491,6 +519,7 @@ const marketDataService = {
   // Utility functions
   formatCurrency,
   formatPercent,
+  formatVolume,
   safeNumber,
   safeToFixed,
   calculateSMA,

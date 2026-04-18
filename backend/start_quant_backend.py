@@ -10245,14 +10245,20 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
 1. 成交量状态判断 (Volume Status): 基于当前成交量、平均成交量、相对成交量，判断成交量状态为 Low / Normal / High
 
-2. 详细推理 (Detailed Reasoning): 提供详细的英文分析，必须基于具体数据：
-   - 价格变动分析: 基于具体的价格和涨跌幅数据
-   - 趋势结构分析: 基于价格走势和技术形态
-   - 动量分析: 基于近期价格变动和动能指标
-   - 成交量分析: 基于当前成交量状态和异常情况
-   - 新闻催化剂分析: 基于新闻情绪和事件影响
-   - 风险评估: 基于波动率和事件风险
-   每只股票的分析必须体现其独特性，不要使用模板化的语言。
+2. 详细推理 (Detailed Reasoning): 提供一段自然流畅的英文分析（3-5句），用于详情面板显示。必须：
+   - 不要使用固定的小标题模板（如"Price Movement Analysis:"、"Trend Structure Analysis:"等）
+   - 写成一段连贯的文字，不要分段标题
+   - 基于具体数据，但用自然语言表达
+   - 每只股票的分析必须体现其独特性，不要使用模板化的语言
+   - 必须包含以下要素（但要用自然方式融入）：
+     * 价格走势和日内位置（如"trading in the upper half of today's range"）
+     * 成交量参与度（如"about 1.4x its recent average volume"）
+     * 价格结构评估（如"constructive price structure"或"holding above recent range support"）
+     * 新闻情绪影响
+     * 风险评估和原因解释
+   - 结论不要说太满：如果没有非常明确的历史区间/突破证据，不要写"clear upward trajectory"或"breaking above recent consolidation levels"
+   - 使用更自然的表达：把"62.27% position"改成"trading in the upper half of today's range"，把"1.4x relative multiple"改成"about 1.4x its recent average volume"
+   - 必须解释风险等级的原因：如果是Medium，要解释为什么不是Low（如"positive news helps sentiment, but event-driven headlines can still increase short-term volatility"）
 
 3. 简洁推理 (Concise Reasoning): 提供简洁的英文摘要（1-2行），用于主表显示。必须包含：
    - 主要趋势方向
@@ -10277,7 +10283,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
 7. 简洁推理: 用于主表显示的简短分析
 
-8. 详细推理: 用于详情面板的详细分析
+8. 详细推理: 用于详情面板的详细分析（必须是一段自然流畅的3-5句文字）
 
 
 
@@ -10413,7 +10419,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                     
 
-                    # 确保所有V2字段都存在
+                    # 确保所有V2字段都存在 - 全部改为空值
 
                     for field in required_fields_v2:
 
@@ -10421,31 +10427,31 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                             if field == 'trendLabel':
 
-                                analysis_result[field] = 'Neutral'
+                                analysis_result[field] = None  # 改为空值
 
                             elif field in ['overallScore', 'trendScore', 'momentumScore', 'volumeScore', 'volatilityScore', 'structureScore', 'newsScore']:
 
-                                analysis_result[field] = 50
+                                analysis_result[field] = None  # 改为空值
 
                             elif field == 'confidence':
 
-                                analysis_result[field] = 0.5
+                                analysis_result[field] = None  # 改为空值
 
                             elif field == 'volumeStatus':
 
-                                analysis_result[field] = 'Normal'
+                                analysis_result[field] = None  # 改为空值
 
                             elif field == 'eventRisk':
 
-                                analysis_result[field] = 'Low'
+                                analysis_result[field] = None  # 改为空值
 
                             elif field == 'conciseReasoning':
 
-                                analysis_result[field] = 'AI analysis completed'
+                                analysis_result[field] = None  # 改为空值
 
                             elif field == 'detailedReasoning':
 
-                                analysis_result[field] = 'AI analysis completed'
+                                analysis_result[field] = None  # 改为空值
 
                     
 
@@ -10453,7 +10459,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                     if 'scannerReason' not in analysis_result:
 
-                        analysis_result['scannerReason'] = analysis_result.get('conciseReasoning', 'AI analysis completed')
+                        analysis_result['scannerReason'] = analysis_result.get('conciseReasoning')  # 不提供默认值
 
                     
 
@@ -10461,7 +10467,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                     if 'aiReasoning' not in analysis_result:
 
-                        analysis_result['aiReasoning'] = analysis_result.get('detailedReasoning', 'AI analysis completed')
+                        analysis_result['aiReasoning'] = analysis_result.get('detailedReasoning')  # 不提供默认值
 
                 else:
 
@@ -10477,55 +10483,53 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                             if field == 'trendLabel':
 
-                                analysis_result[field] = 'Neutral'
+                                analysis_result[field] = None  # 改为空值
 
                             elif field == 'trendScore':
 
-                                analysis_result[field] = 50
+                                analysis_result[field] = None  # 改为空值
 
                             elif field == 'trendConfidence':
 
-                                analysis_result[field] = 0.5
+                                analysis_result[field] = None  # 改为空值
 
                             elif field == 'scannerReason':
 
-                                analysis_result[field] = 'AI analysis completed'
+                                analysis_result[field] = None  # 改为空值
 
                     
 
-                    # 为V1格式添加缺失的V2字段
+                    # 为V1格式添加缺失的V2字段 - 全部改为空值
 
-                    analysis_result['overallScore'] = analysis_result.get('trendScore', 50)
+                    analysis_result['overallScore'] = analysis_result.get('trendScore')  # 不提供默认值
 
-                    analysis_result['confidence'] = analysis_result.get('trendConfidence', 0.5)
+                    analysis_result['confidence'] = analysis_result.get('trendConfidence')  # 不提供默认值
 
-                    analysis_result['volumeStatus'] = 'Normal'  # 默认正常成交量
+                    analysis_result['volumeStatus'] = None  # 改为空值
 
-                    analysis_result['eventRisk'] = 'Medium'  # 默认中等风险
+                    analysis_result['eventRisk'] = None  # 改为空值
 
-                    analysis_result['conciseReasoning'] = analysis_result.get('scannerReason', 'AI analysis completed')
+                    analysis_result['conciseReasoning'] = analysis_result.get('scannerReason')  # 不提供默认值
 
-                    analysis_result['detailedReasoning'] = analysis_result.get('scannerReason', 'AI analysis completed')
+                    analysis_result['detailedReasoning'] = analysis_result.get('scannerReason')  # 不提供默认值
 
-                    analysis_result['aiReasoning'] = analysis_result.get('scannerReason', 'AI analysis completed')
+                    analysis_result['aiReasoning'] = analysis_result.get('scannerReason')  # 不提供默认值
 
                     
 
-                    # 为6维度分数设置默认值（基于总体分数）
+                    # 为6维度分数设置空值
 
-                    base_score = analysis_result.get('trendScore', 50)
+                    analysis_result['trendScore'] = analysis_result.get('trendScore')  # 保持原值或None
 
-                    analysis_result['trendScore'] = base_score
+                    analysis_result['momentumScore'] = None  # 空值
 
-                    analysis_result['momentumScore'] = base_score
+                    analysis_result['volumeScore'] = None  # 空值
 
-                    analysis_result['volumeScore'] = base_score
+                    analysis_result['volatilityScore'] = None  # 空值
 
-                    analysis_result['volatilityScore'] = base_score
+                    analysis_result['structureScore'] = None  # 空值
 
-                    analysis_result['structureScore'] = base_score
-
-                    analysis_result['newsScore'] = base_score
+                    analysis_result['newsScore'] = None  # 空值
 
                 
 
@@ -17895,7 +17899,8 @@ def ai_analyze_single():
                 headline = headlines[0]
                 return {
                     'title': headline.get('headline', 'No title available'),
-                    'source': headline.get('source', 'Unknown'),
+                    'source': 'Finnhub',  # 数据源
+                    'publisher': headline.get('source', 'Unknown'),  # 新闻发布者
                     'published': headline.get('time'),
                     'url': headline.get('url', ''),
                     'summary': ''  # 可以从rawNews中获取摘要
@@ -17905,7 +17910,8 @@ def ai_analyze_single():
                 news = raw_news[0]
                 return {
                     'title': news.get('headline', 'No title available'),
-                    'source': news.get('source', 'Unknown'),
+                    'source': 'Finnhub',  # 数据源
+                    'publisher': news.get('source', 'Unknown'),  # 新闻发布者
                     'published': news.get('datetime'),
                     'url': news.get('url', ''),
                     'summary': news.get('summary', '')[:200]  # 限制摘要长度
@@ -17914,7 +17920,8 @@ def ai_analyze_single():
             elif news_data.get('topCatalyst'):
                 return {
                     'title': news_data.get('topCatalyst'),
-                    'source': news_data.get('newsSource', 'Finnhub'),
+                    'source': news_data.get('newsSource', 'Finnhub'),  # 数据源
+                    'publisher': 'Unknown',  # 新闻发布者未知
                     'published': None,
                     'url': '',
                     'summary': ''
@@ -18317,7 +18324,7 @@ def ai_analyze_single():
 
                     'news': 'finnhub' if news_data else 'none',
 
-                    'aiAnalysis': 'failed'  # AI分析失败
+                    'aiAnalysis': 'AI Failed'  # AI分析失败，明确标记
 
                 },
 
@@ -18458,7 +18465,7 @@ def ai_analyze_single():
 
                         'news': 'finnhub' if news_data else 'none',
 
-                        'aiAnalysis': ai_config.get('provider', 'DeepSeek').lower()
+                        'aiAnalysis': 'Local Fallback' if ai_analysis.get('analysisSource') == 'rule_based' else ai_config.get('provider', 'DeepSeek')  # 本地分析标记为Local Fallback
 
                     },
 
