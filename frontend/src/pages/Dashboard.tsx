@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { Card, Row, Col, Button, Spin, Alert, Empty, Tag, Typography, Space, Progress } from 'antd';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Card, Row, Col, Button, Spin, Alert, Empty, Tag, Typography, Space } from 'antd';
 import { ReloadOutlined, DashboardOutlined, RiseOutlined, FallOutlined, LineChartOutlined, EyeOutlined, PieChartOutlined, BarChartOutlined, ClockCircleOutlined, DatabaseOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { StockData, formatCurrency, safeNumber, safeToFixed } from '../services/marketDataService';
+import { StockData, safeNumber, safeToFixed } from '../services/marketDataService';
 import { sharedDataService } from '../services/sharedDataService';
 import DataSourceBadge from '../components/DataSourceBadge';
 
