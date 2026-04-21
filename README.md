@@ -1,6 +1,6 @@
 # Professional Quantitative Trading Platform
 
-![Version](https://img.shields.io/badge/version-1.7.0-blue)
+![Version](https://img.shields.io/badge/version-1.8.1-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
 ![React](https://img.shields.io/badge/react-18.2.0-blue)
@@ -9,6 +9,13 @@
 A modern, full-featured quantitative trading platform with real-time market data, backtesting engine, AI-powered trading signals, and portfolio management. Built with React/TypeScript frontend and Python/Flask backend.
 
 ## ✨ Features
+
+### 🆕 Version 1.8.1 Highlights
+- **AI-Powered Continue Scan**: Enhanced market scanner with AI-driven candidate selection
+- **Improved UI/UX**: Streamlined continue scan interface with progress tracking
+- **Better AI Integration**: Direct AI decision-making for candidate inclusion
+- **Enhanced Transparency**: Clear display of AI vs rule-based selections
+- **Performance Optimizations**: Faster processing and better error handling
 
 ### 📈 Market Data & Analysis
 - **Real-time Stock Quotes**: Multiple data sources (Finnhub, Alpaca, Yahoo Finance)
