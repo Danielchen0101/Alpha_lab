@@ -1,0 +1,176 @@
+{
+  "test_time": "2026-04-16T20:22:23.469485",
+  "backend_url": "http://127.0.0.1:8890",
+  "total_symbols": 15,
+  "success_count": 11,
+  "empty_count": 4,
+  "empty_symbols": [
+    "INVALID",
+    "TEST123",
+    "XYZ",
+    "TIMEOUT"
+  ],
+  "failure_stages": {
+    "symbol_validation": 3,
+    "timeout": 1
+  },
+  "detailed_results": [
+    {
+      "symbol": "AAPL",
+      "success": true,
+      "trendLabel": "Bullish",
+      "overallScore": 80,
+      "aiReasoning": "AI analysis for AAPL: Strong fundamentals and positive momentum.",
+      "duration": 0.5055181980133057,
+      "is_empty": false,
+      "error": null,
+      "error_stage": null
+    },
+    {
+      "symbol": "MSFT",
+      "success": true,
+      "trendLabel": "Bullish",
+      "overallScore": 80,
+      "aiReasoning": "AI analysis for MSFT: Strong fundamentals and positive momentum.",
+      "duration": 0.5207183361053467,
+      "is_empty": false,
+      "error": null,
+      "error_stage": null
+    },
+    {
+      "symbol": "GOOGL",
+      "success": true,
+      "trendLabel": "Bullish",
+      "overallScore": 80,
+      "aiReasoning": "AI analysis for GOOGL: Strong fundamentals and positive momentum.",
+      "duration": 0.5050427913665771,
+      "is_empty": false,
+      "error": null,
+      "error_stage": null
+    },
+    {
+      "symbol": "TSLA",
+      "success": true,
+      "trendLabel": "Neutral",
+      "overallScore": 60,
+      "aiReasoning": "AI analysis for TSLA: Strong fundamentals and positive momentum.",
+      "duration": 0.5048329830169678,
+      "is_empty": false,
+      "error": null,
+      "error_stage": null
+    },
+    {
+      "symbol": "NVDA",
+      "success": true,
+      "trendLabel": "Neutral",
+      "overallScore": 60,
+      "aiReasoning": "AI analysis for NVDA: Strong fundamentals and positive momentum.",
+      "duration": 0.5043318271636963,
+      "is_empty": false,
+      "error": null,
+      "error_stage": null
+    },
+    {
+      "symbol": "AMZN",
+      "success": true,
+      "trendLabel": "Neutral",
+      "overallScore": 60,
+      "aiReasoning": "AI analysis for AMZN: Strong fundamentals and positive momentum.",
+      "duration": 0.5285367965698242,
+      "is_empty": false,
+      "error": null,
+      "error_stage": null
+    },
+    {
+      "symbol": "META",
+      "success": true,
+      "trendLabel": "Neutral",
+      "overallScore": 60,
+      "aiReasoning": "AI analysis for META: Strong fundamentals and positive momentum.",
+      "duration": 0.51971435546875,
+      "is_empty": false,
+      "error": null,
+      "error_stage": null
+    },
+    {
+      "symbol": "JPM",
+      "success": true,
+      "trendLabel": "Neutral",
+      "overallScore": 60,
+      "aiReasoning": "AI analysis for JPM: Strong fundamentals and positive momentum.",
+      "duration": 0.5164492130279541,
+      "is_empty": false,
+      "error": null,
+      "error_stage": null
+    },
+    {
+      "symbol": "JNJ",
+      "success": true,
+      "trendLabel": "Neutral",
+      "overallScore": 60,
+      "aiReasoning": "AI analysis for JNJ: Strong fundamentals and positive momentum.",
+      "duration": 0.5044651031494141,
+      "is_empty": false,
+      "error": null,
+      "error_stage": null
+    },
+    {
+      "symbol": "V",
+      "success": true,
+      "trendLabel": "Neutral",
+      "overallScore": 60,
+      "aiReasoning": "AI analysis for V: Strong fundamentals and positive momentum.",
+      "duration": 0.5192453861236572,
+      "is_empty": false,
+      "error": null,
+      "error_stage": null
+    },
+    {
+      "symbol": "INVALID",
+      "success": false,
+      "trendLabel": null,
+      "duration": 0.01977825164794922,
+      "is_empty": true,
+      "error": "Invalid symbol: INVALID",
+      "error_stage": "symbol_validation"
+    },
+    {
+      "symbol": "TEST123",
+      "success": false,
+      "trendLabel": null,
+      "duration": 0.0041351318359375,
+      "is_empty": true,
+      "error": "Invalid symbol: TEST123",
+      "error_stage": "symbol_validation"
+    },
+    {
+      "symbol": "XYZ",
+      "success": false,
+      "trendLabel": null,
+      "duration": 0.0171201229095459,
+      "is_empty": true,
+      "error": "Invalid symbol: XYZ",
+      "error_stage": "symbol_validation"
+    },
+    {
+      "symbol": "SLOW",
+      "success": true,
+      "trendLabel": "Neutral",
+      "overallScore": 60,
+      "aiReasoning": "AI analysis for SLOW: Strong fundamentals and positive momentum.",
+      "duration": 2.0234463214874268,
+      "is_empty": false,
+      "error": null,
+      "error_stage": null
+    },
+    {
+      "symbol": "TIMEOUT",
+      "success": false,
+      "trendLabel": null,
+      "duration": 10,
+      "is_empty": true,
+      "error": "请求超时 (10秒)",
+      "error_stage": "timeout"
+    }
+  ]
+}

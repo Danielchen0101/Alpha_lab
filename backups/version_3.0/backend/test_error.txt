@@ -1,0 +1,45 @@
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on http://127.0.0.1:8889
+Press CTRL+C to quit
+127.0.0.1 - - [26/Mar/2026 03:12:28] "GET /api/backtest/history HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:12:28] "GET /api/backtest/history HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:12:37] "GET /api/market/stocks HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:12:48] "GET /api/market/stock/AAPL HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:12:48] "GET /api/market/stock/AAPL HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:12:48] "GET /api/market/history/AAPL?interval=D&range=2month HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:12:49] "GET /api/market/history/AAPL?interval=D&range=2month HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:12:49] "GET /api/market/history/AAPL?interval=D&range=2month HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:12:50] "GET /api/market/history/AAPL?interval=D&range=2month HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:12:53] "GET /api/market/history/AAPL?interval=1min&range=1day HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:12:57] "GET /api/market/stocks?symbols=ADBE,AAPL,AMD,AMZN,GOOGL HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:12:57] "GET /api/market/stocks?symbols=ADBE,AAPL,AMD,AMZN,GOOGL HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:12:58] "GET /api/market/stocks?symbols=ADBE,AAPL,AMD,AMZN,GOOGL HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:12:58] "GET /api/market/stocks?symbols=ADBE,AAPL,AMD,AMZN,GOOGL HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:12:58] "GET /api/market/stocks?symbols=ADBE,AAPL,AMD,AMZN,GOOGL HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:12:58] "GET /api/market/stocks?symbols=ADBE,AAPL,AMD,AMZN,GOOGL HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:12:58] "GET /api/market/stocks?symbols=ADBE,AAPL,AMD,AMZN,GOOGL HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:12:58] "GET /api/market/stock/ADBE HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:12:59] "GET /api/market/stock/ADBE HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:12:59] "GET /api/market/history/ADBE?interval=D&range=2month HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:13:00] "GET /api/market/history/ADBE?interval=D&range=2month HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:13:00] "GET /api/market/history/ADBE?interval=D&range=2month HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:13:01] "GET /api/market/stocks HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:13:01] "GET /api/market/history/ADBE?interval=D&range=2month HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:13:04] "GET /api/backtest/history HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:13:05] "GET /api/backtest/history HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:13:09] "POST /api/backtest/run HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:13:10] "GET /api/backtest/history HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:13:25] "POST /api/backtest/run HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:13:25] "GET /api/backtest/history HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:13:33] "POST /api/backtest/run HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:13:34] "GET /api/backtest/history HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:13:41] "POST /api/backtest/run HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:13:41] "GET /api/backtest/history HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:13:57] "POST /api/backtest/run HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:13:57] "GET /api/backtest/history HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:14:08] "POST /api/backtest/run HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:14:08] "GET /api/backtest/history HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:18:54] "GET /api/backtest/history HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:18:55] "GET /api/backtest/history HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:20:00] "POST /api/backtest/run HTTP/1.1" 200 -
+127.0.0.1 - - [26/Mar/2026 03:20:00] "GET /api/backtest/history HTTP/1.1" 200 -

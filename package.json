@@ -1,0 +1,45 @@
+{
+  "name": "professional-quant-platform",
+  "version": "1.8.1",
+  "description": "专业量化交易平台 - 全栈AI驱动交易系统",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "start": "concurrently \"npm run start:backend\" \"npm run start:frontend\"",
+    "start:frontend": "cd frontend && npm start",
+    "start:backend": "cd backend && python app.py",
+    "build": "cd frontend && npm run build",
+    "test": "echo \"Running tests...\"",
+    "docker:build": "docker-compose build",
+    "docker:up": "docker-compose up",
+    "docker:down": "docker-compose down"
+  },
+  "dependencies": {
+    "lightweight-charts": "^5.1.0"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "keywords": [
+    "quantitative-trading",
+    "ai-trading",
+    "stock-analysis",
+    "algorithmic-trading",
+    "react",
+    "python",
+    "flask"
+  ],
+  "author": "Quant Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Danielchen0101/quant_platform.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Danielchen0101/quant_platform/issues"
+  },
+  "homepage": "https://github.com/Danielchen0101/quant_platform#readme"
+}

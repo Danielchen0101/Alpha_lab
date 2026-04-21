@@ -1,0 +1,18 @@
+﻿
+> quant-dashboard@1.7.0 build
+> react-scripts build
+
+Creating an optimized production build...
+Failed to compile.
+
+TS2322: Type '() => void' is not assignable to type 'FC<{}>'.
+  Type 'void' is not assignable to type 'ReactElement<any, any> | null'.
+  [0m [90m 117 |[39m }
+   [90m 118 |[39m
+  [31m[1m>[22m[39m[90m 119 |[39m [36mconst[39m [33mPortfolio[39m[33m:[39m [33mReact[39m[33m.[39m[33mFC[39m [33m=[39m () [33m=>[39m {
+   [90m     |[39m       [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+   [90m 120 |[39m   [90m// AI Agent 鐘舵€?- Step 2: 鍙仛 UI锛屼笉鎺ョ湡瀹為€昏緫[39m
+   [90m 121 |[39m   [36mconst[39m [aiConfig[33m,[39m setAiConfig] [33m=[39m useState({
+   [90m 122 |[39m     apiKey[33m:[39m [32m''[39m[33m,[39m[0m
+
+

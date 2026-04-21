@@ -1,0 +1,341 @@
+// 简化的参数优化页面修复版本
+// 只包含基本功能，修复了语法错误
+
+import React, { useState } from 'react';
+import { Form, Input, Button, Card, Row, Col, InputNumber, Select, Table, message } from 'antd';
+import { RocketOutlined, PlayCircleOutlined, DownloadOutlined } from '@ant-design/icons';
+import { useLanguage } from '../contexts/LanguageContext';
+import { backtraderAPI } from '../services/api';
+
+const { Option } = Select;
+
+const ParameterOptimization: React.FC = () => {
+  const { t } = useLanguage();
+  const [form] = Form.useForm();
+  const [loading, setLoading] = useState(false);
+  const [optimizationResults, setOptimizationResults] = useState<any[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  // 策略选项
+  const strategyOptions = [
+    { value: 'moving_average', label: 'Moving Average Crossover' },
+    { value: 'rsi', label: 'RSI Strategy' },
+    { value: 'macd', label: 'MACD Strategy' },
+    { value: 'bollinger', label: 'Bollinger Bands' },
+    { value: 'momentum', label: 'Momentum Strategy' },
+  ];
+
+  // 运行优化
+  const handleRunOptimization = async (values: any) => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      // 准备请求数据
+      const payload = {
+        symbol: values.symbol.toUpperCase(),
+        strategy: values.strategy,
+        startDate: values.startDate || '2024-01-01',
+        endDate: values.endDate || '2024-12-31',
+        initialCapital: values.initialCapital || 100000,
+      };
+
+      // 根据策略添加参数
+      if (values.strategy === 'moving_average') {
+        payload.shortMaRange = {
+          start: values.shortMaStart || 5,
+          end: values.shortMaEnd || 50,
+          step: values.shortMaStep || 5
+        };
+        payload.longMaRange = {
+          start: values.longMaStart || 50,
+          end: values.longMaEnd || 200,
+          step: values.longMaStep || 25
+        };
+      } else if (values.strategy === 'rsi') {
+        payload.rsiPeriodRange = {
+          start: values.rsiPeriodStart || 10,
+          end: values.rsiPeriodEnd || 30,
+          step: values.rsiPeriodStep || 2
+        };
+        payload.oversoldRange = {
+          start: values.oversoldStart || 20,
+          end: values.oversoldEnd || 40,
+          step: values.oversoldStep || 5
+        };
+        payload.overboughtRange = {
+          start: values.overboughtStart || 60,
+          end: values.overboughtEnd || 80,
+          step: values.overboughtStep || 5
+        };
+      } else if (values.strategy === 'macd') {
+        payload.fastRange = {
+          start: values.fastStart || 8,
+          end: values.fastEnd || 20,
+          step: values.fastStep || 2
+        };
+        payload.slowRange = {
+          start: values.slowStart || 21,
+          end: values.slowEnd || 35,
+          step: values.slowStep || 3
+        };
+        payload.signalRange = {
+          start: values.signalStart || 5,
+          end: values.signalEnd || 15,
+          step: values.signalStep || 2
+        };
+      } else if (values.strategy === 'bollinger') {
+        payload.periodRange = {
+          start: values.periodStart || 10,
+          end: values.periodEnd || 30,
+          step: values.periodStep || 2
+        };
+        payload.stdDevRange = {
+          start: values.stdDevStart || 1.5,
+          end: values.stdDevEnd || 3.0,
+          step: values.stdDevStep || 0.5
+        };
+      } else if (values.strategy === 'momentum') {
+        payload.momentumPeriodRange = {
+          start: values.momentumPeriodStart || 5,
+          end: values.momentumPeriodEnd || 30,
+          step: values.momentumPeriodStep || 5
+        };
+      }
+
+      console.log('Sending optimization request:', payload);
+      
+      // 调用API
+      const response = await backtraderAPI.runParameterOptimization(payload);
+      
+      if (response.data.success) {
+        setOptimizationResults(response.data.results || []);
+        message.success(`优化完成，找到 ${response.data.results?.length || 0} 个结果`);
+      } else {
+        setError(response.data.error || '优化失败');
+      }
+    } catch (err: any) {
+      console.error('Optimization error:', err);
+      setError(err.response?.data?.error || err.message || '请求失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 渲染策略参数
+  const renderStrategyParameters = () => {
+    const strategy = form.getFieldValue('strategy') || 'moving_average';
+    
+    switch (strategy) {
+      case 'moving_average':
+        return (
+          <>
+            {/* Short MA Parameters */}
+            <div style={{ marginBottom: '20px', padding: '20px', background: '#fafbff', borderRadius: '8px' }}>
+              <h4>Short MA Parameters</h4>
+              <Row gutter={16}>
+                <Col span={8}>
+                  <Form.Item label="Start" name="shortMaStart" initialValue={5}>
+                    <InputNumber min={1} max={200} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item label="End" name="shortMaEnd" initialValue={50}>
+                    <InputNumber min={1} max={200} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item label="Step" name="shortMaStep" initialValue={5}>
+                    <InputNumber min={1} max={50} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+              </Row>
+            </div>
+
+            {/* Long MA Parameters */}
+            <div style={{ marginBottom: '20px', padding: '20px', background: '#f6ffed', borderRadius: '8px' }}>
+              <h4>Long MA Parameters</h4>
+              <Row gutter={16}>
+                <Col span={8}>
+                  <Form.Item label="Start" name="longMaStart" initialValue={50}>
+                    <InputNumber min={1} max={300} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item label="End" name="longMaEnd" initialValue={200}>
+                    <InputNumber min={1} max={300} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item label="Step" name="longMaStep" initialValue={25}>
+                    <InputNumber min={1} max={100} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+              </Row>
+            </div>
+          </>
+        );
+
+      case 'rsi':
+        return (
+          <>
+            {/* RSI Period Parameters */}
+            <div style={{ marginBottom: '20px', padding: '20px', background: '#fff7e6', borderRadius: '8px' }}>
+              <h4>RSI Period Parameters</h4>
+              <Row gutter={16}>
+                <Col span={8}>
+                  <Form.Item label="Start" name="rsiPeriodStart" initialValue={10}>
+                    <InputNumber min={5} max={50} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item label="End" name="rsiPeriodEnd" initialValue={30}>
+                    <InputNumber min={5} max={50} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item label="Step" name="rsiPeriodStep" initialValue={2}>
+                    <InputNumber min={1} max={10} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+              </Row>
+            </div>
+
+            {/* Oversold Level Parameters */}
+            <div style={{ marginBottom: '20px', padding: '20px', background: '#f6ffed', borderRadius: '8px' }}>
+              <h4>Oversold Level Parameters</h4>
+              <Row gutter={16}>
+                <Col span={8}>
+                  <Form.Item label="Start" name="oversoldStart" initialValue={20}>
+                    <InputNumber min={10} max={50} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item label="End" name="oversoldEnd" initialValue={40}>
+                    <InputNumber min={10} max={50} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item label="Step" name="oversoldStep" initialValue={5}>
+                    <InputNumber min={1} max={10} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+              </Row>
+            </div>
+
+            {/* Overbought Level Parameters */}
+            <div style={{ marginBottom: '20px', padding: '20px', background: '#fff1f0', borderRadius: '8px' }}>
+              <h4>Overbought Level Parameters</h4>
+              <Row gutter={16}>
+                <Col span={8}>
+                  <Form.Item label="Start" name="overboughtStart" initialValue={60}>
+                    <InputNumber min={50} max={90} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item label="End" name="overboughtEnd" initialValue={80}>
+                    <InputNumber min={50} max={90} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item label="Step" name="overboughtStep" initialValue={5}>
+                    <InputNumber min={1} max={10} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+              </Row>
+            </div>
+          </>
+        );
+
+      // 其他策略的简化版本...
+      default:
+        return <div>选择策略以查看参数</div>;
+    }
+  };
+
+  // 结果表格列定义
+  const columns = [
+    { title: 'Rank', dataIndex: 'rank', key: 'rank' },
+    { title: 'Strategy', dataIndex: 'strategy', key: 'strategy' },
+    { title: 'Total Return (%)', dataIndex: 'totalReturn', key: 'totalReturn' },
+    { title: 'Sharpe Ratio', dataIndex: 'sharpeRatio', key: 'sharpeRatio' },
+    { title: 'Max Drawdown (%)', dataIndex: 'maxDrawdown', key: 'maxDrawdown' },
+  ];
+
+  return (
+    <div style={{ padding: '20px', maxWidth: '1200px', margin: '0 auto' }}>
+      <h1><RocketOutlined /> 参数优化</h1>
+      
+      {error && <div style={{ color: 'red', marginBottom: '20px' }}>错误: {error}</div>}
+
+      <Card style={{ marginBottom: '20px' }}>
+        <Form form={form} layout="vertical" onFinish={handleRunOptimization}>
+          {/* 基本配置 */}
+          <Row gutter={16}>
+            <Col span={6}>
+              <Form.Item label="股票代码" name="symbol" initialValue="AAPL" rules={[{ required: true }]}>
+                <Input placeholder="例如: AAPL" />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item label="策略" name="strategy" initialValue="moving_average" rules={[{ required: true }]}>
+                <Select>
+                  {strategyOptions.map(option => (
+                    <Option key={option.value} value={option.value}>{option.label}</Option>
+                  ))}
+                </Select>
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item label="开始日期" name="startDate" initialValue="2024-01-01">
+                <Input type="date" />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item label="结束日期" name="endDate" initialValue="2024-12-31">
+                <Input type="date" />
+              </Form.Item>
+            </Col>
+          </Row>
+
+          <Row gutter={16}>
+            <Col span={6}>
+              <Form.Item label="初始资金" name="initialCapital" initialValue={100000}>
+                <InputNumber min={1000} max={1000000} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
+
+          {/* 动态策略参数 */}
+          {renderStrategyParameters()}
+
+          {/* 提交按钮 */}
+          <Form.Item>
+            <Button type="primary" htmlType="submit" loading={loading} icon={<PlayCircleOutlined />}>
+              运行优化
+            </Button>
+          </Form.Item>
+        </Form>
+      </Card>
+
+      {/* 结果表格 */}
+      {optimizationResults.length > 0 && (
+        <Card title="优化结果">
+          <Table 
+            dataSource={optimizationResults} 
+            columns={columns} 
+            rowKey="rank"
+            pagination={{ pageSize: 10 }}
+          />
+          <div style={{ marginTop: '20px' }}>
+            <Button icon={<DownloadOutlined />} disabled={optimizationResults.length === 0}>
+              导出CSV
+            </Button>
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+};
+
+export default ParameterOptimization;

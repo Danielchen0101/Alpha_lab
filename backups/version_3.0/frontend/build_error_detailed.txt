@@ -1,0 +1,17 @@
+﻿
+> quant-dashboard@1.0.0 build
+> react-scripts build
+
+Creating an optimized production build...
+Failed to compile.
+
+TS2307: Cannot find module '../utils/paperTradingEngine' or its corresponding type declarations.
+  [0m [90m 122 |[39m   type [33mEquityHistory[39m[33m,[39m
+   [90m 123 |[39m   type [33mPriceHistory[39m[33m,[39m
+  [31m[1m>[22m[39m[90m 124 |[39m } [36mfrom[39m [32m'../utils/paperTradingEngine'[39m[33m;[39m
+   [90m     |[39m        [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+   [90m 125 |[39m
+   [90m 126 |[39m [90m// 瀵煎叆Broker Service[39m
+   [90m 127 |[39m [36mimport[39m { brokerService[33m,[39m setBrokerMode[33m,[39m getBrokerMode } [36mfrom[39m [32m'../services/brokerService'[39m[33m;[39m[0m
+
+

@@ -1,0 +1,6214 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  Card, Typography, Space, Statistic, Row, Col, 
+  Button, Divider, Table, Tag, Select, Form, Input, 
+  message, Progress, Empty, Badge, Alert, Tooltip
+} from 'antd';
+import { 
+  LineChartOutlined, BarChartOutlined,
+  SettingOutlined, PlayCircleOutlined, PauseCircleOutlined, 
+  ThunderboltOutlined, CheckCircleOutlined, ClockCircleOutlined,
+  RobotOutlined, CloseCircleOutlined, ExclamationCircleOutlined, SyncOutlined,
+  ArrowUpOutlined, ArrowDownOutlined, ArrowRightOutlined, MinusOutlined,
+  SortDescendingOutlined, SortAscendingOutlined
+} from '@ant-design/icons';
+import aiTradingService, { AIProviderConfig } from '../services/aiTradingService';
+import { backtraderAPI, marketAPI } from '../services/api';
+import api, { scannerApi } from '../services/api';
+import marketDataService from '../services/marketDataService';
+import alpacaBrokerService, { AlpacaPosition, AlpacaOrder } from '../services/alpacaBrokerService';
+
+const { Title, Text } = Typography;
+const { Option } = Select;
+
+// AI分析结果类型定义 - V3格式
+interface AIAnalysisResult {
+  // 基础字段
+  success: boolean;
+  symbol: string;
+  
+  // V1/V2兼容字段
+  trend?: string | null;
+  overallScore?: number | null;
+  confidence?: number | null;
+  trendScore?: number | null;
+  momentumScore?: number | null;
+  volumeScore?: number | null;
+  volatilityScore?: number | null;
+  structureScore?: number | null;
+  newsScore?: number | null;
+  scannerReason?: string | null;
+  aiReasoning?: string | null;
+  newsSentiment?: string | null;
+  eventRisk?: string | null;
+  topNews?: string | null;
+  companyName?: string | null;
+  sector?: string | null;
+  volumeStatus?: string | null;
+  conciseReasoning?: string | null;
+  detailedReasoning?: string | null;
+  
+  // V3增强字段
+  trendLabel?: string | null;
+  momentumLabel?: string | null;
+  volatilityLabel?: string | null;
+  volumeLabel?: 'low' | 'normal' | 'high' | null;
+  structureLabel?: 'uptrend' | 'downtrend' | 'sideways' | 'breakout' | 'high-volatility' | null;
+  newsLabel?: 'positive' | 'neutral' | 'negative' | null;
+  riskLevel?: 'low' | 'medium' | 'high' | null;
+  conciseReason?: string | null;
+  
+  // 数据源信息
+  provenance?: {
+    marketData?: string;
+    companyInfo?: string;
+    news?: string;
+    aiAnalysis?: string;
+  };
+}
+
+// 趋势分析结果类型
+interface TrendAnalysis {
+  // 核心趋势字段
+  trendLabel: string | null;
+  trendScore: number | null;
+  trendConfidence: number | null;
+  scannerReason: string | null;
+  
+  // 6维度分数
+  trendScoreDetail: number | null;
+  momentumScore: number | null;
+  volumeScore: number | null;
+  volatilityScore: number | null;
+  structureScore: number | null;
+  newsScore: number | null;
+  
+  // V2兼容字段
+  volumeStatus: string | null;
+  conciseReasoning: string | null;
+  detailedReasoning: string | null;
+  aiReasoning: string | null;
+  newsSentiment: string | null;
+  eventRisk: string | null;
+  topNews: string | null;
+  companyName: string | null;
+  sector: string | null;
+  
+  // V3字段
+  momentumLabel?: string | null;
+  volatilityLabel?: string | null;
+  volumeLabel?: 'low' | 'normal' | 'high' | null;
+  
+  // 数据来源
+  provenance?: {
+    marketData: string;
+    companyInfo: string;
+    news: string;
+    aiAnalysis: string;
+  } | null;
+  structureLabel?: 'uptrend' | 'downtrend' | 'sideways' | 'breakout' | 'high-volatility' | null;
+  newsLabel?: 'positive' | 'neutral' | 'negative' | null;
+  riskLevel?: 'low' | 'medium' | 'high' | null;
+  
+  // 新增字段（实际使用中）
+  overallScore?: number | null;
+  confidence?: number | null;
+  conciseReason?: string | null;
+}
+
+const Portfolio: React.FC = (): React.ReactElement => {
+  console.log('Portfolio component rendering');
+  // AI Agent 状态 - Step 2: 只做 UI，不接真实逻辑
+  const [aiConfig, setAiConfig] = useState({
+    apiKey: '',
+    baseUrl: 'https://api.deepseek.com',
+    model: 'deepseek-chat',
+    provider: 'DeepSeek'
+  });
+  
+  const [scanInterval, setScanInterval] = useState<string>('5');
+  // Step 5 修复：拆分为两个独立的状态
+  const [isAutoScanEnabled, setIsAutoScanEnabled] = useState(false); // 自动扫描模式是否开启
+  const isAutoScanEnabledRef = useRef(isAutoScanEnabled); // Ref to track latest value for timeout callbacks
+  
+  // Update ref when state changes
+  useEffect(() => {
+    isAutoScanEnabledRef.current = isAutoScanEnabled;
+  }, [isAutoScanEnabled]);
+  
+  const [isScanInProgress, setIsScanInProgress] = useState(false);   // 当前是否正在执行一次扫描
+  const [scanStatus, setScanStatus] = useState({
+    status: 'stopped' as 'stopped' | 'running' | 'scheduled' | 'paused',
+    lastRun: null as string | null,
+    nextRun: null as string | null,
+    progress: 0
+  });
+  
+  const [aiRecommendations, setAiRecommendations] = useState<any[]>([]);
+  const [scanErrors, setScanErrors] = useState<Array<{symbol: string, error: string, step: string}>>([]);
+  const [aiConfigForm] = Form.useForm();
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [savingConfig, setSavingConfig] = useState(false);
+  
+  // Alpaca Paper Trading 真实账户状态
+  const [alpacaOrders, setAlpacaOrders] = useState<any[]>([]);
+  
+  // Market Scanner 状态
+  const [marketScannerStatus, setMarketScannerStatus] = useState({
+    status: 'stopped' as 'stopped' | 'running' | 'scheduled',
+    lastScanTime: null as string | null,
+    nextScanTime: null as string | null,
+    progress: 0,
+    totalSymbols: 0,
+    scannedSymbols: 0,
+    // 新增字段用于详细进度显示
+    currentSymbol: null as string | null,
+    currentStatus: null as 'initializing' | 'scanning' | 'retrying' | 'validating' | 'validated' | 'queued' | 'queued_for_retry' | 'rendering' | 'completed' | 'failed' | 'error' | 'idle' | 'stopped' | null,
+    currentBatch: null as number | null,
+    batchProgress: null as string | null,
+    retryAttempt: 0,
+    maxRetryAttempts: 3
+  });
+  const [marketScannerResults, setMarketScannerResults] = useState<any[]>([]);
+  
+  // Preferred Continue Scan List 状态
+  const [continueScanStatus, setContinueScanStatus] = useState<'idle' | 'processing' | 'completed' | 'error'>('idle');
+  console.log('continueScanStatus defined');
+  const [continueScanProgress, setContinueScanProgress] = useState(0);
+  const [preferredContinueScanList, setPreferredContinueScanList] = useState<any[]>([]);
+  
+  // Continue Scan 进度详情
+  const [continueScanDetails, setContinueScanDetails] = useState({
+    currentStage: '' as string,
+    startTime: null as number | null,
+    estimatedTimeRemaining: null as number | null,
+    processedCount: 0,
+    totalCount: 0
+  });
+  
+  // AI调用互斥控制
+  const [aiCallInProgress, setAiCallInProgress] = useState(false);
+  const aiCallInProgressRef = useRef(false);
+  
+  // 手动启动Continue Scan的函数
+  const handleStartContinueScan = () => {
+    // 检查是否满足启动条件（与按钮disabled条件保持一致）
+    const canStartContinueScan = 
+      // 1. 有market scan结果
+      marketScannerResults.length > 0 &&
+      // 2. Continue Scan处于空闲状态
+      continueScanStatus === 'idle';
+    
+    if (!canStartContinueScan) {
+      // 提供具体的错误信息
+      if (marketScannerResults.length === 0) {
+        message.warning('No market scan results available');
+      } else if (continueScanStatus !== 'idle') {
+        message.warning('Continue scan is already running or completed');
+      } else {
+        message.warning('Cannot start continue scan at this time');
+      }
+      return;
+    }
+    
+    console.log('Starting continue scan manually...');
+    
+    // 重置状态
+    setContinueScanStatus('processing');
+    setContinueScanProgress(0);
+    setPreferredContinueScanList([]);
+    setContinueScanDetails({
+      currentStage: 'Initializing...',
+      startTime: Date.now(),
+      estimatedTimeRemaining: null,
+      processedCount: 0,
+      totalCount: marketScannerResults.length
+    });
+    
+    // 开始处理
+    processContinueScan();
+  };
+  
+  // Continue Scan处理函数 - 重构为AI驱动的continue scan
+  const processContinueScan = async () => {
+    try {
+      console.log(`Starting AI-driven continue scan for ${marketScannerResults.length} market scan results...`);
+      
+      // 阶段A: 读取market scan results (10%)
+      setContinueScanProgress(10);
+      setContinueScanDetails(prev => ({
+        ...prev,
+        currentStage: 'Loading market scan results...',
+        processedCount: 0,
+        totalCount: marketScannerResults.length,
+        estimatedTimeRemaining: null
+      }));
+      
+      // 检查是否有有效的market scan结果
+      if (marketScannerResults.length === 0) {
+        setPreferredContinueScanList([]);
+        setContinueScanStatus('completed');
+        setContinueScanProgress(100);
+        setContinueScanDetails(prev => ({
+          ...prev,
+          currentStage: 'No market scan results available',
+          estimatedTimeRemaining: 0
+        }));
+        console.log('No market scan results available for continue scan');
+        return;
+      }
+      
+      // 阶段B: 准备候选数据 (20%)
+      setContinueScanProgress(30);
+      setContinueScanDetails(prev => ({
+        ...prev,
+        currentStage: 'Preparing candidates for AI evaluation...'
+      }));
+      
+      // 准备所有候选的上下文数据
+      const allCandidates = marketScannerResults.map(candidate => ({
+        symbol: candidate.symbol || 'N/A',
+        trend: candidate.trendLabel || 'Neutral',
+        score: candidate.overallScore || candidate.trendScore || 0,
+        risk: candidate.eventRisk || 'Medium',
+        sector: candidate.sector || 'Unknown',
+        priceChange: candidate.changePct || 0,
+        volumeStatus: candidate.volumeStatus || 'Normal',
+        newsSentiment: candidate.newsSentiment || 'Neutral',
+        companyName: candidate.companyName || '',
+        marketCap: candidate.marketCap || 0,
+        // 保留原始数据用于显示
+        originalData: candidate
+      }));
+      
+      console.log(`Prepared ${allCandidates.length} candidates for AI evaluation`);
+      
+      // 阶段C: AI评估所有候选 (50%)
+      setContinueScanProgress(50);
+      setContinueScanDetails(prev => ({
+        ...prev,
+        currentStage: 'AI evaluating candidates...',
+        estimatedTimeRemaining: null
+      }));
+      
+      // 设置AI调用状态
+      setAiCallInProgress(true);
+      
+      // 批量处理候选
+      const batchSize = 3; // 减小批量大小以确保稳定性
+      const batches = [];
+      for (let i = 0; i < allCandidates.length; i += batchSize) {
+        batches.push(allCandidates.slice(i, i + batchSize));
+      }
+      
+      const aiEvaluatedCandidates: any[] = [];
+      
+      for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+        const batch = batches[batchIndex];
+        
+        // 更新进度
+        const batchProgress = Math.round(((batchIndex * batchSize) / allCandidates.length) * 100);
+        setContinueScanProgress(50 + Math.round(batchProgress * 0.4)); // 50% - 90%
+        setContinueScanDetails(prev => ({
+          ...prev,
+          currentStage: `AI evaluating: batch ${batchIndex + 1}/${batches.length}`,
+          processedCount: batchIndex * batchSize,
+          estimatedTimeRemaining: null
+        }));
+        
+        // 检查是否有新的Market Scan开始
+        if (detailedScanStatus.currentStatus === 'scanning') {
+          console.log('New market scan started, aborting continue scan');
+          setContinueScanStatus('error');
+          setContinueScanProgress(0);
+          setContinueScanDetails(prev => ({
+            ...prev,
+            currentStage: 'Continue scan aborted: new market scan started',
+            estimatedTimeRemaining: null
+          }));
+          setAiCallInProgress(false);
+          return;
+        }
+        
+        // 并行处理批次内的候选
+        const batchPromises = batch.map(async (candidate) => {
+          try {
+            // 构建AI上下文 - 包含所有真实market scan数据
+            const aiContext = {
+              symbol: candidate.symbol,
+              trend: candidate.trend,
+              score: candidate.score,
+              risk: candidate.risk,
+              sector: candidate.sector,
+              priceChange: candidate.priceChange,
+              volumeStatus: candidate.volumeStatus,
+              newsSentiment: candidate.newsSentiment,
+              companyName: candidate.companyName,
+              marketCap: candidate.marketCap,
+              // 明确告诉AI这是continue scan评估，要求AI直接决定是否入选
+              evaluationType: 'continue_scan_selection',
+              task: `Evaluate if ${candidate.symbol} should be included in continue scan list based on:
+- Trend: ${candidate.trend}
+- Score: ${candidate.score}/100
+- Risk: ${candidate.risk}
+- Sector: ${candidate.sector}
+- Price Change: ${candidate.priceChange}%
+- Volume Status: ${candidate.volumeStatus}
+- News Sentiment: ${candidate.newsSentiment}
+
+Please provide:
+1. include_in_continue_scan: true/false (whether to include in continue scan list)
+2. priority_score: 1-100 (higher = more urgent for follow-up)
+3. selection_reason: concise reason for inclusion/exclusion
+4. confidence: 0-1 confidence in this assessment`
+            };
+            
+            // 调用专门的continue scan AI评估
+            const aiResponse = await evaluateContinueScanCandidate(candidate.symbol, aiContext);
+            
+            if (aiResponse.success && aiResponse.decision) {
+              // 从专门的continue scan AI响应中提取信息
+              const decision = aiResponse.decision;
+              
+              const includeInContinueScan = decision.include_in_continue_scan || false;
+              const priority = Math.max(1, Math.min(100, decision.priority_score || 50));
+              const selectionReason = decision.selection_reason || 'AI evaluation completed';
+              const confidence = decision.confidence || 0;
+              
+              // 确定selectedBy标签 - 基于AI是否明确决定入选
+              let selectedBy = 'Rule';
+              if (includeInContinueScan) {
+                selectedBy = confidence > 0.7 ? 'AI' : 'Rule + AI';
+              }
+              
+              // 确保reason不包含交易/账户相关内容
+              let cleanReason = selectionReason;
+              const unwantedPatterns = [
+                /\$0\.00/,
+                /zero volume/i,
+                /no backtest/i,
+                /buying power/i,
+                /account balance/i,
+                /trade/i,
+                /position/i,
+                /order/i
+              ];
+              
+              for (const pattern of unwantedPatterns) {
+                if (pattern.test(cleanReason)) {
+                  console.warn(`Cleaning unwanted content from AI reason for ${candidate.symbol}`);
+                  // 使用fallback reason替换
+                  cleanReason = generateFallbackReason(candidate.originalData);
+                  break;
+                }
+              }
+              
+              return {
+                ...candidate.originalData,
+                includeInContinueScan,
+                priorityScore: priority,
+                selectionReason: selectionReason,
+                continueScanStatus: 'completed' as const,
+                aiReasonStatus: 'completed' as const,
+                aiEvaluated: true,
+                // 新增字段：AI参与度信息
+                reasonSource: 'AI',
+                selectedBy: selectedBy,
+                aiConfidence: confidence,
+                aiProvider: aiConfig.provider || 'DeepSeek',
+                aiModel: aiConfig.model || 'deepseek-chat',
+                scanBatchId: 'current',
+                scanTimestamp: detailedScanStatus.lastScanAt || new Date().toISOString(),
+                generatedAt: new Date().toISOString(),
+                // 新增显示字段
+                sector: candidate.sector,
+                newsSentiment: candidate.newsSentiment,
+                priceChangePct: candidate.priceChange,
+                volumeStatus: candidate.volumeStatus
+              };
+            } else {
+              // AI调用失败，使用fallback
+              console.log(`AI evaluation failed for ${candidate.symbol}, using fallback`);
+              const fallbackReason = generateFallbackReason(candidate.originalData);
+              const fallbackPriority = calculateFallbackPriority(candidate.originalData);
+              
+              // Fallback逻辑：基于规则决定是否入选
+              const fallbackInclude = fallbackPriority > 30;
+              
+              return {
+                ...candidate.originalData,
+                includeInContinueScan: fallbackInclude,
+                priorityScore: fallbackPriority,
+                selectionReason: fallbackReason,
+                continueScanStatus: 'completed' as const,
+                aiReasonStatus: 'failed' as const,
+                aiEvaluated: false,
+                // 新增字段：AI参与度信息
+                reasonSource: 'Fallback',
+                selectedBy: 'Rule',
+                aiConfidence: 0,
+                aiProvider: 'N/A',
+                aiModel: 'N/A',
+                scanBatchId: 'current',
+                scanTimestamp: detailedScanStatus.lastScanAt || new Date().toISOString(),
+                generatedAt: new Date().toISOString(),
+                // 新增显示字段
+                sector: candidate.sector,
+                newsSentiment: candidate.newsSentiment,
+                priceChangePct: candidate.priceChange,
+                volumeStatus: candidate.volumeStatus
+              };
+            }
+          } catch (error) {
+            console.error(`AI evaluation error for ${candidate.symbol}:`, error);
+            // 错误处理：使用fallback
+            const fallbackReason = generateFallbackReason(candidate.originalData);
+            const fallbackPriority = calculateFallbackPriority(candidate.originalData);
+            
+            // Fallback逻辑：基于规则决定是否入选
+            const fallbackInclude = fallbackPriority > 30;
+            
+            return {
+              ...candidate.originalData,
+              includeInContinueScan: fallbackInclude,
+              priorityScore: fallbackPriority,
+              selectionReason: fallbackReason,
+              continueScanStatus: 'completed' as const,
+              aiReasonStatus: 'failed' as const,
+              aiEvaluated: false,
+              // 新增字段：AI参与度信息
+              reasonSource: 'Error',
+              selectedBy: 'Rule',
+              aiConfidence: 0,
+              aiProvider: 'N/A',
+              aiModel: 'N/A',
+              scanBatchId: 'current',
+              scanTimestamp: detailedScanStatus.lastScanAt || new Date().toISOString(),
+              generatedAt: new Date().toISOString(),
+              // 新增显示字段
+              sector: candidate.sector,
+              newsSentiment: candidate.newsSentiment,
+              priceChangePct: candidate.priceChange,
+              volumeStatus: candidate.volumeStatus
+            };
+          }
+        });
+        
+        // 等待当前批次完成
+        const batchResults = await Promise.allSettled(batchPromises);
+        
+        // 收集成功的结果
+        batchResults.forEach(result => {
+          if (result.status === 'fulfilled') {
+            aiEvaluatedCandidates.push(result.value);
+          }
+        });
+        
+        // 批次间短暂延迟，避免过载
+        if (batchIndex < batches.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+      
+      // 阶段D: 筛选和排序AI评估的候选 (20%)
+      setContinueScanProgress(90);
+      setContinueScanDetails(prev => ({
+        ...prev,
+        currentStage: 'Ranking selected candidates...',
+        estimatedTimeRemaining: 2
+      }));
+      
+      console.log(`AI evaluation completed for ${aiEvaluatedCandidates.length} candidates`);
+      
+      if (aiEvaluatedCandidates.length === 0) {
+        setPreferredContinueScanList([]);
+        setContinueScanStatus('completed');
+        setContinueScanProgress(100);
+        setContinueScanDetails(prev => ({
+          ...prev,
+          currentStage: 'No candidates selected by AI for continue scan',
+          estimatedTimeRemaining: 0
+        }));
+        setAiCallInProgress(false);
+        console.log('No candidates selected by AI for continue scan');
+        return;
+      }
+      
+      // 统计AI决策结果
+      const aiSelectedCandidates = aiEvaluatedCandidates.filter(candidate => 
+        candidate.includeInContinueScan === true && candidate.selectedBy !== 'Rule'
+      );
+      
+      const ruleSelectedCandidates = aiEvaluatedCandidates.filter(candidate => 
+        candidate.selectedBy === 'Rule'
+      );
+      
+      const fallbackCandidates = aiEvaluatedCandidates.filter(candidate => 
+        candidate.reasonSource === 'Fallback' || candidate.reasonSource === 'Error'
+      );
+      
+      console.log(`AI selected ${aiSelectedCandidates.length} candidates for continue scan`);
+      console.log(`Rule selected: ${ruleSelectedCandidates.length}`);
+      console.log(`Fallback decisions: ${fallbackCandidates.length}`);
+      
+      // 优先显示AI选择的候选，按priority排序
+      let candidatesToShow = [...aiSelectedCandidates];
+      
+      // 如果AI选择的候选太少，添加一些高质量的规则选择候选
+      if (candidatesToShow.length < 10) {
+        console.log(`Only ${candidatesToShow.length} AI-selected candidates, adding high-quality rule-selected candidates`);
+        
+        // 筛选高质量的规则选择候选：Bullish/Strong Bullish, 高分数，低风险
+        const highQualityRuleCandidates = ruleSelectedCandidates
+          .filter(candidate => {
+            const trend = candidate.trendLabel;
+            const score = candidate.overallScore || candidate.trendScore || 0;
+            const risk = candidate.eventRisk || 'Medium';
+            
+            // 优先Bullish/Strong Bullish
+            if (trend !== 'Bullish' && trend !== 'Strong Bullish') return false;
+            
+            // 分数至少50
+            if (score < 50) return false;
+            
+            // 风险不能是High
+            if (risk === 'High') return false;
+            
+            return true;
+          })
+          .sort((a, b) => b.priorityScore - a.priorityScore)
+          .slice(0, 10 - candidatesToShow.length);
+        
+        candidatesToShow = [...candidatesToShow, ...highQualityRuleCandidates];
+      }
+      
+      // 按priority排序
+      candidatesToShow.sort((a, b) => b.priorityScore - a.priorityScore);
+      
+      // 限制最多20个
+      const finalList = candidatesToShow.slice(0, 20);
+      
+      // 阶段E: 完成处理 (10%)
+      setContinueScanProgress(100);
+      setContinueScanDetails(prev => ({
+        ...prev,
+        currentStage: 'Finalizing continue scan list...',
+        estimatedTimeRemaining: 0
+      }));
+      
+      // 显示最终列表
+      setPreferredContinueScanList(finalList);
+      setContinueScanStatus('completed');
+      
+      console.log(`Continue scan completed. AI selected ${finalList.length} candidates for follow-up.`);
+      
+      // 重置AI调用状态
+      setAiCallInProgress(false);
+      
+    } catch (error) {
+      console.error('Continue scan processing failed:', error);
+      setContinueScanStatus('error');
+      setContinueScanProgress(0);
+      setContinueScanDetails(prev => ({
+        ...prev,
+        currentStage: `Error: ${error instanceof Error ? error.message : String(error)}`,
+        estimatedTimeRemaining: null
+      }));
+      setAiCallInProgress(false);
+    }
+  };
+  
+  // AI生成selection reason的函数
+  const generateAiSelectionReasons = async (candidates: any[]) => {
+    if (!candidates || candidates.length === 0) return;
+    
+    // 检查是否有新的Market Scan开始
+    if (detailedScanStatus.currentStatus === 'scanning') {
+      console.log('New market scan started, aborting AI reason generation');
+      return;
+    }
+    
+    console.log(`Starting AI reason generation for ${candidates.length} candidates`);
+    
+    // 设置AI调用状态
+    setAiCallInProgress(true);
+    
+    try {
+      // 批量处理，避免同时发起太多请求
+      const batchSize = 5;
+      const batches = [];
+      
+      for (let i = 0; i < candidates.length; i += batchSize) {
+        batches.push(candidates.slice(i, i + batchSize));
+      }
+      
+      for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+        const batch = batches[batchIndex];
+        
+        // 更新进度
+        const progressPercent = Math.round(((batchIndex * batchSize) / candidates.length) * 100);
+        setContinueScanDetails(prev => ({
+          ...prev,
+          currentStage: `Generating AI reasons: batch ${batchIndex + 1}/${batches.length}`,
+          estimatedTimeRemaining: Math.max(1, (batches.length - batchIndex) * 3) // 估算剩余时间
+        }));
+        
+        // 并行处理批次内的candidate
+        const promises = batch.map(async (candidate, indexInBatch) => {
+          const globalIndex = batchIndex * batchSize + indexInBatch;
+          
+          try {
+            // 更新状态为processing
+            setPreferredContinueScanList(prev => {
+              const newList = [...prev];
+              if (newList[globalIndex]) {
+                newList[globalIndex] = {
+                  ...newList[globalIndex],
+                  aiReasonStatus: 'processing'
+                };
+              }
+              return newList;
+            });
+            
+            // 构建AI上下文
+            const aiContext = {
+              symbol: candidate.symbol,
+              trend: candidate.trendLabel,
+              score: candidate.overallScore || candidate.trendScore || 0,
+              risk: candidate.eventRisk || 'Medium',
+              sector: candidate.sector || 'Unknown',
+              priceChange: candidate.changePct || 0,
+              volumeStatus: candidate.volumeStatus || 'Normal',
+              newsSentiment: candidate.newsSentiment || 'Neutral',
+              // 添加其他可用字段
+              ...candidate
+            };
+            
+            // 调用AI服务生成selection reason
+            const aiResponse = await aiTradingService.previewTradeWithContext(candidate.symbol, aiContext);
+            
+            if (aiResponse.success && aiResponse.decision && aiResponse.decision.reason) {
+              // 使用AI生成的reason
+              const aiReason = aiResponse.decision.reason;
+              
+              // 更新列表中的selection reason
+              setPreferredContinueScanList(prev => {
+                const newList = [...prev];
+                if (newList[globalIndex]) {
+                  newList[globalIndex] = {
+                    ...newList[globalIndex],
+                    selectionReason: aiReason,
+                    aiReasonStatus: 'completed'
+                  };
+                }
+                return newList;
+              });
+              
+              console.log(`AI reason generated for ${candidate.symbol}: ${aiReason.substring(0, 50)}...`);
+            } else {
+              // AI调用失败，使用fallback reason
+              const fallbackReason = generateFallbackReason(candidate);
+              
+              setPreferredContinueScanList(prev => {
+                const newList = [...prev];
+                if (newList[globalIndex]) {
+                  newList[globalIndex] = {
+                    ...newList[globalIndex],
+                    selectionReason: fallbackReason,
+                    aiReasonStatus: 'failed'
+                  };
+                }
+                return newList;
+              });
+              
+              console.log(`AI reason generation failed for ${candidate.symbol}, using fallback: ${fallbackReason}`);
+            }
+            
+          } catch (error) {
+            console.error(`AI reason generation error for ${candidate.symbol}:`, error);
+            
+            // 错误处理：使用fallback reason
+            const fallbackReason = generateFallbackReason(candidate);
+            
+            setPreferredContinueScanList(prev => {
+              const newList = [...prev];
+              if (newList[globalIndex]) {
+                newList[globalIndex] = {
+                  ...newList[globalIndex],
+                  selectionReason: fallbackReason,
+                  aiReasonStatus: 'failed'
+                };
+              }
+              return newList;
+            });
+          }
+        });
+        
+        // 等待当前批次完成
+        await Promise.allSettled(promises);
+        
+        // 批次间短暂延迟，避免过载
+        if (batchIndex < batches.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+      
+      console.log('AI reason generation completed for all candidates');
+      setContinueScanDetails(prev => ({
+        ...prev,
+        currentStage: 'AI reason generation completed',
+        estimatedTimeRemaining: 0
+      }));
+      
+    } catch (error) {
+      console.error('AI reason generation failed:', error);
+      setContinueScanDetails(prev => ({
+        ...prev,
+        currentStage: `AI generation error: ${error instanceof Error ? error.message : String(error)}`,
+        estimatedTimeRemaining: null
+      }));
+    } finally {
+      // 无论成功还是失败，都重置AI调用状态
+      setAiCallInProgress(false);
+    }
+  };
+  
+  // Fallback reason生成函数
+  // Continue Scan专用的AI评估函数
+  const evaluateContinueScanCandidate = async (symbol: string, context: any): Promise<any> => {
+    try {
+      console.log('Evaluating continue scan candidate:', { symbol, context });
+      
+      // 构建专门的continue scan prompt
+      const prompt = `You are evaluating stocks for a "Continue Scan" list. This is NOT for trading decisions.
+      
+Based on the following market scan data, determine if this stock should be included in the continue scan shortlist:
+
+Symbol: ${context.symbol}
+Trend: ${context.trend}
+Score: ${context.score}/100
+Risk: ${context.risk}
+Sector: ${context.sector}
+Price Change: ${context.priceChange}%
+Volume Status: ${context.volumeStatus}
+News Sentiment: ${context.newsSentiment}
+${context.companyName ? `Company: ${context.companyName}` : ''}
+${context.marketCap ? `Market Cap: ${context.marketCap}` : ''}
+
+Your task:
+1. Should this stock be included in the continue scan shortlist? (true/false)
+2. What priority score (1-100) should it have for follow-up analysis?
+3. Provide a concise selection reason based ONLY on the market scan data above.
+
+IMPORTANT:
+- Do NOT mention trading, buying power, account balance, backtest results, or $0.00 prices
+- Focus ONLY on the market scan data provided
+- Base your decision on trend, score, risk, and other scan metrics
+- For continue scan, prioritize bullish/strong bullish trends with good scores and manageable risk
+
+Please respond in this exact JSON format:
+{
+  "include_in_continue_scan": true/false,
+  "priority_score": 1-100,
+  "selection_reason": "concise reason based on market scan data",
+  "confidence": 0.0-1.0
+}`;
+
+      // 使用现有的AI服务，但使用专门的continue scan prompt
+      const response = await aiTradingService.previewTradeWithContext(symbol, {
+        ...context,
+        prompt: prompt,
+        task: 'continue_scan_evaluation_only',
+        evaluation_type: 'continue_scan_shortlist'
+      });
+      
+      console.log('Continue scan AI response:', response);
+      
+      // 解析AI响应
+      if (response.success && response.decision && response.decision.reason) {
+        const aiReason = response.decision.reason;
+        
+        // 尝试从AI响应中提取结构化数据
+        try {
+          // 首先尝试解析JSON格式的响应
+          const jsonMatch = aiReason.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            return {
+              success: true,
+              decision: {
+                include_in_continue_scan: parsed.include_in_continue_scan || false,
+                priority_score: parsed.priority_score || Math.round((response.decision.confidence || 0.5) * 100),
+                selection_reason: parsed.selection_reason || response.decision.reason,
+                confidence: parsed.confidence || response.decision.confidence || 0.5
+              }
+            };
+          }
+        } catch (e) {
+          console.log('Failed to parse JSON from AI response, using fallback parsing');
+        }
+        
+        // 如果无法解析JSON，使用启发式方法
+        const lowerReason = aiReason.toLowerCase();
+        
+        // 检查是否包含交易/账户相关的不相关内容
+        const unwantedPatterns = [
+          /\$0\.00/,
+          /zero volume/i,
+          /no backtest/i,
+          /buying power/i,
+          /account balance/i,
+          /trade/i,
+          /position/i,
+          /order/i
+        ];
+        
+        let hasUnwantedContent = false;
+        for (const pattern of unwantedPatterns) {
+          if (pattern.test(aiReason)) {
+            hasUnwantedContent = true;
+            console.warn(`AI response contains unwanted content for continue scan: ${pattern}`);
+            break;
+          }
+        }
+        
+        // 如果包含不相关内容，使用fallback
+        if (hasUnwantedContent) {
+          console.log(`AI response contains trading/account context for ${symbol}, using fallback`);
+          throw new Error('AI response contains trading context, not suitable for continue scan');
+        }
+        
+        // 基于AI响应决定是否入选
+        const includeKeywords = ['include', 'recommend', 'select', 'worth', 'good', 'strong', 'bullish', 'positive', 'follow-up'];
+        const excludeKeywords = ['exclude', 'not recommend', 'avoid', 'weak', 'bearish', 'negative', 'risk', 'skip'];
+        
+        let includeScore = 0;
+        let excludeScore = 0;
+        
+        includeKeywords.forEach(keyword => {
+          if (lowerReason.includes(keyword)) includeScore++;
+        });
+        
+        excludeKeywords.forEach(keyword => {
+          if (lowerReason.includes(keyword)) excludeScore++;
+        });
+        
+        const confidence = response.decision.confidence || 0.5;
+        const includeInContinueScan = (confidence > 0.6 && includeScore > excludeScore) || 
+                                     (confidence > 0.7 && includeScore >= excludeScore);
+        
+        // 基于趋势和分数调整priority
+        let priorityScore = Math.round(confidence * 100);
+        if (context.trend === 'Strong Bullish') priorityScore += 20;
+        if (context.trend === 'Bullish') priorityScore += 10;
+        if (context.trend === 'Bearish') priorityScore -= 15;
+        if (context.trend === 'Strong Bearish') priorityScore -= 25;
+        if (context.score > 80) priorityScore += 10;
+        if (context.score > 60) priorityScore += 5;
+        if (context.risk === 'Low') priorityScore += 5;
+        if (context.risk === 'High') priorityScore -= 10;
+        
+        priorityScore = Math.max(1, Math.min(100, priorityScore));
+        
+        return {
+          success: true,
+          decision: {
+            include_in_continue_scan: includeInContinueScan,
+            priority_score: priorityScore,
+            selection_reason: aiReason,
+            confidence: confidence
+          }
+        };
+      }
+      
+      // AI调用失败
+      return {
+        success: false,
+        decision: null
+      };
+      
+    } catch (error) {
+      console.error(`Continue scan evaluation error for ${symbol}:`, error);
+      return {
+        success: false,
+        decision: null
+      };
+    }
+  };
+
+  const generateFallbackReason = (candidate: any): string => {
+    const trend = candidate.trendLabel;
+    const score = candidate.overallScore || candidate.trendScore || 0;
+    const risk = candidate.eventRisk || 'Medium';
+    
+    if (trend === 'Strong Bullish') {
+      return `Strong bullish trend (score: ${score}, risk: ${risk}) makes this a strong follow-up candidate`;
+    } else if (trend === 'Bullish') {
+      return `Bullish setup with score ${score} and ${risk.toLowerCase()} risk is worth deeper continue scan`;
+    } else if (score > 70) {
+      return `High score ${score} with ${risk.toLowerCase()} risk supports further analysis`;
+    } else {
+      return `Moderate setup (score: ${score}, risk: ${risk}) for further analysis`;
+    }
+  };
+  
+  // Fallback priority计算函数（当AI调用失败时使用）
+  const calculateFallbackPriority = (candidate: any): number => {
+    const trend = candidate.trendLabel;
+    const score = candidate.overallScore || candidate.trendScore || 0;
+    const risk = candidate.eventRisk || 'Medium';
+    
+    // 基础分数
+    let priorityScore = score;
+    
+    // 趋势加成
+    if (trend === 'Strong Bullish') priorityScore += 30;
+    if (trend === 'Bullish') priorityScore += 20;
+    if (trend === 'Neutral') priorityScore += 10;
+    if (trend === 'Bearish') priorityScore -= 10;
+    
+    // 风险调整
+    if (risk === 'Low') priorityScore += 15;
+    if (risk === 'Medium') priorityScore += 5;
+    if (risk === 'High') priorityScore -= 20;
+    
+    // 确保分数在合理范围内
+    priorityScore = Math.max(0, Math.min(100, priorityScore));
+    
+    return Math.round(priorityScore);
+  };
+  
+  const [marketScannerSummary, setMarketScannerSummary] = useState({
+    universeScanned: 0,
+    bullishCount: 0,
+    bearishCount: 0,
+    neutralCount: 0,
+    strongTrendCount: 0,
+    newsRiskCount: 0,
+    lastScanTime: null as string | null
+  });
+  const [marketScannerFilters, setMarketScannerFilters] = useState({
+    trendFilter: 'all' as 'all' | 'bullish' | 'bearish' | 'neutral' | 'strong',
+    sortBy: 'trendScore' as 'trendScore' | 'volume' | 'changePct' | 'newsSentiment',
+    sortOrder: 'desc' as 'asc' | 'desc'
+  });
+  const [marketScannerAutoEnabled, setMarketScannerAutoEnabled] = useState(false);
+  const marketScannerTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // 新增：Market Scanner 自动扫描相关的 ref
+  const marketScannerAutoEnabledRef = useRef(false);
+  const marketScannerStopRequestedRef = useRef(false);
+  const marketScannerIsScanningRef = useRef(false);
+  
+  // 展开行状态
+  const [expandedRows, setExpandedRows] = useState<string[]>([]);
+  
+  // Step 5: 自动扫描定时器
+  const autoScanTimerRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // 扫描控制标记
+  const stopRequestedRef = useRef(false);
+  const activeSymbolsRef = useRef<string[]>([]);
+  const retryCountRef = useRef<number>(0);
+  const validatedCountRef = useRef<number>(0);
+  
+  // 跟踪是否已经处理过当前批次的market scan results
+  const processedResultsSignatureRef = useRef<string>('');
+  
+  // 详细扫描状态
+  const [detailedScanStatus, setDetailedScanStatus] = useState({
+    currentStatus: 'idle' as 'idle' | 'scanning' | 'waiting_next_scan' | 'stopped' | 'completed' | 'error',
+    processedCount: 0,
+    totalCount: 0,
+    percent: 0,
+    activeSymbols: [] as string[],
+    retryCount: 0,
+    validatedCount: 0,
+    lastScanAt: null as string | null,
+    nextScanAt: null as string | null,
+    statusMessage: '' as string
+  });
+
+  // Step 3: 加载 AI 配置（接入真实配置系统）
+  useEffect(() => {
+    loadAiConfig();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Step 5: 组件卸载时清理定时器
+  useEffect(() => {
+    return () => {
+      clearAutoScanTimer();
+      clearMarketScannerTimer();
+    };
+  }, []);
+
+  // 同步 Market Scanner 自动扫描状态到 ref
+  useEffect(() => {
+    marketScannerAutoEnabledRef.current = marketScannerAutoEnabled;
+  }, [marketScannerAutoEnabled]);
+
+  // 同步 AI 调用状态到 ref
+  useEffect(() => {
+    aiCallInProgressRef.current = aiCallInProgress;
+  }, [aiCallInProgress]);
+
+  // 监控market scan状态，只处理状态重置，不自动触发continue scan
+  useEffect(() => {
+    // 生成当前results的签名（用于检测是否是新批次）
+    const generateResultsSignature = (results: any[]): string => {
+      if (!results || results.length === 0) return '';
+      
+      // 使用results长度和最后一个symbol的时间戳作为签名
+      const lastResult = results[results.length - 1];
+      const timestamp = lastResult.scanTime || lastResult.timestamp || Date.now().toString();
+      return `${results.length}_${timestamp}`;
+    };
+
+    const currentSignature = generateResultsSignature(marketScannerResults);
+    
+    // 当有新的market scan结果时，更新签名但不自动开始处理
+    if (currentSignature !== '' && currentSignature !== processedResultsSignatureRef.current) {
+      console.log(`New market scan results detected (${marketScannerResults.length} results), ready for manual continue scan`);
+      processedResultsSignatureRef.current = currentSignature;
+    }
+
+    // 如果market scan重新开始，重置continue scan状态
+    if (detailedScanStatus.currentStatus === 'scanning') {
+      console.log('Market scan restarted, resetting continue scan state');
+      setContinueScanStatus('idle');
+      setContinueScanProgress(0);
+      setPreferredContinueScanList([]);
+      processedResultsSignatureRef.current = ''; // 重置签名
+      
+      // 如果AI调用正在进行，也重置
+      if (aiCallInProgressRef.current) {
+        console.log('Market scan restarted, aborting AI calls');
+        setAiCallInProgress(false);
+      }
+    }
+  }, [marketScannerResults, continueScanStatus, detailedScanStatus.currentStatus]);
+
+  const loadAiConfig = async () => {
+    try {
+      const response = await aiTradingService.getProviderConfig();
+      
+      if (response.success && response.config) {
+        const config = response.config;
+        
+        // Provider合法化：只允许合法的provider
+        const allowedProviders = ['DeepSeek', 'OpenAI', 'Claude'] as const;
+        type AIProvider = typeof allowedProviders[number];
+        
+        let provider = config.provider || 'DeepSeek';
+        let model = config.model || 'deepseek-chat';
+        
+        // 如果provider不在允许列表中，重置为默认值
+        if (!allowedProviders.includes(provider as AIProvider)) {
+          console.warn(`非法provider值: ${provider}，重置为DeepSeek`);
+          provider = 'DeepSeek';
+          model = 'deepseek-chat';
+        }
+        
+        // 设置表单值
+        aiConfigForm.setFieldsValue({
+          provider: provider,
+          model: model,
+          apiKey: config.apiKey || '',
+          baseUrl: config.baseUrl || 'https://api.deepseek.com'
+        });
+        
+        // 更新本地状态
+        setAiConfig({
+          provider: provider,
+          model: model,
+          apiKey: config.apiKey || '',
+          baseUrl: config.baseUrl || 'https://api.deepseek.com'
+        });
+      } else {
+        console.warn('AI 配置加载失败或为空，保留现有配置');
+        // 不覆盖现有配置，只显示警告
+        message.warning('AI 配置加载失败，保留现有配置');
+      }
+    } catch (error) {
+      console.error('加载 AI 配置失败:', error);
+      message.error('加载 AI 配置失败，保留现有配置');
+      // 不覆盖现有配置，避免清空用户已保存的设置
+    }
+  };
+
+  // 加载 Alpaca Paper Trading 真实账户数据
+  const loadAlpacaAccount = async () => {
+    try {
+      console.log('开始加载 Alpaca Paper Trading 账户数据...');
+      
+      // 获取账户信息 - 直接使用导入的alpacaBrokerService实例
+      const account = await alpacaBrokerService.getAccount();
+      console.log('Alpaca 账户数据加载成功:', account);
+      
+      // 获取持仓信息
+      let positions: AlpacaPosition[] = [];
+      try {
+        positions = await alpacaBrokerService.getPositions();
+        console.log(`Alpaca 持仓数据加载成功: ${positions.length} 个持仓`);
+      } catch (positionsError) {
+        console.warn('获取持仓数据失败:', positionsError);
+      }
+      
+      // 获取订单信息
+      let orders: AlpacaOrder[] = [];
+      try {
+        orders = await alpacaBrokerService.getOrders();
+        setAlpacaOrders(orders);
+        console.log(`Alpaca 订单数据加载成功: ${orders.length} 个订单`);
+      } catch (ordersError) {
+        console.warn('获取订单数据失败:', ordersError);
+        setAlpacaOrders([]);
+      }
+      
+      return {
+        account,
+        positions,
+        orders
+      };
+    } catch (error: any) {
+      console.error('加载 Alpaca 账户数据失败:', error);
+      const errorMessage = error.response?.data?.error?.message || error.message || '未知错误';
+      message.error(`Alpaca 账户数据加载失败: ${errorMessage}`);
+      
+      // 返回null表示失败
+      return null;
+    }
+  };
+
+  // Step 3: AI 配置保存（接入真实配置系统）
+  const handleSaveAiConfig = async (values: any) => {
+    setSavingConfig(true);
+    try {
+      // 构建符合 AIProviderConfig 接口的配置对象
+      const config: AIProviderConfig = {
+        provider: values.provider || 'DeepSeek',
+        model: values.model || 'deepseek-chat',
+        apiKey: values.apiKey || '',
+        baseUrl: values.baseUrl || 'https://api.deepseek.com'
+      };
+      
+      // 调用真实保存接口
+      const response = await aiTradingService.saveProviderConfig(config);
+      
+      if (response.success) {
+        message.success('AI 配置保存成功');
+        
+        // 更新本地状态
+        setAiConfig(config);
+        
+        // 重新加载配置以确保与后端同步
+        await loadAiConfig();
+      } else {
+        message.error('AI 配置保存失败');
+        console.error('保存配置失败，响应:', response);
+      }
+    } catch (error: any) {
+      console.error('保存 AI 配置失败:', error);
+      message.error(`保存 AI 配置失败: ${error.message || '未知错误'}`);
+    } finally {
+      setSavingConfig(false);
+    }
+  };
+
+  // Step 3: 测试 AI 连接（接入真实测试系统）
+  const handleTestConnection = async () => {
+    setTestingConnection(true);
+    try {
+      // 获取当前表单值
+      const values = await aiConfigForm.validateFields();
+      
+      // 构建符合 AIProviderConfig 接口的配置对象
+      const config: AIProviderConfig = {
+        provider: values.provider || 'DeepSeek',
+        model: values.model || 'deepseek-chat',
+        apiKey: values.apiKey || '',
+        baseUrl: values.baseUrl || 'https://api.deepseek.com'
+      };
+      
+      // 调用真实测试接口
+      const response = await aiTradingService.testProviderConnection(config);
+      
+      if (response.success && response.valid) {
+        message.success(`AI 连接测试成功: ${response.message || '连接正常'}`);
+      } else {
+        message.error(`AI 连接测试失败: ${response.message || '连接失败'}`);
+        console.error('连接测试失败，响应:', response);
+      }
+    } catch (error: any) {
+      console.error('测试 AI 连接失败:', error);
+      message.error(`测试 AI 连接失败: ${error.message || '未知错误'}`);
+    } finally {
+      setTestingConnection(false);
+    }
+  };
+
+  // Market Scanner 函数
+  const runMarketScanner = async (): Promise<void> => {
+    // 重置停止标记
+    stopRequestedRef.current = false;
+    marketScannerStopRequestedRef.current = false;
+    
+    // 设置扫描状态 ref
+    marketScannerIsScanningRef.current = true;
+    
+    // 设置详细状态
+    setDetailedScanStatus(prev => ({
+      ...prev,
+      currentStatus: 'scanning',
+      processedCount: 0,
+      percent: 0,
+      activeSymbols: [],
+      retryCount: 0,
+      validatedCount: 0,
+      statusMessage: 'Starting scan...'
+    }));
+    
+    setMarketScannerStatus(prev => ({ ...prev, status: 'running', progress: 0 }));
+    setMarketScannerResults([]);
+    
+    try {
+      console.log('开始市场扫描...');
+      
+      // 1. 获取固定50个symbol universe (30个科技股 + 20个非科技股)
+      const tradingSymbols = await getTradingUniverse();
+      
+      if (!tradingSymbols || tradingSymbols.length === 0) {
+        console.warn('没有获取到可交易股票列表，使用默认股票池');
+        // 使用默认股票池作为后备
+        const defaultSymbols = [
+          'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META',
+          'TSLA', 'NVDA', 'AMD', 'AVGO', 'INTC',
+          'JPM', 'XOM', 'WMT', 'HD', 'JNJ',
+          'PG', 'KO', 'PEP', 'V', 'MA'
+        ];
+        await scanSymbols(defaultSymbols);
+      } else {
+        // 使用完整的50个symbol universe
+        console.log(`开始扫描固定universe: ${tradingSymbols.length}个symbol`);
+        await scanSymbols(tradingSymbols);
+      }
+      
+      // 检查是否被停止
+      if (stopRequestedRef.current || marketScannerStopRequestedRef.current) {
+        console.log('扫描被用户停止');
+        setDetailedScanStatus(prev => ({
+          ...prev,
+          currentStatus: 'stopped',
+          statusMessage: 'Scan stopped by user'
+        }));
+        setMarketScannerStatus(prev => ({ ...prev, status: 'stopped' }));
+        marketScannerIsScanningRef.current = false;
+        return;
+      }
+      
+      // 扫描完成，更新最后扫描时间
+      const now = new Date().toISOString();
+      setDetailedScanStatus(prev => ({
+        ...prev,
+        currentStatus: 'completed',
+        lastScanAt: now,
+        statusMessage: 'Scan completed'
+      }));
+      setMarketScannerStatus(prev => ({ ...prev, status: 'stopped', lastScanTime: now }));
+      
+      // 清除扫描状态 ref
+      marketScannerIsScanningRef.current = false;
+      
+      console.log('市场扫描完成');
+      
+      // 如果 Market Scanner 自动扫描开启，安排下一轮
+      if (marketScannerAutoEnabledRef.current && !marketScannerStopRequestedRef.current) {
+        scheduleNextMarketScannerAutoScan();
+      }
+      
+    } catch (error: any) {
+      console.error('=== 市场扫描失败 - 外层catch捕获的完整错误 ===');
+      console.error('错误消息:', error?.message);
+      console.error('错误堆栈:', error?.stack);
+      console.error('错误名称:', error?.name);
+      console.error('错误代码:', error?.code);
+      console.error('完整错误对象:', error);
+      
+      // 如果是Axios错误，打印更多信息
+      if (error?.isAxiosError) {
+        console.error('Axios错误详情:');
+        console.error('状态码:', error?.response?.status);
+        console.error('状态文本:', error?.response?.statusText);
+        console.error('响应数据:', error?.response?.data);
+        console.error('请求URL:', error?.config?.url);
+        console.error('请求方法:', error?.config?.method);
+      }
+      
+      setDetailedScanStatus(prev => ({
+        ...prev,
+        currentStatus: 'error',
+        statusMessage: `Error: ${error.message || 'Unknown error'}`
+      }));
+      setMarketScannerStatus(prev => ({ ...prev, status: 'stopped' }));
+      // 清除扫描状态 ref
+      marketScannerIsScanningRef.current = false;
+      message.error('市场扫描失败');
+    }
+  };
+
+  const getTradingUniverse = async (): Promise<string[]> => {
+    try {
+      // 固定50个symbol universe：30个科技股 + 20个非科技股
+      
+      // 1. 科技股 (30个) - 必须包含：AAPL, TSLA, NVDA, AMD, RKLB, SNDK
+      const techStocks = [
+        // 必须包含的科技股 (6个)
+        'AAPL', 'TSLA', 'NVDA', 'AMD', 'RKLB', 'SNDK',
+        
+        // 其他热门科技股 (24个)
+        'MSFT', 'GOOGL', 'AMZN', 'META', 'AVGO', 'INTC',
+        'QCOM', 'TXN', 'MU', 'AMAT', 'LRCX', 'KLAC',
+        'ASML', 'ADBE', 'CRM', 'ORCL', 'IBM', 'CSCO',
+        'ACN', 'NOW', 'SNOW', 'DDOG', 'CRWD', 'ZS'
+      ];
+      
+      // 2. 非科技股 (20个) - 不能包含科技股
+      const nonTechStocks = [
+        // 金融 (5个)
+        'JPM', 'BAC', 'WFC', 'GS', 'C',
+        
+        // 医疗 (4个)
+        'JNJ', 'UNH', 'PFE', 'MRK',
+        
+        // 消费 (4个)
+        'WMT', 'PG', 'KO', 'PEP',
+        
+        // 工业 (3个)
+        'CAT', 'HON', 'BA',
+        
+        // 能源 (2个)
+        'XOM', 'CVX',
+        
+        // 材料 (1个)
+        'LIN',
+        
+        // 公用事业 (1个)
+        'NEE'
+      ];
+      
+      // 3. 合并并确保总数正好50个
+      const allStocks = [...techStocks, ...nonTechStocks];
+      
+      // 验证数量
+      if (techStocks.length !== 30) {
+        console.error(`科技股数量错误: ${techStocks.length}, 应为30个`);
+      }
+      if (nonTechStocks.length !== 20) {
+        console.error(`非科技股数量错误: ${nonTechStocks.length}, 应为20个`);
+      }
+      if (allStocks.length !== 50) {
+        console.error(`总股票数量错误: ${allStocks.length}, 应为50个`);
+      }
+      
+      console.log(`固定universe生成完成: ${techStocks.length}个科技股 + ${nonTechStocks.length}个非科技股 = ${allStocks.length}个symbol`);
+      console.log(`科技股: ${techStocks.slice(0, 10).join(', ')}${techStocks.length > 10 ? '...' : ''}`);
+      console.log(`非科技股: ${nonTechStocks.slice(0, 10).join(', ')}${nonTechStocks.length > 10 ? '...' : ''}`);
+      
+      return allStocks;
+    } catch (error) {
+      console.error('获取交易股票列表失败:', error);
+      return [];
+    }
+  };
+
+  // 处理单个symbol的函数
+  // eslint-disable-next-line no-unreachable
+  const processSingleSymbol = async (symbol: string, retryCount: number = 0): Promise<any> => {
+    try {
+      console.log(`[${symbol}] === 开始处理symbol (第${retryCount + 1}次尝试) ===`);
+      
+      // 获取股票数据
+      console.log(`[${symbol}] 开始获取stockData...`);
+      const stockData = await marketDataService.getStockData(symbol);
+      console.log(`[${symbol}] stockData获取完成:`, {
+        hasPrice: stockData?.price !== null && stockData?.price !== undefined,
+        price: stockData?.price,
+        hasVolume: stockData?.volume !== null && stockData?.volume !== undefined,
+        volume: stockData?.volume,
+        changePct: stockData?.changePct,
+        changePercent: stockData?.changePercent,
+        dayHigh: stockData?.dayHigh,
+        dayLow: stockData?.dayLow
+      });
+      
+      // 获取新闻数据（真实API）
+      console.log(`[${symbol}] 开始获取newsData...`);
+      const newsData = await getStockNews(symbol);
+      console.log(`[${symbol}] newsData获取完成:`, {
+        hasSentiment: !!newsData?.sentiment,
+        sentiment: newsData?.sentiment,
+        hasTopNews: !!newsData?.topNews,
+        topNews: newsData?.topNews
+      });
+      
+      // 获取公司名（真实API）
+      console.log(`[${symbol}] 开始获取companyName...`);
+      const companyName = await getCompanyName(symbol);
+      console.log(`[${symbol}] companyName获取完成:`, companyName);
+      
+      // 计算趋势分数和标签（真实AI分析）
+      console.log(`[${symbol}] 开始analyzeTrend...`);
+      const trendAnalysis = await analyzeTrend(symbol, stockData, newsData);
+      console.log(`[${symbol}] analyzeTrend完成:`, {
+        hasTrendLabel: !!trendAnalysis.trendLabel,
+        trendLabel: trendAnalysis.trendLabel,
+        hasTrendScore: !!trendAnalysis.trendScore,
+        trendScore: trendAnalysis.trendScore,
+        hasAiReasoning: !!trendAnalysis.aiReasoning
+      });
+      
+      // 创建结果对象
+      const result = {
+        symbol,
+        companyName: trendAnalysis.companyName || companyName,
+        trendLabel: trendAnalysis.trendLabel,
+        trendScore: trendAnalysis.trendScore || trendAnalysis.overallScore || null,
+        trendConfidence: trendAnalysis.trendConfidence || trendAnalysis.confidence || null,
+        price: stockData.price || null,
+        changePct: stockData.changePct || stockData.changePercent || null, // 使用changePct字段
+        changePercent: stockData.changePercent || null, // 保留原字段
+        volume: stockData.volume || null,
+        marketCap: stockData.marketCap || null,
+        dayHigh: stockData.dayHigh || null, // 添加dayHigh
+        dayLow: stockData.dayLow || null,   // 添加dayLow
+        newsSentiment: trendAnalysis.newsSentiment || newsData.sentiment,
+        eventRisk: trendAnalysis.eventRisk || newsData.eventRisk,
+        topNews: trendAnalysis.topNews || newsData.topNews,
+        sector: stockData.sector || trendAnalysis.sector,
+        scannerReason: trendAnalysis.scannerReason,
+        trendScoreDetail: trendAnalysis.trendScoreDetail,
+        momentumScore: trendAnalysis.momentumScore,
+        volumeScore: trendAnalysis.volumeScore,
+        volatilityScore: trendAnalysis.volatilityScore,
+        structureScore: trendAnalysis.structureScore,
+        newsScore: trendAnalysis.newsScore,
+        aiReasoning: trendAnalysis.aiReasoning,
+        detailedReasoning: trendAnalysis.detailedReasoning,
+        conciseReasoning: trendAnalysis.conciseReasoning,
+        volumeStatus: trendAnalysis.volumeStatus,
+        provenance: trendAnalysis.provenance || { // 添加provenance字段
+          marketData: stockData.dataSource || 'Unknown',
+          companyInfo: 'Unknown',
+          news: 'Unknown',
+          aiAnalysis: 'Unknown'
+        },
+        dataSource: stockData.dataSource || 'Unknown', // 添加dataSource字段
+        analysisStatus: 'success' as 'success' | 'partial' | 'failed',
+        analysisError: null as string | null,
+        timestamp: new Date().toISOString()
+      };
+      
+      console.log(`[${symbol}] 处理成功:`, {
+        trendLabel: result.trendLabel,
+        trendScore: result.trendScore,
+        changePct: result.changePct,
+        sector: result.sector
+      });
+      
+      // 检查数据完整性
+      const validation = validateSymbolData(result);
+      if (!validation.valid) {
+        console.warn(`[${symbol}] 关键字段缺失，需要重试。缺失关键字段: ${validation.missingFields.join(', ')}`);
+        console.log(`[${symbol}] 详细字段状态:`, {
+          symbol: result.symbol,
+          price: result.price,
+          changePct: result.changePct,
+          changePercent: result.changePercent,
+          volume: result.volume,
+          trendLabel: result.trendLabel,
+          trendScore: result.trendScore,
+          aiReasoning: result.aiReasoning
+        });
+        
+        // 如果还有重试次数，抛出错误以触发重试
+        if (retryCount < 2) { // 最多重试2次（加上当前这次共3次）
+          throw new Error(`关键字段缺失，需要重试。缺失字段: ${validation.missingFields.join(', ')}`);
+        } else {
+          console.error(`[${symbol}] 已达到最大重试次数(3)，关键字段仍缺失`);
+          // 即使关键字段缺失，也返回结果，但标记为部分成功
+          result.analysisStatus = 'partial' as 'partial';
+          (result as any).analysisError = `关键字段缺失: ${validation.missingFields.join(', ')}`;
+        }
+      }
+      
+      return result;
+      
+    } catch (error: any) {
+      console.error(`扫描 ${symbol} 失败:`, error);
+      
+      // 创建失败结果
+      const failedResult = {
+        symbol,
+        companyName: null,
+        trendLabel: null,
+        trendScore: null,
+        trendConfidence: null,
+        price: null,
+        changePct: null,
+        changePercent: null,
+        volume: null,
+        marketCap: null,
+        newsSentiment: null,
+        eventRisk: null,
+        topNews: null,
+        sector: null,
+        scannerReason: null,
+        trendScoreDetail: null,
+        momentumScore: null,
+        volumeScore: null,
+        volatilityScore: null,
+        structureScore: null,
+        newsScore: null,
+        aiReasoning: null,
+        detailedReasoning: null,
+        conciseReasoning: null,
+        volumeStatus: null,
+        analysisStatus: 'failed' as 'failed',
+        analysisError: error?.message || 'Unknown error',
+        timestamp: new Date().toISOString()
+      };
+      
+      console.warn(`[${symbol}] 处理失败:`, {
+        analysisStatus: 'failed',
+        analysisError: error?.message
+      });
+      
+      return failedResult;
+    }
+  };
+
+    const scanSymbols = async (symbols: string[]): Promise<void> => {
+    try {
+      console.log('=== scanSymbols 开始执行（小并发滑动窗口） ===');
+      console.log('总symbols数:', symbols.length);
+      console.log('symbols列表:', symbols);
+      
+      const totalSymbols = symbols.length;
+      const RENDER_BATCH_SIZE = 10; // 每10个完整结果渲染一批
+      
+      // 更新详细状态
+      setDetailedScanStatus(prev => ({
+        ...prev,
+        totalCount: totalSymbols,
+        processedCount: 0,
+        percent: 0,
+        activeSymbols: [],
+        retryCount: 0,
+        validatedCount: 0,
+        statusMessage: `Starting scan of ${totalSymbols} symbols`
+      }));
+      
+      // 并发配置（按照用户要求）
+      const CONCURRENT_CONFIG = {
+        windowSize: 3,           // 滑动窗口大小：同时处理3个symbols
+        marketDataConcurrent: 3, // 市场数据并发数
+        finnhubConcurrent: 2,    // Finnhub并发数
+        aiConcurrent: 2,         // AI分析并发数
+        maxRetries: 3            // 最大重试次数
+      };
+      
+      console.log('并发配置:', CONCURRENT_CONFIG);
+      
+      setMarketScannerStatus(prev => ({ 
+        ...prev, 
+        totalSymbols, 
+        scannedSymbols: 0,
+        currentStatus: 'initializing',
+        currentSymbol: '',
+        currentBatch: 0,
+        batchProgress: '',
+        retryAttempt: 0,
+        maxRetryAttempts: CONCURRENT_CONFIG.maxRetries
+      }));
+      
+      // 1. 清空结果，从头开始
+      console.log('=== 清空结果，开始滑动窗口扫描 ===');
+      setMarketScannerResults([]);
+      
+      // 2. 初始化数据结构
+      const pendingSymbols = [...symbols]; // 待处理的symbols队列
+      const validatedBuffer: any[] = [];   // 已验证的完整结果缓冲区
+      const retryQueue: Array<{symbol: string, retryCount: number, lastError?: string}> = []; // 重试队列
+      const processingSlots = new Set<string>(); // 正在处理的symbols
+      const failedSymbols: Array<{symbol: string, error: string}> = []; // 失败symbols记录
+      
+      let totalProcessed = 0;
+      let totalValidated = 0;
+      let totalRetries = 0;
+      
+      // 单个symbol处理函数
+      const startProcessing = async (symbol: string, retryCount: number, lastError?: string) => {
+        // 检查停止标记
+        if (stopRequestedRef.current) {
+          console.log(`[${symbol}] 停止请求已收到，跳过处理`);
+          return;
+        }
+        
+        processingSlots.add(symbol);
+        totalProcessed++;
+        
+        // 更新状态
+        setMarketScannerStatus(prev => ({
+          ...prev,
+          currentSymbol: symbol,
+          currentStatus: retryCount > 0 ? 'retrying' : 'scanning',
+          retryAttempt: retryCount
+        }));
+        
+        console.log(`[${symbol}] 开始处理 (重试 ${retryCount}/${CONCURRENT_CONFIG.maxRetries})`);
+        if (lastError) {
+          console.log(`[${symbol}] 上次错误: ${lastError}`);
+        }
+        
+        try {
+          // 处理单个symbol，传递重试计数
+          const result = await processSingleSymbol(symbol, retryCount);
+          
+          // 严格校验数据（按照用户要求的校验规则）
+          const validation = validateSymbolData(result);
+          
+          if (validation.valid && result.analysisStatus !== 'partial') {
+            // 校验通过且数据完整，加入validatedBuffer
+            console.log(`[${symbol}] ✅ 数据校验通过 (第${retryCount + 1}次尝试)`);
+            validatedBuffer.push(result);
+            totalValidated++;
+            
+            // 更新状态
+            setMarketScannerStatus(prev => ({
+              ...prev,
+              currentStatus: 'validated',
+              batchProgress: `${validatedBuffer.length}/${RENDER_BATCH_SIZE}`
+            }));
+            
+          } else if (retryCount < CONCURRENT_CONFIG.maxRetries) {
+            // 准备重试
+            console.log(`[${symbol}] ❌ 数据校验失败: ${validation.error}`);
+            console.log(`[${symbol}] 准备重试 (${retryCount + 1}/${CONCURRENT_CONFIG.maxRetries})`);
+            
+            retryQueue.push({
+              symbol,
+              retryCount,
+              lastError: validation.error
+            });
+            
+            // 更新状态
+            setMarketScannerStatus(prev => ({
+              ...prev,
+              currentStatus: 'queued_for_retry'
+            }));
+            
+          } else {
+            // 超过最大重试次数，标记失败
+            console.warn(`[${symbol}] ❌ 超过最大重试次数，标记失败: ${validation.error}`);
+            failedSymbols.push({
+              symbol,
+              error: validation.error || 'Unknown error'
+            });
+            
+            // 更新状态
+            setMarketScannerStatus(prev => ({
+              ...prev,
+              currentStatus: 'failed'
+            }));
+          }
+          
+        } catch (error: any) {
+          console.error(`[${symbol}] 处理异常:`, error);
+          
+          // 检查是否是数据不完整错误
+          const isDataIncompleteError = error.message?.includes('数据不完整');
+          
+          if (retryCount < CONCURRENT_CONFIG.maxRetries) {
+            // 准备重试
+            console.log(`[${symbol}] 准备重试异常 (${retryCount + 1}/${CONCURRENT_CONFIG.maxRetries})`);
+            console.log(`[${symbol}] 错误类型: ${isDataIncompleteError ? '数据不完整' : '其他错误'}`);
+            
+            retryQueue.push({
+              symbol,
+              retryCount,
+              lastError: error.message || 'Processing error'
+            });
+            
+          } else {
+            // 超过最大重试次数，标记失败
+            console.warn(`[${symbol}] ❌ 超过最大重试次数，标记失败: ${error.message}`);
+            console.log(`[${symbol}] 最终状态: ${isDataIncompleteError ? '数据仍不完整' : '处理失败'}`);
+            
+            failedSymbols.push({
+              symbol,
+              error: error.message || 'Unknown error'
+            });
+          }
+          
+        } finally {
+          // 释放slot
+          processingSlots.delete(symbol);
+          console.log(`[${symbol}] 处理完成，释放slot，当前活动slots: ${Array.from(processingSlots).join(', ') || 'none'}`);
+        }
+      };
+      
+      // 渲染已验证的批次
+      const renderValidatedBatch = () => {
+        const batchToRender = validatedBuffer.splice(0, RENDER_BATCH_SIZE);
+        console.log(`=== 渲染批次 (${batchToRender.length}个symbols) ===`);
+        console.log('渲染symbols:', batchToRender.map(r => r.symbol).join(', '));
+        
+        setMarketScannerStatus(prev => ({
+          ...prev,
+          currentStatus: 'rendering',
+          currentSymbol: `Rendering ${batchToRender.length} symbols`
+        }));
+        
+        // 使用函数式更新确保追加正确
+        setMarketScannerResults(prevResults => {
+          const newResults = [...prevResults, ...batchToRender];
+          console.log(`追加后结果数量: ${newResults.length}`);
+          return newResults;
+        });
+        
+        console.log('UI更新完成');
+        
+        setMarketScannerStatus(prev => ({
+          ...prev,
+          currentStatus: 'scanning',
+          batchProgress: `${validatedBuffer.length}/${RENDER_BATCH_SIZE}`
+        }));
+      };
+      
+      // 3. 初始化滑动窗口
+      console.log('=== 初始化滑动窗口 ===');
+      while (processingSlots.size < CONCURRENT_CONFIG.windowSize && pendingSymbols.length > 0) {
+        const symbol = pendingSymbols.shift()!;
+        startProcessing(symbol, 0);
+      }
+      
+      console.log(`初始窗口: ${Array.from(processingSlots).join(', ')}`);
+      console.log(`剩余待处理: ${pendingSymbols.length} symbols`);
+      
+      // 4. 主处理循环
+      console.log('=== 开始主处理循环 ===');
+      while (processingSlots.size > 0 || pendingSymbols.length > 0 || retryQueue.length > 0) {
+        // 检查停止标记
+        if (stopRequestedRef.current) {
+          console.log('检测到停止请求，退出扫描循环');
+          break;
+        }
+        
+        // 等待一小段时间，避免CPU占用过高
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        // 更新进度状态（按照用户要求的进度条规则）
+        const progressPercent = Math.round((totalProcessed / totalSymbols) * 100);
+        const validatedProgress = `${totalValidated}/${RENDER_BATCH_SIZE}`;
+        const activeSymbols = Array.from(processingSlots);
+        
+        // 更新详细状态
+        setDetailedScanStatus(prev => ({
+          ...prev,
+          processedCount: totalProcessed,
+          percent: progressPercent,
+          activeSymbols: activeSymbols,
+          retryCount: totalRetries,
+          validatedCount: totalValidated,
+          statusMessage: activeSymbols.length > 0 
+            ? `Scanning: ${activeSymbols.join(', ')}` 
+            : 'Processing queue...'
+        }));
+        
+        setMarketScannerStatus(prev => ({
+          ...prev,
+          progress: progressPercent,
+          scannedSymbols: totalProcessed,
+          currentStatus: processingSlots.size > 0 ? 'scanning' : 'idle',
+          currentSymbol: activeSymbols.join(', ') || 'Waiting...',
+          batchProgress: validatedProgress,
+          retryAttempt: totalRetries
+        }));
+        
+        // 处理retryQueue（优先级较低）
+        if (processingSlots.size < CONCURRENT_CONFIG.windowSize && retryQueue.length > 0) {
+          const retryItem = retryQueue.shift()!;
+          console.log(`[retryQueue] 处理重试: ${retryItem.symbol} (重试 ${retryItem.retryCount + 1}/${CONCURRENT_CONFIG.maxRetries})`);
+          startProcessing(retryItem.symbol, retryItem.retryCount + 1, retryItem.lastError);
+          totalRetries++;
+        }
+        
+        // 处理新symbols
+        if (processingSlots.size < CONCURRENT_CONFIG.windowSize && pendingSymbols.length > 0) {
+          const symbol = pendingSymbols.shift()!;
+          startProcessing(symbol, 0);
+        }
+        
+        // 检查是否需要渲染（收集到10个完整结果就渲染）
+        if (validatedBuffer.length >= RENDER_BATCH_SIZE) {
+          renderValidatedBatch();
+        }
+      }
+      
+      // 5. 处理最后一批（可能不满10个）
+      console.log('=== 处理最后一批 ===');
+      if (validatedBuffer.length > 0) {
+        renderValidatedBatch();
+      }
+      
+      // 6. 扫描完成
+      console.log('=== 扫描完成 ===');
+      console.log(`总处理: ${totalProcessed}, 成功: ${totalValidated}, 失败: ${failedSymbols.length}, 重试: ${totalRetries}`);
+      
+      if (failedSymbols.length > 0) {
+        console.warn('失败的symbols:', failedSymbols);
+      }
+      
+      // 设置market scanner状态
+      setMarketScannerStatus(prev => ({
+        ...prev,
+        progress: 100,
+        scannedSymbols: totalProcessed,
+        currentStatus: 'completed',
+        currentSymbol: 'Scan completed',
+        batchProgress: 'Completed',
+        retryAttempt: totalRetries
+      }));
+      
+      // 同时设置detailed scan状态为completed
+      setDetailedScanStatus(prev => ({
+        ...prev,
+        currentStatus: 'completed',
+        processedCount: totalProcessed,
+        totalCount: totalSymbols,
+        percent: 100,
+        validatedCount: totalValidated,
+        lastScanAt: new Date().toISOString(),
+        statusMessage: `Scan completed: ${totalValidated}/${totalSymbols} symbols validated`
+      }));
+      
+    } catch (error: any) {
+      console.error('scanSymbols 主循环异常:', error);
+      setMarketScannerStatus(prev => ({
+        ...prev,
+        currentStatus: 'error',
+        currentSymbol: `Error: ${error.message}`,
+        analysisError: error.message
+      }));
+    }
+  };
+
+  const getCompanyName = async (symbol: string): Promise<string> => {
+    try {
+      // 从marketDataService获取真实公司名
+      const stockData = await marketDataService.getStockData(symbol);
+      if (stockData?.name) {
+        return stockData.name;
+      }
+      // 如果API没有返回公司名，返回symbol
+      return symbol;
+    } catch (error) {
+      console.warn(`无法获取${symbol}的公司名:`, error);
+      // 不返回假数据，返回symbol
+      return symbol;
+    }
+  };
+
+  const getStockNews = async (symbol: string): Promise<any> => {
+    try {
+      console.log(`[DEBUG] 开始获取 ${symbol} 新闻`);
+      
+      // 调用新的新闻接口
+      const response = await api.get(`/market/news/${symbol}`);
+      
+      console.log(`[DEBUG] ${symbol} 新闻响应状态:`, response.status);
+      console.log(`[DEBUG] ${symbol} 新闻响应数据:`, response.data);
+      console.log(`[DEBUG] ${symbol} 新闻success字段:`, response.data?.success);
+      console.log(`[DEBUG] ${symbol} 新闻sentiment字段:`, response.data?.sentiment);
+      console.log(`[DEBUG] ${symbol} 新闻eventRisk字段:`, response.data?.eventRisk);
+      console.log(`[DEBUG] ${symbol} 新闻topNews字段:`, response.data?.topNews);
+      
+      if (response.data?.success) {
+        const newsData = response.data;
+        console.log(`[DEBUG] ${symbol} 新闻获取成功:`, newsData);
+        
+        return {
+          sentiment: newsData.sentiment || null,
+          eventRisk: newsData.eventRisk || null,
+          topCatalyst: newsData.topNews?.title || null,
+          newsItems: newsData.news || [],
+          source: newsData.source || null,
+          topNews: newsData.topNews || null,
+          newsCount: newsData.newsCount || 0,
+          hasNews: newsData.hasNews || false
+        };
+      } else {
+        console.error(`[DEBUG] ${symbol} 新闻获取失败:`, response.data?.error);
+        // 返回空数据
+        return {
+          sentiment: null,
+          eventRisk: null,
+          topCatalyst: null,
+          newsItems: [],
+          source: null,
+          topNews: null,
+          newsCount: 0,
+          hasNews: false
+        };
+      }
+      
+    } catch (error: any) {
+      console.error(`[DEBUG] 获取 ${symbol} 新闻异常:`, error.message, error.response?.data);
+      // 返回空数据，而不是模拟数据
+      return {
+        sentiment: null,
+        eventRisk: null,
+        topCatalyst: null,
+        newsItems: [],
+        source: null,
+        topNews: null,
+        newsCount: 0,
+        hasNews: false
+      };
+    }
+  };
+
+  // Symbol数据完整性校验函数
+  const validateSymbolData = (data: any): { valid: boolean; missingFields: string[]; error?: string } => {
+    const missingFields: string[] = [];
+    
+    // 辅助函数：检查真正的空值（null/undefined/空字符串），0是有效值
+    const isReallyEmpty = (value: any): boolean => {
+      return value === null || value === undefined || value === '';
+    };
+    
+    // ========== 关键字段（缺了才重扫） ==========
+    // 1. symbol - 必须存在且非空
+    if (isReallyEmpty(data?.symbol)) missingFields.push('symbol');
+    
+    // 2. price - 必须存在，0是有效价格
+    if (isReallyEmpty(data?.price)) missingFields.push('price');
+    
+    // 3. changePct/changePercent - 必须存在，0是有效涨跌幅
+    if (isReallyEmpty(data?.changePct) && isReallyEmpty(data?.changePercent)) {
+      missingFields.push('changePct/changePercent');
+    }
+    
+    // 4. volume - 必须存在，0是有效成交量
+    if (isReallyEmpty(data?.volume)) missingFields.push('volume');
+    
+    // 5. trendLabel - 必须存在且非空
+    if (isReallyEmpty(data?.trendLabel)) missingFields.push('trendLabel');
+    
+    // 6. overallScore/trendScore - 必须存在，0是有效分数
+    if (isReallyEmpty(data?.overallScore) && isReallyEmpty(data?.trendScore)) {
+      missingFields.push('overallScore/trendScore');
+    }
+    
+    // 7. aiReasoning - 必须存在且非空
+    if (isReallyEmpty(data?.aiReasoning)) missingFields.push('aiReasoning');
+    
+    // ========== 非关键增强字段（只记录，不触发重扫） ==========
+    const enhancementFields: string[] = [];
+    
+    // 价格范围字段
+    if (isReallyEmpty(data?.dayHigh)) enhancementFields.push('dayHigh');
+    if (isReallyEmpty(data?.dayLow)) enhancementFields.push('dayLow');
+    
+    // 新闻相关字段
+    if (isReallyEmpty(data?.newsSentiment)) enhancementFields.push('newsSentiment');
+    if (isReallyEmpty(data?.eventRisk)) enhancementFields.push('eventRisk');
+    
+    // 6维度分数字段
+    if (isReallyEmpty(data?.momentumScore)) enhancementFields.push('momentumScore');
+    if (isReallyEmpty(data?.volumeScore)) enhancementFields.push('volumeScore');
+    if (isReallyEmpty(data?.volatilityScore)) enhancementFields.push('volatilityScore');
+    if (isReallyEmpty(data?.structureScore)) enhancementFields.push('structureScore');
+    if (isReallyEmpty(data?.newsScore)) enhancementFields.push('newsScore');
+    
+    // 记录增强字段缺失情况（只记录，不影响验证结果）
+    if (enhancementFields.length > 0) {
+      console.log(`[${data?.symbol}] 增强字段缺失（不影响验证）: ${enhancementFields.join(', ')}`);
+    }
+    
+    // 至少一个有效的AI判断字段（非空）
+    const hasValidAIField = !isReallyEmpty(data?.trendLabel) || 
+                           !isReallyEmpty(data?.trendScore) || 
+                           !isReallyEmpty(data?.aiReasoning);
+    
+    // provenance检查（如果有的话）
+    const hasProvenance = data?.provenance || data?.source;
+    if (!hasProvenance) {
+      // 不是必须字段，但记录警告
+      console.warn(`[${data?.symbol}] 缺少provenance/source字段`);
+    }
+    
+    const valid = missingFields.length === 0 && hasValidAIField;
+    
+    return {
+      valid,
+      missingFields,
+      error: valid ? undefined : `Missing critical fields: ${missingFields.join(', ')}${!hasValidAIField ? ' (no valid AI field)' : ''}`
+    };
+  };
+
+  const analyzeTrend = async (symbol: string, stockData: any, newsData: any): Promise<TrendAnalysis> => {
+    try {
+      console.log(`[AI DEBUG] ====== 开始AI分析 ${symbol} ======`);
+      console.log(`[AI DEBUG] symbol before analyze =`, symbol);
+      console.log(`[AI DEBUG] request payload =`, { symbol });
+      const requestStartTime = Date.now();
+      
+      // 调用新的单只股票AI分析接口 - 使用scanner专用api（无timeout限制）
+      const response = await scannerApi.post('/ai/analyze/single', {
+        symbol: symbol
+      });
+      
+      const requestEndTime = Date.now();
+      const requestDuration = requestEndTime - requestStartTime;
+      console.log(`[AI DEBUG] API请求耗时: ${requestDuration}ms`);
+      
+      console.log(`[AI DEBUG] raw analyze response =`, response.data);
+      console.log(`[AI DEBUG] response status =`, response.status);
+      console.log(`[AI DEBUG] response success =`, response.data?.success);
+      
+      if (response.data?.success) {
+        const result = response.data;
+        console.log(`[AI DEBUG] AI分析 ${symbol} 成功:`, {
+          trendLabel: result.trendLabel,
+          trendScore: result.trendScore,
+          overallScore: result.overallScore,
+          aiReasoning: result.aiReasoning ? '有' : '无'
+        });
+        
+        // 调试：检查关键字段 - V3格式
+        console.log(`[DEBUG] AI分析 ${symbol} - trendLabel字段:`, result.trendLabel);
+        console.log(`[DEBUG] AI分析 ${symbol} - trendScore字段:`, result.trendScore);
+        console.log(`[DEBUG] AI分析 ${symbol} - momentumLabel字段:`, result.momentumLabel);
+        console.log(`[DEBUG] AI分析 ${symbol} - momentumScore字段:`, result.momentumScore);
+        console.log(`[DEBUG] AI分析 ${symbol} - volatilityLabel字段:`, result.volatilityLabel);
+        console.log(`[DEBUG] AI分析 ${symbol} - volatilityScore字段:`, result.volatilityScore);
+        console.log(`[DEBUG] AI分析 ${symbol} - volumeLabel字段:`, result.volumeLabel);
+        console.log(`[DEBUG] AI分析 ${symbol} - volumeScore字段:`, result.volumeScore);
+        console.log(`[DEBUG] AI分析 ${symbol} - structureLabel字段:`, result.structureLabel);
+        console.log(`[DEBUG] AI分析 ${symbol} - structureScore字段:`, result.structureScore);
+        console.log(`[DEBUG] AI分析 ${symbol} - newsLabel字段:`, result.newsLabel);
+        console.log(`[DEBUG] AI分析 ${symbol} - newsScore字段:`, result.newsScore);
+        console.log(`[DEBUG] AI分析 ${symbol} - riskLevel字段:`, result.riskLevel);
+        console.log(`[DEBUG] AI分析 ${symbol} - overallScore字段:`, result.overallScore);
+        console.log(`[DEBUG] AI分析 ${symbol} - aiReasoning字段:`, result.aiReasoning);
+        console.log(`[DEBUG] AI分析 ${symbol} - conciseReason字段:`, result.conciseReason);
+        
+        // 向后兼容：检查V2格式字段
+        console.log(`[DEBUG] AI分析 ${symbol} - trend字段(V2):`, result.trend);
+        console.log(`[DEBUG] AI分析 ${symbol} - confidence字段(V2):`, result.confidence);
+        console.log(`[DEBUG] AI分析 ${symbol} - newsSentiment字段(V2):`, result.newsSentiment);
+        console.log(`[DEBUG] AI分析 ${symbol} - eventRisk字段(V2):`, result.eventRisk);
+        console.log(`[DEBUG] AI分析 ${symbol} - volumeStatus字段(V2):`, result.volumeStatus);
+        console.log(`[DEBUG] AI分析 ${symbol} - conciseReasoning字段(V2):`, result.conciseReasoning);
+        console.log(`[DEBUG] AI分析 ${symbol} - detailedReasoning字段(V2):`, result.detailedReasoning);
+        console.log(`[DEBUG] AI分析 ${symbol} - scannerReason字段(V2):`, result.scannerReason);
+        console.log(`[DEBUG] AI分析 ${symbol} - companyName字段:`, result.companyName);
+        console.log(`[DEBUG] AI分析 ${symbol} - sector字段:`, result.sector);
+        
+        // 构建trendAnalysis对象 - 优先使用V3格式，回退到V2格式
+        const trendAnalysis: TrendAnalysis = {
+          // V3字段
+          trendLabel: result.trendLabel || result.trend || null,
+          trendScore: result.trendScore || result.overallScore || null,
+          momentumLabel: result.momentumLabel || null,
+          momentumScore: result.momentumScore || null,
+          volatilityLabel: result.volatilityLabel || null,
+          volatilityScore: result.volatilityScore || null,
+          volumeLabel: (result.volumeLabel as 'low' | 'normal' | 'high') || result.volumeStatus || null,
+          volumeScore: result.volumeScore || null,
+          structureLabel: result.structureLabel || null,
+          structureScore: result.structureScore || null,
+          newsLabel: (result.newsLabel as 'positive' | 'neutral' | 'negative') || result.newsSentiment || null,
+          newsScore: result.newsScore || null,
+          riskLevel: (result.riskLevel as 'low' | 'medium' | 'high') || result.eventRisk || null,
+          
+          // V2兼容字段
+          trendConfidence: result.confidence || null,
+          scannerReason: result.scannerReason || result.conciseReason || null,
+          trendScoreDetail: result.trendScore || null,
+          volumeStatus: result.volumeStatus || result.volumeLabel || null,
+          conciseReasoning: result.conciseReasoning || result.conciseReason || null,
+          detailedReasoning: result.detailedReasoning || result.aiReasoning || null,
+          aiReasoning: result.aiReasoning || null,
+          newsSentiment: result.newsSentiment || result.newsLabel || null,
+          eventRisk: result.eventRisk || result.riskLevel || null,
+          topNews: result.topNews || null,
+          companyName: result.companyName || null,
+          sector: result.sector || null,
+          
+          // 确保所有字段都有值
+          overallScore: result.overallScore || result.trendScore || null,
+          conciseReason: result.conciseReason || result.conciseReasoning || null
+        };
+        
+        console.log(`[AI DEBUG] normalized trendAnalysis (V3) =`, {
+          symbol,
+          // V3核心字段
+          trendLabel: trendAnalysis.trendLabel,
+          trendScore: trendAnalysis.trendScore,
+          momentumLabel: trendAnalysis.momentumLabel,
+          momentumScore: trendAnalysis.momentumScore,
+          volumeLabel: trendAnalysis.volumeLabel,
+          volumeScore: trendAnalysis.volumeScore,
+          newsLabel: trendAnalysis.newsLabel,
+          newsScore: trendAnalysis.newsScore,
+          riskLevel: trendAnalysis.riskLevel,
+          overallScore: trendAnalysis.overallScore,
+          // 关键推理字段
+          aiReasoning: trendAnalysis.aiReasoning,
+          conciseReason: trendAnalysis.conciseReason
+        });
+        
+        console.log(`[AI DEBUG] ====== AI分析 ${symbol} 完成 (成功) ======`);
+        return trendAnalysis;
+      } else {
+        // 后端返回success: false，返回null数据
+        console.warn(`[AI DEBUG] AI分析 ${symbol} 后端返回success: false，返回null数据`);
+        console.warn(`[AI DEBUG] AI分析 ${symbol} 错误信息:`, response.data?.error);
+        console.log(`[AI DEBUG] ====== AI分析 ${symbol} 完成 (失败: success=false) ======`);
+        
+        // 返回null数据，不伪造任何值 - 包含所有V3字段
+        return {
+          // V3字段
+          trendLabel: null,
+          trendScore: null,
+          momentumLabel: null,
+          momentumScore: null,
+          volatilityLabel: null,
+          volatilityScore: null,
+          volumeLabel: null,
+          volumeScore: null,
+          structureLabel: null,
+          structureScore: null,
+          newsLabel: null,
+          newsScore: null,
+          riskLevel: null,
+          overallScore: null,
+          conciseReason: null,
+          
+          // V2兼容字段
+          trendConfidence: null,
+          scannerReason: null,
+          trendScoreDetail: null,
+          volumeStatus: null,
+          conciseReasoning: null,
+          detailedReasoning: null,
+          aiReasoning: null,
+          newsSentiment: null,
+          eventRisk: null,
+          topNews: null,
+          companyName: null,
+          sector: null
+        };
+      }
+    } catch (error: any) {
+      console.error(`[AI DEBUG] AI分析 ${symbol} 异常:`, error.message, error.response?.data);
+      console.error(`[AI DEBUG] 异常类型:`, error.constructor.name);
+      console.error(`[AI DEBUG] 异常堆栈:`, error.stack);
+      console.log(`[AI DEBUG] ====== AI分析 ${symbol} 完成 (异常) ======`);
+      // AI分析失败时，返回null数据，不伪造任何值 - 包含所有V3字段
+      return {
+        // V3字段
+        trendLabel: null,
+        trendScore: null,
+        momentumLabel: null,
+        momentumScore: null,
+        volatilityLabel: null,
+        volatilityScore: null,
+        volumeLabel: null,
+        volumeScore: null,
+        structureLabel: null,
+        structureScore: null,
+        newsLabel: null,
+        newsScore: null,
+        riskLevel: null,
+        overallScore: null,
+        conciseReason: null,
+        
+        // V2兼容字段
+        trendConfidence: null,
+        scannerReason: null,
+        trendScoreDetail: null,
+        volumeStatus: null,
+        conciseReasoning: null,
+        detailedReasoning: null,
+        aiReasoning: null,
+        newsSentiment: null,
+        eventRisk: null,
+        topNews: null,
+        companyName: null,
+        sector: null
+      };
+    }
+  };
+
+  const calculateRelativeVolume = (volume: number | null, symbol: string): string | null => {
+    // 基于真实成交量计算相对成交量
+    // 暂时返回null，等待真实平均成交量数据
+    return null;
+  };
+
+  const getTrendLabel = (score: number): string => {
+    if (score >= 80) return 'Strong Bullish';
+    if (score >= 60) return 'Bullish';
+    if (score >= 40) return 'Neutral';
+    if (score >= 20) return 'Bearish';
+    return 'Strong Bearish';
+  };
+
+  const getTrendColor = (label: string): string => {
+    switch (label) {
+      case 'Strong Bullish': return '#52c41a';
+      case 'Bullish': return '#73d13d';
+      case 'Neutral': return '#faad14';
+      case 'Bearish': return '#ff7875';
+      case 'Strong Bearish': return '#ff4d4f';
+      default: return '#8c8c8c';
+    }
+  };
+
+  // 统一的 trend badge 渲染函数
+  const renderTrendBadge = (label: string) => {
+    if (!label) {
+      return (
+        <div style={{
+          display: 'inline-block',
+          padding: '4px 12px',
+          borderRadius: '12px',
+          backgroundColor: '#f5f5f5',
+          border: '1px solid #d9d9d9',
+          color: '#8c8c8c',
+          fontWeight: '600',
+          fontSize: '11px',
+          textAlign: 'center',
+          minWidth: '80px',
+          height: '24px',
+          lineHeight: '16px',
+          boxSizing: 'border-box'
+        }}>
+          N/A
+        </div>
+      );
+    }
+    
+    const color = getTrendColor(label);
+    const isStrong = label.includes('Strong');
+    
+    return (
+      <div style={{
+        display: 'inline-block',
+        padding: '4px 12px',
+        borderRadius: '12px',
+        backgroundColor: `${color}15`,
+        border: `1.5px solid ${color}`,
+        color: color,
+        fontWeight: isStrong ? '700' : '600',
+        fontSize: '11px',
+        textAlign: 'center',
+        minWidth: '80px',
+        height: '24px',
+        lineHeight: '16px',
+        boxSizing: 'border-box',
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis'
+      }}>
+        {label}
+      </div>
+    );
+  };
+
+  const generateScannerReason = (symbol: string, score: number, newsData: any, stockData: any): string | null => {
+    // 不再使用模板句子，返回null让AI分析提供真实reasoning
+    return null;
+  };
+
+  const updateScannerSummary = (results: any[]): void => {
+    // 修复：全部使用 null-safe 检查
+    const bullishCount = results.filter(r => (r.trendLabel || '').includes('Bullish')).length;
+    const bearishCount = results.filter(r => (r.trendLabel || '').includes('Bearish')).length;
+    const neutralCount = results.filter(r => r.trendLabel === 'Neutral').length;
+    const strongTrendCount = results.filter(r => (r.trendLabel || '').includes('Strong')).length;
+    const newsRiskCount = results.filter(r => r.eventRisk === 'High').length;
+    
+    setMarketScannerSummary({
+      universeScanned: results.length,
+      bullishCount,
+      bearishCount,
+      neutralCount,
+      strongTrendCount,
+      newsRiskCount,
+      lastScanTime: new Date().toISOString()
+    });
+  };
+
+  // 获取过滤和排序后的结果
+  const getFilteredAndSortedResults = (): any[] => {
+    if (!marketScannerResults || marketScannerResults.length === 0) {
+      return [];
+    }
+    
+    // 1. 先过滤
+    let filteredResults = [...marketScannerResults];
+    
+    if (marketScannerFilters.trendFilter !== 'all') {
+      switch (marketScannerFilters.trendFilter) {
+        case 'bullish':
+          filteredResults = filteredResults.filter(r => 
+            r.trendLabel === 'Bullish' || r.trendLabel === 'Strong Bullish'
+          );
+          break;
+        case 'bearish':
+          filteredResults = filteredResults.filter(r => 
+            r.trendLabel === 'Bearish' || r.trendLabel === 'Strong Bearish'
+          );
+          break;
+        case 'neutral':
+          filteredResults = filteredResults.filter(r => r.trendLabel === 'Neutral');
+          break;
+        case 'strong':
+          filteredResults = filteredResults.filter(r => 
+            r.trendLabel === 'Strong Bullish' || r.trendLabel === 'Strong Bearish'
+          );
+          break;
+      }
+    }
+    
+    // 2. 再排序
+    const sortField = marketScannerFilters.sortBy;
+    const sortOrder = marketScannerFilters.sortOrder;
+    
+    filteredResults.sort((a, b) => {
+      let aValue = a[sortField];
+      let bValue = b[sortField];
+      
+      // 处理特殊字段
+      if (sortField === 'trendScore') {
+        aValue = a.trendScore || a.overallScore || 0;
+        bValue = b.trendScore || b.overallScore || 0;
+      } else if (sortField === 'changePct') {
+        aValue = a.changePct || a.changePercent || 0;
+        bValue = b.changePct || b.changePercent || 0;
+      } else if (sortField === 'volume') {
+        aValue = a.volume || 0;
+        bValue = b.volume || 0;
+      } else if (sortField === 'newsSentiment') {
+        // 将新闻情绪映射为数值进行排序
+        const sentimentMap: Record<string, number> = {
+          'Positive': 3,
+          'Neutral': 2,
+          'Negative': 1,
+          'Mixed': 2
+        };
+        aValue = sentimentMap[a.newsSentiment] || 0;
+        bValue = sentimentMap[b.newsSentiment] || 0;
+      }
+      
+      // 处理空值
+      if (aValue === null || aValue === undefined) aValue = sortOrder === 'desc' ? -Infinity : Infinity;
+      if (bValue === null || bValue === undefined) bValue = sortOrder === 'desc' ? -Infinity : Infinity;
+      
+      // 数值比较
+      if (typeof aValue === 'number' && typeof bValue === 'number') {
+        return sortOrder === 'desc' ? bValue - aValue : aValue - bValue;
+      }
+      
+      // 字符串比较
+      const aStr = String(aValue || '');
+      const bStr = String(bValue || '');
+      return sortOrder === 'desc' ? bStr.localeCompare(aStr) : aStr.localeCompare(bStr);
+    });
+    
+    return filteredResults;
+  };
+
+  // 获取Preferred Continue Scan List
+
+
+  // 获取bullish候选数量（用于UI显示）
+  const getBullishCandidatesCount = (): number => {
+    if (!marketScannerResults || marketScannerResults.length === 0) {
+      return 0;
+    }
+    
+    return marketScannerResults.filter(candidate => {
+      if (!candidate.symbol || !candidate.trendLabel) return false;
+      const trend = candidate.trendLabel;
+      const score = candidate.overallScore || candidate.trendScore || 0;
+      const risk = candidate.eventRisk || 'Medium';
+      
+      // 排除规则
+      if (risk === 'High') return false;
+      if (trend === 'Strong Bearish') return false;
+      if (score < 30) return false;
+      
+      // 只计算Bullish/Strong Bullish
+      return trend === 'Bullish' || trend === 'Strong Bullish';
+    }).length;
+  };
+
+  const clearMarketScannerTimer = (): void => {
+    if (marketScannerTimerRef.current) {
+      clearTimeout(marketScannerTimerRef.current);
+      marketScannerTimerRef.current = null;
+    }
+  };
+
+  // 安排下一次 Market Scanner 自动扫描
+  const scheduleNextMarketScannerAutoScan = (): void => {
+    // 只在 Market Scanner 自动扫描启用时安排下一次
+    if (!marketScannerAutoEnabledRef.current || marketScannerStopRequestedRef.current) {
+      console.log('Market Scanner 自动扫描未启用或已停止，不安排下一次扫描');
+      setDetailedScanStatus(prev => ({
+        ...prev,
+        nextScanAt: null,
+        statusMessage: 'Auto scan not enabled or stopped'
+      }));
+      return;
+    }
+    
+    clearMarketScannerTimer(); // 先清理旧的定时器
+    
+    // 使用硬编码的30分钟间隔（与 UI 下拉框一致）
+    const intervalMinutes = 30;
+    const intervalMs = intervalMinutes * 60 * 1000;
+    
+    // 计算下一次扫描时间
+    const now = new Date();
+    const nextScanTime = new Date(now.getTime() + intervalMs);
+    const nextScanAt = nextScanTime.toISOString();
+    
+    console.log(`安排下一次 Market Scanner 自动扫描，间隔 ${intervalMinutes} 分钟，时间: ${nextScanTime.toLocaleString()}`);
+    
+    // 更新详细状态
+    setDetailedScanStatus(prev => ({
+      ...prev,
+      currentStatus: 'waiting_next_scan',
+      nextScanAt: nextScanAt,
+      statusMessage: `Next scan at ${nextScanTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`
+    }));
+    
+    // 更新 Market Scanner 状态
+    setMarketScannerStatus(prev => ({
+      ...prev,
+      nextScanTime: nextScanAt
+    }));
+    
+    marketScannerTimerRef.current = setTimeout(async () => {
+      try {
+        console.log(`Market Scanner 自动扫描定时器触发，间隔 ${intervalMinutes} 分钟`);
+        
+        // 检查是否还在自动扫描模式
+        if (!marketScannerAutoEnabledRef.current || marketScannerStopRequestedRef.current) {
+          console.log('Market Scanner 自动扫描已关闭或停止，跳过本次扫描');
+          return;
+        }
+        
+        // 检查是否已经在扫描中
+        if (marketScannerIsScanningRef.current) {
+          console.log('Market Scanner 扫描已在运行中，等待当前扫描完成');
+          // 重新安排下一次扫描
+          scheduleNextMarketScannerAutoScan();
+          return;
+        }
+        
+        // 执行扫描
+        await runMarketScanner();
+      } catch (error) {
+        console.error('Market Scanner 自动扫描执行失败:', error);
+        const errorMessage = error instanceof Error ? error.message : 
+                            typeof error === 'string' ? error : 
+                            'Unknown error';
+        setDetailedScanStatus(prev => ({
+          ...prev,
+          currentStatus: 'error',
+          statusMessage: `Auto scan failed: ${errorMessage}`
+        }));
+      } finally {
+        // 无论扫描是否成功或跳过，如果自动扫描仍然启用，都安排下一次
+        if (marketScannerAutoEnabledRef.current && !marketScannerStopRequestedRef.current) {
+          scheduleNextMarketScannerAutoScan();
+        }
+      }
+    }, intervalMs);
+  };
+
+  const handleStartMarketScannerAuto = (): void => {
+    // 防止重复启动
+    if (marketScannerAutoEnabled) {
+      message.warning('Market Scanner 自动扫描已在运行中');
+      return;
+    }
+    
+    // 重置停止标记
+    marketScannerStopRequestedRef.current = false;
+    
+    // 启用自动扫描
+    setMarketScannerAutoEnabled(true);
+    marketScannerAutoEnabledRef.current = true;
+    
+    // 更新状态
+    setDetailedScanStatus(prev => ({
+      ...prev,
+      currentStatus: 'waiting_next_scan',
+      statusMessage: 'Auto scan started, starting first scan...'
+    }));
+    
+    // 立即开始第一轮扫描
+    runMarketScanner();
+  };
+
+  const handleStopMarketScannerAuto = (): void => {
+    // 设置停止标记
+    marketScannerStopRequestedRef.current = true;
+    
+    // 禁用自动扫描
+    setMarketScannerAutoEnabled(false);
+    marketScannerAutoEnabledRef.current = false;
+    
+    // 清理定时器
+    clearMarketScannerTimer();
+    
+    // 更新状态
+    setDetailedScanStatus(prev => ({
+      ...prev,
+      currentStatus: 'stopped',
+      nextScanAt: null,
+      statusMessage: 'Scan stopped by user'
+    }));
+    
+    // 更新 Market Scanner 状态
+    setMarketScannerStatus(prev => ({
+      ...prev,
+      nextScanTime: null
+    }));
+    
+    message.success('已停止 Market Scanner 自动扫描');
+  };
+
+  const handleRunMarketScannerNow = (): void => {
+    if (marketScannerIsScanningRef.current) {
+      message.warning('扫描正在进行中');
+      return;
+    }
+    runMarketScanner();
+  };
+
+  const handleSymbolClick = (symbol: string): void => {
+    // 将选中的symbol添加到AI Recommendations扫描
+    message.info(`已将 ${symbol} 添加到分析队列`);
+    // 这里可以实现将symbol添加到AI分析队列的逻辑
+  };
+
+  // Step 4: 获取候选股票符号 - 扩展股票池：科技股 + 非科技股
+  // 展开行相关函数
+  const toggleRowExpand = (symbol: string) => {
+    setExpandedRows(prev => 
+      prev.includes(symbol) 
+        ? prev.filter(s => s !== symbol)
+        : [...prev, symbol]
+    );
+  };
+
+  // 格式化新闻日期函数
+  const formatNewsDate = (timestamp: any): string => {
+    if (!timestamp) return 'Time unavailable';
+    
+    try {
+      // 检查是否是数字（Unix时间戳）
+      const num = Number(timestamp);
+      if (!isNaN(num)) {
+        // 判断是秒时间戳（10位）还是毫秒时间戳（13位）
+        const timestampMs = num < 10000000000 ? num * 1000 : num;
+        const date = new Date(timestampMs);
+        
+        // 检查日期是否有效（不是1970年）
+        if (date.getFullYear() < 1971) {
+          return 'Time unavailable';
+        }
+        
+        return date.toLocaleDateString('en-US', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric'
+        });
+      }
+      
+      // 如果不是数字，尝试直接解析
+      const date = new Date(timestamp);
+      if (isNaN(date.getTime()) || date.getFullYear() < 1971) {
+        return 'Time unavailable';
+      }
+      
+      return date.toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric'
+      });
+    } catch (error) {
+      console.error('Error formatting news date:', error, timestamp);
+      return 'Time unavailable';
+    }
+  };
+
+  const renderDetailPanel = (record: any) => {
+    return (
+      <div style={{ padding: '20px', backgroundColor: '#f8f9fa', borderRadius: '10px', border: '1px solid #e8e8e8' }}>
+        {/* 头部信息 */}
+        <div style={{ marginBottom: '16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
+            <div style={{ fontSize: '18px', fontWeight: '700', color: '#1f1f1f' }}>{record.symbol}</div>
+            <div style={{ fontSize: '14px', color: '#666' }}>{record.companyName || 'N/A'}</div>
+            <div style={{ 
+              display: 'inline-block',
+              padding: '2px 10px',
+              borderRadius: '12px',
+              backgroundColor: '#e6f7ff',
+              color: '#1890ff',
+              fontSize: '11px',
+              fontWeight: '600'
+            }}>
+              {record.dataSource || 'Unknown Source'}
+            </div>
+          </div>
+          <div style={{ fontSize: '12px', color: '#999' }}>
+            Last updated: {record.timestamp ? new Date(record.timestamp).toLocaleString() : 'N/A'}
+          </div>
+        </div>
+        
+        {/* 三列布局 */}
+        <Row gutter={[16, 16]}>
+          {/* 基础信息列 */}
+          <Col span={8}>
+            <Card 
+              size="small" 
+              title={
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '13px', fontWeight: '600' }}>📊 Basic Info</span>
+                </div>
+              }
+              style={{ height: '100%', border: '1px solid #e8e8e8' }}
+              bodyStyle={{ padding: '16px' }}
+            >
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {/* 价格信息 */}
+                <div>
+                  <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Price</div>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                    <div style={{ fontSize: '16px', fontWeight: '700', color: '#1f1f1f' }}>
+                      ${record.price?.toFixed(2) || '--'}
+                    </div>
+                    <div style={{ 
+                      fontSize: '12px', 
+                      color: record.changePercent >= 0 ? '#52c41a' : '#ff4d4f',
+                      fontWeight: '600'
+                    }}>
+                      {record.changePercent !== null && record.changePercent !== undefined ? 
+                        `${record.changePercent >= 0 ? '+' : ''}${record.changePercent.toFixed(2)}%` : 'N/A'}
+                    </div>
+                  </div>
+                </div>
+                
+                {/* 价格范围 */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                  <div>
+                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Day High</div>
+                    <div style={{ fontSize: '13px', fontWeight: '600', color: '#333' }}>
+                      ${record.dayHigh?.toFixed(2) || '--'}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Day Low</div>
+                    <div style={{ fontSize: '13px', fontWeight: '600', color: '#333' }}>
+                      ${record.dayLow?.toFixed(2) || '--'}
+                    </div>
+                  </div>
+                </div>
+                
+                {/* 成交量信息 */}
+                <div>
+                  <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Volume</div>
+                  <div style={{ fontSize: '14px', fontWeight: '600', color: '#333' }}>
+                    {record.volume ? marketDataService.formatVolume(record.volume) : '--'}
+                  </div>
+                  <div style={{ fontSize: '11px', color: record.volumeStatus ? '#666' : '#999', marginTop: '2px' }}>
+                    Status: {record.volumeStatus || 'N/A'}
+                  </div>
+                </div>
+                
+                {/* 行业和数据源 */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                  <div>
+                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Sector</div>
+                    <div style={{ fontSize: '13px', fontWeight: '600', color: '#333' }}>
+                      {record.sector || 'N/A'}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Data Sources</div>
+                    <div style={{ fontSize: '11px', fontWeight: '600', color: '#333', lineHeight: '1.4' }}>
+                      {record.provenance ? (
+                        <div>
+                          <div>Market: {record.provenance.marketData || 'N/A'}</div>
+                          <div>News: {record.provenance.news || 'N/A'}</div>
+                          <div>AI: {record.provenance.aiAnalysis || 'N/A'}</div>
+                        </div>
+                      ) : (
+                        'N/A'
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </Card>
+          </Col>
+          
+          {/* 趋势分析列 */}
+          <Col span={8}>
+            <Card 
+              size="small" 
+              title={
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '13px', fontWeight: '600' }}>📈 Trend Analysis</span>
+                </div>
+              }
+              style={{ height: '100%', border: '1px solid #e8e8e8' }}
+              bodyStyle={{ padding: '16px' }}
+            >
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {/* 趋势标签 */}
+                <div>
+                  <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Trend</div>
+                  {record.trendLabel ? renderTrendBadge(record.trendLabel) : (
+                    <div style={{ fontSize: '12px', color: '#999' }}>N/A</div>
+                  )}
+                </div>
+                
+                {/* 总体分数 */}
+                <div>
+                  <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Overall Score</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <div style={{ fontSize: '20px', fontWeight: '700', color: '#1f1f1f' }}>
+                      {record.trendScore?.toFixed(0) || '--'}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#999' }}>/100</div>
+                    <div style={{ fontSize: '11px', color: '#666' }}>
+                      Conf: {record.trendConfidence ? `${(record.trendConfidence * 100).toFixed(0)}%` : 'N/A'}
+                    </div>
+                  </div>
+                  {record.trendScore && (
+                    <div style={{ 
+                      width: '100%', 
+                      height: '6px', 
+                      backgroundColor: '#f0f0f0', 
+                      borderRadius: '3px',
+                      marginTop: '8px',
+                      overflow: 'hidden'
+                    }}>
+                      <div style={{ 
+                        width: `${record.trendScore}%`, 
+                        height: '100%', 
+                        backgroundColor: record.trendScore >= 70 ? '#52c41a' : record.trendScore >= 40 ? '#faad14' : '#ff4d4f',
+                        borderRadius: '3px'
+                      }} />
+                    </div>
+                  )}
+                </div>
+                
+                {/* 6维度分数 */}
+                <div>
+                  <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>6-Dimension Scores</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '6px' }}>
+                    {[
+                      { label: 'Trend', value: record.trendScoreDetail },
+                      { label: 'Momentum', value: record.momentumScore },
+                      { label: 'Volume', value: record.volumeScore },
+                      { label: 'Volatility', value: record.volatilityScore },
+                      { label: 'Structure', value: record.structureScore },
+                      { label: 'News', value: record.newsScore }
+                    ].map((item, index) => (
+                      <div key={index} style={{ 
+                        padding: '4px 8px', 
+                        backgroundColor: '#f8f9fa', 
+                        borderRadius: '6px',
+                        border: '1px solid #e8e8e8'
+                      }}>
+                        <div style={{ fontSize: '10px', color: '#666' }}>{item.label}</div>
+                        <div style={{ fontSize: '12px', fontWeight: '600', color: '#333' }}>
+                          {item.value?.toFixed(0) || '--'}/100
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </Card>
+          </Col>
+          
+          {/* 新闻分析列 */}
+          <Col span={8}>
+            <Card 
+              size="small" 
+              title={
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '13px', fontWeight: '600' }}>📰 News & Analysis</span>
+                </div>
+              }
+              style={{ height: '100%', border: '1px solid #e8e8e8' }}
+              bodyStyle={{ padding: '16px' }}
+            >
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {/* 新闻情绪 */}
+                <div>
+                  <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>News Sentiment</div>
+                  {record.newsSentiment ? (
+                    <div style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '4px 12px',
+                      borderRadius: '12px',
+                      backgroundColor: record.newsSentiment === 'Positive' ? '#52c41a15' : 
+                                     record.newsSentiment === 'Negative' ? '#ff4d4f15' : '#faad1415',
+                      color: record.newsSentiment === 'Positive' ? '#52c41a' : 
+                             record.newsSentiment === 'Negative' ? '#ff4d4f' : '#faad14',
+                      fontWeight: '600',
+                      fontSize: '12px'
+                    }}>
+                      <span>{record.newsSentiment === 'Positive' ? '📈' : record.newsSentiment === 'Negative' ? '📉' : '📊'}</span>
+                      <span>{record.newsSentiment}</span>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: '12px', color: '#999' }}>N/A</div>
+                  )}
+                </div>
+                
+                {/* 事件风险 */}
+                <div>
+                  <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Event Risk</div>
+                  {record.eventRisk ? (
+                    <div style={{
+                      display: 'inline-block',
+                      padding: '4px 12px',
+                      borderRadius: '12px',
+                      backgroundColor: record.eventRisk === 'High' ? '#ff4d4f15' : 
+                                     record.eventRisk === 'Medium' ? '#faad1415' : '#52c41a15',
+                      color: record.eventRisk === 'High' ? '#ff4d4f' : 
+                             record.eventRisk === 'Medium' ? '#faad14' : '#52c41a',
+                      fontWeight: '600',
+                      fontSize: '12px'
+                    }}>
+                      {record.eventRisk}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: '12px', color: '#999' }}>N/A</div>
+                  )}
+                </div>
+                
+                {/* AI推理 */}
+                <div>
+                  <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>AI Reasoning</div>
+                  <div style={{ 
+                    fontSize: '12px', 
+                    color: record.detailedReasoning || record.aiReasoning || record.scannerReason ? '#333' : '#999',
+                    lineHeight: 1.4,
+                    padding: '8px',
+                    backgroundColor: '#f8f9fa',
+                    borderRadius: '6px',
+                    border: '1px solid #e8e8e8',
+                    minHeight: '60px',
+                    maxHeight: '120px',
+                    overflowY: 'auto'
+                  }}>
+                    {record.detailedReasoning || record.aiReasoning || record.scannerReason || 'N/A'}
+                  </div>
+                </div>
+                
+                {/* 头条新闻 */}
+                <div>
+                  <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Top News</div>
+                  <div style={{ 
+                    padding: '8px',
+                    backgroundColor: '#f8f9fa',
+                    borderRadius: '6px',
+                    border: '1px solid #e8e8e8',
+                    minHeight: '60px'
+                  }}>
+                    {record.topNews ? (
+                      <>
+                        <div style={{ fontSize: '12px', fontWeight: '600', color: '#333', marginBottom: '4px' }}>
+                          {record.topNews.title || 'No title available'}
+                        </div>
+                        {(record.topNews.source || record.topNews.publisher) && (
+                          <div style={{ fontSize: '11px', color: '#666' }}>
+                            {record.topNews.source && `Data Source: ${record.topNews.source}`}
+                            {record.topNews.publisher && record.topNews.source && ` • `}
+                            {record.topNews.publisher && `Publisher: ${record.topNews.publisher}`}
+                            {record.topNews.published && ` • ${formatNewsDate(record.topNews.published)}`}
+                          </div>
+                        )}
+                        {record.topNews.summary && (
+                          <div style={{ fontSize: '11px', color: '#666', marginTop: '4px', lineHeight: 1.3 }}>
+                            {record.topNews.summary}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div style={{ 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        justifyContent: 'center',
+                        height: '100%',
+                        color: '#999',
+                        fontSize: '12px',
+                        fontStyle: 'italic'
+                      }}>
+                        No recent news available
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </Card>
+          </Col>
+        </Row>
+      </div>
+    );
+  };
+
+  const getCandidateSymbols = async (): Promise<{symbols: string[], source: string, scanType: string}> => {
+    try {
+      console.log('开始扩展股票池扫描...');
+      
+      // 1. 扩展股票池：科技股 + 非科技股
+      // 科技股列表（主要科技股）
+      const techStocks = [
+        'NVDA', 'AAPL', 'MSFT', 'AMD', 'AVGO',
+        'META', 'AMZN', 'GOOGL', 'TSLA', 'INTC'
+      ];
+      
+      // 非科技股列表（不同板块）
+      const nonTechStocks = [
+        'WMT', 'HD', 'JPM', 'XOM', 'UNH',
+        'COST', 'KO', 'CAT', 'JNJ', 'PG'
+      ];
+      
+      // 合并所有股票
+      const allCandidates = [...techStocks, ...nonTechStocks];
+      
+      console.log(`扩展股票池: ${techStocks.length}只科技股 + ${nonTechStocks.length}只非科技股 = ${allCandidates.length}只股票`);
+      console.log(`科技股: ${techStocks.slice(0, 5).join(', ')}${techStocks.length > 5 ? '...' : ''}`);
+      console.log(`非科技股: ${nonTechStocks.slice(0, 5).join(', ')}${nonTechStocks.length > 5 ? '...' : ''}`);
+      
+      // 2. 验证股票数据可用性（可选步骤）
+      // 注意：这里我们假设所有股票都有数据，实际扫描时会验证
+      
+      // 3. 返回所有候选股票
+      // 在实际应用中，可以限制每次扫描的数量，但为了演示目的，我们返回所有
+      // 实际扫描时会为每个symbol执行完整的分析流程
+      const symbolsToScan = allCandidates.slice(0, 12); // 限制最多扫描12只股票以保持性能
+      
+      console.log(`扩展股票池扫描完成，将扫描 ${symbolsToScan.length} 只股票: ${symbolsToScan.join(', ')}`);
+      
+      return { 
+        symbols: symbolsToScan, 
+        source: 'expanded_universe', 
+        scanType: 'expanded_tech_nontech'
+      };
+      
+    } catch (error: any) {
+      console.error('扩展股票池扫描失败:', error);
+      // 如果扩展扫描失败，回退到原始的市场扫描逻辑
+      console.log('尝试回退到原始市场扫描逻辑...');
+      return await fallbackMarketScan();
+    }
+  };
+  
+  // 回退函数：原始市场扫描逻辑
+  const fallbackMarketScan = async (): Promise<{symbols: string[], source: string, scanType: string}> => {
+    try {
+      console.log('开始回退市场扫描...');
+      
+      const response = await marketAPI.getStocks();
+      
+      if (!response.data || !response.data.stocks || !Array.isArray(response.data.stocks)) {
+        throw new Error('市场数据源返回的股票列表为空或格式不正确');
+      }
+      
+      const allStocks = response.data.stocks;
+      
+      // 简单的股票选择：取前5只有数据的股票
+      const validStocks = allStocks.filter((stock: any) => 
+        stock.symbol && stock.changePercent !== null && stock.price !== null
+      ).slice(0, 5);
+      
+      if (validStocks.length === 0) {
+        throw new Error('没有找到有效的股票数据');
+      }
+      
+      const symbols = validStocks.map((stock: any) => stock.symbol);
+      console.log(`回退市场扫描完成: ${symbols.join(', ')}`);
+      
+      return { 
+        symbols, 
+        source: 'fallback_market_scan', 
+        scanType: 'market_all' 
+      };
+    } catch (fallbackError: any) {
+      console.error('回退市场扫描失败:', fallbackError);
+      // 如果回退也失败，返回一个最小的默认列表
+      const defaultSymbols = ['NVDA', 'AAPL', 'WMT', 'JPM'];
+      console.log(`使用默认股票列表: ${defaultSymbols.join(', ')}`);
+      return { 
+        symbols: defaultSymbols, 
+        source: 'default_list', 
+        scanType: 'default' 
+      };
+    }
+  };
+
+  // Step 2: 扫描控制函数（只做 UI，不接真实逻辑）
+  // Step 5: 清理定时器
+  const clearAutoScanTimer = () => {
+    if (autoScanTimerRef.current) {
+      clearTimeout(autoScanTimerRef.current);
+      autoScanTimerRef.current = null;
+    }
+  };
+
+  // Step 5: 计算下一次运行时间
+  const calculateNextRunTime = (): string => {
+    const intervalMinutes = parseInt(scanInterval);
+    const nextRunTime = new Date(Date.now() + intervalMinutes * 60 * 1000);
+    return nextRunTime.toISOString();
+  };
+
+  // 格式化时间显示
+  const formatTimeDisplay = (isoString: string | null): string => {
+    if (!isoString) return 'N/A';
+    try {
+      const date = new Date(isoString);
+      return date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    } catch (error) {
+      return 'Invalid time';
+    }
+  };
+
+  // Step 5: 安排下一次自动扫描
+  const scheduleNextAutoScan = () => {
+    // 只在自动扫描启用时安排下一次 - 使用 ref 获取最新值
+    if (!isAutoScanEnabledRef.current) {
+      console.log('自动扫描未启用，不安排下一次扫描');
+      setDetailedScanStatus(prev => ({
+        ...prev,
+        nextScanAt: null,
+        statusMessage: 'Auto scan not enabled'
+      }));
+      return;
+    }
+    
+    clearAutoScanTimer(); // 先清理旧的定时器
+    
+    const intervalMinutes = parseInt(scanInterval);
+    const intervalMs = intervalMinutes * 60 * 1000;
+    
+    // 计算下一次扫描时间
+    const now = new Date();
+    const nextScanTime = new Date(now.getTime() + intervalMs);
+    const nextScanAt = nextScanTime.toISOString();
+    
+    console.log(`安排下一次自动扫描，间隔 ${intervalMinutes} 分钟，时间: ${nextScanTime.toLocaleString()}`);
+    
+    // 更新详细状态
+    setDetailedScanStatus(prev => ({
+      ...prev,
+      currentStatus: 'waiting_next_scan',
+      nextScanAt: nextScanAt,
+      statusMessage: `Next scan at ${nextScanTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`
+    }));
+    
+    autoScanTimerRef.current = setTimeout(async () => {
+      try {
+        console.log(`自动扫描定时器触发，间隔 ${intervalMinutes} 分钟`);
+        
+        // 检查是否还在自动扫描模式
+        if (!isAutoScanEnabledRef.current) {
+          console.log('自动扫描已关闭，跳过本次扫描');
+          return;
+        }
+        
+        // 检查是否已经在扫描中
+        if (detailedScanStatus.currentStatus === 'scanning') {
+          console.log('扫描已在运行中，等待当前扫描完成');
+          // 重新安排下一次扫描
+          scheduleNextAutoScan();
+          return;
+        }
+        
+        // 执行扫描
+        await runMarketScanner();
+      } catch (error) {
+        console.error('自动扫描执行失败:', error);
+        const errorMessage = error instanceof Error ? error.message : 
+                            typeof error === 'string' ? error : 
+                            'Unknown error';
+        setDetailedScanStatus(prev => ({
+          ...prev,
+          currentStatus: 'error',
+          statusMessage: `Auto scan failed: ${errorMessage}`
+        }));
+      } finally {
+        // 无论扫描是否成功或跳过，如果自动扫描仍然启用，都安排下一次
+        if (isAutoScanEnabledRef.current) {
+          scheduleNextAutoScan();
+        }
+      }
+    }, intervalMs);
+    
+    // 更新下一次运行时间
+    const nextRun = calculateNextRunTime();
+    setScanStatus(prev => ({ 
+      ...prev, 
+      status: 'scheduled',
+      nextRun 
+    }));
+  };
+
+  // Step 5: 启动自动扫描
+  const handleStartAutoScan = () => {
+    // 防止重复启动 - 检查是否已启用自动扫描
+    if (isAutoScanEnabled) {
+      message.warning('自动扫描已在运行中');
+      return;
+    }
+    
+    // 重置停止标记
+    stopRequestedRef.current = false;
+    
+    // 清理旧的定时器
+    clearAutoScanTimer();
+    
+    // 启用自动扫描模式
+    setIsAutoScanEnabled(true);
+    isAutoScanEnabledRef.current = true; // 同步更新ref
+    
+    // 更新详细状态
+    setDetailedScanStatus(prev => ({
+      ...prev,
+      currentStatus: 'waiting_next_scan',
+      statusMessage: 'Auto scan started, scheduling first scan...'
+    }));
+    
+    // 更新状态为 scheduled（等待第一次扫描）
+    setScanStatus(prev => ({
+      ...prev,
+      status: 'scheduled',
+      nextRun: calculateNextRunTime(),
+      progress: 0
+    }));
+    
+    message.success(`已启动自动扫描，间隔 ${scanInterval} 分钟`);
+    
+    // 立即执行第一次扫描，扫描完成后会自动安排下一次
+    runMarketScanner();
+  };
+
+  // Step 5: 停止自动扫描
+  const handleStopAutoScan = () => {
+    // 设置停止标记
+    stopRequestedRef.current = true;
+    
+    // 禁用自动扫描模式
+    setIsAutoScanEnabled(false);
+    isAutoScanEnabledRef.current = false; // 同步更新ref
+    
+    // 清理定时器
+    clearAutoScanTimer();
+    
+    // 更新详细状态
+    setDetailedScanStatus(prev => ({
+      ...prev,
+      currentStatus: 'stopped',
+      nextScanAt: null,
+      statusMessage: 'Scan stopped by user'
+    }));
+    
+    // 更新状态
+    setScanStatus(prev => ({
+      ...prev,
+      status: 'stopped',
+      nextRun: null,
+    }));
+    
+    // 更新市场扫描器状态
+    setMarketScannerStatus(prev => ({
+      ...prev,
+      status: 'stopped',
+      currentStatus: 'stopped',
+      currentSymbol: 'Stopped by user'
+    }));
+    
+    message.success('已停止自动扫描，当前扫描将立即停止');
+  };
+
+  // Step 5: 统一的扫描入口函数
+  const runAiScanOnce = async (isAutoScan: boolean = false): Promise<void> => {
+    try {
+      // 防止重复扫描 - 使用 isScanInProgress
+      if (isScanInProgress) {
+        console.log('扫描已在运行中，跳过本次扫描');
+        if (!isAutoScan) {
+          message.warning('扫描已在运行中，请等待完成');
+        }
+        // 对于自动扫描，返回一个标志表示扫描被跳过
+        // 这样 scheduleNextAutoScan 的 finally 块仍然会安排下一次扫描
+        return;
+      }
+
+      // 更新状态为运行中 - 只设置扫描进度状态
+      setIsScanInProgress(true);
+      setScanStatus(prev => ({
+        ...prev,
+        status: 'running',
+        progress: 0
+      }));
+      
+      // 清空之前的错误和推荐
+      setScanErrors([]);
+      if (!isAutoScan) {
+        setAiRecommendations([]); // 手动扫描时清空之前的推荐
+      }
+      
+      if (!isAutoScan) {
+        message.info('开始 AI 扫描...');
+      }
+      
+      // ========== 第一步：加载 Alpaca Paper Trading 真实账户数据 ==========
+      console.log('开始加载 Alpaca Paper Trading 账户数据...');
+      let accountData = null;
+      try {
+        accountData = await loadAlpacaAccount();
+        if (!accountData) {
+          throw new Error('无法加载 Alpaca 账户数据');
+        }
+        console.log('Alpaca 账户数据加载成功，开始扫描...');
+      } catch (accountError: any) {
+        console.error('加载 Alpaca 账户数据失败:', accountError);
+        if (!isAutoScan) {
+          message.error(`Alpaca 账户数据加载失败: ${accountError.message || '未知错误'}`);
+        }
+        setIsScanInProgress(false);
+        setScanStatus(prev => ({ ...prev, status: 'stopped', progress: 0 }));
+        return;
+      }
+      
+      // 从账户数据中提取关键信息
+      const { account, positions } = accountData;
+      const buyingPower = account?.buyingPower || 0;
+      const portfolioValue = account?.portfolioValue || 0;
+      const isTradingBlocked = account?.tradingBlocked || false;
+      
+      if (isTradingBlocked) {
+        console.warn('Alpaca 账户交易被阻止，无法执行交易');
+        if (!isAutoScan) {
+          message.warning('Alpaca 账户交易被阻止，只能进行模拟分析');
+        }
+      }
+      
+      // 构建账户上下文用于AI分析
+      const accountContext = {
+        cash: account?.cash || 0,
+        equity: account?.equity || 0,
+        buyingPower,
+        portfolioValue,
+        tradingBlocked: isTradingBlocked,
+        positions: positions || [],
+        positionsCount: positions?.length || 0
+      };
+      
+      // 1. 获取候选股票
+      let candidateSymbols: string[] = [];
+      let candidateSymbolsSource = 'unknown';
+      let candidateScanType = 'unknown';
+      try {
+        const candidateResult = await getCandidateSymbols();
+        candidateSymbols = candidateResult.symbols;
+        candidateSymbolsSource = candidateResult.source;
+        candidateScanType = candidateResult.scanType;
+      } catch (symbolError: any) {
+        if (!isAutoScan) {
+          message.error(`获取候选股票失败: ${symbolError.message}`);
+        }
+        setIsScanInProgress(false);
+        setScanStatus(prev => ({ ...prev, status: 'stopped', progress: 0 }));
+        return;
+      }
+      
+      if (candidateSymbols.length === 0) {
+        if (!isAutoScan) {
+          message.warning('没有找到候选股票，请先添加股票到 watchlist 或确保市场数据源可用');
+        }
+        setIsScanInProgress(false);
+        setScanStatus(prev => ({ ...prev, status: 'stopped', progress: 0 }));
+        return;
+      }
+      
+      console.log(`开始扫描 ${candidateSymbols.length} 个股票:`, candidateSymbols);
+      
+      const recommendations = [];
+      const failedSymbols: Array<{symbol: string, error: string, step: string}> = [];
+      const totalSymbols = candidateSymbols.length;
+      
+      for (let i = 0; i < totalSymbols; i++) {
+        const symbol = candidateSymbols[i];
+        
+        try {
+          // 更新进度
+          const progress = Math.round(((i + 1) / totalSymbols) * 100);
+          setScanStatus(prev => ({ ...prev, progress }));
+          
+          console.log(`正在分析股票 ${i + 1}/${totalSymbols}: ${symbol}`);
+          
+          // 跟踪每个步骤的状态
+          let marketSuccess = false;
+          let backtestSuccess = false;
+          let optimizationSuccess = false;
+          let aiSuccess = false;
+          
+          // 2. 获取市场数据
+          let marketData: any = null;
+          try {
+            marketData = await marketDataService.getStockData(symbol);
+            console.log(`股票 ${symbol} 市场数据获取成功:`, { 
+              price: marketData.price,
+              changePercent: marketData.changePercent 
+            });
+            marketSuccess = true;
+          } catch (marketError: any) {
+            console.error(`股票 ${symbol} 市场数据获取失败:`, marketError);
+            failedSymbols.push({
+              symbol,
+              error: marketError.message || 'Market data fetch failed',
+              step: 'Market data'
+            });
+            continue; // 跳过这个股票，继续下一个
+          }
+          
+          // 3. 运行回测（使用最简单的 moving_average 策略）
+          // 获取本地日期，确保不超过今天
+          const getLocalDateString = (date: Date): string => {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+          };
+          
+          const today = new Date();
+          const oneYearAgo = new Date(today);
+          oneYearAgo.setFullYear(today.getFullYear() - 1);
+          
+          const backtestConfig = {
+            symbol: symbol, // 关键修复：使用'symbol'而不是'symbols'数组
+            strategy: 'moving_average',
+            startDate: getLocalDateString(oneYearAgo), // 1年前（本地日期）
+            endDate: getLocalDateString(today), // 今天（本地日期）
+            initialCapital: 10000,
+            dataMode: 'real', // 固定使用真实数据
+            parameters: {
+              shortMaPeriod: 20,
+              longMaPeriod: 50
+            }
+          };
+          
+          // ========== DEBUG: AI Agent发起backtest前 ==========
+          console.log(`=== DEBUG Layer A: AI Agent发起backtest前 (${symbol}) ===`);
+          console.log(`recommendation symbol: ${symbol}`);
+          console.log(`backtestConfig.symbol: ${backtestConfig.symbol}`);
+          console.log(`strategy: ${backtestConfig.strategy}`);
+          console.log(`date range: ${backtestConfig.startDate} to ${backtestConfig.endDate}`);
+          console.log(`backtestConfig: ${JSON.stringify(backtestConfig)}`);
+          // ========== END DEBUG ==========
+          
+          let backtestResponse: any;
+          try {
+            backtestResponse = await backtraderAPI.runBacktest(backtestConfig);
+            console.log(`股票 ${symbol} 回测响应:`, {
+              success: backtestResponse.data?.success,
+              hasResult: !!backtestResponse.data?.result,
+              resultKeys: backtestResponse.data?.result ? Object.keys(backtestResponse.data.result) : []
+            });
+            // 检查backtest是否真正成功
+            if (backtestResponse.data?.success && backtestResponse.data?.result) {
+              backtestSuccess = true;
+            }
+          } catch (backtestError: any) {
+            console.error(`股票 ${symbol} 回测失败:`, backtestError);
+            failedSymbols.push({
+              symbol,
+              error: backtestError.message || 'Backtest failed',
+              step: 'Backtest'
+            });
+            continue; // 跳过这个股票，继续下一个
+          }
+          
+          // 4. 运行参数优化
+          const optimizationConfig = {
+            symbol: symbol,
+            strategy: 'moving_average',
+            startDate: backtestConfig.startDate,
+            endDate: backtestConfig.endDate,
+            initialCapital: backtestConfig.initialCapital,
+            parameters: {
+              shortMaPeriod: { min: 5, max: 30, step: 5 },
+              longMaPeriod: { min: 30, max: 100, step: 10 }
+            }
+          };
+          
+          let optimizationResponse: any;
+          try {
+            optimizationResponse = await backtraderAPI.runParameterOptimization(optimizationConfig);
+            console.log(`股票 ${symbol} 参数优化响应:`, {
+              success: optimizationResponse.data?.success,
+              hasResult: !!optimizationResponse.data?.result,
+              resultKeys: optimizationResponse.data?.result ? Object.keys(optimizationResponse.data.result) : []
+            });
+            // 检查optimization是否真正成功
+            if (optimizationResponse.data?.success && optimizationResponse.data?.result) {
+              optimizationSuccess = true;
+            }
+          } catch (optimizationError: any) {
+            console.error(`股票 ${symbol} 参数优化失败:`, optimizationError);
+            failedSymbols.push({
+              symbol,
+              error: optimizationError.message || 'Parameter optimization failed',
+              step: 'Parameter optimization'
+            });
+            // 不跳过，继续处理，但使用空的optimization结果
+            optimizationResponse = { data: { success: false, result: null } };
+          }
+          
+          // ========== DEBUG: 打印每个symbol的原始backtest值 ==========
+          console.log(`=== DEBUG: ${symbol} 原始backtest值 ===`);
+          console.log('backtestResponse.data:', JSON.stringify(backtestResponse.data, null, 2));
+          if (backtestResponse.data?.result) {
+            const result = backtestResponse.data.result;
+            console.log(`symbol: ${symbol}`);
+            console.log(`backtestId: ${result.backtestId || 'N/A'}`);
+            console.log(`totalReturn: ${result.results?.totalReturn || result.totalReturn || 'N/A'}`);
+            console.log(`sharpeRatio: ${result.results?.sharpeRatio || result.sharpeRatio || 'N/A'}`);
+            console.log(`maxDrawdown: ${result.results?.maxDrawdown || result.maxDrawdown || 'N/A'}`);
+            console.log(`---`);
+          }
+          // ========== END DEBUG ==========
+          
+          // 5. 准备 AI 分析上下文 - 包含真实 Alpaca 账户数据
+          // 检查当前symbol是否已有持仓
+          const existingPosition = positions?.find((p: any) => p.symbol === symbol);
+          const currentSymbolPosition = existingPosition ? {
+            symbol: existingPosition.symbol,
+            qty: existingPosition.quantity || 0,
+            avgPrice: existingPosition.avgPrice || 0,
+            marketValue: existingPosition.marketValue || 0,
+            unrealizedPL: existingPosition.unrealizedPL || 0,
+            unrealizedPLPercent: existingPosition.unrealizedPLPercent || 0
+          } : null;
+          
+          const aiContext = {
+            symbol: symbol,
+            marketData: {
+              price: marketData.price,
+              changePercent: marketData.changePercent,
+              volume: marketData.volume,
+              dayHigh: marketData.dayHigh,
+              dayLow: marketData.dayLow
+            },
+            backtestResult: backtestResponse.data?.result || {},
+            optimizationResult: optimizationResponse.data?.result || {},
+            accountSnapshot: {
+              cash: account?.cash || 0,
+              equity: account?.equity || 0,
+              buyingPower: account?.buyingPower || 0,
+              portfolioValue: account?.portfolioValue || 0,
+              tradingBlocked: account?.tradingBlocked || false,
+              positionsCount: positions?.length || 0,
+              openOrdersCount: alpacaOrders?.length || 0
+            },
+            positions: positions?.map((p: any) => ({
+              symbol: p.symbol,
+              qty: p.quantity || 0,
+              avgPrice: p.avgPrice || 0,
+              marketValue: p.marketValue || 0
+            })) || [],
+            currentPosition: currentSymbolPosition,
+            tradingEnvironment: 'paper' // 固定为paper trading环境
+          };
+          
+          console.log(`AI Context for ${symbol}:`, {
+            hasAccountData: !!account,
+            buyingPower: account?.buyingPower,
+            hasPosition: !!currentSymbolPosition,
+            positionQty: currentSymbolPosition?.qty
+          });
+          
+          // 6. 调用 AI 分析
+          const aiResponse = await aiTradingService.previewTradeWithContext(symbol, aiContext);
+          console.log(`股票 ${symbol} AI 分析响应:`, {
+            success: aiResponse.success,
+            hasDecision: !!aiResponse.decision,
+            decision: aiResponse.decision,
+            validation: aiResponse.validation,
+            responseStructure: Object.keys(aiResponse)
+          });
+          
+          // 检查AI分析是否成功
+          if (aiResponse.success && aiResponse.decision) {
+            aiSuccess = true;
+          }
+          
+          // 7. 构建推荐结果（无论成功还是失败都添加）
+          let recommendation;
+          
+          // 基础字段
+          const baseFields = {
+            symbol: symbol,
+            generatedTime: new Date().toISOString(),
+            strategyUsed: 'moving_average',
+            symbolsSource: candidateSymbolsSource,
+            scanType: candidateScanType,
+            backtestRange: `${backtestConfig.startDate} → ${backtestConfig.endDate}`,
+            optimizationRange: `${optimizationConfig.startDate} → ${optimizationConfig.endDate}`
+          };
+          
+          if (aiResponse.success && aiResponse.decision) {
+            const decision = aiResponse.decision;
+            
+            // ========== DEBUG: 构建证据摘要前的值 ==========
+            console.log(`=== DEBUG: ${symbol} evidenceSummary构建 ===`);
+            console.log('backtestResponse.data?.result:', backtestResponse.data?.result);
+            if (backtestResponse.data?.result) {
+              const result = backtestResponse.data.result;
+              console.log(`backtestKeyResults源值:`);
+              console.log(`  totalReturn: ${result.results?.totalReturn || result.totalReturn}`);
+              console.log(`  sharpeRatio: ${result.results?.sharpeRatio || result.sharpeRatio}`);
+              console.log(`  maxDrawdown: ${result.results?.maxDrawdown || result.maxDrawdown}`);
+            }
+            // ========== END DEBUG ==========
+            
+            // 构建证据摘要
+            // 注意: backtest 返回结构为 {success: true, result: {results: {totalReturn, sharpeRatio, maxDrawdown, ...}, ...}}
+            // optimization 返回结构为 {success: true, result: {summary: {bestScore, bestCombination, totalCombinations, ...}, ...}}
+            const evidenceSummary = {
+              marketData: marketData ? {
+                price: marketData.price,
+                changePercent: marketData.changePercent,
+                volume: marketData.volume
+              } : null,
+              backtestKeyResults: backtestResponse.data?.result ? {
+                totalReturn: backtestResponse.data.result.results?.totalReturn || backtestResponse.data.result.totalReturn,
+                sharpeRatio: backtestResponse.data.result.results?.sharpeRatio || backtestResponse.data.result.sharpeRatio,
+                maxDrawdown: backtestResponse.data.result.results?.maxDrawdown || backtestResponse.data.result.maxDrawdown,
+                winRate: backtestResponse.data.result.results?.winRate || backtestResponse.data.result.winRate
+              } : null,
+              optimizationKeyResults: optimizationResponse.data?.result ? {
+                bestScore: optimizationResponse.data.result.summary?.bestScore || optimizationResponse.data.result.bestScore,
+                bestCombination: optimizationResponse.data.result.summary?.bestCombination || optimizationResponse.data.result.bestCombination,
+                totalCombinations: optimizationResponse.data.result.summary?.totalCombinations || optimizationResponse.data.result.totalCombinations
+              } : null,
+              aiReasoning: decision.reason || 'Standard moving average crossover analysis'
+            };
+            
+            // ========== DEBUG: 构建证据摘要后的值 ==========
+            console.log(`=== DEBUG: ${symbol} evidenceSummary构建完成 ===`);
+            console.log('evidenceSummary.backtestKeyResults:', evidenceSummary.backtestKeyResults);
+            console.log('evidenceFull JSON:', JSON.stringify(evidenceSummary));
+            // ========== END DEBUG ==========
+            
+            // 构建更详细的后测摘要
+            const backtestDetailedSummary = backtestResponse.data?.result ? 
+              `Return: ${(backtestResponse.data.result.results?.totalReturn || backtestResponse.data.result.totalReturn)?.toFixed(2) || 'N/A'}% | ` +
+              `Sharpe: ${(backtestResponse.data.result.results?.sharpeRatio || backtestResponse.data.result.sharpeRatio)?.toFixed(2) || 'N/A'} | ` +
+              `Drawdown: ${(backtestResponse.data.result.results?.maxDrawdown || backtestResponse.data.result.maxDrawdown)?.toFixed(2) || 'N/A'}%` :
+              'Backtest unavailable';
+            
+            // 构建更详细的优化摘要
+            const optimizationDetailedSummary = optimizationResponse.data?.success === false 
+              ? 'Optimization unavailable (404)' 
+              : optimizationResponse.data?.result?.summary?.bestCombination || optimizationResponse.data?.result?.bestCombination
+                ? `Best: ${JSON.stringify(optimizationResponse.data.result.summary?.bestCombination || optimizationResponse.data.result.bestCombination)} | ` +
+                  `Score: ${(optimizationResponse.data.result.summary?.bestScore || optimizationResponse.data.result.bestScore)?.toFixed(4) || 'N/A'}` 
+                : 'Optimization completed';
+            
+            // 生成简洁的 reason 总结（一句话）
+            const generateReasonSummary = () => {
+              const action = decision.action;
+              const displayAction = action === 'SKIP' ? 'HOLD' : action;
+              const confidence = decision.confidence || 0.5;
+              const recommendedQty = decision.recommendedQty || decision.positionSize || decision.qty || 0;
+              
+              // 根据 backtest 结果生成简洁信号
+              let backtestSignal = '';
+              const backtestReturn = backtestResponse.data?.result?.results?.totalReturn !== undefined 
+                ? backtestResponse.data.result.results.totalReturn 
+                : backtestResponse.data?.result?.totalReturn;
+              if (backtestReturn !== undefined) {
+                const returnVal = backtestReturn;
+                if (returnVal > 10) backtestSignal = 'strong positive backtest';
+                else if (returnVal > 5) backtestSignal = 'positive backtest';
+                else if (returnVal < -5) backtestSignal = 'negative backtest';
+                else if (returnVal < -10) backtestSignal = 'strong negative backtest';
+                else backtestSignal = 'neutral backtest';
+              } else {
+                backtestSignal = 'no backtest data';
+              }
+              
+              // 根据市场数据生成简洁趋势
+              let marketTrend = '';
+              if (marketData?.changePercent !== undefined) {
+                const change = marketData.changePercent;
+                if (change > 3) marketTrend = 'bullish trend';
+                else if (change > 1) marketTrend = 'slightly bullish';
+                else if (change < -3) marketTrend = 'bearish trend';
+                else if (change < -1) marketTrend = 'slightly bearish';
+                else marketTrend = 'neutral trend';
+              } else {
+                marketTrend = 'no market data';
+              }
+              
+              // 根据置信度生成简洁描述
+              let confidenceDesc = '';
+              if (confidence >= 0.8) confidenceDesc = 'high confidence';
+              else if (confidence >= 0.6) confidenceDesc = 'medium confidence';
+              else confidenceDesc = 'low confidence';
+              
+              // 生成一句话总结，包含推荐数量
+              if (displayAction === 'BUY' && recommendedQty > 0) {
+                return `BUY ${recommendedQty} shares: ${marketTrend}, ${backtestSignal}, ${confidenceDesc}.`;
+              } else if (displayAction === 'SELL' && recommendedQty > 0) {
+                return `SELL ${recommendedQty} shares: ${marketTrend}, ${backtestSignal}, ${confidenceDesc}.`;
+              } else if (displayAction === 'HOLD') {
+                return `HOLD: ${marketTrend}, ${backtestSignal}, ${confidenceDesc}.`;
+              } else if (displayAction === 'ERROR') {
+                return `ERROR: ${decision.reason || 'AI analysis failed'}`;
+              } else {
+                return `${displayAction}: ${marketTrend}, ${backtestSignal}, ${confidenceDesc}.`;
+              }
+            };
+            
+            // 生成详细的 evidence 摘要
+            const generateEvidenceSummary = () => {
+              const parts = [];
+              
+              // 市场数据证据
+              if (marketData?.changePercent !== undefined) {
+                const changeText = marketData.changePercent >= 0 ? `up ${marketData.changePercent.toFixed(2)}%` : `down ${Math.abs(marketData.changePercent).toFixed(2)}%`;
+                parts.push(`Market: ${changeText} at $${marketData.price?.toFixed(2) || 'N/A'}`);
+              }
+              
+              // 回测证据
+              const backtestReturn = backtestResponse.data?.result?.results?.totalReturn !== undefined 
+                ? backtestResponse.data.result.results.totalReturn 
+                : backtestResponse.data?.result?.totalReturn;
+              const backtestSharpe = backtestResponse.data?.result?.results?.sharpeRatio !== undefined 
+                ? backtestResponse.data.result.results.sharpeRatio 
+                : backtestResponse.data?.result?.sharpeRatio;
+              if (backtestReturn !== undefined) {
+                parts.push(`Backtest: ${backtestReturn.toFixed(2)}% return, Sharpe ${backtestSharpe?.toFixed(2) || 'N/A'}`);
+              }
+              
+              // 优化证据
+              const optimizationScore = optimizationResponse.data?.result?.summary?.bestScore !== undefined 
+                ? optimizationResponse.data.result.summary.bestScore 
+                : optimizationResponse.data?.result?.bestScore;
+              if (optimizationScore !== undefined) {
+                parts.push(`Optimization: best score ${optimizationScore.toFixed(4)}`);
+              }
+              
+              // AI 推理证据
+              if (decision.reason) {
+                const shortReason = decision.reason.length > 100 
+                  ? decision.reason.substring(0, 100) + '...' 
+                  : decision.reason;
+                parts.push(`AI: ${shortReason}`);
+              }
+              
+              return parts.join(' | ');
+            };
+            
+            // 从decision中获取推荐数量，优先使用recommendedQty，然后是positionSize
+            const recommendedQty = decision.recommendedQty || decision.positionSize || decision.qty || 0;
+            const displayAction = decision.action === 'SKIP' ? 'HOLD' : decision.action;
+            
+            // 计算综合状态
+            let overallStatus = 'error'; // 默认错误
+            if (!marketSuccess || !backtestSuccess || !aiSuccess) {
+              // 核心步骤失败
+              overallStatus = 'error';
+            } else if (!optimizationSuccess) {
+              // 核心步骤成功但optimization失败
+              overallStatus = 'partial';
+            } else {
+              // 全部成功
+              overallStatus = 'success';
+            }
+            
+            recommendation = {
+              ...baseFields,
+              recommendation: displayAction,
+              confidence: decision.confidence || 0.5,
+              reason: generateReasonSummary(), // 简洁总结版
+              reasonFull: decision.reasoningFull || decision.reason || 'AI analysis completed', // 完整版
+              evidenceSummary: generateEvidenceSummary(), // 证据摘要
+              evidenceFull: JSON.stringify(evidenceSummary), // 完整证据
+              backtestSummary: backtestDetailedSummary,
+              optimizationSummary: optimizationDetailedSummary,
+              recommendedQty: recommendedQty,
+              positionSize: recommendedQty,
+              status: overallStatus
+            };
+            
+            console.log(`股票 ${symbol} 分析完成: ${decision.action} (状态: ${overallStatus}, 置信度: ${decision.confidence})`);
+          } else {
+            console.warn(`股票 ${symbol} AI 分析失败:`, aiResponse);
+            
+            // 计算失败时的状态：如果核心步骤失败，则为error；如果只有优化失败，则为partial
+            let overallStatus = 'error'; // 默认错误
+            if (marketSuccess && backtestSuccess && aiSuccess) {
+              // AI分析成功，但可能其他步骤失败
+              if (!optimizationSuccess) {
+                overallStatus = 'partial';
+              } else {
+                // 所有核心步骤都成功，但AI分析返回失败
+                overallStatus = 'error';
+              }
+            } else if (marketSuccess && backtestSuccess && !aiSuccess) {
+              // 市场数据和回测成功，但AI失败
+              overallStatus = 'error';
+            } else {
+              // 核心步骤失败
+              overallStatus = 'error';
+            }
+            
+            // 即使失败，也添加一条错误推荐行
+            recommendation = {
+              ...baseFields,
+              recommendation: 'ERROR',
+              confidence: 0,
+              reason: aiResponse.validation?.message || 'AI analysis failed',
+              reasonFull: aiResponse.validation?.message || 'AI analysis failed',
+              evidenceSummary: `Analysis failed: ${aiResponse.validation?.message || 'AI analysis failed'}`,
+              evidenceFull: JSON.stringify({
+                error: aiResponse.validation?.message || 'AI analysis failed',
+                step: 'AI analysis'
+              }),
+              backtestSummary: backtestSuccess ? 'Completed' : 'Failed',
+              optimizationSummary: optimizationSuccess ? 'Completed' : 'Failed',
+              status: overallStatus
+            };
+            
+            // 记录失败原因
+            failedSymbols.push({
+              symbol,
+              error: aiResponse.validation?.message || 'AI analysis failed',
+              step: 'AI analysis'
+            });
+          }
+          
+          recommendations.push(recommendation);
+          
+        } catch (symbolError: any) {
+          console.error(`处理股票 ${symbol} 时出错:`, symbolError);
+          // 继续处理下一个股票
+        }
+      }
+      
+      // 8. 更新推荐结果和错误信息
+      setAiRecommendations(recommendations);
+      setScanErrors(failedSymbols);
+      
+      // 9. 更新扫描状态
+      const now = new Date().toISOString();
+      
+      // 根据自动扫描模式决定状态
+      let nextStatus: 'stopped' | 'scheduled' = 'stopped';
+      let nextNextRun: string | null = null;
+      
+      if (isAutoScan && isAutoScanEnabledRef.current) {
+        // 自动扫描模式下，扫描完成后状态为 scheduled
+        nextStatus = 'scheduled';
+        nextNextRun = calculateNextRunTime();
+      }
+      
+      setScanStatus({
+        status: nextStatus,
+        lastRun: now,
+        nextRun: nextNextRun,
+        progress: 0
+      });
+      setIsScanInProgress(false); // 扫描完成，清除进行中状态
+      
+      // 显示扫描结果摘要
+      if (!isAutoScan) {
+        if (recommendations.length > 0) {
+          message.success(`AI 扫描完成，生成 ${recommendations.length} 个推荐`);
+          if (failedSymbols.length > 0) {
+            message.warning(`${failedSymbols.length} 个股票分析失败，请查看错误详情`);
+          }
+        } else if (failedSymbols.length > 0) {
+          message.error(`所有 ${failedSymbols.length} 个股票分析失败，请检查配置或网络连接`);
+        } else {
+          message.warning('AI 扫描完成，但未生成任何推荐');
+        }
+      }
+      
+      // 如果是自动扫描且自动扫描模式仍然启用，安排下一次 (try block)
+      if (isAutoScan && isAutoScanEnabledRef.current) {
+        scheduleNextAutoScan();
+      }
+      
+      if (!isAutoScan) {
+        if (recommendations.length > 0) {
+          message.success(`AI 扫描完成，生成 ${recommendations.length} 个推荐`);
+        } else {
+          message.warning('AI 扫描完成，但未生成任何推荐');
+        }
+      }
+      
+      return;
+      
+    } catch (error: any) {
+      console.error('AI 扫描失败:', error);
+      if (!isAutoScan) {
+        message.error(`AI 扫描失败: ${error.message || '未知错误'}`);
+      }
+      
+      // 重置状态
+      setIsScanInProgress(false);
+      
+      // 根据自动扫描模式决定状态
+      let nextStatus: 'stopped' | 'scheduled' = 'stopped';
+      let nextNextRun: string | null = null;
+      
+      if (isAutoScan && isAutoScanEnabledRef.current) {
+        nextStatus = 'scheduled';
+        nextNextRun = calculateNextRunTime();
+      }
+      
+      setScanStatus(prev => ({ 
+        ...prev, 
+        status: nextStatus, 
+        nextRun: nextNextRun,
+        progress: 0 
+      }));
+      
+      // 如果是自动扫描且自动扫描模式仍然启用，安排下一次 (catch block)
+      if (isAutoScan && isAutoScanEnabledRef.current) {
+        scheduleNextAutoScan();
+      }
+    }
+  };
+
+  // Step 4: 执行单次 AI 扫描（现在调用统一的扫描函数）
+  const handleRunNow = async () => {
+    await runAiScanOnce(false);
+  };
+
+  return (
+    <div>
+      <Title level={2}><RobotOutlined style={{ marginRight: '12px' }} />AI Agent</Title>
+      <Text type="secondary">AI-powered stock recommendations and trading automation</Text>
+      
+      <Divider />
+      
+      {/* 1. AI Configuration */}
+      <div style={{ marginBottom: 24 }}>
+        <Title level={4}>
+          <SettingOutlined style={{ marginRight: '8px' }} />
+          AI Configuration
+        </Title>
+        <Card>
+          <Form
+            form={aiConfigForm}
+            layout="vertical"
+            onFinish={handleSaveAiConfig}
+            initialValues={aiConfig}
+          >
+            <Row gutter={16}>
+              <Col span={12}>
+                <Form.Item
+                  name="provider"
+                  label="AI Provider"
+                  rules={[{ required: true, message: 'Please select AI provider' }]}
+                >
+                  <Select 
+                    placeholder="Select AI provider"
+                    onChange={(value) => {
+                      // 当provider改变时，重置model为默认值
+                      const providerModels = {
+                        'DeepSeek': 'deepseek-chat',
+                        'OpenAI': 'gpt-4',
+                        'Claude': 'claude-3-opus'
+                      } as const;
+                      
+                      type AIProvider = keyof typeof providerModels;
+                      const provider = value as AIProvider;
+                      
+                      if (value && providerModels[provider]) {
+                        aiConfigForm.setFieldsValue({ model: providerModels[provider] });
+                      }
+                    }}
+                  >
+                    <Option value="DeepSeek">DeepSeek</Option>
+                    <Option value="OpenAI">OpenAI</Option>
+                    <Option value="Claude">Claude</Option>
+                  </Select>
+                </Form.Item>
+              </Col>
+              <Col span={12}>
+                <Form.Item
+                  name="model"
+                  label="Model"
+                  rules={[{ required: true, message: 'Please select model' }]}
+                >
+                  <Select placeholder="Select model">
+                    <Option value="deepseek-chat">deepseek-chat</Option>
+                    <Option value="deepseek-coder">deepseek-coder</Option>
+                    <Option value="gpt-4">GPT-4</Option>
+                    <Option value="gpt-3.5-turbo">GPT-3.5 Turbo</Option>
+                    <Option value="claude-3-opus">Claude 3 Opus</Option>
+                    <Option value="claude-3-sonnet">Claude 3 Sonnet</Option>
+                  </Select>
+                </Form.Item>
+              </Col>
+            </Row>
+            
+            <Row gutter={16}>
+              <Col span={12}>
+                <Form.Item
+                  name="apiKey"
+                  label="API Key"
+                  rules={[{ required: true, message: 'Please enter API key' }]}
+                >
+                  <Input.Password 
+                    placeholder="Enter your API key" 
+                    visibilityToggle={true}
+                  />
+                </Form.Item>
+              </Col>
+              <Col span={12}>
+                <Form.Item
+                  name="baseUrl"
+                  label="Base URL"
+                  rules={[{ required: true, message: 'Please enter base URL' }]}
+                >
+                  <Input placeholder="e.g., https://api.deepseek.com" />
+                </Form.Item>
+              </Col>
+            </Row>
+            
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+              <Button 
+                onClick={handleTestConnection}
+                loading={testingConnection}
+                icon={<CheckCircleOutlined />}
+              >
+                Test Connection
+              </Button>
+              <Button 
+                type="primary" 
+                htmlType="submit"
+                loading={savingConfig}
+                icon={<SettingOutlined />}
+              >
+                Save Settings
+              </Button>
+            </div>
+          </Form>
+        </Card>
+      </div>
+      
+      {/* 2. Market Scanner */}
+      <div style={{ marginBottom: 24 }}>
+        <Title level={4}>
+          <LineChartOutlined style={{ marginRight: '8px' }} />
+          Market Scanner
+        </Title>
+        <Card>
+          <Row gutter={16} align="middle" style={{ marginBottom: 16 }}>
+            <Col span={8}>
+              <div style={{ marginBottom: '8px' }}>
+                <Text strong>Scanner Interval:</Text>
+              </div>
+              <Select 
+                value="30" 
+                style={{ width: '100%' }}
+                disabled={marketScannerAutoEnabled}
+              >
+                <Option value="30">30 minutes</Option>
+                <Option value="60">60 minutes</Option>
+                <Option value="120">120 minutes</Option>
+              </Select>
+            </Col>
+            
+            <Col span={16}>
+              <Space size="middle">
+                <Button
+                  type="primary"
+                  icon={<PlayCircleOutlined />}
+                  onClick={handleStartMarketScannerAuto}
+                  disabled={marketScannerAutoEnabled}
+                >
+                  Start Auto Scanner
+                </Button>
+                
+                <Button
+                  danger
+                  icon={<PauseCircleOutlined />}
+                  onClick={handleStopMarketScannerAuto}
+                  disabled={!marketScannerAutoEnabled}
+                >
+                  Stop Auto Scanner
+                </Button>
+                
+                <Button
+                  icon={<ThunderboltOutlined />}
+                  onClick={handleRunMarketScannerNow}
+                  loading={marketScannerStatus.status === 'running'}
+                >
+                  Run Scanner Now
+                </Button>
+              </Space>
+            </Col>
+          </Row>
+          
+          <Divider style={{ margin: '16px 0' }} />
+          
+          {/* Scanner Status Display */}
+          <Row gutter={16} style={{ marginBottom: 16 }}>
+            <Col span={6}>
+              <div style={{ marginBottom: '8px' }}>
+                <Text strong>Status:</Text>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Badge 
+                  status={
+                    detailedScanStatus.currentStatus === 'scanning' ? 'processing' :
+                    detailedScanStatus.currentStatus === 'completed' ? 'success' :
+                    detailedScanStatus.currentStatus === 'error' ? 'error' :
+                    detailedScanStatus.currentStatus === 'stopped' ? 'warning' : 'default'
+                  } 
+                />
+                <Text strong style={{ 
+                  color: detailedScanStatus.currentStatus === 'scanning' ? '#52c41a' :
+                         detailedScanStatus.currentStatus === 'completed' ? '#1890ff' :
+                         detailedScanStatus.currentStatus === 'error' ? '#ff4d4f' :
+                         detailedScanStatus.currentStatus === 'stopped' ? '#faad14' : '#8c8c8c'
+                }}>
+                  {detailedScanStatus.currentStatus === 'scanning' ? 'SCANNING' :
+                   detailedScanStatus.currentStatus === 'waiting_next_scan' ? 'WAITING' :
+                   detailedScanStatus.currentStatus === 'completed' ? 'COMPLETED' :
+                   detailedScanStatus.currentStatus === 'error' ? 'ERROR' :
+                   detailedScanStatus.currentStatus === 'stopped' ? 'STOPPED' : 'IDLE'}
+                </Text>
+              </div>
+            </Col>
+            
+            <Col span={6}>
+              <div style={{ marginBottom: '8px' }}>
+                <Text strong>Last Scan:</Text>
+              </div>
+              <Text type="secondary" style={{ fontSize: '13px' }}>
+                {detailedScanStatus.lastScanAt 
+                  ? `${formatTimeDisplay(detailedScanStatus.lastScanAt)}` 
+                  : 'Never'}
+              </Text>
+            </Col>
+            
+            <Col span={6}>
+              <div style={{ marginBottom: '8px' }}>
+                <Text strong>Next Scan:</Text>
+              </div>
+              <Text type="secondary" style={{ fontSize: '13px' }}>
+                {marketScannerStatus.nextScanTime 
+                  ? `${formatTimeDisplay(marketScannerStatus.nextScanTime)}` 
+                  : detailedScanStatus.nextScanAt
+                  ? `${formatTimeDisplay(detailedScanStatus.nextScanAt)}`
+                  : 'Not scheduled'}
+              </Text>
+            </Col>
+            
+            <Col span={6}>
+              <div style={{ marginBottom: '8px' }}>
+                <Text strong>Progress:</Text>
+              </div>
+              <Text type="secondary" style={{ fontSize: '13px' }}>
+                {detailedScanStatus.currentStatus === 'scanning' 
+                  ? `${detailedScanStatus.processedCount}/${detailedScanStatus.totalCount} symbols` 
+                  : detailedScanStatus.currentStatus === 'completed' ? 'Completed' :
+                    detailedScanStatus.currentStatus === 'stopped' ? 'Stopped' : 'Idle'}
+              </Text>
+            </Col>
+          </Row>
+          
+          {(marketScannerStatus.status === 'running' || detailedScanStatus.currentStatus === 'scanning') && (
+            <div style={{ marginBottom: '16px' }}>
+              {/* 状态标题 */}
+              <div style={{ 
+                fontSize: '12px', 
+                fontWeight: '600', 
+                color: '#333', 
+                marginBottom: '8px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center'
+              }}>
+                <span>
+                  {detailedScanStatus.currentStatus === 'scanning' ? 'SCANNING IN PROGRESS' : 
+                   detailedScanStatus.currentStatus === 'stopped' ? 'SCAN STOPPED' :
+                   detailedScanStatus.currentStatus === 'completed' ? 'SCAN COMPLETED' :
+                   detailedScanStatus.currentStatus === 'error' ? 'SCAN ERROR' : 'WAITING FOR NEXT SCAN'}
+                </span>
+                <span style={{ color: '#666', fontWeight: 'normal', fontSize: '11px' }}>
+                  {detailedScanStatus.percent}% complete
+                </span>
+              </div>
+              
+              {/* 进度条 */}
+              <Progress 
+                percent={detailedScanStatus.percent} 
+                size="small" 
+                status={detailedScanStatus.currentStatus === 'scanning' ? 'active' : 
+                       detailedScanStatus.currentStatus === 'stopped' ? 'exception' :
+                       detailedScanStatus.currentStatus === 'completed' ? 'success' : 'normal'}
+                strokeColor={
+                  detailedScanStatus.currentStatus === 'scanning' ? '#52c41a' :
+                  detailedScanStatus.currentStatus === 'completed' ? '#1890ff' :
+                  detailedScanStatus.currentStatus === 'error' ? '#ff4d4f' : '#faad14'
+                }
+              />
+              
+              {/* 详细信息 */}
+              <div style={{ 
+                fontSize: '11px', 
+                color: '#666', 
+                marginTop: '8px',
+                lineHeight: '1.4',
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: '8px'
+              }}>
+                <div>
+                  <div style={{ fontWeight: '500', color: '#333', marginBottom: '2px' }}>Progress</div>
+                  <div>{detailedScanStatus.processedCount} / {detailedScanStatus.totalCount} symbols</div>
+                </div>
+                <div>
+                  <div style={{ fontWeight: '500', color: '#333', marginBottom: '2px' }}>Validated</div>
+                  <div>{detailedScanStatus.validatedCount} symbols</div>
+                </div>
+                <div>
+                  <div style={{ fontWeight: '500', color: '#333', marginBottom: '2px' }}>Retries</div>
+                  <div>{detailedScanStatus.retryCount}</div>
+                </div>
+                <div>
+                  <div style={{ fontWeight: '500', color: '#333', marginBottom: '2px' }}>Status</div>
+                  <div>{detailedScanStatus.statusMessage || 'Ready'}</div>
+                </div>
+              </div>
+              {detailedScanStatus.activeSymbols.length > 0 && (
+                <div style={{ 
+                  fontSize: '11px', 
+                  color: '#333', 
+                  marginTop: '8px',
+                  padding: '6px',
+                  backgroundColor: '#f6ffed',
+                  borderRadius: '4px',
+                  border: '1px solid #b7eb8f'
+                }}>
+                  <div style={{ fontWeight: '500', marginBottom: '2px' }}>Currently Scanning:</div>
+                  <div>{detailedScanStatus.activeSymbols.join(', ')}</div>
+                </div>
+              )}
+            </div>
+          )}
+          
+          {/* Scanner Summary */}
+          {marketScannerSummary.universeScanned > 0 && (
+            <Card 
+              size="small" 
+              style={{ 
+                marginBottom: 16, 
+                border: '1px solid #f0f0f0',
+                boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)'
+              }}
+              bodyStyle={{ padding: '16px' }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <div>
+                  <Text strong style={{ fontSize: '16px' }}>Market Scan Summary</Text>
+                  <div style={{ fontSize: '12px', color: '#666', marginTop: 2 }}>
+                    {marketScannerSummary.lastScanTime 
+                      ? new Date(marketScannerSummary.lastScanTime).toLocaleString() 
+                      : 'Not scanned'}
+                  </div>
+                </div>
+                <Tag color="blue">Full Market Scan</Tag>
+              </div>
+              
+              <Divider style={{ margin: '12px 0' }} />
+              
+              <Row gutter={[16, 16]}>
+                <Col span={4}>
+                  <Statistic
+                    title="Universe Scanned"
+                    value={marketScannerSummary.universeScanned}
+                    valueStyle={{ color: '#1890ff', fontSize: '20px', fontWeight: 'bold' }}
+                    prefix={<BarChartOutlined />}
+                  />
+                </Col>
+                <Col span={4}>
+                  <Statistic
+                    title="Bullish"
+                    value={marketScannerSummary.bullishCount}
+                    valueStyle={{ color: '#52c41a', fontSize: '20px', fontWeight: 'bold' }}
+                    prefix={<ArrowUpOutlined />}
+                  />
+                </Col>
+                <Col span={4}>
+                  <Statistic
+                    title="Bearish"
+                    value={marketScannerSummary.bearishCount}
+                    valueStyle={{ color: '#ff4d4f', fontSize: '20px', fontWeight: 'bold' }}
+                    prefix={<ArrowDownOutlined />}
+                  />
+                </Col>
+                <Col span={4}>
+                  <Statistic
+                    title="Neutral"
+                    value={marketScannerSummary.neutralCount}
+                    valueStyle={{ color: '#faad14', fontSize: '20px', fontWeight: 'bold' }}
+                    prefix={<MinusOutlined />}
+                  />
+                </Col>
+                <Col span={4}>
+                  <Statistic
+                    title="Strong Trend"
+                    value={marketScannerSummary.strongTrendCount}
+                    valueStyle={{ color: '#722ed1', fontSize: '20px', fontWeight: 'bold' }}
+                    prefix={<ThunderboltOutlined />}
+                  />
+                </Col>
+                <Col span={4}>
+                  <Statistic
+                    title="News Risk"
+                    value={marketScannerSummary.newsRiskCount}
+                    valueStyle={{ color: '#fa8c16', fontSize: '20px', fontWeight: 'bold' }}
+                    prefix={<ExclamationCircleOutlined />}
+                  />
+                </Col>
+              </Row>
+            </Card>
+          )}
+          
+          {/* Scanner Results Table */}
+          {marketScannerResults.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <Text strong style={{ fontSize: '14px' }}>Top Market Trends ({getFilteredAndSortedResults().length} symbols)</Text>
+                <Space size="small">
+                  <Select 
+                    value={marketScannerFilters.trendFilter}
+                    onChange={(value) => setMarketScannerFilters(prev => ({ ...prev, trendFilter: value }))}
+                    style={{ width: 120 }}
+                    size="small"
+                  >
+                    <Option value="all">All Trends</Option>
+                    <Option value="bullish">Bullish</Option>
+                    <Option value="bearish">Bearish</Option>
+                    <Option value="neutral">Neutral</Option>
+                    <Option value="strong">Strong Trends</Option>
+                  </Select>
+                  
+                  <Select 
+                    value={marketScannerFilters.sortBy}
+                    onChange={(value) => setMarketScannerFilters(prev => ({ ...prev, sortBy: value }))}
+                    style={{ width: 140 }}
+                    size="small"
+                  >
+                    <Option value="trendScore">Trend Score</Option>
+                    <Option value="volume">Volume</Option>
+                    <Option value="changePct">Change %</Option>
+                    <Option value="newsSentiment">News Sentiment</Option>
+                  </Select>
+                  
+                  <Button 
+                    size="small" 
+                    icon={marketScannerFilters.sortOrder === 'desc' ? <SortDescendingOutlined /> : <SortAscendingOutlined />}
+                    onClick={() => setMarketScannerFilters(prev => ({ ...prev, sortOrder: prev.sortOrder === 'desc' ? 'asc' : 'desc' }))}
+                    type={marketScannerFilters.sortOrder === 'desc' ? 'primary' : 'default'}
+                  />
+                </Space>
+              </div>
+              
+              <Table 
+                columns={[
+                  { 
+                    title: '', 
+                    key: 'expand',
+                    width: 40,
+                    render: (_, record: any) => (
+                      <Button 
+                        type="text" 
+                        size="small"
+                        icon={expandedRows.includes(record.symbol) ? <ArrowDownOutlined /> : <ArrowRightOutlined />}
+                        onClick={() => toggleRowExpand(record.symbol)}
+                        style={{ padding: 0, width: 24, height: 24 }}
+                      />
+                    )
+                  },
+                  { 
+                    title: 'Symbol', 
+                    dataIndex: 'symbol', 
+                    key: 'symbol',
+                    width: 150,
+                    render: (symbol: string, record: any) => (
+                      <div>
+                        <div style={{ fontWeight: 'bold', fontSize: '14px' }}>{symbol}</div>
+                        <div style={{ fontSize: '11px', color: '#666', marginTop: '2px' }}>
+                          {record.companyName || 'N/A'}
+                        </div>
+                      </div>
+                    )
+                  },
+                  { 
+                    title: 'Trend', 
+                    dataIndex: 'trendLabel', 
+                    key: 'trendLabel',
+                    width: 120,
+                    render: (label: string) => renderTrendBadge(label)
+                  },
+                  { 
+                    title: 'Score', 
+                    dataIndex: 'trendScore', 
+                    key: 'trendScore',
+                    width: 140,
+                    render: (score: number, record: any) => {
+                      const hasScore = score !== null && score !== undefined;
+                      const hasConfidence = record.trendConfidence !== null && record.trendConfidence !== undefined;
+                      
+                      if (!hasScore) {
+                        return (
+                          <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                              <Text strong style={{ fontSize: '15px', color: '#bfbfbf' }}>
+                                N/A
+                              </Text>
+                              <div style={{ fontSize: '11px', color: '#bfbfbf' }}>
+                                /100
+                              </div>
+                            </div>
+                            <div style={{ fontSize: '10px', color: '#bfbfbf', fontWeight: '500' }}>
+                              Conf: N/A
+                            </div>
+                          </div>
+                        );
+                      }
+                      
+                      const scoreColor = score >= 70 ? '#52c41a' : score >= 40 ? '#faad14' : '#ff4d4f';
+                      const confidenceColor = record.trendConfidence >= 0.7 ? '#52c41a' : 
+                                            record.trendConfidence >= 0.4 ? '#faad14' : '#ff4d4f';
+                      const confidenceText = hasConfidence ? `${(record.trendConfidence * 100).toFixed(0)}%` : 'N/A';
+                      
+                      return (
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 8 }}>
+                            <Text strong style={{ 
+                              fontSize: '18px', 
+                              color: scoreColor,
+                              fontWeight: '700'
+                            }}>
+                              {score.toFixed(0)}
+                            </Text>
+                            <div style={{ fontSize: '12px', color: '#8c8c8c' }}>
+                              /100
+                            </div>
+                            <div style={{ 
+                              fontSize: '10px', 
+                              color: confidenceColor, 
+                              fontWeight: '600',
+                              marginLeft: 'auto',
+                              padding: '2px 6px',
+                              backgroundColor: `${confidenceColor}15`,
+                              borderRadius: '4px'
+                            }}>
+                              Conf {confidenceText}
+                            </div>
+                          </div>
+                          <div style={{ 
+                            width: '100%', 
+                            height: 8, 
+                            backgroundColor: '#f5f5f5', 
+                            borderRadius: 4,
+                            overflow: 'hidden',
+                            position: 'relative'
+                          }}>
+                            <div style={{ 
+                              width: `${score}%`, 
+                              height: '100%', 
+                              backgroundColor: scoreColor,
+                              borderRadius: 4,
+                              transition: 'width 0.4s ease',
+                              boxShadow: `0 0 8px ${scoreColor}40`
+                            }} />
+                            {/* 刻度标记 */}
+                            <div style={{ 
+                              position: 'absolute',
+                              top: 0,
+                              left: '70%',
+                              width: '1px',
+                              height: '100%',
+                              backgroundColor: score >= 70 ? '#52c41a' : '#e8e8e8'
+                            }} />
+                            <div style={{ 
+                              position: 'absolute',
+                              top: 0,
+                              left: '40%',
+                              width: '1px',
+                              height: '100%',
+                              backgroundColor: score >= 40 ? '#faad14' : '#e8e8e8'
+                            }} />
+                          </div>
+                        </div>
+                      );
+                    }
+                  },
+                  { 
+                    title: 'Price', 
+                    dataIndex: 'price', 
+                    key: 'price',
+                    width: 120,
+                    render: (price: number, record: any) => {
+                      const hasPrice = price !== null && price !== undefined;
+                      const hasChange = record.changePct !== null && record.changePct !== undefined;
+                      
+                      if (!hasPrice) {
+                        return (
+                          <div>
+                            <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, marginBottom: 4 }}>
+                              <Text strong style={{ fontSize: '14px', color: '#bfbfbf', fontWeight: '600' }}>
+                                N/A
+                              </Text>
+                            </div>
+                            <div style={{ fontSize: '11px', color: '#bfbfbf' }}>
+                              N/A
+                            </div>
+                          </div>
+                        );
+                      }
+                      
+                      const changePct = record.changePct || 0;
+                      const changeColor = changePct >= 0 ? '#52c41a' : '#ff4d4f';
+                      const changeIcon = changePct >= 0 ? '↗' : '↘';
+                      const changeSign = changePct >= 0 ? '+' : '';
+                      const changeAbs = Math.abs(changePct).toFixed(2);
+                      
+                      return (
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 6 }}>
+                            <Text strong style={{ 
+                              fontSize: '15px', 
+                              color: '#1f1f1f',
+                              fontWeight: '700',
+                              letterSpacing: '-0.2px'
+                            }}>
+                              ${price.toFixed(2)}
+                            </Text>
+                          </div>
+                          <div style={{ 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            gap: 4,
+                            fontSize: '11px', 
+                            color: changeColor,
+                            fontWeight: '600',
+                            padding: '3px 8px',
+                            backgroundColor: `${changeColor}10`,
+                            borderRadius: '6px',
+                            width: 'fit-content'
+                          }}>
+                            <span style={{ fontSize: '12px' }}>{changeIcon}</span>
+                            <span>{changeSign}{changeAbs}%</span>
+                          </div>
+                        </div>
+                      );
+                    }
+                  },
+                  { 
+                    title: 'Volume', 
+                    dataIndex: 'volume', 
+                    key: 'volume',
+                    width: 120,
+                    render: (volume: number, record: any) => {
+                      const hasVolume = volume !== null && volume !== undefined;
+                      const volumeStatus = record.volumeStatus;
+                      
+                      if (!hasVolume) {
+                        return (
+                          <div>
+                            <div style={{ fontSize: '11px', color: '#bfbfbf' }}>
+                              N/A
+                            </div>
+                            <div style={{ fontSize: '10px', color: '#bfbfbf' }}>
+                              Status: N/A
+                            </div>
+                          </div>
+                        );
+                      }
+                      
+                      // 根据volumeStatus设置颜色
+                      let statusColor = '#8c8c8c';
+                      let statusText = 'N/A';
+                      
+                      if (volumeStatus === 'High') {
+                        statusColor = '#ff4d4f';
+                        statusText = 'High';
+                      } else if (volumeStatus === 'Low') {
+                        statusColor = '#52c41a';
+                        statusText = 'Low';
+                      } else if (volumeStatus === 'Normal') {
+                        statusColor = '#faad14';
+                        statusText = 'Normal';
+                      }
+                      
+                      return (
+                        <div>
+                          <div style={{ fontSize: '11px', fontWeight: '600', color: '#333' }}>
+                            {marketDataService.formatVolume(volume)}
+                          </div>
+                          <div style={{ 
+                            fontSize: '10px', 
+                            color: statusColor,
+                            fontWeight: '500',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            marginTop: '2px'
+                          }}>
+                            <span>Status:</span>
+                            <span style={{ 
+                              padding: '1px 6px',
+                              borderRadius: '8px',
+                              backgroundColor: `${statusColor}15`,
+                              fontWeight: '600'
+                            }}>
+                              {statusText}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    }
+                  },
+                  { 
+                    title: 'News', 
+                    dataIndex: 'newsSentiment', 
+                    key: 'newsSentiment',
+                    width: 100,
+                    render: (sentiment: string, record: any) => {
+                      const hasSentiment = sentiment !== null && sentiment !== undefined;
+                      const hasRisk = record.eventRisk !== null && record.eventRisk !== undefined;
+                      
+                      if (!hasSentiment) {
+                        return (
+                          <div>
+                            <div style={{
+                              display: 'inline-block',
+                              padding: '3px 8px',
+                              borderRadius: '8px',
+                              backgroundColor: '#f0f0f0',
+                              color: '#666',
+                              fontSize: '10px',
+                              fontWeight: '500'
+                            }}>
+                              N/A
+                            </div>
+                            <div style={{ fontSize: '9px', color: '#999', marginTop: 4 }}>
+                              Risk: N/A
+                            </div>
+                          </div>
+                        );
+                      }
+                      
+                      let color = '#8c8c8c';
+                      let icon = '📰';
+                      if (sentiment === 'Positive') {
+                        color = '#52c41a';
+                        icon = '📈';
+                      } else if (sentiment === 'Negative') {
+                        color = '#ff4d4f';
+                        icon = '📉';
+                      } else if (sentiment === 'Mixed') {
+                        color = '#faad14';
+                        icon = '📊';
+                      }
+                      
+                      let riskColor = '#8c8c8c';
+                      if (record.eventRisk === 'High') riskColor = '#ff4d4f';
+                      if (record.eventRisk === 'Medium') riskColor = '#faad14';
+                      if (record.eventRisk === 'Low') riskColor = '#52c41a';
+                      
+                      return (
+                        <div>
+                          <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 4
+                          }}>
+                            <span style={{ fontSize: '11px' }}>{icon}</span>
+                            <div style={{
+                              display: 'inline-block',
+                              padding: '3px 8px',
+                              borderRadius: '8px',
+                              backgroundColor: `${color}15`,
+                              color: color,
+                              fontSize: '10px',
+                              fontWeight: '600'
+                            }}>
+                              {sentiment}
+                            </div>
+                          </div>
+                          <div style={{ 
+                            fontSize: '9px', 
+                            color: hasRisk ? riskColor : '#999', 
+                            marginTop: 4,
+                            fontWeight: hasRisk ? '500' : '400'
+                          }}>
+                            {hasRisk ? `Risk: ${record.eventRisk}` : 'Risk: N/A'}
+                          </div>
+                        </div>
+                      );
+                    }
+                  },
+                  { 
+                    title: 'Sector', 
+                    dataIndex: 'sector', 
+                    key: 'sector',
+                    width: 100,
+                    render: (sector: string) => (
+                      <div style={{ fontSize: '11px', color: '#666' }}>
+                        {sector || 'N/A'}
+                      </div>
+                    )
+                  },
+                  { 
+                    title: 'AI Reasoning', 
+                    dataIndex: 'conciseReasoning', 
+                    key: 'conciseReasoning',
+                    width: 220,
+                    render: (reason: string, record: any) => {
+                      const displayReason = reason || record.scannerReason || record.aiReasoning;
+                      
+                      if (!displayReason) {
+                        return (
+                          <div style={{ 
+                            fontSize: '11px', 
+                            color: '#bfbfbf',
+                            fontStyle: 'italic',
+                            padding: '4px 0'
+                          }}>
+                            N/A
+                          </div>
+                        );
+                      }
+                      
+                      // 限制在1-2行，大约120个字符
+                      const maxLength = 120;
+                      let truncatedReason = displayReason;
+                      
+                      if (displayReason.length > maxLength) {
+                        truncatedReason = displayReason.substring(0, maxLength).trim() + '...';
+                      }
+                      
+                      return (
+                        <div style={{ 
+                          fontSize: '11px', 
+                          lineHeight: 1.4,
+                          color: '#333',
+                          padding: '4px 0',
+                          maxHeight: '2.8em',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          display: '-webkit-box',
+                          WebkitLineClamp: 2,
+                          WebkitBoxOrient: 'vertical'
+                        }}>
+                          {truncatedReason}
+                        </div>
+                      );
+                    }
+                  }
+                ]}
+                dataSource={getFilteredAndSortedResults()}
+                rowKey="symbol"
+                size="small"
+                pagination={{ pageSize: 10, size: 'small' }}
+                scroll={{ x: 1200 }}
+                expandable={{
+                  expandedRowRender: (record: any) => renderDetailPanel(record),
+                  rowExpandable: (record: any) => true,
+                  expandedRowKeys: expandedRows,
+                  onExpand: (expanded, record) => {
+                    if (expanded) {
+                      setExpandedRows(prev => [...prev, record.symbol]);
+                    } else {
+                      setExpandedRows(prev => prev.filter(s => s !== record.symbol));
+                    }
+                  }
+                }}
+              />
+            </div>
+          )}
+          
+          {marketScannerResults.length === 0 && marketScannerStatus.status !== 'running' && (
+            <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
+              <LineChartOutlined style={{ fontSize: '48px', marginBottom: 16 }} />
+              <div style={{ fontSize: '14px' }}>No market scan results yet</div>
+              <div style={{ fontSize: '12px', marginTop: 8 }}>
+                Click "Run Scanner Now" to start scanning the market
+              </div>
+            </div>
+          )}
+        </Card>
+      </div>
+      
+      {/* 2.5 Preferred Continue Scan List */}
+      <div style={{ marginBottom: 24 }}>
+        <Title level={4}>
+          <BarChartOutlined style={{ marginRight: '8px' }} />
+          Preferred Continue Scan List
+        </Title>
+        <Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>
+          Follow-up candidates selected from completed market scan results
+        </Text>
+        
+        {/* 顶部控制面板 */}
+        <Card style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
+                <div>
+                  <Text strong>Status:</Text>
+                  <Badge 
+                    status={
+                      continueScanStatus === 'processing' ? 'processing' :
+                      continueScanStatus === 'completed' ? 'success' :
+                      continueScanStatus === 'error' ? 'error' : 'default'
+                    }
+                    text={
+                      continueScanStatus === 'processing' ? 'AI Evaluating' :
+                      continueScanStatus === 'completed' ? 'Completed' :
+                      continueScanStatus === 'error' ? 'Error' : 'Ready'
+                    }
+                    style={{ marginLeft: '8px' }}
+                  />
+                </div>
+                
+                <div>
+                  <Text strong>Based on:</Text>
+                  <Text style={{ marginLeft: '8px' }}>
+                    {marketScannerResults.length} validated symbols
+                  </Text>
+                </div>
+                
+                <div>
+                  <Text strong>AI Provider:</Text>
+                  <Text style={{ marginLeft: '8px' }}>
+                    {aiConfig.provider || 'DeepSeek'} {aiConfig.model ? `(${aiConfig.model})` : ''}
+                  </Text>
+                </div>
+              </div>
+              
+              <div style={{ fontSize: '12px', color: '#666' }}>
+                {detailedScanStatus.lastScanAt && (
+                  <div>Last market scan: {new Date(detailedScanStatus.lastScanAt).toLocaleString()}</div>
+                )}
+                <div>Continue scan will evaluate all market scan results using AI</div>
+                
+                {/* 完成时显示统计信息 */}
+                {continueScanStatus === 'completed' && preferredContinueScanList.length > 0 && (
+                  <div style={{ marginTop: '8px', padding: '8px', backgroundColor: '#f6ffed', borderRadius: '4px' }}>
+                    <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                      <div>
+                        <Text strong>Total Selected:</Text>
+                        <Text style={{ marginLeft: '4px', color: '#1890ff' }}>
+                          {preferredContinueScanList.length} symbols
+                        </Text>
+                      </div>
+                      <div>
+                        <Text strong>AI Selected:</Text>
+                        <Text style={{ marginLeft: '4px', color: '#52c41a' }}>
+                          {preferredContinueScanList.filter(c => c.selectedBy === 'AI').length} symbols
+                        </Text>
+                      </div>
+                      <div>
+                        <Text strong>AI + Rule:</Text>
+                        <Text style={{ marginLeft: '4px', color: '#faad14' }}>
+                          {preferredContinueScanList.filter(c => c.selectedBy === 'Rule + AI').length} symbols
+                        </Text>
+                      </div>
+                      <div>
+                        <Text strong>Bullish/Strong Bullish:</Text>
+                        <Text style={{ marginLeft: '4px', color: '#722ed1' }}>
+                          {preferredContinueScanList.filter(c => c.trendLabel === 'Bullish' || c.trendLabel === 'Strong Bullish').length} symbols
+                        </Text>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#666', marginTop: '4px' }}>
+                      Based on {marketScannerResults.length} market scan results
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+            
+            <div>
+              <Button 
+                type="primary" 
+                size="small"
+                onClick={handleStartContinueScan}
+                disabled={
+                  marketScannerResults.length === 0 || 
+                  continueScanStatus !== 'idle'
+                }
+                loading={continueScanStatus === 'processing'}
+              >
+                Start Continue Scan
+              </Button>
+            </div>
+          </div>
+          
+          {/* 进度条（处理中时显示） */}
+          {continueScanStatus === 'processing' && (
+            <div style={{ marginTop: '16px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <Text>{continueScanDetails.currentStage || 'Processing...'}</Text>
+                <Text strong>{continueScanProgress}%</Text>
+              </div>
+              <Progress 
+                percent={continueScanProgress} 
+                status="active"
+                strokeColor={{
+                  '0%': '#108ee9',
+                  '100%': '#87d068',
+                }}
+              />
+              <div style={{ fontSize: '12px', color: '#666', marginTop: '8px' }}>
+                <div>Processed: {continueScanDetails.processedCount} / {continueScanDetails.totalCount} candidates</div>
+              </div>
+            </div>
+          )}
+        </Card>
+        
+        <Card>
+          {(() => {
+            // 状态1: 没有market scan结果
+            if (marketScannerResults.length === 0) {
+              return (
+                <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
+                  <BarChartOutlined style={{ fontSize: '48px', marginBottom: 16 }} />
+                  <div style={{ fontSize: '14px' }}>No market scan results available</div>
+                  <div style={{ fontSize: '12px', marginTop: 8 }}>
+                    {detailedScanStatus.currentStatus === 'scanning' 
+                      ? 'Market scan in progress...' 
+                      : 'Run market scan first to generate continue scan list'}
+                  </div>
+                </div>
+              );
+            }
+            
+            // 状态2: continue scan处理中 - 现在进度条在顶部控制面板中显示
+            if (continueScanStatus === 'processing') {
+              return (
+                <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
+                  <SyncOutlined spin style={{ fontSize: '48px', marginBottom: 16, color: '#1890ff' }} />
+                  <div style={{ fontSize: '14px' }}>AI evaluating candidates...</div>
+                  <div style={{ fontSize: '12px', marginTop: 8 }}>
+                    Processing {continueScanDetails.processedCount} of {continueScanDetails.totalCount} candidates
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#999', marginTop: 8 }}>
+                    Check progress in the control panel above
+                  </div>
+                </div>
+              );
+            }
+            
+            // 状态3: continue scan完成
+            if (continueScanStatus === 'completed' && preferredContinueScanList.length > 0) {
+              return (
+                <div>
+                  <div style={{ marginBottom: 16 }}>
+                    <Alert 
+                      message={`Found ${preferredContinueScanList.length} candidates for follow-up analysis`}
+                      type="success"
+                      showIcon
+                      style={{ marginBottom: 16 }}
+                    />
+                    
+                    <Table
+                      size="small"
+                      dataSource={preferredContinueScanList}
+                      pagination={{ 
+                        pageSize: 10, 
+                        size: 'small',
+                        showSizeChanger: false,
+                        showQuickJumper: false,
+                        showTotal: (total, range) => `${range[0]}-${range[1]} of ${total} candidates`
+                      }}
+                      scroll={{ x: 'max-content' }}
+                      rowKey="symbol"
+                      columns={[
+                        {
+                          title: 'Rank',
+                          key: 'rank',
+                          width: 60,
+                          render: (_, __, index) => (
+                            <Badge 
+                              count={index + 1} 
+                              style={{ backgroundColor: index < 3 ? '#1890ff' : '#8c8c8c' }}
+                            />
+                          ),
+                        },
+                        {
+                          title: 'Symbol',
+                          key: 'symbol',
+                          width: 80,
+                          render: (record) => {
+                            const symbol = record.symbol || 'N/A';
+                            return (
+                              <Text strong style={{ fontSize: '12px' }}>{symbol}</Text>
+                            );
+                          },
+                        },
+                        {
+                          title: 'Trend',
+                          key: 'trend',
+                          width: 100,
+                          render: (record) => {
+                            const trend = record.trendLabel;
+                            return renderTrendBadge(trend);
+                          },
+                        },
+                        {
+                          title: 'Score',
+                          key: 'score',
+                          width: 80,
+                          render: (record) => {
+                            // 使用与processing函数相同的逻辑获取score
+                            const score = record.overallScore || record.trendScore || 0;
+                            const displayScore = score > 0 ? score : 'N/A';
+                            
+                            return (
+                              <div style={{ textAlign: 'center' }}>
+                                <Text strong style={{ 
+                                  color: score >= 70 ? '#52c41a' : score >= 50 ? '#faad14' : '#ff4d4f',
+                                  fontSize: '12px'
+                                }}>
+                                  {displayScore}
+                                </Text>
+                              </div>
+                            );
+                          },
+                        },
+                        {
+                          title: 'Risk',
+                          key: 'risk',
+                          width: 80,
+                          render: (record) => {
+                            // 使用与processing函数相同的逻辑获取risk
+                            const risk = record.eventRisk || 'Medium';
+                            let color = '#8c8c8c';
+                            if (risk === 'Low') color = '#52c41a';
+                            if (risk === 'Medium') color = '#faad14';
+                            if (risk === 'High') color = '#ff4d4f';
+                            
+                            return (
+                              <div style={{ textAlign: 'center' }}>
+                                <div style={{
+                                  display: 'inline-block',
+                                  padding: '2px 8px',
+                                  borderRadius: '4px',
+                                  backgroundColor: `${color}15`,
+                                  color: color,
+                                  fontSize: '11px',
+                                  fontWeight: '600'
+                                }}>
+                                  {risk}
+                                </div>
+                              </div>
+                            );
+                          },
+                        },
+                        {
+                          title: 'Sector',
+                          key: 'sector',
+                          width: 100,
+                          render: (record) => {
+                            const sector = record.sector || 'N/A';
+                            return (
+                              <Text style={{ fontSize: '11px', color: '#666' }}>
+                                {sector}
+                              </Text>
+                            );
+                          },
+                        },
+                        {
+                          title: 'News',
+                          key: 'news',
+                          width: 80,
+                          render: (record) => {
+                            const sentiment = record.newsSentiment || 'Neutral';
+                            let color = '#8c8c8c';
+                            let icon = '📰';
+                            
+                            if (sentiment === 'Positive') {
+                              color = '#52c41a';
+                              icon = '📈';
+                            } else if (sentiment === 'Negative') {
+                              color = '#ff4d4f';
+                              icon = '📉';
+                            }
+                            
+                            return (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                <span style={{ fontSize: '12px' }}>{icon}</span>
+                                <Text style={{ fontSize: '11px', color }}>
+                                  {sentiment}
+                                </Text>
+                              </div>
+                            );
+                          },
+                        },
+                        {
+                          title: 'Change %',
+                          key: 'change',
+                          width: 80,
+                          render: (record) => {
+                            const change = record.priceChangePct || record.changePct || 0;
+                            const color = change >= 0 ? '#52c41a' : '#ff4d4f';
+                            const icon = change >= 0 ? '↗' : '↘';
+                            
+                            return (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                <span style={{ fontSize: '12px' }}>{icon}</span>
+                                <Text style={{ fontSize: '11px', color, fontWeight: '500' }}>
+                                  {change.toFixed(2)}%
+                                </Text>
+                              </div>
+                            );
+                          },
+                        },
+                        {
+                          title: 'Volume',
+                          key: 'volume',
+                          width: 80,
+                          render: (record) => {
+                            const volumeStatus = record.volumeStatus || 'Normal';
+                            let color = '#8c8c8c';
+                            
+                            if (volumeStatus === 'High') color = '#52c41a';
+                            if (volumeStatus === 'Low') color = '#ff4d4f';
+                            
+                            return (
+                              <Text style={{ fontSize: '11px', color }}>
+                                {volumeStatus}
+                              </Text>
+                            );
+                          },
+                        },
+                        {
+                          title: 'Priority',
+                          key: 'priority',
+                          width: 100,
+                          render: (record) => {
+                            const priorityScore = record.priorityScore || 0;
+                            return (
+                              <div>
+                                <Progress 
+                                  percent={priorityScore} 
+                                  size="small"
+                                  strokeColor={{
+                                    '0%': '#ff4d4f',
+                                    '50%': '#faad14',
+                                    '100%': '#52c41a',
+                                  }}
+                                  format={(percent) => `${percent}%`}
+                                />
+                              </div>
+                            );
+                          },
+                        },
+                        {
+                          title: 'Reason Source',
+                          key: 'reasonSource',
+                          width: 100,
+                          render: (record) => {
+                            const source = record.reasonSource || 'Unknown';
+                            const aiEvaluated = record.aiEvaluated || false;
+                            
+                            let color = '#666';
+                            let icon = null;
+                            
+                            if (source === 'AI') {
+                              color = '#52c41a';
+                              icon = <RobotOutlined style={{ fontSize: '10px', marginRight: '4px' }} />;
+                            } else if (source === 'Fallback') {
+                              color = '#faad14';
+                              icon = <ExclamationCircleOutlined style={{ fontSize: '10px', marginRight: '4px' }} />;
+                            } else if (source === 'Error') {
+                              color = '#ff4d4f';
+                              icon = <CloseCircleOutlined style={{ fontSize: '10px', marginRight: '4px' }} />;
+                            }
+                            
+                            return (
+                              <div style={{ display: 'flex', alignItems: 'center' }}>
+                                {icon}
+                                <Text style={{ fontSize: '11px', color, fontWeight: '500' }}>
+                                  {source}
+                                </Text>
+                              </div>
+                            );
+                          },
+                        },
+                        {
+                          title: 'Selected By',
+                          key: 'selectedBy',
+                          width: 100,
+                          render: (record) => {
+                            const selectedBy = record.selectedBy || 'Unknown';
+                            const color = selectedBy === 'AI' ? '#52c41a' : 
+                                         selectedBy === 'Rule' ? '#faad14' : '#666';
+                            
+                            return (
+                              <Text style={{ fontSize: '11px', color, fontWeight: '500' }}>
+                                {selectedBy}
+                              </Text>
+                            );
+                          },
+                        },
+                        {
+                          title: 'Confidence',
+                          key: 'confidence',
+                          width: 100,
+                          render: (record) => {
+                            const confidence = record.aiConfidence || 0;
+                            const displayConfidence = Math.round(confidence * 100);
+                            
+                            return (
+                              <div>
+                                <Progress 
+                                  percent={displayConfidence} 
+                                  size="small"
+                                  strokeColor={{
+                                    '0%': '#ff4d4f',
+                                    '50%': '#faad14',
+                                    '100%': '#52c41a',
+                                  }}
+                                  format={(percent) => `${percent}%`}
+                                  showInfo={confidence > 0}
+                                />
+                                {confidence === 0 && (
+                                  <Text style={{ fontSize: '10px', color: '#999', fontStyle: 'italic' }}>
+                                    N/A
+                                  </Text>
+                                )}
+                              </div>
+                            );
+                          },
+                        },
+                        {
+                          title: 'Selection Reason',
+                          key: 'reason',
+                          width: 200,
+                          render: (record) => {
+                            const reason = record.selectionReason || '';
+                            const aiReasonStatus = record.aiReasonStatus || 'pending';
+                            const reasonSource = record.reasonSource || 'Unknown';
+                            
+                            // 根据AI生成状态显示不同内容
+                            if (aiReasonStatus === 'processing') {
+                              return (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <SyncOutlined spin style={{ fontSize: '10px', color: '#1890ff' }} />
+                                  <Text style={{ fontSize: '11px', color: '#999', fontStyle: 'italic' }}>
+                                    Generating AI reason...
+                                  </Text>
+                                </div>
+                              );
+                            } else if (aiReasonStatus === 'failed') {
+                              return (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <ExclamationCircleOutlined style={{ fontSize: '10px', color: '#faad14' }} />
+                                  <Text style={{ fontSize: '11px', color: '#666' }}>
+                                    {reason}
+                                  </Text>
+                                </div>
+                              );
+                            } else {
+                              // 根据reason source添加前缀
+                              let prefix = '';
+                              if (reasonSource === 'AI') {
+                                prefix = '🤖 ';
+                              } else if (reasonSource === 'Fallback') {
+                                prefix = '⚠️ ';
+                              } else if (reasonSource === 'Error') {
+                                prefix = '❌ ';
+                              }
+                              
+                              return (
+                                <Text style={{ fontSize: '11px', color: '#666' }}>
+                                  {prefix}{reason}
+                                </Text>
+                              );
+                            }
+                          },
+                        },
+                      ]}
+                    />
+                  </div>
+                  
+                  <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid #f0f0f0' }}>
+                    <Text type="secondary" style={{ fontSize: '12px' }}>
+                      Based on {marketScannerResults.length} total scan results • {getBullishCandidatesCount()} bullish candidates analyzed
+                    </Text>
+                  </div>
+                </div>
+              );
+            }
+            
+            // 状态4: continue scan完成但无结果
+            if (continueScanStatus === 'completed' && preferredContinueScanList.length === 0) {
+              return (
+                <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
+                  <ExclamationCircleOutlined style={{ fontSize: '48px', marginBottom: 16 }} />
+                  <div style={{ fontSize: '14px' }}>No suitable candidates found</div>
+                  <div style={{ fontSize: '12px', marginTop: 8 }}>
+                    Market scan completed but no bullish candidates met the criteria for continue scan
+                  </div>
+                </div>
+              );
+            }
+            
+            // 状态5: continue scan错误
+            if (continueScanStatus === 'error') {
+              return (
+                <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
+                  <CloseCircleOutlined style={{ fontSize: '48px', marginBottom: 16, color: '#ff4d4f' }} />
+                  <div style={{ fontSize: '14px', color: '#ff4d4f' }}>Continue scan processing failed</div>
+                  <div style={{ fontSize: '12px', marginTop: 8 }}>
+                    An error occurred while processing continue scan candidates
+                  </div>
+                </div>
+              );
+            }
+            
+            // 状态6: market scan完成但continue scan未开始
+            return (
+              <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
+                <ClockCircleOutlined style={{ fontSize: '48px', marginBottom: 16 }} />
+                <div style={{ fontSize: '14px' }}>Ready to start continue scan</div>
+                <div style={{ fontSize: '12px', marginTop: 8 }}>
+                  Market scan completed with {marketScannerResults.length} results
+                </div>
+                <div style={{ fontSize: '11px', color: '#999', marginTop: 8 }}>
+                  Use the "Start Continue Scan" button in the control panel above
+                </div>
+              </div>
+            );
+          })()}
+        </Card>
+      </div>
+      
+      {/* 3. AI Recommendations */}
+      <div style={{ marginBottom: 24 }}>
+        <Title level={4}>
+          <RobotOutlined style={{ marginRight: '8px' }} />
+          AI Recommendations
+        </Title>
+        <Card>
+          {/* Scan Control - 移动到此处 */}
+          <div style={{ marginBottom: 24 }}>
+            <Title level={5}>
+              <ClockCircleOutlined style={{ marginRight: '8px' }} />
+              Scan Control
+            </Title>
+            <Card>
+              <Row gutter={16} align="middle">
+                <Col span={6}>
+                  <div style={{ marginBottom: '8px' }}>
+                    <Text strong>Scan Interval:</Text>
+                  </div>
+                  <Select 
+                    value={scanInterval} 
+                    onChange={setScanInterval}
+                    style={{ width: '100%' }}
+                    disabled={isAutoScanEnabled}
+                  >
+                    <Option value="5">5 minutes</Option>
+                    <Option value="15">15 minutes</Option>
+                  </Select>
+                </Col>
+                
+                <Col span={18}>
+                  <Space size="middle">
+                    <Button
+                      type="primary"
+                      icon={<PlayCircleOutlined />}
+                      onClick={handleStartAutoScan}
+                      disabled={isAutoScanEnabled}
+                    >
+                      Start Auto Scan
+                    </Button>
+                    
+                    <Button
+                      danger
+                      icon={<PauseCircleOutlined />}
+                      onClick={handleStopAutoScan}
+                      disabled={!isAutoScanEnabled}
+                    >
+                      Stop Auto Scan
+                    </Button>
+                    
+                    <Button
+                      icon={<ThunderboltOutlined />}
+                      onClick={handleRunNow}
+                    >
+                      Run Now
+                    </Button>
+                  </Space>
+                </Col>
+              </Row>
+              
+              <Divider style={{ margin: '16px 0' }} />
+              
+              {/* Status Display */}
+              <Row gutter={16}>
+                <Col span={8}>
+                  <div style={{ marginBottom: '8px' }}>
+                    <Text strong>Status:</Text>
+                  </div>
+                  <Badge 
+                    status={scanStatus.status === 'running' ? 'processing' : 'default'} 
+                    text={
+                      <Text strong style={{ 
+                        color: scanStatus.status === 'running' ? '#52c41a' : '#8c8c8c' 
+                      }}>
+                        {scanStatus.status === 'running' ? 'RUNNING' : 'STOPPED'}
+                      </Text>
+                    }
+                  />
+                </Col>
+                
+                <Col span={8}>
+                  <div style={{ marginBottom: '8px' }}>
+                    <Text strong>Last Run:</Text>
+                  </div>
+                  <Text type="secondary">
+                    {scanStatus.lastRun 
+                      ? new Date(scanStatus.lastRun).toLocaleString() 
+                      : 'Never'}
+                  </Text>
+                </Col>
+                
+                <Col span={8}>
+                  <div style={{ marginBottom: '8px' }}>
+                    <Text strong>Next Run:</Text>
+                  </div>
+                  <Text type="secondary">
+                    {scanStatus.nextRun 
+                      ? new Date(scanStatus.nextRun).toLocaleString() 
+                      : 'Not scheduled'}
+                  </Text>
+                </Col>
+              </Row>
+              
+              {isScanInProgress && (
+                <div style={{ marginTop: '16px' }}>
+                  <Progress 
+                    percent={scanStatus.progress} 
+                    size="small" 
+                    status="active"
+                    format={() => `Scanning in progress...`}
+                  />
+                </div>
+              )}
+            </Card>
+          </div>
+          
+          {/* 错误显示区域 */}
+          {scanErrors.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <Alert
+                message={`${scanErrors.length} 个股票分析失败`}
+                description={
+                  <div>
+                    <div style={{ marginBottom: 8 }}>
+                      <Text type="secondary">失败详情：</Text>
+                    </div>
+                    <div style={{ maxHeight: 150, overflowY: 'auto' }}>
+                      {scanErrors.map((error, index) => (
+                        <div key={index} style={{ marginBottom: 4, fontSize: '12px' }}>
+                          <Text type="danger">{error.symbol}</Text>
+                          <Text type="secondary"> - {error.step}: {error.error}</Text>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                }
+                type="warning"
+                showIcon
+                closable
+                onClose={() => setScanErrors([])}
+              />
+            </div>
+          )}
+          
+          {aiRecommendations.length > 0 ? (
+            <>
+              {/* 专业简洁版 Summary */}
+              <Card 
+                size="small" 
+                style={{ 
+                  marginBottom: 16, 
+                  border: '1px solid #f0f0f0',
+                  boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)'
+                }}
+                bodyStyle={{ padding: '16px' }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                  <div>
+                    <Text strong style={{ fontSize: '16px' }}>Scan Summary</Text>
+                    <div style={{ fontSize: '12px', color: '#666', marginTop: 2 }}>
+                      {new Date().toLocaleString()} • {
+                        aiRecommendations[0]?.backtestRange?.split('→')[0]?.trim() || 'N/A'
+                      } → {
+                        aiRecommendations[0]?.backtestRange?.split('→')[1]?.trim() || 'N/A'
+                      }
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <Tag color="blue">{aiRecommendations[0]?.strategyUsed || 'moving_average'}</Tag>
+                    <Tag color={
+                      aiRecommendations[0]?.symbolsSource === 'tech_market_scan' ? 'purple' :
+                      aiRecommendations[0]?.symbolsSource === 'market_scan' ? 'orange' :
+                      aiRecommendations[0]?.symbolsSource === 'watchlist' ? 'green' : 'default'
+                    }>
+                      {aiRecommendations[0]?.symbolsSource === 'tech_market_scan' ? 'Tech Market Scan' :
+                       aiRecommendations[0]?.symbolsSource === 'market_scan' ? 'Market Scan' :
+                       aiRecommendations[0]?.symbolsSource === 'watchlist' ? 'Watchlist' : 'Unknown'}
+                    </Tag>
+                    {aiRecommendations[0]?.scanType && (
+                      <Tag color="cyan">
+                        {aiRecommendations[0]?.scanType === 'tech_market_scan' ? 'Top Tech Stocks' :
+                         aiRecommendations[0]?.scanType === 'market_all' ? 'Market All' :
+                         aiRecommendations[0]?.scanType}
+                      </Tag>
+                    )}
+                  </div>
+                </div>
+                
+                <Divider style={{ margin: '12px 0' }} />
+                
+                <Row gutter={[16, 16]}>
+                  <Col span={4}>
+                    <Statistic
+                      title="Total Symbols"
+                      value={aiRecommendations.length}
+                      valueStyle={{ color: '#1890ff', fontSize: '24px', fontWeight: 'bold' }}
+                      prefix={<BarChartOutlined />}
+                      suffix=""
+                    />
+                  </Col>
+                  <Col span={4}>
+                    <Statistic
+                      title="Successful"
+                      value={aiRecommendations.filter(r => r.status === 'success').length}
+                      valueStyle={{ color: '#52c41a', fontSize: '24px', fontWeight: 'bold' }}
+                      prefix={<CheckCircleOutlined />}
+                      suffix=""
+                    />
+                  </Col>
+                  <Col span={4}>
+                    <Statistic
+                      title="Failed"
+                      value={aiRecommendations.filter(r => r.status === 'error').length}
+                      valueStyle={{ color: '#ff4d4f', fontSize: '24px', fontWeight: 'bold' }}
+                      prefix={<CloseCircleOutlined />}
+                      suffix=""
+                    />
+                  </Col>
+                  <Col span={4}>
+                    <Statistic
+                      title="Partial Success"
+                      value={aiRecommendations.filter(r => r.status === 'partial').length}
+                      valueStyle={{ color: '#faad14', fontSize: '24px', fontWeight: 'bold' }}
+                      prefix={<ExclamationCircleOutlined />}
+                      suffix=""
+                    />
+                  </Col>
+                  <Col span={4}>
+                    <Statistic
+                      title="Hold Recommendations"
+                      value={aiRecommendations.filter(r => r.recommendation === 'HOLD').length}
+                      valueStyle={{ color: '#fa8c16', fontSize: '24px', fontWeight: 'bold' }}
+                      prefix={<PauseCircleOutlined />}
+                      suffix=""
+                    />
+                  </Col>
+                  <Col span={4}>
+                    <Statistic
+                      title="Avg Confidence"
+                      value={aiRecommendations.length > 0 ? 
+                        (aiRecommendations.reduce((sum, r) => sum + (r.confidence || 0), 0) / aiRecommendations.length * 100).toFixed(1) : 0}
+                      valueStyle={{ color: '#722ed1', fontSize: '24px', fontWeight: 'bold' }}
+                      prefix={<LineChartOutlined />}
+                      suffix="%"
+                    />
+                  </Col>
+                </Row>
+              </Card>
+
+              {/* 专业表格 */}
+              <Table 
+                columns={[
+                  { 
+                    title: 'Symbol', 
+                    dataIndex: 'symbol', 
+                    key: 'symbol',
+                    width: 100,
+                    render: (symbol: string, record: any) => (
+                      <div>
+                        <Text strong>{symbol}</Text>
+                        <div style={{ fontSize: '11px', color: '#666', marginTop: 2 }}>
+                          {record.strategyUsed || 'MA'}
+                        </div>
+                      </div>
+                    )
+                  },
+                  { 
+                    title: 'Action', 
+                    dataIndex: 'recommendation', 
+                    key: 'recommendation',
+                    width: 110,
+                    render: (rec: string) => {
+                      // 将SKIP映射为HOLD进行显示
+                      const displayRec = rec === 'SKIP' ? 'HOLD' : rec;
+                      
+                      let backgroundColor = '';
+                      let borderColor = '';
+                      let textColor = '';
+                      let fontWeight = '600';
+                      
+                      if (displayRec === 'BUY') {
+                        backgroundColor = '#f6ffed';
+                        borderColor = '#b7eb8f';
+                        textColor = '#52c41a';
+                      } else if (displayRec === 'SELL') {
+                        backgroundColor = '#fff2f0';
+                        borderColor = '#ffccc7';
+                        textColor = '#ff4d4f';
+                      } else if (displayRec === 'HOLD') {
+                        backgroundColor = '#fffbe6';
+                        borderColor = '#ffe58f';
+                        textColor = '#faad14';
+                      } else if (displayRec === 'ERROR') {
+                        backgroundColor = '#fff1f0';
+                        borderColor = '#ffa39e';
+                        textColor = '#cf1322';
+                      } else {
+                        backgroundColor = '#fafafa';
+                        borderColor = '#d9d9d9';
+                        textColor = '#666';
+                      }
+                      
+                      return (
+                        <div style={{
+                          display: 'inline-block',
+                          padding: '4px 12px',
+                          borderRadius: '12px',
+                          backgroundColor,
+                          border: `1px solid ${borderColor}`,
+                          color: textColor,
+                          fontWeight,
+                          fontSize: '12px',
+                          textAlign: 'center',
+                          minWidth: '70px',
+                          boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
+                        }}>
+                          {displayRec}
+                        </div>
+                      );
+                    }
+                  },
+                  { 
+                    title: 'Qty', 
+                    dataIndex: 'recommendedQty', 
+                    key: 'recommendedQty',
+                    width: 100,
+                    render: (qty: number, record: any) => {
+                      const recommendedQty = record.recommendedQty || record.positionSize || 0;
+                      const action = record.recommendation;
+                      const displayAction = action === 'SKIP' ? 'HOLD' : action;
+                      
+                      let backgroundColor = '';
+                      let borderColor = '';
+                      let textColor = '';
+                      let fontWeight = '600';
+                      let displayText = '-';
+                      let suffix = '';
+                      
+                      if (displayAction === 'BUY' && recommendedQty > 0) {
+                        backgroundColor = '#f6ffed';
+                        borderColor = '#b7eb8f';
+                        textColor = '#52c41a';
+                        displayText = `${recommendedQty}`;
+                        suffix = ' ↗';
+                      } else if (displayAction === 'SELL' && recommendedQty > 0) {
+                        backgroundColor = '#fff2f0';
+                        borderColor = '#ffccc7';
+                        textColor = '#ff4d4f';
+                        displayText = `${recommendedQty}`;
+                        suffix = ' ↘';
+                      } else if (displayAction === 'HOLD') {
+                        backgroundColor = '#fffbe6';
+                        borderColor = '#ffe58f';
+                        textColor = '#faad14';
+                        displayText = '0';
+                        suffix = '';
+                      } else if (displayAction === 'ERROR') {
+                        backgroundColor = '#fff1f0';
+                        borderColor = '#ffa39e';
+                        textColor = '#cf1322';
+                        displayText = 'Error';
+                        suffix = '';
+                      } else {
+                        backgroundColor = '#fafafa';
+                        borderColor = '#d9d9d9';
+                        textColor = '#666';
+                        displayText = '0';
+                        suffix = '';
+                      }
+                      
+                      return (
+                        <div style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          padding: '4px 8px',
+                          borderRadius: '10px',
+                          backgroundColor,
+                          border: `1px solid ${borderColor}`,
+                          color: textColor,
+                          fontWeight,
+                          fontSize: '12px',
+                          minWidth: '60px',
+                          boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                          gap: '4px'
+                        }}>
+                          <span>{displayText}</span>
+                          {suffix && <span style={{ fontSize: '10px' }}>{suffix}</span>}
+                        </div>
+                      );
+                    }
+                  },
+                  { 
+                    title: 'Confidence', 
+                    dataIndex: 'confidence', 
+                    key: 'confidence',
+                    width: 130,
+                    render: (conf: number) => {
+                      const percent = Math.round(conf * 100);
+                      let strokeColor = '#ff4d4f';
+                      let bgColor = '#fff2f0';
+                      
+                      if (percent >= 80) {
+                        strokeColor = '#52c41a';
+                        bgColor = '#f6ffed';
+                      } else if (percent >= 60) {
+                        strokeColor = '#faad14';
+                        bgColor = '#fffbe6';
+                      }
+                      
+                      return (
+                        <div style={{ 
+                          display: 'flex', 
+                          alignItems: 'center', 
+                          gap: 8,
+                          padding: '4px 8px',
+                          backgroundColor: bgColor,
+                          borderRadius: '8px',
+                          border: '1px solid #f0f0f0'
+                        }}>
+                          <Progress 
+                            percent={percent} 
+                            size="small" 
+                            style={{ width: 60, margin: 0 }}
+                            strokeColor={strokeColor}
+                            showInfo={false}
+                          />
+                          <Text style={{ 
+                            fontSize: '12px', 
+                            fontWeight: 'bold', 
+                            minWidth: 30,
+                            color: strokeColor
+                          }}>
+                            {percent}%
+                          </Text>
+                        </div>
+                      );
+                    }
+                  },
+                  { 
+                    title: 'AI Reasoning', 
+                    dataIndex: 'reason', 
+                    key: 'reason',
+                    width: 240,
+                    render: (reason: string, record: any) => {
+                      const fullReason = record.reasonFull || 'No detailed reasoning available';
+                      const isError = reason.includes('ERROR');
+                      const bgColor = isError ? '#fff1f0' : '#fafafa';
+                      const borderColor = isError ? '#ffa39e' : '#f0f0f0';
+                      
+                      return (
+                        <Tooltip 
+                          title={
+                            <div style={{ maxWidth: 500 }}>
+                              <div style={{ fontWeight: 'bold', marginBottom: 8 }}>Full AI Analysis</div>
+                              <div style={{ 
+                                fontSize: '12px', 
+                                lineHeight: 1.5,
+                                whiteSpace: 'pre-wrap',
+                                maxHeight: '300px',
+                                overflowY: 'auto',
+                                padding: '8px',
+                                backgroundColor: '#fff',
+                                borderRadius: '4px',
+                                border: '1px solid #d9d9d9'
+                              }}>
+                                {fullReason}
+                              </div>
+                            </div>
+                          }
+                          placement="left"
+                        >
+                          <div 
+                            style={{ 
+                              maxHeight: '2.6em',
+                              lineHeight: '1.3em',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              display: '-webkit-box',
+                              WebkitLineClamp: 2,
+                              WebkitBoxOrient: 'vertical',
+                              cursor: 'pointer',
+                              fontSize: '12px',
+                              fontStyle: isError ? 'italic' : 'normal',
+                              color: isError ? '#cf1322' : '#333',
+                              padding: '6px 8px',
+                              backgroundColor: bgColor,
+                              borderRadius: '6px',
+                              border: `1px solid ${borderColor}`,
+                              transition: 'all 0.2s'
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.backgroundColor = isError ? '#ffeae8' : '#f5f5f5';
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.backgroundColor = bgColor;
+                            }}
+                          >
+                            {reason}
+                          </div>
+                        </Tooltip>
+                      );
+                    }
+                  },
+                  { 
+                    title: 'Backtest', 
+                    dataIndex: 'backtestSummary', 
+                    key: 'backtestSummary',
+                    width: 150,
+                    render: (summary: string, record: any) => {
+                      // ========== DEBUG: Backtest列渲染 ==========
+                      console.log(`=== DEBUG: Backtest列渲染 for ${record.symbol} ===`);
+                      console.log('summary:', summary);
+                      console.log('record.symbol:', record.symbol);
+                      console.log('record.backtestSummary:', record.backtestSummary);
+                      
+                      // 尝试解析evidenceFull查看实际值
+                      if (record.evidenceFull) {
+                        try {
+                          const evidence = JSON.parse(record.evidenceFull);
+                          console.log(`evidence.backtestKeyResults for ${record.symbol}:`, evidence.backtestKeyResults);
+                          if (evidence.backtestKeyResults) {
+                            console.log(`  totalReturn: ${evidence.backtestKeyResults.totalReturn}`);
+                            console.log(`  sharpeRatio: ${evidence.backtestKeyResults.sharpeRatio}`);
+                            console.log(`  maxDrawdown: ${evidence.backtestKeyResults.maxDrawdown}`);
+                          }
+                        } catch (e) {
+                          console.warn(`解析evidenceFull失败 for ${record.symbol}:`, e);
+                        }
+                      }
+                      // ========== END DEBUG ==========
+                      
+                      const displayText = summary.includes('unavailable') || summary.includes('Failed') 
+                        ? 'Unavailable' 
+                        : summary.split('|')[0]?.trim() || summary;
+                      
+                      return (
+                        <Tooltip title={
+                          <div>
+                            <div><strong>Range:</strong> {record.backtestRange || 'N/A'}</div>
+                            <div><strong>Summary:</strong> {summary}</div>
+                          </div>
+                        }>
+                          <div style={{ 
+                            fontSize: '12px',
+                            whiteSpace: 'nowrap', 
+                            overflow: 'hidden', 
+                            textOverflow: 'ellipsis',
+                            cursor: 'pointer'
+                          }}>
+                            {displayText}
+                          </div>
+                        </Tooltip>
+                      );
+                    }
+                  },
+                  { 
+                    title: 'Optimization', 
+                    dataIndex: 'optimizationSummary', 
+                    key: 'optimizationSummary',
+                    width: 150,
+                    render: (summary: string, record: any) => {
+                      const displayText = summary.includes('unavailable') || summary.includes('Failed') 
+                        ? 'Unavailable' 
+                        : summary.split('|')[0]?.trim() || summary;
+                      
+                      return (
+                        <Tooltip title={
+                          <div>
+                            <div><strong>Range:</strong> {record.optimizationRange || record.backtestRange || 'N/A'}</div>
+                            <div><strong>Summary:</strong> {summary}</div>
+                          </div>
+                        }>
+                          <div style={{ 
+                            fontSize: '12px',
+                            whiteSpace: 'nowrap', 
+                            overflow: 'hidden', 
+                            textOverflow: 'ellipsis',
+                            cursor: 'pointer'
+                          }}>
+                            {displayText}
+                          </div>
+                        </Tooltip>
+                      );
+                    }
+                  },
+                  { 
+                    title: 'Time', 
+                    dataIndex: 'generatedTime', 
+                    key: 'generatedTime',
+                    width: 100,
+                    render: (time: string) => (
+                      <div style={{ fontSize: '11px' }}>
+                        <div>{time ? new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-'}</div>
+                        <div style={{ color: '#666' }}>
+                          {time ? new Date(time).toLocaleDateString([], { month: 'short', day: 'numeric' }) : ''}
+                        </div>
+                      </div>
+                    )
+                  }
+                ]}
+                dataSource={aiRecommendations}
+                rowKey="symbol"
+                size="small"
+                pagination={{ pageSize: 10 }}
+                expandable={{
+                  expandedRowRender: (record: any) => {
+                    // ========== DEBUG: 展开行渲染 ==========
+                    console.log(`=== DEBUG: expandedRowRender for ${record.symbol} ===`);
+                    console.log('record:', { 
+                      symbol: record.symbol,
+                      evidenceFull: record.evidenceFull ? 'exists' : 'null',
+                      backtestSummary: record.backtestSummary
+                    });
+                    // ========== END DEBUG ==========
+                    
+                    let evidence: any = {};
+                    try {
+                      evidence = record.evidenceFull ? JSON.parse(record.evidenceFull) : {};
+                      
+                      // ========== DEBUG: 解析后的evidence ==========
+                      console.log(`=== DEBUG: ${record.symbol} 解析后的evidence ===`);
+                      console.log('evidence:', evidence);
+                      if (evidence.backtestKeyResults) {
+                        console.log('backtestKeyResults:', evidence.backtestKeyResults);
+                        console.log(`totalReturn: ${evidence.backtestKeyResults.totalReturn}`);
+                        console.log(`sharpeRatio: ${evidence.backtestKeyResults.sharpeRatio}`);
+                        console.log(`maxDrawdown: ${evidence.backtestKeyResults.maxDrawdown}`);
+                      }
+                      // ========== END DEBUG ==========
+                    } catch (e) {
+                      console.warn('Failed to parse evidenceFull:', e);
+                    }
+                    
+                    return (
+                      <div style={{ padding: 20, background: '#fafafa', borderRadius: 4 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
+                          <div>
+                            <Text strong style={{ fontSize: '16px' }}>Detailed Analysis: {record.symbol}</Text>
+                            <div style={{ fontSize: '12px', color: '#666', marginTop: 4 }}>
+                              {record.strategyUsed || 'moving_average'} • {record.scanType === 'tech_market_scan' ? 'Tech Market Scan' : 'Market Scan'} • {record.backtestRange || 'N/A'}
+                            </div>
+                          </div>
+                          <div>
+                            <Tag color={
+                              record.recommendation === 'BUY' ? 'green' : 
+                              record.recommendation === 'SELL' ? 'red' : 
+                              record.recommendation === 'ERROR' ? 'red' :
+                              'gold'
+                            } style={{ fontSize: '14px', padding: '4px 12px' }}>
+                              {record.recommendation} ({(record.confidence * 100).toFixed(0)}%)
+                            </Tag>
+                          </div>
+                        </div>
+                        
+                        <Row gutter={24}>
+                          {/* AI Analysis */}
+                          <Col span={24} style={{ marginBottom: 16 }}>
+                            <Card 
+                              size="small" 
+                              title={
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                  <span>AI Analysis</span>
+                                  <div style={{ 
+                                    padding: '2px 8px', 
+                                    borderRadius: '4px',
+                                    backgroundColor: 
+                                      record.recommendation === 'BUY' ? '#f6ffed' : 
+                                      record.recommendation === 'SELL' ? '#fff2f0' : 
+                                      record.recommendation === 'HOLD' ? '#fffbe6' : '#fff1f0',
+                                    border: `1px solid ${
+                                      record.recommendation === 'BUY' ? '#b7eb8f' : 
+                                      record.recommendation === 'SELL' ? '#ffccc7' : 
+                                      record.recommendation === 'HOLD' ? '#ffe58f' : '#ffa39e'
+                                    }`,
+                                    color: 
+                                      record.recommendation === 'BUY' ? '#52c41a' : 
+                                      record.recommendation === 'SELL' ? '#ff4d4f' : 
+                                      record.recommendation === 'HOLD' ? '#faad14' : '#cf1322',
+                                    fontSize: '11px',
+                                    fontWeight: 'bold'
+                                  }}>
+                                    Final Action: {record.recommendation}
+                                  </div>
+                                </div>
+                              } 
+                              style={{ background: 'white', border: '1px solid #f0f0f0' }}
+                            >
+                              <div style={{ padding: 16 }}>
+                                <div style={{ 
+                                  fontSize: '13px', 
+                                  lineHeight: 1.6,
+                                  whiteSpace: 'pre-wrap',
+                                  fontFamily: 'monospace',
+                                  backgroundColor: '#fafafa',
+                                  padding: '12px',
+                                  borderRadius: '6px',
+                                  border: '1px solid #f0f0f0',
+                                  maxHeight: '300px',
+                                  overflowY: 'auto'
+                                }}>
+                                  {record.reasonFull || record.reason || 'No AI reasoning provided'}
+                                </div>
+                                <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed #f0f0f0' }}>
+                                  <Row gutter={16}>
+                                    <Col span={8}>
+                                      <div style={{ fontSize: '11px', color: '#666' }}>Confidence</div>
+                                      <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#1890ff' }}>
+                                        {(record.confidence * 100).toFixed(1)}%
+                                      </div>
+                                    </Col>
+                                    <Col span={8}>
+                                      <div style={{ fontSize: '11px', color: '#666' }}>Recommended Qty</div>
+                                      <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#52c41a' }}>
+                                        {record.recommendedQty || record.positionSize || 0}
+                                      </div>
+                                    </Col>
+                                    <Col span={8}>
+                                      <div style={{ fontSize: '11px', color: '#666' }}>Generated</div>
+                                      <div style={{ fontSize: '12px', color: '#999' }}>
+                                        {record.generatedTime ? new Date(record.generatedTime).toLocaleString() : 'N/A'}
+                                      </div>
+                                    </Col>
+                                  </Row>
+                                </div>
+                              </div>
+                            </Card>
+                          </Col>
+                          
+                          {/* 市场数据 */}
+                          <Col span={8}>
+                            <Card size="small" title="Market Snapshot" style={{ height: '100%' }}>
+                              {evidence.marketData ? (
+                                <div style={{ padding: 12 }}>
+                                  <div style={{ marginBottom: 8 }}>
+                                    <div style={{ fontSize: '11px', color: '#666' }}>Price</div>
+                                    <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
+                                      ${evidence.marketData.price?.toFixed(2) || 'N/A'}
+                                    </div>
+                                  </div>
+                                  <div style={{ marginBottom: 8 }}>
+                                    <div style={{ fontSize: '11px', color: '#666' }}>Change</div>
+                                    <div style={{ 
+                                      fontSize: '14px', 
+                                      fontWeight: 'bold',
+                                      color: evidence.marketData.changePercent >= 0 ? '#52c41a' : '#ff4d4f'
+                                    }}>
+                                      {evidence.marketData.changePercent?.toFixed(2) || 'N/A'}%
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <div style={{ fontSize: '11px', color: '#666' }}>Volume</div>
+                                    <div style={{ fontSize: '12px' }}>
+                                      {evidence.marketData.volume?.toLocaleString() || 'N/A'}
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div style={{ padding: 12, color: '#999', textAlign: 'center' }}>
+                                  No market data available
+                                </div>
+                              )}
+                            </Card>
+                          </Col>
+                          
+                          {/* 回测结果 */}
+                          <Col span={8}>
+                            <Card size="small" title="Backtest Results" style={{ height: '100%' }}>
+                              {evidence.backtestKeyResults ? (
+                                <div style={{ padding: 12 }}>
+                                  <div style={{ marginBottom: 8 }}>
+                                    <div style={{ fontSize: '11px', color: '#666' }}>Total Return</div>
+                                    <div style={{ 
+                                      fontSize: '16px', 
+                                      fontWeight: 'bold',
+                                      color: evidence.backtestKeyResults.totalReturn >= 0 ? '#52c41a' : '#ff4d4f'
+                                    }}>
+                                      {evidence.backtestKeyResults.totalReturn?.toFixed(2) || 'N/A'}%
+                                    </div>
+                                  </div>
+                                  <div style={{ marginBottom: 8 }}>
+                                    <div style={{ fontSize: '11px', color: '#666' }}>Sharpe Ratio</div>
+                                    <div style={{ fontSize: '14px', fontWeight: 'bold' }}>
+                                      {evidence.backtestKeyResults.sharpeRatio?.toFixed(2) || 'N/A'}
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <div style={{ fontSize: '11px', color: '#666' }}>Max Drawdown</div>
+                                    <div style={{ fontSize: '12px' }}>
+                                      {evidence.backtestKeyResults.maxDrawdown?.toFixed(2) || 'N/A'}%
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div style={{ padding: 12, color: '#999', textAlign: 'center' }}>
+                                  No backtest results
+                                </div>
+                              )}
+                            </Card>
+                          </Col>
+                          
+                          {/* 优化结果 */}
+                          <Col span={8}>
+                            <Card size="small" title="Optimization Results" style={{ height: '100%' }}>
+                              {evidence.optimizationKeyResults ? (
+                                <div style={{ padding: 12 }}>
+                                  <div style={{ marginBottom: 8 }}>
+                                    <div style={{ fontSize: '11px', color: '#666' }}>Best Score</div>
+                                    <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
+                                      {evidence.optimizationKeyResults.bestScore?.toFixed(4) || 'N/A'}
+                                    </div>
+                                  </div>
+                                  <div style={{ marginBottom: 8 }}>
+                                    <div style={{ fontSize: '11px', color: '#666' }}>Best Parameters</div>
+                                    <div style={{ fontSize: '12px', fontFamily: 'monospace' }}>
+                                      {JSON.stringify(evidence.optimizationKeyResults.bestCombination) || 'N/A'}
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <div style={{ fontSize: '11px', color: '#666' }}>Total Combinations</div>
+                                    <div style={{ fontSize: '12px' }}>
+                                      {evidence.optimizationKeyResults.totalCombinations || 'N/A'}
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div style={{ padding: 12, color: '#999', textAlign: 'center' }}>
+                                  No optimization results
+                                </div>
+                              )}
+                            </Card>
+                          </Col>
+                        </Row>
+                        
+                        {/* 证据摘要 */}
+
+
+                      </div>
+                    );
+                  },
+                  rowExpandable: (record: any) => true,
+                  expandIcon: ({ expanded, onExpand, record }: any) => (
+                    <Button 
+                      type="link" 
+                      size="small"
+                      onClick={(e) => onExpand(record, e)}
+                      style={{ padding: '0 4px' }}
+                    >
+                      {expanded ? '▲ Hide Details' : '▼ Show Details'}
+                    </Button>
+                  )
+                }}
+              />
+            </>
+          ) : (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={
+                <div>
+                  <Text type="secondary">No recommendations yet</Text>
+                  <div style={{ marginTop: '8px' }}>
+                    <Text type="secondary">
+                      Click "Run Now" to generate AI recommendations based on your watchlist
+                    </Text>
+                  </div>
+                </div>
+              }
+            />
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+};
+
+export default Portfolio;

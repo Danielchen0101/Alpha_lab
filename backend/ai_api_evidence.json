@@ -1,0 +1,131 @@
+{
+  "timestamp": "2026-04-15T18:23:39.795455",
+  "api_key_preview": "sk-8336524...",
+  "api_key_length": 35,
+  "base_url": "https://api.deepseek.com",
+  "model": "deepseek-chat",
+  "results": {
+    "AAPL": {
+      "symbol": "AAPL",
+      "status_code": 401,
+      "response_time": 0.5527727603912354,
+      "headers": {
+        "Content-Type": "application/json",
+        "Content-Length": "153",
+        "Connection": "keep-alive",
+        "Date": "Wed, 15 Apr 2026 22:23:24 GMT",
+        "Server": "elb",
+        "vary": "origin, access-control-request-method, access-control-request-headers",
+        "access-control-allow-credentials": "true",
+        "x-ds-trace-id": "fbd595ac2a522be696e7f37fe02de9b6",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+        "X-Content-Type-Options": "nosniff",
+        "X-Cache": "Error from cloudfront",
+        "Via": "1.1 ad2d59fb6f7c4118dea14b5b7a9a1658.cloudfront.net (CloudFront)",
+        "X-Amz-Cf-Pop": "JFK50-P7",
+        "X-Amz-Cf-Id": "_sNPeyUUV6Q-VeRSVAcmnDMaWvzBS9Xr_68RHd6wSIYPfF1Q6uGMwg=="
+      },
+      "success": false,
+      "error": "Authentication failed"
+    },
+    "GOOGL": {
+      "symbol": "GOOGL",
+      "status_code": 401,
+      "response_time": 0.5779116153717041,
+      "headers": {
+        "Content-Type": "application/json",
+        "Content-Length": "153",
+        "Connection": "keep-alive",
+        "Date": "Wed, 15 Apr 2026 22:23:27 GMT",
+        "Server": "elb",
+        "vary": "origin, access-control-request-method, access-control-request-headers",
+        "access-control-allow-credentials": "true",
+        "x-ds-trace-id": "6c0b92a27e467cfc552decd05ea29cd1",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+        "X-Content-Type-Options": "nosniff",
+        "X-Cache": "Error from cloudfront",
+        "Via": "1.1 1dd1e483fa41d512929f44790f141972.cloudfront.net (CloudFront)",
+        "X-Amz-Cf-Pop": "JFK50-P3",
+        "X-Amz-Cf-Id": "eadhzFRq8mROULGffsDCwcfttxTg82KvV8nJ93Ll_oRpdT1LqWq3vQ=="
+      },
+      "success": false,
+      "error": "Authentication failed"
+    },
+    "MSFT": {
+      "symbol": "MSFT",
+      "status_code": 401,
+      "response_time": 0.5582747459411621,
+      "headers": {
+        "Content-Type": "application/json",
+        "Content-Length": "153",
+        "Connection": "keep-alive",
+        "Date": "Wed, 15 Apr 2026 22:23:31 GMT",
+        "Server": "elb",
+        "vary": "origin, access-control-request-method, access-control-request-headers",
+        "access-control-allow-credentials": "true",
+        "x-ds-trace-id": "0c5e8bb99c9a4b65a937e0a3c150bf8b",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+        "X-Content-Type-Options": "nosniff",
+        "X-Cache": "Error from cloudfront",
+        "Via": "1.1 b9fa5c33e059fb3ed603bd8fcb9d4aea.cloudfront.net (CloudFront)",
+        "X-Amz-Cf-Pop": "JFK50-P1",
+        "X-Amz-Cf-Id": "WnOpp5U5AuAqXn25BFnxy0MKzFJFiaGiY4EDE_ofgWRgL7TDiZlxfw=="
+      },
+      "success": false,
+      "error": "Authentication failed"
+    },
+    "META": {
+      "symbol": "META",
+      "status_code": 401,
+      "response_time": 0.5537958145141602,
+      "headers": {
+        "Content-Type": "application/json",
+        "Content-Length": "153",
+        "Connection": "keep-alive",
+        "Date": "Wed, 15 Apr 2026 22:23:34 GMT",
+        "Server": "elb",
+        "vary": "origin, access-control-request-method, access-control-request-headers",
+        "access-control-allow-credentials": "true",
+        "x-ds-trace-id": "f148f0a67d94709006bc644a5b6771af",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+        "X-Content-Type-Options": "nosniff",
+        "X-Cache": "Error from cloudfront",
+        "Via": "1.1 fe705b44d5a5a2d7d6e73595ceeca2e2.cloudfront.net (CloudFront)",
+        "X-Amz-Cf-Pop": "JFK50-P7",
+        "X-Amz-Cf-Id": "18V8m-JJZohfUy8ldzAU8_FAjv4COLIuerrglxc2mFDD_d28yTEcMw=="
+      },
+      "success": false,
+      "error": "Authentication failed"
+    },
+    "NVDA": {
+      "symbol": "NVDA",
+      "status_code": 401,
+      "response_time": 0.5482504367828369,
+      "headers": {
+        "Content-Type": "application/json",
+        "Content-Length": "153",
+        "Connection": "keep-alive",
+        "Date": "Wed, 15 Apr 2026 22:23:38 GMT",
+        "Server": "elb",
+        "vary": "origin, access-control-request-method, access-control-request-headers",
+        "access-control-allow-credentials": "true",
+        "x-ds-trace-id": "da1adaeb1ca5e3c8b3d7c8b9ad8207ef",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+        "X-Content-Type-Options": "nosniff",
+        "X-Cache": "Error from cloudfront",
+        "Via": "1.1 15b20cdc545f9b56059a7fe493f5451a.cloudfront.net (CloudFront)",
+        "X-Amz-Cf-Pop": "JFK52-P2",
+        "X-Amz-Cf-Id": "smvjg-3jLA7Y9WYI7KkGrj32ulKxCvKDiIM9n9HrFuVjnAGv-Zr6ig=="
+      },
+      "success": false,
+      "error": "Authentication failed"
+    }
+  },
+  "summary": {
+    "total_tested": 5,
+    "success_count": 0,
+    "rate_limit_count": 0,
+    "auth_fail_count": 5,
+    "other_fail_count": 0
+  }
+}

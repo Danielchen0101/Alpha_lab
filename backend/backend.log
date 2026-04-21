@@ -1,0 +1,134 @@
+[配置加载] Finnhub API Key: d7apg21r01...
+[配置加载] Twelve Data API Key: 8b847a1ef2...
+[配置加载] 默认股票列表: ['AAPL', 'NVDA', 'TSLA', 'JPM', 'JNJ', 'XOM', 'WMT', 'UNH', 'V', 'PG', 'HD']
+[Backtest History] 初始化: backtest_history = [], id = 2081320243712
+================================================================================
+简化版后端启动 - 包含 AI 接口
+端口: 8889
+包含接口:
+  1. AI 配置接口:
+     - POST /api/ai/provider/config - DeepSeek 配置保存
+     - POST /api/ai/provider/test - DeepSeek API 测试
+  2. AI Alpaca 交易接口:
+     - GET /api/ai/alpaca/account - AI Alpaca 账户
+     - GET /api/ai/alpaca/positions - AI Alpaca 持仓
+     - GET /api/ai/alpaca/orders - AI Alpaca 订单
+     - GET /api/ai/alpaca/orders/history - AI Alpaca 历史订单
+     - GET /api/ai/alpaca/portfolio/history - AI Alpaca Portfolio 历史
+  3. AI Trading 接口:
+     - POST /api/ai/trade/preview - AI 交易预览
+     - GET /api/ai/trade/status - AI 交易状态
+     - GET /api/ai/trade/history - AI 交易历史
+     - POST /api/ai/trade/toggle - AI 交易开关
+     - POST /api/ai/trade/execute - AI 交易执行
+     - GET/POST /api/ai/trading/environment - AI 交易环境
+  4. AI 聊天接口:
+     - POST /api/ai/chat - AI 聊天
+  5. 基础接口:
+     - GET /api/status - 系统状态
+     - GET /api/market/stocks - 股票列表
+     - GET /api/market/stock/<symbol> - 股票详情
+     - POST /api/backtest/run - 运行回测
+================================================================================
+
+调试信息:
+已注册路由数量: 30
+检查特定路由:
+  /api/ai/trade/preview -> ai_trade_preview
+  /api/ai/trade/analyze-with-context -> ai_trade_analyze_with_context
+  /api/ai/trade/status -> ai_trade_status
+  /api/ai/trade/history -> ai_trade_history
+  /api/ai/trade/toggle -> ai_trade_toggle
+  /api/ai/trade/execute -> ai_trade_execute
+
+启动服务器...
+ * Serving Flask app 'start_quant_backend'
+ * Debug mode: on
+[配置加载] Finnhub API Key: d7apg21r01...
+[配置加载] Twelve Data API Key: 8b847a1ef2...
+[配置加载] 默认股票列表: ['AAPL', 'NVDA', 'TSLA', 'JPM', 'JNJ', 'XOM', 'WMT', 'UNH', 'V', 'PG', 'HD']
+[Backtest History] 初始化: backtest_history = [], id = 2695570528640
+================================================================================
+简化版后端启动 - 包含 AI 接口
+端口: 8889
+包含接口:
+  1. AI 配置接口:
+     - POST /api/ai/provider/config - DeepSeek 配置保存
+     - POST /api/ai/provider/test - DeepSeek API 测试
+  2. AI Alpaca 交易接口:
+     - GET /api/ai/alpaca/account - AI Alpaca 账户
+     - GET /api/ai/alpaca/positions - AI Alpaca 持仓
+     - GET /api/ai/alpaca/orders - AI Alpaca 订单
+     - GET /api/ai/alpaca/orders/history - AI Alpaca 历史订单
+     - GET /api/ai/alpaca/portfolio/history - AI Alpaca Portfolio 历史
+  3. AI Trading 接口:
+     - POST /api/ai/trade/preview - AI 交易预览
+     - GET /api/ai/trade/status - AI 交易状态
+     - GET /api/ai/trade/history - AI 交易历史
+     - POST /api/ai/trade/toggle - AI 交易开关
+     - POST /api/ai/trade/execute - AI 交易执行
+     - GET/POST /api/ai/trading/environment - AI 交易环境
+  4. AI 聊天接口:
+     - POST /api/ai/chat - AI 聊天
+  5. 基础接口:
+     - GET /api/status - 系统状态
+     - GET /api/market/stocks - 股票列表
+     - GET /api/market/stock/<symbol> - 股票详情
+     - POST /api/backtest/run - 运行回测
+================================================================================
+
+调试信息:
+已注册路由数量: 30
+检查特定路由:
+  /api/ai/trade/preview -> ai_trade_preview
+  /api/ai/trade/analyze-with-context -> ai_trade_analyze_with_context
+  /api/ai/trade/status -> ai_trade_status
+  /api/ai/trade/history -> ai_trade_history
+  /api/ai/trade/toggle -> ai_trade_toggle
+  /api/ai/trade/execute -> ai_trade_execute
+
+启动服务器...
+[配置加载] Finnhub API Key: d7apg21r01...
+[配置加载] Twelve Data API Key: 8b847a1ef2...
+[配置加载] 默认股票列表: ['AAPL', 'NVDA', 'TSLA', 'JPM', 'JNJ', 'XOM', 'WMT', 'UNH', 'V', 'PG', 'HD']
+[Backtest History] 初始化: backtest_history = [], id = 2680159541568
+================================================================================
+简化版后端启动 - 包含 AI 接口
+端口: 8889
+包含接口:
+  1. AI 配置接口:
+     - POST /api/ai/provider/config - DeepSeek 配置保存
+     - POST /api/ai/provider/test - DeepSeek API 测试
+  2. AI Alpaca 交易接口:
+     - GET /api/ai/alpaca/account - AI Alpaca 账户
+     - GET /api/ai/alpaca/positions - AI Alpaca 持仓
+     - GET /api/ai/alpaca/orders - AI Alpaca 订单
+     - GET /api/ai/alpaca/orders/history - AI Alpaca 历史订单
+     - GET /api/ai/alpaca/portfolio/history - AI Alpaca Portfolio 历史
+  3. AI Trading 接口:
+     - POST /api/ai/trade/preview - AI 交易预览
+     - GET /api/ai/trade/status - AI 交易状态
+     - GET /api/ai/trade/history - AI 交易历史
+     - POST /api/ai/trade/toggle - AI 交易开关
+     - POST /api/ai/trade/execute - AI 交易执行
+     - GET/POST /api/ai/trading/environment - AI 交易环境
+  4. AI 聊天接口:
+     - POST /api/ai/chat - AI 聊天
+  5. 基础接口:
+     - GET /api/status - 系统状态
+     - GET /api/market/stocks - 股票列表
+     - GET /api/market/stock/<symbol> - 股票详情
+     - POST /api/backtest/run - 运行回测
+================================================================================
+
+调试信息:
+已注册路由数量: 30
+检查特定路由:
+  /api/ai/trade/preview -> ai_trade_preview
+  /api/ai/trade/analyze-with-context -> ai_trade_analyze_with_context
+  /api/ai/trade/status -> ai_trade_status
+  /api/ai/trade/history -> ai_trade_history
+  /api/ai/trade/toggle -> ai_trade_toggle
+  /api/ai/trade/execute -> ai_trade_execute
+
+启动服务器...
