@@ -5,6 +5,36 @@ All notable changes to the Professional Quantitative Trading Platform will be do
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] - 2026-04-21
+
+### Added
+- **AI-Powered Continue Scan**: New continue scan feature with AI-driven candidate selection
+- **Enhanced UI Components**: Progress tracking, statistics panels, and improved visual feedback
+- **Transparency Fields**: Reason Source, Selected By, Confidence indicators for AI decisions
+- **Market Data Integration**: Sector, News Sentiment, Price Change, Volume Status columns
+- **Batch Processing**: Efficient AI evaluation with progress tracking and error handling
+
+### Changed
+- **Continue Scan Logic**: Now truly AI-driven instead of rule-based filtering
+- **UI/UX Improvements**: Streamlined continue scan interface with single progress bar
+- **AI Context**: Specialized continue scan prompts instead of generic trade analysis
+- **Data Source**: Continue scan now uses market scan results directly, no re-scanning
+- **Selection Criteria**: Prioritizes Bullish/Strong Bullish candidates with AI validation
+
+### Fixed
+- **Duplicate Progress Bars**: Removed duplicate progress display in continue scan
+- **AI Provider Display**: Now shows actual AI configuration instead of hardcoded "OpenAI GPT-4"
+- **Progress Initialization**: Progress bar now starts at 0% instead of 70%
+- **Time Estimates**: Removed inaccurate estimated time remaining display
+- **AI Context Issues**: Fixed AI returning trading/account context in continue scan responses
+- **Selection Reason Errors**: Eliminated $0.00, zero volume, buying power references
+
+### Technical Improvements
+- **Code Structure**: Added dedicated `evaluateContinueScanCandidate` function
+- **Error Handling**: Enhanced error recovery and fallback mechanisms
+- **Performance**: Optimized batch processing and state management
+- **Build System**: Updated package.json with proper versioning and scripts
+
 ## [1.7.3] - 2026-04-16
 
 ### Added
