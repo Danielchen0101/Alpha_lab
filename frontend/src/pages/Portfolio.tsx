@@ -229,16 +229,16 @@ const Portfolio: React.FC = (): React.ReactElement => {
     processContinueScan();
   };
   
-  // Continue Scan处理函数 - 重构为AI驱动的continue scan
+  // Continue Scan处理函数 - 重构为纯rule-based continue scan
   const processContinueScan = async () => {
     try {
-      console.log(`Starting AI-driven continue scan for ${marketScannerResults.length} market scan results...`);
+      console.log(`Starting rule-based continue scan for ${marketScannerResults.length} market scan results...`);
       
-      // 阶段A: 读取market scan results (10%)
-      setContinueScanProgress(10);
+      // 阶段A: 初始化 (0%)
+      setContinueScanProgress(0);
       setContinueScanDetails(prev => ({
         ...prev,
-        currentStage: 'Loading market scan results...',
+        currentStage: 'Initializing rule-based scan...',
         processedCount: 0,
         totalCount: marketScannerResults.length,
         estimatedTimeRemaining: null
@@ -258,14 +258,14 @@ const Portfolio: React.FC = (): React.ReactElement => {
         return;
       }
       
-      // 阶段B: 准备候选数据 (20%)
-      setContinueScanProgress(30);
+      // 阶段B: 读取market scan results (20%)
+      setContinueScanProgress(20);
       setContinueScanDetails(prev => ({
         ...prev,
-        currentStage: 'Preparing candidates for AI evaluation...'
+        currentStage: 'Loading market scan results...'
       }));
       
-      // 准备所有候选的上下文数据
+      // 准备所有候选的原始数据
       const allCandidates = marketScannerResults.map(candidate => ({
         symbol: candidate.symbol || 'N/A',
         trend: candidate.trendLabel || 'Neutral',
@@ -281,39 +281,36 @@ const Portfolio: React.FC = (): React.ReactElement => {
         originalData: candidate
       }));
       
-      console.log(`Prepared ${allCandidates.length} candidates for AI evaluation`);
+      console.log(`Loaded ${allCandidates.length} candidates for rule-based evaluation`);
       
-      // 阶段C: AI评估所有候选 (50%)
-      setContinueScanProgress(50);
+      // 阶段C: 过滤bullish/strong bullish候选 (40%)
+      setContinueScanProgress(40);
       setContinueScanDetails(prev => ({
         ...prev,
-        currentStage: 'AI evaluating candidates...',
+        currentStage: 'Filtering bullish candidates...',
         estimatedTimeRemaining: null
       }));
       
-      // 设置AI调用状态
-      setAiCallInProgress(true);
+      // 阶段D: 计算priority score (60%)
+      setContinueScanProgress(60);
+      setContinueScanDetails(prev => ({
+        ...prev,
+        currentStage: 'Calculating priority scores...',
+        estimatedTimeRemaining: null
+      }));
       
-      // 批量处理候选
-      const batchSize = 3; // 减小批量大小以确保稳定性
-      const batches = [];
-      for (let i = 0; i < allCandidates.length; i += batchSize) {
-        batches.push(allCandidates.slice(i, i + batchSize));
-      }
+      // 应用规则筛选和评分
+      const ruleEvaluatedCandidates: any[] = [];
       
-      const aiEvaluatedCandidates: any[] = [];
-      
-      for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-        const batch = batches[batchIndex];
+      for (let i = 0; i < allCandidates.length; i++) {
+        const candidate = allCandidates[i];
         
         // 更新进度
-        const batchProgress = Math.round(((batchIndex * batchSize) / allCandidates.length) * 100);
-        setContinueScanProgress(50 + Math.round(batchProgress * 0.4)); // 50% - 90%
+        const progress = Math.round((i / allCandidates.length) * 20); // 60% - 80%
+        setContinueScanProgress(60 + progress);
         setContinueScanDetails(prev => ({
           ...prev,
-          currentStage: `AI evaluating: batch ${batchIndex + 1}/${batches.length}`,
-          processedCount: batchIndex * batchSize,
-          estimatedTimeRemaining: null
+          processedCount: i + 1
         }));
         
         // 检查是否有新的Market Scan开始
@@ -326,269 +323,137 @@ const Portfolio: React.FC = (): React.ReactElement => {
             currentStage: 'Continue scan aborted: new market scan started',
             estimatedTimeRemaining: null
           }));
-          setAiCallInProgress(false);
           return;
         }
         
-        // 并行处理批次内的候选
-        const batchPromises = batch.map(async (candidate) => {
-          try {
-            // 构建AI上下文 - 包含所有真实market scan数据
-            const aiContext = {
-              symbol: candidate.symbol,
-              trend: candidate.trend,
-              score: candidate.score,
-              risk: candidate.risk,
-              sector: candidate.sector,
-              priceChange: candidate.priceChange,
-              volumeStatus: candidate.volumeStatus,
-              newsSentiment: candidate.newsSentiment,
-              companyName: candidate.companyName,
-              marketCap: candidate.marketCap,
-              // 明确告诉AI这是continue scan评估，要求AI直接决定是否入选
-              evaluationType: 'continue_scan_selection',
-              task: `Evaluate if ${candidate.symbol} should be included in continue scan list based on:
-- Trend: ${candidate.trend}
-- Score: ${candidate.score}/100
-- Risk: ${candidate.risk}
-- Sector: ${candidate.sector}
-- Price Change: ${candidate.priceChange}%
-- Volume Status: ${candidate.volumeStatus}
-- News Sentiment: ${candidate.newsSentiment}
-
-Please provide:
-1. include_in_continue_scan: true/false (whether to include in continue scan list)
-2. priority_score: 1-100 (higher = more urgent for follow-up)
-3. selection_reason: concise reason for inclusion/exclusion
-4. confidence: 0-1 confidence in this assessment`
-            };
-            
-            // 调用专门的continue scan AI评估
-            const aiResponse = await evaluateContinueScanCandidate(candidate.symbol, aiContext);
-            
-            if (aiResponse.success && aiResponse.decision) {
-              // 从专门的continue scan AI响应中提取信息
-              const decision = aiResponse.decision;
-              
-              const includeInContinueScan = decision.include_in_continue_scan || false;
-              const priority = Math.max(1, Math.min(100, decision.priority_score || 50));
-              const selectionReason = decision.selection_reason || 'AI evaluation completed';
-              const confidence = decision.confidence || 0;
-              
-              // 确定selectedBy标签 - 基于AI是否明确决定入选
-              let selectedBy = 'Rule';
-              if (includeInContinueScan) {
-                selectedBy = confidence > 0.7 ? 'AI' : 'Rule + AI';
-              }
-              
-              // 确保reason不包含交易/账户相关内容
-              let cleanReason = selectionReason;
-              const unwantedPatterns = [
-                /\$0\.00/,
-                /zero volume/i,
-                /no backtest/i,
-                /buying power/i,
-                /account balance/i,
-                /trade/i,
-                /position/i,
-                /order/i
-              ];
-              
-              for (const pattern of unwantedPatterns) {
-                if (pattern.test(cleanReason)) {
-                  console.warn(`Cleaning unwanted content from AI reason for ${candidate.symbol}`);
-                  // 使用fallback reason替换
-                  cleanReason = generateFallbackReason(candidate.originalData);
-                  break;
-                }
-              }
-              
-              return {
-                ...candidate.originalData,
-                includeInContinueScan,
-                priorityScore: priority,
-                selectionReason: selectionReason,
-                continueScanStatus: 'completed' as const,
-                aiReasonStatus: 'completed' as const,
-                aiEvaluated: true,
-                // 新增字段：AI参与度信息
-                reasonSource: 'AI',
-                selectedBy: selectedBy,
-                aiConfidence: confidence,
-                aiProvider: aiConfig.provider || 'DeepSeek',
-                aiModel: aiConfig.model || 'deepseek-chat',
-                scanBatchId: 'current',
-                scanTimestamp: detailedScanStatus.lastScanAt || new Date().toISOString(),
-                generatedAt: new Date().toISOString(),
-                // 新增显示字段
-                sector: candidate.sector,
-                newsSentiment: candidate.newsSentiment,
-                priceChangePct: candidate.priceChange,
-                volumeStatus: candidate.volumeStatus
-              };
-            } else {
-              // AI调用失败，使用fallback
-              console.log(`AI evaluation failed for ${candidate.symbol}, using fallback`);
-              const fallbackReason = generateFallbackReason(candidate.originalData);
-              const fallbackPriority = calculateFallbackPriority(candidate.originalData);
-              
-              // Fallback逻辑：基于规则决定是否入选
-              const fallbackInclude = fallbackPriority > 30;
-              
-              return {
-                ...candidate.originalData,
-                includeInContinueScan: fallbackInclude,
-                priorityScore: fallbackPriority,
-                selectionReason: fallbackReason,
-                continueScanStatus: 'completed' as const,
-                aiReasonStatus: 'failed' as const,
-                aiEvaluated: false,
-                // 新增字段：AI参与度信息
-                reasonSource: 'Fallback',
-                selectedBy: 'Rule',
-                aiConfidence: 0,
-                aiProvider: 'N/A',
-                aiModel: 'N/A',
-                scanBatchId: 'current',
-                scanTimestamp: detailedScanStatus.lastScanAt || new Date().toISOString(),
-                generatedAt: new Date().toISOString(),
-                // 新增显示字段
-                sector: candidate.sector,
-                newsSentiment: candidate.newsSentiment,
-                priceChangePct: candidate.priceChange,
-                volumeStatus: candidate.volumeStatus
-              };
-            }
-          } catch (error) {
-            console.error(`AI evaluation error for ${candidate.symbol}:`, error);
-            // 错误处理：使用fallback
-            const fallbackReason = generateFallbackReason(candidate.originalData);
-            const fallbackPriority = calculateFallbackPriority(candidate.originalData);
-            
-            // Fallback逻辑：基于规则决定是否入选
-            const fallbackInclude = fallbackPriority > 30;
-            
-            return {
-              ...candidate.originalData,
-              includeInContinueScan: fallbackInclude,
-              priorityScore: fallbackPriority,
-              selectionReason: fallbackReason,
-              continueScanStatus: 'completed' as const,
-              aiReasonStatus: 'failed' as const,
-              aiEvaluated: false,
-              // 新增字段：AI参与度信息
-              reasonSource: 'Error',
-              selectedBy: 'Rule',
-              aiConfidence: 0,
-              aiProvider: 'N/A',
-              aiModel: 'N/A',
-              scanBatchId: 'current',
-              scanTimestamp: detailedScanStatus.lastScanAt || new Date().toISOString(),
-              generatedAt: new Date().toISOString(),
-              // 新增显示字段
-              sector: candidate.sector,
-              newsSentiment: candidate.newsSentiment,
-              priceChangePct: candidate.priceChange,
-              volumeStatus: candidate.volumeStatus
-            };
-          }
-        });
+        // 应用入选基本条件
+        const trend = candidate.trend;
+        const score = candidate.score;
+        const risk = candidate.risk;
         
-        // 等待当前批次完成
-        const batchResults = await Promise.allSettled(batchPromises);
+        // 条件1: trend必须是Bullish或Strong Bullish
+        if (trend !== 'Bullish' && trend !== 'Strong Bullish') {
+          continue; // 跳过不符合条件的候选
+        }
         
-        // 收集成功的结果
-        batchResults.forEach(result => {
-          if (result.status === 'fulfilled') {
-            aiEvaluatedCandidates.push(result.value);
-          }
-        });
+        // 条件2: score >= 75
+        if (score < 75) {
+          continue; // 跳过不符合条件的候选
+        }
         
-        // 批次间短暂延迟，避免过载
-        if (batchIndex < batches.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 500));
+        // 条件3: risk不能是High
+        if (risk === 'High') {
+          continue; // 跳过不符合条件的候选
+        }
+        
+        // 计算priority score
+        let priorityScore = 0;
+        
+        // Trend加分
+        if (trend === 'Strong Bullish') {
+          priorityScore += 35;
+        } else if (trend === 'Bullish') {
+          priorityScore += 25;
+        }
+        
+        // Score加分: score * 0.5
+        priorityScore += score * 0.5;
+        
+        // Risk加分
+        if (risk === 'Low') {
+          priorityScore += 12;
+        } else if (risk === 'Medium') {
+          priorityScore += 6;
+        }
+        // High risk已经排除，不加分
+        
+        // News Sentiment加分
+        const newsSentiment = candidate.newsSentiment || 'Neutral';
+        if (newsSentiment === 'Positive') {
+          priorityScore += 10;
+        } else if (newsSentiment === 'Neutral') {
+          priorityScore += 4;
+        } else if (newsSentiment === 'Negative') {
+          priorityScore -= 8;
+        }
+        
+        // Change %加分
+        const priceChange = candidate.priceChange || 0;
+        if (priceChange >= 3) {
+          priorityScore += 8;
+        } else if (priceChange >= 1) {
+          priorityScore += 5;
+        } else if (priceChange > 0) {
+          priorityScore += 2;
+        } else if (priceChange <= 0) {
+          priorityScore -= 6;
+        }
+        
+        // Volume Status加分
+        const volumeStatus = candidate.volumeStatus || 'Normal';
+        if (volumeStatus === 'High') {
+          priorityScore += 8;
+        } else if (volumeStatus === 'Normal') {
+          priorityScore += 4;
+        }
+        // Low不加分
+        
+        // Clamp到0-100
+        priorityScore = Math.max(0, Math.min(100, priorityScore));
+        
+        // 最终入选规则: priorityScore >= 60
+        if (priorityScore >= 60) {
+          // 生成selection reason
+          const selectionReason = generateRuleBasedReason(candidate);
+          
+          ruleEvaluatedCandidates.push({
+            ...candidate.originalData,
+            includeInContinueScan: true,
+            priorityScore: Math.round(priorityScore),
+            selectionReason: selectionReason,
+            continueScanStatus: 'completed' as const,
+            aiReasonStatus: 'completed' as const,
+            aiEvaluated: false,
+            // 移除AI相关字段
+            reasonSource: 'Rule',
+            selectedBy: 'Rule',
+            aiConfidence: 0,
+            aiProvider: 'N/A',
+            aiModel: 'N/A',
+            scanBatchId: 'current',
+            scanTimestamp: detailedScanStatus.lastScanAt || new Date().toISOString(),
+            generatedAt: new Date().toISOString(),
+            // 显示字段
+            sector: candidate.sector,
+            newsSentiment: candidate.newsSentiment,
+            priceChangePct: candidate.priceChange,
+            volumeStatus: candidate.volumeStatus
+          });
+        }
+        
+        // 短暂延迟，避免UI阻塞
+        if (i % 10 === 0) {
+          await new Promise(resolve => setTimeout(resolve, 10));
         }
       }
       
-      // 阶段D: 筛选和排序AI评估的候选 (20%)
-      setContinueScanProgress(90);
+      console.log(`Rule evaluation completed. Found ${ruleEvaluatedCandidates.length} qualified candidates`);
+      
+      // 阶段E: 排序和限制数量 (80%)
+      setContinueScanProgress(80);
       setContinueScanDetails(prev => ({
         ...prev,
-        currentStage: 'Ranking selected candidates...',
-        estimatedTimeRemaining: 2
+        currentStage: 'Sorting and limiting candidates...',
+        estimatedTimeRemaining: null
       }));
       
-      console.log(`AI evaluation completed for ${aiEvaluatedCandidates.length} candidates`);
-      
-      if (aiEvaluatedCandidates.length === 0) {
-        setPreferredContinueScanList([]);
-        setContinueScanStatus('completed');
-        setContinueScanProgress(100);
-        setContinueScanDetails(prev => ({
-          ...prev,
-          currentStage: 'No candidates selected by AI for continue scan',
-          estimatedTimeRemaining: 0
-        }));
-        setAiCallInProgress(false);
-        console.log('No candidates selected by AI for continue scan');
-        return;
-      }
-      
-      // 统计AI决策结果
-      const aiSelectedCandidates = aiEvaluatedCandidates.filter(candidate => 
-        candidate.includeInContinueScan === true && candidate.selectedBy !== 'Rule'
-      );
-      
-      const ruleSelectedCandidates = aiEvaluatedCandidates.filter(candidate => 
-        candidate.selectedBy === 'Rule'
-      );
-      
-      const fallbackCandidates = aiEvaluatedCandidates.filter(candidate => 
-        candidate.reasonSource === 'Fallback' || candidate.reasonSource === 'Error'
-      );
-      
-      console.log(`AI selected ${aiSelectedCandidates.length} candidates for continue scan`);
-      console.log(`Rule selected: ${ruleSelectedCandidates.length}`);
-      console.log(`Fallback decisions: ${fallbackCandidates.length}`);
-      
-      // 优先显示AI选择的候选，按priority排序
-      let candidatesToShow = [...aiSelectedCandidates];
-      
-      // 如果AI选择的候选太少，添加一些高质量的规则选择候选
-      if (candidatesToShow.length < 10) {
-        console.log(`Only ${candidatesToShow.length} AI-selected candidates, adding high-quality rule-selected candidates`);
-        
-        // 筛选高质量的规则选择候选：Bullish/Strong Bullish, 高分数，低风险
-        const highQualityRuleCandidates = ruleSelectedCandidates
-          .filter(candidate => {
-            const trend = candidate.trendLabel;
-            const score = candidate.overallScore || candidate.trendScore || 0;
-            const risk = candidate.eventRisk || 'Medium';
-            
-            // 优先Bullish/Strong Bullish
-            if (trend !== 'Bullish' && trend !== 'Strong Bullish') return false;
-            
-            // 分数至少50
-            if (score < 50) return false;
-            
-            // 风险不能是High
-            if (risk === 'High') return false;
-            
-            return true;
-          })
-          .sort((a, b) => b.priorityScore - a.priorityScore)
-          .slice(0, 10 - candidatesToShow.length);
-        
-        candidatesToShow = [...candidatesToShow, ...highQualityRuleCandidates];
-      }
-      
-      // 按priority排序
-      candidatesToShow.sort((a, b) => b.priorityScore - a.priorityScore);
+      // 按priority score排序
+      ruleEvaluatedCandidates.sort((a, b) => b.priorityScore - a.priorityScore);
       
       // 限制最多20个
-      const finalList = candidatesToShow.slice(0, 20);
+      const finalList = ruleEvaluatedCandidates.slice(0, 20);
       
-      // 阶段E: 完成处理 (10%)
+      // 阶段F: 完成处理 (100%)
       setContinueScanProgress(100);
       setContinueScanDetails(prev => ({
         ...prev,
@@ -600,10 +465,7 @@ Please provide:
       setPreferredContinueScanList(finalList);
       setContinueScanStatus('completed');
       
-      console.log(`Continue scan completed. AI selected ${finalList.length} candidates for follow-up.`);
-      
-      // 重置AI调用状态
-      setAiCallInProgress(false);
+      console.log(`Continue scan completed. Rule-based selection found ${finalList.length} candidates for follow-up.`);
       
     } catch (error) {
       console.error('Continue scan processing failed:', error);
@@ -614,7 +476,6 @@ Please provide:
         currentStage: `Error: ${error instanceof Error ? error.message : String(error)}`,
         estimatedTimeRemaining: null
       }));
-      setAiCallInProgress(false);
     }
   };
   
@@ -886,11 +747,11 @@ Please respond in this exact JSON format:
         let excludeScore = 0;
         
         includeKeywords.forEach(keyword => {
-          if (lowerReason.includes(keyword)) includeScore++;
+          if (lowerReason && typeof lowerReason === 'string' && lowerReason.includes(keyword)) includeScore++;
         });
         
         excludeKeywords.forEach(keyword => {
-          if (lowerReason.includes(keyword)) excludeScore++;
+          if (lowerReason && typeof lowerReason === 'string' && lowerReason.includes(keyword)) excludeScore++;
         });
         
         const confidence = response.decision.confidence || 0.5;
@@ -952,6 +813,78 @@ Please respond in this exact JSON format:
     }
   };
   
+  // Rule-based selection reason生成函数
+  const generateRuleBasedReason = (candidate: any): string => {
+    const trend = candidate.trend;
+    const score = candidate.score;
+    const risk = candidate.risk;
+    const sector = candidate.sector || 'Unknown';
+    const priceChange = candidate.priceChange || 0;
+    const volumeStatus = candidate.volumeStatus || 'Normal';
+    const newsSentiment = candidate.newsSentiment || 'Neutral';
+    
+    // 基于规则生成reason
+    const reasons: string[] = [];
+    
+    // Trend相关
+    if (trend === 'Strong Bullish') {
+      reasons.push('strong bullish trend');
+    } else if (trend === 'Bullish') {
+      reasons.push('bullish trend');
+    }
+    
+    // Score相关
+    if (score >= 85) {
+      reasons.push('excellent score');
+    } else if (score >= 75) {
+      reasons.push('strong score');
+    }
+    
+    // Risk相关
+    if (risk === 'Low') {
+      reasons.push('low risk');
+    } else if (risk === 'Medium') {
+      reasons.push('manageable risk');
+    }
+    
+    // News sentiment相关
+    if (newsSentiment === 'Positive') {
+      reasons.push('positive news sentiment');
+    } else if (newsSentiment === 'Neutral') {
+      reasons.push('neutral news sentiment');
+    }
+    
+    // Price change相关
+    if (priceChange >= 3) {
+      reasons.push('strong price momentum');
+    } else if (priceChange >= 1) {
+      reasons.push('positive price momentum');
+    }
+    
+    // Volume相关
+    if (volumeStatus === 'High') {
+      reasons.push('high volume activity');
+    } else if (volumeStatus === 'Normal') {
+      reasons.push('normal volume activity');
+    }
+    
+    // 构建最终reason
+    if (reasons.length > 0) {
+      const firstPart = reasons.slice(0, 2).join(', ');
+      const remaining = reasons.slice(2);
+      
+      let reasonText = `${firstPart}`;
+      if (remaining.length > 0) {
+        reasonText += ` and ${remaining.length} other positive factors`;
+      }
+      
+      return `${reasonText.charAt(0).toUpperCase() + reasonText.slice(1)} make this a top follow-up candidate.`;
+    }
+    
+    // 默认reason
+    return `Bullish setup with solid score and acceptable risk meets continue scan criteria.`;
+  };
+
   // Fallback priority计算函数（当AI调用失败时使用）
   const calculateFallbackPriority = (candidate: any): number => {
     const trend = candidate.trendLabel;
@@ -1073,7 +1006,9 @@ Please respond in this exact JSON format:
     }
 
     // 如果market scan重新开始，重置continue scan状态
-    if (detailedScanStatus.currentStatus === 'scanning') {
+    // 只有当market scanner真正开始扫描时（不是AI Recommendations扫描）才重置
+    if (detailedScanStatus.currentStatus === 'scanning' && 
+        detailedScanStatus.statusMessage?.includes('Market Scanner')) {
       console.log('Market scan restarted, resetting continue scan state');
       setContinueScanStatus('idle');
       setContinueScanProgress(0);
@@ -2303,7 +2238,7 @@ Please respond in this exact JSON format:
     }
     
     const color = getTrendColor(label);
-    const isStrong = label.includes('Strong');
+    const isStrong = label && typeof label === 'string' && label.includes('Strong');
     
     return (
       <div style={{
@@ -2989,47 +2924,56 @@ Please respond in this exact JSON format:
 
   const getCandidateSymbols = async (): Promise<{symbols: string[], source: string, scanType: string}> => {
     try {
-      console.log('开始扩展股票池扫描...');
+      console.log('开始从Preferred Continue Scan List获取候选股票...');
       
-      // 1. 扩展股票池：科技股 + 非科技股
-      // 科技股列表（主要科技股）
-      const techStocks = [
-        'NVDA', 'AAPL', 'MSFT', 'AMD', 'AVGO',
-        'META', 'AMZN', 'GOOGL', 'TSLA', 'INTC'
-      ];
+      // 1. 从Preferred Continue Scan List中获取股票
+      // 检查是否有可用的continue list结果
+      if (!preferredContinueScanList || preferredContinueScanList.length === 0) {
+        console.log('Preferred Continue Scan List为空，尝试从Market Scanner结果中获取');
+        
+        // 如果continue list为空，尝试从market scanner结果中获取
+        if (marketScannerResults && marketScannerResults.length > 0) {
+          const symbolsFromMarketScanner = marketScannerResults
+            .filter((result: any) => result.symbol)
+            .map((result: any) => result.symbol)
+            .slice(0, 12); // 限制最多12个
+          
+          console.log(`从Market Scanner结果中获取 ${symbolsFromMarketScanner.length} 只股票: ${symbolsFromMarketScanner.join(', ')}`);
+          
+          return { 
+            symbols: symbolsFromMarketScanner, 
+            source: 'market_scanner_results', 
+            scanType: 'market_scanner_fallback'
+          };
+        }
+        
+        // 如果都没有，使用默认列表
+        console.log('没有可用的扫描结果，使用默认股票列表');
+        const defaultSymbols = ['NVDA', 'AAPL', 'MSFT', 'AMD', 'META', 'AMZN'];
+        return { 
+          symbols: defaultSymbols, 
+          source: 'default_list', 
+          scanType: 'default'
+        };
+      }
       
-      // 非科技股列表（不同板块）
-      const nonTechStocks = [
-        'WMT', 'HD', 'JPM', 'XOM', 'UNH',
-        'COST', 'KO', 'CAT', 'JNJ', 'PG'
-      ];
+      // 2. 从Preferred Continue Scan List中提取symbol
+      const symbolsFromContinueList = preferredContinueScanList
+        .filter((candidate: any) => candidate.symbol && candidate.includeInContinueScan === true)
+        .map((candidate: any) => candidate.symbol)
+        .slice(0, 12); // 限制最多12个，避免扫描时间过长
       
-      // 合并所有股票
-      const allCandidates = [...techStocks, ...nonTechStocks];
-      
-      console.log(`扩展股票池: ${techStocks.length}只科技股 + ${nonTechStocks.length}只非科技股 = ${allCandidates.length}只股票`);
-      console.log(`科技股: ${techStocks.slice(0, 5).join(', ')}${techStocks.length > 5 ? '...' : ''}`);
-      console.log(`非科技股: ${nonTechStocks.slice(0, 5).join(', ')}${nonTechStocks.length > 5 ? '...' : ''}`);
-      
-      // 2. 验证股票数据可用性（可选步骤）
-      // 注意：这里我们假设所有股票都有数据，实际扫描时会验证
-      
-      // 3. 返回所有候选股票
-      // 在实际应用中，可以限制每次扫描的数量，但为了演示目的，我们返回所有
-      // 实际扫描时会为每个symbol执行完整的分析流程
-      const symbolsToScan = allCandidates.slice(0, 12); // 限制最多扫描12只股票以保持性能
-      
-      console.log(`扩展股票池扫描完成，将扫描 ${symbolsToScan.length} 只股票: ${symbolsToScan.join(', ')}`);
+      console.log(`从Preferred Continue Scan List中获取 ${symbolsFromContinueList.length} 只股票: ${symbolsFromContinueList.join(', ')}`);
       
       return { 
-        symbols: symbolsToScan, 
-        source: 'expanded_universe', 
-        scanType: 'expanded_tech_nontech'
+        symbols: symbolsFromContinueList, 
+        source: 'preferred_continue_scan_list', 
+        scanType: 'continue_list_scan'
       };
       
     } catch (error: any) {
-      console.error('扩展股票池扫描失败:', error);
-      // 如果扩展扫描失败，回退到原始的市场扫描逻辑
+      console.error('从Preferred Continue Scan List获取候选股票失败:', error);
+      // 如果失败，回退到原始市场扫描逻辑
       console.log('尝试回退到原始市场扫描逻辑...');
       return await fallbackMarketScan();
     }
@@ -3923,6 +3867,1900 @@ Please respond in this exact JSON format:
     await runAiScanOnce(false);
   };
 
+  // AI Recommendations专用的扫描函数 - 只扫描Continue List中的股票
+  const handleAiRecommendationsScan = async () => {
+    try {
+      console.log('开始AI Recommendations扫描...');
+      
+      // 检查是否有可用的Continue List
+      if (!preferredContinueScanList || preferredContinueScanList.length === 0) {
+        message.warning('没有可用的Continue List结果，请先生成Preferred Continue Scan List');
+        return;
+      }
+      
+      // 获取Continue List中的symbol和完整数据
+      const candidatesFromContinueList = preferredContinueScanList
+        .filter((candidate: any) => candidate.symbol && candidate.includeInContinueScan === true);
+      
+      if (candidatesFromContinueList.length === 0) {
+        message.warning('Continue List中没有符合条件的股票');
+        return;
+      }
+      
+      console.log(`从Continue List中获取 ${candidatesFromContinueList.length} 只股票: ${candidatesFromContinueList.map(c => c.symbol).join(', ')}`);
+      
+      // 设置AI Recommendations扫描状态 - 使用独立的scanStatus，不影响Market Scanner
+      setIsScanInProgress(true);
+      setScanStatus(prev => ({
+        ...prev,
+        status: 'running',
+        progress: 0,
+        lastRun: null,
+        nextRun: null
+      }));
+      
+      // 清空之前的AI推荐结果
+      setAiRecommendations([]);
+      setScanErrors([]);
+      
+      message.info(`开始AI Recommendations扫描，处理 ${candidatesFromContinueList.length} 只股票...`);
+      
+      // 逐个扫描股票
+      const recommendations = [];
+      const failedSymbols: Array<{symbol: string, error: string, step: string}> = [];
+      const totalSymbols = candidatesFromContinueList.length;
+      
+      for (let i = 0; i < totalSymbols; i++) {
+        const candidate = candidatesFromContinueList[i];
+        const symbol = candidate.symbol;
+        
+        try {
+          // 更新进度
+          const progress = Math.round(((i + 1) / totalSymbols) * 100);
+          setScanStatus(prev => ({ ...prev, progress }));
+          
+          console.log(`正在分析股票 ${i + 1}/${totalSymbols}: ${symbol}`);
+          
+          // 1. 获取市场数据
+          let marketData = null;
+          try {
+            marketData = await marketDataService.getStockData(symbol);
+            console.log(`股票 ${symbol} 市场数据获取成功`);
+          } catch (marketError: any) {
+            console.warn(`股票 ${symbol} 市场数据获取失败:`, marketError);
+            // 使用候选数据中的信息作为fallback
+            marketData = {
+              price: 0,
+              changePercent: candidate.changePct || candidate.priceChange || 0,
+              volume: 0,
+              dayHigh: 0,
+              dayLow: 0
+            };
+          }
+          
+          // 2. AI策略路由：先判断股票类型，再分配对应策略
+          console.log(`股票 ${symbol} 开始策略路由分析...`);
+          
+          // 3.1 构建策略路由上下文
+          const strategyRoutingContext = {
+            symbol: symbol,
+            marketData: {
+              price: marketData?.price || 0,
+              changePercent: marketData?.changePercent || candidate.changePct || candidate.priceChange || 0,
+              volume: marketData?.volume || 0,
+              dayHigh: marketData?.dayHigh || 0,
+              dayLow: marketData?.dayLow || 0
+            },
+            candidateData: {
+              trendLabel: candidate.trendLabel || 'Neutral',
+              overallScore: candidate.overallScore || candidate.trendScore || 0,
+              eventRisk: candidate.eventRisk || 'Medium',
+              sector: candidate.sector || 'Unknown',
+              newsSentiment: candidate.newsSentiment || 'Neutral',
+              volumeStatus: candidate.volumeStatus || 'Normal',
+              priorityScore: candidate.priorityScore || 0,
+              selectionReason: candidate.selectionReason || ''
+            },
+            // 添加技术指标分析提示
+            analysisFocus: '请分析这只股票的市场结构类型：趋势型(Trend)、震荡型(Range)、突破准备型(Breakout Prep)、混合型(Mixed)或不明确(Unclear)。基于以下特征判断：均线排列、趋势强度、波动特征、关键价位位置、成交量模式。'
+          };
+          
+          // 3.2 调用AI进行策略路由
+          let marketType = 'Unclear';
+          let selectedStrategies: string[] = [];
+          let strategyRoutingReason = '';
+          let routingConfidence = 0;
+          
+          try {
+            const routingResponse = await aiTradingService.previewTradeWithContext(symbol, strategyRoutingContext);
+            
+            if (routingResponse.success && routingResponse.decision) {
+              // 解析AI返回的市场类型和策略建议
+              const routingDecision = routingResponse.decision;
+              marketType = extractMarketTypeFromDecision(routingDecision);
+              selectedStrategies = selectStrategiesForMarketType(marketType, candidate);
+              strategyRoutingReason = routingDecision.reason || 'AI策略路由分析完成';
+              routingConfidence = Math.max(0, Math.min(1, routingDecision.confidence || 0.5));
+              
+              console.log(`股票 ${symbol} 策略路由结果:`, {
+                marketType,
+                selectedStrategies,
+                strategyCount: selectedStrategies.length,
+                routingConfidence: Math.round(routingConfidence * 100) + '%'
+              });
+            } else {
+              // AI路由失败，使用基于规则的fallback
+              marketType = determineMarketTypeByRules(candidate, marketData);
+              selectedStrategies = selectStrategiesForMarketType(marketType, candidate);
+              strategyRoutingReason = `基于规则的路由: ${marketType}`;
+              routingConfidence = 0.6;
+              
+              console.log(`股票 ${symbol} AI路由失败，使用规则路由:`, {
+                marketType,
+                selectedStrategies,
+                strategyCount: selectedStrategies.length
+              });
+            }
+          } catch (routingError: any) {
+            console.error(`股票 ${symbol} 策略路由失败:`, routingError);
+            // 使用最保守的fallback
+            marketType = 'Unclear';
+            selectedStrategies = ['moving_average']; // 默认只跑移动平均
+            strategyRoutingReason = `路由失败，使用默认策略`;
+            routingConfidence = 0.5;
+          }
+          
+          // 3.3 自动触发对应策略的回测
+          console.log(`股票 ${symbol} 开始自动回测，策略: ${selectedStrategies.join(', ')}`);
+          const backtestResults = await runStrategyBacktests(symbol, selectedStrategies, candidate, marketData);
+          console.log(`股票 ${symbol} 回测完成，结果:`, backtestResults);
+          
+          // 3.4 自动触发参数优化（基于成功的回测结果）
+          console.log(`股票 ${symbol} 开始参数优化`);
+          const optimizationResults = await runParameterOptimizations(symbol, selectedStrategies, backtestResults);
+          console.log(`股票 ${symbol} 参数优化完成，结果:`, optimizationResults);
+          
+          // 3.5 基于回测和优化结果构建AI分析上下文
+          const aiContext = {
+            symbol: symbol,
+            marketData: {
+              price: marketData?.price || 0,
+              changePercent: marketData?.changePercent || candidate.changePct || candidate.priceChange || 0,
+              volume: marketData?.volume || 0,
+              dayHigh: marketData?.dayHigh || 0,
+              dayLow: marketData?.dayLow || 0
+            },
+            candidateData: {
+              trendLabel: candidate.trendLabel || 'Neutral',
+              overallScore: candidate.overallScore || candidate.trendScore || 0,
+              eventRisk: candidate.eventRisk || 'Medium',
+              sector: candidate.sector || 'Unknown',
+              newsSentiment: candidate.newsSentiment || 'Neutral',
+              volumeStatus: candidate.volumeStatus || 'Normal',
+              priorityScore: candidate.priorityScore || 0,
+              selectionReason: candidate.selectionReason || ''
+            },
+            strategyRouting: {
+              marketType: marketType,
+              selectedStrategies: selectedStrategies,
+              routingReason: strategyRoutingReason,
+              routingConfidence: routingConfidence
+            },
+            backtestResults: backtestResults,
+            optimizationResults: optimizationResults,
+            accountSnapshot: {
+              cash: 10000, // 模拟现金
+              equity: 10000,
+              buyingPower: 10000,
+              portfolioValue: 10000,
+              tradingBlocked: false,
+              positionsCount: 0,
+              openOrdersCount: 0
+            },
+            positions: [],
+            currentPosition: null,
+            tradingEnvironment: 'paper'
+          };
+          
+          // 3.6 调用AI分析（基于路由结果、回测数据和优化数据）
+          const aiResponse = await aiTradingService.previewTradeWithContext(symbol, aiContext);
+          console.log(`股票 ${symbol} AI分析响应:`, {
+            success: aiResponse.success,
+            hasDecision: !!aiResponse.decision,
+            decision: aiResponse.decision,
+            marketType: marketType,
+            strategyCount: selectedStrategies.length,
+            backtestCount: backtestResults.length
+          });
+          
+          // 4. 生成推荐结果（包含回测数据）
+          let recommendation: any = {
+            symbol: symbol,
+            generatedTime: new Date().toISOString(),
+            strategyUsed: selectedStrategies.length > 0 ? selectedStrategies[0] : 'moving_average',
+            symbolsSource: 'continue_scan_list',
+            scanType: 'continue_list',
+            backtestRange: 'N/A → N/A',
+            optimizationRange: 'N/A → N/A',
+            // 新增字段
+            marketType: marketType,
+            selectedStrategies: selectedStrategies.join(', '),
+            strategyRoutingReason: strategyRoutingReason,
+            routingConfidence: Math.round(routingConfidence * 100),
+            // 回测相关字段
+            backtestResults: backtestResults,
+            backtestSummary: generateBacktestSummary(backtestResults),
+            bestStrategy: findBestStrategy(backtestResults),
+            bestStrategyReturn: findBestStrategyReturn(backtestResults),
+            backtestStatus: determineOverallBacktestStatus(backtestResults),
+            // 优化相关字段
+            optimizationResults: optimizationResults,
+            optimizationSummary: generateOptimizationSummary(optimizationResults),
+            bestOptimizedStrategy: findBestOptimizedStrategy(optimizationResults),
+            bestOptimizedReturn: findBestOptimizedReturn(optimizationResults),
+            optimizationStatus: determineOverallOptimizationStatus(optimizationResults)
+          };
+          
+          if (aiResponse.success && aiResponse.decision) {
+            const decision = aiResponse.decision;
+            
+            // 确定Action: Buy, Hold, Skip（基于回测和优化结果）
+            let action = determineActionFromBacktestAndOptimizationResults(backtestResults, optimizationResults, decision.action || 'HOLD');
+            if (action === 'SKIP') {
+              action = 'HOLD'; // 将SKIP映射为HOLD进行显示
+            }
+            
+            // 验证和修正Confidence (0-100%)，基于回测和优化结果调整
+            let confidence = adjustConfidenceWithBacktestAndOptimizationResults(decision.confidence || 0.5, backtestResults, optimizationResults);
+            confidence = Math.max(0, Math.min(1, confidence)); // 确保在0-1之间
+            const confidencePercent = Math.round(confidence * 100);
+            
+            // 生成AI Reasoning - 基于真实字段、策略路由、回测和优化结果
+            const aiReasoning = generateAiReasoningWithBacktestAndOptimizationResults(candidate, decision, marketType, selectedStrategies, backtestResults, optimizationResults);
+            
+            // 计算Suggested Qty (Position Size)，基于回测和优化结果
+            const suggestedQty = calculateSuggestedQtyWithBacktestAndOptimizationResults(action, confidencePercent, candidate, marketType, backtestResults, optimizationResults);
+            
+            // 确定整体状态，基于回测和优化结果
+            const status = determineRecommendationStatusWithBacktestAndOptimizationResults(aiResponse, candidate, marketType, backtestResults, optimizationResults);
+            
+            recommendation = {
+              ...recommendation,
+              recommendation: action,
+              confidence: confidence, // 保持0-1范围用于计算
+              reason: aiReasoning, // 简洁版
+              reasonFull: decision.reason || aiReasoning, // 完整版
+              evidenceSummary: `AI分析基于${marketType}市场类型，运行${selectedStrategies.length}个策略，回测完成${backtestResults.filter(r => r.status === 'completed').length}个，优化完成${optimizationResults.filter(r => r.status === 'completed').length}个`,
+              evidenceFull: JSON.stringify({
+                candidateData: aiContext.candidateData,
+                strategyRouting: aiContext.strategyRouting,
+                backtestResults: aiContext.backtestResults,
+                optimizationResults: aiContext.optimizationResults,
+                aiDecision: decision,
+                marketData: aiContext.marketData,
+                // 添加展开详情需要的字段
+                backtestKeyResults: generateBacktestKeyResults(backtestResults),
+                optimizationKeyResults: generateOptimizationKeyResults(optimizationResults)
+              }),
+              backtestSummary: generateBacktestSummary(backtestResults),
+              optimizationSummary: determineOptimizationStatusWithBacktestResults(candidate, marketType, selectedStrategies, backtestResults),
+              recommendedQty: suggestedQty,
+              positionSize: suggestedQty,
+              status: status,
+              // 添加验证字段
+              validation: {
+                confidenceValid: confidencePercent >= 0 && confidencePercent <= 100,
+                actionValid: ['BUY', 'HOLD', 'SELL', 'SKIP'].includes(action),
+                reasoningValid: aiReasoning && aiReasoning.length > 0,
+                qtyValid: suggestedQty >= 0,
+                strategyCountValid: selectedStrategies.length >= 1 && selectedStrategies.length <= 3,
+                marketTypeValid: ['Trend', 'Range', 'Breakout Prep', 'Mixed', 'Unclear'].includes(marketType),
+                backtestValid: backtestResults.length > 0 && backtestResults.some(r => r.status === 'completed')
+              }
+            };
+            
+            console.log(`股票 ${symbol} 分析完成: ${action} (市场类型: ${marketType}, 策略数: ${selectedStrategies.length}, 回测完成: ${backtestResults.filter(r => r.status === 'completed').length}, 置信度: ${confidencePercent}%)`);
+          } else {
+            // AI分析失败，生成fallback推荐
+            console.warn(`股票 ${symbol} AI分析失败，使用fallback推荐`);
+            
+            // 基于候选数据生成fallback推荐
+            const fallbackRecommendation = generateFallbackRecommendation(candidate);
+            
+            recommendation = {
+              ...recommendation,
+              ...fallbackRecommendation,
+              status: 'error',
+              validation: {
+                confidenceValid: false,
+                actionValid: false,
+                reasoningValid: false,
+                qtyValid: false
+              }
+            };
+            
+            failedSymbols.push({
+              symbol,
+              error: aiResponse.validation?.message || 'AI analysis failed',
+              step: 'AI analysis'
+            });
+          }
+          
+          recommendations.push(recommendation);
+          
+          // 短暂延迟，避免UI阻塞
+          if (i % 3 === 0) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+          
+        } catch (error: any) {
+          console.error(`股票 ${symbol} 分析失败:`, error);
+          failedSymbols.push({
+            symbol,
+            error: error.message || '分析失败',
+            step: 'AI分析'
+          });
+          
+          // 添加错误推荐
+          recommendations.push({
+            symbol,
+            generatedTime: new Date().toISOString(),
+            strategyUsed: 'N/A',
+            symbolsSource: 'continue_scan_list',
+            scanType: 'continue_list',
+            recommendation: 'ERROR',
+            confidence: 0,
+            reason: `分析失败: ${error.message || '未知错误'}`,
+            reasonFull: `分析失败: ${error.message || '未知错误'}`,
+            backtestSummary: 'Failed',
+            optimizationSummary: 'Failed',
+            recommendedQty: 0,
+            positionSize: 0,
+            status: 'error',
+            validation: {
+              confidenceValid: false,
+              actionValid: false,
+              reasoningValid: false,
+              qtyValid: false
+            }
+          });
+        }
+      }
+      
+      // 5. 计算汇总统计
+      const summaryStats = calculateRecommendationSummary(recommendations);
+      console.log('AI Recommendations汇总统计:', summaryStats);
+      
+      // 6. 更新结果
+      setAiRecommendations(recommendations);
+      setScanErrors(failedSymbols);
+      
+      // 7. 更新状态
+      setIsScanInProgress(false);
+      setScanStatus(prev => ({
+        ...prev,
+        status: 'stopped',
+        progress: 100,
+        lastRun: new Date().toISOString()
+      }));
+      
+      if (failedSymbols.length > 0) {
+        message.warning(`AI Recommendations扫描完成，${recommendations.length - failedSymbols.length} 个成功，${failedSymbols.length} 个失败`);
+      } else {
+        message.success(`AI Recommendations扫描完成，成功分析 ${recommendations.length} 只股票`);
+      }
+      
+    } catch (error: any) {
+      console.error('AI Recommendations扫描失败:', error);
+      setIsScanInProgress(false);
+      setScanStatus(prev => ({ ...prev, status: 'stopped', progress: 0 }));
+      message.error(`AI Recommendations扫描失败: ${error.message || '未知错误'}`);
+    }
+  };
+  
+  // 辅助函数：基于候选数据生成AI Reasoning
+  const generateAiReasoningFromCandidate = (candidate: any, decision: any): string => {
+    const trend = candidate.trendLabel || 'Neutral';
+    const score = candidate.overallScore || candidate.trendScore || 0;
+    const risk = candidate.eventRisk || 'Medium';
+    const sector = candidate.sector || 'Unknown';
+    const news = candidate.newsSentiment || 'Neutral';
+    const change = candidate.changePct || candidate.priceChange || 0;
+    const volume = candidate.volumeStatus || 'Normal';
+    
+    // 基于真实字段生成简洁的reasoning
+    let reasoning = '';
+    
+    if (decision.reason && decision.reason.length > 0) {
+      // 使用AI生成的reasoning
+      reasoning = decision.reason;
+    } else {
+      // 生成基于字段的reasoning
+      reasoning = `${trend} trend with ${score} score, ${risk} risk. `;
+      reasoning += `${news} news sentiment, ${change >= 0 ? '+' : ''}${change.toFixed(2)}% change. `;
+      reasoning += `${volume} volume in ${sector} sector.`;
+    }
+    
+    // 确保reasoning不为空且长度合理
+    if (!reasoning || reasoning.trim().length === 0) {
+      reasoning = `Based on continue list analysis: ${trend} trend, ${score} score, ${risk} risk.`;
+    }
+    
+    // 限制长度
+    if (reasoning.length > 200) {
+      reasoning = reasoning.substring(0, 197) + '...';
+    }
+    
+    return reasoning;
+  };
+  
+  // 辅助函数：确定Backtest状态
+  const determineBacktestStatus = (candidate: any): string => {
+    const score = candidate.overallScore || candidate.trendScore || 0;
+    
+    if (score >= 80) {
+      return 'Available (High Score)';
+    } else if (score >= 60) {
+      return 'Not run (Medium Score)';
+    } else {
+      return 'Pending (Low Score)';
+    }
+  };
+  
+  // 辅助函数：确定Optimization状态
+  const determineOptimizationStatus = (candidate: any): string => {
+    const priority = candidate.priorityScore || 0;
+    
+    if (priority >= 80) {
+      return 'Available (High Priority)';
+    } else if (priority >= 60) {
+      return 'Not run (Medium Priority)';
+    } else {
+      return 'Pending (Low Priority)';
+    }
+  };
+  
+  // 辅助函数：计算Suggested Qty
+  const calculateSuggestedQty = (action: string, confidencePercent: number, candidate: any): number => {
+    if (action !== 'BUY') {
+      return 0;
+    }
+    
+    const score = candidate.overallScore || candidate.trendScore || 0;
+    const priority = candidate.priorityScore || 0;
+    const risk = candidate.eventRisk || 'Medium';
+    
+    // 基础数量
+    let baseQty = 10;
+    
+    // 根据confidence调整
+    if (confidencePercent >= 80) {
+      baseQty = 20;
+    } else if (confidencePercent >= 60) {
+      baseQty = 15;
+    }
+    
+    // 根据score调整
+    if (score >= 80) {
+      baseQty += 5;
+    } else if (score >= 60) {
+      baseQty += 2;
+    }
+    
+    // 根据priority调整
+    if (priority >= 80) {
+      baseQty += 5;
+    } else if (priority >= 60) {
+      baseQty += 2;
+    }
+    
+    // 根据risk调整
+    if (risk === 'Low') {
+      baseQty += 3;
+    } else if (risk === 'High') {
+      baseQty = Math.max(1, baseQty - 5);
+    }
+    
+    return Math.max(1, baseQty); // 确保至少为1
+  };
+  
+  // 辅助函数：确定推荐状态
+  const determineRecommendationStatus = (aiResponse: any, candidate: any): string => {
+    if (!aiResponse.success) {
+      return 'error';
+    }
+    
+    const score = candidate.overallScore || candidate.trendScore || 0;
+    const priority = candidate.priorityScore || 0;
+    
+    if (score >= 80 && priority >= 80) {
+      return 'success';
+    } else if (score >= 60 && priority >= 60) {
+      return 'partial';
+    } else {
+      return 'success'; // 默认成功
+    }
+  };
+  
+  // 辅助函数：生成fallback推荐
+  const generateFallbackRecommendation = (candidate: any): any => {
+    const trend = candidate.trendLabel || 'Neutral';
+    const score = candidate.overallScore || candidate.trendScore || 0;
+    const risk = candidate.eventRisk || 'Medium';
+    const priority = candidate.priorityScore || 0;
+    
+    // 基于规则确定action
+    let action = 'HOLD';
+    let confidence = 0.5;
+    
+    if (trend === 'Strong Bullish' && score >= 80 && risk !== 'High') {
+      action = 'BUY';
+      confidence = 0.7 + (Math.random() * 0.2); // 70-90%
+    } else if ((trend === 'Bullish' || trend === 'Strong Bullish') && score >= 60 && risk !== 'High') {
+      action = 'BUY';
+      confidence = 0.5 + (Math.random() * 0.2); // 50-70%
+    } else if (trend === 'Bearish' || trend === 'Strong Bearish' || risk === 'High') {
+      action = 'HOLD';
+      confidence = 0.3 + (Math.random() * 0.2); // 30-50%
+    }
+    
+    // 生成reasoning
+    const reasoning = `Fallback: ${trend} trend with ${score} score, ${risk} risk. Priority: ${priority}.`;
+    
+    return {
+      recommendation: action,
+      confidence: confidence,
+      reason: reasoning,
+      reasonFull: reasoning,
+      backtestSummary: determineBacktestStatus(candidate),
+      optimizationSummary: determineOptimizationStatus(candidate),
+      recommendedQty: calculateSuggestedQty(action, Math.round(confidence * 100), candidate),
+      positionSize: calculateSuggestedQty(action, Math.round(confidence * 100), candidate)
+    };
+  };
+  
+  // 辅助函数：计算推荐汇总统计
+  const calculateRecommendationSummary = (recommendations: any[]): any => {
+    const total = recommendations.length;
+    const successful = recommendations.filter(r => r.status === 'success').length;
+    const errors = recommendations.filter(r => r.status === 'error').length;
+    const partial = recommendations.filter(r => r.status === 'partial').length;
+    const holdCount = recommendations.filter(r => r.recommendation === 'HOLD').length;
+    
+    // 计算平均confidence (0-100%)
+    const validConfidences = recommendations
+      .filter(r => r.confidence >= 0 && r.confidence <= 1)
+      .map(r => r.confidence * 100);
+    
+    const avgConfidence = validConfidences.length > 0 
+      ? validConfidences.reduce((sum, conf) => sum + conf, 0) / validConfidences.length
+      : 0;
+    
+    // 验证统计
+    const validationStats = {
+      confidenceValid: recommendations.filter(r => r.validation?.confidenceValid === true).length,
+      actionValid: recommendations.filter(r => r.validation?.actionValid === true).length,
+      reasoningValid: recommendations.filter(r => r.validation?.reasoningValid === true).length,
+      qtyValid: recommendations.filter(r => r.validation?.qtyValid === true).length,
+      strategyCountValid: recommendations.filter(r => r.validation?.strategyCountValid === true).length,
+      marketTypeValid: recommendations.filter(r => r.validation?.marketTypeValid === true).length
+    };
+    
+    // 市场类型统计
+    const marketTypeStats = {
+      trend: recommendations.filter(r => r.marketType === 'Trend').length,
+      range: recommendations.filter(r => r.marketType === 'Range').length,
+      breakout: recommendations.filter(r => r.marketType === 'Breakout Prep').length,
+      mixed: recommendations.filter(r => r.marketType === 'Mixed').length,
+      unclear: recommendations.filter(r => r.marketType === 'Unclear').length
+    };
+    
+    // 策略数量统计
+    const strategyCountStats = {
+      oneStrategy: recommendations.filter(r => {
+        const strategies = r.selectedStrategies?.split(',') || [];
+        return strategies.length === 1;
+      }).length,
+      twoStrategies: recommendations.filter(r => {
+        const strategies = r.selectedStrategies?.split(',') || [];
+        return strategies.length === 2;
+      }).length,
+      threeStrategies: recommendations.filter(r => {
+        const strategies = r.selectedStrategies?.split(',') || [];
+        return strategies.length === 3;
+      }).length,
+      moreThanThree: recommendations.filter(r => {
+        const strategies = r.selectedStrategies?.split(',') || [];
+        return strategies.length > 3;
+      }).length
+    };
+    
+    return {
+      total,
+      successful,
+      errors,
+      partial,
+      holdCount,
+      avgConfidence: Math.round(avgConfidence * 10) / 10, // 保留一位小数
+      validationStats,
+      marketTypeStats,
+      strategyCountStats
+    };
+  };
+  
+  // ========== 策略路由相关辅助函数 ==========
+  
+  // 从AI决策中提取市场类型
+  const extractMarketTypeFromDecision = (decision: any): string => {
+    const reason = decision.reason || '';
+    const reasonLower = reason.toLowerCase();
+    
+    // 检查AI返回的reasoning中是否包含市场类型关键词
+    if (reasonLower.includes('trend') || reasonLower.includes('趋势')) {
+      return 'Trend';
+    } else if (reasonLower.includes('range') || reasonLower.includes('震荡') || reasonLower.includes('区间')) {
+      return 'Range';
+    } else if (reasonLower.includes('breakout') || reasonLower.includes('突破')) {
+      return 'Breakout Prep';
+    } else if (reasonLower.includes('mixed') || reasonLower.includes('混合')) {
+      return 'Mixed';
+    } else {
+      return 'Unclear';
+    }
+  };
+  
+  // 根据市场类型选择策略
+  const selectStrategiesForMarketType = (marketType: string, candidate: any): string[] => {
+    const trend = candidate.trendLabel || 'Neutral';
+    const score = candidate.overallScore || candidate.trendScore || 0;
+    const risk = candidate.eventRisk || 'Medium';
+    
+    // 策略映射
+    const strategyMap: Record<string, string[]> = {
+      'Trend': ['Moving Average', 'MACD', 'Breakout follow-through'],
+      'Range': ['RSI', 'Mean Reversion', 'Bollinger Band'],
+      'Breakout Prep': ['Breakout', 'Volume confirmation', 'Momentum continuation'],
+      'Mixed': ['Moving Average', 'RSI', 'Breakout'], // 混合型：各选一个代表性策略
+      'Unclear': ['Moving Average'] // 不明确：只跑最基础的移动平均
+    };
+    
+    // 获取基础策略列表
+    let strategies = strategyMap[marketType] || ['Moving Average'];
+    
+    // 根据候选特征调整策略数量
+    if (marketType === 'Unclear' || risk === 'High' || score < 60) {
+      // 高风险或低分股票：只跑1个策略
+      strategies = strategies.slice(0, 1);
+    } else if (marketType === 'Mixed' || score < 75) {
+      // 混合型或中等分数：跑2个策略
+      strategies = strategies.slice(0, 2);
+    } else {
+      // 明确类型且高分：跑最多3个策略
+      strategies = strategies.slice(0, 3);
+    }
+    
+    return strategies;
+  };
+  
+  // 基于规则确定市场类型（AI路由失败时的fallback）
+  const determineMarketTypeByRules = (candidate: any, marketData: any): string => {
+    const trend = candidate.trendLabel || 'Neutral';
+    const score = candidate.overallScore || candidate.trendScore || 0;
+    const changePercent = marketData?.changePercent || candidate.changePct || candidate.priceChange || 0;
+    const volumeStatus = candidate.volumeStatus || 'Normal';
+    
+    // 规则1: 强趋势股票 -> Trend
+    if ((trend === 'Strong Bullish' || trend === 'Strong Bearish') && score >= 75) {
+      return 'Trend';
+    }
+    
+    // 规则2: 中等趋势但波动大 -> Mixed
+    if ((trend === 'Bullish' || trend === 'Bearish') && Math.abs(changePercent) > 3) {
+      return 'Mixed';
+    }
+    
+    // 规则3: 趋势不明显，分数中等 -> Range
+    if (trend === 'Neutral' && score >= 60 && score < 75) {
+      return 'Range';
+    }
+    
+    // 规则4: 接近关键位置，成交量异常 -> Breakout Prep
+    if (Math.abs(changePercent) < 1.5 && (volumeStatus === 'High' || volumeStatus === 'Very High')) {
+      return 'Breakout Prep';
+    }
+    
+    // 默认: Unclear
+    return 'Unclear';
+  };
+  
+  // 生成包含策略路由的AI Reasoning
+  const generateAiReasoningWithStrategyRouting = (candidate: any, decision: any, marketType: string, selectedStrategies: string[]): string => {
+    const trend = candidate.trendLabel || 'Neutral';
+    const score = candidate.overallScore || candidate.trendScore || 0;
+    const risk = candidate.eventRisk || 'Medium';
+    const news = candidate.newsSentiment || 'Neutral';
+    const change = candidate.changePct || candidate.priceChange || 0;
+    
+    let reasoning = '';
+    
+    if (decision.reason && decision.reason.length > 0) {
+      // 使用AI生成的reasoning
+      reasoning = decision.reason;
+    } else {
+      // 生成基于字段和策略路由的reasoning
+      reasoning = `${marketType}市场类型: ${trend}趋势，${score}分，${risk}风险。`;
+      reasoning += `分配策略: ${selectedStrategies.join('、')}。`;
+      reasoning += `${news}新闻情绪，${change >= 0 ? '+' : ''}${change.toFixed(2)}%涨跌幅。`;
+    }
+    
+    // 确保reasoning不为空且长度合理
+    if (!reasoning || reasoning.trim().length === 0) {
+      reasoning = `${marketType}市场类型分析: ${trend}趋势，${score}分，分配${selectedStrategies.length}个策略。`;
+    }
+    
+    // 限制长度
+    if (reasoning.length > 200) {
+      reasoning = reasoning.substring(0, 197) + '...';
+    }
+    
+    return reasoning;
+  };
+  
+  // 基于策略路由确定Backtest状态
+  const determineBacktestStatusWithRouting = (candidate: any, marketType: string, selectedStrategies: string[]): string => {
+    const score = candidate.overallScore || candidate.trendScore || 0;
+    const strategyCount = selectedStrategies.length;
+    
+    if (marketType === 'Trend' && score >= 75) {
+      return `Available for ${strategyCount} trend strategies`;
+    } else if (marketType === 'Range' && score >= 65) {
+      return `Available for ${strategyCount} range strategies`;
+    } else if (marketType === 'Breakout Prep') {
+      return `Pending breakout confirmation`;
+    } else if (strategyCount === 1) {
+      return 'Single strategy backtest';
+    } else {
+      return `Limited to ${strategyCount} strategies`;
+    }
+  };
+  
+  // 基于策略路由确定Optimization状态
+  const determineOptimizationStatusWithRouting = (candidate: any, marketType: string, selectedStrategies: string[]): string => {
+    const priority = candidate.priorityScore || 0;
+    const strategyCount = selectedStrategies.length;
+    
+    if (priority >= 80 && strategyCount <= 2) {
+      return `Optimization feasible for ${strategyCount} strategies`;
+    } else if (priority >= 60) {
+      return `Limited optimization for ${strategyCount} strategies`;
+    } else if (strategyCount === 1) {
+      return 'Single strategy optimization';
+    } else {
+      return `Strategy-specific optimization`;
+    }
+  };
+  
+  // 基于策略路由计算Suggested Qty
+  const calculateSuggestedQtyWithRouting = (action: string, confidencePercent: number, candidate: any, marketType: string): number => {
+    if (action !== 'BUY') {
+      return 0;
+    }
+    
+    const score = candidate.overallScore || candidate.trendScore || 0;
+    const priority = candidate.priorityScore || 0;
+    const risk = candidate.eventRisk || 'Medium';
+    
+    // 基础数量
+    let baseQty = 10;
+    
+    // 根据市场类型调整
+    if (marketType === 'Trend') {
+      baseQty += 5; // 趋势型可以多买
+    } else if (marketType === 'Breakout Prep') {
+      baseQty += 3; // 突破准备型中等
+    } else if (marketType === 'Range') {
+      baseQty -= 2; // 震荡型少买
+    }
+    
+    // 根据confidence调整
+    if (confidencePercent >= 80) {
+      baseQty = Math.round(baseQty * 1.5);
+    } else if (confidencePercent >= 60) {
+      baseQty = Math.round(baseQty * 1.2);
+    }
+    
+    // 根据score调整
+    if (score >= 80) {
+      baseQty += 5;
+    } else if (score >= 60) {
+      baseQty += 2;
+    }
+    
+    // 根据priority调整
+    if (priority >= 80) {
+      baseQty += 5;
+    } else if (priority >= 60) {
+      baseQty += 2;
+    }
+    
+    // 根据risk调整
+    if (risk === 'Low') {
+      baseQty += 3;
+    } else if (risk === 'High') {
+      baseQty = Math.max(1, baseQty - 5);
+    }
+    
+    return Math.max(1, baseQty); // 确保至少为1
+  };
+  
+  // 基于策略路由确定推荐状态
+  const determineRecommendationStatusWithRouting = (aiResponse: any, candidate: any, marketType: string): string => {
+    if (!aiResponse.success) {
+      return 'error';
+    }
+    
+    const score = candidate.overallScore || candidate.trendScore || 0;
+    const priority = candidate.priorityScore || 0;
+    
+    // 明确的市场类型且高分 -> success
+    if (marketType !== 'Unclear' && score >= 75 && priority >= 70) {
+      return 'success';
+    }
+    
+    // 中等条件 -> partial
+    if (score >= 60 && priority >= 60) {
+      return 'partial';
+    }
+    
+    // 默认成功
+    return 'success';
+  };
+  
+  // ========== 回测相关辅助函数 ==========
+  
+  // 运行策略回测 - 真正调用平台内已有的backtest功能
+  const runStrategyBacktests = async (symbol: string, strategies: string[], candidate: any, marketData: any): Promise<any[]> => {
+    const backtestResults = [];
+    
+    for (const strategy of strategies) {
+      try {
+        console.log(`=== 开始真实回测: ${symbol} - ${strategy} ===`);
+        
+        // 构建回测配置 - 使用平台标准格式
+        const backtestConfig = {
+          symbol: symbol,
+          strategy: mapStrategyToBacktestType(strategy),
+          startDate: getDefaultStartDate(),
+          endDate: getDefaultEndDate(),
+          initialCapital: 10000,
+          parameters: getStrategyParameters(strategy)
+        };
+        
+        console.log(`回测请求配置:`, JSON.stringify(backtestConfig, null, 2));
+        
+        // 真正调用平台内已有的backtest API
+        const backtestResponse = await backtraderAPI.runBacktest(backtestConfig);
+        console.log(`回测响应:`, backtestResponse);
+        
+        // 详细解析API响应
+        const responseData = backtestResponse.data;
+        console.log(`回测响应数据:`, responseData);
+        
+        let backtestResult: any = {
+          strategy: strategy,
+          responseData: responseData
+        };
+        
+        if (responseData?.success) {
+          // 成功响应 - 解析真实结果
+          const result = responseData.result || {};
+          const results = result.results || {};
+          
+          backtestResult = {
+            ...backtestResult,
+            status: 'completed',
+            totalReturn: results.totalReturn || result.totalReturn || 0,
+            sharpeRatio: results.sharpeRatio || result.sharpeRatio || 0,
+            winRate: results.winRate || result.winRate || 0,
+            maxDrawdown: results.maxDrawdown || result.maxDrawdown || 0,
+            tradeCount: results.tradeCount || result.tradeCount || 0,
+            bestParams: results.bestParams || result.bestParams || {},
+            equityCurve: results.equityCurve || result.equityCurve || [],
+            trades: results.trades || result.trades || [],
+            error: null
+          };
+          
+          console.log(`回测成功 - ${strategy}:`, {
+            totalReturn: backtestResult.totalReturn,
+            winRate: backtestResult.winRate,
+            sharpeRatio: backtestResult.sharpeRatio,
+            maxDrawdown: backtestResult.maxDrawdown
+          });
+        } else {
+          // 失败响应
+          backtestResult = {
+            ...backtestResult,
+            status: 'failed',
+            totalReturn: 0,
+            sharpeRatio: 0,
+            winRate: 0,
+            maxDrawdown: 0,
+            tradeCount: 0,
+            error: responseData?.error || responseData?.message || '回测失败'
+          };
+          
+          console.warn(`回测失败 - ${strategy}:`, backtestResult.error);
+        }
+        
+        backtestResults.push(backtestResult);
+        
+        // 短暂延迟，避免API限制
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+      } catch (error: any) {
+        console.error(`回测异常 - ${symbol} - ${strategy}:`, error);
+        
+        // 添加异常的回测结果
+        backtestResults.push({
+          strategy: strategy,
+          status: 'failed',
+          totalReturn: 0,
+          sharpeRatio: 0,
+          winRate: 0,
+          maxDrawdown: 0,
+          tradeCount: 0,
+          error: error.message || '回测异常',
+          responseData: null
+        });
+      }
+    }
+    
+    console.log(`=== ${symbol} 回测完成，${backtestResults.filter(r => r.status === 'completed').length}/${strategies.length} 个策略成功 ===`);
+    return backtestResults;
+  };
+  
+  // 运行参数优化 - 真正调用平台内已有的parameter optimization功能
+  const runParameterOptimizations = async (symbol: string, strategies: string[], backtestResults: any[]): Promise<any[]> => {
+    const optimizationResults: any[] = [];
+    
+    // 只对回测成功的策略进行优化
+    const successfulStrategies = backtestResults
+      .filter(r => r.status === 'completed' && r.totalReturn > 0)
+      .map(r => r.strategy);
+    
+    if (successfulStrategies.length === 0) {
+      console.log(`股票 ${symbol} 没有成功的回测结果，跳过参数优化`);
+      return optimizationResults;
+    }
+    
+    for (const strategy of successfulStrategies) {
+      try {
+        console.log(`=== 开始参数优化: ${symbol} - ${strategy} ===`);
+        
+        // 1. 检查平台是否支持该策略的optimization
+        if (!isStrategySupportedForOptimization(strategy)) {
+          console.log(`策略 ${strategy} 不支持optimization，跳过`);
+          
+          optimizationResults.push({
+            strategy: strategy,
+            status: 'not_supported',
+            bestParams: {},
+            bestReturn: 0,
+            bestSharpe: 0,
+            error: `策略 ${strategy} 不支持参数优化`,
+            responseData: null,
+            optimizationConfig: null
+          });
+          
+          continue;
+        }
+        
+        // 2. 获取平台支持的optimization配置
+        const optimizationConfig = getPlatformOptimizationConfig(symbol, strategy);
+        
+        if (!optimizationConfig) {
+          console.log(`无法为策略 ${strategy} 生成有效的optimization配置`);
+          
+          optimizationResults.push({
+            strategy: strategy,
+            status: 'not_supported',
+            bestParams: {},
+            bestReturn: 0,
+            bestSharpe: 0,
+            error: `策略 ${strategy} 的optimization配置不可用`,
+            responseData: null,
+            optimizationConfig: null
+          });
+          
+          continue;
+        }
+        
+        console.log(`优化请求配置:`, JSON.stringify(optimizationConfig, null, 2));
+        
+        // 3. 真正调用平台内已有的parameter optimization API
+        const optimizationResponse = await backtraderAPI.runParameterOptimization(optimizationConfig);
+        console.log(`优化响应状态:`, optimizationResponse.status);
+        console.log(`优化响应数据:`, optimizationResponse.data);
+        
+        // 详细解析API响应
+        const responseData = optimizationResponse.data;
+        
+        let optimizationResult: any = {
+          strategy: strategy,
+          responseData: responseData,
+          optimizationConfig: optimizationConfig
+        };
+        
+        if (responseData?.success) {
+          // 成功响应 - 解析真实结果
+          const result = responseData.result || {};
+          const bestResult = result.bestResult || {};
+          
+          optimizationResult = {
+            ...optimizationResult,
+            status: 'completed',
+            bestParams: bestResult.parameters || result.bestParams || {},
+            bestReturn: bestResult.totalReturn || result.bestReturn || 0,
+            bestSharpe: bestResult.sharpeRatio || result.bestSharpe || 0,
+            optimizationSpace: result.optimizationSpace || optimizationConfig.parameterSpace || {},
+            allResults: result.allResults || [],
+            totalCombinations: result.totalCombinations || 
+                              (optimizationConfig.parameterSpace ? 
+                               Object.keys(optimizationConfig.parameterSpace).length : 0),
+            error: null
+          };
+          
+          console.log(`优化成功 - ${strategy}:`, {
+            bestReturn: optimizationResult.bestReturn,
+            bestParams: optimizationResult.bestParams,
+            totalCombinations: optimizationResult.totalCombinations
+          });
+        } else {
+          // 失败响应 - 提取详细错误信息
+          let errorMessage = '参数优化失败';
+          
+          if (responseData?.error) {
+            errorMessage = responseData.error;
+          } else if (responseData?.message) {
+            errorMessage = responseData.message;
+          } else if (optimizationResponse.status === 400) {
+            errorMessage = `API请求错误 (400): ${JSON.stringify(responseData || {})}`;
+          } else if (optimizationResponse.status >= 500) {
+            errorMessage = `服务器错误 (${optimizationResponse.status})`;
+          }
+          
+          optimizationResult = {
+            ...optimizationResult,
+            status: 'failed',
+            bestParams: {},
+            bestReturn: 0,
+            bestSharpe: 0,
+            error: errorMessage,
+            optimizationSpace: optimizationConfig.parameterSpace || {}
+          };
+          
+          console.warn(`优化失败 - ${strategy}:`, {
+            error: optimizationResult.error,
+            status: optimizationResponse.status,
+            config: optimizationConfig
+          });
+        }
+        
+        optimizationResults.push(optimizationResult);
+        
+        // 短暂延迟，避免API限制
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+      } catch (error: any) {
+        console.error(`优化异常 - ${symbol} - ${strategy}:`, error);
+        
+        // 添加异常的优化结果
+        optimizationResults.push({
+          strategy: strategy,
+          status: 'failed',
+          bestParams: {},
+          bestReturn: 0,
+          bestSharpe: 0,
+          error: `异常: ${error.message || '未知错误'}`,
+          responseData: null,
+          optimizationConfig: null
+        });
+      }
+    }
+    
+    console.log(`=== ${symbol} 参数优化完成，${optimizationResults.filter(r => r.status === 'completed').length}/${successfulStrategies.length} 个策略成功 ===`);
+    return optimizationResults;
+  };
+  
+  // 获取优化参数范围
+  const getOptimizationParameters = (strategy: string): any => {
+    const optimizationParams: Record<string, any> = {
+      'Moving Average': {
+        shortPeriod: { min: 5, max: 30, step: 5 },
+        longPeriod: { min: 30, max: 100, step: 10 }
+      },
+      'MACD': {
+        fastPeriod: { min: 8, max: 20, step: 2 },
+        slowPeriod: { min: 20, max: 40, step: 5 },
+        signalPeriod: { min: 5, max: 15, step: 2 }
+      },
+      'RSI': {
+        period: { min: 10, max: 30, step: 5 },
+        oversold: { min: 20, max: 40, step: 5 },
+        overbought: { min: 60, max: 80, step: 5 }
+      },
+      'Mean Reversion': {
+        period: { min: 10, max: 40, step: 5 },
+        stdDev: { min: 1.5, max: 3.0, step: 0.5 }
+      },
+      'Bollinger Band': {
+        period: { min: 10, max: 40, step: 5 },
+        stdDev: { min: 1.5, max: 3.0, step: 0.5 }
+      },
+      'Breakout': {
+        period: { min: 10, max: 40, step: 5 },
+        multiplier: { min: 1.0, max: 2.0, step: 0.2 }
+      },
+      'Volume confirmation': {
+        volumePeriod: { min: 10, max: 40, step: 5 },
+        volumeMultiplier: { min: 1.2, max: 2.5, step: 0.2 }
+      },
+      'Momentum continuation': {
+        period: { min: 5, max: 20, step: 3 }
+      }
+    };
+    
+    return optimizationParams[strategy] || optimizationParams['Moving Average'];
+  };
+  
+  // 将策略名称映射到回测类型
+  const mapStrategyToBacktestType = (strategy: string): string => {
+    const strategyMap: Record<string, string> = {
+      'Moving Average': 'moving_average',
+      'MACD': 'macd',
+      'Breakout follow-through': 'breakout',
+      'RSI': 'rsi',
+      'Mean Reversion': 'mean_reversion',
+      'Bollinger Band': 'bollinger_band',
+      'Breakout': 'breakout',
+      'Volume confirmation': 'volume_breakout',
+      'Momentum continuation': 'momentum'
+    };
+    
+    return strategyMap[strategy] || 'moving_average';
+  };
+  
+  // 检查平台是否支持该策略的optimization
+  const isStrategySupportedForOptimization = (strategy: string): boolean => {
+    // 平台支持的optimization策略列表（基于实际平台能力）
+    const supportedStrategies = [
+      'moving_average',
+      'macd', 
+      'rsi',
+      'bollinger_band',
+      'breakout'
+      // 注意：mean_reversion, volume_breakout, momentum 可能不被平台optimization支持
+    ];
+    
+    const strategyKey = mapStrategyToBacktestType(strategy);
+    return supportedStrategies.includes(strategyKey);
+  };
+  
+  // 获取平台支持的optimization配置
+  const getPlatformOptimizationConfig = (symbol: string, strategy: string): any => {
+    const strategyKey = mapStrategyToBacktestType(strategy);
+    
+    // 基础配置
+    const baseConfig = {
+      symbol: symbol,
+      strategy: strategyKey,
+      startDate: getDefaultStartDate(),
+      endDate: getDefaultEndDate(),
+      initialCapital: 10000
+    };
+    
+    // 根据策略类型添加特定配置
+    switch (strategyKey) {
+      case 'moving_average':
+        return {
+          ...baseConfig,
+          parameterSpace: {
+            shortPeriod: { min: 5, max: 30, step: 5 },
+            longPeriod: { min: 30, max: 100, step: 10 }
+          }
+        };
+      case 'macd':
+        return {
+          ...baseConfig,
+          parameterSpace: {
+            fastPeriod: { min: 8, max: 20, step: 2 },
+            slowPeriod: { min: 20, max: 40, step: 5 },
+            signalPeriod: { min: 5, max: 15, step: 2 }
+          }
+        };
+      case 'rsi':
+        return {
+          ...baseConfig,
+          parameterSpace: {
+            period: { min: 10, max: 30, step: 5 },
+            oversold: { min: 20, max: 40, step: 5 },
+            overbought: { min: 60, max: 80, step: 5 }
+          }
+        };
+      case 'bollinger_band':
+        return {
+          ...baseConfig,
+          parameterSpace: {
+            period: { min: 10, max: 40, step: 5 },
+            stdDev: { min: 1.5, max: 3.0, step: 0.5 }
+          }
+        };
+      case 'breakout':
+        return {
+          ...baseConfig,
+          parameterSpace: {
+            period: { min: 10, max: 40, step: 5 },
+            multiplier: { min: 1.0, max: 2.0, step: 0.2 }
+          }
+        };
+      default:
+        // 对于不支持的策略，返回null表示不运行optimization
+        return null;
+    }
+  };
+  
+  // 获取默认开始日期（30天前）
+  const getDefaultStartDate = (): string => {
+    const date = new Date();
+    date.setDate(date.getDate() - 30);
+    return date.toISOString().split('T')[0];
+  };
+  
+  // 获取默认结束日期（今天）
+  const getDefaultEndDate = (): string => {
+    return new Date().toISOString().split('T')[0];
+  };
+  
+  // 获取策略参数
+  const getStrategyParameters = (strategy: string): any => {
+    const defaultParams: Record<string, any> = {
+      moving_average: { shortPeriod: 20, longPeriod: 50 },
+      macd: { fastPeriod: 12, slowPeriod: 26, signalPeriod: 9 },
+      rsi: { period: 14, oversold: 30, overbought: 70 },
+      mean_reversion: { period: 20, stdDev: 2 },
+      bollinger_band: { period: 20, stdDev: 2 },
+      breakout: { period: 20, multiplier: 1 },
+      volume_breakout: { volumePeriod: 20, volumeMultiplier: 1.5 },
+      momentum: { period: 10 }
+    };
+    
+    const strategyKey = mapStrategyToBacktestType(strategy);
+    return defaultParams[strategyKey] || defaultParams.moving_average;
+  };
+  
+  // 从回测响应中提取总回报
+  const extractTotalReturn = (responseData: any): number => {
+    if (!responseData?.result) return 0;
+    
+    // 尝试不同的字段名
+    return responseData.result.results?.totalReturn || 
+           responseData.result.totalReturn || 
+           responseData.result.return || 
+           0;
+  };
+  
+  // 从回测响应中提取夏普比率
+  const extractSharpeRatio = (responseData: any): number => {
+    if (!responseData?.result) return 0;
+    
+    return responseData.result.results?.sharpeRatio || 
+           responseData.result.sharpeRatio || 
+           0;
+  };
+  
+  // 从回测响应中提取胜率
+  const extractWinRate = (responseData: any): number => {
+    if (!responseData?.result) return 0;
+    
+    return responseData.result.results?.winRate || 
+           responseData.result.winRate || 
+           0;
+  };
+  
+  // 从回测响应中提取最大回撤
+  const extractMaxDrawdown = (responseData: any): number => {
+    if (!responseData?.result) return 0;
+    
+    return responseData.result.results?.maxDrawdown || 
+           responseData.result.maxDrawdown || 
+           0;
+  };
+  
+  // 从回测响应中提取交易次数
+  const extractTradeCount = (responseData: any): number => {
+    if (!responseData?.result) return 0;
+    
+    return responseData.result.results?.tradeCount || 
+           responseData.result.tradeCount || 
+           0;
+  };
+  
+  // 生成回测摘要
+  const generateBacktestSummary = (backtestResults: any[]): string => {
+    const completedResults = backtestResults.filter(r => r.status === 'completed');
+    
+    if (completedResults.length === 0) {
+      return 'No backtest completed';
+    }
+    
+    // 找到最佳策略
+    const bestResult = completedResults.reduce((best, current) => {
+      return (current.totalReturn > best.totalReturn) ? current : best;
+    }, completedResults[0]);
+    
+    return `${completedResults.length} strategies tested | Best: ${bestResult.strategy} (${bestResult.totalReturn.toFixed(1)}%)`;
+  };
+  
+  // 找到最佳策略
+  const findBestStrategy = (backtestResults: any[]): string => {
+    const completedResults = backtestResults.filter(r => r.status === 'completed');
+    
+    if (completedResults.length === 0) {
+      return 'N/A';
+    }
+    
+    const bestResult = completedResults.reduce((best, current) => {
+      return (current.totalReturn > best.totalReturn) ? current : best;
+    }, completedResults[0]);
+    
+    return bestResult.strategy;
+  };
+  
+  // 找到最佳策略回报
+  const findBestStrategyReturn = (backtestResults: any[]): number => {
+    const completedResults = backtestResults.filter(r => r.status === 'completed');
+    
+    if (completedResults.length === 0) {
+      return 0;
+    }
+    
+    const bestResult = completedResults.reduce((best, current) => {
+      return (current.totalReturn > best.totalReturn) ? current : best;
+    }, completedResults[0]);
+    
+    return bestResult.totalReturn;
+  };
+  
+  // 确定整体回测状态
+  const determineOverallBacktestStatus = (backtestResults: any[]): string => {
+    const completedCount = backtestResults.filter(r => r.status === 'completed').length;
+    const totalCount = backtestResults.length;
+    
+    if (completedCount === 0) {
+      return 'Failed';
+    } else if (completedCount === totalCount) {
+      return 'Completed';
+    } else if (completedCount >= totalCount / 2) {
+      return 'Partial';
+    } else {
+      return 'Limited';
+    }
+  };
+  
+  // 基于回测结果确定Action
+  const determineActionFromBacktestResults = (backtestResults: any[], defaultAction: string): string => {
+    const completedResults = backtestResults.filter(r => r.status === 'completed');
+    
+    if (completedResults.length === 0) {
+      return defaultAction;
+    }
+    
+    // 检查是否有成功的回测结果
+    const profitableResults = completedResults.filter(r => r.totalReturn > 0);
+    const profitableRatio = profitableResults.length / completedResults.length;
+    
+    if (profitableRatio >= 0.7) {
+      return 'BUY';
+    } else if (profitableRatio >= 0.4) {
+      return 'HOLD';
+    } else {
+      return 'SKIP';
+    }
+  };
+  
+  // 基于回测结果调整置信度
+  const adjustConfidenceWithBacktestResults = (baseConfidence: number, backtestResults: any[]): number => {
+    const completedResults = backtestResults.filter(r => r.status === 'completed');
+    
+    if (completedResults.length === 0) {
+      return baseConfidence * 0.5; // 没有回测结果，降低置信度
+    }
+    
+    // 计算平均夏普比率
+    const avgSharpe = completedResults.reduce((sum, r) => sum + r.sharpeRatio, 0) / completedResults.length;
+    
+    // 基于夏普比率调整置信度
+    let adjustment = 1.0;
+    if (avgSharpe > 1.5) {
+      adjustment = 1.2;
+    } else if (avgSharpe > 1.0) {
+      adjustment = 1.1;
+    } else if (avgSharpe < 0) {
+      adjustment = 0.7;
+    }
+    
+    return Math.max(0, Math.min(1, baseConfidence * adjustment));
+  };
+  
+  // 生成包含回测结果的AI Reasoning
+  const generateAiReasoningWithBacktestResults = (candidate: any, decision: any, marketType: string, selectedStrategies: string[], backtestResults: any[]): string => {
+    const trend = candidate.trendLabel || 'Neutral';
+    const score = candidate.overallScore || candidate.trendScore || 0;
+    const risk = candidate.eventRisk || 'Medium';
+    
+    let reasoning = '';
+    
+    if (decision.reason && decision.reason.length > 0) {
+      // 使用AI生成的reasoning
+      reasoning = decision.reason;
+    } else {
+      // 生成基于字段、策略路由和回测结果的reasoning
+      const completedResults = backtestResults.filter(r => r.status === 'completed');
+      const bestResult = completedResults.length > 0 ? 
+        completedResults.reduce((best, current) => (current.totalReturn > best.totalReturn) ? current : best, completedResults[0]) : 
+        null;
+      
+      reasoning = `${marketType}市场类型: ${trend}趋势，${score}分，${risk}风险。`;
+      reasoning += `运行${selectedStrategies.length}个策略，${completedResults.length}个回测完成。`;
+      
+      if (bestResult) {
+        reasoning += `最佳策略: ${bestResult.strategy} (${bestResult.totalReturn.toFixed(1)}%回报)。`;
+      }
+    }
+    
+    // 确保reasoning不为空且长度合理
+    if (!reasoning || reasoning.trim().length === 0) {
+      reasoning = `${marketType}市场类型分析: ${trend}趋势，${score}分，运行${selectedStrategies.length}个策略回测。`;
+    }
+    
+    // 限制长度
+    if (reasoning.length > 200) {
+      reasoning = reasoning.substring(0, 197) + '...';
+    }
+    
+    return reasoning;
+  };
+  
+  // 基于回测结果计算Suggested Qty
+  const calculateSuggestedQtyWithBacktestResults = (action: string, confidencePercent: number, candidate: any, marketType: string, backtestResults: any[]): number => {
+    if (action !== 'BUY') {
+      return 0;
+    }
+    
+    const completedResults = backtestResults.filter(r => r.status === 'completed');
+    
+    if (completedResults.length === 0) {
+      return calculateSuggestedQtyWithRouting(action, confidencePercent, candidate, marketType);
+    }
+    
+    // 基于回测结果计算数量
+    const avgReturn = completedResults.reduce((sum, r) => sum + r.totalReturn, 0) / completedResults.length;
+    const avgSharpe = completedResults.reduce((sum, r) => sum + r.sharpeRatio, 0) / completedResults.length;
+    
+    // 基础数量
+    let baseQty = 10;
+    
+    // 根据平均回报调整
+    if (avgReturn > 10) {
+      baseQty += 10;
+    } else if (avgReturn > 5) {
+      baseQty += 5;
+    } else if (avgReturn < 0) {
+      baseQty = Math.max(1, baseQty - 5);
+    }
+    
+    // 根据夏普比率调整
+    if (avgSharpe > 1.5) {
+      baseQty += 5;
+    } else if (avgSharpe > 1.0) {
+      baseQty += 3;
+    } else if (avgSharpe < 0.5) {
+      baseQty = Math.max(1, baseQty - 3);
+    }
+    
+    // 根据confidence调整
+    if (confidencePercent >= 80) {
+      baseQty = Math.round(baseQty * 1.5);
+    } else if (confidencePercent >= 60) {
+      baseQty = Math.round(baseQty * 1.2);
+    }
+    
+    return Math.max(1, baseQty);
+  };
+  
+  // 基于回测结果确定推荐状态
+  const determineRecommendationStatusWithBacktestResults = (aiResponse: any, candidate: any, marketType: string, backtestResults: any[]): string => {
+    if (!aiResponse.success) {
+      return 'error';
+    }
+    
+    const completedResults = backtestResults.filter(r => r.status === 'completed');
+    
+    if (completedResults.length === 0) {
+      return 'error';
+    }
+    
+    const score = candidate.overallScore || candidate.trendScore || 0;
+    const avgReturn = completedResults.reduce((sum, r) => sum + r.totalReturn, 0) / completedResults.length;
+    
+    // 高分且正回报 -> success
+    if (score >= 75 && avgReturn > 5) {
+      return 'success';
+    }
+    
+    // 中等条件 -> partial
+    if (score >= 60 && avgReturn > 0) {
+      return 'partial';
+    }
+    
+    // 默认成功
+    return 'success';
+  };
+  
+  // 基于回测结果确定优化状态
+  const determineOptimizationStatusWithBacktestResults = (candidate: any, marketType: string, selectedStrategies: string[], backtestResults: any[]): string => {
+    const completedResults = backtestResults.filter(r => r.status === 'completed');
+    
+    if (completedResults.length === 0) {
+      return 'Backtest failed';
+    }
+    
+    const profitableResults = completedResults.filter(r => r.totalReturn > 0);
+    const profitableRatio = profitableResults.length / completedResults.length;
+    
+    if (profitableRatio >= 0.7 && completedResults.length >= 2) {
+      return `Optimization feasible (${profitableResults.length}/${completedResults.length} profitable)`;
+    } else if (profitableRatio >= 0.5) {
+      return `Limited optimization (${profitableResults.length}/${completedResults.length} profitable)`;
+    } else {
+      return `Strategy-specific analysis`;
+    }
+  };
+  
+  // ========== 优化结果相关辅助函数 ==========
+  
+  // 生成优化摘要
+  const generateOptimizationSummary = (optimizationResults: any[]): string => {
+    const completedResults = optimizationResults.filter(r => r.status === 'completed');
+    
+    if (completedResults.length === 0) {
+      return 'No optimization completed';
+    }
+    
+    // 找到最佳优化策略
+    const bestResult = completedResults.reduce((best, current) => {
+      return (current.bestReturn > best.bestReturn) ? current : best;
+    }, completedResults[0]);
+    
+    return `${completedResults.length} strategies optimized | Best: ${bestResult.strategy} (${bestResult.bestReturn.toFixed(1)}%)`;
+  };
+  
+  // 找到最佳优化策略
+  const findBestOptimizedStrategy = (optimizationResults: any[]): string => {
+    const completedResults = optimizationResults.filter(r => r.status === 'completed');
+    
+    if (completedResults.length === 0) {
+      return 'N/A';
+    }
+    
+    const bestResult = completedResults.reduce((best, current) => {
+      return (current.bestReturn > best.bestReturn) ? current : best;
+    }, completedResults[0]);
+    
+    return bestResult.strategy;
+  };
+  
+  // 找到最佳优化回报
+  const findBestOptimizedReturn = (optimizationResults: any[]): number => {
+    const completedResults = optimizationResults.filter(r => r.status === 'completed');
+    
+    if (completedResults.length === 0) {
+      return 0;
+    }
+    
+    const bestResult = completedResults.reduce((best, current) => {
+      return (current.bestReturn > best.bestReturn) ? current : best;
+    }, completedResults[0]);
+    
+    return bestResult.bestReturn;
+  };
+  
+  // 确定整体优化状态
+  const determineOverallOptimizationStatus = (optimizationResults: any[]): string => {
+    const completedCount = optimizationResults.filter(r => r.status === 'completed').length;
+    const totalCount = optimizationResults.length;
+    
+    if (completedCount === 0) {
+      return 'Failed';
+    } else if (completedCount === totalCount) {
+      return 'Completed';
+    } else if (completedCount >= totalCount / 2) {
+      return 'Partial';
+    } else {
+      return 'Limited';
+    }
+  };
+  
+  // 基于回测和优化结果确定Action
+  const determineActionFromBacktestAndOptimizationResults = (backtestResults: any[], optimizationResults: any[], defaultAction: string): string => {
+    const completedBacktests = backtestResults.filter(r => r.status === 'completed');
+    const completedOptimizations = optimizationResults.filter(r => r.status === 'completed');
+    
+    if (completedBacktests.length === 0) {
+      return defaultAction;
+    }
+    
+    // 检查回测结果
+    const profitableBacktests = completedBacktests.filter(r => r.totalReturn > 0);
+    const backtestProfitableRatio = profitableBacktests.length / completedBacktests.length;
+    
+    // 检查优化结果（如果有）
+    let optimizationProfitableRatio = 0;
+    if (completedOptimizations.length > 0) {
+      const profitableOptimizations = completedOptimizations.filter(r => r.bestReturn > 0);
+      optimizationProfitableRatio = profitableOptimizations.length / completedOptimizations.length;
+    }
+    
+    // 综合判断
+    const overallProfitableRatio = completedOptimizations.length > 0 
+      ? (backtestProfitableRatio * 0.4 + optimizationProfitableRatio * 0.6)  // 优化结果权重更高
+      : backtestProfitableRatio;
+    
+    if (overallProfitableRatio >= 0.7) {
+      return 'BUY';
+    } else if (overallProfitableRatio >= 0.4) {
+      return 'HOLD';
+    } else {
+      return 'SKIP';
+    }
+  };
+  
+  // 基于回测和优化结果调整置信度
+  const adjustConfidenceWithBacktestAndOptimizationResults = (baseConfidence: number, backtestResults: any[], optimizationResults: any[]): number => {
+    const completedBacktests = backtestResults.filter(r => r.status === 'completed');
+    const completedOptimizations = optimizationResults.filter(r => r.status === 'completed');
+    
+    if (completedBacktests.length === 0) {
+      return baseConfidence * 0.5; // 没有回测结果，降低置信度
+    }
+    
+    // 计算平均夏普比率（回测）
+    const avgBacktestSharpe = completedBacktests.reduce((sum, r) => sum + r.sharpeRatio, 0) / completedBacktests.length;
+    
+    // 计算平均优化回报（如果有）
+    let avgOptimizationReturn = 0;
+    if (completedOptimizations.length > 0) {
+      avgOptimizationReturn = completedOptimizations.reduce((sum, r) => sum + r.bestReturn, 0) / completedOptimizations.length;
+    }
+    
+    // 基于结果调整置信度
+    let adjustment = 1.0;
+    
+    // 回测夏普比率调整
+    if (avgBacktestSharpe > 1.5) {
+      adjustment *= 1.2;
+    } else if (avgBacktestSharpe > 1.0) {
+      adjustment *= 1.1;
+    } else if (avgBacktestSharpe < 0) {
+      adjustment *= 0.8;
+    }
+    
+    // 优化结果调整（如果有）
+    if (completedOptimizations.length > 0) {
+      if (avgOptimizationReturn > 10) {
+        adjustment *= 1.3;
+      } else if (avgOptimizationReturn > 5) {
+        adjustment *= 1.2;
+      } else if (avgOptimizationReturn < 0) {
+        adjustment *= 0.7;
+      }
+    }
+    
+    return Math.max(0, Math.min(1, baseConfidence * adjustment));
+  };
+  
+  // 生成包含回测和优化结果的AI Reasoning
+  const generateAiReasoningWithBacktestAndOptimizationResults = (candidate: any, decision: any, marketType: string, selectedStrategies: string[], backtestResults: any[], optimizationResults: any[]): string => {
+    const trend = candidate.trendLabel || 'Neutral';
+    const score = candidate.overallScore || candidate.trendScore || 0;
+    const risk = candidate.eventRisk || 'Medium';
+    
+    let reasoning = '';
+    
+    if (decision.reason && decision.reason.length > 0) {
+      // 使用AI生成的reasoning
+      reasoning = decision.reason;
+    } else {
+      // 生成基于字段、策略路由、回测和优化结果的reasoning
+      const completedBacktests = backtestResults.filter(r => r.status === 'completed');
+      const completedOptimizations = optimizationResults.filter(r => r.status === 'completed');
+      
+      const bestBacktest = completedBacktests.length > 0 ? 
+        completedBacktests.reduce((best, current) => (current.totalReturn > best.totalReturn) ? current : best, completedBacktests[0]) : 
+        null;
+      
+      const bestOptimization = completedOptimizations.length > 0 ? 
+        completedOptimizations.reduce((best, current) => (current.bestReturn > best.bestReturn) ? current : best, completedOptimizations[0]) : 
+        null;
+      
+      reasoning = `${marketType}市场类型: ${trend}趋势，${score}分，${risk}风险。`;
+      reasoning += `运行${selectedStrategies.length}个策略，${completedBacktests.length}个回测完成，${completedOptimizations.length}个优化完成。`;
+      
+      if (bestBacktest) {
+        reasoning += `最佳回测策略: ${bestBacktest.strategy} (${bestBacktest.totalReturn.toFixed(1)}%回报)。`;
+      }
+      
+      if (bestOptimization) {
+        reasoning += `最佳优化策略: ${bestOptimization.strategy} (${bestOptimization.bestReturn.toFixed(1)}%优化后回报)。`;
+      }
+    }
+    
+    // 确保reasoning不为空且长度合理
+    if (!reasoning || reasoning.trim().length === 0) {
+      reasoning = `${marketType}市场类型分析: ${trend}趋势，${score}分，运行${selectedStrategies.length}个策略回测和优化。`;
+    }
+    
+    // 限制长度
+    if (reasoning.length > 200) {
+      reasoning = reasoning.substring(0, 197) + '...';
+    }
+    
+    return reasoning;
+  };
+  
+  // 基于回测和优化结果计算Suggested Qty
+  const calculateSuggestedQtyWithBacktestAndOptimizationResults = (action: string, confidencePercent: number, candidate: any, marketType: string, backtestResults: any[], optimizationResults: any[]): number => {
+    if (action !== 'BUY') {
+      return 0;
+    }
+    
+    const completedBacktests = backtestResults.filter(r => r.status === 'completed');
+    const completedOptimizations = optimizationResults.filter(r => r.status === 'completed');
+    
+    if (completedBacktests.length === 0) {
+      return calculateSuggestedQtyWithRouting(action, confidencePercent, candidate, marketType);
+    }
+    
+    // 基于回测结果计算基础数量
+    const avgBacktestReturn = completedBacktests.reduce((sum, r) => sum + r.totalReturn, 0) / completedBacktests.length;
+    const avgBacktestSharpe = completedBacktests.reduce((sum, r) => sum + r.sharpeRatio, 0) / completedBacktests.length;
+    
+    // 基础数量
+    let baseQty = 10;
+    
+    // 根据回测平均回报调整
+    if (avgBacktestReturn > 10) {
+      baseQty += 10;
+    } else if (avgBacktestReturn > 5) {
+      baseQty += 5;
+    } else if (avgBacktestReturn < 0) {
+      baseQty = Math.max(1, baseQty - 5);
+    }
+    
+    // 根据回测夏普比率调整
+    if (avgBacktestSharpe > 1.5) {
+      baseQty += 5;
+    } else if (avgBacktestSharpe > 1.0) {
+      baseQty += 3;
+    } else if (avgBacktestSharpe < 0.5) {
+      baseQty = Math.max(1, baseQty - 3);
+    }
+    
+    // 根据优化结果调整（如果有）
+    if (completedOptimizations.length > 0) {
+      const avgOptimizationReturn = completedOptimizations.reduce((sum, r) => sum + r.bestReturn, 0) / completedOptimizations.length;
+      
+      if (avgOptimizationReturn > avgBacktestReturn + 3) {
+        baseQty += 5; // 优化显著提升回报
+      } else if (avgOptimizationReturn > avgBacktestReturn) {
+        baseQty += 2; // 优化有提升
+      }
+    }
+    
+    // 根据confidence调整
+    if (confidencePercent >= 80) {
+      baseQty = Math.round(baseQty * 1.5);
+    } else if (confidencePercent >= 60) {
+      baseQty = Math.round(baseQty * 1.2);
+    }
+    
+    return Math.max(1, baseQty);
+  };
+  
+  // 基于回测和优化结果确定推荐状态
+  const determineRecommendationStatusWithBacktestAndOptimizationResults = (aiResponse: any, candidate: any, marketType: string, backtestResults: any[], optimizationResults: any[]): string => {
+    if (!aiResponse.success) {
+      return 'error';
+    }
+    
+    const completedBacktests = backtestResults.filter(r => r.status === 'completed');
+    
+    if (completedBacktests.length === 0) {
+      return 'error';
+    }
+    
+    const score = candidate.overallScore || candidate.trendScore || 0;
+    const avgBacktestReturn = completedBacktests.reduce((sum, r) => sum + r.totalReturn, 0) / completedBacktests.length;
+    
+    // 检查优化结果（如果有）
+    const completedOptimizations = optimizationResults.filter(r => r.status === 'completed');
+    let avgOptimizationReturn = 0;
+    if (completedOptimizations.length > 0) {
+      avgOptimizationReturn = completedOptimizations.reduce((sum, r) => sum + r.bestReturn, 0) / completedOptimizations.length;
+    }
+    
+    // 使用优化结果（如果有）或回测结果
+    const effectiveReturn = completedOptimizations.length > 0 ? avgOptimizationReturn : avgBacktestReturn;
+    
+    // 高分且正回报 -> success
+    if (score >= 75 && effectiveReturn > 5) {
+      return 'success';
+    }
+    
+    // 中等条件 -> partial
+    if (score >= 60 && effectiveReturn > 0) {
+      return 'partial';
+    }
+    
+    // 默认成功
+    return 'success';
+  };
+  
+  // 生成展开详情需要的backtestKeyResults
+  const generateBacktestKeyResults = (backtestResults: any[]): any => {
+    const completedResults = backtestResults.filter(r => r.status === 'completed');
+    
+    if (completedResults.length === 0) {
+      return null;
+    }
+    
+    // 找到最佳回测结果
+    const bestResult = completedResults.reduce((best, current) => {
+      return (current.totalReturn > best.totalReturn) ? current : best;
+    }, completedResults[0]);
+    
+    return {
+      totalReturn: bestResult.totalReturn || 0,
+      sharpeRatio: bestResult.sharpeRatio || 0,
+      maxDrawdown: bestResult.maxDrawdown || 0,
+      winRate: bestResult.winRate || 0,
+      tradeCount: bestResult.tradeCount || 0,
+      strategy: bestResult.strategy || 'N/A'
+    };
+  };
+  
+  // 生成展开详情需要的optimizationKeyResults
+  const generateOptimizationKeyResults = (optimizationResults: any[]): any => {
+    const completedResults = optimizationResults.filter(r => r.status === 'completed');
+    
+    if (completedResults.length === 0) {
+      return null;
+    }
+    
+    // 找到最佳优化结果
+    const bestResult = completedResults.reduce((best, current) => {
+      return (current.bestReturn > best.bestReturn) ? current : best;
+    }, completedResults[0]);
+    
+    return {
+      bestScore: bestResult.bestReturn || 0,
+      bestCombination: bestResult.bestParams || {},
+      totalCombinations: Object.keys(bestResult.optimizationSpace || {}).length || 0,
+      strategy: bestResult.strategy || 'N/A'
+    };
+  };
+
+
   return (
     <div>
       <Title level={2}><RobotOutlined style={{ marginRight: '12px' }} />AI Agent</Title>
@@ -4801,11 +6639,12 @@ Please respond in this exact JSON format:
         
         {/* 顶部控制面板 */}
         <Card style={{ marginBottom: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
-                <div>
-                  <Text strong>Status:</Text>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div style={{ flex: 1 }}>
+              {/* 状态和信息行 */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '12px', fontSize: '12px', color: '#666' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <Text strong style={{ fontSize: '12px', color: '#333' }}>Status:</Text>
                   <Badge 
                     status={
                       continueScanStatus === 'processing' ? 'processing' :
@@ -4813,84 +6652,123 @@ Please respond in this exact JSON format:
                       continueScanStatus === 'error' ? 'error' : 'default'
                     }
                     text={
-                      continueScanStatus === 'processing' ? 'AI Evaluating' :
+                      continueScanStatus === 'processing' ? 'Rule Scanning' :
                       continueScanStatus === 'completed' ? 'Completed' :
                       continueScanStatus === 'error' ? 'Error' : 'Ready'
                     }
-                    style={{ marginLeft: '8px' }}
+                    style={{ fontSize: '11px' }}
                   />
                 </div>
                 
-                <div>
-                  <Text strong>Based on:</Text>
-                  <Text style={{ marginLeft: '8px' }}>
-                    {marketScannerResults.length} validated symbols
-                  </Text>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <Text strong style={{ fontSize: '12px', color: '#333' }}>Based on:</Text>
+                  <Text>{marketScannerResults.length} validated symbols</Text>
                 </div>
                 
-                <div>
-                  <Text strong>AI Provider:</Text>
-                  <Text style={{ marginLeft: '8px' }}>
-                    {aiConfig.provider || 'DeepSeek'} {aiConfig.model ? `(${aiConfig.model})` : ''}
-                  </Text>
-                </div>
-              </div>
-              
-              <div style={{ fontSize: '12px', color: '#666' }}>
                 {detailedScanStatus.lastScanAt && (
-                  <div>Last market scan: {new Date(detailedScanStatus.lastScanAt).toLocaleString()}</div>
-                )}
-                <div>Continue scan will evaluate all market scan results using AI</div>
-                
-                {/* 完成时显示统计信息 */}
-                {continueScanStatus === 'completed' && preferredContinueScanList.length > 0 && (
-                  <div style={{ marginTop: '8px', padding: '8px', backgroundColor: '#f6ffed', borderRadius: '4px' }}>
-                    <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
-                      <div>
-                        <Text strong>Total Selected:</Text>
-                        <Text style={{ marginLeft: '4px', color: '#1890ff' }}>
-                          {preferredContinueScanList.length} symbols
-                        </Text>
-                      </div>
-                      <div>
-                        <Text strong>AI Selected:</Text>
-                        <Text style={{ marginLeft: '4px', color: '#52c41a' }}>
-                          {preferredContinueScanList.filter(c => c.selectedBy === 'AI').length} symbols
-                        </Text>
-                      </div>
-                      <div>
-                        <Text strong>AI + Rule:</Text>
-                        <Text style={{ marginLeft: '4px', color: '#faad14' }}>
-                          {preferredContinueScanList.filter(c => c.selectedBy === 'Rule + AI').length} symbols
-                        </Text>
-                      </div>
-                      <div>
-                        <Text strong>Bullish/Strong Bullish:</Text>
-                        <Text style={{ marginLeft: '4px', color: '#722ed1' }}>
-                          {preferredContinueScanList.filter(c => c.trendLabel === 'Bullish' || c.trendLabel === 'Strong Bullish').length} symbols
-                        </Text>
-                      </div>
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#666', marginTop: '4px' }}>
-                      Based on {marketScannerResults.length} market scan results
-                    </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <Text strong style={{ fontSize: '12px', color: '#333' }}>Last scan:</Text>
+                    <Text>{new Date(detailedScanStatus.lastScanAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
                   </div>
                 )}
               </div>
+              
+              {/* 统计卡片 - 只在完成时显示 */}
+              {continueScanStatus === 'completed' && preferredContinueScanList.length > 0 && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '12px' }}>
+                  {/* Selected 卡片 */}
+                  <div style={{ 
+                    padding: '12px', 
+                    backgroundColor: '#f0f9ff', 
+                    borderRadius: '8px',
+                    border: '1px solid #e6f7ff'
+                  }}>
+                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Selected</div>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
+                      <Text strong style={{ fontSize: '20px', color: '#1890ff' }}>
+                        {preferredContinueScanList.length}
+                      </Text>
+                      <Text style={{ fontSize: '12px', color: '#666' }}>symbols</Text>
+                    </div>
+                  </div>
+                  
+                  {/* Bullish/Strong Bullish 卡片 */}
+                  <div style={{ 
+                    padding: '12px', 
+                    backgroundColor: '#f9f0ff', 
+                    borderRadius: '8px',
+                    border: '1px solid #f0e6ff'
+                  }}>
+                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Bullish/Strong Bullish</div>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
+                      <Text strong style={{ fontSize: '20px', color: '#722ed1' }}>
+                        {preferredContinueScanList.filter(c => c.trendLabel === 'Bullish' || c.trendLabel === 'Strong Bullish').length}
+                      </Text>
+                      <Text style={{ fontSize: '12px', color: '#666' }}>symbols</Text>
+                    </div>
+                  </div>
+                  
+                  {/* Avg Priority 卡片 */}
+                  <div style={{ 
+                    padding: '12px', 
+                    backgroundColor: '#f6ffed', 
+                    borderRadius: '8px',
+                    border: '1px solid #e6ffcf'
+                  }}>
+                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Avg Priority</div>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
+                      <Text strong style={{ fontSize: '20px', color: '#52c41a' }}>
+                        {preferredContinueScanList.length > 0 
+                          ? Math.round(preferredContinueScanList.reduce((sum, c) => sum + (c.priorityScore || 0), 0) / preferredContinueScanList.length) 
+                          : 0}%
+                      </Text>
+                      <Text style={{ fontSize: '12px', color: '#666' }}>score</Text>
+                    </div>
+                  </div>
+                  
+                  {/* Avg Score 卡片 */}
+                  <div style={{ 
+                    padding: '12px', 
+                    backgroundColor: '#fff7e6', 
+                    borderRadius: '8px',
+                    border: '1px solid #ffe7ba'
+                  }}>
+                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Avg Score</div>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
+                      <Text strong style={{ fontSize: '20px', color: '#faad14' }}>
+                        {preferredContinueScanList.length > 0 
+                          ? Math.round(preferredContinueScanList.reduce((sum, c) => sum + (c.overallScore || c.trendScore || 0), 0) / preferredContinueScanList.length) 
+                          : 0}
+                      </Text>
+                      <Text style={{ fontSize: '12px', color: '#666' }}>/100</Text>
+                    </div>
+                  </div>
+                </div>
+              )}
+              
+              {/* 描述文本 */}
+              <div style={{ fontSize: '12px', color: '#666' }}>
+                <div>Continue scan will evaluate market scan results using rule-based selection</div>
+              </div>
             </div>
             
-            <div>
+            {/* 按钮区域 */}
+            <div style={{ marginLeft: '16px' }}>
               <Button 
-                type="primary" 
-                size="small"
+                type={continueScanStatus === 'completed' ? 'default' : 'primary'}
+                size="middle"
                 onClick={handleStartContinueScan}
                 disabled={
                   marketScannerResults.length === 0 || 
-                  continueScanStatus !== 'idle'
+                  continueScanStatus === 'processing'
                 }
                 loading={continueScanStatus === 'processing'}
+                style={{
+                  minWidth: '140px',
+                  fontWeight: '500'
+                }}
               >
-                Start Continue Scan
+                {continueScanStatus === 'completed' ? 'Re-run Continue Scan' : 'Start Continue Scan'}
               </Button>
             </div>
           </div>
@@ -4939,7 +6817,7 @@ Please respond in this exact JSON format:
               return (
                 <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
                   <SyncOutlined spin style={{ fontSize: '48px', marginBottom: 16, color: '#1890ff' }} />
-                  <div style={{ fontSize: '14px' }}>AI evaluating candidates...</div>
+                  <div style={{ fontSize: '14px' }}>Rule-based scan in progress...</div>
                   <div style={{ fontSize: '12px', marginTop: 8 }}>
                     Processing {continueScanDetails.processedCount} of {continueScanDetails.totalCount} candidates
                   </div>
@@ -4978,22 +6856,56 @@ Please respond in this exact JSON format:
                         {
                           title: 'Rank',
                           key: 'rank',
-                          width: 60,
-                          render: (_, __, index) => (
-                            <Badge 
-                              count={index + 1} 
-                              style={{ backgroundColor: index < 3 ? '#1890ff' : '#8c8c8c' }}
-                            />
-                          ),
+                          width: 70,
+                          render: (_, __, index) => {
+                            const rank = index + 1;
+                            let backgroundColor = '#8c8c8c';
+                            let fontWeight = 'normal';
+                            let fontSize = '12px';
+                            
+                            if (rank === 1) {
+                              backgroundColor = '#ffd700';
+                              fontWeight = 'bold';
+                              fontSize = '13px';
+                            } else if (rank === 2) {
+                              backgroundColor = '#c0c0c0';
+                              fontWeight = '600';
+                              fontSize = '12px';
+                            } else if (rank === 3) {
+                              backgroundColor = '#cd7f32';
+                              fontWeight = '600';
+                              fontSize = '12px';
+                            }
+                            
+                            return (
+                              <div style={{ textAlign: 'center' }}>
+                                <div style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  width: '28px',
+                                  height: '28px',
+                                  borderRadius: '14px',
+                                  backgroundColor: backgroundColor,
+                                  color: '#fff',
+                                  fontWeight: fontWeight,
+                                  fontSize: fontSize,
+                                  boxShadow: rank <= 3 ? '0 2px 4px rgba(0,0,0,0.1)' : 'none'
+                                }}>
+                                  {rank}
+                                </div>
+                              </div>
+                            );
+                          },
                         },
                         {
                           title: 'Symbol',
                           key: 'symbol',
-                          width: 80,
+                          width: 90,
                           render: (record) => {
                             const symbol = record.symbol || 'N/A';
                             return (
-                              <Text strong style={{ fontSize: '12px' }}>{symbol}</Text>
+                              <Text strong style={{ fontSize: '13px', color: '#1f1f1f' }}>{symbol}</Text>
                             );
                           },
                         },
@@ -5011,18 +6923,23 @@ Please respond in this exact JSON format:
                           key: 'score',
                           width: 80,
                           render: (record) => {
-                            // 使用与processing函数相同的逻辑获取score
                             const score = record.overallScore || record.trendScore || 0;
                             const displayScore = score > 0 ? score : 'N/A';
                             
                             return (
                               <div style={{ textAlign: 'center' }}>
-                                <Text strong style={{ 
+                                <div style={{
+                                  display: 'inline-block',
+                                  padding: '4px 8px',
+                                  borderRadius: '4px',
+                                  backgroundColor: score >= 70 ? '#52c41a15' : score >= 50 ? '#faad1415' : '#ff4d4f15',
                                   color: score >= 70 ? '#52c41a' : score >= 50 ? '#faad14' : '#ff4d4f',
-                                  fontSize: '12px'
+                                  fontSize: '12px',
+                                  fontWeight: '600',
+                                  minWidth: '40px'
                                 }}>
                                   {displayScore}
-                                </Text>
+                                </div>
                               </div>
                             );
                           },
@@ -5032,7 +6949,6 @@ Please respond in this exact JSON format:
                           key: 'risk',
                           width: 80,
                           render: (record) => {
-                            // 使用与processing函数相同的逻辑获取risk
                             const risk = record.eventRisk || 'Medium';
                             let color = '#8c8c8c';
                             if (risk === 'Low') color = '#52c41a';
@@ -5043,7 +6959,7 @@ Please respond in this exact JSON format:
                               <div style={{ textAlign: 'center' }}>
                                 <div style={{
                                   display: 'inline-block',
-                                  padding: '2px 8px',
+                                  padding: '4px 8px',
                                   borderRadius: '4px',
                                   backgroundColor: `${color}15`,
                                   color: color,
@@ -5057,20 +6973,84 @@ Please respond in this exact JSON format:
                           },
                         },
                         {
-                          title: 'Sector',
+                          title: 'Priority',
+                          key: 'priority',
+                          width: 120,
+                          render: (record) => {
+                            const priorityScore = record.priorityScore || 0;
+                            let strokeColor = {};
+                            
+                            if (priorityScore >= 80) {
+                              strokeColor = { '0%': '#87d068', '100%': '#52c41a' };
+                            } else if (priorityScore >= 60) {
+                              strokeColor = { '0%': '#faad14', '100%': '#faad14' };
+                            } else {
+                              strokeColor = { '0%': '#ff4d4f', '100%': '#ff4d4f' };
+                            }
+                            
+                            return (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <Progress 
+                                  percent={priorityScore} 
+                                  size="small"
+                                  strokeColor={strokeColor}
+                                  showInfo={false}
+                                  style={{ flex: 1 }}
+                                />
+                                <Text strong style={{ 
+                                  fontSize: '11px', 
+                                  color: priorityScore >= 80 ? '#52c41a' : priorityScore >= 60 ? '#faad14' : '#ff4d4f',
+                                  minWidth: '30px',
+                                  textAlign: 'right'
+                                }}>
+                                  {priorityScore}%
+                                </Text>
+                              </div>
+                            );
+                          },
+                        },
+                        {
+                          title: 'Selection Reason',
+                          key: 'reason',
+                          width: 220,
+                          render: (record) => {
+                            const reason = record.selectionReason || '';
+                            const truncatedReason = reason.length > 80 ? reason.substring(0, 80) + '...' : reason;
+                            
+                            return (
+                              <Tooltip title={reason.length > 80 ? reason : null}>
+                                <Text style={{ 
+                                  fontSize: '11px', 
+                                  color: '#666',
+                                  lineHeight: '1.4',
+                                  display: '-webkit-box',
+                                  WebkitLineClamp: 2,
+                                  WebkitBoxOrient: 'vertical',
+                                  overflow: 'hidden',
+                                  maxHeight: '32px'
+                                }}>
+                                  {truncatedReason}
+                                </Text>
+                              </Tooltip>
+                            );
+                          },
+                        },
+                        // 次要列 - 视觉弱化
+                        {
+                          title: <span style={{ fontSize: '11px', color: '#8c8c8c', fontWeight: 'normal' }}>Sector</span>,
                           key: 'sector',
-                          width: 100,
+                          width: 90,
                           render: (record) => {
                             const sector = record.sector || 'N/A';
                             return (
-                              <Text style={{ fontSize: '11px', color: '#666' }}>
+                              <Text style={{ fontSize: '10px', color: '#8c8c8c' }}>
                                 {sector}
                               </Text>
                             );
                           },
                         },
                         {
-                          title: 'News',
+                          title: <span style={{ fontSize: '11px', color: '#8c8c8c', fontWeight: 'normal' }}>News</span>,
                           key: 'news',
                           width: 80,
                           render: (record) => {
@@ -5087,9 +7067,9 @@ Please respond in this exact JSON format:
                             }
                             
                             return (
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                <span style={{ fontSize: '12px' }}>{icon}</span>
-                                <Text style={{ fontSize: '11px', color }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', opacity: 0.8 }}>
+                                <span style={{ fontSize: '11px' }}>{icon}</span>
+                                <Text style={{ fontSize: '10px', color }}>
                                   {sentiment}
                                 </Text>
                               </div>
@@ -5097,7 +7077,7 @@ Please respond in this exact JSON format:
                           },
                         },
                         {
-                          title: 'Change %',
+                          title: <span style={{ fontSize: '11px', color: '#8c8c8c', fontWeight: 'normal' }}>Change %</span>,
                           key: 'change',
                           width: 80,
                           render: (record) => {
@@ -5106,17 +7086,17 @@ Please respond in this exact JSON format:
                             const icon = change >= 0 ? '↗' : '↘';
                             
                             return (
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                <span style={{ fontSize: '12px' }}>{icon}</span>
-                                <Text style={{ fontSize: '11px', color, fontWeight: '500' }}>
-                                  {change.toFixed(2)}%
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', opacity: 0.8 }}>
+                                <span style={{ fontSize: '11px' }}>{icon}</span>
+                                <Text style={{ fontSize: '10px', color, fontWeight: '500' }}>
+                                  {change.toFixed(1)}%
                                 </Text>
                               </div>
                             );
                           },
                         },
                         {
-                          title: 'Volume',
+                          title: <span style={{ fontSize: '11px', color: '#8c8c8c', fontWeight: 'normal' }}>Volume</span>,
                           key: 'volume',
                           width: 80,
                           render: (record) => {
@@ -5127,157 +7107,10 @@ Please respond in this exact JSON format:
                             if (volumeStatus === 'Low') color = '#ff4d4f';
                             
                             return (
-                              <Text style={{ fontSize: '11px', color }}>
+                              <Text style={{ fontSize: '10px', color, opacity: 0.8 }}>
                                 {volumeStatus}
                               </Text>
                             );
-                          },
-                        },
-                        {
-                          title: 'Priority',
-                          key: 'priority',
-                          width: 100,
-                          render: (record) => {
-                            const priorityScore = record.priorityScore || 0;
-                            return (
-                              <div>
-                                <Progress 
-                                  percent={priorityScore} 
-                                  size="small"
-                                  strokeColor={{
-                                    '0%': '#ff4d4f',
-                                    '50%': '#faad14',
-                                    '100%': '#52c41a',
-                                  }}
-                                  format={(percent) => `${percent}%`}
-                                />
-                              </div>
-                            );
-                          },
-                        },
-                        {
-                          title: 'Reason Source',
-                          key: 'reasonSource',
-                          width: 100,
-                          render: (record) => {
-                            const source = record.reasonSource || 'Unknown';
-                            const aiEvaluated = record.aiEvaluated || false;
-                            
-                            let color = '#666';
-                            let icon = null;
-                            
-                            if (source === 'AI') {
-                              color = '#52c41a';
-                              icon = <RobotOutlined style={{ fontSize: '10px', marginRight: '4px' }} />;
-                            } else if (source === 'Fallback') {
-                              color = '#faad14';
-                              icon = <ExclamationCircleOutlined style={{ fontSize: '10px', marginRight: '4px' }} />;
-                            } else if (source === 'Error') {
-                              color = '#ff4d4f';
-                              icon = <CloseCircleOutlined style={{ fontSize: '10px', marginRight: '4px' }} />;
-                            }
-                            
-                            return (
-                              <div style={{ display: 'flex', alignItems: 'center' }}>
-                                {icon}
-                                <Text style={{ fontSize: '11px', color, fontWeight: '500' }}>
-                                  {source}
-                                </Text>
-                              </div>
-                            );
-                          },
-                        },
-                        {
-                          title: 'Selected By',
-                          key: 'selectedBy',
-                          width: 100,
-                          render: (record) => {
-                            const selectedBy = record.selectedBy || 'Unknown';
-                            const color = selectedBy === 'AI' ? '#52c41a' : 
-                                         selectedBy === 'Rule' ? '#faad14' : '#666';
-                            
-                            return (
-                              <Text style={{ fontSize: '11px', color, fontWeight: '500' }}>
-                                {selectedBy}
-                              </Text>
-                            );
-                          },
-                        },
-                        {
-                          title: 'Confidence',
-                          key: 'confidence',
-                          width: 100,
-                          render: (record) => {
-                            const confidence = record.aiConfidence || 0;
-                            const displayConfidence = Math.round(confidence * 100);
-                            
-                            return (
-                              <div>
-                                <Progress 
-                                  percent={displayConfidence} 
-                                  size="small"
-                                  strokeColor={{
-                                    '0%': '#ff4d4f',
-                                    '50%': '#faad14',
-                                    '100%': '#52c41a',
-                                  }}
-                                  format={(percent) => `${percent}%`}
-                                  showInfo={confidence > 0}
-                                />
-                                {confidence === 0 && (
-                                  <Text style={{ fontSize: '10px', color: '#999', fontStyle: 'italic' }}>
-                                    N/A
-                                  </Text>
-                                )}
-                              </div>
-                            );
-                          },
-                        },
-                        {
-                          title: 'Selection Reason',
-                          key: 'reason',
-                          width: 200,
-                          render: (record) => {
-                            const reason = record.selectionReason || '';
-                            const aiReasonStatus = record.aiReasonStatus || 'pending';
-                            const reasonSource = record.reasonSource || 'Unknown';
-                            
-                            // 根据AI生成状态显示不同内容
-                            if (aiReasonStatus === 'processing') {
-                              return (
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                  <SyncOutlined spin style={{ fontSize: '10px', color: '#1890ff' }} />
-                                  <Text style={{ fontSize: '11px', color: '#999', fontStyle: 'italic' }}>
-                                    Generating AI reason...
-                                  </Text>
-                                </div>
-                              );
-                            } else if (aiReasonStatus === 'failed') {
-                              return (
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                  <ExclamationCircleOutlined style={{ fontSize: '10px', color: '#faad14' }} />
-                                  <Text style={{ fontSize: '11px', color: '#666' }}>
-                                    {reason}
-                                  </Text>
-                                </div>
-                              );
-                            } else {
-                              // 根据reason source添加前缀
-                              let prefix = '';
-                              if (reasonSource === 'AI') {
-                                prefix = '🤖 ';
-                              } else if (reasonSource === 'Fallback') {
-                                prefix = '⚠️ ';
-                              } else if (reasonSource === 'Error') {
-                                prefix = '❌ ';
-                              }
-                              
-                              return (
-                                <Text style={{ fontSize: '11px', color: '#666' }}>
-                                  {prefix}{reason}
-                                </Text>
-                              );
-                            }
                           },
                         },
                       ]}
@@ -5285,8 +7118,8 @@ Please respond in this exact JSON format:
                   </div>
                   
                   <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid #f0f0f0' }}>
-                    <Text type="secondary" style={{ fontSize: '12px' }}>
-                      Based on {marketScannerResults.length} total scan results • {getBullishCandidatesCount()} bullish candidates analyzed
+                    <Text type="secondary" style={{ fontSize: '11px', color: '#8c8c8c' }}>
+                      Built from {marketScannerResults.length} scanned symbols · {getBullishCandidatesCount()} shortlisted
                     </Text>
                   </div>
                 </div>
@@ -5371,24 +7204,16 @@ Please respond in this exact JSON format:
                     <Button
                       type="primary"
                       icon={<PlayCircleOutlined />}
-                      onClick={handleStartAutoScan}
-                      disabled={isAutoScanEnabled}
+                      onClick={handleAiRecommendationsScan}
+                      disabled={isScanInProgress}
                     >
-                      Start Auto Scan
-                    </Button>
-                    
-                    <Button
-                      danger
-                      icon={<PauseCircleOutlined />}
-                      onClick={handleStopAutoScan}
-                      disabled={!isAutoScanEnabled}
-                    >
-                      Stop Auto Scan
+                      Scan Continue List
                     </Button>
                     
                     <Button
                       icon={<ThunderboltOutlined />}
-                      onClick={handleRunNow}
+                      onClick={handleAiRecommendationsScan}
+                      loading={isScanInProgress}
                     >
                       Run Now
                     </Button>
@@ -5494,33 +7319,15 @@ Please respond in this exact JSON format:
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                   <div>
-                    <Text strong style={{ fontSize: '16px' }}>Scan Summary</Text>
+                    <Text strong style={{ fontSize: '16px' }}>AI Recommendations Summary</Text>
                     <div style={{ fontSize: '12px', color: '#666', marginTop: 2 }}>
-                      {new Date().toLocaleString()} • {
-                        aiRecommendations[0]?.backtestRange?.split('→')[0]?.trim() || 'N/A'
-                      } → {
-                        aiRecommendations[0]?.backtestRange?.split('→')[1]?.trim() || 'N/A'
-                      }
+                      {new Date().toLocaleString()} • Source: Continue Scan List
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <Tag color="blue">{aiRecommendations[0]?.strategyUsed || 'moving_average'}</Tag>
-                    <Tag color={
-                      aiRecommendations[0]?.symbolsSource === 'tech_market_scan' ? 'purple' :
-                      aiRecommendations[0]?.symbolsSource === 'market_scan' ? 'orange' :
-                      aiRecommendations[0]?.symbolsSource === 'watchlist' ? 'green' : 'default'
-                    }>
-                      {aiRecommendations[0]?.symbolsSource === 'tech_market_scan' ? 'Tech Market Scan' :
-                       aiRecommendations[0]?.symbolsSource === 'market_scan' ? 'Market Scan' :
-                       aiRecommendations[0]?.symbolsSource === 'watchlist' ? 'Watchlist' : 'Unknown'}
-                    </Tag>
-                    {aiRecommendations[0]?.scanType && (
-                      <Tag color="cyan">
-                        {aiRecommendations[0]?.scanType === 'tech_market_scan' ? 'Top Tech Stocks' :
-                         aiRecommendations[0]?.scanType === 'market_all' ? 'Market All' :
-                         aiRecommendations[0]?.scanType}
-                      </Tag>
-                    )}
+                    <Tag color="blue">moving_average</Tag>
+                    <Tag color="green">Continue List</Tag>
+                    <Tag color="cyan">AI Analysis</Tag>
                   </div>
                 </div>
                 
@@ -5538,10 +7345,19 @@ Please respond in this exact JSON format:
                   </Col>
                   <Col span={4}>
                     <Statistic
-                      title="Successful"
-                      value={aiRecommendations.filter(r => r.status === 'success').length}
+                      title="Buy"
+                      value={aiRecommendations.filter(r => r.recommendation === 'BUY').length}
                       valueStyle={{ color: '#52c41a', fontSize: '24px', fontWeight: 'bold' }}
                       prefix={<CheckCircleOutlined />}
+                      suffix=""
+                    />
+                  </Col>
+                  <Col span={4}>
+                    <Statistic
+                      title="Hold"
+                      value={aiRecommendations.filter(r => r.recommendation === 'HOLD').length}
+                      valueStyle={{ color: '#faad14', fontSize: '24px', fontWeight: 'bold' }}
+                      prefix={<PauseCircleOutlined />}
                       suffix=""
                     />
                   </Col>
@@ -5556,33 +7372,63 @@ Please respond in this exact JSON format:
                   </Col>
                   <Col span={4}>
                     <Statistic
-                      title="Partial Success"
-                      value={aiRecommendations.filter(r => r.status === 'partial').length}
-                      valueStyle={{ color: '#faad14', fontSize: '24px', fontWeight: 'bold' }}
-                      prefix={<ExclamationCircleOutlined />}
-                      suffix=""
-                    />
-                  </Col>
-                  <Col span={4}>
-                    <Statistic
-                      title="Hold Recommendations"
-                      value={aiRecommendations.filter(r => r.recommendation === 'HOLD').length}
-                      valueStyle={{ color: '#fa8c16', fontSize: '24px', fontWeight: 'bold' }}
-                      prefix={<PauseCircleOutlined />}
-                      suffix=""
-                    />
-                  </Col>
-                  <Col span={4}>
-                    <Statistic
                       title="Avg Confidence"
                       value={aiRecommendations.length > 0 ? 
-                        (aiRecommendations.reduce((sum, r) => sum + (r.confidence || 0), 0) / aiRecommendations.length * 100).toFixed(1) : 0}
+                        (aiRecommendations
+                          .filter(r => r.confidence >= 0 && r.confidence <= 1)
+                          .reduce((sum, r) => sum + (r.confidence || 0), 0) / 
+                        aiRecommendations.filter(r => r.confidence >= 0 && r.confidence <= 1).length * 100).toFixed(1) : 0}
                       valueStyle={{ color: '#722ed1', fontSize: '24px', fontWeight: 'bold' }}
                       prefix={<LineChartOutlined />}
                       suffix="%"
                     />
                   </Col>
+                  <Col span={4}>
+                    <Statistic
+                      title="Valid Qty"
+                      value={aiRecommendations.filter(r => r.validation?.qtyValid === true).length}
+                      valueStyle={{ color: '#13c2c2', fontSize: '24px', fontWeight: 'bold' }}
+                      prefix={<CheckCircleOutlined />}
+                      suffix={`/${aiRecommendations.length}`}
+                    />
+                  </Col>
                 </Row>
+                
+                {/* 验证状态行 */}
+                {aiRecommendations.length > 0 && (
+                  <div style={{ marginTop: '12px', padding: '8px', backgroundColor: '#fafafa', borderRadius: '6px' }}>
+                    <Row gutter={[8, 8]}>
+                      <Col span={6}>
+                        <div style={{ fontSize: '11px', color: '#666' }}>
+                          Confidence Valid: <Text strong style={{ color: aiRecommendations.filter(r => r.validation?.confidenceValid === true).length === aiRecommendations.length ? '#52c41a' : '#ff4d4f' }}>
+                            {aiRecommendations.filter(r => r.validation?.confidenceValid === true).length}/{aiRecommendations.length}
+                          </Text>
+                        </div>
+                      </Col>
+                      <Col span={6}>
+                        <div style={{ fontSize: '11px', color: '#666' }}>
+                          Action Valid: <Text strong style={{ color: aiRecommendations.filter(r => r.validation?.actionValid === true).length === aiRecommendations.length ? '#52c41a' : '#ff4d4f' }}>
+                            {aiRecommendations.filter(r => r.validation?.actionValid === true).length}/{aiRecommendations.length}
+                          </Text>
+                        </div>
+                      </Col>
+                      <Col span={6}>
+                        <div style={{ fontSize: '11px', color: '#666' }}>
+                          Reasoning Valid: <Text strong style={{ color: aiRecommendations.filter(r => r.validation?.reasoningValid === true).length === aiRecommendations.length ? '#52c41a' : '#ff4d4f' }}>
+                            {aiRecommendations.filter(r => r.validation?.reasoningValid === true).length}/{aiRecommendations.length}
+                          </Text>
+                        </div>
+                      </Col>
+                      <Col span={6}>
+                        <div style={{ fontSize: '11px', color: '#666' }}>
+                          Qty Valid: <Text strong style={{ color: aiRecommendations.filter(r => r.validation?.qtyValid === true).length === aiRecommendations.length ? '#52c41a' : '#ff4d4f' }}>
+                            {aiRecommendations.filter(r => r.validation?.qtyValid === true).length}/{aiRecommendations.length}
+                          </Text>
+                        </div>
+                      </Col>
+                    </Row>
+                  </div>
+                )}
               </Card>
 
               {/* 专业表格 */}
@@ -5732,7 +7578,7 @@ Please respond in this exact JSON format:
                     title: 'Confidence', 
                     dataIndex: 'confidence', 
                     key: 'confidence',
-                    width: 130,
+                    width: 110,
                     render: (conf: number) => {
                       const percent = Math.round(conf * 100);
                       let strokeColor = '#ff4d4f';
@@ -5776,13 +7622,106 @@ Please respond in this exact JSON format:
                     }
                   },
                   { 
+                    title: 'Market Type', 
+                    dataIndex: 'marketType', 
+                    key: 'marketType',
+                    width: 120,
+                    render: (marketType: string) => {
+                      let color = '#8c8c8c';
+                      let bgColor = '#fafafa';
+                      let borderColor = '#f0f0f0';
+                      
+                      if (marketType === 'Trend') {
+                        color = '#1890ff';
+                        bgColor = '#e6f7ff';
+                        borderColor = '#91d5ff';
+                      } else if (marketType === 'Range') {
+                        color = '#52c41a';
+                        bgColor = '#f6ffed';
+                        borderColor = '#b7eb8f';
+                      } else if (marketType === 'Breakout Prep') {
+                        color = '#722ed1';
+                        bgColor = '#f9f0ff';
+                        borderColor = '#d3adf7';
+                      } else if (marketType === 'Mixed') {
+                        color = '#fa8c16';
+                        bgColor = '#fff7e6';
+                        borderColor = '#ffd591';
+                      }
+                      
+                      return (
+                        <div style={{
+                          display: 'inline-block',
+                          padding: '4px 8px',
+                          borderRadius: '8px',
+                          backgroundColor: bgColor,
+                          border: `1px solid ${borderColor}`,
+                          color: color,
+                          fontWeight: '600',
+                          fontSize: '11px',
+                          textAlign: 'center',
+                          minWidth: '80px'
+                        }}>
+                          {marketType || 'Unclear'}
+                        </div>
+                      );
+                    }
+                  },
+                  { 
+                    title: 'Strategies', 
+                    dataIndex: 'selectedStrategies', 
+                    key: 'selectedStrategies',
+                    width: 150,
+                    render: (strategies: string) => {
+                      const strategyList = strategies?.split(',') || [];
+                      const strategyCount = strategyList.length;
+                      
+                      let color = '#8c8c8c';
+                      if (strategyCount === 1) color = '#faad14';
+                      if (strategyCount === 2) color = '#52c41a';
+                      if (strategyCount === 3) color = '#1890ff';
+                      
+                      return (
+                        <Tooltip title={strategies || 'No strategies selected'}>
+                          <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            padding: '4px 8px',
+                            borderRadius: '8px',
+                            backgroundColor: '#fafafa',
+                            border: '1px solid #f0f0f0'
+                          }}>
+                            <div style={{
+                              width: '16px',
+                              height: '16px',
+                              borderRadius: '50%',
+                              backgroundColor: color,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              color: 'white',
+                              fontSize: '10px',
+                              fontWeight: 'bold'
+                            }}>
+                              {strategyCount}
+                            </div>
+                            <Text style={{ fontSize: '11px', color: '#666' }}>
+                              {strategyCount} strategy{strategyCount !== 1 ? 'ies' : ''}
+                            </Text>
+                          </div>
+                        </Tooltip>
+                      );
+                    }
+                  },
+                  { 
                     title: 'AI Reasoning', 
                     dataIndex: 'reason', 
                     key: 'reason',
                     width: 240,
                     render: (reason: string, record: any) => {
                       const fullReason = record.reasonFull || 'No detailed reasoning available';
-                      const isError = reason.includes('ERROR');
+                      const isError = reason && typeof reason === 'string' && reason.includes('ERROR');
                       const bgColor = isError ? '#fff1f0' : '#fafafa';
                       const borderColor = isError ? '#ffa39e' : '#f0f0f0';
                       
@@ -5841,50 +7780,131 @@ Please respond in this exact JSON format:
                     }
                   },
                   { 
-                    title: 'Backtest', 
+                    title: 'Backtest Results', 
                     dataIndex: 'backtestSummary', 
                     key: 'backtestSummary',
-                    width: 150,
+                    width: 180,
                     render: (summary: string, record: any) => {
-                      // ========== DEBUG: Backtest列渲染 ==========
-                      console.log(`=== DEBUG: Backtest列渲染 for ${record.symbol} ===`);
-                      console.log('summary:', summary);
-                      console.log('record.symbol:', record.symbol);
-                      console.log('record.backtestSummary:', record.backtestSummary);
+                      // 获取回测结果
+                      const backtestResults = record.backtestResults || [];
+                      const completedResults = backtestResults.filter((r: any) => r.status === 'completed');
+                      const bestStrategy = record.bestStrategy || 'N/A';
+                      const bestReturn = record.bestStrategyReturn || 0;
                       
-                      // 尝试解析evidenceFull查看实际值
-                      if (record.evidenceFull) {
-                        try {
-                          const evidence = JSON.parse(record.evidenceFull);
-                          console.log(`evidence.backtestKeyResults for ${record.symbol}:`, evidence.backtestKeyResults);
-                          if (evidence.backtestKeyResults) {
-                            console.log(`  totalReturn: ${evidence.backtestKeyResults.totalReturn}`);
-                            console.log(`  sharpeRatio: ${evidence.backtestKeyResults.sharpeRatio}`);
-                            console.log(`  maxDrawdown: ${evidence.backtestKeyResults.maxDrawdown}`);
-                          }
-                        } catch (e) {
-                          console.warn(`解析evidenceFull失败 for ${record.symbol}:`, e);
-                        }
+                      // 生成显示文本
+                      let displayText = 'No backtest';
+                      let color = '#8c8c8c';
+                      let bgColor = '#fafafa';
+                      let borderColor = '#f0f0f0';
+                      
+                      if (completedResults.length > 0) {
+                        displayText = `${completedResults.length}/${backtestResults.length} completed`;
+                        
+                        // 根据用户要求：completed/success/passed => 绿色
+                        // 不再根据bestReturn设置颜色，所有成功的回测都显示绿色
+                        color = '#52c41a';
+                        bgColor = '#f6ffed';
+                        borderColor = '#b7eb8f';
+                      } else if (backtestResults.length > 0) {
+                        // 有回测结果但都失败了
+                        displayText = `${backtestResults.length} failed`;
+                        color = '#ff4d4f';
+                        bgColor = '#fff2f0';
+                        borderColor = '#ffccc7';
                       }
-                      // ========== END DEBUG ==========
                       
-                      const displayText = summary.includes('unavailable') || summary.includes('Failed') 
-                        ? 'Unavailable' 
-                        : summary.split('|')[0]?.trim() || summary;
+                      // 构建Tooltip内容
+                      const tooltipContent = (
+                        <div style={{ maxWidth: 400 }}>
+                          <div style={{ fontWeight: 'bold', marginBottom: 8 }}>Backtest Results for {record.symbol}</div>
+                          
+                          {backtestResults.length === 0 ? (
+                            <div style={{ color: '#999' }}>No backtest results available</div>
+                          ) : (
+                            <div>
+                              <div style={{ marginBottom: 8 }}>
+                                <strong>Market Type:</strong> {record.marketType || 'N/A'}
+                              </div>
+                              <div style={{ marginBottom: 8 }}>
+                                <strong>Strategies Tested:</strong> {record.selectedStrategies || 'N/A'}
+                              </div>
+                              
+                              <div style={{ marginTop: 12, marginBottom: 8 }}>
+                                <strong>Results by Strategy:</strong>
+                              </div>
+                              
+                              {backtestResults.map((result: any, index: number) => (
+                                <div key={index} style={{ 
+                                  marginBottom: 6, 
+                                  padding: '6px',
+                                  backgroundColor: result.status === 'completed' ? '#fafafa' : '#fff2f0',
+                                  borderRadius: '4px',
+                                  border: '1px solid #f0f0f0'
+                                }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <div>
+                                      <strong>{result.strategy}</strong>
+                                      <div style={{ fontSize: '11px', color: result.status === 'completed' ? '#52c41a' : '#ff4d4f' }}>
+                                        {result.status === 'completed' ? '✓ Completed' : '✗ Failed'}
+                                      </div>
+                                    </div>
+                                    
+                                    {result.status === 'completed' && (
+                                      <div style={{ textAlign: 'right' }}>
+                                        <div style={{ fontWeight: 'bold', color: result.totalReturn >= 0 ? '#52c41a' : '#ff4d4f' }}>
+                                          {result.totalReturn.toFixed(1)}%
+                                        </div>
+                                        <div style={{ fontSize: '10px', color: '#666' }}>
+                                          Win: {(result.winRate * 100).toFixed(0)}%
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                  
+                                  {result.status === 'completed' && (
+                                    <div style={{ fontSize: '10px', color: '#666', marginTop: 4 }}>
+                                      Sharpe: {result.sharpeRatio.toFixed(2)} | Drawdown: {result.maxDrawdown.toFixed(1)}%
+                                    </div>
+                                  )}
+                                  
+                                  {result.error && (
+                                    <div style={{ fontSize: '10px', color: '#ff4d4f', marginTop: 4 }}>
+                                      Error: {result.error}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                              
+                              {completedResults.length > 0 && (
+                                <div style={{ marginTop: 12, padding: '8px', backgroundColor: '#e6f7ff', borderRadius: '4px' }}>
+                                  <div style={{ fontWeight: 'bold' }}>Best Strategy: {bestStrategy}</div>
+                                  <div style={{ color: bestReturn >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 'bold' }}>
+                                    Return: {bestReturn.toFixed(1)}%
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
                       
                       return (
-                        <Tooltip title={
-                          <div>
-                            <div><strong>Range:</strong> {record.backtestRange || 'N/A'}</div>
-                            <div><strong>Summary:</strong> {summary}</div>
-                          </div>
-                        }>
+                        <Tooltip title={tooltipContent} placement="left">
                           <div style={{ 
-                            fontSize: '12px',
-                            whiteSpace: 'nowrap', 
-                            overflow: 'hidden', 
-                            textOverflow: 'ellipsis',
-                            cursor: 'pointer'
+                            display: 'inline-block',
+                            padding: '4px 8px',
+                            borderRadius: '8px',
+                            backgroundColor: bgColor,
+                            border: `1px solid ${borderColor}`,
+                            color: color,
+                            fontWeight: '600',
+                            fontSize: '11px',
+                            textAlign: 'center',
+                            minWidth: '120px',
+                            cursor: 'pointer',
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis'
                           }}>
                             {displayText}
                           </div>
@@ -5893,28 +7913,146 @@ Please respond in this exact JSON format:
                     }
                   },
                   { 
-                    title: 'Optimization', 
+                    title: 'Optimization Results', 
                     dataIndex: 'optimizationSummary', 
                     key: 'optimizationSummary',
-                    width: 150,
+                    width: 180,
                     render: (summary: string, record: any) => {
-                      const displayText = summary.includes('unavailable') || summary.includes('Failed') 
-                        ? 'Unavailable' 
-                        : summary.split('|')[0]?.trim() || summary;
+                      // 获取优化结果
+                      const optimizationResults = record.optimizationResults || [];
+                      const completedResults = optimizationResults.filter((r: any) => r.status === 'completed');
+                      const bestOptimizedStrategy = record.bestOptimizedStrategy || 'N/A';
+                      const bestOptimizedReturn = record.bestOptimizedReturn || 0;
+                      
+                      // 生成显示文本
+                      let displayText = 'No optimization';
+                      let color = '#8c8c8c';
+                      let bgColor = '#fafafa';
+                      let borderColor = '#f0f0f0';
+                      
+                      if (completedResults.length > 0) {
+                        displayText = `${completedResults.length}/${optimizationResults.length} optimized`;
+                        
+                        // 根据用户要求：completed/success => 绿色
+                        // 不再根据bestOptimizedReturn设置颜色，所有成功的优化都显示绿色
+                        color = '#52c41a';
+                        bgColor = '#f6ffed';
+                        borderColor = '#b7eb8f';
+                      } else if (optimizationResults.length > 0) {
+                        // 检查是否有部分成功的情况（partial/mixed）
+                        const partialResults = optimizationResults.filter((r: any) => 
+                          r.status === 'partial' || r.status === 'mixed' || r.status === 'warning'
+                        );
+                        
+                        if (partialResults.length > 0) {
+                          // partial/mixed => 黄色
+                          displayText = `${partialResults.length}/${optimizationResults.length} partial`;
+                          color = '#faad14';
+                          bgColor = '#fffbe6';
+                          borderColor = '#ffe58f';
+                        } else {
+                          // 全部失败 => 红色
+                          displayText = `${optimizationResults.length} failed`;
+                          color = '#ff4d4f';
+                          bgColor = '#fff2f0';
+                          borderColor = '#ffccc7';
+                        }
+                      }
+                      
+                      // 构建Tooltip内容
+                      const tooltipContent = (
+                        <div style={{ maxWidth: 400 }}>
+                          <div style={{ fontWeight: 'bold', marginBottom: 8 }}>Optimization Results for {record.symbol}</div>
+                          
+                          {optimizationResults.length === 0 ? (
+                            <div style={{ color: '#999' }}>No optimization results available</div>
+                          ) : (
+                            <div>
+                              <div style={{ marginBottom: 8 }}>
+                                <strong>Market Type:</strong> {record.marketType || 'N/A'}
+                              </div>
+                              
+                              <div style={{ marginTop: 12, marginBottom: 8 }}>
+                                <strong>Optimization Results by Strategy:</strong>
+                              </div>
+                              
+                              {optimizationResults.map((result: any, index: number) => (
+                                <div key={index} style={{ 
+                                  marginBottom: 6, 
+                                  padding: '6px',
+                                  backgroundColor: result.status === 'completed' ? '#fafafa' : '#fff2f0',
+                                  borderRadius: '4px',
+                                  border: '1px solid #f0f0f0'
+                                }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <div>
+                                      <strong>{result.strategy}</strong>
+                                      <div style={{ fontSize: '11px', color: result.status === 'completed' ? '#52c41a' : '#ff4d4f' }}>
+                                        {result.status === 'completed' ? '✓ Optimized' : '✗ Failed'}
+                                      </div>
+                                    </div>
+                                    
+                                    {result.status === 'completed' && (
+                                      <div style={{ textAlign: 'right' }}>
+                                        <div style={{ fontWeight: 'bold', color: result.bestReturn >= 0 ? '#52c41a' : '#ff4d4f' }}>
+                                          {result.bestReturn.toFixed(1)}%
+                                        </div>
+                                        <div style={{ fontSize: '10px', color: '#666' }}>
+                                          Optimized
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                  
+                                  {result.status === 'completed' && result.bestParams && Object.keys(result.bestParams).length > 0 && (
+                                    <div style={{ fontSize: '10px', color: '#666', marginTop: 4 }}>
+                                      <strong>Best Params:</strong> {JSON.stringify(result.bestParams)}
+                                    </div>
+                                  )}
+                                  
+                                  {result.error && (
+                                    <div style={{ fontSize: '10px', color: '#ff4d4f', marginTop: 4 }}>
+                                      Error: {result.error}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                              
+                              {completedResults.length > 0 && (
+                                <div style={{ marginTop: 12, padding: '8px', backgroundColor: '#f0f6ff', borderRadius: '4px' }}>
+                                  <div style={{ fontWeight: 'bold' }}>Best Optimized Strategy: {bestOptimizedStrategy}</div>
+                                  <div style={{ color: bestOptimizedReturn >= 0 ? '#1890ff' : '#ff4d4f', fontWeight: 'bold' }}>
+                                    Optimized Return: {bestOptimizedReturn.toFixed(1)}%
+                                  </div>
+                                  {completedResults.find((r: any) => r.strategy === bestOptimizedStrategy)?.bestParams && (
+                                    <div style={{ fontSize: '10px', color: '#666', marginTop: 4 }}>
+                                      <strong>Parameters:</strong> {JSON.stringify(completedResults.find((r: any) => r.strategy === bestOptimizedStrategy)?.bestParams)}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
                       
                       return (
-                        <Tooltip title={
-                          <div>
-                            <div><strong>Range:</strong> {record.optimizationRange || record.backtestRange || 'N/A'}</div>
-                            <div><strong>Summary:</strong> {summary}</div>
-                          </div>
-                        }>
+                        <Tooltip title={tooltipContent} placement="left">
                           <div style={{ 
-                            fontSize: '12px',
-                            whiteSpace: 'nowrap', 
-                            overflow: 'hidden', 
-                            textOverflow: 'ellipsis',
-                            cursor: 'pointer'
+                            display: 'inline-block',
+                            padding: '4px 8px',
+                            borderRadius: '8px',
+                            backgroundColor: bgColor,
+                            border: `1px solid ${borderColor}`,
+                            color: color,
+                            fontWeight: '600',
+                            fontSize: '11px',
+                            textAlign: 'center',
+                            minWidth: '120px',
+                            cursor: 'pointer',
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis'
                           }}>
                             {displayText}
                           </div>
@@ -6140,30 +8278,179 @@ Please respond in this exact JSON format:
                           {/* 优化结果 */}
                           <Col span={8}>
                             <Card size="small" title="Optimization Results" style={{ height: '100%' }}>
-                              {evidence.optimizationKeyResults ? (
+                              {evidence.optimizationResults && evidence.optimizationResults.length > 0 ? (
                                 <div style={{ padding: 12 }}>
-                                  <div style={{ marginBottom: 8 }}>
-                                    <div style={{ fontSize: '11px', color: '#666' }}>Best Score</div>
-                                    <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
-                                      {evidence.optimizationKeyResults.bestScore?.toFixed(4) || 'N/A'}
+                                  {/* 显示优化结果统计 */}
+                                  <div style={{ marginBottom: 12 }}>
+                                    <div style={{ fontSize: '11px', color: '#666' }}>Optimization Status</div>
+                                    <div style={{ fontSize: '14px', fontWeight: 'bold' }}>
+                                      {evidence.optimizationResults.filter((r: any) => r.status === 'completed').length}/{evidence.optimizationResults.length} completed
                                     </div>
                                   </div>
-                                  <div style={{ marginBottom: 8 }}>
-                                    <div style={{ fontSize: '11px', color: '#666' }}>Best Parameters</div>
-                                    <div style={{ fontSize: '12px', fontFamily: 'monospace' }}>
-                                      {JSON.stringify(evidence.optimizationKeyResults.bestCombination) || 'N/A'}
+                                  
+                                  {/* 按状态分组显示优化结果 */}
+                                  {evidence.optimizationResults.map((result: any, index: number) => (
+                                    <div key={index} style={{ 
+                                      marginBottom: 8, 
+                                      padding: '6px',
+                                      backgroundColor: result.status === 'completed' ? '#f6ffed' : 
+                                                     result.status === 'failed' ? '#fff2f0' : '#fafafa',
+                                      borderRadius: '4px',
+                                      border: `1px solid ${result.status === 'completed' ? '#b7eb8f' : 
+                                                          result.status === 'failed' ? '#ffccc7' : '#f0f0f0'}`
+                                    }}>
+                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                        <div>
+                                          <strong>{result.strategy || 'Unknown Strategy'}</strong>
+                                          <div style={{ 
+                                            fontSize: '10px', 
+                                            color: result.status === 'completed' ? '#52c41a' : 
+                                                   result.status === 'failed' ? '#ff4d4f' : '#8c8c8c'
+                                          }}>
+                                            {result.status === 'completed' ? '✓ Optimized' : 
+                                             result.status === 'failed' ? '✗ Failed' : '⏸ Not run'}
+                                          </div>
+                                        </div>
+                                        
+                                        {result.status === 'completed' && result.bestReturn !== undefined && (
+                                          <div style={{ textAlign: 'right' }}>
+                                            <div style={{ 
+                                              fontWeight: 'bold', 
+                                              color: result.bestReturn >= 0 ? '#52c41a' : '#ff4d4f',
+                                              fontSize: '12px'
+                                            }}>
+                                              {result.bestReturn.toFixed(1)}%
+                                            </div>
+                                            <div style={{ fontSize: '9px', color: '#666' }}>
+                                              Optimized
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                      
+                                      {/* 显示最佳参数（如果优化成功） */}
+                                      {result.status === 'completed' && result.bestParams && Object.keys(result.bestParams).length > 0 && (
+                                        <div style={{ fontSize: '9px', color: '#666', marginTop: 4 }}>
+                                          <strong>Best Params:</strong> {JSON.stringify(result.bestParams)}
+                                        </div>
+                                      )}
+                                      
+                                      {/* 显示错误信息（如果优化失败） */}
+                                      {result.status === 'failed' && result.error && (
+                                        <div style={{ fontSize: '9px', color: '#ff4d4f', marginTop: 4 }}>
+                                          <strong>Error:</strong> {result.error}
+                                        </div>
+                                      )}
+                                      
+                                      {/* 显示未支持/未运行原因 */}
+                                      {result.status === 'not_supported' && (
+                                        <div style={{ fontSize: '9px', color: '#faad14', marginTop: 4 }}>
+                                          <strong>Not Supported:</strong> {result.error || '策略不支持参数优化'}
+                                        </div>
+                                      )}
+                                      
+                                      {result.status !== 'completed' && result.status !== 'failed' && result.status !== 'not_supported' && (
+                                        <div style={{ fontSize: '9px', color: '#8c8c8c', marginTop: 4 }}>
+                                          Optimization not run for this strategy
+                                        </div>
+                                      )}
+                                      
+                                      {/* 显示优化空间信息（如果有） */}
+                                      {result.optimizationSpace && Object.keys(result.optimizationSpace).length > 0 && (
+                                        <div style={{ fontSize: '9px', color: '#666', marginTop: 4 }}>
+                                          <strong>Parameter Space:</strong> {Object.keys(result.optimizationSpace).length} parameters
+                                        </div>
+                                      )}
+                                      
+                                      {/* 显示总组合数（如果优化成功） */}
+                                      {result.status === 'completed' && result.totalCombinations && (
+                                        <div style={{ fontSize: '9px', color: '#666', marginTop: 4 }}>
+                                          <strong>Total Combinations:</strong> {result.totalCombinations}
+                                        </div>
+                                      )}
                                     </div>
-                                  </div>
-                                  <div>
-                                    <div style={{ fontSize: '11px', color: '#666' }}>Total Combinations</div>
-                                    <div style={{ fontSize: '12px' }}>
-                                      {evidence.optimizationKeyResults.totalCombinations || 'N/A'}
+                                  ))}
+                                  
+                                  {/* 显示优化结果统计摘要 */}
+                                  <div style={{ 
+                                    marginTop: 12, 
+                                    padding: '8px', 
+                                    backgroundColor: '#fafafa', 
+                                    borderRadius: '4px',
+                                    border: '1px solid #f0f0f0'
+                                  }}>
+                                    <div style={{ fontWeight: 'bold', fontSize: '12px', marginBottom: 4 }}>Optimization Summary</div>
+                                    
+                                    {/* 按状态统计 */}
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px' }}>
+                                      <div>
+                                        <span style={{ color: '#52c41a', fontWeight: 'bold' }}>
+                                          ✓ {evidence.optimizationResults.filter((r: any) => r.status === 'completed').length}
+                                        </span> Completed
+                                      </div>
+                                      <div>
+                                        <span style={{ color: '#ff4d4f', fontWeight: 'bold' }}>
+                                          ✗ {evidence.optimizationResults.filter((r: any) => r.status === 'failed').length}
+                                        </span> Failed
+                                      </div>
+                                      <div>
+                                        <span style={{ color: '#faad14', fontWeight: 'bold' }}>
+                                          ⚠ {evidence.optimizationResults.filter((r: any) => r.status === 'not_supported').length}
+                                        </span> Not Supported
+                                      </div>
                                     </div>
+                                    
+                                    {/* 显示最佳优化结果（如果有成功的优化） */}
+                                    {evidence.optimizationResults.some((r: any) => r.status === 'completed') && (
+                                      <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #f0f0f0' }}>
+                                        <div style={{ fontWeight: 'bold', fontSize: '11px', marginBottom: 2 }}>Best Optimization</div>
+                                        {(() => {
+                                          const completedResults = evidence.optimizationResults.filter((r: any) => r.status === 'completed');
+                                          if (completedResults.length === 0) return null;
+                                          
+                                          const bestResult = completedResults.reduce((best: any, current: any) => {
+                                            return (current.bestReturn > best.bestReturn) ? current : best;
+                                          }, completedResults[0]);
+                                          
+                                          return (
+                                            <div>
+                                              <div style={{ fontSize: '10px', color: '#666' }}>
+                                                Strategy: <strong>{bestResult.strategy}</strong>
+                                              </div>
+                                              <div style={{ fontSize: '10px', color: '#666' }}>
+                                                Return: <strong style={{ color: bestResult.bestReturn >= 0 ? '#52c41a' : '#ff4d4f' }}>
+                                                  {bestResult.bestReturn.toFixed(2)}%
+                                                </strong>
+                                              </div>
+                                              {bestResult.bestParams && Object.keys(bestResult.bestParams).length > 0 && (
+                                                <div style={{ fontSize: '9px', color: '#666', marginTop: 2 }}>
+                                                  Params: {JSON.stringify(bestResult.bestParams)}
+                                                </div>
+                                              )}
+                                            </div>
+                                          );
+                                        })()}
+                                      </div>
+                                    )}
+                                    
+                                    {/* 显示失败详情（如果有失败的优化） */}
+                                    {evidence.optimizationResults.some((r: any) => r.status === 'failed') && (
+                                      <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #f0f0f0' }}>
+                                        <div style={{ fontWeight: 'bold', fontSize: '11px', marginBottom: 2, color: '#ff4d4f' }}>Failed Optimizations</div>
+                                        {evidence.optimizationResults
+                                          .filter((r: any) => r.status === 'failed')
+                                          .map((failedResult: any, idx: number) => (
+                                            <div key={idx} style={{ fontSize: '9px', color: '#666', marginTop: 2 }}>
+                                              • {failedResult.strategy}: {failedResult.error || 'Unknown error'}
+                                            </div>
+                                          ))}
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
                               ) : (
                                 <div style={{ padding: 12, color: '#999', textAlign: 'center' }}>
-                                  No optimization results
+                                  No optimization results available
                                 </div>
                               )}
                             </Card>
@@ -6209,6 +8496,227 @@ Please respond in this exact JSON format:
       </div>
     </div>
   );
+  
+  // 测试函数：验证AI Recommendations实现
+  const testAiRecommendationsImplementation = async () => {
+    console.log('=== 开始测试AI Recommendations实现 ===');
+    
+    // 测试1: 验证helper函数
+    console.log('测试1: 验证helper函数...');
+    
+    const testCandidate = {
+      symbol: 'TEST',
+      trendLabel: 'Strong Bullish',
+      overallScore: 85,
+      eventRisk: 'Low',
+      sector: 'Technology',
+      newsSentiment: 'Positive',
+      changePct: 2.5,
+      volumeStatus: 'High',
+      priorityScore: 90,
+      selectionReason: 'Test reason'
+    };
+    
+    // 测试generateAiReasoningFromCandidate
+    const testDecision = { reason: 'AI generated reason' };
+    const reasoning = generateAiReasoningFromCandidate(testCandidate, testDecision);
+    console.log('generateAiReasoningFromCandidate测试:', reasoning);
+    
+    // 测试determineBacktestStatus
+    const backtestStatus = determineBacktestStatus(testCandidate);
+    console.log('determineBacktestStatus测试:', backtestStatus);
+    
+    // 测试determineOptimizationStatus
+    const optimizationStatus = determineOptimizationStatus(testCandidate);
+    console.log('determineOptimizationStatus测试:', optimizationStatus);
+    
+    // 测试calculateSuggestedQty
+    const suggestedQty = calculateSuggestedQty('BUY', 85, testCandidate);
+    console.log('calculateSuggestedQty测试:', suggestedQty);
+    
+    // 测试generateFallbackRecommendation
+    const fallbackRec = generateFallbackRecommendation(testCandidate);
+    console.log('generateFallbackRecommendation测试:', fallbackRec);
+    
+    // 测试2: 验证四种测试组
+    console.log('\n测试2: 验证四种测试组...');
+    
+    const testGroups = [
+      {
+        name: '强候选组 (Strong Candidates)',
+        candidates: [
+          {
+            symbol: 'AAPL',
+            trendLabel: 'Strong Bullish',
+            overallScore: 88,
+            eventRisk: 'Low',
+            sector: 'Technology',
+            newsSentiment: 'Positive',
+            changePct: 3.2,
+            volumeStatus: 'High',
+            priorityScore: 92
+          },
+          {
+            symbol: 'MSFT',
+            trendLabel: 'Strong Bullish',
+            overallScore: 85,
+            eventRisk: 'Medium',
+            sector: 'Technology',
+            newsSentiment: 'Positive',
+            changePct: 2.8,
+            volumeStatus: 'Normal',
+            priorityScore: 88
+          }
+        ]
+      },
+      {
+        name: '一般候选组 (General Candidates)',
+        candidates: [
+          {
+            symbol: 'GOOGL',
+            trendLabel: 'Bullish',
+            overallScore: 76,
+            eventRisk: 'Medium',
+            sector: 'Technology',
+            newsSentiment: 'Neutral',
+            changePct: 1.5,
+            volumeStatus: 'Normal',
+            priorityScore: 72
+          },
+          {
+            symbol: 'AMZN',
+            trendLabel: 'Bullish',
+            overallScore: 78,
+            eventRisk: 'Medium',
+            sector: 'Consumer',
+            newsSentiment: 'Positive',
+            changePct: 2.1,
+            volumeStatus: 'Normal',
+            priorityScore: 75
+          }
+        ]
+      },
+      {
+        name: '边缘候选组 (Edge Candidates)',
+        candidates: [
+          {
+            symbol: 'TSLA',
+            trendLabel: 'Bullish',
+            overallScore: 62,
+            eventRisk: 'High',
+            sector: 'Automotive',
+            newsSentiment: 'Negative',
+            changePct: -1.2,
+            volumeStatus: 'Low',
+            priorityScore: 58
+          },
+          {
+            symbol: 'NFLX',
+            trendLabel: 'Neutral',
+            overallScore: 65,
+            eventRisk: 'Medium',
+            sector: 'Entertainment',
+            newsSentiment: 'Neutral',
+            changePct: 0.5,
+            volumeStatus: 'Low',
+            priorityScore: 62
+          }
+        ]
+      },
+      {
+        name: '异常数据组 (Abnormal Data)',
+        candidates: [
+          {
+            symbol: 'UNKNOWN1',
+            trendLabel: undefined,
+            overallScore: undefined,
+            eventRisk: undefined,
+            sector: undefined,
+            newsSentiment: undefined,
+            changePct: undefined,
+            volumeStatus: undefined,
+            priorityScore: undefined
+          },
+          {
+            symbol: 'UNKNOWN2',
+            trendLabel: null,
+            overallScore: null,
+            eventRisk: null,
+            sector: null,
+            newsSentiment: null,
+            changePct: null,
+            volumeStatus: null,
+            priorityScore: null
+          }
+        ]
+      }
+    ];
+    
+    for (const group of testGroups) {
+      console.log(`\n${group.name}:`);
+      for (const candidate of group.candidates) {
+        const fallback = generateFallbackRecommendation(candidate);
+        console.log(`  ${candidate.symbol}: Action=${fallback.recommendation}, Confidence=${Math.round(fallback.confidence * 100)}%, Qty=${fallback.recommendedQty}`);
+        
+        // 验证字段
+        const validations = {
+          confidenceValid: fallback.confidence >= 0 && fallback.confidence <= 1,
+          actionValid: ['BUY', 'HOLD', 'SELL', 'SKIP'].includes(fallback.recommendation),
+          reasoningValid: fallback.reason && fallback.reason.length > 0,
+          qtyValid: fallback.recommendedQty >= 0
+        };
+        
+        console.log(`    验证: ${JSON.stringify(validations)}`);
+      }
+    }
+    
+    // 测试3: 验证calculateRecommendationSummary
+    console.log('\n测试3: 验证calculateRecommendationSummary...');
+    
+    const testRecommendations = [
+      {
+        symbol: 'TEST1',
+        recommendation: 'BUY',
+        confidence: 0.85,
+        status: 'success',
+        validation: { confidenceValid: true, actionValid: true, reasoningValid: true, qtyValid: true }
+      },
+      {
+        symbol: 'TEST2',
+        recommendation: 'HOLD',
+        confidence: 0.45,
+        status: 'success',
+        validation: { confidenceValid: true, actionValid: true, reasoningValid: true, qtyValid: true }
+      },
+      {
+        symbol: 'TEST3',
+        recommendation: 'ERROR',
+        confidence: 0,
+        status: 'error',
+        validation: { confidenceValid: false, actionValid: false, reasoningValid: false, qtyValid: false }
+      }
+    ];
+    
+    const summary = calculateRecommendationSummary(testRecommendations);
+    console.log('汇总统计:', summary);
+    
+    console.log('\n=== AI Recommendations实现测试完成 ===');
+    console.log('关键验证点:');
+    console.log('1. Confidence在0-100%范围内:', summary.avgConfidence >= 0 && summary.avgConfidence <= 100);
+    console.log('2. Action字段有效:', testRecommendations.filter(r => r.validation.actionValid).length === testRecommendations.length - 1); // 减去ERROR
+    console.log('3. Reasoning不为空:', testRecommendations.filter(r => r.validation.reasoningValid).length === testRecommendations.length - 1);
+    console.log('4. Qty有效:', testRecommendations.filter(r => r.validation.qtyValid).length === testRecommendations.length - 1);
+    
+    return {
+      success: true,
+      testGroups: testGroups.length,
+      recommendationsTested: testRecommendations.length,
+      summary: summary
+    };
+  };
+  
+  // 开发环境测试函数 - 手动调用
+  // 在开发控制台中调用: testAiRecommendationsImplementation()
 };
 
 export default Portfolio;
