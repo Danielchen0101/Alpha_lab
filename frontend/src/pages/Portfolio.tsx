@@ -183,6 +183,12 @@ const Portfolio: React.FC = (): React.ReactElement => {
     totalCount: 0
   });
   
+
+  // Fine Scan 状态
+  const [fineScanStatus, setFineScanStatus] = useState('idle');
+  const [fineScanResults, setFineScanResults] = useState<any[]>([]);
+  const [fineScanProgress, setFineScanProgress] = useState(0);
+
   // AI调用互斥控制
   const [aiCallInProgress, setAiCallInProgress] = useState(false);
   const aiCallInProgressRef = useRef(false);
@@ -4672,6 +4678,389 @@ Please respond in this exact JSON format:
   };
 
 
+// Fine Scan: Regime detection and strategy matching
+  // Fine Scan: AI-driven regime detection and strategy matching
+  const handleRunFineScan = async () => {
+    if (preferredContinueScanList.length === 0) {
+      message.warning('No continue list candidates available. Run Continue Scan first.');
+      return;
+    }
+
+    setFineScanStatus('running');
+    setFineScanProgress(0);
+    setFineScanResults([]);
+
+    try {
+      const results: any[] = [];
+      const candidates = preferredContinueScanList;
+      const candidateCount = candidates.length;
+
+      // Build a lookup map from marketScannerResults for primary data
+      const scannerMap = new Map<string, any>();
+      for (const s of marketScannerResults) {
+        if (s.symbol) scannerMap.set(s.symbol.toUpperCase(), s);
+      }
+
+      for (let i = 0; i < candidateCount; i++) {
+        const c = candidates[i];
+        const progress = Math.round(((i + 1) / candidateCount) * 100);
+        setFineScanProgress(progress);
+
+        const symbol = c.symbol || 'N/A';
+        const symbolUpper = symbol.toUpperCase();
+
+        // PRIMARY data source: matching market scanner result
+        const ms = scannerMap.get(symbolUpper);
+
+        // ===== FIELD NORMALIZATION: ms (scanner) first, c (continue list) fallback =====
+        // Core fields — market scanner always has these when data is valid
+        const msTrendLabel = ms?.trendLabel || ms?.trend || null;
+        const msScore = ms?.overallScore !== null && ms?.overallScore !== undefined ? ms.overallScore : (ms?.trendScore || null);
+        const msPrice = ms?.price || ms?.lastPrice || null;
+        const msChangePct = ms?.changePct || ms?.changePercent || ms?.priceChangePct || null;
+        const msVolumeStatus = ms?.volumeStatus || null;
+        const msSector = ms?.sector || null;
+        const msNewsSentiment = ms?.newsSentiment || ms?.newsLabel || null;
+        const msEventRisk = ms?.eventRisk || ms?.riskLevel || null;
+        const msAiReasoning = ms?.aiReasoning || ms?.conciseReasoning || ms?.reason || ms?.scannerReason || null;
+
+        // Now read: ms first, then c, then default
+        const trendLabel      = msTrendLabel   || c.trendLabel || c.trend || 'Neutral';
+        const score           = msScore        ?? (c.overallScore || c.trendScore || 0);
+        const risk            = msEventRisk    || c.eventRisk || c.riskLevel || 'Medium';
+        const sector          = msSector       || c.sector || 'Unknown';
+        const priceChange     = msChangePct    ?? (c.priceChangePct || c.changePct || 0);
+        const volumeStatus    = msVolumeStatus || c.volumeStatus || 'Normal';
+        const newsSentiment   = msNewsSentiment || c.newsSentiment || c.newsLabel || 'Neutral';
+        const aiReasoning     = msAiReasoning  || c.aiReasoning || c.conciseReasoning || '';
+        const structureLabel  = ms?.structureLabel || c.structureLabel || '';
+        const momentumLabel   = ms?.momentumLabel || c.momentumLabel || '';
+        const volatilityLabel = ms?.volatilityLabel || c.volatilityLabel || '';
+        const confidence      = ms?.trendConfidence || ms?.confidence || c.confidence || 0;
+        const relativeVolume  = ms?.relativeVolume || c.relativeVolume || 0;
+        const price           = msPrice ?? 0;
+        const volume          = ms?.volume || 0;
+        const companyName     = ms?.companyName || c.companyName || '';
+
+        // ===== DEBUG LOG: first 3 candidates =====
+        if (i < 3) {
+          console.log('[FINE SCAN DEBUG] Candidate ' + (i+1) + '/' + candidateCount + ': ' + symbol, {
+            dataSource: ms ? 'market_scan' : 'continue_list_only',
+            scannerSymbolFound: !!ms,
+            trendLabel: trendLabel,
+            score: score,
+            price: price,
+            changePct: priceChange,
+            volumeStatus: volumeStatus,
+            volume: volume,
+            newsSentiment: newsSentiment,
+            sector: sector,
+            risk: risk,
+            structureLabel: structureLabel,
+            momentumLabel: momentumLabel,
+            aiReasoningLength: aiReasoning ? aiReasoning.length : 0,
+          });
+        }
+
+        const contextPayload = {
+          task: 'strategy_matching',
+          symbol,
+          dataSource: ms ? 'market_scan' : 'continue_list_only',
+          data: {
+            trend: trendLabel,
+            score,
+            confidence,
+            risk,
+            sector,
+            price,
+            priceChange,
+            volume,
+            volumeStatus,
+            newsSentiment,
+            structureLabel,
+            momentumLabel,
+            volatilityLabel,
+            aiReasoning,
+            companyName,
+            trendScore: ms?.trendScore ?? c.trendScore ?? 0,
+            momentumScore: ms?.momentumScore ?? c.momentumScore ?? 0,
+            volumeScore: ms?.volumeScore ?? c.volumeScore ?? 0,
+            volatilityScore: ms?.volatilityScore ?? c.volatilityScore ?? 0,
+            structureScore: ms?.structureScore ?? c.structureScore ?? 0,
+            newsScore: ms?.newsScore ?? c.newsScore ?? 0,
+            volumeLabel: ms?.volumeLabel || c.volumeLabel || '',
+            newsLabel: ms?.newsLabel || c.newsLabel || '',
+            riskLevel: ms?.riskLevel || c.riskLevel || '',
+            conciseReason: ms?.conciseReason || c.conciseReason || '',
+            overallScore: ms?.overallScore ?? c.overallScore ?? score,
+            priorityScore: c.priorityScore || 0,
+            priceChangePct: priceChange,
+            relativeVolume,
+            selectionReason: c.selectionReason || '',
+          }
+        };
+
+        // === REGIME DETECTION (field-driven, not AI fallback) ===
+        // Classify regime based on available market scan data BEFORE AI call
+        // This ensures regime is data-driven, not dependent on AI trading endpoint
+        
+        // Build technical signal profile from available fields
+        const isBullTrend = trendLabel === 'Bullish' || trendLabel === 'Strong Bullish';
+        const isBearTrend = trendLabel === 'Bearish' || trendLabel === 'Strong Bearish';
+        const hasHighScore = score >= 65;
+        const hasHighVolume = volumeStatus === 'High' || (relativeVolume > 1.5);
+        const hasLowVolume = volumeStatus === 'Low' || (volume > 0 && volume < 100000 && relativeVolume < 0.5);
+        const hasPositiveNews = newsSentiment === 'Positive';
+        const hasLargeMove = Math.abs(priceChange) > 5;
+        const hasModerateMove = Math.abs(priceChange) > 2;
+        const isLowRisk = risk === 'Low';
+        const isHighRisk = risk === 'High';
+        const hasAiReasoning = aiReasoning && aiReasoning.length > 20;
+        const hasStructureData = !!structureLabel;
+        
+        // ===== REGIME CLASSIFICATION (rule-based, using available fields) =====
+        // This is a proxy-based regime matching using market scan proxy fields.
+        // Without full EMA/RSI/Bollinger/HH-HL, we estimate structure from
+        // trendLabel, score, volumeStatus, priceChange, newsSentiment, risk.
+        // The result is an approximation, not a complete technical structure analysis.
+        
+        // === INDICATOR FUNCTIONS (reusable) ===
+        const isPositiveMove = priceChange > 0;
+        const isNegativeMove = priceChange < 0;
+        const hasPositiveVol = hasHighVolume && !hasLowVolume;
+        const hasNeutralVol = !hasHighVolume && !hasLowVolume && volumeStatus !== 'Unknown';
+        const isConsistentRange = !isBullTrend && !isBearTrend && !hasLargeMove;
+        const hasStrongTrendBias = isBullTrend && hasHighScore && isPositiveMove && hasPositiveVol;
+        const hasClearTrendSignals = (structureLabel === 'uptrend' ? 1 : 0) + (momentumLabel === 'strengthening' ? 1 : 0) + (hasStrongTrendBias ? 1 : 0);
+        const hasConflictingSignals = (isBullTrend && isNegativeMove) || (isBullTrend && hasLowVolume);
+        const hasBreakoutPotential = (hasPositiveVol || hasHighVolume) && hasModerateMove && (isBullTrend || isPositiveMove);
+        const breakoutIndicators = [
+          structureLabel === 'breakout',
+          isBullTrend && hasHighVolume && hasModerateMove,
+          isBullTrend && hasPositiveNews && hasHighVolume,
+          hasHighScore && hasHighVolume && hasModerateMove,
+          hasHighVolume && hasLargeMove,
+          isBullTrend && isLowRisk && (hasHighVolume || hasModerateMove),
+        ];
+        
+        // === BUILD SIGNAL LIST ===
+        const allSignals: string[] = [];
+        if (structureLabel === 'uptrend') allSignals.push('EMA aligned');
+        if (structureLabel === 'sideways') allSignals.push('Range-bound');
+        if (structureLabel === 'breakout') allSignals.push('Breakout structure');
+        if (momentumLabel === 'strengthening') allSignals.push('MACD strengthening');
+        if (volatilityLabel === 'low') allSignals.push('Low volatility');
+        if (isBullTrend) allSignals.push('Bullish trend');
+        if (isBearTrend) allSignals.push('Bearish trend');
+        if (hasHighScore) allSignals.push('Score: ' + score);
+        if (hasHighVolume) allSignals.push(volumeStatus === 'High' ? 'High volume' : 'Above avg volume');
+        if (hasLowVolume) allSignals.push('Low volume');
+        if (newsSentiment === 'Positive') allSignals.push('Positive catalyst');
+        if (newsSentiment === 'Negative') allSignals.push('Negative news');
+        if (price > 0) allSignals.push('Price: $' + Number(price).toFixed(2));
+        if (hasLargeMove) allSignals.push('Big move: ' + (priceChange > 0 ? '+' : '') + Number(priceChange).toFixed(1) + '%');
+        else if (hasModerateMove) allSignals.push('Moderate move: ' + (priceChange > 0 ? '+' : '') + Number(priceChange).toFixed(1) + '%');
+        if (isLowRisk) allSignals.push('Low risk profile');
+        if (isHighRisk) allSignals.push('Elevated risk');
+        
+        let keySignals: string[] = Array.from(new Set(allSignals)).slice(0, 6);
+        
+        let regime = 'Unclear';
+        let matchReason = '';
+        let matchedStrategies: string[] = [];
+        let matchConfidence = 22;
+        
+        // ===== THREE-REGIME SCORING =====
+        // Each regime gets a score. The highest score that clears its threshold wins.
+        // If no regime clears threshold, output remains Unclear.
+        
+        // --- Breakout-ready scoring (needs at least 2 breakout-specific indicators) ---
+        const bOut = breakoutIndicators.filter(Boolean).length;
+        const bExtra = (hasBreakoutPotential ? 1 : 0) + (hasHighVolume && isPositiveMove ? 1 : 0);
+        const breakoutScore2 = bOut + bExtra;
+        
+        // --- Range-bound scoring (needs at least 2 range-specific indicators) ---
+        const rangeIndicators2 = [
+          structureLabel === 'sideways',
+          isConsistentRange,
+          volatilityLabel === 'low' && hasModerateMove,
+          hasLowVolume && !hasLargeMove,
+          !isBullTrend && !isBearTrend,
+          isHighRisk && !hasLargeMove,
+          hasConflictingSignals,
+          !hasHighScore && !hasLargeMove && hasNeutralVol,
+        ];
+        const rangeScore2 = rangeIndicators2.filter(Boolean).length;
+        
+        // --- Trending scoring (needs at least 2 trend-indicators, no conflicting) ---
+        const trendIndicators2 = [
+          structureLabel === 'uptrend',
+          isBullTrend && hasHighScore && isPositiveMove,
+          isBullTrend && isPositiveMove && hasPositiveVol,
+          isBullTrend && isLowRisk && isPositiveMove,
+          momentumLabel === 'strengthening',
+          hasStrongTrendBias,
+          hasHighScore && isPositiveMove && !hasLowVolume,
+        ];
+        const trendScore3 = trendIndicators2.filter(Boolean).length;
+        const trendPenalized = hasConflictingSignals ? -2 : 0;
+        
+        // === FINAL CLASSIFICATION WITH EXPLICIT BOUNDARY HANDLING ===
+        
+        // 1) Breakout-ready: needs clear volume + move + bias, not just ordinary bullish
+        if (breakoutScore2 >= 3) {
+          regime = 'Breakout-ready';
+          matchedStrategies = ['Breakout', 'Volume Confirmation', 'Momentum Continuation'];
+          matchConfidence = Math.min(85, 50 + breakoutScore2 * 8 + (hasHighVolume ? 10 : 0));
+          
+          const volDetail = hasHighVolume ? 'strong volume expansion' : 'elevated volume with price action';
+          const direction = isPositiveMove || isBullTrend ? 'bullish direction' : 'directional expansion';
+          matchReason = `${companyName || symbol}: Breakout-ready — ${volDetail} in ${direction}. Not fitting mean-reversion or range setups because momentum and volume support directional continuation. Breakout, volume confirmation, and momentum continuation are the natural fit.`;
+        }
+        
+        // 2) Range-bound: limited move, mixed signals, no clear break or trend
+        else if (rangeScore2 >= 2) {
+          regime = 'Range-bound';
+          if (hasHighVolume) {
+            matchedStrategies = ['RSI', 'Mean Reversion', 'Bollinger Band'];
+          } else {
+            matchedStrategies = ['RSI', 'Mean Reversion'];
+          }
+          matchConfidence = Math.min(70, 40 + rangeScore2 * 6);
+          
+          const rangeType = structureLabel === 'sideways' ? 'clear sideways channel' : 'proxy-based bounded structure';
+          const conflictNote = hasConflictingSignals ? 'with conflicting trend signals, making trend-following unreliable' : 'with limited directional conviction';
+          matchReason = `${companyName || symbol}: Range-bound regime in ${rangeType} ${conflictNote}. RSI bounces and mean reversion are preferred over breakouts or trend-following because the price is oscillating within a defined zone without clear expansion.`;
+        }
+        
+        // 3) Trending: needs clear trend confirmation, no negative/conflicting signals
+        else if (trendScore3 >= 2 && trendScore3 + trendPenalized >= 2) {
+          const isStrongTrend = trendScore3 >= 4;
+          
+          regime = 'Trending';
+          
+          if (isStrongTrend) {
+            matchedStrategies = ['Moving Average', 'MACD', 'Breakout Follow-through'];
+            matchConfidence = Math.min(85, 50 + trendScore3 * 8);
+          } else {
+            matchedStrategies = ['Moving Average', 'MACD'];
+            matchConfidence = Math.min(70, 40 + trendScore3 * 8);
+          }
+          // Add Momentum Continuation if volume is strong
+          if (matchedStrategies.length < 3 && hasHighVolume && isPositiveMove) {
+            matchedStrategies.push('Momentum Continuation');
+          }
+          
+          const strength = isStrongTrend ? 'strong trend continuation pattern' : 'moderate trend confirmation';
+          const trendType = momentumLabel === 'strengthening' ? 'with strengthening momentum confirming the uptrend' : 'supported by consistent bullish readings';
+          const conflictNote = hasConflictingSignals ? ' despite conflicting volume/price signals' : '';
+          matchReason = `${companyName || symbol}: Trending regime — ${strength}${conflictNote} ${trendType}. Price is not range-bound (no sideways structure) and not breakout-ready (insufficient volume expansion). Moving average and MACD suit the established direction.${!isStrongTrend ? ' For stronger trend confirmation and breakout follow-through, additional signals are needed.' : ''}`;
+        }
+        
+        // 4) CONFLICTING / MIXED SIGNALS (Unclear)
+        else if (hasConflictingSignals) {
+          regime = 'Unclear';
+          matchedStrategies = ['Moving Average'];
+          matchConfidence = Math.max(20, Math.min(35, score ? Math.round(score * 0.3) : 20));
+          
+          const signal1 = isBullTrend ? 'Bullish trend label' : (isBearTrend ? 'Bearish trend label' : 'Neutral trend');
+          const signal2 = isNegativeMove ? 'negative price action' : 'low volume';
+          matchReason = `${companyName || symbol}: Unclear regime — conflicting signals: ${signal1} but ${signal2}. Trend continuation is not reliable because price/volume contradicts the trend label. Range-bound criteria not met due to insufficient bounded structure evidence. Conservative single-strategy fallback used. Needs more data.`;
+        }
+        
+        // 5) INSUFFICIENT STRUCTURE (Unclear)
+        else {
+          regime = 'Unclear';
+          matchedStrategies = ['Moving Average'];
+          
+          const hasAnyData = price > 0 || score > 0 || volume > 0 || (trendLabel && trendLabel !== 'Neutral');
+          if (hasAnyData) {
+            matchConfidence = Math.max(20, Math.min(35, score ? Math.round(score * 0.3) : 20));
+            matchReason = `${companyName || symbol}: Unclear regime — insufficient structure indicators for confident classification. Score ${score > 0 ? score + ' is' : 'is'} below classification thresholds. Trend not clearly trending, range-bound, or breakout-ready. Single conservative strategy applied.`;
+          } else {
+            matchConfidence = 15;
+            matchReason = `${companyName || symbol}: Unclear regime — insufficient market data for any structure classification. Conservative fallback as Moving Average only.`;
+          }
+        }
+
+        // Clamp confidence
+        matchConfidence = Math.max(15, Math.min(95, matchConfidence));
+
+        // === AI VALIDATION (optional, refines but doesn't override field-driven regime) ===
+        // Call AI for additional insight (best-effort, results not required)
+        let aiSucceeded = false;
+        try {
+          const aiResponse = await aiTradingService.previewTradeWithContext(symbol, contextPayload);
+          
+          if (aiResponse.success && aiResponse.decision) {
+            const strategyMode = aiResponse.decision.strategyMode;
+            const aiReason = aiResponse.decision.reason || '';
+            
+            // AI can only UPGRADE confidence if it confirms our regime
+            if (strategyMode?.marketRegime) {
+              const r = strategyMode.marketRegime.toLowerCase();
+              let aiRegime = '';
+              if (r.includes('trend') || r.includes('momentum')) aiRegime = 'Trending';
+              else if (r.includes('range') || r.includes('mean') || r.includes('sideways') || r.includes('bound')) aiRegime = 'Range-bound';
+              else if (r.includes('break') || r.includes('volatility') || r.includes('expansion')) aiRegime = 'Breakout-ready';
+              
+              if (aiRegime === regime || !aiRegime) {
+                // AI confirms our regime — boost confidence
+                if (aiResponse.decision.confidence && aiResponse.decision.confidence > 0.5) {
+                  matchConfidence = Math.min(95, matchConfidence + Math.round(aiResponse.decision.confidence * 15));
+                }
+              }
+            }
+            
+            // AI reasoning can supplement matchReason with fresh insight
+            if (aiReason && aiReason.length > 10) {
+              const hasStale = ['No market data', 'backtest', 'optimization', 'price is $0', 'Insufficient data']
+                .some(p => aiReason.toLowerCase().includes(p.toLowerCase()));
+              if (!hasStale) {
+                // AI provided useful reasoning — incorporate it
+                const firstSentence = aiReason.split('.')[0];
+                if (firstSentence.length > 15 && !firstSentence.includes('insufficient') && !firstSentence.includes('no market')) {
+                  matchReason = matchReason.split('.')[0] + '. AI confirms: ' + firstSentence.substring(0, 80) + '.';
+                }
+              }
+            }
+            
+            aiSucceeded = true;
+          }
+        } catch (aiError) {
+          console.warn('[FINE SCAN] AI validation skipped for ' + symbol + ': ' + (aiError as any).message);
+        }
+
+        results.push({
+          symbol,
+          regime,
+          matchedStrategies,
+          matchReason,
+          keySignals,
+          matchConfidence,
+          priority: 0,
+          aiUsed: aiSucceeded,
+        });
+      }
+
+      // Sort by confidence descending and assign priority
+      results.sort((a, b) => b.matchConfidence - a.matchConfidence);
+      results.forEach((r, i) => { r.priority = i + 1; });
+
+      setFineScanResults(results);
+      setFineScanProgress(100);
+      setFineScanStatus('completed');
+      
+      const aiCount = results.filter(r => r.aiUsed).length;
+      message.success(`Strategy matching complete: ${results.length} candidates (${aiCount} AI-driven)`);
+    } catch (error) {
+      console.error('Fine scan error:', error);
+      setFineScanStatus('error');
+      message.error('Fine scan failed: ' + (error as any).message);
+    }
+  };
+
+
   return (
     <div>
       <Title level={2}><RobotOutlined style={{ marginRight: '12px' }} />AI Agent</Title>
@@ -6079,6 +6468,187 @@ Please respond in this exact JSON format:
           })()}
         </Card>
       </div>
+{/* 3. Fine Scan */}
+      <div style={{ marginBottom: 24 }}>
+        <Title level={4}>
+          <ThunderboltOutlined style={{ marginRight: '8px' }} />
+          Fine Scan
+          <Text style={{ fontSize: '13px', fontWeight: 'normal', color: '#888', marginLeft: '12px' }}>
+            Step 1: Strategy matching scan for continue-list candidates
+          </Text>
+        </Title>
+        
+        <Card>
+          <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <Text style={{ fontSize: '12px', color: '#666' }}>
+                Analyzes each continue-list candidate's market structure and matches 2-3 suitable strategies
+              </Text>
+            </div>
+            <Space>
+              <Button
+                type="primary"
+                icon={<ThunderboltOutlined />}
+                onClick={handleRunFineScan}
+                disabled={fineScanStatus === 'running' || preferredContinueScanList.length === 0}
+                loading={fineScanStatus === 'running'}
+              >
+                {fineScanStatus === 'running' ? 'Running...' : 'Run Fine Scan'}
+              </Button>
+            </Space>
+          </div>
+
+          {fineScanStatus === 'running' && (
+            <div style={{ marginBottom: 16 }}>
+              <Progress percent={fineScanProgress} status="active" />
+              <div style={{ fontSize: '12px', color: '#666', marginTop: '4px' }}>
+                Processing candidates...
+              </div>
+            </div>
+          )}
+
+          {fineScanResults.length > 0 && (
+            <Table
+              dataSource={fineScanResults}
+              rowKey="symbol"
+              pagination={false}
+              size="small"
+              scroll={{ x: 'max-content' }}
+              columns={[
+                {
+                  title: 'Symbol',
+                  key: 'symbol',
+                  width: 80,
+                  render: (record) => (
+                    <Text strong style={{ fontSize: '12px' }}>{record.symbol}</Text>
+                  ),
+                },
+                {
+                  title: 'Regime',
+                  key: 'regime',
+                  width: 130,
+                  render: (record) => {
+                    const regime = record.regime || 'Unknown';
+                    let color = '#8c8c8c';
+                    if (regime === 'Trending') { color = '#1890ff'; }
+                    else if (regime === 'Range-bound') { color = '#faad14'; }
+                    else if (regime === 'Breakout-ready') { color = '#52c41a'; }
+                    return (
+                      <Tag color={color} style={{ fontSize: '11px', fontWeight: 500 }}>{regime}</Tag>
+                    );
+                  },
+                },
+                {
+                  title: 'Matched Strategies',
+                  key: 'strategies',
+                  width: 280,
+                  render: (record) => {
+                    const strategies = record.matchedStrategies || [];
+                    return (
+                      <Space size={[4, 4]} wrap>
+                        {strategies.map((s: string, i: number) => (
+                          <Tag key={i} style={{ fontSize: '10px', margin: 0 }}>{s}</Tag>
+                        ))}
+                      </Space>
+                    );
+                  },
+                },
+                {
+                  title: 'Why Matched',
+                  key: 'reason',
+                  width: 200,
+                  render: (record) => (
+                    <Text style={{ fontSize: '11px', color: '#666', lineHeight: '1.4' }}>
+                      {record.matchReason || ''}
+                    </Text>
+                  ),
+                },
+                {
+                  title: 'Key Signals',
+                  key: 'signals',
+                  width: 200,
+                  render: (record) => {
+                    const signals = record.keySignals || [];
+                    return (
+                      <Space size={[2, 2]} wrap>
+                        {signals.map((sig: string, i: number) => (
+                          <Tag key={i} color="default" style={{ fontSize: '9px', margin: 0, padding: '0 4px', lineHeight: '18px' }}>
+                            {sig}
+                          </Tag>
+                        ))}
+                      </Space>
+                    );
+                  },
+                },
+                {
+                  title: 'Match',
+                  key: 'confidence',
+                  width: 80,
+                  render: (record) => {
+                    const conf = record.matchConfidence || 0;
+                    let color = '#8c8c8c';
+                    if (conf >= 80) color = '#52c41a';
+                    else if (conf >= 60) color = '#faad14';
+                    else color = '#ff4d4f';
+                    return (
+                      <div style={{ textAlign: 'center' }}>
+                        <div style={{
+                          display: 'inline-block',
+                          padding: '2px 8px',
+                          borderRadius: '4px',
+                          backgroundColor: color + '20',
+                          color: color,
+                          fontSize: '11px',
+                          fontWeight: 600
+                        }}>
+                          {conf}%
+                        </div>
+                      </div>
+                    );
+                  },
+                },
+                {
+                  title: 'Priority',
+                  key: 'priority',
+                  width: 70,
+                  render: (record) => (
+                    <div style={{ textAlign: 'center' }}>
+                      <Text style={{ fontSize: '11px', color: '#1f1f1f', fontWeight: 500 }}>
+                        #{record.priority || '-'}
+                      </Text>
+                    </div>
+                  ),
+                },
+              ]}
+            />
+          )}
+
+          {fineScanStatus === 'completed' && fineScanResults.length === 0 && (
+            <div style={{ textAlign: 'center', padding: '24px 0', color: '#999' }}>
+              <Text>No candidates to analyze. Run Continue Scan first.</Text>
+            </div>
+          )}
+
+          {fineScanStatus === 'error' && (
+            <div style={{ textAlign: 'center', padding: '24px 0', color: '#ff4d4f' }}>
+              <CloseCircleOutlined style={{ fontSize: '24px', marginBottom: 8 }} />
+              <div>An error occurred during strategy matching</div>
+            </div>
+          )}
+
+          {fineScanStatus === 'idle' && fineScanResults.length === 0 && (
+            <div style={{ textAlign: 'center', padding: '24px 0', color: '#999' }}>
+              <ThunderboltOutlined style={{ fontSize: '36px', marginBottom: 12, opacity: 0.4 }} />
+              <div style={{ fontSize: '13px' }}>Run Fine Scan to match strategies for continue-list candidates</div>
+              <div style={{ fontSize: '11px', marginTop: 8, color: '#bbb' }}>
+                Scan will analyze each candidate's market structure and recommend 2-3 suitable strategies
+              </div>
+            </div>
+          )}
+        </Card>
+      </div>
+
+
       
     </div>
   );
