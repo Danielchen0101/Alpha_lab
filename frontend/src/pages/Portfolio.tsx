@@ -13,13 +13,24 @@ import {
   SortDescendingOutlined, SortAscendingOutlined
 } from '@ant-design/icons';
 import aiTradingService, { AIProviderConfig } from '../services/aiTradingService';
-import { backtraderAPI, marketAPI } from '../services/api';
+import { backtraderAPI, marketAPI, entryQualityAPI, fineScanAdvancedAPI } from '../services/api';
 import api, { scannerApi } from '../services/api';
 import marketDataService from '../services/marketDataService';
 import alpacaBrokerService, { AlpacaPosition, AlpacaOrder } from '../services/alpacaBrokerService';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
+
+// Small inline tag used in Entry Quality detail panel
+const DetailTag: React.FC<{ label: string; value: string; color?: string }> = ({ label, value, color }) => (
+  <div style={{
+    padding: '2px 8px', backgroundColor: '#fff', borderRadius: 3,
+    border: '1px solid #e8e8e8', fontSize: '9px', lineHeight: '1.6'
+  }}>
+    <span style={{ color: '#888', marginRight: 4 }}>{label}:</span>
+    <span style={{ fontWeight: 500, color: color || '#333' }}>{value}</span>
+  </div>
+);
 
 // AI分析结果类型定义 - V3格式
 interface AIAnalysisResult {
@@ -2747,6 +2758,169 @@ Please respond in this exact JSON format:
           </div>
         </div>
 
+        {/* Entry Quality Assessment */}
+        {record.entryQuality && record.entryQuality !== 'Error / No Data' && record.entryQuality !== '—' && record.entryQuality !== 'Data Unavailable' && (
+          <div style={{ marginBottom: 12 }}>
+            <Text strong style={{ fontSize: '12px', color: '#333' }}>Entry Quality</Text>
+            <div style={{ marginTop: 4, padding: '6px 10px', backgroundColor: '#f0f5ff', borderRadius: 4, border: '1px solid #adc6ff' }}>
+              {(() => {
+                const eq = record.entryQuality;
+                const reason = record.entryReason || '';
+                const d = record.entryDetails;
+                let gradeColor = '#52c41a';
+                if (eq === 'Wait for Pullback') gradeColor = '#faad14';
+                else if (eq === 'Chasing / Extended' || eq === 'Near Resistance') gradeColor = '#ff4d4f';
+                else if (eq === 'Poor Reward-Risk') gradeColor = '#ff4d4f';
+
+                return (
+                  <div>
+                    <div style={{ fontSize: '11px', marginBottom: 6 }}>
+                      Grade: <Tag color={gradeColor} style={{ fontSize: '10px', fontWeight: 600, margin: 0 }}>{eq}</Tag>
+                      <span style={{ marginLeft: 8, color: '#888', fontSize: '10px' }}>Score: {record.entryScore || '—'}/100</span>
+                    </div>
+                    {reason && <div style={{ fontSize: '10px', color: '#555', marginBottom: 6 }}>{reason}</div>}
+                    {d && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', fontSize: '10px' }}>
+                        <DetailTag label="Price" value={`$${d.current_price}`} />
+                        <DetailTag label="ATR" value={`$${d.atr} (${d.atr_pct}%)`} />
+                        <DetailTag label="EMA20" value={d.ema20 ? `$${d.ema20}` : '—'} />
+                        <DetailTag label="EMA50" value={d.ema50 ? `$${d.ema50}` : '—'} />
+                        <DetailTag label="Support" value={`$${d.support}`} />
+                        <DetailTag label="Resistance" value={`$${d.resistance}`} />
+                        <DetailTag label="Entry Zone" value={`$${d.entry_zone_low} – $${d.entry_zone_high}`} />
+                        <DetailTag label="Invalidation" value={`$${d.invalidation}`} />
+                        <DetailTag label="Stop Dist" value={`${d.stop_distance_pct}%`} />
+                        <DetailTag label="Target 1" value={`$${d.target_1}`} />
+                        <DetailTag label="Target 2" value={`$${d.target_2}`} />
+                        <DetailTag label="R/R" value={`${d.reward_risk_ratio}:1`} color={d.reward_risk_ratio >= 2 ? '#52c41a' : d.reward_risk_ratio >= 1.5 ? '#faad14' : '#ff4d4f'} />
+                        <DetailTag label="Vol Ratio" value={`${d.volume_ratio}x`} />
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+
+        {/* Step 6: Liquidity / Volume Assessment */}
+        {record.liquidityGrade && record.liquidityGrade !== 'Error' && record.liquidityGrade !== '—' && (
+          <div style={{ marginBottom: 12 }}>
+            <Text strong style={{ fontSize: '12px', color: '#333' }}>Liquidity / Volume</Text>
+            <div style={{ marginTop: 4, padding: '6px 10px', backgroundColor: '#f6ffed', borderRadius: 4, border: '1px solid #b7eb8f' }}>
+              {(() => {
+                const lg = record.liquidityGrade;
+                const lr = record.liquidityReason || '';
+                const ld = record.liquidityDetails;
+                let gColor = '#52c41a';
+                if (lg === 'Caution') gColor = '#faad14';
+                else if (lg === 'Poor') gColor = '#ff4d4f';
+                return (
+                  <div>
+                    <div style={{ fontSize: '11px', marginBottom: 4 }}>
+                      Grade: <Tag color={gColor} style={{ fontSize: '10px', fontWeight: 600 }}>{lg}</Tag>
+                    </div>
+                    {lr && <div style={{ fontSize: '10px', color: '#555', marginBottom: 4 }}>{lr}</div>}
+                    {ld && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', fontSize: '10px' }}>
+                        <DetailTag label="RVOL" value={`${ld.rvol}x`} color={ld.rvol >= 1.5 ? '#52c41a' : ld.rvol >= 0.7 ? '#faad14' : '#ff4d4f'} />
+                        <DetailTag label="Spread" value={ld.spread_pct != null ? `${ld.spread_pct}%` : '—'} color={ld.spread_pct != null && ld.spread_pct < 0.05 ? '#52c41a' : ld.spread_pct != null && ld.spread_pct < 0.20 ? '#faad14' : '#ff4d4f'} />
+                        <DetailTag label="Today Vol" value={ld.today_volume != null ? (ld.today_volume / 1e6).toFixed(1) + 'M' : '—'} />
+                        <DetailTag label="Avg 20d Vol" value={ld.avg_20d_volume != null ? (ld.avg_20d_volume / 1e6).toFixed(1) + 'M' : '—'} />
+                        <DetailTag label="$ Vol" value={ld.dollar_volume != null ? (ld.dollar_volume / 1e6).toFixed(1) + 'M' : '—'} />
+                        <DetailTag label="Pattern" value={ld.volume_pattern || '—'} />
+                        <DetailTag label="Score" value={`${ld.liq_score || 0}/100`} color={ld.liq_score >= 50 ? '#52c41a' : ld.liq_score >= 25 ? '#faad14' : '#ff4d4f'} />
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+
+        {/* Step 7: News / Event Assessment */}
+        {record.newsGrade && record.newsGrade !== 'Error' && record.newsGrade !== '—' && (
+          <div style={{ marginBottom: 12 }}>
+            <Text strong style={{ fontSize: '12px', color: '#333' }}>News / Event</Text>
+            <div style={{ marginTop: 4, padding: '6px 10px', backgroundColor: '#fff7e6', borderRadius: 4, border: '1px solid #ffd591' }}>
+              {(() => {
+                const ng = record.newsGrade;
+                const nr = record.newsReason || '';
+                const nd = record.newsDetails;
+                let gColor = '#52c41a';
+                if (ng === 'Catalyst') gColor = '#1890ff';
+                else if (ng === 'Caution') gColor = '#faad14';
+                else if (ng === 'High Event Risk') gColor = '#ff4d4f';
+                return (
+                  <div>
+                    <div style={{ fontSize: '11px', marginBottom: 4 }}>
+                      Grade: <Tag color={gColor} style={{ fontSize: '10px', fontWeight: 600 }}>{ng}</Tag>
+                    </div>
+                    {nr && <div style={{ fontSize: '10px', color: '#555', marginBottom: 4 }}>{nr}</div>}
+                    {nd && nd.top_headlines && nd.top_headlines.length > 0 && (
+                      <div style={{ fontSize: '10px', color: '#888', marginBottom: 4 }}>
+                        {nd.top_headlines.slice(0, 3).map((h: string, idx: number) => (
+                          <div key={idx} style={{ marginBottom: 2 }}>• {h}</div>
+                        ))}
+                      </div>
+                    )}
+                    {nd && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', fontSize: '10px' }}>
+                        <DetailTag label="Headlines" value={`${nd.headline_count || 0}`} />
+                        <DetailTag label="Earnings Soon" value={nd.earnings_soon ? 'Yes' : 'No'} color={nd.earnings_soon ? '#faad14' : '#52c41a'} />
+                        <DetailTag label="Catalyst" value={nd.has_catalyst ? '✓' : '—'} color={nd.has_catalyst ? '#1890ff' : '#999'} />
+                        <DetailTag label="Caution" value={nd.has_caution ? '⚠' : '—'} color={nd.has_caution ? '#faad14' : '#999'} />
+                        <DetailTag label="High Risk Event" value={nd.has_high_event ? '⚠' : '—'} color={nd.has_high_event ? '#ff4d4f' : '#999'} />
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+
+        {/* Step 8: Final Risk Assessment */}
+        {record.riskGrade && record.riskGrade !== '—' && (
+          <div style={{ marginBottom: 12 }}>
+            <Text strong style={{ fontSize: '12px', color: '#333' }}>Final Risk Assessment</Text>
+            <div style={{ marginTop: 4, padding: '6px 10px', backgroundColor: '#fff2e8', borderRadius: 4, border: '1px solid #ffccc7' }}>
+              {(() => {
+                const rg = record.riskGrade;
+                const rr = record.riskReason || '';
+                const rd = record.riskDetails;
+                let gColor = '#52c41a';
+                let bgColor = '#f6ffed';
+                let borderColor = '#b7eb8f';
+                if (rg === 'MEDIUM') { gColor = '#faad14'; bgColor = '#fffbe6'; borderColor = '#ffe58f'; }
+                else if (rg === 'HIGH') { gColor = '#ff4d4f'; bgColor = '#fff2f0'; borderColor = '#ffa39e'; }
+                else if (rg === 'SKIP') { gColor = '#bbb'; bgColor = '#f5f5f5'; borderColor = '#d9d9d9'; }
+                return (
+                  <div style={{ backgroundColor: bgColor, padding: '6px 10px', borderRadius: 4, border: `1px solid ${borderColor}` }}>
+                    <div style={{ fontSize: '12px', marginBottom: 4 }}>
+                      Grade: <Tag color={gColor} style={{ fontSize: '11px', fontWeight: 700 }}>{rg}</Tag>
+                    </div>
+                    {rr && <div style={{ fontSize: '10px', color: '#555', marginBottom: 4 }}>{rr}</div>}
+                    {rd && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', fontSize: '10px' }}>
+                        <DetailTag label="Risk Score" value={`${rd.risk_score || '—'}/100`}
+                          color={rd.risk_score >= 65 ? '#ff4d4f' : rd.risk_score >= 35 ? '#faad14' : '#52c41a'} />
+                        <DetailTag label="Factors" value={(rd.risk_factors || []).join(', ') || 'none'} />
+                        <DetailTag label="ATR Vol" value={rd.atr_pct ? `${rd.atr_pct}%` : '—'}
+                          color={rd.atr_pct > 5 ? '#ff4d4f' : '#52c41a'} />
+                        <DetailTag label="Liq" value={rd.liquidity_grade || '—'} />
+                        <DetailTag label="News" value={rd.news_grade || '—'} />
+                        <DetailTag label="Entry" value={rd.entry_quality || '—'} />
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+
         {/* Inherited market scan data */}
         {scanData && (
           <div style={{ marginBottom: 0 }}>
@@ -5195,36 +5369,7 @@ Please respond in this exact JSON format:
           console.warn('[FINE SCAN] AI validation skipped for ' + symbol + ': ' + (aiError as any).message);
         }
 
-        // --- Part 2: MTF Multi-timeframe confirmation ---
-        // Data source priority: Finnhub → Alpaca fallback → unavailable
-        let mtfResult: any = { alignment: 'N/A', available: false };
-        setFineScanMessage(`MTF analysis: fetching ${symbol} (1D/4H/1H/30m/15m)...`);
-        try {
-          const mtfResponse = await fetch('/api/ai/analyze/mtf', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ symbol })
-          });
-          if (mtfResponse.ok) {
-            const mtfData = await mtfResponse.json();
-            if (mtfData.success && mtfData.mtf_results) {
-              const mr = mtfData.mtf_results;
-              mtfResult = {
-                alignment: mtfData.alignment || 'N/A',
-                results: mr,
-                daily: mr['1D'],
-                hour4: mr['4H'],
-                hour1: mr['1H'],
-                s30m: mr['30m'],
-                s15m: mr['15m'],
-                available: true
-              };
-              console.log(`[FINE SCAN] ${symbol} MTF: ${mtfData.alignment}`);
-            }
-          }
-        } catch (mtfError) {
-          console.warn(`[FINE SCAN] MTF skipped for ${symbol}: ${(mtfError as any).message}`);
-        }
+        // (MTF multi-timeframe confirmation removed per user request — no 1D/4H/1H/30m/15m fetching)
 
         // Priority lookup from marketScannerResults
         const scanData = marketScannerResults && marketScannerResults.length > 0
@@ -5240,14 +5385,6 @@ Please respond in this exact JSON format:
           matchConfidence,
           priority: 0,
           aiUsed: aiSucceeded,
-          // Part 2: MTF fields
-          mtfAlignment: mtfResult.alignment,
-          mtfAvailable: mtfResult.available,
-          mtfDaily: mtfResult.daily,
-          mtfHour4: mtfResult.hour4,
-          mtfHour1: mtfResult.hour1,
-          mtf30m: mtfResult.s30m,
-          mtf15m: mtfResult.s15m,
           // Step 3: Quick Backtest Validation
           backtestStatus: 'pending',
           backtestSummary: '',
@@ -5595,6 +5732,57 @@ Please respond in this exact JSON format:
           }
         }
         // --- End Step 3 (Quick Backtest + Optimization) ---
+
+        // --- Step 4: Entry Quality Scan (Alpaca-based) ---
+        try {
+          setFineScanMessage(`[${i + 1}/${candidateCount}] ${symbol}: assessing entry quality...`);
+          const eqResponse = await entryQualityAPI.assessEntry(symbol);
+          if (eqResponse.data && eqResponse.data.success) {
+            rec.entryQuality = eqResponse.data.entry_quality;
+            rec.entryReason = eqResponse.data.entry_reason || '';
+            rec.entryScore = eqResponse.data.entry_score || 0;
+            rec.entryDetails = eqResponse.data.details || null;
+          } else {
+            rec.entryQuality = 'Error / No Data';
+            rec.entryReason = eqResponse.data?.message || 'API returned no valid data';
+            rec.entryDetails = null;
+          }
+        } catch (eqErr: any) {
+          console.warn(`[EntryQuality] ${symbol} failed:`, eqErr.message);
+          rec.entryQuality = 'Error / No Data';
+          rec.entryReason = eqErr.message || 'Alpaca request failed';
+          rec.entryDetails = null;
+        }
+        // --- End Step 4: Entry Quality ---
+
+        // --- Step 5: Liquidity / Volume Scan (Step 6) ---
+        try {
+          setFineScanMessage(`[${i + 1}/${candidateCount}] ${symbol}: liquidity/volume check...`);
+          const advResponse = await fineScanAdvancedAPI.scan(symbol, rec.entryDetails);
+          if (advResponse.data && advResponse.data.success) {
+            rec.liquidityGrade = advResponse.data.liquidity?.grade || 'Error';
+            rec.liquidityReason = advResponse.data.liquidity?.reason || '';
+            rec.liquidityDetails = advResponse.data.liquidity?.details || null;
+            rec.newsGrade = advResponse.data.news?.grade || 'Error';
+            rec.newsReason = advResponse.data.news?.reason || '';
+            rec.newsDetails = advResponse.data.news?.details || null;
+            rec.riskGrade = advResponse.data.risk?.grade || 'MEDIUM';
+            rec.riskReason = advResponse.data.risk?.reason || '';
+            rec.riskDetails = advResponse.data.risk?.details || null;
+          } else {
+            rec.liquidityGrade = 'Error';
+            rec.newsGrade = 'Error';
+            rec.riskGrade = 'SKIP';
+            rec.riskReason = 'API returned no valid data';
+          }
+        } catch (advErr: any) {
+          console.warn(`[FineScanAdvanced] ${symbol} failed:`, advErr.message);
+          rec.liquidityGrade = 'Error';
+          rec.newsGrade = 'Error';
+          rec.riskGrade = 'SKIP';
+          rec.riskReason = advErr.message || 'advanced scan failed';
+        }
+        // --- End Steps 5-6-7: Liquidity, News, Risk ---
 
         // Assign temporary priority based on current confidence (final sort happens at end)
         const currentSorted = [...results].sort((a: any, b: any) => b.matchConfidence - a.matchConfidence);
@@ -7201,6 +7389,86 @@ Please respond in this exact JSON format:
                         )}
                       </div>
                     );
+                  },
+                },
+                // ===== Entry Quality Column =====
+                {
+                  title: 'Entry',
+                  key: 'entryQuality',
+                  width: 100,
+                  render: (record) => {
+                    const eq = record.entryQuality || '—';
+                    const reason = record.entryReason || '';
+                    const details = record.entryDetails;
+
+                    // Build compact tag
+                    let tagColor = '#999', tagLabel = '—', shortText = '';
+                    if (eq === 'Excellent') { tagColor = '#52c41a'; tagLabel = 'Excellent'; shortText = details ? `R/R ${details.reward_risk_ratio}:1` : ''; }
+                    else if (eq === 'Good') { tagColor = '#73d13d'; tagLabel = 'Good'; shortText = details ? `R/R ${details.reward_risk_ratio}:1` : ''; }
+                    else if (eq === 'Wait for Pullback') { tagColor = '#faad14'; tagLabel = 'Wait'; shortText = 'pullback'; }
+                    else if (eq === 'Chasing / Extended') { tagColor = '#ff7a45'; tagLabel = 'Extended'; shortText = 'chasing'; }
+                    else if (eq === 'Near Resistance') { tagColor = '#ff4d4f'; tagLabel = 'Near Res'; shortText = 'limited upside'; }
+                    else if (eq === 'Poor Reward-Risk') { tagColor = '#ff4d4f'; tagLabel = 'Poor R/R'; shortText = details ? `R/R ${details.reward_risk_ratio}:1` : ''; }
+                    else if (eq === 'Partial') { tagColor = '#b37feb'; tagLabel = 'Partial'; shortText = reason ? reason.substring(0, 30) : 'incomplete data'; }
+                    else if (eq === 'Data Unavailable') { tagColor = '#bbb'; tagLabel = 'No Data'; shortText = reason ? reason.substring(0, 30) : '—'; }
+                    else if (eq === 'Error / No Data') { tagColor = '#bbb'; tagLabel = 'Error'; shortText = 'no data'; }
+
+                    return (
+                      <div style={{ lineHeight: '1.6' }}>
+                        <Tag color={tagColor} style={{ fontSize: '10px', fontWeight: 600, margin: 0 }}>{tagLabel}</Tag>
+                        {shortText && (
+                          <div style={{ fontSize: '9px', color: '#999', marginTop: 1, lineHeight: '1.3' }}>
+                            {shortText}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  },
+                },
+                // ===== Liquidity Column =====
+                {
+                  title: 'Liq',
+                  key: 'liquidityGrade',
+                  width: 65,
+                  render: (record) => {
+                    const lg = record.liquidityGrade || '—';
+                    let color = '#bbb', label = '—';
+                    if (lg === 'Good') { color = '#52c41a'; label = 'Good'; }
+                    else if (lg === 'Caution') { color = '#faad14'; label = 'Caution'; }
+                    else if (lg === 'Poor') { color = '#ff4d4f'; label = 'Poor'; }
+                    else if (lg === 'Error') { color = '#bbb'; label = 'Error'; }
+                    return <Tag color={color} style={{ fontSize: '10px', fontWeight: 600, margin: 0 }}>{label}</Tag>;
+                  },
+                },
+                // ===== News Column =====
+                {
+                  title: 'News',
+                  key: 'newsGrade',
+                  width: 80,
+                  render: (record) => {
+                    const ng = record.newsGrade || '—';
+                    let color = '#bbb', label = '—';
+                    if (ng === 'Clear') { color = '#52c41a'; label = 'Clear'; }
+                    else if (ng === 'Catalyst') { color = '#1890ff'; label = 'Catalyst'; }
+                    else if (ng === 'Caution') { color = '#faad14'; label = 'Caution'; }
+                    else if (ng === 'High Event Risk') { color = '#ff4d4f'; label = 'High Risk'; }
+                    else if (ng === 'Error') { color = '#bbb'; label = 'Error'; }
+                    return <Tag color={color} style={{ fontSize: '10px', fontWeight: 600, margin: 0 }}>{label}</Tag>;
+                  },
+                },
+                // ===== Final Risk Column =====
+                {
+                  title: 'Risk',
+                  key: 'riskGrade',
+                  width: 65,
+                  render: (record) => {
+                    const rg = record.riskGrade || '—';
+                    let color = '#bbb', label = '—';
+                    if (rg === 'LOW') { color = '#52c41a'; label = 'LOW'; }
+                    else if (rg === 'MEDIUM') { color = '#faad14'; label = 'MED'; }
+                    else if (rg === 'HIGH') { color = '#ff4d4f'; label = 'HIGH'; }
+                    else if (rg === 'SKIP') { color = '#bbb'; label = 'SKIP'; }
+                    return <Tag color={color} style={{ fontSize: '10px', fontWeight: 600, margin: 0 }}>{label}</Tag>;
                   },
                 },
                 {

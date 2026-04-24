@@ -106,5 +106,19 @@ export const userAPI = {
   updateProfile: (profileData: any) => api.put('/user/profile', profileData),
 };
 
+// Entry Quality API
+export const entryQualityAPI = {
+  assessEntry: (symbol: string) => {
+    return api.post('/ai/entry-quality', { symbol });
+  },
+};
+
+// Fine Scan Advanced API (Steps 6-8: Liquidity, News, Risk)
+export const fineScanAdvancedAPI = {
+  scan: (symbol: string, entryDetails?: any) => {
+    return api.post('/ai/fine-scan-advanced', { symbol, entryDetails });
+  },
+};
+
 export { scannerApi };
 export default api;

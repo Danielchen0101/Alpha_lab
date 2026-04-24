@@ -18702,7 +18702,1034 @@ if __name__ == '__main__':
             print(f"  {rule.rule} -> {rule.endpoint}")
 
 
-    # ============ MTF Multi-Timeframe Confirmation Analysis (v2) ============
+    # ============ Entry Quality Analysis (Alpaca-based) ============
+
+@app.route('/api/ai/entry-quality', methods=['POST'])
+def ai_entry_quality():
+    """
+    Entry Quality / Position Quality Scan.
+    Fetches Alpaca snapshot + 60 daily bars, computes ATR/EMA20/EMA50/
+    support/resistance/entry zone/invalidation/targets and returns
+    entry quality grade: Excellent / Good / Wait for Pullback /
+    Chasing / Extended / Poor Reward-Risk / Near Resistance / Error
+    """
+    import time
+    import json
+    import requests as req_lib
+    import math
+
+    try:
+        data = request.get_json()
+        if not data or 'symbol' not in data:
+            return jsonify({'success': False, 'message': 'symbol required'}), 400
+
+        symbol = data['symbol'].strip().upper()
+        start_time = time.time()
+
+        print(f'\n=== ENTRY QUALITY START: {symbol} ===')
+
+        # Track source statuses
+        source_status = {
+            'alpaca_snapshot': 'not_attempted',
+            'alpaca_bars': 'not_attempted',
+        }
+
+        # ── 1. Fetch Alpaca Snapshot ──
+        current_price = 0
+        daily_bar = {}
+        latest_trade = {}
+        latest_quote = {}
+
+        try:
+            snap_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/snapshot'
+            snap_headers = {
+                'APCA-API-KEY-ID': ALPACA_API_KEY,
+                'APCA-API-SECRET-KEY': ALPACA_API_SECRET
+            }
+            snap_resp = req_lib.get(snap_url, headers=snap_headers, timeout=10)
+            if snap_resp.status_code == 200:
+                source_status['alpaca_snapshot'] = 'ok'
+                snap = snap_resp.json()
+                latest_trade = snap.get('latestTrade', {}) or {}
+                latest_quote = snap.get('latestQuote', {}) or {}
+                daily_bar = snap.get('dailyBar', {}) or {}
+                current_price = float(latest_trade.get('p', 0))
+                if current_price <= 0:
+                    current_price = float(daily_bar.get('c', 0) or 0)
+                if current_price <= 0:
+                    current_price = float(snap.get('prevDailyBar', {}).get('c', 0) or 0)
+            else:
+                source_status['alpaca_snapshot'] = f'http_{snap_resp.status_code}'
+        except Exception as snap_err:
+            source_status['alpaca_snapshot'] = f'exception: {str(snap_err)[:60]}'
+
+        # ── 2. Fetch 60 daily bars (3 months) ──
+        closes = []
+        highs = []
+        lows = []
+        volumes = []
+        bars = []
+
+        try:
+            bars_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/bars'
+            # Calculate date range
+            from datetime import datetime as dt_dt, timedelta as dt_td
+            bars_end = dt_dt.utcnow()
+            bars_start = bars_end - dt_td(days=90)
+            bars_params = {
+                'timeframe': '1Day', 'limit': 100, 'adjustment': 'raw',
+                'start': bars_start.strftime('%Y-%m-%dT00:00:00Z'),
+                'end': bars_end.strftime('%Y-%m-%dT00:00:00Z'),
+                'sort': 'asc'
+            }
+            snap_headers = {
+                'APCA-API-KEY-ID': ALPACA_API_KEY,
+                'APCA-API-SECRET-KEY': ALPACA_API_SECRET
+            }
+            bars_resp = req_lib.get(bars_url, headers=snap_headers, params=bars_params, timeout=10)
+            if bars_resp.status_code == 200:
+                source_status['alpaca_bars'] = 'ok'
+                raw = bars_resp.json().get('bars', [])
+                bars = raw if raw else []
+                closes = [float(b['c']) for b in bars if b.get('c')]
+                highs = [float(b['h']) for b in bars if b.get('h')]
+                lows = [float(b['l']) for b in bars if b.get('l')]
+                volumes = [float(b['v']) for b in bars if b.get('v')]
+            else:
+                source_status['alpaca_bars'] = f'http_{bars_resp.status_code}'
+        except Exception as bars_err:
+            source_status['alpaca_bars'] = f'exception: {str(bars_err)[:60]}'
+
+        # ── 3. Fallback price from bars if snapshot failed but bars exist ──
+        if current_price <= 0 and closes:
+            current_price = closes[-1]
+
+        n = len(closes)
+
+        # ── 4. Check data sufficiency ──
+        data_unavailable = (current_price <= 0)
+        partial_data = False
+        entry_quality = ''
+        entry_reason = ''
+        score = 0
+        entry_details = {}
+
+        if data_unavailable:
+            entry_quality = 'Data Unavailable'
+            entry_reason = 'No current price from Alpaca snapshot or bars'
+            data_notes = []
+            if source_status['alpaca_snapshot'] != 'ok':
+                data_notes.append(f"snapshot: {source_status['alpaca_snapshot']}")
+            if source_status['alpaca_bars'] != 'ok':
+                data_notes.append(f"bars: {source_status['alpaca_bars']}")
+            if data_notes:
+                entry_reason += f" [{'; '.join(data_notes)}]"
+
+            elapsed = round(time.time() - start_time, 2)
+            print(f'=== ENTRY QUALITY {symbol}: Data Unavailable ({elapsed}s) ===')
+            print(f'    source_status: {source_status}')
+
+            entry_details = {
+                'current_price': 0,
+                'atr': 0,
+                'atr_pct': 0,
+                'ema20': None,
+                'ema50': None,
+                'support': 0,
+                'resistance': 0,
+                'strong_support': 0,
+                'strong_resistance': 0,
+                'entry_zone_low': 0,
+                'entry_zone_high': 0,
+                'invalidation': 0,
+                'stop_distance_pct': 0,
+                'target_1': 0,
+                'target_2': 0,
+                'reward_risk_ratio': 0,
+                'dist_from_support_pct': 0,
+                'dist_from_resistance_pct': 0,
+                'near_resistance': False,
+                'near_support': False,
+                'volume_ratio': 0,
+                'regime_class': 'unknown',
+                'score': 0,
+                'data_source_status': source_status,
+                'partial': False,
+            }
+
+            return jsonify({
+                'success': True,
+                'symbol': symbol,
+                'entry_quality': entry_quality,
+                'entry_reason': entry_reason.strip(),
+                'entry_score': 0,
+                'details': entry_details,
+                'data_source_status': source_status,
+                'elapsed': elapsed,
+            })
+
+        # ── 4. Compute indicators from real data only ──
+        atr = 0
+        ema20 = None
+        ema50 = None
+        support_1 = 0
+        resistance_1 = 0
+        strong_support = 0
+        strong_resistance = 0
+        atr_pct = 0
+        rr_ratio = 0
+        dist_from_support_pct = 0
+        dist_from_resistance_pct = 0
+        dist_from_ema20_pct = 0
+
+        partial_indicators = []
+
+        # ATR(14) - real data only
+        if n >= 15:
+            trs = []
+            for i in range(1, len(highs)):
+                hl = highs[i] - lows[i]
+                hc = abs(highs[i] - closes[i-1])
+                lc = abs(lows[i] - closes[i-1])
+                trs.append(max(hl, hc, lc))
+            if len(trs) >= 14:
+                atr = sum(trs[-14:]) / 14
+                atr_pct = atr / current_price * 100 if current_price > 0 else 0
+            else:
+                partial_indicators.append('atr')
+                source_status['alpaca_bars'] = f'insufficient_trs({len(trs)}/14)'
+        else:
+            partial_indicators.append('atr')
+            if n > 0 and n < 15:
+                source_status['alpaca_bars'] = f'insufficient_bars({n}/15)'
+
+        # EMA20/50
+        def calc_ema(data, period):
+            if len(data) < period:
+                return None
+            k = 2 / (period + 1)
+            ema = sum(data[:period]) / period
+            for i in range(period, len(data)):
+                ema = data[i] * k + ema * (1 - k)
+            return ema
+
+        if n >= 20:
+            ema20 = calc_ema(closes, 20)
+        else:
+            partial_indicators.append('ema20')
+        if n >= 50:
+            ema50 = calc_ema(closes, 50)
+        else:
+            partial_indicators.append('ema50')
+        if n >= 50:
+            pass  # full data
+        else:
+            partial_indicators.append('ema50')
+
+        # Support/Resistance from bars only
+        if n >= 14:
+            recent_high = max(highs[-14:])
+            recent_low = min(lows[-14:])
+            resistance_1 = recent_high
+            support_1 = recent_low
+        else:
+            partial_indicators.append('support_resistance')
+        if n > 0:
+            full_high = max(highs)
+            full_low = min(lows)
+            strong_support = full_low
+            strong_resistance = full_high
+        else:
+            strong_support = 0
+            strong_resistance = 0
+
+        partial_data = len(partial_indicators) > 0
+
+        # ── 5. Compute entry zone and targets (only if we have support and ATR) ──
+        entry_zone_low = 0
+        entry_zone_high = 0
+        invalidation = 0
+        stop_distance_pct = 0
+        target_1 = 0
+        target_2 = 0
+
+        if support_1 > 0 and atr > 0:
+            entry_zone_low = round(support_1, 2)
+            entry_zone_high = round(support_1 + atr * 0.5, 2)
+            invalidation = round(entry_zone_low - atr * 1.5, 2)
+            stop_distance_pct = round(((current_price - entry_zone_high) / current_price) * 100, 2) if current_price > 0 else 0
+            target_1 = round(entry_zone_high + atr * 1.0, 2)
+            target_2 = round(entry_zone_high + atr * 2.0, 2)
+            r_to_target1 = (target_1 - entry_zone_high) / (entry_zone_high - invalidation) if (entry_zone_high - invalidation) > 0 else 0
+            r_to_target2 = (target_2 - entry_zone_high) / (entry_zone_high - invalidation) if (entry_zone_high - invalidation) > 0 else 0
+            rr_ratio = round(r_to_target2, 2)
+
+        # ── 6. Entry Quality Assessment ──
+        dist_from_support_pct = ((current_price - support_1) / current_price * 100) if current_price > 0 and support_1 > 0 else 0
+        dist_from_resistance_pct = ((resistance_1 - current_price) / current_price * 100) if current_price > 0 and resistance_1 > 0 else 0
+        dist_from_ema20_pct = ((current_price - ema20) / current_price * 100) if ema20 and current_price > 0 else 0
+
+        avg_vol_recent = sum(volumes[-5:]) / 5 if len(volumes) >= 5 else 0
+        avg_vol_prior = sum(volumes[-10:-5]) / 5 if len(volumes) >= 10 else 0
+        vol_ratio = avg_vol_recent / avg_vol_prior if avg_vol_prior > 0 else 1.0
+
+        above_ema20 = current_price > ema20 if ema20 else None
+        above_ema50 = current_price > ema50 if ema50 else None
+        ema_bullish = ema20 > ema50 if ema20 and ema50 else None
+
+        near_resistance = (resistance_1 - current_price) <= (atr * 0.5) if resistance_1 > 0 and atr > 0 else False
+        near_support = (current_price - support_1) <= (atr * 0.3) if support_1 > 0 and atr > 0 else False
+        overextended = dist_from_support_pct > (atr / current_price * 100 * 3) if current_price > 0 and atr > 0 and dist_from_support_pct > 0 else False
+        chasing = (above_ema20 == True) and (dist_from_ema20_pct > 1.5) if ema20 else False
+        poor_rr = rr_ratio < 1.5 if rr_ratio > 0 else True
+
+        # Regime (only with real data)
+        regime_class = 'unknown'
+        if support_1 > 0 and resistance_1 > 0:
+            if near_resistance and not near_support:
+                regime_class = 'near_resistance'
+            elif near_support and not near_resistance:
+                regime_class = 'near_support'
+            elif above_ema20 == True and ema_bullish == True:
+                regime_class = 'trending'
+            elif above_ema20 == False and ema_bullish == False:
+                regime_class = 'downtrend'
+            else:
+                regime_class = 'range_bound'
+
+        # Score 0-100 (only computed metrics that have real data)
+        score = 0
+        deductions = []
+        if above_ema20 == True:
+            score += 25
+        elif above_ema20 == False:
+            deductions.append('below ema20')
+            score -= 15
+        # else ema20 unavailable -> skip this score component
+
+        if vol_ratio > 1.2:
+            score += 15
+        elif vol_ratio < 0.5:
+            deductions.append('low volume')
+
+        if support_1 > 0:
+            if near_support:
+                score += 25
+            elif dist_from_support_pct < 1.0:
+                score += 15
+
+        if resistance_1 > 0 and near_resistance:
+            deductions.append('near resistance')
+            score -= 25
+
+        if chasing:
+            deductions.append('chasing')
+            score -= 20
+        if overextended:
+            deductions.append('overextended')
+            score -= 15
+        if rr_ratio >= 2.0:
+            score += 15
+        elif rr_ratio >= 1.5:
+            score += 8
+        else:
+            deductions.append('poor r/r')
+
+        if 0.5 <= atr_pct <= 4.0:
+            score += 5
+
+        # Grade
+        if partial_data:
+            if score >= 55:
+                entry_quality = 'Good'
+            elif score >= 30:
+                entry_quality = 'Wait'
+            else:
+                entry_quality = 'Bad'
+            entry_quality = 'Partial'
+        else:
+            if score >= 70: entry_quality = 'Excellent'
+            elif score >= 55: entry_quality = 'Good'
+            elif score >= 40:
+                if chasing or overextended: entry_quality = 'Chasing / Extended'
+                elif near_resistance: entry_quality = 'Near Resistance'
+                else: entry_quality = 'Wait for Pullback'
+            elif score >= 25: entry_quality = 'Poor Reward-Risk'
+            else: entry_quality = 'Chasing / Extended'
+
+        # Reason
+        if partial_data:
+            entry_reason = 'Partial data. ' + ', '.join(partial_indicators) + ' unavailable.'
+        elif entry_quality == 'Excellent':
+            entry_reason = 'Near support, healthy volume, good R/R, trending with EMA alignment.'
+        elif entry_quality == 'Good':
+            entry_reason = 'Reasonable entry. ' + ('Near support.' if near_support else '') + (' Decent R/R.' if not poor_rr else '')
+        elif entry_quality == 'Wait for Pullback':
+            entry_reason = 'Price needs to pull back to support/EMA20 zone for better entry.'
+        elif entry_quality == 'Chasing / Extended':
+            entry_reason = 'Price too far above support/EMA20, waiting for reversion improves R/R.'
+        elif entry_quality == 'Near Resistance':
+            entry_reason = f'Only {round(dist_from_resistance_pct, 1)}% from resistance, limited upside.'
+        elif entry_quality == 'Poor Reward-Risk':
+            entry_reason = f'R/R ratio {rr_ratio}:1 is below 1.5 threshold.'
+        else:
+            entry_reason = 'Unclear entry quality.'
+
+        if deductions:
+            entry_reason += ' Factors: ' + ', '.join(deductions) + '.'
+
+        # Add data source info to reason
+        data_notes = []
+        if source_status['alpaca_snapshot'] != 'ok':
+            data_notes.append(f"snapshot: {source_status['alpaca_snapshot']}")
+        if source_status['alpaca_bars'] != 'ok':
+            data_notes.append(f"bars: {source_status['alpaca_bars']}")
+        if data_notes:
+            entry_reason += f" [{'; '.join(data_notes)}]"
+
+        elapsed = round(time.time() - start_time, 2)
+        print(f'=== ENTRY QUALITY {symbol}: {entry_quality} (score {score}, R/R {rr_ratio}, {elapsed}s) ===')
+        print(f'    source_status: {source_status}')
+        print(f'    partial_indicators: {partial_indicators}')
+
+        entry_details = {
+            'current_price': round(current_price, 2),
+            'atr': round(atr, 2),
+            'atr_pct': round(atr_pct, 2),
+            'ema20': round(ema20, 2) if ema20 else None,
+            'ema50': round(ema50, 2) if ema50 else None,
+            'support': round(support_1, 2),
+            'resistance': round(resistance_1, 2),
+            'strong_support': round(strong_support, 2),
+            'strong_resistance': round(strong_resistance, 2),
+            'entry_zone_low': entry_zone_low,
+            'entry_zone_high': entry_zone_high,
+            'invalidation': invalidation,
+            'stop_distance_pct': stop_distance_pct,
+            'target_1': target_1,
+            'target_2': target_2,
+            'reward_risk_ratio': rr_ratio,
+            'dist_from_support_pct': round(dist_from_support_pct, 2),
+            'dist_from_resistance_pct': round(dist_from_resistance_pct, 2),
+            'near_resistance': near_resistance,
+            'near_support': near_support,
+            'volume_ratio': round(vol_ratio, 2),
+            'regime_class': regime_class,
+            'score': score,
+            'data_source_status': source_status,
+            'partial': partial_data,
+        }
+
+        return jsonify({
+            'success': True,
+            'symbol': symbol,
+            'entry_quality': entry_quality,
+            'entry_reason': entry_reason.strip(),
+            'entry_score': score,
+            'details': entry_details,
+            'data_source_status': source_status,
+            'elapsed': elapsed,
+        })
+
+    except Exception as e:
+        print(f'[ENTRY QUALITY ERROR] {e}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+    # ============ Liquidity / News / Final Risk Scan (Steps 6-7-8) ============
+
+@app.route('/api/ai/fine-scan-advanced', methods=['POST'])
+def ai_fine_scan_advanced():
+    """
+    Combined lightweight scan for Liquidity/Volume (Step 6),
+    News/Event (Step 7), and Final Risk (Step 8).
+
+    Accepts:
+      { symbol: "...", entryDetails: { ... } | null }
+
+    Returns:
+      liquidity: { grade, reason, details }
+      news:      { grade, reason, details }
+      risk:      { grade, reason, details }
+    """
+    import time
+    from datetime import datetime, timedelta
+    import json
+    import re
+
+    try:
+        body = request.get_json()
+        if not body or 'symbol' not in body:
+            return jsonify({'success': False, 'message': 'symbol required'}), 400
+
+        symbol = body['symbol'].strip().upper()
+        entry_details = body.get('entryDetails', None)
+        start_ts = time.time()
+        print(f'\n=== FINE SCAN ADVANCED START: {symbol} ===')
+
+        headers = {
+            'APCA-API-KEY-ID': ALPACA_API_KEY,
+            'APCA-API-SECRET-KEY': ALPACA_API_SECRET,
+        }
+
+        # Source status tracking
+        source_status = {
+            'alpaca_snapshot': 'not_attempted',
+            'alpaca_bars': 'not_attempted',
+            'alpaca_news': 'not_attempted',
+            'finnhub_news': 'not_attempted',
+            'finnhub_earnings': 'not_attempted',
+            'ai_risk': 'not_attempted',
+        }
+
+        # ──────────────────────────────────────────────────
+        # Step 6: Liquidity / Volume Scan
+        # ──────────────────────────────────────────────────
+        liquidity_grade = 'Caution'
+        liquidity_reason = 'no liquidity data'
+        liquidity_details = {
+            'rvol': 0, 'spread_pct': None, 'today_volume': 0,
+            'avg_20d_volume': 0, 'dollar_volume': 0,
+            'spread_type': 'unknown', 'volume_pattern': 'unknown',
+            'liq_score': 0,
+        }
+
+        current_price = 0
+
+        try:
+            snap_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/snapshot'
+            snap_resp = requests.get(snap_url, headers=headers, timeout=10)
+            if snap_resp.status_code == 200:
+                source_status['alpaca_snapshot'] = 'ok'
+                snap = snap_resp.json()
+                latest_trade = snap.get('latestTrade', {}) or {}
+                latest_quote = snap.get('latestQuote', {}) or {}
+                daily_bar = snap.get('dailyBar', {}) or {}
+
+                current_price = float(latest_trade.get('p', 0))
+                if current_price <= 0:
+                    current_price = float(daily_bar.get('c', 0) or 0)
+                if current_price <= 0:
+                    current_price = float(snap.get('prevDailyBar', {}).get('c', 0) or 0)
+
+                # Bid/Ask spread
+                bid = float(latest_quote.get('bp', 0))
+                ask = float(latest_quote.get('ap', 0))
+                spread_pct = None
+                if current_price > 0 and bid > 0 and ask > 0:
+                    spread_pct = round(((ask - bid) / current_price) * 100, 3)
+
+                # Daily volume
+                today_vol = float(daily_bar.get('v', 0)) if daily_bar else 0
+
+                # Recent 21 bars for avg volume
+                bars_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/bars'
+                bars_params = {'timeframe': '1Day', 'limit': 21, 'adjustment': 'raw', 'feed': 'sip', 'sort': 'desc'}
+                bars_resp = requests.get(bars_url, headers=headers, params=bars_params, timeout=10)
+                vol_list = []
+                if bars_resp.status_code == 200:
+                    source_status['alpaca_bars'] = 'ok'
+                    bars = bars_resp.json().get('bars', [])
+                    for b in bars:
+                        vol_list.append(float(b.get('v', 0)))
+                else:
+                    source_status['alpaca_bars'] = f'http_{bars_resp.status_code}'
+
+                recent_volumes = vol_list[:21]
+                avg_20d_vol = sum(recent_volumes[1:]) / max(len(recent_volumes[1:]), 1) if len(recent_volumes) > 1 else today_vol
+                rvol = round(today_vol / avg_20d_vol, 2) if avg_20d_vol > 0 else 0
+
+                recent_5_avg = sum(recent_volumes[1:6]) / 5 if len(recent_volumes) > 5 else 0
+                concentrated_at_open = (rvol > 2.0 and today_vol > recent_5_avg * 3) if recent_5_avg > 0 else False
+
+                dollar_vol = current_price * today_vol if current_price > 0 else 0
+
+                # Grade liquidity
+                liq_score = 0
+                liq_notes = []
+
+                if spread_pct is not None:
+                    if spread_pct < 0.05:
+                        liq_score += 30
+                        liq_notes.append(f'spread {spread_pct}%')
+                    elif spread_pct < 0.20:
+                        liq_score += 15
+                        liq_notes.append(f'spread {spread_pct}%')
+                    else:
+                        liq_notes.append(f'wide spread {spread_pct}%')
+                        liq_score -= 20
+
+                if rvol >= 1.5:
+                    liq_score += 25
+                    liq_notes.append(f'RVOL {rvol}x')
+                elif rvol >= 0.7:
+                    liq_score += 10
+                    liq_notes.append(f'RVOL {rvol}x')
+                else:
+                    liq_notes.append(f'low RVOL {rvol}x')
+                    liq_score -= 10
+
+                if dollar_vol >= 50_000_000:
+                    liq_score += 20
+                elif dollar_vol >= 10_000_000:
+                    liq_score += 10
+                else:
+                    liq_notes.append('low $vol')
+                    liq_score -= 10
+
+                if concentrated_at_open:
+                    liq_notes.append('open spike')
+                    liq_score -= 15
+
+                # When no quote/bid/ask available, adjust scoring
+                if spread_pct is None:
+                    liq_score += 10  # neutral for missing spread
+                    liq_notes.append('quote missing')
+
+                if liq_score >= 50:
+                    liquidity_grade = 'Good'
+                elif liq_score >= 25:
+                    liquidity_grade = 'Caution'
+                else:
+                    liquidity_grade = 'Poor'
+
+                liquidity_reason = ', '.join(liq_notes) if liq_notes else 'insufficient data'
+                liquidity_details = {
+                    'rvol': rvol,
+                    'spread_pct': spread_pct,
+                    'today_volume': int(today_vol),
+                    'avg_20d_volume': int(avg_20d_vol),
+                    'dollar_volume': int(dollar_vol),
+                    'spread_type': 'narrow' if spread_pct is not None and spread_pct < 0.05 else ('moderate' if spread_pct is not None and spread_pct < 0.20 else 'wide') if spread_pct is not None else 'unknown',
+                    'volume_pattern': 'open_spike' if concentrated_at_open else ('sustained' if rvol >= 1.0 else 'low'),
+                    'liq_score': liq_score,
+                }
+
+                print(f'  [LIQ] {liquidity_grade} | RVOL {rvol}x spread {spread_pct}% score {liq_score}')
+            else:
+                source_status['alpaca_snapshot'] = f'http_{snap_resp.status_code}'
+                # Check if we have partial data at least from quote or volume separately
+                has_partial = False
+                # Try fetching just the daily bar via bars endpoint for volume
+                try:
+                    vol_check_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/bars'
+                    vol_check_resp = requests.get(vol_check_url, headers=headers, params={'timeframe': '1Day', 'limit': 2, 'adjustment': 'raw', 'sort': 'desc'}, timeout=8)
+                    if vol_check_resp.status_code == 200:
+                        vol_bars = vol_check_resp.json().get('bars', [])
+                        if vol_bars:
+                            partial_vol = float(vol_bars[0].get('v', 0))
+                            partial_price = float(vol_bars[0].get('c', 0))
+                            if partial_vol > 0:
+                                liquidity_grade = 'Partial'
+                                liquidity_reason = f'volume available only, snapshot HTTP {snap_resp.status_code}'
+                                liquidity_details['today_volume'] = int(partial_vol)
+                                current_price = partial_price
+                                has_partial = True
+                                source_status['alpaca_bars'] = 'ok_partial'
+                except:
+                    pass
+
+                if not has_partial:
+                    liquidity_grade = 'Data Unavailable'
+                    liquidity_reason = f'snapshot HTTP {snap_resp.status_code}'
+                    # Only use entry_details price if real
+                    entry_price = 0
+                    if entry_details:
+                        entry_price = float(entry_details.get('current_price', 0))
+                    if entry_price > 0:
+                        current_price = entry_price
+
+        except Exception as liq_e:
+            print(f'  [LIQ] Exception: {liq_e}')
+            liquidity_grade = 'Data Unavailable'
+            liquidity_reason = str(liq_e)[:100]
+            entry_price = 0
+            if entry_details:
+                entry_price = float(entry_details.get('current_price', 0))
+            if entry_price > 0:
+                current_price = entry_price
+
+        # Price from entry details only if real (from Alpaca snapshot/bars in Step 4)
+        if current_price <= 0 and entry_details:
+            entry_price = float(entry_details.get('current_price', 0))
+            if entry_price > 0:
+                current_price = entry_price
+
+        # ──────────────────────────────────────────────────
+        # Step 7: News / Event Scan (Alpaca + Finnhub combined)
+        # ──────────────────────────────────────────────────
+        news_grade = 'Clear'
+        news_reason = 'no recent major news'
+        news_details = {
+            'headline_count': 0,
+            'top_headlines': [],
+            'has_high_event': False,
+            'has_catalyst': False,
+            'has_caution': False,
+            'earnings_soon': False,
+            'sources': [],
+        }
+
+        all_headlines = []
+
+        # 7a. Try Alpaca news
+        try:
+            alpaca_news_url = 'https://data.alpaca.markets/v1beta1/news'
+            now_utc = datetime.utcnow()
+            seven_days_ago = (now_utc - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            news_params = {'symbols': symbol, 'start': seven_days_ago, 'limit': 5, 'sort': 'desc'}
+            news_resp = requests.get(alpaca_news_url, headers=headers, params=news_params, timeout=10)
+            if news_resp.status_code == 200:
+                source_status['alpaca_news'] = 'ok'
+                news_data = news_resp.json().get('news', [])
+                for item in news_data:
+                    headline = item.get('headline', '')
+                    summary = item.get('summary', '')
+                    source = item.get('source', '')
+                    all_headlines.append({
+                        'headline': headline,
+                        'summary': summary[:200] if summary else '',
+                        'source': source or 'alpaca',
+                    })
+            else:
+                source_status['alpaca_news'] = f'http_{news_resp.status_code}'
+        except Exception as alp_news_e:
+            source_status['alpaca_news'] = f'exception: {str(alp_news_e)[:60]}'
+
+        # 7b. Try Finnhub company news (fallback/supplement)
+        try:
+            finnhub_list = []
+            fnh = fetch_finnhub_company_news(symbol, days_back=7)
+            if isinstance(fnh, tuple) and fnh[0]:
+                finnhub_list = fnh[0]
+            elif isinstance(fnh, list):
+                finnhub_list = fnh
+            if finnhub_list:
+                source_status['finnhub_news'] = 'ok'
+                for item in finnhub_list[:5]:
+                    headline = item.get('headline', '')
+                    # Check for duplicates with Alpaca headlines
+                    is_dup = any(h['headline'] == headline for h in all_headlines)
+                    if not is_dup and headline:
+                        all_headlines.append({
+                            'headline': headline,
+                            'summary': (item.get('summary', '') or '')[:200],
+                            'source': 'finnhub',
+                        })
+            else:
+                source_status['finnhub_news'] = 'no_articles'
+        except Exception as fh_new_e:
+            source_status['finnhub_news'] = f'exception: {str(fh_new_e)[:60]}'
+
+        # 7c. Check Finnhub earnings calendar
+        earnings_soon = False
+        try:
+            if FINNHUB_API_KEY:
+                ec_url = 'https://finnhub.io/api/v1/calendar/earnings'
+                ec_params = {'symbol': symbol, 'token': FINNHUB_API_KEY}
+                ec_resp = requests.get(ec_url, params=ec_params, timeout=10)
+                if ec_resp.status_code == 200:
+                    source_status['finnhub_earnings'] = 'ok'
+                    ec_data = ec_resp.json()
+                    earnings_cal = ec_data.get('earningsCalendar', [])
+                    for entry in earnings_cal:
+                        date_str = entry.get('date', '')
+                        if date_str:
+                            try:
+                                e_date = datetime.strptime(date_str, '%Y-%m-%d')
+                                days_until = (e_date - datetime.now()).days
+                                if -1 <= days_until <= 7:
+                                    earnings_soon = True
+                                    break
+                            except:
+                                pass
+                else:
+                    source_status['finnhub_earnings'] = f'http_{ec_resp.status_code}'
+            else:
+                source_status['finnhub_earnings'] = 'no_api_key'
+        except Exception as ec_e:
+            source_status['finnhub_earnings'] = f'exception: {str(ec_e)[:60]}'
+
+        # 7d. Analyze headlines
+        high_event_keywords = [
+            'lawsuit', 'regulatory', 'sec investigation', 'sec probe', 'doj', 'fraud',
+            'delist', 'bankruptcy', 'default', 'class action',
+            'ceo resign', 'cfo resign', 'accounting error', 'restatement',
+            'halt trading', 'suspended', 'investigation'
+        ]
+        catalyst_keywords = [
+            'upgrade', 'outperform', 'buy rating', 'strong buy',
+            'raised price target', 'positive guidance', 'beat estimates',
+            'raised guidance', 'initiated buy', 'positive trial',
+            'approval', 'fda approval', 'contract award', 'partnership',
+            'merger', 'acquisition', 'takeover', 'positive'
+        ]
+        caution_keywords = [
+            'downgrade', 'sell rating', 'underperform', 'reduce',
+            'lowered price target', 'negative guidance', 'miss estimates',
+            'lowered guidance', 'layoff', 'restructuring', 'cut jobs',
+            'bearish', 'warning', 'recession', 'negative'
+        ]
+
+        headlines_lower = ' '.join([h['headline'].lower() + ' ' + h['summary'].lower() for h in all_headlines])
+
+        has_high_event = any(kw in headlines_lower for kw in high_event_keywords) if headlines_lower else False
+        has_catalyst = any(kw in headlines_lower for kw in catalyst_keywords) if headlines_lower else False
+        has_caution = any(kw in headlines_lower for kw in caution_keywords) if headlines_lower else False
+
+        # Determine if any news source delivered data
+        any_news_success = (source_status['alpaca_news'] == 'ok' or source_status['finnhub_news'] == 'ok')
+
+        if not any_news_success:
+            news_grade = 'Unknown'
+            news_reason = f'Data Unavailable (alpaca: {source_status["alpaca_news"]}, finnhub: {source_status["finnhub_news"]})'
+        elif has_high_event:
+            news_grade = 'High Event Risk'
+            news_reason = 'lawsuit/regulatory risk detected'
+        elif earnings_soon:
+            if has_catalyst:
+                news_grade = 'Catalyst'
+                news_reason = 'catalyst + earnings upcoming'
+            elif has_caution:
+                news_grade = 'High Event Risk'
+                news_reason = 'earnings soon + caution signals'
+            else:
+                news_grade = 'Caution'
+                news_reason = 'earnings upcoming'
+        elif has_catalyst and not has_caution:
+            news_grade = 'Catalyst'
+            news_reason = 'positive catalyst detected'
+        elif has_caution and not has_catalyst:
+            news_grade = 'Caution'
+            news_reason = 'negative signals detected'
+        elif has_catalyst and has_caution:
+            news_grade = 'Caution'
+            news_reason = 'mixed news signals'
+        elif len(all_headlines) == 0:
+            news_grade = 'Clear'
+            news_reason = 'no major news (no articles returned)'
+        else:
+            news_grade = 'Clear'
+            news_reason = 'neutral recent news'
+
+        news_details = {
+            'headline_count': len(all_headlines),
+            'top_headlines': [h['headline'][:150] for h in all_headlines[:3]],
+            'has_high_event': has_high_event,
+            'has_catalyst': has_catalyst,
+            'has_caution': has_caution,
+            'earnings_soon': earnings_soon,
+            'sources': list(set([h['source'] for h in all_headlines if h['source']])),
+        }
+
+        print(f'  [NEWS] {news_grade} | {len(all_headlines)} headlines ({source_status["alpaca_news"]}, {source_status["finnhub_news"]}) earnings_soon={earnings_soon}')
+        for h in all_headlines[:2]:
+            print(f'    → [{h["source"]}] {h["headline"][:100]}')
+
+        # ──────────────────────────────────────────────────
+        # Step 8: Final Risk Scan (AI + deterministic fallback)
+        # ──────────────────────────────────────────────────
+        risk_grade = 'MEDIUM'
+        risk_reason = ''
+        risk_details = {}
+
+        ai_risk_result = None
+
+        # 8a. Determine if we have enough real data for AI risk
+        has_real_entry = (entry_details and entry_details.get('score', 0) > 0 and entry_details.get('current_price', 0) > 0)
+        has_real_liquidity = liquidity_grade not in ('Data Unavailable',)
+        has_real_news = news_grade not in ('Unknown',)
+        enough_for_ai = has_real_entry and has_real_liquidity and has_real_news
+        missing_data_info = {
+            'missing_entry': not has_real_entry,
+            'missing_liquidity': not has_real_liquidity,
+            'missing_news': not has_real_news,
+        }
+
+        ai_risk_result = None
+
+        if not enough_for_ai:
+            source_status['ai_risk'] = 'skipped_insufficient_data'
+        else:
+            # 8a. AI risk assessment
+            try:
+                api_key = ai_provider_config_state.get('apiKey', '')
+                if api_key and len(api_key) >= 30 and not api_key.startswith('sk-') or (len(api_key) > 30):
+                    # Build structured input for AI
+                    ai_input = {
+                        'symbol': symbol,
+                        'entry_quality': entry_details.get('entry_quality', '') if entry_details else '',
+                        'entry_score': entry_details.get('score', 0) if entry_details else 0,
+                        'reward_risk_ratio': entry_details.get('reward_risk_ratio', 0) if entry_details else 0,
+                        'atr_pct': entry_details.get('atr_pct', 0) if entry_details else 0,
+                        'liquidity_grade': liquidity_grade,
+                        'liquidity_score': liquidity_details.get('liq_score', 0),
+                        'spread': liquidity_details.get('spread_pct'),
+                        'rvol': liquidity_details.get('rvol', 0),
+                        'news_grade': news_grade,
+                        'news_has_catalyst': news_details.get('has_catalyst', False),
+                        'news_has_caution': news_details.get('has_caution', False),
+                        'news_has_high_event': news_details.get('has_high_event', False),
+                        'earnings_soon': news_details.get('earnings_soon', False),
+                        'headline_count': news_details.get('headline_count', 0),
+                        'missing_data': [k for k, v in missing_data_info.items() if v],
+                    }
+
+                    ai_prompt = f"""You are a risk assessment AI for a stock trading platform. Assess the risk level for {symbol}.
+
+Entry Quality: {ai_input['entry_quality']} (score {ai_input['entry_score']})
+R/R Ratio: {ai_input['reward_risk_ratio']}:1
+ATR%: {ai_input['atr_pct']}%
+Liquidity: {ai_input['liquidity_grade']} (score {ai_input['liquidity_score']})
+Spread: {ai_input['spread']}%
+RVOL: {ai_input['rvol']}x
+News: {ai_input['news_grade']}
+  Catalyst: {ai_input['news_has_catalyst']}
+  Caution: {ai_input['news_has_caution']}
+  High Event: {ai_input['news_has_high_event']}
+  Earnings Soon: {ai_input['earnings_soon']}
+  Headlines: {ai_input['headline_count']}
+
+Return ONLY one line with: LOW | MEDIUM | HIGH | SKIP and a short reason.
+LOW = strong entry, good liq, no event risk, good r/r
+MEDIUM = moderate risk factors
+HIGH = poor liq, high event risk, poor entry
+SKIP = critical data missing, severe risk combo
+Example: MEDIUM | mixed news, moderate liquidity"""
+
+                    provider = ai_provider_config_state.get('provider', 'deepseek')
+                    base_url = ai_provider_config_state.get('baseURL', 'https://api.deepseek.com')
+                    model = ai_provider_config_state.get('model', 'deepseek-chat')
+
+                    ai_headers = {
+                        'Authorization': f'Bearer {api_key}',
+                        'Content-Type': 'application/json'
+                    }
+
+                    ai_payload = {
+                        'model': model,
+                        'messages': [
+                            {'role': 'system', 'content': 'You are a risk assessment AI. Respond with exactly one line: RISK_LABEL | short reason. Only use LOW, MEDIUM, HIGH, or SKIP.'},
+                            {'role': 'user', 'content': ai_prompt}
+                        ],
+                        'max_tokens': 100,
+                        'temperature': 0.3,
+                    }
+
+                    if not base_url.startswith('http'):
+                        base_url = 'https://' + base_url
+
+                    ai_resp = requests.post(f'{base_url}/chat/completions', headers=ai_headers, json=ai_payload, timeout=15)
+
+                    if ai_resp.status_code == 200:
+                        source_status['ai_risk'] = 'ok'
+                        ai_content = ai_resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
+                        ai_content = ai_content.strip()
+
+                        # Parse AI response
+                        for label in ['SKIP', 'HIGH', 'MEDIUM', 'LOW']:
+                            if label in ai_content.upper():
+                                risk_grade = label if label in ['SKIP', 'HIGH', 'MEDIUM', 'LOW'] else 'MEDIUM'
+                                # Extract reason after |
+                                parts = ai_content.split('|')
+                                risk_reason = parts[1].strip() if len(parts) > 1 else 'AI judged risk'
+                                ai_risk_result = {'grade': risk_grade, 'reason': risk_reason, 'raw': ai_content}
+                                break
+                        else:
+                            risk_reason = f'AI returned unparsed: {ai_content[:80]}'
+                            source_status['ai_risk'] = 'unparsed'
+                    else:
+                        source_status['ai_risk'] = f'http_{ai_resp.status_code}'
+            except Exception as ai_e:
+                print(f'  [RISK] AI exception: {ai_e}')
+                source_status['ai_risk'] = f'exception: {str(ai_e)[:60]}'
+
+        # 8b. Deterministic fallback if AI failed or was skipped
+        if not ai_risk_result:
+            risk_score = 50
+            risk_factors = []
+
+            if liquidity_grade == 'Good': risk_score -= 10
+            elif liquidity_grade == 'Caution': risk_score += 10; risk_factors.append('liquidity caution')
+            elif liquidity_grade == 'Poor': risk_score += 25; risk_factors.append('poor liquidity')
+
+            if news_grade == 'Catalyst': risk_score -= 10
+            elif news_grade == 'High Event Risk': risk_score += 25; risk_factors.append('high event risk')
+            elif news_grade == 'Caution': risk_score += 10; risk_factors.append('news caution')
+
+            entry_quality_str = entry_details.get('entry_quality', '') if entry_details else ''
+            if entry_quality_str in ('Excellent', 'Good'): risk_score -= 10
+            elif entry_quality_str in ('Chasing / Extended', 'Near Resistance', 'Poor Reward-Risk'):
+                risk_score += 15; risk_factors.append('poor entry')
+
+            atr_pct_val = 0
+            if entry_details:
+                try: atr_pct_val = float(entry_details.get('atr_pct', 0))
+                except: pass
+            if atr_pct_val > 5: risk_score += 15; risk_factors.append('high vol')
+            elif atr_pct_val < 0.3: risk_score += 5; risk_factors.append('low vol')
+
+            sp = liquidity_details.get('spread_pct')
+            if sp is not None:
+                if sp > 0.30: risk_score += 10; risk_factors.append('wide spread')
+                elif sp < 0.03: risk_score -= 5
+
+            if entry_details:
+                try:
+                    support = float(entry_details.get('support', 0))
+                    current_p = float(entry_details.get('current_price', 0))
+                    if support > 0 and current_p > 0:
+                        gap_to_support = abs(current_p - support) / current_p * 100
+                        if gap_to_support > 3: risk_score += 10; risk_factors.append('gap risk')
+                except: pass
+
+            risk_score = max(0, min(100, risk_score))
+            if risk_score >= 65: risk_grade = 'HIGH'
+            elif risk_score >= 35: risk_grade = 'MEDIUM'
+            else: risk_grade = 'LOW'
+
+            risk_reason = ', '.join(risk_factors) if risk_factors else 'no significant risk factors (fallback)'
+
+            # SKIP overrides
+            if liquidity_grade == 'Data Unavailable' and news_grade == 'Unknown':
+                risk_grade = 'SKIP'
+                risk_reason = 'critical data missing'
+            elif liquidity_grade == 'Poor' and news_grade == 'High Event Risk':
+                risk_grade = 'SKIP'
+                risk_reason = 'poor liquidity + high event risk'
+
+        risk_details = {
+            'risk_score': risk_score if not ai_risk_result else None,
+            'risk_factors': risk_factors if not ai_risk_result else [risk_reason],
+            'atr_pct': atr_pct_val if not ai_risk_result else 0,
+            'liquidity_grade': liquidity_grade,
+            'news_grade': news_grade,
+            'entry_quality': entry_details.get('entry_quality', '') if entry_details else '',
+            'ai_assessed': ai_risk_result is not None,
+        }
+
+        elapsed = round(time.time() - start_ts, 2)
+        print(f'=== FINE SCAN ADVANCED {symbol}: liq={liquidity_grade} news={news_grade} risk={risk_grade} (AI={ai_risk_result is not None}) ({elapsed}s) ===')
+
+        return jsonify({
+            'success': True,
+            'symbol': symbol,
+            'source_status': source_status,
+            'liquidity': {'grade': liquidity_grade, 'reason': liquidity_reason, 'details': liquidity_details},
+            'news': {'grade': news_grade, 'reason': news_reason, 'details': news_details},
+            'risk': {'grade': risk_grade, 'reason': risk_reason, 'details': risk_details},
+            'elapsed': elapsed,
+        })
+
+    except Exception as e:
+        print(f'[FINE SCAN ADVANCED ERROR] {e}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+# ============ MTF Multi-Timeframe Confirmation Analysis (v2) ============
 
 @app.route('/api/ai/analyze/mtf', methods=['POST'])
 @app.route('/ai/analyze/mtf', methods=['POST'])
