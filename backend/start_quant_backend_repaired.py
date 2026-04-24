@@ -18885,9 +18885,493 @@ if __name__ == '__main__':
 
     
 
-    print("\n启动服务器...")
+@app.route('/api/ai/analyze/mtf', methods=['POST'])
+@app.route('/ai/analyze/mtf', methods=['POST'])
+def ai_analyze_mtf():
+    """
+    多时间框架确认分析接口 (v2 - Finnhub优先, Alpaca fallback)
+    对单个股票进行 1D / 4H(从1H聚合) / 1H / 30m 四层级分析
+    数据源优先级: Finnhub → Alpaca → Unavailable
+    返回每个层级: trend_bias / structure_quality / stretch / momentum_state / source
+    """
+    import time
+    start_time = time.time()
+    
+    try:
+        data = request.get_json()
+        symbol = data.get('symbol') if data else None
+        if not symbol:
+            return jsonify({'success': False, 'error': 'Symbol is required'}), 400
+        
+        symbol_upper = symbol.upper()
+        print(f'[MTF分析] 开始: {symbol_upper}')
 
-    app.run(host='127.0.0.1', port=8889, debug=True, use_reloader=False)  # 使用端口8889，禁用reloader避免重复启动
+        # ============ 1. 获取多时间框架数据 ============
+        # 时间框架配置: (label, finnhub_resolution, days_back)
+        # Finnhub resolution: 1/5/15/30/60/D/W/M
+        timeframe_configs = [
+            ('1D',   'D',   180),   # 日线,  6个月
+            ('1H',   '60',   30),   # 1小时, 30天
+            ('30m',  '30',   14),   # 30分钟,14天
+            ('15m',  '15',    7),   # 15分钟, 7天
+        ]
+        
+        frame_results = {}
+        
+        # --- 获取原始蜡烛数据 (sequential, with rate-limit delay) ---
+        raw_frames = {}  # label -> (candles, source)
+        
+        for i, (label, resolution, days_back) in enumerate(timeframe_configs):
+            # 300ms delay between API calls to avoid Finnhub/Alpaca rate limits
+            if i > 0:
+                time.sleep(0.3)
+            candles, source, error = fetch_mtf_candles(symbol_upper, resolution, days_back, label)
+            if candles:
+                raw_frames[label] = (candles, source)
+                print(f'[MTF分析] {symbol_upper} {label}: {len(candles)} bars from {source}')
+            else:
+                raw_frames[label] = (None, f'unavailable ({error})')
+                print(f'[MTF分析] {symbol_upper} {label}: unavailable - {error}')
+        
+        # --- 聚合 4H (从 1H 蜡烛) ---
+        if raw_frames.get('1H') and raw_frames['1H'][0]:
+            one_hour_candles, one_hour_source = raw_frames['1H']
+            four_hour_candles = aggregate_to_4h(one_hour_candles)
+            raw_frames['4H'] = (four_hour_candles, one_hour_source)
+            print(f'[MTF分析] {symbol_upper} 4H: {len(four_hour_candles)} bars (aggregated from 1H, source:{one_hour_source})')
+        else:
+            raw_frames['4H'] = (None, 'unavailable (no 1H data to aggregate)')
+            print(f'[MTF分析] {symbol_upper} 4H: unavailable - no 1H data')
+        
+        # ============ 2. 分析每个时间框架 ============
+        tf_order = ['1D', '4H', '1H', '30m', '15m']
+        for label in tf_order:
+            candles, source_info = raw_frames.get(label, (None, 'unavailable'))
+            if candles and len(candles) >= 5:
+                closes = [c['close'] for c in candles]
+                highs  = [c['high'] for c in candles]
+                lows   = [c['low'] for c in candles]
+                analysis = analyze_single_timeframe(closes, highs, lows, label)
+                analysis['source'] = source_info
+                analysis['available'] = True
+                analysis['bar_count'] = len(candles)
+                # 分离 source 字符串中的 error 部分
+                if 'unavailable' in source_info:
+                    analysis['available'] = False
+                    analysis['source'] = 'unavailable'
+                    analysis['error'] = source_info
+                frame_results[label] = analysis
+            else:
+                frame_results[label] = {
+                    'trend_bias': 'N/A',
+                    'structure_quality': 'N/A',
+                    'stretch': 'N/A',
+                    'momentum_state': 'N/A',
+                    'available': False,
+                    'source': 'unavailable',
+                    'error': source_info if isinstance(source_info, str) and 'unavailable' in source_info else 'insufficient data (<5 bars)'
+                }
+        
+        # ============ 3. 计算综合Alignment ============
+        alignment = calculate_mtf_alignment(frame_results)
+        
+        # ============ 4. 构建结果 ============
+        response_data = {
+            'success': True,
+            'symbol': symbol_upper,
+            'mtf_results': frame_results,
+            'alignment': alignment,
+            'timestamp': int(time.time()),
+            'responseTime': round(time.time() - start_time, 3)
+        }
+        
+        # 打印摘要
+        for label in tf_order:
+            r = frame_results.get(label, {})
+            s = r.get('source', 'unavailable')
+            t = r.get('trend_bias', 'N/A')
+            print(f'[MTF分析]   {label}: src={s} trend={t}')
+        print(f'[MTF分析] {symbol_upper} 完成: alignment={alignment}, 耗时={response_data["responseTime"]}s')
+        return jsonify(response_data)
+        
+    except Exception as e:
+        print(f'[MTF分析] 整体异常: {str(e)}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def fetch_mtf_candles(symbol, resolution, days_back, label):
+    """
+    获取MTF蜡烛数据, 数据源优先级: Finnhub → Alpaca
+    返回: (candles_list, source_string)
+          candles_list: list of dict {timestamp, open, high, low, close, volume}
+          source_string: 'finnhub' / 'alpaca' / 'unavailable: <reason>'
+    """
+    import requests, time
+    from datetime import datetime, timedelta
+    
+    end_ts = int(time.time())
+    start_ts = end_ts - days_back * 24 * 3600
+    
+    # ---- 1) Try Finnhub ----
+    if FINNHUB_API_KEY:
+        try:
+            finnhub_url = f"{FINNHUB_BASE_URL}/stock/candle"
+            params = {
+                'symbol': symbol,
+                'resolution': resolution,
+                'from': start_ts,
+                'to': end_ts,
+                'token': FINNHUB_API_KEY
+            }
+            print(f'[MTF] Finnhub {label}({resolution}d{days_back}): {symbol}')
+            resp = requests.get(finnhub_url, params=params, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('s') == 'ok' and 'c' in data and data['c']:
+                    candles = []
+                data = resp.json()
+                if data.get('s') == 'ok' and 'c' in data and data['c']:
+                    candles = []
+                    timestamps = data.get('t', [])
+                    opens = data.get('o', [])
+                    highs = data.get('h', [])
+                    lows = data.get('l', [])
+                    closes = data.get('c', [])
+                    volumes = data.get('v', [])
+                    for i in range(len(timestamps)):
+                        try:
+                            candles.append({
+                                'timestamp': int(timestamps[i]),
+                                'open': float(opens[i]),
+                                'high': float(highs[i]),
+                                'low': float(lows[i]),
+                                'close': float(closes[i]),
+                                'volume': int(float(volumes[i])) if i < len(volumes) else 0
+                            })
+                        except (ValueError, IndexError):
+                            continue
+                    candles.sort(key=lambda x: x['timestamp'])
+                    print(f'[MTF] Finnhub {label}: {len(candles)} bars OK')
+                    return candles, 'finnhub'
+                else:
+                    reason = data.get('s', 'no_data')
+                    print(f'[MTF] Finnhub {label}: s={reason}')
+                    # Finnhub returns 'no_data' for out-of-market tickers
+            else:
+                print(f'[MTF] Finnhub {label}: HTTP {resp.status_code}')
+        except Exception as e:
+            print(f'[MTF] Finnhub {label} error: {e}')
+    else:
+        print(f'[MTF] Finnhub {label}: API key not configured, skip')
+    
+    # ---- 2) Fallback to Alpaca ----
+    time.sleep(0.3)  # Rate-limit delay before Alpaca
+    try:
+        # Map our labels to Alpaca interval/range
+        alpaca_map = {
+            '1D':   ('1Day',  '6Month'),
+            '1H':   ('1Hour', '1Month'),
+            '30m':  ('15Min', '2Week'),   # 30m not directly supported, use 15Min
+            '15m':  ('15Min', '1Week'),
+        }
+        if label in alpaca_map:
+            interval, range_param = alpaca_map[label]
+            print(f'[MTF] Alpaca fallback {label}({interval}/{range_param}): {symbol}')
+            bars, success, src = get_alpaca_history(symbol, interval, range_param)
+            if success and bars and len(bars) > 0:
+                # Normalize to our format
+                candles = []
+                for bar in bars:
+                    candles.append({
+                        'timestamp': bar.get('t', bar.get('timestamp', 0)),
+                        'open': float(bar.get('o', bar.get('open', 0))),
+                        'high': float(bar.get('h', bar.get('high', 0))),
+                        'low': float(bar.get('l', bar.get('low', 0))),
+                        'close': float(bar.get('c', bar.get('close', 0))),
+                        'volume': int(float(bar.get('v', bar.get('volume', 0)))),
+                    })
+                candles.sort(key=lambda x: x['timestamp'])
+                print(f'[MTF] Alpaca {label}: {len(candles)} bars OK')
+                return candles, 'alpaca'
+            else:
+                print(f'[MTF] Alpaca {label}: {src}')
+        else:
+            print(f'[MTF] Alpaca {label}: no mapping, skip')
+    except Exception as e:
+        print(f'[MTF] Alpaca {label} error: {e}')
+    
+    # ---- 3) Both failed ----
+    # Build error reason
+    parts = []
+    if not FINNHUB_API_KEY:
+        parts.append('finnhub no key')
+    else:
+        parts.append('finnhub fail')
+    parts.append('alpaca fail')
+    return None, f'unavailable: {", ".join(parts)}'
+
+
+def aggregate_to_4h(one_hour_candles):
+    """
+    从 1H 蜡烛聚合生成 4H 蜡烛
+    每 4 根 1H 合成为 1 根 4H
+    """
+    if not one_hour_candles or len(one_hour_candles) < 4:
+        return one_hour_candles or []
+    
+    sorted_candles = sorted(one_hour_candles, key=lambda x: x['timestamp'])
+    four_h_candles = []
+    for i in range(0, len(sorted_candles), 4):
+        chunk = sorted_candles[i:i+4]
+        if len(chunk) < 2:
+            continue
+        open_price = chunk[0]['open']
+        high_price = max(c['high'] for c in chunk)
+        low_price = min(c['low'] for c in chunk)
+        close_price = chunk[-1]['close']
+        volume = sum(c['volume'] for c in chunk)
+        timestamp = chunk[0]['timestamp']
+        four_h_candles.append({
+            'timestamp': timestamp,
+            'open': open_price,
+            'high': high_price,
+            'low': low_price,
+            'close': close_price,
+            'volume': volume
+        })
+    return four_h_candles
+
+
+def analyze_single_timeframe(closes, highs, lows, label):
+    """
+    对单个时间框架进行简化分析
+    返回: trend_bias, structure_quality, stretch, momentum_state
+    """
+    if len(closes) < 5:
+        return {
+            'trend_bias': 'N/A',
+            'structure_quality': 'N/A',
+            'stretch': 'N/A',
+            'momentum_state': 'N/A',
+            'available': False
+        }
+    
+    current_price = closes[-1]
+    
+    # === Trend Bias ===
+    # 简单EMA计算 (用于大小框架的简版趋势判断)
+    def ema(data, period):
+        if len(data) < period:
+            # 用更短的周期
+            period = max(3, len(data) // 2)
+        if len(data) < period:
+            return data[-1] if data else 0
+        alpha = 2.0 / (period + 1)
+        result = data[0]
+        for i in range(1, len(data)):
+            result = alpha * data[i] + (1 - alpha) * result
+        return result
+    
+    ema20 = ema(closes, min(20, len(closes)))
+    ema50 = ema(closes, min(50, len(closes))) if len(closes) >= 10 else ema20 * 0.99
+    ema200 = ema(closes, min(200, len(closes))) if len(closes) >= 30 else ema20 * 0.98
+    
+    # 价格相对EMA位置
+    price_vs_ema20 = (current_price / ema20 - 1) * 100
+    price_vs_ema50 = (current_price / ema50 - 1) * 100 if ema50 else 0
+    
+    # 趋势方向判断
+    if price_vs_ema20 > 2 and price_vs_ema50 > 1 and ema20 > ema50:
+        trend_bias = 'Bullish'
+    elif price_vs_ema20 < -2 and price_vs_ema50 < -1 and ema20 < ema50:
+        trend_bias = 'Bearish'
+    else:
+        trend_bias = 'Neutral'
+    
+    # 对于大级别加强判断（1D use 4% threshold instead of 2%）
+    if label == '1D':
+        if price_vs_ema20 > 4 and ema20 > ema50 * 1.01:
+            trend_bias = 'Bullish'
+        elif price_vs_ema20 < -4 and ema20 < ema50 * 0.99:
+            trend_bias = 'Bearish'
+        else:
+            trend_bias = 'Neutral'
+    
+    # === Structure Quality ===
+    # 检查是否有一致的高点/低点模式（用简单的分段方法）
+    half = len(closes) // 2
+    first_half_high = max(highs[:half]) if half > 0 else highs[0]
+    first_half_low = min(lows[:half]) if half > 0 else lows[0]
+    second_half_high = max(highs[half:]) if half < len(highs) else highs[-1]
+    second_half_low = min(lows[half:]) if half < len(lows) else lows[-1]
+    
+    higher_high = second_half_high > first_half_high * 1.01
+    higher_low = second_half_low > first_half_low * 1.01
+    
+    # 检查趋势一致性（使用价格序列的线性相关系数近似）
+    import math
+    n = len(closes)
+    x_sum = n * (n - 1) / 2
+    y_sum = sum(closes)
+    xy_sum = sum(i * c for i, c in enumerate(closes))
+    x2_sum = sum(i * i for i in range(n))
+    y2_sum = sum(c * c for c in closes)
+    
+    denominator = math.sqrt((n * x2_sum - x_sum * x_sum) * (n * y2_sum - y_sum * y_sum))
+    correlation = ((n * xy_sum - x_sum * y_sum) / denominator) if denominator > 0 else 0
+    
+    # 结构质量判断
+    if higher_high and higher_low and correlation > 0.6:
+        structure_quality = 'Strong'
+    elif (higher_high or higher_low) and correlation > 0.3:
+        structure_quality = 'Mixed'
+    else:
+        structure_quality = 'Weak'
+    
+    # === Stretch ===
+    # 使用价格相对于近期范围的位置来判断拉伸度
+    lookback = min(20, len(closes))
+    recent_high = max(highs[-lookback:])
+    recent_low = min(lows[-lookback:])
+    range_size = recent_high - recent_low
+    range_pct = range_size / recent_low * 100 if recent_low > 0 else 0
+    
+    if range_size > 0:
+        price_position = (current_price - recent_low) / range_size
+    else:
+        price_position = 0.5
+    
+    # 价格在范围顶部80%以上 = Extended
+    # 价格在底部20%以下 = maybe oversold
+    if price_position > 0.85:
+        stretch = 'Extended'
+    elif price_position > 0.7:
+        stretch = 'Normal'
+    elif price_position > 0.3:
+        stretch = 'Normal'
+    else:
+        stretch = 'Normal'  # 底部不标记stretched
+    
+    # 对15min/1H级别更敏感
+    if label in ['15min', '30min', 'Entry']:
+        if price_position > 0.88:
+            stretch = 'Extended'
+        elif price_position > 0.75:
+            stretch = 'Normal'
+        else:
+            stretch = 'Normal'
+    
+    # === Momentum State ===
+    # 通过最近n根K线的斜率来判断动量方向
+    if len(closes) >= 10:
+        recent_closes = closes[-10:]
+    else:
+        recent_closes = closes
+    
+    # 简单动量：比较后半段和前半段平均价格
+    mid = len(recent_closes) // 2
+    first_half_avg = sum(recent_closes[:mid]) / mid if mid > 0 else recent_closes[0]
+    second_half_avg = sum(recent_closes[mid:]) / (len(recent_closes) - mid) if (len(recent_closes) - mid) > 0 else recent_closes[-1]
+    momentum_pct = (second_half_avg / first_half_avg - 1) * 100
+    
+    # 最近几根K线的变化率
+    if len(closes) >= 5:
+        recent_3 = (closes[-1] / closes[-3] - 1) * 100 if closes[-3] > 0 else 0
+    else:
+        recent_3 = 0
+    
+    # 根据趋势和动量方向判断
+    if momentum_pct > 1 and recent_3 > 0:
+        momentum_state = 'Improving'
+    elif momentum_pct > 0.5:
+        momentum_state = 'Flat'
+    elif momentum_pct > -0.5:
+        momentum_state = 'Flat'
+    elif momentum_pct < -1 and recent_3 < 0:
+        momentum_state = 'Fading'
+    else:
+        momentum_state = 'Flat'
+    
+    return {
+        'trend_bias': trend_bias,
+        'structure_quality': structure_quality,
+        'stretch': stretch,
+        'momentum_state': momentum_state,
+        'available': True,
+        'bar_count': len(closes),
+        'price': round(current_price, 2),
+        'price_vs_ema20': round(price_vs_ema20, 2)
+    }
+
+
+def calculate_mtf_alignment(frame_results):
+    """
+    综合判断多时间框架的 Alignment (v2)
+    TF keys: 1D, 4H, 1H, 30m, 15m
+    - Aligned: 大级别+中间+小级别都配合
+    - Partially aligned: 大级别强但小级别stretched 或有些冲突
+    - Conflicted: 大级别与小级别方向不一致
+    """
+    daily  = frame_results.get('1D',  {})
+    hour4  = frame_results.get('4H',  {})
+    hour1  = frame_results.get('1H',  {})
+    s30m   = frame_results.get('30m', {})
+    s15m   = frame_results.get('15m', {})
+    
+    daily_bias = daily.get('trend_bias', 'N/A')
+    h4_bias    = hour4.get('trend_bias', 'N/A')
+    h1_bias    = hour1.get('trend_bias', 'N/A')
+    s30_bias   = s30m.get('trend_bias', 'N/A')
+    s15_bias   = s15m.get('trend_bias', 'N/A')
+    
+    # Check which timeframes are actually available
+    avail = {
+        k: frame_results.get(k, {}).get('available', False)
+        for k in ['1D', '4H', '1H', '30m', '15m']
+    }
+    num_avail = sum(1 for v in avail.values() if v)
+    
+    # If no data available at all
+    if not daily.get('available', False) and not hour1.get('available', False):
+        return 'Unavailable'
+    
+    # If only single timeframe
+    if num_avail <= 1:
+        return 'Aligned' if daily.get('available', False) else 'Partially aligned'
+    
+    # Use available lower timeframes for entry context
+    entry_bias = s15_bias if avail.get('15m') else (s30_bias if avail.get('30m') else (h1_bias if avail.get('1H') else 'N/A'))
+    entry_stretch = frame_results.get('15m', {}).get('stretch', 'N/A') if avail.get('15m') else frame_results.get('30m', {}).get('stretch', 'N/A')
+    
+    # 大级别方向判断
+    if daily_bias == 'Bullish':
+        if h4_bias in ['Bullish', 'Neutral'] and entry_bias in ['Bullish', 'Neutral']:
+            if entry_stretch == 'Extended':
+                return 'Partially aligned'
+            else:
+                return 'Aligned'
+        elif h4_bias == 'Bearish' or entry_bias == 'Bearish':
+            return 'Conflicted'
+        else:
+            return 'Partially aligned'
+    elif daily_bias == 'Bearish':
+        if entry_bias == 'Bullish':
+            return 'Conflicted'
+        elif entry_stretch == 'Extended':
+            return 'Partially aligned'
+        else:
+            return 'Aligned'
+    else:  # Neutral
+        if h4_bias == 'Bullish' and entry_bias == 'Bullish':
+            return 'Conflicted'
+        elif h4_bias == 'Bullish' or entry_bias == 'Bullish':
+            return 'Partially aligned'
+        else:
+            return 'Aligned'
+
+
 
 def fetch_finnhub_news(symbol):
     """从Finnhub获取股票新闻"""

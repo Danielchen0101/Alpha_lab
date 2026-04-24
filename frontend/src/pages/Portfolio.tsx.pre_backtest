@@ -2605,7 +2605,37 @@ Please respond in this exact JSON format:
   const renderFineScanDetailPanel = (record: any) => {
     const fullReason = record.matchReason || '';
     const signals = record.keySignals || [];
+    const daily = record.mtfDaily;
+    const h4 = record.mtfHour4;
+    const h1 = record.mtfHour1;
+    const s30 = record.mtf30m;
+    const s15 = record.mtf15m;
+    const alignment = record.mtfAlignment || '';
+    const mtfAvail = record.mtfAvailable;
     const scanData = record.scanTrend ? `Trend: ${record.scanTrend} | Score: ${record.scanScore}` : '';
+
+    // Helper to render a TF line with source
+    const renderTfLine = (label: string, tf: any) => {
+      if (!tf || !tf.available) {
+        const reason = tf?.error || 'no data';
+        return (
+          <div style={{ color: '#bbb', fontSize: '11px', lineHeight: '1.8', marginBottom: 2 }}>
+            <strong>{label}:</strong> Unavailable <span style={{ color: '#ccc' }}>({reason})</span>
+          </div>
+        );
+      }
+      const src = tf.source || 'unknown';
+      const srcColor = src === 'finnhub' ? '#52c41a' : (src === 'alpaca' ? '#faad14' : '#bbb');
+      return (
+        <div style={{ fontSize: '11px', lineHeight: '1.8', marginBottom: 2 }}>
+          <strong>{label}:</strong> {tf.trend_bias || 'N/A'}
+          {' | '}Structure: {tf.structure_quality || 'N/A'}
+          {' | '}Stretch: {tf.stretch || 'N/A'}
+          {' | '}Momentum: {tf.momentum_state || 'N/A'}
+          {' | '}<span style={{ color: srcColor }}>src:{src}</span>
+        </div>
+      );
+    };
 
     return (
       <div style={{ padding: '8px 8px 8px 32px', maxWidth: 600 }}>
@@ -2633,117 +2663,26 @@ Please respond in this exact JSON format:
           </div>
         )}
 
-        {/* Quick Backtest Results */}
+        {/* MTF Detail - reserved for future enhancement */}
         <div style={{ marginBottom: 12 }}>
-          <Text strong style={{ fontSize: '12px', color: '#333' }}>Quick Backtest Summary</Text>
-          <div style={{ marginTop: 4, padding: '6px 10px', backgroundColor: '#fafafa', borderRadius: 4, border: '1px solid #eee' }}>
-            {(() => {
-              const perStrategy = record.backtestPerStrategy || [];
-              const backtestStatus = record.backtestStatus || 'pending';
-              if (perStrategy.length > 0) {
-                const statusColor = backtestStatus === 'passed' ? '#52c41a' : backtestStatus === 'caution' ? '#faad14' : backtestStatus === 'losing' ? '#ff4d4f' : backtestStatus === 'failed' ? '#ff4d4f' : '#999';
-                const statusLabel = backtestStatus === 'passed' ? 'Passed' : backtestStatus === 'caution' ? 'Caution' : backtestStatus === 'losing' ? 'Completed / Losing' : backtestStatus === 'failed' ? 'Failed' : backtestStatus === 'error' ? 'Error' : backtestStatus === 'skipped' ? 'Skipped' : 'Pending';
-                return (
-                  <div>
-                    <div style={{ fontSize: '11px', marginBottom: 6 }}>
-                      Overall: <Tag color={statusColor} style={{ fontSize: '10px', fontWeight: 600, margin: 0 }}>{statusLabel}</Tag>
-                    </div>
-                    {perStrategy.map((ps: any, psi: number) => {
-                      const psColor = ps.status === 'passed' ? '#f6ffed' : ps.status === 'caution' ? '#fffbe6' : ps.status === 'completed_losing' ? '#fffbe6' : ps.status === 'failed' ? '#fff2f0' : '#f5f5f5';
-                      const psTagColor = ps.status === 'passed' ? '#52c41a' : ps.status === 'caution' ? '#faad14' : ps.status === 'completed_losing' ? '#ff4d4f' : ps.status === 'failed' ? '#ff4d4f' : '#bbb';
-                      const psLabel = ps.status === 'passed' ? 'Passed' : ps.status === 'caution' ? 'Caution' : ps.status === 'completed_losing' ? 'Completed / Losing' : ps.status === 'failed' ? 'Failed' : ps.status === 'error' ? 'Error' : ps.status === 'skipped' ? 'Skipped' : 'Pending';
-                      return (
-                        <div key={psi} style={{ marginBottom: 6, padding: '6px 8px', backgroundColor: psColor, borderRadius: 4, fontSize: '11px', lineHeight: '1.7' }}>
-                          <div style={{ fontWeight: 500, marginBottom: 2 }}>
-                            {ps.strategy} <Tag color={psTagColor} style={{ fontSize: '9px', fontWeight: 600, margin: 0, padding: '0 4px', lineHeight: '16px' }}>{psLabel}</Tag>
-                          </div>
-                          {ps.status === 'skipped' && <div style={{ color: '#999', fontStyle: 'italic' }}>{ps.reason}</div>}
-                          {ps.status === 'error' && <div style={{ color: '#999', fontStyle: 'italic' }}>{ps.reason}</div>}
-                          {ps.status !== 'skipped' && ps.status !== 'error' && ps.totalReturn !== null && ps.totalReturn !== undefined && (
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '2px 8px' }}>
-                              <span>Return: <span style={{ color: ps.totalReturn >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 500 }}>{ps.totalReturn >= 0 ? '+' : ''}{Number(ps.totalReturn).toFixed(2)}%</span></span>
-                              <span>Sharpe: <span style={{ fontWeight: 500 }}>{Number(ps.sharpe).toFixed(2)}</span></span>
-                              <span>Max DD: <span style={{ color: '#ff4d4f', fontWeight: 500 }}>{Number(ps.maxDrawdown).toFixed(2)}%</span></span>
-                              <span>Win Rate: <span style={{ fontWeight: 500 }}>{Number(ps.winRate).toFixed(1)}%</span></span>
-                              <span>PF: <span style={{ fontWeight: 500 }}>{ps.profitFactor ? Number(ps.profitFactor).toFixed(2) : 'N/A'}</span></span>
-                              <span>Trades: <span style={{ fontWeight: 500 }}>{ps.tradeCount ?? 0}</span></span>
-                              <span>Window: <span style={{ fontWeight: 500 }}>{ps.window || 'N/A'}</span></span>
-                            </div>
-                          )}
-                          {ps._params && ps.status !== 'skipped' && ps.status !== 'error' && (
-                            <div style={{ marginTop: 4, padding: '3px 6px', backgroundColor: '#f5f5f5', borderRadius: 3, fontSize: '10px', color: '#777', lineHeight: '1.6', fontFamily: 'monospace' }}>
-                              {ps._params.strategy} | {ps._params.symbol} | {ps._params.startDate} → {ps._params.endDate} | Cap: ${(ps._params.initialCapital || 100000).toLocaleString()} | mode: {ps._params.dataMode}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              }
-              return <div style={{ fontSize: '11px', color: '#999', fontStyle: 'italic' }}>Quick backtest validation not yet available.</div>;
-            })()}
-          </div>
-        </div>
-
-        {/* Quick Optimization Summary */}
-        <div style={{ marginBottom: 12 }}>
-          <Text strong style={{ fontSize: '12px', color: '#333' }}>Quick Optimization</Text>
-          <div style={{ marginTop: 4, padding: '6px 10px', backgroundColor: '#fff7e6', borderRadius: 4, border: '1px solid #ffd591' }}>
-            {(() => {
-              const qs = record.quickOptStatus;
-              const qr = record.quickOptResults || [];
-              const qsSummary = record.quickOptSummary;
-
-              if (qs === 'skipped' || !qs) {
-                return <div style={{ fontSize: '11px', color: '#999', fontStyle: 'italic' }}>Not run (skipped due to backtest result or top-5 limit).</div>;
-              }
-              if (qs === 'running') {
-                return <div style={{ fontSize: '11px', color: '#fa8c16' }}>Optimization in progress...</div>;
-              }
-              if (qs === 'error') {
-                return <div style={{ fontSize: '11px', color: '#ff4d4f' }}>Optimization failed.</div>;
-              }
-
-              return (
-                <div>
-                  <div style={{ fontSize: '11px', marginBottom: 6 }}>
-                    Status: <Tag color="#fa8c16" style={{ fontSize: '10px', fontWeight: 600, margin: 0 }}>Completed</Tag>
-                    {qsSummary && <span style={{ marginLeft: 8, color: '#888' }}>{qsSummary}</span>}
-                  </div>
-                  {qr.map((opt: any, oi: number) => {
-                    const stabColor = opt.stability === 'Stable' ? '#52c41a' : opt.stability === 'Weak' ? '#faad14' : '#ff4d4f';
-                    return (
-                      <div key={oi} style={{ marginBottom: 6, padding: '6px 8px', backgroundColor: '#f6f6f6', borderRadius: 4, fontSize: '10px', lineHeight: '1.6' }}>
-                        <div style={{ fontWeight: 500, marginBottom: 2 }}>
-                          {opt.strategy}
-                          <Tag color={stabColor} style={{ fontSize: '9px', fontWeight: 600, margin: '0 6px', padding: '0 4px', lineHeight: '16px' }}>{opt.stability}</Tag>
-                          <span style={{ color: '#888', fontSize: '9px' }}>{opt.paramCount} params</span>
-                        </div>
-                        <div>
-                          Avg Return: <span style={{ color: opt.avgReturn >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 500 }}>{opt.avgReturn >= 0 ? '+' : ''}{opt.avgReturn}%</span>
-                          {' | '}Positive: <span style={{ fontWeight: 500 }}>{opt.positiveRatio}%</span>
-                          {' | '}Std: <span style={{ fontWeight: 500 }}>±{opt.stdReturn}%</span>
-                        </div>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: 3 }}>
-                          {opt.results.map((r: any, ri: number) => {
-                            const rColor = r.totalReturn >= 0 ? '#52c41a' : '#ff4d4f';
-                            return (
-                              <span key={ri} style={{
-                                padding: '1px 6px', backgroundColor: '#fff', borderRadius: 3,
-                                border: '1px solid #e8e8e8', fontSize: '9px', color: rColor
-                              }}>
-                                {r.label} {r.totalReturn >= 0 ? '+' : ''}{r.totalReturn.toFixed(1)}%
-                              </span>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })()}
+          <Text strong style={{ fontSize: '12px', color: '#333' }}>Multi-Timeframe Analysis</Text>
+          <div style={{ marginTop: 4, padding: '6px 10px', backgroundColor: '#f9f9ff', borderRadius: 4, border: '1px solid #e8e8f0' }}>
+            {mtfAvail ? (
+              <div style={{ fontSize: '11px', lineHeight: '1.8' }}>
+                {renderTfLine('1D', daily)}
+                {renderTfLine('4H', h4)}
+                {renderTfLine('1H', h1)}
+                {renderTfLine('30m', s30)}
+                {renderTfLine('15m', s15)}
+                {alignment && (
+                  <div style={{ marginTop: 4, fontWeight: 500 }}>Overall: {alignment}</div>
+                )}
+              </div>
+            ) : (
+              <Text style={{ fontSize: '11px', color: '#999', fontStyle: 'italic' }}>
+                MTF data is currently unavailable from existing data sources. Reserved for future enhancement.
+              </Text>
+            )}
           </div>
         </div>
 
@@ -5248,360 +5187,11 @@ Please respond in this exact JSON format:
           mtfHour1: mtfResult.hour1,
           mtf30m: mtfResult.s30m,
           mtf15m: mtfResult.s15m,
-          // Step 3: Quick Backtest Validation
-          backtestStatus: 'pending',
-          backtestSummary: '',
-          backtestPerStrategy: [],
           // Inherited from market scan
           scanTrend: scanData?.trendLabel || scanData?.trend || 'N/A',
           scanScore: scanData?.score || scanData?.signalScore || 0,
           scanVolume: scanData?.volumeRatio || scanData?.volume || null,
         });
-
-        // --- Step 3: Quick Backtest Validation ---
-        // Map FineScan strategy names -> Backtest page strategy names
-        const btStrategyMap: Record<string, string> = {
-          'Moving Average': 'moving_average',
-          'Moving Average Crossover': 'moving_average',
-          'MACD': 'macd',
-          'MACD Strategy': 'macd',
-          'RSI': 'rsi',
-          'RSI Strategy': 'rsi',
-          'Mean Reversion': 'rsi',
-          'Bollinger Band': 'bollinger',
-          'Bollinger Bands': 'bollinger',
-          'Range-bound': 'bollinger',
-          'Range Bound': 'bollinger',
-          'Range-Bound': 'bollinger',
-          'Momentum': 'momentum',
-          'Momentum Strategy': 'momentum',
-          'Momentum Continuation': 'momentum',
-        };
-        const supportedStrategies = new Set(['moving_average', 'macd', 'rsi', 'bollinger', 'momentum']);
-
-        let perStrategyResults: any[] = [];
-        let execStatus = 'pending';
-        let perfStatus: string | null = null;
-        let overallSummary = '';
-
-        if (matchedStrategies && matchedStrategies.length > 0) {
-          for (let si = 0; si < matchedStrategies.length; si++) {
-            const stratName = matchedStrategies[si];
-            const mappedName = btStrategyMap[stratName];
-
-            if (!mappedName || !supportedStrategies.has(mappedName)) {
-              perStrategyResults.push({ strategy: stratName, status: 'skipped', reason: 'Strategy not supported by local Backtest', totalReturn: null, sharpe: null, maxDrawdown: null, winRate: null, profitFactor: null, tradeCount: null, window: null });
-              continue;
-            }
-
-            // Try 3M, fallback 6M, fallback 1Y
-            let windowLabel = '';
-            let btSuccess = false;
-            let btData = null;
-            let btParams = {};
-
-            for (const win of ['3M', '6M', '1Y']) {
-              const daysBack = win === '3M' ? 90 : (win === '6M' ? 180 : 365);
-              const sd = new Date(Date.now() - daysBack * 86400000).toISOString().split('T')[0];
-              const ed = new Date().toISOString().split('T')[0];
-              windowLabel = win;
-
-              setFineScanMessage(`[${i+1}/${candidateCount}] ${symbol}: ${stratName} testing on ${win}...`);
-
-              try {
-                const payload = {
-                  strategy: mappedName, symbol, startDate: sd, endDate: ed,
-                  initialCapital: 100000, dataMode: 'real', parameters: {},
-                };
-                btParams = payload;
-                const resp = await backtraderAPI.runBacktest(payload);
-                const btResult = (resp as any)?.data?.result;
-                if (btResult?.results) {
-                  btData = btResult.results;
-                  btSuccess = true;
-                  break;
-                }
-              } catch (_) { /* continue fallback */ }
-            }
-
-            if (!btSuccess || !btData) {
-              perStrategyResults.push({ strategy: stratName, status: 'error', reason: 'Backtest failed for all time windows', totalReturn: null, sharpe: null, maxDrawdown: null, winRate: null, profitFactor: null, tradeCount: null, window: null, _params: btParams });
-              continue;
-            }
-
-            const tr = btData.totalReturn ?? 0;
-            const shrp = btData.sharpeRatio ?? 0;
-            const mdd = btData.maxDrawdown ?? 0;
-            const wr = btData.winRate ?? 0;
-            const pf = btData.profitFactor ?? 0;
-            const tcnt = btData.trades ?? 0;
-
-            let sStatus = 'completed_losing';
-            if (tr > 0 && pf > 1 && tcnt >= 3 && mdd < 30) { sStatus = 'passed'; }
-            else if (tr > -10 && tcnt >= 2 && mdd < 40) { sStatus = 'caution'; }
-
-            perStrategyResults.push({
-              strategy: stratName, status: sStatus, reason: '',
-              totalReturn: tr, sharpe: shrp, maxDrawdown: mdd,
-              winRate: wr, profitFactor: pf, tradeCount: tcnt, window: windowLabel, _params: btParams,
-            });
-
-            if (si < matchedStrategies.length - 1) await new Promise(r => setTimeout(r, 300));
-          }
-
-          // Compute overall — split execution + performance
-          const passed = perStrategyResults.filter(r => r.status === 'passed').length;
-          const caution = perStrategyResults.filter(r => r.status === 'caution').length;
-          const losing = perStrategyResults.filter(r => r.status === 'completed_losing').length;
-          const err = perStrategyResults.filter(r => r.status === 'error').length;
-
-          execStatus = 'pass';
-          perfStatus = null;
-
-          if (passed >= 1) {
-            execStatus = 'pass';
-            perfStatus = 'positive';
-            const best = perStrategyResults.find(r => r.status === 'passed' && r.totalReturn > -999);
-            const retStr = best ? (best.totalReturn >= 0 ? '+' : '') + Number(best.totalReturn).toFixed(1) + '%' : '';
-            const pfStr = best && best.profitFactor > 0 ? 'PF ' + Number(best.profitFactor).toFixed(1) : '';
-            overallSummary = 'Pass | Positive: ' + (best?.strategy || '') + (retStr ? ' ' + retStr : '') + (pfStr ? ', ' + pfStr : '');
-          } else if (caution >= 1) {
-            execStatus = 'pass';
-            perfStatus = 'caution';
-            const c = perStrategyResults.find(r => r.status === 'caution');
-            const retStr = c ? (c.totalReturn >= 0 ? '+' : '') + Number(c.totalReturn).toFixed(1) + '%' : '';
-            overallSummary = 'Pass | Caution: ' + (c?.strategy || '') + (retStr ? ' ' + retStr : '');
-          } else if (losing >= 1) {
-            execStatus = 'pass';
-            perfStatus = 'negative';
-            const l = perStrategyResults.find(r => r.status === 'completed_losing');
-            overallSummary = 'Pass | Negative: ' + (l?.strategy || '') + ', return ' + (l?.totalReturn ?? 0).toFixed(1) + '%';
-          } else if (err >= 1) {
-            execStatus = 'fail';
-            perfStatus = null;
-            overallSummary = 'Fail: No usable metrics from backtest';
-          } else {
-            execStatus = 'fail';
-            perfStatus = null;
-            overallSummary = perStrategyResults.length === 0 ? 'No strategy tested' : 'Tests failed';
-          }
-        } else {
-          execStatus = 'skipped';
-          perfStatus = null;
-          overallSummary = 'No strategy to test';
-        }
-
-        // Update last result record
-        const rec = results[results.length - 1];
-        if (rec && rec.symbol === symbol) {
-          rec.backtestStatus = execStatus;
-          rec.backtestPerformance = perfStatus;
-          rec.backtestSummary = overallSummary;
-          rec.backtestPerStrategy = perStrategyResults;
-
-          // Quick Optimization: lightweight parameter stability check
-          // Run for any symbol with a successful backtest execution regardless of sign
-          const canOptimize = (execStatus === 'pass') && perStrategyResults.some(
-            (r: any) => r.status === 'passed' || r.status === 'caution' || r.status === 'completed_losing'
-          );
-          rec.quickOptStatus = 'skipped';
-          rec.quickOptResults = [];
-          rec.quickOptSummary = null;
-
-          if (canOptimize) {
-            rec.quickOptStatus = 'running';
-            // Update progress to show optimization phase
-            setFineScanMessage(`[${i+1}/${candidateCount}] ${symbol}: Quick Optimization...`);
-
-            const optStartTime = Date.now();
-            const optResults: any[] = [];
-
-            // Get strategies that had usable backtest data
-            const optimizableStrategies = perStrategyResults.filter(
-              (ps: any) => ps.status === 'passed' || ps.status === 'caution' || ps.status === 'completed_losing'
-            );
-
-            // Define lightweight parameter grids: {paramKey: [values]}
-            const paramGrid: Record<string, any[]> = {
-              'moving_average': [
-                { shortMaRange: {start:9,end:9,step:1}, longMaRange: {start:21,end:21,step:1}, label: '9/21' },
-                { shortMaRange: {start:10,end:10,step:1}, longMaRange: {start:20,end:20,step:1}, label: '10/20' },
-                { shortMaRange: {start:12,end:12,step:1}, longMaRange: {start:26,end:26,step:1}, label: '12/26' },
-              ],
-              'rsi': [
-                { rsiPeriodRange: {start:14,end:14,step:1}, overboughtRange: {start:70,end:70,step:1}, oversoldRange: {start:30,end:30,step:1}, label: '70/30' },
-                { rsiPeriodRange: {start:14,end:14,step:1}, overboughtRange: {start:75,end:75,step:1}, oversoldRange: {start:25,end:25,step:1}, label: '75/25' },
-                { rsiPeriodRange: {start:14,end:14,step:1}, overboughtRange: {start:65,end:65,step:1}, oversoldRange: {start:35,end:35,step:1}, label: '65/35' },
-              ],
-              'macd': [
-                { fastRange: {start:12,end:12,step:1}, slowRange: {start:26,end:26,step:1}, signalRange: {start:9,end:9,step:1}, label: '12/26/9' },
-                { fastRange: {start:10,end:10,step:1}, slowRange: {start:24,end:24,step:1}, signalRange: {start:9,end:9,step:1}, label: '10/24/9' },
-                { fastRange: {start:8,end:8,step:1}, slowRange: {start:21,end:21,step:1}, signalRange: {start:5,end:5,step:1}, label: '8/21/5' },
-              ],
-              'bollinger': [
-                { periodRange: {start:20,end:20,step:1}, stdDevRange: {start:2.0,end:2.0,step:0.5}, label: '20/2.0' },
-                { periodRange: {start:18,end:18,step:1}, stdDevRange: {start:2.5,end:2.5,step:0.5}, label: '18/2.5' },
-                { periodRange: {start:22,end:22,step:1}, stdDevRange: {start:1.5,end:1.5,step:0.5}, label: '22/1.5' },
-              ],
-              'momentum': [
-                { momentumPeriodRange: {start:10,end:10,step:1}, label: '10' },
-                { momentumPeriodRange: {start:14,end:14,step:1}, label: '14' },
-                { momentumPeriodRange: {start:20,end:20,step:1}, label: '20' },
-              ],
-            };
-
-            // Map FineScan strategy name to backend strategy key
-            const fsToBackend: Record<string, string> = {
-              'Moving Average': 'moving_average',
-              'Moving Average Crossover': 'moving_average',
-              'MACD': 'macd',
-              'MACD Strategy': 'macd',
-              'RSI': 'rsi',
-              'RSI Strategy': 'rsi',
-              'Mean Reversion': 'rsi',
-              'Bollinger Band': 'bollinger',
-              'Bollinger Bands': 'bollinger',
-              'Range-bound': 'bollinger',
-              'Momentum': 'momentum',
-              'Momentum Continuation': 'momentum',
-            };
-
-            for (let oi = 0; oi < optimizableStrategies.length; oi++) {
-              const ps = optimizableStrategies[oi];
-              const backendKey = fsToBackend[ps.strategy];
-              if (!backendKey || !paramGrid[backendKey]) continue;
-
-              const paramPoints = paramGrid[backendKey];
-              const btWindow = ps.window || '3M';
-              const daysBack = btWindow === '3M' ? 90 : (btWindow === '6M' ? 180 : 365);
-              const sd = new Date(Date.now() - daysBack * 86400000).toISOString().split('T')[0];
-              const ed = new Date().toISOString().split('T')[0];
-
-              const strategyOptResults: any[] = [];
-
-              for (let pi = 0; pi < paramPoints.length; pi++) {
-                const pp = paramPoints[pi];
-                const optPayload: any = {
-                  symbol, strategy: backendKey,
-                  startDate: sd, endDate: ed,
-                  initialCapital: 100000,
-                  ...pp,
-                };
-                delete optPayload.label;
-
-                try {
-                  const optResp = await backtraderAPI.runParameterOptimization(optPayload);
-                  const optData = (optResp as any)?.data?.result;
-                  if (optData?.results && optData.results.length > 0) {
-                    // Use the first (best) result or aggregate
-                    const best = optData.results[0];
-                    strategyOptResults.push({
-                      label: paramPoints[pi].label || `idx${pi}`,
-                      totalReturn: best.totalReturn ?? 0,
-                      sharpe: best.sharpeRatio ?? 0,
-                      maxDrawdown: best.maxDrawdown ?? 0,
-                      winRate: best.winRate ?? 0,
-                      profitFactor: best.profitFactor ?? 0,
-                      tradeCount: best.trades ?? 0,
-                      params: paramPoints[pi],
-                    });
-                  } else {
-                    strategyOptResults.push({
-                      label: paramPoints[pi].label || `idx${pi}`,
-                      totalReturn: 0,
-                      sharpe: 0,
-                      maxDrawdown: 0,
-                      error: 'No results returned',
-                      params: paramPoints[pi],
-                    });
-                  }
-                } catch (optErr) {
-                  strategyOptResults.push({
-                    label: paramPoints[pi].label || `idx${pi}`,
-                    totalReturn: 0,
-                    sharpe: 0,
-                    maxDrawdown: 0,
-                    error: (optErr as any).message || 'Request failed',
-                    params: paramPoints[pi],
-                  });
-                }
-              }
-
-              if (strategyOptResults.length > 0) {
-                // Compute stability
-                const returns = strategyOptResults.map(r => r.totalReturn).filter((v: number) => !isNaN(v));
-                const positiveCount = returns.filter((v: number) => v > 0).length;
-                const avgReturn = returns.length > 0 ? returns.reduce((a: number, b: number) => a + b, 0) / returns.length : 0;
-                const stdReturn = returns.length > 1
-                  ? Math.sqrt(returns.reduce((sum: number, v: number) => sum + Math.pow(v - avgReturn, 2), 0) / returns.length)
-                  : 0;
-
-                let stability: string;
-                if (returns.length === 0) {
-                  stability = 'N/A';
-                } else if (positiveCount / returns.length >= 0.7 && stdReturn < 10) {
-                  stability = 'Stable';
-                } else if (positiveCount / returns.length >= 0.4 || stdReturn < 20) {
-                  stability = 'Weak';
-                } else {
-                  stability = 'Overfit Risk';
-                }
-
-                // Check overfit: only 1 param point with >10% return, all others <2%
-                const highReturners = returns.filter((v: number) => v > 10);
-                const lowReturners = returns.filter((v: number) => v < 2);
-                if (highReturners.length === 1 && lowReturners.length >= returns.length - 1 && returns.length > 1) {
-                  stability = 'Overfit Risk';
-                }
-
-                optResults.push({
-                  strategy: ps.strategy,
-                  backendKey,
-                  paramCount: paramPoints.length,
-                  results: strategyOptResults,
-                  returns,
-                  avgReturn: Number(avgReturn.toFixed(2)),
-                  stdReturn: Number(stdReturn.toFixed(2)),
-                  positiveRatio: returns.length > 0 ? Number((positiveCount / returns.length * 100).toFixed(0)) : 0,
-                  stability,
-                });
-              }
-
-              // Small delay between strategy optimizations
-              if (oi < optimizableStrategies.length - 1) await new Promise(r => setTimeout(r, 200));
-            }
-
-            const optElapsed = Date.now() - optStartTime;
-            rec.quickOptResults = optResults;
-
-            // Compute overall optimization status
-            if (optResults.length === 0) {
-              rec.quickOptStatus = 'skipped';
-              rec.quickOptSummary = null;
-            } else {
-              rec.quickOptStatus = 'completed';
-              const stableCount = optResults.filter((r: any) => r.stability === 'Stable').length;
-              const weakCount = optResults.filter((r: any) => r.stability === 'Weak').length;
-              const overfitCount = optResults.filter((r: any) => r.stability === 'Overfit Risk').length;
-
-              if (stableCount >= optResults.length * 0.7) {
-                rec.quickOptSummary = `Stable (${stableCount}/${optResults.length} strategies) - in ${(optElapsed / 1000).toFixed(0)}s`;
-              } else if (weakCount > overfitCount) {
-                rec.quickOptSummary = `Weak (${weakCount}/${optResults.length} mixed) - in ${(optElapsed / 1000).toFixed(0)}s`;
-              } else {
-                rec.quickOptSummary = `Overfit Risk (${overfitCount}/${optResults.length} unstable) - in ${(optElapsed / 1000).toFixed(0)}s`;
-              }
-            }
-          }
-        }
-        // --- End Step 3 (Quick Backtest + Optimization) ---
-
-        // Assign temporary priority based on current confidence (final sort happens at end)
-        const currentSorted = [...results].sort((a: any, b: any) => b.matchConfidence - a.matchConfidence);
-        currentSorted.forEach((r: any, idx: number) => { r.priority = idx + 1; });
-
-        // Update UI immediately with current results (forces React re-render)
-        setFineScanResults(currentSorted);
 
         // Rate-limit delay between symbols (500ms)
         if (i < candidateCount - 1) {
@@ -5617,7 +5207,9 @@ Please respond in this exact JSON format:
       setFineScanProgress(100);
       setFineScanStatus('completed');
 
-      message.success(`Fine Scan complete: ${results.length} candidates analyzed`);
+      const aiCount = results.filter(r => r.aiUsed).length;
+      const mtfCount = results.filter(r => r.mtfAvailable).length;
+      message.success(`Fine Scan complete: ${results.length} candidates (${aiCount} AI-driven, ${mtfCount} MTF confirmed)`);
     } catch (error) {
       console.error('Fine scan error:', error);
       setFineScanStatus('error');
@@ -7076,7 +6668,7 @@ Please respond in this exact JSON format:
             <Table
               dataSource={fineScanResults}
               rowKey="symbol"
-              pagination={{ pageSize: 10, showSizeChanger: false, showTotal: (total, range) => `${range[0]}-${range[1]} / ${total}` }}
+              pagination={false}
               size="small"
               scroll={{ x: 'max-content' }}
               expandable={{
@@ -7100,109 +6692,7 @@ Please respond in this exact JSON format:
                     <Text strong style={{ fontSize: '12px' }}>{record.symbol}</Text>
                   ),
                 },
-                // ===== Backtest Check Column =====
-                {
-                  title: 'Backtest Check',
-                  key: 'backtestCheck',
-                  width: 200,
-                  render: (record) => {
-                    const execStatus = record.backtestStatus || 'pending';
-                    const perfStatus = record.backtestPerformance || null;
-                    const summary = record.backtestSummary || '';
-
-                    // Execution tag
-                    let execColor = '#999', execLabel = 'Pending';
-                    if (execStatus === 'pass') { execColor = '#52c41a'; execLabel = 'Pass'; }
-                    else if (execStatus === 'fail') { execColor = '#ff4d4f'; execLabel = 'Fail'; }
-                    else if (execStatus === 'error') { execColor = '#999'; execLabel = 'Error'; }
-                    else if (execStatus === 'skipped') { execColor = '#bbb'; execLabel = 'Skipped'; }
-
-                    // Performance badge
-                    let perfColor = '', perfLabel = '';
-                    if (perfStatus === 'positive') { perfColor = '#52c41a'; perfLabel = 'Positive'; }
-                    else if (perfStatus === 'negative') { perfColor = '#ff4d4f'; perfLabel = 'Negative'; }
-                    else if (perfStatus === 'caution') { perfColor = '#faad14'; perfLabel = 'Caution'; }
-
-                    return (
-                      <div style={{ lineHeight: '1.6' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                          <Tag color={execColor} style={{ fontSize: '10px', fontWeight: 600, margin: 0 }}>{execLabel}</Tag>
-                          {perfStatus && (
-                            <Tag color={perfColor} style={{ fontSize: '10px', fontWeight: 600, margin: 0 }}>{perfLabel}</Tag>
-                          )}
-                        </div>
-                        {summary && (
-                          <div style={{ fontSize: '10px', color: '#777', marginTop: 1, lineHeight: '1.4' }}>
-                            {summary.length > 60 ? summary.substring(0, 60) + '...' : summary}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  },
-                },
-                // ===== Optimization Column =====
-                {
-                  title: 'Optimization',
-                  key: 'optimization',
-                  width: 120,
-                  render: (record) => {
-                    const optStatus = record.quickOptStatus || 'Not Run';
-                    const qr = record.quickOptResults || [];
-                    const qs = record.quickOptSummary || '';
-
-                    let statusColor = '#999', statusLabel = 'Not Run';
-                    if (optStatus === 'completed') { statusColor = '#52c41a'; statusLabel = 'Pass'; }
-                    else if (optStatus === 'error') { statusColor = '#ff4d4f'; statusLabel = 'Fail'; }
-                    else if (optStatus === 'skipped') { statusColor = '#bbb'; statusLabel = 'Skipped'; }
-                    else if (optStatus === 'running') { statusColor = '#fa8c16'; statusLabel = 'Running'; }
-
-                    // Extract stability from summary or results
-                    let stabilityLabel = 'N/A';
-                    let stabilityColor = '#999';
-                    if (optStatus === 'completed' && qr.length > 0) {
-                      const stableCount = qr.filter((r: any) => r.stability === 'Stable').length;
-                      const weakCount = qr.filter((r: any) => r.stability === 'Weak').length;
-                      const overfitCount = qr.filter((r: any) => r.stability === 'Overfit Risk').length;
-                      if (stableCount >= qr.length * 0.7 || stableCount >= 2) {
-                        stabilityLabel = 'Stable';
-                        stabilityColor = '#52c41a';
-                      } else if (weakCount > overfitCount) {
-                        stabilityLabel = 'Weak';
-                        stabilityColor = '#faad14';
-                      } else if (overfitCount > 0) {
-                        stabilityLabel = 'Overfit';
-                        stabilityColor = '#ff4d4f';
-                      }
-                    } else if (optStatus === 'skipped') {
-                      stabilityLabel = '—';
-                      stabilityColor = '#ccc';
-                    }
-
-                    // Short summary text
-                    let shortMsg = '';
-                    if (optStatus === 'completed') {
-                      if (qs) shortMsg = qs.length > 30 ? qs.substring(0, 30) + '…' : qs;
-                    } else if (optStatus === 'error') {
-                      shortMsg = 'no valid params';
-                    } else if (optStatus === 'skipped') {
-                      shortMsg = 'not candidate';
-                    }
-
-                    return (
-                      <div style={{ lineHeight: '1.6' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
-                          <Tag color={statusColor} style={{ fontSize: '10px', fontWeight: 600, margin: 0 }}>{statusLabel}</Tag>
-                          <Tag color={stabilityColor} style={{ fontSize: '9px', fontWeight: 500, margin: 0, padding: '0 4px' }}>{stabilityLabel}</Tag>
-                        </div>
-                        {shortMsg && (
-                          <div style={{ fontSize: '9px', color: '#999', marginTop: 1, lineHeight: '1.3' }}>
-                            {shortMsg}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  },
-                },
+                // ===== MTF Columns Removed (reserved for detail panel only) =====
                 {
                   title: 'Regime',
                   key: 'regime',
@@ -7334,7 +6824,7 @@ Please respond in this exact JSON format:
               <ThunderboltOutlined style={{ fontSize: '36px', marginBottom: 12, opacity: 0.4 }} />
               <div style={{ fontSize: '13px' }}>Run Fine Scan to match strategies for continue-list candidates</div>
               <div style={{ fontSize: '11px', marginTop: 8, color: '#bbb' }}>
-                Step 1: Regime & strategy matching &nbsp;|&nbsp; Step 3: Quick backtest validation
+                Step 1: Regime & strategy matching &nbsp;|&nbsp; Step 2: Multi-timeframe confirmation analysis
               </div>
             </div>
           )}

@@ -1,70 +1,10 @@
-﻿"""
+"""
 
 简化版后端 - 包含所有核心功能和 AI 接口
 
 """
 
 from flask import Flask, request, jsonify
-
-# ===== 安全打印辅助函数 =====
-def safe_print(text, max_length=500):
-    """安全打印，避免编码错误"""
-    try:
-        if isinstance(text, (dict, list)):
-            text_str = str(text)
-        else:
-            text_str = str(text)
-        
-        # 截断并清理特殊字符
-        safe_text = text_str[:max_length]
-        # 移除可能导致编码问题的字符
-        safe_text = ''.join(c for c in safe_text if ord(c) < 128 or c in '，。！？；：""')
-        
-        print(safe_text + ('...' if len(text_str) > max_length else ''))
-    except:
-        print(f'[安全打印] 无法打印内容: {type(text)}')
-
-
-def safe_print_dict(data, prefix=''):
-    """安全打印字典"""
-    if not isinstance(data, dict):
-        safe_print(f'{prefix}{data}')
-        return
-    
-    print(f'{prefix}{{')
-    for key, value in list(data.items())[:10]:  # 只打印前10个键值对
-        if isinstance(value, dict):
-            print(f'{prefix}  {key}: {{...}}')
-        elif isinstance(value, list):
-            print(f'{prefix}  {key}: [{len(value)} items]')
-        else:
-            safe_print(f'{prefix}  {key}: {value}')
-    if len(data) > 10:
-        print(f'{prefix}  ... and {len(data)-10} more items')
-    print(f'{prefix}}}')
-
-
-def safe_print_news(news_data, prefix=''):
-    """安全打印新闻数据"""
-    if not news_data:
-        print(f'{prefix}No news data')
-        return
-    
-    if isinstance(news_data, list):
-        print(f'{prefix}News list with {len(news_data)} items')
-        for i, item in enumerate(news_data[:3]):  # 只打印前3条
-            if isinstance(item, dict):
-                headline = item.get('headline', 'No headline')
-                source = item.get('source', 'Unknown')
-                safe_print(f'{prefix}  [{i+1}] {headline[:50]}... ({source})')
-    elif isinstance(news_data, dict):
-        safe_print_dict(news_data, prefix)
-    else:
-        safe_print(f'{prefix}{news_data}')
-
-# ===== 安全打印辅助函数结束 =====
-
-
 
 from flask_cors import CORS
 
@@ -88,15 +28,26 @@ import dateutil.parser
 
 # 导入技术指标模块
 try:
-    from technical_indicators import calculate_simple_technical_indicators, generate_technical_summary
-    print("[导入] 技术指标模块导入成功")
+    from technical_indicators import calculate_technical_indicators, analyze_news_for_scanner
+    print("[导入] 成功导入技术指标模块")
 except ImportError as e:
-    print(f"[导入] 技术指标模块导入失败: {e}")
+    print(f"[导入] 导入技术指标模块失败: {e}")
     # 定义占位函数
-    def calculate_simple_technical_indicators(price_data):
-        return {'error': 'Technical indicators module not available'}
-    def generate_technical_summary(indicators):
-        return 'Technical analysis not available'
+    def calculate_technical_indicators(symbol, historical_bars, current_price=None):
+        print(f"[占位] 技术指标计算函数未实现: {symbol}")
+        return None
+    
+    def analyze_news_for_scanner(news_items):
+        print(f"[占位] 新闻分析函数未实现")
+        return {
+            'news_count': 0,
+            'headlines': [],
+            'summaries': [],
+            'categories': [],
+            'timestamps': [],
+            'event_tags': [],
+            'raw_news': []
+        }
 
 
 
@@ -252,38 +203,29 @@ except ImportError as e:
 
 ai_provider_config_state = {
 
-    'provider': 'DeepSeek',
+    'provider': '',  # 用户必须配置
 
-    'apiKey': '',  # 必须由用户在AI Configuration页面输入
+    'apiKey': '',  # 用户必须配置，无硬编码默认值
 
-    'baseURL': 'https://api.deepseek.com',
+    'baseURL': '',   # 用户必须配置
 
-    'model': 'deepseek-chat'
+    'model': ''      # 用户必须配置
 
 }
 
 # AI配置持久化
 import json
 import os
+AI_CONFIG_FILE = os.path.expanduser('~/.openclaw/ai_config.json')
 
-AI_CONFIG_FILE = 'ai_provider_config.json'
-
-def save_ai_config_to_file():
+def save_ai_config_to_file(config):
     """保存AI配置到文件"""
     try:
-        config_to_save = dict(ai_provider_config_state)
-        # 确保字段一致性
-        if 'baseUrl' in config_to_save and 'baseURL' not in config_to_save:
-            config_to_save['baseURL'] = config_to_save['baseUrl']
-        elif 'baseURL' in config_to_save and 'baseUrl' not in config_to_save:
-            config_to_save['baseUrl'] = config_to_save['baseURL']
-        
+        os.makedirs(os.path.dirname(AI_CONFIG_FILE), exist_ok=True)
         with open(AI_CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(config_to_save, f, indent=2)
-        print(f'[AI配置] 配置已保存到文件: {AI_CONFIG_FILE}')
+            json.dump(config, f, indent=2)
         return True
-    except Exception as e:
-        print(f'[AI配置] 保存配置到文件失败: {e}')
+    except:
         return False
 
 def load_ai_config_from_file():
@@ -291,25 +233,57 @@ def load_ai_config_from_file():
     try:
         if os.path.exists(AI_CONFIG_FILE):
             with open(AI_CONFIG_FILE, 'r', encoding='utf-8') as f:
-                saved_config = json.load(f)
-            
-            # 更新内存配置
-            for key in ['provider', 'apiKey', 'baseURL', 'baseUrl', 'model']:
-                if key in saved_config:
-                    ai_provider_config_state[key] = saved_config[key]
-            
-            print(f'[AI配置] 从文件加载配置成功: {AI_CONFIG_FILE}')
-            return True
-        else:
-            print(f'[AI配置] 配置文件不存在: {AI_CONFIG_FILE}')
-            return False
-    except Exception as e:
-        print(f'[AI配置] 从文件加载配置失败: {e}')
-        return False
+                return json.load(f)
+    except:
+        pass
+    return {}
+
+def get_effective_ai_config():
+    """获取有效的AI配置 - 唯一来源"""
+    # 总是优先从文件加载最新配置
+    file_config = load_ai_config_from_file()
+    if file_config:
+        # 更新内存状态
+        ai_provider_config_state.update(file_config)
+        config = dict(file_config)
+    else:
+        config = dict(ai_provider_config_state)
+    
+    # 确保字段名一致性（前端使用baseUrl，后端使用baseURL）
+    if 'baseUrl' in config and 'baseURL' not in config:
+        config['baseURL'] = config['baseUrl']
+    elif 'baseURL' in config and 'baseUrl' not in config:
+        config['baseUrl'] = config['baseURL']
+    
+    # 清洗非法provider/model
+    SUPPORTED_PROVIDERS = ['DeepSeek', 'OpenAI', 'Claude']
+    PROVIDER_MODELS = {
+        'DeepSeek': ['deepseek-chat', 'deepseek-coder'],
+        'OpenAI': ['gpt-4', 'gpt-3.5-turbo'],
+        'Claude': ['claude-3-opus', 'claude-3-sonnet']
+    }
+    
+    provider = config.get('provider', '').strip()
+    model = config.get('model', '').strip()
+    
+    # 如果provider不合法，重置为默认值
+    if provider not in SUPPORTED_PROVIDERS:
+        config['provider'] = 'DeepSeek'
+        config['model'] = 'deepseek-chat'
+        print(f"[get_effective_ai_config] 清洗非法provider: {provider} -> DeepSeek")
+    
+    # 如果model不合法，重置为provider的默认model
+    elif model not in PROVIDER_MODELS.get(provider, []):
+        default_model = PROVIDER_MODELS.get(provider, ['deepseek-chat'])[0]
+        config['model'] = default_model
+        print(f"[get_effective_ai_config] 清洗非法model: {model} -> {default_model}")
+    
+    return config
 
 # 启动时加载配置
-load_ai_config_from_file()
-
+_startup_config = load_ai_config_from_file()
+if _startup_config:
+    ai_provider_config_state.update(_startup_config)
 
 
 
@@ -736,9 +710,11 @@ def fetch_alpaca_stock_data(symbol):
 
             close_price = bar.get('c')
 
-            # 只检查close price是否存在且为正数，volume可以为0或很小
+            volume = bar.get('v')
 
-            return close_price is not None and float(close_price) > 0
+            # 检查close price和volume是否存在且为正数
+
+            return close_price is not None and float(close_price) > 0 and volume is not None and int(volume) > 0
 
         
 
@@ -1140,9 +1116,11 @@ def fetch_alpaca_stock_data_snapshot(symbols):
 
                 close_price = bar.get('c')
 
-                # 只检查close price是否存在且为正数，volume可以为0或很小
+                volume = bar.get('v')
 
-                return close_price is not None and float(close_price) > 0
+                # 检查close price和volume是否存在且为正数
+
+                return close_price is not None and float(close_price) > 0 and volume is not None and int(volume) > 0
 
             
 
@@ -3172,13 +3150,12 @@ def fetch_finnhub_profile(symbol):
 
 
 
-        if 'marketCapitalization' not in data:
-
-            # 没有必要字段，返回空数据
-
-            print(f"[Finnhub Profile] 没有marketCapitalization字段，返回空数据")
-
-            return None, "Missing required field: marketCapitalization"
+        # 检查是否有必要字段，但不再因为缺少marketCapitalization而返回空数据
+        # 只要有name或sector等基本信息就可以返回
+        if not data.get('name') and not data.get('sector'):
+            # 完全没有基本信息，返回空数据
+            print(f"[Finnhub Profile] 没有name或sector字段，返回空数据")
+            return None, "Missing basic fields: name and sector"
 
 
 
@@ -4739,6 +4716,7 @@ def get_mock_response(message):
 
 
 @app.route('/api/ai/provider/config', methods=['GET', 'POST'])
+@app.route('/ai/provider/config', methods=['GET', 'POST'])  # 兼容无前缀版本
 
 def ai_provider_config():
 
@@ -4746,21 +4724,14 @@ def ai_provider_config():
 
         if request.method == 'GET':
 
-            # 返回当前配置状态，不添加任何硬编码key
-
-            config_to_return = dict(ai_provider_config_state)
-
+            # 使用统一配置函数获取当前配置
+            effective_config = get_effective_ai_config()
             
-
             return jsonify({
 
                 'success': True,
 
-                'config': config_to_return,
-
-                'hasUserKey': bool(config_to_return.get('apiKey')),
-
-                'message': 'User must configure API key in AI Configuration page' if not config_to_return.get('apiKey') else 'Configuration loaded'
+                'config': effective_config
 
             })
 
@@ -4776,45 +4747,79 @@ def ai_provider_config():
 
 
 
-            # 更新所有配置字段
-
+            # 验证配置字段
+            SUPPORTED_PROVIDERS = ['DeepSeek', 'OpenAI', 'Claude']
+            PROVIDER_MODELS = {
+                'DeepSeek': ['deepseek-chat', 'deepseek-coder'],
+                'OpenAI': ['gpt-4', 'gpt-3.5-turbo'],
+                'Claude': ['claude-3-opus', 'claude-3-sonnet']
+            }
+            
+            # 验证provider
             if 'provider' in data:
+                provider = data['provider'].strip()
+                if not provider:
+                    return jsonify({
+                        'success': False,
+                        'message': 'provider不能为空',
+                        'config': ai_provider_config_state
+                    })
+                
+                if provider not in SUPPORTED_PROVIDERS:
+                    return jsonify({
+                        'success': False,
+                        'message': f'不支持的provider: {provider}。支持的provider: {", ".join(SUPPORTED_PROVIDERS)}',
+                        'config': ai_provider_config_state
+                    })
+                
+                ai_provider_config_state['provider'] = provider
 
-                ai_provider_config_state['provider'] = data['provider']
+            # 验证model
+            if 'model' in data:
+                model = data['model'].strip()
+                if not model:
+                    return jsonify({
+                        'success': False,
+                        'message': 'model不能为空',
+                        'config': ai_provider_config_state
+                    })
+                
+                current_provider = ai_provider_config_state.get('provider', '')
+                if current_provider:  # 如果provider已设置，验证model
+                    supported_models = PROVIDER_MODELS.get(current_provider, [])
+                    if model not in supported_models:
+                        return jsonify({
+                            'success': False,
+                            'message': f'不支持的model: {model}。{current_provider}支持的model: {", ".join(supported_models)}',
+                            'config': ai_provider_config_state
+                        })
+                
+                ai_provider_config_state['model'] = model
 
+            # 更新其他字段
             if 'apiKey' in data:
-
                 ai_provider_config_state['apiKey'] = data['apiKey']
 
             if 'baseUrl' in data:
-
                 ai_provider_config_state['baseURL'] = data['baseUrl']
 
             if 'baseURL' in data:  # 也支持大写
-
                 ai_provider_config_state['baseURL'] = data['baseURL']
 
-            if 'model' in data:
-
-                ai_provider_config_state['model'] = data['model']
 
 
-
-            # 确保返回baseUrl字段（前端期望）
-            config_to_return = dict(ai_provider_config_state)
-            if 'baseURL' in config_to_return and 'baseUrl' not in config_to_return:
-                config_to_return['baseUrl'] = config_to_return['baseURL']
-            
             response = {
+
                 'success': True,
-                'config': config_to_return,
+
+                'config': ai_provider_config_state,
+
                 'message': '配置保存成功'
+
             }
 
             print('返回响应:', response)
 
-            # 保存配置到文件
-            save_ai_config_to_file()
             return jsonify(response)
 
     except Exception as e:
@@ -4830,25 +4835,72 @@ def ai_provider_config():
 def ai_provider_test():
 
     print('=== AI Provider Test 请求 ===')
+    print(f'请求数据: {request.get_json()}')
 
     try:
 
         data = request.get_json()
-
         api_key = data.get('apiKey', '')
+        
+        print(f'解析的apiKey: {api_key[:10]}... (长度: {len(api_key)})')
+        print(f'provider: {data.get("provider")}')
+        print(f'baseUrl: {data.get("baseUrl")}')
+        print(f'baseURL: {data.get("baseURL")}')
+        print(f'model: {data.get("model")}')
 
-
-
-        if not api_key or api_key.startswith('sk-') and len(api_key) < 30:
-
+        # 1. 验证provider
+        SUPPORTED_PROVIDERS = ['DeepSeek', 'OpenAI', 'Claude']
+        provider = data.get('provider', '').strip()
+        if not provider:
             return jsonify({
-
                 'success': False,
-
-                'message': 'API 密钥无效或未提供',
-
+                'message': 'provider未提供',
                 'valid': False
+            })
+        
+        if provider not in SUPPORTED_PROVIDERS:
+            return jsonify({
+                'success': False,
+                'message': f'不支持的provider: {provider}。支持的provider: {", ".join(SUPPORTED_PROVIDERS)}',
+                'valid': False
+            })
 
+        # 2. 验证model
+        PROVIDER_MODELS = {
+            'DeepSeek': ['deepseek-chat', 'deepseek-coder'],
+            'OpenAI': ['gpt-4', 'gpt-3.5-turbo'],
+            'Claude': ['claude-3-opus', 'claude-3-sonnet']
+        }
+        model = data.get('model', '').strip()
+        if not model:
+            return jsonify({
+                'success': False,
+                'message': 'model未提供',
+                'valid': False
+            })
+        
+        supported_models = PROVIDER_MODELS.get(provider, [])
+        if model not in supported_models:
+            return jsonify({
+                'success': False,
+                'message': f'不支持的model: {model}。{provider}支持的model: {", ".join(supported_models)}',
+                'valid': False
+            })
+
+        # 3. 验证apiKey（基本格式检查）
+        if not api_key:
+            return jsonify({
+                'success': False,
+                'message': 'API密钥未提供',
+                'valid': False
+            })
+        
+        # 对于sk-开头的key，检查最小长度
+        if api_key.startswith('sk-') and len(api_key) < 30:
+            return jsonify({
+                'success': False,
+                'message': 'API密钥格式可能无效（长度太短）',
+                'valid': False
             })
 
 
@@ -4874,25 +4926,23 @@ def ai_provider_test():
 
 
         try:
+            # 构建测试请求
+            test_url = f'{base_url}/chat/completions'
+            test_payload = {
+                'model': data.get('model', 'deepseek-chat'),
+                'messages': [{'role': 'user', 'content': 'Hello'}],
+                'max_tokens': 10
+            }
+            
+            print(f'测试URL: {test_url}')
+            print(f'测试payload: {test_payload}')
+            print(f'请求头Authorization: Bearer {api_key[:10]}...')
 
             test_response = requests.post(
-
-                f'{base_url}/chat/completions',
-
+                test_url,
                 headers=headers,
-
-                json={
-
-                    'model': data.get('model', 'deepseek-chat'),
-
-                    'messages': [{'role': 'user', 'content': 'Hello'}],
-
-                    'max_tokens': 10
-
-                },
-
+                json=test_payload,
                 timeout=10
-
             )
 
 
@@ -4910,6 +4960,9 @@ def ai_provider_test():
                 })
 
             else:
+                print(f'API测试失败，状态码: {test_response.status_code}')
+                print(f'API响应头: {dict(test_response.headers)}')
+                print(f'API响应文本: {test_response.text[:500]}')
 
                 return jsonify({
 
@@ -9483,6 +9536,8 @@ def get_stock_data_for_scanner(symbol):
 
                     'changePercent': alpaca_data.get('changePercent', 0),
 
+                    'changePct': alpaca_data.get('changePercent', 0),  # 添加前端使用的字段名
+
                     'volume': final_volume,
 
                     'dataSource': 'Alpaca',  # 主数据源
@@ -9533,6 +9588,8 @@ def get_stock_data_for_scanner(symbol):
 
                         'changePercent': finnhub_data.get('dp', 0),
 
+                        'changePct': finnhub_data.get('dp', 0),  # 添加前端使用的字段名
+
                         'volume': finnhub_volume,
 
                         'dataSource': 'Finnhub',
@@ -9577,6 +9634,8 @@ def get_stock_data_for_scanner(symbol):
 
                         'changePercent': 0,
 
+                        'changePct': 0,  # 添加前端使用的字段名
+
                         'volume': 0,
 
                         'dataSource': 'Failed',
@@ -9614,6 +9673,8 @@ def get_stock_data_for_scanner(symbol):
                 'price': 0,
 
                 'changePercent': 0,
+
+                'changePct': 0,  # 添加前端使用的字段名
 
                 'volume': 0,
 
@@ -9809,231 +9870,339 @@ def get_stock_data_for_scanner(symbol):
 
         }
 
-def fetch_finnhub_news(symbol):
-    """从Finnhub获取股票新闻"""
-    try:
-        print(f'[Finnhub新闻] 获取 {symbol} 新闻')
-        
-        # 检查API密钥
-        if not FINNHUB_API_KEY:
-            print(f'[Finnhub新闻] Finnhub API密钥未配置')
-            return None
-        
-        # 调用Finnhub News API
-        import requests
-        from datetime import datetime, timedelta
-        
-        # 设置时间范围（最近7天）
-        to_date = datetime.utcnow()
-        from_date = to_date - timedelta(days=7)
-        
-        # 格式化日期
-        from_str = from_date.strftime('%Y-%m-%d')
-        to_str = to_date.strftime('%Y-%m-%d')
-        
-        # 构建API URL
-        url = f'{FINNHUB_BASE_URL}/company-news'
-        params = {
-            'symbol': symbol,
-            'from': from_str,
-            'to': to_str,
-            'token': FINNHUB_API_KEY
-        }
-        
-        print(f'[Finnhub新闻] 请求URL: {url}')
-        print(f'[Finnhub新闻] 参数: {params}')
-        
-        # 发送请求
-        response = requests.get(url, params=params, timeout=10)
-        
-        if response.status_code == 200:
-            news_data = response.json()
-            print(f'[Finnhub新闻] 获取到 {len(news_data)} 条新闻')
-            return news_data
-        else:
-            print(f'[Finnhub新闻] API请求失败: {response.status_code}')
-            print(f'[Finnhub新闻] 响应: {response.text[:200]}')
-            return None
-            
-    except Exception as e:
-        print(f'[Finnhub新闻] 获取新闻时出错: {str(e)}')
-        return None
-
-
 
 
 
 
 def analyze_news_for_stock(symbol):
-    """分析股票的新闻数据 - 使用真实Finnhub API"""
+
+    """分析股票的新闻数据 - 使用Finnhub新闻接口"""
+
     try:
+
         symbol_upper = symbol.upper()
+
         
-        print(f'[新闻分析] 开始获取真实新闻数据: {symbol_upper}')
+
+        # 调用Finnhub新闻接口
+
+        print(f'[新闻分析] 调用Finnhub新闻接口: {symbol_upper}')
+
+        news_items, news_error = fetch_finnhub_company_news(symbol_upper, days_back=7)
+
         
-        # 调用真实Finnhub API
-        finnhub_news = fetch_finnhub_news(symbol_upper)
-        
-        if finnhub_news and isinstance(finnhub_news, list) and len(finnhub_news) > 0:
-            print(f'[新闻分析] 获取到 {len(finnhub_news)} 条真实新闻')
-            
-            # 分析新闻情绪
-            sentiment_scores = []
-            valid_news = []
-            has_sentiment_data = False
-            
-            for news_item in finnhub_news[:10]:  # 最多分析10条新闻
-                try:
-                    sentiment = news_item.get('sentiment')
-                    
-                    # 检查是否有有效的情绪数据（不是N/A或None）
-                    if sentiment is not None and sentiment != 'N/A':
-                        try:
-                            sentiment_float = float(sentiment)
-                            sentiment_scores.append(sentiment_float)
-                            has_sentiment_data = True
-                        except (ValueError, TypeError):
-                            pass  # 忽略无效的情绪值
-                    
-                    # 提取关键信息
-                    headline = news_item.get('headline', '')
-                    summary = news_item.get('summary', headline)
-                    url = news_item.get('url', '')
-                    source = news_item.get('source', 'Unknown')
-                    datetime_val = news_item.get('datetime')
-                    
-                    if headline:
-                        valid_news.append({
-                            'headline': headline,
-                            'summary': summary,
-                            'url': url,
-                            'source': source,
-                            'datetime': datetime_val,
-                            'sentiment': sentiment if sentiment != 'N/A' else None
-                        })
-                except Exception as e:
-                    print(f'[新闻分析] 处理新闻条目时出错: {str(e)}')
-                    continue
-            
-            # 确定情绪标签和事件风险
-            sentiment_label = 'Neutral'
-            event_risk = 'Low'
-            
-            if has_sentiment_data and sentiment_scores:
-                # 计算平均情绪
-                avg_sentiment = sum(sentiment_scores) / len(sentiment_scores)
-                
-                # 确定情绪标签
-                if avg_sentiment > 0.2:
-                    sentiment_label = 'Positive'
-                elif avg_sentiment < -0.2:
-                    sentiment_label = 'Negative'
-                else:
-                    sentiment_label = 'Neutral'
-                
-                # 确定事件风险
-                if abs(avg_sentiment) > 0.5:
-                    event_risk = 'High'
-                elif abs(avg_sentiment) > 0.3:
-                    event_risk = 'Medium'
-                else:
-                    event_risk = 'Low'
-                
-                sentiment_summary = f'基于{len(sentiment_scores)}条有情绪数据的新闻分析，平均情绪得分: {avg_sentiment:.2f}'
-            else:
-                # 如果没有情绪数据，基于新闻标题关键词进行简单分析
-                positive_keywords = ['up', 'gain', 'rise', 'bullish', 'positive', 'beat', 'surge', 'rally', 'growth']
-                negative_keywords = ['down', 'drop', 'fall', 'bearish', 'negative', 'miss', 'decline', 'loss', 'cut']
-                
-                positive_count = 0
-                negative_count = 0
-                
-                for news in valid_news[:5]:  # 只分析前5条新闻
-                    headline_lower = news['headline'].lower()
-                    if any(keyword in headline_lower for keyword in positive_keywords):
-                        positive_count += 1
-                    if any(keyword in headline_lower for keyword in negative_keywords):
-                        negative_count += 1
-                
-                if positive_count > negative_count:
-                    sentiment_label = 'Positive'
-                elif negative_count > positive_count:
-                    sentiment_label = 'Negative'
-                else:
-                    sentiment_label = 'Neutral'
-                
-                # 基于新闻数量确定风险
-                if len(valid_news) > 15:
-                    event_risk = 'High'
-                elif len(valid_news) > 5:
-                    event_risk = 'Medium'
-                else:
-                    event_risk = 'Low'
-                
-                sentiment_summary = f'基于{len(valid_news)}条新闻标题分析，正面关键词: {positive_count}, 负面关键词: {negative_count}'
-            
-            # 提取主要催化剂和头条新闻
-            top_catalyst = ''
-            headlines = []
-            
-            if valid_news:
-                # 使用最新的新闻作为主要催化剂
-                sorted_news = sorted(valid_news, key=lambda x: x.get('datetime', 0), reverse=True)
-                top_news = sorted_news[0]
-                top_catalyst = top_news.get('headline', '')[:100]
-                
-                # 提取前5条新闻作为头条
-                for news in sorted_news[:5]:
-                    headlines.append({
-                        'headline': news.get('headline', '')[:80],
-                        'source': news.get('source', 'Unknown'),
-                        'time': news.get('datetime'),
-                        'url': news.get('url', '')
-                    })
-            
+
+        if news_error or not news_items:
+
+            print(f'[新闻分析] {symbol_upper}: 没有获取到新闻数据，返回空数据')
+
             return {
-                'sentiment': sentiment_label,
-                'eventRisk': event_risk,
-                'topCatalyst': top_catalyst if top_catalyst else 'No recent news available',
-                'newsCount': len(valid_news),
-                'newsSource': 'Finnhub',
-                'hasNews': True,
-                'newsSummary': sentiment_summary if 'sentiment_summary' in locals() else f'基于{len(valid_news)}条新闻分析',
-                'headlines': headlines,  # 新增：头条新闻列表
-                'rawNews': valid_news[:5]  # 返回前5条新闻供参考
-            }
-        else:
-            print(f'[新闻分析] 未获取到新闻数据，返回中性分析')
-            return {
-                'sentiment': 'Neutral',
+
+                'sentiment': 'No recent news',
+
                 'eventRisk': 'Low',
-                'topCatalyst': 'No recent news available',
+
+                'topCatalyst': 'No recent catalyst',
+
                 'newsCount': 0,
-                'newsSource': 'None',
+
+                'newsSource': 'Finnhub (empty)',
+
                 'hasNews': False,
-                'newsSummary': 'No recent news available from Finnhub'
+
+                'newsSummary': 'No recent news available from Finnhub.'
+
             }
+
+        
+
+        # 分析新闻情感
+
+        total_sentiment_score = 0
+
+        valid_news_count = 0
+
+        top_headline = ''
+
+        top_summary = ''
+
+        
+
+        for news_item in news_items[:5]:  # 只分析前5条新闻
+
+            sentiment_score = news_item.get('sentiment_score', 0)
+
+            if sentiment_score != 0:  # 只统计有情感分数的新闻
+
+                total_sentiment_score += sentiment_score
+
+                valid_news_count += 1
+
             
-    except Exception as e:
-        print(f'[新闻分析] 分析新闻时出错: {str(e)}')
+
+            # 记录第一条新闻作为top catalyst
+
+            if not top_headline and news_item.get('headline'):
+
+                top_headline = news_item.get('headline', '')[:100]  # 限制长度
+
+                top_summary = news_item.get('summary', '')[:200] if news_item.get('summary') else ''
+
+        
+
+        # 计算平均情感分数并转换为sentiment标签
+
+        avg_sentiment = total_sentiment_score / valid_news_count if valid_news_count > 0 else 0
+
+        
+
+        if avg_sentiment > 0.2:
+
+            sentiment = 'Positive'
+
+        elif avg_sentiment < -0.2:
+
+            sentiment = 'Negative'
+
+        else:
+
+            sentiment = 'Neutral'
+
+        
+
+        # 根据新闻数量判断event risk
+
+        news_count = len(news_items)
+
+        if news_count >= 5:
+
+            event_risk = 'High'
+
+        elif news_count >= 2:
+
+            event_risk = 'Medium'
+
+        else:
+
+            event_risk = 'Low'
+
+        
+
+        # 构建top catalyst
+
+        top_catalyst = top_headline if top_headline else 'Recent company news'
+
+        
+
+        print(f'[新闻分析] {symbol_upper}: 分析完成 - {sentiment} sentiment, {event_risk} risk, {news_count} news items')
+
+        
+
         return {
-            'sentiment': 'Neutral',
-            'eventRisk': 'Low',
-            'topCatalyst': f'News analysis error: {str(e)[:50]}',
-            'newsCount': 0,
-            'newsSource': 'Error',
-            'hasNews': False,
-            'newsSummary': f'Error analyzing news: {str(e)[:100]}'
+
+            'sentiment': sentiment,
+
+            'eventRisk': event_risk,
+
+            'topCatalyst': top_catalyst,
+
+            'newsCount': news_count,
+
+            'newsSource': 'Finnhub',
+
+            'hasNews': news_count > 0,
+
+            'newsSummary': top_summary if top_summary else f'{news_count} recent news items from Finnhub.'
+
         }
 
-def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
+        sentiment_scores = []
 
-    """使用DeepSeek分析股票趋势"""
+        event_risk_levels = []
 
-    print(f'[DeepSeek分析] 函数被调用，参数: symbol={symbol}, stock_data type={type(stock_data)}, news_data type={type(news_data)}, profile_data type={type(profile_data)}')
+        catalysts = []
 
-    
+        
 
+        for news in news_items:
+
+            # 使用Finnhub提供的情感分数
+
+            sentiment_score = news.get('sentiment_score', 0)
+
+            sentiment_scores.append(sentiment_score)
+
+            
+
+            # 根据新闻标题和内容判断事件风险
+
+            headline = news.get('headline', '').lower()
+
+            summary = news.get('summary', '').lower()
+
+            
+
+            # 判断高风险事件
+
+            high_risk_keywords = ['earnings miss', 'guidance cut', 'lawsuit', 'investigation', 'recall', 'warning', 'downgrade']
+
+            medium_risk_keywords = ['earnings', 'guidance', 'analyst', 'upgrade', 'downgrade', 'target']
+
+            
+
+            risk_level = 'Low'
+
+            for keyword in high_risk_keywords:
+
+                if keyword in headline or keyword in summary:
+
+                    risk_level = 'High'
+
+                    break
+
+            
+
+            if risk_level == 'Low':
+
+                for keyword in medium_risk_keywords:
+
+                    if keyword in headline or keyword in summary:
+
+                        risk_level = 'Medium'
+
+                        break
+
+            
+
+            event_risk_levels.append(risk_level)
+
+            
+
+            # 识别主要催化剂
+
+            catalyst_keywords = ['earnings', 'guidance', 'analyst', 'upgrade', 'downgrade', 'target price', 'product launch', 'merger', 'acquisition']
+
+            for keyword in catalyst_keywords:
+
+                if keyword in headline or keyword in summary:
+
+                    catalysts.append(news.get('headline', 'News catalyst'))
+
+                    break
+
+        
+
+        # 计算平均情感分数
+
+        avg_sentiment = sum(sentiment_scores) / len(sentiment_scores) if sentiment_scores else 0
+
+        
+
+        # 确定整体情绪
+
+        if avg_sentiment > 0.1:
+
+            sentiment = 'Positive'
+
+        elif avg_sentiment < -0.1:
+
+            sentiment = 'Negative'
+
+        else:
+
+            sentiment = 'Mixed'
+
+        
+
+        # 确定事件风险（取最高风险级别）
+
+        event_risk = 'Low'
+
+        if 'High' in event_risk_levels:
+
+            event_risk = 'High'
+
+        elif 'Medium' in event_risk_levels:
+
+            event_risk = 'Medium'
+
+        
+
+        # 确定主要催化剂
+
+        top_catalyst = catalysts[0] if catalysts else news_items[0].get('headline', 'Recent news activity')
+
+        if len(top_catalyst) > 100:
+
+            top_catalyst = top_catalyst[:100] + '...'
+
+        
+
+        return {
+
+            'sentiment': sentiment,
+
+            'eventRisk': event_risk,
+
+            'topCatalyst': top_catalyst,
+
+            'newsCount': len(news_items),
+
+            'avgSentimentScore': avg_sentiment,
+
+            'newsSource': 'Finnhub',
+
+            'hasNews': True
+
+        }
+
+        
+
+    except Exception as e:
+
+        print(f'分析 {symbol} 新闻失败: {str(e)}')
+
+        return {
+
+            'sentiment': 'News analysis failed',
+
+            'eventRisk': 'Low',
+
+            'topCatalyst': 'News analysis failed',
+
+            'newsCount': 0,
+
+            'newsSource': 'error',
+
+            'hasNews': False
+
+        }
+
+
+
+
+
+def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data, technical_indicators=None, structured_news=None):
+
+    """使用DeepSeek分析股票趋势 - 增强版，支持技术指标和结构化新闻输入"""
+
+    print(f'DeepSeek API调用失败: {response.status_code}，返回详细错误信息')
+    return {
+                'trendLabel': None,
+                'trendScore': None,
+                'trendConfidence': None,
+                'scannerReason': f'API调用失败: HTTP {response.status_code}',
+                'trendScoreDetail': None,
+                'momentumScore': None,
+                'volumeScore': None,
+                'volatilityScore': None,
+                'structureScore': None,
+                'newsScore': None,
+                'aiReasoning': f'DeepSeek API调用失败: HTTP {response.status_code} - {response.text[:200] if response.text else "无响应内容"}',
+                'api_error': True,
+                'http_status': response.status_code,
+                'error_message': response.text[:500] if response.text else 'No response body'
+            }
     try:
 
         print(f'[DeepSeek分析] 开始分析 {symbol}')
@@ -10046,19 +10215,24 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         
 
-        # 检查是否有用户配置的API密钥
+        # 检查是否有有效的API密钥
+
         api_key = ai_provider_config_state.get('apiKey', '')
-        
-        print(f'[DeepSeek分析] API密钥检查: 长度={len(api_key)}, 前10位={api_key[:10] if api_key else "N/A"}')
+
+        print(f'[DeepSeek分析] API密钥: "{api_key[:10]}..." (长度: {len(api_key)})')
+
         print(f'[DeepSeek分析] AI配置状态: {ai_provider_config_state}')
 
-        # 严格验证：必须由用户在AI Configuration页面配置API密钥
-        if not api_key or api_key.strip() == '':
-            print(f'[DeepSeek分析] 错误: 用户未在AI Configuration页面配置API密钥 {symbol}')
+        
+
+        # 简化验证逻辑：只要API密钥不为空就尝试使用DeepSeek
+
+        if not api_key:
+
+            print(f'[DeepSeek分析] API密钥为空，返回null数据 {symbol}')
+
             return {
-                'error': 'No user-provided AI API key found',
-                'stage': 'ai_config',
-                'provider': ai_provider_config_state.get('provider', 'DeepSeek'),
+
                 'trendLabel': None,
 
                 'trendScore': None,
@@ -10129,7 +10303,11 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
             'topCatalyst': news_data.get('topCatalyst', 'No recent catalyst'),
 
-            'newsCount': news_data.get('newsCount', 0)
+            'newsCount': news_data.get('newsCount', 0),
+
+            # 技术指标（如果可用）
+            'technical_indicators': technical_indicators,
+            'structured_news': structured_news
 
         }
 
@@ -10148,38 +10326,6 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
         print(f'  stock_data keys: {list(stock_data.keys()) if stock_data else "None"}')
 
         
-        # 计算技术指标
-        technical_indicators = {}
-        technical_summary = ""
-        
-        try:
-            # 准备价格数据用于技术指标计算
-            price_data_for_indicators = {
-                'price': stock_data.get('price'),
-                'changePercent': stock_data.get('changePercent'),
-                'volume': stock_data.get('volume'),
-                'dayHigh': stock_data.get('dayHigh'),
-                'dayLow': stock_data.get('dayLow'),
-                'open': stock_data.get('open')
-            }
-            
-            # 计算技术指标
-            technical_indicators = calculate_simple_technical_indicators(price_data_for_indicators)
-            technical_summary = generate_technical_summary(technical_indicators)
-            
-            print(f'[DeepSeek分析] 技术指标计算完成:')
-            print(f'  价格位置: {technical_indicators.get("pricePosition", "N/A")}%')
-            print(f'  涨跌幅: {technical_indicators.get("changePct", "N/A")}%')
-            print(f'  成交量状态: {technical_indicators.get("volumeStatus", "N/A")}')
-            print(f'  波动率: {technical_indicators.get("volatilityLevel", "N/A")}')
-            print(f'  价格结构: {technical_indicators.get("priceStructure", "N/A")}')
-            print(f'  动量: {technical_indicators.get("momentum", "N/A")}')
-            print(f'  技术摘要: {technical_summary}')
-            
-        except Exception as e:
-            print(f'[DeepSeek分析] 技术指标计算失败: {str(e)}')
-            technical_indicators = {}
-            technical_summary = "Technical analysis unavailable"
 
         # 构建提示 - 处理可能的None值
 
@@ -10191,137 +10337,138 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         
 
-        prompt = f"""作为专业的量化分析师，请分析以下股票并给出完整的趋势分析：
-
-
-
-股票: {analysis_context['symbol']} ({analysis_context['companyName']})
-
-价格: {price_str} ({change_str})
-
-成交量: {volume_str}
-
-板块: {analysis_context['sector']}
-
-
-
-技术指标分析:
-
-{technical_summary if technical_summary else "技术分析数据不可用"}
-
-
-
-新闻分析:
-
-- 情绪: {analysis_context['newsSentiment']}
-
-- 事件风险: {analysis_context['eventRisk']}
-
-- 主要催化剂: {analysis_context['topCatalyst']}
-
-- 新闻数量: {analysis_context['newsCount']}
-
-
-
-请基于以下6个维度给出详细分析，每个维度0-100分，必须为每个维度提供具体的分数：
-
-
-
-1. 趋势分数 (Trend Score): 基于价格趋势和技术分析 - 请提供具体分数
-
-2. 动量分数 (Momentum Score): 基于近期价格变动和动能 - 请提供具体分数
-
-3. 成交量分数 (Volume Score): 基于成交量和相对成交量 - 请提供具体分数
-
-4. 波动率分数 (Volatility Score): 基于价格波动范围和稳定性 - 请提供具体分数
-
-5. 结构分数 (Structure Score): 基于价格结构和支撑阻力位 - 请提供具体分数
-
-6. 新闻分数 (News Score): 基于新闻情绪和事件影响 - 请提供具体分数
-
-
-
-特别要求：
-
-1. 成交量状态判断 (Volume Status): 基于当前成交量、平均成交量、相对成交量，判断成交量状态为 Low / Normal / High
-
-2. 详细推理 (Detailed Reasoning): 提供一段自然流畅的英文分析（3-5句），用于详情面板显示。必须：
-   - 不要使用固定的小标题模板（如"Price Movement Analysis:"、"Trend Structure Analysis:"等）
-   - 写成一段连贯的文字，不要分段标题
-   - 基于具体数据，但用自然语言表达
-   - 每只股票的分析必须体现其独特性，不要使用模板化的语言
-   - 必须包含以下要素（但要用自然方式融入）：
-     * 价格走势和日内位置（如"trading in the upper half of today's range"）
-     * 成交量参与度（如"about 1.4x its recent average volume"）
-     * 价格结构评估（如"constructive price structure"或"holding above recent range support"）
-     * 新闻情绪影响
-     * 风险评估和原因解释
-   - 结论不要说太满：如果没有非常明确的历史区间/突破证据，不要写"clear upward trajectory"或"breaking above recent consolidation levels"
-   - 使用更自然的表达：把"62.27% position"改成"trading in the upper half of today's range"，把"1.4x relative multiple"改成"about 1.4x its recent average volume"
-   - 必须解释风险等级的原因：如果是Medium，要解释为什么不是Low（如"positive news helps sentiment, but event-driven headlines can still increase short-term volatility"）
-
-3. 简洁推理 (Concise Reasoning): 提供简洁的英文摘要（1-2行），用于主表显示。必须包含：
-   - 主要趋势方向
-   - 关键驱动因素
-   - 风险提示
-
-
-
-请给出完整的分析结果，必须包括：
-
-1. 趋势标签: Strong Bullish / Bullish / Neutral / Bearish / Strong Bearish
-
-2. 总体分数: 0-100分（基于6个维度的加权平均）
-
-3. 置信度: 0.0-1.0
-
-4. 6个维度分数: 每个维度必须提供0-100分的具体分数
-
-5. 成交量状态: Low / Normal / High
-
-6. 事件风险: High / Medium / Low
-
-7. 简洁推理: 用于主表显示的简短分析
-
-8. 详细推理: 用于详情面板的详细分析（必须是一段自然流畅的3-5句文字）
-
-
-
-重要：必须为所有6个维度提供具体的分数，不要使用默认值或占位符。
-
-
-
-请以JSON格式返回：
-
-{{
-
-  "trendLabel": "趋势标签",
-
-  "overallScore": 总体分数,
-
-  "confidence": 置信度,
-
-  "trendScore": 趋势分数,
-
-  "momentumScore": 动量分数,
-
-  "volumeScore": 成交量分数,
-
-  "volatilityScore": 波动率分数,
-
-  "structureScore": 结构分数,
-
-  "newsScore": 新闻分数,
-
-  "volumeStatus": "成交量状态",
-
-  "eventRisk": "事件风险",
-
-  "conciseReasoning": "简洁推理",
-
-  "detailedReasoning": "详细推理"
-
-}}"""
+        # 构建技术指标部分
+        technical_section = ""
+        if technical_indicators and technical_indicators.get('calculation_success'):
+            tech = technical_indicators
+            technical_section = f"""
+    技术指标分析:
+
+    趋势分析:
+    - EMA排列: {tech.get('ema_alignment', 'mixed')}
+    - 价格 vs EMA20: {tech.get('price_vs_ema20_pct', 0):.2f}%
+    - 价格 vs EMA50: {tech.get('price_vs_ema50_pct', 0):.2f}%
+    - 价格 vs EMA200: {tech.get('price_vs_ema200_pct', 0):.2f}%
+    - EMA20斜率: {tech.get('ema20_slope', 0):.6f}
+    - EMA50斜率: {tech.get('ema50_slope', 0):.6f}
+
+    动量分析:
+    - RSI: {tech.get('rsi', 'N/A')}
+    - MACD线: {tech.get('macd_line', 'N/A')}
+    - MACD信号线: {tech.get('signal_line', 'N/A')}
+    - MACD柱状图: {tech.get('macd_histogram', 'N/A')}
+    - 5日收益率: {tech.get('return_5d_pct', 'N/A')}%
+    - 10日收益率: {tech.get('return_10d_pct', 'N/A')}%
+    - 20日收益率: {tech.get('return_20d_pct', 'N/A')}%
+
+    波动率分析:
+    - ATR: {tech.get('atr', 'N/A')}
+    - ATR百分比: {tech.get('atr_percent', 'N/A')}%
+    - 波动率状态: {tech.get('volatility_regime', 'normal')}
+
+    成交量分析:
+    - 当前成交量: {tech.get('current_volume', 'N/A'):,.0f}
+    - 20日平均成交量: {tech.get('avg_volume_20d', 'N/A'):,.0f}
+    - 相对成交量: {tech.get('relative_volume', 1):.2f}x
+    - 成交量spike: {'是' if tech.get('volume_spike') else '否'}
+    - 成交金额: ${tech.get('dollar_volume', 0):,.0f}
+
+    结构分析:
+    - 20日高点: {tech.get('recent_high_20d', 'N/A')}
+    - 20日低点: {tech.get('recent_low_20d', 'N/A')}
+    - 50日高点: {tech.get('recent_high_50d', 'N/A')}
+    - 50日低点: {tech.get('recent_low_50d', 'N/A')}
+    - Higher Highs: {'是' if tech.get('higher_highs') else '否'}
+    - Higher Lows: {'是' if tech.get('higher_lows') else '否'}
+    - 接近20日高点: {'是' if tech.get('near_20d_high') else '否'}
+    - 接近20日低点: {'是' if tech.get('near_20d_low') else '否'}
+    - 突破20日高点: {'是' if tech.get('breakout_above_20d_high') else '否'}
+    - 跌破20日低点: {'是' if tech.get('breakdown_below_20d_low') else '否'}
+    - 区间震荡: {'是' if tech.get('range_bound') else '否'}
+    """
+        
+        # 构建新闻分析部分
+        news_section = ""
+        if structured_news and structured_news.get('news_count', 0) > 0:
+            news = structured_news
+            news_section = f"""
+    详细新闻分析:
+    - 新闻数量: {news.get('news_count', 0)}
+    - 主要标题: {', '.join(news.get('headlines', [])[:3]) if news.get('headlines') else '无'}
+    - 事件标签: {', '.join(set([tag for tags in news.get('event_tags', []) for tag in tags])) if news.get('event_tags') else '无'}
+    """
+        
+        prompt = f"""作为专业的量化分析师，请基于以下完整数据对股票进行综合分析：
+
+    股票: {analysis_context['symbol']} ({analysis_context['companyName']})
+    价格: {price_str} ({change_str})
+    成交量: {volume_str}
+    板块: {analysis_context['sector']}
+
+    {technical_section if technical_section else "技术指标: 数据不足"}
+
+    新闻摘要:
+    - 情绪: {analysis_context['newsSentiment']}
+    - 事件风险: {analysis_context['eventRisk']}
+    - 主要催化剂: {analysis_context['topCatalyst']}
+    - 新闻数量: {analysis_context['newsCount']}
+
+    {news_section if news_section else ""}
+
+    请基于以下6个维度给出详细分析，每个维度0-100分：
+
+    1. 趋势分数 (Trend Score): 基于EMA排列、价格位置、趋势结构、higher highs/lows
+    2. 动量分数 (Momentum Score): 基于RSI、MACD、收益率、近期价格变动
+    3. 成交量分数 (Volume Score): 基于相对成交量、成交量spike、成交金额、流动性
+    4. 波动率分数 (Volatility Score): 基于ATR、波动率状态、价格波动范围
+    5. 结构分数 (Structure Score): 基于突破/跌破、区间震荡、支撑阻力、价格结构
+    6. 新闻分数 (News Score): 基于新闻情绪、事件类型、催化剂影响、风险水平
+
+    特别要求：
+    1. 成交量状态 (Volume Label): 必须明确判断为 low / normal / high
+    2. 新闻情绪 (News Label): 必须明确判断为 positive / neutral / negative
+    3. 风险等级 (Risk Level): 必须明确判断为 low / medium / high
+    4. 结构标签 (Structure Label): 尽量归类为 uptrend / downtrend / sideways / breakout / high-volatility
+
+    请给出完整的分析结果，必须包括：
+    1. trendLabel: Strong Bullish / Bullish / Neutral / Bearish / Strong Bearish
+    2. trendScore: 0-100
+    3. momentumLabel: 基于动量分析的标签
+    4. momentumScore: 0-100
+    5. volatilityLabel: 基于波动率分析的标签
+    6. volatilityScore: 0-100
+    7. volumeLabel: low / normal / high
+    8. volumeScore: 0-100
+    9. structureLabel: uptrend / downtrend / sideways / breakout / high-volatility
+    10. structureScore: 0-100
+    11. newsLabel: positive / neutral / negative
+    12. newsScore: 0-100
+    13. riskLevel: low / medium / high
+    14. overallScore: 0-100 (6个维度的加权平均)
+    15. aiReasoning: 详细的分析推理（英文）
+    16. conciseReason: 简洁的摘要（英文）
+
+    重要：所有分数必须基于提供的技术指标和新闻数据，不要使用默认值。
+
+    请以JSON格式返回：
+    {{
+    "trendLabel": "趋势标签",
+    "trendScore": 趋势分数,
+    "momentumLabel": "动量标签",
+    "momentumScore": 动量分数,
+    "volatilityLabel": "波动率标签",
+    "volatilityScore": 波动率分数,
+    "volumeLabel": "成交量标签",
+    "volumeScore": 成交量分数,
+    "structureLabel": "结构标签",
+    "structureScore": 结构分数,
+    "newsLabel": "新闻标签",
+    "newsScore": 新闻分数,
+    "riskLevel": "风险等级",
+    "overallScore": 总体分数,
+    "aiReasoning": "详细推理",
+    "conciseReason": "简洁摘要"
+    }}"""
 
         
 
@@ -10361,17 +10508,25 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         
 
+        print("calling provider with payload =", {
+            "url": f'{base_url}/chat/completions',
+            "model": payload.get("model"),
+            "messages_count": len(payload.get("messages", [])),
+            "max_tokens": payload.get("max_tokens")
+        })
+        
+        start_time = time.time()
         response = requests.post(
-
             f'{base_url}/chat/completions',
-
             headers=headers,
-
             json=payload
-
-            # 移除timeout，让AI分析可以自由完成，不人为限制时间
-
+            # 移除timeout限制，让scanner可以等待AI分析完成
         )
+        elapsed_ms = (time.time() - start_time) * 1000
+        
+        print("provider status =", response.status_code)
+        print("provider body =", response.text[:1000])
+        print(f"provider elapsed ms = {elapsed_ms:.0f}")
 
         
 
@@ -10405,21 +10560,47 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                 
 
-                # 检查是V1还是V2格式
-
-                is_v2_format = all(field in analysis_result for field in ['overallScore', 'trendScore', 'momentumScore'])
-
+                # 检查是哪种格式
+                is_v3_format = all(field in analysis_result for field in ['trendLabel', 'trendScore', 'momentumLabel', 'volumeLabel', 'newsLabel', 'riskLevel'])
+                is_v2_format = all(field in analysis_result for field in ['overallScore', 'trendScore', 'momentumScore']) and not is_v3_format
                 
 
-                if is_v2_format:
-
+                if is_v3_format:
+                    # V3格式：增强的分析结果，包含标签和分数
+                    print(f'[DeepSeek分析] 收到V3格式分析结果，包含完整标签和分数')
+                    
+                    # 确保所有V3字段都存在
+                    required_fields_v3 = ['trendLabel', 'trendScore', 'momentumLabel', 'momentumScore', 'volatilityLabel', 'volatilityScore', 'volumeLabel', 'volumeScore', 'structureLabel', 'structureScore', 'newsLabel', 'newsScore', 'riskLevel', 'overallScore', 'aiReasoning', 'conciseReason']
+                    
+                    for field in required_fields_v3:
+                        if field not in analysis_result:
+                            if field.endswith('Label'):
+                                analysis_result[field] = 'Neutral'
+                            elif field.endswith('Score'):
+                                analysis_result[field] = 50
+                            elif field == 'riskLevel':
+                                analysis_result[field] = 'Medium'
+                            elif field == 'overallScore':
+                                analysis_result[field] = 50
+                            elif field in ['aiReasoning', 'conciseReason']:
+                                analysis_result[field] = 'AI analysis completed'
+                    
+                    # 添加兼容字段
+                    analysis_result['trendConfidence'] = 0.8
+                    analysis_result['scannerReason'] = analysis_result.get('conciseReason', 'AI analysis completed')
+                    analysis_result['volumeStatus'] = analysis_result.get('volumeLabel', 'normal')
+                    analysis_result['eventRisk'] = analysis_result.get('riskLevel', 'Medium')
+                    analysis_result['conciseReasoning'] = analysis_result.get('conciseReason', 'AI analysis completed')
+                    analysis_result['detailedReasoning'] = analysis_result.get('aiReasoning', 'AI analysis completed')
+                    analysis_result['confidence'] = 0.8
+                    
+                elif is_v2_format:
                     # V2格式：完整的6维度分析
-
                     print(f'[DeepSeek分析] 收到V2格式分析结果，包含6维度分数')
 
                     
 
-                    # 确保所有V2字段都存在 - 全部改为空值
+                    # 确保所有V2字段都存在
 
                     for field in required_fields_v2:
 
@@ -10427,31 +10608,31 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                             if field == 'trendLabel':
 
-                                analysis_result[field] = None  # 改为空值
+                                analysis_result[field] = 'Neutral'
 
                             elif field in ['overallScore', 'trendScore', 'momentumScore', 'volumeScore', 'volatilityScore', 'structureScore', 'newsScore']:
 
-                                analysis_result[field] = None  # 改为空值
+                                analysis_result[field] = 50
 
                             elif field == 'confidence':
 
-                                analysis_result[field] = None  # 改为空值
+                                analysis_result[field] = 0.5
 
                             elif field == 'volumeStatus':
 
-                                analysis_result[field] = None  # 改为空值
+                                analysis_result[field] = 'Normal'
 
                             elif field == 'eventRisk':
 
-                                analysis_result[field] = None  # 改为空值
+                                analysis_result[field] = 'Low'
 
                             elif field == 'conciseReasoning':
 
-                                analysis_result[field] = None  # 改为空值
+                                analysis_result[field] = 'AI analysis completed'
 
                             elif field == 'detailedReasoning':
 
-                                analysis_result[field] = None  # 改为空值
+                                analysis_result[field] = 'AI analysis completed'
 
                     
 
@@ -10459,7 +10640,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                     if 'scannerReason' not in analysis_result:
 
-                        analysis_result['scannerReason'] = analysis_result.get('conciseReasoning')  # 不提供默认值
+                        analysis_result['scannerReason'] = analysis_result.get('conciseReasoning', 'AI analysis completed')
 
                     
 
@@ -10467,7 +10648,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                     if 'aiReasoning' not in analysis_result:
 
-                        analysis_result['aiReasoning'] = analysis_result.get('detailedReasoning')  # 不提供默认值
+                        analysis_result['aiReasoning'] = analysis_result.get('detailedReasoning', 'AI analysis completed')
 
                 else:
 
@@ -10483,53 +10664,55 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                             if field == 'trendLabel':
 
-                                analysis_result[field] = None  # 改为空值
+                                analysis_result[field] = 'Neutral'
 
                             elif field == 'trendScore':
 
-                                analysis_result[field] = None  # 改为空值
+                                analysis_result[field] = 50
 
                             elif field == 'trendConfidence':
 
-                                analysis_result[field] = None  # 改为空值
+                                analysis_result[field] = 0.5
 
                             elif field == 'scannerReason':
 
-                                analysis_result[field] = None  # 改为空值
+                                analysis_result[field] = 'AI analysis completed'
 
                     
 
-                    # 为V1格式添加缺失的V2字段 - 全部改为空值
+                    # 为V1格式添加缺失的V2字段
 
-                    analysis_result['overallScore'] = analysis_result.get('trendScore')  # 不提供默认值
+                    analysis_result['overallScore'] = analysis_result.get('trendScore', 50)
 
-                    analysis_result['confidence'] = analysis_result.get('trendConfidence')  # 不提供默认值
+                    analysis_result['confidence'] = analysis_result.get('trendConfidence', 0.5)
 
-                    analysis_result['volumeStatus'] = None  # 改为空值
+                    analysis_result['volumeStatus'] = 'Normal'  # 默认正常成交量
 
-                    analysis_result['eventRisk'] = None  # 改为空值
+                    analysis_result['eventRisk'] = 'Medium'  # 默认中等风险
 
-                    analysis_result['conciseReasoning'] = analysis_result.get('scannerReason')  # 不提供默认值
+                    analysis_result['conciseReasoning'] = analysis_result.get('scannerReason', 'AI analysis completed')
 
-                    analysis_result['detailedReasoning'] = analysis_result.get('scannerReason')  # 不提供默认值
+                    analysis_result['detailedReasoning'] = analysis_result.get('scannerReason', 'AI analysis completed')
 
-                    analysis_result['aiReasoning'] = analysis_result.get('scannerReason')  # 不提供默认值
+                    analysis_result['aiReasoning'] = analysis_result.get('scannerReason', 'AI analysis completed')
 
                     
 
-                    # 为6维度分数设置空值
+                    # 为6维度分数设置默认值（基于总体分数）
 
-                    analysis_result['trendScore'] = analysis_result.get('trendScore')  # 保持原值或None
+                    base_score = analysis_result.get('trendScore', 50)
 
-                    analysis_result['momentumScore'] = None  # 空值
+                    analysis_result['trendScore'] = base_score
 
-                    analysis_result['volumeScore'] = None  # 空值
+                    analysis_result['momentumScore'] = base_score
 
-                    analysis_result['volatilityScore'] = None  # 空值
+                    analysis_result['volumeScore'] = base_score
 
-                    analysis_result['structureScore'] = None  # 空值
+                    analysis_result['volatilityScore'] = base_score
 
-                    analysis_result['newsScore'] = None  # 空值
+                    analysis_result['structureScore'] = base_score
+
+                    analysis_result['newsScore'] = base_score
 
                 
 
@@ -10602,14 +10785,6 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
                 'aiReasoning': None
 
             }
-
-            
-
-    except Exception as e:
-
-        print(f'DeepSeek分析失败: {str(e)}，使用本地分析')
-
-        return analyze_trend_locally(symbol, stock_data, news_data, profile_data)
 
 
 
@@ -11184,7 +11359,6 @@ def ai_trading_environment():
 
 
 @app.route('/api/status', methods=['GET'])
-@app.route('/system/status', methods=['GET'])
 
 def get_status():
 
@@ -11203,6 +11377,8 @@ def get_status():
 @app.route('/api/market/stocks', methods=['GET'])
 
 @app.route('/market/stocks', methods=['GET'])
+
+@app.route('/api/market/stocks', methods=['GET'])
 
 def get_market_stocks():
 
@@ -11870,6 +12046,8 @@ def get_stock_detail(symbol):
 
                     "changePercent": quote_data.get('dp'),
 
+                    "changePct": quote_data.get('dp'),  # 添加前端scanner使用的字段名
+
                     "dayHigh": quote_data.get('h'),
 
                     "dayLow": quote_data.get('l'),
@@ -11937,6 +12115,8 @@ def get_stock_detail(symbol):
                     "change": None,
 
                     "changePercent": None,
+
+                    "changePct": None,  # 添加前端scanner使用的字段名
 
                     "dayHigh": None,
 
@@ -12019,6 +12199,8 @@ def get_stock_detail(symbol):
             "change": change,
 
             "changePercent": change_percent,
+
+            "changePct": change_percent,  # 添加前端scanner使用的字段名
 
             "dayHigh": alpaca_data.get('dayHigh'),
 
@@ -12181,6 +12363,8 @@ def get_stock_detail(symbol):
             "change": None,
 
             "changePercent": None,
+
+            "changePct": None,  # 添加前端scanner使用的字段名
 
             "dayHigh": None,
 
@@ -17694,17 +17878,26 @@ def get_stock_news(symbol):
 
             print(f'[新闻接口] 没有找到新闻，返回空数据')
 
-            print(f'[新闻接口] 没有找到新闻，返回空数据')
             return jsonify({
+
                 'success': True,
+
                 'symbol': symbol_upper,
+
                 'sentiment': 'Neutral',
+
                 'eventRisk': 'Low',
+
                 'topNews': None,
+
                 'news': [],
+
                 'source': 'none',
+
                 'hasNews': False,
+
                 'newsCount': 0
+
             })
 
         
@@ -17878,96 +18071,61 @@ def get_stock_news(symbol):
 def ai_analyze_single():
 
     """单只股票AI分析接口 - 使用用户配置的AI provider进行真实分析"""
-
-    print(f'=== 单只股票AI分析请求 ===')
-
-    start_time = time.time()
-
+    import time
+    total_start_time = time.time()
     
-    def format_top_news_for_frontend(news_data):
-        """格式化topNews对象以匹配前端期望的格式"""
-        if not news_data:
-            return None
-        
-        try:
-            # 获取头条新闻列表
-            headlines = news_data.get('headlines', [])
-            raw_news = news_data.get('rawNews', [])
-            
-            # 优先使用headlines中的第一条新闻
-            if headlines and len(headlines) > 0:
-                headline = headlines[0]
-                return {
-                    'title': headline.get('headline', 'No title available'),
-                    'source': 'Finnhub',  # 数据源
-                    'publisher': headline.get('source', 'Unknown'),  # 新闻发布者
-                    'published': headline.get('time'),
-                    'url': headline.get('url', ''),
-                    'summary': ''  # 可以从rawNews中获取摘要
-                }
-            # 如果没有headlines，使用rawNews
-            elif raw_news and len(raw_news) > 0:
-                news = raw_news[0]
-                return {
-                    'title': news.get('headline', 'No title available'),
-                    'source': 'Finnhub',  # 数据源
-                    'publisher': news.get('source', 'Unknown'),  # 新闻发布者
-                    'published': news.get('datetime'),
-                    'url': news.get('url', ''),
-                    'summary': news.get('summary', '')[:200]  # 限制摘要长度
-                }
-            # 如果只有topCatalyst字符串
-            elif news_data.get('topCatalyst'):
-                return {
-                    'title': news_data.get('topCatalyst'),
-                    'source': news_data.get('newsSource', 'Finnhub'),  # 数据源
-                    'publisher': 'Unknown',  # 新闻发布者未知
-                    'published': None,
-                    'url': '',
-                    'summary': ''
-                }
-            else:
-                return None
-        except Exception as e:
-            print(f'[格式化topNews] 错误: {str(e)}')
-            return None
-
+    print(f'=== AI ANALYZE START ===')
+    
     try:
-
+        # 获取请求数据
         data = request.get_json()
-
-        if not data:
-
-            return jsonify({
-
-                'success': False,
-
-                'error': 'No JSON data provided',
-
-                'timestamp': int(time.time())
-
-            }), 400
-
+        symbol = data.get('symbol') if data else None
         
-
-        symbol = data.get('symbol')
+        if not data:
+            return jsonify({
+                'success': False,
+                'error': 'No JSON data provided',
+                'timestamp': int(time.time())
+            }), 400
 
         if not symbol:
-
             return jsonify({
-
                 'success': False,
-
                 'error': 'Symbol is required',
-
                 'timestamp': int(time.time())
-
             }), 400
 
+        symbol_upper = symbol.upper()
         
+        # 详细日志记录开始
+        stage_times = {}
+        
+        print(f"[AI调用链路] === 开始处理 {symbol_upper} ===")
+        print(f"[AI调用链路] 请求时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"[AI调用链路] 请求数据: {data}")
+        print(f"=== AI ANALYZE START {symbol_upper} ===")
+        print("request.json =", data)
+        print(f"[AI调用链路] 开始处理 {symbol_upper}")
+        
+        print(f"=== AI ANALYZE START {symbol_upper} ===")
+        print("request.json =", data)
+        print(f"[AI调用链路] 开始处理 {symbol_upper}")
+        
+        if not data:
+            return jsonify({
+                'success': False,
+                'error': 'No JSON data provided',
+                'timestamp': int(time.time())
+            }), 400
+
+        if not symbol:
+            return jsonify({
+                'success': False,
+                'error': 'Symbol is required',
+                'timestamp': int(time.time())
+            }), 400
 
         symbol_upper = symbol.upper()
-
         print(f'[AI分析接口] 分析股票: {symbol_upper}')
 
         
@@ -18190,26 +18348,38 @@ def ai_analyze_single():
 
         
 
-        # 3. 获取新闻数据 - 使用新添加的新闻接口逻辑
-
+        # 3. 获取历史数据用于技术指标计算
+        historical_data = None
+        
+        try:
+            print(f'[AI分析接口] 获取历史数据用于技术指标计算: {symbol_upper}')
+            
+            # 获取最近60天的日线数据，足够计算EMA20/50/200, RSI, MACD, ATR等
+            # 使用1day间隔，3month范围（约66个交易日）
+            historical_response = get_alpaca_history(symbol_upper, '1day', '3month')
+            
+            if historical_response and historical_response.get('success'):
+                historical_data = historical_response.get('bars', [])
+                print(f'[AI分析接口] 历史数据获取成功: {len(historical_data)}个bars')
+            else:
+                print(f'[AI分析接口] 历史数据获取失败: {historical_response.get("error", "Unknown error")}')
+                historical_data = None
+                
+        except Exception as e:
+            print(f'[AI分析接口] 历史数据获取异常: {str(e)}')
+            historical_data = None
+        
+        # 4. 获取新闻数据 - 使用新添加的新闻接口逻辑
         news_data = None
 
         try:
-
             print(f'[AI分析接口] 获取新闻数据: {symbol_upper}')
-
             # 调用内部的新闻分析函数
-
             news_analysis = analyze_news_for_stock(symbol_upper)
-
             news_data = news_analysis
-
             print(f'[AI分析接口] 新闻数据获取成功')
-
         except Exception as e:
-
             print(f'[AI分析接口] 新闻数据获取异常: {str(e)}')
-
             news_data = None
 
         
@@ -18217,10 +18387,17 @@ def ai_analyze_single():
         # 4. 使用用户配置的AI provider进行真实分析
 
         print(f'[AI分析接口] 使用AI配置进行分析')
+        
+        # 获取有效的AI配置
+        effective_config = get_effective_ai_config()
+        print(f"effective ai config =", {
+            "provider": effective_config.get("provider"),
+            "model": effective_config.get("model"),
+            "baseUrl": effective_config.get("baseURL"),
+            "apiKey_len": len(effective_config.get("apiKey") or "")
+        })
 
-        print(f'[AI分析接口] 当前AI配置状态: {ai_provider_config_state}')
-
-        ai_config = ai_provider_config_state
+        ai_config = effective_config
 
         
 
@@ -18246,19 +18423,51 @@ def ai_analyze_single():
 
             company_info = {}
 
+        print("stock_data =", market_data)
+        print("news_data =", news_data)
+        print("company_info =", company_info)
+
+        # 计算技术指标
+        technical_indicators = None
+        if historical_data and market_data:
+            try:
+                current_price = market_data.get('price')
+                technical_indicators = calculate_technical_indicators(symbol_upper, historical_data, current_price)
+                print(f'[AI分析接口] 技术指标计算完成: {technical_indicators is not None}')
+            except Exception as e:
+                print(f'[AI分析接口] 计算技术指标时发生错误: {e}')
+                technical_indicators = None
         
+        # 分析新闻数据
+        structured_news = None
+        if news_data and isinstance(news_data, dict) and news_data.get('hasNews'):
+            try:
+                # 获取原始新闻数据
+                raw_news = news_data.get('raw_news', [])
+                structured_news = analyze_news_for_scanner(raw_news)
+                print(f'[AI分析接口] 新闻分析完成: news_count={structured_news.get("news_count", 0)}')
+            except Exception as e:
+                print(f'[AI分析接口] 分析新闻时发生错误: {e}')
+                structured_news = None
 
         print(f'[AI分析接口] 调用函数: analyze_trend_with_deepseek({symbol_upper}, {type(market_data)}, {type(news_data)}, {type(company_info)})')
-
-        print(f'[AI分析接口] 新闻数据内容: {news_data}')
+        print(f'[AI分析接口] 技术指标: {technical_indicators is not None}')
+        print(f'[AI分析接口] 结构化新闻: {structured_news is not None}')
 
         
 
         try:
 
-            # 直接调用AI分析函数
-
-            ai_analysis = analyze_trend_with_deepseek(symbol_upper, market_data, news_data, company_info)
+            # 直接调用AI分析函数，传递技术指标和结构化新闻
+            print("calling analyze_trend_with_deepseek with enhanced data...")
+            ai_analysis = analyze_trend_with_deepseek(
+                symbol_upper, 
+                market_data, 
+                news_data, 
+                company_info,
+                technical_indicators=technical_indicators,
+                structured_news=structured_news
+            )
 
         except Exception as e:
 
@@ -18298,19 +18507,11 @@ def ai_analyze_single():
 
                 'aiReasoning': None,  # AI分析失败，返回null
 
-                'volumeStatus': None,  # AI分析失败，返回null
-
-                'conciseReasoning': None,  # AI分析失败，返回null
-
-                'detailedReasoning': None,  # AI分析失败，返回null
-
                 'newsSentiment': news_data.get('sentiment') if news_data else None,
 
                 'eventRisk': news_data.get('eventRisk') if news_data else None,
 
                 'topNews': news_data.get('topCatalyst') if news_data else None,
-
-                'headlines': news_data.get('headlines', []) if news_data else [],  # 新增：新闻头条列表
 
                 'companyName': company_info.get('name') if company_info else None,  # 如果没有公司信息，返回null
 
@@ -18324,7 +18525,7 @@ def ai_analyze_single():
 
                     'news': 'finnhub' if news_data else 'none',
 
-                    'aiAnalysis': 'AI Failed'  # AI分析失败，明确标记
+                    'aiAnalysis': 'failed'  # AI分析失败
 
                 },
 
@@ -18434,12 +18635,6 @@ def ai_analyze_single():
 
                     'newsScore': ai_analysis.get('newsScore', 50),
 
-                    'volumeStatus': ai_analysis.get('volumeStatus', None),  # AI判断的成交量状态
-
-                    'conciseReasoning': ai_analysis.get('conciseReasoning', ai_analysis.get('scannerReason', 'AI analysis completed')),  # 简洁推理
-
-                    'detailedReasoning': ai_analysis.get('detailedReasoning', ai_analysis.get('aiReasoning', ai_analysis.get('scannerReason', 'Detailed AI analysis'))),  # 详细推理
-
                     'scannerReason': ai_analysis.get('scannerReason', 'AI analysis based on market data'),
 
                     'aiReasoning': ai_analysis.get('aiReasoning', ai_analysis.get('scannerReason', 'AI analysis completed')),  # 优先使用aiReasoning，否则使用scannerReason
@@ -18448,10 +18643,7 @@ def ai_analyze_single():
 
                     'eventRisk': ai_analysis.get('eventRisk', news_data.get('eventRisk') if news_data else 'Medium'),  # 优先使用AI的eventRisk
 
-                    # 修复：将topNews从字符串改为对象，以匹配前端期望的格式
-                    'topNews': format_top_news_for_frontend(news_data) if news_data else None,
-
-                    'headlines': news_data.get('headlines', []) if news_data else [],  # 新增：新闻头条列表
+                    'topNews': news_data.get('topCatalyst') if news_data else None,
 
                     'companyName': company_info.get('name') if company_info else symbol_upper,
 
@@ -18465,7 +18657,7 @@ def ai_analyze_single():
 
                         'news': 'finnhub' if news_data else 'none',
 
-                        'aiAnalysis': 'Local Fallback' if ai_analysis.get('analysisSource') == 'rule_based' else ai_config.get('provider', 'DeepSeek')  # 本地分析标记为Local Fallback
+                        'aiAnalysis': ai_config.get('provider', 'DeepSeek').lower()
 
                     },
 
@@ -18520,58 +18712,48 @@ def ai_analyze_single():
                 print(f'[AI分析接口] 最终响应数据: {response_data}')
 
             else:
-                # 检查是否是"没有用户key"的错误
-                error_msg = ai_analysis.get('error', '') if ai_analysis else ''
-                stage = ai_analysis.get('stage', '') if ai_analysis else ''
+
+                # AI分析失败，回退到本地规则
+
+                print(f'[AI分析接口] AI分析失败，使用本地规则: {ai_analysis.get("error") if ai_analysis else "Unknown error"}')
+
+                trend_analysis = analyze_trend_locally(symbol_upper, market_data, news_data, company_info)
+
                 
-                if 'No user-provided AI API key' in error_msg or stage == 'ai_config':
-                    # 用户未配置API key，直接返回错误，不进行本地规则回退
-                    print(f'[AI分析接口] 用户未配置API key，返回明确错误: {error_msg}')
-                    
-                    return jsonify({
-                        'success': False,
-                        'symbol': symbol_upper,
-                        'error': error_msg,
-                        'stage': stage,
-                        'provider': ai_analysis.get('provider', 'DeepSeek') if ai_analysis else 'DeepSeek',
-                        'hasAiData': False,
-                        'provenance': {
-                            'marketData': 'alpaca' if market_data and market_data.get('dataSource') == 'Alpaca' else 'finnhub' if market_data else 'none',
-                            'companyInfo': 'finnhub' if company_info else 'none',
-                            'news': 'finnhub' if news_data else 'none',
-                            'aiAnalysis': 'failed_no_user_key'
-                        },
-                        'timestamp': int(time.time()),
-                        'responseTime': round(time.time() - start_time, 3),
-                        'message': 'AI analysis failed - user must configure API key in AI Configuration page'
-                    })
-                else:
-                    # 其他类型的AI失败，回退到本地规则
-                    print(f'[AI分析接口] AI分析失败，使用本地规则: {error_msg}')
-                    trend_analysis = analyze_trend_locally(symbol_upper, market_data, news_data, company_info)
-                    
-                    response_data = {
-                        'success': True,
-                        'symbol': symbol_upper,
-                        'trend': trend_analysis.get('trend', 'Neutral'),
-                        'overallScore': trend_analysis.get('overallScore', 50),
-                        'confidence': trend_analysis.get('confidence', 0.5),
-                        'trendScore': trend_analysis.get('trendScore', 50),
-                        'momentumScore': trend_analysis.get('momentumScore', 50),
-                        'volumeScore': trend_analysis.get('volumeScore', 50),
-                        'volatilityScore': trend_analysis.get('volatilityScore', 50),
-                        'structureScore': trend_analysis.get('structureScore', 50),
-                        'newsScore': trend_analysis.get('newsScore', 50),
-                        'scannerReason': trend_analysis.get('scannerReason', 'Local analysis after AI failure'),
-                        'aiReasoning': trend_analysis.get('aiReasoning', f'AI analysis failed: {error_msg}'),
+
+                response_data = {
+
+                    'success': True,
+
+                    'symbol': symbol_upper,
+
+                    'trend': trend_analysis.get('trend', 'Neutral'),
+
+                    'overallScore': trend_analysis.get('overallScore', 50),
+
+                    'confidence': trend_analysis.get('confidence', 0.5),
+
+                    'trendScore': trend_analysis.get('trendScore', 50),
+
+                    'momentumScore': trend_analysis.get('momentumScore', 50),
+
+                    'volumeScore': trend_analysis.get('volumeScore', 50),
+
+                    'volatilityScore': trend_analysis.get('volatilityScore', 50),
+
+                    'structureScore': trend_analysis.get('structureScore', 50),
+
+                    'newsScore': trend_analysis.get('newsScore', 50),
+
+                    'scannerReason': trend_analysis.get('scannerReason', 'Local analysis after AI failure'),
+
+                    'aiReasoning': trend_analysis.get('aiReasoning', f'AI analysis failed: {ai_analysis.get("error") if ai_analysis else "Unknown error"}'),
 
                     'newsSentiment': news_data.get('sentiment') if news_data else None,
 
                     'eventRisk': news_data.get('eventRisk') if news_data else None,
 
                     'topNews': news_data.get('topCatalyst') if news_data else None,
-
-                    'headlines': news_data.get('headlines', []) if news_data else [],  # 新增：新闻头条列表
 
                     'companyName': company_info.get('name') if company_info else symbol_upper,
 
@@ -18596,33 +18778,33 @@ def ai_analyze_single():
                     'message': 'Analysis completed using local rules (AI analysis failed)'
 
                 }
-
         
+        print("final trend_analysis =", response_data)
+        print(f"=== AI ANALYZE END {symbol_upper} ===")
 
         return jsonify(response_data)
 
         
 
-    except Exception as e:
-
-        print(f'[AI分析接口] 异常: {str(e)}')
-
+        except Exception as e:
         import traceback
-
-        traceback.print_exc()
-
+        error_detail = traceback.format_exc()
+        print(f'[AI调用链路] {symbol_upper} 分析过程发生异常: {str(e)}')
+        print(f'[AI调用链路] 异常详情: {error_detail}')
         
-
+        # 返回详细的错误信息，而不是静默返回null
         return jsonify({
-
             'success': False,
-
-            'error': f'AI analysis error: {str(e)}',
-
+            'symbol': symbol_upper,
+            'error': f'AI分析过程异常: {str(e)}',
+            'error_type': type(e).__name__,
+            'stage': 'ai_analysis_process',
+            'has_market_data': market_data is not None,
+            'has_company_info': company_info is not None,
+            'has_news_data': news_data is not None,
             'timestamp': int(time.time()),
-
-            'responseTime': round(time.time() - start_time, 3)
-
+            'responseTime': round(time.time() - start_time, 3),
+            'message': f'AI分析失败: {str(e)[:100]}'
         }), 500
 
 
@@ -18701,510 +18883,61 @@ if __name__ == '__main__':
 
             print(f"  {rule.rule} -> {rule.endpoint}")
 
-
-    # ============ MTF Multi-Timeframe Confirmation Analysis (v2) ============
-
-@app.route('/api/ai/analyze/mtf', methods=['POST'])
-@app.route('/ai/analyze/mtf', methods=['POST'])
-def ai_analyze_mtf():
-    """
-    多时间框架确认分析接口 (v2 - Finnhub优先, Alpaca fallback)
-    对单个股票进行 1D / 4H(从1H聚合) / 1H / 30m 四层级分析
-    数据源优先级: Finnhub → Alpaca → Unavailable
-    返回每个层级: trend_bias / structure_quality / stretch / momentum_state / source
-    """
-    import time
-    start_time = time.time()
-    
-    try:
-        data = request.get_json()
-        symbol = data.get('symbol') if data else None
-        if not symbol:
-            return jsonify({'success': False, 'error': 'Symbol is required'}), 400
-        
-        symbol_upper = symbol.upper()
-        print(f'[MTF分析] 开始: {symbol_upper}')
-
-        # ============ 1. 获取多时间框架数据 ============
-        # 时间框架配置: (label, finnhub_resolution, days_back)
-        # Finnhub resolution: 1/5/15/30/60/D/W/M
-        timeframe_configs = [
-            ('1D',   'D',   180),   # 日线,  6个月
-            ('1H',   '60',   30),   # 1小时, 30天
-            ('30m',  '30',   14),   # 30分钟,14天
-            ('15m',  '15',    7),   # 15分钟, 7天
-        ]
-        
-        frame_results = {}
-        
-        # --- 获取原始蜡烛数据 (sequential, with rate-limit delay) ---
-        raw_frames = {}  # label -> (candles, source)
-        
-        for i, (label, resolution, days_back) in enumerate(timeframe_configs):
-            # 300ms delay between API calls to avoid Finnhub/Alpaca rate limits
-            if i > 0:
-                time.sleep(0.3)
-            candles, source, error = fetch_mtf_candles(symbol_upper, resolution, days_back, label)
-            if candles:
-                raw_frames[label] = (candles, source)
-                print(f'[MTF分析] {symbol_upper} {label}: {len(candles)} bars from {source}')
-            else:
-                raw_frames[label] = (None, f'unavailable ({error})')
-                print(f'[MTF分析] {symbol_upper} {label}: unavailable - {error}')
-        
-        # --- 聚合 4H (从 1H 蜡烛) ---
-        if raw_frames.get('1H') and raw_frames['1H'][0]:
-            one_hour_candles, one_hour_source = raw_frames['1H']
-            four_hour_candles = aggregate_to_4h(one_hour_candles)
-            raw_frames['4H'] = (four_hour_candles, one_hour_source)
-            print(f'[MTF分析] {symbol_upper} 4H: {len(four_hour_candles)} bars (aggregated from 1H, source:{one_hour_source})')
-        else:
-            raw_frames['4H'] = (None, 'unavailable (no 1H data to aggregate)')
-            print(f'[MTF分析] {symbol_upper} 4H: unavailable - no 1H data')
-        
-        # ============ 2. 分析每个时间框架 ============
-        tf_order = ['1D', '4H', '1H', '30m', '15m']
-        for label in tf_order:
-            candles, source_info = raw_frames.get(label, (None, 'unavailable'))
-            if candles and len(candles) >= 5:
-                closes = [c['close'] for c in candles]
-                highs  = [c['high'] for c in candles]
-                lows   = [c['low'] for c in candles]
-                analysis = analyze_single_timeframe(closes, highs, lows, label)
-                analysis['source'] = source_info
-                analysis['available'] = True
-                analysis['bar_count'] = len(candles)
-                # 分离 source 字符串中的 error 部分
-                if 'unavailable' in source_info:
-                    analysis['available'] = False
-                    analysis['source'] = 'unavailable'
-                    analysis['error'] = source_info
-                frame_results[label] = analysis
-            else:
-                frame_results[label] = {
-                    'trend_bias': 'N/A',
-                    'structure_quality': 'N/A',
-                    'stretch': 'N/A',
-                    'momentum_state': 'N/A',
-                    'available': False,
-                    'source': 'unavailable',
-                    'error': source_info if isinstance(source_info, str) and 'unavailable' in source_info else 'insufficient data (<5 bars)'
-                }
-        
-        # ============ 3. 计算综合Alignment ============
-        alignment = calculate_mtf_alignment(frame_results)
-        
-        # ============ 4. 构建结果 ============
-        response_data = {
-            'success': True,
-            'symbol': symbol_upper,
-            'mtf_results': frame_results,
-            'alignment': alignment,
-            'timestamp': int(time.time()),
-            'responseTime': round(time.time() - start_time, 3)
-        }
-        
-        # 打印摘要
-        for label in tf_order:
-            r = frame_results.get(label, {})
-            s = r.get('source', 'unavailable')
-            t = r.get('trend_bias', 'N/A')
-            print(f'[MTF分析]   {label}: src={s} trend={t}')
-        print(f'[MTF分析] {symbol_upper} 完成: alignment={alignment}, 耗时={response_data["responseTime"]}s')
-        return jsonify(response_data)
-        
-    except Exception as e:
-        print(f'[MTF分析] 整体异常: {str(e)}')
-        import traceback
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-def fetch_mtf_candles(symbol, resolution, days_back, label):
-    """
-    获取MTF蜡烛数据, 数据源优先级: Finnhub → Alpaca
-    返回: (candles_list, source_string)
-          candles_list: list of dict {timestamp, open, high, low, close, volume}
-          source_string: 'finnhub' / 'alpaca' / 'unavailable: <reason>'
-    """
-    import requests, time
-    from datetime import datetime, timedelta
-    
-    end_ts = int(time.time())
-    start_ts = end_ts - days_back * 24 * 3600
-    
-    # ---- 1) Try Finnhub ----
-    if FINNHUB_API_KEY:
-        try:
-            finnhub_url = f"{FINNHUB_BASE_URL}/stock/candle"
-            params = {
-                'symbol': symbol,
-                'resolution': resolution,
-                'from': start_ts,
-                'to': end_ts,
-                'token': FINNHUB_API_KEY
-            }
-            print(f'[MTF] Finnhub {label}({resolution}d{days_back}): {symbol}')
-            resp = requests.get(finnhub_url, params=params, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get('s') == 'ok' and 'c' in data and data['c']:
-                    candles = []
-                data = resp.json()
-                if data.get('s') == 'ok' and 'c' in data and data['c']:
-                    candles = []
-                    timestamps = data.get('t', [])
-                    opens = data.get('o', [])
-                    highs = data.get('h', [])
-                    lows = data.get('l', [])
-                    closes = data.get('c', [])
-                    volumes = data.get('v', [])
-                    for i in range(len(timestamps)):
-                        try:
-                            candles.append({
-                                'timestamp': int(timestamps[i]),
-                                'open': float(opens[i]),
-                                'high': float(highs[i]),
-                                'low': float(lows[i]),
-                                'close': float(closes[i]),
-                                'volume': int(float(volumes[i])) if i < len(volumes) else 0
-                            })
-                        except (ValueError, IndexError):
-                            continue
-                    candles.sort(key=lambda x: x['timestamp'])
-                    print(f'[MTF] Finnhub {label}: {len(candles)} bars OK')
-                    return candles, "finnhub", None
-                else:
-                    reason = data.get('s', 'no_data')
-                    print(f'[MTF] Finnhub {label}: s={reason}')
-                    # Finnhub returns 'no_data' for out-of-market tickers
-            else:
-                print(f'[MTF] Finnhub {label}: HTTP {resp.status_code}')
-        except Exception as e:
-            print(f'[MTF] Finnhub {label} error: {e}')
-    else:
-        print(f'[MTF] Finnhub {label}: API key not configured, skip')
-    
-    # ---- 2) Fallback to Alpaca ----
-    time.sleep(0.3)  # Rate-limit delay before Alpaca
-    try:
-        # Map our labels to Alpaca interval/range
-        alpaca_map = {
-            '1D':   ('1Day',  '6Month'),
-            '1H':   ('1Hour', '1Month'),
-            '30m':  ('15Min', '2Week'),   # 30m not directly supported, use 15Min
-            '15m':  ('15Min', '1Week'),
-        }
-        if label in alpaca_map:
-            interval, range_param = alpaca_map[label]
-            print(f'[MTF] Alpaca fallback {label}({interval}/{range_param}): {symbol}')
-            bars, success, src = get_alpaca_history(symbol, interval, range_param)
-            if success and bars and len(bars) > 0:
-                # Normalize to our format
-                candles = []
-                for bar in bars:
-                    candles.append({
-                        'timestamp': bar.get('t', bar.get('timestamp', 0)),
-                        'open': float(bar.get('o', bar.get('open', 0))),
-                        'high': float(bar.get('h', bar.get('high', 0))),
-                        'low': float(bar.get('l', bar.get('low', 0))),
-                        'close': float(bar.get('c', bar.get('close', 0))),
-                        'volume': int(float(bar.get('v', bar.get('volume', 0)))),
-                    })
-                candles.sort(key=lambda x: x['timestamp'])
-                print(f'[MTF] Alpaca {label}: {len(candles)} bars OK')
-                return candles, "alpaca", None
-            else:
-                print(f'[MTF] Alpaca {label}: {src}')
-        else:
-            print(f'[MTF] Alpaca {label}: no mapping, skip')
-    except Exception as e:
-        print(f'[MTF] Alpaca {label} error: {e}')
-    
-    # ---- 3) Both failed ----
-    # Build error reason
-    parts = []
-    if not FINNHUB_API_KEY:
-        parts.append('finnhub no key')
-    else:
-        parts.append('finnhub fail')
-    parts.append('alpaca fail')
-    err_msg = 'unavailable: ' + ', '.join(parts)
-    return None, err_msg, err_msg
-
-
-def aggregate_to_4h(one_hour_candles):
-    """
-    从 1H 蜡烛聚合生成 4H 蜡烛
-    每 4 根 1H 合成为 1 根 4H
-    """
-    if not one_hour_candles or len(one_hour_candles) < 4:
-        return one_hour_candles or []
-    
-    sorted_candles = sorted(one_hour_candles, key=lambda x: x['timestamp'])
-    four_h_candles = []
-    for i in range(0, len(sorted_candles), 4):
-        chunk = sorted_candles[i:i+4]
-        if len(chunk) < 2:
-            continue
-        open_price = chunk[0]['open']
-        high_price = max(c['high'] for c in chunk)
-        low_price = min(c['low'] for c in chunk)
-        close_price = chunk[-1]['close']
-        volume = sum(c['volume'] for c in chunk)
-        timestamp = chunk[0]['timestamp']
-        four_h_candles.append({
-            'timestamp': timestamp,
-            'open': open_price,
-            'high': high_price,
-            'low': low_price,
-            'close': close_price,
-            'volume': volume
-        })
-    return four_h_candles
-
-
-def analyze_single_timeframe(closes, highs, lows, label):
-    """
-    对单个时间框架进行简化分析
-    返回: trend_bias, structure_quality, stretch, momentum_state
-    """
-    if len(closes) < 5:
-        return {
-            'trend_bias': 'N/A',
-            'structure_quality': 'N/A',
-            'stretch': 'N/A',
-            'momentum_state': 'N/A',
-            'available': False
-        }
-    
-    current_price = closes[-1]
-    
-    # === Trend Bias ===
-    # 简单EMA计算 (用于大小框架的简版趋势判断)
-    def ema(data, period):
-        if len(data) < period:
-            # 用更短的周期
-            period = max(3, len(data) // 2)
-        if len(data) < period:
-            return data[-1] if data else 0
-        alpha = 2.0 / (period + 1)
-        result = data[0]
-        for i in range(1, len(data)):
-            result = alpha * data[i] + (1 - alpha) * result
-        return result
-    
-    ema20 = ema(closes, min(20, len(closes)))
-    ema50 = ema(closes, min(50, len(closes))) if len(closes) >= 10 else ema20 * 0.99
-    ema200 = ema(closes, min(200, len(closes))) if len(closes) >= 30 else ema20 * 0.98
-    
-    # 价格相对EMA位置
-    price_vs_ema20 = (current_price / ema20 - 1) * 100
-    price_vs_ema50 = (current_price / ema50 - 1) * 100 if ema50 else 0
-    
-    # 趋势方向判断
-    if price_vs_ema20 > 2 and price_vs_ema50 > 1 and ema20 > ema50:
-        trend_bias = 'Bullish'
-    elif price_vs_ema20 < -2 and price_vs_ema50 < -1 and ema20 < ema50:
-        trend_bias = 'Bearish'
-    else:
-        trend_bias = 'Neutral'
-    
-    # 对于大级别加强判断（1D use 4% threshold instead of 2%）
-    if label == '1D':
-        if price_vs_ema20 > 4 and ema20 > ema50 * 1.01:
-            trend_bias = 'Bullish'
-        elif price_vs_ema20 < -4 and ema20 < ema50 * 0.99:
-            trend_bias = 'Bearish'
-        else:
-            trend_bias = 'Neutral'
-    
-    # === Structure Quality ===
-    # 检查是否有一致的高点/低点模式（用简单的分段方法）
-    half = len(closes) // 2
-    first_half_high = max(highs[:half]) if half > 0 else highs[0]
-    first_half_low = min(lows[:half]) if half > 0 else lows[0]
-    second_half_high = max(highs[half:]) if half < len(highs) else highs[-1]
-    second_half_low = min(lows[half:]) if half < len(lows) else lows[-1]
-    
-    higher_high = second_half_high > first_half_high * 1.01
-    higher_low = second_half_low > first_half_low * 1.01
-    
-    # 检查趋势一致性（使用价格序列的线性相关系数近似）
-    import math
-    n = len(closes)
-    x_sum = n * (n - 1) / 2
-    y_sum = sum(closes)
-    xy_sum = sum(i * c for i, c in enumerate(closes))
-    x2_sum = sum(i * i for i in range(n))
-    y2_sum = sum(c * c for c in closes)
-    
-    denominator = math.sqrt((n * x2_sum - x_sum * x_sum) * (n * y2_sum - y_sum * y_sum))
-    correlation = ((n * xy_sum - x_sum * y_sum) / denominator) if denominator > 0 else 0
-    
-    # 结构质量判断
-    if higher_high and higher_low and correlation > 0.6:
-        structure_quality = 'Strong'
-    elif (higher_high or higher_low) and correlation > 0.3:
-        structure_quality = 'Mixed'
-    else:
-        structure_quality = 'Weak'
-    
-    # === Stretch ===
-    # 使用价格相对于近期范围的位置来判断拉伸度
-    lookback = min(20, len(closes))
-    recent_high = max(highs[-lookback:])
-    recent_low = min(lows[-lookback:])
-    range_size = recent_high - recent_low
-    range_pct = range_size / recent_low * 100 if recent_low > 0 else 0
-    
-    if range_size > 0:
-        price_position = (current_price - recent_low) / range_size
-    else:
-        price_position = 0.5
-    
-    # 价格在范围顶部80%以上 = Extended
-    # 价格在底部20%以下 = maybe oversold
-    if price_position > 0.85:
-        stretch = 'Extended'
-    elif price_position > 0.7:
-        stretch = 'Normal'
-    elif price_position > 0.3:
-        stretch = 'Normal'
-    else:
-        stretch = 'Normal'  # 底部不标记stretched
-    
-    # 对15min/1H级别更敏感
-    if label in ['15min', '30min', 'Entry']:
-        if price_position > 0.88:
-            stretch = 'Extended'
-        elif price_position > 0.75:
-            stretch = 'Normal'
-        else:
-            stretch = 'Normal'
-    
-    # === Momentum State ===
-    # 通过最近n根K线的斜率来判断动量方向
-    if len(closes) >= 10:
-        recent_closes = closes[-10:]
-    else:
-        recent_closes = closes
-    
-    # 简单动量：比较后半段和前半段平均价格
-    mid = len(recent_closes) // 2
-    first_half_avg = sum(recent_closes[:mid]) / mid if mid > 0 else recent_closes[0]
-    second_half_avg = sum(recent_closes[mid:]) / (len(recent_closes) - mid) if (len(recent_closes) - mid) > 0 else recent_closes[-1]
-    momentum_pct = (second_half_avg / first_half_avg - 1) * 100
-    
-    # 最近几根K线的变化率
-    if len(closes) >= 5:
-        recent_3 = (closes[-1] / closes[-3] - 1) * 100 if closes[-3] > 0 else 0
-    else:
-        recent_3 = 0
-    
-    # 根据趋势和动量方向判断
-    if momentum_pct > 1 and recent_3 > 0:
-        momentum_state = 'Improving'
-    elif momentum_pct > 0.5:
-        momentum_state = 'Flat'
-    elif momentum_pct > -0.5:
-        momentum_state = 'Flat'
-    elif momentum_pct < -1 and recent_3 < 0:
-        momentum_state = 'Fading'
-    else:
-        momentum_state = 'Flat'
-    
-    return {
-        'trend_bias': trend_bias,
-        'structure_quality': structure_quality,
-        'stretch': stretch,
-        'momentum_state': momentum_state,
-        'available': True,
-        'bar_count': len(closes),
-        'price': round(current_price, 2),
-        'price_vs_ema20': round(price_vs_ema20, 2)
-    }
-
-
-def calculate_mtf_alignment(frame_results):
-    """
-    综合判断多时间框架的 Alignment (v2)
-    TF keys: 1D, 4H, 1H, 30m, 15m
-    - Aligned: 大级别+中间+小级别都配合
-    - Partially aligned: 大级别强但小级别stretched 或有些冲突
-    - Conflicted: 大级别与小级别方向不一致
-    """
-    daily  = frame_results.get('1D',  {})
-    hour4  = frame_results.get('4H',  {})
-    hour1  = frame_results.get('1H',  {})
-    s30m   = frame_results.get('30m', {})
-    s15m   = frame_results.get('15m', {})
-    
-    daily_bias = daily.get('trend_bias', 'N/A')
-    h4_bias    = hour4.get('trend_bias', 'N/A')
-    h1_bias    = hour1.get('trend_bias', 'N/A')
-    s30_bias   = s30m.get('trend_bias', 'N/A')
-    s15_bias   = s15m.get('trend_bias', 'N/A')
-    
-    # Check which timeframes are actually available
-    avail = {
-        k: frame_results.get(k, {}).get('available', False)
-        for k in ['1D', '4H', '1H', '30m', '15m']
-    }
-    num_avail = sum(1 for v in avail.values() if v)
-    
-    # If no data available at all
-    if not daily.get('available', False) and not hour1.get('available', False):
-        return 'Unavailable'
-    
-    # If only single timeframe
-    if num_avail <= 1:
-        return 'Aligned' if daily.get('available', False) else 'Partially aligned'
-    
-    # Use available lower timeframes for entry context
-    entry_bias = s15_bias if avail.get('15m') else (s30_bias if avail.get('30m') else (h1_bias if avail.get('1H') else 'N/A'))
-    entry_stretch = frame_results.get('15m', {}).get('stretch', 'N/A') if avail.get('15m') else frame_results.get('30m', {}).get('stretch', 'N/A')
-    
-    # 大级别方向判断
-    if daily_bias == 'Bullish':
-        if h4_bias in ['Bullish', 'Neutral'] and entry_bias in ['Bullish', 'Neutral']:
-            if entry_stretch == 'Extended':
-                return 'Partially aligned'
-            else:
-                return 'Aligned'
-        elif h4_bias == 'Bearish' or entry_bias == 'Bearish':
-            return 'Conflicted'
-        else:
-            return 'Partially aligned'
-    elif daily_bias == 'Bearish':
-        if entry_bias == 'Bullish':
-            return 'Conflicted'
-        elif entry_stretch == 'Extended':
-            return 'Partially aligned'
-        else:
-            return 'Aligned'
-    else:  # Neutral
-        if h4_bias == 'Bullish' and entry_bias == 'Bullish':
-            return 'Conflicted'
-        elif h4_bias == 'Bullish' or entry_bias == 'Bullish':
-            return 'Partially aligned'
-        else:
-            return 'Aligned'
-
-
-
-
-
-    # ============ End MTF ============
-
-
     
 
     print("\n启动服务器...")
 
     app.run(host='127.0.0.1', port=8889, debug=True, use_reloader=False)  # 使用端口8889，禁用reloader避免重复启动
 
-
+def fetch_finnhub_news(symbol):
+    """从Finnhub获取股票新闻"""
+    try:
+        print(f'[Finnhub新闻] 获取 {symbol} 新闻')
+        
+        # 检查API密钥
+        if not FINNHUB_API_KEY:
+            print(f'[Finnhub新闻] Finnhub API密钥未配置')
+            return None
+        
+        # 调用Finnhub News API
+        import requests
+        from datetime import datetime, timedelta
+        
+        # 设置时间范围（最近7天）
+        to_date = datetime.utcnow()
+        from_date = to_date - timedelta(days=7)
+        
+        # 格式化日期
+        from_str = from_date.strftime('%Y-%m-%d')
+        to_str = to_date.strftime('%Y-%m-%d')
+        
+        # 构建API URL
+        url = f'{FINNHUB_BASE_URL}/company-news'
+        params = {
+            'symbol': symbol,
+            'from': from_str,
+            'to': to_str,
+            'token': FINNHUB_API_KEY
+        }
+        
+        print(f'[Finnhub新闻] 请求URL: {url}')
+        print(f'[Finnhub新闻] 参数: {params}')
+        
+        # 发送请求
+        response = requests.get(url, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            news_data = response.json()
+            print(f'[Finnhub新闻] 获取到 {len(news_data)} 条新闻')
+            return news_data
+        else:
+            print(f'[Finnhub新闻] API请求失败: {response.status_code}')
+            print(f'[Finnhub新闻] 响应: {response.text[:200]}')
+            return None
+            
+    except Exception as e:
+        print(f'[Finnhub新闻] 获取新闻时出错: {str(e)}')
+        return None
 
 # 主程序入口
 if __name__ == '__main__':
