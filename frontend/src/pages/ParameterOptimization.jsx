@@ -77,30 +77,30 @@ const ParameterOptimization = () => {
         newValues.momentumPeriodStep = 5;
       } else if (selectedStrategy === 'rsi') {
         newValues.rsiPeriodStart = 10;
-        newValues.rsiPeriodEnd = 30;
-        newValues.rsiPeriodStep = 2;
-        newValues.oversoldStart = 20;
-        newValues.oversoldEnd = 40;
+        newValues.rsiPeriodEnd = 20;
+        newValues.rsiPeriodStep = 5;
+        newValues.oversoldStart = 25;
+        newValues.oversoldEnd = 35;
         newValues.oversoldStep = 5;
-        newValues.overboughtStart = 60;
-        newValues.overboughtEnd = 80;
+        newValues.overboughtStart = 65;
+        newValues.overboughtEnd = 75;
         newValues.overboughtStep = 5;
       } else if (selectedStrategy === 'macd') {
-        newValues.fastStart = 5;
-        newValues.fastEnd = 15;
+        newValues.fastStart = 8;
+        newValues.fastEnd = 12;
         newValues.fastStep = 2;
         newValues.slowStart = 20;
         newValues.slowEnd = 30;
-        newValues.slowStep = 2;
-        newValues.signalStart = 5;
-        newValues.signalEnd = 10;
-        newValues.signalStep = 1;
+        newValues.slowStep = 5;
+        newValues.signalStart = 7;
+        newValues.signalEnd = 11;
+        newValues.signalStep = 2;
       } else if (selectedStrategy === 'bollinger') {
         newValues.periodStart = 10;
         newValues.periodEnd = 30;
         newValues.periodStep = 5;
         newValues.stdDevStart = 1.5;
-        newValues.stdDevEnd = 3.0;
+        newValues.stdDevEnd = 2.5;
         newValues.stdDevStep = 0.5;
       }
       
@@ -142,7 +142,7 @@ const ParameterOptimization = () => {
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item label="End" name="longMaEnd" initialValue={200}>
+              <Form.Item label="End" name="longMaEnd" initialValue={150}>
                 <InputNumber min={1} max={300} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
@@ -188,12 +188,12 @@ const ParameterOptimization = () => {
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item label="End" name="rsiPeriodEnd" initialValue={30}>
+              <Form.Item label="End" name="rsiPeriodEnd" initialValue={20}>
                 <InputNumber min={5} max={100} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item label="Step" name="rsiPeriodStep" initialValue={2}>
+              <Form.Item label="Step" name="rsiPeriodStep" initialValue={5}>
                 <InputNumber min={1} max={10} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
@@ -202,12 +202,12 @@ const ParameterOptimization = () => {
           <h4>Oversold Level Parameters</h4>
           <Row gutter={16}>
             <Col span={8}>
-              <Form.Item label="Start" name="oversoldStart" initialValue={20}>
+              <Form.Item label="Start" name="oversoldStart" initialValue={25}>
                 <InputNumber min={10} max={40} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item label="End" name="oversoldEnd" initialValue={40}>
+              <Form.Item label="End" name="oversoldEnd" initialValue={35}>
                 <InputNumber min={10} max={50} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
@@ -221,12 +221,12 @@ const ParameterOptimization = () => {
           <h4>Overbought Level Parameters</h4>
           <Row gutter={16}>
             <Col span={8}>
-              <Form.Item label="Start" name="overboughtStart" initialValue={60}>
+              <Form.Item label="Start" name="overboughtStart" initialValue={65}>
                 <InputNumber min={50} max={80} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item label="End" name="overboughtEnd" initialValue={80}>
+              <Form.Item label="End" name="overboughtEnd" initialValue={75}>
                 <InputNumber min={50} max={90} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
@@ -244,12 +244,12 @@ const ParameterOptimization = () => {
           <h4>Fast EMA Parameters</h4>
           <Row gutter={16}>
             <Col span={8}>
-              <Form.Item label="Start" name="fastStart" initialValue={5}>
+              <Form.Item label="Start" name="fastStart" initialValue={8}>
                 <InputNumber min={5} max={20} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item label="End" name="fastEnd" initialValue={15}>
+              <Form.Item label="End" name="fastEnd" initialValue={12}>
                 <InputNumber min={5} max={30} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
@@ -273,7 +273,7 @@ const ParameterOptimization = () => {
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item label="Step" name="slowStep" initialValue={2}>
+              <Form.Item label="Step" name="slowStep" initialValue={5}>
                 <InputNumber min={1} max={10} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
@@ -282,17 +282,17 @@ const ParameterOptimization = () => {
           <h4>Signal EMA Parameters</h4>
           <Row gutter={16}>
             <Col span={8}>
-              <Form.Item label="Start" name="signalStart" initialValue={5}>
+              <Form.Item label="Start" name="signalStart" initialValue={7}>
                 <InputNumber min={3} max={15} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item label="End" name="signalEnd" initialValue={10}>
+              <Form.Item label="End" name="signalEnd" initialValue={11}>
                 <InputNumber min={3} max={20} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item label="Step" name="signalStep" initialValue={1}>
+              <Form.Item label="Step" name="signalStep" initialValue={2}>
                 <InputNumber min={1} max={5} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
@@ -329,7 +329,7 @@ const ParameterOptimization = () => {
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item label="End" name="stdDevEnd" initialValue={3.0}>
+              <Form.Item label="End" name="stdDevEnd" initialValue={2.5}>
                 <InputNumber min={1.0} max={5.0} step={0.1} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
@@ -461,40 +461,40 @@ const ParameterOptimization = () => {
       };
       payload.longMaRange = {
         start: values.longMaStart || 50,
-        end: values.longMaEnd || 200,
+        end: values.longMaEnd || 150,
         step: values.longMaStep || 25
       };
     } else if (values.strategy === 'rsi') {
       payload.rsiPeriodRange = {
         start: values.rsiPeriodStart || 10,
-        end: values.rsiPeriodEnd || 30,
-        step: values.rsiPeriodStep || 2
+        end: values.rsiPeriodEnd || 20,
+        step: values.rsiPeriodStep || 5
       };
       payload.oversoldRange = {
         start: values.oversoldStart || 20,
-        end: values.oversoldEnd || 40,
+        end: values.oversoldEnd || 35,
         step: values.oversoldStep || 5
       };
       payload.overboughtRange = {
         start: values.overboughtStart || 60,
-        end: values.overboughtEnd || 80,
+        end: values.overboughtEnd || 75,
         step: values.overboughtStep || 5
       };
     } else if (values.strategy === 'macd') {
       payload.fastRange = {
         start: values.fastStart || 5,
-        end: values.fastEnd || 15,
+        end: values.fastEnd || 12,
         step: values.fastStep || 2
       };
       payload.slowRange = {
         start: values.slowStart || 20,
         end: values.slowEnd || 30,
-        step: values.slowStep || 2
+        step: values.slowStep || 5
       };
       payload.signalRange = {
         start: values.signalStart || 5,
         end: values.signalEnd || 10,
-        step: values.signalStep || 1
+        step: values.signalStep || 2
       };
     } else if (values.strategy === 'bollinger') {
       payload.periodRange = {
@@ -504,7 +504,7 @@ const ParameterOptimization = () => {
       };
       payload.stdDevRange = {
         start: values.stdDevStart || 1.5,
-        end: values.stdDevEnd || 3.0,
+        end: values.stdDevEnd || 2.5,
         step: values.stdDevStep || 0.5
       };
     } else if (values.strategy === 'momentum') {
