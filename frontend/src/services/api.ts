@@ -120,5 +120,72 @@ export const fineScanAdvancedAPI = {
   },
 };
 
+export const fineScanSelectAPI = {
+  select: (candidates: any[]) => {
+    return api.post('/ai/fine-scan-select', { candidates });
+  },
+};
+
+export const deeperValidationAPI = {
+  validate: (candidates: any[], period = '1y', initialCapital = 100000) => {
+    return api.post('/ai/deeper-validation', { candidates, period, initialCapital });
+  },
+};
+
+// Fine Scan AI Explanation Layer (generates narrative text only, no metrics)
+export const fineScanExplainAPI = {
+  explain: (data: FineScanExplainRequest) => {
+    return api.post('/ai/fine-scan-explain', data);
+  },
+};
+
+export interface FineScanExplainRequest {
+  symbol: string;
+  trendLabel: string;
+  trendScore: number;
+  matchedStrategies: string[];
+  backtestMetrics: {
+    totalReturn?: number;
+    sharpe?: number;
+    winRate?: number;
+    profitFactor?: number;
+    maxDrawdown?: number;
+    tradeCount?: number;
+  };
+  optimizationMetrics: {
+    stability?: string;
+    avgReturn?: number;
+    positiveRatio?: number;
+  };
+  entryQuality: {
+    grade?: string;
+    score?: number;
+    atr?: number;
+    zone?: string;
+  };
+  liquidity: {
+    grade?: string;
+    score?: number;
+  };
+  newsSummary: {
+    grade?: string;
+    headlineCount?: number;
+  };
+  riskAssessment: {
+    grade?: string;
+    score?: number;
+    reason?: string;
+  };
+}
+
+export interface FineScanExplainResponse {
+  success: boolean;
+  symbol: string;
+  whyMatched: string;
+  keySignalExplanation: string;
+  finalReason: string;
+  nextStep: string;
+}
+
 export { scannerApi };
 export default api;

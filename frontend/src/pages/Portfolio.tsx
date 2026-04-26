@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Card, Typography, Space, Statistic, Row, Col,
   Button, Divider, Table, Tag, Select, Form, Input,
@@ -13,7 +13,7 @@ import {
   SortDescendingOutlined, SortAscendingOutlined
 } from '@ant-design/icons';
 import aiTradingService, { AIProviderConfig } from '../services/aiTradingService';
-import { backtraderAPI, marketAPI, entryQualityAPI, fineScanAdvancedAPI } from '../services/api';
+import { backtraderAPI, marketAPI, entryQualityAPI, fineScanAdvancedAPI, deeperValidationAPI, fineScanExplainAPI } from '../services/api';
 import api, { scannerApi } from '../services/api';
 import marketDataService from '../services/marketDataService';
 import alpacaBrokerService, { AlpacaPosition, AlpacaOrder } from '../services/alpacaBrokerService';
@@ -184,6 +184,7 @@ const Portfolio: React.FC = (): React.ReactElement => {
   console.log('continueScanStatus defined');
   const [continueScanProgress, setContinueScanProgress] = useState(0);
   const [preferredContinueScanList, setPreferredContinueScanList] = useState<any[]>([]);
+const [preferredContinuePage, setPreferredContinuePage] = useState(1);
 
   // Continue Scan 进度详情
   const [continueScanDetails, setContinueScanDetails] = useState({
@@ -199,6 +200,8 @@ const Portfolio: React.FC = (): React.ReactElement => {
   const [fineScanStatus, setFineScanStatus] = useState('idle');     
   const [fineScanResults, setFineScanResults] = useState<any[]>([]);
   const [fineScanProgress, setFineScanProgress] = useState(0);
+  const [fineScanStepProgress, setFineScanStepProgress] = useState(0);
+  const [fineScanCurrentStep, setFineScanCurrentStep] = useState<string>('');
   const [fineScanMessage, setFineScanMessage] = useState<string>('');
   const [fineScanExpandedRows, setFineScanExpandedRows] = useState<string[]>([]);
 
@@ -2616,139 +2619,280 @@ Please respond in this exact JSON format:
   const renderFineScanDetailPanel = (record: any) => {
     const fullReason = record.matchReason || '';
     const signals = record.keySignals || [];
-    const scanData = record.scanTrend ? `Trend: ${record.scanTrend} | Score: ${record.scanScore}` : '';
 
     return (
-      <div style={{ padding: '8px 8px 8px 32px', maxWidth: 600 }}>
-        {/* Why Matched - full content */}
-        {fullReason && (
-          <div style={{ marginBottom: 12 }}>
-            <Text strong style={{ fontSize: '12px', color: '#333' }}>Why Matched</Text>
-            <div style={{ marginTop: 4, padding: '6px 10px', backgroundColor: '#fafafa', borderRadius: 4, border: '1px solid #f0f0f0' }}>
-              <Text style={{ fontSize: '11px', color: '#555', lineHeight: '1.6', whiteSpace: 'pre-wrap' }}>
+      <div style={{
+        padding: '16px',
+        backgroundColor: '#f8f9fa',
+        borderRadius: 10,
+        border: '1px solid #e8e8e8',
+        margin: '0 8px 8px 8px'
+      }}>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+          gap: 14
+        }}>
+          {/* 1. Why Matched */}
+          {fullReason && (
+            <div style={{
+              background: '#fff',
+              border: '1px solid #e5e7eb',
+              borderRadius: 8,
+              padding: 12
+            }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>🎯</span> Why Matched
+              </div>
+              <div style={{ fontSize: 11, color: '#555', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
                 {fullReason}
-              </Text>
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Key Signals - full list */}
-        {signals.length > 0 && (
-          <div style={{ marginBottom: 12 }}>
-            <Text strong style={{ fontSize: '12px', color: '#333' }}>Key Signals</Text>
-            <div style={{ marginTop: 4 }}>
-              {signals.map((sig: string, i: number) => (
-                <Tag key={i} style={{ fontSize: '11px', marginBottom: 2 }}>{sig}</Tag>
-              ))}
+          {/* 2. Key Signals */}
+          {signals.length > 0 && (
+            <div style={{
+              background: '#fff',
+              border: '1px solid #e5e7eb',
+              borderRadius: 8,
+              padding: 12
+            }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>📊</span> Key Signals
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                {signals.map((sig: string, i: number) => (
+                  <span key={i} style={{
+                    padding: '2px 8px',
+                    borderRadius: 4,
+                    backgroundColor: '#f0f5ff',
+                    color: '#1890ff',
+                    fontSize: 10,
+                    border: '1px solid #d6e4ff',
+                    lineHeight: '1.8'
+                  }}>
+                    {sig}
+                  </span>
+                ))}
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Quick Backtest Results */}
-        <div style={{ marginBottom: 12 }}>
-          <Text strong style={{ fontSize: '12px', color: '#333' }}>Quick Backtest Summary</Text>
-          <div style={{ marginTop: 4, padding: '6px 10px', backgroundColor: '#fafafa', borderRadius: 4, border: '1px solid #eee' }}>
+          {/* 3. Market Scan Data */}
+          {(record.scanTrend || record.scanScore != null || record.scanVolume != null) && (
+            <div style={{
+              background: '#fff',
+              border: '1px solid #e5e7eb',
+              borderRadius: 8,
+              padding: 12
+            }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>📈</span> Market Scan Data
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11 }}>
+                <div>
+                  <span style={{ color: '#888' }}>Trend: </span>
+                  {record.scanTrend ? (
+                    <span style={{ fontWeight: 500, color: record.scanTrend === 'Strong Bullish' || record.scanTrend === 'Bullish' ? '#52c41a' : record.scanTrend === 'Neutral' ? '#faad14' : '#ff4d4f' }}>
+                      {record.scanTrend}
+                    </span>
+                  ) : <span style={{ color: '#bbb' }}>N/A</span>}
+                </div>
+                <div><span style={{ color: '#888' }}>Score: </span><span style={{ fontWeight: 500 }}>{record.scanScore != null ? record.scanScore : 'N/A'}</span></div>
+                <div><span style={{ color: '#888' }}>Volume: </span><span style={{ fontWeight: 500 }}>{record.scanVolume != null ? (record.scanVolume / 1e6).toFixed(1) + 'M' : 'N/A'}</span></div>
+              </div>
+            </div>
+          )}
+
+          {/* 4. Quick Backtest Summary - spans 2 cols */}
+          <div style={{
+            background: '#fff',
+            border: '1px solid #e5e7eb',
+            borderRadius: 8,
+            padding: 12,
+            gridColumn: 'span 2'
+          }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span>🧪</span> Quick Backtest Summary
+            </div>
             {(() => {
               const perStrategy = record.backtestPerStrategy || [];
-              const backtestStatus = record.backtestStatus || 'pending';
+              const btStatus = record.backtestStatus || 'pending';
               if (perStrategy.length > 0) {
-                const statusColor = backtestStatus === 'passed' ? '#52c41a' : backtestStatus === 'caution' ? '#faad14' : backtestStatus === 'losing' ? '#ff4d4f' : backtestStatus === 'failed' ? '#ff4d4f' : '#999';
-                const statusLabel = backtestStatus === 'passed' ? 'Passed' : backtestStatus === 'caution' ? 'Caution' : backtestStatus === 'losing' ? 'Completed / Losing' : backtestStatus === 'failed' ? 'Failed' : backtestStatus === 'error' ? 'Error' : backtestStatus === 'skipped' ? 'Skipped' : 'Pending';
+                const ovColor = btStatus === 'passed' ? '#52c41a' : btStatus === 'caution' ? '#faad14' : btStatus === 'losing' ? '#ff4d4f' : btStatus === 'failed' ? '#ff4d4f' : '#999';
+                const ovLabel = btStatus === 'passed' ? 'Positive' : btStatus === 'caution' ? 'Caution' : btStatus === 'losing' ? 'Negative' : btStatus === 'failed' ? 'Failed' : btStatus === 'skipped' ? 'Skipped' : 'Pending';
                 return (
                   <div>
-                    <div style={{ fontSize: '11px', marginBottom: 6 }}>
-                      Overall: <Tag color={statusColor} style={{ fontSize: '10px', fontWeight: 600, margin: 0 }}>{statusLabel}</Tag>
+                    <div style={{ fontSize: 11, marginBottom: 8 }}>
+                      Overall: <span style={{ color: ovColor, fontWeight: 600 }}>{ovLabel}</span>
+                      {record.backtestPeriod && <span style={{ marginLeft: 8, color: '#999', fontSize: 10 }}>Period: {record.backtestPeriod}</span>}
                     </div>
-                    {perStrategy.map((ps: any, psi: number) => {
-                      const psColor = ps.status === 'passed' ? '#f6ffed' : ps.status === 'caution' ? '#fffbe6' : ps.status === 'completed_losing' ? '#fffbe6' : ps.status === 'failed' ? '#fff2f0' : '#f5f5f5';
-                      const psTagColor = ps.status === 'passed' ? '#52c41a' : ps.status === 'caution' ? '#faad14' : ps.status === 'completed_losing' ? '#ff4d4f' : ps.status === 'failed' ? '#ff4d4f' : '#bbb';
-                      const psLabel = ps.status === 'passed' ? 'Passed' : ps.status === 'caution' ? 'Caution' : ps.status === 'completed_losing' ? 'Completed / Losing' : ps.status === 'failed' ? 'Failed' : ps.status === 'error' ? 'Error' : ps.status === 'skipped' ? 'Skipped' : 'Pending';
-                      return (
-                        <div key={psi} style={{ marginBottom: 6, padding: '6px 8px', backgroundColor: psColor, borderRadius: 4, fontSize: '11px', lineHeight: '1.7' }}>
-                          <div style={{ fontWeight: 500, marginBottom: 2 }}>
-                            {ps.strategy} <Tag color={psTagColor} style={{ fontSize: '9px', fontWeight: 600, margin: 0, padding: '0 4px', lineHeight: '16px' }}>{psLabel}</Tag>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                      {perStrategy.map((ps: any, psi: number) => {
+                        const psBg = ps.status === 'passed' ? '#f6ffed' : ps.status === 'caution' ? '#fffbe6' : ps.status === 'completed_losing' ? '#fffbe6' : ps.status === 'failed' ? '#fff2f0' : '#f5f5f5';
+                        const psTagColor = ps.status === 'passed' ? '#52c41a' : ps.status === 'caution' ? '#faad14' : ps.status === 'completed_losing' ? '#ff4d4f' : ps.status === 'failed' ? '#ff4d4f' : '#bbb';
+                        const psLabel = ps.status === 'passed' ? 'Passed' : ps.status === 'caution' ? 'Caution' : ps.status === 'completed_losing' ? 'Losing' : ps.status === 'failed' ? 'Failed' : ps.status === 'skipped' ? 'Skipped' : 'Pending';
+                        return (
+                          <div key={psi} style={{
+                            flex: '1 1 220px',
+                            padding: 8,
+                            backgroundColor: psBg,
+                            borderRadius: 6,
+                            fontSize: 10,
+                            lineHeight: 1.7
+                          }}>
+                            <div style={{ fontWeight: 500, marginBottom: 4, fontSize: 11 }}>
+                              {ps.strategy}
+                              <span style={{
+                                display: 'inline-block',
+                                marginLeft: 6, padding: '0 5px',
+                                backgroundColor: psTagColor + '20',
+                                color: psTagColor,
+                                borderRadius: 3,
+                                fontWeight: 600,
+                                fontSize: 9
+                              }}>{psLabel}</span>
+                            </div>
+                            {ps.status === 'skipped' && <div style={{ color: '#999', fontStyle: 'italic' }}>{ps.reason || 'Strategy not supported by local Backtest'}</div>}
+                            {ps.status === 'error' && <div style={{ color: '#999', fontStyle: 'italic' }}>{ps.reason || 'Error running backtest'}</div>}
+                            {ps.status !== 'skipped' && ps.status !== 'error' && ps.totalReturn != null && (
+                              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2px 8px' }}>
+                                <div>Return: <span style={{ color: ps.totalReturn >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 500 }}>
+                                  {ps.totalReturn >= 0 ? '+' : ''}{Number(ps.totalReturn).toFixed(2)}%</span></div>
+                                <div>Sharpe: <span style={{
+                                  color: ps.sharpe >= 1 ? '#52c41a' : ps.sharpe >= 0.5 ? '#faad14' : '#ff4d4f',
+                                  fontWeight: 500
+                                }}>{Number(ps.sharpe).toFixed(2)}</span></div>
+                                <div>Win Rate: <span style={{ fontWeight: 500 }}>{ps.winRate != null ? Number(ps.winRate).toFixed(1) + '%' : 'N/A'}</span></div>
+                                <div>P.Factor: <span style={{
+                                  color: ps.profitFactor >= 1.5 ? '#52c41a' : ps.profitFactor >= 1 ? '#faad14' : '#ff4d4f',
+                                  fontWeight: 500
+                                }}>{ps.profitFactor ? Number(ps.profitFactor).toFixed(2) : 'N/A'}</span></div>
+                                <div>Max DD: <span style={{
+                                  color: Math.abs(ps.maxDrawdown || 0) < 15 ? '#8c8c8c' : Math.abs(ps.maxDrawdown || 0) < 25 ? '#faad14' : '#ff4d4f',
+                                  fontWeight: 500
+                                }}>{Number(ps.maxDrawdown).toFixed(1)}%</span></div>
+                                <div>Trades: <span style={{ fontWeight: 500 }}>{ps.tradeCount ?? 0}</span></div>
+                                <div>Window: <span style={{ fontWeight: 500 }}>{ps.window || 'N/A'}</span></div>
+                                {ps.bestParams && <div style={{ gridColumn: 'span 2', marginTop: 2 }}>
+                                  <span style={{ color: '#888' }}>Params: </span>
+                                  {Object.entries(ps.bestParams).map(([k, v]: [string, any], pi: number) => (
+                                    <span key={pi} style={{
+                                      padding: '1px 5px',
+                                      backgroundColor: '#f0f0f0',
+                                      borderRadius: 3,
+                                      border: '1px solid #e0e0e0',
+                                      fontSize: 9,
+                                      marginRight: 3
+                                    }}>{k}: {String(v)}</span>
+                                  ))}
+                                </div>}
+                              </div>
+                            )}
                           </div>
-                          {ps.status === 'skipped' && <div style={{ color: '#999', fontStyle: 'italic' }}>{ps.reason}</div>}
-                          {ps.status === 'error' && <div style={{ color: '#999', fontStyle: 'italic' }}>{ps.reason}</div>}
-                          {ps.status !== 'skipped' && ps.status !== 'error' && ps.totalReturn !== null && ps.totalReturn !== undefined && (
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '2px 8px' }}>
-                              <span>Return: <span style={{ color: ps.totalReturn >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 500 }}>{ps.totalReturn >= 0 ? '+' : ''}{Number(ps.totalReturn).toFixed(2)}%</span></span>
-                              <span>Sharpe: <span style={{ fontWeight: 500 }}>{Number(ps.sharpe).toFixed(2)}</span></span>
-                              <span>Max DD: <span style={{ color: '#ff4d4f', fontWeight: 500 }}>{Number(ps.maxDrawdown).toFixed(2)}%</span></span>
-                              <span>Win Rate: <span style={{ fontWeight: 500 }}>{Number(ps.winRate).toFixed(1)}%</span></span>
-                              <span>PF: <span style={{ fontWeight: 500 }}>{ps.profitFactor ? Number(ps.profitFactor).toFixed(2) : 'N/A'}</span></span>
-                              <span>Trades: <span style={{ fontWeight: 500 }}>{ps.tradeCount ?? 0}</span></span>
-                              <span>Window: <span style={{ fontWeight: 500 }}>{ps.window || 'N/A'}</span></span>
-                            </div>
-                          )}
-                          {ps._params && ps.status !== 'skipped' && ps.status !== 'error' && (
-                            <div style={{ marginTop: 4, padding: '3px 6px', backgroundColor: '#f5f5f5', borderRadius: 3, fontSize: '10px', color: '#777', lineHeight: '1.6', fontFamily: 'monospace' }}>
-                              {ps._params.strategy} | {ps._params.symbol} | {ps._params.startDate} → {ps._params.endDate} | Cap: ${(ps._params.initialCapital || 100000).toLocaleString()} | mode: {ps._params.dataMode}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
                   </div>
                 );
               }
-              return <div style={{ fontSize: '11px', color: '#999', fontStyle: 'italic' }}>Quick backtest validation not yet available.</div>;
+              return <div style={{ fontSize: 11, color: '#999', fontStyle: 'italic' }}>Quick backtest validation not yet available.</div>;
             })()}
           </div>
-        </div>
 
-        {/* Quick Optimization Summary */}
-        <div style={{ marginBottom: 12 }}>
-          <Text strong style={{ fontSize: '12px', color: '#333' }}>Quick Optimization</Text>
-          <div style={{ marginTop: 4, padding: '6px 10px', backgroundColor: '#fff7e6', borderRadius: 4, border: '1px solid #ffd591' }}>
+          {/* 5. Quick Optimization - single col */}
+          <div style={{
+            background: '#fff',
+            border: '1px solid #e5e7eb',
+            borderRadius: 8,
+            padding: 12
+          }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span>⚙️</span> Quick Optimization
+            </div>
             {(() => {
               const qs = record.quickOptStatus;
               const qr = record.quickOptResults || [];
               const qsSummary = record.quickOptSummary;
-
               if (qs === 'skipped' || !qs) {
-                return <div style={{ fontSize: '11px', color: '#999', fontStyle: 'italic' }}>Not run (skipped due to backtest result or top-5 limit).</div>;
+                return <div style={{ fontSize: 11, color: '#999', fontStyle: 'italic' }}>Not run (skipped due to backtest result or top-5 limit).</div>;
               }
               if (qs === 'running') {
-                return <div style={{ fontSize: '11px', color: '#fa8c16' }}>Optimization in progress...</div>;
+                return <div style={{ fontSize: 11, color: '#fa8c16' }}>Optimization in progress...</div>;
               }
               if (qs === 'error') {
-                return <div style={{ fontSize: '11px', color: '#ff4d4f' }}>Optimization failed.</div>;
+                return <div style={{ fontSize: 11, color: '#ff4d4f' }}>Optimization failed.</div>;
               }
-
               return (
                 <div>
-                  <div style={{ fontSize: '11px', marginBottom: 6 }}>
-                    Status: <Tag color="#fa8c16" style={{ fontSize: '10px', fontWeight: 600, margin: 0 }}>Completed</Tag>
-                    {qsSummary && <span style={{ marginLeft: 8, color: '#888' }}>{qsSummary}</span>}
+                  <div style={{ fontSize: 11, marginBottom: 6 }}>
+                    Status: <span style={{ color: '#fa8c16', fontWeight: 600 }}>Completed</span>
+                    {qsSummary && <span style={{ marginLeft: 8, color: '#888', fontSize: 10 }}>{qsSummary}</span>}
                   </div>
                   {qr.map((opt: any, oi: number) => {
                     const stabColor = opt.stability === 'Stable' ? '#52c41a' : opt.stability === 'Weak' ? '#faad14' : '#ff4d4f';
+                    const stabIcon = opt.stability === 'Stable' ? '\u2705' : opt.stability === 'Weak' ? '\u26a0\ufe0f' : '\u2716';
+                    const params = opt.bestParams || opt.params || {};
                     return (
-                      <div key={oi} style={{ marginBottom: 6, padding: '6px 8px', backgroundColor: '#f6f6f6', borderRadius: 4, fontSize: '10px', lineHeight: '1.6' }}>
-                        <div style={{ fontWeight: 500, marginBottom: 2 }}>
+                      <div key={oi} style={{
+                        marginBottom: 6,
+                        padding: '6px 8px',
+                        backgroundColor: '#f6f6f6',
+                        borderRadius: 6,
+                        fontSize: 10,
+                        lineHeight: 1.6
+                      }}>
+                        <div style={{ fontWeight: 500, marginBottom: 3 }}>
                           {opt.strategy}
-                          <Tag color={stabColor} style={{ fontSize: '9px', fontWeight: 600, margin: '0 6px', padding: '0 4px', lineHeight: '16px' }}>{opt.stability}</Tag>
-                          <span style={{ color: '#888', fontSize: '9px' }}>{opt.paramCount} params</span>
+                          <span style={{
+                            display: 'inline-block',
+                            marginLeft: 6, padding: '0 5px',
+                            backgroundColor: stabColor + '20',
+                            color: stabColor,
+                            borderRadius: 3,
+                            fontWeight: 600,
+                            fontSize: 9
+                          }}>{stabIcon} {opt.stability}</span>
                         </div>
-                        <div>
-                          Avg Return: <span style={{ color: opt.avgReturn >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 500 }}>{opt.avgReturn >= 0 ? '+' : ''}{opt.avgReturn}%</span>
-                          {' | '}Positive: <span style={{ fontWeight: 500 }}>{opt.positiveRatio}%</span>
-                          {' | '}Std: <span style={{ fontWeight: 500 }}>±{opt.stdReturn}%</span>
+                        <div style={{ marginBottom: 3 }}>
+                          <span>Avg Return: <span style={{ color: opt.avgReturn >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 500 }}>{opt.avgReturn >= 0 ? '+' : ''}{opt.avgReturn}%</span></span>
+                          <span style={{ color: '#ddd', margin: '0 4px' }}>|</span>
+                          Positive: <span style={{ fontWeight: 500 }}>{opt.positiveRatio}%</span>
+                          <span style={{ color: '#ddd', margin: '0 4px' }}>|</span>
+                          Std: <span style={{ fontWeight: 500 }}>{opt.stdReturn}%</span>
                         </div>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: 3 }}>
-                          {opt.results.map((r: any, ri: number) => {
-                            const rColor = r.totalReturn >= 0 ? '#52c41a' : '#ff4d4f';
-                            return (
+                        {Object.keys(params).length > 0 && (
+                          <div style={{ marginBottom: 3 }}>
+                            <span style={{ color: '#888' }}>Params: </span>
+                            {Object.entries(params).map(([k, v]: [string, any], pi: number) => (
+                              <span key={pi} style={{
+                                padding: '1px 5px',
+                                backgroundColor: '#f0f0f0',
+                                borderRadius: 3,
+                                border: '1px solid #e0e0e0',
+                                fontSize: 9,
+                                marginRight: 3
+                              }}>{k}: {String(v)}</span>
+                            ))}
+                          </div>
+                        )}
+                        {opt.results && opt.results.length > 0 && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 2 }}>
+                            {opt.results.slice(0, 3).map((r: any, ri: number) => (
                               <span key={ri} style={{
-                                padding: '1px 6px', backgroundColor: '#fff', borderRadius: 3,
-                                border: '1px solid #e8e8e8', fontSize: '9px', color: rColor
+                                padding: '1px 6px',
+                                backgroundColor: '#fff',
+                                borderRadius: 3,
+                                border: '1px solid #e8e8e8',
+                                fontSize: 9,
+                                color: r.totalReturn >= 0 ? '#52c41a' : '#ff4d4f'
                               }}>
-                                {r.label} {r.totalReturn >= 0 ? '+' : ''}{r.totalReturn.toFixed(1)}%
+                                {r.label || '#' + (ri + 1)} {r.totalReturn >= 0 ? '+' : ''}{r.totalReturn.toFixed(1)}%
                               </span>
-                            );
-                          })}
-                        </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -2756,13 +2900,19 @@ Please respond in this exact JSON format:
               );
             })()}
           </div>
-        </div>
 
-        {/* Entry Quality Assessment */}
-        {record.entryQuality && record.entryQuality !== 'Error / No Data' && record.entryQuality !== '—' && record.entryQuality !== 'Data Unavailable' && (
-          <div style={{ marginBottom: 12 }}>
-            <Text strong style={{ fontSize: '12px', color: '#333' }}>Entry Quality</Text>
-            <div style={{ marginTop: 4, padding: '6px 10px', backgroundColor: '#f0f5ff', borderRadius: 4, border: '1px solid #adc6ff' }}>
+          {/* 6. Entry Quality - spans 2 cols */}
+          {record.entryQuality && record.entryQuality !== 'Error / No Data' && record.entryQuality !== '\u2014' && (
+            <div style={{
+              background: '#fff',
+              border: '1px solid #e5e7eb',
+              borderRadius: 8,
+              padding: 12,
+              gridColumn: 'span 2'
+            }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>🚪</span> Entry Quality
+              </div>
               {(() => {
                 const eq = record.entryQuality;
                 const reason = record.entryReason || '';
@@ -2771,43 +2921,46 @@ Please respond in this exact JSON format:
                 if (eq === 'Wait for Pullback') gradeColor = '#faad14';
                 else if (eq === 'Chasing / Extended' || eq === 'Near Resistance') gradeColor = '#ff4d4f';
                 else if (eq === 'Poor Reward-Risk') gradeColor = '#ff4d4f';
-
                 return (
                   <div>
-                    <div style={{ fontSize: '11px', marginBottom: 6 }}>
-                      Grade: <Tag color={gradeColor} style={{ fontSize: '10px', fontWeight: 600, margin: 0 }}>{eq}</Tag>
-                      <span style={{ marginLeft: 8, color: '#888', fontSize: '10px' }}>Score: {record.entryScore || '—'}/100</span>
+                    <div style={{ fontSize: 11, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span>Grade: <span style={{ color: gradeColor, fontWeight: 600, fontSize: 12 }}>{eq}</span></span>
+                      <span style={{ color: '#888', fontSize: 10 }}>Score: {record.entryScore || '\u2014'}/100</span>
                     </div>
-                    {reason && <div style={{ fontSize: '10px', color: '#555', marginBottom: 6 }}>{reason}</div>}
+                    {reason && <div style={{ fontSize: 10, color: '#555', marginBottom: 6 }}>{reason}</div>}
                     {d && (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', fontSize: '10px' }}>
-                        <DetailTag label="Price" value={`$${d.current_price}`} />
-                        <DetailTag label="ATR" value={`$${d.atr} (${d.atr_pct}%)`} />
-                        <DetailTag label="EMA20" value={d.ema20 ? `$${d.ema20}` : '—'} />
-                        <DetailTag label="EMA50" value={d.ema50 ? `$${d.ema50}` : '—'} />
-                        <DetailTag label="Support" value={`$${d.support}`} />
-                        <DetailTag label="Resistance" value={`$${d.resistance}`} />
-                        <DetailTag label="Entry Zone" value={`$${d.entry_zone_low} – $${d.entry_zone_high}`} />
-                        <DetailTag label="Invalidation" value={`$${d.invalidation}`} />
-                        <DetailTag label="Stop Dist" value={`${d.stop_distance_pct}%`} />
-                        <DetailTag label="Target 1" value={`$${d.target_1}`} />
-                        <DetailTag label="Target 2" value={`$${d.target_2}`} />
-                        <DetailTag label="R/R" value={`${d.reward_risk_ratio}:1`} color={d.reward_risk_ratio >= 2 ? '#52c41a' : d.reward_risk_ratio >= 1.5 ? '#faad14' : '#ff4d4f'} />
-                        <DetailTag label="Vol Ratio" value={`${d.volume_ratio}x`} />
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '4px 12px', fontSize: 10 }}>
+                        {d.current_price != null && <div><span style={{ color: '#888' }}>Price: </span><span style={{ fontWeight: 500 }}>${d.current_price}</span></div>}
+                        {d.atr != null && <div><span style={{ color: '#888' }}>ATR: </span><span style={{ fontWeight: 500 }}>${d.atr} ({d.atr_pct}%)</span></div>}
+                        {d.ema20 != null && <div><span style={{ color: '#888' }}>EMA20: </span><span style={{ fontWeight: 500 }}>${d.ema20}</span></div>}
+                        {d.ema50 != null && <div><span style={{ color: '#888' }}>EMA50: </span><span style={{ fontWeight: 500 }}>${d.ema50}</span></div>}
+                        {d.support != null && <div><span style={{ color: '#888' }}>Support: </span><span style={{ fontWeight: 500 }}>${d.support}</span></div>}
+                        {d.resistance != null && <div><span style={{ color: '#888' }}>Resistance: </span><span style={{ fontWeight: 500 }}>${d.resistance}</span></div>}
+                        {d.entry_zone_low != null && <div><span style={{ color: '#888' }}>Entry Zone: </span><span style={{ fontWeight: 500 }}>${d.entry_zone_low} - ${d.entry_zone_high}</span></div>}
+                        {d.stop_distance_pct != null && <div><span style={{ color: '#888' }}>Stop Dist: </span><span style={{ fontWeight: 500 }}>{d.stop_distance_pct}%</span></div>}
+                        {d.target_1 != null && <div><span style={{ color: '#888' }}>Target 1: </span><span style={{ fontWeight: 500 }}>${d.target_1}</span></div>}
+                        {d.target_2 != null && <div><span style={{ color: '#888' }}>Target 2: </span><span style={{ fontWeight: 500 }}>${d.target_2}</span></div>}
+                        {d.reward_risk_ratio != null && <div><span style={{ color: '#888' }}>R/R: </span><span style={{ color: d.reward_risk_ratio >= 2 ? '#52c41a' : d.reward_risk_ratio >= 1.5 ? '#faad14' : '#ff4d4f', fontWeight: 500 }}>{d.reward_risk_ratio}:1</span></div>}
+                        {d.volume_ratio != null && <div><span style={{ color: '#888' }}>Vol Ratio: </span><span style={{ fontWeight: 500 }}>{d.volume_ratio}x</span></div>}
                       </div>
                     )}
                   </div>
                 );
               })()}
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Step 6: Liquidity / Volume Assessment */}
-        {record.liquidityGrade && record.liquidityGrade !== 'Error' && record.liquidityGrade !== '—' && (
-          <div style={{ marginBottom: 12 }}>
-            <Text strong style={{ fontSize: '12px', color: '#333' }}>Liquidity / Volume</Text>
-            <div style={{ marginTop: 4, padding: '6px 10px', backgroundColor: '#f6ffed', borderRadius: 4, border: '1px solid #b7eb8f' }}>
+          {/* 7. Liquidity / Volume */}
+          {record.liquidityGrade && record.liquidityGrade !== 'Error' && record.liquidityGrade !== '\u2014' && (
+            <div style={{
+              background: '#fff',
+              border: '1px solid #e5e7eb',
+              borderRadius: 8,
+              padding: 12
+            }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>💧</span> Liquidity / Volume
+              </div>
               {(() => {
                 const lg = record.liquidityGrade;
                 const lr = record.liquidityReason || '';
@@ -2817,33 +2970,41 @@ Please respond in this exact JSON format:
                 else if (lg === 'Poor') gColor = '#ff4d4f';
                 return (
                   <div>
-                    <div style={{ fontSize: '11px', marginBottom: 4 }}>
-                      Grade: <Tag color={gColor} style={{ fontSize: '10px', fontWeight: 600 }}>{lg}</Tag>
+                    <div style={{ fontSize: 11, marginBottom: 4 }}>
+                      Grade: <span style={{ color: gColor, fontWeight: 600 }}>{lg}</span>
                     </div>
-                    {lr && <div style={{ fontSize: '10px', color: '#555', marginBottom: 4 }}>{lr}</div>}
-                    {ld && (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', fontSize: '10px' }}>
-                        <DetailTag label="RVOL" value={`${ld.rvol}x`} color={ld.rvol >= 1.5 ? '#52c41a' : ld.rvol >= 0.7 ? '#faad14' : '#ff4d4f'} />
-                        <DetailTag label="Spread" value={ld.spread_pct != null ? `${ld.spread_pct}%` : '—'} color={ld.spread_pct != null && ld.spread_pct < 0.05 ? '#52c41a' : ld.spread_pct != null && ld.spread_pct < 0.20 ? '#faad14' : '#ff4d4f'} />
-                        <DetailTag label="Today Vol" value={ld.today_volume != null ? (ld.today_volume / 1e6).toFixed(1) + 'M' : '—'} />
-                        <DetailTag label="Avg 20d Vol" value={ld.avg_20d_volume != null ? (ld.avg_20d_volume / 1e6).toFixed(1) + 'M' : '—'} />
-                        <DetailTag label="$ Vol" value={ld.dollar_volume != null ? (ld.dollar_volume / 1e6).toFixed(1) + 'M' : '—'} />
-                        <DetailTag label="Pattern" value={ld.volume_pattern || '—'} />
-                        <DetailTag label="Score" value={`${ld.liq_score || 0}/100`} color={ld.liq_score >= 50 ? '#52c41a' : ld.liq_score >= 25 ? '#faad14' : '#ff4d4f'} />
+                    {lr && <div style={{ fontSize: 10, color: '#555', marginBottom: 4 }}>{lr}</div>}
+                    {ld ? (
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3px 12px', fontSize: 10 }}>
+                        {ld.rvol != null && <div><span style={{ color: '#888' }}>RVOL: </span><span style={{ color: ld.rvol >= 1.5 ? '#52c41a' : ld.rvol >= 0.7 ? '#faad14' : '#ff4d4f', fontWeight: 500 }}>{ld.rvol}x</span></div>}
+                        {ld.spread_pct != null ? <div><span style={{ color: '#888' }}>Spread: </span><span style={{ color: ld.spread_pct < 0.05 ? '#52c41a' : ld.spread_pct < 0.20 ? '#faad14' : '#ff4d4f', fontWeight: 500 }}>{ld.spread_pct}%</span></div> : <div><span style={{ color: '#888' }}>Spread: </span><span style={{ color: '#bbb' }}>N/A</span></div>}
+                        {ld.today_volume != null && <div><span style={{ color: '#888' }}>Today Vol: </span><span style={{ fontWeight: 500 }}>{(ld.today_volume / 1e6).toFixed(1)}M</span></div>}
+                        {ld.avg_20d_volume != null && <div><span style={{ color: '#888' }}>Avg 20d: </span><span style={{ fontWeight: 500 }}>{(ld.avg_20d_volume / 1e6).toFixed(1)}M</span></div>}
+                        {ld.dollar_volume != null && <div><span style={{ color: '#888' }}>$ Vol: </span><span style={{ fontWeight: 500 }}>{(ld.dollar_volume / 1e6).toFixed(1)}M</span></div>}
+                        {ld.volume_pattern && <div><span style={{ color: '#888' }}>Pattern: </span><span style={{ fontWeight: 500 }}>{ld.volume_pattern}</span></div>}
+                        {ld.source && <div><span style={{ color: '#888' }}>Source: </span><span style={{ fontWeight: 500 }}>{ld.source}</span></div>}
                       </div>
+                    ) : (
+                      <div style={{ fontSize: 10, color: '#999', fontStyle: 'italic' }}>Details not available</div>
                     )}
                   </div>
                 );
               })()}
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Step 7: News / Event Assessment */}
-        {record.newsGrade && record.newsGrade !== 'Error' && record.newsGrade !== '—' && (
-          <div style={{ marginBottom: 12 }}>
-            <Text strong style={{ fontSize: '12px', color: '#333' }}>News / Event</Text>
-            <div style={{ marginTop: 4, padding: '6px 10px', backgroundColor: '#fff7e6', borderRadius: 4, border: '1px solid #ffd591' }}>
+          {/* 8. News / Event - spans 2 cols */}
+          {record.newsGrade && record.newsGrade !== 'Error' && record.newsGrade !== '\u2014' && (
+            <div style={{
+              background: '#fff',
+              border: '1px solid #e5e7eb',
+              borderRadius: 8,
+              padding: 12,
+              gridColumn: 'span 2'
+            }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>📰</span> News / Event
+              </div>
               {(() => {
                 const ng = record.newsGrade;
                 const nr = record.newsReason || '';
@@ -2854,86 +3015,86 @@ Please respond in this exact JSON format:
                 else if (ng === 'High Event Risk') gColor = '#ff4d4f';
                 return (
                   <div>
-                    <div style={{ fontSize: '11px', marginBottom: 4 }}>
-                      Grade: <Tag color={gColor} style={{ fontSize: '10px', fontWeight: 600 }}>{ng}</Tag>
+                    <div style={{ fontSize: 11, marginBottom: 4 }}>
+                      Grade: <span style={{ color: gColor, fontWeight: 600 }}>{ng}</span>
                     </div>
-                    {nr && <div style={{ fontSize: '10px', color: '#555', marginBottom: 4 }}>{nr}</div>}
-                    {nd && nd.top_headlines && nd.top_headlines.length > 0 && (
-                      <div style={{ fontSize: '10px', color: '#888', marginBottom: 4 }}>
-                        {nd.top_headlines.slice(0, 3).map((h: string, idx: number) => (
-                          <div key={idx} style={{ marginBottom: 2 }}>• {h}</div>
+                    {nr && <div style={{ fontSize: 10, color: '#555', marginBottom: 4 }}>{nr}</div>}
+                    {nd && nd.top_headlines && nd.top_headlines.length > 0 ? (
+                      <div style={{ fontSize: 10, color: '#555', marginBottom: 6, lineHeight: 1.6 }}>
+                        {nd.top_headlines.slice(0, 4).map((h: string, idx: number) => (
+                          <div key={idx} style={{ marginBottom: 2, padding: '2px 0' }}>
+                            <span style={{ color: '#999' }}>• </span>{h}
+                          </div>
                         ))}
                       </div>
+                    ) : (
+                      <div style={{ fontSize: 10, color: '#999', fontStyle: 'italic', marginBottom: 6 }}>No recent material news</div>
                     )}
                     {nd && (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', fontSize: '10px' }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 10 }}>
                         <DetailTag label="Headlines" value={`${nd.headline_count || 0}`} />
                         <DetailTag label="Earnings Soon" value={nd.earnings_soon ? 'Yes' : 'No'} color={nd.earnings_soon ? '#faad14' : '#52c41a'} />
-                        <DetailTag label="Catalyst" value={nd.has_catalyst ? '✓' : '—'} color={nd.has_catalyst ? '#1890ff' : '#999'} />
-                        <DetailTag label="Caution" value={nd.has_caution ? '⚠' : '—'} color={nd.has_caution ? '#faad14' : '#999'} />
-                        <DetailTag label="High Risk Event" value={nd.has_high_event ? '⚠' : '—'} color={nd.has_high_event ? '#ff4d4f' : '#999'} />
+                        <DetailTag label="Catalyst" value={nd.has_catalyst ? '\u2713' : '\u2014'} color={nd.has_catalyst ? '#1890ff' : '#999'} />
+                        <DetailTag label="Caution" value={nd.has_caution ? '\u26a0' : '\u2014'} color={nd.has_caution ? '#faad14' : '#999'} />
+                        <DetailTag label="High Risk" value={nd.has_high_event ? '\u26a0' : '\u2014'} color={nd.has_high_event ? '#ff4d4f' : '#999'} />
                       </div>
                     )}
                   </div>
                 );
               })()}
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Step 8: Final Risk Assessment */}
-        {record.riskGrade && record.riskGrade !== '—' && (
-          <div style={{ marginBottom: 12 }}>
-            <Text strong style={{ fontSize: '12px', color: '#333' }}>Final Risk Assessment</Text>
-            <div style={{ marginTop: 4, padding: '6px 10px', backgroundColor: '#fff2e8', borderRadius: 4, border: '1px solid #ffccc7' }}>
+          {/* 9. Final Risk Assessment */}
+          {record.riskGrade && record.riskGrade !== '\u2014' && (
+            <div style={{
+              background: '#fff',
+              border: '1px solid #e5e7eb',
+              borderRadius: 8,
+              padding: 12
+            }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>🛡️</span> Final Risk Assessment
+              </div>
               {(() => {
                 const rg = record.riskGrade;
                 const rr = record.riskReason || '';
                 const rd = record.riskDetails;
-                let gColor = '#52c41a';
-                let bgColor = '#f6ffed';
-                let borderColor = '#b7eb8f';
-                if (rg === 'MEDIUM') { gColor = '#faad14'; bgColor = '#fffbe6'; borderColor = '#ffe58f'; }
-                else if (rg === 'HIGH') { gColor = '#ff4d4f'; bgColor = '#fff2f0'; borderColor = '#ffa39e'; }
-                else if (rg === 'SKIP') { gColor = '#bbb'; bgColor = '#f5f5f5'; borderColor = '#d9d9d9'; }
+                let gColor = '#52c41a', gLabel = 'Low';
+                if (rg === 'MEDIUM') { gColor = '#faad14'; gLabel = 'Medium'; }
+                else if (rg === 'HIGH') { gColor = '#ff4d4f'; gLabel = 'High'; }
+                else if (rg === 'LOW') { gLabel = 'Low'; }
+                else if (rg === 'SKIP') { gColor = '#bbb'; gLabel = 'Skip'; }
                 return (
-                  <div style={{ backgroundColor: bgColor, padding: '6px 10px', borderRadius: 4, border: `1px solid ${borderColor}` }}>
-                    <div style={{ fontSize: '12px', marginBottom: 4 }}>
-                      Grade: <Tag color={gColor} style={{ fontSize: '11px', fontWeight: 700 }}>{rg}</Tag>
+                  <div>
+                    <div style={{ fontSize: 12, marginBottom: 4 }}>
+                      Grade: <span style={{ color: gColor, fontWeight: 700 }}>{gLabel}</span>
                     </div>
-                    {rr && <div style={{ fontSize: '10px', color: '#555', marginBottom: 4 }}>{rr}</div>}
+                    {rr && <div style={{ fontSize: 10, color: '#555', marginBottom: 4 }}>{rr}</div>}
                     {rd && (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', fontSize: '10px' }}>
-                        <DetailTag label="Risk Score" value={`${rd.risk_score || '—'}/100`}
-                          color={rd.risk_score >= 65 ? '#ff4d4f' : rd.risk_score >= 35 ? '#faad14' : '#52c41a'} />
-                        <DetailTag label="Factors" value={(rd.risk_factors || []).join(', ') || 'none'} />
-                        <DetailTag label="ATR Vol" value={rd.atr_pct ? `${rd.atr_pct}%` : '—'}
-                          color={rd.atr_pct > 5 ? '#ff4d4f' : '#52c41a'} />
-                        <DetailTag label="Liq" value={rd.liquidity_grade || '—'} />
-                        <DetailTag label="News" value={rd.news_grade || '—'} />
-                        <DetailTag label="Entry" value={rd.entry_quality || '—'} />
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3px 12px', fontSize: 10 }}>
+                        <div><span style={{ color: '#888' }}>Risk Score: </span>
+                          <span style={{
+                            color: rd.risk_score >= 65 ? '#ff4d4f' : rd.risk_score >= 35 ? '#faad14' : '#52c41a',
+                            fontWeight: 500
+                          }}>{rd.risk_score || '\u2014'}/100</span></div>
+                        <div><span style={{ color: '#888' }}>Factors: </span><span style={{ fontWeight: 500 }}>{(rd.risk_factors || []).join(', ') || '\u2014'}</span></div>
+                        <div><span style={{ color: '#888' }}>ATR Vol: </span>
+                          <span style={{ color: rd.atr_pct > 5 ? '#ff4d4f' : rd.atr_pct > 2 ? '#faad14' : '#52c41a', fontWeight: 500 }}>{rd.atr_pct || '\u2014'}%</span></div>
+                        <div><span style={{ color: '#888' }}>Liquidity Risk: </span><span style={{ fontWeight: 500 }}>{rd.liquidity_grade || '\u2014'}</span></div>
+                        <div><span style={{ color: '#888' }}>News Risk: </span><span style={{ fontWeight: 500 }}>{rd.news_grade || '\u2014'}</span></div>
+                        <div><span style={{ color: '#888' }}>Entry Risk: </span><span style={{ fontWeight: 500 }}>{rd.entry_quality || '\u2014'}</span></div>
                       </div>
                     )}
                   </div>
                 );
               })()}
             </div>
-          </div>
-        )}
-
-        {/* Inherited market scan data */}
-        {scanData && (
-          <div style={{ marginBottom: 0 }}>
-            <Text strong style={{ fontSize: '12px', color: '#333' }}>Market Scan Data</Text>
-            <div style={{ marginTop: 4, fontSize: '11px', color: '#888' }}>
-              {scanData}
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     );
   };
-
   const renderDetailPanel = (record: any) => {
     return (
       <div style={{ padding: '20px', backgroundColor: '#f8f9fa', borderRadius: '10px', border: '1px solid #e8e8e8' }}>
@@ -5024,6 +5185,8 @@ Please respond in this exact JSON format:
 
     setFineScanStatus('running');
     setFineScanProgress(0);
+    setFineScanStepProgress(0);
+    setFineScanCurrentStep('');
     setFineScanResults([]);
     setFineScanMessage('');
 
@@ -5042,7 +5205,9 @@ Please respond in this exact JSON format:
         const c = candidates[i];
         const progress = Math.round(((i + 1) / candidateCount) * 100);
         setFineScanProgress(progress);
-        setFineScanMessage(`[${i+1}/${candidateCount}] ${c.symbol}: Step 1 strategy matching...`);
+        setFineScanStepProgress(14);
+        setFineScanCurrentStep('Strategy Matching');
+        setFineScanMessage(`[${i+1}/${candidateCount}] ${c.symbol}: Strategy matching...`);
 
         const symbol = c.symbol || 'N/A';
         const symbolUpper = symbol.toUpperCase();
@@ -5303,7 +5468,7 @@ Please respond in this exact JSON format:
 
           const signal1 = isBullTrend ? 'Bullish trend label' : (isBearTrend ? 'Bearish trend label' : 'Neutral trend');
           const signal2 = isNegativeMove ? 'negative price action' : 'low volume';
-          matchReason = `${companyName || symbol}: Unclear regime - conflicting signals: ${signal1} but ${signal2}. Trend continuation is not reliable because price/volume contradicts the trend label. Range-bound criteria not met due to insufficient bounded structure evidence. Conservative single-strategy fallback used. Needs more data.`;
+          matchReason = `${companyName || symbol}: Unclear regime - conflicting signals: trend label is '${trendLabel}' but ${signal2}. Trend continuation is not reliable because price/volume contradicts the trend label. Range-bound criteria not met due to insufficient bounded structure evidence. Conservative single-strategy fallback used. Needs more data.`;
         }
 
         // 5) INSUFFICIENT STRUCTURE (Unclear)
@@ -5391,7 +5556,7 @@ Please respond in this exact JSON format:
           backtestPerStrategy: [],
           // Inherited from market scan
           scanTrend: scanData?.trendLabel || scanData?.trend || 'N/A',
-          scanScore: scanData?.score || scanData?.signalScore || 0,
+          scanScore: scanData?.overallScore ?? scanData?.trendScore ?? null,
           scanVolume: scanData?.volumeRatio || scanData?.volume || null,
         });
 
@@ -5443,7 +5608,9 @@ Please respond in this exact JSON format:
               const ed = new Date().toISOString().split('T')[0];
               windowLabel = win;
 
-              setFineScanMessage(`[${i+1}/${candidateCount}] ${symbol}: ${stratName} testing on ${win}...`);
+        setFineScanStepProgress(28);
+        setFineScanCurrentStep('Backtest');
+        setFineScanMessage(`[${i+1}/${candidateCount}] ${symbol}: ${stratName} testing on ${win}...`);
 
               try {
                 const payload = {
@@ -5548,7 +5715,9 @@ Please respond in this exact JSON format:
           if (canOptimize) {
             rec.quickOptStatus = 'running';
             // Update progress to show optimization phase
-            setFineScanMessage(`[${i+1}/${candidateCount}] ${symbol}: Quick Optimization...`);
+        setFineScanStepProgress(42);
+        setFineScanCurrentStep('Optimization');
+        setFineScanMessage(`[${i+1}/${candidateCount}] ${symbol}: Quick Optimization...`);
 
             const optStartTime = Date.now();
             const optResults: any[] = [];
@@ -5735,7 +5904,9 @@ Please respond in this exact JSON format:
 
         // --- Step 4: Entry Quality Scan (Alpaca-based) ---
         try {
-          setFineScanMessage(`[${i + 1}/${candidateCount}] ${symbol}: assessing entry quality...`);
+        setFineScanStepProgress(57);
+        setFineScanCurrentStep('Entry Quality');
+        setFineScanMessage(`[${i + 1}/${candidateCount}] ${symbol}: assessing entry quality...`);
           const eqResponse = await entryQualityAPI.assessEntry(symbol);
           if (eqResponse.data && eqResponse.data.success) {
             rec.entryQuality = eqResponse.data.entry_quality;
@@ -5757,7 +5928,9 @@ Please respond in this exact JSON format:
 
         // --- Step 5: Liquidity / Volume Scan (Step 6) ---
         try {
-          setFineScanMessage(`[${i + 1}/${candidateCount}] ${symbol}: liquidity/volume check...`);
+        setFineScanStepProgress(71);
+        setFineScanCurrentStep('Liquidity / Volume Check');
+        setFineScanMessage(`[${i + 1}/${candidateCount}] ${symbol}: liquidity/volume check...`);
           const advResponse = await fineScanAdvancedAPI.scan(symbol, rec.entryDetails);
           if (advResponse.data && advResponse.data.success) {
             rec.liquidityGrade = advResponse.data.liquidity?.grade || 'Error';
@@ -5784,28 +5957,103 @@ Please respond in this exact JSON format:
         }
         // --- End Steps 5-6-7: Liquidity, News, Risk ---
 
-        // Assign temporary priority based on current confidence (final sort happens at end)
-        const currentSorted = [...results].sort((a: any, b: any) => b.matchConfidence - a.matchConfidence);
-        currentSorted.forEach((r: any, idx: number) => { r.priority = idx + 1; });
+        // Compute Decision: Continue / Watch / Skip for this symbol immediately
+        const btOk = rec.backtestStatus === 'pass' && (rec.backtestPerformance === 'positive' || rec.backtestPerformance === 'caution');
+        const eqOk = rec.entryQuality === 'Excellent' || rec.entryQuality === 'Good' || rec.entryQuality === 'Wait for Pullback';
+        const riskOk = rec.riskGrade === 'LOW' || rec.riskGrade === 'MEDIUM';
+        const scoreOk = (rec.matchConfidence || 0) >= 30;
+        if (btOk && eqOk && riskOk && scoreOk) {
+          rec.decision = 'Continue';
+        } else if (btOk && (rec.matchConfidence || 0) >= 20) {
+          rec.decision = 'Watch';
+        } else if (rec.riskGrade === 'HIGH' || rec.entryQuality === 'Chasing / Extended' || rec.matchConfidence < 15) {
+          rec.decision = 'Skip';
+        } else {
+          rec.decision = 'Watch';
+        }
+        rec.scanStatus = 'completed';
 
-        // Update UI immediately with current results (forces React re-render)
-        setFineScanResults(currentSorted);
+        // Append to results (keep scan order from Preferred Continue Scan List)
+        const scanOrderIndex = results.length;
+        results[results.length - 1].priority = scanOrderIndex;
+        setFineScanResults([...results]);
 
         // Rate-limit delay between symbols (500ms)
         if (i < candidateCount - 1) {
           await new Promise(resolve => setTimeout(resolve, 500));
         }
       }
-
-      // Sort by confidence descending and assign priority
-      results.sort((a, b) => b.matchConfidence - a.matchConfidence);
-      results.forEach((r, i) => { r.priority = i + 1; });
-
-      setFineScanResults(results);
       setFineScanProgress(100);
       setFineScanStatus('completed');
 
       message.success(`Fine Scan complete: ${results.length} candidates analyzed`);
+
+      // ===== AI EXPLANATION LAYER (fire-and-forget, best-effort) =====
+      // Only overwrites narrative fields (whyMatched, keySignalExplanation, finalReason, nextStep)
+      // Never touches: backtest metrics, optimization, entry, liquidity, risk scores
+      (async () => {
+        for (const r of results) {
+          try {
+            // Only generate AI explanations for results that had at least some data
+            if (r.matchConfidence < 15) continue;
+
+            const explainData: import('../services/api').FineScanExplainRequest = {
+              symbol: r.symbol,
+              trendLabel: r.trendLabel || r.trend || 'Neutral',
+              trendScore: r.scanScore ?? null,
+              matchedStrategies: r.matchedStrategies || [],
+              backtestMetrics: {
+                totalReturn: r.backtestPerStrategy?.[0]?.totalReturn,
+                sharpe: r.backtestPerStrategy?.[0]?.sharpe,
+                winRate: r.backtestPerStrategy?.[0]?.winRate,
+                profitFactor: r.backtestPerStrategy?.[0]?.profitFactor,
+                maxDrawdown: r.backtestPerStrategy?.[0]?.maxDrawdown,
+                tradeCount: r.backtestPerStrategy?.[0]?.tradeCount,
+              },
+              optimizationMetrics: {
+                stability: r.quickOptSummary?.stability,
+                avgReturn: r.quickOptSummary?.avgReturn,
+                positiveRatio: r.quickOptSummary?.positiveRatio,
+              },
+              entryQuality: {
+                grade: r.entryQuality,
+                score: r.entryScore,
+                atr: r.entryDetails?.atr,
+                zone: r.entryDetails?.zone,
+              },
+              liquidity: {
+                grade: r.liquidityGrade,
+                score: r.liquidityScore,
+              },
+              newsSummary: {
+                grade: r.newsGrade,
+                headlineCount: r.newsDetails?.headlines?.length,
+              },
+              riskAssessment: {
+                grade: r.riskGrade,
+                score: r.riskScore,
+                reason: r.riskReason,
+              },
+            };
+
+            const resp = (await fineScanExplainAPI.explain(explainData)).data;
+            if (resp.success) {
+              // OVERWRITE ONLY: narrative fields
+              if (resp.whyMatched) r.matchReason = resp.whyMatched;
+              if (resp.keySignalExplanation) r.keySignalExplanation = resp.keySignalExplanation;
+              if (resp.finalReason) r.finalReason = resp.finalReason;
+              if (resp.nextStep) r.nextStep = resp.nextStep;
+              // Mark as AI-enhanced for UI
+              r.aiExplained = true;
+            }
+          } catch (e: any) {
+            console.warn(`[FineScanExplain] AI failed for ${r.symbol}: ${e.message}`);
+            // Fallback: deterministic fields already set, no action needed
+          }
+        }
+        // Refresh UI with AI-enhanced explanations
+        setFineScanResults([...results]);
+      })();
     } catch (error) {
       console.error('Fine scan error:', error);
       setFineScanStatus('error');
@@ -5813,6 +6061,289 @@ Please respond in this exact JSON format:
     }
   };
 
+
+  // ===== Deeper Validation State =====
+  const [deeperValidationStatus, setDeeperValidationStatus] = useState<'idle' | 'loading' | 'completed' | 'error'>('idle');
+  const [deeperValidationResults, setDeeperValidationResults] = useState<any[] | null>(null);
+
+  const selectValidationCandidates = useCallback(() => {
+    if (!fineScanResults || fineScanResults.length === 0) return [];
+    // ONLY Fine Scan Continue decisions — no Watch/Skip supplement
+    const continueCandidates = fineScanResults.filter((r: any) =>
+      r.decision === 'Continue' && r.scanStatus === 'completed'
+    );
+    // Sort by score descending, limit to 5
+    continueCandidates.sort((a: any, b: any) =>
+      (b.matchConfidence || 0) - (a.matchConfidence || 0)
+    );
+    return continueCandidates.slice(0, 5);
+  }, [fineScanResults]);
+
+  const handleDeeperValidation = async () => {
+    const selected = selectValidationCandidates();
+    if (selected.length === 0) {
+      message.warning('No qualified Fine Scan candidates. Run Fine Scan first or adjust criteria.');
+      return;
+    }
+    setDeeperValidationStatus('loading');
+    setDeeperValidationResults(null);
+    try {
+      const candidates = selected.map((r: any) => {
+        // Map strategies to backend-friendly names
+        const strats = r.matchedStrategies || [];
+        let strategy = 'momentum';
+        for (const s of strats) {
+          const sl = s.toLowerCase();
+          if (sl.includes('momentum') || sl.includes('continuation') || sl.includes('breakout') || sl.includes('trend following')) { strategy = 'momentum'; break; }
+          if (sl.includes('rsi') || sl.includes('mean reversion') || sl.includes('reversal')) { strategy = 'rsi'; break; }
+          if (sl.includes('moving average') || sl.includes('ma crossover') || sl.includes('ema')) { strategy = 'moving_average'; break; }
+          if (sl.includes('macd')) { strategy = 'macd'; break; }
+          if (sl.includes('bollinger') || sl.includes('range') || sl.includes('bb')) { strategy = 'bollinger'; break; }
+        }
+        return {
+          symbol: r.symbol,
+          decision: r.decision,
+          score: r.matchConfidence || 0,
+          strategy: strategy,
+          matchedStrategies: strats,
+          backtestStatus: r.backtestStatus || '',
+          optimizationStatus: r.quickOptStatus || '',
+          entryQuality: r.entryQuality || '',
+          liquidityGrade: r.liquidityGrade || '',
+          riskGrade: r.riskGrade || '',
+          whyMatched: r.matchReason || '',
+          decisionReason: r.decisionReason || r.finalReason || '',
+        };
+      });
+      const resp = (await deeperValidationAPI.validate(candidates, '1y', 100000)).data;
+      if (resp.success && Array.isArray(resp.results)) {
+        setDeeperValidationResults(resp.results);
+        setDeeperValidationStatus('completed');
+        message.success(`Deeper validation completed for ${resp.results.length} results`);
+      } else {
+        setDeeperValidationStatus('error');
+        message.error('Validation returned no results');
+      }
+    } catch (err: any) {
+      setDeeperValidationStatus('error');
+      message.error('Validation failed: ' + (err.message || 'Unknown error'));
+    }
+  };
+
+
+// ===== Deeper Validation Detail Panel =====
+function renderDVDetailPanel(record: any) {
+  var tc = record.tradeCount != null ? record.tradeCount : record.trades;
+  
+  // Verdict colors
+  var v = record.verdict;
+  var vColor = '#52c41a';
+  if (v === 'Watch' || v === 'Caution') vColor = '#faad14';
+  else if (v === 'Avoid' || v === 'Reject' || v === 'Rejected') vColor = '#ff4d4f';
+  else if (v === 'Needs Manual Review') vColor = '#722ed1';
+  var vName = v === 'Needs Manual Review' ? 'Review' : v === 'Reject' || v === 'Rejected' || v === 'Avoid' ? 'Rejected' : v === 'Caution' ? 'Watch' : v;
+  if (vName === 'Review') v = vName;
+  else if (v === 'Reject' || v === 'Rejected' || v === 'Avoid') v = 'Rejected';
+  else if (v === 'Caution') v = 'Watch';
+  
+  // Reason parts
+  var reasonParts = (record.reason || '').split(' | ');
+  
+  // Helper: render a metric row
+  function metricRow(label: any, value: any, color?: any) {
+    return React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '3px 0', borderBottom: '1px solid #f0f0f0', fontSize: '11px' } },
+      React.createElement('span', { style: { color: '#888' } }, label),
+      React.createElement('span', { style: { fontWeight: 600, color: color || '#333' } }, value != null ? String(value) : 'N/A')
+    );
+  }
+  
+  // Helper: parameter chips
+  function paramChips(params: any) {
+    if (!params || Object.keys(params).length === 0) return null;
+    return React.createElement('div', { style: { display: 'flex', gap: 3, flexWrap: 'wrap', justifyContent: 'flex-end' } },
+      Object.entries(params).map(function(kv: any) {
+        return React.createElement(Tag, { key: kv[0], style: { fontSize: '9px', margin: 0, padding: '0 4px', background: '#f0f0f0', border: 'none' } }, kv[0] + ': ' + String(kv[1]));
+      })
+    );
+  }
+  
+  // Helper: card wrapper
+  function cardBlock(title: any, children: any, accentColor: any, extra?: any) {
+    return React.createElement('div', { style: { background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 14, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' } },
+      React.createElement('div', { style: { fontWeight: 700, fontSize: '12px', marginBottom: 8, color: accentColor || '#333', borderBottom: '2px solid ' + (accentColor || '#e5e7eb'), paddingBottom: 6 } }, title),
+      extra ? React.createElement('div', { style: { fontSize: '10px', color: '#999', marginBottom: 6 } }, extra) : null,
+      children
+    );
+  }
+  
+  // Profit factor text
+  function pfText(): string {
+    var pf = record.profitFactor;
+    if (pf == null) {
+      if (tc != null && tc > 0 && record.totalReturn != null && record.totalReturn > 0) return String.fromCharCode(8734) + ' (no losses)';
+      return 'N/A';
+    }
+    return pf.toFixed(2);
+  }
+  function pfColor(): string {
+    var pf = record.profitFactor;
+    if (pf == null) return (tc != null && tc > 0 && record.totalReturn != null && record.totalReturn > 0) ? '#52c41a' : '#bbb';
+    if (pf >= 1.5) return '#52c41a';
+    if (pf >= 1.0) return '#faad14';
+    return '#ff4d4f';
+  }
+  
+  // Sharpe color
+  function shColor(s: any): string {
+    if (s == null) return '#bbb';
+    if (s >= 1.0) return '#52c41a';
+    if (s >= 0.5) return '#faad14';
+    return '#ff4d4f';
+  }
+  
+  // Return color
+  function retColor(r: any): string {
+    if (r == null) return '#bbb';
+    return r > 0 ? '#52c41a' : '#ff4d4f';
+  }
+  
+  // DD color
+  function ddColor(d: any): string {
+    if (d == null) return '#bbb';
+    var absD = Math.abs(d);
+    if (absD <= 15) return '#52c41a';
+    if (absD <= 25) return '#faad14';
+    return '#ff4d4f';
+  }
+  
+  // Stability
+  var isLimitedSample = (tc != null && tc < 3) || (record.validCombinationCount != null && record.validCombinationCount < 3);
+  var stScore = record.stabilityScore;
+  var stLabel = stScore != null ? (stScore >= 70 ? 'Stable' : stScore >= 50 ? 'Moderate' : 'Weak') : 'N/A';
+  var stColor = stScore != null ? (stScore >= 70 ? '#52c41a' : stScore >= 50 ? '#faad14' : '#ff4d4f') : '#bbb';
+  
+  // Trend color
+  function trendColor(t: any): string {
+    if (!t) return '#bbb';
+    if (t === 'Weakening') return '#faad14';
+    if (t === 'Divergent') return '#ff4d4f';
+    if (t === 'Consistent') return '#1890ff';
+    return '#52c41a';
+  }
+  
+  return React.createElement('div', { style: { background: '#f8f9fa', padding: '16px', borderRadius: '10px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '14px', maxWidth: '100%' } },
+    
+    // Card 1: 1Y Backtest
+    cardBlock('1Y Backtest',
+      React.createElement(React.Fragment, null,
+        metricRow('Strategy', record.strategy),
+        metricRow('Total Return', record.totalReturn != null ? (record.totalReturn > 0 ? '+' : '') + record.totalReturn.toFixed(1) + '%' : 'N/A', retColor(record.totalReturn)),
+        metricRow('Sharpe', record.sharpeRatio != null ? record.sharpeRatio.toFixed(2) : 'N/A', shColor(record.sharpeRatio)),
+        metricRow('Max DD', record.maxDrawdown != null ? '-' + Math.abs(record.maxDrawdown).toFixed(1) + '%' : 'N/A', ddColor(record.maxDrawdown)),
+        metricRow('Win Rate', record.winRate != null ? record.winRate + '%' : 'N/A'),
+        metricRow('Profit Factor', pfText(), pfColor()),
+        record.parameters && Object.keys(record.parameters).length > 0 ? 
+          React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '3px 0', borderBottom: '1px solid #f0f0f0', fontSize: '11px' } },
+            React.createElement('span', { style: { color: '#888' } }, 'Parameters'),
+            paramChips(record.parameters)
+          ) : null,
+        metricRow('Trades', tc != null ? (tc < 3 ? 'Limited (' + tc + ')' : String(tc)) : 'N/A', tc != null ? (tc >= 10 ? undefined : tc >= 3 ? '#faad14' : '#ff4d4f') : undefined),
+      ),
+      '#1890ff',
+      'Source: Internal Backtest'
+    ),
+    
+    // Card 2: Light Optimization
+    cardBlock('Light Optimization',
+      React.createElement(React.Fragment, null,
+        metricRow('Tested Combos', (record.testedCombinationCount ?? record.optimizationResults?.length ?? record.validCombinationCount ?? 0) > 0 ? String(record.testedCombinationCount ?? record.optimizationResults?.length ?? record.validCombinationCount ?? 0) : 'N/A'),
+        metricRow('Valid Combos', record.validCombinationCount != null ? String(record.validCombinationCount) : 'N/A'),
+        metricRow('Best Return', record.optimizedReturn != null ? (record.optimizedReturn > 0 ? '+' : '') + record.optimizedReturn.toFixed(1) + '%' : 'N/A', retColor(record.optimizedReturn)),
+        metricRow('Best Sharpe', record.optimizedSharpe != null ? record.optimizedSharpe.toFixed(2) : 'N/A', shColor(record.optimizedSharpe)),
+        metricRow('Avg Return', record.avgReturn != null ? record.avgReturn + '%' : 'N/A', retColor(record.avgReturn)),
+        metricRow('Median Return', record.medianReturn != null ? record.medianReturn + '%' : 'N/A'),
+        metricRow('Positive Ratio', record.profitableRatio != null ? Math.round(record.profitableRatio * 100) + '%' : 'N/A'),
+        metricRow('Return Spread', record.returnSpread != null ? record.returnSpread + '%' : 'N/A'),
+        // Top 3 results
+        record.top3Results && record.top3Results.length > 0 ? 
+          React.createElement('div', { style: { marginTop: 8 } },
+            React.createElement('div', { style: { fontSize: '10px', color: '#888', marginBottom: 4 } }, 'Top Results:'),
+            record.top3Results.map(function(r: any, i: number) {
+              return React.createElement('div', { key: i, style: { fontSize: '10px', padding: '2px 0', borderBottom: i < record.top3Results.length - 1 ? '1px solid #f0f0f0' : 'none' } },
+                React.createElement('span', { style: { color: '#666' } }, '#' + (i+1) + ': '),
+                React.createElement('span', { style: { color: r.ret > 0 ? '#52c41a' : '#ff4d4f', fontWeight: 600 } }, 'ret=' + r.ret + '%'),
+                React.createElement('span', { style: { color: '#999' } }, ' sharpe=' + r.sharp + ' '),
+                r.params && typeof r.params === 'object' ? 
+                  React.createElement('span', { style: { color: '#999' } }, Object.entries(r.params).map(function(kv: any) { return kv[0] + '=' + String(kv[1]); }).join(', ')) : null
+              );
+            })
+          ) : null
+      ),
+      '#722ed1',
+      'Source: Internal Optimization'
+    ),
+    
+    // Card 3: Parameter Stability
+    cardBlock('Parameter Stability',
+      React.createElement(React.Fragment, null,
+        isLimitedSample ?
+          React.createElement('div', { style: { padding: '6px 8px', background: '#fff3cd', borderRadius: 6, marginBottom: 8, fontSize: '10px', color: '#856404' } },
+            String.fromCharCode(9888) + ' Limited sample: only ' + tc + ' trade(s), ' + (record.validCombinationCount || 0) + ' combo(s) tested. Validation confidence is reduced.'
+          ) : null,
+        metricRow('Score', stScore != null ? stScore + '/100' : 'N/A', stColor),
+        metricRow('Label', stLabel, stColor),
+        metricRow('Profitable Ratio', record.profitableRatio != null ? Math.round(record.profitableRatio * 100) + '%' : 'N/A'),
+        metricRow('Median Return', record.medianReturn != null ? record.medianReturn + '%' : 'N/A'),
+        metricRow('Best Return', record.bestReturn != null ? record.bestReturn + '%' : 'N/A', retColor(record.bestReturn)),
+        metricRow('Return Spread', record.returnSpread != null ? record.returnSpread + '%' : 'N/A'),
+        metricRow('Stable Params', record.stableParameterCount != null ? String(record.stableParameterCount) : 'N/A'),
+        record.stabilityReason ?
+          React.createElement('div', { style: { marginTop: 6, fontSize: '10px', color: '#666', fontStyle: 'italic' } }, record.stabilityReason) : null
+      ),
+      '#fa8c16'
+    ),
+    
+    // Card 4: Recent vs Long-Term
+    cardBlock('Recent vs Long-Term',
+      React.createElement(React.Fragment, null,
+        metricRow('Long Return', record.longTermReturn != null ? (record.longTermReturn > 0 ? '+' : '') + record.longTermReturn.toFixed(1) + '%' : 'N/A', retColor(record.longTermReturn)),
+        metricRow('Recent Return', record.recentReturn != null ? (record.recentReturn > 0 ? '+' : '') + record.recentReturn.toFixed(1) + '%' : 'N/A', retColor(record.recentReturn)),
+        metricRow('Long Sharpe', record.longTermSharpe != null ? record.longTermSharpe.toFixed(2) : 'N/A', shColor(record.longTermSharpe)),
+        metricRow('Recent Sharpe', record.recentSharpe != null ? record.recentSharpe.toFixed(2) : 'N/A', shColor(record.recentSharpe)),
+        metricRow('Long DD', record.longTermMaxDrawdown != null ? '-' + Math.abs(record.longTermMaxDrawdown).toFixed(1) + '%' : 'N/A', ddColor(record.longTermMaxDrawdown)),
+        metricRow('Recent DD', record.recentMaxDrawdown != null ? '-' + Math.abs(record.recentMaxDrawdown).toFixed(1) + '%' : 'N/A', ddColor(record.recentMaxDrawdown)),
+        record.recentVsLongTerm ?
+          React.createElement('div', { style: { marginTop: 8, textAlign: 'center' } },
+            React.createElement(Tag, { color: trendColor(record.recentVsLongTerm), style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '2px 10px', borderRadius: '8px' } }, record.recentVsLongTerm)
+          ) : null
+      ),
+      '#13c2c2'
+    ),
+    
+    // Summary Footer
+    React.createElement('div', { style: { gridColumn: '1 / -1', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 14, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' } },
+      React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 8 } },
+        React.createElement('div', { style: { fontSize: '10px', color: '#999' } },
+          React.createElement('div', { style: { fontSize: '10px', color: '#999', marginBottom: 2 } }, 'Data Source'),
+          React.createElement('div', { style: { fontSize: '11px', fontWeight: 600, color: '#333' } }, 'Internal Backtest + Optimization'),
+          React.createElement('div', { style: { fontSize: '10px', color: '#999', marginTop: 2 } }, 'Candidate Source: Fine Scan'),
+          isLimitedSample ?
+            React.createElement('div', { style: { fontSize: '10px', color: '#856404', marginTop: 1 } }, 'Note: Limited trade / combo sample') : null
+        ),
+        React.createElement('div', null,
+          React.createElement('div', { style: { fontSize: '10px', color: '#999', textAlign: 'right' } }, 'Final Verdict'),
+          React.createElement(Tag, { color: vColor, style: { fontSize: '12px', fontWeight: 700, margin: '2px 0', padding: '2px 12px', borderRadius: '10px' } }, v || 'N/A')
+        )
+      ),
+      reasonParts.length > 0 ?
+        React.createElement('div', { style: { marginTop: 8, borderTop: '1px solid #f0f0f0', paddingTop: 8 } },
+          reasonParts.map(function(part: any, i: number) {
+            return React.createElement('div', { key: i, style: { fontSize: '10px', color: '#555', lineHeight: 1.5, marginBottom: 2 } }, part);
+          })
+        ) : null
+    )
+  );
+}
 
   return (
     <div>
@@ -6901,7 +7432,8 @@ Please respond in this exact JSON format:
                         size: 'small',
                         showSizeChanger: false,
                         showQuickJumper: false,
-                        showTotal: (total, range) => `${range[0]}-${range[1]} of ${total} candidates`
+                        showTotal: (total, range) => `${range[0]}-${range[1]} of ${total} candidates`,
+                        onChange: (page) => setPreferredContinuePage(page)
                       }}
                       scroll={{ x: 'max-content' }}
                       rowKey="symbol"
@@ -6911,7 +7443,7 @@ Please respond in this exact JSON format:
                           key: 'rank',
                           width: 70,
                           render: (_, __, index) => {
-                            const rank = index + 1;
+                            const rank = (preferredContinuePage - 1) * 10 + index + 1;
                             let backgroundColor = '#8c8c8c';
                             let fontWeight = 'normal';
                             let fontSize = '12px';
@@ -7232,11 +7764,9 @@ Please respond in this exact JSON format:
         </Title>
 
         <Card>
-          <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
-              <Text style={{ fontSize: '12px', color: '#666' }}>
-                Step 1: Regime & strategy matching, quick backtest validation, final conclusion
-              </Text>
+              {/* nothing — removed old subtitle */}
             </div>
             <Space>
               <Button
@@ -7252,16 +7782,70 @@ Please respond in this exact JSON format:
           </div>
 
           {fineScanStatus === 'running' && (
-            <div style={{ marginBottom: 16 }}>
-              <Progress percent={fineScanProgress} status="active" />
-              <div style={{ fontSize: '12px', color: '#666', marginTop: '4px' }}>
+            <div style={{ marginBottom: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {/* Overall Progress */}
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 2 }}>
+                  <span style={{ fontSize: '11px', color: '#595959', fontWeight: 600 }}>Overall Progress</span>
+                  <span style={{ fontSize: '11px', color: '#1890ff', fontWeight: 500 }}>{fineScanProgress}%</span>
+                </div>
+                <Progress
+                  percent={fineScanProgress}
+                  status="active"
+                  strokeColor="#1890ff"
+                  strokeWidth={7}
+                  showInfo={false}
+                  style={{ margin: 0 }}
+                />
+              </div>
+
+              {/* Status text */}
+              <div style={{ fontSize: '11px', color: '#8c8c8c', marginTop: 6 }}>
                 {fineScanMessage || 'Processing candidates...'}
               </div>
             </div>
           )}
 
+          {/* Summary stats */}
+          {fineScanResults.length > 0 && (() => {
+            const total = fineScanResults.length;
+            const continueCount = fineScanResults.filter(function(r: any) { return r.decision === 'Continue'; }).length;
+            const watchCount = fineScanResults.filter(function(r: any) { return r.decision === 'Watch'; }).length;
+            const skipCount = fineScanResults.filter(function(r: any) { return r.decision === 'Skip'; }).length;
+            return (
+              <div style={{ marginBottom: 12, display: 'flex', gap: 16, alignItems: 'center', fontSize: '12px' }}>
+                <Text style={{ color: '#8c8c8c' }}>Scanned: <span style={{ fontWeight: 600, color: '#262626' }}>{total}</span></Text>
+                {continueCount > 0 && <Text style={{ color: '#52c41a' }}>Continue: <span style={{ fontWeight: 600 }}>{continueCount}</span></Text>}
+                {watchCount > 0 && <Text style={{ color: '#faad14' }}>Watch: <span style={{ fontWeight: 600 }}>{watchCount}</span></Text>}
+                {skipCount > 0 && <Text style={{ color: '#ff4d4f' }}>Skip: <span style={{ fontWeight: 600 }}>{skipCount}</span></Text>}
+              </div>
+            );
+          })()}
+
           {fineScanResults.length > 0 && (
+            <>
+            <style>{`
+              .fine-scan-table .ant-table-thead > tr > th {
+                font-size: 11px;
+                font-weight: 600;
+                color: #595959;
+                background: #fafafa;
+                padding: 6px 8px !important;
+                border-bottom: 2px solid #e8e8e8;
+              }
+              .fine-scan-table .ant-table-tbody > tr > td {
+                padding: 5px 8px !important;
+                font-size: 11px;
+              }
+              .fine-scan-table .ant-table-tbody > tr:hover > td {
+                background: #fafafa;
+              }
+              .fine-scan-table .ant-table-row {
+                height: 36px;
+              }
+            `}</style>
             <Table
+              className="fine-scan-table"
               dataSource={fineScanResults}
               rowKey="symbol"
               pagination={{ pageSize: 10, showSizeChanger: false, showTotal: (total, range) => `${range[0]}-${range[1]} / ${total}` }}
@@ -7284,304 +7868,199 @@ Please respond in this exact JSON format:
                   title: 'Symbol',
                   key: 'symbol',
                   width: 80,
+                  fixed: 'left',
                   render: (record) => (
                     <Text strong style={{ fontSize: '12px' }}>{record.symbol}</Text>
                   ),
                 },
-                // ===== Backtest Check Column =====
+                // ===== Decision =====
                 {
-                  title: 'Backtest Check',
-                  key: 'backtestCheck',
+                  title: 'Decision',
+                  key: 'decision',
+                  width: 95,
+                  render: (record) => {
+                    const d = record.decision || '--';
+                    let c = '#999', l = d, icon = '';
+                    if (d === 'Continue') { c = '#52c41a'; l = 'Continue'; icon = '✅'; }
+                    else if (d === 'Watch') { c = '#faad14'; l = 'Watch'; icon = '⚠️'; }
+                    else if (d === 'Skip') { c = '#ff4d4f'; l = 'Skip'; icon = '✖'; }
+                    return <span style={{ color: c, fontSize: '11px', fontWeight: 600 }}>{icon} {l}</span>;
+                  },
+                },
+                // ===== Score =====
+                {
+                  title: 'Score',
+                  key: 'score',
+                  width: 80,
+                  render: (record) => {
+                    const s = record.score ?? record.matchConfidence;
+                    if (s == null) return <Text style={{ fontSize: '11px', color: '#bbb' }}>-</Text>;
+                    let c = '#ff4d4f';
+                    if (s >= 80) c = '#52c41a';
+                    else if (s >= 60) c = '#faad14';
+                    else if (s >= 40) c = '#ff7a45';
+                    const w = Math.min(100, Math.max(2, s));
+                    return (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <span style={{ fontSize: '11px', fontWeight: 600, color: c, minWidth: 22 }}>{s}</span>
+                        <div style={{ width: 36, height: 4, background: '#f0f0f0', borderRadius: 2, overflow: 'hidden' }}>
+                          <div style={{ width: `${w}%`, height: '100%', background: c, borderRadius: 2 }} />
+                        </div>
+                      </div>
+                    );
+                  },
+                },
+                // ===== Strategies =====
+                {
+                  title: 'Strategies',
+                  key: 'strategies',
                   width: 200,
                   render: (record) => {
-                    const execStatus = record.backtestStatus || 'pending';
-                    const perfStatus = record.backtestPerformance || null;
-                    const summary = record.backtestSummary || '';
-
-                    // Execution tag
-                    let execColor = '#999', execLabel = 'Pending';
-                    if (execStatus === 'pass') { execColor = '#52c41a'; execLabel = 'Pass'; }
-                    else if (execStatus === 'fail') { execColor = '#ff4d4f'; execLabel = 'Fail'; }
-                    else if (execStatus === 'error') { execColor = '#999'; execLabel = 'Error'; }
-                    else if (execStatus === 'skipped') { execColor = '#bbb'; execLabel = 'Skipped'; }
-
-                    // Performance badge
-                    let perfColor = '', perfLabel = '';
-                    if (perfStatus === 'positive') { perfColor = '#52c41a'; perfLabel = 'Positive'; }
-                    else if (perfStatus === 'negative') { perfColor = '#ff4d4f'; perfLabel = 'Negative'; }
-                    else if (perfStatus === 'caution') { perfColor = '#faad14'; perfLabel = 'Caution'; }
-
+                    const strats = record.matchedStrategies || [];
+                    if (strats.length === 0) return <Text style={{ fontSize: '11px', color: '#bbb' }}>-</Text>;
+                    const display = strats.slice(0, 3).join(' · ');
+                    const extra = strats.length > 3 ? ` +${strats.length - 3}` : '';
                     return (
-                      <div style={{ lineHeight: '1.6' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                          <Tag color={execColor} style={{ fontSize: '10px', fontWeight: 600, margin: 0 }}>{execLabel}</Tag>
-                          {perfStatus && (
-                            <Tag color={perfColor} style={{ fontSize: '10px', fontWeight: 600, margin: 0 }}>{perfLabel}</Tag>
-                          )}
-                        </div>
-                        {summary && (
-                          <div style={{ fontSize: '10px', color: '#777', marginTop: 1, lineHeight: '1.4' }}>
-                            {summary.length > 60 ? summary.substring(0, 60) + '...' : summary}
-                          </div>
-                        )}
-                      </div>
+                      <Tooltip title={strats.join(', ')}>
+                        <span style={{ fontSize: '10px', color: '#595959', lineHeight: '1.4' }}>
+                          {display}{extra}
+                        </span>
+                      </Tooltip>
                     );
                   },
                 },
-                // ===== Optimization Column =====
+                // ===== Liquidity =====
                 {
-                  title: 'Optimization',
-                  key: 'optimization',
-                  width: 120,
+                  title: 'Liquidity',
+                  key: 'liquidity',
+                  width: 90,
                   render: (record) => {
-                    const optStatus = record.quickOptStatus || 'Not Run';
-                    const qr = record.quickOptResults || [];
-                    const qs = record.quickOptSummary || '';
-
-                    let statusColor = '#999', statusLabel = 'Not Run';
-                    if (optStatus === 'completed') { statusColor = '#52c41a'; statusLabel = 'Pass'; }
-                    else if (optStatus === 'error') { statusColor = '#ff4d4f'; statusLabel = 'Fail'; }
-                    else if (optStatus === 'skipped') { statusColor = '#bbb'; statusLabel = 'Skipped'; }
-                    else if (optStatus === 'running') { statusColor = '#fa8c16'; statusLabel = 'Running'; }
-
-                    // Extract stability from summary or results
-                    let stabilityLabel = 'N/A';
-                    let stabilityColor = '#999';
-                    if (optStatus === 'completed' && qr.length > 0) {
-                      const stableCount = qr.filter((r: any) => r.stability === 'Stable').length;
-                      const weakCount = qr.filter((r: any) => r.stability === 'Weak').length;
-                      const overfitCount = qr.filter((r: any) => r.stability === 'Overfit Risk').length;
-                      if (stableCount >= qr.length * 0.7 || stableCount >= 2) {
-                        stabilityLabel = 'Stable';
-                        stabilityColor = '#52c41a';
-                      } else if (weakCount > overfitCount) {
-                        stabilityLabel = 'Weak';
-                        stabilityColor = '#faad14';
-                      } else if (overfitCount > 0) {
-                        stabilityLabel = 'Overfit';
-                        stabilityColor = '#ff4d4f';
-                      }
-                    } else if (optStatus === 'skipped') {
-                      stabilityLabel = '—';
-                      stabilityColor = '#ccc';
-                    }
-
-                    // Short summary text
-                    let shortMsg = '';
-                    if (optStatus === 'completed') {
-                      if (qs) shortMsg = qs.length > 30 ? qs.substring(0, 30) + '…' : qs;
-                    } else if (optStatus === 'error') {
-                      shortMsg = 'no valid params';
-                    } else if (optStatus === 'skipped') {
-                      shortMsg = 'not candidate';
-                    }
-
-                    return (
-                      <div style={{ lineHeight: '1.6' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
-                          <Tag color={statusColor} style={{ fontSize: '10px', fontWeight: 600, margin: 0 }}>{statusLabel}</Tag>
-                          <Tag color={stabilityColor} style={{ fontSize: '9px', fontWeight: 500, margin: 0, padding: '0 4px' }}>{stabilityLabel}</Tag>
-                        </div>
-                        {shortMsg && (
-                          <div style={{ fontSize: '9px', color: '#999', marginTop: 1, lineHeight: '1.3' }}>
-                            {shortMsg}
-                          </div>
-                        )}
-                      </div>
-                    );
+                    const lg = record.liquidityGrade || '-';
+                    let c = '#bbb', l = '-';
+                    if (lg === 'Good') { c = '#52c41a'; l = 'Good'; }
+                    else if (lg === 'Caution') { c = '#faad14'; l = 'Caution'; }
+                    else if (lg === 'Poor') { c = '#ff4d4f'; l = 'Poor'; }
+                    else if (lg === 'Error') { c = '#bbb'; l = 'Error'; }
+                    return <span style={{ color: c, fontSize: '11px', fontWeight: 500 }}>{l}</span>;
                   },
                 },
-                // ===== Entry Quality Column =====
+                // ===== Entry =====
                 {
                   title: 'Entry',
-                  key: 'entryQuality',
+                  key: 'entry',
                   width: 100,
                   render: (record) => {
-                    const eq = record.entryQuality || '—';
-                    const reason = record.entryReason || '';
-                    const details = record.entryDetails;
-
-                    // Build compact tag
-                    let tagColor = '#999', tagLabel = '—', shortText = '';
-                    if (eq === 'Excellent') { tagColor = '#52c41a'; tagLabel = 'Excellent'; shortText = details ? `R/R ${details.reward_risk_ratio}:1` : ''; }
-                    else if (eq === 'Good') { tagColor = '#73d13d'; tagLabel = 'Good'; shortText = details ? `R/R ${details.reward_risk_ratio}:1` : ''; }
-                    else if (eq === 'Wait for Pullback') { tagColor = '#faad14'; tagLabel = 'Wait'; shortText = 'pullback'; }
-                    else if (eq === 'Chasing / Extended') { tagColor = '#ff7a45'; tagLabel = 'Extended'; shortText = 'chasing'; }
-                    else if (eq === 'Near Resistance') { tagColor = '#ff4d4f'; tagLabel = 'Near Res'; shortText = 'limited upside'; }
-                    else if (eq === 'Poor Reward-Risk') { tagColor = '#ff4d4f'; tagLabel = 'Poor R/R'; shortText = details ? `R/R ${details.reward_risk_ratio}:1` : ''; }
-                    else if (eq === 'Partial') { tagColor = '#b37feb'; tagLabel = 'Partial'; shortText = reason ? reason.substring(0, 30) : 'incomplete data'; }
-                    else if (eq === 'Data Unavailable') { tagColor = '#bbb'; tagLabel = 'No Data'; shortText = reason ? reason.substring(0, 30) : '—'; }
-                    else if (eq === 'Error / No Data') { tagColor = '#bbb'; tagLabel = 'Error'; shortText = 'no data'; }
-
+                    const eq = record.entryQuality || '-';
+                    let c = '#999', l = '-';
+                    if (eq === 'Excellent') { c = '#52c41a'; l = 'Excellent'; }
+                    else if (eq === 'Good') { c = '#73d13d'; l = 'Good'; }
+                    else if (eq === 'Wait for Pullback') { c = '#faad14'; l = 'Wait'; }
+                    else if (eq === 'Chasing / Extended') { c = '#ff7a45'; l = 'Extended'; }
+                    else if (eq === 'Near Resistance') { c = '#ff4d4f'; l = 'Near Res'; }
+                    else if (eq === 'Poor Reward-Risk') { c = '#ff4d4f'; l = 'Poor R/R'; }
+                    else if (eq === 'Partial') { c = '#b37feb'; l = 'Partial'; }
+                    else if (eq === 'Data Unavailable' || eq === 'Error / No Data') { c = '#bbb'; l = 'No Data'; }
+                    return <span style={{ color: c, fontSize: '11px', fontWeight: 500 }}>{l}</span>;
+                  },
+                },
+                // ===== Validation =====
+                {
+                  title: 'Validation',
+                  key: 'validation',
+                  width: 145,
+                  render: (record) => {
+                    const ps = record.backtestPerformance || null;
+                    let pc = '#999', pl = 'Pending';
+                    if (ps === 'positive') { pc = '#52c41a'; pl = 'Positive'; }
+                    else if (ps === 'negative') { pc = '#ff4d4f'; pl = 'Negative'; }
+                    else if (ps === 'caution') { pc = '#faad14'; pl = 'Caution'; }
+                    const optStatus = record.quickOptStatus || 'Not Run';
+                    let stLabel = 'N/A', stColor = '#999';
+                    if (optStatus === 'completed') {
+                      const qr = record.quickOptResults || [];
+                      if (qr.length > 0) {
+                        const stable = qr.filter(function(r: any) { return r.stability === 'Stable'; }).length;
+                        const weak = qr.filter(function(r: any) { return r.stability === 'Weak'; }).length;
+                        const overfit = qr.filter(function(r: any) { return r.stability === 'Overfit Risk'; }).length;
+                        if (stable >= qr.length * 0.7 || stable >= 2) { stLabel = 'Stable'; stColor = '#52c41a'; }
+                        else if (weak > overfit) { stLabel = 'Weak'; stColor = '#faad14'; }
+                        else if (overfit > 0) { stLabel = 'Overfit'; stColor = '#ff4d4f'; }
+                      }
+                    }
                     return (
-                      <div style={{ lineHeight: '1.6' }}>
-                        <Tag color={tagColor} style={{ fontSize: '10px', fontWeight: 600, margin: 0 }}>{tagLabel}</Tag>
-                        {shortText && (
-                          <div style={{ fontSize: '9px', color: '#999', marginTop: 1, lineHeight: '1.3' }}>
-                            {shortText}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  },
-                },
-                // ===== Liquidity Column =====
-                {
-                  title: 'Liq',
-                  key: 'liquidityGrade',
-                  width: 65,
-                  render: (record) => {
-                    const lg = record.liquidityGrade || '—';
-                    let color = '#bbb', label = '—';
-                    if (lg === 'Good') { color = '#52c41a'; label = 'Good'; }
-                    else if (lg === 'Caution') { color = '#faad14'; label = 'Caution'; }
-                    else if (lg === 'Poor') { color = '#ff4d4f'; label = 'Poor'; }
-                    else if (lg === 'Error') { color = '#bbb'; label = 'Error'; }
-                    return <Tag color={color} style={{ fontSize: '10px', fontWeight: 600, margin: 0 }}>{label}</Tag>;
-                  },
-                },
-                // ===== News Column =====
-                {
-                  title: 'News',
-                  key: 'newsGrade',
-                  width: 80,
-                  render: (record) => {
-                    const ng = record.newsGrade || '—';
-                    let color = '#bbb', label = '—';
-                    if (ng === 'Clear') { color = '#52c41a'; label = 'Clear'; }
-                    else if (ng === 'Catalyst') { color = '#1890ff'; label = 'Catalyst'; }
-                    else if (ng === 'Caution') { color = '#faad14'; label = 'Caution'; }
-                    else if (ng === 'High Event Risk') { color = '#ff4d4f'; label = 'High Risk'; }
-                    else if (ng === 'Error') { color = '#bbb'; label = 'Error'; }
-                    return <Tag color={color} style={{ fontSize: '10px', fontWeight: 600, margin: 0 }}>{label}</Tag>;
-                  },
-                },
-                // ===== Final Risk Column =====
-                {
-                  title: 'Risk',
-                  key: 'riskGrade',
-                  width: 65,
-                  render: (record) => {
-                    const rg = record.riskGrade || '—';
-                    let color = '#bbb', label = '—';
-                    if (rg === 'LOW') { color = '#52c41a'; label = 'LOW'; }
-                    else if (rg === 'MEDIUM') { color = '#faad14'; label = 'MED'; }
-                    else if (rg === 'HIGH') { color = '#ff4d4f'; label = 'HIGH'; }
-                    else if (rg === 'SKIP') { color = '#bbb'; label = 'SKIP'; }
-                    return <Tag color={color} style={{ fontSize: '10px', fontWeight: 600, margin: 0 }}>{label}</Tag>;
-                  },
-                },
-                {
-                  title: 'Regime',
-                  key: 'regime',
-                  width: 130,
-                  render: (record) => {
-                    const regime = record.regime || 'Unknown';
-                    let color = '#8c8c8c';
-                    if (regime === 'Trending') { color = '#1890ff'; }
-                    else if (regime === 'Range-bound') { color = '#faad14'; }
-                    else if (regime === 'Breakout-ready') { color = '#52c41a'; }
-                    return (
-                      <Tag color={color} style={{ fontSize: '11px', fontWeight: 500 }}>{regime}</Tag>
-                    );
-                  },
-                },
-                {
-                  title: 'Matched Strategies',
-                  key: 'strategies',
-                  width: 280,
-                  render: (record) => {
-                    const strategies = record.matchedStrategies || [];
-                    return (
-                      <Space size={[4, 4]} wrap>
-                        {strategies.map((s: string, i: number) => (
-                          <Tag key={i} style={{ fontSize: '10px', margin: 0 }}>{s}</Tag>
-                        ))}
-                      </Space>
-                    );
-                  },
-                },
-                {
-                  title: 'Why Matched',
-                  key: 'reason',
-                  width: 200,
-                  render: (record) => {
-                    const full = record.matchReason || '';
-                    const truncated = full.length > 60 ? full.substring(0, 60) + '...' : full;
-                    let color = '#666';
-                    if (full.length > 60) color = '#1f1f1f';
-                    return (
-                      <div>
-                        <Text style={{ fontSize: '11px', color: color, lineHeight: '1.4' }}>
-                          {truncated || ''}
-                        </Text>
-                        {full.length > 60 && (
-                          <Text style={{ fontSize: '10px', color: '#888', marginLeft: 4, cursor: 'pointer' }}>
-                            ▶ detail
-                          </Text>
-                        )}
-                      </div>
-                    );
-                  },
-                },
-                {
-                  title: 'Key Signals',
-                  key: 'signals',
-                  width: 200,
-                  render: (record) => {
-                    const signals = record.keySignals || [];
-                    return (
-                      <Space size={[2, 2]} wrap>
-                        {signals.map((sig: string, i: number) => (
-                          <Tag key={i} color="default" style={{ fontSize: '9px', margin: 0, padding: '0 4px', lineHeight: '18px' }}>
-                            {sig}
-                          </Tag>
-                        ))}
-                      </Space>
-                    );
-                  },
-                },
-                {
-                  title: 'Match',
-                  key: 'confidence',
-                  width: 80,
-                  render: (record) => {
-                    const conf = record.matchConfidence || 0;
-                    let color = '#8c8c8c';
-                    if (conf >= 80) color = '#52c41a';
-                    else if (conf >= 60) color = '#faad14';
-                    else color = '#ff4d4f';
-                    return (
-                      <div style={{ textAlign: 'center' }}>
-                        <div style={{
-                          display: 'inline-block',
-                          padding: '2px 8px',
-                          borderRadius: '4px',
-                          backgroundColor: color + '20',
-                          color: color,
-                          fontSize: '11px',
-                          fontWeight: 600
-                        }}>
-                          {conf}%
+                      <div style={{ fontSize: '10px', lineHeight: '1.8' }}>
+                        <div>
+                          <span style={{ color: '#8c8c8c' }}>Backtest: </span>
+                          <span style={{ color: pc, fontWeight: 500 }}>{pl}</span>
+                        </div>
+                        <div>
+                          <span style={{ color: '#8c8c8c' }}>Optimization: </span>
+                          <span style={{ color: stColor, fontWeight: 500 }}>{stLabel}</span>
                         </div>
                       </div>
                     );
                   },
                 },
                 {
-                  title: 'Priority',
-                  key: 'priority',
-                  width: 70,
-                  render: (record) => (
-                    <div style={{ textAlign: 'center' }}>
-                      <Text style={{ fontSize: '11px', color: '#1f1f1f', fontWeight: 500 }}>
-                        #{record.priority || '-'}
-                      </Text>
-                    </div>
-                  ),
+                  title: 'Risk',
+                  key: 'risk',
+                  width: 75,
+                  render: (record) => {
+                    const rg = record.riskGrade || '-';
+                    let c = '#bbb', l = '-', dot = '';
+                    if (rg === 'LOW') { c = '#52c41a'; l = 'Low'; dot = '🟢'; }
+                    else if (rg === 'MEDIUM') { c = '#faad14'; l = 'Medium'; dot = '🟠'; }
+                    else if (rg === 'HIGH') { c = '#ff4d4f'; l = 'High'; dot = '🔴'; }
+                    else if (rg === 'SKIP') { c = '#bbb'; l = 'SKIP'; }
+                    return <span style={{ color: c, fontSize: '11px', fontWeight: 500 }}>{dot} {l}</span>;
+                  },
                 },
+                // ===== Why Matched =====
+                {
+                  title: 'Why Matched',
+                  key: 'whyMatched',
+                  width: 150,
+                  render: (record) => {
+                    const full = record.matchReason || '';
+                    const truncated = full.length > 50 ? full.substring(0, 50) + '...' : full;
+                    return (
+                      <Text style={{ fontSize: '10px', color: '#666', lineHeight: '1.4' }}>
+                        {truncated || '-'}
+                      </Text>
+                    );
+                  },
+                },
+                // ===== Grade =====
+                {
+                  title: 'Grade',
+                  key: 'grade',
+                  width: 65,
+                  render: (record) => {
+                    const rg = record.riskGrade || '-';
+                    const eq = record.entryQuality || '-';
+                    let gd = 'Medium', gc = '#faad14';
+                    if ((rg === 'LOW' || rg === 'SKIP') && (eq === 'Excellent' || eq === 'Good')) { gd = 'Low'; gc = '#52c41a'; }
+                    else if (rg === 'LOW') { gd = 'Low'; gc = '#52c41a'; }
+                    else if (rg === 'MEDIUM' && (eq === 'Excellent' || eq === 'Good')) { gd = 'Low'; gc = '#52c41a'; }
+                    else if (rg === 'MEDIUM') { gd = 'Medium'; gc = '#faad14'; }
+                    else if (rg === 'HIGH') { gd = 'High'; gc = '#ff4d4f'; }
+                    return <span style={{ color: gc, fontSize: '11px', fontWeight: 600 }}>{gd}</span>;
+                  },
+                },
+                // ===== Rank =====
+                {
+                  title: 'Rank',
+                  key: 'rank',
+                  width: 55,
+                  render: (record) => (
+                    <Text style={{ fontSize: '12px', color: '#595959', fontWeight: 500 }}>
+                      {record.priority || '-'}
+                    </Text>
+                  ),
+                }
               ]}
             />
+            </>
           )}
 
           {fineScanStatus === 'completed' && fineScanResults.length === 0 && (
@@ -7609,7 +8088,243 @@ Please respond in this exact JSON format:
         </Card>
       </div>
 
+      {/* ===== Deeper Validation ===== */}
+      <div style={{ marginTop: 24 }}>
+        <Card
+          title={
+            <Space>
+              <BarChartOutlined />
+              <Text strong style={{ fontSize: '14px' }}>Deeper Validation</Text>
+            </Space>
+          }
+          size="small"
+          style={{ borderRadius: 6, border: '1px solid #e8e8e8' }}
+        >
+          <Space size="middle">
+            <Button
+              type="primary"
+              icon={<CheckCircleOutlined />}
+              onClick={handleDeeperValidation}
+              loading={deeperValidationStatus === 'loading'}
+              disabled={fineScanStatus !== 'completed' || fineScanResults.length === 0 || selectValidationCandidates().length === 0}
+            >
+              {deeperValidationStatus === 'loading' ? 'Validating...' : `Run Validation (${selectValidationCandidates().length} Continue)`}
+            </Button>
+          </Space>
 
+          {deeperValidationStatus === 'loading' && (
+            <div style={{ textAlign: 'center', padding: '24px 0' }}>
+              <SyncOutlined spin style={{ fontSize: 24, color: '#1890ff' }} />
+              <div style={{ marginTop: 8, color: '#666' }}>Validating deeper metrics...</div>
+            </div>
+          )}
+
+          {deeperValidationStatus === 'completed' && deeperValidationResults && (
+            <Table
+              dataSource={deeperValidationResults}
+              rowKey="symbol"
+              size="small"
+              pagination={false}
+              style={{ marginTop: 12 }}
+              expandable={{
+                expandedRowRender: (record: any) => renderDVDetailPanel(record),
+                rowExpandable: () => true,
+                expandIconColumnIndex: 0,
+              }}
+              columns={[
+                {
+                  title: '',
+                  key: 'expand',
+                  width: 30,
+                },
+                {
+                  title: 'Symbol',
+                  key: 'symbol',
+                  width: 72,
+                  render: (record: any) => <Text strong style={{ fontSize: '11px' }}>{record.symbol}</Text>,
+                },
+                {
+                  title: '1Y Return',
+                  key: 'totalReturn',
+                  width: 80,
+                  render: (record: any) => {
+                    const tr = record.totalReturn;
+                    if (tr == null) return <Text style={{ color: '#bbb', fontSize: '11px' }}>N/A</Text>;
+                    const c = tr > 0 ? '#52c41a' : '#ff4d4f';
+                    return <Text style={{ color: c, fontWeight: 600, fontSize: '11px' }}>{tr > 0 ? '+' : ''}{tr.toFixed(1)}%</Text>;
+                  },
+                },
+                {
+                  title: 'Strategy',
+                  key: 'strategy',
+                  width: 80,
+                  render: (record: any) => <Text style={{ fontSize: '10px' }}>{record.strategy}</Text>,
+                },
+                {
+                  title: 'Sharpe',
+                  key: 'sharpeRatio',
+                  width: 64,
+                  render: (record: any) => {
+                    const s = record.sharpeRatio ?? record.sharpe;
+                    if (s == null) return <Text style={{ color: '#bbb', fontSize: '11px' }}>N/A</Text>;
+                    let c = '#bbb';
+                    if (s >= 1.0) c = '#52c41a';
+                    else if (s >= 0.5) c = '#faad14';
+                    else c = '#ff4d4f';
+                    return <Text style={{ color: c, fontWeight: 600, fontSize: '11px' }}>{s.toFixed(2)}</Text>;
+                  },
+                },
+                {
+                  title: 'Max DD',
+                  key: 'maxDrawdown',
+                  width: 70,
+                  render: (record: any) => {
+                    const mdd = record.maxDrawdown;
+                    if (mdd == null) return <Text style={{ color: '#bbb', fontSize: '11px' }}>N/A</Text>;
+                    const absDd = Math.abs(mdd);
+                    let c = '#bbb';
+                    if (absDd <= 15) c = '#52c41a';
+                    else if (absDd <= 25) c = '#faad14';
+                    else c = '#ff4d4f';
+                    return <Text style={{ color: c, fontWeight: 600, fontSize: '11px' }}>-{absDd.toFixed(1)}%</Text>;
+                  },
+                },
+                {
+                  title: 'Win Rate',
+                  key: 'winRate',
+                  width: 66,
+                  render: (record: any) => {
+                    const wr = record.winRate;
+                    if (wr == null) return <Text style={{ color: '#bbb', fontSize: '11px' }}>N/A</Text>;
+                    let c = '#bbb';
+                    if (wr >= 55) c = '#52c41a';
+                    else if (wr >= 40) c = '#faad14';
+                    else c = '#ff4d4f';
+                    return <Text style={{ color: c, fontWeight: 600, fontSize: '11px' }}>{wr}%</Text>;
+                  },
+                },
+                {
+                  title: 'P.Factor',
+                  key: 'profitFactor',
+                  width: 72,
+                  render: (record: any) => {
+                    const pf = record.profitFactor;
+                    if (pf == null) {
+                      const tc = record.tradeCount ?? record.trades;
+                      if (tc != null && tc > 0 && record.totalReturn != null && record.totalReturn > 0) {
+                        return (React.createElement(Tooltip, { title: 'No losing trades in this sample; limited reliability due to low trade count' },
+                          React.createElement('span', { style: { color: '#52c41a', fontWeight: 600, fontSize: '11px' } }, String.fromCharCode(8734))
+                        ));
+                      }
+                      return <Text style={{ color: '#bbb', fontSize: '11px' }}>N/A</Text>;
+                    }
+                    let c = '#bbb';
+                    if (pf >= 1.5) c = '#52c41a';
+                    else if (pf >= 1.0) c = '#faad14';
+                    else c = '#ff4d4f';
+                    return <Text style={{ color: c, fontWeight: 600, fontSize: '11px' }}>{pf.toFixed(2)}</Text>;
+                  },
+                },
+                {
+                  title: 'Trades',
+                  key: 'tradeCount',
+                  width: 60,
+                  render: (record: any) => {
+                    const tc = record.tradeCount ?? record.trades;
+                    if (tc == null) return <Text style={{ color: '#bbb', fontSize: '11px' }}>N/A</Text>;
+                    if (tc < 3) return <Text style={{ color: '#ff4d4f', fontSize: '11px' }}>Limited ({tc})</Text>;
+                    if (tc < 10) return <Text style={{ color: '#faad14', fontSize: '11px' }}>{tc}</Text>;
+                    return <Text style={{ fontSize: '11px' }}>{tc}</Text>;
+                  },
+                },
+                {
+                  title: 'Stability',
+                  key: 'stabilityScore',
+                  width: 88,
+                  render: (record: any) => {
+                    const score = record.stabilityScore;
+                    const tc = record.tradeCount ?? record.trades;
+                    const vc = record.validCombinationCount;
+                    const isLimited = (tc != null && tc < 3) || (vc != null && vc < 3);
+                    if (score == null) return <Text style={{ color: '#bbb', fontSize: '11px' }}>N/A</Text>;
+                    let c = '#52c41a', l = 'Stable';
+                    if (score < 50) { c = '#ff4d4f'; l = 'Weak'; }
+                    else if (score < 70) { c = '#faad14'; l = 'Moderate'; }
+                    if (isLimited) { l = 'Limited'; }
+                    return React.createElement(Tooltip,
+                      { title: isLimited ? 'Limited sample (' + tc + ' trade(s), ' + vc + ' combo(s)) - stability confidence reduced' : l + ' (' + score + '/100)' },
+                      React.createElement('span', { style: { fontSize: '11px', fontWeight: 600, color: c } }, l + ' · ' + score)
+                    );
+                  },
+                },
+                {
+                  title: 'Trend',
+                  key: 'recentVsLongTerm',
+                  width: 78,
+                  render: (record: any) => {
+                    const t = record.recentVsLongTerm;
+                    if (!t) return <Text style={{ color: '#bbb', fontSize: '11px' }}>N/A</Text>;
+                    let c = '#52c41a';
+                    if (t === 'Weakening') c = '#faad14';
+                    else if (t === 'Divergent') c = '#ff4d4f';
+                    else if (t === 'Consistent') c = '#1890ff';
+                    else if (t === 'Improving') c = '#52c41a';
+                    return <Text style={{ fontSize: '11px', fontWeight: 600, color: c }}>{t}</Text>;
+                  },
+                },
+                {
+                  title: 'Verdict',
+                  key: 'verdict',
+                  width: 85,
+                  render: (record: any) => {
+                    const v = record.verdict;
+                    if (!v) return <Text style={{ color: '#bbb', fontSize: '11px' }}>N/A</Text>;
+                    let c = '#52c41a', l = v;
+                    if (v === 'Watch' || v === 'Caution') { c = '#faad14'; l = 'Watch'; }
+                    else if (v === 'Avoid' || v === 'Reject' || v === 'Rejected') { c = '#ff4d4f'; l = 'Rejected'; }
+                    else if (v === 'Needs Manual Review') { c = '#722ed1'; l = 'Review'; }
+                    return <Text style={{ fontSize: '11px', fontWeight: 700, color: c }}>{l}</Text>;
+                  },
+                },
+                {
+                  title: 'Reason',
+                  key: 'reason',
+                  width: 200,
+                  render: (record: any) => {
+                    const r = record.reason;
+                    if (!r) return <Text style={{ color: '#bbb', fontSize: '11px' }}>N/A</Text>;
+                    const truncated = r.length > 65 ? r.substring(0, 62) + '...' : r;
+                    return (
+                      React.createElement(Tooltip,
+                        { title: React.createElement('span', { style: { fontSize: 12, maxWidth: 500, whiteSpace: 'pre-wrap' as any } }, r) },
+                        React.createElement('span', { style: { fontSize: '10px', color: '#666', lineHeight: 1.3 } }, truncated)
+                      )
+                    );
+                  },
+                },
+              ]}
+            />
+          )}
+
+          {deeperValidationStatus === 'error' && (
+            <div style={{ textAlign: 'center', padding: '16px 0', color: '#ff4d4f' }}>
+              <CloseCircleOutlined style={{ fontSize: 20 }} />
+              <div style={{ marginTop: 4 }}>Validation failed. Please try again.</div>
+            </div>
+          )}
+
+          {deeperValidationStatus === 'idle' && fineScanStatus === 'completed' && (
+            <div style={{ textAlign: 'center', padding: '12px 0', color: '#bbb', fontSize: '12px' }}>
+              Selected {selectValidationCandidates().length} Continue candidates from Fine Scan for deeper validation.
+            </div>
+          )}
+          {deeperValidationStatus === 'idle' && fineScanStatus !== 'completed' && (
+            <div style={{ textAlign: 'center', padding: '12px 0', color: '#bbb', fontSize: '12px' }}>
+              Run Fine Scan first, then validate top candidates.
+            </div>
+          )}
+        </Card>
+      </div>
 
     </div>
   );
