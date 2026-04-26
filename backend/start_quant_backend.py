@@ -14,12 +14,12 @@ def safe_print(text, max_length=500):
             text_str = str(text)
         else:
             text_str = str(text)
-        
+
         # 截断并清理特殊字符
         safe_text = text_str[:max_length]
         # 移除可能导致编码问题的字符
         safe_text = ''.join(c for c in safe_text if ord(c) < 128 or c in '，。！？；：""')
-        
+
         print(safe_text + ('...' if len(text_str) > max_length else ''))
     except:
         print(f'[安全打印] 无法打印内容: {type(text)}')
@@ -30,7 +30,7 @@ def safe_print_dict(data, prefix=''):
     if not isinstance(data, dict):
         safe_print(f'{prefix}{data}')
         return
-    
+
     print(f'{prefix}{{')
     for key, value in list(data.items())[:10]:  # 只打印前10个键值对
         if isinstance(value, dict):
@@ -49,7 +49,7 @@ def safe_print_news(news_data, prefix=''):
     if not news_data:
         print(f'{prefix}No news data')
         return
-    
+
     if isinstance(news_data, list):
         print(f'{prefix}News list with {len(news_data)} items')
         for i, item in enumerate(news_data[:3]):  # 只打印前3条
@@ -116,7 +116,7 @@ class RateLimitError(Exception):
 
         self.scanned_symbols = scanned_symbols or []
 
-        
+
 
 class AlpacaAPIError(Exception):
 
@@ -277,7 +277,7 @@ def save_ai_config_to_file():
             config_to_save['baseURL'] = config_to_save['baseUrl']
         elif 'baseURL' in config_to_save and 'baseUrl' not in config_to_save:
             config_to_save['baseUrl'] = config_to_save['baseURL']
-        
+
         with open(AI_CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(config_to_save, f, indent=2)
         print(f'[AI配置] 配置已保存到文件: {AI_CONFIG_FILE}')
@@ -292,12 +292,12 @@ def load_ai_config_from_file():
         if os.path.exists(AI_CONFIG_FILE):
             with open(AI_CONFIG_FILE, 'r', encoding='utf-8') as f:
                 saved_config = json.load(f)
-            
+
             # 更新内存配置
             for key in ['provider', 'apiKey', 'baseURL', 'baseUrl', 'model']:
                 if key in saved_config:
                     ai_provider_config_state[key] = saved_config[key]
-            
+
             print(f'[AI配置] 从文件加载配置成功: {AI_CONFIG_FILE}')
             return True
         else:
@@ -740,7 +740,7 @@ def fetch_alpaca_stock_data(symbol):
 
             return close_price is not None and float(close_price) > 0
 
-        
+
 
         # 从daily_bars中查找最新有效bar（从后往前遍历）
 
@@ -778,7 +778,7 @@ def fetch_alpaca_stock_data(symbol):
 
                         break
 
-        
+
 
         # 如果仍然没有有效bar，尝试使用bars_data（实时bar）
 
@@ -790,7 +790,7 @@ def fetch_alpaca_stock_data(symbol):
 
             print(f'[Alpaca数据] 股票 {symbol} 使用实时bar数据')
 
-        
+
 
         # 设置OHLCV数据
 
@@ -804,7 +804,7 @@ def fetch_alpaca_stock_data(symbol):
 
         bar_volume = None
 
-        
+
 
         if effective_bar:
 
@@ -878,7 +878,7 @@ def fetch_alpaca_stock_data(symbol):
 
                 print(f'[Alpaca数据] 股票 {symbol} 查找previous_close失败: {e}')
 
-        
+
 
         # 如果previous_close仍然为None，且session_type为'Previous Trading Day'，则无法计算涨跌幅
 
@@ -1008,7 +1008,7 @@ def fetch_alpaca_stock_data_snapshot(symbols):
 
     environment = alpaca_config_state.get('environment', 'paper')
 
-    
+
 
     # 统一使用 alpaca_config_state 中的凭据（已从 config.py 导入）
 
@@ -1070,7 +1070,7 @@ def fetch_alpaca_stock_data_snapshot(symbols):
 
         print(f'[Alpaca数据] API Secret 长度: {secret_len} 字符')
 
-        
+
 
         response = requests.get(snapshots_url, headers=market_headers, timeout=10)
 
@@ -1144,7 +1144,7 @@ def fetch_alpaca_stock_data_snapshot(symbols):
 
                 return close_price is not None and float(close_price) > 0
 
-            
+
 
             # 决定使用哪个bar作为当天数据
 
@@ -1154,7 +1154,7 @@ def fetch_alpaca_stock_data_snapshot(symbols):
 
             is_fallback = session_type == 'Previous Trading Day'
 
-            
+
 
             # 1. price优先级：latestTrade.p > (bp+ap)/2 > bp > ap
 
@@ -1196,7 +1196,7 @@ def fetch_alpaca_stock_data_snapshot(symbols):
 
                 price_source = 'quote_ask'
 
-            
+
 
             # 如果价格仍然为None，但effective_bar存在，使用其收盘价作为价格
 
@@ -1294,7 +1294,7 @@ def fetch_alpaca_stock_data_snapshot(symbols):
 
             volume = None
 
-            
+
 
             if effective_bar:
 
@@ -1536,7 +1536,7 @@ def get_52week_high_low(symbol):
 
 
 
-            bars = data.get('bars', [])
+            bars = data.get('bars', []) or []
 
             print(f'[52周高低点] bars数量: {len(bars)}')
 
@@ -1832,13 +1832,13 @@ def fetch_alpaca_bars(symbol, timeframe, range_param):
 
             target_date_eastern = now_eastern
 
-            
+
 
             # 判断是否为交易日（简单版：周一至周五为交易日，忽略节假日）
 
             is_trading_day = weekday < 5  # Monday=0 to Friday=4
 
-            
+
 
             if not is_trading_day:
 
@@ -1846,7 +1846,7 @@ def fetch_alpaca_bars(symbol, timeframe, range_param):
 
                 print(f'[Alpaca bars] 今天({target_date_eastern.strftime("%Y-%m-%d")})不是交易日（星期{weekday+1}），自动回退到上一个交易日')
 
-                
+
 
                 # 计算上一个交易日
 
@@ -1862,7 +1862,7 @@ def fetch_alpaca_bars(symbol, timeframe, range_param):
 
                     days_back = 1  # 默认回退到昨天
 
-                    
+
 
                 target_date_eastern = now_eastern - datetime.timedelta(days=days_back)
 
@@ -1872,11 +1872,11 @@ def fetch_alpaca_bars(symbol, timeframe, range_param):
 
                     target_date_eastern = target_date_eastern - datetime.timedelta(days=1)
 
-                
+
 
                 print(f'[Alpaca bars] 回退到交易日: {target_date_eastern.strftime("%Y-%m-%d")} (星期{target_date_eastern.weekday()+1})')
 
-            
+
 
             # 交易日时间范围：交易日的00:00 AM 美东时间 到 23:59:59
 
@@ -1884,7 +1884,7 @@ def fetch_alpaca_bars(symbol, timeframe, range_param):
 
             trade_day_start_eastern = target_date_eastern.replace(hour=0, minute=0, second=0, microsecond=0)
 
-            
+
 
             # 如果是今天并且是交易日，使用当前时间往前15分钟作为结束时间
 
@@ -2080,7 +2080,7 @@ def fetch_alpaca_bars(symbol, timeframe, range_param):
 
             print(f'  {key}: {value}')
 
-        
+
 
         # 调试：打印当前时间和环境
 
@@ -3230,7 +3230,7 @@ def fetch_finnhub_company_news(symbol, days_back=7):
 
         start_date = end_date - timedelta(days=days_back)
 
-        
+
 
         url = "https://finnhub.io/api/v1/company-news"
 
@@ -3314,7 +3314,7 @@ def fetch_finnhub_company_news(symbol, days_back=7):
 
         print(f"[Finnhub News] 获取到 {symbol} 的 {len(valid_news)} 条有效新闻")
 
-        
+
 
         # 缓存结果（5分钟缓存）
 
@@ -4118,7 +4118,7 @@ def fetch_alpaca_bars_for_backtest(symbol, timeframe, start_date_utc, end_date_u
 
         feeds_to_try = ['sip', 'iex']
 
-        
+
 
         for feed in feeds_to_try:
 
@@ -4152,13 +4152,13 @@ def fetch_alpaca_bars_for_backtest(symbol, timeframe, start_date_utc, end_date_u
 
             print(f'[Optimization Alpaca] key = {ALPACA_API_KEY[:6]}...{ALPACA_API_KEY[-4:] if len(ALPACA_API_KEY) > 10 else ALPACA_API_KEY}')
 
-            
+
 
             # 发送请求
 
             response = requests.get(url, headers=headers, params=params, timeout=30)
 
-            
+
 
             print(f'[Optimization Alpaca] status = {response.status_code}')
 
@@ -4170,7 +4170,7 @@ def fetch_alpaca_bars_for_backtest(symbol, timeframe, start_date_utc, end_date_u
 
                 data = response.json()
 
-                
+
 
                 # Alpaca原始返回摘要
 
@@ -4204,7 +4204,7 @@ def fetch_alpaca_bars_for_backtest(symbol, timeframe, start_date_utc, end_date_u
 
                     print(f'  - 响应数据: {data}')
 
-                
+
 
                 if 'bars' in data and data['bars']:
 
@@ -4286,7 +4286,7 @@ def fetch_alpaca_bars_for_backtest(symbol, timeframe, start_date_utc, end_date_u
 
                 continue
 
-        
+
 
         # 所有feed都失败
 
@@ -4750,7 +4750,7 @@ def ai_provider_config():
 
             config_to_return = dict(ai_provider_config_state)
 
-            
+
 
             return jsonify({
 
@@ -4804,7 +4804,7 @@ def ai_provider_config():
             config_to_return = dict(ai_provider_config_state)
             if 'baseURL' in config_to_return and 'baseUrl' not in config_to_return:
                 config_to_return['baseUrl'] = config_to_return['baseURL']
-            
+
             response = {
                 'success': True,
                 'config': config_to_return,
@@ -7993,7 +7993,7 @@ def ai_trade_analyze_with_context():
 
                         decision_data['whyNotOtherActions'] = 'Not provided in analysis'
 
-                    
+
 
                     # 确保核心字段存在
 
@@ -8041,7 +8041,7 @@ def ai_trade_analyze_with_context():
 
                     decision_data['timeFrame'] = decision_data.get('timeFrame', 'Intraday')
 
-                    
+
 
                     # 确保action字段存在以兼容前端（使用executionAction作为主要action）
 
@@ -8239,7 +8239,7 @@ def build_context_analysis_prompt(symbol, context):
 
     portfolio = context.get('portfolioPerformance', {})
 
-    
+
 
     # Get market data, backtest results, and optimization results
 
@@ -8277,7 +8277,7 @@ def build_context_analysis_prompt(symbol, context):
 
 """
 
-    
+
 
     # Add backtest results
 
@@ -8303,7 +8303,7 @@ def build_context_analysis_prompt(symbol, context):
 
         prompt += "- Backtest data not available\n"
 
-    
+
 
     prompt += f"""
 
@@ -8311,7 +8311,7 @@ def build_context_analysis_prompt(symbol, context):
 
 """
 
-    
+
 
     # Add optimization results
 
@@ -8559,7 +8559,7 @@ def generate_context_based_analysis(symbol, context):
 
     """Generate simple analysis results based on context (when AI is unavailable)"""
 
-    
+
 
     print(f"[Context Based Analysis] Generating real-data-based analysis for {symbol}")
 
@@ -8571,7 +8571,7 @@ def generate_context_based_analysis(symbol, context):
 
     portfolio = context.get('portfolioPerformance', {})
 
-    
+
 
     # 获取真实的市场数据、回测结果和优化结果
 
@@ -8601,7 +8601,7 @@ def generate_context_based_analysis(symbol, context):
 
             current_price = 150  # 默认值
 
-    
+
 
     # 提取回测关键指标
 
@@ -8613,7 +8613,7 @@ def generate_context_based_analysis(symbol, context):
 
     backtest_win_rate = 0
 
-    
+
 
     if backtest_result and backtest_result.get('results'):
 
@@ -8627,7 +8627,7 @@ def generate_context_based_analysis(symbol, context):
 
         backtest_win_rate = results.get('winRate', 0)
 
-    
+
 
     # 提取优化结果
 
@@ -8635,7 +8635,7 @@ def generate_context_based_analysis(symbol, context):
 
     optimization_best_params = {}
 
-    
+
 
     if optimization_result:
 
@@ -8683,19 +8683,19 @@ def generate_context_based_analysis(symbol, context):
 
         market_value = existing_position.get('marketValue', 0)
 
-        
+
 
         # 计算当前盈亏
 
         current_pnl_pct = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
 
-        
+
 
         # 决策逻辑：结合回测结果、当前盈亏和持仓比例
 
         position_ratio = market_value / account.get('portfolioValue', 100000) if account.get('portfolioValue', 100000) > 0 else 0
 
-        
+
 
         if backtest_total_return > 20 and backtest_sharpe > 1.0:
 
@@ -8741,7 +8741,7 @@ def generate_context_based_analysis(symbol, context):
 
         buying_power = account.get('buyingPower', 0)
 
-        
+
 
         # 评估信号强度
 
@@ -8763,7 +8763,7 @@ def generate_context_based_analysis(symbol, context):
 
             signal_strength = -1  # 卖出信号
 
-        
+
 
         if signal_strength >= 2 and buying_power > 2000:
 
@@ -8937,7 +8937,7 @@ def ai_market_scanner():
 
         resume_info = data.get('resumeInfo', None)  # 恢复信息：已扫描symbols，剩余symbols
 
-        
+
 
         if not symbols:
 
@@ -8945,19 +8945,19 @@ def ai_market_scanner():
 
             symbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'AMD', 'JPM', 'XOM', 'WMT', 'HD']
 
-        
+
 
         # 限制扫描数量
 
         symbols = symbols[:max_symbols]
 
-        
+
 
         print(f'市场扫描请求: {len(symbols)} 只股票')
 
         print(f'股票列表: {symbols}')
 
-        
+
 
         # 处理恢复逻辑
 
@@ -8971,7 +8971,7 @@ def ai_market_scanner():
 
             print(f'恢复扫描: 已扫描 {len(scanned_symbols)} 只，剩余 {len(symbols)} 只')
 
-        
+
 
         # ========== 分层扫描优化 ==========
 
@@ -8981,7 +8981,7 @@ def ai_market_scanner():
 
         start_time = time.time()
 
-        
+
 
         # 使用批量API获取数据
 
@@ -9043,13 +9043,13 @@ def ai_market_scanner():
 
                 }
 
-        
+
 
         layer1_time = time.time() - start_time
 
         print(f'第一层完成，耗时: {layer1_time:.2f}秒')
 
-        
+
 
         # 第二层：快速预筛选
 
@@ -9069,7 +9069,7 @@ def ai_market_scanner():
 
                 change_pct = data.get('changePercent', 0)
 
-                
+
 
                 # 快速筛选条件
 
@@ -9091,11 +9091,11 @@ def ai_market_scanner():
 
                 print(f'✗ {symbol}: 无数据')
 
-        
+
 
         print(f'预筛选后shortlist: {len(shortlist)} 只股票')
 
-        
+
 
         # 第三层：简化分析（不调用AI）
 
@@ -9109,13 +9109,13 @@ def ai_market_scanner():
 
                 print(f'分析股票 {i+1}/{len(shortlist)}: {symbol}')
 
-                
+
 
                 # 获取股票基础数据
 
                 stock_data = batch_data.get(symbol, {})
 
-                
+
 
                 # 简化分析：基于价格变化判断趋势
 
@@ -9125,7 +9125,7 @@ def ai_market_scanner():
 
                 volume = stock_data.get('volume', 0)
 
-                
+
 
                 # 简单趋势判断
 
@@ -9147,7 +9147,7 @@ def ai_market_scanner():
 
                     trend_score = 50
 
-                
+
 
                 # 如果成交量高，加强趋势信号
 
@@ -9157,7 +9157,7 @@ def ai_market_scanner():
 
                     trend_score = trend_score + 10 if trend_score > 50 else trend_score - 10
 
-                
+
 
                 result_obj = {
 
@@ -9203,13 +9203,13 @@ def ai_market_scanner():
 
                 }
 
-                
+
 
                 results.append(result_obj)
 
                 print(f'✓ {symbol}: 分析完成 - {trend_label}')
 
-                
+
 
             except Exception as e:
 
@@ -9263,7 +9263,7 @@ def ai_market_scanner():
 
                 })
 
-        
+
 
         total_time = time.time() - start_time
 
@@ -9277,7 +9277,7 @@ def ai_market_scanner():
 
         print(f'分析完成: {len(results)} 只')
 
-        
+
 
         # 计算摘要统计
 
@@ -9291,7 +9291,7 @@ def ai_market_scanner():
 
         news_risk_count = sum(1 for r in results if r.get('eventRisk') == 'High')
 
-        
+
 
         return jsonify({
 
@@ -9335,7 +9335,7 @@ def ai_market_scanner():
 
         })
 
-        
+
 
     except Exception as e:
 
@@ -9381,7 +9381,7 @@ def get_stock_data_for_scanner(symbol):
 
         }
 
-        
+
 
         try:
 
@@ -9395,7 +9395,7 @@ def get_stock_data_for_scanner(symbol):
 
                 print(f'[Volume Fix] {symbol} Alpaca完整数据: price={alpaca_data.get("price")}, volume={alpaca_data.get("volume")}, bars_data字段: {"bars_data" in alpaca_data}')
 
-                
+
 
                 # 获取Alpaca volume - 直接从Alpaca数据获取
 
@@ -9403,7 +9403,7 @@ def get_stock_data_for_scanner(symbol):
 
                 print(f'[Volume Fix] {symbol} Alpaca原始volume: {alpaca_volume}, 类型: {type(alpaca_volume)}')
 
-                
+
 
                 # 检查是否有bars数据可以提取volume
 
@@ -9427,7 +9427,7 @@ def get_stock_data_for_scanner(symbol):
 
                             print(f'[Volume Fix] {symbol} 使用bars_data中的volume: {alpaca_volume}')
 
-                
+
 
                 # 决定最终volume和来源
 
@@ -9435,7 +9435,7 @@ def get_stock_data_for_scanner(symbol):
 
                 volume_source = 'none'
 
-                
+
 
                 if alpaca_volume and alpaca_volume > 0:
 
@@ -9473,7 +9473,7 @@ def get_stock_data_for_scanner(symbol):
 
                         print(f'[Volume Fix] {symbol} Finnhub API失败')
 
-                
+
 
                 # 构建stock_data，包含详细来源信息
 
@@ -9503,7 +9503,7 @@ def get_stock_data_for_scanner(symbol):
 
                 }
 
-                
+
 
                 # 更新字段来源
 
@@ -9513,7 +9513,7 @@ def get_stock_data_for_scanner(symbol):
 
                 field_sources['volume'] = volume_source
 
-                
+
 
             else:
 
@@ -9553,7 +9553,7 @@ def get_stock_data_for_scanner(symbol):
 
                     }
 
-                    
+
 
                     # 更新字段来源
 
@@ -9563,7 +9563,7 @@ def get_stock_data_for_scanner(symbol):
 
                     field_sources['volume'] = 'Finnhub' if finnhub_volume > 0 else 'none'
 
-                    
+
 
                 else:
 
@@ -9597,7 +9597,7 @@ def get_stock_data_for_scanner(symbol):
 
                     }
 
-                    
+
 
                     field_sources['price'] = 'none'
 
@@ -9629,13 +9629,13 @@ def get_stock_data_for_scanner(symbol):
 
             }
 
-        
+
 
         # 获取新闻数据
 
         news_data = analyze_news_for_stock(symbol)
 
-        
+
 
         # 获取公司档案和Sector信息
 
@@ -9647,7 +9647,7 @@ def get_stock_data_for_scanner(symbol):
 
         sector_source = 'unknown'
 
-        
+
 
         try:
 
@@ -9661,7 +9661,7 @@ def get_stock_data_for_scanner(symbol):
 
                 profile_data = {}
 
-            
+
 
             # 确保公司名称
 
@@ -9679,7 +9679,7 @@ def get_stock_data_for_scanner(symbol):
 
                 field_sources['companyName'] = 'default'
 
-            
+
 
             # Sector信息处理 - 严格按照优先级
 
@@ -9737,7 +9737,7 @@ def get_stock_data_for_scanner(symbol):
 
                         print(f'[Sector Fix] {symbol}: 所有来源都无法获取Sector信息')
 
-            
+
 
             # 设置sector信息到profile_data
 
@@ -9749,13 +9749,13 @@ def get_stock_data_for_scanner(symbol):
 
             profile_data['name'] = company_name  # 确保有公司名称
 
-            
+
 
             # 更新字段来源
 
             field_sources['sector'] = sector_source
 
-            
+
 
         except Exception as e:
 
@@ -9779,17 +9779,17 @@ def get_stock_data_for_scanner(symbol):
 
             }
 
-        
+
 
         # 分析趋势
 
         analysis_result = analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data)
 
-        
+
 
         return stock_data, news_data, profile_data, analysis_result
 
-        
+
 
     except Exception as e:
 
@@ -9813,24 +9813,24 @@ def fetch_finnhub_news(symbol):
     """从Finnhub获取股票新闻"""
     try:
         print(f'[Finnhub新闻] 获取 {symbol} 新闻')
-        
+
         # 检查API密钥
         if not FINNHUB_API_KEY:
             print(f'[Finnhub新闻] Finnhub API密钥未配置')
             return None
-        
+
         # 调用Finnhub News API
         import requests
         from datetime import datetime, timedelta
-        
+
         # 设置时间范围（最近7天）
         to_date = datetime.utcnow()
         from_date = to_date - timedelta(days=7)
-        
+
         # 格式化日期
         from_str = from_date.strftime('%Y-%m-%d')
         to_str = to_date.strftime('%Y-%m-%d')
-        
+
         # 构建API URL
         url = f'{FINNHUB_BASE_URL}/company-news'
         params = {
@@ -9839,13 +9839,13 @@ def fetch_finnhub_news(symbol):
             'to': to_str,
             'token': FINNHUB_API_KEY
         }
-        
+
         print(f'[Finnhub新闻] 请求URL: {url}')
         print(f'[Finnhub新闻] 参数: {params}')
-        
+
         # 发送请求
         response = requests.get(url, params=params, timeout=10)
-        
+
         if response.status_code == 200:
             news_data = response.json()
             print(f'[Finnhub新闻] 获取到 {len(news_data)} 条新闻')
@@ -9854,7 +9854,7 @@ def fetch_finnhub_news(symbol):
             print(f'[Finnhub新闻] API请求失败: {response.status_code}')
             print(f'[Finnhub新闻] 响应: {response.text[:200]}')
             return None
-            
+
     except Exception as e:
         print(f'[Finnhub新闻] 获取新闻时出错: {str(e)}')
         return None
@@ -9868,24 +9868,24 @@ def analyze_news_for_stock(symbol):
     """分析股票的新闻数据 - 使用真实Finnhub API"""
     try:
         symbol_upper = symbol.upper()
-        
+
         print(f'[新闻分析] 开始获取真实新闻数据: {symbol_upper}')
-        
+
         # 调用真实Finnhub API
         finnhub_news = fetch_finnhub_news(symbol_upper)
-        
+
         if finnhub_news and isinstance(finnhub_news, list) and len(finnhub_news) > 0:
             print(f'[新闻分析] 获取到 {len(finnhub_news)} 条真实新闻')
-            
+
             # 分析新闻情绪
             sentiment_scores = []
             valid_news = []
             has_sentiment_data = False
-            
+
             for news_item in finnhub_news[:10]:  # 最多分析10条新闻
                 try:
                     sentiment = news_item.get('sentiment')
-                    
+
                     # 检查是否有有效的情绪数据（不是N/A或None）
                     if sentiment is not None and sentiment != 'N/A':
                         try:
@@ -9894,14 +9894,14 @@ def analyze_news_for_stock(symbol):
                             has_sentiment_data = True
                         except (ValueError, TypeError):
                             pass  # 忽略无效的情绪值
-                    
+
                     # 提取关键信息
                     headline = news_item.get('headline', '')
                     summary = news_item.get('summary', headline)
                     url = news_item.get('url', '')
                     source = news_item.get('source', 'Unknown')
                     datetime_val = news_item.get('datetime')
-                    
+
                     if headline:
                         valid_news.append({
                             'headline': headline,
@@ -9914,15 +9914,15 @@ def analyze_news_for_stock(symbol):
                 except Exception as e:
                     print(f'[新闻分析] 处理新闻条目时出错: {str(e)}')
                     continue
-            
+
             # 确定情绪标签和事件风险
             sentiment_label = 'Neutral'
             event_risk = 'Low'
-            
+
             if has_sentiment_data and sentiment_scores:
                 # 计算平均情绪
                 avg_sentiment = sum(sentiment_scores) / len(sentiment_scores)
-                
+
                 # 确定情绪标签
                 if avg_sentiment > 0.2:
                     sentiment_label = 'Positive'
@@ -9930,7 +9930,7 @@ def analyze_news_for_stock(symbol):
                     sentiment_label = 'Negative'
                 else:
                     sentiment_label = 'Neutral'
-                
+
                 # 确定事件风险
                 if abs(avg_sentiment) > 0.5:
                     event_risk = 'High'
@@ -9938,30 +9938,30 @@ def analyze_news_for_stock(symbol):
                     event_risk = 'Medium'
                 else:
                     event_risk = 'Low'
-                
+
                 sentiment_summary = f'基于{len(sentiment_scores)}条有情绪数据的新闻分析，平均情绪得分: {avg_sentiment:.2f}'
             else:
                 # 如果没有情绪数据，基于新闻标题关键词进行简单分析
                 positive_keywords = ['up', 'gain', 'rise', 'bullish', 'positive', 'beat', 'surge', 'rally', 'growth']
                 negative_keywords = ['down', 'drop', 'fall', 'bearish', 'negative', 'miss', 'decline', 'loss', 'cut']
-                
+
                 positive_count = 0
                 negative_count = 0
-                
+
                 for news in valid_news[:5]:  # 只分析前5条新闻
                     headline_lower = news['headline'].lower()
                     if any(keyword in headline_lower for keyword in positive_keywords):
                         positive_count += 1
                     if any(keyword in headline_lower for keyword in negative_keywords):
                         negative_count += 1
-                
+
                 if positive_count > negative_count:
                     sentiment_label = 'Positive'
                 elif negative_count > positive_count:
                     sentiment_label = 'Negative'
                 else:
                     sentiment_label = 'Neutral'
-                
+
                 # 基于新闻数量确定风险
                 if len(valid_news) > 15:
                     event_risk = 'High'
@@ -9969,19 +9969,19 @@ def analyze_news_for_stock(symbol):
                     event_risk = 'Medium'
                 else:
                     event_risk = 'Low'
-                
+
                 sentiment_summary = f'基于{len(valid_news)}条新闻标题分析，正面关键词: {positive_count}, 负面关键词: {negative_count}'
-            
+
             # 提取主要催化剂和头条新闻
             top_catalyst = ''
             headlines = []
-            
+
             if valid_news:
                 # 使用最新的新闻作为主要催化剂
                 sorted_news = sorted(valid_news, key=lambda x: x.get('datetime', 0), reverse=True)
                 top_news = sorted_news[0]
                 top_catalyst = top_news.get('headline', '')[:100]
-                
+
                 # 提取前5条新闻作为头条
                 for news in sorted_news[:5]:
                     headlines.append({
@@ -9990,7 +9990,7 @@ def analyze_news_for_stock(symbol):
                         'time': news.get('datetime'),
                         'url': news.get('url', '')
                     })
-            
+
             return {
                 'sentiment': sentiment_label,
                 'eventRisk': event_risk,
@@ -10013,7 +10013,7 @@ def analyze_news_for_stock(symbol):
                 'hasNews': False,
                 'newsSummary': 'No recent news available from Finnhub'
             }
-            
+
     except Exception as e:
         print(f'[新闻分析] 分析新闻时出错: {str(e)}')
         return {
@@ -10032,7 +10032,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
     print(f'[DeepSeek分析] 函数被调用，参数: symbol={symbol}, stock_data type={type(stock_data)}, news_data type={type(news_data)}, profile_data type={type(profile_data)}')
 
-    
+
 
     try:
 
@@ -10044,11 +10044,11 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         print(f'[DeepSeek分析] 公司资料: {profile_data is not None}')
 
-        
+
 
         # 检查是否有用户配置的API密钥
         api_key = ai_provider_config_state.get('apiKey', '')
-        
+
         print(f'[DeepSeek分析] API密钥检查: 长度={len(api_key)}, 前10位={api_key[:10] if api_key else "N/A"}')
         print(f'[DeepSeek分析] AI配置状态: {ai_provider_config_state}')
 
@@ -10083,13 +10083,13 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
             }
 
-        
+
 
         # 即使API密钥可能无效，也尝试使用DeepSeek，让API调用失败后fallback
 
         print(f'[DeepSeek分析] 尝试使用DeepSeek API分析 {symbol}')
 
-        
+
 
         # 处理可能的None值
 
@@ -10105,7 +10105,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
             profile_data = {}
 
-        
+
 
         # 准备分析数据 - 不要用默认值0掩盖缺失数据
 
@@ -10133,7 +10133,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         }
 
-        
+
 
         # 打印实际接收到的数据
 
@@ -10147,11 +10147,11 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         print(f'  stock_data keys: {list(stock_data.keys()) if stock_data else "None"}')
 
-        
+
         # 计算技术指标
         technical_indicators = {}
         technical_summary = ""
-        
+
         try:
             # 准备价格数据用于技术指标计算
             price_data_for_indicators = {
@@ -10162,11 +10162,11 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
                 'dayLow': stock_data.get('dayLow'),
                 'open': stock_data.get('open')
             }
-            
+
             # 计算技术指标
             technical_indicators = calculate_simple_technical_indicators(price_data_for_indicators)
             technical_summary = generate_technical_summary(technical_indicators)
-            
+
             print(f'[DeepSeek分析] 技术指标计算完成:')
             print(f'  价格位置: {technical_indicators.get("pricePosition", "N/A")}%')
             print(f'  涨跌幅: {technical_indicators.get("changePct", "N/A")}%')
@@ -10175,7 +10175,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
             print(f'  价格结构: {technical_indicators.get("priceStructure", "N/A")}')
             print(f'  动量: {technical_indicators.get("momentum", "N/A")}')
             print(f'  技术摘要: {technical_summary}')
-            
+
         except Exception as e:
             print(f'[DeepSeek分析] 技术指标计算失败: {str(e)}')
             technical_indicators = {}
@@ -10189,7 +10189,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         volume_str = f"{analysis_context['volume']:,.0f}" if analysis_context['volume'] is not None else "数据缺失"
 
-        
+
 
         prompt = f"""作为专业的量化分析师，请分析以下股票并给出完整的趋势分析：
 
@@ -10323,7 +10323,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
 }}"""
 
-        
+
 
         # 调用DeepSeek API
 
@@ -10335,7 +10335,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         }
 
-        
+
 
         payload = {
 
@@ -10351,7 +10351,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         }
 
-        
+
 
         base_url = ai_provider_config_state.get('baseURL', 'https://api.deepseek.com')
 
@@ -10359,7 +10359,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
             base_url = 'https://' + base_url
 
-        
+
 
         response = requests.post(
 
@@ -10373,7 +10373,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         )
 
-        
+
 
         if response.status_code == 200:
 
@@ -10381,13 +10381,13 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
             ai_response = result['choices'][0]['message']['content']
 
-            
+
 
             # 打印AI原始响应以便调试
 
             print(f'[DeepSeek分析] AI原始响应: {ai_response[:500]}...')
 
-            
+
 
             try:
 
@@ -10395,7 +10395,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                 analysis_result = json_module.loads(ai_response)
 
-                
+
 
                 # 验证必要字段 - 支持新旧两种格式
 
@@ -10403,13 +10403,13 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                 required_fields_v2 = ['trendLabel', 'overallScore', 'confidence', 'trendScore', 'momentumScore', 'volumeScore', 'volatilityScore', 'structureScore', 'newsScore', 'volumeStatus', 'eventRisk', 'conciseReasoning', 'detailedReasoning']
 
-                
+
 
                 # 检查是V1还是V2格式
 
                 is_v2_format = all(field in analysis_result for field in ['overallScore', 'trendScore', 'momentumScore'])
 
-                
+
 
                 if is_v2_format:
 
@@ -10417,7 +10417,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                     print(f'[DeepSeek分析] 收到V2格式分析结果，包含6维度分数')
 
-                    
+
 
                     # 确保所有V2字段都存在 - 全部改为空值
 
@@ -10453,7 +10453,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                                 analysis_result[field] = None  # 改为空值
 
-                    
+
 
                     # 确保有scannerReason字段（前端可能使用）
 
@@ -10461,7 +10461,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                         analysis_result['scannerReason'] = analysis_result.get('conciseReasoning')  # 不提供默认值
 
-                    
+
 
                     # 确保有aiReasoning字段（前端可能使用）
 
@@ -10475,7 +10475,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                     print(f'[DeepSeek分析] 收到V1格式分析结果，只有基本字段')
 
-                    
+
 
                     for field in required_fields_v1:
 
@@ -10497,7 +10497,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                                 analysis_result[field] = None  # 改为空值
 
-                    
+
 
                     # 为V1格式添加缺失的V2字段 - 全部改为空值
 
@@ -10515,7 +10515,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                     analysis_result['aiReasoning'] = analysis_result.get('scannerReason')  # 不提供默认值
 
-                    
+
 
                     # 为6维度分数设置空值
 
@@ -10531,7 +10531,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                     analysis_result['newsScore'] = None  # 空值
 
-                
+
 
                 print(f'DeepSeek分析 {symbol} 成功: {analysis_result["trendLabel"]}')
 
@@ -10541,7 +10541,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                 return analysis_result
 
-                
+
 
             except Exception as e:
 
@@ -10603,7 +10603,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
             }
 
-            
+
 
     except Exception as e:
 
@@ -10629,7 +10629,7 @@ def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
 
         print(f'[本地规则分析] 公司资料: {profile_data}')
 
-        
+
 
         # 初始化6维度分数
 
@@ -10645,11 +10645,11 @@ def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
 
         news_score = 50
 
-        
+
 
         reasons = []
 
-        
+
 
         # 1. 趋势分析 (25%)
 
@@ -10661,13 +10661,13 @@ def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
 
         low = stock_data.get('low', price) if price else stock_data.get('low')
 
-        
+
 
         # 打印实际数据
 
         print(f'[本地规则分析] 实际价格数据: price={price}, change_pct={change_pct}')
 
-        
+
 
         # 价格变动趋势
 
@@ -10701,7 +10701,7 @@ def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
 
             reasons.append("价格变动数据缺失")
 
-        
+
 
         # 2. 动量分析 (20%)
 
@@ -10737,7 +10737,7 @@ def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
 
             reasons.append("动量数据缺失")
 
-        
+
 
         # 3. 波动率分析 (15%)
 
@@ -10767,7 +10767,7 @@ def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
 
                 reasons.append(f"低波动率 {volatility_pct:.1f}%")
 
-        
+
 
         # 4. 成交量分析 (15%)
 
@@ -10775,7 +10775,7 @@ def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
 
         avg_volume = stock_data.get('averageVolume', volume) if volume else stock_data.get('averageVolume')
 
-        
+
 
         if volume and avg_volume and avg_volume > 0:
 
@@ -10799,7 +10799,7 @@ def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
 
                 reasons.append(f"成交量萎缩 {volume_ratio:.1f}x")
 
-        
+
 
         # 5. 结构分析 (15%)
 
@@ -10817,7 +10817,7 @@ def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
 
             reasons.append("接近近期低点")
 
-        
+
 
         # 6. 新闻分析 (10%)
 
@@ -10825,7 +10825,7 @@ def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
 
         event_risk = news_data.get('eventRisk', 'Low') if news_data else 'Low'
 
-        
+
 
         if sentiment == 'Positive':
 
@@ -10839,7 +10839,7 @@ def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
 
             reasons.append("负面新闻情绪")
 
-        
+
 
         if event_risk == 'High':
 
@@ -10853,7 +10853,7 @@ def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
 
             reasons.append("中等风险事件")
 
-        
+
 
         # 计算综合分数（加权平均）
 
@@ -10873,13 +10873,13 @@ def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
 
         )
 
-        
+
 
         # 确保分数在0-100范围内
 
         overall_score = max(0, min(100, overall_score))
 
-        
+
 
         # 确定趋势标签
 
@@ -10901,7 +10901,7 @@ def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
 
             confidence = 0.8
 
-        
+
 
         # 生成详细的AI推理
 
@@ -10919,19 +10919,19 @@ def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
 
         scanner_reason += f" 新闻({news_score}/100)"
 
-        
+
 
         if reasons:
 
             scanner_reason += f"。关键因素：{', '.join(reasons)}"
 
-        
+
 
         # 明确标记为规则分析
 
         scanner_reason = f"本地规则分析：{scanner_reason}"
 
-        
+
 
         print(f'[本地规则分析] 最终结果:')
 
@@ -10945,7 +10945,7 @@ def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
 
         print(f'  推理: {scanner_reason}')
 
-        
+
 
         return {
 
@@ -10975,7 +10975,7 @@ def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
 
         }
 
-        
+
 
     except Exception as e:
 
@@ -11630,7 +11630,7 @@ def debug_alpaca():
 
         api_secret = alpaca_config_state.get('paper_api_secret') if environment == 'paper' else alpaca_config_state.get('live_api_secret')
 
-        
+
 
         # 测试单个股票
 
@@ -11646,7 +11646,7 @@ def debug_alpaca():
 
         test_url = f'https://data.alpaca.markets/v2/stocks/snapshots?symbols={test_symbol}'
 
-        
+
 
         print(f'[Debug Alpaca] 测试URL: {test_url}')
 
@@ -11654,11 +11654,11 @@ def debug_alpaca():
 
         print(f'[Debug Alpaca] API Key前10位: {api_key[:10] if api_key else "None"}...')
 
-        
+
 
         response = requests.get(test_url, headers=market_headers, timeout=10)
 
-        
+
 
         result = {
 
@@ -11678,11 +11678,11 @@ def debug_alpaca():
 
         }
 
-        
+
 
         return jsonify(result), 200
 
-        
+
 
     except Exception as e:
 
@@ -11742,7 +11742,7 @@ def get_stock_detail(symbol):
 
             print(f'[股票详情] snapshots_errors: {snapshots_errors}')
 
-            
+
 
             if symbol_upper in snapshots_results:
 
@@ -11784,7 +11784,7 @@ def get_stock_detail(symbol):
 
             profile_data, profile_error = future_profile.result()
 
-        
+
 
         print(f'[股票详情] Finnhub quote数据: {quote_data is not None}')
 
@@ -11850,7 +11850,7 @@ def get_stock_detail(symbol):
 
             print(f'[股票详情] AI Agent页面要求: 优先使用Alpaca真实数据，但Alpaca数据获取失败，使用Finnhub数据')
 
-            
+
 
             # 使用Finnhub数据作为fallback
 
@@ -11918,7 +11918,7 @@ def get_stock_detail(symbol):
 
                 }
 
-                
+
 
                 return jsonify(stock_info)
 
@@ -12048,7 +12048,7 @@ def get_stock_detail(symbol):
 
         }
 
-        
+
 
         print(f'[股票详情] Alpaca映射完成: price={current_price}, dayHigh={alpaca_data.get("dayHigh")}, volume={alpaca_data.get("volume")}')
 
@@ -12528,7 +12528,7 @@ def run_backtest():
 
         print(f"  - parameters: {parameters}")
 
-        
+
 
         # ========== DEBUG Layer B: run_backtest()入口 ==========
 
@@ -12674,7 +12674,7 @@ def run_backtest():
 
                 print(f"[Backtest] 获取历史数据成功 ({data_source}): {len(historical_data)} 个数据点")
 
-                
+
 
                 # 详细数据摘要
 
@@ -12696,7 +12696,7 @@ def run_backtest():
 
                     print("  警告: 历史数据为空数组")
 
-                
+
 
                 # 数据验证
 
@@ -12746,7 +12746,7 @@ def run_backtest():
 
                     }), 200
 
-                
+
 
                 # 2. 检查策略所需最小数据量
 
@@ -12760,7 +12760,7 @@ def run_backtest():
 
                     print(f"[Backtest] MA策略验证: longMaPeriod={long_ma_period}, 需要最小数据量={min_required_data}")
 
-                
+
 
                 if len(historical_data) < min_required_data:
 
@@ -12806,7 +12806,7 @@ def run_backtest():
 
                     }), 200
 
-                
+
 
                 # 3. 检查非交易日/无效数据
 
@@ -12856,7 +12856,7 @@ def run_backtest():
 
                     }), 200
 
-                
+
 
                 # ========== DEBUG Layer C: 历史数据获取后 ==========
 
@@ -14756,7 +14756,7 @@ def run_backtest():
 
         print(f"maxDrawdown: {results.get('maxDrawdown')}")
 
-        
+
 
         # 检查trade records里的symbol
 
@@ -14780,7 +14780,7 @@ def run_backtest():
 
         # ========== END DEBUG ==========
 
-        
+
 
         return jsonify(result)
 
@@ -14824,7 +14824,7 @@ def generate_simulation_result(strategy, rank, params, initial_capital):
 
     print(f"[WARNING] 此函数已弃用，应使用真实Alpaca数据进行回测")
 
-    
+
 
     # 返回一个明显的错误结果，表明这是模拟数据
 
@@ -15074,6 +15074,7 @@ def run_moving_average_strategy_for_optimization(data, params, initial_capital, 
 
                                 trade['exitPrice'] = price
 
+                                trade['pnl'] = round((price - trade['entryPrice']) * trade['quantity'], 2)
                                 break
 
                         position = 0
@@ -15300,6 +15301,226 @@ def run_rsi_strategy_for_optimization(data, params, initial_capital, symbol):
 
 
 
+def run_macd_strategy_for_optimization(data, params, initial_capital, symbol):
+    """MACD策略参数优化专用回测函数"""
+    fast_period = params.get('macdFast', params.get('fast', 12))
+    slow_period = params.get('macdSlow', params.get('slow', 26))
+    signal_period = params.get('macdSignal', params.get('signal', 9))
+
+    trades = []
+    equity_curve = []
+    position = 0
+    cash = initial_capital
+
+    prices = [point['close'] for point in data]
+
+    # 计算MACD
+    ema_fast = []
+    ema_slow = []
+    macd_line = []
+    signal_line = []
+
+    for i in range(len(prices)):
+        if i == 0:
+            ema_fast.append(prices[i])
+            ema_slow.append(prices[i])
+        else:
+            fast_alpha = 2 / (fast_period + 1)
+            slow_alpha = 2 / (slow_period + 1)
+            ema_fast.append(prices[i] * fast_alpha + ema_fast[i-1] * (1 - fast_alpha))
+            ema_slow.append(prices[i] * slow_alpha + ema_slow[i-1] * (1 - slow_alpha))
+
+        macd = ema_fast[i] - ema_slow[i]
+        macd_line.append(macd)
+
+        if i == 0:
+            signal_line.append(macd)
+        elif i < signal_period:
+            signal_line.append(macd)
+        else:
+            signal_alpha = 2 / (signal_period + 1)
+            signal_line.append(macd * signal_alpha + signal_line[i-1] * (1 - signal_alpha))
+
+    # 执行交易
+    for i, data_point in enumerate(data):
+        date = data_point['timestamp']
+        price = data_point['close']
+
+        if i >= max(fast_period, slow_period, signal_period):
+            hist_val = macd_line[i] - signal_line[i]
+            prev_hist = macd_line[i-1] - signal_line[i-1] if i > 0 else 0
+            # MACD上穿信号线 -> 买入
+            if hist_val > 0 and prev_hist <= 0 and position == 0:
+                if cash > 0:
+                    shares_to_buy = cash // price
+                    if shares_to_buy > 0:
+                        cost = shares_to_buy * price
+                        cash -= cost
+                        position = shares_to_buy
+                        trades.append({
+                            'entryDate': date, 'exitDate': None,
+                            'entryPrice': price, 'exitPrice': None,
+                            'pnl': 0, 'returnPct': 0, 'holdingPeriod': 0,
+                            'position': 1, 'action': 'BUY',
+                            'quantity': shares_to_buy, 'symbol': symbol
+                        })
+            # MACD下穿信号线 -> 卖出
+            elif hist_val < 0 and prev_hist >= 0 and position > 0:
+                value = position * price
+                cash += value
+                for trade in reversed(trades):
+                    if trade.get('exitDate') is None and trade.get('action') == 'BUY':
+                        entry_price = trade['entryPrice']
+                        pnl = (price - entry_price) * trade['quantity']
+                        return_pct = ((price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+                        trade['exitDate'] = date
+                        trade['exitPrice'] = price
+                        trade['pnl'] = round(pnl, 2)
+                        trade['returnPct'] = round(return_pct, 2)
+                        trade['holdingPeriod'] = i - next((idx for idx, p in enumerate(data) if p['timestamp'] == trade['entryDate']), i)
+                        break
+                position = 0
+
+        equity = cash + (position * price)
+        equity_curve.append({'date': date, 'equity': equity, 'price': price})
+
+    return trades, equity_curve
+
+
+def run_bollinger_strategy_for_optimization(data, params, initial_capital, symbol):
+    """布林带策略参数优化专用回测函数"""
+    period = params.get('bollingerPeriod', params.get('period', 20))
+    std_dev = params.get('bollingerStdDev', params.get('std_dev', 2))
+
+    trades = []
+    equity_curve = []
+    position = 0
+    cash = initial_capital
+
+    prices = [point['close'] for point in data]
+    sma_values = []
+    upper_band = []
+    lower_band = []
+
+    for i in range(len(prices)):
+        if i >= period:
+            sma = sum(prices[i-period:i]) / period
+            variance = sum((p - sma) ** 2 for p in prices[i-period:i]) / period
+            std = variance ** 0.5
+            sma_values.append(sma)
+            upper_band.append(sma + std_dev * std)
+            lower_band.append(sma - std_dev * std)
+        else:
+            sma_values.append(prices[i])
+            upper_band.append(prices[i])
+            lower_band.append(prices[i])
+
+    for i, data_point in enumerate(data):
+        date = data_point['timestamp']
+        price = data_point['close']
+
+        if i >= period:
+            # 价格跌破下轨 -> 买入（超卖反弹）
+            if price < lower_band[i] and position == 0:
+                if cash > 0:
+                    shares_to_buy = cash // price
+                    if shares_to_buy > 0:
+                        cost = shares_to_buy * price
+                        cash -= cost
+                        position = shares_to_buy
+                        trades.append({
+                            'entryDate': date, 'exitDate': None,
+                            'entryPrice': price, 'exitPrice': None,
+                            'pnl': 0, 'returnPct': 0, 'holdingPeriod': 0,
+                            'position': 1, 'action': 'BUY',
+                            'quantity': shares_to_buy, 'symbol': symbol
+                        })
+            # 价格突破上轨 -> 卖出（超买回归）
+            elif price > upper_band[i] and position > 0:
+                value = position * price
+                cash += value
+                for trade in reversed(trades):
+                    if trade.get('exitDate') is None and trade.get('action') == 'BUY':
+                        entry_price = trade['entryPrice']
+                        pnl = (price - entry_price) * trade['quantity']
+                        return_pct = ((price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+                        trade['exitDate'] = date
+                        trade['exitPrice'] = price
+                        trade['pnl'] = round(pnl, 2)
+                        trade['returnPct'] = round(return_pct, 2)
+                        trade['holdingPeriod'] = i - next((idx for idx, p in enumerate(data) if p['timestamp'] == trade['entryDate']), i)
+                        break
+                position = 0
+
+        equity = cash + (position * price)
+        equity_curve.append({'date': date, 'equity': equity, 'price': price})
+
+    return trades, equity_curve
+
+
+def run_momentum_strategy_for_optimization(data, params, initial_capital, symbol):
+    """动量策略参数优化专用回测函数（支持阈值）"""
+    period = params.get('momentumPeriod', params.get('momentum_period', 10))
+    threshold = params.get('momentumThreshold', params.get('momentum_threshold', 0))
+
+    trades = []
+    equity_curve = []
+    position = 0
+    cash = initial_capital
+
+    prices = [point['close'] for point in data]
+    momentum_values = []
+
+    for i in range(len(prices)):
+        if i >= period:
+            momentum = prices[i] - prices[i-period]
+            momentum_values.append(momentum)
+        else:
+            momentum_values.append(0)
+
+    for i, data_point in enumerate(data):
+        date = data_point['timestamp']
+        price = data_point['close']
+
+        if i >= period:
+            # 动量超过正向阈值 -> 买入
+            if momentum_values[i] > threshold and position == 0:
+                if cash > 0:
+                    shares_to_buy = cash // price
+                    if shares_to_buy > 0:
+                        cost = shares_to_buy * price
+                        cash -= cost
+                        position = shares_to_buy
+                        trades.append({
+                            'entryDate': date, 'exitDate': None,
+                            'entryPrice': price, 'exitPrice': None,
+                            'pnl': 0, 'returnPct': 0, 'holdingPeriod': 0,
+                            'position': 1, 'action': 'BUY',
+                            'quantity': shares_to_buy, 'symbol': symbol
+                        })
+            # 动量低于负向阈值 -> 卖出
+            elif momentum_values[i] < -threshold and position > 0:
+                value = position * price
+                cash += value
+                for trade in reversed(trades):
+                    if trade.get('exitDate') is None and trade.get('action') == 'BUY':
+                        entry_price = trade['entryPrice']
+                        pnl = (price - entry_price) * trade['quantity']
+                        return_pct = ((price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+                        trade['exitDate'] = date
+                        trade['exitPrice'] = price
+                        trade['pnl'] = round(pnl, 2)
+                        trade['returnPct'] = round(return_pct, 2)
+                        trade['holdingPeriod'] = i - next((idx for idx, p in enumerate(data) if p['timestamp'] == trade['entryDate']), i)
+                        break
+                position = 0
+
+        equity = cash + (position * price)
+        equity_curve.append({'date': date, 'equity': equity, 'price': price})
+
+    return trades, equity_curve
+
+
 @app.route('/backtest/optimize', methods=['POST'])
 
 @app.route('/api/backtest/optimize', methods=['POST'])
@@ -15344,27 +15565,27 @@ def run_parameter_optimization():
 
             short_ma_range = data.get('shortMaRange', {'start': 5, 'end': 50, 'step': 5})
 
-            long_ma_range = data.get('longMaRange', {'start': 50, 'end': 200, 'step': 25})
+            long_ma_range = data.get('longMaRange', {'start': 50, 'end': 150, 'step': 25})
 
             param_ranges = {'short_ma': short_ma_range, 'long_ma': long_ma_range}
 
         elif strategy == 'rsi':
 
-            rsi_period_range = data.get('rsiPeriodRange', {'start': 10, 'end': 30, 'step': 2})
+            rsi_period_range = data.get('rsiPeriodRange', {'start': 10, 'end': 20, 'step': 5})
 
-            oversold_range = data.get('oversoldRange', {'start': 20, 'end': 40, 'step': 5})
+            oversold_range = data.get('oversoldRange', {'start': 25, 'end': 35, 'step': 5})
 
-            overbought_range = data.get('overboughtRange', {'start': 60, 'end': 80, 'step': 5})
+            overbought_range = data.get('overboughtRange', {'start': 65, 'end': 75, 'step': 5})
 
             param_ranges = {'rsi_period': rsi_period_range, 'oversold': oversold_range, 'overbought': overbought_range}
 
         elif strategy == 'macd':
 
-            fast_range = data.get('fastRange', {'start': 8, 'end': 20, 'step': 2})
+            fast_range = data.get('fastRange', {'start': 8, 'end': 12, 'step': 2})
 
-            slow_range = data.get('slowRange', {'start': 21, 'end': 35, 'step': 3})
+            slow_range = data.get('slowRange', {'start': 20, 'end': 30, 'step': 5})
 
-            signal_range = data.get('signalRange', {'start': 5, 'end': 15, 'step': 2})
+            signal_range = data.get('signalRange', {'start': 7, 'end': 11, 'step': 2})
 
             param_ranges = {'fast': fast_range, 'slow': slow_range, 'signal': signal_range}
 
@@ -15372,7 +15593,7 @@ def run_parameter_optimization():
 
             period_range = data.get('periodRange', {'start': 10, 'end': 30, 'step': 2})
 
-            std_dev_range = data.get('stdDevRange', {'start': 1.5, 'end': 3.0, 'step': 0.5})
+            std_dev_range = data.get('stdDevRange', {'start': 1.5, 'end': 2.5, 'step': 0.5})
 
             param_ranges = {'period': period_range, 'std_dev': std_dev_range}
 
@@ -15380,239 +15601,66 @@ def run_parameter_optimization():
 
             momentum_period_range = data.get('momentumPeriodRange', {'start': 5, 'end': 30, 'step': 5})
 
-            param_ranges = {'momentum_period': momentum_period_range}
+            momentum_threshold_range = data.get('momentumThresholdRange', {'start': 0.0, 'end': 0.0, 'step': 1.0})
 
-        else:
-
-            # 默认使用MA参数
-
-            short_ma_range = data.get('shortMaRange', {'start': 5, 'end': 50, 'step': 5})
-
-            long_ma_range = data.get('longMaRange', {'start': 50, 'end': 200, 'step': 25})
-
-            param_ranges = {'short_ma': short_ma_range, 'long_ma': long_ma_range}
-
-            strategy = 'moving_average'  # 强制使用MA策略
-
-
+            param_ranges = {'momentum_period': momentum_period_range, 'momentum_threshold': momentum_threshold_range}
 
         # 生成优化ID
-
         import uuid
-
         optimization_id = str(uuid.uuid4())[:8]
-
-
-
         print(f"[Optimization] 开始处理参数优化，ID: {optimization_id}")
-
         print(f"[Optimization] 策略: {strategy}")
-
         print(f"[Optimization] 参数范围: {param_ranges}")
-
         print(f"[Optimization] 数据源: Alpaca")
 
-
-
-        # 第一步：获取Alpaca历史数据
-
-        print(f"[Optimization] 获取Alpaca历史数据: {symbol}, {start_date} 到 {end_date}")
-
-        
-
-        # 计算日期差以确定合适的timeframe
+        # 获取Alpaca历史数据
+        print(f"[Optimization] Fetching Alpaca historical data for {symbol}...")
 
         from datetime import datetime
-
         start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-
         end_dt = datetime.strptime(end_date, '%Y-%m-%d')
-
         days_diff = (end_dt - start_dt).days
-
-        
-
-        # 总是使用1Day timeframe进行优化
-
         timeframe = '1Day'
-
-        # 使用正确的range_param格式：start_date to end_date
-
         range_param = f"{start_date} to {end_date}"
-
-        
-
-        print(f"[Optimization] 时间范围: {days_diff} 天，使用timeframe: {timeframe}, range: {range_param}")
-
-        
-
-        # 获取Alpaca历史数据 - 100%使用真实Alpaca bars，禁止模拟数据
-
-        print(f"[Optimization] 获取Alpaca历史数据: {symbol}, {start_date} 到 {end_date}")
-
-        print(f"[Optimization] 使用timeframe: {timeframe}, range: {range_param}")
-
-        
-
-        # 调用Alpaca历史数据获取函数
 
         historical_data, success, data_source = get_alpaca_history_for_backtest(symbol, timeframe, range_param)
 
-        
-
-        print(f"[Optimization] historical_data获取结果: success={success}, data_source={data_source}")
-
-        print(f"[Optimization] historical_data length = {len(historical_data) if historical_data else 0}")
-
-        
-
-        if historical_data and len(historical_data) > 0:
-
-            print(f"[Optimization] first bar = {historical_data[0]}")
-
-            print(f"[Optimization] last bar = {historical_data[-1]}")
-
-        else:
-
-            print(f"[Optimization] historical_data为空或长度为0")
-
-        
-
-        # 严格检查：如果Alpaca数据获取失败或数据不足，直接返回错误
-
-        if not success:
-
-            print(f"[Optimization] 错误: Alpaca历史数据获取失败 - {data_source}")
-
+        if not historical_data:
+            print(f"[Optimization] Failed to fetch Alpaca data for {symbol}")
             return jsonify({
-
                 "success": False,
-
                 "result": {
-
-                    "error": f"Alpaca historical bars unavailable: {data_source}",
-
-                    "optimizationId": optimization_id,
-
+                    "error": f"Alpaca data unavailable: {data_source}",
                     "results": [],
-
-                    "summary": None,
-
-                    "parameters": {
-
-                        "symbol": symbol,
-
-                        "strategy": strategy,
-
-                        "startDate": start_date,
-
-                        "endDate": end_date,
-
-                        "initialCapital": initial_capital,
-
-                        "dataSource": "Alpaca (failed)",
-
-                        "historicalDataPoints": 0
-
-                    }
-
+                    "summary": None
                 }
-
             }), 400
 
-        
+        print(f"[Optimization] Got {len(historical_data)} bars from {data_source}")
 
-        if not historical_data or len(historical_data) == 0:
-
-            print(f"[Optimization] 错误: Alpaca返回空数据")
-
-            return jsonify({
-
-                "success": False,
-
-                "result": {
-
-                    "error": "No Alpaca data returned for optimization",
-
-                    "optimizationId": optimization_id,
-
-                    "results": [],
-
-                    "summary": None,
-
-                    "parameters": {
-
-                        "symbol": symbol,
-
-                        "strategy": strategy,
-
-                        "startDate": start_date,
-
-                        "endDate": end_date,
-
-                        "initialCapital": initial_capital,
-
-                        "dataSource": "Alpaca (empty)",
-
-                        "historicalDataPoints": 0
-
-                    }
-
-                }
-
-            }), 400
-
-        
-
-        # 检查数据点是否足够进行优化 - 基于最大参数值动态计算
-
-        # 对于移动平均策略，至少需要 max(long_ma) + 10 个数据点（10个点作为缓冲）
-
-        min_required_bars = 2  # 默认最小值
-
-        
-
+        # 根据策略计算所需的最小数据点数
+        min_required_bars = 50  # 默认最小值
         if strategy == 'moving_average':
-
-            max_long_ma = param_ranges.get('long_ma', {}).get('end', 200)
-
-            min_required_bars = max_long_ma + 10
-
-            print(f"[Optimization] MA策略检查: max_long_ma={max_long_ma}, 需要至少 {min_required_bars} 个数据点")
-
+            fast_max = param_ranges.get('fast', {}).get('end', 50)
+            slow_max = param_ranges.get('slow', {}).get('end', 200)
+            min_required_bars = slow_max + 10
         elif strategy == 'rsi':
-
-            max_rsi_period = param_ranges.get('rsi_period', {}).get('end', 30)
-
-            min_required_bars = max_rsi_period + 10
-
-            print(f"[Optimization] RSI策略检查: max_rsi_period={max_rsi_period}, 需要至少 {min_required_bars} 个数据点")
-
+            period_max = param_ranges.get('rsi_period', {}).get('end', 30)
+            min_required_bars = period_max + 10
         elif strategy == 'macd':
-
-            max_slow = param_ranges.get('slow', {}).get('end', 35)
-
-            min_required_bars = max_slow + 10
-
-            print(f"[Optimization] MACD策略检查: max_slow={max_slow}, 需要至少 {min_required_bars} 个数据点")
-
+            fast_max = param_ranges.get('fast', {}).get('end', 12)
+            slow_max = param_ranges.get('slow', {}).get('end', 30)
+            signal_max = param_ranges.get('signal', {}).get('end', 11)
+            min_required_bars = max(slow_max, 30) + signal_max + 10
         elif strategy == 'bollinger':
-
-            max_period = param_ranges.get('period', {}).get('end', 30)
-
-            min_required_bars = max_period + 10
-
-            print(f"[Optimization] Bollinger策略检查: max_period={max_period}, 需要至少 {min_required_bars} 个数据点")
-
+            period_max = param_ranges.get('period', {}).get('end', 50)
+            min_required_bars = period_max + 10
         elif strategy == 'momentum':
+            period_max = param_ranges.get('momentum_period', {}).get('end', 30)
+            min_required_bars = period_max + 10
+        print(f"[Optimization] 策略 {strategy} 需要至少 {min_required_bars} 个数据点")
 
-            max_momentum_period = param_ranges.get('momentum_period', {}).get('end', 30)
 
-            min_required_bars = max_momentum_period + 10
-
-            print(f"[Optimization] Momentum策略检查: max_momentum_period={max_momentum_period}, 需要至少 {min_required_bars} 个数据点")
-
-        
 
         if len(historical_data) < min_required_bars:
 
@@ -15658,7 +15706,7 @@ def run_parameter_optimization():
 
             }), 400
 
-        
+
 
         print(f"[Optimization] 成功获取 {len(historical_data)} 个Alpaca历史数据点")
 
@@ -15704,13 +15752,13 @@ def run_parameter_optimization():
 
                     print(f"[Optimization] testing combo short={short_ma}, long={long_ma}")
 
-                    
+
 
                     try:
 
                         print(f"[Optimization] combo start short={short_ma}, long={long_ma}")
 
-                        
+
 
                         # 使用真实策略函数
 
@@ -15720,7 +15768,7 @@ def run_parameter_optimization():
 
                         print(f"[Optimization] trades={len(trades) if trades else 0}, equity_curve={len(equity_curve) if equity_curve else 0}")
 
-                        
+
 
                         # 计算性能指标 - 即使没有交易也要计算
 
@@ -15738,7 +15786,7 @@ def run_parameter_optimization():
 
                                 shares = initial_capital // initial_price if initial_price > 0 else 0
 
-                                
+
 
                                 for data_point in historical_data:
 
@@ -15774,7 +15822,7 @@ def run_parameter_optimization():
 
                                 equity_curve = [{'date': int(time.time()), 'equity': initial_capital, 'price': 0}]
 
-                        
+
 
                         # 确保有足够的数据点
 
@@ -15784,7 +15832,7 @@ def run_parameter_optimization():
 
                             continue
 
-                        
+
 
                         # 计算总回报率
 
@@ -15794,7 +15842,7 @@ def run_parameter_optimization():
 
                         total_return = ((final_equity - initial_equity) / initial_equity) * 100 if initial_equity > 0 else 0
 
-                        
+
 
                         # 计算夏普比率（简化版）
 
@@ -15812,7 +15860,7 @@ def run_parameter_optimization():
 
                                 returns.append(daily_return)
 
-                        
+
 
                         if returns:
 
@@ -15826,7 +15874,7 @@ def run_parameter_optimization():
 
                             sharpe_ratio = 0
 
-                        
+
 
                         # 计算最大回撤
 
@@ -15848,7 +15896,7 @@ def run_parameter_optimization():
 
                                 max_drawdown = drawdown
 
-                        
+
 
                         result = {
 
@@ -15902,7 +15950,7 @@ def run_parameter_optimization():
 
                         print(f"[Optimization] combo success short={short_ma}, long={long_ma}, return={total_return:.2f}%")
 
-                        
+
 
                     except Exception as e:
 
@@ -15911,6 +15959,21 @@ def run_parameter_optimization():
                         import traceback
 
                         traceback.print_exc()
+
+
+
+                        results.append({
+                            'short_ma': short_ma,
+                            'long_ma': long_ma,
+                            'status': 'failed',
+                            'totalReturn': 0,
+                            'sharpeRatio': 0,
+                            'maxDrawdown': 0,
+                            'winRate': 0,
+                            'profitFactor': 0,
+                            'trades': 0,
+                            'error': str(e)
+                        })
 
 
 
@@ -15956,7 +16019,7 @@ def run_parameter_optimization():
 
                         print(f"[Optimization] testing RSI combo period={rsi_period}, oversold={oversold}, overbought={overbought}")
 
-                        
+
 
                         try:
 
@@ -15968,7 +16031,7 @@ def run_parameter_optimization():
 
                             print(f"[Optimization] trades={len(trades) if trades else 0}, equity_curve={len(equity_curve) if equity_curve else 0}")
 
-                            
+
 
                             # 计算性能指标
 
@@ -15978,7 +16041,7 @@ def run_parameter_optimization():
 
                                 continue
 
-                            
+
 
                             # 计算总回报率
 
@@ -15988,7 +16051,7 @@ def run_parameter_optimization():
 
                             total_return = ((final_equity - initial_equity) / initial_equity) * 100 if initial_equity > 0 else 0
 
-                            
+
 
                             # 计算夏普比率（简化版）
 
@@ -16006,7 +16069,7 @@ def run_parameter_optimization():
 
                                     returns.append(daily_return)
 
-                            
+
 
                             if returns:
 
@@ -16020,7 +16083,7 @@ def run_parameter_optimization():
 
                                 sharpe_ratio = 0
 
-                            
+
 
                             # 计算最大回撤
 
@@ -16042,7 +16105,7 @@ def run_parameter_optimization():
 
                                     max_drawdown = drawdown
 
-                            
+
 
                             result = {
 
@@ -16064,23 +16127,15 @@ def run_parameter_optimization():
 
                                 'trades': len(trades) if trades else 0,
 
+                                'status': 'completed',
+
                                 'winRate': 0,  # 简化版本，实际需要计算胜率
 
-                                'profitFactor': 0,  # 简化版本
-
-                                'parameters': {
-
-                                    'rsi_period': rsi_period,
-
-                                    'oversold': oversold,
-
-                                    'overbought': overbought
-
-                                }
+                                'profitFactor': 0  # 简化版本
 
                             }
 
-                            
+
 
                             results.append(result)
 
@@ -16088,12 +16143,25 @@ def run_parameter_optimization():
 
                             count += 1
 
-                            
+
 
                         except Exception as e:
 
                             print(f"[Optimization] RSI策略执行异常: {str(e)}")
 
+                            results.append({
+                                'rsi_period': rsi_period,
+                                'oversold': oversold,
+                                'overbought': overbought,
+                                'status': 'failed',
+                                'totalReturn': 0,
+                                'sharpeRatio': 0,
+                                'maxDrawdown': 0,
+                                'winRate': 0,
+                                'profitFactor': 0,
+                                'trades': 0,
+                                'error': str(e)
+                            })
                             continue
 
 
@@ -16121,30 +16189,83 @@ def run_parameter_optimization():
             count = 0
 
             for fast in fast_values:
-
                 for slow in slow_values:
-
                     for signal in signal_values:
-
                         if fast >= slow:
+                            continue  # skip invalid (fast must be < slow)
 
-                            continue  # 跳过无效组合（快线必须小于慢线）
+                        try:
+                            trades, equity_curve = run_macd_strategy_for_optimization(
+                                historical_data,
+                                {'macdFast': fast, 'macdSlow': slow, 'macdSignal': signal},
+                                initial_capital,
+                                symbol
+                            )
+                            if trades and len(trades) > 0:
+                                total_return = ((equity_curve[-1]['equity'] - initial_capital) / initial_capital) * 100
+                                winning_trades = [t for t in trades if t.get('pnl', 0) > 0]
+                                losing_trades = [t for t in trades if t.get('pnl', 0) <= 0]
+                                win_rate = (len(winning_trades) / len(trades)) * 100 if len(trades) > 0 else 0
+                                total_profit = sum(t.get('pnl', 0) for t in winning_trades)
+                                total_loss = abs(sum(t.get('pnl', 0) for t in losing_trades))
+                                profit_factor = (total_profit / total_loss) if total_loss > 0 else (total_profit if total_profit > 0 else 1)
+                                returns = [equity_curve[j+1]['equity'] / equity_curve[j]['equity'] - 1 for j in range(len(equity_curve)-1)]
+                                avg_return = sum(returns) / len(returns) if returns else 0
+                                std_return = (sum((r - avg_return)**2 for r in returns) / len(returns))**0.5 if returns else 1
+                                sharpe_ratio = (avg_return / std_return) * (252**0.5) if std_return > 0 else 0
+                                max_equity = equity_curve[0]['equity']
+                                max_drawdown = 0
+                                for point in equity_curve:
+                                    if point['equity'] > max_equity:
+                                        max_equity = point['equity']
+                                    dd = (point['equity'] - max_equity) / max_equity * 100
+                                    if dd < max_drawdown:
+                                        max_drawdown = dd
 
-
-
-                        if count >= max_combinations:
-
-                            break
-
-
-
-                        print(f"[Optimization] 警告: MACD策略暂未实现真实回测，跳过组合 fast={fast}, slow={slow}, signal={signal}")
-
+                                results.append({
+                                    'fast': fast,
+                                    'slow': slow,
+                                    'signal': signal,
+                                    'status': 'completed',
+                                    'totalReturn': round(total_return, 2),
+                                    'sharpeRatio': round(sharpe_ratio, 2),
+                                    'maxDrawdown': round(max_drawdown, 2),
+                                    'winRate': round(win_rate, 2),
+                                    'profitFactor': round(profit_factor, 2),
+                                    'trades': len(trades),
+                                    'error': None
+                                })
+                            else:
+                                results.append({
+                                    'fast': fast,
+                                    'slow': slow,
+                                    'signal': signal,
+                                    'status': 'failed',
+                                    'totalReturn': 0, 'sharpeRatio': 0,
+                                    'maxDrawdown': 0, 'winRate': 0,
+                                    'profitFactor': 0, 'trades': 0,
+                                    'error': 'No trades generated'
+                                })
+                        except Exception as e:
+                            print(f"[Optimization] MACD exception: {str(e)}")
+                            results.append({
+                                'fast': fast,
+                                'slow': slow,
+                                'signal': signal,
+                                'status': 'failed',
+                                'totalReturn': 0, 'sharpeRatio': 0,
+                                'maxDrawdown': 0, 'winRate': 0,
+                                'profitFactor': 0, 'trades': 0,
+                                'error': str(e)
+                            })
                         count += 1
 
-                        # 暂时跳过MACD策略的真实回测
-
-
+                        if count >= max_combinations:
+                            break
+                    if count >= max_combinations:
+                        break
+                if count >= max_combinations:
+                    break
 
         elif strategy == 'bollinger':
 
@@ -16169,30 +16290,153 @@ def run_parameter_optimization():
 
 
             for period in period_values:
-
                 for std_dev in std_dev_values:
+                    try:
+                        trades, equity_curve = run_bollinger_strategy_for_optimization(
+                            historical_data,
+                            {'bollingerPeriod': period, 'bollingerStdDev': std_dev},
+                            initial_capital,
+                            symbol
+                        )
+                        if trades and len(trades) > 0:
+                            total_return = ((equity_curve[-1]['equity'] - initial_capital) / initial_capital) * 100
+                            winning_trades = [t for t in trades if t.get('pnl', 0) > 0]
+                            losing_trades = [t for t in trades if t.get('pnl', 0) <= 0]
+                            win_rate = (len(winning_trades) / len(trades)) * 100 if len(trades) > 0 else 0
+                            total_profit = sum(t.get('pnl', 0) for t in winning_trades)
+                            total_loss = abs(sum(t.get('pnl', 0) for t in losing_trades))
+                            profit_factor = (total_profit / total_loss) if total_loss > 0 else (total_profit if total_profit > 0 else 1)
+                            returns = [equity_curve[j+1]['equity'] / equity_curve[j]['equity'] - 1 for j in range(len(equity_curve)-1)]
+                            avg_return = sum(returns) / len(returns) if returns else 0
+                            std_return = (sum((r - avg_return)**2 for r in returns) / len(returns))**0.5 if returns else 1
+                            sharpe_ratio = (avg_return / std_return) * (252**0.5) if std_return > 0 else 0
+                            max_equity = equity_curve[0]['equity']
+                            max_drawdown = 0
+                            for point in equity_curve:
+                                if point['equity'] > max_equity:
+                                    max_equity = point['equity']
+                                dd = (point['equity'] - max_equity) / max_equity * 100
+                                if dd < max_drawdown:
+                                    max_drawdown = dd
 
-                    print(f"[Optimization] 警告: Bollinger策略暂未实现真实回测，跳过组合 period={period}, std_dev={std_dev}")
-
-                    # 暂时跳过Bollinger策略的真实回测
-
+                            results.append({
+                                'period': period,
+                                'std_dev': round(std_dev, 2),
+                                'status': 'completed',
+                                'totalReturn': round(total_return, 2),
+                                'sharpeRatio': round(sharpe_ratio, 2),
+                                'maxDrawdown': round(max_drawdown, 2),
+                                'winRate': round(win_rate, 2),
+                                'profitFactor': round(profit_factor, 2),
+                                'trades': len(trades),
+                                'error': None
+                            })
+                        else:
+                            results.append({
+                                'period': period,
+                                'std_dev': round(std_dev, 2),
+                                'status': 'failed',
+                                'totalReturn': 0, 'sharpeRatio': 0,
+                                'maxDrawdown': 0, 'winRate': 0,
+                                'profitFactor': 0, 'trades': 0,
+                                'error': 'No trades generated'
+                            })
+                    except Exception as e:
+                        print(f"[Optimization] Bollinger exception: {str(e)}")
+                        results.append({
+                            'period': period,
+                            'std_dev': round(std_dev, 2),
+                            'status': 'failed',
+                            'totalReturn': 0, 'sharpeRatio': 0,
+                            'maxDrawdown': 0, 'winRate': 0,
+                            'profitFactor': 0, 'trades': 0,
+                            'error': str(e)
+                        })
 
 
         elif strategy == 'momentum':
 
             momentum_period_values = list(range(param_ranges['momentum_period']['start'], param_ranges['momentum_period']['end'] + 1, param_ranges['momentum_period']['step']))
 
+            threshold_start = param_ranges['momentum_threshold']['start']
+            threshold_end = param_ranges['momentum_threshold']['end']
+            threshold_step = param_ranges['momentum_threshold']['step']
+            threshold_values = []
+            current = threshold_start
+            while current <= threshold_end + 0.0001:
+                threshold_values.append(round(current, 4))
+                current += threshold_step
 
-
-            print(f"[Optimization] 生成 {len(momentum_period_values)} 个Momentum参数组合")
-
-
+            total_combos = len(momentum_period_values) * len(threshold_values)
+            print(f"[Optimization] {len(momentum_period_values)} x {len(threshold_values)} = {total_combos} Momentum combos")
 
             for momentum_period in momentum_period_values:
+                for momentum_threshold in threshold_values:
+                    try:
+                        trades, equity_curve = run_momentum_strategy_for_optimization(
+                            historical_data,
+                            {'momentumPeriod': momentum_period, 'momentumThreshold': momentum_threshold},
+                            initial_capital,
+                            symbol
+                        )
+                        if trades and len(trades) > 0:
+                            total_return = ((equity_curve[-1]['equity'] - initial_capital) / initial_capital) * 100
+                            winning_trades = [t for t in trades if t.get('pnl', 0) > 0]
+                            losing_trades = [t for t in trades if t.get('pnl', 0) <= 0]
+                            win_rate = (len(winning_trades) / len(trades)) * 100 if len(trades) > 0 else 0
+                            total_profit = sum(t.get('pnl', 0) for t in winning_trades)
+                            total_loss = abs(sum(t.get('pnl', 0) for t in losing_trades))
+                            profit_factor = (total_profit / total_loss) if total_loss > 0 else (total_profit if total_profit > 0 else 1)
+                            returns = [equity_curve[j+1]['equity'] / equity_curve[j]['equity'] - 1 for j in range(len(equity_curve)-1)]
+                            avg_return = sum(returns) / len(returns) if returns else 0
+                            std_return = (sum((r - avg_return)**2 for r in returns) / len(returns))**0.5 if returns else 1
+                            sharpe_ratio = (avg_return / std_return) * (252**0.5) if std_return > 0 else 0
+                            max_equity = equity_curve[0]['equity']
+                            max_drawdown = 0
+                            for point in equity_curve:
+                                if point['equity'] > max_equity:
+                                    max_equity = point['equity']
+                                dd = (point['equity'] - max_equity) / max_equity * 100
+                                if dd < max_drawdown:
+                                    max_drawdown = dd
 
-                print(f"[Optimization] 警告: Momentum策略暂未实现真实回测，跳过组合 momentum_period={momentum_period}")
+                            results.append({
+                                'momentum_period': momentum_period,
+                                'momentum_threshold': momentum_threshold,
+                                'status': 'completed',
+                                'totalReturn': round(total_return, 2),
+                                'sharpeRatio': round(sharpe_ratio, 2),
+                                'maxDrawdown': round(max_drawdown, 2),
+                                'winRate': round(win_rate, 2),
+                                'profitFactor': round(profit_factor, 2),
+                                'trades': len(trades),
+                                'error': None
+                            })
+                        else:
+                            results.append({
+                                'momentum_period': momentum_period,
+                                'momentum_threshold': momentum_threshold,
+                                'status': 'failed',
+                                'totalReturn': 0, 'sharpeRatio': 0,
+                                'maxDrawdown': 0, 'winRate': 0,
+                                'profitFactor': 0, 'trades': 0,
+                                'error': 'No trades generated'
+                            })
+                    except Exception as e:
+                        print(f"[Optimization] Momentum exception: {str(e)}")
+                        results.append({
+                            'momentum_period': momentum_period,
+                            'momentum_threshold': momentum_threshold,
+                            'status': 'failed',
+                            'totalReturn': 0, 'sharpeRatio': 0,
+                            'maxDrawdown': 0, 'winRate': 0,
+                            'profitFactor': 0, 'trades': 0,
+                            'error': str(e)
+                        })
 
-                # 暂时跳过Momentum策略的真实回测
+
+
+        # 按夏普比率排序
 
 
 
@@ -16222,7 +16466,7 @@ def run_parameter_optimization():
 
         best_score = 0
 
-        
+
 
         if results and len(results) > 0:
 
@@ -16230,7 +16474,7 @@ def run_parameter_optimization():
 
             best_score = best_result.get('sharpeRatio', 0)
 
-            
+
 
             # 从最佳结果中提取参数
 
@@ -16974,7 +17218,7 @@ def get_sector_from_multiple_sources(symbol, stock_data, news_data):
 
             'ADBE': 'Technology', 'CRM': 'Technology', 'ORCL': 'Technology', 'IBM': 'Technology',
 
-            
+
 
             # Financials
 
@@ -16984,7 +17228,7 @@ def get_sector_from_multiple_sources(symbol, stock_data, news_data):
 
             'V': 'Financials', 'MA': 'Financials', 'PYPL': 'Financials', 'SCHW': 'Financials',
 
-            
+
 
             # Energy
 
@@ -16992,7 +17236,7 @@ def get_sector_from_multiple_sources(symbol, stock_data, news_data):
 
             'PSX': 'Energy', 'MPC': 'Energy', 'VLO': 'Energy', 'KMI': 'Energy', 'OXY': 'Energy',
 
-            
+
 
             # Healthcare
 
@@ -17002,7 +17246,7 @@ def get_sector_from_multiple_sources(symbol, stock_data, news_data):
 
             'LLY': 'Healthcare', 'GILD': 'Healthcare', 'CVS': 'Healthcare', 'CI': 'Healthcare',
 
-            
+
 
             # Consumer Defensive
 
@@ -17014,7 +17258,7 @@ def get_sector_from_multiple_sources(symbol, stock_data, news_data):
 
             'EL': 'Consumer Defensive', 'KMB': 'Consumer Defensive', 'KHC': 'Consumer Defensive',
 
-            
+
 
             # Consumer Cyclical
 
@@ -17024,7 +17268,7 @@ def get_sector_from_multiple_sources(symbol, stock_data, news_data):
 
             'TGT': 'Consumer Cyclical', 'BKNG': 'Consumer Cyclical', 'MAR': 'Consumer Cyclical',
 
-            
+
 
             # Industrials
 
@@ -17034,7 +17278,7 @@ def get_sector_from_multiple_sources(symbol, stock_data, news_data):
 
             'LMT': 'Industrials', 'DE': 'Industrials', 'FDX': 'Industrials',
 
-            
+
 
             # Communication Services
 
@@ -17044,7 +17288,7 @@ def get_sector_from_multiple_sources(symbol, stock_data, news_data):
 
             'TMUS': 'Communication Services',
 
-            
+
 
             # Utilities
 
@@ -17052,7 +17296,7 @@ def get_sector_from_multiple_sources(symbol, stock_data, news_data):
 
             'AEP': 'Utilities', 'EXC': 'Utilities', 'SRE': 'Utilities',
 
-            
+
 
             # Real Estate
 
@@ -17060,7 +17304,7 @@ def get_sector_from_multiple_sources(symbol, stock_data, news_data):
 
             'PSA': 'Real Estate', 'SPG': 'Real Estate', 'O': 'Real Estate',
 
-            
+
 
             # Materials
 
@@ -17070,7 +17314,7 @@ def get_sector_from_multiple_sources(symbol, stock_data, news_data):
 
         }
 
-        
+
 
         # 1. 首先检查预定义的映射
 
@@ -17078,7 +17322,7 @@ def get_sector_from_multiple_sources(symbol, stock_data, news_data):
 
             return sector_map[symbol.upper()]
 
-        
+
 
         # 2. 检查是否有新闻数据可以提供线索
 
@@ -17096,7 +17340,7 @@ def get_sector_from_multiple_sources(symbol, stock_data, news_data):
 
             healthcare_keywords = ['pharma', 'drug', 'medical', 'health', 'hospital', 'biotech']
 
-            
+
 
             for keyword_list, sector in [
 
@@ -17114,7 +17358,7 @@ def get_sector_from_multiple_sources(symbol, stock_data, news_data):
 
                     return sector
 
-        
+
 
         # 3. 如果股票数据中有相关字段，可以推断
 
@@ -17126,13 +17370,13 @@ def get_sector_from_multiple_sources(symbol, stock_data, news_data):
 
             pass
 
-        
+
 
         # 4. 最后返回Unknown
 
         return 'Unknown'
 
-        
+
 
     except Exception as e:
 
@@ -17154,7 +17398,7 @@ def infer_sector_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         api_key = ai_provider_config_state.get('apiKey', '')
 
-        
+
 
         if not api_key or api_key.startswith('sk-') and len(api_key) < 30:
 
@@ -17162,7 +17406,7 @@ def infer_sector_with_deepseek(symbol, stock_data, news_data, profile_data):
 
             return 'Unknown'
 
-        
+
 
         # 准备分析数据
 
@@ -17184,7 +17428,7 @@ def infer_sector_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         }
 
-        
+
 
         # 构建提示
 
@@ -17246,7 +17490,7 @@ def infer_sector_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         }
 
-        
+
 
         payload = {
 
@@ -17262,7 +17506,7 @@ def infer_sector_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         }
 
-        
+
 
         base_url = ai_provider_config_state.get('baseURL', 'https://api.deepseek.com')
 
@@ -17270,7 +17514,7 @@ def infer_sector_with_deepseek(symbol, stock_data, news_data, profile_data):
 
             base_url = 'https://' + base_url
 
-        
+
 
         response = requests.post(
 
@@ -17284,7 +17528,7 @@ def infer_sector_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         )
 
-        
+
 
         if response.status_code == 200:
 
@@ -17292,7 +17536,7 @@ def infer_sector_with_deepseek(symbol, stock_data, news_data, profile_data):
 
             ai_response = result['choices'][0]['message']['content'].strip()
 
-            
+
 
             # 验证响应是有效的sector
 
@@ -17306,7 +17550,7 @@ def infer_sector_with_deepseek(symbol, stock_data, news_data, profile_data):
 
             ]
 
-            
+
 
             if ai_response in valid_sectors:
 
@@ -17326,7 +17570,7 @@ def infer_sector_with_deepseek(symbol, stock_data, news_data, profile_data):
 
             return 'Unknown'
 
-            
+
 
     except Exception as e:
 
@@ -17348,7 +17592,7 @@ def get_alpaca_news_data(symbol):
 
         print(f'[Alpaca新闻] 尝试获取 {symbol} 的新闻')
 
-        
+
 
         # 检查Alpaca配置
 
@@ -17356,7 +17600,7 @@ def get_alpaca_news_data(symbol):
 
         alpaca_secret_key = os.environ.get('APCA_API_SECRET_KEY')
 
-        
+
 
         if not alpaca_api_key or not alpaca_secret_key:
 
@@ -17364,7 +17608,7 @@ def get_alpaca_news_data(symbol):
 
             return None
 
-        
+
 
         # 使用Alpaca News API
 
@@ -17372,7 +17616,7 @@ def get_alpaca_news_data(symbol):
 
         from datetime import datetime, timedelta
 
-        
+
 
         # 设置时间范围（最近7天）
 
@@ -17380,7 +17624,7 @@ def get_alpaca_news_data(symbol):
 
         start_date = end_date - timedelta(days=7)
 
-        
+
 
         # 格式化日期
 
@@ -17388,13 +17632,13 @@ def get_alpaca_news_data(symbol):
 
         end_str = end_date.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-        
+
 
         # Alpaca News API URL
 
         url = f'https://data.alpaca.markets/v1beta1/news'
 
-        
+
 
         headers = {
 
@@ -17404,7 +17648,7 @@ def get_alpaca_news_data(symbol):
 
         }
 
-        
+
 
         params = {
 
@@ -17420,11 +17664,11 @@ def get_alpaca_news_data(symbol):
 
         }
 
-        
+
 
         response = requests.get(url, headers=headers, params=params, timeout=10)
 
-        
+
 
         if response.status_code == 200:
 
@@ -17432,25 +17676,25 @@ def get_alpaca_news_data(symbol):
 
             news_items = data.get('news', [])
 
-            
+
 
             if news_items:
 
                 print(f'[Alpaca新闻] 成功获取 {len(news_items)} 条新闻')
 
-                
+
 
                 # 分析新闻情绪
 
                 sentiment = analyze_news_sentiment(news_items)
 
-                
+
 
                 # 选择最重要的新闻作为topNews
 
                 top_news = select_top_news(news_items)
 
-                
+
 
                 return {
 
@@ -17498,7 +17742,7 @@ def get_alpaca_news_data(symbol):
 
             return None
 
-            
+
 
     except Exception as e:
 
@@ -17516,7 +17760,7 @@ def analyze_news_sentiment(news_items):
 
         return 'Neutral'
 
-    
+
 
     # 简单的关键词分析
 
@@ -17524,13 +17768,13 @@ def analyze_news_sentiment(news_items):
 
     negative_keywords = ['miss', 'weak', 'decline', 'negative', 'bearish', 'cut', 'downgrade']
 
-    
+
 
     positive_count = 0
 
     negative_count = 0
 
-    
+
 
     for news in news_items:
 
@@ -17540,7 +17784,7 @@ def analyze_news_sentiment(news_items):
 
         text = headline + ' ' + summary
 
-        
+
 
         for keyword in positive_keywords:
 
@@ -17550,7 +17794,7 @@ def analyze_news_sentiment(news_items):
 
                 break
 
-        
+
 
         for keyword in negative_keywords:
 
@@ -17560,7 +17804,7 @@ def analyze_news_sentiment(news_items):
 
                 break
 
-    
+
 
     if positive_count > negative_count:
 
@@ -17584,13 +17828,13 @@ def select_top_news(news_items):
 
         return None
 
-    
+
 
     # 选择最新的新闻
 
     latest_news = news_items[0]
 
-    
+
 
     return {
 
@@ -17622,7 +17866,7 @@ def get_stock_news(symbol):
 
     start_time = time.time()
 
-    
+
 
     try:
 
@@ -17632,7 +17876,7 @@ def get_stock_news(symbol):
 
         source = None
 
-        
+
 
         # 1. 先尝试Alpaca新闻API
 
@@ -17658,7 +17902,7 @@ def get_stock_news(symbol):
 
             print(f'[新闻接口] Alpaca新闻API错误: {alpaca_error}')
 
-        
+
 
         # 2. 如果Alpaca没有新闻，尝试Finnhub
 
@@ -17686,7 +17930,7 @@ def get_stock_news(symbol):
 
                 print(f'[新闻接口] Finnhub新闻API错误: {finnhub_error}')
 
-        
+
 
         # 3. 如果都没有新闻，返回"No recent news available"
 
@@ -17707,7 +17951,7 @@ def get_stock_news(symbol):
                 'newsCount': 0
             })
 
-        
+
 
         # 3. 分析新闻数据
 
@@ -17719,15 +17963,15 @@ def get_stock_news(symbol):
 
             # 按时间排序，选择最新的
 
-            sorted_news = sorted(news_items, 
+            sorted_news = sorted(news_items,
 
-                               key=lambda x: x.get('published_at') or x.get('datetime') or x.get('time', 0), 
+                               key=lambda x: x.get('published_at') or x.get('datetime') or x.get('time', 0),
 
                                reverse=True)
 
             top_news = sorted_news[0]
 
-            
+
 
             # 格式化top_news
 
@@ -17747,7 +17991,7 @@ def get_stock_news(symbol):
 
             }
 
-            
+
 
             # 分析新闻情绪
 
@@ -17771,7 +18015,7 @@ def get_stock_news(symbol):
 
                     sentiment = 'Negative'
 
-            
+
 
             # 判断事件风险
 
@@ -17781,7 +18025,7 @@ def get_stock_news(symbol):
 
             medium_risk_keywords = ['earnings', 'guidance', 'downgrade', 'cut', 'delay']
 
-            
+
 
             if any(word in title_summary for word in high_risk_keywords):
 
@@ -17803,7 +18047,7 @@ def get_stock_news(symbol):
 
             event_risk = None
 
-        
+
 
         # 4. 构建响应
 
@@ -17835,13 +18079,13 @@ def get_stock_news(symbol):
 
         }
 
-        
+
 
         print(f'[新闻接口] 最终响应数据: {response_data}')
 
         return jsonify(response_data)
 
-        
+
 
     except Exception as e:
 
@@ -17851,7 +18095,7 @@ def get_stock_news(symbol):
 
         traceback.print_exc()
 
-        
+
 
         return jsonify({
 
@@ -17883,17 +18127,17 @@ def ai_analyze_single():
 
     start_time = time.time()
 
-    
+
     def format_top_news_for_frontend(news_data):
         """格式化topNews对象以匹配前端期望的格式"""
         if not news_data:
             return None
-        
+
         try:
             # 获取头条新闻列表
             headlines = news_data.get('headlines', [])
             raw_news = news_data.get('rawNews', [])
-            
+
             # 优先使用headlines中的第一条新闻
             if headlines and len(headlines) > 0:
                 headline = headlines[0]
@@ -17948,7 +18192,7 @@ def ai_analyze_single():
 
             }), 400
 
-        
+
 
         symbol = data.get('symbol')
 
@@ -17964,13 +18208,13 @@ def ai_analyze_single():
 
             }), 400
 
-        
+
 
         symbol_upper = symbol.upper()
 
         print(f'[AI分析接口] 分析股票: {symbol_upper}')
 
-        
+
 
         # 1. 获取市场数据 - 强制使用与UI完全相同的标准化数据
 
@@ -17978,13 +18222,13 @@ def ai_analyze_single():
 
         company_info = None
 
-        
+
 
         try:
 
             print(f'[AI分析接口] 获取标准化市场数据 (与UI相同): {symbol_upper}')
 
-            
+
 
             # 方法1: 直接调用UI使用的接口
 
@@ -18002,7 +18246,7 @@ def ai_analyze_single():
 
                 )
 
-                
+
 
                 if ui_response.status_code == 200:
 
@@ -18016,7 +18260,7 @@ def ai_analyze_single():
 
                         print(f'[AI分析接口] UI数据: price={ui_stock.get("price")}, change%={ui_stock.get("changePercent")}, volume={ui_stock.get("volume")}')
 
-                        
+
 
                         # 创建标准化的market_data结构
 
@@ -18060,7 +18304,7 @@ def ai_analyze_single():
 
                 print(f'[AI分析接口] UI接口调用失败: {ui_error}')
 
-            
+
 
             # 方法2: 如果UI接口失败，使用snapshots函数
 
@@ -18070,7 +18314,7 @@ def ai_analyze_single():
 
                 alpaca_data_dict, alpaca_errors = fetch_alpaca_stock_data_snapshot([symbol_upper])
 
-                
+
 
                 if symbol_upper in alpaca_data_dict:
 
@@ -18080,7 +18324,7 @@ def ai_analyze_single():
 
                     print(f'[AI分析接口] Alpaca数据: price={alpaca_data.get("price")}, change%={alpaca_data.get("changePercent")}, volume={alpaca_data.get("volume")}')
 
-                    
+
 
                     # 创建标准化的market_data结构
 
@@ -18124,7 +18368,7 @@ def ai_analyze_single():
 
                     market_data = None
 
-        
+
 
         except Exception as e:
 
@@ -18132,7 +18376,7 @@ def ai_analyze_single():
 
             market_data = None
 
-        
+
 
         # 在市场数据获取后立即添加详细调试信息
 
@@ -18158,7 +18402,7 @@ def ai_analyze_single():
 
             print(f'[AI分析接口] 市场数据为None或空')
 
-        
+
 
         # 2. 获取公司信息 - 使用Finnhub
 
@@ -18168,7 +18412,7 @@ def ai_analyze_single():
 
             company_profile, profile_error = fetch_finnhub_profile(symbol_upper)
 
-            
+
 
             if profile_error or not company_profile:
 
@@ -18188,7 +18432,7 @@ def ai_analyze_single():
 
             company_info = None
 
-        
+
 
         # 3. 获取新闻数据 - 使用新添加的新闻接口逻辑
 
@@ -18212,7 +18456,7 @@ def ai_analyze_single():
 
             news_data = None
 
-        
+
 
         # 4. 使用用户配置的AI provider进行真实分析
 
@@ -18222,7 +18466,7 @@ def ai_analyze_single():
 
         ai_config = ai_provider_config_state
 
-        
+
 
         # 强制使用DeepSeek分析，跳过API密钥验证
 
@@ -18230,7 +18474,7 @@ def ai_analyze_single():
 
         print(f'[AI分析接口] AI配置状态: provider={ai_config.get("provider")}, model={ai_config.get("model")}, baseURL={ai_config.get("baseURL")}')
 
-        
+
 
         # 确保参数不为None
 
@@ -18246,13 +18490,13 @@ def ai_analyze_single():
 
             company_info = {}
 
-        
+
 
         print(f'[AI分析接口] 调用函数: analyze_trend_with_deepseek({symbol_upper}, {type(market_data)}, {type(news_data)}, {type(company_info)})')
 
         print(f'[AI分析接口] 新闻数据内容: {news_data}')
 
-        
+
 
         try:
 
@@ -18266,7 +18510,7 @@ def ai_analyze_single():
 
             print(f'[AI分析接口] AI分析失败，返回null数据')
 
-            
+
 
             # AI分析失败时返回null数据，不生成本地规则数据
 
@@ -18336,7 +18580,7 @@ def ai_analyze_single():
 
             }
 
-            
+
 
             print(f'[AI分析接口] AI分析失败，返回null数据: {response_data}')
 
@@ -18356,7 +18600,7 @@ def ai_analyze_single():
 
             print(f'  - company_info type: {type(company_info)}, value: {company_info}')
 
-            
+
 
             # 确保参数不为None
 
@@ -18372,13 +18616,13 @@ def ai_analyze_single():
 
                 company_info = {}
 
-            
+
 
             print(f'[AI分析接口] 调用函数: analyze_trend_with_deepseek({symbol_upper}, {type(market_data)}, {type(news_data)}, {type(company_info)})')
 
             print(f'[AI分析接口] 市场数据内容: price={market_data.get("price") if market_data else None}, changePercent={market_data.get("changePercent") if market_data else None}, volume={market_data.get("volume") if market_data else None}')
 
-            
+
 
             try:
 
@@ -18394,7 +18638,7 @@ def ai_analyze_single():
 
                 raise
 
-            
+
 
             if ai_analysis and 'error' not in ai_analysis:
 
@@ -18404,11 +18648,11 @@ def ai_analyze_single():
 
                 # 它可能返回: trendLabel, trendScore, trendConfidence, scannerReason, aiReasoning
 
-                
+
 
                 print(f'[AI分析接口] AI分析结果: {ai_analysis}')
 
-                
+
 
                 response_data = {
 
@@ -18477,7 +18721,7 @@ def ai_analyze_single():
 
                 }
 
-                
+
 
                 # 添加调试信息
 
@@ -18491,7 +18735,7 @@ def ai_analyze_single():
 
                     alpaca_environment = alpaca_config_state.get('environment', 'paper')
 
-                    
+
 
                     response_data['debug'] = {
 
@@ -18515,7 +18759,7 @@ def ai_analyze_single():
 
                     }
 
-                
+
 
                 print(f'[AI分析接口] 最终响应数据: {response_data}')
 
@@ -18523,11 +18767,11 @@ def ai_analyze_single():
                 # 检查是否是"没有用户key"的错误
                 error_msg = ai_analysis.get('error', '') if ai_analysis else ''
                 stage = ai_analysis.get('stage', '') if ai_analysis else ''
-                
+
                 if 'No user-provided AI API key' in error_msg or stage == 'ai_config':
                     # 用户未配置API key，直接返回错误，不进行本地规则回退
                     print(f'[AI分析接口] 用户未配置API key，返回明确错误: {error_msg}')
-                    
+
                     return jsonify({
                         'success': False,
                         'symbol': symbol_upper,
@@ -18549,7 +18793,7 @@ def ai_analyze_single():
                     # 其他类型的AI失败，回退到本地规则
                     print(f'[AI分析接口] AI分析失败，使用本地规则: {error_msg}')
                     trend_analysis = analyze_trend_locally(symbol_upper, market_data, news_data, company_info)
-                    
+
                     response_data = {
                         'success': True,
                         'symbol': symbol_upper,
@@ -18597,11 +18841,11 @@ def ai_analyze_single():
 
                 }
 
-        
+
 
         return jsonify(response_data)
 
-        
+
 
     except Exception as e:
 
@@ -18611,7 +18855,7 @@ def ai_analyze_single():
 
         traceback.print_exc()
 
-        
+
 
         return jsonify({
 
@@ -18624,6 +18868,217 @@ def ai_analyze_single():
             'responseTime': round(time.time() - start_time, 3)
 
         }), 500
+
+
+# ============ AI Final Candidate Selection ============
+
+@app.route('/api/ai/fine-scan-select', methods=['POST'])
+def fine_scan_select():
+    """
+    AI final selection of top 3-5 stocks for next step.
+    Called once after all symbols have completed Fine Scan.
+    Receives all candidate results, returns AI-ranked picks.
+    """
+    import json as _json
+    import time as _time
+
+    start_ts = _time.time()
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        candidates = data.get('candidates', [])
+        if not candidates:
+            return jsonify({'success': False, 'message': 'No candidates provided'}), 400
+
+        # Build structured input for AI
+        candidate_lines = []
+        for c in candidates:
+            sym = c.get('symbol', '?')
+            bt_stat = c.get('backtestStatus', 'N/A')
+            bt_perf = c.get('backtestPerformance', 'N/A')
+            bt_return = c.get('backtestReturn', '')
+            opt_stab = c.get('optimizationStability', '')
+            entry = c.get('entryQuality', 'N/A')
+            entry_rr = c.get('entryRR', '')
+            liq = c.get('liquidityGrade', 'N/A')
+            news = c.get('newsGrade', 'N/A')
+            risk = c.get('riskGrade', 'N/A')
+            regime = c.get('marketRegime', '')
+            strategy = c.get('matchedStrategy', '')
+            score = c.get('matchConfidence', 0)
+            candidate_lines.append(
+                f"- {sym}: BT={bt_stat} perf={bt_perf}"
+                f"{'(' + str(bt_return) + ')' if bt_return else ''}"
+                f" opt={opt_stab} entry={entry}"
+                f"{' R/R=' + str(entry_rr) if entry_rr else ''}"
+                f" liq={liq} news={news} risk={risk}"
+                f" regime={regime} strat={strategy} score={score}"
+            )
+
+        ai_prompt = f"""You are a quantitative trading analyst. Select the best 3-5 stocks for the NEXT TRADE based on all scan results.
+
+Rules:
+1. Select ONLY candidates with actionable combination of strengths and acceptable risks
+2. Prefer: strong backtest + stable optimization + Good/Excellent entry + acceptable liquidity + controllable risk
+3. Do NOT select: SKIP risk, Data Unavailable on key fields, very poor liquidity, or very poor reward/risk
+4. EXCEPTION: you may select borderline stocks ONLY if you explain why (e.g. "strong backtest despite poor entry")
+
+Return EXACTLY this JSON format (no markdown, no extra text):
+{{
+  "selected": [
+    {{
+      "rank": 1,
+      "symbol": "AAPL",
+      "decision": "Continue|Watch|Skip",
+      "confidence": 85,
+      "main_reason": "strong backtest with stable params, good entry near support, acceptable liquidity",
+      "risk": "MEDIUM",
+      "next_step": "Monitor for pullback to EMA20 before entry on Monday"
+    }}
+  ],
+  "explanation": "Brief overall reasoning for the selection"
+}}
+
+Candidates:
+{chr(10).join(candidate_lines)}
+
+Return ONLY the JSON. No preamble."""
+        # Read AI config
+        api_key = ai_provider_config_state.get('apiKey', '')
+        if not api_key or len(api_key) < 10:
+            return jsonify({
+                'success': False,
+                'message': 'AI config: no valid API key',
+                'ai_skipped': True,
+                'fallback': True,
+                'selected': _rank_fallback(candidates)
+            })
+
+        provider = ai_provider_config_state.get('provider', 'deepseek')
+        base_url = ai_provider_config_state.get('baseURL', 'https://api.deepseek.com')
+        model = ai_provider_config_state.get('model', 'deepseek-chat')
+
+        ai_headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        }
+
+        ai_payload = {
+            'model': model,
+            'messages': [
+                {'role': 'system', 'content': 'You are a quantitative trading analyst. Return only valid JSON.'},
+                {'role': 'user', 'content': ai_prompt}
+            ],
+            'max_tokens': 2000,
+            'temperature': 0.3,
+        }
+
+        if not base_url.startswith('http'):
+            base_url = 'https://' + base_url
+
+        resp = requests.post(f'{base_url}/chat/completions', headers=ai_headers, json=ai_payload, timeout=30)
+
+        if resp.status_code != 200:
+            print(f'[FINE SCAN SELECT] AI HTTP {resp.status_code}: {resp.text[:200]}')
+            return jsonify({
+                'success': False,
+                'message': f'AI returned HTTP {resp.status_code}',
+                'ai_skipped': True,
+                'fallback': True,
+                'selected': _rank_fallback(candidates)
+            })
+
+        ai_content = resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
+        # Strip markdown fences if present
+        ai_content = ai_content.strip()
+        if ai_content.startswith('```'):
+            ai_content = ai_content.split('\\n', 1)[-1] if '\\n' in ai_content else ai_content[3:]
+            if ai_content.endswith('```'):
+                ai_content = ai_content[:-3]
+            ai_content = ai_content.strip()
+
+        try:
+            result = _json.loads(ai_content)
+        except _json.JSONDecodeError as e:
+            print(f'[FINE SCAN SELECT] JSON parse error: {e}, raw: {ai_content[:200]}')
+            return jsonify({
+                'success': False,
+                'message': f'AI returned unparseable JSON: {str(e)}',
+                'ai_skipped': True,
+                'fallback': True,
+                'selected': _rank_fallback(candidates)
+            })
+
+        elapsed = round(_time.time() - start_ts, 2)
+        print(f'=== FINE SCAN SELECTED: {len(result.get("selected", []))} candidates ({elapsed}s) ===')
+
+        return jsonify({
+            'success': True,
+            'selected': result.get('selected', []),
+            'explanation': result.get('explanation', ''),
+            'ai_skipped': False,
+            'elapsed': elapsed
+        })
+
+    except Exception as e:
+        print(f'[FINE SCAN SELECT ERROR] {e}')
+        import traceback as _tb
+        _tb.print_exc()
+        return jsonify({
+            'success': False,
+            'message': str(e),
+            'ai_skipped': True,
+            'fallback': True,
+            'selected': _rank_fallback(candidates) if 'candidates' in dir() else []
+        })
+
+
+def _rank_fallback(candidates):
+    """Deterministic fallback ranking when AI is unavailable."""
+    scored = []
+    for c in candidates:
+        score = 0
+        bt = c.get('backtestPerformance', '')
+        if bt == 'positive': score += 30
+        elif bt == 'caution': score += 10
+        opt = c.get('optimizationStability', '')
+        if opt == 'Stable': score += 20
+        elif opt == 'Weak': score += 5
+        entry = c.get('entryQuality', '')
+        if entry in ('Excellent', 'Good'): score += 25
+        elif entry == 'Wait for Pullback': score += 10
+        liq = c.get('liquidityGrade', '')
+        if liq == 'Good': score += 15
+        elif liq in ('Caution',): score += 5
+        risk = c.get('riskGrade', '')
+        if risk == 'LOW': score += 20
+        elif risk == 'MEDIUM': score += 5
+        if risk in ('SKIP',): score = -999
+        if liq in ('Poor', 'Data Unavailable'): score -= 10
+        if entry in ('Data Unavailable', 'Error / No Data'): score -= 20
+        if bt == 'error': score -= 30
+        scored.append({'symbol': c.get('symbol', '?'), 'score': score, 'candidate': c})
+
+    scored.sort(key=lambda x: -x['score'])
+    selected = []
+    rank = 0
+    for s in scored:
+        if s['score'] <= 0:
+            continue
+        rank += 1
+        if rank > 5:
+            break
+        c = s['candidate']
+        decision = 'Continue' if s['score'] >= 50 else ('Watch' if s['score'] >= 25 else 'Skip')
+        selected.append({
+            'rank': rank,
+            'symbol': s['symbol'],
+            'decision': decision,
+            'confidence': min(s['score'], 100),
+            'main_reason': f'Score={s["score"]}: BT={c.get("backtestPerformance","")} Entry={c.get("entryQuality","")} Risk={c.get("riskGrade","")}',
+            'risk': c.get('riskGrade', 'MEDIUM'),
+            'next_step': 'Consider entry on pullback' if decision == 'Continue' else 'Monitor for improvement'
+        })
+    return selected
 
 
 
@@ -18701,7 +19156,2445 @@ if __name__ == '__main__':
 
             print(f"  {rule.rule} -> {rule.endpoint}")
 
+
+    # ============ Entry Quality Analysis (Alpaca-based) ============
+
+@app.route('/api/ai/entry-quality', methods=['POST'])
+def ai_entry_quality():
+    """
+    Entry Quality / Position Quality Scan.
+    Fetches Alpaca snapshot + 60 daily bars, computes ATR/EMA20/EMA50/
+    support/resistance/entry zone/invalidation/targets and returns
+    entry quality grade: Excellent / Good / Wait for Pullback /
+    Chasing / Extended / Poor Reward-Risk / Near Resistance / Error
+    """
+    import time
+    import json
+    import requests as req_lib
+    import math
+
+    try:
+        data = request.get_json()
+        if not data or 'symbol' not in data:
+            return jsonify({'success': False, 'message': 'symbol required'}), 400
+
+        symbol = data['symbol'].strip().upper()
+        start_time = time.time()
+
+        print(f'\n=== ENTRY QUALITY START: {symbol} ===')
+
+        # Track source statuses
+        source_status = {
+            'alpaca_snapshot': 'not_attempted',
+            'alpaca_bars': 'not_attempted',
+        }
+
+        # ── 1. Fetch Alpaca Snapshot ──
+        current_price = 0
+        daily_bar = {}
+        latest_trade = {}
+        latest_quote = {}
+
+        try:
+            snap_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/snapshot'
+            snap_headers = {
+                'APCA-API-KEY-ID': ALPACA_API_KEY,
+                'APCA-API-SECRET-KEY': ALPACA_API_SECRET
+            }
+            snap_resp = req_lib.get(snap_url, headers=snap_headers, timeout=10)
+            if snap_resp.status_code == 200:
+                source_status['alpaca_snapshot'] = 'ok'
+                snap = snap_resp.json()
+                latest_trade = snap.get('latestTrade', {}) or {}
+                latest_quote = snap.get('latestQuote', {}) or {}
+                daily_bar = snap.get('dailyBar', {}) or {}
+                current_price = float(latest_trade.get('p', 0))
+                if current_price <= 0:
+                    current_price = float(daily_bar.get('c', 0) or 0)
+                if current_price <= 0:
+                    current_price = float(snap.get('prevDailyBar', {}).get('c', 0) or 0)
+            else:
+                source_status['alpaca_snapshot'] = f'http_{snap_resp.status_code}'
+        except Exception as snap_err:
+            source_status['alpaca_snapshot'] = f'exception: {str(snap_err)[:60]}'
+
+        # ── 2. Fetch 60 daily bars (3 months) ──
+        closes = []
+        highs = []
+        lows = []
+        volumes = []
+        bars = []
+
+        try:
+            bars_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/bars'
+            # Calculate date range
+            from datetime import datetime as dt_dt, timedelta as dt_td
+            bars_end = dt_dt.utcnow()
+            bars_start = bars_end - dt_td(days=90)
+            bars_params = {
+                'timeframe': '1Day', 'limit': 100, 'adjustment': 'raw',
+                'start': bars_start.strftime('%Y-%m-%dT00:00:00Z'),
+                'end': bars_end.strftime('%Y-%m-%dT00:00:00Z'),
+                'sort': 'asc'
+            }
+            snap_headers = {
+                'APCA-API-KEY-ID': ALPACA_API_KEY,
+                'APCA-API-SECRET-KEY': ALPACA_API_SECRET
+            }
+            bars_resp = req_lib.get(bars_url, headers=snap_headers, params=bars_params, timeout=10)
+            if bars_resp.status_code == 200:
+                source_status['alpaca_bars'] = 'ok'
+                raw = bars_resp.json().get('bars', [])
+                bars = raw if raw else []
+                closes = [float(b['c']) for b in bars if b.get('c')]
+                highs = [float(b['h']) for b in bars if b.get('h')]
+                lows = [float(b['l']) for b in bars if b.get('l')]
+                volumes = [float(b['v']) for b in bars if b.get('v')]
+            else:
+                source_status['alpaca_bars'] = f'http_{bars_resp.status_code}'
+        except Exception as bars_err:
+            source_status['alpaca_bars'] = f'exception: {str(bars_err)[:60]}'
+
+        # ── 3. Fallback price from bars if snapshot failed but bars exist ──
+        if current_price <= 0 and closes:
+            current_price = closes[-1]
+
+        n = len(closes)
+
+        # ── 4. Check data sufficiency ──
+        data_unavailable = (current_price <= 0)
+        partial_data = False
+        entry_quality = ''
+        entry_reason = ''
+        score = 0
+        entry_details = {}
+
+        if data_unavailable:
+            entry_quality = 'Data Unavailable'
+            entry_reason = 'No current price from Alpaca snapshot or bars'
+            data_notes = []
+            if source_status['alpaca_snapshot'] != 'ok':
+                data_notes.append(f"snapshot: {source_status['alpaca_snapshot']}")
+            if source_status['alpaca_bars'] != 'ok':
+                data_notes.append(f"bars: {source_status['alpaca_bars']}")
+            if data_notes:
+                entry_reason += f" [{'; '.join(data_notes)}]"
+
+            elapsed = round(time.time() - start_time, 2)
+            print(f'=== ENTRY QUALITY {symbol}: Data Unavailable ({elapsed}s) ===')
+            print(f'    source_status: {source_status}')
+
+            entry_details = {
+                'current_price': 0,
+                'atr': 0,
+                'atr_pct': 0,
+                'ema20': None,
+                'ema50': None,
+                'support': 0,
+                'resistance': 0,
+                'strong_support': 0,
+                'strong_resistance': 0,
+                'entry_zone_low': 0,
+                'entry_zone_high': 0,
+                'invalidation': 0,
+                'stop_distance_pct': 0,
+                'target_1': 0,
+                'target_2': 0,
+                'reward_risk_ratio': 0,
+                'dist_from_support_pct': 0,
+                'dist_from_resistance_pct': 0,
+                'near_resistance': False,
+                'near_support': False,
+                'volume_ratio': 0,
+                'regime_class': 'unknown',
+                'score': 0,
+                'data_source_status': source_status,
+                'partial': False,
+            }
+
+            return jsonify({
+                'success': True,
+                'symbol': symbol,
+                'entry_quality': entry_quality,
+                'entry_reason': entry_reason.strip(),
+                'entry_score': 0,
+                'details': entry_details,
+                'data_source_status': source_status,
+                'elapsed': elapsed,
+            })
+
+        # ── 4. Compute indicators from real data only ──
+        atr = 0
+        ema20 = None
+        ema50 = None
+        support_1 = 0
+        resistance_1 = 0
+        strong_support = 0
+        strong_resistance = 0
+        atr_pct = 0
+        rr_ratio = 0
+        dist_from_support_pct = 0
+        dist_from_resistance_pct = 0
+        dist_from_ema20_pct = 0
+
+        partial_indicators = []
+
+        # ATR(14) - real data only
+        if n >= 15:
+            trs = []
+            for i in range(1, len(highs)):
+                hl = highs[i] - lows[i]
+                hc = abs(highs[i] - closes[i-1])
+                lc = abs(lows[i] - closes[i-1])
+                trs.append(max(hl, hc, lc))
+            if len(trs) >= 14:
+                atr = sum(trs[-14:]) / 14
+                atr_pct = atr / current_price * 100 if current_price > 0 else 0
+            else:
+                partial_indicators.append('atr')
+                source_status['alpaca_bars'] = f'insufficient_trs({len(trs)}/14)'
+        else:
+            partial_indicators.append('atr')
+            if n > 0 and n < 15:
+                source_status['alpaca_bars'] = f'insufficient_bars({n}/15)'
+
+        # EMA20/50
+        def calc_ema(data, period):
+            if len(data) < period:
+                return None
+            k = 2 / (period + 1)
+            ema = sum(data[:period]) / period
+            for i in range(period, len(data)):
+                ema = data[i] * k + ema * (1 - k)
+            return ema
+
+        if n >= 20:
+            ema20 = calc_ema(closes, 20)
+        else:
+            partial_indicators.append('ema20')
+        if n >= 50:
+            ema50 = calc_ema(closes, 50)
+        else:
+            partial_indicators.append('ema50')
+        if n >= 50:
+            pass  # full data
+        else:
+            partial_indicators.append('ema50')
+
+        # Support/Resistance from bars only
+        if n >= 14:
+            recent_high = max(highs[-14:])
+            recent_low = min(lows[-14:])
+            resistance_1 = recent_high
+            support_1 = recent_low
+        else:
+            partial_indicators.append('support_resistance')
+        if n > 0:
+            full_high = max(highs)
+            full_low = min(lows)
+            strong_support = full_low
+            strong_resistance = full_high
+        else:
+            strong_support = 0
+            strong_resistance = 0
+
+        partial_data = len(partial_indicators) > 0
+
+        # ── 5. Compute entry zone and targets (only if we have support and ATR) ──
+        entry_zone_low = 0
+        entry_zone_high = 0
+        invalidation = 0
+        stop_distance_pct = 0
+        target_1 = 0
+        target_2 = 0
+
+        if support_1 > 0 and atr > 0:
+            entry_zone_low = round(support_1, 2)
+            entry_zone_high = round(support_1 + atr * 0.5, 2)
+            invalidation = round(entry_zone_low - atr * 1.5, 2)
+            stop_distance_pct = round(((current_price - entry_zone_high) / current_price) * 100, 2) if current_price > 0 else 0
+            target_1 = round(entry_zone_high + atr * 1.0, 2)
+            target_2 = round(entry_zone_high + atr * 2.0, 2)
+            r_to_target1 = (target_1 - entry_zone_high) / (entry_zone_high - invalidation) if (entry_zone_high - invalidation) > 0 else 0
+            r_to_target2 = (target_2 - entry_zone_high) / (entry_zone_high - invalidation) if (entry_zone_high - invalidation) > 0 else 0
+            rr_ratio = round(r_to_target2, 2)
+
+        # ── 6. Entry Quality Assessment ──
+        dist_from_support_pct = ((current_price - support_1) / current_price * 100) if current_price > 0 and support_1 > 0 else 0
+        dist_from_resistance_pct = ((resistance_1 - current_price) / current_price * 100) if current_price > 0 and resistance_1 > 0 else 0
+        dist_from_ema20_pct = ((current_price - ema20) / current_price * 100) if ema20 and current_price > 0 else 0
+
+        avg_vol_recent = sum(volumes[-5:]) / 5 if len(volumes) >= 5 else 0
+        avg_vol_prior = sum(volumes[-10:-5]) / 5 if len(volumes) >= 10 else 0
+        vol_ratio = avg_vol_recent / avg_vol_prior if avg_vol_prior > 0 else 1.0
+
+        above_ema20 = current_price > ema20 if ema20 else None
+        above_ema50 = current_price > ema50 if ema50 else None
+        ema_bullish = ema20 > ema50 if ema20 and ema50 else None
+
+        near_resistance = (0 <= resistance_1 - current_price <= max(atr * 0.5, current_price * 0.03)) if resistance_1 > 0 and atr > 0 and current_price < resistance_1 else False
+        near_support = (0 <= current_price - support_1 <= max(atr * 1.0, current_price * 0.05)) if support_1 > 0 and atr > 0 and current_price > support_1 else False
+        overextended = dist_from_support_pct > (atr / current_price * 100 * 3) if current_price > 0 and atr > 0 and dist_from_support_pct > 0 else False
+        chasing = (above_ema20 == True) and (dist_from_ema20_pct > 2.5) if ema20 else False  # loosened 1.5→2.5
+        poor_rr = rr_ratio < 1.5 if rr_ratio > 0 else True
+
+        # Regime (only with real data)
+        regime_class = 'unknown'
+        if support_1 > 0 and resistance_1 > 0:
+            if near_resistance and not near_support:
+                regime_class = 'near_resistance'
+            elif near_support and not near_resistance:
+                regime_class = 'near_support'
+            elif above_ema20 == True and ema_bullish == True:
+                regime_class = 'trending'
+            elif above_ema20 == False and ema_bullish == False:
+                regime_class = 'downtrend'
+            else:
+                regime_class = 'range_bound'
+
+        # ── Regime-aware Scoring ──
+        # Different assessments for different market regimes (breakout/trending/downtrend/range)
+        score = 0
+        deductions = []
+
+        # Determine if price is near breakout zone (within 1 ATR of recent high/resistance)
+        is_near_breakout = False
+        if resistance_1 > 0 and atr > 0 and current_price > 0:
+            dist_from_high_pct = ((resistance_1 - current_price) / current_price * 100)
+            # Price within 1 ATR below resistance AND above EMA20 = potential breakout
+            is_near_breakout = (
+                (0 <= resistance_1 - current_price <= atr * 1.5) and
+                (above_ema20 == True)
+            )
+            # Also check: price has already broken above prior resistance
+            is_breakout_occurred = current_price > resistance_1 * 1.005 and above_ema20 == True
+        else:
+            is_near_breakout = False
+            is_breakout_occurred = False
+
+        # Regime-specific logic
+        if is_breakout_occurred:
+            # Breakout has occurred - assess pullback quality
+            dist_from_breakout_pct = abs(current_price - resistance_1) / current_price * 100 if resistance_1 > 0 else 0
+            if dist_from_breakout_pct < 1.0:
+                score += 40  # Fresh breakout, good momentum entry
+            elif dist_from_breakout_pct < 3.0:
+                score += 25  # Small extension, still reasonable
+            else:
+                deductions.append('extended from breakout')
+                score -= 15
+            # Vol confirmation
+            if vol_ratio > 1.5:
+                score += 20
+            elif vol_ratio > 1.0:
+                score += 10
+            # Trend quality
+            if ema_bullish == True:
+                score += 15
+            else:
+                deductions.append('weak trend')
+                score -= 10
+        elif regime_class == 'near_resistance':
+            # Near resistance - assess breakout readiness
+            dist_to_res_pct = ((resistance_1 - current_price) / current_price * 100) if current_price > 0 else 0
+            if dist_to_res_pct <= 1.0:
+                # Tight to resistance
+                if vol_ratio > 1.2:
+                    score += 35  # Tight + volume = ready to break
+                else:
+                    score += 20  # Tight but no vol confirmation
+            elif dist_to_res_pct <= 3.0:
+                deductions.append('approaching resistance')
+                score += 10
+            else:
+                deductions.append('near resistance')
+                score -= 15
+            # Trend quality
+            if ema_bullish == True:
+                score += 15
+            if above_ema20 == True:
+                score += 10
+            # Vol
+            if vol_ratio > 1.2:
+                score += 10
+            # Avoid over-penalizing for being near resistance in this regime
+            if atr_pct >= 2.0 and atr_pct <= 5.0:
+                score += 5
+        elif regime_class == 'trending':
+            # Trending - assess distance from EMA, not from 14-day low
+            if above_ema20 == True:
+                score += 25
+                dist_ema20_pct = abs(dist_from_ema20_pct) if dist_from_ema20_pct else 0
+                if dist_ema20_pct < 1.0:
+                    score += 20  # Riding EMA tight = ideal entry
+                elif dist_ema20_pct < 3.0:
+                    score += 10  # Slightly extended but acceptable
+                elif dist_ema20_pct < 5.0:
+                    deductions.append('moderately extended')
+                    score -= 5
+                else:
+                    deductions.append('overextended from EMA')
+                    score -= 15
+            else:
+                deductions.append('below EMA20')
+                score -= 15
+            # EMA50 support check for trending
+            if ema50 and current_price > ema50:
+                ema50_dist = ((current_price - ema50) / current_price * 100)
+                if ema50_dist < 5.0:
+                    score += 10  # Above EMA50 and close = healthy trend
+            if ema_bullish == True:
+                score += 10
+            # Vol confirmation
+            if vol_ratio > 1.2:
+                score += 10
+            # ATR quality
+            if 1.0 <= atr_pct <= 5.0:
+                score += 5
+        elif regime_class == 'downtrend':
+            # Downtrend - should generally avoid
+            deductions.append('downtrend')
+            if above_ema20 == True:
+                score += 15  # Pulling back above EMA20 = potential reversal
+            else:
+                score -= 10
+            if vol_ratio < 0.8:
+                deductions.append('low volume bounce')
+                score -= 10
+            # Check if approaching support
+            if near_support and atr > 0:
+                score += 15
+            elif dist_from_support_pct < 3.0:
+                score += 5
+        else:
+            # Range-bound or unknown - use original logic
+            if above_ema20 == True:
+                score += 20
+            elif above_ema20 == False:
+                deductions.append('below ema20')
+                score -= 10
+            if vol_ratio > 1.2:
+                score += 15
+            # Range position check
+            if support_1 > 0 and resistance_1 > 0:
+                range_pos = (current_price - support_1) / (resistance_1 - support_1) if (resistance_1 - support_1) > 0 else 0.5
+                if range_pos < 0.3:
+                    score += 20  # Near range low
+                elif range_pos > 0.7:
+                    deductions.append('near range high')
+                    score -= 15
+                else:
+                    score += 10  # Mid-range
+            if atr_pct <= 4.0:
+                score += 5
+
+        # Common: check R/R from the entry zone if available
+        if rr_ratio >= 2.0:
+            score += 10
+        elif rr_ratio >= 1.5:
+            score += 5
+        else:
+            # Only penalize poor R/R if we have a defined entry zone
+            if entry_zone_high > 0 and invalidation > 0:
+                deductions.append('poor r/r')
+
+        # Grade (same thresholds, but deductions already handled by regime logic)
+        if partial_data:
+            if score >= 65: entry_quality = 'Excellent'
+            elif score >= 50: entry_quality = 'Good'
+            elif score >= 35:
+                if regime_class == 'downtrend':
+                    entry_quality = 'Avoid / Downtrend'
+                elif near_resistance and regime_class != 'near_resistance':
+                    entry_quality = 'Near Resistance'
+                elif is_breakout_occurred and 'extended from breakout' in deductions:
+                    entry_quality = 'Extended from Breakout'
+                else:
+                    entry_quality = 'Wait for Pullback'
+            else:
+                entry_quality = 'Chasing / Extended'
+        else:
+            if score >= 65: entry_quality = 'Excellent'
+            elif score >= 50: entry_quality = 'Good'
+            elif score >= 35:
+                if regime_class == 'downtrend':
+                    entry_quality = 'Avoid / Downtrend'
+                elif near_resistance and regime_class != 'near_resistance':
+                    entry_quality = 'Near Resistance'
+                elif is_breakout_occurred and 'extended from breakout' in deductions:
+                    entry_quality = 'Extended from Breakout'
+                else:
+                    entry_quality = 'Wait for Pullback'
+            else:
+                entry_quality = 'Chasing / Extended'
+
+        # Reason
+        if partial_data:
+            entry_reason = 'Partial data. ' + ', '.join(partial_indicators) + ' unavailable.'
+        elif entry_quality == 'Excellent':
+            entry_reason = 'Ideal entry based on regime conditions and risk-reward profile.'
+        elif entry_quality == 'Good':
+            if regime_class == 'near_resistance' and is_near_breakout:
+                entry_reason = 'Ready near resistance with volume confirmation, potential breakout entry.'
+            elif regime_class == 'trending':
+                entry_reason = 'Trending with good EMA alignment, price near ideal entry zone.'
+            else:
+                entry_reason = 'Reasonable entry conditions overall.'
+        elif entry_quality == 'Wait for Pullback':
+            if regime_class == 'trending':
+                entry_reason = 'Slightly extended from EMA20, wait for pullback to EMA for better entry.'
+            elif regime_class == 'near_resistance':
+                entry_reason = 'Approaching resistance without breakout confirmation, wait for clear break.'
+            else:
+                entry_reason = 'Price needs to pull back to support/EMA zone for better entry.'
+        elif entry_quality == 'Chasing / Extended':
+            entry_reason = 'Price too far from ideal entry zone. Waiting for reversion reduces risk.'
+        elif entry_quality == 'Near Resistance':
+            entry_reason = f'Only {round(dist_from_resistance_pct, 1)}% from resistance with limited setup confirmation.'
+        elif entry_quality == 'Avoid / Downtrend':
+            entry_reason = 'In downtrend regime with weak technical setup. Consider staging a watchlist.'
+        elif entry_quality == 'Extended from Breakout':
+            entry_reason = 'Breakout occurred but price has run too far. Wait for a pullback to the breakout level.'
+        elif entry_quality == 'Poor Reward-Risk':
+            entry_reason = f'R/R ratio {rr_ratio}:1 is below the minimum threshold.'
+        else:
+            entry_reason = 'Unclear entry quality.'
+
+        if deductions:
+            entry_reason += ' Factors: ' + ', '.join(deductions) + '.'
+
+        # Add data source info to reason
+        data_notes = []
+        if source_status['alpaca_snapshot'] != 'ok':
+            data_notes.append(f"snapshot: {source_status['alpaca_snapshot']}")
+        if source_status['alpaca_bars'] != 'ok':
+            data_notes.append(f"bars: {source_status['alpaca_bars']}")
+        if data_notes:
+            entry_reason += f" [{'; '.join(data_notes)}]"
+
+        elapsed = round(time.time() - start_time, 2)
+        print(f'=== ENTRY QUALITY {symbol}: {entry_quality} (score {score}, R/R {rr_ratio}, {elapsed}s) ===')
+        print(f'    source_status: {source_status}')
+        print(f'    partial_indicators: {partial_indicators}')
+        print(f'    DEBUG: price={current_price:.2f} support={support_1:.2f} res={resistance_1:.2f} ATR={atr:.2f}({atr_pct:.1f}%) EMA20={ema20:.2f} EMA50={ema50:.2f}')
+        print(f'    DEBUG: dist_support={dist_from_support_pct:.1f}% dist_res={dist_from_resistance_pct:.1f}% dist_ema20={dist_from_ema20_pct:.1f}%')
+        print(f'    DEBUG: near_support={near_support} near_resistance={near_resistance} chasing={chasing} overext={overextended} poor_rr={poor_rr}')
+        print(f'    DEBUG: ema_bullish={ema_bullish} above_ema20={above_ema20} vol_ratio={vol_ratio:.2f}')
+        print(f'    DEBUG: score_breakdown: {score} (deductions: {deductions})')
+        print(f'    DEBUG: target_1={target_1:.2f} target_2={target_2:.2f} ezone=[{entry_zone_low:.2f},{entry_zone_high:.2f}] inval={invalidation:.2f}')
+
+        entry_details = {
+            'current_price': round(current_price, 2),
+            'atr': round(atr, 2),
+            'atr_pct': round(atr_pct, 2),
+            'ema20': round(ema20, 2) if ema20 else None,
+            'ema50': round(ema50, 2) if ema50 else None,
+            'support': round(support_1, 2),
+            'resistance': round(resistance_1, 2),
+            'strong_support': round(strong_support, 2),
+            'strong_resistance': round(strong_resistance, 2),
+            'entry_zone_low': entry_zone_low,
+            'entry_zone_high': entry_zone_high,
+            'invalidation': invalidation,
+            'stop_distance_pct': stop_distance_pct,
+            'target_1': target_1,
+            'target_2': target_2,
+            'reward_risk_ratio': rr_ratio,
+            'dist_from_support_pct': round(dist_from_support_pct, 2),
+            'dist_from_resistance_pct': round(dist_from_resistance_pct, 2),
+            'near_resistance': near_resistance,
+            'near_support': near_support,
+            'volume_ratio': round(vol_ratio, 2),
+            'regime_class': regime_class,
+            'score': score,
+            'data_source_status': source_status,
+            'partial': partial_data,
+        }
+
+        return jsonify({
+            'success': True,
+            'symbol': symbol,
+            'entry_quality': entry_quality,
+            'entry_reason': entry_reason.strip(),
+            'entry_score': score,
+            'details': entry_details,
+            'data_source_status': source_status,
+            'elapsed': elapsed,
+        })
+
+    except Exception as e:
+        print(f'[ENTRY QUALITY ERROR] {e}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+    # ============ Liquidity / News / Final Risk Scan (Steps 6-7-8) ============
+
+@app.route('/api/ai/fine-scan-advanced', methods=['POST'])
+def ai_fine_scan_advanced():
+    """
+    Combined lightweight scan for Liquidity/Volume (Step 6),
+    News/Event (Step 7), and Final Risk (Step 8).
+
+    Accepts:
+      { symbol: "...", entryDetails: { ... } | null }
+
+    Returns:
+      liquidity: { grade, reason, details }
+      news:      { grade, reason, details }
+      risk:      { grade, reason, details }
+    """
+    import time
+    from datetime import datetime, timedelta
+    import json
+    import re
+
+    try:
+        body = request.get_json()
+        if not body or 'symbol' not in body:
+            return jsonify({'success': False, 'message': 'symbol required'}), 400
+
+        symbol = body['symbol'].strip().upper()
+        entry_details = body.get('entryDetails', None)
+        start_ts = time.time()
+        print(f'\n[FINESCAN] === FINE SCAN ADVANCED START: {symbol} ===')
+        print(f'[FINESCAN] entry_details keys: {list(entry_details.keys()) if entry_details else "None"}')
+        print(f'[FINESCAN] entry_details price: {entry_details.get("current_price", "N/A") if entry_details else "N/A"}')
+
+        headers = {
+            'APCA-API-KEY-ID': ALPACA_API_KEY,
+            'APCA-API-SECRET-KEY': ALPACA_API_SECRET,
+        }
+
+        # Source status tracking
+        source_status = {
+            'alpaca_snapshot': 'not_attempted',
+            'alpaca_bars': 'not_attempted',
+            'alpaca_news': 'not_attempted',
+            'finnhub_news': 'not_attempted',
+            'finnhub_earnings': 'not_attempted',
+            'ai_risk': 'not_attempted',
+        }
+
+        # ──────────────────────────────────────────────────
+        # Step 6: Liquidity / Volume Scan
+        # ──────────────────────────────────────────────────
+        liquidity_grade = 'Caution'
+        liquidity_reason = 'no liquidity data'
+        liquidity_details = {
+            'rvol': 0, 'spread_pct': None, 'today_volume': 0,
+            'avg_20d_volume': 0, 'dollar_volume': 0,
+            'spread_type': 'unknown', 'volume_pattern': 'unknown',
+            'liq_score': 0,
+        }
+
+        current_price = 0
+
+        try:
+            snap_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/snapshot'
+            snap_resp = requests.get(snap_url, headers=headers, timeout=10)
+            print(f'[FINESCAN][{symbol}] snapshot status: {snap_resp.status_code} snap_url: {snap_url}')
+            if snap_resp.status_code == 200:
+                source_status['alpaca_snapshot'] = 'ok'
+                snap = snap_resp.json()
+                print(f'[FINESCAN][{symbol}] snapshot keys: {list(snap.keys())}')
+
+                raw_latestTrade = snap.get('latestTrade')
+                raw_latestQuote = snap.get('latestQuote')
+                raw_dailyBar = snap.get('dailyBar')
+                raw_prevBar = snap.get('prevDailyBar')
+                print(f'[FINESCAN][{symbol}] raw latestTrade={type(raw_latestTrade).__name__}, latestQuote={type(raw_latestQuote).__name__}, dailyBar={type(raw_dailyBar).__name__}, prevDailyBar={type(raw_prevBar).__name__}')
+                if isinstance(raw_latestTrade, dict):
+                    print(f'[FINESCAN][{symbol}] latestTrade keys={list(raw_latestTrade.keys())} p={raw_latestTrade.get("p", "MISSING")} s={raw_latestTrade.get("s", "MISSING")}')
+                if isinstance(raw_dailyBar, dict):
+                    print(f'[FINESCAN][{symbol}] dailyBar keys={list(raw_dailyBar.keys())} o={raw_dailyBar.get("o","?")} h={raw_dailyBar.get("h","?")} l={raw_dailyBar.get("l","?")} c={raw_dailyBar.get("c","?")} v={raw_dailyBar.get("v","?")}')
+                if isinstance(raw_prevBar, dict):
+                    print(f'[FINESCAN][{symbol}] prevDailyBar keys={list(raw_prevBar.keys())} c={raw_prevBar.get("c","?")} v={raw_prevBar.get("v","?")}')
+                print(f'[FINESCAN][{symbol}] latestBar in snap: {"latestBar" in snap}, value: {snap.get("latestBar", "MISSING")}')
+
+                latest_trade = raw_latestTrade or {}
+                latest_quote = raw_latestQuote or {}
+                daily_bar = raw_dailyBar or {}
+
+                current_price = float(latest_trade.get('p', 0))
+                if current_price <= 0:
+                    current_price = float(daily_bar.get('c', 0) or 0)
+                if current_price <= 0:
+                    current_price = float(snap.get('prevDailyBar', {}).get('c', 0) or 0)
+
+                # Bid/Ask spread
+                bid = float(latest_quote.get('bp', 0))
+                ask = float(latest_quote.get('ap', 0))
+                spread_pct = None
+                if current_price > 0 and bid > 0 and ask > 0:
+                    spread_pct = round(((ask - bid) / current_price) * 100, 3)
+
+                # Daily volume
+                today_vol = float(daily_bar.get('v', 0)) if daily_bar else 0
+
+                # Recent 21 bars for avg volume
+                bars_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/bars'
+                bars_params = {'timeframe': '1Day', 'limit': 21, 'adjustment': 'raw', 'feed': 'sip', 'sort': 'desc'}
+                bars_resp = requests.get(bars_url, headers=headers, params=bars_params, timeout=10)
+                vol_list = []
+                if bars_resp.status_code == 200:
+                    source_status['alpaca_bars'] = 'ok'
+                    raw_bars = bars_resp.json().get('bars', None)
+                    bars = raw_bars if raw_bars else []
+                    for b in bars:
+                        vol_list.append(float(b.get('v', 0)))
+                else:
+                    source_status['alpaca_bars'] = f'http_{bars_resp.status_code}'
+
+                recent_volumes = vol_list[:21]
+                avg_20d_vol = sum(recent_volumes[1:]) / max(len(recent_volumes[1:]), 1) if len(recent_volumes) > 1 else today_vol
+                rvol = round(today_vol / avg_20d_vol, 2) if avg_20d_vol > 0 else 0
+
+                recent_5_avg = sum(recent_volumes[1:6]) / 5 if len(recent_volumes) > 5 else 0
+                concentrated_at_open = (rvol > 2.0 and today_vol > recent_5_avg * 3) if recent_5_avg > 0 else False
+
+                dollar_vol = current_price * today_vol if current_price > 0 else 0
+
+                # Grade liquidity
+                liq_score = 0
+                liq_notes = []
+
+                if spread_pct is not None:
+                    if spread_pct < 0.05:
+                        liq_score += 30
+                        liq_notes.append(f'spread {spread_pct}%')
+                    elif spread_pct < 0.20:
+                        liq_score += 15
+                        liq_notes.append(f'spread {spread_pct}%')
+                    else:
+                        liq_notes.append(f'wide spread {spread_pct}%')
+                        liq_score -= 20
+
+                if rvol >= 1.5:
+                    liq_score += 25
+                    liq_notes.append(f'RVOL {rvol}x')
+                elif rvol >= 0.7:
+                    liq_score += 10
+                    liq_notes.append(f'RVOL {rvol}x')
+                else:
+                    liq_notes.append(f'low RVOL {rvol}x')
+                    liq_score -= 10
+
+                if dollar_vol >= 50_000_000:
+                    liq_score += 20
+                elif dollar_vol >= 10_000_000:
+                    liq_score += 10
+                else:
+                    liq_notes.append('low $vol')
+                    liq_score -= 10
+
+                if concentrated_at_open:
+                    liq_notes.append('open spike')
+                    liq_score -= 15
+
+                # When no quote/bid/ask available, adjust scoring
+                if spread_pct is None:
+                    liq_score += 10  # neutral for missing spread
+                    liq_notes.append('quote missing')
+
+                if liq_score >= 50:
+                    liquidity_grade = 'Good'
+                elif liq_score >= 25:
+                    liquidity_grade = 'Caution'
+                else:
+                    liquidity_grade = 'Poor'
+
+                liquidity_reason = ', '.join(liq_notes) if liq_notes else 'insufficient data'
+                liquidity_details = {
+                    'rvol': rvol,
+                    'spread_pct': spread_pct,
+                    'today_volume': int(today_vol),
+                    'avg_20d_volume': int(avg_20d_vol),
+                    'dollar_volume': int(dollar_vol),
+                    'spread_type': 'narrow' if spread_pct is not None and spread_pct < 0.05 else ('moderate' if spread_pct is not None and spread_pct < 0.20 else 'wide') if spread_pct is not None else 'unknown',
+                    'volume_pattern': 'open_spike' if concentrated_at_open else ('sustained' if rvol >= 1.0 else 'low'),
+                    'liq_score': liq_score,
+                }
+
+                print(f'  [LIQ] {liquidity_grade} | RVOL {rvol}x spread {spread_pct}% score {liq_score}')
+                print(f'[FINESCAN][{symbol}] LIQUIDITY FINAL: grade={liquidity_grade}, rvol={rvol}, todayVol={int(today_vol)}, avg20d={int(avg_20d_vol)}, dollarVol={int(dollar_vol)}, spread_pct={spread_pct}')
+            else:
+                source_status['alpaca_snapshot'] = f'http_{snap_resp.status_code}'
+                # Check if we have partial data at least from quote or volume separately
+                has_partial = False
+                # Try fetching just the daily bar via bars endpoint for volume
+                try:
+                    vol_check_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/bars'
+                    vol_check_resp = requests.get(vol_check_url, headers=headers, params={'timeframe': '1Day', 'limit': 2, 'adjustment': 'raw', 'sort': 'desc'}, timeout=8)
+                    if vol_check_resp.status_code == 200:
+                        vol_raw = vol_check_resp.json().get('bars', None)
+                        vol_bars = vol_raw if vol_raw else []
+                        if vol_bars:
+                            partial_vol = float(vol_bars[0].get('v', 0))
+                            partial_price = float(vol_bars[0].get('c', 0))
+                            if partial_vol > 0:
+                                liquidity_grade = 'Partial'
+                                liquidity_reason = f'volume available only, snapshot HTTP {snap_resp.status_code}'
+                                liquidity_details['today_volume'] = int(partial_vol)
+                                current_price = partial_price
+                                has_partial = True
+                                source_status['alpaca_bars'] = 'ok_partial'
+                except:
+                    pass
+
+                if not has_partial:
+                    liquidity_grade = 'Data Unavailable'
+                    liquidity_reason = f'snapshot HTTP {snap_resp.status_code}'
+                    # Only use entry_details price if real
+                    entry_price = 0
+                    if entry_details:
+                        entry_price = float(entry_details.get('current_price', 0))
+                    if entry_price > 0:
+                        current_price = entry_price
+
+        except Exception as liq_e:
+            print(f'  [LIQ] Exception: {liq_e}')
+            liquidity_grade = 'Data Unavailable'
+            liquidity_reason = str(liq_e)[:100]
+            entry_price = 0
+            if entry_details:
+                entry_price = float(entry_details.get('current_price', 0))
+            if entry_price > 0:
+                current_price = entry_price
+
+        # Price from entry details only if real (from Alpaca snapshot/bars in Step 4)
+        if current_price <= 0 and entry_details:
+            entry_price = float(entry_details.get('current_price', 0))
+            if entry_price > 0:
+                current_price = entry_price
+
+        # ──────────────────────────────────────────────────
+        # Step 7: News / Event Scan (Alpaca + Finnhub combined)
+        # ──────────────────────────────────────────────────
+        news_grade = 'Clear'
+        news_reason = 'no recent major news'
+        news_details = {
+            'headline_count': 0,
+            'top_headlines': [],
+            'has_high_event': False,
+            'has_catalyst': False,
+            'has_caution': False,
+            'earnings_soon': False,
+            'sources': [],
+        }
+
+        all_headlines = []
+
+        # 7a. Try Alpaca news
+        try:
+            alpaca_news_url = 'https://data.alpaca.markets/v1beta1/news'
+            now_utc = datetime.utcnow()
+            seven_days_ago = (now_utc - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            news_params = {'symbols': symbol, 'start': seven_days_ago, 'limit': 5, 'sort': 'desc'}
+            news_resp = requests.get(alpaca_news_url, headers=headers, params=news_params, timeout=10)
+            if news_resp.status_code == 200:
+                source_status['alpaca_news'] = 'ok'
+                news_data = news_resp.json().get('news', [])
+                for item in news_data:
+                    headline = item.get('headline', '')
+                    summary = item.get('summary', '')
+                    source = item.get('source', '')
+                    all_headlines.append({
+                        'headline': headline,
+                        'summary': summary[:200] if summary else '',
+                        'source': source or 'alpaca',
+                    })
+            else:
+                source_status['alpaca_news'] = f'http_{news_resp.status_code}'
+        except Exception as alp_news_e:
+            source_status['alpaca_news'] = f'exception: {str(alp_news_e)[:60]}'
+
+        # 7b. Try Finnhub company news (fallback/supplement)
+        try:
+            finnhub_list = []
+            fnh = fetch_finnhub_company_news(symbol, days_back=7)
+            if isinstance(fnh, tuple) and fnh[0]:
+                finnhub_list = fnh[0]
+            elif isinstance(fnh, list):
+                finnhub_list = fnh
+            if finnhub_list:
+                source_status['finnhub_news'] = 'ok'
+                for item in finnhub_list[:5]:
+                    headline = item.get('headline', '')
+                    # Check for duplicates with Alpaca headlines
+                    is_dup = any(h['headline'] == headline for h in all_headlines)
+                    if not is_dup and headline:
+                        all_headlines.append({
+                            'headline': headline,
+                            'summary': (item.get('summary', '') or '')[:200],
+                            'source': 'finnhub',
+                        })
+            else:
+                source_status['finnhub_news'] = 'no_articles'
+        except Exception as fh_new_e:
+            source_status['finnhub_news'] = f'exception: {str(fh_new_e)[:60]}'
+
+        # 7c. Check Finnhub earnings calendar
+        earnings_soon = False
+        try:
+            if FINNHUB_API_KEY:
+                ec_url = 'https://finnhub.io/api/v1/calendar/earnings'
+                ec_params = {'symbol': symbol, 'token': FINNHUB_API_KEY}
+                ec_resp = requests.get(ec_url, params=ec_params, timeout=10)
+                if ec_resp.status_code == 200:
+                    source_status['finnhub_earnings'] = 'ok'
+                    ec_data = ec_resp.json()
+                    earnings_cal = ec_data.get('earningsCalendar', [])
+                    for entry in earnings_cal:
+                        date_str = entry.get('date', '')
+                        if date_str:
+                            try:
+                                e_date = datetime.strptime(date_str, '%Y-%m-%d')
+                                days_until = (e_date - datetime.now()).days
+                                if -1 <= days_until <= 7:
+                                    earnings_soon = True
+                                    break
+                            except:
+                                pass
+                else:
+                    source_status['finnhub_earnings'] = f'http_{ec_resp.status_code}'
+            else:
+                source_status['finnhub_earnings'] = 'no_api_key'
+        except Exception as ec_e:
+            source_status['finnhub_earnings'] = f'exception: {str(ec_e)[:60]}'
+
+        # 7d. Analyze headlines
+        high_event_keywords = [
+            'lawsuit', 'regulatory', 'sec investigation', 'sec probe', 'doj', 'fraud',
+            'delist', 'bankruptcy', 'default', 'class action',
+            'ceo resign', 'cfo resign', 'accounting error', 'restatement',
+            'halt trading', 'suspended', 'investigation'
+        ]
+        catalyst_keywords = [
+            'upgrade', 'outperform', 'buy rating', 'strong buy',
+            'raised price target', 'positive guidance', 'beat estimates',
+            'raised guidance', 'initiated buy', 'positive trial',
+            'approval', 'fda approval', 'contract award', 'partnership',
+            'merger', 'acquisition', 'takeover', 'positive'
+        ]
+        caution_keywords = [
+            'downgrade', 'sell rating', 'underperform', 'reduce',
+            'lowered price target', 'negative guidance', 'miss estimates',
+            'lowered guidance', 'layoff', 'restructuring', 'cut jobs',
+            'bearish', 'warning', 'recession', 'negative'
+        ]
+
+        headlines_lower = ' '.join([h['headline'].lower() + ' ' + h['summary'].lower() for h in all_headlines])
+
+        has_high_event = any(kw in headlines_lower for kw in high_event_keywords) if headlines_lower else False
+        has_catalyst = any(kw in headlines_lower for kw in catalyst_keywords) if headlines_lower else False
+        has_caution = any(kw in headlines_lower for kw in caution_keywords) if headlines_lower else False
+
+        # Determine if any news source delivered data
+        any_news_success = (source_status['alpaca_news'] == 'ok' or source_status['finnhub_news'] == 'ok')
+
+        if not any_news_success:
+            news_grade = 'Unknown'
+            news_reason = f'Data Unavailable (alpaca: {source_status["alpaca_news"]}, finnhub: {source_status["finnhub_news"]})'
+        elif has_high_event:
+            news_grade = 'High Event Risk'
+            news_reason = 'lawsuit/regulatory risk detected'
+        elif earnings_soon:
+            if has_catalyst:
+                news_grade = 'Catalyst'
+                news_reason = 'catalyst + earnings upcoming'
+            elif has_caution:
+                news_grade = 'High Event Risk'
+                news_reason = 'earnings soon + caution signals'
+            else:
+                news_grade = 'Caution'
+                news_reason = 'earnings upcoming'
+        elif has_catalyst and not has_caution:
+            news_grade = 'Catalyst'
+            news_reason = 'positive catalyst detected'
+        elif has_caution and not has_catalyst:
+            news_grade = 'Caution'
+            news_reason = 'negative signals detected'
+        elif has_catalyst and has_caution:
+            news_grade = 'Caution'
+            news_reason = 'mixed news signals'
+        elif len(all_headlines) == 0:
+            news_grade = 'Clear'
+            news_reason = 'no major news (no articles returned)'
+        else:
+            news_grade = 'Clear'
+            news_reason = 'neutral recent news'
+
+        news_details = {
+            'headline_count': len(all_headlines),
+            'top_headlines': [h['headline'][:150] for h in all_headlines[:3]],
+            'has_high_event': has_high_event,
+            'has_catalyst': has_catalyst,
+            'has_caution': has_caution,
+            'earnings_soon': earnings_soon,
+            'sources': list(set([h['source'] for h in all_headlines if h['source']])),
+        }
+
+        print(f'  [NEWS] {news_grade} | {len(all_headlines)} headlines ({source_status["alpaca_news"]}, {source_status["finnhub_news"]}) earnings_soon={earnings_soon}')
+        for h in all_headlines[:2]:
+            print(f'    → [{h["source"]}] {h["headline"][:100]}')
+
+        # ──────────────────────────────────────────────────
+        # Step 8: Final Risk Scan (AI + deterministic fallback)
+        # ──────────────────────────────────────────────────
+        risk_grade = 'MEDIUM'
+        risk_reason = ''
+        risk_details = {}
+
+        ai_risk_result = None
+
+        # 8a. Determine if we have enough real data for AI risk
+        has_real_entry = (entry_details and entry_details.get('entry_quality', '')
+                         not in ('', 'Partial', 'Data Unavailable', 'Error / No Data'))
+        has_real_liquidity = liquidity_grade not in ('Data Unavailable',)
+        has_real_news = news_grade not in ('Unknown',)
+        enough_for_ai = has_real_entry and has_real_liquidity and has_real_news
+        missing_data_info = {
+            'missing_entry': not has_real_entry,
+            'missing_liquidity': not has_real_liquidity,
+            'missing_news': not has_real_news,
+        }
+
+        ai_risk_result = None
+
+        if not enough_for_ai:
+            source_status['ai_risk'] = 'skipped_insufficient_data'
+        else:
+            # 8a. AI risk assessment
+            try:
+                api_key = ai_provider_config_state.get('apiKey', '')
+                if api_key and len(api_key) >= 10:
+                    # Build structured input for AI
+                    ai_input = {
+                        'symbol': symbol,
+                        'entry_quality': entry_details.get('entry_quality', '') if entry_details else '',
+                        'entry_score': entry_details.get('score', 0) if entry_details else 0,
+                        'reward_risk_ratio': entry_details.get('reward_risk_ratio', 0) if entry_details else 0,
+                        'atr_pct': entry_details.get('atr_pct', 0) if entry_details else 0,
+                        'liquidity_grade': liquidity_grade,
+                        'liquidity_score': liquidity_details.get('liq_score', 0),
+                        'spread': liquidity_details.get('spread_pct'),
+                        'rvol': liquidity_details.get('rvol', 0),
+                        'news_grade': news_grade,
+                        'news_has_catalyst': news_details.get('has_catalyst', False),
+                        'news_has_caution': news_details.get('has_caution', False),
+                        'news_has_high_event': news_details.get('has_high_event', False),
+                        'earnings_soon': news_details.get('earnings_soon', False),
+                        'headline_count': news_details.get('headline_count', 0),
+                        'missing_data': [k for k, v in missing_data_info.items() if v],
+                    }
+
+                    ai_prompt = f"""You are a risk assessment AI for a stock trading platform. Assess the risk level for {symbol}.
+
+Entry Quality: {ai_input['entry_quality']} (score {ai_input['entry_score']})
+R/R Ratio: {ai_input['reward_risk_ratio']}:1
+ATR%: {ai_input['atr_pct']}%
+Liquidity: {ai_input['liquidity_grade']} (score {ai_input['liquidity_score']})
+Spread: {ai_input['spread']}%
+RVOL: {ai_input['rvol']}x
+News: {ai_input['news_grade']}
+  Catalyst: {ai_input['news_has_catalyst']}
+  Caution: {ai_input['news_has_caution']}
+  High Event: {ai_input['news_has_high_event']}
+  Earnings Soon: {ai_input['earnings_soon']}
+  Headlines: {ai_input['headline_count']}
+
+Return ONLY one line with: LOW | MEDIUM | HIGH | SKIP and a short reason.
+LOW = strong entry, good liq, no event risk, good r/r
+MEDIUM = moderate risk factors
+HIGH = poor liq, high event risk, poor entry
+SKIP = critical data missing, severe risk combo
+Example: MEDIUM | mixed news, moderate liquidity"""
+
+                    provider = ai_provider_config_state.get('provider', 'deepseek')
+                    base_url = ai_provider_config_state.get('baseURL', 'https://api.deepseek.com')
+                    model = ai_provider_config_state.get('model', 'deepseek-chat')
+
+                    ai_headers = {
+                        'Authorization': f'Bearer {api_key}',
+                        'Content-Type': 'application/json'
+                    }
+
+                    ai_payload = {
+                        'model': model,
+                        'messages': [
+                            {'role': 'system', 'content': 'You are a risk assessment AI. Respond with exactly one line: RISK_LABEL | short reason. Only use LOW, MEDIUM, HIGH, or SKIP.'},
+                            {'role': 'user', 'content': ai_prompt}
+                        ],
+                        'max_tokens': 100,
+                        'temperature': 0.3,
+                    }
+
+                    if not base_url.startswith('http'):
+                        base_url = 'https://' + base_url
+
+                    ai_resp = requests.post(f'{base_url}/chat/completions', headers=ai_headers, json=ai_payload, timeout=15)
+
+                    if ai_resp.status_code == 200:
+                        source_status['ai_risk'] = 'ok'
+                        ai_content = ai_resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
+                        ai_content = ai_content.strip()
+
+                        # Parse AI response
+                        for label in ['SKIP', 'HIGH', 'MEDIUM', 'LOW']:
+                            if label in ai_content.upper():
+                                risk_grade = label if label in ['SKIP', 'HIGH', 'MEDIUM', 'LOW'] else 'MEDIUM'
+                                # Extract reason after |
+                                parts = ai_content.split('|')
+                                risk_reason = parts[1].strip() if len(parts) > 1 else 'AI judged risk'
+                                ai_risk_result = {'grade': risk_grade, 'reason': risk_reason, 'raw': ai_content}
+                                break
+                        else:
+                            risk_reason = f'AI returned unparsed: {ai_content[:80]}'
+                            source_status['ai_risk'] = 'unparsed'
+                    else:
+                        source_status['ai_risk'] = f'http_{ai_resp.status_code}'
+            except Exception as ai_e:
+                print(f'  [RISK] AI exception: {ai_e}')
+                source_status['ai_risk'] = f'exception: {str(ai_e)[:60]}'
+
+        # 8b. Deterministic fallback if AI failed or was skipped
+        if not ai_risk_result:
+            risk_score = 50
+            risk_factors = []
+
+            if liquidity_grade == 'Good': risk_score -= 10
+            elif liquidity_grade == 'Caution': risk_score += 10; risk_factors.append('liquidity caution')
+            elif liquidity_grade == 'Poor': risk_score += 25; risk_factors.append('poor liquidity')
+
+            if news_grade == 'Catalyst': risk_score -= 10
+            elif news_grade == 'High Event Risk': risk_score += 25; risk_factors.append('high event risk')
+            elif news_grade == 'Caution': risk_score += 10; risk_factors.append('news caution')
+
+            entry_quality_str = entry_details.get('entry_quality', '') if entry_details else ''
+            if entry_quality_str in ('Excellent', 'Good'): risk_score -= 10
+            elif entry_quality_str in ('Chasing / Extended', 'Near Resistance', 'Poor Reward-Risk'):
+                risk_score += 8; risk_factors.append('poor entry')  # was +15, reduced to +8
+
+            atr_pct_val = 0
+            if entry_details:
+                try: atr_pct_val = float(entry_details.get('atr_pct', 0))
+                except: pass
+            if atr_pct_val > 5: risk_score += 15; risk_factors.append('high vol')
+            elif atr_pct_val < 0.3: risk_score += 5; risk_factors.append('low vol')
+
+            sp = liquidity_details.get('spread_pct')
+            if sp is not None:
+                if sp > 0.30: risk_score += 10; risk_factors.append('wide spread')
+                elif sp < 0.03: risk_score -= 5
+
+            if entry_details:
+                try:
+                    support = float(entry_details.get('support', 0))
+                    current_p = float(entry_details.get('current_price', 0))
+                    if support > 0 and current_p > 0:
+                        gap_to_support = abs(current_p - support) / current_p * 100
+                        if gap_to_support > 10: risk_score += 8; risk_factors.append('gap risk')  # was >3% +10, now >10% +8
+                except: pass
+
+            # Liquidity alone: Widish spread with Caution → only +2 extra (not +10 on top)
+            if sp is not None and liquidity_grade == 'Caution' and sp > 0.30:
+                if 'wide spread' not in [f.split(' (')[0] for f in risk_factors]:
+                    pass  # already counted above
+
+            risk_score = max(0, min(100, risk_score))
+            # Lower HIGH threshold since we reduced base contributions
+            if risk_score >= 70: risk_grade = 'HIGH'  # was 65, raised to 70
+            elif risk_score >= 30: risk_grade = 'MEDIUM'  # was 35, lowered to 30
+            else: risk_grade = 'LOW'
+
+            risk_reason = ', '.join(risk_factors) if risk_factors else 'no significant risk factors (fallback)'
+
+            # SKIP overrides
+            if liquidity_grade == 'Data Unavailable' and news_grade == 'Unknown':
+                risk_grade = 'SKIP'
+                risk_reason = 'critical data missing'
+            elif liquidity_grade == 'Poor' and news_grade == 'High Event Risk':
+                risk_grade = 'SKIP'
+                risk_reason = 'poor liquidity + high event risk'
+
+        risk_details = {
+            'risk_score': risk_score if not ai_risk_result else None,
+            'risk_factors': risk_factors if not ai_risk_result else [risk_reason],
+            'atr_pct': atr_pct_val if not ai_risk_result else 0,
+            'liquidity_grade': liquidity_grade,
+            'news_grade': news_grade,
+            'entry_quality': entry_details.get('entry_quality', '') if entry_details else '',
+            'ai_assessed': ai_risk_result is not None,
+        }
+
+        elapsed = round(time.time() - start_ts, 2)
+        print(f'=== FINE SCAN ADVANCED {symbol}: liq={liquidity_grade} news={news_grade} risk={risk_grade} (AI={ai_risk_result is not None}) ({elapsed}s) ===')
+        if not ai_risk_result:
+            print(f'    RISK DEBUG: score={risk_score} factors={risk_factors} source: ai_risk={source_status.get("ai_risk","none")}')
+            print(f'    RISK DEBUG: entry={entry_quality_str} liq={liquidity_grade} news={news_grade} atr_pct={atr_pct_val:.1f}% spread={sp} gap={gap_to_support if "gap_to_support" in dir() else "N/A"}')
+
+        return jsonify({
+            'success': True,
+            'symbol': symbol,
+            'source_status': source_status,
+            'liquidity': {'grade': liquidity_grade, 'reason': liquidity_reason, 'details': liquidity_details},
+            'news': {'grade': news_grade, 'reason': news_reason, 'details': news_details},
+            'risk': {'grade': risk_grade, 'reason': risk_reason, 'details': risk_details},
+            'elapsed': elapsed,
+        })
+
+    except Exception as e:
+        print(f'[FINE SCAN ADVANCED ERROR] {e}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+# ============ Deeper Validation - 4-step post-fine-scan verification ============
+
+STRATEGY_PARAM_GRIDS = {
+    'moving_average': {
+        'param_sets': [
+            {'shortMaPeriod': 8, 'longMaPeriod': 20},
+            {'shortMaPeriod': 8, 'longMaPeriod': 25},
+            {'shortMaPeriod': 10, 'longMaPeriod': 20},
+            {'shortMaPeriod': 10, 'longMaPeriod': 25},
+            {'shortMaPeriod': 10, 'longMaPeriod': 30},
+            {'shortMaPeriod': 12, 'longMaPeriod': 25},
+            {'shortMaPeriod': 12, 'longMaPeriod': 30},
+        ]
+    },
+    'rsi': {
+        'param_sets': [
+            {'rsiPeriod': 10, 'oversoldLevel': 30, 'overboughtLevel': 70},
+            {'rsiPeriod': 10, 'oversoldLevel': 25, 'overboughtLevel': 75},
+            {'rsiPeriod': 14, 'oversoldLevel': 30, 'overboughtLevel': 70},
+            {'rsiPeriod': 14, 'oversoldLevel': 25, 'overboughtLevel': 75},
+            {'rsiPeriod': 18, 'oversoldLevel': 30, 'overboughtLevel': 70},
+            {'rsiPeriod': 18, 'oversoldLevel': 25, 'overboughtLevel': 75},
+        ]
+    },
+    'macd': {
+        'param_sets': [
+            {'fast': 8, 'slow': 21, 'signal': 9},
+            {'fast': 10, 'slow': 22, 'signal': 9},
+            {'fast': 12, 'slow': 26, 'signal': 9},
+            {'fast': 8, 'slow': 26, 'signal': 9},
+            {'fast': 12, 'slow': 26, 'signal': 12},
+            {'fast': 14, 'slow': 30, 'signal': 9},
+        ]
+    },
+    'bollinger': {
+        'param_sets': [
+            {'period': 20, 'std_dev': 2.0},
+            {'period': 20, 'std_dev': 2.5},
+            {'period': 25, 'std_dev': 2.0},
+            {'period': 25, 'std_dev': 2.5},
+            {'period': 20, 'std_dev': 1.5},
+            {'period': 15, 'std_dev': 2.0},
+        ]
+    },
+    'momentum': {
+        'param_sets': [
+            {'momentum_period': 10, 'momentum_threshold': 0.02},
+            {'momentum_period': 10, 'momentum_threshold': 0.05},
+            {'momentum_period': 15, 'momentum_threshold': 0.02},
+            {'momentum_period': 15, 'momentum_threshold': 0.05},
+            {'momentum_period': 20, 'momentum_threshold': 0.02},
+            {'momentum_period': 20, 'momentum_threshold': 0.05},
+        ]
+    }
+}
+
+DEFAULT_FALLBACK_PARAMS = {
+    'moving_average': {'shortMaPeriod': 10, 'longMaPeriod': 25},
+    'rsi': {'rsiPeriod': 14, 'oversoldLevel': 30, 'overboughtLevel': 70},
+    'macd': {'fast': 12, 'slow': 26, 'signal': 9},
+    'bollinger': {'period': 20, 'std_dev': 2.0},
+    'momentum': {'momentum_period': 15, 'momentum_threshold': 0.02},
+}
+
+STRATEGY_FN_MAP = {
+    'moving_average': run_moving_average_strategy_for_optimization,
+    'rsi': run_rsi_strategy_for_optimization,
+    'macd': run_macd_strategy_for_optimization,
+    'bollinger': run_bollinger_strategy_for_optimization,
+    'momentum': run_momentum_strategy_for_optimization,
+}
+
+STRATEGY_LABEL_MAP = {
+    'breakout': 'momentum',
+    'volume confirmation': 'momentum',
+    'momentum continuation': 'momentum',
+    'momentum': 'momentum',
+    'mean reversion': 'rsi',
+    'rsi': 'rsi',
+    'moving average': 'moving_average',
+    'moving_average': 'moving_average',
+    'macd': 'macd',
+    'bollinger': 'bollinger',
+    'range': 'bollinger',
+    'bands': 'bollinger',
+}
+
+def _count_trading_days(days_back=365):
+    """Estimate ~252 trading days per year."""
+    return max(60, int(days_back * 252 / 365))
+
+def _fetch_1y_data(symbol):
+    """Fetch ~1 year of daily data using backtest-specific Alpaca API (date range)."""
+    from datetime import datetime, timedelta
+    end = datetime.now()
+    start = end - timedelta(days=400)
+    range_str = start.strftime('%Y-%m-%d') + ' to ' + end.strftime('%Y-%m-%d')
+    data, num, note = get_alpaca_history_for_backtest(symbol, '1day', range_str)
+    if not data or len(data) < 60:
+        print(f'[DV] Insufficient data from backtest API: {note}')
+        return None, f'Insufficient data: {note}'
+    return data, 'alpaca'
+
+def _compute_metrics(trades, equity_curve, initial_capital):
+    """Compute standard backtest metrics from trades + equity curve."""
+    final_eq = equity_curve[-1]['equity'] if equity_curve else initial_capital
+    total_return = ((final_eq - initial_capital) / initial_capital) * 100
+
+    # Sharpe ratio approximation (daily returns)
+    daily_returns = []
+    for i in range(1, len(equity_curve)):
+        prev = equity_curve[i-1]['equity']
+        cur = equity_curve[i]['equity']
+        if prev > 0:
+            daily_returns.append((cur - prev) / prev)
+
+    if len(daily_returns) > 1:
+        mean_ret = sum(daily_returns) / len(daily_returns)
+        var_ret = sum((r - mean_ret)**2 for r in daily_returns) / len(daily_returns)
+        std_ret = max(var_ret ** 0.5, 0.0001)
+        sharpe_ratio = (mean_ret / std_ret) * (252 ** 0.5)
+    else:
+        sharpe_ratio = 0.0
+
+    # Max drawdown
+    peak = initial_capital
+    max_dd = 0.0
+    for point in equity_curve:
+        eq = point['equity']
+        if eq > peak:
+            peak = eq
+        dd = (peak - eq) / peak * 100
+        max_dd = max(max_dd, dd)
+
+    # Trade-based metrics
+    # Trade-based metrics (compute pnl from entry/exit price if missing)
+    for t in trades:
+        if t.get('pnl') is None and t.get('entryPrice') is not None and t.get('exitPrice') is not None and t.get('quantity') is not None:
+            t['pnl'] = round((t['exitPrice'] - t['entryPrice']) * t['quantity'], 2)
+
+    wins = [t for t in trades if t.get('pnl', 0) > 0.01]
+    losses = [t for t in trades if t.get('pnl', 0) < -0.01]
+    breakeven = [t for t in trades if abs(t.get('pnl', 0)) <= 0.01]
+    total_closed = len(wins) + len(losses)
+    win_rate = (len(wins) / total_closed * 100) if total_closed > 0 else None
+    gross_profit = sum(t['pnl'] for t in wins) if wins else 0
+    gross_loss = abs(sum(t['pnl'] for t in losses)) if losses else 0
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else (None if gross_profit > 0 else None)
+
+    avg_trade_pnl = round((gross_profit - gross_loss) / total_closed, 2) if total_closed > 0 else None
+    return {
+        'totalReturn': round(total_return, 2),
+        'sharpeRatio': round(sharpe_ratio, 3),
+        'maxDrawdown': round(max_dd, 2),
+        'winRate': round(win_rate, 1) if win_rate is not None else None,
+        'profitFactor': round(profit_factor, 2) if profit_factor is not None else None,
+        'tradeCount': total_closed,
+        'avgReturnPerTrade': avg_trade_pnl,
+        'grossProfit': round(gross_profit, 2),
+        'grossLoss': round(gross_loss, 2),
+    }
+    print(f'[DV_METRICS] trades={len(trades)} wins={len(wins)} losses={len(losses)} breakeven={len(breakeven)} total_closed={total_closed} winRate={win_rate} grossProfit={gross_profit:.2f} grossLoss={gross_loss:.2f} pf={profit_factor} totalReturn={total_return:.2f}')
+
+def _run_backtest_core(symbol, strategy_name, params, data):
+    """Run a single backtest for given symbol + strategy + params on pre-fetched data."""
+    fn = STRATEGY_FN_MAP.get(strategy_name)
+    if not fn:
+        return None, f'Unknown strategy: {strategy_name}'
+
+    ic = 100000
+    try:
+        result = fn(data, params, ic, symbol)
+        if len(result) == 3:
+            trades, equity, _ = result
+        else:
+            trades, equity = result
+        metrics = _compute_metrics(trades, equity, ic)
+        return {'metrics': metrics, 'tradeCount': len(trades), 'finalEquity': equity[-1]['equity'] if equity else ic}, None
+    except Exception as e:
+        return None, str(e)
+
+def _compute_stability_score(opt_results, valid_count):
+    """Compute parameter stability score 0-100."""
+    if valid_count == 0:
+        return 0, 'No valid parameter combinations'
+
+    profitable = sum(1 for r in opt_results if r.get('totalReturn', -999) > 0)
+    profitable_ratio = profitable / valid_count if valid_count > 0 else 0
+    returns = [r.get('totalReturn', 0) for r in opt_results]
+    median_ret = sorted(returns)[len(returns)//2] if returns else 0
+    best_ret = max(returns) if returns else 0
+    sharps = [r.get('sharpeRatio', 0) for r in opt_results]
+    median_sharpe = sorted(sharps)[len(sharps)//2] if sharps else 0
+    dds = [r.get('maxDrawdown', 100) for r in opt_results]
+    median_dd = sorted(dds)[len(dds)//2] if dds else 0
+
+    score = 0
+    # profitable ratio (max 30)
+    score += min(30, int(profitable_ratio * 30))
+    # median return > 0 (max 20)
+    if median_ret > 0:
+        score += min(20, int(median_ret * 2))
+    # median sharpe > 0.5 (max 20)
+    if median_sharpe > 0.5:
+        score += 20
+    elif median_sharpe > 0:
+        score += 10
+    # drawdown control (max 20)
+    if median_dd < 15:
+        score += 20
+    elif median_dd < 25:
+        score += 10
+    elif median_dd < 40:
+        score += 5
+    # valid combinations (max 10)
+    max_possible = len(STRATEGY_PARAM_GRIDS.get('moving_average', {}).get('param_sets', []))
+    score += min(10, int(valid_count / max_possible * 10)) if max_possible > 0 else 5
+
+    # Small bonus for spread not being extreme
+    spread = best_ret - median_ret
+    if spread < 10:
+        score += 5
+
+    score = max(0, min(100, score))
+
+    reason_parts = []
+    if valid_count < 5:
+        reason_parts.append(f'Limited sample: only {valid_count} combinations tested')
+    elif valid_count < 10:
+        reason_parts.append(f'{valid_count} combinations tested')
+
+    if profitable_ratio >= 0.7:
+        reason_parts.append(f'{int(profitable_ratio*100)}% parameter sets profitable')
+    elif profitable_ratio >= 0.4:
+        reason_parts.append(f'{int(profitable_ratio*100)}% parameter sets profitable')
+    else:
+        reason_parts.append(f'only {int(profitable_ratio*100)}% sets profitable')
+
+    if median_ret > 0:
+        reason_parts.append(f'median return +{median_ret:.1f}%')
+    else:
+        reason_parts.append(f'median return {median_ret:.1f}%')
+
+    if median_sharpe > 0.5:
+        reason_parts.append('median sharpe > 0.5')
+    elif median_sharpe > 0:
+        reason_parts.append('median sharpe marginal')
+
+    return score, ', '.join(reason_parts)
+def _compute_recent_vs_long_term(metrics, long_metrics, short_metrics):
+    """Determine recent vs long-term status string."""
+    lr = long_metrics.get('totalReturn', 0) if long_metrics else 0
+    sr = short_metrics.get('totalReturn', 0) if short_metrics else 0
+    ls = long_metrics.get('sharpeRatio', 0) if long_metrics else 0
+    ss = short_metrics.get('sharpeRatio', 0) if short_metrics else 0
+
+    if sr > 0 and ss >= ls * 0.8:
+        return 'Improving' if ss > ls * 1.1 else 'Consistent'
+    elif lr > 0 and sr <= 0:
+        return 'Weakening'
+    elif lr <= 0 and sr > 0:
+        return 'Divergent'
+    elif lr <= 0 and sr <= 0:
+        return 'Weakening'
+    elif ls >= 0.5 and ss < 0.3:
+        return 'Weakening'
+    else:
+        return 'Consistent'
+
+def _compute_verdict(metrics, stability, recent_vs_long, opt_results, valid_count):
+    """Compute final verdict for a candidate with rich reason text."""
+    tr = metrics.get('totalReturn', 0)
+    sp = metrics.get('sharpeRatio', 0)
+    dd = metrics.get('maxDrawdown', 100)
+    pf = metrics.get('profitFactor', 0)
+    tc = metrics.get('tradeCount', 0)
+    st = stability.get('score', 0)
+    pf_ratio = stability.get('profitableRatio', 0)
+    best_ret = stability.get('bestReturn', 0)
+    median_ret = stability.get('medianReturn', 0)
+
+    # Build metric summary for reason text
+    metric_parts = []
+    if tc > 0:
+        metric_parts.append(f'{tc} trades')
+    metric_parts.append(f'return {tr:+.1f}%')
+    metric_parts.append(f'sharpe {sp:.2f}')
+    metric_parts.append(f'drawdown {abs(dd):.1f}%')
+    if pf is not None:
+        metric_parts.append(f'profit factor {pf:.2f}')
+    else:
+        metric_parts.append('all-win (PF N/A)')
+    metric_str = ', '.join(metric_parts)
+
+    # Reject check
+    reject_reasons = []
+    if tr < -20:
+        reject_reasons.append(f'return {tr:.1f}%')
+    if sp <= 0:
+        reject_reasons.append(f'sharpe {sp:.2f}')
+    if pf is not None and pf < 1:
+        reject_reasons.append(f'profit factor {pf:.2f}')
+    if reject_reasons:
+        return 'Reject', f'Reject: 1Y ' + ', '.join(reject_reasons) + f' - {metric_str}'
+
+    # Confirmed - strong across all dimensions
+    if tr > 0 and sp > 0.5 and dd < 35 and (pf is None or pf >= 1.2) and st >= 70:
+        r = f'Confirmed: 1Y +{tr:.1f}% sharpe {sp:.2f}'
+        if pf is not None:
+            r += f' profit factor {pf:.2f}'
+        if pf_ratio >= 0.6:
+            r += f', {int(pf_ratio*100)}% param sets profitable'
+        if valid_count < 10:
+            r += f' ({valid_count} combos)'
+        r += f', recent {recent_vs_long}'
+        return 'Confirmed', r
+
+    # Reject - best positive but stability very poor
+    if st < 50 and pf_ratio < 0.5 and tr > 0:
+        return 'Reject', f'Reject: best +{tr:.1f}% but only {int(pf_ratio*100)}% of param sets profitable, stability {st} - {metric_str}'
+
+    # Watch - borderline
+    watch_parts = ['Watch:']
+    if 50 <= st < 70:
+        watch_parts.append(f' stability {st}')
+    if recent_vs_long in ('Weakening', 'Divergent'):
+        watch_parts.append(f' recent {recent_vs_long}')
+    if tc < 10 and tr > 0:
+        watch_parts.append(f' only {tc} trades')
+    if pf is not None and pf < 1.2:
+        watch_parts.append(f' marginal PF {pf:.2f}')
+    watch_parts.append(f' - {metric_str}')
+    return 'Watch', ''.join(watch_parts)
+
+@app.route('/api/ai/fine-scan-explain', methods=['POST'])
+def fine_scan_explain():
+    """AI explanation layer for Fine Scan candidates.
     
+    Accepts real data summary, returns AI-generated explanation text only.
+    Metrics in -> text out. No mock data, no hallucinated metrics.
+    
+    Input:
+      symbol, trendLabel, trendScore, matchedStrategies,
+      backtestMetrics: { totalReturn, sharpe, winRate, profitFactor, maxDrawdown, tradeCount },
+      optimizationMetrics: { stability, avgReturn, positiveRatio },
+      entryQuality: { grade, score, atr, zone },
+      liquidity: { grade, score, details },
+      newsSummary: { grade, headlineCount },
+      riskAssessment: { grade, score, reason }
+    
+    Output:
+      success, whyMatched, keySignalExplanation, finalReason, nextStep
+    """
+    import time
+    from datetime import datetime
+    
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'error': 'No data provided'}), 400
+        
+        symbol = data.get('symbol', '')
+        if not symbol:
+            return jsonify({'success': False, 'error': 'Symbol required'}), 400
+        
+        trend_label = data.get('trendLabel', '')
+        trend_score = data.get('trendScore', 0)
+        matched_strategies = data.get('matchedStrategies', [])
+        bt = data.get('backtestMetrics', {})
+        opt = data.get('optimizationMetrics', {})
+        eq = data.get('entryQuality', {})
+        liq = data.get('liquidity', {})
+        news = data.get('newsSummary', {})
+        risk = data.get('riskAssessment', {})
+        
+        # Build prompt with ONLY deterministic data - no AI-created metrics
+        prompt = f"""You are a professional quantitative trading analyst. Your ONLY job is to explain the data given below in natural language. DO NOT invent or modify any numbers, grades, or metrics.
+
+Stock: {symbol}
+
+## Market Context
+- Trend: {trend_label} (Score: {trend_score}/100)
+- Matched Strategies: {', '.join(matched_strategies) if matched_strategies else 'None'}
+
+## Backtest Results (1-year, internal engine)
+- Total Return: {bt.get('totalReturn', 'N/A')}%
+- Sharpe Ratio: {bt.get('sharpe', 'N/A')}
+- Win Rate: {bt.get('winRate', 'N/A')}%
+- Profit Factor: {bt.get('profitFactor', 'N/A')}
+- Max Drawdown: {bt.get('maxDrawdown', 'N/A')}%
+- Trade Count: {bt.get('tradeCount', 'N/A')}
+
+## Optimization Results (parameter sweep)
+- Stability: {opt.get('stability', 'N/A')}
+- Average Return (all combos): {opt.get('avgReturn', 'N/A')}%
+- Positive Ratio: {opt.get('positiveRatio', 'N/A')}%
+
+## Entry Quality (Alpaca-based, deterministic)
+- Grade: {eq.get('grade', 'N/A')}
+- Score: {eq.get('score', 'N/A')}/100
+- Estimated ATR: {eq.get('atr', 'N/A')}
+- Entry Zone: {eq.get('zone', 'N/A')}
+
+## Liquidity (Alpaca-based, deterministic)
+- Grade: {liq.get('grade', 'N/A')}
+- Score: {liq.get('score', 'N/A')}/100
+
+## News (Finnhub, raw)
+- Grade: {news.get('grade', 'N/A')}
+- Headlines Count: {news.get('headlineCount', 'N/A')}
+
+## Final Risk Assessment (composite, deterministic)
+- Grade: {risk.get('grade', 'N/A')}
+- Score: {risk.get('score', 'N/A')}/100
+- Reason: {risk.get('reason', 'N/A')}
+
+Based ONLY on the above data, generate the following 4 explanation fields in JSON format:
+
+{{
+  "whyMatched": "Why this stock matches the current strategy/regime. 1-2 sentences.",
+  "keySignalExplanation": "The most important technical signals to watch. 1-2 sentences.",
+  "finalReason": "Actionable reason summarizing why to enter/wait/skip. 1-2 sentences.",
+  "nextStep": "Concrete next action suggestion. 1 sentence."
+}}
+
+Rules:
+1. DO NOT invent or change any numbers, grades, or scores.
+2. DO NOT simulate trades or returns.
+3. Keep each field concise (1-2 sentences max).
+4. If data is insufficient, say so honestly. Do not fabricate.
+5. Output ONLY valid JSON. No markdown, no extra text.
+6. CRITICAL - Use the Trend field EXACTLY as given. Do NOT contradict the trend label. If Trend is 'Bullish', never describe it as neutral or bearish. If Trend is 'Neutral', do not call it bullish unless explaining mixed signals with the word 'mixed'.
+7. Do NOT fabricate a new trend label. Describe what the data shows.
+"""
+        
+        api_key = ai_provider_config_state.get('apiKey', '')
+        if not api_key:
+            print('[FineScanExplain] No AI API key configured, returning fallback')
+            return _fine_scan_fallback_explain(symbol, trend_label, matched_strategies, eq)
+        
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        }
+        
+        payload = {
+            'model': ai_provider_config_state.get('model', 'deepseek-chat'),
+            'messages': [{'role': 'user', 'content': prompt}],
+            'max_tokens': 800,
+            'temperature': 0.3,
+            'response_format': {'type': 'json_object'}
+        }
+        
+        base_url = ai_provider_config_state.get('baseURL', 'https://api.deepseek.com')
+        if not base_url.startswith('http'):
+            base_url = 'https://' + base_url
+        
+        response = requests.post(
+            f'{base_url}/chat/completions',
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            ai_response = result['choices'][0]['message']['content']
+            
+            import json as json_module
+            try:
+                explanation = json_module.loads(ai_response)
+                return jsonify({
+                    'success': True,
+                    'symbol': symbol,
+                    'whyMatched': explanation.get('whyMatched', 'AI analysis completed.'),
+                    'keySignalExplanation': explanation.get('keySignalExplanation', ''),
+                    'finalReason': explanation.get('finalReason', ''),
+                    'nextStep': explanation.get('nextStep', '')
+                })
+            except:
+                print(f'[FineScanExplain] Failed to parse AI response: {ai_response[:200]}')
+                return _fine_scan_fallback_explain(symbol, trend_label, matched_strategies, eq)
+        else:
+            print(f'[FineScanExplain] AI API error: {response.status_code}')
+            return _fine_scan_fallback_explain(symbol, trend_label, matched_strategies, eq)
+    
+    except Exception as e:
+        print(f'[FineScanExplain] Error: {e}')
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'whyMatched': '',
+            'keySignalExplanation': '',
+            'finalReason': '',
+            'nextStep': ''
+        }), 500
+
+
+def _fine_scan_fallback_explain(symbol, trend_label, matched_strategies, entry_quality):
+    """Deterministic fallback when AI is unavailable."""
+    eq_grade = entry_quality.get('grade', 'N/A') if entry_quality else 'N/A'
+    
+    # Build why matched based on strategy count
+    if matched_strategies:
+        strat_str = ', '.join(matched_strategies[:3])
+        if len(matched_strategies) > 3:
+            strat_str += f' +{len(matched_strategies)-3} more'
+        why_matched = f'Strategy match: {trend_label} trend from market scan with {len(matched_strategies)} compatible strategies ({strat_str}).'
+    else:
+        why_matched = f'{trend_label} trend from market scan detected with no strategy matches.'
+    
+    if eq_grade != 'N/A':
+        key_signal = f'Entry quality: {eq_grade}. Key level to watch for confirmation/rejection.'
+    else:
+        key_signal = 'Monitor price action relative to trend support/resistance.'
+    
+    final_reason = f'{trend_label} regime with {eq_grade} quality entry. The trend label is used directly from market scan data.'
+    next_step = 'Monitor for entry confirmation within the expected zone.'
+    
+    return jsonify({
+        'success': True,
+        'symbol': symbol,
+        'whyMatched': why_matched,
+        'keySignalExplanation': key_signal,
+        'finalReason': final_reason,
+        'nextStep': next_step
+    })
+@app.route('/api/ai/deeper-validation', methods=['POST'])
+@app.route('/ai/deeper-validation', methods=['POST'])
+def deeper_validation():
+    """4-step validation for fine-scanned candidates: backtest, optimize, stability, recent-vs-long."""
+    try:
+        data = request.get_json()
+        raw_candidates = data.get('candidates', [])
+        period = data.get('period', '1y')
+        initial_capital = data.get('initialCapital', 100000)
+
+        if not raw_candidates:
+            return jsonify({'success': False, 'message': 'No candidates provided'}), 400
+
+        results = []
+        errors = []
+
+        all_data_cache = {}
+
+        for idx, cand in enumerate(raw_candidates):
+            symbol = cand.get('symbol', '').upper().strip()
+            strategy = cand.get('strategy', '')
+            if not strategy or strategy == 'unknown':
+                strategy = cand.get('bestStrategy', '')
+
+            # Map fine-scan labels to supported strategy keys
+            fallback_reason = ''
+            strategy_lower = strategy.strip().lower()
+            if strategy_lower in STRATEGY_LABEL_MAP:
+                mapped = STRATEGY_LABEL_MAP[strategy_lower]
+                if strategy_lower != mapped:
+                    fallback_reason = f'Strategy mapped: {strategy} → {mapped}'
+                    strategy = mapped
+
+            if strategy not in STRATEGY_FN_MAP:
+                fallback_reason = f'Strategy fallback: moving_average (unrecognized: {strategy})'
+                strategy = 'moving_average'
+
+            if not fallback_reason and cand.get('strategy', '') != strategy:
+                fallback_reason = f'Strategy fallback: {strategy}'
+
+            print(f'[DV] Processing {symbol} with {strategy} ({idx+1}/{len(raw_candidates)})')
+
+            # Step 1: Fetch Data (cache per symbol)
+            if symbol not in all_data_cache:
+                all_data_cache[symbol] = _fetch_1y_data(symbol)
+            data_result = all_data_cache[symbol]
+
+            if data_result is None or data_result[0] is None:
+                errors.append({'symbol': symbol, 'step': 'data_fetch', 'message': 'No data available'})
+                results.append({
+                    'symbol': symbol,
+                    'strategy': strategy,
+                    'verdict': 'Rejected',
+                    'reason': 'No 1-year historical data available',
+                    'error': True
+                })
+                continue
+
+            data_daily, data_source = data_result
+
+            # Step 2: Split data for recent vs long-term
+            split_idx = max(len(data_daily) - 60, len(data_daily) // 2)
+            long_data = data_daily
+            short_data = data_daily[split_idx:]
+
+            # Step 3: 1-Year Backtest with best/selected params
+            params = {}
+            p = cand.get('parameters', {})
+            if p and isinstance(p, dict) and len(p) > 0:
+                params = p
+            else:
+                params = DEFAULT_FALLBACK_PARAMS.get(strategy, {})
+
+            bt_result, bt_err = _run_backtest_core(symbol, strategy, params, data_daily)
+            if bt_err or not bt_result:
+                errors.append({'symbol': symbol, 'step': 'backtest', 'message': bt_err or 'No results'})
+                continue
+
+            metrics = bt_result['metrics']
+            print(f'[DeeperValidation][1Y] {symbol} {strategy} totalReturn={metrics.get("totalReturn", "N/A")} sharpeRatio={metrics.get("sharpeRatio", "N/A")} maxDrawdown={metrics.get("maxDrawdown", "N/A")} winRate={metrics.get("winRate", "N/A")} profitFactor={metrics.get("profitFactor", "N/A")} tradeCount={metrics.get("tradeCount", "N/A")} tradesLen={len(bt_result.get("trades", [])) if bt_result else 0}')
+
+            # Step 4: Light Optimization (parameter grid)
+            param_grid = STRATEGY_PARAM_GRIDS.get(strategy, {})
+            param_sets = param_grid.get('param_sets', [])
+            opt_results = []
+            seen_params = set()
+
+            for ps in param_sets:
+                # Skip if same params as already done
+                key = str(sorted(ps.items()))
+                if key in seen_params:
+                    continue
+                seen_params.add(key)
+
+                r, e = _run_backtest_core(symbol, strategy, ps, data_daily)
+                if r:
+                    opt_results.append({
+                        'params': ps,
+                        'totalReturn': r['metrics']['totalReturn'],
+                        'sharpeRatio': r['metrics']['sharpeRatio'],
+                        'maxDrawdown': r['metrics']['maxDrawdown'],
+                        'winRate': r['metrics']['winRate'],
+                        'profitFactor': r['metrics']['profitFactor'],
+                        'tradeCount': r['metrics']['tradeCount'],
+                    })
+
+            valid_count = len(opt_results)
+            best_opt = max(opt_results, key=lambda x: x['totalReturn']) if opt_results else None
+
+            # Log optimization details
+            top3 = sorted(opt_results, key=lambda x: x['totalReturn'], reverse=True)[:3] if opt_results else []
+            top3_fmt = [{'params': str(r['params']), 'ret': round(r['totalReturn'], 2), 'sharp': round(r['sharpeRatio'], 2)} for r in top3] if top3 else []
+            print(f'[DeeperValidation][LightOpt] {symbol} validCombinations={valid_count} bestReturn={best_opt["totalReturn"] if best_opt else "None"} bestParams={best_opt["params"] if best_opt else "None"} top3={top3_fmt}')
+
+            # Step 5: Parameter Stability
+            stability_score, stability_reason_str = _compute_stability_score(opt_results, valid_count)
+            stability = {
+                'score': stability_score,
+                'profitableRatio': round(sum(1 for r in opt_results if r.get('totalReturn', -999) > 0) / valid_count, 2) if valid_count > 0 else 0,
+                'medianReturn': round(sorted([r.get('totalReturn', 0) for r in opt_results])[valid_count//2], 2) if valid_count > 0 else 0,
+                'bestReturn': best_opt['totalReturn'] if best_opt else 0,
+                'returnSpread': round(best_opt['totalReturn'] - sorted([r.get('totalReturn', 0) for r in opt_results])[valid_count//2], 2) if best_opt and valid_count > 0 else 0,
+                'stableParameterCount': valid_count,
+                'stabilityReason': stability_reason_str,
+            }
+
+            # Step 6: Recent vs Long-Term
+            long_bt, _ = _run_backtest_core(symbol, strategy, params, long_data)
+            short_bt, _ = _run_backtest_core(symbol, strategy, params, short_data)
+            long_metrics = long_bt['metrics'] if long_bt else None
+            short_metrics = short_bt['metrics'] if short_bt else None
+
+            if long_metrics and short_metrics:
+                recent_vs_long = _compute_recent_vs_long_term(metrics, long_metrics, short_metrics)
+            else:
+                recent_vs_long = 'Consistent'
+
+            # Step 7: Verdict
+            verdict, reason_str = _compute_verdict(metrics, stability, recent_vs_long, opt_results, valid_count)
+
+            # Build reason
+            reason_parts = []
+            if fallback_reason:
+                reason_parts.append(fallback_reason)
+            reason_parts.append(reason_str)
+
+            result_entry = {
+                'symbol': symbol,
+                'strategy': strategy,
+                'parameters': params,
+                'verdict': verdict,
+                'reason': ' | '.join(reason_parts),
+                # 1Y backtest
+                'totalReturn': metrics['totalReturn'],
+                'sharpeRatio': metrics['sharpeRatio'],
+                'maxDrawdown': metrics['maxDrawdown'],
+                'winRate': metrics['winRate'],
+                'profitFactor': metrics['profitFactor'],
+                'tradeCount': metrics['tradeCount'],
+                # Optimization
+                'bestParams': best_opt['params'] if best_opt else params,
+                'optimizedReturn': best_opt['totalReturn'] if best_opt else 0,
+                'optimizedSharpe': best_opt['sharpeRatio'] if best_opt else 0,
+                'optimizationResults': opt_results,
+                'bestReturn': stability['bestReturn'],
+                'validCombinationCount': valid_count,
+                # Stability
+                'stabilityScore': stability['score'],
+                'profitableRatio': stability['profitableRatio'],
+                'medianReturn': stability['medianReturn'],
+                'returnSpread': stability['returnSpread'],
+                'stableParameterCount': stability['stableParameterCount'],
+                'stabilityReason': stability['stabilityReason'],
+                # Optimization details
+                'avgReturn': round(sum(r.get('totalReturn', 0) for r in opt_results) / valid_count, 2) if valid_count > 0 else None,
+                'testedCombinationCount': len(param_sets) or len(opt_results) or valid_count or 0,
+                'validCombinationCount': valid_count,
+                'top3Results': top3_fmt if top3_fmt else [],
+                # Recent vs Long
+                'longTermReturn': long_metrics['totalReturn'] if long_metrics else 0,
+                'recentReturn': short_metrics['totalReturn'] if short_metrics else 0,
+                'longTermSharpe': long_metrics['sharpeRatio'] if long_metrics else 0,
+                'recentSharpe': short_metrics['sharpeRatio'] if short_metrics else 0,
+                'recentVsLongTerm': recent_vs_long,
+                'longTermMaxDrawdown': long_metrics['maxDrawdown'] if long_metrics else 0,
+                'recentMaxDrawdown': short_metrics['maxDrawdown'] if short_metrics else 0,
+                # Data source
+                'dataSource': data_source,
+            }
+            results.append(result_entry)
+
+        # Sort: Confirmed first, then Watch, Reject, Needs Manual Review
+        verdict_order = {'Confirmed': 0, 'Watch': 1, 'Reject': 2, 'Needs Manual Review': 3}
+        results.sort(key=lambda r: (verdict_order.get(r.get('verdict', 'Needs Manual Review'), 9), -r.get('stabilityScore', 0)))
+
+        confirmed_count = sum(1 for r in results if r.get('verdict') == 'Confirmed')
+        watch_count = sum(1 for r in results if r.get('verdict') == 'Watch')
+        reject_count = sum(1 for r in results if r.get('verdict') == 'Reject')
+        manual_count = sum(1 for r in results if r.get('verdict') == 'Needs Manual Review')
+
+        return jsonify({
+            'success': True,
+            'results': results,
+            'errors': errors,
+            'summary': {
+                'total': len(results),
+                'confirmed': confirmed_count,
+                'watch': watch_count,
+                'reject': reject_count,
+                'needsManualReview': manual_count,
+                'averageStabilityScore': round(sum(r.get('stabilityScore', 0) for r in results) / len(results), 1) if results else 0,
+            }
+        })
+
+    except Exception as e:
+        print(f'[DV] Error: {e}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+# ============ MTF Multi-Timeframe Confirmation Analysis (v2) ============
+
+@app.route('/api/ai/analyze/mtf', methods=['POST'])
+@app.route('/ai/analyze/mtf', methods=['POST'])
+def ai_analyze_mtf():
+    """
+    多时间框架确认分析接口 (v2 - Finnhub优先, Alpaca fallback)
+    对单个股票进行 1D / 4H(从1H聚合) / 1H / 30m 四层级分析
+    数据源优先级: Finnhub → Alpaca → Unavailable
+    返回每个层级: trend_bias / structure_quality / stretch / momentum_state / source
+    """
+    import time
+    start_time = time.time()
+
+    try:
+        data = request.get_json()
+        symbol = data.get('symbol') if data else None
+        if not symbol:
+            return jsonify({'success': False, 'error': 'Symbol is required'}), 400
+
+        symbol_upper = symbol.upper()
+        print(f'[MTF分析] 开始: {symbol_upper}')
+
+        # ============ 1. 获取多时间框架数据 ============
+        # 时间框架配置: (label, finnhub_resolution, days_back)
+        # Finnhub resolution: 1/5/15/30/60/D/W/M
+        timeframe_configs = [
+            ('1D',   'D',   180),   # 日线,  6个月
+            ('1H',   '60',   30),   # 1小时, 30天
+            ('30m',  '30',   14),   # 30分钟,14天
+            ('15m',  '15',    7),   # 15分钟, 7天
+        ]
+
+        frame_results = {}
+
+        # --- 获取原始蜡烛数据 (sequential, with rate-limit delay) ---
+        raw_frames = {}  # label -> (candles, source)
+
+        for i, (label, resolution, days_back) in enumerate(timeframe_configs):
+            # 300ms delay between API calls to avoid Finnhub/Alpaca rate limits
+            if i > 0:
+                time.sleep(0.3)
+            candles, source, error = fetch_mtf_candles(symbol_upper, resolution, days_back, label)
+            if candles:
+                raw_frames[label] = (candles, source)
+                print(f'[MTF分析] {symbol_upper} {label}: {len(candles)} bars from {source}')
+            else:
+                raw_frames[label] = (None, f'unavailable ({error})')
+                print(f'[MTF分析] {symbol_upper} {label}: unavailable - {error}')
+
+        # --- 聚合 4H (从 1H 蜡烛) ---
+        if raw_frames.get('1H') and raw_frames['1H'][0]:
+            one_hour_candles, one_hour_source = raw_frames['1H']
+            four_hour_candles = aggregate_to_4h(one_hour_candles)
+            raw_frames['4H'] = (four_hour_candles, one_hour_source)
+            print(f'[MTF分析] {symbol_upper} 4H: {len(four_hour_candles)} bars (aggregated from 1H, source:{one_hour_source})')
+        else:
+            raw_frames['4H'] = (None, 'unavailable (no 1H data to aggregate)')
+            print(f'[MTF分析] {symbol_upper} 4H: unavailable - no 1H data')
+
+        # ============ 2. 分析每个时间框架 ============
+        tf_order = ['1D', '4H', '1H', '30m', '15m']
+        for label in tf_order:
+            candles, source_info = raw_frames.get(label, (None, 'unavailable'))
+            if candles and len(candles) >= 5:
+                closes = [c['close'] for c in candles]
+                highs  = [c['high'] for c in candles]
+                lows   = [c['low'] for c in candles]
+                analysis = analyze_single_timeframe(closes, highs, lows, label)
+                analysis['source'] = source_info
+                analysis['available'] = True
+                analysis['bar_count'] = len(candles)
+                # 分离 source 字符串中的 error 部分
+                if 'unavailable' in source_info:
+                    analysis['available'] = False
+                    analysis['source'] = 'unavailable'
+                    analysis['error'] = source_info
+                frame_results[label] = analysis
+            else:
+                frame_results[label] = {
+                    'trend_bias': 'N/A',
+                    'structure_quality': 'N/A',
+                    'stretch': 'N/A',
+                    'momentum_state': 'N/A',
+                    'available': False,
+                    'source': 'unavailable',
+                    'error': source_info if isinstance(source_info, str) and 'unavailable' in source_info else 'insufficient data (<5 bars)'
+                }
+
+        # ============ 3. 计算综合Alignment ============
+        alignment = calculate_mtf_alignment(frame_results)
+
+        # ============ 4. 构建结果 ============
+        response_data = {
+            'success': True,
+            'symbol': symbol_upper,
+            'mtf_results': frame_results,
+            'alignment': alignment,
+            'timestamp': int(time.time()),
+            'responseTime': round(time.time() - start_time, 3)
+        }
+
+        # 打印摘要
+        for label in tf_order:
+            r = frame_results.get(label, {})
+            s = r.get('source', 'unavailable')
+            t = r.get('trend_bias', 'N/A')
+            print(f'[MTF分析]   {label}: src={s} trend={t}')
+        print(f'[MTF分析] {symbol_upper} 完成: alignment={alignment}, 耗时={response_data["responseTime"]}s')
+        return jsonify(response_data)
+
+    except Exception as e:
+        print(f'[MTF分析] 整体异常: {str(e)}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def fetch_mtf_candles(symbol, resolution, days_back, label):
+    """
+    获取MTF蜡烛数据, 数据源优先级: Finnhub → Alpaca
+    返回: (candles_list, source_string)
+          candles_list: list of dict {timestamp, open, high, low, close, volume}
+          source_string: 'finnhub' / 'alpaca' / 'unavailable: <reason>'
+    """
+    import requests, time
+    from datetime import datetime, timedelta
+
+    end_ts = int(time.time())
+    start_ts = end_ts - days_back * 24 * 3600
+
+    # ---- 1) Try Finnhub ----
+    if FINNHUB_API_KEY:
+        try:
+            finnhub_url = f"{FINNHUB_BASE_URL}/stock/candle"
+            params = {
+                'symbol': symbol,
+                'resolution': resolution,
+                'from': start_ts,
+                'to': end_ts,
+                'token': FINNHUB_API_KEY
+            }
+            print(f'[MTF] Finnhub {label}({resolution}d{days_back}): {symbol}')
+            resp = requests.get(finnhub_url, params=params, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('s') == 'ok' and 'c' in data and data['c']:
+                    candles = []
+                data = resp.json()
+                if data.get('s') == 'ok' and 'c' in data and data['c']:
+                    candles = []
+                    timestamps = data.get('t', [])
+                    opens = data.get('o', [])
+                    highs = data.get('h', [])
+                    lows = data.get('l', [])
+                    closes = data.get('c', [])
+                    volumes = data.get('v', [])
+                    for i in range(len(timestamps)):
+                        try:
+                            candles.append({
+                                'timestamp': int(timestamps[i]),
+                                'open': float(opens[i]),
+                                'high': float(highs[i]),
+                                'low': float(lows[i]),
+                                'close': float(closes[i]),
+                                'volume': int(float(volumes[i])) if i < len(volumes) else 0
+                            })
+                        except (ValueError, IndexError):
+                            continue
+                    candles.sort(key=lambda x: x['timestamp'])
+                    print(f'[MTF] Finnhub {label}: {len(candles)} bars OK')
+                    return candles, "finnhub", None
+                else:
+                    reason = data.get('s', 'no_data')
+                    print(f'[MTF] Finnhub {label}: s={reason}')
+                    # Finnhub returns 'no_data' for out-of-market tickers
+            else:
+                print(f'[MTF] Finnhub {label}: HTTP {resp.status_code}')
+        except Exception as e:
+            print(f'[MTF] Finnhub {label} error: {e}')
+    else:
+        print(f'[MTF] Finnhub {label}: API key not configured, skip')
+
+    # ---- 2) Fallback to Alpaca ----
+    time.sleep(0.3)  # Rate-limit delay before Alpaca
+    try:
+        # Map our labels to Alpaca interval/range
+        alpaca_map = {
+            '1D':   ('1Day',  '6Month'),
+            '1H':   ('1Hour', '1Month'),
+            '30m':  ('15Min', '2Week'),   # 30m not directly supported, use 15Min
+            '15m':  ('15Min', '1Week'),
+        }
+        if label in alpaca_map:
+            interval, range_param = alpaca_map[label]
+            print(f'[MTF] Alpaca fallback {label}({interval}/{range_param}): {symbol}')
+            bars, success, src = get_alpaca_history(symbol, interval, range_param)
+            if success and bars and len(bars) > 0:
+                # Normalize to our format
+                candles = []
+                for bar in bars:
+                    candles.append({
+                        'timestamp': bar.get('t', bar.get('timestamp', 0)),
+                        'open': float(bar.get('o', bar.get('open', 0))),
+                        'high': float(bar.get('h', bar.get('high', 0))),
+                        'low': float(bar.get('l', bar.get('low', 0))),
+                        'close': float(bar.get('c', bar.get('close', 0))),
+                        'volume': int(float(bar.get('v', bar.get('volume', 0)))),
+                    })
+                candles.sort(key=lambda x: x['timestamp'])
+                print(f'[MTF] Alpaca {label}: {len(candles)} bars OK')
+                return candles, "alpaca", None
+            else:
+                print(f'[MTF] Alpaca {label}: {src}')
+        else:
+            print(f'[MTF] Alpaca {label}: no mapping, skip')
+    except Exception as e:
+        print(f'[MTF] Alpaca {label} error: {e}')
+
+    # ---- 3) Both failed ----
+    # Build error reason
+    parts = []
+    if not FINNHUB_API_KEY:
+        parts.append('finnhub no key')
+    else:
+        parts.append('finnhub fail')
+    parts.append('alpaca fail')
+    err_msg = 'unavailable: ' + ', '.join(parts)
+    return None, err_msg, err_msg
+
+
+def aggregate_to_4h(one_hour_candles):
+    """
+    从 1H 蜡烛聚合生成 4H 蜡烛
+    每 4 根 1H 合成为 1 根 4H
+    """
+    if not one_hour_candles or len(one_hour_candles) < 4:
+        return one_hour_candles or []
+
+    sorted_candles = sorted(one_hour_candles, key=lambda x: x['timestamp'])
+    four_h_candles = []
+    for i in range(0, len(sorted_candles), 4):
+        chunk = sorted_candles[i:i+4]
+        if len(chunk) < 2:
+            continue
+        open_price = chunk[0]['open']
+        high_price = max(c['high'] for c in chunk)
+        low_price = min(c['low'] for c in chunk)
+        close_price = chunk[-1]['close']
+        volume = sum(c['volume'] for c in chunk)
+        timestamp = chunk[0]['timestamp']
+        four_h_candles.append({
+            'timestamp': timestamp,
+            'open': open_price,
+            'high': high_price,
+            'low': low_price,
+            'close': close_price,
+            'volume': volume
+        })
+    return four_h_candles
+
+
+def analyze_single_timeframe(closes, highs, lows, label):
+    """
+    对单个时间框架进行简化分析
+    返回: trend_bias, structure_quality, stretch, momentum_state
+    """
+    if len(closes) < 5:
+        return {
+            'trend_bias': 'N/A',
+            'structure_quality': 'N/A',
+            'stretch': 'N/A',
+            'momentum_state': 'N/A',
+            'available': False
+        }
+
+    current_price = closes[-1]
+
+    # === Trend Bias ===
+    # 简单EMA计算 (用于大小框架的简版趋势判断)
+    def ema(data, period):
+        if len(data) < period:
+            # 用更短的周期
+            period = max(3, len(data) // 2)
+        if len(data) < period:
+            return data[-1] if data else 0
+        alpha = 2.0 / (period + 1)
+        result = data[0]
+        for i in range(1, len(data)):
+            result = alpha * data[i] + (1 - alpha) * result
+        return result
+
+    ema20 = ema(closes, min(20, len(closes)))
+    ema50 = ema(closes, min(50, len(closes))) if len(closes) >= 10 else ema20 * 0.99
+    ema200 = ema(closes, min(200, len(closes))) if len(closes) >= 30 else ema20 * 0.98
+
+    # 价格相对EMA位置
+    price_vs_ema20 = (current_price / ema20 - 1) * 100
+    price_vs_ema50 = (current_price / ema50 - 1) * 100 if ema50 else 0
+
+    # 趋势方向判断
+    if price_vs_ema20 > 2 and price_vs_ema50 > 1 and ema20 > ema50:
+        trend_bias = 'Bullish'
+    elif price_vs_ema20 < -2 and price_vs_ema50 < -1 and ema20 < ema50:
+        trend_bias = 'Bearish'
+    else:
+        trend_bias = 'Neutral'
+
+    # 对于大级别加强判断（1D use 4% threshold instead of 2%）
+    if label == '1D':
+        if price_vs_ema20 > 4 and ema20 > ema50 * 1.01:
+            trend_bias = 'Bullish'
+        elif price_vs_ema20 < -4 and ema20 < ema50 * 0.99:
+            trend_bias = 'Bearish'
+        else:
+            trend_bias = 'Neutral'
+
+    # === Structure Quality ===
+    # 检查是否有一致的高点/低点模式（用简单的分段方法）
+    half = len(closes) // 2
+    first_half_high = max(highs[:half]) if half > 0 else highs[0]
+    first_half_low = min(lows[:half]) if half > 0 else lows[0]
+    second_half_high = max(highs[half:]) if half < len(highs) else highs[-1]
+    second_half_low = min(lows[half:]) if half < len(lows) else lows[-1]
+
+    higher_high = second_half_high > first_half_high * 1.01
+    higher_low = second_half_low > first_half_low * 1.01
+
+    # 检查趋势一致性（使用价格序列的线性相关系数近似）
+    import math
+    n = len(closes)
+    x_sum = n * (n - 1) / 2
+    y_sum = sum(closes)
+    xy_sum = sum(i * c for i, c in enumerate(closes))
+    x2_sum = sum(i * i for i in range(n))
+    y2_sum = sum(c * c for c in closes)
+
+    denominator = math.sqrt((n * x2_sum - x_sum * x_sum) * (n * y2_sum - y_sum * y_sum))
+    correlation = ((n * xy_sum - x_sum * y_sum) / denominator) if denominator > 0 else 0
+
+    # 结构质量判断
+    if higher_high and higher_low and correlation > 0.6:
+        structure_quality = 'Strong'
+    elif (higher_high or higher_low) and correlation > 0.3:
+        structure_quality = 'Mixed'
+    else:
+        structure_quality = 'Weak'
+
+    # === Stretch ===
+    # 使用价格相对于近期范围的位置来判断拉伸度
+    lookback = min(20, len(closes))
+    recent_high = max(highs[-lookback:])
+    recent_low = min(lows[-lookback:])
+    range_size = recent_high - recent_low
+    range_pct = range_size / recent_low * 100 if recent_low > 0 else 0
+
+    if range_size > 0:
+        price_position = (current_price - recent_low) / range_size
+    else:
+        price_position = 0.5
+
+    # 价格在范围顶部80%以上 = Extended
+    # 价格在底部20%以下 = maybe oversold
+    if price_position > 0.85:
+        stretch = 'Extended'
+    elif price_position > 0.7:
+        stretch = 'Normal'
+    elif price_position > 0.3:
+        stretch = 'Normal'
+    else:
+        stretch = 'Normal'  # 底部不标记stretched
+
+    # 对15min/1H级别更敏感
+    if label in ['15min', '30min', 'Entry']:
+        if price_position > 0.88:
+            stretch = 'Extended'
+        elif price_position > 0.75:
+            stretch = 'Normal'
+        else:
+            stretch = 'Normal'
+
+    # === Momentum State ===
+    # 通过最近n根K线的斜率来判断动量方向
+    if len(closes) >= 10:
+        recent_closes = closes[-10:]
+    else:
+        recent_closes = closes
+
+    # 简单动量：比较后半段和前半段平均价格
+    mid = len(recent_closes) // 2
+    first_half_avg = sum(recent_closes[:mid]) / mid if mid > 0 else recent_closes[0]
+    second_half_avg = sum(recent_closes[mid:]) / (len(recent_closes) - mid) if (len(recent_closes) - mid) > 0 else recent_closes[-1]
+    momentum_pct = (second_half_avg / first_half_avg - 1) * 100
+
+    # 最近几根K线的变化率
+    if len(closes) >= 5:
+        recent_3 = (closes[-1] / closes[-3] - 1) * 100 if closes[-3] > 0 else 0
+    else:
+        recent_3 = 0
+
+    # 根据趋势和动量方向判断
+    if momentum_pct > 1 and recent_3 > 0:
+        momentum_state = 'Improving'
+    elif momentum_pct > 0.5:
+        momentum_state = 'Flat'
+    elif momentum_pct > -0.5:
+        momentum_state = 'Flat'
+    elif momentum_pct < -1 and recent_3 < 0:
+        momentum_state = 'Fading'
+    else:
+        momentum_state = 'Flat'
+
+    return {
+        'trend_bias': trend_bias,
+        'structure_quality': structure_quality,
+        'stretch': stretch,
+        'momentum_state': momentum_state,
+        'available': True,
+        'bar_count': len(closes),
+        'price': round(current_price, 2),
+        'price_vs_ema20': round(price_vs_ema20, 2)
+    }
+
+
+def calculate_mtf_alignment(frame_results):
+    """
+    综合判断多时间框架的 Alignment (v2)
+    TF keys: 1D, 4H, 1H, 30m, 15m
+    - Aligned: 大级别+中间+小级别都配合
+    - Partially aligned: 大级别强但小级别stretched 或有些冲突
+    - Conflicted: 大级别与小级别方向不一致
+    """
+    daily  = frame_results.get('1D',  {})
+    hour4  = frame_results.get('4H',  {})
+    hour1  = frame_results.get('1H',  {})
+    s30m   = frame_results.get('30m', {})
+    s15m   = frame_results.get('15m', {})
+
+    daily_bias = daily.get('trend_bias', 'N/A')
+    h4_bias    = hour4.get('trend_bias', 'N/A')
+    h1_bias    = hour1.get('trend_bias', 'N/A')
+    s30_bias   = s30m.get('trend_bias', 'N/A')
+    s15_bias   = s15m.get('trend_bias', 'N/A')
+
+    # Check which timeframes are actually available
+    avail = {
+        k: frame_results.get(k, {}).get('available', False)
+        for k in ['1D', '4H', '1H', '30m', '15m']
+    }
+    num_avail = sum(1 for v in avail.values() if v)
+
+    # If no data available at all
+    if not daily.get('available', False) and not hour1.get('available', False):
+        return 'Unavailable'
+
+    # If only single timeframe
+    if num_avail <= 1:
+        return 'Aligned' if daily.get('available', False) else 'Partially aligned'
+
+    # Use available lower timeframes for entry context
+    entry_bias = s15_bias if avail.get('15m') else (s30_bias if avail.get('30m') else (h1_bias if avail.get('1H') else 'N/A'))
+    entry_stretch = frame_results.get('15m', {}).get('stretch', 'N/A') if avail.get('15m') else frame_results.get('30m', {}).get('stretch', 'N/A')
+
+    # 大级别方向判断
+    if daily_bias == 'Bullish':
+        if h4_bias in ['Bullish', 'Neutral'] and entry_bias in ['Bullish', 'Neutral']:
+            if entry_stretch == 'Extended':
+                return 'Partially aligned'
+            else:
+                return 'Aligned'
+        elif h4_bias == 'Bearish' or entry_bias == 'Bearish':
+            return 'Conflicted'
+        else:
+            return 'Partially aligned'
+    elif daily_bias == 'Bearish':
+        if entry_bias == 'Bullish':
+            return 'Conflicted'
+        elif entry_stretch == 'Extended':
+            return 'Partially aligned'
+        else:
+            return 'Aligned'
+    else:  # Neutral
+        if h4_bias == 'Bullish' and entry_bias == 'Bullish':
+            return 'Conflicted'
+        elif h4_bias == 'Bullish' or entry_bias == 'Bullish':
+            return 'Partially aligned'
+        else:
+            return 'Aligned'
+
+
+
+
+
+    # ============ End MTF ============
+
+
+
 
     print("\n启动服务器...")
 
@@ -18715,6 +21608,6 @@ if __name__ == '__main__':
     print("修复版后端启动")
     print("端口: 8889")
     print("================================================================================")
-    
+
     print("\n启动服务器...")
     app.run(host='127.0.0.1', port=8889, debug=True, use_reloader=False)
