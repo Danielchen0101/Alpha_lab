@@ -132,6 +132,13 @@ export const deeperValidationAPI = {
   },
 };
 
+// Entry Plan API (deterministic entry/stop/target calculator)
+export const entryPlanAPI = {
+  generate: (candidates: any[], accountSize = 100000, riskPerTradePct = 1, maxPositionPct = 10) => {
+    return api.post('/ai/entry-plan', { candidates, accountSize, riskPerTradePct, maxPositionPct });
+  },
+};
+
 // Fine Scan AI Explanation Layer (generates narrative text only, no metrics)
 export const fineScanExplainAPI = {
   explain: (data: FineScanExplainRequest) => {

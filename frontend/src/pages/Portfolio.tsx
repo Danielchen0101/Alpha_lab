@@ -1,19 +1,19 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Card, Typography, Space, Statistic, Row, Col,
-  Button, Divider, Table, Tag, Select, Form, Input,
-  message, Progress, Empty, Badge, Alert, Tooltip
+  Button, Divider, Table, Tag, Select, Form, Input, InputNumber,
+  message, Progress, Empty, Badge, Alert, Tooltip, Spin
 } from 'antd';
 import {
   LineChartOutlined, BarChartOutlined,
   SettingOutlined, PlayCircleOutlined, PauseCircleOutlined,
   ThunderboltOutlined, CheckCircleOutlined, ClockCircleOutlined,
-  RobotOutlined, CloseCircleOutlined, ExclamationCircleOutlined, SyncOutlined,
+  RobotOutlined, CloseCircleOutlined, ExclamationCircleOutlined, SyncOutlined, LoadingOutlined,
   ArrowUpOutlined, ArrowDownOutlined, ArrowRightOutlined, MinusOutlined,
   SortDescendingOutlined, SortAscendingOutlined
 } from '@ant-design/icons';
 import aiTradingService, { AIProviderConfig } from '../services/aiTradingService';
-import { backtraderAPI, marketAPI, entryQualityAPI, fineScanAdvancedAPI, deeperValidationAPI, fineScanExplainAPI } from '../services/api';
+import { backtraderAPI, marketAPI, entryQualityAPI, fineScanAdvancedAPI, deeperValidationAPI, entryPlanAPI, fineScanExplainAPI } from '../services/api';
 import api, { scannerApi } from '../services/api';
 import marketDataService from '../services/marketDataService';
 import alpacaBrokerService, { AlpacaPosition, AlpacaOrder } from '../services/alpacaBrokerService';
@@ -6066,6 +6066,75 @@ Please respond in this exact JSON format:
   const [deeperValidationStatus, setDeeperValidationStatus] = useState<'idle' | 'loading' | 'completed' | 'error'>('idle');
   const [deeperValidationResults, setDeeperValidationResults] = useState<any[] | null>(null);
 
+  // ===== Entry Plan State =====
+  const [entryPlanStatus, setEntryPlanStatus] = useState<'idle' | 'loading' | 'completed' | 'error'>('idle');
+  const [entryPlanResults, setEntryPlanResults] = useState<any[] | null>(null);
+  const [expandedEntryPlanSymbol, setExpandedEntryPlanSymbol] = useState<string | null>(null);
+  const [entryPlanAccountSize, setEntryPlanAccountSize] = useState<number>(100000);
+
+  const getEntryPlanCandidates = useCallback(() => {
+    if (!deeperValidationResults || deeperValidationResults.length === 0) return [];
+    // Confirmed candidates first, then Watch (up to total of 5 max)
+    const confirmed: any[] = [];
+    const watch: any[] = [];
+    for (const r of deeperValidationResults) {
+      if (r.verdict === 'Confirmed') confirmed.push(r);
+      else if (r.verdict === 'Watch') watch.push({ ...r, planNote: 'Conservative / Watch Only' });
+    }
+    // If fewer than 3 Confirmed, supplement with Watch
+    if (confirmed.length < 3) {
+      const needed = 3 - confirmed.length;
+      return [...confirmed, ...watch.slice(0, needed)];
+    }
+    return confirmed;
+  }, [deeperValidationResults]);
+
+  const handleRunEntryPlan = useCallback(async () => {
+    const candidates = getEntryPlanCandidates();
+    if (!candidates.length) return;
+    setEntryPlanStatus('loading');
+    setEntryPlanResults(null);
+    try {
+      // Build input data with richest possible fields from deeper validation results
+      const candidateData = candidates.map((c: any) => ({
+        symbol: c.symbol,
+        strategy: c.strategy || c.strategyType || '',
+        verdict: c.verdict || '',
+        totalReturn: c.totalReturn ?? c.aggregateReturn,
+        sharpeRatio: c.sharpeRatio ?? c.sharpe,
+        maxDrawdown: c.maxDrawdown,
+        winRate: c.winRate,
+        profitFactor: c.profitFactor,
+        tradeCount: c.tradeCount ?? c.trades,
+        stabilityScore: c.stabilityScore,
+        recentVsLongTerm: c.recentVsLongTerm,
+        fineScanEntryQuality: c.fineScanEntryQuality || '',
+        liquidity: c.liquidity || '',
+        riskGrade: c.riskGrade || '',
+        currentPrice: c.currentPrice || c.price || 0,
+        support: c.support || 0,
+        resistance: c.resistance || 0,
+        atr: c.atr || 0,
+        ema20: c.ema20 || 0,
+        ema50: c.ema50 || 0,
+        recentHigh: c.recentHigh || 0,
+        recentLow: c.recentLow || 0,
+        volume: c.volume || 0,
+        avgVolume: c.avgVolume || 0,
+      }));
+      const res = await entryPlanAPI.generate(candidateData, entryPlanAccountSize, 1, 10);
+      if (res.data?.success && res.data?.plans) {
+        setEntryPlanResults(res.data.plans);
+        setEntryPlanStatus('completed');
+      } else {
+        setEntryPlanStatus('error');
+      }
+    } catch (err) {
+      console.error('Entry plan error:', err);
+      setEntryPlanStatus('error');
+    }
+  }, [getEntryPlanCandidates, entryPlanAccountSize]);
+
   const selectValidationCandidates = useCallback(() => {
     if (!fineScanResults || fineScanResults.length === 0) return [];
     // ONLY Fine Scan Continue decisions — no Watch/Skip supplement
@@ -8326,10 +8395,416 @@ function renderDVDetailPanel(record: any) {
         </Card>
       </div>
 
+      {/* ▲▲▲ Above: Deeper Validation ▲▲▲ */}
+
+      {/* ▲▲▲ Below: Entry Plan ▲▲▲ */}
+      {/* ===== Entry Plan Section ===== */}
+      <div style={{ marginBottom: '24px' }}>
+        <Card
+          title={
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <span style={{ fontSize: '14px', fontWeight: 600 }}>Entry Plan</span>
+                <div style={{ fontSize: '11px', color: '#888', marginTop: '2px', fontWeight: 400 }}>
+                  Build actionable entry zones, stop loss, take profit, position sizing, and invalidation rules for validated candidates.
+                </div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <InputNumber
+                  size="small"
+                  value={entryPlanAccountSize}
+                  onChange={(v) => setEntryPlanAccountSize(v || 100000)}
+                  formatter={(v) => `$${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                  parser={(v) => parseFloat(v?.replace(/\$\s?|,/g, '') || '100000')}
+                  style={{ width: '120px' }}
+                  min={10000}
+                  max={10000000}
+                  step={10000}
+                />
+                <Button
+                  type="primary"
+                  size="small"
+                  loading={entryPlanStatus === 'loading'}
+                  disabled={entryPlanStatus === 'loading' || !getEntryPlanCandidates().length}
+                  onClick={handleRunEntryPlan}
+                  style={{ fontSize: '12px', height: '28px' }}
+                >
+                  Run Entry Plan
+                </Button>
+              </div>
+            </div>
+          }
+          size="small"
+          style={{ borderRadius: '8px', border: '1px solid #f0f0f0', fontSize: '12px' }}
+          bodyStyle={{ padding: deeperValidationStatus !== 'completed' ? '16px' : '12px' }}
+        >
+          {/* No DV candidates yet */}
+          {deeperValidationStatus !== 'completed' && (
+            <div style={{ textAlign: 'center', padding: '12px 0', color: '#bbb', fontSize: '12px' }}>
+              No validated candidates yet. Run Deeper Validation first.
+            </div>
+          )}
+
+          {/* DV done but no confirmed/watch candidates */}
+          {deeperValidationStatus === 'completed' && getEntryPlanCandidates().length === 0 && (
+            <div style={{ textAlign: 'center', padding: '12px 0', color: '#bbb', fontSize: '12px' }}>
+              No Confirmed or Watch candidates available from Deeper Validation.
+            </div>
+          )}
+
+          {/* DV done, candidates available */}
+          {deeperValidationStatus === 'completed' && getEntryPlanCandidates().length > 0 && entryPlanStatus === 'idle' && (
+            <div style={{ textAlign: 'center', padding: '12px 0', color: '#bbb', fontSize: '12px' }}>
+              {getEntryPlanCandidates().length} validated candidates ready. Click "Run Entry Plan" to generate entry zones.
+            </div>
+          )}
+
+          {/* Loading */}
+          {entryPlanStatus === 'loading' && (
+            <div style={{ textAlign: 'center', padding: '24px 0' }}>
+              <Spin indicator={<LoadingOutlined style={{ fontSize: 24 }} spin />} />
+              <div style={{ marginTop: '8px', color: '#888', fontSize: '12px' }}>
+                Computing entry zones, stop loss, and position sizes...
+              </div>
+              <Progress
+                type="line"
+                percent={50}
+                showInfo={false}
+                strokeColor="#1890ff"
+                style={{ maxWidth: '400px', margin: '12px auto 0' }}
+              />
+            </div>
+          )}
+
+          {/* Error */}
+          {entryPlanStatus === 'error' && (
+            <div style={{ textAlign: 'center', padding: '16px 0', color: '#ff4d4f' }}>
+              <CloseCircleOutlined style={{ fontSize: 20 }} />
+              <div style={{ marginTop: 4 }}>Entry plan generation failed. Please try again.</div>
+            </div>
+          )}
+
+          {/* Results */}
+          {entryPlanStatus === 'completed' && entryPlanResults && entryPlanResults.length > 0 && (
+            <>
+              {/* Summary cards */}
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                {[
+                  { label: 'Candidates Planned', value: entryPlanResults.length, color: '#1890ff' },
+                  { label: 'Ready', value: entryPlanResults.filter((p) => p.status === 'Ready').length, color: '#52c41a' },
+                  { label: 'Wait for Pullback', value: entryPlanResults.filter((p) => p.status === 'Wait for Pullback').length, color: '#faad14' },
+                  { label: 'Breakout Watch', value: entryPlanResults.filter((p) => p.status === 'Breakout Watch').length, color: '#722ed1' },
+                  { label: 'Avoid', value: entryPlanResults.filter((p) => p.status === 'Avoid').length, color: '#ff4d4f' },
+                  { label: 'Manual Review', value: entryPlanResults.filter((p) => p.status === 'Manual Review').length, color: '#fa8c16' },
+                ].map((stat) => (
+                  <div
+                    key={stat.label}
+                    style={{
+                      background: '#fafafa',
+                      borderRadius: '6px',
+                      border: '1px solid #f0f0f0',
+                      padding: '6px 12px',
+                      textAlign: 'center',
+                      minWidth: '100px',
+                    }}
+                  >
+                    <div style={{ fontSize: '13px', fontWeight: 600, color: stat.color }}>{stat.value}</div>
+                    <div style={{ fontSize: '10px', color: '#888', marginTop: '2px' }}>{stat.label}</div>
+                  </div>
+                ))}
+                <div
+                  style={{
+                    background: '#fafafa',
+                    borderRadius: '6px',
+                    border: '1px solid #f0f0f0',
+                    padding: '6px 12px',
+                    textAlign: 'center',
+                    minWidth: '100px',
+                  }}
+                >
+                  <div style={{ fontSize: '13px', fontWeight: 600, color: '#1890ff' }}>
+                    {(() => {
+                      const rrs = entryPlanResults.map((p) => Math.max(p.riskReward1 || 0, p.riskReward2 || 0)).filter((r) => r > 0);
+                      if (!rrs.length) return 'N/A';
+                      const avg = rrs.reduce((a, b) => a + b, 0) / rrs.length;
+                      return avg.toFixed(1) + ':1';
+                    })()}
+                  </div>
+                  <div style={{ fontSize: '10px', color: '#888', marginTop: '2px' }}>Avg R/R</div>
+                </div>
+              </div>
+
+              {/* Table */}
+              <Table
+                dataSource={entryPlanResults}
+                rowKey="symbol"
+                size="small"
+                pagination={false}
+                expandable={{
+                  expandedRowKeys: expandedEntryPlanSymbol ? [expandedEntryPlanSymbol] : [],
+                  onExpand: (expanded, record) => {
+                    setExpandedEntryPlanSymbol(expanded ? record.symbol : null);
+                  },
+                  expandedRowRender: (record) => {
+                    const ep = record;
+                    return (
+                      <div style={{
+                        background: '#f8f9fa',
+                        padding: '12px 16px',
+                        borderRadius: '8px',
+                        display: 'grid',
+                        gridTemplateColumns: '1fr 1fr',
+                        gap: '10px',
+                      }}>
+                        {/* Card 1: Entry Setup */}
+                        <div style={{ background: '#fff', borderRadius: '6px', border: '1px solid #e5e7eb', padding: '10px' }}>
+                          <div style={{ fontSize: '11px', fontWeight: 600, color: '#1890ff', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span>📝</span> Entry Setup
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', fontSize: '11px' }}>
+                            <div><span style={{ color: '#888' }}>Plan Type:</span> <span style={{ fontWeight: 500 }}>{ep.planType}</span></div>
+                            <div><span style={{ color: '#888' }}>Current:</span> <span style={{ fontWeight: 500 }}>${ep.currentPrice?.toFixed(2)}</span></div>
+                            <div><span style={{ color: '#888' }}>Entry Zone:</span> <span style={{ fontWeight: 500 }}>${ep.entryZoneLow?.toFixed(2)} - ${ep.entryZoneHigh?.toFixed(2)}</span></div>
+                            <div><span style={{ color: '#888' }}>Trigger:</span> <span style={{ fontWeight: 500, fontSize: '10px' }}>{ep.entryTrigger || 'N/A'}</span></div>
+                            <div style={{ gridColumn: '1 / -1' }}>
+                              <span style={{ color: '#888' }}>Confirmation:</span>
+                              <span style={{ fontWeight: 500, fontSize: '10px', marginLeft: '4px' }}>{ep.confirmationSignals || 'N/A'}</span>
+                            </div>
+                            <div style={{ gridColumn: '1 / -1' }}>
+                              <span style={{ color: '#888' }}>Status:</span>{' '}
+                              <Tag color={ep.status === 'Ready' ? 'green' : ep.status === 'Avoid' ? 'red' : ep.status === 'Breakout Watch' ? 'purple' : ep.status === 'Manual Review' ? 'orange' : 'gold'} style={{ fontSize: '10px' }}>
+                                {ep.status}
+                              </Tag>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Card 2: Risk Management */}
+                        <div style={{ background: '#fff', borderRadius: '6px', border: '1px solid #e5e7eb', padding: '10px' }}>
+                          <div style={{ fontSize: '11px', fontWeight: 600, color: '#ff4d4f', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span>🛡️</span> Risk Management
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', fontSize: '11px' }}>
+                            <div><span style={{ color: '#888' }}>Stop Loss:</span> <span style={{ fontWeight: 500, color: '#ff4d4f' }}>${ep.stopLoss?.toFixed(2)}</span></div>
+                            <div><span style={{ color: '#888' }}>Risk/Share:</span> <span style={{ fontWeight: 500 }}>${(ep.currentPrice - ep.stopLoss)?.toFixed(2)}</span></div>
+                            <div style={{ gridColumn: '1 / -1' }}>
+                              <span style={{ color: '#888' }}>Stop Reason:</span>
+                              <span style={{ fontWeight: 400, fontSize: '10px', marginLeft: '4px' }}>{ep.stopLossReason || 'N/A'}</span>
+                            </div>
+                            <div><span style={{ color: '#888' }}>Risk $:</span> <span style={{ fontWeight: 500, color: '#ff4d4f' }}>${ep.riskDollars?.toFixed(0)}</span></div>
+                            <div><span style={{ color: '#888' }}>Max Loss:</span> <span style={{ fontWeight: 500 }}>{ep.maxLossPct}%</span></div>
+                            <div><span style={{ color: '#888' }}>Position:</span> <span style={{ fontWeight: 500 }}>{ep.positionSizeShares} shares</span></div>
+                            <div><span style={{ color: '#888' }}>Size $:</span> <span style={{ fontWeight: 500 }}>${ep.positionSizeDollars?.toFixed(0)}</span></div>
+                          </div>
+                        </div>
+
+                        {/* Card 3: Profit Targets */}
+                        <div style={{ background: '#fff', borderRadius: '6px', border: '1px solid #e5e7eb', padding: '10px' }}>
+                          <div style={{ fontSize: '11px', fontWeight: 600, color: '#52c41a', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span>🎯</span> Profit Targets
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', fontSize: '11px' }}>
+                            <div><span style={{ color: '#888' }}>TP1:</span> <span style={{ fontWeight: 500, color: '#52c41a' }}>${ep.takeProfit1?.toFixed(2)}</span></div>
+                            <div><span style={{ color: '#888' }}>R/R 1:</span> <span style={{ fontWeight: 500, color: ep.riskReward1 >= 2 ? '#52c41a' : ep.riskReward1 >= 1.2 ? '#faad14' : '#ff4d4f' }}>{ep.riskReward1?.toFixed(1) || 'N/A'}:1</span></div>
+                            <div><span style={{ color: '#888' }}>TP2:</span> <span style={{ fontWeight: 500, color: '#52c41a' }}>${ep.takeProfit2?.toFixed(2)}</span></div>
+                            <div><span style={{ color: '#888' }}>R/R 2:</span> <span style={{ fontWeight: 500, color: ep.riskReward2 >= 2 ? '#52c41a' : ep.riskReward2 >= 1.2 ? '#faad14' : '#ff4d4f' }}>{ep.riskReward2?.toFixed(1) || 'N/A'}:1</span></div>
+                            <div style={{ gridColumn: '1 / -1' }}>
+                              <span style={{ color: '#888' }}>Expected Move:</span>
+                              <span style={{ fontWeight: 400, fontSize: '10px', marginLeft: '4px' }}>
+                                {ep.planType === 'Pullback to EMA20' ? `${ep.distFromEma20Pct?.toFixed(1)}% above EMA20` :
+                                 ep.atr ? `ATR: $${ep.atr.toFixed(2)}` : 'N/A'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Card 4: Invalidation / Notes */}
+                        <div style={{ background: '#fff', borderRadius: '6px', border: '1px solid #e5e7eb', padding: '10px' }}>
+                          <div style={{ fontSize: '11px', fontWeight: 600, color: '#722ed1', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span>⚠️</span> Invalidation / Notes
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '6px', fontSize: '11px' }}>
+                            <div>
+                              <span style={{ color: '#888' }}>Invalidation:</span>
+                              <div style={{ fontWeight: 400, fontSize: '10px', marginTop: '2px', padding: '4px 6px', background: '#fffbe6', borderRadius: '4px', border: '1px solid #ffe58f' }}>
+                                {ep.invalidationCondition || 'N/A'}
+                              </div>
+                            </div>
+                            <div>
+                              <span style={{ color: '#888' }}>Time Limit:</span>
+                              <span style={{ fontWeight: 500, marginLeft: '4px' }}>{ep.timeLimit || 'N/A'}</span>
+                            </div>
+                            <div>
+                              <span style={{ color: '#888' }}>Why not market buy:</span>
+                              <div style={{ fontWeight: 400, fontSize: '10px', marginTop: '2px', color: '#666', lineHeight: 1.4 }}>
+                                {ep.reason || 'N/A'}
+                              </div>
+                            </div>
+                            <div>
+                              <span style={{ color: '#888' }}>Data Source:</span>
+                              <Tag style={{ fontSize: '10px', marginLeft: '4px' }}
+                                color={ep.dataSource === 'alpaca' ? 'green' : ep.dataSource === 'candidate_fallback' ? 'gold' : 'red'}
+                              >
+                                {ep.dataSource === 'alpaca' ? 'Alpaca Live' : ep.dataSource === 'candidate_fallback' ? 'Deeper Validation' : 'Unknown'}
+                              </Tag>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  },
+                }}
+                columns={[
+                  {
+                    title: 'Symbol',
+                    dataIndex: 'symbol',
+                    key: 'symbol',
+                    width: 70,
+                    fixed: 'left',
+                    render: (text) => (
+                      <Text strong style={{ fontSize: '11px', fontFamily: 'monospace' }}>{text}</Text>
+                    ),
+                  },
+                  {
+                    title: 'Strategy',
+                    dataIndex: 'strategy',
+                    key: 'strategy',
+                    width: 100,
+                    render: (text) => (
+                      <Text style={{ fontSize: '10px', color: '#666' }}>{text || 'N/A'}</Text>
+                    ),
+                  },
+                  {
+                    title: 'Plan Type',
+                    dataIndex: 'planType',
+                    key: 'planType',
+                    width: 130,
+                    render: (text) => {
+                      let c = '#1890ff';
+                      if (text === 'Pullback to EMA20') c = '#faad14';
+                      else if (text === 'Breakout Above Resistance') c = '#722ed1';
+                      else if (text === 'Support Bounce') c = '#52c41a';
+                      else if (text === 'Range Reversion') c = '#13c2c2';
+                      else if (text === 'Momentum Continuation') c = '#1890ff';
+                      else if (text === 'No Trade Yet') c = '#bbb';
+                      return <Tag color={c} style={{ fontSize: '10px' }}>{text}</Tag>;
+                    },
+                  },
+                  {
+                    title: 'Entry Zone',
+                    key: 'entryZone',
+                    width: 115,
+                    render: (record) => (
+                      <Text style={{ fontSize: '11px', fontFamily: 'monospace' }}>
+                        ${record.entryZoneLow?.toFixed(1)} - ${record.entryZoneHigh?.toFixed(1)}
+                      </Text>
+                    ),
+                  },
+                  {
+                    title: 'Price',
+                    dataIndex: 'currentPrice',
+                    key: 'currentPrice',
+                    width: 70,
+                    render: (v) => (
+                      <Text style={{ fontSize: '11px', fontFamily: 'monospace' }}>${v?.toFixed(2)}</Text>
+                    ),
+                  },
+                  {
+                    title: 'Stop Loss',
+                    dataIndex: 'stopLoss',
+                    key: 'stopLoss',
+                    width: 75,
+                    render: (v) => (
+                      <Text style={{ fontSize: '11px', fontFamily: 'monospace', color: '#ff4d4f' }}>${v?.toFixed(2)}</Text>
+                    ),
+                  },
+                  {
+                    title: 'Take Profit',
+                    dataIndex: 'takeProfit1',
+                    key: 'takeProfit1',
+                    width: 80,
+                    render: (v) => (
+                      <Text style={{ fontSize: '11px', fontFamily: 'monospace', color: '#52c41a' }}>${v?.toFixed(2)}</Text>
+                    ),
+                  },
+                  {
+                    title: 'R/R',
+                    key: 'rr',
+                    width: 50,
+                    render: (record) => {
+                      const maxRr = Math.max(record.riskReward1 || 0, record.riskReward2 || 0);
+                      let c = '#52c41a';
+                      if (maxRr < 1.2) c = '#ff4d4f';
+                      else if (maxRr < 2) c = '#faad14';
+                      return <Text style={{ fontSize: '11px', fontWeight: 600, color: c }}>{maxRr > 0 ? maxRr.toFixed(1) + ':1' : 'N/A'}</Text>;
+                    },
+                  },
+                  {
+                    title: 'Size',
+                    key: 'position',
+                    width: 90,
+                    render: (record) => (
+                      <div>
+                        <Text style={{ fontSize: '10px', fontFamily: 'monospace' }}>{record.positionSizeShares} sh</Text>
+                        <div style={{ fontSize: '9px', color: '#888' }}>${(record.positionSizeDollars || 0).toFixed(0)}</div>
+                      </div>
+                    ),
+                  },
+                  {
+                    title: 'Status',
+                    dataIndex: 'status',
+                    key: 'status',
+                    width: 105,
+                    render: (text) => {
+                      let c = '#52c41a';
+                      let bg = '#f6ffed';
+                      if (text === 'Wait for Pullback') { c = '#d4a017'; bg = '#fffbe6'; }
+                      else if (text === 'Breakout Watch') { c = '#722ed1'; bg = '#f9f0ff'; }
+                      else if (text === 'Avoid') { c = '#ff4d4f'; bg = '#fff2f0'; }
+                      else if (text === 'Manual Review') { c = '#fa8c16'; bg = '#fff7e6'; }
+                      return (
+                        <Tag style={{ fontSize: '10px', fontWeight: 500, color: c, background: bg, border: `1px solid ${c}20` }}>
+                          {text}
+                        </Tag>
+                      );
+                    },
+                  },
+                  {
+                    title: 'Invalidation',
+                    dataIndex: 'invalidationCondition',
+                    key: 'invalidation',
+                    width: 200,
+                    render: (text) => (
+                      <Tooltip title={text}>
+                        <Text style={{ fontSize: '10px', color: '#888' }}>
+                          {text && text.length > 55 ? text.slice(0, 55) + '...' : text || 'N/A'}
+                        </Text>
+                      </Tooltip>
+                    ),
+                  },
+                  {
+                    title: 'Reason',
+                    dataIndex: 'reason',
+                    key: 'reason',
+                    width: 200,
+                    render: (text) => (
+                      <Tooltip title={text}>
+                        <Text style={{ fontSize: '10px', color: '#666' }}>
+                          {text && text.length > 65 ? text.slice(0, 65) + '...' : text || 'N/A'}
+                        </Text>
+                      </Tooltip>
+                    ),
+                  },
+                ]}
+              />
+            </>
+          )}
+        </Card>
+      </div>
+      {/* ▲▲▲ Above: Entry Plan ▲▲▲ */}
+
     </div>
   );
-
-  // 测试函数：验证AI Recommendations实现
 
 }
 export default Portfolio;

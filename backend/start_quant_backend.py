@@ -21098,6 +21098,442 @@ def deeper_validation():
         traceback.print_exc()
         return jsonify({'success': False, 'message': str(e)}), 500
 
+# ============ Entry Plan - Deterministic Entry/Stop/Target Calculator ============
+
+@app.route('/api/ai/entry-plan', methods=['POST'])
+@app.route('/ai/entry-plan', methods=['POST'])
+def ai_entry_plan():
+    """
+    Generate deterministic entry plans for Deeper Validation candidates.
+    All price levels (entry zone, stop loss, take profit) are computed from
+    real Alpaca market data. AI only generates narrative explanation text.
+
+    Input: { candidates, accountSize, riskPerTradePct, maxPositionPct }
+    Output: { success, plans: [{ symbol, planType, status, ... }] }
+    """
+    import time
+    import math
+    import json
+    import requests as req_lib
+
+    try:
+        data = request.get_json()
+        if not data or 'candidates' not in data:
+            return jsonify({'success': False, 'message': 'candidates required'}), 400
+
+        candidates = data.get('candidates', [])
+        account_size = float(data.get('accountSize', 100000))
+        risk_per_trade_pct = float(data.get('riskPerTradePct', 1.0))
+        max_position_pct = float(data.get('maxPositionPct', 10.0))
+
+        if not candidates:
+            return jsonify({'success': False, 'message': 'No candidates provided'}), 400
+
+        risk_dollars = account_size * (risk_per_trade_pct / 100.0)
+        max_pos_dollars = account_size * (max_position_pct / 100.0)
+
+        print(f'\n=== ENTRY PLAN START: {len(candidates)} candidates ===')
+        print(f'    Account: ${account_size}, Risk/trade: ${risk_dollars:.0f}, Max pos: ${max_pos_dollars:.0f}')
+
+        plans = []
+        from datetime import datetime as dt_dt, timedelta as dt_td
+
+        for candidate in candidates:
+            symbol = candidate.get('symbol', '').upper().strip()
+            if not symbol:
+                continue
+
+            strategy = candidate.get('strategy', 'unknown')
+            verdict = candidate.get('verdict', '')
+            total_return = candidate.get('totalReturn')
+            sharpe = candidate.get('sharpeRatio') or candidate.get('sharpe')
+            max_dd = candidate.get('maxDrawdown')
+            win_rate = candidate.get('winRate')
+            pf = candidate.get('profitFactor')
+            trade_count = candidate.get('tradeCount') or candidate.get('trades')
+            stability = candidate.get('stabilityScore')
+            trend = candidate.get('recentVsLongTerm', '')
+            entry_quality = candidate.get('fineScanEntryQuality', '')
+            liquidity = candidate.get('liquidity', '')
+            risk_grade = candidate.get('riskGrade', '')
+            fine_scan_entry = candidate.get('entryQuality', '')
+
+            # ── 1. Fetch real Alpaca data for this symbol ──
+            current_price = 0
+            closes = []
+            highs = []
+            lows = []
+            volumes = []
+
+            try:
+                # Snapshot
+                snap_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/snapshot'
+                snap_headers = {
+                    'APCA-API-KEY-ID': ALPACA_API_KEY,
+                    'APCA-API-SECRET-KEY': ALPACA_API_SECRET
+                }
+                snap_resp = req_lib.get(snap_url, headers=snap_headers, timeout=10)
+                if snap_resp.status_code == 200:
+                    snap = snap_resp.json()
+                    latest_trade = snap.get('latestTrade', {}) or {}
+                    daily_bar = snap.get('dailyBar', {}) or {}
+                    current_price = float(latest_trade.get('p', 0))
+                    if current_price <= 0:
+                        current_price = float(daily_bar.get('c', 0))
+                    if current_price <= 0:
+                        current_price = float(snap.get('prevDailyBar', {}).get('c', 0))
+                # Bars
+                bars_end = dt_dt.utcnow()
+                bars_start = bars_end - dt_td(days=120)
+                bars_params = {
+                    'timeframe': '1Day', 'limit': 150, 'adjustment': 'raw',
+                    'start': bars_start.strftime('%Y-%m-%dT00:00:00Z'),
+                    'end': bars_end.strftime('%Y-%m-%dT00:00:00Z'),
+                    'sort': 'asc'
+                }
+                bars_resp = req_lib.get(
+                    f'https://data.alpaca.markets/v2/stocks/{symbol}/bars',
+                    headers=snap_headers, params=bars_params, timeout=10
+                )
+                if bars_resp.status_code == 200:
+                    raw = bars_resp.json().get('bars', [])
+                    if raw:
+                        closes = [float(b['c']) for b in raw if b.get('c')]
+                        highs = [float(b['h']) for b in raw if b.get('h')]
+                        lows = [float(b['l']) for b in raw if b.get('l')]
+                        volumes = [float(b['v']) for b in raw if b.get('v')]
+                if current_price <= 0 and closes:
+                    current_price = closes[-1]
+            except Exception as fetch_err:
+                print(f'    [{symbol}] Fetch error: {fetch_err}')
+
+            n = len(closes)
+
+            # ── 2. Compute indicators (EMAs, ATR, support/resistance) from real data ──
+            def calc_ema(data, period):
+                if len(data) < period:
+                    return None
+                k = 2 / (period + 1)
+                ema = sum(data[:period]) / period
+                for i in range(period, len(data)):
+                    ema = data[i] * k + ema * (1 - k)
+                return ema
+
+            ema20 = calc_ema(closes, 20)
+            ema50 = calc_ema(closes, 50)
+            atr = 0
+            support = 0
+            resistance = 0
+            recent_high = 0
+            recent_low = 0
+            avg_volume = 0
+
+            # ATR(14)
+            if n >= 15:
+                trs = []
+                for i in range(1, min(len(highs), len(closes))):
+                    hl = highs[i] - lows[i]
+                    hc = abs(highs[i] - closes[i-1])
+                    lc = abs(lows[i] - closes[i-1])
+                    trs.append(max(hl, hc, lc))
+                if len(trs) >= 14:
+                    atr = sum(trs[-14:]) / 14
+
+            if n >= 20:
+                recent_high = max(highs[-20:]) if highs else 0
+                recent_low = min(lows[-20:]) if lows else 0
+                support = recent_low
+                resistance = recent_high
+            if n > 0:
+                avg_volume = sum(volumes[-20:]) / min(20, len(volumes)) if volumes else 0
+
+            # ── 3. Fallback from candidate data if Alpaca failed ──
+            if current_price <= 0:
+                current_price = float(candidate.get('currentPrice', 0))
+            if support <= 0:
+                support = float(candidate.get('support', 0))
+            if resistance <= 0:
+                resistance = float(candidate.get('resistance', 0))
+            if atr <= 0:
+                atr = float(candidate.get('atr', current_price * 0.03))
+            if ema20 is None:
+                ema20 = float(candidate.get('ema20', current_price))
+            if ema50 is None:
+                ema50 = float(candidate.get('ema50', current_price))
+            if recent_high <= 0:
+                recent_high = float(candidate.get('recentHigh', resistance))
+            if recent_low <= 0:
+                recent_low = float(candidate.get('recentLow', support))
+            if avg_volume <= 0:
+                avg_volume = float(candidate.get('avgVolume', 0))
+            if current_price <= 0:
+                plans.append({
+                    'symbol': symbol, 'strategy': strategy, 'planType': 'No Trade Yet',
+                    'status': 'Manual Review', 'currentPrice': 0,
+                    'entryZoneLow': 0, 'entryZoneHigh': 0, 'entryTrigger': '',
+                    'stopLoss': 0, 'stopLossReason': 'No price data available',
+                    'takeProfit1': 0, 'takeProfit2': 0, 'riskReward1': 0, 'riskReward2': 0,
+                    'positionSizeShares': 0, 'positionSizeDollars': 0,
+                    'riskDollars': 0, 'maxLossPct': 0,
+                    'invalidationCondition': 'No data - cancel plan',
+                    'confirmationSignals': '', 'timeLimit': '',
+                    'reason': 'Unable to fetch price data for entry plan calculation.',
+                    'dataSource': 'alpaca_failed'
+                })
+                continue
+
+            # ── 4. Determine Plan Type from price position & strategy ──
+            plan_type = 'No Trade Yet'
+            status = 'Manual Review'
+            entry_zone_low = 0
+            entry_zone_high = 0
+            entry_trigger = ''
+            stop_loss = 0
+            stop_loss_reason = ''
+            tp1 = 0
+            tp2 = 0
+            rr1 = 0
+            rr2 = 0
+            invalidation = ''
+            confirmation_signals = ''
+            time_limit = ''
+            reason = ''
+
+            # Distance from EMAs
+            dist_from_ema20_pct = 0
+            if ema20 and current_price > 0:
+                dist_from_ema20_pct = (current_price - ema20) / ema20 * 100
+            dist_from_ema50_pct = 0
+            if ema50 and current_price > 0:
+                dist_from_ema50_pct = (current_price - ema50) / ema50 * 100
+            dist_from_support_pct = 0
+            if support > 0 and current_price > 0:
+                dist_from_support_pct = (current_price - support) / support * 100
+            dist_from_resistance_pct = 0
+            if resistance > 0 and current_price > 0:
+                dist_from_resistance_pct = (resistance - current_price) / current_price * 100
+            vol_ratio = 0
+            if avg_volume > 0 and volumes and len(volumes) > 0:
+                last_vol = volumes[-1] if volumes else 0
+                vol_ratio = last_vol / avg_volume if avg_volume > 0 else 0
+
+            # Classify price position
+            is_above_ema20 = ema20 is not None and current_price > ema20
+            is_above_ema50 = ema50 is not None and current_price > ema50
+            is_near_resistance = dist_from_resistance_pct is not None and dist_from_resistance_pct < 3.0
+            is_near_support = dist_from_support_pct is not None and dist_from_support_pct < 3.0
+            is_extended = dist_from_ema20_pct > 5.0
+            is_over_extended = dist_from_ema20_pct > 12.0
+
+            # Strategy-specific signals
+            strategy_lower = (strategy or '').lower()
+            is_momentum = any(s in strategy_lower for s in ['momentum', 'continuation', 'breakout'])
+            is_mean_reversion = any(s in strategy_lower for s in ['rsi', 'mean', 'reversion'])
+            is_ma_cross = any(s in strategy_lower for s in ['moving_average', 'ma_cross', 'ma cross'])
+            is_macd = 'macd' in strategy_lower
+            is_bollinger = any(s in strategy_lower for s in ['bollinger', 'range', 'bb'])
+
+            # Compute plan type based on position + strategy
+            if is_over_extended:
+                # Price far above EMAs - wait for pullback
+                plan_type = 'Pullback to EMA20'
+                entry_zone_low = round(ema20 - 0.25 * atr, 2) if ema20 else round(current_price * 0.95, 2)
+                entry_zone_high = round(ema20 + 0.25 * atr, 2) if ema20 else round(current_price * 0.98, 2)
+                entry_trigger = f'Price pulls back into ${entry_zone_low:.2f} - ${entry_zone_high:.2f} zone with declining volume'
+                stop_loss = round(min(support, (entry_zone_low - 1.0 * atr)) if support > 0 else entry_zone_low - 1.0 * atr, 2)
+                stop_loss_reason = f'Below support (${support:.2f}) and entry zone minus 1 ATR (${atr:.2f})'
+                tp1 = round(resistance if resistance > current_price else current_price * 1.08, 2)
+                tp2 = round(current_price * 1.15, 2)
+                status = 'Wait for Pullback'
+                invalidation = f'Daily close below EMA50 (${ema50:.2f}) or support break below ${support:.2f}'
+                confirmation_signals = 'RSI pulling back toward 50, volume declining on pullback, price holding above EMA50'
+                if ema20 and current_price:
+                    reason = f'Price is {dist_from_ema20_pct:.1f}% above EMA20. Wait for pullback toward ${entry_zone_low:.2f} - ${entry_zone_high:.2f} with declining volume. Enter only with confirmation.'
+            elif is_near_resistance and (is_momentum or is_ma_cross):
+                # Near resistance - breakout setup
+                plan_type = 'Breakout Above Resistance'
+                entry_trigger = f'Close above ${resistance:.2f} with volume > 1.5x average ({(avg_volume * 1.5):.0f})'
+                entry_zone_low = round(resistance, 2)
+                entry_zone_high = round(resistance + 0.3 * atr, 2)
+                stop_loss = round(resistance - 1.0 * atr, 2)
+                stop_loss_reason = f'Below resistance breakout level (${resistance:.2f}) minus 1 ATR (${atr:.2f})'
+                tp1 = round(current_price + 1.5 * atr, 2)
+                tp2 = round(current_price + 2.5 * atr, 2)
+                status = 'Breakout Watch'
+                invalidation = f'Failed breakout - close back below ${resistance:.2f}. Cancel if volume < {(avg_volume * 0.7):.0f}.'
+                confirmation_signals = f'Volume > {(avg_volume * 1.5):.0f}, strong close above resistance, positive momentum'
+                reason = f'Near resistance at ${resistance:.2f}. Enter only on confirmed close above with volume > 1.5x average ({(avg_volume * 1.5):.0f}).'
+            elif is_near_support:
+                # Near support - bounce setup
+                plan_type = 'Support Bounce'
+                entry_zone_low = round(support - 0.3 * atr, 2)
+                entry_zone_high = round(support + 0.3 * atr, 2)
+                entry_trigger = 'Price holds support zone with bullish reversal candle'
+                stop_loss = round(support - 1.0 * atr, 2)
+                stop_loss_reason = f'Below support (${support:.2f}) minus 1 ATR (${atr:.2f})'
+                tp1 = round(ema20 if ema20 and ema20 > current_price else current_price + 1.0 * atr, 2)
+                tp2 = round(resistance if resistance > current_price else current_price + 2.0 * atr, 2)
+                # Check if current price is inside entry zone
+                if current_price >= entry_zone_low and current_price <= entry_zone_high:
+                    status = 'Ready'
+                else:
+                    status = 'Wait for Pullback'
+                invalidation = f'Support breakdown - daily close below ${stop_loss:.2f}'
+                confirmation_signals = 'Bullish engulfing, long lower wick, RSI oversold bounce'
+                reason = f'Price near support at ${support:.2f}. Enter on bullish confirmation in zone ${entry_zone_low:.2f} - ${entry_zone_high:.2f}.'
+            elif is_mean_reversion or is_bollinger:
+                plan_type = 'Range Reversion'
+                entry_zone_low = round(support if support > 0 else current_price * 0.95, 2)
+                entry_zone_high = round(entry_zone_low + 0.5 * atr, 2)
+                entry_trigger = 'Price reaches lower range with RSI oversold or BB lower band touch'
+                stop_loss = round(entry_zone_low - 1.0 * atr, 2)
+                stop_loss_reason = f'Below lower range (${entry_zone_low:.2f}) minus 1 ATR (${atr:.2f})'
+                tp1 = round(current_price + atr, 2)
+                tp2 = round(resistance if resistance > 0 else current_price + 2.0 * atr, 2)
+                status = 'Wait for Pullback'
+                invalidation = f'Close below ${stop_loss:.2f} (lower range breakdown)'
+                confirmation_signals = 'RSI < 30, BB lower band touch, bullish divergence'
+                reason = f'Mean reversion setup. Enter only at lower range with oversold confirmation.'
+            elif is_above_ema20 and is_above_ema50:
+                # In uptrend, moderate distance - momentum continuation
+                plan_type = 'Momentum Continuation'
+                entry_zone_low = round(current_price * 0.98, 2)
+                entry_zone_high = round(current_price * 1.01, 2)
+                entry_trigger = 'Current price with volume confirmation'
+                stop_loss = round(ema50 if ema50 and ema50 < current_price else current_price * 0.95, 2)
+                stop_loss_reason = f'Below EMA50 (${ema50:.2f})'
+                tp1 = round(current_price + 1.5 * atr, 2)
+                tp2 = round(current_price + 2.5 * atr, 2)
+                status = 'Manual Review'
+                invalidation = f'Close below EMA20 (${ema20:.2f}) or EMA50 (${ema50:.2f})'
+                confirmation_signals = 'Price above both EMAs, positive momentum, trending volume'
+                reason = f'Price in uptrend (above EMA20: ${ema20:.2f}, EMA50: ${ema50:.2f}). Manual review recommended for entry timing.'
+            else:
+                plan_type = 'No Trade Yet'
+                entry_zone_low = round(current_price * 0.97, 2)
+                entry_zone_high = round(current_price * 1.03, 2)
+                stop_loss = round(current_price * 0.93, 2)
+                stop_loss_reason = 'Weak trend structure - wider stop needed'
+                tp1 = round(current_price * 1.07, 2)
+                tp2 = round(current_price * 1.12, 2)
+                status = 'Avoid'
+                invalidation = 'Cancel until clearer trend emerges'
+                confirmation_signals = ''
+                reason = 'Current price structure lacks clear directional bias. Avoid until trend confirms.'
+
+            # ── 5. Compute R/R ──
+            risk_per_share = abs(entry_zone_low - stop_loss)
+            if risk_per_share <= 0:
+                risk_per_share = atr if atr > 0 else current_price * 0.02
+                stop_loss = entry_zone_low - risk_per_share
+                stop_loss_reason = 'Risk recomputed: ATR-based fallback'
+
+            if tp1 > 0 and entry_zone_low > 0:
+                rr1 = round((tp1 - entry_zone_low) / risk_per_share, 2)
+            if tp2 > 0 and entry_zone_low > 0:
+                rr2 = round((tp2 - entry_zone_low) / risk_per_share, 2)
+
+            # ── 6. Override status based on R/R ──
+            max_rr = max(rr1, rr2) if rr1 and rr2 else (rr1 or 0)
+            if max_rr < 1.2 and status not in ('Manual Review', 'Avoid'):
+                status = 'Manual Review'
+                reason += ' Avoid: R/R below 1.2.'
+            elif max_rr < 1.8 and status == 'Ready':
+                status = 'Wait for Pullback'
+                reason += ' Conservative: R/R below 1.8.'
+
+            # ── 7. Override status for poor fundamental metrics ──
+            if max_dd is not None and abs(max_dd) > 35:
+                status = 'Avoid'
+                reason += ' Max drawdown too high.'
+            if trade_count is not None and trade_count < 3:
+                status = 'Manual Review'
+                reason += ' Limited trade sample.'
+            if stability is not None and stability < 50:
+                status = 'Manual Review'
+                reason += ' Low stability score.'
+
+            # ── 8. Compute position size ──
+            pos_shares = 0
+            pos_dollars = 0
+            max_loss_pct = 0
+
+            if risk_per_share > 0 and current_price > 0:
+                pos_shares = int(risk_dollars / risk_per_share)
+                pos_dollars = pos_shares * current_price
+                if pos_dollars > max_pos_dollars:
+                    pos_shares = int(max_pos_dollars / current_price)
+                    pos_dollars = pos_shares * current_price
+                max_loss_pct = round(risk_per_share / current_price * 100, 2)
+            else:
+                status = 'Manual Review'
+                reason += ' Invalid risk calculation.'
+
+            # ── 9. Time limit ──
+            if status == 'Wait for Pullback':
+                time_limit = 'Plan valid for 5 trading days. Re-evaluate if not triggered.'
+            elif status == 'Breakout Watch':
+                time_limit = 'Plan valid for 3 trading days. Monitor for volume confirmation.'
+            elif status == 'Ready':
+                time_limit = 'Plan valid for 2 trading days. Execute on confirmation.'
+            else:
+                time_limit = 'N/A'
+
+            # ── 10. Data source note ──
+            if current_price > 0 and closes:
+                data_source = 'alpaca'
+            elif current_price > 0:
+                data_source = 'candidate_fallback'
+            else:
+                data_source = 'unknown'
+
+            plans.append({
+                'symbol': symbol,
+                'strategy': strategy,
+                'planType': plan_type,
+                'status': status,
+                'currentPrice': round(current_price, 2),
+                'entryZoneLow': round(entry_zone_low, 2),
+                'entryZoneHigh': round(entry_zone_high, 2),
+                'entryTrigger': entry_trigger,
+                'stopLoss': round(stop_loss, 2),
+                'stopLossReason': stop_loss_reason,
+                'takeProfit1': round(tp1, 2) if tp1 > 0 else 0,
+                'takeProfit2': round(tp2, 2) if tp2 > 0 else 0,
+                'riskReward1': rr1,
+                'riskReward2': rr2,
+                'positionSizeShares': pos_shares,
+                'positionSizeDollars': round(pos_dollars, 2),
+                'riskDollars': round(min(risk_dollars, pos_dollars) if pos_dollars > 0 else 0, 2),
+                'maxLossPct': max_loss_pct,
+                'invalidationCondition': invalidation,
+                'confirmationSignals': confirmation_signals,
+                'timeLimit': time_limit,
+                'reason': reason.strip(),
+                'dataSource': data_source,
+                'sourceVerdict': verdict,
+                'ema20': round(ema20, 2) if ema20 else None,
+                'ema50': round(ema50, 2) if ema50 else None,
+                'atr': round(atr, 2),
+                'support': round(support, 2),
+                'resistance': round(resistance, 2),
+                'recentHigh': round(recent_high, 2),
+                'recentLow': round(recent_low, 2),
+                'volume': int(volumes[-1]) if volumes else 0,
+                'avgVolume': int(avg_volume),
+                'distFromEma20Pct': round(dist_from_ema20_pct, 1) if dist_from_ema20_pct else 0,
+                'distFromResistancePct': round(dist_from_resistance_pct, 1) if dist_from_resistance_pct else 0
+            })
+
+        print(f'=== ENTRY PLAN COMPLETE: {len(plans)} plans generated ===')
+        return jsonify({'success': True, 'plans': plans})
+
+    except Exception as e:
+        print(f'[ENTRY PLAN] Error: {e}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': str(e)}), 500
+
 # ============ MTF Multi-Timeframe Confirmation Analysis (v2) ============
 
 @app.route('/api/ai/analyze/mtf', methods=['POST'])
