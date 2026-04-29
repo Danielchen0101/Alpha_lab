@@ -1,0 +1,35 @@
+node_modules/
+**/node_modules/
+
+.cache/
+**/.cache/
+
+build/
+dist/
+coverage/
+
+.env
+.env.local
+.DS_Store
+
+# Python
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log
+*.txt
+
+# Backups
+backup/
+backups/
+*.bak
+
+# Temp scripts
+memory/*.py
+
+# IDEs
+.idea/
+.vscode/
