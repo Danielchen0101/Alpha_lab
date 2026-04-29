@@ -1,42 +1,58 @@
 import React from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { Menu } from 'antd';
-import { 
-  DashboardOutlined, 
-  LineChartOutlined, 
-  BarChartOutlined, 
-  UserOutlined, 
-  TrophyOutlined, 
-  UnorderedListOutlined, 
-  SwapOutlined, 
+import {
+  DashboardOutlined,
+  LineChartOutlined,
+  BarChartOutlined,
+  UserOutlined,
+  TrophyOutlined,
+  UnorderedListOutlined,
+  SwapOutlined,
   RocketOutlined,
   AreaChartOutlined,
   PieChartOutlined,
   ExperimentOutlined,
-  RobotOutlined 
+  RobotOutlined,
+  SettingOutlined
 } from '@ant-design/icons';
 import { useLanguage } from '../contexts/LanguageContext';
 import styles from './NavigationMenu.module.css';
 
 const NavigationMenu: React.FC = () => {
   const { t } = useLanguage();
+  const location = useLocation();
 
-  // 创建菜单项组件的函数，确保所有菜单项使用完全相同的结构
+  // Determine selected key from current path
+  const getSelectedKey = () => {
+    const path = location.pathname;
+    if (path === '/') return '1';
+    if (path === '/market') return '2';
+    if (path === '/watchlist') return '3';
+    if (path === '/backtest') return '4';
+    if (path === '/optimize') return '5';
+    if (path === '/compare') return '6';
+    if (path === '/ranking') return '7';
+    if (path === '/local-paper-trading') return '8';
+    if (path === '/analytics') return '9';
+    if (path === '/ai-trading') return '10';
+    if (path === '/portfolio') return '11';
+    if (path.startsWith('/settings')) return '12';
+    return '1';
+  };
+
   const createMenuItem = (key: string, icon: React.ReactNode, text: string, to: string) => (
-    <Menu.Item 
-      key={key} 
-      icon={icon}
-    >
+    <Menu.Item key={key} icon={icon}>
       <Link to={to}>{text}</Link>
     </Menu.Item>
   );
 
   return (
     <div className={styles.navigationMenu}>
-      <Menu 
-        theme="dark" 
-        mode="inline" 
-        defaultSelectedKeys={['1']}
+      <Menu
+        theme="dark"
+        mode="inline"
+        selectedKeys={[getSelectedKey()]}
         style={{
           backgroundColor: '#001529',
           borderRight: 'none',
@@ -53,6 +69,7 @@ const NavigationMenu: React.FC = () => {
         {createMenuItem('9', <AreaChartOutlined />, t.navigation.analytics, '/analytics')}
         {createMenuItem('10', <RobotOutlined />, 'Alpaca Trade', '/ai-trading')}
         {createMenuItem('11', <PieChartOutlined />, 'AI Agent', '/portfolio')}
+        {createMenuItem('12', <SettingOutlined />, 'Settings', '/settings')}
       </Menu>
     </div>
   );

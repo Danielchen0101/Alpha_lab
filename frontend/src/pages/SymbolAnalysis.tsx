@@ -3455,22 +3455,14 @@ const SymbolAnalysis: React.FC = () => {
   };
 
 
-  // 初始化加载数据
+  // 初始化加载数据 + timeframe切换时重新加载
   useEffect(() => {
     if (symbol) {
       loadStockData();
       loadBacktestHistory();
       loadHistoricalPrices();
     }
-  }, [symbol, selectedTimeframe]); // 添加selectedTimeframe依赖，确保切换timeframe时重新加载所有数据
-
-  // 当 timeframe 改变时重新加载历史数据
-  useEffect(() => {
-    if (symbol) {
-      console.log(`[SymbolAnalysis] timeframe切换: ${selectedTimeframe}, 重新加载数据`);
-      loadHistoricalPrices();
-    }
-  }, [selectedTimeframe]);
+  }, [symbol, selectedTimeframe]);
 
   if (loading) {
     return (

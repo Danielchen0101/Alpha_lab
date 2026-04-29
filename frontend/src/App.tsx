@@ -20,6 +20,8 @@ import LanguageTest from './pages/LanguageTest';
 import LanguageButtonPreview from './components/LanguageButtonPreview';
 import LanguageSwitcher from './components/LanguageSwitcher';
 import NavigationMenu from './components/NavigationMenu';
+import Settings from './pages/Settings';
+import Configuration from './pages/Configuration';
 import { LanguageProvider } from './contexts/LanguageContext';
 import './App.css';
 
@@ -86,6 +88,8 @@ const App: React.FC = () => {
                     <Route path="/analytics" element={<Analytics />} />
                     <Route path="/ai-trading" element={<AITrading />} />
                     <Route path="/portfolio" element={<Portfolio />} />
+                    <Route path="/settings" element={<Settings />} />
+                    <Route path="/settings/configuration" element={<Configuration />} />
                     <Route path="/language-test" element={<LanguageTest />} />
                     <Route path="/button-preview" element={<LanguageButtonPreview />} />
                   </Routes>
