@@ -4940,6 +4940,276 @@ def ai_provider_test():
         })
 
 
+# ============ Platform Configuration Endpoints ============
+
+CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
+ALPACA_CONFIG_FILE = os.path.join(CONFIG_DIR, 'alpaca_config.json')
+FINNHUB_CONFIG_FILE = os.path.join(CONFIG_DIR, 'finnhub_config.json')
+MARKET_DATA_CONFIG_FILE = os.path.join(CONFIG_DIR, 'market_data_config.json')
+
+
+def _mask_key(key):
+    """Mask a secret key for display: show first 4 and last 4 chars."""
+    if not key or len(key) <= 8:
+        return '****' if key else ''
+    return key[:4] + '****' + key[-4:]
+
+
+def _load_json_config(filepath, defaults=None):
+    """Load a JSON config file, returning defaults if not found."""
+    try:
+        if os.path.exists(filepath):
+            with open(filepath, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f'[Config] Failed to load {filepath}: {e}')
+    return defaults or {}
+
+
+def _save_json_config(filepath, data):
+    """Save data to a JSON config file."""
+    try:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+        return True
+    except Exception as e:
+        print(f'[Config] Failed to save {filepath}: {e}')
+        return False
+
+
+# --- Alpaca Config ---
+
+@app.route('/api/config/alpaca', methods=['GET', 'POST'])
+def config_alpaca():
+    """GET: return masked Alpaca config. POST: save Alpaca config."""
+    try:
+        if request.method == 'GET':
+            cfg = dict(alpaca_config_state)
+            # Load from file if exists (overrides in-memory)
+            file_cfg = _load_json_config(ALPACA_CONFIG_FILE)
+            for k in ['paper_api_key', 'paper_api_secret', 'live_api_key', 'live_api_secret',
+                       'paper_base_url', 'live_base_url', 'environment', 'data_base_url', 'feed']:
+                if k in file_cfg and file_cfg[k]:
+                    cfg[k] = file_cfg[k]
+            return jsonify({
+                'success': True,
+                'config': {
+                    'paper_api_key_masked': _mask_key(cfg.get('paper_api_key', '')),
+                    'paper_api_secret_masked': _mask_key(cfg.get('paper_api_secret', '')),
+                    'paper_api_key': bool(cfg.get('paper_api_key')),
+                    'paper_api_secret': bool(cfg.get('paper_api_secret')),
+                    'paper_base_url': cfg.get('paper_base_url', 'https://paper-api.alpaca.markets'),
+                    'live_api_key_masked': _mask_key(cfg.get('live_api_key', '')),
+                    'live_api_secret_masked': _mask_key(cfg.get('live_api_secret', '')),
+                    'live_api_key': bool(cfg.get('live_api_key')),
+                    'live_api_secret': bool(cfg.get('live_api_secret')),
+                    'live_base_url': cfg.get('live_base_url', 'https://api.alpaca.markets'),
+                    'environment': cfg.get('environment', 'paper'),
+                }
+            })
+        else:
+            data = request.get_json() or {}
+            # Load existing
+            cfg = _load_json_config(ALPACA_CONFIG_FILE, dict(alpaca_config_state))
+            for k in ['paper_api_key', 'paper_api_secret', 'live_api_key', 'live_api_secret',
+                       'paper_base_url', 'live_base_url', 'environment']:
+                if k in data and data[k]:
+                    cfg[k] = data[k]
+            _save_json_config(ALPACA_CONFIG_FILE, cfg)
+            # Update in-memory state
+            for k in ['paper_api_key', 'paper_api_secret', 'live_api_key', 'live_api_secret', 'environment']:
+                if k in cfg and cfg[k]:
+                    alpaca_config_state[k] = cfg[k]
+            return jsonify({'success': True, 'message': 'Alpaca config saved'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/config/alpaca/test', methods=['POST'])
+def config_alpaca_test():
+    """Test Alpaca connection for paper or live mode."""
+    try:
+        data = request.get_json() or {}
+        mode = data.get('mode', 'paper')
+
+        # Load config
+        cfg = _load_json_config(ALPACA_CONFIG_FILE, dict(alpaca_config_state))
+
+        if mode == 'paper':
+            api_key = cfg.get('paper_api_key', alpaca_config_state.get('paper_api_key', ''))
+            api_secret = cfg.get('paper_api_secret', alpaca_config_state.get('paper_api_secret', ''))
+            base_url = cfg.get('paper_base_url', 'https://paper-api.alpaca.markets')
+        else:
+            api_key = cfg.get('live_api_key', alpaca_config_state.get('live_api_key', ''))
+            api_secret = cfg.get('live_api_secret', alpaca_config_state.get('live_api_secret', ''))
+            base_url = cfg.get('live_base_url', 'https://api.alpaca.markets')
+
+        if not api_key or not api_secret:
+            return jsonify({'success': False, 'message': f'No {mode} API key/secret configured'})
+
+        headers = {
+            'APCA-API-KEY-ID': api_key,
+            'APCA-API-SECRET-KEY': api_secret,
+        }
+        resp = requests.get(f'{base_url}/v2/account', headers=headers, timeout=10)
+        if resp.status_code == 200:
+            acct = resp.json()
+            return jsonify({
+                'success': True,
+                'account_id': acct.get('id', 'N/A'),
+                'status': acct.get('status', 'N/A'),
+                'mode': mode,
+            })
+        else:
+            return jsonify({'success': False, 'message': f'HTTP {resp.status_code}: {resp.text[:200]}'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)[:200]})
+
+
+# --- Market Data Config ---
+
+@app.route('/api/config/market-data', methods=['GET', 'POST'])
+def config_market_data():
+    """GET: return market data config. POST: save market data config."""
+    try:
+        if request.method == 'GET':
+            cfg = _load_json_config(MARKET_DATA_CONFIG_FILE, {
+                'data_base_url': 'https://data.alpaca.markets',
+                'feed': 'iex',
+            })
+            return jsonify({'success': True, 'config': cfg})
+        else:
+            data = request.get_json() or {}
+            cfg = _load_json_config(MARKET_DATA_CONFIG_FILE, {
+                'data_base_url': 'https://data.alpaca.markets',
+                'feed': 'iex',
+            })
+            for k in ['data_base_url', 'feed']:
+                if k in data and data[k]:
+                    cfg[k] = data[k]
+            _save_json_config(MARKET_DATA_CONFIG_FILE, cfg)
+            return jsonify({'success': True, 'message': 'Market data config saved'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/config/market-data/test', methods=['POST'])
+def config_market_data_test():
+    """Test market data connection by fetching AAPL snapshot."""
+    try:
+        cfg = _load_json_config(MARKET_DATA_CONFIG_FILE, {
+            'data_base_url': 'https://data.alpaca.markets',
+            'feed': 'iex',
+        })
+        data_url = cfg.get('data_base_url', 'https://data.alpaca.markets')
+        feed = cfg.get('feed', 'iex')
+
+        # Use paper keys for market data (Alpaca data API uses same auth)
+        alpaca_cfg = _load_json_config(ALPACA_CONFIG_FILE, dict(alpaca_config_state))
+        api_key = alpaca_cfg.get('paper_api_key', alpaca_config_state.get('paper_api_key', ''))
+        api_secret = alpaca_cfg.get('paper_api_secret', alpaca_config_state.get('paper_api_secret', ''))
+
+        if not api_key:
+            return jsonify({'success': False, 'message': 'No Alpaca API key configured (needed for market data auth)'})
+
+        headers = {
+            'APCA-API-KEY-ID': api_key,
+            'APCA-API-SECRET-KEY': api_secret,
+        }
+        resp = requests.get(f'{data_url}/v2/stocks/AAPL/snapshot', headers=headers,
+                          params={'feed': feed}, timeout=10)
+        if resp.status_code == 200:
+            return jsonify({'success': True, 'message': f'Market data OK (feed={feed})'})
+        else:
+            return jsonify({'success': False, 'message': f'HTTP {resp.status_code}: {resp.text[:200]}'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)[:200]})
+
+
+# --- Finnhub Config ---
+
+@app.route('/api/config/finnhub', methods=['GET', 'POST'])
+def config_finnhub():
+    """GET: return masked Finnhub config. POST: save Finnhub config."""
+    try:
+        if request.method == 'GET':
+            cfg = _load_json_config(FINNHUB_CONFIG_FILE, {
+                'api_key': FINNHUB_API_KEY if 'FINNHUB_API_KEY' in dir() else '',
+                'base_url': 'https://finnhub.io/api/v1',
+            })
+            return jsonify({
+                'success': True,
+                'config': {
+                    'api_key_masked': _mask_key(cfg.get('api_key', '')),
+                    'api_key': bool(cfg.get('api_key')),
+                    'base_url': cfg.get('base_url', 'https://finnhub.io/api/v1'),
+                }
+            })
+        else:
+            data = request.get_json() or {}
+            cfg = _load_json_config(FINNHUB_CONFIG_FILE, {
+                'api_key': FINNHUB_API_KEY if 'FINNHUB_API_KEY' in dir() else '',
+                'base_url': 'https://finnhub.io/api/v1',
+            })
+            if 'api_key' in data and data['api_key']:
+                cfg['api_key'] = data['api_key']
+            if 'base_url' in data and data['base_url']:
+                cfg['base_url'] = data['base_url']
+            _save_json_config(FINNHUB_CONFIG_FILE, cfg)
+            return jsonify({'success': True, 'message': 'Finnhub config saved'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/config/finnhub/test', methods=['POST'])
+def config_finnhub_test():
+    """Test Finnhub connection by fetching AAPL quote."""
+    try:
+        cfg = _load_json_config(FINNHUB_CONFIG_FILE, {
+            'api_key': FINNHUB_API_KEY if 'FINNHUB_API_KEY' in dir() else '',
+            'base_url': 'https://finnhub.io/api/v1',
+        })
+        api_key = cfg.get('api_key', '')
+        base_url = cfg.get('base_url', 'https://finnhub.io/api/v1')
+
+        if not api_key:
+            return jsonify({'success': False, 'message': 'No Finnhub API key configured'})
+
+        resp = requests.get(f'{base_url}/quote', params={'symbol': 'AAPL', 'token': api_key}, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if 'c' in data and data['c'] > 0:
+                return jsonify({'success': True, 'message': f'Finnhub OK — AAPL price: ${data["c"]}'})
+            else:
+                return jsonify({'success': False, 'message': 'Finnhub responded but no data (check API key)'})
+        else:
+            return jsonify({'success': False, 'message': f'HTTP {resp.status_code}'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)[:200]})
+
+
+# --- Load all config files on startup ---
+def _load_all_configs():
+    """Load Alpaca, Finnhub, and Market Data configs from files on startup."""
+    # Alpaca
+    alpaca_file_cfg = _load_json_config(ALPACA_CONFIG_FILE)
+    if alpaca_file_cfg:
+        for k in ['paper_api_key', 'paper_api_secret', 'live_api_key', 'live_api_secret',
+                   'paper_base_url', 'live_base_url', 'environment']:
+            if k in alpaca_file_cfg and alpaca_file_cfg[k]:
+                alpaca_config_state[k] = alpaca_file_cfg[k]
+        print(f'[Config] Loaded Alpaca config from {ALPACA_CONFIG_FILE}')
+
+    # Finnhub
+    finnhub_file_cfg = _load_json_config(FINNHUB_CONFIG_FILE)
+    if finnhub_file_cfg and finnhub_file_cfg.get('api_key'):
+        global FINNHUB_API_KEY
+        FINNHUB_API_KEY = finnhub_file_cfg['api_key']
+        print(f'[Config] Loaded Finnhub config from {FINNHUB_CONFIG_FILE}')
+
+
+_load_all_configs()
+
 
 @app.route('/api/ai/alpaca/account', methods=['GET'])
 
@@ -19578,6 +19848,7 @@ def ai_agent_watchlist_add():
             'riskComment': data.get('riskComment', ''),
             'invalidationComment': data.get('invalidationComment', ''),
             'source': data.get('source', 'Entry Plan'),
+            'selectedBy': data.get('selectedBy', ''),
             'createdAt': data.get('createdAt', _dt.utcnow().isoformat() + 'Z'),
             'updatedAt': _dt.utcnow().isoformat() + 'Z',
             'status': data.get('status', 'ACTIVE')
@@ -20449,8 +20720,8 @@ def ai_fine_scan_advanced():
 
                 # When no quote/bid/ask available, adjust scoring
                 if spread_pct is None:
-                    liq_score += 10  # neutral for missing spread
-                    liq_notes.append('quote missing')
+                    liq_score += 20  # neutral-positive for missing spread (don't penalize)
+                    liq_notes.append('spread N/A (market may be closed)')
 
                 if liq_score >= 50:
                     liquidity_grade = 'Good'
@@ -20488,9 +20759,16 @@ def ai_fine_scan_advanced():
                             partial_vol = float(vol_bars[0].get('v', 0))
                             partial_price = float(vol_bars[0].get('c', 0))
                             if partial_vol > 0:
-                                liquidity_grade = 'Partial'
-                                liquidity_reason = f'volume available only, snapshot HTTP {snap_resp.status_code}'
+                                # Grade by volume directly — don't just say "Partial"
+                                if partial_vol >= 1_000_000:
+                                    liquidity_grade = 'Good'
+                                elif partial_vol >= 300_000:
+                                    liquidity_grade = 'Caution'
+                                else:
+                                    liquidity_grade = 'Poor'
+                                liquidity_reason = f'volume={int(partial_vol):,} (snapshot unavailable, graded by volume only)'
                                 liquidity_details['today_volume'] = int(partial_vol)
+                                liquidity_details['liq_score'] = 35 if partial_vol >= 300_000 else 10
                                 current_price = partial_price
                                 has_partial = True
                                 source_status['alpaca_bars'] = 'ok_partial'
@@ -20865,13 +21143,16 @@ Example: MEDIUM | mixed news, moderate liquidity"""
 
             risk_reason = ', '.join(risk_factors) if risk_factors else 'no significant risk factors (fallback)'
 
-            # SKIP overrides
+            # SKIP overrides — only for genuinely critical combos
             if liquidity_grade == 'Data Unavailable' and news_grade == 'Unknown':
-                risk_grade = 'SKIP'
-                risk_reason = 'critical data missing'
+                # Data missing alone is NOT a SKIP — downgrade to HIGH with note
+                risk_grade = 'HIGH'
+                risk_factors.append('data gaps (liquidity+news unavailable)')
+                risk_reason = ', '.join(risk_factors) if risk_factors else 'data gaps'
             elif liquidity_grade == 'Poor' and news_grade == 'High Event Risk':
-                risk_grade = 'SKIP'
-                risk_reason = 'poor liquidity + high event risk'
+                risk_grade = 'HIGH'
+                risk_factors.append('poor liquidity + high event risk')
+                risk_reason = ', '.join(risk_factors)
 
         risk_details = {
             'risk_score': risk_score if not ai_risk_result else None,
@@ -21445,7 +21726,7 @@ def fine_scan_decision():
       riskGrade, riskScore, entryScore
     
     Output:
-      decision: "CONTINUE" | "WATCH" | "SKIP"
+      decision: "CONTINUE" | "WATCH" | "REJECT" | "NEED_MORE_DATA"
       grade: "HIGH" | "MEDIUM" | "LOW"
       confidence: number (0-100)
       reason: string
@@ -21488,7 +21769,7 @@ def fine_scan_decision():
         
         strategy_str = ', '.join(matched_strategies[:4]) if matched_strategies else 'none'
         
-        ai_prompt = f"""You are a quantitative trading analyst. Based on the evidence below, decide whether this stock should CONTINUE (best candidates for further analysis), WATCH (potentially good but needs monitoring), or SKIP (not suitable now).
+        ai_prompt = f"""You are a quantitative trading analyst. Based on the evidence below, decide whether this stock should CONTINUE (best candidates for further analysis), WATCH (potentially good but needs monitoring), REJECT (not suitable), or NEED_MORE_DATA (insufficient data to decide).
 
 SYMBOL: {symbol}
 
@@ -21503,21 +21784,25 @@ EVIDENCE:
 
 RULES:
 1. CONTINUE means "worth entering deeper validation / entry plan analysis." NOT a buy signal. Give CONTINUE to any candidate with:
-   - Score >= 70 AND backtest positive/acceptable
-   - OR score >= 60 AND strong trend + acceptable backtest + no hard blockers
+   - Score >= 60 AND backtest positive/acceptable/caution
+   - OR score >= 50 AND strong trend + no hard blockers
+   - OR score >= 45 AND backtest is missing (N/A) but trend is bullish and entry quality is acceptable
    - Entry: Good/Wait/Pullback/Breakout Setup all qualify. Extended alone is NOT a hard blocker.
    - Risk: LOW/MEDIUM preferred, but HIGH alone does NOT prevent CONTINUE (downgrade to WATCH instead)
    - General guidance: when in doubt between WATCH and CONTINUE for a strong-ish candidate, choose CONTINUE.
 2. WATCH if: some positive signals but one area needs monitoring (e.g. backtest caution, entry wait zone, moderate risk, or risk=HIGH with other decent signals).
-3. SKIP only if: trend unclear AND backtest negative, OR entry is Avoid/Downtrend, OR risk is SKIP (critical data missing), OR multiple hard blockers present.
-4. Do NOT skip just because entry is "Wait for Pullback" or "Chasing/Extended" — if other signals are strong, WATCH or CONTINUE.
-5. Do NOT skip just because risk is HIGH. HIGH risk alone → WATCH. Only risk=SKIP triggers skip.
-6. Consider News grade: "High Event Risk" or "Caution" with earnings upcoming should push toward WATCH. "Catalyst" is a positive signal. "Clear" is neutral.
-7. Consider Risk score: higher risk score (closer to 100) means more caution. Risk score > 65 should push toward WATCH unless other signals are very strong.
+3. REJECT if: trend clearly bearish AND backtest negative, OR entry is Avoid/Downtrend, OR risk is SKIP (critical data missing), OR multiple hard blockers present.
+4. NEED_MORE_DATA if: key fields are missing (price=0, no backtest, no entry quality) AND you cannot make a reliable CONTINUE/REJECT decision.
+5. Do NOT reject just because entry is "Wait for Pullback" or "Chasing/Extended" — if other signals are strong, WATCH or CONTINUE.
+6. Do NOT reject just because risk is HIGH. HIGH risk alone → WATCH. Only risk=SKIP triggers reject.
+7. Consider News grade: "High Event Risk" or "Caution" with earnings upcoming should push toward WATCH. "Catalyst" is a positive signal. "Clear" is neutral.
+8. Consider Risk score: higher risk score (closer to 100) means more caution. Risk score > 65 should push toward WATCH unless other signals are very strong.
+9. Backtest missing (N/A) is NOT a reason to REJECT. If trend/entry/risk are acceptable, give CONTINUE or WATCH.
+10. NEVER invent or assume data. Only use the evidence provided above.
 
 Return ONLY valid JSON (no markdown):
 {{
-  "decision": "CONTINUE" or "WATCH" or "SKIP",
+  "decision": "CONTINUE" or "WATCH" or "REJECT" or "NEED_MORE_DATA",
   "grade": "HIGH" or "MEDIUM" or "LOW",
   "confidence": 0-100,
   "reason": "1-sentence summary of key factors",
@@ -21584,12 +21869,19 @@ Return ONLY valid JSON (no markdown):
                 warnings = parsed.get('warnings', [])
                 blockers = parsed.get('blockers', [])
                 
-                # Normalize decision
-                if decision.upper() in ('CONTINUE', 'CONTINUE'):
+                # Normalize decision — 4 categories
+                dec_upper = decision.upper().strip()
+                if dec_upper in ('CONTINUE', 'PASS', 'PROCEED'):
                     decision = 'CONTINUE'
-                elif decision.upper() == 'SKIP':
-                    decision = 'SKIP'
+                elif dec_upper in ('REJECT', 'SKIP', 'FAIL'):
+                    decision = 'REJECT'
+                elif dec_upper in ('NEED_MORE_DATA', 'NEED_MORE_INFO', 'INSUFFICIENT_DATA', 'UNKNOWN'):
+                    decision = 'NEED_MORE_DATA'
+                elif dec_upper in ('WATCH', 'HOLD', 'MONITOR', 'WAIT'):
+                    decision = 'WATCH'
                 else:
+                    # Unknown value — treat as WATCH, not silent default
+                    print(f'[FineScanDecision] WARNING: unrecognized decision "{dec_upper}" for {symbol}, mapping to WATCH')
                     decision = 'WATCH'
                 
                 # Normalize grade

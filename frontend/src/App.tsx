@@ -14,6 +14,8 @@ import Analytics from './pages/Analytics';
 import LocalPaperTrading from './pages/LocalPaperTrading';
 import AITrading from './pages/AITrading';
 import Portfolio from './pages/Portfolio';
+import Settings from './pages/Settings';
+import Configuration from './pages/Configuration';
 import SymbolAnalysis from './pages/SymbolAnalysis';
 import BacktestAnalysis from './pages/BacktestAnalysis';
 import LanguageTest from './pages/LanguageTest';
@@ -86,6 +88,8 @@ const App: React.FC = () => {
                     <Route path="/analytics" element={<Analytics />} />
                     <Route path="/ai-trading" element={<AITrading />} />
                     <Route path="/portfolio" element={<Portfolio />} />
+                    <Route path="/settings" element={<Settings />} />
+                    <Route path="/settings/configuration" element={<Configuration />} />
                     <Route path="/language-test" element={<LanguageTest />} />
                     <Route path="/button-preview" element={<LanguageButtonPreview />} />
                   </Routes>
