@@ -2990,11 +2990,11 @@ def fetch_finnhub_quote(symbol):
 
         if data.get('c', 0) == 0:
 
-            # 价格数据为0，返回模拟数据
+            # 价格数据为0，返回空数据（不使用mock）
 
-            print(f"[Finnhub报价] 价格数据为0，返回模拟数据")
+            print(f"[Finnhub报价] 价格数据为0，返回空数据")
 
-            return generate_mock_quote_data(symbol), None
+            return None, 'Finnhub returned zero price'
 
 
 
@@ -3008,11 +3008,11 @@ def fetch_finnhub_quote(symbol):
 
     except Exception as e:
 
-        # 发生异常，返回模拟数据
+        # 发生异常，返回空数据（不使用mock）
 
-        print(f"[Finnhub报价] 异常: {str(e)}，返回模拟数据")
+        print(f"[Finnhub报价] 异常: {str(e)}，返回空数据")
 
-        return generate_mock_quote_data(symbol), None
+        return None, f'Finnhub exception: {str(e)[:100]}'
 
 
 
@@ -4480,11 +4480,9 @@ def get_finnhub_history(symbol, interval, range_param):
 
         if response.status_code != 200:
 
-            # 如果API密钥无效，返回模拟数据
+            print(f"[Finnhub历史数据] API请求失败: {response.status_code}")
 
-            print(f"[Finnhub历史数据] API密钥无效，返回模拟数据")
-
-            return generate_mock_history_data(symbol, interval, range_param), True, "模拟数据 (Finnhub API密钥无效)"
+            return [], False, f"Finnhub API error (HTTP {response.status_code})"
 
 
 
@@ -4494,11 +4492,9 @@ def get_finnhub_history(symbol, interval, range_param):
 
         if data.get('s') != 'ok':
 
-            # 如果API返回错误，返回模拟数据
+            print(f"[Finnhub历史数据] API返回错误状态: {data.get('s')}")
 
-            print(f"[Finnhub历史数据] API返回错误，返回模拟数据")
-
-            return generate_mock_history_data(symbol, interval, range_param), True, "模拟数据 (Finnhub错误)"
+            return [], False, f"Finnhub API returned status: {data.get('s')}"
 
 
 
@@ -4506,11 +4502,9 @@ def get_finnhub_history(symbol, interval, range_param):
 
         if 'c' not in data or not data['c']:
 
-            # 如果没有数据，返回模拟数据
+            print(f"[Finnhub历史数据] 没有历史数据")
 
-            print(f"[Finnhub历史数据] 没有历史数据，返回模拟数据")
-
-            return generate_mock_history_data(symbol, interval, range_param), True, "模拟数据 (无历史数据)"
+            return [], False, "No historical data available"
 
 
 
@@ -4598,11 +4592,9 @@ def get_finnhub_history(symbol, interval, range_param):
 
     except Exception as e:
 
-        # 如果发生异常，返回模拟数据
+        print(f"[Finnhub历史数据] 异常: {str(e)}")
 
-        print(f"[Finnhub历史数据] 异常: {str(e)}，返回模拟数据")
-
-        return generate_mock_history_data(symbol, interval, range_param), True, "模拟数据 (异常)"
+        return [], False, f"Historical data error: {str(e)[:100]}"
 
 
 
@@ -7203,17 +7195,15 @@ def ai_chat():
 
         if not api_key or api_key.startswith('sk-') and len(api_key) < 30:
 
-            # 没有有效 API 密钥，返回模拟回复
+            # 没有有效 API 密钥，返回错误
 
-            print('没有有效的 DeepSeek API 密钥，返回模拟回复')
-
-            ai_response = get_mock_response(message)
+            print('没有有效的 AI API 密钥，返回错误')
 
             return jsonify({
 
-                'success': True,
+                'success': False,
 
-                'response': ai_response,
+                'response': '',
 
                 'timestamp': time.time(),
 
@@ -7221,9 +7211,11 @@ def ai_chat():
 
                 'new_strategy_state': None,
 
-                'isMockResponse': True,
+                'isMockResponse': False,
 
-                'message': 'DeepSeek API 密钥未配置或无效，返回模拟回复'
+                'error': 'AI API key not configured. Please configure in AI Configuration page.',
+
+                'message': 'AI API key not configured'
 
             })
 
@@ -7343,17 +7335,13 @@ def ai_chat():
 
             else:
 
-                print(f'DeepSeek API 调用失败: {response.status_code} - {response.text}')
-
-                # API调用失败时返回模拟回复
-
-                ai_response = get_mock_response(message)
+                print(f'AI API 调用失败: {response.status_code} - {response.text}')
 
                 return jsonify({
 
-                    'success': True,
+                    'success': False,
 
-                    'response': ai_response,
+                    'response': '',
 
                     'timestamp': time.time(),
 
@@ -7361,9 +7349,11 @@ def ai_chat():
 
                     'new_strategy_state': None,
 
-                    'isMockResponse': True,
+                    'isMockResponse': False,
 
-                    'message': f'DeepSeek API 调用失败 ({response.status_code})，返回模拟回复'
+                    'error': f'AI API call failed (HTTP {response.status_code})',
+
+                    'message': f'AI API call failed ({response.status_code})'
 
                 })
 
@@ -7371,17 +7361,13 @@ def ai_chat():
 
         except Exception as api_error:
 
-            print(f'DeepSeek API 调用异常: {api_error}')
-
-            # API调用异常时返回模拟回复
-
-            ai_response = get_mock_response(message)
+            print(f'AI API 调用异常: {api_error}')
 
             return jsonify({
 
-                'success': True,
+                'success': False,
 
-                'response': ai_response,
+                'response': '',
 
                 'timestamp': time.time(),
 
@@ -7389,9 +7375,11 @@ def ai_chat():
 
                 'new_strategy_state': None,
 
-                'isMockResponse': True,
+                'isMockResponse': False,
 
-                'message': f'DeepSeek API 调用异常: {str(api_error)[:100]}'
+                'error': f'AI API call exception: {str(api_error)[:100]}',
+
+                'message': f'AI API call exception: {str(api_error)[:100]}'
 
             })
 
@@ -7401,15 +7389,11 @@ def ai_chat():
 
         print(f'AI Chat 错误: {e}')
 
-        # 异常时返回模拟回复
-
-        ai_response = f"处理消息时发生错误，当前为模拟回复。\n错误: {str(e)[:100]}"
-
         return jsonify({
 
-            'success': True,
+            'success': False,
 
-            'response': ai_response,
+            'response': '',
 
             'timestamp': time.time(),
 
@@ -7417,7 +7401,9 @@ def ai_chat():
 
             'new_strategy_state': None,
 
-            'isMockResponse': True
+            'isMockResponse': False,
+
+            'error': f'AI chat error: {str(e)[:100]}'
 
         })
 
@@ -9179,11 +9165,11 @@ def ai_market_scanner():
 
                     'sector': stock_data.get('sector', 'Unknown'),
 
-                    'newsSentiment': 'No news analyzed',
+                    'newsSentiment': None,
 
-                    'eventRisk': 'Low',
+                    'eventRisk': None,
 
-                    'topCatalyst': 'Price movement',
+                    'topCatalyst': None,
 
                     'newsCount': 0,
 
@@ -9193,7 +9179,7 @@ def ai_market_scanner():
 
                     'trendScore': trend_score,
 
-                    'trendConfidence': 0.6,
+                    'trendConfidence': None,
 
                     'scannerReason': f'Price change: {change_pct:.2f}%, Volume: {volume}',
 
@@ -9201,7 +9187,7 @@ def ai_market_scanner():
 
                     'aiCalled': False,
 
-                    'aiSource': 'Local Rules',
+                    'aiSource': 'unavailable',
 
                     'aiModel': None,
 
@@ -9213,11 +9199,11 @@ def ai_market_scanner():
 
                         'marketData': stock_data.get('dataSource', 'unknown'),
 
-                        'companyInfo': 'Stock data only',
+                        'companyInfo': 'Not fetched',
 
-                        'news': 'None',
+                        'news': 'Not fetched',
 
-                        'aiData': 'Local Rules (deterministic scoring)'
+                        'aiData': 'Not called (simplified scanner)'
 
                     },
 
@@ -9237,7 +9223,7 @@ def ai_market_scanner():
 
                 print(f'✗ {symbol}: 分析失败 - {str(e)}')
 
-                # 添加错误结果
+                # 添加错误结果（不使用fake数据）
 
                 results.append({
 
@@ -9245,39 +9231,43 @@ def ai_market_scanner():
 
                     'companyName': symbol,
 
-                    'price': 0,
+                    'price': None,
 
-                    'changePct': 0,
+                    'changePct': None,
 
-                    'changePercent': 0,
+                    'changePercent': None,
 
-                    'volume': 0,
+                    'volume': None,
 
                     'hasValidVolume': False,
 
                     'dataSource': 'Error',
 
-                    'sector': 'Unknown',
+                    'sector': None,
 
-                    'newsSentiment': 'Analysis failed',
+                    'newsSentiment': None,
 
-                    'eventRisk': 'Low',
+                    'eventRisk': None,
 
-                    'topCatalyst': 'Analysis error',
+                    'topCatalyst': None,
 
                     'newsCount': 0,
 
                     'hasNews': False,
 
-                    'trendLabel': 'Neutral',
+                    'trendLabel': None,
 
-                    'trendScore': 50,
+                    'trendScore': None,
 
-                    'trendConfidence': 0.3,
+                    'trendConfidence': None,
 
-                    'scannerReason': f'分析失败: {str(e)[:50]}',
+                    'scannerReason': f'Analysis failed: {str(e)[:50]}',
 
                     'analysisSource': 'error',
+
+                    'aiCalled': False,
+
+                    'aiSource': 'unavailable',
 
                     'timestamp': int(time.time()),
 
@@ -9817,17 +9807,31 @@ def get_stock_data_for_scanner(symbol):
 
         print(f'获取 {symbol} 扫描数据失败: {str(e)}')
 
-        # 返回空数据
+        # 返回空数据（不使用fake数据）
 
-        return {}, {'sentiment': 'Mixed', 'eventRisk': 'Low', 'topCatalyst': 'Data unavailable'}, {}, {
+        return {}, {'sentiment': None, 'eventRisk': None, 'topCatalyst': None, 'newsCount': 0}, {}, {
 
-            'trendLabel': 'Neutral',
+            'error': f'Data fetch failed: {str(e)[:100]}',
 
-            'trendScore': 50,
+            'trendLabel': None,
 
-            'trendConfidence': 0.3,
+            'trendScore': None,
 
-            'scannerReason': f'数据获取失败: {str(e)[:100]}'
+            'trendConfidence': None,
+
+            'scannerReason': None,
+
+            'momentumScore': None,
+
+            'volumeScore': None,
+
+            'volatilityScore': None,
+
+            'structureScore': None,
+
+            'newsScore': None,
+
+            'aiReasoning': None
 
         }
 
@@ -10629,9 +10633,24 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
     except Exception as e:
 
-        print(f'DeepSeek分析失败: {str(e)}，使用本地分析')
+        print(f'DeepSeek分析失败: {str(e)}，不使用本地fallback，返回空AI数据')
 
-        return analyze_trend_locally(symbol, stock_data, news_data, profile_data)
+        return {
+            'error': f'AI analysis failed: {str(e)[:100]}',
+            'stage': 'ai_exception',
+            'provider': ai_provider_config_state.get('provider', 'unknown'),
+            'trendLabel': None,
+            'trendScore': None,
+            'trendConfidence': None,
+            'scannerReason': None,
+            'trendScoreDetail': None,
+            'momentumScore': None,
+            'volumeScore': None,
+            'volatilityScore': None,
+            'structureScore': None,
+            'newsScore': None,
+            'aiReasoning': None
+        }
 
 
 
@@ -18986,34 +19005,36 @@ def ai_analyze_single():
                         'message': 'AI analysis failed - user must configure API key in AI Configuration page'
                     })
                 else:
-                    # 其他类型的AI失败，回退到本地规则
-                    print(f'[AI分析接口] AI分析失败，使用本地规则: {error_msg}')
-                    trend_analysis = analyze_trend_locally(symbol_upper, market_data, news_data, company_info)
+                    # AI failed — return unavailable, do NOT use local rules as fake AI
+                    print(f'[AI分析接口] AI分析失败，返回unavailable（不使用本地规则fallback）: {error_msg}')
 
-                    response_data = {
-                        'success': True,
+                    return jsonify({
+                        'success': False,
                         'symbol': symbol_upper,
-                        'trendLabel': trend_analysis.get('trendLabel', trend_analysis.get('trend', 'Neutral')),
-                        'trend': trend_analysis.get('trendLabel', trend_analysis.get('trend', 'Neutral')),
-                        'overallScore': trend_analysis.get('overallScore', 50),
-                        'confidence': trend_analysis.get('confidence', 0.5),
-                        'trendScore': trend_analysis.get('trendScore', 50),
-                        'momentumScore': trend_analysis.get('momentumScore', 50),
-                        'volumeScore': trend_analysis.get('volumeScore', 50),
-                        'volatilityScore': trend_analysis.get('volatilityScore', 50),
-                        'structureScore': trend_analysis.get('structureScore', 50),
-                        'newsScore': trend_analysis.get('newsScore', 50),
-                        'scannerReason': trend_analysis.get('scannerReason', 'Local analysis after AI failure'),
-                        'aiReasoning': trend_analysis.get('aiReasoning', f'AI analysis failed: {error_msg}'),
+                        'error': f'AI analysis failed: {error_msg}',
+                        'stage': ai_analysis.get('stage', 'ai_call') if ai_analysis else 'ai_call',
+                        'provider': ai_analysis.get('provider', 'unknown') if ai_analysis else 'unknown',
+                        'hasAiData': False,
 
-                        # AI source tracking fields
-                        'analysisSource': 'rule_based',
-                        'aiCalled': False,
-                        'aiSource': 'Local Rules',
+                        'trendLabel': None,
+                        'trend': None,
+                        'overallScore': None,
+                        'confidence': None,
+                        'trendScore': None,
+                        'momentumScore': None,
+                        'volumeScore': None,
+                        'volatilityScore': None,
+                        'structureScore': None,
+                        'newsScore': None,
+                        'scannerReason': None,
+                        'aiReasoning': None,
+
+                        'analysisSource': 'unavailable',
+                        'aiCalled': True,
+                        'aiSource': 'unavailable',
                         'aiModel': None,
-                        'aiError': error_msg or 'AI analysis failed, local rules used',
-                        'aiAnalysis': 'Local Rules',
-                        'provider': ai_config.get('provider', 'DeepSeek'),
+                        'aiError': error_msg or 'AI analysis failed',
+                        'aiAnalysis': 'unavailable',
 
                         'newsSentiment': news_data.get('sentiment') if news_data else None,
                         'eventRisk': news_data.get('eventRisk') if news_data else None,
@@ -19023,16 +19044,16 @@ def ai_analyze_single():
                         'sector': company_info.get('finnhubIndustry') if company_info else 'Unknown',
 
                         'provenance': {
-                            'marketData': 'alpaca' if market_data and 'alpaca' in str(market_data).lower() else 'finnhub' if market_data else 'none',
+                            'marketData': 'alpaca' if market_data and market_data.get('dataSource') == 'Alpaca' else 'finnhub' if market_data else 'none',
                             'companyInfo': 'finnhub' if company_info else 'none',
                             'news': 'finnhub' if news_data else 'none',
-                            'aiAnalysis': 'Local Rules (fallback)'
+                            'aiAnalysis': 'unavailable'
                         },
 
                         'timestamp': int(time.time()),
                         'responseTime': round(time.time() - start_time, 3),
-                        'message': 'Analysis completed using local rules (AI analysis failed)'
-                    }
+                        'message': 'AI analysis failed - no local rules fallback'
+                    })
 
 
 
@@ -19140,10 +19161,10 @@ Return ONLY the JSON. No preamble."""
         if not api_key or len(api_key) < 10:
             return jsonify({
                 'success': False,
-                'message': 'AI config: no valid API key',
+                'message': 'AI config: no valid API key. Cannot generate AI-selected list.',
                 'ai_skipped': True,
-                'fallback': True,
-                'selected': _rank_fallback(candidates)
+                'fallback': False,
+                'selected': []
             })
 
         provider = ai_provider_config_state.get('provider', 'deepseek')
@@ -19174,10 +19195,10 @@ Return ONLY the JSON. No preamble."""
             print(f'[FINE SCAN SELECT] AI HTTP {resp.status_code}: {resp.text[:200]}')
             return jsonify({
                 'success': False,
-                'message': f'AI returned HTTP {resp.status_code}',
+                'message': f'AI returned HTTP {resp.status_code}. Cannot generate AI-selected list.',
                 'ai_skipped': True,
-                'fallback': True,
-                'selected': _rank_fallback(candidates)
+                'fallback': False,
+                'selected': []
             })
 
         ai_content = resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
@@ -19195,10 +19216,10 @@ Return ONLY the JSON. No preamble."""
             print(f'[FINE SCAN SELECT] JSON parse error: {e}, raw: {ai_content[:200]}')
             return jsonify({
                 'success': False,
-                'message': f'AI returned unparseable JSON: {str(e)}',
+                'message': f'AI returned unparseable JSON: {str(e)}. Cannot generate AI-selected list.',
                 'ai_skipped': True,
-                'fallback': True,
-                'selected': _rank_fallback(candidates)
+                'fallback': False,
+                'selected': []
             })
 
         elapsed = round(_time.time() - start_ts, 2)
@@ -19218,10 +19239,10 @@ Return ONLY the JSON. No preamble."""
         _tb.print_exc()
         return jsonify({
             'success': False,
-            'message': str(e),
+            'message': f'AI selection failed: {str(e)}. Cannot generate AI-selected list.',
             'ai_skipped': True,
-            'fallback': True,
-            'selected': _rank_fallback(candidates) if 'candidates' in dir() else []
+            'fallback': False,
+            'selected': []
         })
 
 
@@ -21321,8 +21342,17 @@ Rules:
         
         api_key = ai_provider_config_state.get('apiKey', '')
         if not api_key:
-            print('[FineScanExplain] No AI API key configured, returning fallback')
-            return _fine_scan_fallback_explain(symbol, trend_label, matched_strategies, eq)
+            print('[FineScanExplain] No AI API key configured, returning unavailable')
+            return jsonify({
+                'success': False,
+                'symbol': symbol,
+                'error': 'AI not configured. Cannot generate explanation.',
+                'source': 'unavailable',
+                'whyMatched': None,
+                'keySignalExplanation': None,
+                'finalReason': None,
+                'nextStep': None
+            })
         
         headers = {
             'Authorization': f'Bearer {api_key}',
@@ -21365,10 +21395,28 @@ Rules:
                 })
             except:
                 print(f'[FineScanExplain] Failed to parse AI response: {ai_response[:200]}')
-                return _fine_scan_fallback_explain(symbol, trend_label, matched_strategies, eq)
+                return jsonify({
+                    'success': False,
+                    'symbol': symbol,
+                    'error': 'AI returned unparseable response',
+                    'source': 'unavailable',
+                    'whyMatched': None,
+                    'keySignalExplanation': None,
+                    'finalReason': None,
+                    'nextStep': None
+                })
         else:
             print(f'[FineScanExplain] AI API error: {response.status_code}')
-            return _fine_scan_fallback_explain(symbol, trend_label, matched_strategies, eq)
+            return jsonify({
+                'success': False,
+                'symbol': symbol,
+                'error': f'AI API returned HTTP {response.status_code}',
+                'source': 'unavailable',
+                'whyMatched': None,
+                'keySignalExplanation': None,
+                'finalReason': None,
+                'nextStep': None
+            })
     
     except Exception as e:
         print(f'[FineScanExplain] Error: {e}')
@@ -21464,6 +21512,8 @@ RULES:
 3. SKIP only if: trend unclear AND backtest negative, OR entry is Avoid/Downtrend, OR risk is SKIP (critical data missing), OR multiple hard blockers present.
 4. Do NOT skip just because entry is "Wait for Pullback" or "Chasing/Extended" — if other signals are strong, WATCH or CONTINUE.
 5. Do NOT skip just because risk is HIGH. HIGH risk alone → WATCH. Only risk=SKIP triggers skip.
+6. Consider News grade: "High Event Risk" or "Caution" with earnings upcoming should push toward WATCH. "Catalyst" is a positive signal. "Clear" is neutral.
+7. Consider Risk score: higher risk score (closer to 100) means more caution. Risk score > 65 should push toward WATCH unless other signals are very strong.
 
 Return ONLY valid JSON (no markdown):
 {{
@@ -21478,11 +21528,18 @@ Return ONLY valid JSON (no markdown):
         
         api_key = ai_provider_config_state.get('apiKey', '')
         if not api_key:
-            print(f'[FineScanDecision] No AI key, using local rules for {symbol}')
-            return _fine_scan_fallback_decision(symbol, trend_label, trend_score, matched_strategies,
-                                                  match_conf, bt_status, bt_perf, bt_return,
-                                                  eq_grade, eq_zone, liq_grade, news_grade,
-                                                  risk_grade, risk_score)
+            print(f'[FineScanDecision] No AI key, returning unavailable for {symbol}')
+            return jsonify({
+                'success': False,
+                'symbol': symbol,
+                'error': 'AI not configured. Cannot generate AI decision.',
+                'source': 'unavailable',
+                'decision': None,
+                'grade': None,
+                'confidence': None,
+                'reason': None,
+                'decisionDetail': {'strengths': [], 'warnings': [], 'blockers': ['AI not configured']}
+            })
         
         provider = ai_provider_config_state.get('provider', 'deepseek')
         base_url = ai_provider_config_state.get('baseURL', 'https://api.deepseek.com')
@@ -21562,16 +21619,30 @@ Return ONLY valid JSON (no markdown):
                 })
             except Exception as parse_err:
                 print(f'[FineScanDecision] Parse error for {symbol}: {parse_err}')
-                return _fine_scan_fallback_decision(symbol, trend_label, trend_score, matched_strategies,
-                                                      match_conf, bt_status, bt_perf, bt_return,
-                                                      eq_grade, eq_zone, liq_grade, news_grade,
-                                                      risk_grade, risk_score)
+                return jsonify({
+                    'success': False,
+                    'symbol': symbol,
+                    'error': f'AI returned unparseable response: {str(parse_err)}',
+                    'source': 'unavailable',
+                    'decision': None,
+                    'grade': None,
+                    'confidence': None,
+                    'reason': None,
+                    'decisionDetail': {'strengths': [], 'warnings': [], 'blockers': ['AI response parse error']}
+                })
         else:
             print(f'[FineScanDecision] AI API error {response.status_code} for {symbol}')
-            return _fine_scan_fallback_decision(symbol, trend_label, trend_score, matched_strategies,
-                                                  match_conf, bt_status, bt_perf, bt_return,
-                                                  eq_grade, eq_zone, liq_grade, news_grade,
-                                                  risk_grade, risk_score)
+            return jsonify({
+                'success': False,
+                'symbol': symbol,
+                'error': f'AI API returned HTTP {response.status_code}',
+                'source': 'unavailable',
+                'decision': None,
+                'grade': None,
+                'confidence': None,
+                'reason': None,
+                'decisionDetail': {'strengths': [], 'warnings': [], 'blockers': [f'AI API error {response.status_code}']}
+            })
     
     except Exception as e:
         print(f'[FineScanDecision] Error: {e}')
@@ -21858,7 +21929,7 @@ def _get_strategy_atr(symbol):
 
 
 def _generate_final_decision(verdict, metrics, stability, opt_results, strategy):
-    """Generate a final AI/rule-based decision for DV result."""
+    """Generate a rule-based final decision for DV result. No AI provider call."""
     decision = {
         'action': 'SKIP',
         'confidence': 0,
@@ -21962,7 +22033,7 @@ def _generate_final_decision(verdict, metrics, stability, opt_results, strategy)
 
         decision['confidence'] = confidence
         decision['reason'] = '; '.join(reasons[:3]) if reasons else 'Rule-based decision'
-        decision['source'] = 'local-rule'
+        decision['source'] = 'Rule-based'
 
     except Exception as e:
         decision['reason'] = f'Decision error: {str(e)[:50]}'
@@ -21970,50 +22041,94 @@ def _generate_final_decision(verdict, metrics, stability, opt_results, strategy)
     return decision
 
 
-def _generate_risk_gate(verdict, metrics, stability, strategy):
-    """Generate a risk gate assessment for DV result."""
+def _generate_risk_gate(verdict, metrics, stability, strategy, recent_vs_long=None):
+    """Generate a conservative risk gate assessment for DV result. Rule-based only."""
     risk_gate = {
         'status': 'PASS',
         'checks': [],
-        'reason': 'All checks passed'
+        'reason': 'All checks passed',
+        'source': 'Rule-based'
     }
 
     try:
         failures = []
+        warnings = []
 
-        # Check backtest metrics
-        if metrics and isinstance(metrics, dict):
-            total_ret = metrics.get('totalReturn', 0) or 0
-            sharpe = metrics.get('sharpeRatio', 0) or 0
-            max_dd = metrics.get('maxDrawdown', 0) or 0
+        # Check if metrics are actually populated
+        if not metrics or not isinstance(metrics, dict):
+            risk_gate['status'] = 'BLOCK'
+            risk_gate['reason'] = 'No backtest metrics available'
+            risk_gate['source'] = 'Rule-based'
+            return risk_gate
 
-            if total_ret < -5:
-                failures.append('Negative return')
-            if sharpe < 0.5:
-                failures.append('Low Sharpe')
-            if max_dd > 30:
-                failures.append('High drawdown')
-            if max_dd > 20:
-                failures.append('Elevated drawdown')
+        total_ret = metrics.get('totalReturn')
+        sharpe = metrics.get('sharpeRatio')
+        max_dd = metrics.get('maxDrawdown')
+        pf = metrics.get('profitFactor')
+        tc = metrics.get('tradeCount')
+
+        # --- BLOCK conditions ---
+        if total_ret is None or (isinstance(total_ret, (int, float)) and total_ret == 0 and (tc is None or tc == 0)):
+            failures.append('No backtest results')
+
+        if total_ret is not None and total_ret < -5:
+            failures.append(f'Negative return {total_ret:.1f}%')
+
+        if sharpe is not None and sharpe < 0:
+            failures.append(f'Negative Sharpe {sharpe:.2f}')
+
+        if max_dd is not None and max_dd > 35:
+            failures.append(f'Excessive drawdown {max_dd:.1f}%')
+
+        if pf is not None and pf < 0.8:
+            failures.append(f'Profit factor {pf:.2f} below 0.8')
+
+        if tc is not None and tc < 3:
+            failures.append(f'Insufficient trades ({tc})')
+
+        # Verdict rejection
+        if verdict:
+            v = verdict.lower()
+            if 'reject' in v:
+                failures.append('Rejected by validation')
+
+        # --- WARNING conditions (don't block but flag) ---
+        if sharpe is not None and 0 <= sharpe < 0.5:
+            warnings.append(f'Low Sharpe {sharpe:.2f}')
+
+        if max_dd is not None and 20 < max_dd <= 35:
+            warnings.append(f'Elevated drawdown {max_dd:.1f}%')
+
+        if pf is not None and 0.8 <= pf < 1.2:
+            warnings.append(f'Marginal profit factor {pf:.2f}')
+
+        if tc is not None and 3 <= tc < 10:
+            warnings.append(f'Limited trades ({tc})')
 
         # Stability
         if stability and isinstance(stability, dict):
             stab_score = stability.get('score', 0) or 0
             if stab_score < 30:
-                failures.append('Poor stability')
+                failures.append(f'Poor stability ({stab_score})')
             elif stab_score < 50:
-                failures.append('Moderate stability')
+                warnings.append(f'Moderate stability ({stab_score})')
 
-        # Verdict
-        if verdict:
-            v = verdict.lower()
-            if 'skip' in v or 'reject' in v:
-                failures.append('Rejected by validation')
+        # Recent vs long-term degradation
+        if recent_vs_long:
+            if recent_vs_long == 'Weakening':
+                warnings.append('Recent performance weakening')
+            elif recent_vs_long == 'Divergent':
+                warnings.append('Recent vs long-term divergent')
 
+        # --- Final status ---
         if failures:
-            risk_gate['status'] = 'REVIEW' if len(failures) <= 2 else 'BLOCK'
+            risk_gate['status'] = 'BLOCK'
             risk_gate['checks'] = failures
             risk_gate['reason'] = '; '.join(failures[:3])
+        elif warnings:
+            risk_gate['status'] = 'REVIEW'
+            risk_gate['checks'] = warnings
+            risk_gate['reason'] = '; '.join(warnings[:3])
         else:
             risk_gate['status'] = 'PASS'
             risk_gate['reason'] = 'All validation checks passed'
@@ -22216,7 +22331,7 @@ def deeper_validation():
                 'setupType': _map_strategy_to_setup(strategy),
                 'entryPlan': _generate_entry_plan_summary(symbol, strategy, metrics, data_source),
                 'finalDecision': _generate_final_decision(verdict, metrics, stability, opt_results, strategy),
-                'riskGate': _generate_risk_gate(verdict, metrics, stability, strategy),
+                'riskGate': _generate_risk_gate(verdict, metrics, stability, strategy, recent_vs_long),
 'dataSource': data_source,
             }
             results.append(result_entry)
@@ -23400,7 +23515,7 @@ def ai_entry_plan():
                 if ai_called:
                     plan['dataSources']['aiData'] = f'{ai_source_label} ({ai_model_name or "AI"}) called'
                 else:
-                    plan['dataSources']['aiData'] = f'Local Rules fallback' + (f' — {ai_error}' if ai_error else '')
+                    plan['dataSources']['aiData'] = 'AI unavailable' + (f' — {ai_error}' if ai_error else '')
 
         ai_success_count = sum(1 for p in plans if p.get('aiCalled'))
         print(f'=== ENTRY PLAN COMPLETE: {len(plans)} plans ({ai_success_count} with AI decisions) ===')
