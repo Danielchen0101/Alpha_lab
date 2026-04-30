@@ -9144,179 +9144,259 @@ function renderDVDetailPanel(record: any) {
                     const rgColor = rg.status === 'PASS' ? '#52c41a' : rg.status === 'REVIEW' ? '#fa8c16' : '#ff4d4f';
                     const faColor = finalAction === 'BUY_READY' ? '#52c41a' : finalAction === 'WAIT_FOR_ENTRY' ? '#fa8c16' : '#ff4d4f';
 
-                    const CardHeader = ({ title, color }: { title: string; color?: string }) => (
-                      <div style={{ fontSize: '11px', fontWeight: 600, color: color || '#8c8c8c', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px', paddingBottom: '4px', borderBottom: '1px solid #edf0f2' }}>{title}</div>
+                    const SectionHeader = ({ title, color }: { title: string; color?: string }) => (
+                      <div style={{ 
+                        fontSize: '12px', 
+                        fontWeight: 700, 
+                        color: color || '#595959', 
+                        textTransform: 'uppercase', 
+                        letterSpacing: '0.6px', 
+                        marginBottom: '10px', 
+                        paddingBottom: '6px', 
+                        borderBottom: '1px solid #f0f2f5',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}>
+                        {title}
+                      </div>
                     );
 
-                    const Label = ({ text }: { text: string }) => <span style={{ fontSize: '11px', color: '#8c8c8c', fontWeight: 500 }}>{text}</span>;
-                    const Value = ({ v, bold, color }: { v: string; bold?: boolean; color?: string }) => <span style={{ fontSize: '12px', fontWeight: bold ? 700 : 500, color: color || '#262626' }}>{v}</span>;
+                    const Label = ({ text }: { text: string }) => (
+                      <span style={{ fontSize: '11px', color: '#8c8c8c', fontWeight: 500 }}>{text}</span>
+                    );
+                    
+                    const Value = ({ v, bold, color, subText }: { v: string; bold?: boolean; color?: string; subText?: string }) => (
+                      <div style={{ display: 'flex', flexDirection: 'column' }}>
+                        <span style={{ fontSize: '12px', fontWeight: bold ? 700 : 500, color: color || '#262626' }}>{v}</span>
+                        {subText && <span style={{ fontSize: '10px', color: '#8c8c8c', marginTop: '1px' }}>{subText}</span>}
+                      </div>
+                    );
+
+                    const ActionBadge = ({ label, color }: { label: string; color: string }) => (
+                      <span style={{ 
+                        backgroundColor: `${color}15`, 
+                        color: color, 
+                        padding: '2px 8px', 
+                        borderRadius: '4px', 
+                        fontSize: '10px', 
+                        fontWeight: 700,
+                        border: `1px solid ${color}30`,
+                        textTransform: 'uppercase'
+                      }}>
+                        {label}
+                      </span>
+                    );
 
                     return (
-                      <div style={{ padding: '10px 16px', background: '#fbfbfc', border: '1px solid #edf0f2', borderRadius: '8px', fontFamily: fontStk, lineHeight: '1.4' }}>
-                        {/* ── Header ── */}
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: '6px', borderBottom: '1px solid #edf0f2', marginBottom: '8px' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                            <span style={{ fontSize: '15px', fontWeight: 700, color: '#1a1a1a' }}>{sym}</span>
-                            <Tag color={setupLabel.includes('Pullback') ? 'gold' : setupLabel.includes('Breakout') ? 'purple' : setupLabel.includes('Range') ? 'green' : setupLabel.includes('Watch') ? 'blue' : 'default'} style={{ fontSize: '11px', margin: 0 }}>{setupLabel}</Tag>
-                            <Tag color={aiDecision === 'BUY' ? 'green' : aiDecision === 'WATCH' ? 'gold' : aiDecision === 'SKIP' ? 'red' : 'default'} style={{ fontSize: '11px', margin: 0 }}>{aiDecision}</Tag>
-                            <span style={{ fontSize: '10px', color: '#999' }}>Cnf {confidence}%</span>
+                      <div style={{ 
+                        padding: '16px', 
+                        background: '#f8fafc', 
+                        border: '1px solid #e5e7eb', 
+                        borderRadius: '10px', 
+                        fontFamily: fontStk, 
+                        lineHeight: '1.4',
+                        boxShadow: '0 1px 3px rgba(0,0,0,0.02)'
+                      }}>
+                        {/* ── Professional Header ── */}
+                        <div style={{ 
+                          display: 'flex', 
+                          justifyContent: 'space-between', 
+                          alignItems: 'center', 
+                          paddingBottom: '12px', 
+                          borderBottom: '1px solid #e5e7eb', 
+                          marginBottom: '16px' 
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                            <span style={{ fontSize: '18px', fontWeight: 800, color: '#111827', letterSpacing: '-0.2px' }}>{sym}</span>
+                            <Tag color={setupLabel.includes('Pullback') ? 'gold' : setupLabel.includes('Breakout') ? 'purple' : setupLabel.includes('Range') ? 'green' : 'blue'} 
+                                 style={{ fontSize: '11px', fontWeight: 600, borderRadius: '4px', margin: 0 }}>
+                              {setupLabel}
+                            </Tag>
+                            <Tag color={aiDecision === 'BUY' ? 'success' : aiDecision === 'WATCH' ? 'warning' : 'error'} 
+                                 style={{ fontSize: '11px', fontWeight: 700, borderRadius: '4px', margin: 0 }}>
+                              AI: {aiDecision}
+                            </Tag>
+                            <span style={{ fontSize: '11px', fontWeight: 600, color: '#6b7280', backgroundColor: '#f3f4f6', padding: '2px 8px', borderRadius: '4px' }}>
+                              Confidence {confidence}%
+                            </span>
                           </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '10px' }}>
-                            <Tag color={dq === 'GOOD' ? 'green' : dq === 'PARTIAL' ? 'gold' : 'red'} style={{ margin: 0 }}>Data: {dq}</Tag>
-                            <Tag color={rg.status === 'PASS' ? 'green' : rg.status === 'REVIEW' ? 'gold' : 'red'} style={{ margin: 0 }}>Gate: {rg.status || 'N/A'}</Tag>
-                            <Tag color={finalAction === 'BUY_READY' ? 'green' : finalAction === 'WAIT_FOR_ENTRY' ? 'gold' : 'red'} style={{ margin: 0, fontWeight: 600 }}>{finalAction}</Tag>
-                            <Button
-                              size="small"
-                              type={finalAction === 'BUY_READY' ? 'primary' : 'default'}
-                              danger={finalAction === 'BLOCKED_BY_RISK'}
-                              disabled={finalAction === 'SKIP' || finalAction === 'BLOCKED_BY_RISK' || dq === 'POOR'}
-                              onClick={() => handleEntryPlanAction(ep)}
-                              style={{ fontSize: '11px', fontWeight: 500 }}
-                            >
-                              {finalAction === 'BUY_READY' ? 'Execute Plan' : finalAction === 'WAIT_FOR_ENTRY' ? 'Wait for Entry' : finalAction === 'SKIP' ? 'Skipped' : 'Blocked'}
-                            </Button>
-                            <Button
-                              size="small"
-                              icon={isInWatchlist(ep.symbol) ? <CheckOutlined /> : <PlusOutlined />}
-                              onClick={() => addToWatchlist(ep)}
-                              style={{
-                                fontSize: '11px', fontWeight: 500,
-                                color: isInWatchlist(ep.symbol) ? '#52c41a' : '#1890ff',
-                                borderColor: isInWatchlist(ep.symbol) ? '#52c41a' : '#1890ff',
-                              }}
-                            >
-                              {isInWatchlist(ep.symbol) ? 'Update Watchlist' : 'Add to Watchlist'}
-                            </Button>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                            <div style={{ display: 'flex', gap: '6px', marginRight: '8px' }}>
+                              <ActionBadge label={`Data: ${dq}`} color={dqColor} />
+                              <ActionBadge label={`Gate: ${rg.status || 'N/A'}`} color={rgColor} />
+                              <ActionBadge label={finalAction} color={faColor} />
+                            </div>
+                            <Space size={8}>
+                              <Button
+                                size="middle"
+                                type={finalAction === 'BUY_READY' ? 'primary' : 'default'}
+                                danger={finalAction === 'BLOCKED_BY_RISK'}
+                                disabled={finalAction === 'SKIP' || finalAction === 'BLOCKED_BY_RISK' || dq === 'POOR'}
+                                onClick={() => handleEntryPlanAction(ep)}
+                                style={{ 
+                                  fontSize: '12px', 
+                                  fontWeight: 600, 
+                                  borderRadius: '6px',
+                                  height: '32px'
+                                }}
+                              >
+                                {finalAction === 'BUY_READY' ? 'Execute Trade' : finalAction === 'WAIT_FOR_ENTRY' ? 'Monitor Entry' : finalAction === 'SKIP' ? 'Plan Skipped' : 'Risk Blocked'}
+                              </Button>
+                              <Button
+                                size="middle"
+                                icon={isInWatchlist(ep.symbol) ? <CheckOutlined /> : <PlusOutlined />}
+                                onClick={() => addToWatchlist(ep)}
+                                style={{
+                                  fontSize: '12px', 
+                                  fontWeight: 600,
+                                  borderRadius: '6px',
+                                  height: '32px',
+                                  color: isInWatchlist(ep.symbol) ? '#52c41a' : '#2563eb',
+                                  borderColor: isInWatchlist(ep.symbol) ? '#52c41a' : '#2563eb',
+                                  backgroundColor: isInWatchlist(ep.symbol) ? '#f0fdf4' : '#eff6ff'
+                                }}
+                              >
+                                {isInWatchlist(ep.symbol) ? 'In Watchlist' : 'Add to Watchlist'}
+                              </Button>
+                            </Space>
                           </div>
                         </div>
 
-                        {/* ── 4-Card Grid ── */}
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '8px' }}>
+                        {/* ── 4-Card Balanced Grid ── */}
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
 
                           {/* A. Execution Plan */}
-                          <div style={{ background: '#fff', borderRadius: '6px', border: '1px solid #edf0f2', padding: '10px 12px' }}>
-                            <CardHeader title="A. Execution Plan" />
-                            <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: '3px 8px', alignItems: 'baseline' }}>
-                              <Label text="Entry Zone" /><Value v={ep.entryZoneLow != null ? `$${ep.entryZoneLow.toFixed(2)} – $${(ep.entryZoneHigh ?? 0).toFixed(2)}` : '—'} bold />
-                              <Label text="Trigger" /><Value v={ep.triggerCondition || '—'} />
-                              <Label text="Stop Loss" /><Value v={`${fmtPrice(ep.stopLoss)} (${ep.stopLossPct != null ? fmtPct(ep.stopLossPct) : 'N/A'} from ${ep.stopSource || 'entry'})`} color="#e84749" bold />
-                              <Label text="Target 1" /><Value v={`${fmtPrice(ep.takeProfit1)}  R/R ${fmtRR(ep.riskReward1)}`} color="#52c41a" bold />
-                              <Label text="Target 2" /><Value v={`${fmtPrice(ep.takeProfit2)}  R/R ${fmtRR(ep.riskReward2)}`} color="#52c41a" />
-                              <Label text="Invalidation" /><Value v={ep.invalidationCondition || '—'} color="#e84749" />
-                              <Label text="Order Type" />
-                              <span>
-                                <Value v={ed.orderTypeSuggestion || 'N/A'} bold color={ed.orderTypeSuggestion === 'Not Available' ? '#ff4d4f' : '#52c41a'} />
-                                {ed.orderTypeReason && <div style={{ fontSize: '10px', color: '#888', marginTop: '1px' }}>{ed.orderTypeReason}</div>}
-                              </span>
+                          <div style={{ background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
+                            <SectionHeader title="A. Execution Plan" />
+                            <div style={{ display: 'grid', gridTemplateColumns: '95px 1fr', gap: '8px 12px', alignItems: 'baseline' }}>
+                              <Label text="Entry Zone" /><Value v={ep.entryZoneLow != null ? `$${ep.entryZoneLow.toFixed(2)} – $${(ep.entryZoneHigh ?? 0).toFixed(2)}` : '—'} bold color="#111827" />
+                              <Label text="Trigger" /><Value v={ep.triggerCondition || '—'} color="#4b5563" />
+                              <Label text="Stop Loss" /><Value v={fmtPrice(ep.stopLoss)} bold color="#dc2626" subText={`${ep.stopLossPct != null ? fmtPct(ep.stopLossPct) : 'N/A'} from ${ep.stopSource || 'entry'}`} />
+                              <Label text="Targets" />
+                              <div style={{ display: 'flex', gap: '16px' }}>
+                                <Value v={fmtPrice(ep.takeProfit1)} bold color="#16a34a" subText={`T1 (R/R ${fmtRR(ep.riskReward1)})`} />
+                                <Value v={fmtPrice(ep.takeProfit2)} color="#16a34a" subText={`T2 (R/R ${fmtRR(ep.riskReward2)})`} />
+                              </div>
+                              <Label text="Invalidation" /><Value v={ep.invalidationCondition || '—'} color="#dc2626" />
+                              <Label text="Order Type" /><Value v={ed.orderTypeSuggestion || 'N/A'} bold color={ed.orderTypeSuggestion === 'Not Available' ? '#dc2626' : '#16a34a'} subText={ed.orderTypeReason} />
                             </div>
                           </div>
 
                           {/* B. Position & Risk */}
-                          <div style={{ background: '#fff', borderRadius: '6px', border: '1px solid #edf0f2', padding: '10px 12px' }}>
-                            <CardHeader title="B. Position & Risk" />
-                            <div style={{ display: 'grid', gridTemplateColumns: '85px 1fr', gap: '3px 8px', alignItems: 'baseline' }}>
+                          <div style={{ background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
+                            <SectionHeader title="B. Position & Risk" />
+                            <div style={{ display: 'grid', gridTemplateColumns: '95px 1fr', gap: '8px 12px', alignItems: 'baseline' }}>
                               <Label text="Portfolio" /><Value v={fmtDollars(ep.positionCapital)} bold />
                               <Label text="Buying Power" /><Value v={fmtDollars(ep.accountBuyingPower)} />
-                              <Label text="Risk Budget" /><Value v={`${fmtDollars(ep.riskBudget)} (${fmtPct(ep.riskPct)} of portfolio)`} />
-                              <Label text="Actual Risk" /><Value v={fmtDollars(ep.riskDollars)} color="#e84749" bold />
-                              <Label text="Risk Used" /><Value v={ep.riskUsedPct != null ? `${ep.riskUsedPct.toFixed(1)}% of budget` : (ep.riskBudget > 0 ? `${(ep.riskDollars / ep.riskBudget * 100).toFixed(1)}% of budget` : '—')} color={ep.riskUsedPct > 80 ? '#ff4d4f' : '#d48806'} bold />
-                              <Label text="Shares" /><Value v={fmtShares(ep.positionSize || ep.positionSizeShares)} bold />
-                              <Label text="Est. Position" /><Value v={fmtDollars(ep.positionValue || ep.positionSizeDollars)} bold />
-                              <Label text="Cap" /><Value v={ep.positionCapStatus || (ep.positionCapped ? `Capped ${fmtPct(ep.positionPct)}` : `OK (${fmtPct(ep.positionPct)} of portfolio)`)} color={ep.positionCapped ? '#d48806' : '#52c41a'} />
+                              <Label text="Risk Budget" /><Value v={fmtDollars(ep.riskBudget)} subText={`${fmtPct(ep.riskPct)} of portfolio`} />
+                              <Label text="Actual Risk" /><Value v={fmtDollars(ep.riskDollars)} bold color="#dc2626" />
+                              <Label text="Risk Used" /><Value v={ep.riskUsedPct != null ? `${ep.riskUsedPct.toFixed(1)}%` : (ep.riskBudget > 0 ? `${(ep.riskDollars / ep.riskBudget * 100).toFixed(1)}%` : '—')} bold color={ep.riskUsedPct > 80 ? '#dc2626' : '#d97706'} subText="of risk budget" />
+                              <Label text="Size" />
+                              <div style={{ display: 'flex', gap: '16px' }}>
+                                <Value v={fmtShares(ep.positionSize || ep.positionSizeShares)} bold subText="Shares" />
+                                <Value v={fmtDollars(ep.positionValue || ep.positionSizeDollars)} bold subText="Est. Value" />
+                              </div>
+                              <Label text="Cap Status" /><Value v={ep.positionCapStatus || (ep.positionCapped ? `Capped at ${fmtPct(ep.positionPct)}` : `OK (${fmtPct(ep.positionPct)} of equity)`)} bold color={ep.positionCapped ? '#d97706' : '#16a34a'} />
                             </div>
                           </div>
 
                           {/* C. Decision */}
-                          <div style={{ background: '#fff', borderRadius: '6px', border: '1px solid #edf0f2', padding: '10px 12px' }}>
-                            <CardHeader title="C. Decision" />
-                            <div style={{ display: 'grid', gridTemplateColumns: '90px 1fr', gap: '3px 8px', alignItems: 'baseline' }}>
+                          <div style={{ background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
+                            <SectionHeader title="C. Decision" />
+                            <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: '8px 12px', alignItems: 'baseline' }}>
                               <Label text="AI Decision" /><Value v={ep.aiDecision || '—'} color={aiColor(ep.aiDecision)} bold />
                               <Label text="Confidence" /><Value v={`${confidence}%`} bold />
                               <Label text="Risk Gate" /><Value v={rg.status || 'N/A'} color={rgColor} bold />
                               <Label text="Final Action" /><Value v={finalAction} color={faColor} bold />
                               <Label text="Trade Readiness" /><Value v={tradeReadiness} color={trColor} bold />
-                              <Label text="Entry Trigger" /><Value v={ep.entryTriggerMet ? 'Met' : 'Not met'} color={ep.entryTriggerMet ? '#52c41a' : '#fa8c16'} />
+                              <Label text="Entry Trigger" /><Value v={ep.entryTriggerMet ? 'Ready' : 'Waiting'} color={ep.entryTriggerMet ? '#16a34a' : '#d97706'} bold />
                               <Label text="Best Strategy" /><Value v={ep.bestStrategy || '—'} />
                             </div>
                           </div>
 
                           {/* D. Data Quality */}
-                          <div style={{ background: '#fff', borderRadius: '6px', border: '1px solid #edf0f2', padding: '10px 12px' }}>
-                            <CardHeader title="D. Data Quality" color={dqColor} />
-                            <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: '3px 8px', alignItems: 'baseline' }}>
-                              <Label text="Quality" /><Tag color={dq === 'GOOD' ? 'green' : dq === 'PARTIAL' ? 'gold' : 'red'} style={{ margin: 0, fontSize: '11px' }}>{dq}</Tag>
-                              <Label text="Market" /><Value v={ds.marketData || 'N/A'} />
-                              <Label text="Account" /><Value v={ds.accountData || 'N/A'} />
-                              <Label text="AI" />
-                              <span style={{ fontSize: '11px', fontWeight: 500 }}>
+                          <div style={{ background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
+                            <SectionHeader title="D. Data Quality" color={dqColor} />
+                            <div style={{ display: 'grid', gridTemplateColumns: '95px 1fr', gap: '8px 12px', alignItems: 'baseline' }}>
+                              <Label text="Market Data" /><Value v={ds.marketData || 'N/A'} bold />
+                              <Label text="Account Data" /><Value v={ds.accountData || 'N/A'} />
+                              <Label text="AI Provider" />
+                              <div style={{ display: 'flex', flexDirection: 'column' }}>
                                 {ep.aiCalled ? (
-                                  <span style={{ color: '#52c41a' }}>{ep.aiSource || 'AI'} ({ep.aiModel || 'LLM'}) ✓</span>
+                                  <span style={{ fontSize: '12px', fontWeight: 600, color: '#16a34a' }}>{ep.aiSource || 'AI'} ({ep.aiModel || 'LLM'}) <CheckOutlined style={{ fontSize: '10px' }} /></span>
                                 ) : (
                                   <Tooltip title={ep.aiError || 'No AI provider configured or call failed'}>
-                                    <span style={{ color: '#fa8c16', cursor: 'help', borderBottom: '1px dotted #fa8c16' }}>Local Rules fallback</span>
+                                    <span style={{ fontSize: '12px', fontWeight: 600, color: '#d97706', cursor: 'help', borderBottom: '1px dotted #d97706' }}>Local Rules fallback</span>
                                   </Tooltip>
                                 )}
-                              </span>
-                              <Label text="Broker" /><Value v={ed.brokerSource || 'Not Connected'} color={ed.brokerConnected ? '#52c41a' : '#ff4d4f'} />
-                              {ep.aiError && <><Label text="AI Error" /><Value v={ep.aiError} color="#ff4d4f" /></>}
+                              </div>
+                              <Label text="Broker" /><Value v={ed.brokerSource || 'Not Connected'} bold color={ed.brokerConnected ? '#16a34a' : '#dc2626'} />
+                              {ep.aiError && <><Label text="AI Error" /><Value v={ep.aiError} color="#dc2626" /></>}
                             </div>
                           </div>
                         </div>
 
-                        {/* ── Bottom Text Sections ── */}
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', borderTop: '1px solid #edf0f2', paddingTop: '8px' }}>
+                        {/* ── Bottom Text Insights ── */}
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', borderTop: '1px solid #e5e7eb', paddingTop: '12px' }}>
                           {/* Left: Decision Reason + Next Step */}
-                          <div>
-                            <div style={{ fontSize: '10px', fontWeight: 600, color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px' }}>
-                              Decision Reason {ep.aiCalled ? '(AI)' : '(Local Rules)'}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                            <div>
+                              <div style={{ fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '6px' }}>
+                                Decision Reason {ep.aiCalled ? '(AI)' : '(Local Rules)'}
+                              </div>
+                              <div style={{ fontSize: '13px', color: '#374151', lineHeight: '1.6', background: '#fff', padding: '8px 12px', borderRadius: '6px', border: '1px solid #f3f4f6' }}>
+                                {ep.decisionReason || ep.reason || 'No detailed reasoning provided.'}
+                              </div>
                             </div>
-                            <div style={{ fontSize: '12px', color: '#444', lineHeight: '1.5', marginBottom: '6px' }}>
-                              {ep.decisionReason || ep.reason || 'No reason provided'}
-                            </div>
-                            <div style={{ fontSize: '10px', fontWeight: 600, color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px' }}>Next Step</div>
-                            <div style={{ fontSize: '12px', color: '#1890ff', lineHeight: '1.5', fontWeight: 500 }}>
-                              {ep.nextStep || 'No next step defined'}
+                            <div>
+                              <div style={{ fontSize: '10px', fontWeight: 700, color: '#2563eb', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '4px' }}>Next Step</div>
+                              <div style={{ fontSize: '13px', color: '#1d4ed8', lineHeight: '1.5', fontWeight: 600, paddingLeft: '4px' }}>
+                                → {ep.nextStep || 'Wait for further signals.'}
+                              </div>
                             </div>
                             {ep.riskComment && (
-                              <>
-                                <div style={{ fontSize: '10px', fontWeight: 600, color: '#d48806', textTransform: 'uppercase', letterSpacing: '0.4px', marginTop: '6px', marginBottom: '4px' }}>Risk Comment</div>
-                                <div style={{ fontSize: '11px', color: '#595959', lineHeight: '1.5' }}>{ep.riskComment}</div>
-                              </>
-                            )}
-                            {ep.invalidationComment && (
-                              <>
-                                <div style={{ fontSize: '10px', fontWeight: 600, color: '#e84749', textTransform: 'uppercase', letterSpacing: '0.4px', marginTop: '6px', marginBottom: '4px' }}>Invalidation</div>
-                                <div style={{ fontSize: '11px', color: '#595959', lineHeight: '1.5' }}>{ep.invalidationComment}</div>
-                              </>
+                              <div style={{ background: '#fff7ed', padding: '8px 12px', borderRadius: '6px', border: '1px solid #ffedd5' }}>
+                                <div style={{ fontSize: '10px', fontWeight: 700, color: '#c2410c', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '4px' }}>Risk Comment</div>
+                                <div style={{ fontSize: '12px', color: '#9a3412', lineHeight: '1.5' }}>{ep.riskComment}</div>
+                              </div>
                             )}
                           </div>
 
-                          {/* Right: Risk Notes + Blockers + Gate Detail */}
-                          <div>
-                            <div style={{ fontSize: '10px', fontWeight: 600, color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px' }}>Risk Notes</div>
-                            <div style={{ fontSize: '11px', lineHeight: '1.5' }}>
-                              {(() => {
-                                const warnings = rg.warnings || [];
-                                if (warnings.length === 0) return <div style={{ color: '#bbb', fontStyle: 'italic' }}>No risk notes</div>;
-                                return warnings.slice(0, 4).map((r: string, i: number) => (
-                                  <div key={i} style={{ marginBottom: '2px', color: '#595959' }}><span style={{ color: '#d48806' }}>•</span> {r}</div>
-                                ));
-                              })()}
+                          {/* Right: Risk Notes + Blockers */}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                            <div>
+                              <div style={{ fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '6px' }}>Risk Assessment</div>
+                              <div style={{ background: '#fff', padding: '8px 12px', borderRadius: '6px', border: '1px solid #f3f4f6', minHeight: '60px' }}>
+                                {(() => {
+                                  const warnings = rg.warnings || [];
+                                  if (warnings.length === 0) return <div style={{ color: '#9ca3af', fontStyle: 'italic', fontSize: '12px' }}>No risk warnings identified.</div>;
+                                  return warnings.slice(0, 4).map((r: string, i: number) => (
+                                    <div key={i} style={{ marginBottom: '3px', color: '#4b5563', fontSize: '12px', display: 'flex', gap: '6px' }}>
+                                      <span style={{ color: '#f59e0b' }}>•</span> <span>{r}</span>
+                                    </div>
+                                  ));
+                                })()}
+                              </div>
                             </div>
-                            <div style={{ fontSize: '10px', fontWeight: 600, color: '#ff4d4f', textTransform: 'uppercase', letterSpacing: '0.4px', marginTop: '6px', marginBottom: '4px' }}>Blockers / Warnings</div>
-                            <div style={{ fontSize: '11px', lineHeight: '1.5' }}>
-                              {(() => {
-                                const blockers = ep.blockers || rg.blockers || [];
-                                if (blockers.length === 0) return <div style={{ color: '#bbb', fontStyle: 'italic' }}>No blockers</div>;
-                                return blockers.slice(0, 4).map((r: string, i: number) => (
-                                  <div key={i} style={{ marginBottom: '2px', color: '#595959' }}><span style={{ color: '#d93025' }}>•</span> {r}</div>
-                                ));
-                              })()}
-                            </div>
-                            {/* Gate REVIEW detail */}
-                            {rg.status === 'REVIEW' && (rg.warnings || []).length > 0 && (
-                              <div style={{ marginTop: '6px', padding: '6px 8px', background: '#fffbe6', borderRadius: '4px', border: '1px solid #ffe58f' }}>
-                                <div style={{ fontSize: '9px', fontWeight: 600, color: '#d48806', marginBottom: '2px' }}>REVIEW: {(rg.warnings || []).slice(0, 2).join('; ')}</div>
+                            
+                            {(ep.blockers || rg.blockers || []).length > 0 && (
+                              <div style={{ background: '#fef2f2', padding: '8px 12px', borderRadius: '6px', border: '1px solid #fee2e2' }}>
+                                <div style={{ fontSize: '10px', fontWeight: 700, color: '#b91c1c', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '6px' }}>Critical Blockers</div>
+                                {(() => {
+                                  const blockers = ep.blockers || rg.blockers || [];
+                                  return blockers.slice(0, 4).map((r: string, i: number) => (
+                                    <div key={i} style={{ marginBottom: '2px', color: '#991b1b', fontSize: '12px', fontWeight: 500, display: 'flex', gap: '6px' }}>
+                                      <span>✕</span> <span>{r}</span>
+                                    </div>
+                                  ));
+                                })()}
+                              </div>
+                            )}
+
+                            {ep.invalidationComment && (
+                              <div style={{ fontSize: '12px', color: '#b91c1c', borderLeft: '3px solid #f87171', paddingLeft: '8px', marginTop: '4px' }}>
+                                <span style={{ fontWeight: 700 }}>Invalidation:</span> {ep.invalidationComment}
                               </div>
                             )}
                           </div>

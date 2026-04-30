@@ -1,3 +1,0 @@
-  File "C:\Users\kexuc\.openclaw\workspace\professional_quant_platform\backend\start_quant_backend_repaired.py", line 10793
-    def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
-SyntaxError: expected 'except' or 'finally' block

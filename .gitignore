@@ -1,30 +1,56 @@
+# Dependencies
 node_modules/
 **/node_modules/
 
-.cache/
-**/.cache/
-
+# Build outputs
 build/
 dist/
 coverage/
+.next/
+frontend/build/
 
+# Cache
+.cache/
+**/.cache/
+.eslintcache
+
+# Secrets — NEVER commit real keys
 .env
 .env.local
-.DS_Store
+.env.development
+.env.production
+.env.*
+!.env.example
 
 # Python
 __pycache__/
 **/__pycache__/
 *.pyc
 *.pyo
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+**/.pytest_cache/
 
 # Logs
 *.log
-*.txt
+backend/*.log
+backend/logs/
+frontend/*.log
 
-# Backups
-backup/
+# Temp / debug files
+*.txt
+!requirements.txt
+!README.md
+!CONTRIBUTING.md
+!COMMIT_CONVENTION.md
+!CHANGELOG.md
+!LICENSE
+
+# Backups — never commit backup directories or files
 backups/
+backup/
 *.bak
 *.backup
 *.backup2
@@ -35,48 +61,24 @@ backups/
 tests_backup/
 old_backup_*/
 
-# Runtime
+# Runtime / databases
 backend/instance/
 *.db
-
-# Test cache
-.pytest_cache/
-**/.pytest_cache/
-*.egg-info/
-
-# ESLint
-.eslintcache
-
-# Temp scripts
-memory/*.py
+backend/ai_provider_config.json
+backend/alpaca_config.json
+backend/finnhub_config.json
+backend/market_data_config.json
 
 # IDEs
 .idea/
 .vscode/
 
-# Secrets
-.env
-.env.*
-!.env.example
+# OS
+.DS_Store
+Thumbs.db
 
-# Dependencies
-node_modules/
-frontend/node_modules/
-
-# Python
-__pycache__/
-*.pyc
-.venv/
-venv/
-
-# Logs
-*.log
-backend/*.log
-
-# Build outputs
-build/
-dist/
-.next/
-
-# Local Claude/OpenClaw settings
+# Claude / AI tooling
 .claude/settings.local.json
+
+# Memory / temp scripts
+memory/*.py
