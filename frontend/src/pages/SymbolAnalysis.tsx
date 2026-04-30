@@ -18,6 +18,8 @@ import marketDataService, {
 } from '../services/marketDataService';
 import DataSourceBadge from '../components/DataSourceBadge';
 
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '/api';
+
 const { TabPane } = Tabs;
 
 interface BacktestHistoryItem {
@@ -887,7 +889,7 @@ const SymbolAnalysis: React.FC = () => {
       console.log(`[Finnhub] 尝试获取 ${symbol} 的收盘价`);
       
       // 调用后端API获取Finnhub数据 - 使用实际存在的接口 /api/market/stock/<symbol>
-      const response = await fetch(`/api/market/stock/${symbol}`);
+      const response = await fetch(`${API_BASE_URL}/market/stock/${symbol}`);
       if (!response.ok) {
         console.error(`[Finnhub] API请求失败: ${response.status}`);
         return null;

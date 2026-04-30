@@ -153,8 +153,7 @@ class AlpacaPaperBrokerService implements IBrokerService {
   
   constructor() {
     // 使用后端代理接口，不再直接调用 Alpaca API
-    const apiUrl = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
-    this.baseUrl = apiUrl;
+    this.baseUrl = process.env.REACT_APP_API_BASE_URL || '/api';
   }
   
   getMode(): BrokerMode {

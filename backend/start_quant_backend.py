@@ -250,6 +250,61 @@ except ImportError as e:
 
 
 
+# ==================== NVIDIA NIM Rate Limiter ====================
+
+import threading as _threading
+import time as _nvidia_time
+
+class _NvidiaRateLimiter:
+    """Rate limiter for NVIDIA NIM free API (40 RPM, min 1500ms interval)."""
+    def __init__(self):
+        self._lock = _threading.Lock()
+        self._last_call_ts = 0.0
+        self._call_timestamps = []
+        self.RPM = 40
+        self.MIN_INTERVAL = 1.5  # seconds
+        self.WINDOW = 60.0       # seconds
+
+    def wait_if_needed(self):
+        with self._lock:
+            now = _nvidia_time.time()
+            # Purge timestamps older than 1 minute
+            self._call_timestamps = [t for t in self._call_timestamps if now - t < self.WINDOW]
+            # Enforce min interval
+            elapsed = now - self._last_call_ts
+            if elapsed < self.MIN_INTERVAL:
+                _nvidia_time.sleep(self.MIN_INTERVAL - elapsed)
+            # Enforce RPM limit
+            if len(self._call_timestamps) >= self.RPM:
+                wait_time = self.WINDOW - (_nvidia_time.time() - self._call_timestamps[0]) + 0.1
+                if wait_time > 0:
+                    _nvidia_time.sleep(wait_time)
+            ts = _nvidia_time.time()
+            self._call_timestamps.append(ts)
+            self._last_call_ts = ts
+
+_nvidia_limiter = _NvidiaRateLimiter()
+
+def _is_nvidia_provider():
+    p = ai_provider_config_state.get('provider', '').upper()
+    return 'NVIDIA' in p
+
+def ai_chat_request(url, headers=None, json_data=None, timeout=30):
+    """Post to /chat/completions. Applies NVIDIA rate limiting when provider is NVIDIA NIM."""
+    if _is_nvidia_provider():
+        _nvidia_limiter.wait_if_needed()
+        for attempt in range(3):
+            resp = requests.post(url, headers=headers, json=json_data, timeout=timeout)
+            if resp.status_code != 429:
+                return resp
+            backoff = 2 ** (attempt + 1)  # 2s, 4s, 8s
+            print(f'[NVIDIA NIM] 429 rate limited, backoff {backoff}s (attempt {attempt+1}/3)')
+            _nvidia_time.sleep(backoff)
+        print('[NVIDIA NIM] Rate limit exceeded after 3 retries')
+        return resp
+    else:
+        return requests.post(url, headers=headers, json=json_data, timeout=timeout)
+
 # ==================== AI 接口 ====================
 
 
@@ -326,15 +381,15 @@ load_ai_config_from_file()
 
 alpaca_config_state = {
 
-    'paper_api_key': 'PKVJJSDBAWINHJPNQIQY4INFAH',  # Paper trading key
+    'paper_api_key': '',  # Loaded from alpaca_config.json or env
 
-    'paper_api_secret': '4z1fRWXVy3rJsFNcPdHhAnxYayj25FB175P1ELhCXy7y',  # Paper trading secret
+    'paper_api_secret': '',  # Loaded from alpaca_config.json or env
 
     'live_api_key': ALPACA_API_KEY,  # 直接使用从config.py导入的真实交易密钥
 
     'live_api_secret': ALPACA_API_SECRET,  # 直接使用从config.py导入的真实交易密钥
 
-    'environment': 'live'  # 'paper' 或 'live' - 改为 live 环境使用真实交易
+    'environment': 'paper'  # 'paper' 或 'live'
 
 }
 
@@ -532,7 +587,7 @@ def fetch_alpaca_stock_data(symbol):
 
         # 尝试获取最新交易
 
-        trade_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/trades/latest'
+        trade_url = f'{_get_market_data_base_url()}/v2/stocks/{symbol}/trades/latest'
 
         trade_response = requests.get(trade_url, headers=market_headers, timeout=5)
 
@@ -552,7 +607,7 @@ def fetch_alpaca_stock_data(symbol):
 
         # 2. 获取最新报价数据
 
-        quote_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/quotes/latest'
+        quote_url = f'{_get_market_data_base_url()}/v2/stocks/{symbol}/quotes/latest'
 
         quote_response = requests.get(quote_url, headers=market_headers, timeout=5)
 
@@ -582,7 +637,7 @@ def fetch_alpaca_stock_data(symbol):
 
         # 3.1 获取最新bar（用于OHLC）
 
-        bars_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/bars/latest'
+        bars_url = f'{_get_market_data_base_url()}/v2/stocks/{symbol}/bars/latest'
 
         bars_response = requests.get(bars_url, headers=market_headers, timeout=5)
 
@@ -602,7 +657,7 @@ def fetch_alpaca_stock_data(symbol):
 
         # 3.2 获取日线bars（用于previousClose和非交易日回退）
 
-        daily_bars_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/bars'
+        daily_bars_url = f'{_get_market_data_base_url()}/v2/stocks/{symbol}/bars'
 
         daily_params = {
 
@@ -1056,7 +1111,7 @@ def fetch_alpaca_stock_data_snapshot(symbols):
 
     symbols_param = ','.join([s.upper() for s in symbols])
 
-    snapshots_url = f'https://data.alpaca.markets/v2/stocks/snapshots?symbols={symbols_param}'
+    snapshots_url = f'{_get_market_data_base_url()}/v2/stocks/snapshots?symbols={symbols_param}'
 
 
 
@@ -1492,7 +1547,7 @@ def get_52week_high_low(symbol):
 
         # 获取52周日线数据
 
-        url = f'https://data.alpaca.markets/v2/stocks/{symbol}/bars'
+        url = f'{_get_market_data_base_url()}/v2/stocks/{symbol}/bars'
 
 
 
@@ -1746,7 +1801,7 @@ def fetch_alpaca_bars(symbol, timeframe, range_param):
 
 
 
-        base_url = 'https://data.alpaca.markets/v2'
+        base_url = f'{_get_market_data_base_url()}/v2'
 
 
 
@@ -4090,7 +4145,7 @@ def fetch_alpaca_bars_for_backtest(symbol, timeframe, start_date_utc, end_date_u
 
 
 
-        base_url = 'https://data.alpaca.markets/v2'
+        base_url = f'{_get_market_data_base_url()}/v2'
 
 
 
@@ -4755,17 +4810,18 @@ def ai_provider_config():
 
 
 
-            return jsonify({
-
+            resp_data = {
                 'success': True,
-
                 'config': config_to_return,
-
                 'hasUserKey': bool(config_to_return.get('apiKey')),
-
                 'message': 'User must configure API key in AI Configuration page' if not config_to_return.get('apiKey') else 'Configuration loaded'
+            }
 
-            })
+            provider_upper = config_to_return.get('provider', '').upper()
+            if 'NVIDIA' in provider_upper:
+                resp_data['rateLimit'] = {'rpm': _nvidia_limiter.RPM, 'minIntervalMs': int(_nvidia_limiter.MIN_INTERVAL * 1000)}
+
+            return jsonify(resp_data)
 
         else:
 
@@ -4840,18 +4896,19 @@ def ai_provider_test():
 
         api_key = data.get('apiKey', '')
 
+        # 检测掩码密钥
+        if api_key and '****' in api_key:
+            api_key = ''
 
+        # 如果请求中没有有效密钥，从已保存的配置读取
+        if not api_key:
+            api_key = ai_provider_config_state.get('apiKey', '')
 
-        if not api_key or api_key.startswith('sk-') and len(api_key) < 30:
-
+        if not api_key:
             return jsonify({
-
                 'success': False,
-
-                'message': 'API 密钥无效或未提供',
-
+                'message': '未配置 API 密钥，请先在 Settings 保存配置',
                 'valid': False
-
             })
 
 
@@ -4878,23 +4935,33 @@ def ai_provider_test():
 
         try:
 
-            test_response = requests.post(
+            test_response = ai_chat_request(
 
                 f'{base_url}/chat/completions',
 
                 headers=headers,
 
-                json={
+                json_data={
 
                     'model': data.get('model', 'deepseek-chat'),
 
-                    'messages': [{'role': 'user', 'content': 'Hello'}],
+                    'messages': [
 
-                    'max_tokens': 10
+                        {'role': 'system', 'content': 'You are a connection test.'},
+
+                        {'role': 'user', 'content': 'Reply with OK only.'}
+
+                    ],
+
+                    'temperature': 0,
+
+                    'max_tokens': 16,
+
+                    'stream': False
 
                 },
 
-                timeout=10
+                timeout=15
 
             )
 
@@ -4902,27 +4969,35 @@ def ai_provider_test():
 
             if test_response.status_code == 200:
 
-                return jsonify({
+                resp_data = test_response.json()
 
-                    'success': True,
+                content = resp_data.get('choices', [{}])[0].get('message', {}).get('content', '')
 
-                    'message': 'API 连接测试成功',
+                if content:
 
-                    'valid': True
+                    return jsonify({'success': True, 'message': 'API 连接测试成功', 'valid': True})
 
-                })
+                else:
+
+                    return jsonify({'success': False, 'message': 'API 返回空内容', 'valid': False})
 
             else:
 
-                return jsonify({
+                status_messages = {
 
-                    'success': False,
+                    401: 'API 密钥无效或已过期',
 
-                    'message': f'API 测试失败: {test_response.status_code}',
+                    403: 'API 密钥无权限访问该模型或 endpoint',
 
-                    'valid': False
+                    404: '模型不可用或 Base URL 不正确',
 
-                })
+                    429: 'API 请求频率超限，请稍后再试',
+
+                }
+
+                msg = status_messages.get(test_response.status_code, f'API 测试失败，状态码: {test_response.status_code}')
+
+                return jsonify({'success': False, 'message': msg, 'valid': False})
 
         except Exception as e:
 
@@ -4957,6 +5032,15 @@ CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
 ALPACA_CONFIG_FILE = os.path.join(CONFIG_DIR, 'alpaca_config.json')
 FINNHUB_CONFIG_FILE = os.path.join(CONFIG_DIR, 'finnhub_config.json')
 MARKET_DATA_CONFIG_FILE = os.path.join(CONFIG_DIR, 'market_data_config.json')
+
+# Module-level config loaded from saved JSON files at startup
+_MARKET_DATA_BASE_URL = 'https://data.alpaca.markets'
+_MARKET_DATA_FEED = 'iex'
+
+
+def _get_market_data_base_url():
+    """Return saved market data base URL, or default."""
+    return _MARKET_DATA_BASE_URL
 
 
 def _mask_key(key):
@@ -5115,10 +5199,10 @@ def config_market_data_test():
         data_url = cfg.get('data_base_url', 'https://data.alpaca.markets')
         feed = cfg.get('feed', 'iex')
 
-        # Use paper keys for market data (Alpaca data API uses same auth)
+        # Use Alpaca keys for market data auth (paper or live both work)
         alpaca_cfg = _load_json_config(ALPACA_CONFIG_FILE, dict(alpaca_config_state))
-        api_key = alpaca_cfg.get('paper_api_key', alpaca_config_state.get('paper_api_key', ''))
-        api_secret = alpaca_cfg.get('paper_api_secret', alpaca_config_state.get('paper_api_secret', ''))
+        api_key = alpaca_cfg.get('paper_api_key') or alpaca_cfg.get('live_api_key') or alpaca_config_state.get('paper_api_key') or alpaca_config_state.get('live_api_key', '')
+        api_secret = alpaca_cfg.get('paper_api_secret') or alpaca_cfg.get('live_api_secret') or alpaca_config_state.get('paper_api_secret') or alpaca_config_state.get('live_api_secret', '')
 
         if not api_key:
             return jsonify({'success': False, 'message': 'No Alpaca API key configured (needed for market data auth)'})
@@ -5217,6 +5301,14 @@ def _load_all_configs():
         global FINNHUB_API_KEY
         FINNHUB_API_KEY = finnhub_file_cfg['api_key']
         print(f'[Config] Loaded Finnhub config from {FINNHUB_CONFIG_FILE}')
+
+    # Market Data
+    global _MARKET_DATA_BASE_URL, _MARKET_DATA_FEED
+    md_file_cfg = _load_json_config(MARKET_DATA_CONFIG_FILE)
+    if md_file_cfg:
+        _MARKET_DATA_BASE_URL = md_file_cfg.get('data_base_url', 'https://data.alpaca.markets')
+        _MARKET_DATA_FEED = md_file_cfg.get('feed', 'iex')
+        print(f'[Config] Loaded Market Data config: {_MARKET_DATA_BASE_URL}, feed={_MARKET_DATA_FEED}')
 
 
 _load_all_configs()
@@ -7474,7 +7566,7 @@ def ai_chat():
 
 
 
-        if not api_key or api_key.startswith('sk-') and len(api_key) < 30:
+        if not api_key or len(api_key) < 10:
 
             # 没有有效 API 密钥，返回错误
 
@@ -7572,13 +7664,13 @@ def ai_chat():
 
         try:
 
-            response = requests.post(
+            response = ai_chat_request(
 
                 f'{base_url}/chat/completions',
 
                 headers=headers,
 
-                json=payload,
+                json_data=payload,
 
                 timeout=30
 
@@ -7718,7 +7810,7 @@ def ai_trade_preview():
 
 
 
-        if not api_key or api_key.startswith('sk-') and len(api_key) < 30:
+        if not api_key or len(api_key) < 10:
 
             # 没有有效 API 密钥，返回错误
 
@@ -7838,13 +7930,13 @@ def ai_trade_preview():
 
         try:
 
-            response = requests.post(
+            response = ai_chat_request(
 
                 f'{base_url}/chat/completions',
 
                 headers=headers,
 
-                json=payload,
+                json_data=payload,
 
                 timeout=30
 
@@ -8096,7 +8188,7 @@ def ai_trade_analyze_with_context():
 
 
 
-        if not api_key or api_key.startswith('sk-') and len(api_key) < 30:
+        if not api_key or len(api_key) < 10:
 
             # 没有有效 API 密钥，返回明确失败
 
@@ -8184,13 +8276,13 @@ def ai_trade_analyze_with_context():
 
         try:
 
-            response = requests.post(
+            response = ai_chat_request(
 
                 f'{base_url}/chat/completions',
 
                 headers=headers,
 
-                json=payload,
+                json_data=payload,
 
                 timeout=30
 
@@ -10668,13 +10760,13 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
 
 
-        response = requests.post(
+        response = ai_chat_request(
 
             f'{base_url}/chat/completions',
 
             headers=headers,
 
-            json=payload
+            json_data=payload
 
             # 移除timeout，让AI分析可以自由完成，不人为限制时间
 
@@ -12117,7 +12209,7 @@ def debug_alpaca():
 
         }
 
-        test_url = f'https://data.alpaca.markets/v2/stocks/snapshots?symbols={test_symbol}'
+        test_url = f'{_get_market_data_base_url()}/v2/stocks/snapshots?symbols={test_symbol}'
 
 
 
@@ -17899,7 +17991,7 @@ def infer_sector_with_deepseek(symbol, stock_data, news_data, profile_data):
 
 
 
-        if not api_key or api_key.startswith('sk-') and len(api_key) < 30:
+        if not api_key or len(api_key) < 10:
 
             print(f'[Sector Inference] 无有效的DeepSeek API密钥，无法推断 {symbol} 的sector')
 
@@ -18015,13 +18107,13 @@ def infer_sector_with_deepseek(symbol, stock_data, news_data, profile_data):
 
 
 
-        response = requests.post(
+        response = ai_chat_request(
 
             f'{base_url}/chat/completions',
 
             headers=headers,
 
-            json=payload,
+            json_data=payload,
 
             timeout=10
 
@@ -18135,7 +18227,7 @@ def get_alpaca_news_data(symbol):
 
         # Alpaca News API URL
 
-        url = f'https://data.alpaca.markets/v1beta1/news'
+        url = f'{_get_market_data_base_url()}/v1beta1/news'
 
 
 
@@ -19470,7 +19562,7 @@ Return ONLY the JSON. No preamble."""
         if not base_url.startswith('http'):
             base_url = 'https://' + base_url
 
-        resp = requests.post(f'{base_url}/chat/completions', headers=ai_headers, json=ai_payload, timeout=30)
+        resp = ai_chat_request(f'{base_url}/chat/completions', headers=ai_headers, json_data=ai_payload, timeout=30)
 
         if resp.status_code != 200:
             print(f'[FINE SCAN SELECT] AI HTTP {resp.status_code}: {resp.text[:200]}')
@@ -20032,7 +20124,7 @@ def ai_entry_quality():
         latest_quote = {}
 
         try:
-            snap_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/snapshot'
+            snap_url = f'{_get_market_data_base_url()}/v2/stocks/{symbol}/snapshot'
             snap_headers = {
                 'APCA-API-KEY-ID': ALPACA_API_KEY,
                 'APCA-API-SECRET-KEY': ALPACA_API_SECRET
@@ -20062,7 +20154,7 @@ def ai_entry_quality():
         bars = []
 
         try:
-            bars_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/bars'
+            bars_url = f'{_get_market_data_base_url()}/v2/stocks/{symbol}/bars'
             # Calculate date range
             from datetime import datetime as dt_dt, timedelta as dt_td
             bars_end = dt_dt.utcnow()
@@ -20628,7 +20720,7 @@ def ai_fine_scan_advanced():
         current_price = 0
 
         try:
-            snap_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/snapshot'
+            snap_url = f'{_get_market_data_base_url()}/v2/stocks/{symbol}/snapshot'
             snap_resp = requests.get(snap_url, headers=headers, timeout=10)
             print(f'[FINESCAN][{symbol}] snapshot status: {snap_resp.status_code} snap_url: {snap_url}')
             if snap_resp.status_code == 200:
@@ -20670,7 +20762,7 @@ def ai_fine_scan_advanced():
                 today_vol = float(daily_bar.get('v', 0)) if daily_bar else 0
 
                 # Recent 21 bars for avg volume
-                bars_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/bars'
+                bars_url = f'{_get_market_data_base_url()}/v2/stocks/{symbol}/bars'
                 bars_params = {'timeframe': '1Day', 'limit': 21, 'adjustment': 'raw', 'feed': 'sip', 'sort': 'desc'}
                 bars_resp = requests.get(bars_url, headers=headers, params=bars_params, timeout=10)
                 vol_list = []
@@ -20761,7 +20853,7 @@ def ai_fine_scan_advanced():
                 has_partial = False
                 # Try fetching just the daily bar via bars endpoint for volume
                 try:
-                    vol_check_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/bars'
+                    vol_check_url = f'{_get_market_data_base_url()}/v2/stocks/{symbol}/bars'
                     vol_check_resp = requests.get(vol_check_url, headers=headers, params={'timeframe': '1Day', 'limit': 2, 'adjustment': 'raw', 'sort': 'desc'}, timeout=8)
                     if vol_check_resp.status_code == 200:
                         vol_raw = vol_check_resp.json().get('bars', None)
@@ -20831,7 +20923,7 @@ def ai_fine_scan_advanced():
 
         # 7a. Try Alpaca news
         try:
-            alpaca_news_url = 'https://data.alpaca.markets/v1beta1/news'
+            alpaca_news_url = f'{_get_market_data_base_url()}/v1beta1/news'
             now_utc = datetime.utcnow()
             seven_days_ago = (now_utc - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
             news_params = {'symbols': symbol, 'start': seven_days_ago, 'limit': 5, 'sort': 'desc'}
@@ -21077,7 +21169,7 @@ Example: MEDIUM | mixed news, moderate liquidity"""
                     if not base_url.startswith('http'):
                         base_url = 'https://' + base_url
 
-                    ai_resp = requests.post(f'{base_url}/chat/completions', headers=ai_headers, json=ai_payload, timeout=15)
+                    ai_resp = ai_chat_request(f'{base_url}/chat/completions', headers=ai_headers, json_data=ai_payload, timeout=15)
 
                     if ai_resp.status_code == 200:
                         source_status['ai_risk'] = 'ok'
@@ -21663,10 +21755,10 @@ Rules:
         if not base_url.startswith('http'):
             base_url = 'https://' + base_url
         
-        response = requests.post(
+        response = ai_chat_request(
             f'{base_url}/chat/completions',
             headers=headers,
-            json=payload,
+            json_data=payload,
             timeout=30
         )
         
@@ -21860,10 +21952,10 @@ Return ONLY valid JSON (no markdown):
         if not base_url.startswith('http'):
             base_url = 'https://' + base_url
         
-        response = requests.post(
+        response = ai_chat_request(
             f'{base_url}/chat/completions',
             headers=ai_headers,
-            json=ai_payload,
+            json_data=ai_payload,
             timeout=30
         )
         
@@ -22793,7 +22885,7 @@ Return ONLY valid JSON (no markdown, no preamble):
             ai_payload['response_format'] = {'type': 'json_object'}
 
         start_ts = _time.time()
-        resp = _req.post(f'{base_url}/chat/completions', headers=ai_headers, json=ai_payload, timeout=45)
+        resp = ai_chat_request(f'{base_url}/chat/completions', headers=ai_headers, json_data=ai_payload, timeout=45)
         elapsed = round(_time.time() - start_ts, 2)
 
         if resp.status_code != 200:
@@ -23095,7 +23187,7 @@ def ai_entry_plan():
             volumes = []
 
             try:
-                snap_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/snapshot'
+                snap_url = f'{_get_market_data_base_url()}/v2/stocks/{symbol}/snapshot'
                 snap_headers = {
                     'APCA-API-KEY-ID': ALPACA_API_KEY,
                     'APCA-API-SECRET-KEY': ALPACA_API_SECRET
@@ -23119,7 +23211,7 @@ def ai_entry_plan():
                     'sort': 'asc'
                 }
                 bars_resp = req_lib.get(
-                    f'https://data.alpaca.markets/v2/stocks/{symbol}/bars',
+                    f'{_get_market_data_base_url()}/v2/stocks/{symbol}/bars',
                     headers=snap_headers, params=bars_params, timeout=10
                 )
                 if bars_resp.status_code == 200:
