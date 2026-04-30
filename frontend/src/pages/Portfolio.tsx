@@ -6343,70 +6343,118 @@ function renderDVDetailPanel(record: any) {
       <div style={{ marginBottom: 24 }}>
         <Card
           title={
-            <span>
-              <SettingOutlined style={{ marginRight: 8 }} />
-              Trading Account Mode
-            </span>
-          }
-        >
-          <div style={{ fontSize: 13, color: '#8c8c8c', marginBottom: 12 }}>
-            Select which Alpaca account is used for Entry Plan position sizing and risk checks.
-            Switching mode does not place any orders.
-          </div>
-          <Row gutter={[24, 12]} align="top">
-            <Col flex="auto">
-              <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>
+                <SettingOutlined style={{ marginRight: 8 }} />
+                Trading Account Mode
+              </span>
+              <div style={{ display: 'flex', background: '#f0f2f5', padding: 4, borderRadius: 8, gap: 4 }}>
                 <Button
-                  type={tradingAccountMode === 'paper' ? 'primary' : 'default'}
+                  type={tradingAccountMode === 'paper' ? 'primary' : 'text'}
                   onClick={() => handleTradingAccountModeChange('paper')}
-                  style={{ minWidth: 140 }}
+                  style={{
+                    borderRadius: 6,
+                    height: 28,
+                    padding: '0 16px',
+                    fontSize: 13,
+                    fontWeight: tradingAccountMode === 'paper' ? 600 : 400,
+                    boxShadow: tradingAccountMode === 'paper' ? '0 1px 2px rgba(0,0,0,0.05)' : 'none',
+                    color: tradingAccountMode === 'paper' ? '#fff' : '#595959',
+                    background: tradingAccountMode === 'paper' ? undefined : 'transparent',
+                    border: 'none',
+                  }}
                 >
                   Paper Trading
                 </Button>
                 <Button
-                  type={tradingAccountMode === 'real' ? 'primary' : 'default'}
-                  onClick={() => handleTradingAccountModeChange('real')}
-                  style={{ minWidth: 140 }}
+                  type={tradingAccountMode === 'real' ? 'primary' : 'text'}
                   danger={tradingAccountMode === 'real'}
+                  onClick={() => handleTradingAccountModeChange('real')}
+                  style={{
+                    borderRadius: 6,
+                    height: 28,
+                    padding: '0 16px',
+                    fontSize: 13,
+                    fontWeight: tradingAccountMode === 'real' ? 600 : 400,
+                    boxShadow: tradingAccountMode === 'real' ? '0 1px 2px rgba(255,0,0,0.1)' : 'none',
+                    color: tradingAccountMode === 'real' ? '#fff' : '#595959',
+                    background: tradingAccountMode === 'real' ? undefined : 'transparent',
+                    border: 'none',
+                  }}
                 >
                   Real Trading
                 </Button>
               </div>
-            </Col>
-            <Col flex="360px">
-              <div style={{ background: '#fafafa', borderRadius: 8, padding: '10px 14px', fontSize: 12, lineHeight: '1.6', border: '1px solid #f0f0f0' }}>
-                <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 13 }}>
-                  {tradingAccountData?.mode === 'paper' ? '📄' : tradingAccountData?.mode === 'real' ? '🔴' : '⚪'} {' '}
-                  {tradingAccountData?.mode === 'paper' ? 'Paper Account' : tradingAccountData?.mode === 'real' ? 'Real Account' : 'Account'}
-                </div>
-                {tradingAccountLoading ? (
-                  <div style={{ color: '#8c8c8c' }}>Loading...</div>
-                ) : tradingAccountData?.success ? (
-                  <div>
-                    <div><span style={{ color: '#8c8c8c' }}>Status: </span><span style={{ fontWeight: 600, color: tradingAccountData.status === 'ACTIVE' ? '#52c41a' : '#faad14' }}>{tradingAccountData.status}</span></div>
-                    <div><span style={{ color: '#8c8c8c' }}>Cash: </span><span style={{ fontWeight: 600 }}>${(tradingAccountData.cash ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
-                    <div><span style={{ color: '#8c8c8c' }}>Buying Power: </span><span style={{ fontWeight: 600 }}>${(tradingAccountData.buyingPower ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
-                    <div><span style={{ color: '#8c8c8c' }}>Portfolio: </span><span style={{ fontWeight: 600 }}>${(tradingAccountData.portfolioValue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
+            </div>
+          }
+        >
+          <div style={{ fontSize: 13, color: '#8c8c8c', marginBottom: 16 }}>
+            Select which Alpaca account is used for Entry Plan position sizing and risk checks. Switching mode does not place any orders.
+          </div>
+          
+          <div style={{ background: '#fafafa', borderRadius: 8, padding: '12px 16px', border: '1px solid #f0f0f0' }}>
+            {tradingAccountLoading ? (
+              <div style={{ color: '#8c8c8c', fontSize: 13 }}>Loading account data...</div>
+            ) : tradingAccountData?.success ? (
+              <Row gutter={[24, 12]} align="middle">
+                <Col>
+                  <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 2 }}>Account Type</div>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>
+                    {tradingAccountData?.mode === 'paper' ? '📄 Paper' : tradingAccountData?.mode === 'real' ? '🔴 Real' : '⚪ Unknown'}
                   </div>
+                </Col>
+                <Col>
+                  <Divider type="vertical" style={{ height: 32, margin: 0 }} />
+                </Col>
+                <Col>
+                  <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 2 }}>Status</div>
+                  <div style={{ fontWeight: 600, fontSize: 14, color: tradingAccountData.status === 'ACTIVE' ? '#52c41a' : '#faad14' }}>
+                    {tradingAccountData.status || 'N/A'}
+                  </div>
+                </Col>
+                <Col>
+                  <Divider type="vertical" style={{ height: 32, margin: 0 }} />
+                </Col>
+                <Col>
+                  <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 2 }}>Cash</div>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>
+                    ${(tradingAccountData.cash ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </div>
+                </Col>
+                <Col>
+                  <Divider type="vertical" style={{ height: 32, margin: 0 }} />
+                </Col>
+                <Col>
+                  <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 2 }}>Buying Power</div>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>
+                    ${(tradingAccountData.buyingPower ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </div>
+                </Col>
+                <Col>
+                  <Divider type="vertical" style={{ height: 32, margin: 0 }} />
+                </Col>
+                <Col>
+                  <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 2 }}>Portfolio Value</div>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>
+                    ${(tradingAccountData.portfolioValue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </div>
+                </Col>
+              </Row>
+            ) : (
+              <div style={{ color: '#8c8c8c', fontSize: 13 }}>
+                {tradingAccountData?.error ? (
+                  <><ExclamationCircleOutlined style={{ marginRight: 4, color: '#faad14' }} />{tradingAccountData.error}</>
                 ) : (
-                  <div style={{ color: '#8c8c8c' }}>
-                    {tradingAccountData?.error ? (
-                      <><ExclamationCircleOutlined style={{ marginRight: 4, color: '#faad14' }} />{tradingAccountData.error}</>
-                    ) : (
-                      'Account data unavailable'
-                    )}
-                    <div style={{ fontSize: 11, marginTop: 4 }}>Entry Plan will use estimated defaults</div>
-                  </div>
+                  'Account data unavailable'
                 )}
-                <div style={{ fontSize: 11, color: '#bbb', borderTop: '1px solid #f0f0f0', marginTop: 8, paddingTop: 6 }}>
-                  Used by: Entry Plan position sizing and risk gate
-                </div>
+                <span style={{ marginLeft: 8, fontSize: 12 }}>— Entry Plan will use estimated defaults</span>
               </div>
-            </Col>
-          </Row>
+            )}
+          </div>
+
           {tradingAccountMode === 'real' && (
             <Alert
-              style={{ marginTop: 10 }}
+              style={{ marginTop: 16 }}
               type="warning"
               showIcon
               message="Real trading account selected"

@@ -1,11 +1,17 @@
-# AlphaLab v1.9.6
+# AlphaLab v1.9.7
 
-![Version](https://img.shields.io/badge/version-1.9.6-blue)
+![Version](https://img.shields.io/badge/version-1.9.7-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
 ![React](https://img.shields.io/badge/react-18.2.0-blue)
 
 AI-powered quantitative trading and stock analysis platform with paper/real trading support. Built with React/TypeScript frontend and Python/Flask backend.
+
+## Overview
+
+Alpha Lab is an AI-assisted quantitative trading and market analysis platform. It helps users scan the market, analyze stocks, run backtests, optimize strategies, evaluate risk, generate AI-supported trade plans, and prepare paper or real trading execution workflows.
+
+The platform is designed for traders, students, and developers who want to combine market data, strategy research, AI reasoning, and execution planning in one workflow.
 
 ## Features
 
@@ -34,6 +40,18 @@ The AI Agent follows a multi-stage workflow:
 5. **Entry Plan** - Generate entry plans with risk gates and position sizing
 6. **AI Watchlist** - Add validated stocks to AI-managed watchlist
 7. **Paper / Real Trading Mode** - Execute trades in paper or live mode
+
+## Showcase
+
+> Screenshots will be added after the next UI capture.
+
+<!-- 
+![Dashboard](docs/showcase/dashboard.png)
+![Market Scanner](docs/showcase/market-scanner.png)
+![AI Agent](docs/showcase/ai-agent.png)
+![Backtest](docs/showcase/backtest.png)
+![Settings](docs/showcase/settings.png)
+-->
 
 ## Configuration
 
@@ -88,6 +106,14 @@ npm run build
 - **Entry Plan execution should respect risk gate.** Do not bypass risk checks.
 - **No mock data should be used for production analysis.** Ensure all data comes from live APIs.
 
+## Tech Stack
+
+**Frontend:** React 18, TypeScript, Ant Design, Recharts, Lightweight Charts, Redux Toolkit, React Router
+
+**Backend:** Flask, Flask-CORS, Requests, Pandas, NumPy, yfinance, Pytz
+
+**Data Sources:** Alpaca Markets, Finnhub, Polygon.io
+
 ## Project Structure
 
 ```
@@ -116,14 +142,23 @@ Alpha_lab/
 └── .env.example                 # Environment variable template
 ```
 
-## Technology Stack
+## Roadmap
 
-**Frontend:** React 18, TypeScript, Ant Design, Recharts, Lightweight Charts, Redux Toolkit, React Router
-
-**Backend:** Flask, Flask-CORS, Requests, Pandas, NumPy, yfinance, Pytz
-
-**Data Sources:** Alpaca Markets, Finnhub, Polygon.io
+- Improve AI Agent reasoning chain
+- Add more technical indicators
+- Enhance portfolio risk analytics
+- Add broker integration options
 
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
+
+---
+
+## 中文说明
+
+这个项目是一个 AI 辅助量化交易平台，用于市场扫描、股票分析、回测、策略优化、风险评估、AI 推荐、Entry Plan、Watchlist 和交易执行准备。
+
+GitHub 仓库不会上传真实 API Key。真实 API Key 应该只放在本地 `.env` 文件中。
+
+真实交易前应该先使用 paper trading 进行测试，并且设置风险控制。
