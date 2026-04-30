@@ -266,7 +266,7 @@ ai_provider_config_state = {
 import json
 import os
 
-AI_CONFIG_FILE = 'ai_provider_config.json'
+AI_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ai_provider_config.json')
 
 def save_ai_config_to_file():
     """保存AI配置到文件"""
@@ -18853,70 +18853,67 @@ def ai_analyze_single():
 
 
 
+                # AI source tracking
+                analysis_source = ai_analysis.get('analysisSource', 'rule_based')
+                ai_called = analysis_source == 'deepseek'
+                ai_source_label = ai_config.get('provider', 'DeepSeek') if ai_called else 'Local Rules'
+                ai_model_name = ai_config.get('model', 'deepseek-chat') if ai_called else None
+
                 response_data = {
 
                     'success': True,
 
                     'symbol': symbol_upper,
 
-                    'trend': ai_analysis.get('trendLabel', ai_analysis.get('trend', 'Neutral')),  # 优先使用trendLabel，否则使用trend
+                    'trendLabel': ai_analysis.get('trendLabel', ai_analysis.get('trend', 'Neutral')),
+                    'trend': ai_analysis.get('trendLabel', ai_analysis.get('trend', 'Neutral')),  # compat
 
-                    'overallScore': ai_analysis.get('overallScore', ai_analysis.get('trendScore', 50)),  # 优先使用overallScore，否则使用trendScore
+                    'overallScore': ai_analysis.get('overallScore', ai_analysis.get('trendScore', 50)),
+                    'trendScore': ai_analysis.get('trendScore', ai_analysis.get('overallScore', 50)),
 
-                    'confidence': ai_analysis.get('confidence', ai_analysis.get('trendConfidence', 0.5)),  # 优先使用confidence，否则使用trendConfidence
-
-                    'trendScore': ai_analysis.get('trendScore', ai_analysis.get('overallScore', 50)),  # 优先使用trendScore，否则使用overallScore
+                    'confidence': ai_analysis.get('confidence', ai_analysis.get('trendConfidence', 0.5)),
+                    'trendConfidence': ai_analysis.get('trendConfidence', ai_analysis.get('confidence', 0.5)),
 
                     'momentumScore': ai_analysis.get('momentumScore', 50),
-
                     'volumeScore': ai_analysis.get('volumeScore', 50),
-
                     'volatilityScore': ai_analysis.get('volatilityScore', 50),
-
                     'structureScore': ai_analysis.get('structureScore', 50),
-
                     'newsScore': ai_analysis.get('newsScore', 50),
 
-                    'volumeStatus': ai_analysis.get('volumeStatus', None),  # AI判断的成交量状态
-
-                    'conciseReasoning': ai_analysis.get('conciseReasoning', ai_analysis.get('scannerReason', 'AI analysis completed')),  # 简洁推理
-
-                    'detailedReasoning': ai_analysis.get('detailedReasoning', ai_analysis.get('aiReasoning', ai_analysis.get('scannerReason', 'Detailed AI analysis'))),  # 详细推理
-
+                    'volumeStatus': ai_analysis.get('volumeStatus', None),
+                    'conciseReasoning': ai_analysis.get('conciseReasoning', ai_analysis.get('scannerReason', 'AI analysis completed')),
+                    'detailedReasoning': ai_analysis.get('detailedReasoning', ai_analysis.get('aiReasoning', ai_analysis.get('scannerReason', 'Detailed AI analysis'))),
                     'scannerReason': ai_analysis.get('scannerReason', 'AI analysis based on market data'),
+                    'aiReasoning': ai_analysis.get('aiReasoning', ai_analysis.get('scannerReason', 'AI analysis completed')),
 
-                    'aiReasoning': ai_analysis.get('aiReasoning', ai_analysis.get('scannerReason', 'AI analysis completed')),  # 优先使用aiReasoning，否则使用scannerReason
+                    # AI source tracking fields
+                    'analysisSource': analysis_source,
+                    'aiCalled': ai_called,
+                    'aiSource': ai_source_label,
+                    'aiModel': ai_model_name,
+                    'aiError': None if ai_called else 'No AI key configured or AI call failed',
+                    'aiAnalysis': ai_source_label,
+                    'provider': ai_config.get('provider', 'DeepSeek'),
 
                     'newsSentiment': news_data.get('sentiment') if news_data else None,
+                    'eventRisk': ai_analysis.get('eventRisk', news_data.get('eventRisk') if news_data else 'Medium'),
 
-                    'eventRisk': ai_analysis.get('eventRisk', news_data.get('eventRisk') if news_data else 'Medium'),  # 优先使用AI的eventRisk
-
-                    # 修复：将topNews从字符串改为对象，以匹配前端期望的格式
                     'topNews': format_top_news_for_frontend(news_data) if news_data else None,
-
-                    'headlines': news_data.get('headlines', []) if news_data else [],  # 新增：新闻头条列表
+                    'headlines': news_data.get('headlines', []) if news_data else [],
 
                     'companyName': company_info.get('name') if company_info else symbol_upper,
-
                     'sector': company_info.get('finnhubIndustry') if company_info else 'Unknown',
 
                     'provenance': {
-
                         'marketData': 'alpaca' if market_data and market_data.get('dataSource') == 'Alpaca' else 'finnhub' if market_data else 'none',
-
                         'companyInfo': 'finnhub' if company_info else 'none',
-
                         'news': 'finnhub' if news_data else 'none',
-
-                        'aiAnalysis': 'Local Fallback' if ai_analysis.get('analysisSource') == 'rule_based' else ai_config.get('provider', 'DeepSeek')  # 本地分析标记为Local Fallback
-
+                        'aiAnalysis': ai_source_label
                     },
 
                     'timestamp': int(time.time()),
-
                     'responseTime': round(time.time() - start_time, 3),
-
-                    'message': f'Analysis completed using {ai_config.get("provider", "DeepSeek")} AI'
+                    'message': f'Analysis completed using {ai_source_label} AI' if ai_called else 'Analysis completed using Local Rules (no AI key configured)'
 
                 }
 
@@ -18996,7 +18993,8 @@ def ai_analyze_single():
                     response_data = {
                         'success': True,
                         'symbol': symbol_upper,
-                        'trend': trend_analysis.get('trend', 'Neutral'),
+                        'trendLabel': trend_analysis.get('trendLabel', trend_analysis.get('trend', 'Neutral')),
+                        'trend': trend_analysis.get('trendLabel', trend_analysis.get('trend', 'Neutral')),
                         'overallScore': trend_analysis.get('overallScore', 50),
                         'confidence': trend_analysis.get('confidence', 0.5),
                         'trendScore': trend_analysis.get('trendScore', 50),
@@ -19008,37 +19006,33 @@ def ai_analyze_single():
                         'scannerReason': trend_analysis.get('scannerReason', 'Local analysis after AI failure'),
                         'aiReasoning': trend_analysis.get('aiReasoning', f'AI analysis failed: {error_msg}'),
 
-                    'newsSentiment': news_data.get('sentiment') if news_data else None,
+                        # AI source tracking fields
+                        'analysisSource': 'rule_based',
+                        'aiCalled': False,
+                        'aiSource': 'Local Rules',
+                        'aiModel': None,
+                        'aiError': error_msg or 'AI analysis failed, local rules used',
+                        'aiAnalysis': 'Local Rules',
+                        'provider': ai_config.get('provider', 'DeepSeek'),
 
-                    'eventRisk': news_data.get('eventRisk') if news_data else None,
+                        'newsSentiment': news_data.get('sentiment') if news_data else None,
+                        'eventRisk': news_data.get('eventRisk') if news_data else None,
+                        'topNews': news_data.get('topCatalyst') if news_data else None,
+                        'headlines': news_data.get('headlines', []) if news_data else [],
+                        'companyName': company_info.get('name') if company_info else symbol_upper,
+                        'sector': company_info.get('finnhubIndustry') if company_info else 'Unknown',
 
-                    'topNews': news_data.get('topCatalyst') if news_data else None,
+                        'provenance': {
+                            'marketData': 'alpaca' if market_data and 'alpaca' in str(market_data).lower() else 'finnhub' if market_data else 'none',
+                            'companyInfo': 'finnhub' if company_info else 'none',
+                            'news': 'finnhub' if news_data else 'none',
+                            'aiAnalysis': 'Local Rules (fallback)'
+                        },
 
-                    'headlines': news_data.get('headlines', []) if news_data else [],  # 新增：新闻头条列表
-
-                    'companyName': company_info.get('name') if company_info else symbol_upper,
-
-                    'sector': company_info.get('finnhubIndustry') if company_info else 'Unknown',
-
-                    'provenance': {
-
-                        'marketData': 'alpaca' if market_data and 'alpaca' in str(market_data).lower() else 'finnhub' if market_data else 'none',
-
-                        'companyInfo': 'finnhub' if company_info else 'none',
-
-                        'news': 'finnhub' if news_data else 'none',
-
-                        'aiAnalysis': 'local_rules_fallback'
-
-                    },
-
-                    'timestamp': int(time.time()),
-
-                    'responseTime': round(time.time() - start_time, 3),
-
-                    'message': 'Analysis completed using local rules (AI analysis failed)'
-
-                }
+                        'timestamp': int(time.time()),
+                        'responseTime': round(time.time() - start_time, 3),
+                        'message': 'Analysis completed using local rules (AI analysis failed)'
+                    }
 
 
 
