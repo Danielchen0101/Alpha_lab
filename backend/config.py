@@ -5,7 +5,7 @@ API 配置 - 市场数据与交易执行分离架构
 import os
 
 # ========== Finnhub API 配置 (市场数据) ==========
-FINNHUB_API_KEY = "d7apg21r01qtpbh9ck9gd7apg21r01qtpbh9cka0"
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
 FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
 
 # ========== Twelve Data API 配置 (历史数据) - 已弃用 ==========
@@ -13,8 +13,8 @@ TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
 TWELVEDATA_BASE_URL = "https://api.twelvedata.com"
 
 # ========== Alpaca API 配置 (交易执行) ==========
-ALPACA_API_KEY = "AKOQQPZNXXOAYAZKDWF7LV4E3D"
-ALPACA_API_SECRET = "93oAgKVTjHjkyzA1fZpHeW4wUkwaYZvzEohcMe5dgXMP"
+ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
+ALPACA_API_SECRET = os.getenv("ALPACA_API_SECRET", "")
 ALPACA_BASE_URL = "https://api.alpaca.markets"  # 真实交易API endpoint
 
 # Alpaca API 端点

@@ -128,7 +128,13 @@ class AlpacaAPIError(Exception):
 
 app = Flask(__name__)
 
-CORS(app)
+allowed_origins = os.getenv("FRONTEND_ORIGIN", "*")
+
+CORS(
+    app,
+    resources={r"/api/*": {"origins": allowed_origins}},
+    supports_credentials=True
+)
 
 
 
@@ -182,7 +188,7 @@ except ImportError as e:
 
     # 设置默认值
 
-    FINNHUB_API_KEY = "d6qsdcpr01qgdhqc82hgd6qsdcpr01qgdhqc82i0"
+    FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
 
     FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
 
@@ -4728,6 +4734,11 @@ def get_mock_response(message):
 
     return f"收到: {msg}\n（当前为模拟回复，配置有效API密钥后可获得真实AI回答）"
 
+
+
+@app.route("/api/health", methods=["GET"])
+def health_check():
+    return {"status": "ok"}
 
 
 @app.route('/api/ai/provider/config', methods=['GET', 'POST'])
