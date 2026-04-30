@@ -40,7 +40,7 @@ function getErrorDescription(error: any): string {
 
 // Create axios instance with improved error handling
 const request = axios.create({
-  baseURL: process.env.REACT_APP_API_BASE_URL || 'http://localhost:8889',
+  baseURL: process.env.REACT_APP_API_BASE_URL || '/api',
   timeout: 15000,
   headers: {
     'Content-Type': 'application/json',

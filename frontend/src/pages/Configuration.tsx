@@ -11,7 +11,8 @@ import axios from 'axios';
 const { Title, Text } = Typography;
 const { Option } = Select;
 
-const api = axios.create({ baseURL: '/api', timeout: 15000 });
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '/api';
+const api = axios.create({ baseURL: API_BASE_URL, timeout: 15000 });
 
 // --- Masking helper ---
 const maskKey = (key: string): string => {
@@ -332,35 +333,68 @@ const MarketDataSection: React.FC = () => {
 // =====================================================================
 // Section D: AI Provider
 // =====================================================================
+const AI_PROVIDER_DEFAULTS: Record<string, { baseUrl: string; model: string }> = {
+  DeepSeek: { baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
+  OpenAI: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4' },
+  Claude: { baseUrl: 'https://api.anthropic.com/v1', model: 'claude-3-sonnet-20240229' },
+  'NVIDIA NIM': { baseUrl: 'https://integrate.api.nvidia.com/v1', model: 'deepseek-ai/deepseek-r1' },
+};
+
 const AIProviderSection: React.FC = () => {
   const [form] = Form.useForm();
   const [testing, setTesting] = useState(false);
   const [status, setStatus] = useState('not_tested');
   const [showKey, setShowKey] = useState(false);
   const [hasSaved, setHasSaved] = useState(false);
+  const [customModel, setCustomModel] = useState(false);
+  const [rateLimitInfo, setRateLimitInfo] = useState<{ rpm: number; minIntervalMs: number } | null>(null);
 
   useEffect(() => {
     api.get('/ai/provider/config').then(res => {
       if (res.data?.success) {
         const cfg = res.data.config || {};
+        const model = cfg.model || 'deepseek-chat';
+        const isKnown = KNOWN_MODELS.includes(model);
+        setCustomModel(!isKnown);
         form.setFieldsValue({
           provider: cfg.provider || 'DeepSeek',
-          model: cfg.model || 'deepseek-chat',
+          model: isKnown ? model : '__custom__',
+          customModel: isKnown ? '' : model,
           apiKey: cfg.apiKey ? maskKey(cfg.apiKey) : '',
           baseUrl: cfg.baseUrl || cfg.baseURL || 'https://api.deepseek.com',
         });
         setHasSaved(!!cfg.apiKey);
         if (cfg.apiKey) setStatus('not_tested');
+        setRateLimitInfo(res.data.rateLimit || null);
       }
     }).catch(() => {});
   }, [form]);
 
+  const handleProviderChange = (value: string) => {
+    const defaults = AI_PROVIDER_DEFAULTS[value];
+    if (defaults) {
+      form.setFieldsValue({ baseUrl: defaults.baseUrl, model: defaults.model });
+      setCustomModel(false);
+    }
+  };
+
+  const handleModelChange = (value: string) => {
+    setCustomModel(value === '__custom__');
+  };
+
+  const KNOWN_MODELS = [
+    'deepseek-chat', 'deepseek-coder', 'deepseek-ai/deepseek-r1',
+    'meta/llama-3.1-70b-instruct', 'gpt-4', 'gpt-3.5-turbo',
+    'claude-3-opus', 'claude-3-sonnet',
+  ];
+
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
+      const modelValue = customModel ? values.customModel : values.model;
       const payload: any = {
         provider: values.provider,
-        model: values.model,
+        model: modelValue,
         baseUrl: values.baseUrl,
       };
       if (values.apiKey && !values.apiKey.includes('****')) {
@@ -373,7 +407,14 @@ const AIProviderSection: React.FC = () => {
         const reload = await api.get('/ai/provider/config');
         if (reload.data?.success) {
           const cfg = reload.data.config || {};
-          form.setFieldsValue({ apiKey: cfg.apiKey ? maskKey(cfg.apiKey) : '' });
+          const model = cfg.model || modelValue;
+          const isKnown = KNOWN_MODELS.includes(model);
+          setCustomModel(!isKnown);
+          form.setFieldsValue({
+            apiKey: cfg.apiKey ? maskKey(cfg.apiKey) : '',
+            model: isKnown ? model : '__custom__',
+            customModel: isKnown ? '' : model,
+          });
         }
       } else {
         message.error(res.data?.message || 'Save failed');
@@ -388,10 +429,10 @@ const AIProviderSection: React.FC = () => {
     setTesting(true);
     try {
       const values = form.getFieldsValue();
+      const modelValue = customModel ? values.customModel : values.model;
       const res = await api.post('/ai/provider/test', {
-        apiKey: values.apiKey?.includes('****') ? undefined : values.apiKey,
         baseUrl: values.baseUrl,
-        model: values.model,
+        model: modelValue,
         provider: values.provider,
       });
       if (res.data?.success) {
@@ -416,24 +457,26 @@ const AIProviderSection: React.FC = () => {
         <Row gutter={16}>
           <Col span={6}>
             <Form.Item name="provider" label="Provider">
-              <Select>
+              <Select onChange={handleProviderChange}>
                 <Option value="DeepSeek">DeepSeek</Option>
                 <Option value="OpenAI">OpenAI</Option>
                 <Option value="Claude">Claude</Option>
+                <Option value="NVIDIA NIM">NVIDIA NIM</Option>
               </Select>
             </Form.Item>
           </Col>
           <Col span={6}>
             <Form.Item name="model" label="Model">
-              <Select>
-                <Option value="deepseek-chat">deepseek-chat</Option>
-                <Option value="deepseek-coder">deepseek-coder</Option>
-                <Option value="gpt-4">GPT-4</Option>
-                <Option value="gpt-3.5-turbo">GPT-3.5 Turbo</Option>
-                <Option value="claude-3-opus">Claude 3 Opus</Option>
-                <Option value="claude-3-sonnet">Claude 3 Sonnet</Option>
+              <Select showSearch onChange={handleModelChange}>
+                {KNOWN_MODELS.map(m => <Option key={m} value={m}>{m}</Option>)}
+                <Option value="__custom__">Other (custom model)...</Option>
               </Select>
             </Form.Item>
+            {customModel && (
+              <Form.Item name="customModel" label="Custom Model Name" rules={[{ required: true, message: 'Enter model name' }]}>
+                <Input placeholder="e.g. deepseek-ai/deepseek-r1" onChange={(e) => form.setFieldsValue({ model: e.target.value })} />
+              </Form.Item>
+            )}
           </Col>
           <Col span={6}>
             <Form.Item name="apiKey" label="API Key">
@@ -454,6 +497,11 @@ const AIProviderSection: React.FC = () => {
           <Button type="primary" onClick={handleSave} icon={<SaveOutlined />}>Save AI Settings</Button>
         </div>
       </Form>
+      {rateLimitInfo && (
+        <div style={{ marginTop: 8 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>Rate limit: {rateLimitInfo.rpm} RPM / min interval {rateLimitInfo.minIntervalMs}ms</Text>
+        </div>
+      )}
     </Card>
   );
 };

@@ -1163,7 +1163,7 @@ Please respond in this exact JSON format:
         const config = response.config;
 
         // Provider合法化：只允许合法的provider
-        const allowedProviders = ['DeepSeek', 'OpenAI', 'Claude'] as const;
+        const allowedProviders = ['DeepSeek', 'OpenAI', 'Claude', 'NVIDIA NIM'] as const;
         type AIProvider = typeof allowedProviders[number];
 
         let provider = config.provider || 'DeepSeek';
