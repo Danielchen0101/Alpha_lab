@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Card, Typography, Space, Statistic, Row, Col,
   Button, Divider, Table, Tag, Select, Form, Input, InputNumber,
-  message, Progress, Empty, Badge, Alert, Tooltip, Spin, Modal
+  message, Progress, Empty, Badge, Alert, Tooltip, Spin, Modal, Pagination
 } from 'antd';
 import {
   LineChartOutlined, BarChartOutlined,
@@ -10,7 +10,8 @@ import {
   ThunderboltOutlined, CheckCircleOutlined, ClockCircleOutlined,
   RobotOutlined, CloseCircleOutlined, ExclamationCircleOutlined, SyncOutlined, LoadingOutlined,
   ArrowUpOutlined, ArrowDownOutlined, ArrowRightOutlined, MinusOutlined,
-  SortDescendingOutlined, SortAscendingOutlined
+  SortDescendingOutlined, SortAscendingOutlined, InfoCircleOutlined,
+  CaretDownOutlined, CaretRightOutlined
 } from '@ant-design/icons';
 import aiTradingService, { AIProviderConfig } from '../services/aiTradingService';
 import { backtraderAPI, marketAPI, entryQualityAPI, fineScanAdvancedAPI, deeperValidationAPI, entryPlanAPI, fineScanExplainAPI, fineScanDecisionAPI, tradingAccountAPI, aiAgentWatchlistAPI } from '../services/api';
@@ -31,6 +32,103 @@ const DetailTag: React.FC<{ label: string; value: string; color?: string }> = ({
     <span style={{ fontWeight: 500, color: color || '#333' }}>{value}</span>
   </div>
 );
+
+// Collapsible Stage Section Component
+interface CollapsibleStageSectionProps {
+  title: string;
+  icon: React.ReactNode;
+  statusText?: string;
+  statusColor?: string;
+  progressValue?: number | null;  // 0-100, null = no progress bar
+  progressText?: string;
+  summaryChips?: Array<{ label: string; value: string | number; color?: string }>;
+  actionButton?: React.ReactNode;
+  isRunning?: boolean;
+  expanded: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}
+
+const CollapsibleStageSection: React.FC<CollapsibleStageSectionProps> = ({
+  title, icon, statusText, statusColor, progressValue, progressText,
+  summaryChips, actionButton, isRunning, expanded, onToggle, children
+}) => {
+  const statusTagColor = statusColor || (isRunning ? 'processing' : 'default');
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div
+        onClick={onToggle}
+        style={{
+          display: 'flex', alignItems: 'center', height: expanded ? 56 : 52,
+          padding: '0 16px', background: isRunning ? '#f0f7ff' : '#fafafa',
+          border: `1px solid ${isRunning ? '#91caff' : '#e8e8e8'}`,
+          borderRadius: expanded ? '6px 6px 0 0' : 6,
+          cursor: 'pointer', transition: 'all 0.2s',
+          userSelect: 'none',
+        }}
+      >
+        {/* Expand icon */}
+        <span style={{ marginRight: 8, fontSize: 12, color: '#888', flexShrink: 0 }}>
+          {expanded ? <CaretDownOutlined /> : <CaretRightOutlined />}
+        </span>
+
+        {/* Title + Icon */}
+        <span style={{ fontSize: 15, fontWeight: 600, color: '#1a1a1a', marginRight: 12, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+          {icon}
+          {title}
+        </span>
+
+        {/* Status badge */}
+        {statusText && (
+          <Tag color={statusTagColor} style={{ margin: 0, fontSize: 11, lineHeight: '18px', padding: '0 6px', marginRight: 10 }}>
+            {statusText}
+          </Tag>
+        )}
+
+        {/* Progress bar (compact 6px) */}
+        {progressValue !== null && progressValue !== undefined && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginRight: 10, minWidth: 120, flexShrink: 0 }}>
+            <div style={{ flex: 1, height: 6, background: '#e8e8e8', borderRadius: 3, overflow: 'hidden' }}>
+              <div style={{ width: `${Math.min(100, Math.max(0, progressValue))}%`, height: '100%', background: isRunning ? '#1890ff' : '#52c41a', borderRadius: 3, transition: 'width 0.3s' }} />
+            </div>
+            <span style={{ fontSize: 11, color: '#888', minWidth: 28, textAlign: 'right' }}>{Math.round(progressValue)}%</span>
+          </div>
+        )}
+        {progressText && (progressValue === null || progressValue === undefined) && (
+          <span style={{ fontSize: 11, color: '#888', marginRight: 10 }}>{progressText}</span>
+        )}
+
+        {/* Summary chips */}
+        {summaryChips && summaryChips.length > 0 && (
+          <div style={{ display: 'flex', gap: 6, marginRight: 10, flexWrap: 'wrap' }}>
+            {summaryChips.map((chip, i) => (
+              <span key={i} style={{ fontSize: 11, color: chip.color || '#595959', background: '#f5f5f5', borderRadius: 3, padding: '1px 6px', lineHeight: '18px' }}>
+                {chip.label}: <strong>{chip.value}</strong>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* Spacer */}
+        <div style={{ flex: 1 }} />
+
+        {/* Action button */}
+        {actionButton && (
+          <div onClick={(e) => e.stopPropagation()}>
+            {actionButton}
+          </div>
+        )}
+      </div>
+
+      {/* Expanded content */}
+      {expanded && (
+        <div style={{ border: '1px solid #e8e8e8', borderTop: 'none', borderRadius: '0 0 6px 6px', padding: '16px', background: '#fff' }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+};
 
 // AI分析结果类型定义 - V3格式
 interface AIAnalysisResult {
@@ -469,14 +567,14 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
             },
             selectionReason: selectionReason,
             continueScanStatus: 'completed' as const,
-            aiReasonStatus: 'completed' as const,
-            aiEvaluated: scannerAiCalled,
-            reasonSource: scannerAiCalled ? 'AI' : 'Local Rules',
-            selectedBy: scannerAiCalled ? scannerAiSource : 'Local Rules',
-            aiSource: scannerAiSource,
-            aiModel: scannerAiModel,
-            aiError: scannerAiError,
-            aiCalled: scannerAiCalled,
+            aiReasonStatus: 'pending' as const,
+            aiEvaluated: false,
+            reasonSource: 'Rule-based',
+            selectedBy: 'Local Rules',
+            aiSource: null,
+            aiModel: null,
+            aiError: null,
+            aiCalled: false,
             scanBatchId: 'current',
             scanTimestamp: detailedScanStatus.lastScanAt || new Date().toISOString(),
             generatedAt: new Date().toISOString(),
@@ -618,7 +716,11 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
                   newList[globalIndex] = {
                     ...newList[globalIndex],
                     selectionReason: aiReason,
-                    aiReasonStatus: 'completed'
+                    aiReasonStatus: 'completed',
+                    reasonSource: 'AI',
+                    aiCalled: true,
+                    aiSource: 'DeepSeek',
+                    aiModel: null,
                   };
                 }
                 return newList;
@@ -635,7 +737,9 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
                   newList[globalIndex] = {
                     ...newList[globalIndex],
                     selectionReason: fallbackReason,
-                    aiReasonStatus: 'failed'
+                    aiReasonStatus: 'failed',
+                    reasonSource: 'Rule-based',
+                    aiCalled: false,
                   };
                 }
                 return newList;
@@ -656,7 +760,9 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
                 newList[globalIndex] = {
                   ...newList[globalIndex],
                   selectionReason: fallbackReason,
-                  aiReasonStatus: 'failed'
+                  aiReasonStatus: 'failed',
+                  reasonSource: 'Rule-based',
+                  aiCalled: false,
                 };
               }
               return newList;
@@ -857,19 +963,12 @@ Please respond in this exact JSON format:
   };
 
   const generateFallbackReason = (candidate: any): string => {
-    const trend = candidate.trendLabel;
-    const score = candidate.overallScore || candidate.trendScore || 0;
-    const risk = candidate.eventRisk || 'Medium';
+    const trend = candidate.trendLabel || 'N/A';
+    const score = candidate.overallScore ?? candidate.trendScore ?? null;
+    const risk = candidate.eventRisk || 'N/A';
+    const scoreStr = score != null ? String(score) : 'N/A';
 
-    if (trend === 'Strong Bullish') {
-      return `Strong bullish trend (score: ${score}, risk: ${risk}) makes this a strong follow-up candidate`;
-    } else if (trend === 'Bullish') {
-      return `Bullish setup with score ${score} and ${risk.toLowerCase()} risk is worth deeper continue scan`;
-    } else if (score > 70) {
-      return `High score ${score} with ${risk.toLowerCase()} risk supports further analysis`;
-    } else {
-      return `Moderate setup (score: ${score}, risk: ${risk}) for further analysis`;
-    }
+    return `[AI unavailable] Rule-based: ${trend} trend, score ${scoreStr}, risk ${risk}. AI selection reason could not be generated.`;
   };
 
   // Rule-based selection reason生成函数 — 使用真实scanner字段，具体不模板
@@ -1437,15 +1536,19 @@ Please respond in this exact JSON format:
           marketData: stockData.dataSource || 'Unknown',
           companyInfo: (stockData as any).profileSource || 'Finnhub',
           news: newsData?.source || 'Unknown',
-          aiAnalysis: trendAnalysis.analysisSource === 'deepseek' ? 'DeepSeek' : trendAnalysis.analysisSource === 'rule_based' ? 'Local Rules' : 'Unknown'
+          aiAnalysis: trendAnalysis.analysisSource === 'deepseek' ? 'DeepSeek' :
+                     trendAnalysis.analysisSource === 'unavailable' ? 'unavailable' :
+                     trendAnalysis.analysisSource === 'rule_based' ? 'Local Rules' : 'Unknown'
         },
         dataSource: stockData.dataSource || 'Unknown',
-        analysisStatus: 'success' as 'success' | 'partial' | 'failed',
-        analysisError: null as string | null,
+        analysisStatus: trendAnalysis.trendLabel ? 'success' as 'success' : 'partial' as 'partial',
+        analysisError: trendAnalysis.aiError || null,
 
         // AI source tracking
-        aiCalled: trendAnalysis.aiCalled || (trendAnalysis.analysisSource === 'deepseek'),
-        aiSource: trendAnalysis.aiSource || (trendAnalysis.analysisSource === 'deepseek' ? 'DeepSeek' : trendAnalysis.analysisSource === 'rule_based' ? 'Local Rules' : 'Unknown'),
+        aiCalled: trendAnalysis.aiCalled !== undefined ? trendAnalysis.aiCalled : (trendAnalysis.analysisSource === 'deepseek'),
+        aiSource: trendAnalysis.aiSource || (trendAnalysis.analysisSource === 'deepseek' ? 'DeepSeek' :
+                 trendAnalysis.analysisSource === 'unavailable' ? 'unavailable' :
+                 trendAnalysis.analysisSource === 'rule_based' ? 'Local Rules' : 'Unknown'),
         aiModel: trendAnalysis.aiModel || null,
         aiError: trendAnalysis.aiError || null,
         timestamp: new Date().toISOString()
@@ -2160,6 +2263,8 @@ Please respond in this exact JSON format:
         console.log(`[AI DEBUG] ====== AI分析 ${symbol} 完成 (失败: success=false) ======`);
 
         // 返回null数据，不伪造任何值 - 包含所有V3字段
+        // 保留后端返回的real news/profile data和AI source tracking
+        const errorData = response.data || {};
         return {
           // V3字段
           trendLabel: null,
@@ -2186,11 +2291,18 @@ Please respond in this exact JSON format:
           conciseReasoning: null,
           detailedReasoning: null,
           aiReasoning: null,
-          newsSentiment: null,
-          eventRisk: null,
-          topNews: null,
-          companyName: null,
-          sector: null
+          newsSentiment: errorData.newsSentiment || null,
+          eventRisk: errorData.eventRisk || null,
+          topNews: errorData.topNews || null,
+          companyName: errorData.companyName || null,
+          sector: errorData.sector || null,
+
+          // AI source tracking - mark as unavailable
+          analysisSource: 'unavailable',
+          aiCalled: true,
+          aiSource: 'unavailable',
+          aiModel: null,
+          aiError: errorData.error || 'AI analysis failed',
         };
       }
     } catch (error: any) {
@@ -2229,7 +2341,14 @@ Please respond in this exact JSON format:
         eventRisk: null,
         topNews: null,
         companyName: null,
-        sector: null
+        sector: null,
+
+        // AI source tracking - mark as unavailable
+        analysisSource: 'unavailable',
+        aiCalled: true,
+        aiSource: 'unavailable',
+        aiModel: null,
+        aiError: error?.message || 'AI analysis exception',
       };
     }
   };
@@ -2263,21 +2382,7 @@ Please respond in this exact JSON format:
   const renderTrendBadge = (label: string) => {
     if (!label) {
       return (
-        <div style={{
-          display: 'inline-block',
-          padding: '4px 12px',
-          borderRadius: '12px',
-          backgroundColor: '#f5f5f5',
-          border: '1px solid #d9d9d9',
-          color: '#8c8c8c',
-          fontWeight: '600',
-          fontSize: '11px',
-          textAlign: 'center',
-          minWidth: '80px',
-          height: '24px',
-          lineHeight: '16px',
-          boxSizing: 'border-box'
-        }}>
+        <div className="scanner-badge-base" style={{ backgroundColor: '#f5f5f5', color: '#8c8c8c', border: '1px solid #d9d9d9' }}>
           N/A
         </div>
       );
@@ -2287,29 +2392,16 @@ Please respond in this exact JSON format:
     const isStrong = label && typeof label === 'string' && label.includes('Strong');
 
     return (
-      <div style={{
-        display: 'inline-block',
-        padding: '4px 12px',
-        borderRadius: '12px',
-        backgroundColor: `${color}15`,
-        border: `1.5px solid ${color}`,
-        color: color,
-        fontWeight: isStrong ? '700' : '600',
-        fontSize: '11px',
-        textAlign: 'center',
-        minWidth: '80px',
-        height: '24px',
-        lineHeight: '16px',
-        boxSizing: 'border-box',
-        whiteSpace: 'nowrap',
-        overflow: 'hidden',
-        textOverflow: 'ellipsis'
+      <div className="scanner-badge-base" style={{ 
+        backgroundColor: `${color}15`, 
+        color: color, 
+        border: `1px solid ${color}`,
+        fontWeight: isStrong ? '700' : '600'
       }}>
         {label}
       </div>
     );
   };
-
   const generateScannerReason = (symbol: string, score: number, newsData: any, stockData: any): string | null => {
     // 不再使用模板句子，返回null让AI分析提供真实reasoning
     return null;
@@ -2782,342 +2874,319 @@ Please respond in this exact JSON format:
     );
   };
   const renderDetailPanel = (record: any) => {
+    const score = record.trendScore || record.overallScore || 0;
+    const scoreColor = score >= 70 ? '#52c41a' : score >= 40 ? '#faad14' : '#ff4d4f';
+    const conf = record.trendConfidence ? (record.trendConfidence * (record.trendConfidence <= 1 ? 100 : 1)).toFixed(0) : 'N/A';
+
     return (
-      <div style={{ padding: '20px', backgroundColor: '#f8f9fa', borderRadius: '10px', border: '1px solid #e8e8e8' }}>
-        {/* 头部信息 */}
-        <div style={{ marginBottom: '16px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
-            <div style={{ fontSize: '18px', fontWeight: '700', color: '#1f1f1f' }}>{record.symbol}</div>
-            <div style={{ fontSize: '14px', color: '#666' }}>{record.companyName || 'N/A'}</div>
-            <div style={{
-              display: 'inline-block',
-              padding: '2px 10px',
-              borderRadius: '12px',
-              backgroundColor: '#e6f7ff',
-              color: '#1890ff',
-              fontSize: '11px',
-              fontWeight: '600'
-            }}>
-              {record.dataSource || 'Unknown Source'}
+      <div className="scanner-detail-container">
+        {/* Detail Header */}
+        <div className="scanner-detail-header">
+          <div>
+            <div className="scanner-detail-title-group">
+              <span className="scanner-detail-symbol">{record.symbol}</span>
+              <span className="scanner-detail-company">{record.companyName || record.name || 'Unknown Company'}</span>
+            </div>
+            <div className="scanner-detail-meta">
+              Last Analysis: {record.timestamp ? new Date(record.timestamp).toLocaleString() : 'N/A'} • 
+              ID: {record.symbol}-{record.timestamp || 'NEW'}
             </div>
           </div>
-          <div style={{ fontSize: '12px', color: '#999' }}>
-            Last updated: {record.timestamp ? new Date(record.timestamp).toLocaleString() : 'N/A'}
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+            <div style={{ textAlign: 'right' }}>
+              <div className="scanner-detail-label" style={{ marginBottom: 2 }}>Analysis Source</div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <Tag color={record.aiCalled ? 'green' : 'orange'} style={{ margin: 0, fontWeight: 700 }}>
+                  {record.aiCalled ? (record.aiSource || 'AI Agent') : 'Local Rules'}
+                </Tag>
+                {record.dataSource && (
+                  <Tag color="blue" style={{ margin: 0, fontWeight: 700 }}>{record.dataSource}</Tag>
+                )}
+              </div>
+            </div>
+            <Divider type="vertical" style={{ height: 40, margin: '0 8px' }} />
+            <div style={{ textAlign: 'center', minWidth: 80 }}>
+              <div className="scanner-detail-label" style={{ marginBottom: 2 }}>Trend</div>
+              {renderTrendBadge(record.trendLabel)}
+            </div>
           </div>
         </div>
 
-        {/* 三列布局 */}
-        <Row gutter={[16, 16]}>
-          {/* 基础信息列 */}
+        <Row gutter={[20, 20]}>
+          {/* Column 1: Market Data & Basic Info */}
           <Col span={8}>
-            <Card
-              size="small"
-              title={
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontSize: '13px', fontWeight: '600' }}>📊 Basic Info</span>
-                </div>
-              }
-              style={{ height: '100%', border: '1px solid #e8e8e8' }}
-              bodyStyle={{ padding: '16px' }}
-            >
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                {/* 价格信息 */}
-                <div>
-                  <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Price</div>
-                  <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
-                    <div style={{ fontSize: '16px', fontWeight: '700', color: '#1f1f1f' }}>
-                      ${record.price?.toFixed(2) || '--'}
+            <Card title="📊 Market & Basic Info" className="scanner-detail-card" bodyStyle={{ padding: '20px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+                {/* Primary Price Info */}
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  alignItems: 'center',
+                  backgroundColor: '#fafafa',
+                  padding: '12px',
+                  borderRadius: '8px',
+                  border: '1px solid #f0f0f0'
+                }}>
+                  <div>
+                    <div className="scanner-detail-label" style={{ marginBottom: 4 }}>Current Price</div>
+                    <div className="scanner-detail-value" style={{ fontSize: '22px', color: '#1f1f1f' }}>
+                      ${(record.price || 0).toFixed(2)}
                     </div>
-                    <div style={{
-                      fontSize: '12px',
-                      color: record.changePercent >= 0 ? '#52c41a' : '#ff4d4f',
-                      fontWeight: '600'
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div className="scanner-detail-label" style={{ marginBottom: 4 }}>24h Change</div>
+                    <div style={{ 
+                      fontSize: '16px', 
+                      fontWeight: 800, 
+                      padding: '2px 8px',
+                      borderRadius: '4px',
+                      backgroundColor: (record.changePct || record.changePercent || 0) >= 0 ? '#f6ffed' : '#fff1f0',
+                      color: (record.changePct || record.changePercent || 0) >= 0 ? '#52c41a' : '#ff4d4f',
+                      display: 'inline-block'
                     }}>
-                      {record.changePercent !== null && record.changePercent !== undefined ?
-                        `${record.changePercent >= 0 ? '+' : ''}${record.changePercent.toFixed(2)}%` : 'N/A'}
+                      {(record.changePct || record.changePercent || 0) >= 0 ? '▲' : '▼'}
+                      {Math.abs(record.changePct || record.changePercent || 0).toFixed(2)}%
                     </div>
                   </div>
                 </div>
 
-                {/* 价格范围 */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                {/* Day Range Info - SWAPPED: Low on Left, High on Right */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', padding: '0 4px' }}>
                   <div>
-                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Day High</div>
-                    <div style={{ fontSize: '13px', fontWeight: '600', color: '#333' }}>
-                      ${record.dayHigh?.toFixed(2) || '--'}
-                    </div>
+                    <div className="scanner-detail-label">Day Low</div>
+                    <div className="scanner-detail-value" style={{ color: '#595959' }}>${(record.dayLow || 0).toFixed(2)}</div>
                   </div>
-                  <div>
-                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Day Low</div>
-                    <div style={{ fontSize: '13px', fontWeight: '600', color: '#333' }}>
-                      ${record.dayLow?.toFixed(2) || '--'}
-                    </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div className="scanner-detail-label">Day High</div>
+                    <div className="scanner-detail-value" style={{ color: '#595959' }}>${(record.dayHigh || 0).toFixed(2)}</div>
                   </div>
                 </div>
 
-                {/* 成交量信息 */}
-                <div>
-                  <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Volume</div>
-                  <div style={{ fontSize: '14px', fontWeight: '600', color: '#333' }}>
-                    {record.volume ? marketDataService.formatVolume(record.volume) : '--'}
-                  </div>
-                  <div style={{ fontSize: '11px', color: record.volumeStatus ? '#666' : '#999', marginTop: '2px' }}>
-                    Status: {record.volumeStatus || 'N/A'}
+                <Divider style={{ margin: '4px 0' }} />
+
+                {/* Volume & Liquidity */}
+                <div style={{ padding: '0 4px' }}>
+                  <div className="scanner-detail-label">Volume & Liquidity</div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
+                    <span className="scanner-detail-value" style={{ fontSize: '16px' }}>{marketDataService.formatVolume(record.volume || 0)}</span>
+                    <Tag color={record.volumeStatus === 'High' ? 'red' : record.volumeStatus === 'Low' ? 'green' : 'gold'} 
+                         style={{ fontSize: '10px', fontWeight: 800, borderRadius: '4px', margin: 0 }}>
+                      {record.volumeStatus || 'NORMAL'}
+                    </Tag>
                   </div>
                 </div>
 
-                {/* 行业和数据源 */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                {/* Sector & Industry */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', padding: '0 4px' }}>
                   <div>
-                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Sector</div>
-                    <div style={{ fontSize: '13px', fontWeight: '600', color: '#333' }}>
-                      {record.sector || 'N/A'}
-                    </div>
+                    <div className="scanner-detail-label">Sector</div>
+                    <div className="scanner-detail-value" style={{ fontSize: '13px', color: '#434343' }}>{record.sector || 'N/A'}</div>
                   </div>
-                  <div>
-                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Data Sources</div>
-                    <div style={{ fontSize: '10px', fontWeight: '500', color: '#333', lineHeight: '1.6' }}>
-                      {record.provenance ? (
-                        <div>
-                          <div><span style={{ color: '#888' }}>Market:</span> <span style={{ color: record.dataSource?.includes('Alpaca') ? '#52c41a' : '#fa8c16' }}>{record.provenance.marketData || record.dataSource || 'Unknown'}</span></div>
-                          <div><span style={{ color: '#888' }}>Company/Sector:</span> {record.provenance.companyInfo || 'Unknown'}</div>
-                          <div><span style={{ color: '#888' }}>News:</span> {record.provenance.news || 'Unknown'}</div>
-                          <div>
-                            <span style={{ color: '#888' }}>AI:</span>
-                            {record.aiCalled ? (
-                              <span style={{ color: '#52c41a' }}>{record.aiSource || 'AI'} ({record.aiModel || 'LLM'}) called</span>
-                            ) : (
-                              <Tooltip title={record.aiError || 'No AI configured or call failed'}>
-                                <span style={{ color: '#fa8c16', cursor: 'help', borderBottom: '1px dotted #fa8c16' }}>{record.aiSource || 'Local Rules'} fallback</span>
-                              </Tooltip>
-                            )}
-                          </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div className="scanner-detail-label">Industry</div>
+                    <div className="scanner-detail-value" style={{ fontSize: '13px', color: '#434343' }}>{record.industry || record.sector || 'N/A'}</div>
+                  </div>
+                </div>
+
+                {/* Data Provenances */}
+                <div style={{ 
+                  marginTop: '4px',
+                  padding: '10px',
+                  backgroundColor: '#f9f9f9',
+                  borderRadius: '6px',
+                  border: '1px dashed #d9d9d9'
+                }}>
+                  <div className="scanner-detail-label" style={{ marginBottom: 8 }}>Data Provenances</div>
+                  <div style={{ fontSize: '11px', color: '#8c8c8c', lineHeight: '1.8' }}>
+                    {record.provenance ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span>Market Data:</span>
+                          <span style={{ fontWeight: 600, color: '#595959' }}>{record.provenance.marketData || 'Real-time'}</span>
                         </div>
-                      ) : (
-                        <div>
-                          <div><span style={{ color: '#888' }}>Market:</span> {record.dataSource || 'Unknown'}</div>
-                          <div>
-                            <span style={{ color: '#888' }}>AI:</span>
-                            {record.aiCalled ? (
-                              <span style={{ color: '#52c41a' }}>{record.aiSource || 'AI'} called</span>
-                            ) : (
-                              <span style={{ color: '#fa8c16' }}>Local Rules</span>
-                            )}
-                          </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span>Fundamentals:</span>
+                          <span style={{ fontWeight: 600, color: '#595959' }}>{record.provenance.companyInfo || 'Finnhub'}</span>
                         </div>
-                      )}
-                    </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span>Sentiment:</span>
+                          <span style={{ fontWeight: 600, color: '#595959' }}>{record.provenance.news || 'Market News'}</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <span style={{ fontStyle: 'italic', color: '#bfbfbf' }}>Detailed source mapping unavailable</span>
+                    )}
                   </div>
                 </div>
               </div>
             </Card>
           </Col>
 
-          {/* 趋势分析列 */}
+          {/* Column 2: Trend & Scores */}
           <Col span={8}>
-            <Card
-              size="small"
-              title={
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontSize: '13px', fontWeight: '600' }}>📈 Trend Analysis</span>
-                </div>
-              }
-              style={{ height: '100%', border: '1px solid #e8e8e8' }}
-              bodyStyle={{ padding: '16px' }}
-            >
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                {/* 趋势标签 */}
+            <Card title="📈 Analysis & Scores" className="scanner-detail-card" bodyStyle={{ padding: '20px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 <div>
-                  <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Trend</div>
-                  {record.trendLabel ? renderTrendBadge(record.trendLabel) : (
-                    <div style={{ fontSize: '12px', color: '#999' }}>N/A</div>
-                  )}
-                </div>
-
-                {/* 总体分数 */}
-                <div>
-                  <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Overall Score</div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    <div style={{ fontSize: '20px', fontWeight: '700', color: '#1f1f1f' }}>
-                      {record.trendScore?.toFixed(0) || '--'}
-                    </div>
-                    <div style={{ fontSize: '12px', color: '#999' }}>/100</div>
-                    <div style={{ fontSize: '11px', color: '#666' }}>
-                      Conf: {record.trendConfidence ? `${(record.trendConfidence * 100).toFixed(0)}%` : 'N/A'}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 10 }}>
+                    <div className="scanner-detail-label" style={{ margin: 0 }}>Overall Trend Score</div>
+                    <div style={{ textAlign: 'right' }}>
+                      <span style={{ fontSize: '26px', fontWeight: 800, color: scoreColor }}>{score.toFixed(0)}</span>
+                      <span style={{ fontSize: '14px', color: '#bfbfbf', marginLeft: 4 }}>/100</span>
                     </div>
                   </div>
-                  {record.trendScore && (
-                    <div style={{
-                      width: '100%',
-                      height: '6px',
-                      backgroundColor: '#f0f0f0',
-                      borderRadius: '3px',
-                      marginTop: '8px',
-                      overflow: 'hidden'
-                    }}>
-                      <div style={{
-                        width: `${record.trendScore}%`,
-                        height: '100%',
-                        backgroundColor: record.trendScore >= 70 ? '#52c41a' : record.trendScore >= 40 ? '#faad14' : '#ff4d4f',
-                        borderRadius: '3px'
-                      }} />
-                    </div>
-                  )}
+                  <Progress 
+                    percent={score} 
+                    strokeColor={scoreColor} 
+                    showInfo={false} 
+                    strokeWidth={12}
+                    style={{ marginBottom: 6 }}
+                  />
+                  <div style={{ fontSize: '12px', color: '#8c8c8c', textAlign: 'right', fontWeight: 600 }}>
+                    Confidence Level: <span style={{ color: scoreColor }}>{conf}%</span>
+                  </div>
                 </div>
 
-                {/* 6维度分数 */}
+                <Divider style={{ margin: '8px 0' }} />
+
                 <div>
-                  <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>6-Dimension Scores</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '6px' }}>
+                  <div className="scanner-detail-label" style={{ marginBottom: 12 }}>Dimensional Breakdown</div>
+                  <div className="scanner-detail-dimension-grid">
                     {[
-                      { label: 'Trend', value: record.trendScoreDetail },
+                      { label: 'Trend', value: record.trendScoreDetail || record.trendScore },
                       { label: 'Momentum', value: record.momentumScore },
                       { label: 'Volume', value: record.volumeScore },
                       { label: 'Volatility', value: record.volatilityScore },
                       { label: 'Structure', value: record.structureScore },
-                      { label: 'News', value: record.newsScore }
-                    ].map((item, index) => (
-                      <div key={index} style={{
-                        padding: '4px 8px',
-                        backgroundColor: '#f8f9fa',
-                        borderRadius: '6px',
-                        border: '1px solid #e8e8e8'
-                      }}>
-                        <div style={{ fontSize: '10px', color: '#666' }}>{item.label}</div>
-                        <div style={{ fontSize: '12px', fontWeight: '600', color: '#333' }}>
-                          {item.value?.toFixed(0) || '--'}/100
+                      { label: 'Sentiment', value: record.newsScore || record.sentimentScore }
+                    ].map((item, idx) => (
+                      <div key={idx} className="scanner-detail-dimension-item" style={{ padding: '12px' }}>
+                        <span className="scanner-detail-label" style={{ margin: 0, fontSize: '10px', color: '#bfbfbf' }}>{item.label}</span>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
+                          <span className="scanner-detail-value" style={{ fontSize: '16px' }}>
+                            {item.value != null ? item.value.toFixed(0) : '--'}
+                          </span>
+                          <div style={{ 
+                            width: 36, 
+                            height: 5, 
+                            borderRadius: 2, 
+                            backgroundColor: '#f0f0f0',
+                            overflow: 'hidden' 
+                          }}>
+                            <div style={{ 
+                              width: `${item.value || 0}%`, 
+                              height: '100%', 
+                              backgroundColor: (item.value || 0) >= 70 ? '#52c41a' : (item.value || 0) >= 40 ? '#faad14' : '#ff4d4f' 
+                            }} />
+                          </div>
                         </div>
                       </div>
                     ))}
                   </div>
                 </div>
+
+                <div style={{ marginTop: 'auto' }}>
+                  <div className="scanner-detail-label" style={{ marginBottom: 8 }}>Risk Profile</div>
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <Tag color={record.eventRisk === 'High' ? 'red' : record.eventRisk === 'Medium' ? 'gold' : 'green'} 
+                         style={{ fontWeight: 700, padding: '4px 10px', borderRadius: '6px', margin: 0 }}>
+                      RISK: {record.eventRisk || 'LOW'}
+                    </Tag>
+                    <Tag color={record.volatilityScore > 70 ? 'orange' : 'blue'} 
+                         style={{ fontWeight: 700, padding: '4px 10px', borderRadius: '6px', margin: 0 }}>
+                      VOL: {record.volatilityScore > 70 ? 'HIGH' : 'STABLE'}
+                    </Tag>
+                  </div>
+                </div>
               </div>
             </Card>
           </Col>
 
-          {/* 新闻分析列 */}
+          {/* Column 3: AI Reasoning & News */}
           <Col span={8}>
-            <Card
-              size="small"
-              title={
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontSize: '13px', fontWeight: '600' }}>📰 News & Analysis</span>
-                </div>
-              }
-              style={{ height: '100%', border: '1px solid #e8e8e8' }}
-              bodyStyle={{ padding: '16px' }}
-            >
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                {/* 新闻情绪 */}
+            <Card title="🧠 AI Agent Reasoning" className="scanner-detail-card" bodyStyle={{ padding: '20px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%' }}>
                 <div>
-                  <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>News Sentiment</div>
-                  {record.newsSentiment ? (
-                    <div style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                      padding: '4px 12px',
-                      borderRadius: '12px',
-                      backgroundColor: record.newsSentiment === 'Positive' ? '#52c41a15' :
-                                     record.newsSentiment === 'Negative' ? '#ff4d4f15' : '#faad1415',
-                      color: record.newsSentiment === 'Positive' ? '#52c41a' :
-                             record.newsSentiment === 'Negative' ? '#ff4d4f' : '#faad14',
-                      fontWeight: '600',
-                      fontSize: '12px'
-                    }}>
-                      <span>{record.newsSentiment === 'Positive' ? '📈' : record.newsSentiment === 'Negative' ? '📉' : '📊'}</span>
-                      <span>{record.newsSentiment}</span>
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: '12px', color: '#999' }}>N/A</div>
-                  )}
-                </div>
-
-                {/* 事件风险 */}
-                <div>
-                  <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Event Risk</div>
-                  {record.eventRisk ? (
-                    <div style={{
-                      display: 'inline-block',
-                      padding: '4px 12px',
-                      borderRadius: '12px',
-                      backgroundColor: record.eventRisk === 'High' ? '#ff4d4f15' :
-                                     record.eventRisk === 'Medium' ? '#faad1415' : '#52c41a15',
-                      color: record.eventRisk === 'High' ? '#ff4d4f' :
-                             record.eventRisk === 'Medium' ? '#faad14' : '#52c41a',
-                      fontWeight: '600',
-                      fontSize: '12px'
-                    }}>
-                      {record.eventRisk}
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: '12px', color: '#999' }}>N/A</div>
-                  )}
-                </div>
-
-                {/* AI推理 */}
-                <div>
-                  <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>AI Reasoning</div>
-                  <div style={{
-                    fontSize: '12px',
-                    color: record.detailedReasoning || record.aiReasoning || record.scannerReason ? '#333' : '#999',
-                    lineHeight: 1.4,
-                    padding: '8px',
-                    backgroundColor: '#f8f9fa',
-                    borderRadius: '6px',
-                    border: '1px solid #e8e8e8',
-                    minHeight: '60px',
-                    maxHeight: '120px',
+                  <div className="scanner-detail-label" style={{ marginBottom: 10 }}>Detailed Analysis</div>
+                  <div className="scanner-detail-reasoning-box" style={{ 
+                    backgroundColor: '#f6ffed',
+                    border: '1px solid #b7eb8f',
+                    borderRadius: '8px',
+                    padding: '16px',
+                    fontSize: '13px',
+                    lineHeight: '1.6',
+                    color: '#262626',
+                    maxHeight: '180px',
                     overflowY: 'auto'
                   }}>
-                    {record.detailedReasoning || record.aiReasoning || record.scannerReason || 'N/A'}
+                    {record.detailedReasoning || record.aiReasoning || record.scannerReason || 'No detailed analysis available for this symbol.'}
                   </div>
                 </div>
 
-                {/* 头条新闻 */}
-                <div>
-                  <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Top News</div>
-                  <div style={{
-                    padding: '8px',
-                    backgroundColor: '#f8f9fa',
-                    borderRadius: '6px',
-                    border: '1px solid #e8e8e8',
-                    minHeight: '60px'
+                <div style={{ flex: 1 }}>
+                  <div className="scanner-detail-label" style={{ marginBottom: 10 }}>Latest Market News</div>
+                  <div className="scanner-detail-news-box" style={{ 
+                    padding: '14px',
+                    backgroundColor: '#fff',
+                    border: '1px solid #f0f0f0',
+                    borderRadius: '8px',
+                    boxShadow: '0 2px 6px rgba(0,0,0,0.02)'
                   }}>
                     {record.topNews ? (
-                      <>
-                        <div style={{ fontSize: '12px', fontWeight: '600', color: '#333', marginBottom: '4px' }}>
-                          {record.topNews.title || 'No title available'}
+                      <div>
+                        <a href="#" className="scanner-detail-news-title" onClick={(e) => e.preventDefault()} style={{
+                          fontSize: '14px',
+                          fontWeight: 700,
+                          color: '#1890ff',
+                          marginBottom: '8px',
+                          display: 'block',
+                          lineHeight: '1.4'
+                        }}>
+                          {record.topNews.title}
+                        </a>
+                        <div style={{ 
+                          fontSize: '11px', 
+                          color: '#bfbfbf', 
+                          marginBottom: 10, 
+                          display: 'flex', 
+                          justifyContent: 'space-between',
+                          borderTop: '1px solid #f5f5f5',
+                          paddingTop: '6px'
+                        }}>
+                          <span style={{ fontWeight: 600, color: '#8c8c8c' }}>{record.topNews.source || record.topNews.publisher || 'Source N/A'}</span>
+                          <span>{record.topNews.published ? formatNewsDate(record.topNews.published) : ''}</span>
                         </div>
-                        {(record.topNews.source || record.topNews.publisher) && (
-                          <div style={{ fontSize: '11px', color: '#666' }}>
-                            {record.topNews.source && `Data Source: ${record.topNews.source}`}
-                            {record.topNews.publisher && record.topNews.source && ` • `}
-                            {record.topNews.publisher && `Publisher: ${record.topNews.publisher}`}
-                            {record.topNews.published && ` • ${formatNewsDate(record.topNews.published)}`}
-                          </div>
-                        )}
-                        {record.topNews.summary && (
-                          <div style={{ fontSize: '11px', color: '#666', marginTop: '4px', lineHeight: 1.3 }}>
-                            {record.topNews.summary}
-                          </div>
-                        )}
-                      </>
+                        <div className="scanner-detail-news-summary" style={{ fontSize: '12px', color: '#595959', lineHeight: '1.5' }}>
+                          {record.topNews.summary ? 
+                            (record.topNews.summary.length > 140 ? record.topNews.summary.substring(0, 140) + '...' : record.topNews.summary) : 
+                            'Recent news headline identified. Sentiment remains consistent with the current trend score.'}
+                        </div>
+                      </div>
                     ) : (
-                      <div style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        height: '100%',
-                        color: '#999',
-                        fontSize: '12px',
-                        fontStyle: 'italic'
-                      }}>
-                        No recent news available
+                      <div style={{ textAlign: 'center', padding: '20px 0', color: '#bfbfbf' }}>
+                        <InfoCircleOutlined style={{ fontSize: '24px', marginBottom: 8, display: 'block', opacity: 0.5 }} />
+                        <span style={{ fontSize: '12px' }}>No symbol-specific news found in the last 24h.</span>
                       </div>
                     )}
                   </div>
                 </div>
+
+                {record.nextStep && (
+                  <div style={{ 
+                    marginTop: 'auto', 
+                    padding: '14px', 
+                    backgroundColor: '#e6f7ff', 
+                    borderRadius: '8px',
+                    border: '1px solid #91d5ff',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px'
+                  }}>
+                    <div className="scanner-detail-label" style={{ color: '#0050b3', margin: 0 }}>Agent Recommendation</div>
+                    <div style={{ fontSize: '13px', color: '#003a8c', fontWeight: 700 }}>
+                      {record.nextStep}
+                    </div>
+                  </div>
+                )}
               </div>
             </Card>
           </Col>
@@ -3151,13 +3220,12 @@ Please respond in this exact JSON format:
           };
         }
 
-        // 如果都没有，使用默认列表
-        console.log('没有可用的扫描结果，使用默认股票列表');
-        const defaultSymbols = ['NVDA', 'AAPL', 'MSFT', 'AMD', 'META', 'AMZN'];
+        // 如果都没有，返回空列表（不使用硬编码默认symbols）
+        console.log('没有可用的扫描结果，无法生成候选列表');
         return {
-          symbols: defaultSymbols,
-          source: 'default_list',
-          scanType: 'default'
+          symbols: [],
+          source: 'none',
+          scanType: 'none'
         };
       }
 
@@ -3215,14 +3283,8 @@ Please respond in this exact JSON format:
       };
     } catch (fallbackError: any) {
       console.error('回退市场扫描失败:', fallbackError);
-      // 如果回退也失败，返回一个最小的默认列表
-      const defaultSymbols = ['NVDA', 'AAPL', 'WMT', 'JPM'];
-      console.log(`使用默认股票列表: ${defaultSymbols.join(', ')}`);
-      return {
-        symbols: defaultSymbols,
-        source: 'default_list',
-        scanType: 'default'
-      };
+      // 不使用硬编码默认列表，抛出错误让调用方处理
+      throw new Error('All market scan methods failed. No symbols available.');
     }
   };
 
@@ -3327,40 +3389,24 @@ Please respond in this exact JSON format:
     }
   };
 
-  // 辅助函数：生成fallback推荐
+  // 辅助函数：生成fallback推荐（AI不可用时）
   const generateFallbackRecommendation = (candidate: any): any => {
-    const trend = candidate.trendLabel || 'Neutral';
-    const score = candidate.overallScore || candidate.trendScore || 0;
-    const risk = candidate.eventRisk || 'Medium';
-    const priority = candidate.priorityScore || 0;
+    const trend = candidate.trendLabel || 'N/A';
+    const score = candidate.overallScore ?? candidate.trendScore ?? null;
+    const risk = candidate.eventRisk || 'N/A';
+    const scoreStr = score != null ? String(score) : 'N/A';
 
-    // 基于规则确定action
-    let action = 'HOLD';
-    let confidence = 0.5;
-
-    if (trend === 'Strong Bullish' && score >= 80 && risk !== 'High') {
-      action = 'BUY';
-      confidence = 0.7 + (Math.random() * 0.2); // 70-90%
-    } else if ((trend === 'Bullish' || trend === 'Strong Bullish') && score >= 60 && risk !== 'High') {
-      action = 'BUY';
-      confidence = 0.5 + (Math.random() * 0.2); // 50-70%
-    } else if (trend === 'Bearish' || trend === 'Strong Bearish' || risk === 'High') {
-      action = 'HOLD';
-      confidence = 0.3 + (Math.random() * 0.2); // 30-50%
-    }
-
-    // 生成reasoning
-    const reasoning = `Fallback: ${trend} trend with ${score} score, ${risk} risk. Priority: ${priority}.`;
+    const reasoning = `[AI unavailable] Cannot generate recommendation. Trend: ${trend}, Score: ${scoreStr}, Risk: ${risk}.`;
 
     return {
-      recommendation: action,
-      confidence: confidence,
+      recommendation: 'N/A',
+      confidence: null,
       reason: reasoning,
       reasonFull: reasoning,
-      backtestSummary: determineBacktestStatus(candidate),
-      optimizationSummary: determineOptimizationStatus(candidate),
-      recommendedQty: calculateSuggestedQty(action, Math.round(confidence * 100), candidate),
-      positionSize: calculateSuggestedQty(action, Math.round(confidence * 100), candidate)
+      backtestSummary: 'N/A',
+      optimizationSummary: 'N/A',
+      recommendedQty: null,
+      positionSize: null
     };
   };
 
@@ -5083,6 +5129,7 @@ Please respond in this exact JSON format:
           matchConfidence,
           priority: 0,
           aiUsed: aiSucceeded,
+          isDevTest: c.isDevTest || false,
           // Step 3: Quick Backtest Validation
           backtestStatus: 'pending',
           backtestSummary: '',
@@ -5724,6 +5771,92 @@ Please respond in this exact JSON format:
   const [executeLoading, setExecuteLoading] = useState(false);
   const [liveConfirmText, setLiveConfirmText] = useState('');
 
+  // ===== Collapsible Stage Sections Expanded State =====
+  const [scannerExpanded, setScannerExpanded] = useState(false);
+  const [continueScanExpanded, setContinueScanExpanded] = useState(false);
+  const [fineScanExpanded, setFineScanExpanded] = useState(false);
+  const [dvExpanded, setDvExpanded] = useState(false);
+  const [entryPlanExpanded, setEntryPlanExpanded] = useState(false);
+
+  // ===== Dev Test Mode =====
+  const [devTestMode, setDevTestMode] = useState(false);
+
+  const DEV_TEST_CANDIDATE = {
+    symbol: 'AAPL',
+    companyName: 'Apple Inc. [DEV TEST]',
+    trendLabel: 'Strong Bullish',
+    trendScore: 88,
+    overallScore: 88,
+    price: 198.50,
+    changePct: 2.3,
+    volume: 52000000,
+    marketCap: 3100000000000,
+    sector: 'Technology',
+    newsSentiment: 'Positive',
+    eventRisk: 'Low',
+    volumeStatus: 'High',
+    topNews: '[DEV TEST] Strong quarterly earnings beat expectations',
+    scannerReason: '[DEV TEST] Strong bullish trend with high volume and positive sentiment',
+    aiReasoning: '[DEV TEST MOCK] AAPL shows strong momentum with volume confirmation. EMA aligned bullish, MACD strengthening.',
+    conciseReasoning: '[DEV TEST MOCK] Strong uptrend with volume expansion',
+    detailedReasoning: '[DEV TEST MOCK] Multi-timeframe alignment bullish. Volume above average. News catalyst positive.',
+    selectionReason: '[DEV TEST] Selected: Apple has strong bullish trend (score 88), positive news sentiment, low risk, and above-average volume at +2.3% momentum.',
+    reasonSource: 'Dev Test',
+    aiCalled: false,
+    aiSource: null,
+    aiModel: null,
+    aiError: null,
+    selectedBy: 'Dev Test',
+    includeInContinueScan: true,
+    priorityScore: 92,
+    priorityBreakdown: { trend: 35, score: 44, risk: 12, news: 10, price: 5, volume: 8 },
+    continueScanStatus: 'completed',
+    aiReasonStatus: 'completed',
+    aiEvaluated: false,
+    scanBatchId: 'dev-test',
+    scanTimestamp: new Date().toISOString(),
+    generatedAt: new Date().toISOString(),
+    dataQuality: 'MOCK',
+    priceChangePct: 2.3,
+    isDevTest: true,
+    provenance: {
+      marketData: 'MOCK DATA',
+      companyInfo: 'MOCK DATA',
+      news: 'MOCK DATA',
+      aiAnalysis: 'MOCK DATA',
+    },
+    analysisSource: 'dev-test',
+    analysisStatus: 'success',
+    structureLabel: 'uptrend',
+    momentumLabel: 'strengthening',
+    volatilityLabel: 'low',
+    newsLabel: 'positive',
+    riskLevel: 'low',
+    trendConfidence: 0.85,
+    confidence: 0.85,
+    trend: 'Strong Bullish',
+    risk: 'Low',
+    priceChange: 2.3,
+    scanTime: new Date().toISOString(),
+    timestamp: new Date().toISOString(),
+    dataSource: 'MOCK DATA',
+  };
+
+  const injectDevTestCandidate = () => {
+    setPreferredContinueScanList(prev => {
+      const exists = prev.some(c => c.isDevTest);
+      if (exists) return prev;
+      return [DEV_TEST_CANDIDATE, ...prev];
+    });
+    setContinueScanStatus('completed');
+    message.success('DEV TEST candidate (AAPL) injected into Continue Scan List');
+  };
+
+  const removeDevTestCandidate = () => {
+    setPreferredContinueScanList(prev => prev.filter(c => !c.isDevTest));
+    message.info('DEV TEST candidate removed');
+  };
+
   const handleEntryPlanAction = (plan: any) => {
     const fa = plan.finalAction;
     const aiDecision = plan.aiDecision;
@@ -5851,11 +5984,13 @@ Please respond in this exact JSON format:
 
   const getEntryPlanCandidates = useCallback(() => {
     if (!deeperValidationResults || deeperValidationResults.length === 0) return [];
-    // Include Confirmed, Watch, and Needs Manual Review. Exclude Rejected.
+    // Include Confirmed, Watch, and Needs Manual Review. Exclude Rejected and Risk Gate BLOCKED.
     const confirmed: any[] = [];
     const watch: any[] = [];
     const manualReview: any[] = [];
     for (const r of deeperValidationResults) {
+      const rgStatus = (r.riskGate || {}).status;
+      if (rgStatus === 'BLOCK') continue; // Exclude risk-gate blocked candidates
       if (r.verdict === 'Confirmed') confirmed.push(r);
       else if (r.verdict === 'Watch') watch.push({ ...r, planNote: 'Conservative / Watch Only' });
       else if (r.verdict === 'Needs Manual Review' || r.verdict === 'Manual Review') manualReview.push({ ...r, planNote: 'Review Required' });
@@ -5914,7 +6049,13 @@ Please respond in this exact JSON format:
         existingPositions, dailyLoss, existingPositions, entryPlanExecutionMode, tradingAccountMode
       );
       if (res.data?.success && res.data?.plans) {
-        setEntryPlanResults(res.data.plans);
+        // Propagate isDevTest flag from DV candidates to Entry Plan results
+        const devTestSymbols = new Set(candidates.filter((c: any) => c.isDevTest).map((c: any) => c.symbol));
+        const enrichedPlans = res.data.plans.map((p: any) => ({
+          ...p,
+          isDevTest: devTestSymbols.has(p.symbol) || p.isDevTest || false,
+        }));
+        setEntryPlanResults(enrichedPlans);
         setEntryPlanStatus('completed');
       } else {
         setEntryPlanStatus('error');
@@ -5976,7 +6117,13 @@ Please respond in this exact JSON format:
       });
       const resp = (await deeperValidationAPI.validate(candidates, '1y', 100000)).data;
       if (resp.success && Array.isArray(resp.results)) {
-        setDeeperValidationResults(resp.results);
+        // Propagate isDevTest flag from Fine Scan results to DV results
+        const devTestSymbols = new Set(selected.filter((r: any) => r.isDevTest).map((r: any) => r.symbol));
+        const enrichedResults = resp.results.map((r: any) => ({
+          ...r,
+          isDevTest: devTestSymbols.has(r.symbol) || r.isDevTest || false,
+        }));
+        setDeeperValidationResults(enrichedResults);
         setDeeperValidationStatus('completed');
         message.success(`Deeper validation completed for ${resp.results.length} results`);
       } else {
@@ -6182,14 +6329,17 @@ function renderDVDetailPanel(record: any) {
     // Data Provenance strip — compact chips
     (function() {
       var aiExplained = record.aiExplained === true;
-      var explanationSource = aiExplained ? 'DeepSeek' : 'Local Rules';
-      var explanationColor = aiExplained ? '#52c41a' : '#fa8c16';
+      var explanationSource = aiExplained ? 'DeepSeek' : 'Rule-based';
+      var rgStatus = (record.riskGate || {}).status || 'N/A';
+      var fdSource = (record.finalDecision || {}).source || 'Rule-based';
       var chips = [
-        {label: 'Candidate: Fine Scan', isAI: false, title: 'Fine Scan'},
+        {label: 'Market: ' + (record.dataSource === 'alpaca' ? 'Alpaca' : record.dataSource || 'N/A'), isAI: false, title: 'Alpaca Market Data API'},
         {label: 'Backtest: Internal', isAI: false, title: 'Internal Backtest Engine'},
         {label: 'Opt: Internal', isAI: false, title: 'Internal Optimization Engine'},
-        {label: 'Verdict: Deterministic', isAI: false, title: 'Deterministic Rules'},
-        {label: 'Explain: ' + explanationSource, isAI: aiExplained, title: aiExplained ? 'DeepSeek AI' : 'Local Rules'},
+        {label: 'Verdict: Rule-based', isAI: false, title: 'Deterministic Rules'},
+        {label: 'Risk Gate: ' + rgStatus, isAI: false, title: 'Rule-based risk gate: ' + ((record.riskGate || {}).reason || 'N/A')},
+        {label: 'Decision: ' + fdSource, isAI: fdSource !== 'Rule-based', title: fdSource !== 'Rule-based' ? 'AI Final Decision' : 'Rule-based decision (no AI call)'},
+        {label: 'Explain: ' + explanationSource, isAI: aiExplained, title: aiExplained ? 'DeepSeek AI' : 'Rule-based explanation'},
       ];
       return React.createElement('div', { style: { gridColumn: '1 / -1', display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center', fontSize: '8px', color: '#888' } },
         chips.map(function(c: any) {
@@ -6210,7 +6360,18 @@ function renderDVDetailPanel(record: any) {
           isLimitedSample ?
             React.createElement('div', { style: { fontSize: '9px', color: '#856404', marginTop: 2 } }, 'Note: Limited sample') : null
         ),
-        React.createElement('div', { style: { textAlign: 'right', flexShrink: 0 } },
+        React.createElement('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 } },
+          // Risk Gate badge
+          (function() {
+            var rg = record.riskGate || {};
+            var rgStatus = rg.status || 'N/A';
+            var rgColor = rgStatus === 'PASS' ? '#52c41a' : rgStatus === 'REVIEW' ? '#faad14' : rgStatus === 'BLOCK' ? '#ff4d4f' : '#bbb';
+            var rgLabel = rgStatus === 'BLOCK' ? 'Blocked' : rgStatus;
+            return React.createElement(Tooltip, { title: rg.reason || 'No risk gate data' },
+              React.createElement(Tag, { color: rgColor === '#52c41a' ? 'green' : rgColor === '#faad14' ? 'gold' : rgColor === '#ff4d4f' ? 'red' : 'default', style: { fontSize: '10px', margin: 0, padding: '0 6px' } }, 'Gate: ' + rgLabel)
+            );
+          })(),
+          // Verdict badge
           React.createElement(Tag, { color: vColor, style: { fontSize: '12px', fontWeight: 700, margin: 0, padding: '2px 12px', borderRadius: '10px' } }, v || 'N/A')
         )
       ),
@@ -6465,11 +6626,44 @@ function renderDVDetailPanel(record: any) {
       </div>
 
       {/* 2. Market Scanner */}
-      <div style={{ marginBottom: 24 }}>
-        <Title level={4}>
-          <LineChartOutlined style={{ marginRight: '8px' }} />
-          Market Scanner
-        </Title>
+      <CollapsibleStageSection
+        title="Market Scanner"
+        icon={<LineChartOutlined />}
+        statusText={
+          detailedScanStatus.currentStatus === 'scanning' ? 'SCANNING' :
+          detailedScanStatus.currentStatus === 'completed' ? 'COMPLETED' :
+          detailedScanStatus.currentStatus === 'error' ? 'ERROR' :
+          detailedScanStatus.currentStatus === 'stopping' ? 'STOPPING' :
+          detailedScanStatus.currentStatus === 'stopped' ? 'STOPPED' : 'IDLE'
+        }
+        statusColor={
+          detailedScanStatus.currentStatus === 'scanning' ? 'processing' :
+          detailedScanStatus.currentStatus === 'completed' ? 'success' :
+          detailedScanStatus.currentStatus === 'error' ? 'error' : 'default'
+        }
+        progressValue={detailedScanStatus.totalCount > 0 ? Math.round((detailedScanStatus.processedCount / detailedScanStatus.totalCount) * 100) : null}
+        progressText={detailedScanStatus.currentStatus === 'scanning' ? `${detailedScanStatus.processedCount}/${detailedScanStatus.totalCount}` : undefined}
+        summaryChips={marketScannerResults.length > 0 ? [
+          { label: 'Results', value: marketScannerResults.length },
+          { label: 'AI', value: marketScannerResults.filter((r: any) => r.aiCalled).length, color: '#1890ff' },
+          { label: 'Rules', value: marketScannerResults.filter((r: any) => !r.aiCalled).length },
+        ] : undefined}
+        actionButton={
+          <Button
+            type={detailedScanStatus.currentStatus === 'scanning' ? 'default' : 'primary'}
+            danger={detailedScanStatus.currentStatus === 'scanning'}
+            icon={detailedScanStatus.currentStatus === 'scanning' ? <PauseCircleOutlined /> : <ThunderboltOutlined />}
+            onClick={handleToggleMarketScanner}
+            loading={detailedScanStatus.currentStatus === 'stopping'}
+            size="small"
+          >
+            {detailedScanStatus.currentStatus === 'scanning' ? 'Stop Scanner' : 'Run Scanner'}
+          </Button>
+        }
+        isRunning={detailedScanStatus.currentStatus === 'scanning'}
+        expanded={scannerExpanded}
+        onToggle={() => setScannerExpanded(!scannerExpanded)}
+      >
         <Card>
           <Row gutter={16} align="middle" style={{ marginBottom: 16 }}>
             <Col span={24}>
@@ -6570,81 +6764,73 @@ function renderDVDetailPanel(record: any) {
           </Row>
 
           {(marketScannerStatus.status === 'running' || detailedScanStatus.currentStatus === 'scanning') && (
-            <div style={{ marginBottom: '16px' }}>
-              {/* 状态标题 */}
+            <div style={{ 
+              marginBottom: 24, 
+              padding: '16px 20px', 
+              background: '#fafafa', 
+              borderRadius: 8, 
+              border: '1px solid #f0f0f0' 
+            }}>
               <div style={{
-                fontSize: '12px',
-                fontWeight: '600',
-                color: '#333',
-                marginBottom: '8px',
                 display: 'flex',
                 justifyContent: 'space-between',
-                alignItems: 'center'
+                alignItems: 'flex-end',
+                marginBottom: 12
               }}>
-                <span>
-                  {detailedScanStatus.currentStatus === 'scanning' ? 'SCANNING IN PROGRESS' :
-                   detailedScanStatus.currentStatus === 'stopped' ? 'SCAN STOPPED' :
-                   detailedScanStatus.currentStatus === 'completed' ? 'SCAN COMPLETED' :
-                   detailedScanStatus.currentStatus === 'error' ? 'SCAN ERROR' : 'WAITING FOR NEXT SCAN'}
-                </span>
-                <span style={{ color: '#666', fontWeight: 'normal', fontSize: '11px' }}>
-                  {detailedScanStatus.percent}% complete
-                </span>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#8c8c8c', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>
+                    {detailedScanStatus.currentStatus === 'scanning' ? 'Scanning in Progress' :
+                     detailedScanStatus.currentStatus === 'stopped' ? 'Scan Stopped' :
+                     detailedScanStatus.currentStatus === 'completed' ? 'Scan Completed' :
+                     detailedScanStatus.currentStatus === 'error' ? 'Scan Error' : 'Waiting for Next Scan'}
+                  </div>
+                  <div style={{ fontSize: 24, fontWeight: 600, color: '#262626', lineHeight: 1.2 }}>
+                    {detailedScanStatus.percent}% <span style={{ fontSize: 14, fontWeight: 400, color: '#8c8c8c' }}>Complete</span>
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: 13, color: '#595959', marginBottom: 4 }}>
+                    <span style={{ fontWeight: 600 }}>{detailedScanStatus.processedCount}</span> / {detailedScanStatus.totalCount} Symbols Processed
+                  </div>
+                  <div style={{ fontSize: 12, color: '#8c8c8c' }}>
+                    {detailedScanStatus.validatedCount} Validated • {detailedScanStatus.retryCount} Retries
+                  </div>
+                </div>
               </div>
 
-              {/* 进度条 */}
               <Progress
                 percent={detailedScanStatus.percent}
-                size="small"
+                showInfo={false}
+                size={["100%", 8]}
                 status={detailedScanStatus.currentStatus === 'scanning' ? 'active' :
                        detailedScanStatus.currentStatus === 'stopped' ? 'exception' :
                        detailedScanStatus.currentStatus === 'completed' ? 'success' : 'normal'}
                 strokeColor={
-                  detailedScanStatus.currentStatus === 'scanning' ? '#52c41a' :
-                  detailedScanStatus.currentStatus === 'completed' ? '#1890ff' :
+                  detailedScanStatus.currentStatus === 'scanning' ? '#1890ff' :
+                  detailedScanStatus.currentStatus === 'completed' ? '#52c41a' :
                   detailedScanStatus.currentStatus === 'error' ? '#ff4d4f' : '#faad14'
                 }
+                style={{ marginBottom: 16 }}
               />
 
-              {/* 详细信息 */}
-              <div style={{
-                fontSize: '11px',
-                color: '#666',
-                marginTop: '8px',
-                lineHeight: '1.4',
-                display: 'grid',
-                gridTemplateColumns: '1fr 1fr',
-                gap: '8px'
-              }}>
-                <div>
-                  <div style={{ fontWeight: '500', color: '#333', marginBottom: '2px' }}>Progress</div>
-                  <div>{detailedScanStatus.processedCount} / {detailedScanStatus.totalCount} symbols</div>
-                </div>
-                <div>
-                  <div style={{ fontWeight: '500', color: '#333', marginBottom: '2px' }}>Validated</div>
-                  <div>{detailedScanStatus.validatedCount} symbols</div>
-                </div>
-                <div>
-                  <div style={{ fontWeight: '500', color: '#333', marginBottom: '2px' }}>Retries</div>
-                  <div>{detailedScanStatus.retryCount}</div>
-                </div>
-                <div>
-                  <div style={{ fontWeight: '500', color: '#333', marginBottom: '2px' }}>Status</div>
-                  <div>{detailedScanStatus.statusMessage || 'Ready'}</div>
-                </div>
-              </div>
               {detailedScanStatus.activeSymbols.length > 0 && (
                 <div style={{
-                  fontSize: '11px',
-                  color: '#333',
-                  marginTop: '8px',
-                  padding: '6px',
-                  backgroundColor: '#f6ffed',
-                  borderRadius: '4px',
-                  border: '1px solid #b7eb8f'
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  fontSize: 12,
+                  color: '#595959'
                 }}>
-                  <div style={{ fontWeight: '500', marginBottom: '2px' }}>Currently Scanning:</div>
-                  <div>{detailedScanStatus.activeSymbols.join(', ')}</div>
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#1890ff', margin: 'auto' }} />
+                  </div>
+                  <Text strong style={{ color: '#262626' }}>Currently Scanning:</Text>
+                  {detailedScanStatus.activeSymbols.map(sym => (
+                    <Tag key={sym} color="blue" bordered={false} style={{ margin: 0 }}>{sym}</Tag>
+                  ))}
+                  {detailedScanStatus.statusMessage && (
+                    <span style={{ color: '#8c8c8c', marginLeft: 'auto' }}>{detailedScanStatus.statusMessage}</span>
+                  )}
                 </div>
               )}
             </div>
@@ -6731,72 +6917,55 @@ function renderDVDetailPanel(record: any) {
           {/* Scanner Results Table */}
           {marketScannerResults.length > 0 && (
             <div style={{ marginTop: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                <Text strong style={{ fontSize: '14px' }}>Top Market Trends ({getFilteredAndSortedResults().length} symbols)</Text>
-                <Space size="small">
-                  <Select
-                    value={marketScannerFilters.trendFilter}
-                    onChange={(value) => setMarketScannerFilters(prev => ({ ...prev, trendFilter: value }))}
-                    style={{ width: 120 }}
-                    size="small"
-                  >
-                    <Option value="all">All Trends</Option>
-                    <Option value="bullish">Bullish</Option>
-                    <Option value="bearish">Bearish</Option>
-                    <Option value="neutral">Neutral</Option>
-                    <Option value="strong">Strong Trends</Option>
-                  </Select>
-
-                  <Select
-                    value={marketScannerFilters.sortBy}
-                    onChange={(value) => setMarketScannerFilters(prev => ({ ...prev, sortBy: value }))}
-                    style={{ width: 140 }}
-                    size="small"
-                  >
-                    <Option value="trendScore">Trend Score</Option>
-                    <Option value="volume">Volume</Option>
-                    <Option value="changePct">Change %</Option>
-                    <Option value="newsSentiment">News Sentiment</Option>
-                  </Select>
-
-                  <Button
-                    size="small"
-                    icon={marketScannerFilters.sortOrder === 'desc' ? <SortDescendingOutlined /> : <SortAscendingOutlined />}
-                    onClick={() => setMarketScannerFilters(prev => ({ ...prev, sortOrder: prev.sortOrder === 'desc' ? 'asc' : 'desc' }))}
-                    type={marketScannerFilters.sortOrder === 'desc' ? 'primary' : 'default'}
-                  />
-                </Space>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, paddingBottom: 12, borderBottom: '1px solid #f0f0f0' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                  <Text strong style={{ fontSize: '15px' }}>Top Market Trends <span style={{ color: '#8c8c8c', fontWeight: 'normal', fontSize: '13px' }}>({getFilteredAndSortedResults().length})</span></Text>
+                  
+                  <div style={{ display: 'flex', background: '#f0f2f5', padding: 4, borderRadius: 6, gap: 4 }}>
+                    {[
+                      { value: 'all', label: 'All' },
+                      { value: 'strong', label: 'Strong' },
+                      { value: 'bullish', label: 'Bullish' },
+                      { value: 'neutral', label: 'Neutral' },
+                      { value: 'bearish', label: 'Bearish' }
+                    ].map(tab => (
+                      <div
+                        key={tab.value}
+                        onClick={() => setMarketScannerFilters(prev => ({ ...prev, trendFilter: tab.value as any }))}
+                        style={{
+                          padding: '4px 12px',
+                          fontSize: 12,
+                          fontWeight: marketScannerFilters.trendFilter === tab.value ? 600 : 400,
+                          color: marketScannerFilters.trendFilter === tab.value ? '#1890ff' : '#595959',
+                          background: marketScannerFilters.trendFilter === tab.value ? '#fff' : 'transparent',
+                          borderRadius: 4,
+                          cursor: 'pointer',
+                          boxShadow: marketScannerFilters.trendFilter === tab.value ? '0 1px 2px rgba(0,0,0,0.05)' : 'none',
+                          transition: 'all 0.2s'
+                        }}
+                      >
+                        {tab.label}
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
 
+            <div className="scanner-table-container">
               <Table
                 columns={[
-                  {
-                    title: '',
-                    key: 'expand',
-                    width: 40,
-                    render: (_, record: any) => (
-                      <Button
-                        type="text"
-                        size="small"
-                        icon={expandedRows.includes(record.symbol) ? <ArrowDownOutlined /> : <ArrowRightOutlined />}
-                        onClick={() => toggleRowExpand(record.symbol)}
-                        style={{ padding: 0, width: 24, height: 24 }}
-                      />
-                    )
-                  },
                   {
                     title: 'Symbol',
                     dataIndex: 'symbol',
                     key: 'symbol',
+                    fixed: 'left',
                     width: 150,
-                    render: (symbol: string, record: any) => (
-                      <div>
-                        <div style={{ fontWeight: 'bold', fontSize: '14px' }}>{symbol}</div>
-                        <div style={{ fontSize: '11px', color: '#666', marginTop: '2px' }}>
-                          {record.companyName || 'N/A'}
-                        </div>
+                    render: (text: string, record: any) => (
+                      <div style={{ display: 'flex', flexDirection: 'column' }}>
+                        <span className="scanner-symbol-text">{text}</span>
+                        <span className="scanner-company-text">{record.companyName || record.name || 'Unknown Company'}</span>
                       </div>
-                    )
+                    ),
                   },
                   {
                     title: 'Trend',
@@ -6811,91 +6980,22 @@ function renderDVDetailPanel(record: any) {
                     key: 'trendScore',
                     width: 140,
                     render: (score: number, record: any) => {
-                      const hasScore = score !== null && score !== undefined;
-                      const hasConfidence = record.trendConfidence !== null && record.trendConfidence !== undefined;
-
-                      if (!hasScore) {
-                        return (
-                          <div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                              <Text strong style={{ fontSize: '15px', color: '#bfbfbf' }}>
-                                N/A
-                              </Text>
-                              <div style={{ fontSize: '11px', color: '#bfbfbf' }}>
-                                /100
-                              </div>
-                            </div>
-                            <div style={{ fontSize: '10px', color: '#bfbfbf', fontWeight: '500' }}>
-                              Conf: N/A
-                            </div>
-                          </div>
-                        );
-                      }
-
-                      const scoreColor = score >= 70 ? '#52c41a' : score >= 40 ? '#faad14' : '#ff4d4f';
-                      const confidenceColor = record.trendConfidence >= 0.7 ? '#52c41a' :
-                                            record.trendConfidence >= 0.4 ? '#faad14' : '#ff4d4f';
-                      const confidenceText = hasConfidence ? `${(record.trendConfidence * 100).toFixed(0)}%` : 'N/A';
-
+                      const displayScore = score || record.overallScore || 0;
+                      const conf = record.trendConfidence ? (record.trendConfidence * (record.trendConfidence <= 1 ? 100 : 1)).toFixed(0) : '0';
+                      const scoreColor = displayScore >= 70 ? '#52c41a' : displayScore >= 40 ? '#faad14' : '#ff4d4f';
                       return (
-                        <div>
-                          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 8 }}>
-                            <Text strong style={{
-                              fontSize: '18px',
-                              color: scoreColor,
-                              fontWeight: '700'
-                            }}>
-                              {score.toFixed(0)}
-                            </Text>
-                            <div style={{ fontSize: '12px', color: '#8c8c8c' }}>
-                              /100
-                            </div>
-                            <div style={{
-                              fontSize: '10px',
-                              color: confidenceColor,
-                              fontWeight: '600',
-                              marginLeft: 'auto',
-                              padding: '2px 6px',
-                              backgroundColor: `${confidenceColor}15`,
-                              borderRadius: '4px'
-                            }}>
-                              Conf {confidenceText}
-                            </div>
+                        <div style={{ width: '100%' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                            <span style={{ fontSize: '12px', fontWeight: 700, color: scoreColor }}>{displayScore.toFixed(0)}</span>
+                            <span style={{ fontSize: '10px', color: '#8c8c8c' }}>Conf: {conf}%</span>
                           </div>
-                          <div style={{
-                            width: '100%',
-                            height: 8,
-                            backgroundColor: '#f5f5f5',
-                            borderRadius: 4,
-                            overflow: 'hidden',
-                            position: 'relative'
-                          }}>
-                            <div style={{
-                              width: `${score}%`,
-                              height: '100%',
-                              backgroundColor: scoreColor,
-                              borderRadius: 4,
-                              transition: 'width 0.4s ease',
-                              boxShadow: `0 0 8px ${scoreColor}40`
-                            }} />
-                            {/* 刻度标记 */}
-                            <div style={{
-                              position: 'absolute',
-                              top: 0,
-                              left: '70%',
-                              width: '1px',
-                              height: '100%',
-                              backgroundColor: score >= 70 ? '#52c41a' : '#e8e8e8'
-                            }} />
-                            <div style={{
-                              position: 'absolute',
-                              top: 0,
-                              left: '40%',
-                              width: '1px',
-                              height: '100%',
-                              backgroundColor: score >= 40 ? '#faad14' : '#e8e8e8'
-                            }} />
-                          </div>
+                          <Progress 
+                            percent={displayScore} 
+                            size="small" 
+                            strokeColor={scoreColor} 
+                            showInfo={false} 
+                            style={{ margin: 0 }}
+                          />
                         </div>
                       );
                     }
@@ -6906,56 +7006,25 @@ function renderDVDetailPanel(record: any) {
                     key: 'price',
                     width: 120,
                     render: (price: number, record: any) => {
-                      const hasPrice = price !== null && price !== undefined;
-                      const hasChange = record.changePct !== null && record.changePct !== undefined;
-
-                      if (!hasPrice) {
-                        return (
-                          <div>
-                            <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, marginBottom: 4 }}>
-                              <Text strong style={{ fontSize: '14px', color: '#bfbfbf', fontWeight: '600' }}>
-                                N/A
-                              </Text>
-                            </div>
-                            <div style={{ fontSize: '11px', color: '#bfbfbf' }}>
-                              N/A
-                            </div>
-                          </div>
-                        );
-                      }
-
                       const changePct = record.changePct || 0;
                       const changeColor = changePct >= 0 ? '#52c41a' : '#ff4d4f';
-                      const changeIcon = changePct >= 0 ? '↗' : '↘';
-                      const changeSign = changePct >= 0 ? '+' : '';
-                      const changeAbs = Math.abs(changePct).toFixed(2);
-
                       return (
                         <div>
-                          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 6 }}>
-                            <Text strong style={{
-                              fontSize: '15px',
-                              color: '#1f1f1f',
-                              fontWeight: '700',
-                              letterSpacing: '-0.2px'
-                            }}>
-                              ${price.toFixed(2)}
-                            </Text>
-                          </div>
+                          <div className="scanner-price-text">${(price || 0).toFixed(2)}</div>
                           <div style={{
-                            display: 'flex',
+                            display: 'inline-flex',
                             alignItems: 'center',
                             gap: 4,
                             fontSize: '11px',
                             color: changeColor,
-                            fontWeight: '600',
-                            padding: '3px 8px',
+                            fontWeight: 600,
+                            padding: '2px 6px',
                             backgroundColor: `${changeColor}10`,
-                            borderRadius: '6px',
-                            width: 'fit-content'
+                            borderRadius: '4px',
+                            marginTop: 4
                           }}>
-                            <span style={{ fontSize: '12px' }}>{changeIcon}</span>
-                            <span>{changeSign}{changeAbs}%</span>
+                            <span>{changePct >= 0 ? '▲' : '▼'}</span>
+                            <span>{changePct >= 0 ? '+' : ''}{changePct.toFixed(2)}%</span>
                           </div>
                         </div>
                       );
@@ -6965,61 +7034,27 @@ function renderDVDetailPanel(record: any) {
                     title: 'Volume',
                     dataIndex: 'volume',
                     key: 'volume',
-                    width: 120,
+                    width: 130,
                     render: (volume: number, record: any) => {
-                      const hasVolume = volume !== null && volume !== undefined;
-                      const volumeStatus = record.volumeStatus;
-
-                      if (!hasVolume) {
-                        return (
-                          <div>
-                            <div style={{ fontSize: '11px', color: '#bfbfbf' }}>
-                              N/A
-                            </div>
-                            <div style={{ fontSize: '10px', color: '#bfbfbf' }}>
-                              Status: N/A
-                            </div>
-                          </div>
-                        );
-                      }
-
-                      // 根据volumeStatus设置颜色
-                      let statusColor = '#8c8c8c';
-                      let statusText = 'N/A';
-
-                      if (volumeStatus === 'High') {
-                        statusColor = '#ff4d4f';
-                        statusText = 'High';
-                      } else if (volumeStatus === 'Low') {
-                        statusColor = '#52c41a';
-                        statusText = 'Low';
-                      } else if (volumeStatus === 'Normal') {
-                        statusColor = '#faad14';
-                        statusText = 'Normal';
-                      }
-
+                      const status = record.volumeStatus || 'Normal';
+                      const statusColor = status === 'High' ? '#ff4d4f' : status === 'Low' ? '#52c41a' : '#faad14';
                       return (
                         <div>
-                          <div style={{ fontSize: '11px', fontWeight: '600', color: '#333' }}>
+                          <div style={{ fontSize: '13px', fontWeight: 600, color: '#262626' }}>
                             {marketDataService.formatVolume(volume)}
                           </div>
-                          <div style={{
-                            fontSize: '10px',
-                            color: statusColor,
-                            fontWeight: '500',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '4px',
-                            marginTop: '2px'
-                          }}>
-                            <span>Status:</span>
+                          <div style={{ marginTop: 4 }}>
                             <span style={{
+                              fontSize: '10px',
+                              color: statusColor,
+                              fontWeight: 700,
+                              textTransform: 'uppercase',
                               padding: '1px 6px',
-                              borderRadius: '8px',
-                              backgroundColor: `${statusColor}15`,
-                              fontWeight: '600'
+                              borderRadius: '4px',
+                              backgroundColor: `${statusColor}10`,
+                              border: `1px solid ${statusColor}30`
                             }}>
-                              {statusText}
+                              {status}
                             </span>
                           </div>
                         </div>
@@ -7027,115 +7062,60 @@ function renderDVDetailPanel(record: any) {
                     }
                   },
                   {
-                    title: 'News',
+                    title: 'News / Sentiment',
                     dataIndex: 'newsSentiment',
                     key: 'newsSentiment',
-                    width: 100,
+                    width: 140,
                     render: (sentiment: string, record: any) => {
-                      const hasSentiment = sentiment !== null && sentiment !== undefined;
-                      const hasRisk = record.eventRisk !== null && record.eventRisk !== undefined;
-
-                      if (!hasSentiment) {
-                        return (
-                          <div>
-                            <div style={{
-                              display: 'inline-block',
-                              padding: '3px 8px',
-                              borderRadius: '8px',
-                              backgroundColor: '#f0f0f0',
-                              color: '#666',
-                              fontSize: '10px',
-                              fontWeight: '500'
-                            }}>
-                              N/A
-                            </div>
-                            <div style={{ fontSize: '9px', color: '#999', marginTop: 4 }}>
-                              Risk: N/A
-                            </div>
-                          </div>
-                        );
-                      }
-
                       let color = '#8c8c8c';
-                      let icon = '📰';
-                      if (sentiment === 'Positive') {
-                        color = '#52c41a';
-                        icon = '📈';
-                      } else if (sentiment === 'Negative') {
-                        color = '#ff4d4f';
-                        icon = '📉';
-                      } else if (sentiment === 'Mixed') {
-                        color = '#faad14';
-                        icon = '📊';
-                      }
-
-                      let riskColor = '#8c8c8c';
-                      if (record.eventRisk === 'High') riskColor = '#ff4d4f';
-                      if (record.eventRisk === 'Medium') riskColor = '#faad14';
-                      if (record.eventRisk === 'Low') riskColor = '#52c41a';
+                      let icon = '⚪';
+                      if (sentiment === 'Positive') { color = '#52c41a'; icon = '📈'; }
+                      else if (sentiment === 'Negative') { color = '#ff4d4f'; icon = '📉'; }
+                      else if (sentiment === 'Mixed') { color = '#faad14'; icon = '📊'; }
+                      
+                      const risk = record.eventRisk || 'Low';
+                      const riskColor = risk === 'High' ? '#ff4d4f' : risk === 'Medium' ? '#faad14' : '#52c41a';
 
                       return (
                         <div>
-                          <div style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 4
-                          }}>
-                            <span style={{ fontSize: '11px' }}>{icon}</span>
-                            <div style={{
-                              display: 'inline-block',
-                              padding: '3px 8px',
-                              borderRadius: '8px',
-                              backgroundColor: `${color}15`,
-                              color: color,
-                              fontSize: '10px',
-                              fontWeight: '600'
-                            }}>
-                              {sentiment}
-                            </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{ fontSize: '14px' }}>{icon}</span>
+                            <span style={{ fontSize: '12px', fontWeight: 600, color }}>{sentiment || 'N/A'}</span>
                           </div>
-                          <div style={{
-                            fontSize: '9px',
-                            color: hasRisk ? riskColor : '#999',
-                            marginTop: 4,
-                            fontWeight: hasRisk ? '500' : '400'
-                          }}>
-                            {hasRisk ? `Risk: ${record.eventRisk}` : 'Risk: N/A'}
+                          <div style={{ fontSize: '10px', color: '#8c8c8c', marginTop: 4 }}>
+                            Risk: <span style={{ color: riskColor, fontWeight: 700 }}>{risk}</span>
                           </div>
                         </div>
                       );
                     }
                   },
                   {
-                    title: 'Sector',
-                    dataIndex: 'sector',
-                    key: 'sector',
-                    width: 100,
-                    render: (sector: string) => (
-                      <div style={{ fontSize: '11px', color: sector === 'Unknown' ? '#ccc' : '#666' }}>
-                        {sector || 'Unknown'}
-                      </div>
-                    )
-                  },
-                  {
-                    title: 'Data',
+                    title: 'Data Qual.',
                     key: 'dataQuality',
-                    width: 75,
+                    width: 100,
                     render: (record: any) => {
                       const hasPrice = record.price != null && record.price > 0;
                       const hasVolume = record.volume != null && record.volume > 0;
                       const hasTrend = record.trendLabel != null;
                       const dqOk = hasPrice && hasVolume && hasTrend;
-                      const dqPartial = (hasPrice || hasVolume || hasTrend) && !dqOk;
-                      const dq = dqOk ? 'GOOD' : dqPartial ? 'PARTIAL' : 'POOR';
-                      const dqColor = dq === 'GOOD' ? '#52c41a' : dq === 'PARTIAL' ? '#fa8c16' : '#ff4d4f';
-                      const aiLabel = record.aiCalled ? (record.aiSource || 'AI') : 'LR';
+                      const dq = dqOk ? 'Good' : 'Partial';
+                      const dqColor = dq === 'Good' ? '#52c41a' : '#faad14';
                       return (
-                        <div style={{ lineHeight: '1.3' }}>
-                          <Tag color={dq === 'GOOD' ? 'green' : dq === 'PARTIAL' ? 'gold' : 'red'} style={{ fontSize: '9px', padding: '0 4px', lineHeight: '16px', margin: 0 }}>{dq}</Tag>
-                          <Tooltip title={record.aiCalled ? `${record.aiSource || 'AI'} / ${record.aiModel || 'LLM'} called${record.aiError ? ' — ' + record.aiError : ''}` : `Local Rules fallback${record.aiError ? ' — ' + record.aiError : ' — no LLM call'}`}>
-                            <div style={{ fontSize: '9px', color: '#aaa', marginTop: '1px', cursor: 'help' }}>{aiLabel}</div>
-                          </Tooltip>
+                        <div>
+                          <div style={{ 
+                            fontSize: '10px', 
+                            fontWeight: 700, 
+                            color: dqColor,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 4
+                          }}>
+                            <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: dqColor }} />
+                            {dq}
+                          </div>
+                          <div style={{ fontSize: '10px', color: '#bfbfbf', marginTop: 2 }}>
+                            {record.aiCalled ? record.aiSource : 'Local'}
+                          </div>
                         </div>
                       );
                     },
@@ -7144,69 +7124,49 @@ function renderDVDetailPanel(record: any) {
                     title: 'AI Reasoning',
                     dataIndex: 'conciseReasoning',
                     key: 'conciseReasoning',
-                    width: 220,
+                    width: 250,
                     render: (reason: string, record: any) => {
-                      const displayReason = reason || record.scannerReason || record.aiReasoning;
-                      const sourceNote = record.aiCalled ? ` (${record.aiSource || 'AI'})` : ' (Local Rules)';
-
-                      if (!displayReason) {
-                        return (
-                          <div style={{
-                            fontSize: '11px',
-                            color: '#bfbfbf',
-                            fontStyle: 'italic',
-                            padding: '4px 0'
-                          }}>
-                            N/A
-                          </div>
-                        );
-                      }
-
-                      // 限制在1-2行，大约120个字符
-                      const maxLength = 120;
-                      let truncatedReason = displayReason;
-
-                      if (displayReason.length > maxLength) {
-                        truncatedReason = displayReason.substring(0, maxLength).trim() + '...';
-                      }
-
+                      const displayReason = reason || record.scannerReason || record.aiReasoning || 'No analysis available';
                       return (
-                        <div style={{
-                          fontSize: '11px',
-                          lineHeight: 1.4,
-                          color: '#333',
-                          padding: '4px 0',
-                          maxHeight: '2.8em',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          display: '-webkit-box',
-                          WebkitLineClamp: 2,
-                          WebkitBoxOrient: 'vertical'
-                        }}>
-                          {truncatedReason}
-                        </div>
+                        <Tooltip title={displayReason}>
+                          <div className="scanner-reasoning-text">
+                            {displayReason}
+                          </div>
+                        </Tooltip>
                       );
                     }
                   }
                 ]}
                 dataSource={getFilteredAndSortedResults()}
                 rowKey="symbol"
-                size="small"
-                pagination={{ pageSize: 10, size: 'small' }}
+                size="middle"
+                pagination={{ pageSize: 10, size: 'default', showSizeChanger: false }}
                 scroll={{ x: 1200 }}
+                onRow={(record) => ({
+                  className: expandedRows.includes(record.symbol) ? 'scanner-row-expanded' : '',
+                  onClick: () => toggleRowExpand(record.symbol)
+                })}
                 expandable={{
                   expandedRowRender: (record: any) => renderDetailPanel(record),
-                  rowExpandable: (record: any) => true,
+                  rowExpandable: () => true,
                   expandedRowKeys: expandedRows,
-                  onExpand: (expanded, record) => {
-                    if (expanded) {
-                      setExpandedRows(prev => [...prev, record.symbol]);
-                    } else {
-                      setExpandedRows(prev => prev.filter(s => s !== record.symbol));
-                    }
-                  }
+                  showExpandColumn: true,
+                  expandRowByClick: false,
+                  expandIcon: ({ expanded, onExpand, record }) => (
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={expanded ? <ArrowDownOutlined /> : <ArrowRightOutlined />}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onExpand(record, e);
+                      }}
+                      style={{ padding: 0, width: 24, height: 24, color: '#bfbfbf' }}
+                    />
+                  )
                 }}
               />
+            </div>
             </div>
           )}
 
@@ -7220,151 +7180,185 @@ function renderDVDetailPanel(record: any) {
             </div>
           )}
         </Card>
-      </div>
+      </CollapsibleStageSection>
 
       {/* 2.5 Preferred Continue Scan List */}
-      <div style={{ marginBottom: 24 }}>
-        <Title level={4}>
-          <BarChartOutlined style={{ marginRight: '8px' }} />
-          Preferred Continue Scan List
-        </Title>
-        <Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>
-          AI-assisted shortlist from completed Market Scanner results — these are not buy signals
-        </Text>
-
-        {/* 顶部控制面板 */}
-        <Card style={{ marginBottom: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div style={{ flex: 1 }}>
-              {/* 状态和信息行 */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '12px', fontSize: '12px', color: '#666', flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <Text strong style={{ fontSize: '12px', color: '#333' }}>Status:</Text>
-                  <Badge
-                    status={
-                      continueScanStatus === 'processing' ? 'processing' :
-                      continueScanStatus === 'completed' ? 'success' :
-                      continueScanStatus === 'error' ? 'error' : 'default'
-                    }
-                    text={
-                      continueScanStatus === 'processing' ? 'Running' :
-                      continueScanStatus === 'completed' ? 'Completed' :
-                      continueScanStatus === 'error' ? 'Error' : 'Ready'
-                    }
-                    style={{ fontSize: '11px' }}
-                  />
-                </div>
-                <span style={{ color: '#ddd' }}>|</span>
-                <Text style={{ fontSize: '11px' }}>
-                  <strong>Source:</strong> Market Scanner · <strong>Selection:</strong>{' '}
-                  {preferredContinueScanList.length > 0 ? (
-                    preferredContinueScanList.filter(c => c.aiCalled).length > 0 ? (
-                      <Tag color="green" style={{ fontSize: '10px', padding: '0 4px', lineHeight: '16px' }}>AI + Rules</Tag>
-                    ) : (
-                      <Tag color="gold" style={{ fontSize: '10px', padding: '0 4px', lineHeight: '16px' }}>Local Rules</Tag>
-                    )
-                  ) : '—'}
-                </Text>
-                <span style={{ color: '#ddd' }}>|</span>
-                <Text style={{ fontSize: '11px' }}><strong>Based on:</strong> {marketScannerResults.length} scanned symbols</Text>
-                {detailedScanStatus.lastScanAt && (
-                  <>
-                    <span style={{ color: '#ddd' }}>|</span>
-                    <Text style={{ fontSize: '11px' }}>
-                      <strong>Last scan:</strong> {new Date(detailedScanStatus.lastScanAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </Text>
-                  </>
-                )}
-              </div>
-
-              {/* AI fallback warning */}
-              {continueScanStatus === 'completed' && preferredContinueScanList.length > 0 &&
-               preferredContinueScanList.filter(c => c.aiCalled).length === 0 && (
-                <Alert
-                  message="Selection generated by Local Rules. Configure AI key for AI-assisted reasoning."
-                  type="warning"
-                  showIcon
-                  style={{ marginBottom: '12px', fontSize: '12px', padding: '6px 12px' }}
-                />
-              )}
-
-              {/* 统计卡片 - 只在完成时显示 */}
-              {continueScanStatus === 'completed' && preferredContinueScanList.length > 0 && (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '10px', marginBottom: '12px' }}>
-                  <div style={{ padding: '10px', backgroundColor: '#f6f8fa', borderRadius: '8px', border: '1px solid #e8eaed' }}>
-                    <div style={{ fontSize: '10px', color: '#888', marginBottom: '2px' }}>Selected</div>
-                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
-                      <Text strong style={{ fontSize: '18px', color: '#1a1a1a' }}>{preferredContinueScanList.length}</Text>
-                      <Text style={{ fontSize: '11px', color: '#888' }}>/ {marketScannerResults.length}</Text>
-                    </div>
-                  </div>
-                  <div style={{ padding: '10px', backgroundColor: '#f6f8fa', borderRadius: '8px', border: '1px solid #e8eaed' }}>
-                    <div style={{ fontSize: '10px', color: '#888', marginBottom: '2px' }}>Avg Priority</div>
-                    <Text strong style={{ fontSize: '18px', color: '#1a1a1a' }}>
-                      {preferredContinueScanList.length > 0
-                        ? `${Math.round(preferredContinueScanList.reduce((sum, c) => sum + (c.priorityScore || 0), 0) / preferredContinueScanList.length)}%`
-                        : '—'}
-                    </Text>
-                  </div>
-                  <div style={{ padding: '10px', backgroundColor: '#f6f8fa', borderRadius: '8px', border: '1px solid #e8eaed' }}>
-                    <div style={{ fontSize: '10px', color: '#888', marginBottom: '2px' }}>Risk Mix</div>
-                    <Text strong style={{ fontSize: '18px', color: '#1a1a1a' }}>
-                      {preferredContinueScanList.filter(c => (c.eventRisk || 'Medium') === 'Low').length}L / {preferredContinueScanList.filter(c => (c.eventRisk || 'Medium') === 'Medium').length}M / {preferredContinueScanList.filter(c => (c.eventRisk || 'Medium') === 'High').length}H
-                    </Text>
-                  </div>
-                  <div style={{ padding: '10px', backgroundColor: '#f6f8fa', borderRadius: '8px', border: '1px solid #e8eaed' }}>
-                    <div style={{ fontSize: '10px', color: '#888', marginBottom: '2px' }}>Avg Score</div>
-                    <Text strong style={{ fontSize: '18px', color: '#1a1a1a' }}>
-                      {preferredContinueScanList.length > 0
-                        ? Math.round(preferredContinueScanList.reduce((sum, c) => sum + (c.overallScore || c.trendScore || 0), 0) / preferredContinueScanList.length)
-                        : '—'}
-                    </Text>
-                  </div>
-                  <div style={{ padding: '10px', backgroundColor: '#f6f8fa', borderRadius: '8px', border: '1px solid #e8eaed' }}>
-                    <div style={{ fontSize: '10px', color: '#888', marginBottom: '2px' }}>AI Status</div>
-                    <Text strong style={{ fontSize: '18px', color: '#1a1a1a' }}>
-                      {preferredContinueScanList.filter(c => c.aiCalled).length}A / {preferredContinueScanList.filter(c => !c.aiCalled).length}R
-                    </Text>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* 按钮区域 */}
-            <div style={{ marginLeft: '16px', display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-end' }}>
-              <Button
-                type={continueScanStatus === 'completed' || continueScanStatus === 'error' ? 'default' : 'primary'}
-                size="middle"
-                onClick={() => handleStartContinueScan(continueScanStatus === 'completed' || continueScanStatus === 'error')}
-                disabled={marketScannerResults.length === 0 || continueScanStatus === 'processing'}
-                loading={continueScanStatus === 'processing'}
-                style={{ minWidth: '170px', fontWeight: '500' }}
-              >
-                {continueScanStatus === 'completed' || continueScanStatus === 'error' ? 'Re-run Continue Scan' : 'Start Continue Scan'}
-              </Button>
-            </div>
+      <CollapsibleStageSection
+        title="Preferred Continue Scan List"
+        icon={<BarChartOutlined style={{ color: '#1890ff' }} />}
+        statusText={
+          continueScanStatus === 'processing' ? 'RUNNING' :
+          continueScanStatus === 'completed' ? 'COMPLETED' :
+          continueScanStatus === 'error' ? 'ERROR' : 'READY'
+        }
+        statusColor={
+          continueScanStatus === 'processing' ? 'processing' :
+          continueScanStatus === 'completed' ? 'success' :
+          continueScanStatus === 'error' ? 'error' : 'default'
+        }
+        progressValue={continueScanStatus === 'processing' ? continueScanProgress : null}
+        summaryChips={preferredContinueScanList.length > 0 ? [
+          { label: 'Candidates', value: preferredContinueScanList.length },
+          { label: 'AI Reasons', value: preferredContinueScanList.filter((c: any) => c.reasonSource === 'AI').length, color: '#1890ff' },
+          { label: 'Rule-based', value: preferredContinueScanList.filter((c: any) => c.reasonSource !== 'AI').length },
+        ] : undefined}
+        actionButton={
+          <div style={{ display: 'flex', gap: 6 }}>
+            <Button
+              type={devTestMode ? 'primary' : 'default'}
+              size="small"
+              danger={devTestMode}
+              onClick={() => {
+                if (devTestMode) {
+                  setDevTestMode(false);
+                  removeDevTestCandidate();
+                } else {
+                  setDevTestMode(true);
+                  injectDevTestCandidate();
+                }
+              }}
+              style={devTestMode ? { background: '#ff4d4f', borderColor: '#ff4d4f' } : {}}
+            >
+              {devTestMode ? 'Disable Test' : 'Enable Test'}
+            </Button>
+            <Button
+              type={continueScanStatus === 'completed' || continueScanStatus === 'error' ? 'default' : 'primary'}
+              size="small"
+              onClick={() => handleStartContinueScan(continueScanStatus === 'completed' || continueScanStatus === 'error')}
+              disabled={marketScannerResults.length === 0 || continueScanStatus === 'processing'}
+              loading={continueScanStatus === 'processing'}
+              icon={<SyncOutlined />}
+            >
+              {continueScanStatus === 'completed' || continueScanStatus === 'error' ? 'Re-run Scan' : 'Start Continue Scan'}
+            </Button>
           </div>
+        }
+        isRunning={continueScanStatus === 'processing'}
+        expanded={continueScanExpanded}
+        onToggle={() => setContinueScanExpanded(!continueScanExpanded)}
+      >
+        <div className="continue-scan-section">
+        {/* 顶部控制面板 */}
+        <Card style={{ marginBottom: 16, borderRadius: '12px', border: '1px solid #f0f0f0' }} bodyStyle={{ padding: '20px' }}>
+          {/* 状态和信息行 */}
+          <div className="continue-scan-header-meta">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span style={{ fontWeight: 600 }}>Status:</span>
+              <Tag 
+                color={
+                  continueScanStatus === 'processing' ? 'blue' :
+                  continueScanStatus === 'completed' ? 'success' :
+                  continueScanStatus === 'error' ? 'error' : 'default'
+                }
+                className="continue-scan-status-badge"
+              >
+                {continueScanStatus === 'processing' ? 'RUNNING' :
+                 continueScanStatus === 'completed' ? 'COMPLETED' :
+                 continueScanStatus === 'error' ? 'ERROR' : 'READY'}
+              </Tag>
+            </div>
+            <Divider type="vertical" />
+            <span><strong>Source:</strong> Market Scanner</span>
+            <Divider type="vertical" />
+            <span>
+              <strong>Selection:</strong>{' '}
+              {preferredContinueScanList.length > 0 ? (
+                preferredContinueScanList.filter(c => c.reasonSource === 'AI').length > 0 ? (
+                  <Tag color="cyan" style={{ fontSize: '10px', fontWeight: 700 }}>AI + RULES</Tag>
+                ) : (
+                  <Tag color="orange" style={{ fontSize: '10px', fontWeight: 700 }}>RULES ONLY</Tag>
+                )
+              ) : '—'}
+            </span>
+            <Divider type="vertical" />
+            <span><strong>Pool:</strong> {marketScannerResults.length} symbols</span>
+            {detailedScanStatus.lastScanAt && (
+              <>
+                <Divider type="vertical" />
+                <span>
+                  <strong>Last Sync:</strong> {new Date(detailedScanStatus.lastScanAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              </>
+            )}
+          </div>
+
+          {/* AI fallback warning */}
+          {continueScanStatus === 'completed' && preferredContinueScanList.length > 0 &&
+            preferredContinueScanList.filter(c => c.reasonSource === 'AI').length === 0 && (
+            <Alert
+              message="Rule-based selection active. AI reasoning is currently disabled."
+              type="info"
+              showIcon
+              style={{ marginBottom: '16px', borderRadius: '8px' }}
+            />
+          )}
+
+          {/* 统计卡片 - 只在完成时显示 */}
+          {continueScanStatus === 'completed' && preferredContinueScanList.length > 0 && (
+            <div className="continue-scan-stat-grid">
+              <div className="continue-scan-stat-card">
+                <div className="continue-scan-stat-label">Selected</div>
+                <div className="continue-scan-stat-value">
+                  {preferredContinueScanList.length}
+                  <span className="continue-scan-stat-sub">/ {marketScannerResults.length}</span>
+                </div>
+              </div>
+              <div className="continue-scan-stat-card">
+                <div className="continue-scan-stat-label">Avg Priority</div>
+                <div className="continue-scan-stat-value" style={{ color: '#1890ff' }}>
+                  {preferredContinueScanList.length > 0
+                    ? `${Math.round(preferredContinueScanList.reduce((sum, c) => sum + (c.priorityScore || 0), 0) / preferredContinueScanList.length)}%`
+                    : '—'}
+                </div>
+              </div>
+              <div className="continue-scan-stat-card">
+                <div className="continue-scan-stat-label">Risk Mix (L/M/H)</div>
+                <div className="continue-scan-stat-value" style={{ fontSize: '16px', paddingTop: '4px' }}>
+                  <span style={{ color: '#52c41a' }}>{preferredContinueScanList.filter(c => (c.eventRisk || 'Medium') === 'Low').length}</span>
+                  <span style={{ color: '#bfbfbf', margin: '0 4px' }}>/</span>
+                  <span style={{ color: '#faad14' }}>{preferredContinueScanList.filter(c => (c.eventRisk || 'Medium') === 'Medium').length}</span>
+                  <span style={{ color: '#bfbfbf', margin: '0 4px' }}>/</span>
+                  <span style={{ color: '#ff4d4f' }}>{preferredContinueScanList.filter(c => (c.eventRisk || 'Medium') === 'High').length}</span>
+                </div>
+              </div>
+              <div className="continue-scan-stat-card">
+                <div className="continue-scan-stat-label">Avg Score</div>
+                <div className="continue-scan-stat-value">
+                  {preferredContinueScanList.length > 0
+                    ? Math.round(preferredContinueScanList.reduce((sum, c) => sum + (c.overallScore || c.trendScore || 0), 0) / preferredContinueScanList.length)
+                    : '—'}
+                </div>
+              </div>
+              <div className="continue-scan-stat-card">
+                <div className="continue-scan-stat-label">AI Coverage</div>
+                <div className="continue-scan-stat-value">
+                  {Math.round((preferredContinueScanList.filter(c => c.reasonSource === 'AI').length / preferredContinueScanList.length) * 100)}%
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* 进度条（处理中时显示） */}
           {continueScanStatus === 'processing' && (
-            <div style={{ marginTop: '16px' }}>
+            <div style={{ marginTop: '8px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                <Text>{continueScanDetails.currentStage || 'Processing...'}</Text>
+                <Text strong style={{ color: '#1890ff' }}>{continueScanDetails.currentStage || 'Processing...'}</Text>
                 <Text strong>{continueScanProgress}%</Text>
               </div>
               <Progress
                 percent={continueScanProgress}
                 status="active"
-                strokeColor={{ '0%': '#108ee9', '100%': '#87d068' }}
+                strokeColor={{ '0%': '#1890ff', '100%': '#52c41a' }}
+                strokeWidth={10}
               />
-              <div style={{ fontSize: '12px', color: '#666', marginTop: '8px' }}>
-                Processed: {continueScanDetails.processedCount} / {continueScanDetails.totalCount} candidates
+              <div style={{ fontSize: '12px', color: '#8c8c8c', marginTop: '8px' }}>
+                Candidates processed: <strong>{continueScanDetails.processedCount}</strong> / {continueScanDetails.totalCount}
               </div>
             </div>
           )}
         </Card>
 
-        <Card>
+        <Card bodyStyle={{ padding: 0, border: 'none' }} bordered={false}>
           {(() => {
             // 状态1: 没有market scan结果
             if (marketScannerResults.length === 0) {
@@ -7383,7 +7377,7 @@ function renderDVDetailPanel(record: any) {
               );
             }
 
-            // 状态2: continue scan处理中 - 现在进度条在顶部控制面板中显示
+            // 状态2: continue scan处理中
             if (continueScanStatus === 'processing') {
               return (
                 <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
@@ -7392,253 +7386,253 @@ function renderDVDetailPanel(record: any) {
                   <div style={{ fontSize: '12px', marginTop: 8 }}>
                     Processing {continueScanDetails.processedCount} of {continueScanDetails.totalCount} candidates
                   </div>
-                  <div style={{ fontSize: '11px', color: '#999', marginTop: 8 }}>
-                    Check progress in the control panel above
-                  </div>
                 </div>
               );
             }
 
             // 状态3: continue scan完成
             if (continueScanStatus === 'completed' && preferredContinueScanList.length > 0) {
+              const paginatedData = preferredContinueScanList.slice((preferredContinuePage - 1) * 10, preferredContinuePage * 10);
               return (
-                <div>
-                  <div style={{ marginBottom: 16 }}>
-                    <Alert
-                      message={`Found ${preferredContinueScanList.length} candidates for follow-up analysis`}
-                      type="success"
-                      showIcon
-                      style={{ marginBottom: 16 }}
-                    />
+                <div className="continue-scan-table-container">
+                  <div style={{ 
+                    backgroundColor: '#f6ffed', 
+                    border: '1px solid #b7eb8f', 
+                    padding: '12px 16px', 
+                    borderRadius: '8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    marginBottom: '16px'
+                  }}>
+                    <CheckCircleOutlined style={{ color: '#52c41a', fontSize: '20px' }} />
+                    <div>
+                      <div style={{ fontWeight: 700, color: '#1f1f1f', fontSize: '14px' }}>
+                        Selection Successful
+                      </div>
+                      <div style={{ color: '#595959', fontSize: '12px' }}>
+                        Found <strong>{preferredContinueScanList.length}</strong> top-tier candidates for follow-up analysis.
+                      </div>
+                    </div>
+                  </div>
 
-                    <Table
-                      size="small"
-                      dataSource={preferredContinueScanList}
-                      pagination={{
-                        pageSize: 10,
-                        size: 'small',
-                        showSizeChanger: false,
-                        showQuickJumper: false,
-                        showTotal: (total, range) => `${range[0]}-${range[1]} of ${total} candidates`,
-                        onChange: (page) => setPreferredContinuePage(page)
-                      }}
-                      scroll={{ x: 1300 }}
-                      rowKey="symbol"
-                      expandable={{
-                        expandedRowRender: (record: any) => {
-                          const pb = record.priorityBreakdown || {};
-                          const dq = record.dataQuality || 'PARTIAL';
-                          const dqColor = dq === 'GOOD' ? '#52c41a' : dq === 'PARTIAL' ? '#fa8c16' : '#ff4d4f';
-                          const sourceColor = record.aiCalled ? '#52c41a' : '#fa8c16';
+                  <Table
+                    dataSource={paginatedData}
+                    pagination={false}
+                    scroll={{ x: 1300 }}
+                    rowKey="symbol"
+                    size="middle"
+                    expandable={{
+                      expandedRowRender: (record: any) => renderDetailPanel(record),
+                      rowExpandable: () => true,
+                    }}
+                    columns={[
+                      {
+                        title: '#',
+                        key: 'rank',
+                        width: 50,
+                        render: (_, __, index) => {
+                          const rank = (preferredContinuePage - 1) * 10 + index + 1;
+                          const isTop = rank <= 3;
                           return (
-                            <div style={{ padding: '12px 16px', background: '#fbfbfc', border: '1px solid #edf0f2', borderRadius: '8px' }}>
-                              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                                {/* Market Snapshot */}
-                                <div style={{ background: '#fff', borderRadius: '6px', border: '1px solid #edf0f2', padding: '10px 12px' }}>
-                                  <div style={{ fontSize: '10px', fontWeight: 600, color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px' }}>Market Snapshot</div>
-                                  <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: '3px 8px', fontSize: '11px' }}>
-                                    <span style={{ color: '#888' }}>Price</span><span style={{ fontWeight: 500 }}>${record.price?.toFixed(2) || 'N/A'}</span>
-                                    <span style={{ color: '#888' }}>Change</span><span style={{ fontWeight: 500, color: (record.changePct || 0) >= 0 ? '#52c41a' : '#ff4d4f' }}>{(record.changePct || 0).toFixed(2)}%</span>
-                                    <span style={{ color: '#888' }}>Day Range</span><span style={{ fontWeight: 500 }}>${record.dayHigh?.toFixed(2) || '—'} – ${record.dayLow?.toFixed(2) || '—'}</span>
-                                    <span style={{ color: '#888' }}>Volume</span><span style={{ fontWeight: 500 }}>{record.volume?.toLocaleString() || 'N/A'} {record.volumeStatus ? `(${record.volumeStatus})` : ''}</span>
-                                    <span style={{ color: '#888' }}>Sector</span><span style={{ fontWeight: 500 }}>{record.sector || 'Unknown'}</span>
-                                    <span style={{ color: '#888' }}>Updated</span><span style={{ fontWeight: 500, fontSize: '10px', color: '#aaa' }}>{record.scanTimestamp ? new Date(record.scanTimestamp).toLocaleString() : 'N/A'}</span>
-                                  </div>
+                            <div style={{ 
+                              display: 'flex', 
+                              alignItems: 'center', 
+                              justifyContent: 'center',
+                              width: 24,
+                              height: 24,
+                              borderRadius: '50%',
+                              backgroundColor: isTop ? '#1890ff' : 'transparent',
+                              color: isTop ? '#fff' : '#8c8c8c',
+                              fontWeight: 700,
+                              fontSize: '11px'
+                            }}>
+                              {rank}
+                            </div>
+                          );
+                        },
+                      },
+                      {
+                        title: 'Symbol',
+                        key: 'symbol',
+                        width: 140,
+                        render: (record) => (
+                          <div style={{ display: 'flex', flexDirection: 'column' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <span className="scanner-symbol-text">{record.symbol}</span>
+                              {record.isDevTest && <Tag color="red" style={{ fontSize: 9, padding: '0 3px', lineHeight: '14px', margin: 0 }}>DEV TEST</Tag>}
+                            </div>
+                            <span className="scanner-company-text" style={{ maxWidth: 100 }}>
+                              {record.companyName || 'Unknown Company'}
+                            </span>
+                          </div>
+                        ),
+                      },
+                      {
+                        title: 'Trend',
+                        key: 'trend',
+                        width: 120,
+                        render: (record) => renderTrendBadge(record.trendLabel),
+                      },
+                      {
+                        title: 'Score',
+                        key: 'score',
+                        width: 80,
+                        render: (record) => {
+                          const score = record.overallScore || record.trendScore || 0;
+                          const color = score >= 70 ? '#52c41a' : score >= 50 ? '#faad14' : '#ff4d4f';
+                          return (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <div style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: color }} />
+                              <span style={{ fontSize: '14px', fontWeight: 700, color: '#262626' }}>{score > 0 ? score.toFixed(0) : '—'}</span>
+                            </div>
+                          );
+                        },
+                      },
+                      {
+                        title: 'Priority',
+                        key: 'priority',
+                        width: 160,
+                        render: (record) => {
+                          const ps = record.priorityScore || 0;
+                          const pb = record.priorityBreakdown || {};
+                          const color = ps >= 80 ? '#52c41a' : ps >= 60 ? '#faad14' : '#ff4d4f';
+                          const breakdownContent = (
+                            <div style={{ padding: '8px', fontSize: '11px' }}>
+                              <div style={{ fontWeight: 700, marginBottom: 4, borderBottom: '1px solid #f0f0f0', paddingBottom: 2 }}>Score Breakdown</div>
+                              {Object.entries(pb).map(([key, val]: [string, any]) => (
+                                <div key={key} style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                                  <span style={{ textTransform: 'capitalize' }}>{key}:</span>
+                                  <span style={{ fontWeight: 700, color: val >= 0 ? '#52c41a' : '#ff4d4f' }}>
+                                    {val >= 0 ? '+' : ''}{val}
+                                  </span>
                                 </div>
-                                {/* Selection Logic */}
-                                <div style={{ background: '#fff', borderRadius: '6px', border: '1px solid #edf0f2', padding: '10px 12px' }}>
-                                  <div style={{ fontSize: '10px', fontWeight: 600, color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px' }}>Selection Logic</div>
-                                  <div style={{ display: 'grid', gridTemplateColumns: '90px 1fr', gap: '3px 8px', fontSize: '11px' }}>
-                                    <span style={{ color: '#888' }}>Priority</span><span style={{ fontWeight: 600 }}>{record.priorityScore || 0}%</span>
-                                    <span style={{ color: '#888' }}>Trend Score</span><span style={{ fontWeight: 500 }}>{record.overallScore || record.trendScore || 'N/A'}</span>
-                                    <span style={{ color: '#888' }}>Confidence</span><span style={{ fontWeight: 500 }}>{record.trendConfidence != null ? `${(record.trendConfidence * 100).toFixed(0)}%` : 'N/A'}</span>
-                                    <span style={{ color: '#888' }}>Event Risk</span><Tag color={record.eventRisk === 'Low' ? 'green' : record.eventRisk === 'Medium' ? 'gold' : 'red'} style={{ fontSize: '9px', margin: 0 }}>{record.eventRisk || 'N/A'}</Tag>
-                                    <span style={{ color: '#888' }}>News</span><span style={{ fontWeight: 500 }}>{record.newsSentiment || 'N/A'}</span>
-                                  </div>
-                                  {/* Priority breakdown */}
-                                  {Object.keys(pb).length > 0 && (
-                                    <div style={{ marginTop: '8px', paddingTop: '6px', borderTop: '1px solid #f0f0f0' }}>
-                                      <div style={{ fontSize: '9px', color: '#aaa', marginBottom: '4px' }}>Priority Breakdown</div>
-                                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', fontSize: '10px' }}>
-                                        {pb.trend !== undefined && <span style={{ color: pb.trend >= 0 ? '#52c41a' : '#ff4d4f' }}>Trend {pb.trend >= 0 ? '+' : ''}{pb.trend}</span>}
-                                        {pb.score !== undefined && <span style={{ color: pb.score >= 0 ? '#1890ff' : '#ff4d4f' }}>Score +{pb.score}</span>}
-                                        {pb.risk !== undefined && <span style={{ color: pb.risk >= 0 ? '#722ed1' : '#ff4d4f' }}>Risk {pb.risk >= 0 ? '+' : ''}{pb.risk}</span>}
-                                        {pb.news !== undefined && <span style={{ color: pb.news >= 0 ? '#13c2c2' : '#ff4d4f' }}>News {pb.news >= 0 ? '+' : ''}{pb.news}</span>}
-                                        {pb.price !== undefined && <span style={{ color: pb.price >= 0 ? '#52c41a' : '#ff4d4f' }}>Price {pb.price >= 0 ? '+' : ''}{pb.price}</span>}
-                                        {pb.volume !== undefined && <span style={{ color: pb.volume >= 0 ? '#fa8c16' : '#ff4d4f' }}>Vol {pb.volume >= 0 ? '+' : ''}{pb.volume}</span>}
-                                      </div>
-                                    </div>
-                                  )}
+                              ))}
+                            </div>
+                          );
+                          return (
+                            <Tooltip title={breakdownContent}>
+                              <div style={{ width: '100%', cursor: 'help' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontSize: '11px' }}>
+                                  <span style={{ color: '#8c8c8c', fontWeight: 600 }}>Weight</span>
+                                  <span style={{ color: color, fontWeight: 800 }}>{ps}%</span>
                                 </div>
-                                {/* AI / Reasoning */}
-                                <div style={{ background: '#fff', borderRadius: '6px', border: '1px solid #edf0f2', padding: '10px 12px' }}>
-                                  <div style={{ fontSize: '10px', fontWeight: 600, color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px' }}>AI / Reasoning</div>
-                                  <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: '3px 8px', fontSize: '11px' }}>
-                                    <span style={{ color: '#888' }}>Source</span><Tag color={record.aiCalled ? 'green' : 'gold'} style={{ fontSize: '9px', margin: 0 }}>{record.aiCalled ? `AI (${record.aiSource || 'LLM'})` : 'Local Rules'}</Tag>
-                                    {record.aiModel && <><span style={{ color: '#888' }}>Model</span><span style={{ fontWeight: 500 }}>{record.aiModel}</span></>}
-                                    {record.aiError && <><span style={{ color: '#888' }}>AI Error</span><span style={{ fontWeight: 500, color: '#ff4d4f', fontSize: '10px' }}>{record.aiError}</span></>}
-                                    <span style={{ color: '#888' }}>Selection</span><span style={{ fontWeight: 500, lineHeight: '1.4' }}>{record.selectionReason || 'N/A'}</span>
-                                  </div>
+                                <div className="continue-scan-priority-bar">
+                                  <div style={{ 
+                                    width: `${ps}%`, 
+                                    height: '100%', 
+                                    backgroundColor: color,
+                                    transition: 'width 0.3s'
+                                  }} />
                                 </div>
-                                {/* Data Quality */}
-                                <div style={{ background: '#fff', borderRadius: '6px', border: '1px solid #edf0f2', padding: '10px 12px' }}>
-                                  <div style={{ fontSize: '10px', fontWeight: 600, color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px' }}>Data Quality</div>
-                                  <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: '3px 8px', fontSize: '11px' }}>
-                                    <span style={{ color: '#888' }}>Quality</span><Tag color={dq === 'GOOD' ? 'green' : dq === 'PARTIAL' ? 'gold' : 'red'} style={{ fontSize: '9px', margin: 0 }}>{dq}</Tag>
-                                    <span style={{ color: '#888' }}>Market</span><span style={{ fontWeight: 500 }}>{record.dataSource || 'Unknown'}</span>
-                                    <span style={{ color: '#888' }}>Company</span><span style={{ fontWeight: 500 }}>{record.companyName ? 'Finnhub' : 'Unknown'}</span>
-                                    <span style={{ color: '#888' }}>News</span><span style={{ fontWeight: 500 }}>{record.hasNews ? (record.newsSource || 'Finnhub') : 'None'}</span>
-                                    <span style={{ color: '#888' }}>AI</span><span style={{ fontWeight: 500, color: sourceColor }}>{record.aiCalled ? record.aiSource || 'AI' : 'Local Rules'}{record.aiCalled && record.aiModel ? ` / ${record.aiModel}` : ''}</span>
-                                  </div>
-                                </div>
+                              </div>
+                            </Tooltip>
+                          );
+                        },
+                      },
+                      {
+                        title: 'Risk',
+                        key: 'risk',
+                        width: 100,
+                        render: (record) => {
+                          const risk = record.eventRisk || 'Medium';
+                          const color = risk === 'Low' ? '#52c41a' : risk === 'Medium' ? '#faad14' : '#ff4d4f';
+                          return (
+                            <span style={{ 
+                              fontSize: '11px', 
+                              fontWeight: 700, 
+                              color: color,
+                              padding: '2px 8px',
+                              backgroundColor: `${color}15`,
+                              borderRadius: '4px',
+                              textTransform: 'uppercase'
+                            }}>
+                              {risk}
+                            </span>
+                          );
+                        },
+                      },
+                      {
+                        title: 'Price / Chg',
+                        key: 'priceChange',
+                        width: 120,
+                        render: (record) => {
+                          const price = record.price;
+                          const chg = record.priceChangePct || record.changePct || 0;
+                          const color = chg >= 0 ? '#52c41a' : '#ff4d4f';
+                          return (
+                            <div>
+                              <div className="scanner-price-text">{price ? `$${price.toFixed(2)}` : 'N/A'}</div>
+                              <div style={{ fontSize: '11px', color: color, fontWeight: 600, marginTop: 2 }}>
+                                {chg >= 0 ? '▲' : '▼'} {chg >= 0 ? '+' : ''}{chg.toFixed(2)}%
                               </div>
                             </div>
                           );
                         },
-                        rowExpandable: () => true,
-                      }}
-                      columns={[
-                        {
-                          title: '#',
-                          key: 'rank',
-                          width: 45,
-                          render: (_, __, index) => {
-                            const rank = (preferredContinuePage - 1) * 10 + index + 1;
-                            return (
-                              <span style={{ fontSize: '12px', fontWeight: rank <= 3 ? 700 : 400, color: rank <= 3 ? '#1a1a1a' : '#999' }}>
-                                {rank}
-                              </span>
-                            );
-                          },
-                        },
-                        {
-                          title: 'Symbol',
-                          key: 'symbol',
-                          width: 85,
-                          render: (record) => (
-                            <div>
-                              <Text strong style={{ fontSize: '13px', color: '#1f1f1f' }}>{record.symbol || 'N/A'}</Text>
-                              {record.companyName && <div style={{ fontSize: '9px', color: '#aaa' }}>{record.companyName.slice(0, 20)}</div>}
+                      },
+                      {
+                        title: 'Selection Reason',
+                        key: 'reason',
+                        width: 280,
+                        render: (record) => (
+                          <Tooltip title={record.selectionReason || record.scannerReason}>
+                            <div className="continue-scan-selection-reason">
+                              {record.selectionReason || record.scannerReason || 'N/A'}
                             </div>
-                          ),
-                        },
-                        {
-                          title: 'Trend',
-                          key: 'trend',
-                          width: 95,
-                          render: (record) => renderTrendBadge(record.trendLabel),
-                        },
-                        {
-                          title: 'Score',
-                          key: 'score',
-                          width: 55,
-                          render: (record) => {
-                            const score = record.overallScore || record.trendScore || 0;
-                            return <span style={{ fontSize: '12px', fontWeight: 600, color: score >= 70 ? '#52c41a' : score >= 50 ? '#faad14' : '#ff4d4f' }}>{score > 0 ? score : '—'}</span>;
-                          },
-                        },
-                        {
-                          title: 'Priority',
-                          key: 'priority',
-                          width: 130,
-                          render: (record) => {
-                            const ps = record.priorityScore || 0;
-                            const pb = record.priorityBreakdown || {};
-                            const breakdownText = Object.keys(pb).length > 0
-                              ? `Trend ${pb.trend >= 0 ? '+' : ''}${pb.trend} | Score +${pb.score} | Risk ${pb.risk >= 0 ? '+' : ''}${pb.risk} | News ${pb.news >= 0 ? '+' : ''}${pb.news} | Price ${pb.price >= 0 ? '+' : ''}${pb.price} | Vol ${pb.volume >= 0 ? '+' : ''}${pb.volume}`
-                              : '';
-                            return (
-                              <Tooltip title={breakdownText || `Priority: ${ps}%`}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'help' }}>
-                                  <Progress percent={ps} size="small" showInfo={false} strokeColor={ps >= 80 ? '#52c41a' : ps >= 60 ? '#faad14' : '#ff4d4f'} style={{ flex: 1, margin: 0 }} />
-                                  <Text strong style={{ fontSize: '11px', color: ps >= 80 ? '#52c41a' : ps >= 60 ? '#faad14' : '#ff4d4f', minWidth: '32px' }}>{ps}%</Text>
-                                </div>
-                              </Tooltip>
-                            );
-                          },
-                        },
-                        {
-                          title: 'Risk',
-                          key: 'risk',
-                          width: 65,
-                          render: (record) => {
-                            const risk = record.eventRisk || 'Medium';
-                            const c = risk === 'Low' ? 'green' : risk === 'Medium' ? 'gold' : 'red';
-                            return <Tag color={c} style={{ fontSize: '10px', margin: 0 }}>{risk}</Tag>;
-                          },
-                        },
-                        {
-                          title: 'Price / Chg',
-                          key: 'priceChange',
-                          width: 90,
-                          render: (record) => {
-                            const price = record.price;
-                            const chg = record.priceChangePct || record.changePct || 0;
-                            return (
-                              <div>
-                                <div style={{ fontSize: '12px', fontWeight: 500 }}>{price ? `$${price.toFixed(2)}` : 'N/A'}</div>
-                                <div style={{ fontSize: '10px', color: chg >= 0 ? '#52c41a' : '#ff4d4f' }}>{chg >= 0 ? '+' : ''}{chg.toFixed(1)}%</div>
+                          </Tooltip>
+                        ),
+                      },
+                      {
+                        title: 'Source',
+                        key: 'source',
+                        width: 100,
+                        render: (record) => (
+                          <Tag color={record.reasonSource === 'AI' ? 'cyan' : 'orange'} style={{ fontSize: '10px', fontWeight: 700, margin: 0 }}>
+                            {record.reasonSource === 'AI' ? 'AI Agent' : 'Rules'}
+                          </Tag>
+                        ),
+                      },
+                      {
+                        title: 'Data',
+                        key: 'data',
+                        width: 80,
+                        render: (record) => {
+                          const dq = record.dataQuality || 'PARTIAL';
+                          const color = dq === 'GOOD' ? '#52c41a' : '#faad14';
+                          return (
+                            <Tooltip title={`Quality: ${dq} | Source: ${record.dataSource || 'N/A'}`}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'help' }}>
+                                <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: color }} />
+                                <span style={{ fontSize: '10px', fontWeight: 700, color: '#8c8c8c' }}>{dq}</span>
                               </div>
-                            );
-                          },
+                            </Tooltip>
+                          );
                         },
-                        {
-                          title: 'Data',
-                          key: 'data',
-                          width: 70,
-                          render: (record) => {
-                            const dq = record.dataQuality || 'PARTIAL';
-                            const dqColor = dq === 'GOOD' ? 'green' : dq === 'PARTIAL' ? 'gold' : 'red';
-                            const sourceLabel = record.aiCalled ? 'AI' : 'LR';
-                            return (
-                              <div style={{ lineHeight: '1.3' }}>
-                                <Tag color={dqColor} style={{ fontSize: '9px', padding: '0 4px', lineHeight: '16px', margin: 0 }}>{dq}</Tag>
-                                <Tooltip title={record.aiCalled ? `${record.aiSource || 'AI'} / ${record.aiModel || 'LLM'}` : 'Local Rules selection'}>
-                                  <div style={{ fontSize: '9px', color: '#aaa', marginTop: '1px', cursor: 'help' }}>{sourceLabel}</div>
-                                </Tooltip>
-                              </div>
-                            );
-                          },
-                        },
-                        {
-                          title: 'Selection Reason',
-                          key: 'reason',
-                          width: 280,
-                          render: (record) => {
-                            const reason = record.selectionReason || '';
-                            const truncatedReason = reason.length > 100 ? reason.substring(0, 100) + '...' : reason;
-                            return (
-                              <div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '2px' }}>
-                                  <Tag color={record.aiCalled ? 'green' : 'default'} style={{ fontSize: '8px', padding: '0 3px', lineHeight: '14px', margin: 0 }}>
-                                    {record.aiCalled ? 'AI' : 'Rules'}
-                                  </Tag>
-                                </div>
-                                <Tooltip title={reason.length > 100 ? reason : undefined}>
-                                  <Text style={{ fontSize: '11px', color: '#555', lineHeight: '1.4', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', maxHeight: '30px' }}>
-                                    {truncatedReason}
-                                  </Text>
-                                </Tooltip>
-                              </div>
-                            );
-                          },
-                        },
+                      }
                       ]}
+                      />
+                  <div className="continue-scan-pagination-wrapper">
+                    <Pagination
+                      total={preferredContinueScanList.length}
+                      current={preferredContinuePage}
+                      pageSize={10}
+                      size="default"
+                      showTotal={(total, range) => (
+                        <span style={{ fontSize: '12px', color: '#8c8c8c' }}>
+                          Displaying <strong>{range[0]}-{range[1]}</strong> of <strong>{total}</strong> candidates
+                        </span>
+                      )}
+                      onChange={(page) => setPreferredContinuePage(page)}
                     />
                   </div>
 
-                  <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid #f0f0f0' }}>
+                  <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid #f0f0f0' }}>
                     <Alert
-                      message="These candidates are not buy signals. Fine Scan validates strategy fit, backtest quality, and entry readiness before moving to Entry Plan."
+                      message="Selection Disclosure: These candidates are filtered from the primary scanner and priority-weighted. Run Fine Scan to validate strategy fit and backtest quality."
                       type="info"
                       showIcon
-                      style={{ fontSize: '11px', padding: '8px 12px' }}
+                      style={{ fontSize: '12px', borderRadius: '8px' }}
                     />
-                    <div style={{ marginTop: '8px' }}>
-                      <Text type="secondary" style={{ fontSize: '11px', color: '#8c8c8c' }}>
-                        Built from {marketScannerResults.length} scanned symbols · {preferredContinueScanList.length} shortlisted · Selection: {preferredContinueScanList.filter(c => c.aiCalled).length > 0 ? 'AI + Local Rules' : 'Local Rules'}
-                      </Text>
-                    </div>
                   </div>
                 </div>
               );
@@ -7688,59 +7682,116 @@ function renderDVDetailPanel(record: any) {
             );
           })()}
         </Card>
-      </div>
-{/* 3. Fine Scan */}
-      <div style={{ marginBottom: 24 }}>
-        <Title level={4}>
-          <ThunderboltOutlined style={{ marginRight: '8px' }} />
-          Fine Scan
-          <Text style={{ fontSize: '13px', fontWeight: 'normal', color: '#888', marginLeft: '12px' }}>
-            Strategy matching and quick validation for continue-list candidates
-          </Text>
-        </Title>
+        </div>
+      </CollapsibleStageSection>
 
-        <Card bodyStyle={{ padding: '14px 18px' }}>
-          {/* Header row: stats on left, button on right — same row */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: fineScanStatus === 'running' ? 10 : (fineScanResults.length > 0 ? 12 : 0) }}>
-            <div style={{ display: 'flex', gap: '14px', alignItems: 'center', flexWrap: 'wrap', fontSize: '12px' }}>
-              {fineScanResults.length > 0 ? (() => {
-                const total = fineScanResults.length;
-                const continueCount = fineScanResults.filter(function(r: any) { return r.decision === 'Continue'; }).length;
-                const watchCount = fineScanResults.filter(function(r: any) { return r.decision === 'Watch'; }).length;
-                const skipCount = fineScanResults.filter(function(r: any) { return r.decision === 'Skip'; }).length;
-                return React.createElement(React.Fragment, null,
-                  React.createElement(Text, { style: { color: '#595959' } }, 'Scanned: ', React.createElement('span', { style: { fontWeight: 600, color: '#1a1a1a' } }, total)),
-                  continueCount > 0 ? React.createElement(Text, { style: { color: '#52c41a' } }, 'Continue: ', React.createElement('span', { style: { fontWeight: 600 } }, continueCount)) : null,
-                  watchCount > 0 ? React.createElement(Text, { style: { color: '#d48806' } }, 'Watch: ', React.createElement('span', { style: { fontWeight: 600 } }, watchCount)) : null,
-                  skipCount > 0 ? React.createElement(Text, { style: { color: '#ff4d4f' } }, 'Skip: ', React.createElement('span', { style: { fontWeight: 600 } }, skipCount)) : null,
-                  fineScanResults[0]?.aiUsed ? React.createElement(Tag, { color: 'green', style: { fontSize: '10px', margin: 0, padding: '0 5px', lineHeight: '18px' } }, 'AI: DeepSeek') : null
-                );
-              })() : (
-                <Text style={{ color: '#8c8c8c', fontSize: '12px' }}>
-                  {fineScanStatus === 'idle' ? 'Ready — click Run Fine Scan to analyze candidates' : ''}
-                </Text>
-              )}
-            </div>
-            <Button
-              type="primary"
-              icon={React.createElement(ThunderboltOutlined)}
-              onClick={handleRunFineScan}
-              disabled={fineScanStatus === 'running' || preferredContinueScanList.length === 0}
-              loading={fineScanStatus === 'running'}
-              size="middle"
-            >
-              {fineScanStatus === 'running' ? 'Running...' : 'Run Fine Scan'}
-            </Button>
+      {/* 3. Fine Scan */}
+      <CollapsibleStageSection
+        title="Fine Scan"
+        icon={<ThunderboltOutlined />}
+        statusText={
+          fineScanStatus === 'running' ? 'RUNNING' :
+          fineScanStatus === 'completed' ? 'COMPLETED' :
+          fineScanStatus === 'error' ? 'ERROR' : 'IDLE'
+        }
+        statusColor={
+          fineScanStatus === 'running' ? 'processing' :
+          fineScanStatus === 'completed' ? 'success' :
+          fineScanStatus === 'error' ? 'error' : 'default'
+        }
+        progressValue={fineScanStatus === 'running' ? fineScanProgress : null}
+        summaryChips={fineScanResults.length > 0 ? [
+          { label: 'Scanned', value: fineScanResults.length },
+          { label: 'Continue', value: fineScanResults.filter((r: any) => r.decision === 'Continue').length, color: '#52c41a' },
+          { label: 'Watch', value: fineScanResults.filter((r: any) => r.decision === 'Watch').length, color: '#d48806' },
+          { label: 'Skip', value: fineScanResults.filter((r: any) => r.decision === 'Skip').length, color: '#ff4d4f' },
+        ] : undefined}
+        actionButton={
+          <Button
+            type="primary"
+            icon={<ThunderboltOutlined />}
+            onClick={handleRunFineScan}
+            disabled={fineScanStatus === 'running' || preferredContinueScanList.length === 0}
+            loading={fineScanStatus === 'running'}
+            size="small"
+          >
+            {fineScanStatus === 'running' ? 'Running...' : 'Run Fine Scan'}
+          </Button>
+        }
+        isRunning={fineScanStatus === 'running'}
+        expanded={fineScanExpanded}
+        onToggle={() => setFineScanExpanded(!fineScanExpanded)}
+      >
+        <Card bodyStyle={{ padding: '20px' }} style={{ borderRadius: '12px', border: '1px solid #f0f0f0' }}>
+          {/* Header Summary Row */}
+          <div className="fine-scan-header-summary">
+            {fineScanResults.length > 0 ? (() => {
+              const total = fineScanResults.length;
+              const contCount = fineScanResults.filter((r: any) => r.decision === 'Continue').length;
+              const watchCount = fineScanResults.filter((r: any) => r.decision === 'Watch').length;
+              const skipCount = fineScanResults.filter((r: any) => r.decision === 'Skip').length;
+              return (
+                <>
+                  <div className="fine-scan-stat-item">
+                    <span style={{ color: '#8c8c8c', fontWeight: 600 }}>CANDIDATES:</span>
+                    <span style={{ fontWeight: 800, color: '#1f1f1f' }}>{total}</span>
+                  </div>
+                  <Divider type="vertical" />
+                  <div className="fine-scan-stat-item">
+                    <span style={{ color: '#8c8c8c', fontWeight: 600 }}>CONTINUE:</span>
+                    <Tag color="success" style={{ fontWeight: 800, margin: 0 }}>{contCount}</Tag>
+                  </div>
+                  <Divider type="vertical" />
+                  <div className="fine-scan-stat-item">
+                    <span style={{ color: '#8c8c8c', fontWeight: 600 }}>WATCH:</span>
+                    <Tag color="warning" style={{ fontWeight: 800, margin: 0 }}>{watchCount}</Tag>
+                  </div>
+                  <Divider type="vertical" />
+                  <div className="fine-scan-stat-item">
+                    <span style={{ color: '#8c8c8c', fontWeight: 600 }}>SKIP:</span>
+                    <Tag color="error" style={{ fontWeight: 800, margin: 0 }}>{skipCount}</Tag>
+                  </div>
+                  <Divider type="vertical" />
+                  <div className="fine-scan-stat-item">
+                    <span style={{ color: '#8c8c8c', fontWeight: 600 }}>AI AGENT:</span>
+                    <Tag color="cyan" style={{ fontWeight: 800, margin: 0 }}>DEEPSEEK V3</Tag>
+                  </div>
+                </>
+              );
+            })() : (
+              <div style={{ color: '#8c8c8c', fontSize: '12px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <InfoCircleOutlined />
+                {fineScanStatus === 'idle' ? 'System ready for multi-dimensional strategy confirmation' : 'Awaiting input from Continue Scan'}
+              </div>
+            )}
           </div>
 
+          {/* Progress Panel */}
           {fineScanStatus === 'running' && (
-            <div style={{ marginBottom: 10 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 2 }}>
-                <span style={{ fontSize: '11px', color: '#595959', fontWeight: 600 }}>Overall Progress</span>
-                <span style={{ fontSize: '11px', color: '#1890ff', fontWeight: 500 }}>{fineScanProgress}%</span>
+            <div className="fine-scan-progress-panel">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <div>
+                  <div style={{ fontSize: '14px', fontWeight: 700, color: '#003a8c' }}>
+                    Scanning Regime & Strategies
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#1890ff' }}>
+                    {fineScanMessage || 'Processing market data for selected candidates...'}
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: '20px', fontWeight: 800, color: '#1890ff', lineHeight: 1 }}>
+                    {fineScanProgress}%
+                  </div>
+                  <div style={{ fontSize: '10px', color: '#8c8c8c', textTransform: 'uppercase', letterSpacing: 0.5 }}>Complete</div>
+                </div>
               </div>
-              <Progress percent={fineScanProgress} status="active" strokeColor="#1890ff" strokeWidth={6} showInfo={false} style={{ margin: 0 }} />
-              <div style={{ fontSize: '11px', color: '#8c8c8c', marginTop: 4 }}>{fineScanMessage || 'Processing candidates...'}</div>
+              <Progress 
+                percent={fineScanProgress} 
+                status="active" 
+                strokeColor={{ '0%': '#1890ff', '100%': '#52c41a' }} 
+                strokeWidth={8} 
+                showInfo={false} 
+              />
             </div>
           )}
 
@@ -7792,7 +7843,10 @@ function renderDVDetailPanel(record: any) {
                   width: 80,
                   fixed: 'left',
                   render: (record) => (
-                    <Text strong style={{ fontSize: '12px' }}>{record.symbol}</Text>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                      <Text strong style={{ fontSize: '12px' }}>{record.symbol}</Text>
+                      {record.isDevTest && <Tag color="red" style={{ fontSize: 8, padding: '0 2px', lineHeight: '12px', margin: 0 }}>TEST</Tag>}
+                    </div>
                   ),
                 },
                 // ===== Decision =====
@@ -8031,32 +8085,43 @@ function renderDVDetailPanel(record: any) {
             </div>
           )}
         </Card>
-      </div>
+      </CollapsibleStageSection>
 
       {/* ===== Deeper Validation ===== */}
-      <div style={{ marginTop: 24 }}>
-        <Card
-          title={
-            <Space>
-              <BarChartOutlined />
-              <Text strong style={{ fontSize: '14px' }}>Deeper Validation</Text>
-            </Space>
-          }
-          size="small"
-          style={{ borderRadius: 6, border: '1px solid #e8e8e8' }}
-        >
-          <Space size="middle">
-            <Button
-              type="primary"
-              icon={<CheckCircleOutlined />}
-              onClick={handleDeeperValidation}
-              loading={deeperValidationStatus === 'loading'}
-              disabled={fineScanStatus !== 'completed' || fineScanResults.length === 0 || selectValidationCandidates().length === 0}
-            >
-              {deeperValidationStatus === 'loading' ? 'Validating...' : `Run Validation (${selectValidationCandidates().length} Continue)`}
-            </Button>
-          </Space>
-
+      <CollapsibleStageSection
+        title="Deeper Validation"
+        icon={<BarChartOutlined />}
+        statusText={
+          deeperValidationStatus === 'loading' ? 'VALIDATING' :
+          deeperValidationStatus === 'completed' ? 'COMPLETED' :
+          deeperValidationStatus === 'error' ? 'ERROR' : 'IDLE'
+        }
+        statusColor={
+          deeperValidationStatus === 'loading' ? 'processing' :
+          deeperValidationStatus === 'completed' ? 'success' :
+          deeperValidationStatus === 'error' ? 'error' : 'default'
+        }
+        summaryChips={deeperValidationResults ? [
+          { label: 'Validated', value: deeperValidationResults.length },
+          { label: 'PASS', value: deeperValidationResults.filter((r: any) => r.riskGate?.status === 'PASS').length, color: '#52c41a' },
+          { label: 'BLOCK', value: deeperValidationResults.filter((r: any) => r.riskGate?.status === 'BLOCK').length, color: '#ff4d4f' },
+        ] : undefined}
+        actionButton={
+          <Button
+            type="primary"
+            icon={<CheckCircleOutlined />}
+            onClick={handleDeeperValidation}
+            loading={deeperValidationStatus === 'loading'}
+            disabled={fineScanStatus !== 'completed' || fineScanResults.length === 0 || selectValidationCandidates().length === 0}
+            size="small"
+          >
+            {deeperValidationStatus === 'loading' ? 'Validating...' : `Run Validation (${selectValidationCandidates().length})`}
+          </Button>
+        }
+        isRunning={deeperValidationStatus === 'loading'}
+        expanded={dvExpanded}
+        onToggle={() => setDvExpanded(!dvExpanded)}
+      >
           {deeperValidationStatus === 'loading' && (
             <div style={{ textAlign: 'center', padding: '24px 0' }}>
               <SyncOutlined spin style={{ fontSize: 24, color: '#1890ff' }} />
@@ -8086,7 +8151,12 @@ function renderDVDetailPanel(record: any) {
                   title: 'Symbol',
                   key: 'symbol',
                   width: 72,
-                  render: (record: any) => <Text strong style={{ fontSize: '11px' }}>{record.symbol}</Text>,
+                  render: (record: any) => (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                      <Text strong style={{ fontSize: '11px' }}>{record.symbol}</Text>
+                      {record.isDevTest && <Tag color="red" style={{ fontSize: 8, padding: '0 2px', lineHeight: '12px', margin: 0 }}>TEST</Tag>}
+                    </div>
+                  ),
                 },
                 {
                   title: '1Y Return',
@@ -8232,6 +8302,33 @@ function renderDVDetailPanel(record: any) {
                   },
                 },
                 {
+                  title: 'Risk Gate',
+                  key: 'riskGate',
+                  width: 80,
+                  render: (record: any) => {
+                    const rg = record.riskGate || {};
+                    const status = rg.status || 'N/A';
+                    let c = '#52c41a', l = status;
+                    if (status === 'REVIEW') { c = '#faad14'; }
+                    else if (status === 'BLOCK' || status === 'ERROR') { c = '#ff4d4f'; l = status === 'BLOCK' ? 'Blocked' : 'Error'; }
+                    else if (status === 'PASS') { l = 'Pass'; }
+                    else { c = '#bbb'; }
+                    const tip = rg.reason || (rg.checks && rg.checks.length > 0 ? rg.checks.join('; ') : 'No checks');
+                    return React.createElement(Tooltip, { title: tip },
+                      React.createElement('span', { style: { fontSize: '11px', fontWeight: 600, color: c } }, l)
+                    );
+                  },
+                },
+                {
+                  title: 'Source',
+                  key: 'dataSource',
+                  width: 60,
+                  render: (record: any) => {
+                    const ds = record.dataSource || 'N/A';
+                    return <Tag color={ds === 'alpaca' ? 'green' : 'default'} style={{ fontSize: '9px', margin: 0, padding: '0 4px' }}>{ds === 'alpaca' ? 'Alpaca' : ds}</Tag>;
+                  },
+                },
+                {
                   title: 'Reason',
                   key: 'reason',
                   width: 200,
@@ -8268,53 +8365,58 @@ function renderDVDetailPanel(record: any) {
               Run Fine Scan first, then validate top candidates.
             </div>
           )}
-        </Card>
-      </div>
+      </CollapsibleStageSection>
 
       {/* ▲▲▲ Above: Deeper Validation ▲▲▲ */}
 
       {/* ▲▲▲ Below: Entry Plan ▲▲▲ */}
-      <div style={{ marginTop: '48px', marginBottom: '32px', fontFamily: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" }}>
-        <Card
-          title={
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
-              <div>
-                <span style={{ fontSize: '18px', fontWeight: 600, color: '#1a1a1a', letterSpacing: '-0.3px', fontFamily: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" }}>Entry Plan</span>
-                <div style={{ fontSize: '12px', color: '#999', marginTop: '3px', fontWeight: 400, lineHeight: '1.5', fontFamily: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" }}>
-                  Execution plan for validated candidates — entry zone, stop loss, position sizing, and risk assessment.
-                </div>
-              </div>
-              {deeperValidationStatus === 'completed' && getEntryPlanCandidates().length > 0 && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <Select
-                    size="small"
-                    value={entryPlanExecutionMode}
-                    onChange={(v) => setEntryPlanExecutionMode(v)}
-                    style={{ width: '160px', fontSize: '11px' }}
-                  >
-                    <Option value="Recommend Only">Recommend Only</Option>
-                    <Option value="Add to Watchlist">Add to Watchlist</Option>
-                    <Option value="Paper Trade if Triggered">Paper Trade if Triggered</Option>
-                    <Option value="Real Trade if Triggered">Real Trade if Triggered</Option>
-                  </Select>
-                  <Button
-                    type="primary"
-                    size="small"
-                    loading={entryPlanStatus === 'loading'}
-                    disabled={entryPlanStatus === 'loading' || !getEntryPlanCandidates().length}
-                    onClick={handleRunEntryPlan}
-                    style={{ fontSize: '12px', height: '32px', padding: '0 20px', fontWeight: 600, borderRadius: '6px', fontFamily: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" }}
-                  >
-                    Run Entry Plan
-                  </Button>
-                </div>
-              )}
+      <CollapsibleStageSection
+        title="Entry Plan"
+        icon={<RobotOutlined />}
+        statusText={
+          entryPlanStatus === 'loading' ? 'GENERATING' :
+          entryPlanStatus === 'completed' ? 'COMPLETED' :
+          entryPlanStatus === 'error' ? 'ERROR' : 'IDLE'
+        }
+        statusColor={
+          entryPlanStatus === 'loading' ? 'processing' :
+          entryPlanStatus === 'completed' ? 'success' :
+          entryPlanStatus === 'error' ? 'error' : 'default'
+        }
+        summaryChips={entryPlanResults ? [
+          { label: 'Plans', value: entryPlanResults.length },
+          { label: 'Mode', value: entryPlanExecutionMode },
+        ] : undefined}
+        actionButton={
+          deeperValidationStatus === 'completed' && getEntryPlanCandidates().length > 0 ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Select
+                size="small"
+                value={entryPlanExecutionMode}
+                onChange={(v) => setEntryPlanExecutionMode(v)}
+                style={{ width: 140, fontSize: 11 }}
+              >
+                <Option value="Recommend Only">Recommend Only</Option>
+                <Option value="Add to Watchlist">Add to Watchlist</Option>
+                <Option value="Paper Trade if Triggered">Paper Trade</Option>
+                <Option value="Real Trade if Triggered">Real Trade</Option>
+              </Select>
+              <Button
+                type="primary"
+                size="small"
+                loading={entryPlanStatus === 'loading'}
+                disabled={entryPlanStatus === 'loading' || !getEntryPlanCandidates().length}
+                onClick={handleRunEntryPlan}
+              >
+                Run Entry Plan
+              </Button>
             </div>
-          }
-          size="small"
-          style={{ borderRadius: '8px', border: '1px solid #e0e0e0', fontSize: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}
-          bodyStyle={{ padding: '24px' }}
-        >
+          ) : undefined
+        }
+        isRunning={entryPlanStatus === 'loading'}
+        expanded={entryPlanExpanded}
+        onToggle={() => setEntryPlanExpanded(!entryPlanExpanded)}
+      >
           {/* No DV candidates yet */}
           {deeperValidationStatus !== 'completed' && (
             <div style={{ textAlign: 'center', padding: '16px 0', color: '#bbb', fontSize: '12px', fontStyle: 'italic' }}>
@@ -8678,6 +8780,7 @@ function renderDVDetailPanel(record: any) {
                     render: (text, record) => (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 3, padding: '1px 0' }}>
                         <span style={{ fontSize: '13px', fontWeight: 600, fontFamily: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif", color: '#333', letterSpacing: '0.2px' }}>{text}</span>
+                        {record.isDevTest && <Tag style={{ fontSize: 8, padding: '0 2px', lineHeight: '12px', margin: 0 }} color="red">DEV TEST</Tag>}
                         {record.dataQuality === 'PARTIAL' && <Tag style={{ fontSize: '9px', marginLeft: '2px', padding: '0 4px', lineHeight: '16px' }} color="gold">P</Tag>}
                         {record.dataQuality === 'POOR' && <Tag style={{ fontSize: '9px', marginLeft: '2px', padding: '0 4px', lineHeight: '16px' }} color="red">!</Tag>}
                         {record.aiCalled === false && (
@@ -8954,8 +9057,7 @@ function renderDVDetailPanel(record: any) {
               `}</style>
             </>
           )}
-        </Card>
-      </div>
+      </CollapsibleStageSection>
       {/* End Entry Plan Section */}
 
       {/* ── Execution Confirmation Modal ── */}
