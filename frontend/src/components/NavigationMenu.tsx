@@ -1,30 +1,53 @@
 import React from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { Menu } from 'antd';
-import { 
-  DashboardOutlined, 
-  LineChartOutlined, 
-  BarChartOutlined, 
-  UserOutlined, 
-  TrophyOutlined, 
-  UnorderedListOutlined, 
-  SwapOutlined, 
+import {
+  DashboardOutlined,
+  LineChartOutlined,
+  BarChartOutlined,
+  UserOutlined,
+  TrophyOutlined,
+  UnorderedListOutlined,
+  SwapOutlined,
   RocketOutlined,
   AreaChartOutlined,
   PieChartOutlined,
   ExperimentOutlined,
-  RobotOutlined 
+  RobotOutlined,
+  SettingOutlined
 } from '@ant-design/icons';
 import { useLanguage } from '../contexts/LanguageContext';
 import styles from './NavigationMenu.module.css';
 
 const NavigationMenu: React.FC = () => {
   const { t } = useLanguage();
+  const location = useLocation();
+
+  // Map routes to menu keys
+  const routeToKey: Record<string, string> = {
+    '/': '1',
+    '/market': '2',
+    '/watchlist': '3',
+    '/backtest': '4',
+    '/optimize': '5',
+    '/compare': '6',
+    '/ranking': '7',
+    '/local-paper-trading': '8',
+    '/analytics': '9',
+    '/ai-trading': '10',
+    '/portfolio': '11',
+    '/settings': '12',
+  };
+
+  // Find selected key: match exact route or prefix (for /settings/configuration)
+  const selectedKey = routeToKey[location.pathname]
+    || Object.entries(routeToKey).find(([path]) => location.pathname.startsWith(path + '/'))?.[1]
+    || '1';
 
   // 创建菜单项组件的函数，确保所有菜单项使用完全相同的结构
   const createMenuItem = (key: string, icon: React.ReactNode, text: string, to: string) => (
-    <Menu.Item 
-      key={key} 
+    <Menu.Item
+      key={key}
       icon={icon}
     >
       <Link to={to}>{text}</Link>
@@ -33,10 +56,10 @@ const NavigationMenu: React.FC = () => {
 
   return (
     <div className={styles.navigationMenu}>
-      <Menu 
-        theme="dark" 
-        mode="inline" 
-        defaultSelectedKeys={['1']}
+      <Menu
+        theme="dark"
+        mode="inline"
+        selectedKeys={[selectedKey]}
         style={{
           backgroundColor: '#001529',
           borderRight: 'none',
@@ -53,6 +76,7 @@ const NavigationMenu: React.FC = () => {
         {createMenuItem('9', <AreaChartOutlined />, t.navigation.analytics, '/analytics')}
         {createMenuItem('10', <RobotOutlined />, 'Alpaca Trade', '/ai-trading')}
         {createMenuItem('11', <PieChartOutlined />, 'AI Agent', '/portfolio')}
+        {createMenuItem('12', <SettingOutlined />, 'Settings', '/settings')}
       </Menu>
     </div>
   );
