@@ -1,0 +1,58 @@
+warning: in the working copy of '.env.example', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/.env.example b/.env.example[m
+[1mindex 99fa7ee..1711980 100644[m
+[1m--- a/.env.example[m
+[1m+++ b/.env.example[m
+[36m@@ -1,39 +1,26 @@[m
+[31m-# ========== 市场数据 API 配置 ==========[m
+[31m-# Polygon.io API 配置[m
+[31m-POLYGON_API_KEY=Pb17vE12y3eH4ixU_P3or5W89TfFbN7E[m
+[32m+[m[32m﻿# Market Data API Configuration[m
+[32m+[m[32mPOLYGON_API_KEY=your_polygon_api_key_here[m
+ POLYGON_BASE_URL=https://api.polygon.io[m
+ [m
+[31m-# ========== 交易执行 API 配置 ==========[m
+[31m-# Alpaca Markets API 配置[m
+[31m-ALPACA_API_KEY=PK47HFNRVYZ7XZLLLYUULBIY4R[m
+[31m-ALPACA_API_SECRET=6CgiJaMDvref9uoHRUph8qMyBKJyHbRxPrGHgKYq2T5g[m
+[32m+[m[32m# Trading API Configuration[m
+[32m+[m[32mALPACA_API_KEY=your_alpaca_api_key_here[m
+[32m+[m[32mALPACA_API_SECRET=your_alpaca_api_secret_here[m
+ ALPACA_BASE_URL=https://paper-api.alpaca.markets/v2[m
+[32m+[m[32mALPACA_DATA_BASE_URL=https://data.alpaca.markets[m
+ [m
+[31m-# ========== 其他 API 配置 ==========[m
+[31m-# Finnhub API (旧版，逐步迁移)[m
+[31m-FINNHUB_API_KEY=d6qsdcpr01qgdhqc82hgd6qsdcpr01qgdhqc82i0[m
+[32m+[m[32m# Other API Configuration[m
+[32m+[m[32mFINNHUB_API_KEY=your_finnhub_api_key_here[m
+ [m
+[31m-# ========== 应用配置 ==========[m
+[31m-# Flask 配置[m
+[32m+[m[32m# Application Configuration[m
+ FLASK_ENV=development[m
+ SECRET_KEY=dev-secret-key-change-in-production[m
+ JWT_SECRET_KEY=jwt-secret-key-change-in-production[m
+ DATABASE_URL=sqlite:///quant.db[m
+ [m
+[31m-# 前端配置[m
+[32m+[m[32m# Frontend[m
+ REACT_APP_API_BASE_URL=/api[m
+ REACT_APP_WS_BASE_URL=ws://localhost:8889[m
+ [m
+[31m-# ========== 开发配置 ==========[m
+[31m-# 端口配置[m
+[32m+[m[32m# Development Configuration[m
+ PORT=8889[m
+[31m-HOST=0.0.0.0[m
+[31m-FRONTEND_PORT=3000[m
+[31m-[m
+[31m-# 日志配置[m
+[31m-LOG_LEVEL=INFO[m
+[31m-LOG_FILE=logs/backend.log[m
+[31m-[m
+[31m-# 缓存配置[m
+[31m-CACHE_TTL=300  # 5分钟[m
+[31m-MAX_CACHE_SIZE=1000[m
+\ No newline at end of file[m
+[32m+[m[32mDEBUG=true[m

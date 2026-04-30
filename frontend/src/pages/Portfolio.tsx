@@ -1,19 +1,19 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Card, Typography, Space, Statistic, Row, Col,
-  Button, Divider, Table, Tag, Select, Form, Input,
-  message, Progress, Empty, Badge, Alert, Tooltip
+  Button, Divider, Table, Tag, Select, Form, Input, InputNumber,
+  message, Progress, Empty, Badge, Alert, Tooltip, Spin, Modal
 } from 'antd';
 import {
   LineChartOutlined, BarChartOutlined,
   SettingOutlined, PlayCircleOutlined, PauseCircleOutlined,
   ThunderboltOutlined, CheckCircleOutlined, ClockCircleOutlined,
-  RobotOutlined, CloseCircleOutlined, ExclamationCircleOutlined, SyncOutlined,
+  RobotOutlined, CloseCircleOutlined, ExclamationCircleOutlined, SyncOutlined, LoadingOutlined,
   ArrowUpOutlined, ArrowDownOutlined, ArrowRightOutlined, MinusOutlined,
   SortDescendingOutlined, SortAscendingOutlined
 } from '@ant-design/icons';
 import aiTradingService, { AIProviderConfig } from '../services/aiTradingService';
-import { backtraderAPI, marketAPI, entryQualityAPI, fineScanAdvancedAPI, deeperValidationAPI, fineScanExplainAPI } from '../services/api';
+import { backtraderAPI, marketAPI, entryQualityAPI, fineScanAdvancedAPI, deeperValidationAPI, entryPlanAPI, fineScanExplainAPI, fineScanDecisionAPI, tradingAccountAPI, aiAgentWatchlistAPI } from '../services/api';
 import api, { scannerApi } from '../services/api';
 import marketDataService from '../services/marketDataService';
 import alpacaBrokerService, { AlpacaPosition, AlpacaOrder } from '../services/alpacaBrokerService';
@@ -125,6 +125,13 @@ interface TrendAnalysis {
   overallScore?: number | null;
   confidence?: number | null;
   conciseReason?: string | null;
+
+  // AI source tracking
+  analysisSource?: string | null;
+  aiCalled?: boolean;
+  aiSource?: string | null;
+  aiModel?: string | null;
+  aiError?: string | null;
 }
 
 const Portfolio: React.FC = (): React.ReactElement => {
@@ -135,23 +142,6 @@ const Portfolio: React.FC = (): React.ReactElement => {
     baseUrl: 'https://api.deepseek.com',
     model: 'deepseek-chat',
     provider: 'DeepSeek'
-  });
-
-  const [scanInterval, setScanInterval] = useState<string>('5');
-  // Step 5 修复：拆分为两个独立的状态
-  const [isAutoScanEnabled, setIsAutoScanEnabled] = useState(false); // 自动扫描模式是否开启
-  const isAutoScanEnabledRef = useRef(isAutoScanEnabled); // Ref to track latest value for timeout callbacks
-
-  // Update ref when state changes
-  useEffect(() => {
-    isAutoScanEnabledRef.current = isAutoScanEnabled;
-  }, [isAutoScanEnabled]);
-
-  const [scanStatus, setScanStatus] = useState({
-    status: 'stopped' as 'stopped' | 'running' | 'scheduled' | 'paused',
-    lastRun: null as string | null,
-    nextRun: null as string | null,
-    progress: 0
   });
 
   const [aiConfigForm] = Form.useForm();
@@ -203,34 +193,57 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
   const [fineScanStepProgress, setFineScanStepProgress] = useState(0);
   const [fineScanCurrentStep, setFineScanCurrentStep] = useState<string>('');
   const [fineScanMessage, setFineScanMessage] = useState<string>('');
+  // Trading Account Mode
+  const [tradingAccountMode, setTradingAccountMode] = useState<'paper' | 'real'>(() => {
+    const saved = localStorage.getItem('tradingAccountMode');
+    return saved === 'paper' || saved === 'real' ? saved : 'paper';
+  });
+  const [tradingAccountData, setTradingAccountData] = useState<any>(null);
+  const [tradingAccountLoading, setTradingAccountLoading] = useState(false);
   const [fineScanExpandedRows, setFineScanExpandedRows] = useState<string[]>([]);
 
   // AI调用互斥控制
   const [aiCallInProgress, setAiCallInProgress] = useState(false);
   const aiCallInProgressRef = useRef(false);
 
-  // 手动启动Continue Scan的函数
-  const handleStartContinueScan = () => {
-    // 检查是否满足启动条件（与按钮disabled条件保持一致）
-    const canStartContinueScan =
-      // 1. 有market scan结果
-      marketScannerResults.length > 0 &&
-      // 2. Continue Scan处于空闲状态
-      continueScanStatus === 'idle';
+  // Trading Account Mode handler
+  const handleTradingAccountModeChange = async (mode: 'paper' | 'real') => {
+    setTradingAccountMode(mode);
+    localStorage.setItem('tradingAccountMode', mode);
+    setTradingAccountLoading(true);
+    try {
+      const res = await tradingAccountAPI.getAccount(mode);
+      setTradingAccountData(res.data);
+    } catch (err) {
+      setTradingAccountData({ success: false, error: 'Failed to fetch account data', mode, available: false });
+    } finally {
+      setTradingAccountLoading(false);
+    }
+  };
 
-    if (!canStartContinueScan) {
-      // 提供具体的错误信息
-      if (marketScannerResults.length === 0) {
-        message.warning('No market scan results available');
-      } else if (continueScanStatus !== 'idle') {
-        message.warning('Continue scan is already running or completed');
-      } else {
-        message.warning('Cannot start continue scan at this time');
-      }
+  // 手动启动Continue Scan的函数
+  const handleStartContinueScan = (forceRerun: boolean = false) => {
+    // 检查是否有market scan结果
+    if (marketScannerResults.length === 0) {
+      message.warning('No market scan results available. Run Market Scanner first.');
       return;
     }
 
-    console.log('Starting continue scan manually...');
+    // 如果正在running，不能重复启动
+    if (continueScanStatus === 'processing') {
+      message.warning('Continue scan is already running');
+      return;
+    }
+
+    // 如果completed且有force标志，允许re-run；如果idle，正常启动
+    if (continueScanStatus === 'completed' && !forceRerun) {
+      // 不应该到达这里（按钮会传force=true），但以防万一
+      console.log('Continue scan already completed, use Re-run button');
+      return;
+    }
+
+    const isRerun = continueScanStatus === 'completed' || continueScanStatus === 'error';
+    console.log(isRerun ? 'Re-running continue scan...' : 'Starting continue scan...');
 
     // 重置状态
     setContinueScanStatus('processing');
@@ -355,8 +368,8 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
           continue; // 跳过不符合条件的候选
         }
 
-        // 条件2: score >= 75
-        if (score < 75) {
+        // 条件2: score >= 70
+        if (score < 70) {
           continue; // 跳过不符合条件的候选
         }
 
@@ -417,6 +430,16 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
         }
         // Low不加分
 
+        // Compute priority components (deterministic breakdown)
+        const trendContrib = (trend === 'Strong Bullish') ? 35 : (trend === 'Bullish') ? 25 : 0;
+        const scoreContrib = Math.round(score * 0.5);
+        const riskContrib = (risk === 'Low') ? 12 : (risk === 'Medium') ? 6 : 0;
+        const newsContrib = (newsSentiment === 'Positive') ? 10 : (newsSentiment === 'Neutral') ? 4 : (newsSentiment === 'Negative') ? -8 : 0;
+        const priceContrib = (priceChange >= 3) ? 8 : (priceChange >= 1) ? 5 : (priceChange > 0) ? 2 : -6;
+        const volContrib = (volumeStatus === 'High') ? 8 : (volumeStatus === 'Normal') ? 4 : 0;
+
+        priorityScore = trendContrib + scoreContrib + riskContrib + newsContrib + priceContrib + volContrib;
+
         // Clamp到0-100
         priorityScore = Math.max(0, Math.min(100, priorityScore));
 
@@ -425,20 +448,35 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
           // 生成selection reason
           const selectionReason = generateRuleBasedReason(candidate);
 
+          // AI source tracking from scanner result
+          const originalData = candidate.originalData || {};
+          const scannerAiCalled = originalData.aiCalled === true;
+          const scannerAiSource = originalData.aiSource || 'Local Rules';
+          const scannerAiModel = originalData.aiModel || null;
+          const scannerAiError = originalData.aiError || null;
+
           ruleEvaluatedCandidates.push({
-            ...candidate.originalData,
+            ...originalData,
             includeInContinueScan: true,
             priorityScore: Math.round(priorityScore),
+            priorityBreakdown: {
+              trend: trendContrib,
+              score: scoreContrib,
+              risk: riskContrib,
+              news: newsContrib,
+              price: priceContrib,
+              volume: volContrib,
+            },
             selectionReason: selectionReason,
             continueScanStatus: 'completed' as const,
             aiReasonStatus: 'completed' as const,
-            aiEvaluated: false,
-            // 移除AI相关字段
-            reasonSource: 'Rule',
-            selectedBy: 'Rule',
-            aiConfidence: 0,
-            aiProvider: 'N/A',
-            aiModel: 'N/A',
+            aiEvaluated: scannerAiCalled,
+            reasonSource: scannerAiCalled ? 'AI' : 'Local Rules',
+            selectedBy: scannerAiCalled ? scannerAiSource : 'Local Rules',
+            aiSource: scannerAiSource,
+            aiModel: scannerAiModel,
+            aiError: scannerAiError,
+            aiCalled: scannerAiCalled,
             scanBatchId: 'current',
             scanTimestamp: detailedScanStatus.lastScanAt || new Date().toISOString(),
             generatedAt: new Date().toISOString(),
@@ -446,7 +484,9 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
             sector: candidate.sector,
             newsSentiment: candidate.newsSentiment,
             priceChangePct: candidate.priceChange,
-            volumeStatus: candidate.volumeStatus
+            volumeStatus: candidate.volumeStatus,
+            // data quality from scanner
+            dataQuality: originalData.dataQuality || (originalData.price && originalData.volume && originalData.trendLabel ? 'GOOD' : 'PARTIAL'),
           });
         }
 
@@ -832,76 +872,31 @@ Please respond in this exact JSON format:
     }
   };
 
-  // Rule-based selection reason生成函数
+  // Rule-based selection reason生成函数 — 使用真实scanner字段，具体不模板
   const generateRuleBasedReason = (candidate: any): string => {
-    const trend = candidate.trend;
-    const score = candidate.score;
-    const risk = candidate.risk;
+    const trend = candidate.trend || '';
+    const score = candidate.score || 0;
+    const risk = candidate.risk || 'Medium';
     const sector = candidate.sector || 'Unknown';
     const priceChange = candidate.priceChange || 0;
     const volumeStatus = candidate.volumeStatus || 'Normal';
     const newsSentiment = candidate.newsSentiment || 'Neutral';
+    const companyName = candidate.companyName || candidate.originalData?.companyName || '';
 
-    // 基于规则生成reason
-    const reasons: string[] = [];
+    const nameOrSymbol = companyName || candidate.originalData?.symbol || '';
+    const trendDesc = trend === 'Strong Bullish' ? `strong bullish trend (score ${score})` :
+                      trend === 'Bullish' ? `bullish trend (score ${score})` :
+                      `trend score ${score}`;
+    const riskDesc = risk === 'Low' ? 'low' : risk === 'Medium' ? 'moderate' : 'elevated';
+    const newsDesc = newsSentiment === 'Positive' ? 'positive' : newsSentiment === 'Negative' ? 'negative' : 'neutral';
+    const volDesc = volumeStatus === 'High' ? 'above-average' : volumeStatus === 'Low' ? 'below-average' : 'normal';
+    const priceDesc = priceChange >= 3 ? `+${priceChange.toFixed(1)}% momentum` :
+                      priceChange >= 1 ? `+${priceChange.toFixed(1)}% gain` :
+                      priceChange > 0 ? `+${priceChange.toFixed(1)}%` :
+                      `${priceChange.toFixed(1)}%`;
+    const sectorText = sector !== 'Unknown' ? ` in ${sector}` : '';
 
-    // Trend相关
-    if (trend === 'Strong Bullish') {
-      reasons.push('strong bullish trend');
-    } else if (trend === 'Bullish') {
-      reasons.push('bullish trend');
-    }
-
-    // Score相关
-    if (score >= 85) {
-      reasons.push('excellent score');
-    } else if (score >= 75) {
-      reasons.push('strong score');
-    }
-
-    // Risk相关
-    if (risk === 'Low') {
-      reasons.push('low risk');
-    } else if (risk === 'Medium') {
-      reasons.push('manageable risk');
-    }
-
-    // News sentiment相关
-    if (newsSentiment === 'Positive') {
-      reasons.push('positive news sentiment');
-    } else if (newsSentiment === 'Neutral') {
-      reasons.push('neutral news sentiment');
-    }
-
-    // Price change相关
-    if (priceChange >= 3) {
-      reasons.push('strong price momentum');
-    } else if (priceChange >= 1) {
-      reasons.push('positive price momentum');
-    }
-
-    // Volume相关
-    if (volumeStatus === 'High') {
-      reasons.push('high volume activity');
-    } else if (volumeStatus === 'Normal') {
-      reasons.push('normal volume activity');
-    }
-
-    // 构建最终reason
-    if (reasons.length > 0) {
-      const firstPart = reasons.slice(0, 2).join(', ');
-      const remaining = reasons.slice(2);
-
-      let reasonText = `${firstPart}`;
-      if (remaining.length > 0) {
-        reasonText += ` and ${remaining.length} other positive factors`;
-      }
-
-      return `${reasonText.charAt(0).toUpperCase() + reasonText.slice(1)} make this a top follow-up candidate.`;
-    }
-
-    // 默认reason
-    return `Bullish setup with solid score and acceptable risk meets continue scan criteria.`;
+    return `Selected${sectorText}: ${nameOrSymbol} has ${trendDesc}, ${newsDesc} news sentiment, ${riskDesc} risk, and ${volDesc} volume${priceChange !== 0 ? ` at ${priceDesc}` : ''}. Fine Scan should verify setup quality and backtest alignment before entry planning.`;
   };
 
   // Fallback priority计算函数（当AI调用失败时使用）
@@ -944,18 +939,11 @@ Please respond in this exact JSON format:
     sortBy: 'trendScore' as 'trendScore' | 'volume' | 'changePct' | 'newsSentiment',
     sortOrder: 'desc' as 'asc' | 'desc'
   });
-  const [marketScannerAutoEnabled, setMarketScannerAutoEnabled] = useState(false);
-  const marketScannerTimerRef = useRef<NodeJS.Timeout | null>(null);
-  // 新增：Market Scanner 自动扫描相关的 ref
-  const marketScannerAutoEnabledRef = useRef(false);
   const marketScannerStopRequestedRef = useRef(false);
   const marketScannerIsScanningRef = useRef(false);
 
   // 展开行状态
   const [expandedRows, setExpandedRows] = useState<string[]>([]);
-
-  // Step 5: 自动扫描定时器
-  const autoScanTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // 扫描控制标记
   const stopRequestedRef = useRef(false);
@@ -968,7 +956,7 @@ Please respond in this exact JSON format:
 
   // 详细扫描状态
   const [detailedScanStatus, setDetailedScanStatus] = useState({
-    currentStatus: 'idle' as 'idle' | 'scanning' | 'waiting_next_scan' | 'stopped' | 'completed' | 'error',
+    currentStatus: 'idle' as 'idle' | 'scanning' | 'stopping' | 'stopped' | 'completed' | 'error',
     processedCount: 0,
     totalCount: 0,
     percent: 0,
@@ -986,18 +974,18 @@ Please respond in this exact JSON format:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Step 5: 组件卸载时清理定时器
+  // Load trading account data on mount
   useEffect(() => {
-    return () => {
-      clearAutoScanTimer();
-      clearMarketScannerTimer();
-    };
+    handleTradingAccountModeChange(tradingAccountMode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 同步 Market Scanner 自动扫描状态到 ref
+  // 组件卸载时清理
   useEffect(() => {
-    marketScannerAutoEnabledRef.current = marketScannerAutoEnabled;
-  }, [marketScannerAutoEnabled]);
+    return () => {
+      stopRequestedRef.current = true;
+    };
+  }, []);
 
   // 同步 AI 调用状态到 ref
   useEffect(() => {
@@ -1275,11 +1263,6 @@ Please respond in this exact JSON format:
 
       console.log('市场扫描完成');
 
-      // 如果 Market Scanner 自动扫描开启，安排下一轮
-      if (marketScannerAutoEnabledRef.current && !marketScannerStopRequestedRef.current) {
-        scheduleNextMarketScannerAutoScan();
-      }
-
     } catch (error: any) {
       console.error('=== 市场扫描失败 - 外层catch捕获的完整错误 ===');
       console.error('错误消息:', error?.message);
@@ -1450,15 +1433,21 @@ Please respond in this exact JSON format:
         detailedReasoning: trendAnalysis.detailedReasoning,
         conciseReasoning: trendAnalysis.conciseReasoning,
         volumeStatus: trendAnalysis.volumeStatus,
-        provenance: trendAnalysis.provenance || { // 添加provenance字段
+        provenance: trendAnalysis.provenance || {
           marketData: stockData.dataSource || 'Unknown',
-          companyInfo: 'Unknown',
-          news: 'Unknown',
-          aiAnalysis: 'Unknown'
+          companyInfo: (stockData as any).profileSource || 'Finnhub',
+          news: newsData?.source || 'Unknown',
+          aiAnalysis: trendAnalysis.analysisSource === 'deepseek' ? 'DeepSeek' : trendAnalysis.analysisSource === 'rule_based' ? 'Local Rules' : 'Unknown'
         },
-        dataSource: stockData.dataSource || 'Unknown', // 添加dataSource字段
+        dataSource: stockData.dataSource || 'Unknown',
         analysisStatus: 'success' as 'success' | 'partial' | 'failed',
         analysisError: null as string | null,
+
+        // AI source tracking
+        aiCalled: trendAnalysis.aiCalled || (trendAnalysis.analysisSource === 'deepseek'),
+        aiSource: trendAnalysis.aiSource || (trendAnalysis.analysisSource === 'deepseek' ? 'DeepSeek' : trendAnalysis.analysisSource === 'rule_based' ? 'Local Rules' : 'Unknown'),
+        aiModel: trendAnalysis.aiModel || null,
+        aiError: trendAnalysis.aiError || null,
         timestamp: new Date().toISOString()
       };
 
@@ -1809,13 +1798,44 @@ Please respond in this exact JSON format:
         }
       }
 
-      // 5. 处理最后一批（可能不满10个）
-      console.log('=== 处理最后一批 ===');
-      if (validatedBuffer.length > 0) {
-        renderValidatedBatch();
+      // 5. 处理最后一批（可能不满10个）- only if not stopped
+      if (!stopRequestedRef.current && !marketScannerStopRequestedRef.current) {
+        console.log('=== 处理最后一批 ===');
+        if (validatedBuffer.length > 0) {
+          renderValidatedBatch();
+        }
       }
 
-      // 6. 扫描完成
+      // 6. 扫描完成或被停止
+      if (stopRequestedRef.current || marketScannerStopRequestedRef.current) {
+        console.log('=== 扫描被用户停止 ===');
+        console.log(`已处理: ${totalProcessed}, 已验证: ${totalValidated}, 失败: ${failedSymbols.length}`);
+
+        setMarketScannerStatus(prev => ({
+          ...prev,
+          progress: Math.round((totalProcessed / totalSymbols) * 100),
+          scannedSymbols: totalProcessed,
+          currentStatus: 'stopped',
+          currentSymbol: 'Stopped by user',
+          batchProgress: `Stopped at ${totalProcessed}/${totalSymbols}`,
+          retryAttempt: totalRetries
+        }));
+
+        setDetailedScanStatus(prev => ({
+          ...prev,
+          currentStatus: 'stopped',
+          processedCount: totalProcessed,
+          totalCount: totalSymbols,
+          percent: Math.round((totalProcessed / totalSymbols) * 100),
+          validatedCount: totalValidated,
+          lastScanAt: new Date().toISOString(),
+          statusMessage: `Stopped at ${totalProcessed}/${totalSymbols} symbols — ${marketScannerResults.length + validatedBuffer.length} results retained`
+        }));
+
+        marketScannerIsScanningRef.current = false;
+        return;
+      }
+
       console.log('=== 扫描完成 ===');
       console.log(`总处理: ${totalProcessed}, 成功: ${totalValidated}, 失败: ${failedSymbols.length}, 重试: ${totalRetries}`);
 
@@ -2103,7 +2123,14 @@ Please respond in this exact JSON format:
 
           // 确保所有字段都有值
           overallScore: result.overallScore || result.trendScore || null,
-          conciseReason: result.conciseReason || result.conciseReasoning || null
+          conciseReason: result.conciseReason || result.conciseReasoning || null,
+
+          // AI source tracking
+          analysisSource: result.analysisSource || result.aiAnalysis || null,
+          aiCalled: result.aiCalled !== undefined ? result.aiCalled : (result.analysisSource === 'deepseek' || result.analysisSource === 'gemini' || result.analysisSource === 'openai'),
+          aiSource: result.aiSource || result.provider || (result.analysisSource === 'deepseek' ? 'DeepSeek' : result.analysisSource === 'rule_based' ? 'Local Rules' : null),
+          aiModel: result.aiModel || result.model || null,
+          aiError: result.aiError || result.message || null,
         };
 
         console.log(`[AI DEBUG] normalized trendAnalysis (V3) =`, {
@@ -2412,151 +2439,22 @@ Please respond in this exact JSON format:
     }).length;
   };
 
-  const clearMarketScannerTimer = (): void => {
-    if (marketScannerTimerRef.current) {
-      clearTimeout(marketScannerTimerRef.current);
-      marketScannerTimerRef.current = null;
-    }
-  };
-
-  // 安排下一次 Market Scanner 自动扫描
-  const scheduleNextMarketScannerAutoScan = (): void => {
-    // 只在 Market Scanner 自动扫描启用时安排下一次
-    if (!marketScannerAutoEnabledRef.current || marketScannerStopRequestedRef.current) {
-      console.log('Market Scanner 自动扫描未启用或已停止，不安排下一次扫描');
+  const handleToggleMarketScanner = (): void => {
+    if (marketScannerIsScanningRef.current) {
+      // Stop the running scan
+      stopRequestedRef.current = true;
+      marketScannerStopRequestedRef.current = true;
       setDetailedScanStatus(prev => ({
         ...prev,
-        nextScanAt: null,
-        statusMessage: 'Auto scan not enabled or stopped'
+        currentStatus: 'stopping',
+        statusMessage: 'Stopping scan...'
       }));
-      return;
+      message.info('Stopping scanner...');
+      // The scan loop checks stopRequestedRef and will exit
+    } else {
+      // Start a new scan
+      runMarketScanner();
     }
-
-    clearMarketScannerTimer(); // 先清理旧的定时器
-
-    // 使用硬编码的30分钟间隔（与 UI 下拉框一致）
-    const intervalMinutes = 30;
-    const intervalMs = intervalMinutes * 60 * 1000;
-
-    // 计算下一次扫描时间
-    const now = new Date();
-    const nextScanTime = new Date(now.getTime() + intervalMs);
-    const nextScanAt = nextScanTime.toISOString();
-
-    console.log(`安排下一次 Market Scanner 自动扫描，间隔 ${intervalMinutes} 分钟，时间: ${nextScanTime.toLocaleString()}`);
-
-    // 更新详细状态
-    setDetailedScanStatus(prev => ({
-      ...prev,
-      currentStatus: 'waiting_next_scan',
-      nextScanAt: nextScanAt,
-      statusMessage: `Next scan at ${nextScanTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`
-    }));
-
-    // 更新 Market Scanner 状态
-    setMarketScannerStatus(prev => ({
-      ...prev,
-      nextScanTime: nextScanAt
-    }));
-
-    marketScannerTimerRef.current = setTimeout(async () => {
-      try {
-        console.log(`Market Scanner 自动扫描定时器触发，间隔 ${intervalMinutes} 分钟`);
-
-        // 检查是否还在自动扫描模式
-        if (!marketScannerAutoEnabledRef.current || marketScannerStopRequestedRef.current) {
-          console.log('Market Scanner 自动扫描已关闭或停止，跳过本次扫描');
-          return;
-        }
-
-        // 检查是否已经在扫描中
-        if (marketScannerIsScanningRef.current) {
-          console.log('Market Scanner 扫描已在运行中，等待当前扫描完成');
-          // 重新安排下一次扫描
-          scheduleNextMarketScannerAutoScan();
-          return;
-        }
-
-        // 执行扫描
-        await runMarketScanner();
-      } catch (error) {
-        console.error('Market Scanner 自动扫描执行失败:', error);
-        const errorMessage = error instanceof Error ? error.message :
-                            typeof error === 'string' ? error :
-                            'Unknown error';
-        setDetailedScanStatus(prev => ({
-          ...prev,
-          currentStatus: 'error',
-          statusMessage: `Auto scan failed: ${errorMessage}`
-        }));
-      } finally {
-        // 无论扫描是否成功或跳过，如果自动扫描仍然启用，都安排下一次
-        if (marketScannerAutoEnabledRef.current && !marketScannerStopRequestedRef.current) {
-          scheduleNextMarketScannerAutoScan();
-        }
-      }
-    }, intervalMs);
-  };
-
-  const handleStartMarketScannerAuto = (): void => {
-    // 防止重复启动
-    if (marketScannerAutoEnabled) {
-      message.warning('Market Scanner 自动扫描已在运行中');
-      return;
-    }
-
-    // 重置停止标记
-    marketScannerStopRequestedRef.current = false;
-
-    // 启用自动扫描
-    setMarketScannerAutoEnabled(true);
-    marketScannerAutoEnabledRef.current = true;
-
-    // 更新状态
-    setDetailedScanStatus(prev => ({
-      ...prev,
-      currentStatus: 'waiting_next_scan',
-      statusMessage: 'Auto scan started, starting first scan...'
-    }));
-
-    // 立即开始第一轮扫描
-    runMarketScanner();
-  };
-
-  const handleStopMarketScannerAuto = (): void => {
-    // 设置停止标记
-    marketScannerStopRequestedRef.current = true;
-
-    // 禁用自动扫描
-    setMarketScannerAutoEnabled(false);
-    marketScannerAutoEnabledRef.current = false;
-
-    // 清理定时器
-    clearMarketScannerTimer();
-
-    // 更新状态
-    setDetailedScanStatus(prev => ({
-      ...prev,
-      currentStatus: 'stopped',
-      nextScanAt: null,
-      statusMessage: 'Scan stopped by user'
-    }));
-
-    // 更新 Market Scanner 状态
-    setMarketScannerStatus(prev => ({
-      ...prev,
-      nextScanTime: null
-    }));
-
-    message.success('已停止 Market Scanner 自动扫描');
-  };
-
-  const handleRunMarketScannerNow = (): void => {
-    if (marketScannerIsScanningRef.current) {
-      message.warning('扫描正在进行中');
-      return;
-    }
-    runMarketScanner();
   };
 
   const handleSymbolClick = (symbol: string): void => {
@@ -2616,483 +2514,271 @@ Please respond in this exact JSON format:
     }
   };
 
+  function FineScanDetailTag({ label, value, color }: { label: string; value: string; color?: string }) {
+    return React.createElement('span', { style: { fontSize: '9px', color: '#888', marginRight: '6px' } },
+      label + ': ',
+      React.createElement('span', { style: { color: color || '#333', fontWeight: 500 } }, value)
+    );
+  }
+
   const renderFineScanDetailPanel = (record: any) => {
     const fullReason = record.matchReason || '';
     const signals = record.keySignals || [];
+    const aiUsed = record.aiUsed === true;
+    const aiExplained = record.aiExplained === true;
+    const decisionSource = record.decisionSource === 'ai' ? 'DeepSeek AI' : 'Local Rules';
+    const dq = (record.provenance && record.provenance.dataQuality) || (record.entryQuality && record.entryQuality !== 'Error / No Data' ? 'GOOD' : 'PARTIAL');
+    const dqColor = dq === 'GOOD' ? '#52c41a' : dq === 'PARTIAL' ? '#fa8c16' : '#ff4d4f';
+    const decision = record.decision || 'Watch';
+    const grade = record.fineScanGrade || 'MEDIUM';
+    const risk = record.riskGrade || 'MEDIUM';
+    const bestStrat = (record.matchedStrategies || [])[0] || 'N/A';
+    const perStrategy = record.backtestPerStrategy || [];
+    const optResults = record.quickOptResults || [];
+    const eq = record.entryQuality;
+    const eqD = record.entryDetails;
+    const lg = record.liquidityGrade;
+    const ld = record.liquidityDetails;
+    const ng = record.newsGrade;
+    const nd = record.newsDetails;
+    const rg = record.riskGrade;
+    const rd = record.riskDetails;
 
-    return (
-      <div style={{
-        padding: '16px',
-        backgroundColor: '#f8f9fa',
-        borderRadius: 10,
-        border: '1px solid #e8e8e8',
-        margin: '0 8px 8px 8px'
-      }}>
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-          gap: 14
-        }}>
-          {/* 1. Why Matched */}
-          {fullReason && (
-            <div style={{
-              background: '#fff',
-              border: '1px solid #e5e7eb',
-              borderRadius: 8,
-              padding: 12
-            }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span>🎯</span> Why Matched
-              </div>
-              <div style={{ fontSize: 11, color: '#555', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
-                {fullReason}
-              </div>
-            </div>
-          )}
+    return React.createElement('div', { style: { padding: '10px 14px', backgroundColor: '#f8f9fa', borderRadius: 8, border: '1px solid #e8e8e8', margin: '0 6px 6px 6px', fontSize: '11px', lineHeight: '1.4' } },
 
-          {/* 2. Key Signals */}
-          {signals.length > 0 && (
-            <div style={{
-              background: '#fff',
-              border: '1px solid #e5e7eb',
-              borderRadius: 8,
-              padding: 12
-            }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span>📊</span> Key Signals
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                {signals.map((sig: string, i: number) => (
-                  <span key={i} style={{
-                    padding: '2px 8px',
-                    borderRadius: 4,
-                    backgroundColor: '#f0f5ff',
-                    color: '#1890ff',
-                    fontSize: 10,
-                    border: '1px solid #d6e4ff',
-                    lineHeight: '1.8'
-                  }}>
-                    {sig}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
+      // Compact Header Row — only essential identifiers, details in cards
+      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', padding: '6px 0', borderBottom: '1px solid #e8eaed', marginBottom: '8px' } },
+        React.createElement('span', { style: { fontWeight: 700, fontSize: '13px', color: '#1a1a1a' } }, record.symbol),
+        React.createElement(Tag, { color: decision === 'Continue' ? 'green' : decision === 'Watch' ? 'gold' : 'red', style: { fontSize: '10px', margin: 0, padding: '0 5px', lineHeight: '18px' } }, decision),
+        React.createElement('span', { style: { color: '#888', fontSize: '10px' } }, 'Score ', React.createElement('span', { style: { fontWeight: 600, color: '#333' } }, record.matchConfidence || 0)),
+        React.createElement('span', { style: { color: '#aaa', fontSize: '10px' } }, '|'),
+        React.createElement('span', { style: { color: '#888', fontSize: '10px' } }, (record.matchedStrategies || []).slice(0, 2).join(', ') || bestStrat),
+        // Warnings inline
+        (record.decisionWarnings || []).concat((record.decisionBlockers || []).map(function(b: string) { return 'BLOCK: ' + b; })).slice(0, 2).map(function(w: string, i: number) {
+          var isBlocker = w.indexOf('BLOCK: ') === 0;
+          return React.createElement('span', { key: 'hw' + i, style: { padding: '1px 5px', borderRadius: 3, background: isBlocker ? '#fff1f0' : '#fffbe6', color: isBlocker ? '#ff4d4f' : '#d48806', fontSize: '8px', border: '1px solid ' + (isBlocker ? '#ffa39e' : '#ffe58f'), whiteSpace: 'nowrap' } }, (isBlocker ? '✕ ' : '⚠ ') + (isBlocker ? w.slice(7) : w));
+        }),
+        React.createElement('span', { style: { marginLeft: 'auto', display: 'flex', gap: '4px', alignItems: 'center' } },
+          React.createElement(Tag, { color: dq === 'GOOD' ? 'green' : dq === 'PARTIAL' ? 'gold' : 'red', style: { fontSize: '8px', margin: 0, padding: '0 4px', lineHeight: '16px' } }, dq),
+          perStrategy.some(function(ps: any) { return (ps.tradeCount || 0) < 3; }) ? React.createElement(Tag, { color: 'warning', style: { fontSize: '8px', margin: 0, padding: '0 4px', lineHeight: '16px' } }, 'limited') : null,
+          React.createElement(Tag, { color: aiUsed ? 'green' : 'default', style: { fontSize: '8px', margin: 0, padding: '0 4px', lineHeight: '16px' } }, aiUsed ? 'DeepSeek' : 'LR')
+        )
+      ),
 
-          {/* 3. Market Scan Data */}
-          {(record.scanTrend || record.scanScore != null || record.scanVolume != null) && (
-            <div style={{
-              background: '#fff',
-              border: '1px solid #e5e7eb',
-              borderRadius: 8,
-              padding: 12
-            }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span>📈</span> Market Scan Data
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11 }}>
-                <div>
-                  <span style={{ color: '#888' }}>Trend: </span>
-                  {record.scanTrend ? (
-                    <span style={{ fontWeight: 500, color: record.scanTrend === 'Strong Bullish' || record.scanTrend === 'Bullish' ? '#52c41a' : record.scanTrend === 'Neutral' ? '#faad14' : '#ff4d4f' }}>
-                      {record.scanTrend}
-                    </span>
-                  ) : <span style={{ color: '#bbb' }}>N/A</span>}
-                </div>
-                <div><span style={{ color: '#888' }}>Score: </span><span style={{ fontWeight: 500 }}>{record.scanScore != null ? record.scanScore : 'N/A'}</span></div>
-                <div><span style={{ color: '#888' }}>Volume: </span><span style={{ fontWeight: 500 }}>{record.scanVolume != null ? (record.scanVolume / 1e6).toFixed(1) + 'M' : 'N/A'}</span></div>
-              </div>
-            </div>
-          )}
+      // Provenance Chips — short labels, full source in title
+      React.createElement('div', { style: { display: 'flex', gap: '5px', flexWrap: 'wrap', marginBottom: '8px' } },
+        (function() {
+          var p = record.provenance || {};
+          var chips: Array<{key: string; label: string; isAI: boolean; title: string}> = [
+            {key: 'Mkt', label: 'Market', isAI: false, title: p.marketSource || 'Scanner'},
+            {key: 'BT', label: 'BT', isAI: false, title: p.backtestSource || 'Backtest'},
+            {key: 'Opt', label: 'Opt', isAI: false, title: p.optimizationSource || 'Optimization'},
+            {key: 'Entry', label: 'Entry', isAI: false, title: p.entrySource || 'Entry Quality'},
+            {key: 'News', label: 'News', isAI: false, title: p.newsSource || 'News'},
+            {key: 'Dec', label: 'Dec ' + (record.decisionSource === 'ai' ? 'AI' : 'Rules'), isAI: record.decisionSource === 'ai', title: decisionSource},
+            {key: 'Exp', label: 'Exp ' + (aiExplained ? 'AI' : 'LR'), isAI: aiExplained, title: aiExplained ? 'DeepSeek AI' : (p.explanationSource || 'Local Rules')},
+          ];
+          return chips.map(function(c) {
+            return React.createElement('span', { key: c.key, title: c.title, style: { padding: '1px 5px', borderRadius: '3px', background: c.isAI ? '#e6fffb' : '#f0f0f0', color: c.isAI ? '#13c2c2' : '#888', fontSize: '8px', border: '1px solid ' + (c.isAI ? '#b5f5ec' : '#e0e0e0'), whiteSpace: 'nowrap', cursor: 'default' } }, c.label);
+          });
+        })()
+      ),
 
-          {/* 4. Quick Backtest Summary - spans 2 cols */}
-          <div style={{
-            background: '#fff',
-            border: '1px solid #e5e7eb',
-            borderRadius: 8,
-            padding: 12,
-            gridColumn: 'span 2'
-          }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span>🧪</span> Quick Backtest Summary
-            </div>
-            {(() => {
-              const perStrategy = record.backtestPerStrategy || [];
-              const btStatus = record.backtestStatus || 'pending';
-              if (perStrategy.length > 0) {
-                const ovColor = btStatus === 'passed' ? '#52c41a' : btStatus === 'caution' ? '#faad14' : btStatus === 'losing' ? '#ff4d4f' : btStatus === 'failed' ? '#ff4d4f' : '#999';
-                const ovLabel = btStatus === 'passed' ? 'Positive' : btStatus === 'caution' ? 'Caution' : btStatus === 'losing' ? 'Negative' : btStatus === 'failed' ? 'Failed' : btStatus === 'skipped' ? 'Skipped' : 'Pending';
-                return (
-                  <div>
-                    <div style={{ fontSize: 11, marginBottom: 8 }}>
-                      Overall: <span style={{ color: ovColor, fontWeight: 600 }}>{ovLabel}</span>
-                      {record.backtestPeriod && <span style={{ marginLeft: 8, color: '#999', fontSize: 10 }}>Period: {record.backtestPeriod}</span>}
-                    </div>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                      {perStrategy.map((ps: any, psi: number) => {
-                        const psBg = ps.status === 'passed' ? '#f6ffed' : ps.status === 'caution' ? '#fffbe6' : ps.status === 'completed_losing' ? '#fffbe6' : ps.status === 'failed' ? '#fff2f0' : '#f5f5f5';
-                        const psTagColor = ps.status === 'passed' ? '#52c41a' : ps.status === 'caution' ? '#faad14' : ps.status === 'completed_losing' ? '#ff4d4f' : ps.status === 'failed' ? '#ff4d4f' : '#bbb';
-                        const psLabel = ps.status === 'passed' ? 'Passed' : ps.status === 'caution' ? 'Caution' : ps.status === 'completed_losing' ? 'Losing' : ps.status === 'failed' ? 'Failed' : ps.status === 'skipped' ? 'Skipped' : 'Pending';
-                        return (
-                          <div key={psi} style={{
-                            flex: '1 1 220px',
-                            padding: 8,
-                            backgroundColor: psBg,
-                            borderRadius: 6,
-                            fontSize: 10,
-                            lineHeight: 1.7
-                          }}>
-                            <div style={{ fontWeight: 500, marginBottom: 4, fontSize: 11 }}>
-                              {ps.strategy}
-                              <span style={{
-                                display: 'inline-block',
-                                marginLeft: 6, padding: '0 5px',
-                                backgroundColor: psTagColor + '20',
-                                color: psTagColor,
-                                borderRadius: 3,
-                                fontWeight: 600,
-                                fontSize: 9
-                              }}>{psLabel}</span>
-                            </div>
-                            {ps.status === 'skipped' && <div style={{ color: '#999', fontStyle: 'italic' }}>{ps.reason || 'Strategy not supported by local Backtest'}</div>}
-                            {ps.status === 'error' && <div style={{ color: '#999', fontStyle: 'italic' }}>{ps.reason || 'Error running backtest'}</div>}
-                            {ps.status !== 'skipped' && ps.status !== 'error' && ps.totalReturn != null && (
-                              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2px 8px' }}>
-                                <div>Return: <span style={{ color: ps.totalReturn >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 500 }}>
-                                  {ps.totalReturn >= 0 ? '+' : ''}{Number(ps.totalReturn).toFixed(2)}%</span></div>
-                                <div>Sharpe: <span style={{
-                                  color: ps.sharpe >= 1 ? '#52c41a' : ps.sharpe >= 0.5 ? '#faad14' : '#ff4d4f',
-                                  fontWeight: 500
-                                }}>{Number(ps.sharpe).toFixed(2)}</span></div>
-                                <div>Win Rate: <span style={{ fontWeight: 500 }}>{ps.winRate != null ? Number(ps.winRate).toFixed(1) + '%' : 'N/A'}</span></div>
-                                <div>P.Factor: <span style={{
-                                  color: ps.profitFactor >= 1.5 ? '#52c41a' : ps.profitFactor >= 1 ? '#faad14' : '#ff4d4f',
-                                  fontWeight: 500
-                                }}>{ps.profitFactor ? Number(ps.profitFactor).toFixed(2) : 'N/A'}</span></div>
-                                <div>Max DD: <span style={{
-                                  color: Math.abs(ps.maxDrawdown || 0) < 15 ? '#8c8c8c' : Math.abs(ps.maxDrawdown || 0) < 25 ? '#faad14' : '#ff4d4f',
-                                  fontWeight: 500
-                                }}>{Number(ps.maxDrawdown).toFixed(1)}%</span></div>
-                                <div>Trades: <span style={{ fontWeight: 500 }}>{ps.tradeCount ?? 0}</span></div>
-                                <div>Window: <span style={{ fontWeight: 500 }}>{ps.window || 'N/A'}</span></div>
-                                {ps.bestParams && <div style={{ gridColumn: 'span 2', marginTop: 2 }}>
-                                  <span style={{ color: '#888' }}>Params: </span>
-                                  {Object.entries(ps.bestParams).map(([k, v]: [string, any], pi: number) => (
-                                    <span key={pi} style={{
-                                      padding: '1px 5px',
-                                      backgroundColor: '#f0f0f0',
-                                      borderRadius: 3,
-                                      border: '1px solid #e0e0e0',
-                                      fontSize: 9,
-                                      marginRight: 3
-                                    }}>{k}: {String(v)}</span>
-                                  ))}
-                                </div>}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              }
-              return <div style={{ fontSize: 11, color: '#999', fontStyle: 'italic' }}>Quick backtest validation not yet available.</div>;
-            })()}
-          </div>
+      // Body: 2-column grid
+      React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1.2fr 0.8fr', gap: '8px' } },
 
-          {/* 5. Quick Optimization - single col */}
-          <div style={{
-            background: '#fff',
-            border: '1px solid #e5e7eb',
-            borderRadius: 8,
-            padding: 12
-          }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span>⚙️</span> Quick Optimization
-            </div>
-            {(() => {
-              const qs = record.quickOptStatus;
-              const qr = record.quickOptResults || [];
-              const qsSummary = record.quickOptSummary;
-              if (qs === 'skipped' || !qs) {
-                return <div style={{ fontSize: 11, color: '#999', fontStyle: 'italic' }}>Not run (skipped due to backtest result or top-5 limit).</div>;
-              }
-              if (qs === 'running') {
-                return <div style={{ fontSize: 11, color: '#fa8c16' }}>Optimization in progress...</div>;
-              }
-              if (qs === 'error') {
-                return <div style={{ fontSize: 11, color: '#ff4d4f' }}>Optimization failed.</div>;
-              }
-              return (
-                <div>
-                  <div style={{ fontSize: 11, marginBottom: 6 }}>
-                    Status: <span style={{ color: '#fa8c16', fontWeight: 600 }}>Completed</span>
-                    {qsSummary && <span style={{ marginLeft: 8, color: '#888', fontSize: 10 }}>{qsSummary}</span>}
-                  </div>
-                  {qr.map((opt: any, oi: number) => {
-                    const stabColor = opt.stability === 'Stable' ? '#52c41a' : opt.stability === 'Weak' ? '#faad14' : '#ff4d4f';
-                    const stabIcon = opt.stability === 'Stable' ? '\u2705' : opt.stability === 'Weak' ? '\u26a0\ufe0f' : '\u2716';
-                    const params = opt.bestParams || opt.params || {};
-                    return (
-                      <div key={oi} style={{
-                        marginBottom: 6,
-                        padding: '6px 8px',
-                        backgroundColor: '#f6f6f6',
-                        borderRadius: 6,
-                        fontSize: 10,
-                        lineHeight: 1.6
-                      }}>
-                        <div style={{ fontWeight: 500, marginBottom: 3 }}>
-                          {opt.strategy}
-                          <span style={{
-                            display: 'inline-block',
-                            marginLeft: 6, padding: '0 5px',
-                            backgroundColor: stabColor + '20',
-                            color: stabColor,
-                            borderRadius: 3,
-                            fontWeight: 600,
-                            fontSize: 9
-                          }}>{stabIcon} {opt.stability}</span>
-                        </div>
-                        <div style={{ marginBottom: 3 }}>
-                          <span>Avg Return: <span style={{ color: opt.avgReturn >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 500 }}>{opt.avgReturn >= 0 ? '+' : ''}{opt.avgReturn}%</span></span>
-                          <span style={{ color: '#ddd', margin: '0 4px' }}>|</span>
-                          Positive: <span style={{ fontWeight: 500 }}>{opt.positiveRatio}%</span>
-                          <span style={{ color: '#ddd', margin: '0 4px' }}>|</span>
-                          Std: <span style={{ fontWeight: 500 }}>{opt.stdReturn}%</span>
-                        </div>
-                        {Object.keys(params).length > 0 && (
-                          <div style={{ marginBottom: 3 }}>
-                            <span style={{ color: '#888' }}>Params: </span>
-                            {Object.entries(params).map(([k, v]: [string, any], pi: number) => (
-                              <span key={pi} style={{
-                                padding: '1px 5px',
-                                backgroundColor: '#f0f0f0',
-                                borderRadius: 3,
-                                border: '1px solid #e0e0e0',
-                                fontSize: 9,
-                                marginRight: 3
-                              }}>{k}: {String(v)}</span>
-                            ))}
-                          </div>
-                        )}
-                        {opt.results && opt.results.length > 0 && (
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 2 }}>
-                            {opt.results.slice(0, 3).map((r: any, ri: number) => (
-                              <span key={ri} style={{
-                                padding: '1px 6px',
-                                backgroundColor: '#fff',
-                                borderRadius: 3,
-                                border: '1px solid #e8e8e8',
-                                fontSize: 9,
-                                color: r.totalReturn >= 0 ? '#52c41a' : '#ff4d4f'
-                              }}>
-                                {r.label || '#' + (ri + 1)} {r.totalReturn >= 0 ? '+' : ''}{r.totalReturn.toFixed(1)}%
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
+        // LEFT COLUMN
+        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
+
+          // Match Summary
+          React.createElement('div', { style: { background: '#fff', borderRadius: 6, border: '1px solid #edf0f2', padding: '8px 10px' } },
+            React.createElement('div', { style: { fontWeight: 600, fontSize: '10px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '4px' } }, 'Match Summary'),
+            fullReason ? React.createElement('div', { style: { fontSize: '10px', color: '#444', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: '2', WebkitBoxOrient: 'vertical', overflow: 'hidden', maxHeight: '30px', marginBottom: '4px' }, title: fullReason }, fullReason) : null,
+            React.createElement('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } },
+              React.createElement(Tag, { color: record.regime === 'Trending' ? 'blue' : record.regime === 'Breakout-ready' ? 'purple' : record.regime === 'Range-bound' ? 'green' : 'default', style: { fontSize: '9px', margin: 0, padding: '0 5px', lineHeight: '16px' } }, record.regime || 'Unclear'),
+              React.createElement('span', { style: { fontSize: '9px', color: '#888' } }, 'Confidence: ' + (record.matchConfidence || 0) + '% | Score: ' + (record.scanScore || 'N/A'))
+            )
+          ),
+
+          // Backtest
+          React.createElement('div', { style: { background: '#fff', borderRadius: 6, border: '1px solid #edf0f2', padding: '8px 10px' } },
+            React.createElement('div', { style: { fontWeight: 600, fontSize: '10px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '4px' } }, 'Backtest'),
+            perStrategy.length > 0 ? (
+              React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '9px' } },
+                React.createElement('thead', null,
+                  React.createElement('tr', { style: { color: '#888', borderBottom: '1px solid #f0f0f0' } },
+                    React.createElement('th', { style: { textAlign: 'left', padding: '2px 4px', fontWeight: 500 } }, 'Strategy'),
+                    React.createElement('th', { style: { textAlign: 'right', padding: '2px 4px', fontWeight: 500 } }, 'Return'),
+                    React.createElement('th', { style: { textAlign: 'right', padding: '2px 4px', fontWeight: 500 } }, 'Sharpe'),
+                    React.createElement('th', { style: { textAlign: 'right', padding: '2px 4px', fontWeight: 500 } }, 'MaxDD'),
+                    React.createElement('th', { style: { textAlign: 'right', padding: '2px 4px', fontWeight: 500 } }, 'WR'),
+                    React.createElement('th', { style: { textAlign: 'right', padding: '2px 4px', fontWeight: 500 } }, 'Tr'),
+                    React.createElement('th', { style: { textAlign: 'center', padding: '2px 4px', fontWeight: 500 } }, 'Status')
+                  )
+                ),
+                React.createElement('tbody', null,
+                  perStrategy.map(function(ps: any, i: number) {
+                    return React.createElement('tr', { key: i, style: { borderBottom: '1px solid #f5f5f5' } },
+                      React.createElement('td', { style: { padding: '2px 4px', fontWeight: 500 } }, ps.strategy),
+                      React.createElement('td', { style: { padding: '2px 4px', textAlign: 'right', color: (ps.totalReturn || 0) >= 0 ? '#52c41a' : '#ff4d4f' } }, ps.totalReturn != null ? (ps.totalReturn >= 0 ? '+' : '') + Number(ps.totalReturn).toFixed(1) + '%' : '--'),
+                      React.createElement('td', { style: { padding: '2px 4px', textAlign: 'right', color: (ps.sharpe || 0) >= 0.5 ? '#333' : '#ff4d4f' } }, ps.sharpe != null ? Number(ps.sharpe).toFixed(2) : '--'),
+                      React.createElement('td', { style: { padding: '2px 4px', textAlign: 'right', color: Math.abs(ps.maxDrawdown || 0) < 15 ? '#333' : Math.abs(ps.maxDrawdown || 0) < 25 ? '#faad14' : '#ff4d4f' } }, ps.maxDrawdown != null ? Number(ps.maxDrawdown).toFixed(1) + '%' : '--'),
+                      React.createElement('td', { style: { padding: '2px 4px', textAlign: 'right' } }, ps.winRate != null ? Number(ps.winRate).toFixed(1) + '%' : '--'),
+                      React.createElement('td', { style: { padding: '2px 4px', textAlign: 'right', fontStyle: (ps.tradeCount || 0) < 3 ? 'italic' : 'normal' }, title: (ps.tradeCount || 0) < 3 ? 'Limited sample' : undefined }, ps.tradeCount != null ? String(ps.tradeCount) : '--'),
+                      React.createElement('td', { style: { padding: '2px 4px', textAlign: 'center' } },
+                        React.createElement(Tag, { color: ps.status === 'passed' ? 'green' : ps.status === 'caution' ? 'gold' : 'red', style: { fontSize: '8px', margin: 0, padding: '0 3px', lineHeight: '14px' } },
+                          ps.status === 'passed' ? 'Pos' : ps.status === 'caution' ? 'Caut' : ps.status === 'completed_losing' ? 'Loss' : '--')
+                      )
                     );
-                  })}
-                </div>
-              );
-            })()}
-          </div>
+                  })
+                )
+              )
+            ) : React.createElement('div', { style: { fontSize: '10px', color: '#999', fontStyle: 'italic' } }, 'Backtest not yet available.'),
+            record.backtestPeriod ? React.createElement('div', { style: { fontSize: '9px', color: '#aaa', marginTop: '4px' } }, 'Period: ' + record.backtestPeriod) : null
+          ),
 
-          {/* 6. Entry Quality - spans 2 cols */}
-          {record.entryQuality && record.entryQuality !== 'Error / No Data' && record.entryQuality !== '\u2014' && (
-            <div style={{
-              background: '#fff',
-              border: '1px solid #e5e7eb',
-              borderRadius: 8,
-              padding: 12,
-              gridColumn: 'span 2'
-            }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span>🚪</span> Entry Quality
-              </div>
-              {(() => {
-                const eq = record.entryQuality;
-                const reason = record.entryReason || '';
-                const d = record.entryDetails;
-                let gradeColor = '#52c41a';
-                if (eq === 'Wait for Pullback') gradeColor = '#faad14';
-                else if (eq === 'Chasing / Extended' || eq === 'Near Resistance') gradeColor = '#ff4d4f';
-                else if (eq === 'Poor Reward-Risk') gradeColor = '#ff4d4f';
-                return (
-                  <div>
-                    <div style={{ fontSize: 11, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span>Grade: <span style={{ color: gradeColor, fontWeight: 600, fontSize: 12 }}>{eq}</span></span>
-                      <span style={{ color: '#888', fontSize: 10 }}>Score: {record.entryScore || '\u2014'}/100</span>
-                    </div>
-                    {reason && <div style={{ fontSize: 10, color: '#555', marginBottom: 6 }}>{reason}</div>}
-                    {d && (
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '4px 12px', fontSize: 10 }}>
-                        {d.current_price != null && <div><span style={{ color: '#888' }}>Price: </span><span style={{ fontWeight: 500 }}>${d.current_price}</span></div>}
-                        {d.atr != null && <div><span style={{ color: '#888' }}>ATR: </span><span style={{ fontWeight: 500 }}>${d.atr} ({d.atr_pct}%)</span></div>}
-                        {d.ema20 != null && <div><span style={{ color: '#888' }}>EMA20: </span><span style={{ fontWeight: 500 }}>${d.ema20}</span></div>}
-                        {d.ema50 != null && <div><span style={{ color: '#888' }}>EMA50: </span><span style={{ fontWeight: 500 }}>${d.ema50}</span></div>}
-                        {d.support != null && <div><span style={{ color: '#888' }}>Support: </span><span style={{ fontWeight: 500 }}>${d.support}</span></div>}
-                        {d.resistance != null && <div><span style={{ color: '#888' }}>Resistance: </span><span style={{ fontWeight: 500 }}>${d.resistance}</span></div>}
-                        {d.entry_zone_low != null && <div><span style={{ color: '#888' }}>Entry Zone: </span><span style={{ fontWeight: 500 }}>${d.entry_zone_low} - ${d.entry_zone_high}</span></div>}
-                        {d.stop_distance_pct != null && <div><span style={{ color: '#888' }}>Stop Dist: </span><span style={{ fontWeight: 500 }}>{d.stop_distance_pct}%</span></div>}
-                        {d.target_1 != null && <div><span style={{ color: '#888' }}>Target 1: </span><span style={{ fontWeight: 500 }}>${d.target_1}</span></div>}
-                        {d.target_2 != null && <div><span style={{ color: '#888' }}>Target 2: </span><span style={{ fontWeight: 500 }}>${d.target_2}</span></div>}
-                        {d.reward_risk_ratio != null && <div><span style={{ color: '#888' }}>R/R: </span><span style={{ color: d.reward_risk_ratio >= 2 ? '#52c41a' : d.reward_risk_ratio >= 1.5 ? '#faad14' : '#ff4d4f', fontWeight: 500 }}>{d.reward_risk_ratio}:1</span></div>}
-                        {d.volume_ratio != null && <div><span style={{ color: '#888' }}>Vol Ratio: </span><span style={{ fontWeight: 500 }}>{d.volume_ratio}x</span></div>}
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
-            </div>
-          )}
+          // Optimization
+          React.createElement('div', { style: { background: '#fff', borderRadius: 6, border: '1px solid #edf0f2', padding: '8px 10px' } },
+            React.createElement('div', { style: { fontWeight: 600, fontSize: '10px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '4px' } }, 'Optimization'),
+            optResults.length > 0 ? (
+              React.createElement('div', { style: { fontSize: '9px' } },
+                React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '9px' } },
+                  React.createElement('thead', null,
+                    React.createElement('tr', { style: { color: '#888', borderBottom: '1px solid #f0f0f0' } },
+                      React.createElement('th', { style: { textAlign: 'left', padding: '2px 4px', fontWeight: 500 } }, 'Strategy'),
+                      React.createElement('th', { style: { textAlign: 'center', padding: '2px 4px', fontWeight: 500 } }, 'Status'),
+                      React.createElement('th', { style: { textAlign: 'right', padding: '2px 4px', fontWeight: 500 } }, 'Avg Ret'),
+                      React.createElement('th', { style: { textAlign: 'right', padding: '2px 4px', fontWeight: 500 } }, 'Pos%'),
+                      React.createElement('th', { style: { textAlign: 'right', padding: '2px 4px', fontWeight: 500 } }, 'Spread')
+                    )
+                  ),
+                  React.createElement('tbody', null,
+                    optResults.map(function(opt: any, oi: number) {
+                      var hasResults = opt.results && opt.results.length > 0;
+                      return React.createElement('tr', { key: oi, style: { borderBottom: '1px solid #f5f5f5' } },
+                        React.createElement('td', { style: { padding: '2px 4px', fontWeight: 500 } }, opt.strategy),
+                        React.createElement('td', { style: { padding: '2px 4px', textAlign: 'center' } },
+                          React.createElement(Tag, { color: opt.stability === 'Stable' ? 'green' : opt.stability === 'Weak' ? 'gold' : 'red', style: { fontSize: '8px', margin: 0, padding: '0 3px', lineHeight: '14px' } },
+                            opt.stability === 'Stable' ? 'Stable' : opt.stability === 'Weak' ? 'Weak' : 'Overfit')
+                        ),
+                        React.createElement('td', { style: { padding: '2px 4px', textAlign: 'right', color: opt.avgReturn >= 0 ? '#52c41a' : '#ff4d4f' } }, (opt.avgReturn >= 0 ? '+' : '') + opt.avgReturn + '%'),
+                        React.createElement('td', { style: { padding: '2px 4px', textAlign: 'right' } }, opt.positiveRatio + '%'),
+                        React.createElement('td', { style: { padding: '2px 4px', textAlign: 'right' } }, (opt.stdReturn || 0).toFixed(1) + '%')
+                      );
+                    })
+                  )
+                ),
+                record.quickOptSummary ? React.createElement('div', { style: { fontSize: '9px', color: '#aaa', marginTop: '4px' } }, record.quickOptSummary) : null
+              )
+            ) : React.createElement('div', { style: { fontSize: '10px', color: '#999', fontStyle: 'italic' } }, 'Optimization not run.'),
+            record.quickOptStatus === 'running' ? React.createElement('div', { style: { fontSize: '10px', color: '#fa8c16' } }, 'In progress...') : null
+          ),
 
-          {/* 7. Liquidity / Volume */}
-          {record.liquidityGrade && record.liquidityGrade !== 'Error' && record.liquidityGrade !== '\u2014' && (
-            <div style={{
-              background: '#fff',
-              border: '1px solid #e5e7eb',
-              borderRadius: 8,
-              padding: 12
-            }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span>💧</span> Liquidity / Volume
-              </div>
-              {(() => {
-                const lg = record.liquidityGrade;
-                const lr = record.liquidityReason || '';
-                const ld = record.liquidityDetails;
-                let gColor = '#52c41a';
-                if (lg === 'Caution') gColor = '#faad14';
-                else if (lg === 'Poor') gColor = '#ff4d4f';
-                return (
-                  <div>
-                    <div style={{ fontSize: 11, marginBottom: 4 }}>
-                      Grade: <span style={{ color: gColor, fontWeight: 600 }}>{lg}</span>
-                    </div>
-                    {lr && <div style={{ fontSize: 10, color: '#555', marginBottom: 4 }}>{lr}</div>}
-                    {ld ? (
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3px 12px', fontSize: 10 }}>
-                        {ld.rvol != null && <div><span style={{ color: '#888' }}>RVOL: </span><span style={{ color: ld.rvol >= 1.5 ? '#52c41a' : ld.rvol >= 0.7 ? '#faad14' : '#ff4d4f', fontWeight: 500 }}>{ld.rvol}x</span></div>}
-                        {ld.spread_pct != null ? <div><span style={{ color: '#888' }}>Spread: </span><span style={{ color: ld.spread_pct < 0.05 ? '#52c41a' : ld.spread_pct < 0.20 ? '#faad14' : '#ff4d4f', fontWeight: 500 }}>{ld.spread_pct}%</span></div> : <div><span style={{ color: '#888' }}>Spread: </span><span style={{ color: '#bbb' }}>N/A</span></div>}
-                        {ld.today_volume != null && <div><span style={{ color: '#888' }}>Today Vol: </span><span style={{ fontWeight: 500 }}>{(ld.today_volume / 1e6).toFixed(1)}M</span></div>}
-                        {ld.avg_20d_volume != null && <div><span style={{ color: '#888' }}>Avg 20d: </span><span style={{ fontWeight: 500 }}>{(ld.avg_20d_volume / 1e6).toFixed(1)}M</span></div>}
-                        {ld.dollar_volume != null && <div><span style={{ color: '#888' }}>$ Vol: </span><span style={{ fontWeight: 500 }}>{(ld.dollar_volume / 1e6).toFixed(1)}M</span></div>}
-                        {ld.volume_pattern && <div><span style={{ color: '#888' }}>Pattern: </span><span style={{ fontWeight: 500 }}>{ld.volume_pattern}</span></div>}
-                        {ld.source && <div><span style={{ color: '#888' }}>Source: </span><span style={{ fontWeight: 500 }}>{ld.source}</span></div>}
-                      </div>
-                    ) : (
-                      <div style={{ fontSize: 10, color: '#999', fontStyle: 'italic' }}>Details not available</div>
-                    )}
-                  </div>
-                );
-              })()}
-            </div>
-          )}
+          // Entry Quality
+          React.createElement('div', { style: { background: '#fff', borderRadius: 6, border: '1px solid #edf0f2', padding: '8px 10px' } },
+            React.createElement('div', { style: { fontWeight: 600, fontSize: '10px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '4px' } }, 'Entry Quality'),
+            eq && eq !== 'Error / No Data' ? (
+              React.createElement('div', null,
+                React.createElement('div', { style: { marginBottom: '4px', display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' } },
+                  React.createElement('span', { style: { fontWeight: 600, color: eq === 'Good' ? '#52c41a' : eq === 'Wait for Pullback' ? '#faad14' : eq === 'Near Resistance' || eq === 'Chasing / Extended' || eq === 'Poor Reward-Risk' ? '#ff4d4f' : '#333' } }, eq),
+                  React.createElement('span', { style: { color: '#888' } }, 'Score: ' + (record.entryScore || '--') + '/100'),
+                  eqD && eqD.reward_risk_ratio != null && eqD.reward_risk_ratio < 1.5 && eq === 'Good' ? React.createElement('span', { style: { padding: '1px 5px', borderRadius: 3, background: '#fffbe6', color: '#d48806', fontSize: '8px', border: '1px solid #ffe58f' } }, '⚠ Entry capped by low R/R (' + eqD.reward_risk_ratio + ':1)') : null
+                ),
+                eqD ? React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px 12px', fontSize: '9px' } },
+                  eqD.current_price != null ? React.createElement(FineScanDetailTag, { label: 'Price', value: '$' + eqD.current_price }) : null,
+                  eqD.atr != null ? React.createElement(FineScanDetailTag, { label: 'ATR', value: '$' + eqD.atr + ' (' + eqD.atr_pct + '%)' }) : null,
+                  eqD.support != null ? React.createElement(FineScanDetailTag, { label: 'Support', value: '$' + eqD.support }) : null,
+                  eqD.resistance != null ? React.createElement(FineScanDetailTag, { label: 'Res', value: '$' + eqD.resistance }) : null,
+                  eqD.entry_zone_low != null ? React.createElement(FineScanDetailTag, { label: 'Entry', value: '$' + eqD.entry_zone_low + '–$' + eqD.entry_zone_high }) : null,
+                  eqD.stop_distance_pct != null ? React.createElement(FineScanDetailTag, { label: 'Stop', value: eqD.stop_distance_pct + '%', color: eqD.stop_distance_pct > 5 ? '#faad14' : undefined }) : null,
+                  eqD.reward_risk_ratio != null ? React.createElement(FineScanDetailTag, { label: 'R/R', value: eqD.reward_risk_ratio + ':1', color: eqD.reward_risk_ratio < 1.5 ? '#ff4d4f' : eqD.reward_risk_ratio < 2 ? '#faad14' : '#52c41a' }) : null
+                ) : null,
+                record.entryReason ? React.createElement('div', { style: { fontSize: '9px', color: '#aaa', marginTop: '3px', lineHeight: '1.3', display: '-webkit-box', WebkitLineClamp: '1', WebkitBoxOrient: 'vertical', overflow: 'hidden' } }, record.entryReason) : null
+              )
+            ) : React.createElement('span', { style: { color: '#bbb', fontSize: '10px' } }, 'Entry quality data unavailable')
+          )
+        ),
 
-          {/* 8. News / Event - spans 2 cols */}
-          {record.newsGrade && record.newsGrade !== 'Error' && record.newsGrade !== '\u2014' && (
-            <div style={{
-              background: '#fff',
-              border: '1px solid #e5e7eb',
-              borderRadius: 8,
-              padding: 12,
-              gridColumn: 'span 2'
-            }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span>📰</span> News / Event
-              </div>
-              {(() => {
-                const ng = record.newsGrade;
-                const nr = record.newsReason || '';
-                const nd = record.newsDetails;
-                let gColor = '#52c41a';
-                if (ng === 'Catalyst') gColor = '#1890ff';
-                else if (ng === 'Caution') gColor = '#faad14';
-                else if (ng === 'High Event Risk') gColor = '#ff4d4f';
-                return (
-                  <div>
-                    <div style={{ fontSize: 11, marginBottom: 4 }}>
-                      Grade: <span style={{ color: gColor, fontWeight: 600 }}>{ng}</span>
-                    </div>
-                    {nr && <div style={{ fontSize: 10, color: '#555', marginBottom: 4 }}>{nr}</div>}
-                    {nd && nd.top_headlines && nd.top_headlines.length > 0 ? (
-                      <div style={{ fontSize: 10, color: '#555', marginBottom: 6, lineHeight: 1.6 }}>
-                        {nd.top_headlines.slice(0, 4).map((h: string, idx: number) => (
-                          <div key={idx} style={{ marginBottom: 2, padding: '2px 0' }}>
-                            <span style={{ color: '#999' }}>• </span>{h}
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div style={{ fontSize: 10, color: '#999', fontStyle: 'italic', marginBottom: 6 }}>No recent material news</div>
-                    )}
-                    {nd && (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 10 }}>
-                        <DetailTag label="Headlines" value={`${nd.headline_count || 0}`} />
-                        <DetailTag label="Earnings Soon" value={nd.earnings_soon ? 'Yes' : 'No'} color={nd.earnings_soon ? '#faad14' : '#52c41a'} />
-                        <DetailTag label="Catalyst" value={nd.has_catalyst ? '\u2713' : '\u2014'} color={nd.has_catalyst ? '#1890ff' : '#999'} />
-                        <DetailTag label="Caution" value={nd.has_caution ? '\u26a0' : '\u2014'} color={nd.has_caution ? '#faad14' : '#999'} />
-                        <DetailTag label="High Risk" value={nd.has_high_event ? '\u26a0' : '\u2014'} color={nd.has_high_event ? '#ff4d4f' : '#999'} />
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
-            </div>
-          )}
+        // RIGHT COLUMN
+        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
 
-          {/* 9. Final Risk Assessment */}
-          {record.riskGrade && record.riskGrade !== '\u2014' && (
-            <div style={{
-              background: '#fff',
-              border: '1px solid #e5e7eb',
-              borderRadius: 8,
-              padding: 12
-            }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span>🛡️</span> Final Risk Assessment
-              </div>
-              {(() => {
-                const rg = record.riskGrade;
-                const rr = record.riskReason || '';
-                const rd = record.riskDetails;
-                let gColor = '#52c41a', gLabel = 'Low';
-                if (rg === 'MEDIUM') { gColor = '#faad14'; gLabel = 'Medium'; }
-                else if (rg === 'HIGH') { gColor = '#ff4d4f'; gLabel = 'High'; }
-                else if (rg === 'LOW') { gLabel = 'Low'; }
-                else if (rg === 'SKIP') { gColor = '#bbb'; gLabel = 'Skip'; }
-                return (
-                  <div>
-                    <div style={{ fontSize: 12, marginBottom: 4 }}>
-                      Grade: <span style={{ color: gColor, fontWeight: 700 }}>{gLabel}</span>
-                    </div>
-                    {rr && <div style={{ fontSize: 10, color: '#555', marginBottom: 4 }}>{rr}</div>}
-                    {rd && (
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3px 12px', fontSize: 10 }}>
-                        <div><span style={{ color: '#888' }}>Risk Score: </span>
-                          <span style={{
-                            color: rd.risk_score >= 65 ? '#ff4d4f' : rd.risk_score >= 35 ? '#faad14' : '#52c41a',
-                            fontWeight: 500
-                          }}>{rd.risk_score || '\u2014'}/100</span></div>
-                        <div><span style={{ color: '#888' }}>Factors: </span><span style={{ fontWeight: 500 }}>{(rd.risk_factors || []).join(', ') || '\u2014'}</span></div>
-                        <div><span style={{ color: '#888' }}>ATR Vol: </span>
-                          <span style={{ color: rd.atr_pct > 5 ? '#ff4d4f' : rd.atr_pct > 2 ? '#faad14' : '#52c41a', fontWeight: 500 }}>{rd.atr_pct || '\u2014'}%</span></div>
-                        <div><span style={{ color: '#888' }}>Liquidity Risk: </span><span style={{ fontWeight: 500 }}>{rd.liquidity_grade || '\u2014'}</span></div>
-                        <div><span style={{ color: '#888' }}>News Risk: </span><span style={{ fontWeight: 500 }}>{rd.news_grade || '\u2014'}</span></div>
-                        <div><span style={{ color: '#888' }}>Entry Risk: </span><span style={{ fontWeight: 500 }}>{rd.entry_quality || '\u2014'}</span></div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
-            </div>
-          )}
-        </div>
-      </div>
+          // Key Signals
+          React.createElement('div', { style: { background: '#fff', borderRadius: 6, border: '1px solid #edf0f2', padding: '8px 10px' } },
+            React.createElement('div', { style: { fontWeight: 600, fontSize: '10px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '4px' } }, 'Key Signals'),
+            signals.length > 0 ? (
+              React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '3px' } },
+                signals.slice(0, 6).map(function(sig: string, i: number) {
+                  return React.createElement('span', { key: i, style: { padding: '1px 6px', borderRadius: 3, backgroundColor: '#f0f5ff', color: '#1890ff', fontSize: '9px', border: '1px solid #d6e4ff' } }, sig);
+                }),
+                signals.length > 6 ? React.createElement('span', { style: { fontSize: '9px', color: '#999' } }, '+' + (signals.length - 6)) : null
+              )
+            ) : React.createElement('span', { style: { color: '#bbb', fontSize: '10px' } }, '--')
+          ),
+
+          // Liquidity & Risk -- merged
+          React.createElement('div', { style: { background: '#fff', borderRadius: 6, border: '1px solid #edf0f2', padding: '8px 10px' } },
+            React.createElement('div', { style: { fontWeight: 600, fontSize: '10px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '4px' } }, 'Liquidity & Risk'),
+            React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 8px', fontSize: '9px' } },
+              React.createElement('div', null,
+                React.createElement('div', { style: { fontWeight: 500, color: '#555', marginBottom: '3px' } }, 'Liquidity'),
+                lg && lg !== 'Error' ? React.createElement('div', null,
+                  React.createElement(FineScanDetailTag, { label: 'Grade', value: lg, color: lg === 'Good' ? '#52c41a' : lg === 'Caution' ? '#faad14' : '#ff4d4f' }),
+                  ld ? React.createElement('div', null,
+                    ld.rvol != null ? React.createElement('div', { style: { marginTop: '2px' } }, React.createElement(FineScanDetailTag, { label: 'RVOL', value: ld.rvol + 'x', color: ld.rvol >= 1.5 ? '#52c41a' : ld.rvol < 0.7 ? '#ff4d4f' : undefined })) : null,
+                    ld.spread_pct != null ? React.createElement('div', { style: { marginTop: '2px' } }, React.createElement(FineScanDetailTag, { label: 'Spread', value: ld.spread_pct + '%', color: ld.spread_pct > 1 ? '#ff4d4f' : ld.spread_pct > 0.2 ? '#faad14' : undefined })) : React.createElement('div', { style: { marginTop: '2px', color: '#bbb' } }, 'Spread: N/A')
+                  ) : null
+                ) : React.createElement('span', { style: { color: '#bbb' } }, '--')
+              ),
+              React.createElement('div', null,
+                React.createElement('div', { style: { fontWeight: 500, color: '#555', marginBottom: '3px' } }, 'Risk'),
+                rg && rg !== 'SKIP' ? React.createElement('div', null,
+                  React.createElement(FineScanDetailTag, { label: 'Grade', value: rg === 'LOW' ? 'Low' : rg === 'MEDIUM' ? 'Medium' : rg === 'HIGH' ? 'High' : rg, color: rg === 'LOW' ? '#52c41a' : rg === 'MEDIUM' ? '#faad14' : '#ff4d4f' }),
+                  rd ? React.createElement('div', null,
+                    React.createElement('div', { style: { marginTop: '2px' } }, React.createElement(FineScanDetailTag, { label: 'Score', value: (rd.risk_score || '--') + '/100', color: rd.risk_score >= 65 ? '#ff4d4f' : rd.risk_score >= 35 ? '#faad14' : '#52c41a' })),
+                    rd.atr_pct != null ? React.createElement('div', { style: { marginTop: '2px' } }, React.createElement(FineScanDetailTag, { label: 'ATR', value: rd.atr_pct + '%', color: rd.atr_pct > 5 ? '#ff4d4f' : undefined })) : null
+                  ) : null
+                ) : React.createElement('span', { style: { color: '#bbb' } }, '--')
+              )
+            )
+          ),
+
+          // News & Catalyst
+          React.createElement('div', { style: { background: '#fff', borderRadius: 6, border: '1px solid #edf0f2', padding: '8px 10px' } },
+            React.createElement('div', { style: { fontWeight: 600, fontSize: '10px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '4px' } }, 'News & Catalyst'),
+            ng && ng !== 'Error' ? React.createElement('div', null,
+              React.createElement('div', { style: { marginBottom: '3px' } },
+                React.createElement(FineScanDetailTag, { label: 'Grade', value: ng, color: ng === 'Catalyst' ? '#1890ff' : ng === 'Caution' ? '#faad14' : ng === 'High Event Risk' ? '#ff4d4f' : undefined }),
+                nd ? React.createElement(React.Fragment, null,
+                  React.createElement(FineScanDetailTag, { label: 'Count', value: String(nd.headline_count || 0) }),
+                  React.createElement(FineScanDetailTag, { label: 'Earnings', value: nd.earnings_soon ? 'Soon' : 'No', color: nd.earnings_soon ? '#faad14' : undefined })
+                ) : null
+              ),
+              nd && nd.top_headlines && nd.top_headlines.length > 0 ? React.createElement('div', { style: { fontSize: '9px', color: '#666', lineHeight: '1.4' } },
+                nd.top_headlines.slice(0, 2).map(function(h: string, i: number) {
+                  return React.createElement('div', { key: i, style: { display: '-webkit-box', WebkitLineClamp: '1', WebkitBoxOrient: 'vertical', overflow: 'hidden', maxHeight: '14px', marginBottom: '1px' }, title: h }, '• ' + h);
+                }),
+                nd.top_headlines.length > 2 ? React.createElement('span', { style: { color: '#999' } }, '+' + (nd.top_headlines.length - 2) + ' more') : null
+              ) : React.createElement('span', { style: { color: '#bbb', fontSize: '9px' } }, 'No recent symbol-specific news')
+            ) : React.createElement('span', { style: { color: '#bbb', fontSize: '10px' } }, '--')
+          ),
+
+          // AI Explanation / Next Step
+          React.createElement('div', { style: { background: '#fff', borderRadius: 6, border: '1px solid #edf0f2', padding: '8px 10px' } },
+            React.createElement('div', { style: { fontWeight: 600, fontSize: '10px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '4px' } }, 'AI Explanation'),
+            React.createElement('div', { style: { marginBottom: '3px' } },
+              React.createElement(FineScanDetailTag, { label: 'Source', value: aiExplained ? 'DeepSeek' : 'Local Rules', color: aiExplained ? '#52c41a' : '#fa8c16' }),
+              aiExplained ? React.createElement(FineScanDetailTag, { label: 'Model', value: 'deepseek-chat' }) : null
+            ),
+            record.finalReason ? React.createElement('div', { style: { fontSize: '9px', color: '#555', lineHeight: '1.4', display: '-webkit-box', WebkitLineClamp: '2', WebkitBoxOrient: 'vertical', overflow: 'hidden', maxHeight: '28px', marginBottom: '3px' }, title: record.finalReason }, record.finalReason) : null,
+            record.nextStep ? React.createElement('div', null,
+              React.createElement('div', { style: { fontSize: '9px', fontWeight: 500, color: '#333', marginBottom: '1px' } }, 'Next Step:'),
+              React.createElement('div', { style: { fontSize: '9px', color: '#1890ff', lineHeight: '1.3', display: '-webkit-box', WebkitLineClamp: '2', WebkitBoxOrient: 'vertical', overflow: 'hidden', maxHeight: '26px' }, title: record.nextStep }, record.nextStep)
+            ) : null,
+            !aiExplained && !record.finalReason ? React.createElement('span', { style: { color: '#bbb', fontSize: '9px' } }, 'AI explanation loading or unavailable.') : null
+          )
+        )
+      ),
+
     );
   };
   const renderDetailPanel = (record: any) => {
@@ -3190,15 +2876,35 @@ Please respond in this exact JSON format:
                   </div>
                   <div>
                     <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Data Sources</div>
-                    <div style={{ fontSize: '11px', fontWeight: '600', color: '#333', lineHeight: '1.4' }}>
+                    <div style={{ fontSize: '10px', fontWeight: '500', color: '#333', lineHeight: '1.6' }}>
                       {record.provenance ? (
                         <div>
-                          <div>Market: {record.provenance.marketData || 'N/A'}</div>
-                          <div>News: {record.provenance.news || 'N/A'}</div>
-                          <div>AI: {record.provenance.aiAnalysis || 'N/A'}</div>
+                          <div><span style={{ color: '#888' }}>Market:</span> <span style={{ color: record.dataSource?.includes('Alpaca') ? '#52c41a' : '#fa8c16' }}>{record.provenance.marketData || record.dataSource || 'Unknown'}</span></div>
+                          <div><span style={{ color: '#888' }}>Company/Sector:</span> {record.provenance.companyInfo || 'Unknown'}</div>
+                          <div><span style={{ color: '#888' }}>News:</span> {record.provenance.news || 'Unknown'}</div>
+                          <div>
+                            <span style={{ color: '#888' }}>AI:</span>
+                            {record.aiCalled ? (
+                              <span style={{ color: '#52c41a' }}>{record.aiSource || 'AI'} ({record.aiModel || 'LLM'}) called</span>
+                            ) : (
+                              <Tooltip title={record.aiError || 'No AI configured or call failed'}>
+                                <span style={{ color: '#fa8c16', cursor: 'help', borderBottom: '1px dotted #fa8c16' }}>{record.aiSource || 'Local Rules'} fallback</span>
+                              </Tooltip>
+                            )}
+                          </div>
                         </div>
                       ) : (
-                        'N/A'
+                        <div>
+                          <div><span style={{ color: '#888' }}>Market:</span> {record.dataSource || 'Unknown'}</div>
+                          <div>
+                            <span style={{ color: '#888' }}>AI:</span>
+                            {record.aiCalled ? (
+                              <span style={{ color: '#52c41a' }}>{record.aiSource || 'AI'} called</span>
+                            ) : (
+                              <span style={{ color: '#fa8c16' }}>Local Rules</span>
+                            )}
+                          </div>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -3520,22 +3226,6 @@ Please respond in this exact JSON format:
     }
   };
 
-  // Step 2: 扫描控制函数（只做 UI，不接真实逻辑）
-  // Step 5: 清理定时器
-  const clearAutoScanTimer = () => {
-    if (autoScanTimerRef.current) {
-      clearTimeout(autoScanTimerRef.current);
-      autoScanTimerRef.current = null;
-    }
-  };
-
-  // Step 5: 计算下一次运行时间
-  const calculateNextRunTime = (): string => {
-    const intervalMinutes = parseInt(scanInterval);
-    const nextRunTime = new Date(Date.now() + intervalMinutes * 60 * 1000);
-    return nextRunTime.toISOString();
-  };
-
   // 格式化时间显示
   const formatTimeDisplay = (isoString: string | null): string => {
     if (!isoString) return 'N/A';
@@ -3545,163 +3235,6 @@ Please respond in this exact JSON format:
     } catch (error) {
       return 'Invalid time';
     }
-  };
-
-  // Step 5: 安排下一次自动扫描
-  const scheduleNextAutoScan = () => {
-    // 只在自动扫描启用时安排下一次 - 使用 ref 获取最新值
-    if (!isAutoScanEnabledRef.current) {
-      console.log('自动扫描未启用，不安排下一次扫描');
-      setDetailedScanStatus(prev => ({
-        ...prev,
-        nextScanAt: null,
-        statusMessage: 'Auto scan not enabled'
-      }));
-      return;
-    }
-
-    clearAutoScanTimer(); // 先清理旧的定时器
-
-    const intervalMinutes = parseInt(scanInterval);
-    const intervalMs = intervalMinutes * 60 * 1000;
-
-    // 计算下一次扫描时间
-    const now = new Date();
-    const nextScanTime = new Date(now.getTime() + intervalMs);
-    const nextScanAt = nextScanTime.toISOString();
-
-    console.log(`安排下一次自动扫描，间隔 ${intervalMinutes} 分钟，时间: ${nextScanTime.toLocaleString()}`);
-
-    // 更新详细状态
-    setDetailedScanStatus(prev => ({
-      ...prev,
-      currentStatus: 'waiting_next_scan',
-      nextScanAt: nextScanAt,
-      statusMessage: `Next scan at ${nextScanTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`
-    }));
-
-    autoScanTimerRef.current = setTimeout(async () => {
-      try {
-        console.log(`自动扫描定时器触发，间隔 ${intervalMinutes} 分钟`);
-
-        // 检查是否还在自动扫描模式
-        if (!isAutoScanEnabledRef.current) {
-          console.log('自动扫描已关闭，跳过本次扫描');
-          return;
-        }
-
-        // 检查是否已经在扫描中
-        if (detailedScanStatus.currentStatus === 'scanning') {
-          console.log('扫描已在运行中，等待当前扫描完成');
-          // 重新安排下一次扫描
-          scheduleNextAutoScan();
-          return;
-        }
-
-        // 执行扫描
-        await runMarketScanner();
-      } catch (error) {
-        console.error('自动扫描执行失败:', error);
-        const errorMessage = error instanceof Error ? error.message :
-                            typeof error === 'string' ? error :
-                            'Unknown error';
-        setDetailedScanStatus(prev => ({
-          ...prev,
-          currentStatus: 'error',
-          statusMessage: `Auto scan failed: ${errorMessage}`
-        }));
-      } finally {
-        // 无论扫描是否成功或跳过，如果自动扫描仍然启用，都安排下一次
-        if (isAutoScanEnabledRef.current) {
-          scheduleNextAutoScan();
-        }
-      }
-    }, intervalMs);
-
-    // 更新下一次运行时间
-    const nextRun = calculateNextRunTime();
-    setScanStatus(prev => ({
-      ...prev,
-      status: 'scheduled',
-      nextRun
-    }));
-  };
-
-  // Step 5: 启动自动扫描
-  const handleStartAutoScan = () => {
-    // 防止重复启动 - 检查是否已启用自动扫描
-    if (isAutoScanEnabled) {
-      message.warning('自动扫描已在运行中');
-      return;
-    }
-
-    // 重置停止标记
-    stopRequestedRef.current = false;
-
-    // 清理旧的定时器
-    clearAutoScanTimer();
-
-    // 启用自动扫描模式
-    setIsAutoScanEnabled(true);
-    isAutoScanEnabledRef.current = true; // 同步更新ref
-
-    // 更新详细状态
-    setDetailedScanStatus(prev => ({
-      ...prev,
-      currentStatus: 'waiting_next_scan',
-      statusMessage: 'Auto scan started, scheduling first scan...'
-    }));
-
-    // 更新状态为 scheduled（等待第一次扫描）
-    setScanStatus(prev => ({
-      ...prev,
-      status: 'scheduled',
-      nextRun: calculateNextRunTime(),
-      progress: 0
-    }));
-
-    message.success(`已启动自动扫描，间隔 ${scanInterval} 分钟`);
-
-    // 立即执行第一次扫描，扫描完成后会自动安排下一次
-    runMarketScanner();
-  };
-
-  // Step 5: 停止自动扫描
-  const handleStopAutoScan = () => {
-    // 设置停止标记
-    stopRequestedRef.current = true;
-
-    // 禁用自动扫描模式
-    setIsAutoScanEnabled(false);
-    isAutoScanEnabledRef.current = false; // 同步更新ref
-
-    // 清理定时器
-    clearAutoScanTimer();
-
-    // 更新详细状态
-    setDetailedScanStatus(prev => ({
-      ...prev,
-      currentStatus: 'stopped',
-      nextScanAt: null,
-      statusMessage: 'Scan stopped by user'
-    }));
-
-    // 更新状态
-    setScanStatus(prev => ({
-      ...prev,
-      status: 'stopped',
-      nextRun: null,
-    }));
-
-    // 更新市场扫描器状态
-    setMarketScannerStatus(prev => ({
-      ...prev,
-      status: 'stopped',
-      currentStatus: 'stopped',
-      currentSymbol: 'Stopped by user'
-    }));
-
-    message.success('已停止自动扫描，当前扫描将立即停止');
   };
 
 
@@ -5558,6 +5091,25 @@ Please respond in this exact JSON format:
           scanTrend: scanData?.trendLabel || scanData?.trend || 'N/A',
           scanScore: scanData?.overallScore ?? scanData?.trendScore ?? null,
           scanVolume: scanData?.volumeRatio || scanData?.volume || null,
+          // Dynamic provenance tracking
+          provenance: {
+            marketSource: ms ? 'Market Scanner (Alpaca/Finnhub)' : 'Continue Scan List',
+            scannerSource: ms ? 'Alpaca Snapshot + Finnhub Profile' : 'Continue List Fallback',
+            backtestSource: 'pending',
+            optimizationSource: 'pending',
+            entrySource: 'pending',
+            liquiditySource: 'pending',
+            newsSource: 'pending',
+            decisionSource: 'pending',
+            explanationSource: 'pending',
+            aiCalled: ms?.aiCalled || false,
+            aiSource: ms?.aiSource || 'Local Rules',
+            aiModel: ms?.aiModel || null,
+            aiError: ms?.aiError || null,
+            dataQuality: ms?.dataQuality || (ms?.price && ms?.volume ? 'GOOD' : 'PARTIAL'),
+            missingFields: [] as string[],
+            fallbackUsed: !ms,
+          },
         });
 
         // --- Step 3: Quick Backtest Validation ---
@@ -5702,6 +5254,11 @@ Please respond in this exact JSON format:
           rec.backtestPerformance = perfStatus;
           rec.backtestSummary = overallSummary;
           rec.backtestPerStrategy = perStrategyResults;
+          // Update provenance
+          if (rec.provenance) {
+            rec.provenance.backtestSource = execStatus === 'pass' ? 'Internal Backtest Engine' : (execStatus === 'fail' ? 'Backtest Failed' : 'Skipped');
+            rec.provenance.optimizationSource = 'pending';
+          }
 
           // Quick Optimization: lightweight parameter stability check
           // Run for any symbol with a successful backtest execution regardless of sign
@@ -5879,6 +5436,10 @@ Please respond in this exact JSON format:
 
             const optElapsed = Date.now() - optStartTime;
             rec.quickOptResults = optResults;
+            // Update provenance
+            if (rec.provenance) {
+              rec.provenance.optimizationSource = optResults.length > 0 ? 'Internal Optimization Engine' : 'Optimization Skipped';
+            }
 
             // Compute overall optimization status
             if (optResults.length === 0) {
@@ -5913,16 +5474,19 @@ Please respond in this exact JSON format:
             rec.entryReason = eqResponse.data.entry_reason || '';
             rec.entryScore = eqResponse.data.entry_score || 0;
             rec.entryDetails = eqResponse.data.details || null;
+            if (rec.provenance) rec.provenance.entrySource = 'Entry Quality API (Alpaca)';
           } else {
             rec.entryQuality = 'Error / No Data';
             rec.entryReason = eqResponse.data?.message || 'API returned no valid data';
             rec.entryDetails = null;
+            if (rec.provenance) { rec.provenance.entrySource = 'Entry Quality Failed'; rec.provenance.dataQuality = 'PARTIAL'; }
           }
         } catch (eqErr: any) {
           console.warn(`[EntryQuality] ${symbol} failed:`, eqErr.message);
           rec.entryQuality = 'Error / No Data';
           rec.entryReason = eqErr.message || 'Alpaca request failed';
           rec.entryDetails = null;
+          if (rec.provenance) { rec.provenance.entrySource = 'Entry Quality Failed'; rec.provenance.dataQuality = 'PARTIAL'; }
         }
         // --- End Step 4: Entry Quality ---
 
@@ -5942,11 +5506,16 @@ Please respond in this exact JSON format:
             rec.riskGrade = advResponse.data.risk?.grade || 'MEDIUM';
             rec.riskReason = advResponse.data.risk?.reason || '';
             rec.riskDetails = advResponse.data.risk?.details || null;
+            if (rec.provenance) {
+              rec.provenance.liquiditySource = 'Fine Scan Advanced API';
+              rec.provenance.newsSource = 'Fine Scan Advanced API (Finnhub/Alpaca)';
+            }
           } else {
             rec.liquidityGrade = 'Error';
             rec.newsGrade = 'Error';
             rec.riskGrade = 'SKIP';
             rec.riskReason = 'API returned no valid data';
+            if (rec.provenance) { rec.provenance.liquiditySource = 'Failed'; rec.provenance.newsSource = 'Failed'; rec.provenance.dataQuality = 'PARTIAL'; }
           }
         } catch (advErr: any) {
           console.warn(`[FineScanAdvanced] ${symbol} failed:`, advErr.message);
@@ -5954,22 +5523,89 @@ Please respond in this exact JSON format:
           rec.newsGrade = 'Error';
           rec.riskGrade = 'SKIP';
           rec.riskReason = advErr.message || 'advanced scan failed';
+          if (rec.provenance) { rec.provenance.liquiditySource = 'Failed'; rec.provenance.newsSource = 'Failed'; rec.provenance.dataQuality = 'PARTIAL'; }
         }
         // --- End Steps 5-6-7: Liquidity, News, Risk ---
 
-        // Compute Decision: Continue / Watch / Skip for this symbol immediately
-        const btOk = rec.backtestStatus === 'pass' && (rec.backtestPerformance === 'positive' || rec.backtestPerformance === 'caution');
-        const eqOk = rec.entryQuality === 'Excellent' || rec.entryQuality === 'Good' || rec.entryQuality === 'Wait for Pullback';
-        const riskOk = rec.riskGrade === 'LOW' || rec.riskGrade === 'MEDIUM';
-        const scoreOk = (rec.matchConfidence || 0) >= 30;
-        if (btOk && eqOk && riskOk && scoreOk) {
-          rec.decision = 'Continue';
-        } else if (btOk && (rec.matchConfidence || 0) >= 20) {
-          rec.decision = 'Watch';
-        } else if (rec.riskGrade === 'HIGH' || rec.entryQuality === 'Chasing / Extended' || rec.matchConfidence < 15) {
-          rec.decision = 'Skip';
-        } else {
-          rec.decision = 'Watch';
+        // Compute Decision: Continue / Watch / Skip — try AI first, fallback to local rules
+        rec.decision = 'Watch'; // default
+        rec.decisionSource = 'pending';
+        rec.fineScanGrade = 'MEDIUM';
+        rec.decisionConfidence = 0;
+        try {
+          const decisionResp = await fineScanDecisionAPI.decide({
+            symbol: rec.symbol,
+            trendLabel: rec.trendLabel || rec.trend || 'Neutral',
+            trendScore: rec.scanScore || 50,
+            matchedStrategies: rec.matchedStrategies || [],
+            matchConfidence: rec.matchConfidence || 0,
+            backtestStatus: rec.backtestStatus || '',
+            backtestPerformance: rec.backtestPerformance || '',
+            backtestTotalReturn: rec.backtestPerStrategy?.[0]?.totalReturn,
+            entryQuality: {
+              grade: rec.entryQuality || '',
+              score: rec.entryScore || 0,
+              zone: rec.entryDetails?.zone || '',
+            },
+            liquidityGrade: rec.liquidityGrade || '',
+            newsGrade: rec.newsGrade || '',
+            riskGrade: rec.riskGrade || '',
+            riskScore: rec.riskScore || 0,
+            entryScore: rec.entryScore || 0,
+          });
+          if (decisionResp.data && decisionResp.data.success) {
+            rec.decision = decisionResp.data.decision === 'CONTINUE' ? 'Continue' :
+                           decisionResp.data.decision === 'SKIP' ? 'Skip' : 'Watch';
+            rec.fineScanGrade = decisionResp.data.grade;
+            rec.decisionConfidence = decisionResp.data.confidence;
+            rec.decisionSource = decisionResp.data.source;
+            rec.decisionReason = decisionResp.data.reason;
+            if (decisionResp.data.decisionDetail) {
+              rec.decisionStrengths = decisionResp.data.decisionDetail.strengths;
+              rec.decisionWarnings = decisionResp.data.decisionDetail.warnings;
+              rec.decisionBlockers = decisionResp.data.decisionDetail.blockers;
+            }
+            if (rec.provenance) {
+              rec.provenance.decisionSource = decisionResp.data.source === 'ai' ? 'DeepSeek AI' : 'Local Rules';
+              rec.provenance.aiCalled = decisionResp.data.source === 'ai';
+            }
+          } else {
+            throw new Error('Decision API returned no data');
+          }
+        } catch (decErr: any) {
+          console.warn(`[FineScanDecision] ${symbol} AI decision failed: ${decErr.message}, using local rules`);
+          // Local fallback decision rules — CONTINUE = "worth deeper analysis and entry plan", not "buy now"
+          const btOk = rec.backtestStatus === 'pass' && (rec.backtestPerformance === 'positive' || rec.backtestPerformance === 'caution');
+          const eqOk = rec.entryQuality === 'Excellent' || rec.entryQuality === 'Good' || rec.entryQuality === 'Wait for Pullback' || rec.entryQuality === 'Breakout Setup';
+          const riskOk = rec.riskGrade === 'LOW' || rec.riskGrade === 'MEDIUM';
+          const scoreOk = (rec.matchConfidence || 0) >= 30;
+          const riskSkip = rec.riskGrade === 'SKIP';
+          const entryAvoidDowntrend = rec.entryQuality === 'Avoid / Downtrend';
+          const blockers = (rec.entryQuality === 'Chasing / Extended' ? 1 : 0) +
+            (rec.riskGrade === 'HIGH' ? 1 : 0) +
+            (rec.liquidityGrade === 'Poor' ? 1 : 0);
+          const hasPositiveBacktest = rec.backtestStatus === 'pass' && rec.backtestPerformance !== 'negative';
+          if (btOk && scoreOk && riskOk && blockers === 0) {
+            // Strong across all dimensions
+            rec.decision = 'Continue';
+            rec.fineScanGrade = 'HIGH';
+          } else if (btOk && (rec.matchConfidence || 0) >= 25 && blockers <= 1) {
+            // Good enough for deeper validation — relaxed
+            rec.decision = 'Continue';
+            rec.fineScanGrade = riskOk ? 'HIGH' : 'MEDIUM';
+          } else if (hasPositiveBacktest && (rec.matchConfidence || 0) >= 20 && blockers <= 2) {
+            // Borderline but worth deeper analysis
+            rec.decision = 'Continue';
+            rec.fineScanGrade = 'MEDIUM';
+          } else if (riskSkip || entryAvoidDowntrend || ((rec.matchConfidence || 0) < 10 && !btOk && !riskOk)) {
+            rec.decision = 'Skip';
+            rec.fineScanGrade = 'LOW';
+          } else {
+            rec.decision = 'Watch';
+            rec.fineScanGrade = 'MEDIUM';
+          }
+          rec.decisionSource = 'local-rule';
+          rec.decisionConfidence = rec.matchConfidence || 0;
         }
         rec.scanStatus = 'completed';
 
@@ -6045,10 +5681,18 @@ Please respond in this exact JSON format:
               if (resp.nextStep) r.nextStep = resp.nextStep;
               // Mark as AI-enhanced for UI
               r.aiExplained = true;
+              if (r.provenance) {
+                r.provenance.explanationSource = 'DeepSeek AI';
+                r.provenance.aiCalled = true;
+                r.provenance.aiSource = 'DeepSeek';
+                r.provenance.aiModel = 'deepseek-chat';
+              }
+            } else {
+              if (r.provenance) r.provenance.explanationSource = 'Explain API failed';
             }
           } catch (e: any) {
             console.warn(`[FineScanExplain] AI failed for ${r.symbol}: ${e.message}`);
-            // Fallback: deterministic fields already set, no action needed
+            if (r.provenance) r.provenance.explanationSource = 'Explain API error';
           }
         }
         // Refresh UI with AI-enhanced explanations
@@ -6065,6 +5709,221 @@ Please respond in this exact JSON format:
   // ===== Deeper Validation State =====
   const [deeperValidationStatus, setDeeperValidationStatus] = useState<'idle' | 'loading' | 'completed' | 'error'>('idle');
   const [deeperValidationResults, setDeeperValidationResults] = useState<any[] | null>(null);
+
+  // ===== Entry Plan State =====
+  const [entryPlanStatus, setEntryPlanStatus] = useState<'idle' | 'loading' | 'completed' | 'error'>('idle');
+  const [entryPlanResults, setEntryPlanResults] = useState<any[] | null>(null);
+  const [expandedEntryPlanSymbol, setExpandedEntryPlanSymbol] = useState<string | null>(null);
+  const [entryPlanAccountSize, setEntryPlanAccountSize] = useState<number>(100000);
+  const [entryPlanRiskPerTrade, setEntryPlanRiskPerTrade] = useState<number>(1);
+  const [entryPlanExecutionMode, setEntryPlanExecutionMode] = useState<string>('Recommend Only');
+
+  // ===== Entry Plan Execution State =====
+  const [executeModalVisible, setExecuteModalVisible] = useState(false);
+  const [executeTarget, setExecuteTarget] = useState<any>(null);
+  const [executeLoading, setExecuteLoading] = useState(false);
+  const [liveConfirmText, setLiveConfirmText] = useState('');
+
+  const handleEntryPlanAction = (plan: any) => {
+    const fa = plan.finalAction;
+    const aiDecision = plan.aiDecision;
+    const rg = plan.riskGate || plan.hardRiskGate || {};
+    const dq = plan.dataQuality;
+    const tr = plan.tradeReadiness;
+
+    if (fa === 'BLOCKED_BY_RISK' || rg.status === 'BLOCK' || dq === 'POOR') {
+      const blockers = plan.blockers || rg.blockers || ['Unknown blocker'];
+      Modal.warning({
+        title: 'Blocked',
+        content: `Cannot execute: ${blockers.slice(0, 3).join('; ')}`,
+      });
+      return;
+    }
+
+    if (fa === 'SKIP' || aiDecision === 'SKIP') {
+      message.info('Skipped — no action needed');
+      return;
+    }
+
+    if (fa === 'WAIT_FOR_ENTRY' || aiDecision === 'WATCH' || tr === 'WAIT') {
+      // Add to watchlist
+      addToWatchlist(plan);
+      return;
+    }
+
+    if (fa === 'BUY_READY') {
+      if (entryPlanExecutionMode === 'Recommend Only') {
+        Modal.info({
+          title: 'Recommend Only Mode',
+          content: 'Order preview only — no order will be submitted. Switch to Paper Trading or Live Trading to execute.',
+        });
+        return;
+      }
+      // Open confirmation modal
+      setExecuteTarget(plan);
+      setLiveConfirmText('');
+      setExecuteModalVisible(true);
+    }
+  };
+
+  const addToWatchlist = async (plan: any) => {
+    try {
+      const ed = plan.executionDetails || {};
+      const orderPreview = ed.orderPreview || plan.orderPreview || {};
+      const item = {
+        symbol: plan.symbol,
+        setupType: plan.setup,
+        aiDecision: plan.aiDecision,
+        confidence: plan.confidence,
+        entryZoneLow: plan.entryZoneLow,
+        entryZoneHigh: plan.entryZoneHigh,
+        trigger: plan.triggerCondition || '',
+        stopLoss: plan.stopLoss,
+        takeProfit1: plan.takeProfit1,
+        takeProfit2: plan.takeProfit2,
+        riskReward: plan.riskReward1,
+        shares: plan.positionSizeShares || plan.shares || 0,
+        finalAction: plan.finalAction,
+        riskGateStatus: (plan.riskGate || plan.hardRiskGate || {}).status || '',
+        dataQuality: plan.dataQuality || '',
+        nextStep: plan.nextStep || '',
+        decisionReason: plan.decisionReason || '',
+        riskComment: plan.riskComment || '',
+        invalidationComment: plan.invalidationComment || '',
+        source: 'Entry Plan',
+      };
+      const res = await aiAgentWatchlistAPI.add(item);
+      if (res.data.success) {
+        const action = res.data.action === 'UPDATED' ? 'Updated in watchlist' : 'Added to AI Entry Watchlist';
+        message.success(`${plan.symbol}: ${action}`);
+      }
+    } catch (e: any) {
+      message.error(`Failed to add to watchlist: ${e?.response?.data?.message || e?.message || 'Unknown error'}`);
+    }
+  };
+
+  const confirmExecutePlan = async () => {
+    if (!executeTarget) return;
+    const plan = executeTarget;
+    const ed = plan.executionDetails || {};
+    const orderPreview = ed.orderPreview || plan.orderPreview || {};
+
+    // Live trading requires confirmation text match
+    const isLive = entryPlanExecutionMode.toLowerCase().includes('live');
+    if (isLive) {
+      const expected = `CONFIRM LIVE BUY ${plan.symbol}`;
+      if (liveConfirmText.trim().toUpperCase() !== expected.toUpperCase()) {
+        message.error(`Type "${expected}" to confirm live trading`);
+        return;
+      }
+    }
+
+    setExecuteLoading(true);
+    try {
+      const res = await entryPlanAPI.execute({
+        symbol: plan.symbol,
+        planSnapshot: {
+          ...plan,
+          riskGate: plan.riskGate || plan.hardRiskGate,
+          shares: plan.positionSizeShares || plan.shares,
+          orderPreview: orderPreview,
+        },
+        executionMode: isLive ? 'live' : 'paper',
+        liveConfirm: isLive,
+        confirmText: isLive ? liveConfirmText : undefined,
+      });
+
+      const d = res.data;
+      if (d.success && d.action === 'ORDER_SUBMITTED') {
+        message.success(`${plan.symbol}: ${d.message} (ID: ${d.orderId?.slice(0, 8)}...)`);
+        setExecuteModalVisible(false);
+        setExecuteTarget(null);
+      } else {
+        message.error(`${plan.symbol}: ${d.reason || 'Blocked'} — ${(d.blockers || []).join('; ')}`);
+      }
+    } catch (e: any) {
+      const errData = e?.response?.data;
+      message.error(`Execution failed: ${errData?.reason || e?.message || 'Unknown error'}`);
+    } finally {
+      setExecuteLoading(false);
+    }
+  };
+
+  const getEntryPlanCandidates = useCallback(() => {
+    if (!deeperValidationResults || deeperValidationResults.length === 0) return [];
+    // Include Confirmed, Watch, and Needs Manual Review. Exclude Rejected.
+    const confirmed: any[] = [];
+    const watch: any[] = [];
+    const manualReview: any[] = [];
+    for (const r of deeperValidationResults) {
+      if (r.verdict === 'Confirmed') confirmed.push(r);
+      else if (r.verdict === 'Watch') watch.push({ ...r, planNote: 'Conservative / Watch Only' });
+      else if (r.verdict === 'Needs Manual Review' || r.verdict === 'Manual Review') manualReview.push({ ...r, planNote: 'Review Required' });
+    }
+    const all = [...confirmed, ...watch, ...manualReview];
+    // Limit to total of 8
+    return all.slice(0, 8);
+  }, [deeperValidationResults]);
+
+  const handleRunEntryPlan = useCallback(async () => {
+    const candidates = getEntryPlanCandidates();
+    if (!candidates.length) return;
+    setEntryPlanStatus('loading');
+    setEntryPlanResults(null);
+    try {
+      const candidateData = candidates.map((c: any) => ({
+        symbol: c.symbol,
+        strategy: c.strategy || c.strategyType || '',
+        verdict: c.verdict || '',
+        totalReturn: c.totalReturn ?? c.aggregateReturn,
+        sharpeRatio: c.sharpeRatio ?? c.sharpe,
+        maxDrawdown: c.maxDrawdown,
+        winRate: c.winRate,
+        profitFactor: c.profitFactor,
+        tradeCount: c.tradeCount ?? c.trades,
+        stabilityScore: c.stabilityScore,
+        recentVsLongTerm: c.recentVsLongTerm,
+        fineScanEntryQuality: c.fineScanEntryQuality || '',
+        liquidity: c.liquidity || '',
+        riskGrade: c.riskGrade || '',
+        currentPrice: c.currentPrice || c.price || 0,
+        support: c.support || 0,
+        resistance: c.resistance || 0,
+        atr: c.atr || 0,
+        ema20: c.ema20 || 0,
+        ema50: c.ema50 || 0,
+        recentHigh: c.recentHigh || 0,
+        recentLow: c.recentLow || 0,
+        volume: c.volume || 0,
+        avgVolume: c.avgVolume || 0,
+        fineScanDecision: c.fineScanDecision || 'Pass',
+        fineScanScore: c.fineScanScore || 50,
+        fineScanStrategy: c.fineScanStrategy || '',
+        fineScanRisk: c.fineScanRisk || '',
+        fineScanNews: c.fineScanNews || '',
+        entryQualityDetail: c.entryQualityDetail || '',
+      }));
+      const existingPositions: string[] = [];
+      const dailyLoss = 0;
+      // Use real account data: buyingPower > equity > portfolioValue > fallback
+      const realAccountSize = tradingAccountData?.success
+        ? (tradingAccountData.portfolioValue ?? tradingAccountData.equity ?? tradingAccountData.buyingPower ?? entryPlanAccountSize)
+        : entryPlanAccountSize;
+      const res = await entryPlanAPI.generate(
+        candidateData, realAccountSize, entryPlanRiskPerTrade, 10,
+        existingPositions, dailyLoss, existingPositions, entryPlanExecutionMode, tradingAccountMode
+      );
+      if (res.data?.success && res.data?.plans) {
+        setEntryPlanResults(res.data.plans);
+        setEntryPlanStatus('completed');
+      } else {
+        setEntryPlanStatus('error');
+      }
+    } catch (err) {
+      console.error('Entry plan error:', err);
+      setEntryPlanStatus('error');
+    }
+  }, [getEntryPlanCandidates, entryPlanAccountSize, entryPlanRiskPerTrade, entryPlanExecutionMode, tradingAccountMode, tradingAccountData]);
 
   const selectValidationCandidates = useCallback(() => {
     if (!fineScanResults || fineScanResults.length === 0) return [];
@@ -6319,26 +6178,47 @@ function renderDVDetailPanel(record: any) {
       ),
       '#13c2c2'
     ),
-    
+
+    // Data Provenance strip — compact chips
+    (function() {
+      var aiExplained = record.aiExplained === true;
+      var explanationSource = aiExplained ? 'DeepSeek' : 'Local Rules';
+      var explanationColor = aiExplained ? '#52c41a' : '#fa8c16';
+      var chips = [
+        {label: 'Candidate: Fine Scan', isAI: false, title: 'Fine Scan'},
+        {label: 'Backtest: Internal', isAI: false, title: 'Internal Backtest Engine'},
+        {label: 'Opt: Internal', isAI: false, title: 'Internal Optimization Engine'},
+        {label: 'Verdict: Deterministic', isAI: false, title: 'Deterministic Rules'},
+        {label: 'Explain: ' + explanationSource, isAI: aiExplained, title: aiExplained ? 'DeepSeek AI' : 'Local Rules'},
+      ];
+      return React.createElement('div', { style: { gridColumn: '1 / -1', display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center', fontSize: '8px', color: '#888' } },
+        chips.map(function(c: any) {
+          return React.createElement('span', { key: c.label, title: c.title, style: { padding: '1px 6px', borderRadius: '3px', background: c.isAI ? '#e6fffb' : '#f0f0f0', color: c.isAI ? '#13c2c2' : '#888', border: '1px solid ' + (c.isAI ? '#b5f5ec' : '#e0e0e0'), whiteSpace: 'nowrap', cursor: 'default' } }, c.label);
+        }),
+        isLimitedSample ?
+          React.createElement(Tag, { color: 'warning', style: { fontSize: '8px', margin: 0, marginLeft: 'auto', padding: '0 4px', lineHeight: '16px' } }, 'Limited sample') : null
+      );
+    })(),
+
     // Summary Footer
     React.createElement('div', { style: { gridColumn: '1 / -1', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 14, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' } },
-      React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 8 } },
-        React.createElement('div', { style: { fontSize: '10px', color: '#999' } },
-          React.createElement('div', { style: { fontSize: '10px', color: '#999', marginBottom: 2 } }, 'Data Source'),
-          React.createElement('div', { style: { fontSize: '11px', fontWeight: 600, color: '#333' } }, 'Internal Backtest + Optimization'),
-          React.createElement('div', { style: { fontSize: '10px', color: '#999', marginTop: 2 } }, 'Candidate Source: Fine Scan'),
+      React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 } },
+        React.createElement('div', { style: { fontSize: '10px', color: '#555', flex: 1, lineHeight: 1.5 } },
+          (record.verdictReason || record.decisionSummary) ?
+            React.createElement('span', { style: { fontWeight: 500, color: '#333' } }, record.verdictReason || record.decisionSummary)
+          : null,
           isLimitedSample ?
-            React.createElement('div', { style: { fontSize: '10px', color: '#856404', marginTop: 1 } }, 'Note: Limited trade / combo sample') : null
+            React.createElement('div', { style: { fontSize: '9px', color: '#856404', marginTop: 2 } }, 'Note: Limited sample') : null
         ),
-        React.createElement('div', null,
-          React.createElement('div', { style: { fontSize: '10px', color: '#999', textAlign: 'right' } }, 'Final Verdict'),
-          React.createElement(Tag, { color: vColor, style: { fontSize: '12px', fontWeight: 700, margin: '2px 0', padding: '2px 12px', borderRadius: '10px' } }, v || 'N/A')
+        React.createElement('div', { style: { textAlign: 'right', flexShrink: 0 } },
+          React.createElement(Tag, { color: vColor, style: { fontSize: '12px', fontWeight: 700, margin: 0, padding: '2px 12px', borderRadius: '10px' } }, v || 'N/A')
         )
       ),
       reasonParts.length > 0 ?
         React.createElement('div', { style: { marginTop: 8, borderTop: '1px solid #f0f0f0', paddingTop: 8 } },
+          React.createElement('div', { style: { fontSize: '9px', color: '#aaa', marginBottom: 4 } }, 'Verdict Reasons'),
           reasonParts.map(function(part: any, i: number) {
-            return React.createElement('div', { key: i, style: { fontSize: '10px', color: '#555', lineHeight: 1.5, marginBottom: 2 } }, part);
+            return React.createElement('div', { key: i, style: { fontSize: '10px', color: '#555', lineHeight: 1.5, marginBottom: 2 } }, '• ' + part);
           })
         ) : null
     )
@@ -6459,6 +6339,83 @@ function renderDVDetailPanel(record: any) {
         </Card>
       </div>
 
+      {/* 1.5 Trading Account Mode */}
+      <div style={{ marginBottom: 24 }}>
+        <Card
+          title={
+            <span>
+              <SettingOutlined style={{ marginRight: 8 }} />
+              Trading Account Mode
+            </span>
+          }
+        >
+          <div style={{ fontSize: 13, color: '#8c8c8c', marginBottom: 12 }}>
+            Select which Alpaca account is used for Entry Plan position sizing and risk checks.
+            Switching mode does not place any orders.
+          </div>
+          <Row gutter={[24, 12]} align="top">
+            <Col flex="auto">
+              <div style={{ display: 'flex', gap: 8 }}>
+                <Button
+                  type={tradingAccountMode === 'paper' ? 'primary' : 'default'}
+                  onClick={() => handleTradingAccountModeChange('paper')}
+                  style={{ minWidth: 140 }}
+                >
+                  Paper Trading
+                </Button>
+                <Button
+                  type={tradingAccountMode === 'real' ? 'primary' : 'default'}
+                  onClick={() => handleTradingAccountModeChange('real')}
+                  style={{ minWidth: 140 }}
+                  danger={tradingAccountMode === 'real'}
+                >
+                  Real Trading
+                </Button>
+              </div>
+            </Col>
+            <Col flex="360px">
+              <div style={{ background: '#fafafa', borderRadius: 8, padding: '10px 14px', fontSize: 12, lineHeight: '1.6', border: '1px solid #f0f0f0' }}>
+                <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 13 }}>
+                  {tradingAccountData?.mode === 'paper' ? '📄' : tradingAccountData?.mode === 'real' ? '🔴' : '⚪'} {' '}
+                  {tradingAccountData?.mode === 'paper' ? 'Paper Account' : tradingAccountData?.mode === 'real' ? 'Real Account' : 'Account'}
+                </div>
+                {tradingAccountLoading ? (
+                  <div style={{ color: '#8c8c8c' }}>Loading...</div>
+                ) : tradingAccountData?.success ? (
+                  <div>
+                    <div><span style={{ color: '#8c8c8c' }}>Status: </span><span style={{ fontWeight: 600, color: tradingAccountData.status === 'ACTIVE' ? '#52c41a' : '#faad14' }}>{tradingAccountData.status}</span></div>
+                    <div><span style={{ color: '#8c8c8c' }}>Cash: </span><span style={{ fontWeight: 600 }}>${(tradingAccountData.cash ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
+                    <div><span style={{ color: '#8c8c8c' }}>Buying Power: </span><span style={{ fontWeight: 600 }}>${(tradingAccountData.buyingPower ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
+                    <div><span style={{ color: '#8c8c8c' }}>Portfolio: </span><span style={{ fontWeight: 600 }}>${(tradingAccountData.portfolioValue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
+                  </div>
+                ) : (
+                  <div style={{ color: '#8c8c8c' }}>
+                    {tradingAccountData?.error ? (
+                      <><ExclamationCircleOutlined style={{ marginRight: 4, color: '#faad14' }} />{tradingAccountData.error}</>
+                    ) : (
+                      'Account data unavailable'
+                    )}
+                    <div style={{ fontSize: 11, marginTop: 4 }}>Entry Plan will use estimated defaults</div>
+                  </div>
+                )}
+                <div style={{ fontSize: 11, color: '#bbb', borderTop: '1px solid #f0f0f0', marginTop: 8, paddingTop: 6 }}>
+                  Used by: Entry Plan position sizing and risk gate
+                </div>
+              </div>
+            </Col>
+          </Row>
+          {tradingAccountMode === 'real' && (
+            <Alert
+              style={{ marginTop: 10 }}
+              type="warning"
+              showIcon
+              message="Real trading account selected"
+              description="Used only for position sizing and risk calculations. No orders will be placed from this switch."
+            />
+          )}
+        </Card>
+      </div>
+
       {/* 2. Market Scanner */}
       <div style={{ marginBottom: 24 }}>
         <Title level={4}>
@@ -6467,48 +6424,32 @@ function renderDVDetailPanel(record: any) {
         </Title>
         <Card>
           <Row gutter={16} align="middle" style={{ marginBottom: 16 }}>
-            <Col span={8}>
-              <div style={{ marginBottom: '8px' }}>
-                <Text strong>Scanner Interval:</Text>
-              </div>
-              <Select
-                value="30"
-                style={{ width: '100%' }}
-                disabled={marketScannerAutoEnabled}
-              >
-                <Option value="30">30 minutes</Option>
-                <Option value="60">60 minutes</Option>
-                <Option value="120">120 minutes</Option>
-              </Select>
-            </Col>
-
-            <Col span={16}>
+            <Col span={24}>
               <Space size="middle">
                 <Button
-                  type="primary"
-                  icon={<PlayCircleOutlined />}
-                  onClick={handleStartMarketScannerAuto}
-                  disabled={marketScannerAutoEnabled}
+                  type={detailedScanStatus.currentStatus === 'scanning' ? 'default' : 'primary'}
+                  danger={detailedScanStatus.currentStatus === 'scanning'}
+                  icon={detailedScanStatus.currentStatus === 'scanning' ? <PauseCircleOutlined /> : <ThunderboltOutlined />}
+                  onClick={handleToggleMarketScanner}
+                  loading={detailedScanStatus.currentStatus === 'stopping'}
                 >
-                  Start Auto Scanner
+                  {detailedScanStatus.currentStatus === 'scanning' ? 'Stop Scanner' : 'Run Scanner'}
                 </Button>
-
-                <Button
-                  danger
-                  icon={<PauseCircleOutlined />}
-                  onClick={handleStopMarketScannerAuto}
-                  disabled={!marketScannerAutoEnabled}
-                >
-                  Stop Auto Scanner
-                </Button>
-
-                <Button
-                  icon={<ThunderboltOutlined />}
-                  onClick={handleRunMarketScannerNow}
-                  loading={marketScannerStatus.status === 'running'}
-                >
-                  Run Scanner Now
-                </Button>
+                {detailedScanStatus.currentStatus === 'scanning' && (
+                  <Text type="secondary" style={{ fontSize: '12px' }}>Scanning in progress...</Text>
+                )}
+                {detailedScanStatus.currentStatus === 'stopping' && (
+                  <Text type="warning" style={{ fontSize: '12px' }}>Stopping...</Text>
+                )}
+                {detailedScanStatus.currentStatus === 'stopped' && (
+                  <Text type="warning" style={{ fontSize: '12px' }}>Scan stopped by user. {marketScannerResults.length} results retained.</Text>
+                )}
+                {detailedScanStatus.currentStatus === 'completed' && (
+                  <Text type="success" style={{ fontSize: '12px' }}>Scan completed: {detailedScanStatus.processedCount} symbols</Text>
+                )}
+                {detailedScanStatus.currentStatus === 'error' && (
+                  <Text type="danger" style={{ fontSize: '12px' }}>{detailedScanStatus.statusMessage}</Text>
+                )}
               </Space>
             </Col>
           </Row>
@@ -6527,46 +6468,22 @@ function renderDVDetailPanel(record: any) {
                     detailedScanStatus.currentStatus === 'scanning' ? 'processing' :
                     detailedScanStatus.currentStatus === 'completed' ? 'success' :
                     detailedScanStatus.currentStatus === 'error' ? 'error' :
-                    detailedScanStatus.currentStatus === 'stopped' ? 'warning' : 'default'
+                    detailedScanStatus.currentStatus === 'stopped' || detailedScanStatus.currentStatus === 'stopping' ? 'warning' : 'default'
                   }
                 />
                 <Text strong style={{
                   color: detailedScanStatus.currentStatus === 'scanning' ? '#52c41a' :
                          detailedScanStatus.currentStatus === 'completed' ? '#1890ff' :
                          detailedScanStatus.currentStatus === 'error' ? '#ff4d4f' :
-                         detailedScanStatus.currentStatus === 'stopped' ? '#faad14' : '#8c8c8c'
+                         detailedScanStatus.currentStatus === 'stopped' || detailedScanStatus.currentStatus === 'stopping' ? '#faad14' : '#8c8c8c'
                 }}>
                   {detailedScanStatus.currentStatus === 'scanning' ? 'SCANNING' :
-                   detailedScanStatus.currentStatus === 'waiting_next_scan' ? 'WAITING' :
                    detailedScanStatus.currentStatus === 'completed' ? 'COMPLETED' :
                    detailedScanStatus.currentStatus === 'error' ? 'ERROR' :
+                   detailedScanStatus.currentStatus === 'stopping' ? 'STOPPING' :
                    detailedScanStatus.currentStatus === 'stopped' ? 'STOPPED' : 'IDLE'}
                 </Text>
               </div>
-            </Col>
-
-            <Col span={6}>
-              <div style={{ marginBottom: '8px' }}>
-                <Text strong>Last Scan:</Text>
-              </div>
-              <Text type="secondary" style={{ fontSize: '13px' }}>
-                {detailedScanStatus.lastScanAt
-                  ? `${formatTimeDisplay(detailedScanStatus.lastScanAt)}`
-                  : 'Never'}
-              </Text>
-            </Col>
-
-            <Col span={6}>
-              <div style={{ marginBottom: '8px' }}>
-                <Text strong>Next Scan:</Text>
-              </div>
-              <Text type="secondary" style={{ fontSize: '13px' }}>
-                {marketScannerStatus.nextScanTime
-                  ? `${formatTimeDisplay(marketScannerStatus.nextScanTime)}`
-                  : detailedScanStatus.nextScanAt
-                  ? `${formatTimeDisplay(detailedScanStatus.nextScanAt)}`
-                  : 'Not scheduled'}
-              </Text>
             </Col>
 
             <Col span={6}>
@@ -6576,8 +6493,30 @@ function renderDVDetailPanel(record: any) {
               <Text type="secondary" style={{ fontSize: '13px' }}>
                 {detailedScanStatus.currentStatus === 'scanning'
                   ? `${detailedScanStatus.processedCount}/${detailedScanStatus.totalCount} symbols`
-                  : detailedScanStatus.currentStatus === 'completed' ? 'Completed' :
-                    detailedScanStatus.currentStatus === 'stopped' ? 'Stopped' : 'Idle'}
+                  : detailedScanStatus.currentStatus === 'completed' ? `Completed ${detailedScanStatus.totalCount}/${detailedScanStatus.totalCount}` :
+                    detailedScanStatus.currentStatus === 'stopped' ? `Stopped at ${detailedScanStatus.processedCount}/${detailedScanStatus.totalCount}` : 'Idle'}
+              </Text>
+            </Col>
+
+            <Col span={6}>
+              <div style={{ marginBottom: '8px' }}>
+                <Text strong>Data Quality:</Text>
+              </div>
+              <Text type="secondary" style={{ fontSize: '13px' }}>
+                {marketScannerResults.length > 0
+                  ? `${marketScannerResults.filter((r: any) => r.price != null && r.volume > 0 && r.trendLabel != null).length} good / ${marketScannerResults.filter((r: any) => (r.price != null || r.volume > 0 || r.trendLabel != null) && !(r.price != null && r.volume > 0 && r.trendLabel != null)).length} partial`
+                  : '—'}
+              </Text>
+            </Col>
+
+            <Col span={6}>
+              <div style={{ marginBottom: '8px' }}>
+                <Text strong>AI Status:</Text>
+              </div>
+              <Text type="secondary" style={{ fontSize: '13px' }}>
+                {marketScannerResults.length > 0
+                  ? `${marketScannerResults.filter((r: any) => r.aiCalled).length} AI / ${marketScannerResults.filter((r: any) => !r.aiCalled).length} Local Rules`
+                  : '—'}
               </Text>
             </Col>
           </Row>
@@ -7125,10 +7064,33 @@ function renderDVDetailPanel(record: any) {
                     key: 'sector',
                     width: 100,
                     render: (sector: string) => (
-                      <div style={{ fontSize: '11px', color: '#666' }}>
-                        {sector || 'N/A'}
+                      <div style={{ fontSize: '11px', color: sector === 'Unknown' ? '#ccc' : '#666' }}>
+                        {sector || 'Unknown'}
                       </div>
                     )
+                  },
+                  {
+                    title: 'Data',
+                    key: 'dataQuality',
+                    width: 75,
+                    render: (record: any) => {
+                      const hasPrice = record.price != null && record.price > 0;
+                      const hasVolume = record.volume != null && record.volume > 0;
+                      const hasTrend = record.trendLabel != null;
+                      const dqOk = hasPrice && hasVolume && hasTrend;
+                      const dqPartial = (hasPrice || hasVolume || hasTrend) && !dqOk;
+                      const dq = dqOk ? 'GOOD' : dqPartial ? 'PARTIAL' : 'POOR';
+                      const dqColor = dq === 'GOOD' ? '#52c41a' : dq === 'PARTIAL' ? '#fa8c16' : '#ff4d4f';
+                      const aiLabel = record.aiCalled ? (record.aiSource || 'AI') : 'LR';
+                      return (
+                        <div style={{ lineHeight: '1.3' }}>
+                          <Tag color={dq === 'GOOD' ? 'green' : dq === 'PARTIAL' ? 'gold' : 'red'} style={{ fontSize: '9px', padding: '0 4px', lineHeight: '16px', margin: 0 }}>{dq}</Tag>
+                          <Tooltip title={record.aiCalled ? `${record.aiSource || 'AI'} / ${record.aiModel || 'LLM'} called${record.aiError ? ' — ' + record.aiError : ''}` : `Local Rules fallback${record.aiError ? ' — ' + record.aiError : ' — no LLM call'}`}>
+                            <div style={{ fontSize: '9px', color: '#aaa', marginTop: '1px', cursor: 'help' }}>{aiLabel}</div>
+                          </Tooltip>
+                        </div>
+                      );
+                    },
                   },
                   {
                     title: 'AI Reasoning',
@@ -7137,6 +7099,7 @@ function renderDVDetailPanel(record: any) {
                     width: 220,
                     render: (reason: string, record: any) => {
                       const displayReason = reason || record.scannerReason || record.aiReasoning;
+                      const sourceNote = record.aiCalled ? ` (${record.aiSource || 'AI'})` : ' (Local Rules)';
 
                       if (!displayReason) {
                         return (
@@ -7204,7 +7167,7 @@ function renderDVDetailPanel(record: any) {
               <LineChartOutlined style={{ fontSize: '48px', marginBottom: 16 }} />
               <div style={{ fontSize: '14px' }}>No market scan results yet</div>
               <div style={{ fontSize: '12px', marginTop: 8 }}>
-                Click "Run Scanner Now" to start scanning the market
+                Click "Run Scanner" to start scanning the market
               </div>
             </div>
           )}
@@ -7218,7 +7181,7 @@ function renderDVDetailPanel(record: any) {
           Preferred Continue Scan List
         </Title>
         <Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>
-          Follow-up candidates selected from completed market scan results
+          AI-assisted shortlist from completed Market Scanner results — these are not buy signals
         </Text>
 
         {/* 顶部控制面板 */}
@@ -7226,7 +7189,7 @@ function renderDVDetailPanel(record: any) {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
             <div style={{ flex: 1 }}>
               {/* 状态和信息行 */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '12px', fontSize: '12px', color: '#666' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '12px', fontSize: '12px', color: '#666', flexWrap: 'wrap' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                   <Text strong style={{ fontSize: '12px', color: '#333' }}>Status:</Text>
                   <Badge
@@ -7236,123 +7199,100 @@ function renderDVDetailPanel(record: any) {
                       continueScanStatus === 'error' ? 'error' : 'default'
                     }
                     text={
-                      continueScanStatus === 'processing' ? 'Rule Scanning' :
+                      continueScanStatus === 'processing' ? 'Running' :
                       continueScanStatus === 'completed' ? 'Completed' :
                       continueScanStatus === 'error' ? 'Error' : 'Ready'
                     }
                     style={{ fontSize: '11px' }}
                   />
                 </div>
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <Text strong style={{ fontSize: '12px', color: '#333' }}>Based on:</Text>
-                  <Text>{marketScannerResults.length} validated symbols</Text>
-                </div>
-
+                <span style={{ color: '#ddd' }}>|</span>
+                <Text style={{ fontSize: '11px' }}>
+                  <strong>Source:</strong> Market Scanner · <strong>Selection:</strong>{' '}
+                  {preferredContinueScanList.length > 0 ? (
+                    preferredContinueScanList.filter(c => c.aiCalled).length > 0 ? (
+                      <Tag color="green" style={{ fontSize: '10px', padding: '0 4px', lineHeight: '16px' }}>AI + Rules</Tag>
+                    ) : (
+                      <Tag color="gold" style={{ fontSize: '10px', padding: '0 4px', lineHeight: '16px' }}>Local Rules</Tag>
+                    )
+                  ) : '—'}
+                </Text>
+                <span style={{ color: '#ddd' }}>|</span>
+                <Text style={{ fontSize: '11px' }}><strong>Based on:</strong> {marketScannerResults.length} scanned symbols</Text>
                 {detailedScanStatus.lastScanAt && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    <Text strong style={{ fontSize: '12px', color: '#333' }}>Last scan:</Text>
-                    <Text>{new Date(detailedScanStatus.lastScanAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
-                  </div>
+                  <>
+                    <span style={{ color: '#ddd' }}>|</span>
+                    <Text style={{ fontSize: '11px' }}>
+                      <strong>Last scan:</strong> {new Date(detailedScanStatus.lastScanAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </Text>
+                  </>
                 )}
               </div>
 
+              {/* AI fallback warning */}
+              {continueScanStatus === 'completed' && preferredContinueScanList.length > 0 &&
+               preferredContinueScanList.filter(c => c.aiCalled).length === 0 && (
+                <Alert
+                  message="Selection generated by Local Rules. Configure AI key for AI-assisted reasoning."
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: '12px', fontSize: '12px', padding: '6px 12px' }}
+                />
+              )}
+
               {/* 统计卡片 - 只在完成时显示 */}
               {continueScanStatus === 'completed' && preferredContinueScanList.length > 0 && (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '12px' }}>
-                  {/* Selected 卡片 */}
-                  <div style={{
-                    padding: '12px',
-                    backgroundColor: '#f0f9ff',
-                    borderRadius: '8px',
-                    border: '1px solid #e6f7ff'
-                  }}>
-                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Selected</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '10px', marginBottom: '12px' }}>
+                  <div style={{ padding: '10px', backgroundColor: '#f6f8fa', borderRadius: '8px', border: '1px solid #e8eaed' }}>
+                    <div style={{ fontSize: '10px', color: '#888', marginBottom: '2px' }}>Selected</div>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
-                      <Text strong style={{ fontSize: '20px', color: '#1890ff' }}>
-                        {preferredContinueScanList.length}
-                      </Text>
-                      <Text style={{ fontSize: '12px', color: '#666' }}>symbols</Text>
+                      <Text strong style={{ fontSize: '18px', color: '#1a1a1a' }}>{preferredContinueScanList.length}</Text>
+                      <Text style={{ fontSize: '11px', color: '#888' }}>/ {marketScannerResults.length}</Text>
                     </div>
                   </div>
-
-                  {/* Bullish/Strong Bullish 卡片 */}
-                  <div style={{
-                    padding: '12px',
-                    backgroundColor: '#f9f0ff',
-                    borderRadius: '8px',
-                    border: '1px solid #f0e6ff'
-                  }}>
-                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Bullish/Strong Bullish</div>
-                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
-                      <Text strong style={{ fontSize: '20px', color: '#722ed1' }}>
-                        {preferredContinueScanList.filter(c => c.trendLabel === 'Bullish' || c.trendLabel === 'Strong Bullish').length}
-                      </Text>
-                      <Text style={{ fontSize: '12px', color: '#666' }}>symbols</Text>
-                    </div>
+                  <div style={{ padding: '10px', backgroundColor: '#f6f8fa', borderRadius: '8px', border: '1px solid #e8eaed' }}>
+                    <div style={{ fontSize: '10px', color: '#888', marginBottom: '2px' }}>Avg Priority</div>
+                    <Text strong style={{ fontSize: '18px', color: '#1a1a1a' }}>
+                      {preferredContinueScanList.length > 0
+                        ? `${Math.round(preferredContinueScanList.reduce((sum, c) => sum + (c.priorityScore || 0), 0) / preferredContinueScanList.length)}%`
+                        : '—'}
+                    </Text>
                   </div>
-
-                  {/* Avg Priority 卡片 */}
-                  <div style={{
-                    padding: '12px',
-                    backgroundColor: '#f6ffed',
-                    borderRadius: '8px',
-                    border: '1px solid #e6ffcf'
-                  }}>
-                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Avg Priority</div>
-                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
-                      <Text strong style={{ fontSize: '20px', color: '#52c41a' }}>
-                        {preferredContinueScanList.length > 0
-                          ? Math.round(preferredContinueScanList.reduce((sum, c) => sum + (c.priorityScore || 0), 0) / preferredContinueScanList.length)
-                          : 0}%
-                      </Text>
-                      <Text style={{ fontSize: '12px', color: '#666' }}>score</Text>
-                    </div>
+                  <div style={{ padding: '10px', backgroundColor: '#f6f8fa', borderRadius: '8px', border: '1px solid #e8eaed' }}>
+                    <div style={{ fontSize: '10px', color: '#888', marginBottom: '2px' }}>Risk Mix</div>
+                    <Text strong style={{ fontSize: '18px', color: '#1a1a1a' }}>
+                      {preferredContinueScanList.filter(c => (c.eventRisk || 'Medium') === 'Low').length}L / {preferredContinueScanList.filter(c => (c.eventRisk || 'Medium') === 'Medium').length}M / {preferredContinueScanList.filter(c => (c.eventRisk || 'Medium') === 'High').length}H
+                    </Text>
                   </div>
-
-                  {/* Avg Score 卡片 */}
-                  <div style={{
-                    padding: '12px',
-                    backgroundColor: '#fff7e6',
-                    borderRadius: '8px',
-                    border: '1px solid #ffe7ba'
-                  }}>
-                    <div style={{ fontSize: '11px', color: '#666', marginBottom: '4px' }}>Avg Score</div>
-                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
-                      <Text strong style={{ fontSize: '20px', color: '#faad14' }}>
-                        {preferredContinueScanList.length > 0
-                          ? Math.round(preferredContinueScanList.reduce((sum, c) => sum + (c.overallScore || c.trendScore || 0), 0) / preferredContinueScanList.length)
-                          : 0}
-                      </Text>
-                      <Text style={{ fontSize: '12px', color: '#666' }}>/100</Text>
-                    </div>
+                  <div style={{ padding: '10px', backgroundColor: '#f6f8fa', borderRadius: '8px', border: '1px solid #e8eaed' }}>
+                    <div style={{ fontSize: '10px', color: '#888', marginBottom: '2px' }}>Avg Score</div>
+                    <Text strong style={{ fontSize: '18px', color: '#1a1a1a' }}>
+                      {preferredContinueScanList.length > 0
+                        ? Math.round(preferredContinueScanList.reduce((sum, c) => sum + (c.overallScore || c.trendScore || 0), 0) / preferredContinueScanList.length)
+                        : '—'}
+                    </Text>
+                  </div>
+                  <div style={{ padding: '10px', backgroundColor: '#f6f8fa', borderRadius: '8px', border: '1px solid #e8eaed' }}>
+                    <div style={{ fontSize: '10px', color: '#888', marginBottom: '2px' }}>AI Status</div>
+                    <Text strong style={{ fontSize: '18px', color: '#1a1a1a' }}>
+                      {preferredContinueScanList.filter(c => c.aiCalled).length}A / {preferredContinueScanList.filter(c => !c.aiCalled).length}R
+                    </Text>
                   </div>
                 </div>
               )}
-
-              {/* 描述文本 */}
-              <div style={{ fontSize: '12px', color: '#666' }}>
-                <div>Continue scan will evaluate market scan results using rule-based selection</div>
-              </div>
             </div>
 
             {/* 按钮区域 */}
-            <div style={{ marginLeft: '16px' }}>
+            <div style={{ marginLeft: '16px', display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-end' }}>
               <Button
-                type={continueScanStatus === 'completed' ? 'default' : 'primary'}
+                type={continueScanStatus === 'completed' || continueScanStatus === 'error' ? 'default' : 'primary'}
                 size="middle"
-                onClick={handleStartContinueScan}
-                disabled={
-                  marketScannerResults.length === 0 ||
-                  continueScanStatus === 'processing'
-                }
+                onClick={() => handleStartContinueScan(continueScanStatus === 'completed' || continueScanStatus === 'error')}
+                disabled={marketScannerResults.length === 0 || continueScanStatus === 'processing'}
                 loading={continueScanStatus === 'processing'}
-                style={{
-                  minWidth: '140px',
-                  fontWeight: '500'
-                }}
+                style={{ minWidth: '170px', fontWeight: '500' }}
               >
-                {continueScanStatus === 'completed' ? 'Re-run Continue Scan' : 'Start Continue Scan'}
+                {continueScanStatus === 'completed' || continueScanStatus === 'error' ? 'Re-run Continue Scan' : 'Start Continue Scan'}
               </Button>
             </div>
           </div>
@@ -7367,13 +7307,10 @@ function renderDVDetailPanel(record: any) {
               <Progress
                 percent={continueScanProgress}
                 status="active"
-                strokeColor={{
-                  '0%': '#108ee9',
-                  '100%': '#87d068',
-                }}
+                strokeColor={{ '0%': '#108ee9', '100%': '#87d068' }}
               />
               <div style={{ fontSize: '12px', color: '#666', marginTop: '8px' }}>
-                <div>Processed: {continueScanDetails.processedCount} / {continueScanDetails.totalCount} candidates</div>
+                Processed: {continueScanDetails.processedCount} / {continueScanDetails.totalCount} candidates
               </div>
             </div>
           )}
@@ -7390,7 +7327,9 @@ function renderDVDetailPanel(record: any) {
                   <div style={{ fontSize: '12px', marginTop: 8 }}>
                     {detailedScanStatus.currentStatus === 'scanning'
                       ? 'Market scan in progress...'
-                      : 'Run market scan first to generate continue scan list'}
+                      : detailedScanStatus.currentStatus === 'stopped'
+                      ? 'Scan was stopped before any results were collected.'
+                      : 'Run Market Scanner first to build a continue scan shortlist.'}
                   </div>
                 </div>
               );
@@ -7435,161 +7374,180 @@ function renderDVDetailPanel(record: any) {
                         showTotal: (total, range) => `${range[0]}-${range[1]} of ${total} candidates`,
                         onChange: (page) => setPreferredContinuePage(page)
                       }}
-                      scroll={{ x: 'max-content' }}
+                      scroll={{ x: 1300 }}
                       rowKey="symbol"
-                      columns={[
-                        {
-                          title: 'Rank',
-                          key: 'rank',
-                          width: 70,
-                          render: (_, __, index) => {
-                            const rank = (preferredContinuePage - 1) * 10 + index + 1;
-                            let backgroundColor = '#8c8c8c';
-                            let fontWeight = 'normal';
-                            let fontSize = '12px';
-
-                            if (rank === 1) {
-                              backgroundColor = '#ffd700';
-                              fontWeight = 'bold';
-                              fontSize = '13px';
-                            } else if (rank === 2) {
-                              backgroundColor = '#c0c0c0';
-                              fontWeight = '600';
-                              fontSize = '12px';
-                            } else if (rank === 3) {
-                              backgroundColor = '#cd7f32';
-                              fontWeight = '600';
-                              fontSize = '12px';
-                            }
-
-                            return (
-                              <div style={{ textAlign: 'center' }}>
-                                <div style={{
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  width: '28px',
-                                  height: '28px',
-                                  borderRadius: '14px',
-                                  backgroundColor: backgroundColor,
-                                  color: '#fff',
-                                  fontWeight: fontWeight,
-                                  fontSize: fontSize,
-                                  boxShadow: rank <= 3 ? '0 2px 4px rgba(0,0,0,0.1)' : 'none'
-                                }}>
-                                  {rank}
+                      expandable={{
+                        expandedRowRender: (record: any) => {
+                          const pb = record.priorityBreakdown || {};
+                          const dq = record.dataQuality || 'PARTIAL';
+                          const dqColor = dq === 'GOOD' ? '#52c41a' : dq === 'PARTIAL' ? '#fa8c16' : '#ff4d4f';
+                          const sourceColor = record.aiCalled ? '#52c41a' : '#fa8c16';
+                          return (
+                            <div style={{ padding: '12px 16px', background: '#fbfbfc', border: '1px solid #edf0f2', borderRadius: '8px' }}>
+                              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                                {/* Market Snapshot */}
+                                <div style={{ background: '#fff', borderRadius: '6px', border: '1px solid #edf0f2', padding: '10px 12px' }}>
+                                  <div style={{ fontSize: '10px', fontWeight: 600, color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px' }}>Market Snapshot</div>
+                                  <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: '3px 8px', fontSize: '11px' }}>
+                                    <span style={{ color: '#888' }}>Price</span><span style={{ fontWeight: 500 }}>${record.price?.toFixed(2) || 'N/A'}</span>
+                                    <span style={{ color: '#888' }}>Change</span><span style={{ fontWeight: 500, color: (record.changePct || 0) >= 0 ? '#52c41a' : '#ff4d4f' }}>{(record.changePct || 0).toFixed(2)}%</span>
+                                    <span style={{ color: '#888' }}>Day Range</span><span style={{ fontWeight: 500 }}>${record.dayHigh?.toFixed(2) || '—'} – ${record.dayLow?.toFixed(2) || '—'}</span>
+                                    <span style={{ color: '#888' }}>Volume</span><span style={{ fontWeight: 500 }}>{record.volume?.toLocaleString() || 'N/A'} {record.volumeStatus ? `(${record.volumeStatus})` : ''}</span>
+                                    <span style={{ color: '#888' }}>Sector</span><span style={{ fontWeight: 500 }}>{record.sector || 'Unknown'}</span>
+                                    <span style={{ color: '#888' }}>Updated</span><span style={{ fontWeight: 500, fontSize: '10px', color: '#aaa' }}>{record.scanTimestamp ? new Date(record.scanTimestamp).toLocaleString() : 'N/A'}</span>
+                                  </div>
+                                </div>
+                                {/* Selection Logic */}
+                                <div style={{ background: '#fff', borderRadius: '6px', border: '1px solid #edf0f2', padding: '10px 12px' }}>
+                                  <div style={{ fontSize: '10px', fontWeight: 600, color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px' }}>Selection Logic</div>
+                                  <div style={{ display: 'grid', gridTemplateColumns: '90px 1fr', gap: '3px 8px', fontSize: '11px' }}>
+                                    <span style={{ color: '#888' }}>Priority</span><span style={{ fontWeight: 600 }}>{record.priorityScore || 0}%</span>
+                                    <span style={{ color: '#888' }}>Trend Score</span><span style={{ fontWeight: 500 }}>{record.overallScore || record.trendScore || 'N/A'}</span>
+                                    <span style={{ color: '#888' }}>Confidence</span><span style={{ fontWeight: 500 }}>{record.trendConfidence != null ? `${(record.trendConfidence * 100).toFixed(0)}%` : 'N/A'}</span>
+                                    <span style={{ color: '#888' }}>Event Risk</span><Tag color={record.eventRisk === 'Low' ? 'green' : record.eventRisk === 'Medium' ? 'gold' : 'red'} style={{ fontSize: '9px', margin: 0 }}>{record.eventRisk || 'N/A'}</Tag>
+                                    <span style={{ color: '#888' }}>News</span><span style={{ fontWeight: 500 }}>{record.newsSentiment || 'N/A'}</span>
+                                  </div>
+                                  {/* Priority breakdown */}
+                                  {Object.keys(pb).length > 0 && (
+                                    <div style={{ marginTop: '8px', paddingTop: '6px', borderTop: '1px solid #f0f0f0' }}>
+                                      <div style={{ fontSize: '9px', color: '#aaa', marginBottom: '4px' }}>Priority Breakdown</div>
+                                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', fontSize: '10px' }}>
+                                        {pb.trend !== undefined && <span style={{ color: pb.trend >= 0 ? '#52c41a' : '#ff4d4f' }}>Trend {pb.trend >= 0 ? '+' : ''}{pb.trend}</span>}
+                                        {pb.score !== undefined && <span style={{ color: pb.score >= 0 ? '#1890ff' : '#ff4d4f' }}>Score +{pb.score}</span>}
+                                        {pb.risk !== undefined && <span style={{ color: pb.risk >= 0 ? '#722ed1' : '#ff4d4f' }}>Risk {pb.risk >= 0 ? '+' : ''}{pb.risk}</span>}
+                                        {pb.news !== undefined && <span style={{ color: pb.news >= 0 ? '#13c2c2' : '#ff4d4f' }}>News {pb.news >= 0 ? '+' : ''}{pb.news}</span>}
+                                        {pb.price !== undefined && <span style={{ color: pb.price >= 0 ? '#52c41a' : '#ff4d4f' }}>Price {pb.price >= 0 ? '+' : ''}{pb.price}</span>}
+                                        {pb.volume !== undefined && <span style={{ color: pb.volume >= 0 ? '#fa8c16' : '#ff4d4f' }}>Vol {pb.volume >= 0 ? '+' : ''}{pb.volume}</span>}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                                {/* AI / Reasoning */}
+                                <div style={{ background: '#fff', borderRadius: '6px', border: '1px solid #edf0f2', padding: '10px 12px' }}>
+                                  <div style={{ fontSize: '10px', fontWeight: 600, color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px' }}>AI / Reasoning</div>
+                                  <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: '3px 8px', fontSize: '11px' }}>
+                                    <span style={{ color: '#888' }}>Source</span><Tag color={record.aiCalled ? 'green' : 'gold'} style={{ fontSize: '9px', margin: 0 }}>{record.aiCalled ? `AI (${record.aiSource || 'LLM'})` : 'Local Rules'}</Tag>
+                                    {record.aiModel && <><span style={{ color: '#888' }}>Model</span><span style={{ fontWeight: 500 }}>{record.aiModel}</span></>}
+                                    {record.aiError && <><span style={{ color: '#888' }}>AI Error</span><span style={{ fontWeight: 500, color: '#ff4d4f', fontSize: '10px' }}>{record.aiError}</span></>}
+                                    <span style={{ color: '#888' }}>Selection</span><span style={{ fontWeight: 500, lineHeight: '1.4' }}>{record.selectionReason || 'N/A'}</span>
+                                  </div>
+                                </div>
+                                {/* Data Quality */}
+                                <div style={{ background: '#fff', borderRadius: '6px', border: '1px solid #edf0f2', padding: '10px 12px' }}>
+                                  <div style={{ fontSize: '10px', fontWeight: 600, color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px' }}>Data Quality</div>
+                                  <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: '3px 8px', fontSize: '11px' }}>
+                                    <span style={{ color: '#888' }}>Quality</span><Tag color={dq === 'GOOD' ? 'green' : dq === 'PARTIAL' ? 'gold' : 'red'} style={{ fontSize: '9px', margin: 0 }}>{dq}</Tag>
+                                    <span style={{ color: '#888' }}>Market</span><span style={{ fontWeight: 500 }}>{record.dataSource || 'Unknown'}</span>
+                                    <span style={{ color: '#888' }}>Company</span><span style={{ fontWeight: 500 }}>{record.companyName ? 'Finnhub' : 'Unknown'}</span>
+                                    <span style={{ color: '#888' }}>News</span><span style={{ fontWeight: 500 }}>{record.hasNews ? (record.newsSource || 'Finnhub') : 'None'}</span>
+                                    <span style={{ color: '#888' }}>AI</span><span style={{ fontWeight: 500, color: sourceColor }}>{record.aiCalled ? record.aiSource || 'AI' : 'Local Rules'}{record.aiCalled && record.aiModel ? ` / ${record.aiModel}` : ''}</span>
+                                  </div>
                                 </div>
                               </div>
+                            </div>
+                          );
+                        },
+                        rowExpandable: () => true,
+                      }}
+                      columns={[
+                        {
+                          title: '#',
+                          key: 'rank',
+                          width: 45,
+                          render: (_, __, index) => {
+                            const rank = (preferredContinuePage - 1) * 10 + index + 1;
+                            return (
+                              <span style={{ fontSize: '12px', fontWeight: rank <= 3 ? 700 : 400, color: rank <= 3 ? '#1a1a1a' : '#999' }}>
+                                {rank}
+                              </span>
                             );
                           },
                         },
                         {
                           title: 'Symbol',
                           key: 'symbol',
-                          width: 90,
-                          render: (record) => {
-                            const symbol = record.symbol || 'N/A';
-                            return (
-                              <Text strong style={{ fontSize: '13px', color: '#1f1f1f' }}>{symbol}</Text>
-                            );
-                          },
+                          width: 85,
+                          render: (record) => (
+                            <div>
+                              <Text strong style={{ fontSize: '13px', color: '#1f1f1f' }}>{record.symbol || 'N/A'}</Text>
+                              {record.companyName && <div style={{ fontSize: '9px', color: '#aaa' }}>{record.companyName.slice(0, 20)}</div>}
+                            </div>
+                          ),
                         },
                         {
                           title: 'Trend',
                           key: 'trend',
-                          width: 100,
-                          render: (record) => {
-                            const trend = record.trendLabel;
-                            return renderTrendBadge(trend);
-                          },
+                          width: 95,
+                          render: (record) => renderTrendBadge(record.trendLabel),
                         },
                         {
                           title: 'Score',
                           key: 'score',
-                          width: 80,
+                          width: 55,
                           render: (record) => {
                             const score = record.overallScore || record.trendScore || 0;
-                            const displayScore = score > 0 ? score : 'N/A';
-
+                            return <span style={{ fontSize: '12px', fontWeight: 600, color: score >= 70 ? '#52c41a' : score >= 50 ? '#faad14' : '#ff4d4f' }}>{score > 0 ? score : '—'}</span>;
+                          },
+                        },
+                        {
+                          title: 'Priority',
+                          key: 'priority',
+                          width: 130,
+                          render: (record) => {
+                            const ps = record.priorityScore || 0;
+                            const pb = record.priorityBreakdown || {};
+                            const breakdownText = Object.keys(pb).length > 0
+                              ? `Trend ${pb.trend >= 0 ? '+' : ''}${pb.trend} | Score +${pb.score} | Risk ${pb.risk >= 0 ? '+' : ''}${pb.risk} | News ${pb.news >= 0 ? '+' : ''}${pb.news} | Price ${pb.price >= 0 ? '+' : ''}${pb.price} | Vol ${pb.volume >= 0 ? '+' : ''}${pb.volume}`
+                              : '';
                             return (
-                              <div style={{ textAlign: 'center' }}>
-                                <div style={{
-                                  display: 'inline-block',
-                                  padding: '4px 8px',
-                                  borderRadius: '4px',
-                                  backgroundColor: score >= 70 ? '#52c41a15' : score >= 50 ? '#faad1415' : '#ff4d4f15',
-                                  color: score >= 70 ? '#52c41a' : score >= 50 ? '#faad14' : '#ff4d4f',
-                                  fontSize: '12px',
-                                  fontWeight: '600',
-                                  minWidth: '40px'
-                                }}>
-                                  {displayScore}
+                              <Tooltip title={breakdownText || `Priority: ${ps}%`}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'help' }}>
+                                  <Progress percent={ps} size="small" showInfo={false} strokeColor={ps >= 80 ? '#52c41a' : ps >= 60 ? '#faad14' : '#ff4d4f'} style={{ flex: 1, margin: 0 }} />
+                                  <Text strong style={{ fontSize: '11px', color: ps >= 80 ? '#52c41a' : ps >= 60 ? '#faad14' : '#ff4d4f', minWidth: '32px' }}>{ps}%</Text>
                                 </div>
-                              </div>
+                              </Tooltip>
                             );
                           },
                         },
                         {
                           title: 'Risk',
                           key: 'risk',
-                          width: 80,
+                          width: 65,
                           render: (record) => {
                             const risk = record.eventRisk || 'Medium';
-                            let color = '#8c8c8c';
-                            if (risk === 'Low') color = '#52c41a';
-                            if (risk === 'Medium') color = '#faad14';
-                            if (risk === 'High') color = '#ff4d4f';
-
+                            const c = risk === 'Low' ? 'green' : risk === 'Medium' ? 'gold' : 'red';
+                            return <Tag color={c} style={{ fontSize: '10px', margin: 0 }}>{risk}</Tag>;
+                          },
+                        },
+                        {
+                          title: 'Price / Chg',
+                          key: 'priceChange',
+                          width: 90,
+                          render: (record) => {
+                            const price = record.price;
+                            const chg = record.priceChangePct || record.changePct || 0;
                             return (
-                              <div style={{ textAlign: 'center' }}>
-                                <div style={{
-                                  display: 'inline-block',
-                                  padding: '4px 8px',
-                                  borderRadius: '4px',
-                                  backgroundColor: `${color}15`,
-                                  color: color,
-                                  fontSize: '11px',
-                                  fontWeight: '600'
-                                }}>
-                                  {risk}
-                                </div>
+                              <div>
+                                <div style={{ fontSize: '12px', fontWeight: 500 }}>{price ? `$${price.toFixed(2)}` : 'N/A'}</div>
+                                <div style={{ fontSize: '10px', color: chg >= 0 ? '#52c41a' : '#ff4d4f' }}>{chg >= 0 ? '+' : ''}{chg.toFixed(1)}%</div>
                               </div>
                             );
                           },
                         },
                         {
-                          title: 'Priority',
-                          key: 'priority',
-                          width: 120,
+                          title: 'Data',
+                          key: 'data',
+                          width: 70,
                           render: (record) => {
-                            const priorityScore = record.priorityScore || 0;
-                            let strokeColor = {};
-
-                            if (priorityScore >= 80) {
-                              strokeColor = { '0%': '#87d068', '100%': '#52c41a' };
-                            } else if (priorityScore >= 60) {
-                              strokeColor = { '0%': '#faad14', '100%': '#faad14' };
-                            } else {
-                              strokeColor = { '0%': '#ff4d4f', '100%': '#ff4d4f' };
-                            }
-
+                            const dq = record.dataQuality || 'PARTIAL';
+                            const dqColor = dq === 'GOOD' ? 'green' : dq === 'PARTIAL' ? 'gold' : 'red';
+                            const sourceLabel = record.aiCalled ? 'AI' : 'LR';
                             return (
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                <Progress
-                                  percent={priorityScore}
-                                  size="small"
-                                  strokeColor={strokeColor}
-                                  showInfo={false}
-                                  style={{ flex: 1 }}
-                                />
-                                <Text strong style={{
-                                  fontSize: '11px',
-                                  color: priorityScore >= 80 ? '#52c41a' : priorityScore >= 60 ? '#faad14' : '#ff4d4f',
-                                  minWidth: '30px',
-                                  textAlign: 'right'
-                                }}>
-                                  {priorityScore}%
-                                </Text>
+                              <div style={{ lineHeight: '1.3' }}>
+                                <Tag color={dqColor} style={{ fontSize: '9px', padding: '0 4px', lineHeight: '16px', margin: 0 }}>{dq}</Tag>
+                                <Tooltip title={record.aiCalled ? `${record.aiSource || 'AI'} / ${record.aiModel || 'LLM'}` : 'Local Rules selection'}>
+                                  <div style={{ fontSize: '9px', color: '#aaa', marginTop: '1px', cursor: 'help' }}>{sourceLabel}</div>
+                                </Tooltip>
                               </div>
                             );
                           },
@@ -7597,104 +7555,23 @@ function renderDVDetailPanel(record: any) {
                         {
                           title: 'Selection Reason',
                           key: 'reason',
-                          width: 220,
+                          width: 280,
                           render: (record) => {
                             const reason = record.selectionReason || '';
-                            const truncatedReason = reason.length > 80 ? reason.substring(0, 80) + '...' : reason;
-
+                            const truncatedReason = reason.length > 100 ? reason.substring(0, 100) + '...' : reason;
                             return (
-                              <Tooltip title={reason.length > 80 ? reason : null}>
-                                <Text style={{
-                                  fontSize: '11px',
-                                  color: '#666',
-                                  lineHeight: '1.4',
-                                  display: '-webkit-box',
-                                  WebkitLineClamp: 2,
-                                  WebkitBoxOrient: 'vertical',
-                                  overflow: 'hidden',
-                                  maxHeight: '32px'
-                                }}>
-                                  {truncatedReason}
-                                </Text>
-                              </Tooltip>
-                            );
-                          },
-                        },
-                        // 次要列 - 视觉弱化
-                        {
-                          title: <span style={{ fontSize: '11px', color: '#8c8c8c', fontWeight: 'normal' }}>Sector</span>,
-                          key: 'sector',
-                          width: 90,
-                          render: (record) => {
-                            const sector = record.sector || 'N/A';
-                            return (
-                              <Text style={{ fontSize: '10px', color: '#8c8c8c' }}>
-                                {sector}
-                              </Text>
-                            );
-                          },
-                        },
-                        {
-                          title: <span style={{ fontSize: '11px', color: '#8c8c8c', fontWeight: 'normal' }}>News</span>,
-                          key: 'news',
-                          width: 80,
-                          render: (record) => {
-                            const sentiment = record.newsSentiment || 'Neutral';
-                            let color = '#8c8c8c';
-                            let icon = '📰';
-
-                            if (sentiment === 'Positive') {
-                              color = '#52c41a';
-                              icon = '📈';
-                            } else if (sentiment === 'Negative') {
-                              color = '#ff4d4f';
-                              icon = '📉';
-                            }
-
-                            return (
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', opacity: 0.8 }}>
-                                <span style={{ fontSize: '11px' }}>{icon}</span>
-                                <Text style={{ fontSize: '10px', color }}>
-                                  {sentiment}
-                                </Text>
+                              <div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '2px' }}>
+                                  <Tag color={record.aiCalled ? 'green' : 'default'} style={{ fontSize: '8px', padding: '0 3px', lineHeight: '14px', margin: 0 }}>
+                                    {record.aiCalled ? 'AI' : 'Rules'}
+                                  </Tag>
+                                </div>
+                                <Tooltip title={reason.length > 100 ? reason : undefined}>
+                                  <Text style={{ fontSize: '11px', color: '#555', lineHeight: '1.4', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', maxHeight: '30px' }}>
+                                    {truncatedReason}
+                                  </Text>
+                                </Tooltip>
                               </div>
-                            );
-                          },
-                        },
-                        {
-                          title: <span style={{ fontSize: '11px', color: '#8c8c8c', fontWeight: 'normal' }}>Change %</span>,
-                          key: 'change',
-                          width: 80,
-                          render: (record) => {
-                            const change = record.priceChangePct || record.changePct || 0;
-                            const color = change >= 0 ? '#52c41a' : '#ff4d4f';
-                            const icon = change >= 0 ? '↗' : '↘';
-
-                            return (
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', opacity: 0.8 }}>
-                                <span style={{ fontSize: '11px' }}>{icon}</span>
-                                <Text style={{ fontSize: '10px', color, fontWeight: '500' }}>
-                                  {change.toFixed(1)}%
-                                </Text>
-                              </div>
-                            );
-                          },
-                        },
-                        {
-                          title: <span style={{ fontSize: '11px', color: '#8c8c8c', fontWeight: 'normal' }}>Volume</span>,
-                          key: 'volume',
-                          width: 80,
-                          render: (record) => {
-                            const volumeStatus = record.volumeStatus || 'Normal';
-                            let color = '#8c8c8c';
-
-                            if (volumeStatus === 'High') color = '#52c41a';
-                            if (volumeStatus === 'Low') color = '#ff4d4f';
-
-                            return (
-                              <Text style={{ fontSize: '10px', color, opacity: 0.8 }}>
-                                {volumeStatus}
-                              </Text>
                             );
                           },
                         },
@@ -7703,9 +7580,17 @@ function renderDVDetailPanel(record: any) {
                   </div>
 
                   <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid #f0f0f0' }}>
-                    <Text type="secondary" style={{ fontSize: '11px', color: '#8c8c8c' }}>
-                      Built from {marketScannerResults.length} scanned symbols · {getBullishCandidatesCount()} shortlisted
-                    </Text>
+                    <Alert
+                      message="These candidates are not buy signals. Fine Scan validates strategy fit, backtest quality, and entry readiness before moving to Entry Plan."
+                      type="info"
+                      showIcon
+                      style={{ fontSize: '11px', padding: '8px 12px' }}
+                    />
+                    <div style={{ marginTop: '8px' }}>
+                      <Text type="secondary" style={{ fontSize: '11px', color: '#8c8c8c' }}>
+                        Built from {marketScannerResults.length} scanned symbols · {preferredContinueScanList.length} shortlisted · Selection: {preferredContinueScanList.filter(c => c.aiCalled).length > 0 ? 'AI + Local Rules' : 'Local Rules'}
+                      </Text>
+                    </div>
                   </div>
                 </div>
               );
@@ -7738,15 +7623,18 @@ function renderDVDetailPanel(record: any) {
             }
 
             // 状态6: market scan完成但continue scan未开始
+            const wasStopped = detailedScanStatus.currentStatus === 'stopped';
             return (
               <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
                 <ClockCircleOutlined style={{ fontSize: '48px', marginBottom: 16 }} />
                 <div style={{ fontSize: '14px' }}>Ready to start continue scan</div>
                 <div style={{ fontSize: '12px', marginTop: 8 }}>
-                  Market scan completed with {marketScannerResults.length} results
+                  {wasStopped
+                    ? `Built from partial scanner results: ${detailedScanStatus.processedCount}/${detailedScanStatus.totalCount} symbols`
+                    : `Market scan completed with ${marketScannerResults.length} results`}
                 </div>
                 <div style={{ fontSize: '11px', color: '#999', marginTop: 8 }}>
-                  Use the "Start Continue Scan" button in the control panel above
+                  Click "Start Continue Scan" to run rule-based selection on current results
                 </div>
               </div>
             );
@@ -7763,64 +7651,50 @@ function renderDVDetailPanel(record: any) {
           </Text>
         </Title>
 
-        <Card>
-          <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>
-              {/* nothing — removed old subtitle */}
+        <Card bodyStyle={{ padding: '14px 18px' }}>
+          {/* Header row: stats on left, button on right — same row */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: fineScanStatus === 'running' ? 10 : (fineScanResults.length > 0 ? 12 : 0) }}>
+            <div style={{ display: 'flex', gap: '14px', alignItems: 'center', flexWrap: 'wrap', fontSize: '12px' }}>
+              {fineScanResults.length > 0 ? (() => {
+                const total = fineScanResults.length;
+                const continueCount = fineScanResults.filter(function(r: any) { return r.decision === 'Continue'; }).length;
+                const watchCount = fineScanResults.filter(function(r: any) { return r.decision === 'Watch'; }).length;
+                const skipCount = fineScanResults.filter(function(r: any) { return r.decision === 'Skip'; }).length;
+                return React.createElement(React.Fragment, null,
+                  React.createElement(Text, { style: { color: '#595959' } }, 'Scanned: ', React.createElement('span', { style: { fontWeight: 600, color: '#1a1a1a' } }, total)),
+                  continueCount > 0 ? React.createElement(Text, { style: { color: '#52c41a' } }, 'Continue: ', React.createElement('span', { style: { fontWeight: 600 } }, continueCount)) : null,
+                  watchCount > 0 ? React.createElement(Text, { style: { color: '#d48806' } }, 'Watch: ', React.createElement('span', { style: { fontWeight: 600 } }, watchCount)) : null,
+                  skipCount > 0 ? React.createElement(Text, { style: { color: '#ff4d4f' } }, 'Skip: ', React.createElement('span', { style: { fontWeight: 600 } }, skipCount)) : null,
+                  fineScanResults[0]?.aiUsed ? React.createElement(Tag, { color: 'green', style: { fontSize: '10px', margin: 0, padding: '0 5px', lineHeight: '18px' } }, 'AI: DeepSeek') : null
+                );
+              })() : (
+                <Text style={{ color: '#8c8c8c', fontSize: '12px' }}>
+                  {fineScanStatus === 'idle' ? 'Ready — click Run Fine Scan to analyze candidates' : ''}
+                </Text>
+              )}
             </div>
-            <Space>
-              <Button
-                type="primary"
-                icon={<ThunderboltOutlined />}
-                onClick={handleRunFineScan}
-                disabled={fineScanStatus === 'running' || preferredContinueScanList.length === 0}
-                loading={fineScanStatus === 'running'}
-              >
-                {fineScanStatus === 'running' ? 'Running...' : 'Run Fine Scan'}
-              </Button>
-            </Space>
+            <Button
+              type="primary"
+              icon={React.createElement(ThunderboltOutlined)}
+              onClick={handleRunFineScan}
+              disabled={fineScanStatus === 'running' || preferredContinueScanList.length === 0}
+              loading={fineScanStatus === 'running'}
+              size="middle"
+            >
+              {fineScanStatus === 'running' ? 'Running...' : 'Run Fine Scan'}
+            </Button>
           </div>
 
           {fineScanStatus === 'running' && (
-            <div style={{ marginBottom: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {/* Overall Progress */}
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 2 }}>
-                  <span style={{ fontSize: '11px', color: '#595959', fontWeight: 600 }}>Overall Progress</span>
-                  <span style={{ fontSize: '11px', color: '#1890ff', fontWeight: 500 }}>{fineScanProgress}%</span>
-                </div>
-                <Progress
-                  percent={fineScanProgress}
-                  status="active"
-                  strokeColor="#1890ff"
-                  strokeWidth={7}
-                  showInfo={false}
-                  style={{ margin: 0 }}
-                />
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 2 }}>
+                <span style={{ fontSize: '11px', color: '#595959', fontWeight: 600 }}>Overall Progress</span>
+                <span style={{ fontSize: '11px', color: '#1890ff', fontWeight: 500 }}>{fineScanProgress}%</span>
               </div>
-
-              {/* Status text */}
-              <div style={{ fontSize: '11px', color: '#8c8c8c', marginTop: 6 }}>
-                {fineScanMessage || 'Processing candidates...'}
-              </div>
+              <Progress percent={fineScanProgress} status="active" strokeColor="#1890ff" strokeWidth={6} showInfo={false} style={{ margin: 0 }} />
+              <div style={{ fontSize: '11px', color: '#8c8c8c', marginTop: 4 }}>{fineScanMessage || 'Processing candidates...'}</div>
             </div>
           )}
-
-          {/* Summary stats */}
-          {fineScanResults.length > 0 && (() => {
-            const total = fineScanResults.length;
-            const continueCount = fineScanResults.filter(function(r: any) { return r.decision === 'Continue'; }).length;
-            const watchCount = fineScanResults.filter(function(r: any) { return r.decision === 'Watch'; }).length;
-            const skipCount = fineScanResults.filter(function(r: any) { return r.decision === 'Skip'; }).length;
-            return (
-              <div style={{ marginBottom: 12, display: 'flex', gap: 16, alignItems: 'center', fontSize: '12px' }}>
-                <Text style={{ color: '#8c8c8c' }}>Scanned: <span style={{ fontWeight: 600, color: '#262626' }}>{total}</span></Text>
-                {continueCount > 0 && <Text style={{ color: '#52c41a' }}>Continue: <span style={{ fontWeight: 600 }}>{continueCount}</span></Text>}
-                {watchCount > 0 && <Text style={{ color: '#faad14' }}>Watch: <span style={{ fontWeight: 600 }}>{watchCount}</span></Text>}
-                {skipCount > 0 && <Text style={{ color: '#ff4d4f' }}>Skip: <span style={{ fontWeight: 600 }}>{skipCount}</span></Text>}
-              </div>
-            );
-          })()}
 
           {fineScanResults.length > 0 && (
             <>
@@ -7880,11 +7754,20 @@ function renderDVDetailPanel(record: any) {
                   width: 95,
                   render: (record) => {
                     const d = record.decision || '--';
-                    let c = '#999', l = d, icon = '';
-                    if (d === 'Continue') { c = '#52c41a'; l = 'Continue'; icon = '✅'; }
-                    else if (d === 'Watch') { c = '#faad14'; l = 'Watch'; icon = '⚠️'; }
-                    else if (d === 'Skip') { c = '#ff4d4f'; l = 'Skip'; icon = '✖'; }
-                    return <span style={{ color: c, fontSize: '11px', fontWeight: 600 }}>{icon} {l}</span>;
+                    let c = '#999', l = d;
+                    const source = record.decisionSource || 'local-rule';
+                    const sourceLabel = source === 'ai' ? 'AI' : '⚙️';
+                    if (d === 'Continue') { c = '#52c41a'; l = 'Continue'; }
+                    else if (d === 'Watch') { c = '#faad14'; l = 'Watch'; }
+                    else if (d === 'Skip') { c = '#ff4d4f'; l = 'Skip'; }
+                    return (
+                      <Tooltip title={`Source: ${source}${record.decisionReason ? ' | ' + record.decisionReason : ''}`}>
+                        <span style={{ color: c, fontSize: '11px', fontWeight: 600 }}>
+                          {l}
+                          <span style={{ fontSize: '9px', color: '#bbb', marginLeft: '3px' }}>{sourceLabel}</span>
+                        </span>
+                      </Tooltip>
+                    );
                   },
                 },
                 // ===== Score =====
@@ -8024,9 +7907,14 @@ function renderDVDetailPanel(record: any) {
                     const full = record.matchReason || '';
                     const truncated = full.length > 50 ? full.substring(0, 50) + '...' : full;
                     return (
-                      <Text style={{ fontSize: '10px', color: '#666', lineHeight: '1.4' }}>
-                        {truncated || '-'}
-                      </Text>
+                      <Tooltip title={record.matchAISource === 'ai-explain' ? 'AI-generated explanation' : 'Template-based (market data)'}>
+                        <Text style={{ fontSize: '10px', color: '#666', lineHeight: '1.4' }}>
+                          {truncated || '-'}
+                          <span style={{ fontSize: '9px', color: '#bbb', marginLeft: '3px' }}>
+                            {record.matchAISource === 'ai-explain' ? '🤖' : '⚙️'}
+                          </span>
+                        </Text>
+                      </Tooltip>
                     );
                   },
                 },
@@ -8036,15 +7924,24 @@ function renderDVDetailPanel(record: any) {
                   key: 'grade',
                   width: 65,
                   render: (record) => {
-                    const rg = record.riskGrade || '-';
-                    const eq = record.entryQuality || '-';
-                    let gd = 'Medium', gc = '#faad14';
-                    if ((rg === 'LOW' || rg === 'SKIP') && (eq === 'Excellent' || eq === 'Good')) { gd = 'Low'; gc = '#52c41a'; }
-                    else if (rg === 'LOW') { gd = 'Low'; gc = '#52c41a'; }
-                    else if (rg === 'MEDIUM' && (eq === 'Excellent' || eq === 'Good')) { gd = 'Low'; gc = '#52c41a'; }
-                    else if (rg === 'MEDIUM') { gd = 'Medium'; gc = '#faad14'; }
-                    else if (rg === 'HIGH') { gd = 'High'; gc = '#ff4d4f'; }
-                    return <span style={{ color: gc, fontSize: '11px', fontWeight: 600 }}>{gd}</span>;
+                    // Grade = stock quality / whether it's worth pursuing
+                    // High = good quality = green, Medium = orange, Low = poor = red
+                    const g = record.fineScanGrade || null;
+                    if (g === 'HIGH') return <span style={{ color: '#52c41a', fontSize: '11px', fontWeight: 600 }}>High</span>;
+                    if (g === 'MEDIUM') return <span style={{ color: '#faad14', fontSize: '11px', fontWeight: 600 }}>Medium</span>;
+                    if (g === 'LOW') return <span style={{ color: '#ff4d4f', fontSize: '11px', fontWeight: 600 }}>Low</span>;
+                    // Fallback grade computation from available data
+                    const btOk = record.backtestStatus === 'pass' && (record.backtestPerformance === 'positive' || record.backtestPerformance === 'caution');
+                    const eqOk = record.entryQuality === 'Excellent' || record.entryQuality === 'Good' || record.entryQuality === 'Wait for Pullback';
+                    const riskOk = record.riskGrade === 'LOW' || record.riskGrade === 'MEDIUM';
+                    const scoreOk = (record.matchConfidence || 0) >= 30;
+                    if (btOk && scoreOk && eqOk && riskOk) {
+                      return <span style={{ color: '#52c41a', fontSize: '11px', fontWeight: 600 }}>High</span>;
+                    }
+                    if (btOk && (record.matchConfidence || 0) >= 20) {
+                      return <span style={{ color: '#faad14', fontSize: '11px', fontWeight: 600 }}>Medium</span>;
+                    }
+                    return <span style={{ color: '#ff4d4f', fontSize: '11px', fontWeight: 600 }}>Low</span>;
                   },
                 },
                 // ===== Rank =====
@@ -8131,7 +8028,7 @@ function renderDVDetailPanel(record: any) {
                 rowExpandable: () => true,
                 expandIconColumnIndex: 0,
               }}
-              columns={[
+                              columns={[
                 {
                   title: '',
                   key: 'expand',
@@ -8253,7 +8150,7 @@ function renderDVDetailPanel(record: any) {
                     if (isLimited) { l = 'Limited'; }
                     return React.createElement(Tooltip,
                       { title: isLimited ? 'Limited sample (' + tc + ' trade(s), ' + vc + ' combo(s)) - stability confidence reduced' : l + ' (' + score + '/100)' },
-                      React.createElement('span', { style: { fontSize: '11px', fontWeight: 600, color: c } }, l + ' · ' + score)
+                      React.createElement('span', { style: { fontSize: '11px', fontWeight: 600, color: c } }, l + ' \u00B7 ' + score)
                     );
                   },
                 },
@@ -8326,10 +8223,743 @@ function renderDVDetailPanel(record: any) {
         </Card>
       </div>
 
+      {/* ▲▲▲ Above: Deeper Validation ▲▲▲ */}
+
+      {/* ▲▲▲ Below: Entry Plan ▲▲▲ */}
+      <div style={{ marginTop: '48px', marginBottom: '32px', fontFamily: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" }}>
+        <Card
+          title={
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
+              <div>
+                <span style={{ fontSize: '18px', fontWeight: 600, color: '#1a1a1a', letterSpacing: '-0.3px', fontFamily: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" }}>Entry Plan</span>
+                <div style={{ fontSize: '12px', color: '#999', marginTop: '3px', fontWeight: 400, lineHeight: '1.5', fontFamily: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" }}>
+                  Execution plan for validated candidates — entry zone, stop loss, position sizing, and risk assessment.
+                </div>
+              </div>
+              {deeperValidationStatus === 'completed' && getEntryPlanCandidates().length > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <Select
+                    size="small"
+                    value={entryPlanExecutionMode}
+                    onChange={(v) => setEntryPlanExecutionMode(v)}
+                    style={{ width: '160px', fontSize: '11px' }}
+                  >
+                    <Option value="Recommend Only">Recommend Only</Option>
+                    <Option value="Add to Watchlist">Add to Watchlist</Option>
+                    <Option value="Paper Trade if Triggered">Paper Trade if Triggered</Option>
+                    <Option value="Real Trade if Triggered">Real Trade if Triggered</Option>
+                  </Select>
+                  <Button
+                    type="primary"
+                    size="small"
+                    loading={entryPlanStatus === 'loading'}
+                    disabled={entryPlanStatus === 'loading' || !getEntryPlanCandidates().length}
+                    onClick={handleRunEntryPlan}
+                    style={{ fontSize: '12px', height: '32px', padding: '0 20px', fontWeight: 600, borderRadius: '6px', fontFamily: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" }}
+                  >
+                    Run Entry Plan
+                  </Button>
+                </div>
+              )}
+            </div>
+          }
+          size="small"
+          style={{ borderRadius: '8px', border: '1px solid #e0e0e0', fontSize: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}
+          bodyStyle={{ padding: '24px' }}
+        >
+          {/* No DV candidates yet */}
+          {deeperValidationStatus !== 'completed' && (
+            <div style={{ textAlign: 'center', padding: '16px 0', color: '#bbb', fontSize: '12px', fontStyle: 'italic' }}>
+              No validated candidates yet. Run Deeper Validation first.
+            </div>
+          )}
+
+          {/* DV done but no confirmed/watch candidates */}
+          {deeperValidationStatus === 'completed' && getEntryPlanCandidates().length === 0 && (
+            <div style={{ textAlign: 'center', padding: '16px 0', color: '#bbb', fontSize: '12px', fontStyle: 'italic' }}>
+              No Confirmed or Watch candidates available from Deeper Validation.
+            </div>
+          )}
+
+          {/* DV done, candidates available */}
+          {deeperValidationStatus === 'completed' && getEntryPlanCandidates().length > 0 && entryPlanStatus === 'idle' && (
+            <div style={{ textAlign: 'center', padding: '16px 0', color: '#999', fontSize: '12px' }}>
+              {getEntryPlanCandidates().length} validated candidates ready. Click <strong>"Run Entry Plan"</strong> to generate entry plans.
+            </div>
+          )}
+
+          {/* Loading */}
+          {entryPlanStatus === 'loading' && (
+            <div style={{ textAlign: 'center', padding: '24px 0' }}>
+              <Spin indicator={<LoadingOutlined style={{ fontSize: 24 }} spin />} />
+              <div style={{ marginTop: '8px', color: '#888', fontSize: '12px' }}>
+                Computing entry zones, stop loss, position sizes, and risk gates...
+              </div>
+              <Progress
+                type="line"
+                percent={50}
+                showInfo={false}
+                strokeColor="#1890ff"
+                style={{ maxWidth: '400px', margin: '12px auto 0' }}
+              />
+            </div>
+          )}
+
+          {/* Error */}
+          {entryPlanStatus === 'error' && (
+            <div style={{ textAlign: 'center', padding: '16px 0', color: '#ff4d4f' }}>
+              <CloseCircleOutlined style={{ fontSize: 20 }} />
+              <div style={{ marginTop: 4 }}>Entry plan generation failed. Please try again.</div>
+            </div>
+          )}
+
+          {/* Results */}
+          {entryPlanStatus === 'completed' && entryPlanResults && entryPlanResults.length > 0 && (
+            <>
+              {/* Summary stat blocks — compact key metrics */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '20px' }}>
+                {/* Block 1: AI Decisions */}
+                <div style={{ background: '#f8f9fa', borderRadius: '8px', border: '1px solid #e8eaed', padding: '12px 14px' }}>
+                  <div style={{ fontSize: '10px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.6px', fontWeight: 500, marginBottom: '6px' }}>AI Decisions</div>
+                  <div style={{ fontSize: '14px', fontWeight: 500, color: '#333', fontFamily: "'Inter', sans-serif", marginBottom: '6px' }}>
+                    <span style={{ color: '#52c41a' }}>{entryPlanResults.filter(p => p.aiDecision === 'BUY').length} Buy</span>
+                    <span style={{ margin: '0 6px', color: '#ccc' }}>/</span>
+                    <span style={{ color: '#fa8c16' }}>{entryPlanResults.filter(p => p.aiDecision === 'WATCH').length} Watch</span>
+                    <span style={{ margin: '0 6px', color: '#ccc' }}>/</span>
+                    <span style={{ color: '#ff4d4f' }}>{entryPlanResults.filter(p => p.aiDecision === 'SKIP').length} Skip</span>
+                  </div>
+                  <div style={{ fontSize: '10px', color: '#999', marginTop: '2px' }}>
+                    {entryPlanResults[0]?.aiCalled ? (
+                      <span style={{ color: '#52c41a' }}>{entryPlanResults[0]?.aiSource || 'AI'} / {entryPlanResults[0]?.aiModel || 'LLM'} ✓</span>
+                    ) : (
+                      <Tooltip title={entryPlanResults[0]?.aiError || 'No AI provider configured. Using Local Rules fallback.'}>
+                        <span style={{ color: '#fa8c16', cursor: 'help' }}>Local Rules (no AI call)</span>
+                      </Tooltip>
+                    )}
+                  </div>
+                </div>
+
+                {/* Block 2: Risk Gate */}
+                <div style={{ background: '#f8f9fa', borderRadius: '8px', border: '1px solid #e8eaed', padding: '12px 14px' }}>
+                  <div style={{ fontSize: '10px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.6px', fontWeight: 500, marginBottom: '6px' }}>Risk Review</div>
+                  <div style={{ display: 'flex', gap: '16px', alignItems: 'baseline' }}>
+                    <div>
+                      <div style={{ fontSize: '20px', fontWeight: 600, color: '#52c41a', fontFamily: "'Inter', sans-serif", lineHeight: '1.2' }}>
+                        {entryPlanResults.filter(p => p.hardRiskGate?.status === 'PASS').length}
+                      </div>
+                      <div style={{ fontSize: '10px', color: '#888' }}>Passed</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '20px', fontWeight: 600, color: '#fa8c16', fontFamily: "'Inter', sans-serif", lineHeight: '1.2' }}>
+                        {entryPlanResults.filter(p => p.hardRiskGate?.status === 'REVIEW').length}
+                      </div>
+                      <div style={{ fontSize: '10px', color: '#888' }}>Review</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '20px', fontWeight: 600, color: '#ff4d4f', fontFamily: "'Inter', sans-serif", lineHeight: '1.2' }}>
+                        {entryPlanResults.filter(p => p.hardRiskGate?.status === 'BLOCK').length}
+                      </div>
+                      <div style={{ fontSize: '10px', color: '#888' }}>Blocked</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Block 3: Trade Readiness */}
+                <div style={{ background: '#f8f9fa', borderRadius: '8px', border: '1px solid #e8eaed', padding: '12px 14px' }}>
+                  <div style={{ fontSize: '10px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.6px', fontWeight: 500, marginBottom: '6px' }}>Trade Readiness</div>
+                  <div style={{ display: 'flex', gap: '16px', alignItems: 'baseline' }}>
+                    <div>
+                      <div style={{ fontSize: '20px', fontWeight: 600, color: '#52c41a', fontFamily: "'Inter', sans-serif", lineHeight: '1.2' }}>
+                        {entryPlanResults.filter(p => p.tradeReadiness === 'READY').length}
+                      </div>
+                      <div style={{ fontSize: '10px', color: '#888' }}>Ready</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '20px', fontWeight: 600, color: '#fa8c16', fontFamily: "'Inter', sans-serif", lineHeight: '1.2' }}>
+                        {entryPlanResults.filter(p => p.tradeReadiness === 'WAIT').length}
+                      </div>
+                      <div style={{ fontSize: '10px', color: '#888' }}>Wait</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '20px', fontWeight: 600, color: '#ff4d4f', fontFamily: "'Inter', sans-serif", lineHeight: '1.2' }}>
+                        {entryPlanResults.filter(p => p.tradeReadiness === 'BLOCKED').length}
+                      </div>
+                      <div style={{ fontSize: '10px', color: '#888' }}>Blocked</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Block 4: Execution Mode */}
+                <div style={{ background: '#f8f9fa', borderRadius: '8px', border: '1px solid #e8eaed', padding: '12px 14px' }}>
+                  <div style={{ fontSize: '10px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.6px', fontWeight: 500, marginBottom: '6px' }}>Execution</div>
+                  <div style={{ fontSize: '12px', fontWeight: 500, color: '#555', fontFamily: "'Inter', sans-serif", marginBottom: '4px' }}>{entryPlanExecutionMode}</div>
+                  <div style={{ fontSize: '10px', color: '#999' }}>
+                    {(() => {
+                      const ed = entryPlanResults[0]?.executionDetails;
+                      if (ed) return `${ed.brokerSource || 'Not Connected'} | Can execute: ${ed.canExecute ? 'Yes' : 'No'}`;
+                      return `Risk/trade: ${entryPlanRiskPerTrade}%`;
+                    })()}
+                  </div>
+                </div>
+              </div>
+
+              {/* Execution mode warning for Real Trading */}
+              {entryPlanExecutionMode === 'Real Trade if Triggered' && (
+                <Alert
+                  message="Real trading requires manual confirmation. No order is placed automatically."
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: '16px', marginTop: '8px', fontSize: '12px', padding: '8px 16px' }}
+                />
+              )}
+
+              {/* Main table */}
+              <Table
+                dataSource={entryPlanResults}
+                rowKey="symbol"
+                size="small"
+                pagination={false}
+                expandable={{
+                  expandedRowKeys: expandedEntryPlanSymbol ? [expandedEntryPlanSymbol] : [],
+                  onExpand: (expanded, record) => {
+                    setExpandedEntryPlanSymbol(expanded ? record.symbol : null);
+                  },
+                  expandedRowRender: (record) => {
+                    const ep = record;
+                    const rg = ep.hardRiskGate || {};
+                    const dq = ep.dataQuality || 'PARTIAL';
+                    const ds = ep.dataSources || {};
+                    const ed = ep.executionDetails || {};
+                    const fontStk = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+
+                    const fmtPrice = (v: number | null | undefined) => v != null ? `$${v.toFixed(2)}` : '—';
+                    const fmtPct = (v: number | null | undefined) => v != null ? `${v.toFixed(1)}%` : '—';
+                    const fmtRR = (v: number | null | undefined) => v != null ? `${v.toFixed(1)}:1` : '—';
+                    const fmtDollars = (v: number | null | undefined) => v != null ? `$${v.toFixed(0)}` : '—';
+                    const fmtShares = (v: number | null | undefined) => v != null ? v.toLocaleString() : '—';
+
+                    const sym = record.symbol || '—';
+                    const setupLabel = ep.setup || '—';
+                    const aiDecision = ep.aiDecision || '—';
+                    const finalAction = ep.finalAction || '—';
+                    const confidence = ep.confidence || ep.aiConfidence || '—';
+                    const tradeReadiness = ep.tradeReadiness || '—';
+
+                    const aiColor = (v: string) => v === 'BUY' ? '#52c41a' : v === 'WATCH' ? '#d48806' : v === 'SKIP' ? '#e84749' : undefined;
+                    const dqColor = dq === 'GOOD' ? '#52c41a' : dq === 'PARTIAL' ? '#fa8c16' : '#ff4d4f';
+                    const trColor = tradeReadiness === 'READY' ? '#52c41a' : tradeReadiness === 'WAIT' ? '#fa8c16' : '#ff4d4f';
+                    const rgColor = rg.status === 'PASS' ? '#52c41a' : rg.status === 'REVIEW' ? '#fa8c16' : '#ff4d4f';
+                    const faColor = finalAction === 'BUY_READY' ? '#52c41a' : finalAction === 'WAIT_FOR_ENTRY' ? '#fa8c16' : '#ff4d4f';
+
+                    const CardHeader = ({ title, color }: { title: string; color?: string }) => (
+                      <div style={{ fontSize: '11px', fontWeight: 600, color: color || '#8c8c8c', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px', paddingBottom: '4px', borderBottom: '1px solid #edf0f2' }}>{title}</div>
+                    );
+
+                    const Label = ({ text }: { text: string }) => <span style={{ fontSize: '11px', color: '#8c8c8c', fontWeight: 500 }}>{text}</span>;
+                    const Value = ({ v, bold, color }: { v: string; bold?: boolean; color?: string }) => <span style={{ fontSize: '12px', fontWeight: bold ? 700 : 500, color: color || '#262626' }}>{v}</span>;
+
+                    return (
+                      <div style={{ padding: '10px 16px', background: '#fbfbfc', border: '1px solid #edf0f2', borderRadius: '8px', fontFamily: fontStk, lineHeight: '1.4' }}>
+                        {/* ── Header ── */}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: '6px', borderBottom: '1px solid #edf0f2', marginBottom: '8px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                            <span style={{ fontSize: '15px', fontWeight: 700, color: '#1a1a1a' }}>{sym}</span>
+                            <Tag color={setupLabel.includes('Pullback') ? 'gold' : setupLabel.includes('Breakout') ? 'purple' : setupLabel.includes('Range') ? 'green' : setupLabel.includes('Watch') ? 'blue' : 'default'} style={{ fontSize: '11px', margin: 0 }}>{setupLabel}</Tag>
+                            <Tag color={aiDecision === 'BUY' ? 'green' : aiDecision === 'WATCH' ? 'gold' : aiDecision === 'SKIP' ? 'red' : 'default'} style={{ fontSize: '11px', margin: 0 }}>{aiDecision}</Tag>
+                            <span style={{ fontSize: '10px', color: '#999' }}>Cnf {confidence}%</span>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '10px' }}>
+                            <Tag color={dq === 'GOOD' ? 'green' : dq === 'PARTIAL' ? 'gold' : 'red'} style={{ margin: 0 }}>Data: {dq}</Tag>
+                            <Tag color={rg.status === 'PASS' ? 'green' : rg.status === 'REVIEW' ? 'gold' : 'red'} style={{ margin: 0 }}>Gate: {rg.status || 'N/A'}</Tag>
+                            <Tag color={finalAction === 'BUY_READY' ? 'green' : finalAction === 'WAIT_FOR_ENTRY' ? 'gold' : 'red'} style={{ margin: 0, fontWeight: 600 }}>{finalAction}</Tag>
+                            <Button
+                              size="small"
+                              type={finalAction === 'BUY_READY' ? 'primary' : finalAction === 'WAIT_FOR_ENTRY' ? 'default' : 'dashed'}
+                              danger={finalAction === 'BLOCKED_BY_RISK'}
+                              disabled={finalAction === 'SKIP' || finalAction === 'BLOCKED_BY_RISK' || dq === 'POOR'}
+                              onClick={() => handleEntryPlanAction(ep)}
+                              style={{ fontSize: '11px', fontWeight: 500 }}
+                            >
+                              {finalAction === 'BUY_READY' ? 'Execute Plan' : finalAction === 'WAIT_FOR_ENTRY' ? 'Add to Watchlist' : finalAction === 'SKIP' ? 'Skipped' : 'Blocked'}
+                            </Button>
+                          </div>
+                        </div>
+
+                        {/* ── 4-Card Grid ── */}
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '8px' }}>
+
+                          {/* A. Execution Plan */}
+                          <div style={{ background: '#fff', borderRadius: '6px', border: '1px solid #edf0f2', padding: '10px 12px' }}>
+                            <CardHeader title="A. Execution Plan" />
+                            <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: '3px 8px', alignItems: 'baseline' }}>
+                              <Label text="Entry Zone" /><Value v={ep.entryZoneLow != null ? `$${ep.entryZoneLow.toFixed(2)} – $${(ep.entryZoneHigh ?? 0).toFixed(2)}` : '—'} bold />
+                              <Label text="Trigger" /><Value v={ep.triggerCondition || '—'} />
+                              <Label text="Stop Loss" /><Value v={`${fmtPrice(ep.stopLoss)} (${ep.stopLossPct != null ? fmtPct(ep.stopLossPct) : 'N/A'} from ${ep.stopSource || 'entry'})`} color="#e84749" bold />
+                              <Label text="Target 1" /><Value v={`${fmtPrice(ep.takeProfit1)}  R/R ${fmtRR(ep.riskReward1)}`} color="#52c41a" bold />
+                              <Label text="Target 2" /><Value v={`${fmtPrice(ep.takeProfit2)}  R/R ${fmtRR(ep.riskReward2)}`} color="#52c41a" />
+                              <Label text="Invalidation" /><Value v={ep.invalidationCondition || '—'} color="#e84749" />
+                              <Label text="Order Type" />
+                              <span>
+                                <Value v={ed.orderTypeSuggestion || 'N/A'} bold color={ed.orderTypeSuggestion === 'Not Available' ? '#ff4d4f' : '#52c41a'} />
+                                {ed.orderTypeReason && <div style={{ fontSize: '10px', color: '#888', marginTop: '1px' }}>{ed.orderTypeReason}</div>}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* B. Position & Risk */}
+                          <div style={{ background: '#fff', borderRadius: '6px', border: '1px solid #edf0f2', padding: '10px 12px' }}>
+                            <CardHeader title="B. Position & Risk" />
+                            <div style={{ display: 'grid', gridTemplateColumns: '85px 1fr', gap: '3px 8px', alignItems: 'baseline' }}>
+                              <Label text="Portfolio" /><Value v={fmtDollars(ep.positionCapital)} bold />
+                              <Label text="Buying Power" /><Value v={fmtDollars(ep.accountBuyingPower)} />
+                              <Label text="Risk Budget" /><Value v={`${fmtDollars(ep.riskBudget)} (${fmtPct(ep.riskPct)} of portfolio)`} />
+                              <Label text="Actual Risk" /><Value v={fmtDollars(ep.riskDollars)} color="#e84749" bold />
+                              <Label text="Risk Used" /><Value v={ep.riskUsedPct != null ? `${ep.riskUsedPct.toFixed(1)}% of budget` : (ep.riskBudget > 0 ? `${(ep.riskDollars / ep.riskBudget * 100).toFixed(1)}% of budget` : '—')} color={ep.riskUsedPct > 80 ? '#ff4d4f' : '#d48806'} bold />
+                              <Label text="Shares" /><Value v={fmtShares(ep.positionSize || ep.positionSizeShares)} bold />
+                              <Label text="Est. Position" /><Value v={fmtDollars(ep.positionValue || ep.positionSizeDollars)} bold />
+                              <Label text="Cap" /><Value v={ep.positionCapStatus || (ep.positionCapped ? `Capped ${fmtPct(ep.positionPct)}` : `OK (${fmtPct(ep.positionPct)} of portfolio)`)} color={ep.positionCapped ? '#d48806' : '#52c41a'} />
+                            </div>
+                          </div>
+
+                          {/* C. Decision */}
+                          <div style={{ background: '#fff', borderRadius: '6px', border: '1px solid #edf0f2', padding: '10px 12px' }}>
+                            <CardHeader title="C. Decision" />
+                            <div style={{ display: 'grid', gridTemplateColumns: '90px 1fr', gap: '3px 8px', alignItems: 'baseline' }}>
+                              <Label text="AI Decision" /><Value v={ep.aiDecision || '—'} color={aiColor(ep.aiDecision)} bold />
+                              <Label text="Confidence" /><Value v={`${confidence}%`} bold />
+                              <Label text="Risk Gate" /><Value v={rg.status || 'N/A'} color={rgColor} bold />
+                              <Label text="Final Action" /><Value v={finalAction} color={faColor} bold />
+                              <Label text="Trade Readiness" /><Value v={tradeReadiness} color={trColor} bold />
+                              <Label text="Entry Trigger" /><Value v={ep.entryTriggerMet ? 'Met' : 'Not met'} color={ep.entryTriggerMet ? '#52c41a' : '#fa8c16'} />
+                              <Label text="Best Strategy" /><Value v={ep.bestStrategy || '—'} />
+                            </div>
+                          </div>
+
+                          {/* D. Data Quality */}
+                          <div style={{ background: '#fff', borderRadius: '6px', border: '1px solid #edf0f2', padding: '10px 12px' }}>
+                            <CardHeader title="D. Data Quality" color={dqColor} />
+                            <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: '3px 8px', alignItems: 'baseline' }}>
+                              <Label text="Quality" /><Tag color={dq === 'GOOD' ? 'green' : dq === 'PARTIAL' ? 'gold' : 'red'} style={{ margin: 0, fontSize: '11px' }}>{dq}</Tag>
+                              <Label text="Market" /><Value v={ds.marketData || 'N/A'} />
+                              <Label text="Account" /><Value v={ds.accountData || 'N/A'} />
+                              <Label text="AI" />
+                              <span style={{ fontSize: '11px', fontWeight: 500 }}>
+                                {ep.aiCalled ? (
+                                  <span style={{ color: '#52c41a' }}>{ep.aiSource || 'AI'} ({ep.aiModel || 'LLM'}) ✓</span>
+                                ) : (
+                                  <Tooltip title={ep.aiError || 'No AI provider configured or call failed'}>
+                                    <span style={{ color: '#fa8c16', cursor: 'help', borderBottom: '1px dotted #fa8c16' }}>Local Rules fallback</span>
+                                  </Tooltip>
+                                )}
+                              </span>
+                              <Label text="Broker" /><Value v={ed.brokerSource || 'Not Connected'} color={ed.brokerConnected ? '#52c41a' : '#ff4d4f'} />
+                              {ep.aiError && <><Label text="AI Error" /><Value v={ep.aiError} color="#ff4d4f" /></>}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* ── Bottom Text Sections ── */}
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', borderTop: '1px solid #edf0f2', paddingTop: '8px' }}>
+                          {/* Left: Decision Reason + Next Step */}
+                          <div>
+                            <div style={{ fontSize: '10px', fontWeight: 600, color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px' }}>
+                              Decision Reason {ep.aiCalled ? '(AI)' : '(Local Rules)'}
+                            </div>
+                            <div style={{ fontSize: '12px', color: '#444', lineHeight: '1.5', marginBottom: '6px' }}>
+                              {ep.decisionReason || ep.reason || 'No reason provided'}
+                            </div>
+                            <div style={{ fontSize: '10px', fontWeight: 600, color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px' }}>Next Step</div>
+                            <div style={{ fontSize: '12px', color: '#1890ff', lineHeight: '1.5', fontWeight: 500 }}>
+                              {ep.nextStep || 'No next step defined'}
+                            </div>
+                            {ep.riskComment && (
+                              <>
+                                <div style={{ fontSize: '10px', fontWeight: 600, color: '#d48806', textTransform: 'uppercase', letterSpacing: '0.4px', marginTop: '6px', marginBottom: '4px' }}>Risk Comment</div>
+                                <div style={{ fontSize: '11px', color: '#595959', lineHeight: '1.5' }}>{ep.riskComment}</div>
+                              </>
+                            )}
+                            {ep.invalidationComment && (
+                              <>
+                                <div style={{ fontSize: '10px', fontWeight: 600, color: '#e84749', textTransform: 'uppercase', letterSpacing: '0.4px', marginTop: '6px', marginBottom: '4px' }}>Invalidation</div>
+                                <div style={{ fontSize: '11px', color: '#595959', lineHeight: '1.5' }}>{ep.invalidationComment}</div>
+                              </>
+                            )}
+                          </div>
+
+                          {/* Right: Risk Notes + Blockers + Gate Detail */}
+                          <div>
+                            <div style={{ fontSize: '10px', fontWeight: 600, color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px' }}>Risk Notes</div>
+                            <div style={{ fontSize: '11px', lineHeight: '1.5' }}>
+                              {(() => {
+                                const warnings = rg.warnings || [];
+                                if (warnings.length === 0) return <div style={{ color: '#bbb', fontStyle: 'italic' }}>No risk notes</div>;
+                                return warnings.slice(0, 4).map((r: string, i: number) => (
+                                  <div key={i} style={{ marginBottom: '2px', color: '#595959' }}><span style={{ color: '#d48806' }}>•</span> {r}</div>
+                                ));
+                              })()}
+                            </div>
+                            <div style={{ fontSize: '10px', fontWeight: 600, color: '#ff4d4f', textTransform: 'uppercase', letterSpacing: '0.4px', marginTop: '6px', marginBottom: '4px' }}>Blockers / Warnings</div>
+                            <div style={{ fontSize: '11px', lineHeight: '1.5' }}>
+                              {(() => {
+                                const blockers = ep.blockers || rg.blockers || [];
+                                if (blockers.length === 0) return <div style={{ color: '#bbb', fontStyle: 'italic' }}>No blockers</div>;
+                                return blockers.slice(0, 4).map((r: string, i: number) => (
+                                  <div key={i} style={{ marginBottom: '2px', color: '#595959' }}><span style={{ color: '#d93025' }}>•</span> {r}</div>
+                                ));
+                              })()}
+                            </div>
+                            {/* Gate REVIEW detail */}
+                            {rg.status === 'REVIEW' && (rg.warnings || []).length > 0 && (
+                              <div style={{ marginTop: '6px', padding: '6px 8px', background: '#fffbe6', borderRadius: '4px', border: '1px solid #ffe58f' }}>
+                                <div style={{ fontSize: '9px', fontWeight: 600, color: '#d48806', marginBottom: '2px' }}>REVIEW: {(rg.warnings || []).slice(0, 2).join('; ')}</div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  },
+                }}
+                                columns={[
+                  {
+                    title: 'Symbol',
+                    dataIndex: 'symbol',
+                    key: 'symbol',
+                    width: 80,
+                    fixed: 'left',
+                    render: (text, record) => (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 3, padding: '1px 0' }}>
+                        <span style={{ fontSize: '13px', fontWeight: 600, fontFamily: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif", color: '#333', letterSpacing: '0.2px' }}>{text}</span>
+                        {record.dataQuality === 'PARTIAL' && <Tag style={{ fontSize: '9px', marginLeft: '2px', padding: '0 4px', lineHeight: '16px' }} color="gold">P</Tag>}
+                        {record.dataQuality === 'POOR' && <Tag style={{ fontSize: '9px', marginLeft: '2px', padding: '0 4px', lineHeight: '16px' }} color="red">!</Tag>}
+                        {record.aiCalled === false && (
+                          <Tooltip title="Local Rules — no LLM call. AI provider not configured or call failed.">
+                            <Tag style={{ fontSize: '9px', marginLeft: '2px', padding: '0 4px', lineHeight: '16px', cursor: 'help' }} color="default">LR</Tag>
+                          </Tooltip>
+                        )}
+                      </div>
+                    ),
+                  },
+                  {
+                    title: 'Setup',
+                    dataIndex: 'setup',
+                    key: 'setup',
+                    width: 110,
+                    render: (text) => {
+                      const colors: Record<string, string> = { 'Pullback Entry': 'gold', 'Breakout Entry': 'purple', 'Range Support Entry': 'green', 'Watch Only': 'blue', 'No Trade': 'red' };
+                      return <Tag color={colors[text] || 'default'} style={{ fontSize: '10px', fontWeight: 600, padding: '0 6px', lineHeight: '18px', borderRadius: '4px', border: 'none' }}>{text || '-'}</Tag>;
+                    },
+                  },
+                  {
+                    title: 'Entry Zone',
+                    key: 'entryZone',
+                    width: 120,
+                    render: (record) => {
+                      const lo = record.entryLow || record.entryZoneLow;
+                      const hi = record.entryHigh || record.entryZoneHigh;
+                      const setup = record.setup || '';
+                      if (lo == null || hi == null || (lo === 0 && hi === 0)) {
+                        return <span style={{ fontSize: '11px', color: '#bbb', fontStyle: 'italic' }}>N/A</span>;
+                      }
+                      const zoneLabel = setup.includes('Pullback') ? 'Pullback' :
+                                        setup.includes('Breakout') ? 'Breakout' :
+                                        setup.includes('Range') ? 'Support' : '';
+                      return (
+                        <div>
+                          <Text style={{ fontSize: '12px', fontFamily: 'Inter, sans-serif', fontWeight: 500 }}>${lo.toFixed(2)} – ${hi.toFixed(2)}</Text>
+                          {zoneLabel && <div style={{ fontSize: '9px', color: '#aaa', marginTop: '1px' }}>{zoneLabel}</div>}
+                        </div>
+                      );
+                    },
+                  },
+                  {
+                    title: 'Stop',
+                    key: 'stopLoss',
+                    width: 95,
+                    render: (record) => {
+                      const v = record.stopLoss;
+                      const pct = record.stopLossPct;
+                      if (v == null || v === 0) {
+                        return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
+                      }
+                      return (
+                        <div>
+                          <Text style={{ fontSize: '12px', fontFamily: 'Inter, sans-serif', color: '#e84749', fontWeight: 500 }}>${v.toFixed(2)}</Text>
+                          {pct != null && pct > 0 && <div style={{ fontSize: '9px', color: '#aaa', marginTop: '1px' }}>{pct.toFixed(1)}% from entry</div>}
+                        </div>
+                      );
+                    },
+                  },
+                  {
+                    title: 'Targets',
+                    key: 'targets',
+                    width: 110,
+                    render: (record) => {
+                      const t1 = record.takeProfit1;
+                      const t2 = record.takeProfit2;
+                      const rr1 = record.riskReward1 || 0;
+                      const rr2 = record.riskReward2 || 0;
+                      if (t1 == null && t2 == null) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
+                      return (
+                        <div style={{ lineHeight: '1.6' }}>
+                          {t1 != null && t1 > 0 ? <div><span style={{ fontSize: '12px', fontWeight: 500, color: '#52c41a', fontFamily: 'Inter, sans-serif' }}>${t1.toFixed(2)}</span><span style={{ fontSize: '9px', color: '#aaa' }}> R{rr1.toFixed(1)}</span></div> : null}
+                          {t2 != null && t2 > 0 ? <div style={{ marginTop: '1px' }}><span style={{ fontSize: '12px', fontWeight: 500, color: '#52c41a', fontFamily: 'Inter, sans-serif' }}>${t2.toFixed(2)}</span><span style={{ fontSize: '9px', color: '#aaa' }}> R{rr2.toFixed(1)}</span></div> : null}
+                        </div>
+                      );
+                    },
+                  },
+                  {
+                    title: 'Position',
+                    key: 'position',
+                    width: 105,
+                    render: (record) => {
+                      const sh = record.positionSize || record.positionSizeShares || 0;
+                      const val = record.positionValue || record.positionSizeDollars || 0;
+                      const capPct = record.positionPct || 0;
+                      const capped = record.positionCapped;
+                      if (sh === 0 && val === 0) {
+                        return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
+                      }
+                      return (
+                        <div style={{ lineHeight: '1.5' }}>
+                          <Text style={{ fontSize: '11px', fontFamily: 'Inter, sans-serif' }}>{sh} sh</Text>
+                          <div style={{ fontSize: '10px', color: '#888', fontFamily: 'Inter, sans-serif' }}>
+                            ${val.toFixed(0)}
+                            {capped && <span style={{ color: '#d48806', marginLeft: '3px', fontSize: '9px' }}>CAP {capPct.toFixed(1)}%</span>}
+                          </div>
+                        </div>
+                      );
+                    },
+                  },
+                  {
+                    title: 'AI Decision',
+                    key: 'aiDecision',
+                    width: 82,
+                    render: (record) => {
+                      const d = record.aiDecision;
+                      if (!d) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
+                      const tagColor = d === 'BUY' ? 'green' : d === 'WATCH' ? 'gold' : d === 'SKIP' ? 'red' : 'default';
+                      const sourceLabel = record.aiCalled ? 'AI' : 'Rule';
+                      return (
+                        <div>
+                          <Tag color={tagColor} style={{ fontSize: '10px', fontWeight: 600, padding: '0 6px', lineHeight: '18px', margin: 0 }}>{d}</Tag>
+                          <div style={{ fontSize: '8px', color: '#aaa', marginTop: '1px' }}>
+                            {record.confidence != null ? `${record.confidence}% ` : ''}
+                            <Tooltip title={record.aiCalled ? `${record.aiSource || 'AI'} (${record.aiModel || 'LLM'}) called` : `Local Rules (deterministic)${record.aiError ? ' — ' + record.aiError : ''}`}>
+                              <span style={{ cursor: 'help', borderBottom: '1px dotted #ccc' }}>{sourceLabel}</span>
+                            </Tooltip>
+                          </div>
+                        </div>
+                      );
+                    },
+                  },
+                  {
+                    title: 'Gate',
+                    key: 'riskGate',
+                    width: 70,
+                    render: (record) => {
+                      const rg = record.riskGate || record.hardRiskGate;
+                      const status = rg?.status;
+                      if (!status) return <span style={{ fontSize: '11px', color: '#ccc' }}>N/A</span>;
+                      const tagColor = status === 'PASS' ? 'green' : status === 'REVIEW' ? 'gold' : 'red';
+                      // Build tooltip with review reasons
+                      const reasons = rg?.warnings || rg?.reasons || [];
+                      const tipTitle = status === 'REVIEW' && reasons.length > 0
+                        ? `Review: ${reasons.slice(0, 3).join('; ')}`
+                        : status === 'BLOCK' && reasons.length > 0
+                        ? `Blocked: ${reasons.slice(0, 3).join('; ')}`
+                        : `Gate: ${status}`;
+                      return (
+                        <Tooltip title={tipTitle}>
+                          <Tag color={tagColor} style={{ fontSize: '10px', fontWeight: 600, padding: '0 6px', lineHeight: '18px', margin: 0, cursor: 'help' }}>{status}</Tag>
+                        </Tooltip>
+                      );
+                    },
+                  },
+                  {
+                    title: 'Final Action',
+                    key: 'finalAction',
+                    width: 115,
+                    render: (record) => {
+                      const a = record.finalAction;
+                      if (!a) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
+                      const displayText: Record<string, string> = {
+                        'BUY_READY': 'BUY READY',
+                        'BUY_ALLOWED': 'BUY',
+                        'WAIT_FOR_ENTRY': 'WAIT ENTRY',
+                        'WATCH_ONLY': 'WATCH',
+                        'SKIP': 'SKIP',
+                        'BLOCKED_BY_RISK': 'BLOCKED',
+                        'NEEDS_REVIEW': 'REVIEW',
+                      };
+                      const tagColor = a === 'BUY_READY' || a === 'BUY_ALLOWED' ? 'green' : a === 'WAIT_FOR_ENTRY' || a === 'WATCH_ONLY' ? 'gold' : 'red';
+                      return <Tag color={tagColor} style={{ fontSize: '10px', fontWeight: 600, padding: '0 6px', lineHeight: '18px', margin: 0 }}>{displayText[a] || a}</Tag>;
+                    },
+                  },
+                  {
+                    title: 'Data',
+                    key: 'dataQuality',
+                    width: 75,
+                    render: (record) => {
+                      const dq = record.dataQuality || 'PARTIAL';
+                      const tagColor = dq === 'GOOD' ? 'green' : dq === 'PARTIAL' ? 'gold' : 'red';
+                      const aiInfo = record.aiCalled
+                        ? `${record.aiSource || 'AI'}`
+                        : `LR${record.aiError ? ': ' + record.aiError.substring(0, 20) : ''}`;
+                      return (
+                        <div>
+                          <Tag color={tagColor} style={{ fontSize: '9px', fontWeight: 600, padding: '0 4px', lineHeight: '16px', margin: 0 }}>{dq}</Tag>
+                          <Tooltip title={record.aiCalled ? `${record.aiSource || 'AI'} / ${record.aiModel || 'LLM'} called` : `Local Rules${record.aiError ? ' — ' + record.aiError : ' — no LLM call'}`}>
+                            <div style={{ fontSize: '8px', color: '#aaa', marginTop: '1px', cursor: 'help' }}>{aiInfo}</div>
+                          </Tooltip>
+                        </div>
+                      );
+                    },
+                  },
+                  {
+                    title: 'Reason',
+                    dataIndex: 'reason',
+                    key: 'reason',
+                    width: 220,
+                    render: (text, record) => {
+                      const fullText = record.decisionReason || text || '';
+                      const displayText = fullText.length > 80 ? fullText.slice(0, 80) + '...' : fullText || '-';
+                      return (
+                        <Tooltip title={fullText || 'No reason provided'}>
+                          <span style={{ fontSize: '11px', color: fullText ? '#555' : '#ccc', cursor: fullText ? 'pointer' : 'default', lineHeight: '1.4' }}>
+                            {displayText}
+                          </span>
+                        </Tooltip>
+                      );
+                    },
+                  },
+                  {
+                    title: 'Action',
+                    key: 'action',
+                    width: 110,
+                    fixed: 'right' as const,
+                    render: (record) => {
+                      const fa = record.finalAction;
+                      const aiDec = record.aiDecision;
+                      const dq = record.dataQuality;
+                      const rg = record.riskGate || record.hardRiskGate || {};
+
+                      if (fa === 'BLOCKED_BY_RISK' || rg.status === 'BLOCK' || dq === 'POOR') {
+                        return (
+                          <Tooltip title={(record.blockers || rg.blockers || ['Blocked']).slice(0, 2).join('; ')}>
+                            <Button size="small" danger disabled style={{ fontSize: '10px' }}>Blocked</Button>
+                          </Tooltip>
+                        );
+                      }
+                      if (fa === 'SKIP' || aiDec === 'SKIP') {
+                        return <Button size="small" disabled style={{ fontSize: '10px' }}>Skipped</Button>;
+                      }
+                      if (fa === 'WAIT_FOR_ENTRY' || aiDec === 'WATCH') {
+                        return (
+                          <Button size="small" onClick={() => addToWatchlist(record)} style={{ fontSize: '10px', color: '#d48806', borderColor: '#d48806' }}>
+                            + Watchlist
+                          </Button>
+                        );
+                      }
+                      if (fa === 'BUY_READY') {
+                        return (
+                          <Button size="small" type="primary" onClick={() => handleEntryPlanAction(record)} style={{ fontSize: '10px' }}>
+                            Execute
+                          </Button>
+                        );
+                      }
+                      return <span style={{ fontSize: '10px', color: '#bbb' }}>—</span>;
+                    },
+                  },
+                ]}
+                scroll={{ x: 1420 }}
+                style={{ fontSize: '12px', marginTop: '16px', fontFamily: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" }}
+                rowClassName={() => 'ep-table-row'}
+              />
+              <style>{`
+                .ep-table-row {
+                  height: 58px !important;
+                }
+                .ep-table-row > td {
+                  padding: 12px 10px !important;
+                  vertical-align: middle;
+                  font-size: 13px !important;
+                  font-family: "Inter", -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif !important;
+                }
+                .ant-table-thead > tr > th {
+                  font-weight: 600 !important;
+                  font-size: 11px !important;
+                  color: #444 !important;
+                  background: #f5f6f8 !important;
+                  padding: 14px 10px !important;
+                  border-bottom: 1px solid #e0e0e0 !important;
+                  letter-spacing: 0.3px !important;
+                  text-transform: uppercase !important;
+                  font-family: "Inter", -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif !important;
+                }
+                .ep-table-row:hover > td {
+                  background: #f8faff !important;
+                }
+                .ant-table-thead > tr > th:not(:last-child)::after {
+                  display: none !important;
+                }
+              `}</style>
+            </>
+          )}
+        </Card>
+      </div>
+      {/* End Entry Plan Section */}
+
+      {/* ── Execution Confirmation Modal ── */}
+      <Modal
+        title={entryPlanExecutionMode.toLowerCase().includes('live') ? '⚠ Live Trading Confirmation' : 'Confirm Order Execution'}
+        open={executeModalVisible}
+        onCancel={() => { setExecuteModalVisible(false); setExecuteTarget(null); setLiveConfirmText(''); }}
+        onOk={confirmExecutePlan}
+        confirmLoading={executeLoading}
+        okText={entryPlanExecutionMode.toLowerCase().includes('live') ? 'Confirm Live Order' : 'Submit Order'}
+        okButtonProps={{ danger: entryPlanExecutionMode.toLowerCase().includes('live') }}
+        width={520}
+      >
+        {executeTarget && (
+          <div style={{ fontSize: '13px', lineHeight: '1.8' }}>
+            {entryPlanExecutionMode.toLowerCase().includes('live') && (
+              <Alert
+                message="Live trading uses real money. Confirm before submitting."
+                type="error"
+                showIcon
+                style={{ marginBottom: '12px' }}
+              />
+            )}
+            <div><strong>Symbol:</strong> {executeTarget.symbol}</div>
+            <div><strong>Setup:</strong> {executeTarget.setup}</div>
+            <div><strong>Order Type:</strong> {(executeTarget.executionDetails || {}).orderTypeSuggestion || 'N/A'}</div>
+            <div><strong>Shares:</strong> {executeTarget.positionSizeShares || executeTarget.shares || 0}</div>
+            <div><strong>Entry Zone:</strong> ${executeTarget.entryZoneLow?.toFixed(2)} – ${executeTarget.entryZoneHigh?.toFixed(2)}</div>
+            <div><strong>Estimated Value:</strong> ${((executeTarget.positionSizeShares || 0) * (executeTarget.entryZoneLow || 0)).toFixed(0)}</div>
+            <div><strong>Max Risk:</strong> ${executeTarget.riskDollars?.toFixed(0) || '0'}</div>
+            <div><strong>Stop Loss:</strong> ${executeTarget.stopLoss?.toFixed(2)}</div>
+            <div><strong>Take Profit:</strong> ${executeTarget.takeProfit1?.toFixed(2)}</div>
+            <div><strong>Mode:</strong> {entryPlanExecutionMode}</div>
+            {entryPlanExecutionMode.toLowerCase().includes('live') && (
+              <div style={{ marginTop: '12px' }}>
+                <div style={{ fontWeight: 600, color: '#ff4d4f', marginBottom: '4px' }}>
+                  Type <code>CONFIRM LIVE BUY {executeTarget.symbol}</code> to confirm:
+                </div>
+                <Input
+                  value={liveConfirmText}
+                  onChange={(e) => setLiveConfirmText(e.target.value)}
+                  placeholder={`CONFIRM LIVE BUY ${executeTarget.symbol}`}
+                  style={{ fontFamily: 'monospace' }}
+                />
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+
     </div>
   );
-
-  // 测试函数：验证AI Recommendations实现
 
 }
 export default Portfolio;
