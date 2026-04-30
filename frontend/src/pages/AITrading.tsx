@@ -1,14 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Card, Typography, Button, Divider, Table, Tag, Row, Col, Statistic, 
-  Select, Form, Input, Modal, Alert, Space, Descriptions, 
-  InputNumber, message 
+import {
+  Card, Typography, Button, Divider, Table, Tag, Row, Col, Statistic,
+  Select, Form, Input, Modal, Alert, Space, Descriptions,
+  InputNumber, message, Tooltip
 } from 'antd';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { 
-  RobotOutlined, ReloadOutlined, PlusOutlined 
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer } from 'recharts';
+import {
+  RobotOutlined, ReloadOutlined, PlusOutlined, EyeOutlined, DeleteOutlined, CheckOutlined
 } from '@ant-design/icons';
 import aiTradingService from '../services/aiTradingService';
+import { aiAgentWatchlistAPI } from '../services/api';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -105,9 +106,50 @@ const AITrading: React.FC = () => {
   const [placingOrder, setPlacingOrder] = useState(false);
   const [orderForm] = Form.useForm();
 
+  // AI Entry Watchlist 状态
+  const [watchlistItems, setWatchlistItems] = useState<any[]>([]);
+  const [watchlistLoading, setWatchlistLoading] = useState(false);
+
+  const loadWatchlist = async () => {
+    setWatchlistLoading(true);
+    try {
+      const res = await aiAgentWatchlistAPI.list();
+      if (res.data.success) {
+        setWatchlistItems(res.data.items || []);
+      }
+    } catch (e) {
+      console.error('Failed to load watchlist:', e);
+    } finally {
+      setWatchlistLoading(false);
+    }
+  };
+
+  const removeWatchlistItem = async (id: string) => {
+    try {
+      const res = await aiAgentWatchlistAPI.remove(id);
+      if (res.data.success) {
+        message.success(res.data.message);
+        loadWatchlist();
+      }
+    } catch (e: any) {
+      message.error('Failed to remove: ' + (e?.message || 'Error'));
+    }
+  };
+
+  const markWatchlistDone = async (id: string) => {
+    try {
+      await aiAgentWatchlistAPI.updateStatus(id, { status: 'DONE' });
+      message.success('Marked as done');
+      loadWatchlist();
+    } catch (e: any) {
+      message.error('Failed to update: ' + (e?.message || 'Error'));
+    }
+  };
+
   // 加载初始数据
   useEffect(() => {
     loadInitialData();
+    loadWatchlist();
   }, []);
 
   const loadInitialData = async () => {
@@ -490,7 +532,119 @@ const AITrading: React.FC = () => {
       </div>
       
       <Divider />
-      
+
+      {/* AI Entry Watchlist */}
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+          <div>
+            <Title level={4} style={{ margin: 0 }}>AI Entry Watchlist</Title>
+            <Text type="secondary">Symbols added from Entry Plan for monitoring</Text>
+          </div>
+          <Button size="small" icon={<ReloadOutlined />} onClick={loadWatchlist} loading={watchlistLoading}>Refresh</Button>
+        </div>
+
+        {watchlistItems.length === 0 ? (
+          <Card size="small">
+            <div style={{ textAlign: 'center', padding: '24px 0' }}>
+              <Text type="secondary">No items in watchlist. Use Entry Plan to add candidates.</Text>
+            </div>
+          </Card>
+        ) : (
+          <>
+            {/* Summary cards */}
+            <Row gutter={12} style={{ marginBottom: '12px' }}>
+              <Col span={6}>
+                <Card size="small" style={{ background: '#f6f8fa' }}>
+                  <Statistic title="Active" value={watchlistItems.filter(w => w.status === 'ACTIVE').length} valueStyle={{ fontSize: '20px', color: '#1890ff' }} />
+                </Card>
+              </Col>
+              <Col span={6}>
+                <Card size="small" style={{ background: '#f6f8fa' }}>
+                  <Statistic title="Ready Soon" value={watchlistItems.filter(w => w.finalAction === 'BUY_READY' || (w.riskGateStatus === 'PASS' && w.dataQuality === 'GOOD')).length} valueStyle={{ fontSize: '20px', color: '#52c41a' }} />
+                </Card>
+              </Col>
+              <Col span={6}>
+                <Card size="small" style={{ background: '#f6f8fa' }}>
+                  <Statistic title="Review" value={watchlistItems.filter(w => w.riskGateStatus === 'REVIEW' || w.finalAction === 'WAIT_FOR_ENTRY').length} valueStyle={{ fontSize: '20px', color: '#d48806' }} />
+                </Card>
+              </Col>
+              <Col span={6}>
+                <Card size="small" style={{ background: '#f6f8fa' }}>
+                  <Statistic title="Done / Archived" value={watchlistItems.filter(w => w.status !== 'ACTIVE').length} valueStyle={{ fontSize: '20px', color: '#8c8c8c' }} />
+                </Card>
+              </Col>
+            </Row>
+
+            {/* Table */}
+            <Table
+              dataSource={watchlistItems}
+              rowKey="id"
+              size="small"
+              pagination={false}
+              loading={watchlistLoading}
+              scroll={{ x: 1200 }}
+              columns={[
+                { title: 'Symbol', dataIndex: 'symbol', key: 'symbol', width: 80, fixed: 'left' as const,
+                  render: (text: string) => <span style={{ fontWeight: 600, fontSize: '13px' }}>{text}</span> },
+                { title: 'Setup', dataIndex: 'setupType', key: 'setup', width: 110,
+                  render: (t: string) => {
+                    const c: Record<string, string> = { 'Pullback Entry': 'gold', 'Breakout Entry': 'purple', 'Range Support Entry': 'green', 'Watch Only': 'blue' };
+                    return <Tag color={c[t] || 'default'} style={{ fontSize: '10px' }}>{t || '—'}</Tag>;
+                  }},
+                { title: 'AI', dataIndex: 'aiDecision', key: 'aiDecision', width: 65,
+                  render: (d: string) => {
+                    const c = d === 'BUY' ? 'green' : d === 'WATCH' ? 'gold' : 'red';
+                    return <Tag color={c} style={{ fontSize: '10px' }}>{d || '—'}</Tag>;
+                  }},
+                { title: 'Cnf', dataIndex: 'confidence', key: 'confidence', width: 50,
+                  render: (v: number) => <span style={{ fontSize: '11px' }}>{v != null ? `${v}%` : '—'}</span> },
+                { title: 'Entry Zone', key: 'entryZone', width: 120,
+                  render: (_: any, r: any) => r.entryZoneLow != null ? <span style={{ fontSize: '11px' }}>${r.entryZoneLow?.toFixed(2)} – ${r.entryZoneHigh?.toFixed(2)}</span> : <span style={{ color: '#ccc' }}>—</span> },
+                { title: 'Stop', dataIndex: 'stopLoss', key: 'stop', width: 70,
+                  render: (v: number) => v != null ? <span style={{ fontSize: '11px', color: '#e84749' }}>${v.toFixed(2)}</span> : '—' },
+                { title: 'T1', dataIndex: 'takeProfit1', key: 'tp1', width: 70,
+                  render: (v: number) => v != null ? <span style={{ fontSize: '11px', color: '#52c41a' }}>${v.toFixed(2)}</span> : '—' },
+                { title: 'R/R', dataIndex: 'riskReward', key: 'rr', width: 55,
+                  render: (v: number) => v != null ? <span style={{ fontSize: '11px' }}>{v.toFixed(1)}:1</span> : '—' },
+                { title: 'Gate', dataIndex: 'riskGateStatus', key: 'gate', width: 70,
+                  render: (s: string) => {
+                    const c = s === 'PASS' ? 'green' : s === 'REVIEW' ? 'gold' : 'red';
+                    return s ? <Tag color={c} style={{ fontSize: '9px' }}>{s}</Tag> : '—';
+                  }},
+                { title: 'Final', dataIndex: 'finalAction', key: 'final', width: 100,
+                  render: (a: string) => {
+                    const labels: Record<string, string> = { 'BUY_READY': 'BUY READY', 'WAIT_FOR_ENTRY': 'WAIT ENTRY', 'SKIP': 'SKIP', 'BLOCKED_BY_RISK': 'BLOCKED' };
+                    const c = a === 'BUY_READY' ? 'green' : a === 'WAIT_FOR_ENTRY' ? 'gold' : 'red';
+                    return <Tag color={c} style={{ fontSize: '9px' }}>{labels[a] || a || '—'}</Tag>;
+                  }},
+                { title: 'Next Step', dataIndex: 'nextStep', key: 'nextStep', width: 180, ellipsis: true,
+                  render: (t: string) => (
+                    <Tooltip title={t}>
+                      <span style={{ fontSize: '10px', color: '#555' }}>{t || '—'}</span>
+                    </Tooltip>
+                  )},
+                { title: 'Created', dataIndex: 'createdAt', key: 'created', width: 100,
+                  render: (t: string) => {
+                    if (!t) return '—';
+                    try { return new Date(t).toLocaleDateString(); } catch { return t; }
+                  }},
+                {
+                  title: 'Actions', key: 'actions', width: 90, fixed: 'right' as const,
+                  render: (_: any, r: any) => (
+                    <Space size="small">
+                      <Tooltip title="Mark as Done"><Button size="small" type="text" icon={<CheckOutlined />} onClick={() => markWatchlistDone(r.id)} style={{ color: '#52c41a' }} /></Tooltip>
+                      <Tooltip title="Remove"><Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => removeWatchlistItem(r.id)} /></Tooltip>
+                    </Space>
+                  ),
+                },
+              ]}
+            />
+          </>
+        )}
+      </div>
+
+      <Divider />
+
       {/* Account Snapshot */}
       <div style={{ marginBottom: 24 }}>
         <Title level={4}>Account Snapshot</Title>
@@ -635,7 +789,7 @@ const AITrading: React.FC = () => {
                       })()}
                       tickFormatter={(value) => `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                     />
-                    <Tooltip 
+                    <RechartsTooltip
                       labelFormatter={(timestamp) => {
                         const ts = normalizeTimestamp(timestamp);
                         if (!ts) return 'Invalid Date';

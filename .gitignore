@@ -26,6 +26,26 @@ __pycache__/
 backup/
 backups/
 *.bak
+*.backup
+*.backup2
+*_backup.*
+*_old.*
+*_temp.*
+*_tmp.*
+tests_backup/
+old_backup_*/
+
+# Runtime
+backend/instance/
+*.db
+
+# Test cache
+.pytest_cache/
+**/.pytest_cache/
+*.egg-info/
+
+# ESLint
+.eslintcache
 
 # Temp scripts
 memory/*.py
@@ -33,3 +53,30 @@ memory/*.py
 # IDEs
 .idea/
 .vscode/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Logs
+*.log
+backend/*.log
+
+# Build outputs
+build/
+dist/
+.next/
+
+# Local Claude/OpenClaw settings
+.claude/settings.local.json

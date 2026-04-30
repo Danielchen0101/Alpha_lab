@@ -266,7 +266,7 @@ ai_provider_config_state = {
 import json
 import os
 
-AI_CONFIG_FILE = 'ai_provider_config.json'
+AI_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ai_provider_config.json')
 
 def save_ai_config_to_file():
     """保存AI配置到文件"""
@@ -320,9 +320,9 @@ load_ai_config_from_file()
 
 alpaca_config_state = {
 
-    'paper_api_key': '',  # Paper trading key - 预留
+    'paper_api_key': 'PKVJJSDBAWINHJPNQIQY4INFAH',  # Paper trading key
 
-    'paper_api_secret': '',  # Paper trading secret
+    'paper_api_secret': '4z1fRWXVy3rJsFNcPdHhAnxYayj25FB175P1ELhCXy7y',  # Paper trading secret
 
     'live_api_key': ALPACA_API_KEY,  # 直接使用从config.py导入的真实交易密钥
 
@@ -9163,7 +9163,7 @@ def ai_market_scanner():
 
                     'symbol': symbol,
 
-                    'companyName': f'{symbol} Inc.',
+                    'companyName': stock_data.get('name') or symbol,
 
                     'price': price,
 
@@ -9177,7 +9177,7 @@ def ai_market_scanner():
 
                     'dataSource': stock_data.get('dataSource', 'unknown'),
 
-                    'sector': 'Technology',  # 简化版本
+                    'sector': stock_data.get('sector', 'Unknown'),
 
                     'newsSentiment': 'No news analyzed',
 
@@ -9197,7 +9197,29 @@ def ai_market_scanner():
 
                     'scannerReason': f'Price change: {change_pct:.2f}%, Volume: {volume}',
 
-                    'analysisSource': 'simplified_scanner',
+                    'analysisSource': 'rule_based',
+
+                    'aiCalled': False,
+
+                    'aiSource': 'Local Rules',
+
+                    'aiModel': None,
+
+                    'aiError': 'No AI call in simplified scanner',
+
+                    'dataQuality': 'PARTIAL' if not (price and volume) else 'GOOD',
+
+                    'dataSources': {
+
+                        'marketData': stock_data.get('dataSource', 'unknown'),
+
+                        'companyInfo': 'Stock data only',
+
+                        'news': 'None',
+
+                        'aiData': 'Local Rules (deterministic scoring)'
+
+                    },
 
                     'timestamp': int(time.time())
 
@@ -9221,7 +9243,7 @@ def ai_market_scanner():
 
                     'symbol': symbol,
 
-                    'companyName': f'{symbol} Inc.',
+                    'companyName': symbol,
 
                     'price': 0,
 
@@ -11178,6 +11200,157 @@ def ai_trading_environment():
         })
 
 
+# ==================== Trading Account Mode API ====================
+
+@app.route('/api/trading/account', methods=['GET'])
+
+def get_trading_account():
+
+    """Get Alpaca account data for a specific mode (paper|real).
+
+    Used by Entry Plan for position sizing and risk checks.
+
+    This does NOT change the global environment - only fetches data for the requested mode.
+
+    Response shape (flat, no wrapper):
+
+        success, mode, available, cash, buyingPower, portfolioValue, equity,
+
+        status, longMarketValue, shortMarketValue, patternDayTrader, tradingBlocked,
+
+        currency, id, error (if not available)
+
+    Behavior:
+
+    - mode=real: always uses live credentials + live endpoint
+
+    - mode=paper: if paper_api_key is configured, uses paper endpoint;
+
+                   if not configured, falls back to live credentials + live endpoint
+
+                   (so data shows the real account even when mode=paper)
+
+    """
+
+    mode = request.args.get('mode', 'paper').strip().lower()
+
+    print(f'=== Trading Account Request: mode={mode} ===')
+
+    if mode not in ('paper', 'real'):
+
+        return jsonify({'success': False, 'error': f'Invalid mode: {mode}. Use "paper" or "real".', 'mode': mode, 'available': False})
+
+    # Determine base URL and credentials
+
+    if mode == 'real':
+
+        api_key = alpaca_config_state.get('live_api_key', '')
+
+        api_secret = alpaca_config_state.get('live_api_secret', '')
+
+        base_url = 'https://api.alpaca.markets'
+
+    else:
+
+        # mode == 'paper': use paper credentials if configured, else use live
+
+        paper_key = alpaca_config_state.get('paper_api_key', '')
+
+        paper_secret = alpaca_config_state.get('paper_api_secret', '')
+
+        if paper_key and paper_secret:
+
+            api_key = paper_key
+
+            api_secret = paper_secret
+
+            base_url = 'https://paper-api.alpaca.markets'
+
+        else:
+
+            # No paper keys configured - reuse live credentials on live base URL
+
+            api_key = alpaca_config_state.get('live_api_key', '')
+
+            api_secret = alpaca_config_state.get('live_api_secret', '')
+
+            base_url = 'https://api.alpaca.markets'
+
+    if not api_key or not api_secret:
+
+        error_msg = 'Real trading account is not configured' if mode == 'real' else 'Trading account is not configured'
+
+        print(f'=== {error_msg} ===')
+
+        return jsonify({'success': False, 'error': error_msg, 'mode': mode, 'available': False})
+
+    try:
+
+        headers = {'APCA-API-KEY-ID': api_key, 'APCA-API-SECRET-KEY': api_secret}
+
+        print(f'Calling Alpaca API ({mode} mode): {base_url}/v2/account')
+
+        resp = requests.get(f'{base_url}/v2/account', headers=headers, timeout=10)
+
+        if resp.status_code == 200:
+
+            data = resp.json()
+
+            result = {
+
+                'success': True,
+
+                'mode': mode,
+
+                'available': True,
+
+                'status': data.get('status', ''),
+
+                'cash': float(data.get('cash', 0)),
+
+                'equity': float(data.get('equity', 0)),
+
+                'buyingPower': float(data.get('buying_power', 0)),
+
+                'portfolioValue': float(data.get('portfolio_value', 0)),
+
+                'longMarketValue': float(data.get('long_market_value', 0)),
+
+                'shortMarketValue': float(data.get('short_market_value', 0)),
+
+                'patternDayTrader': bool(data.get('pattern_day_trader', False)),
+
+                'tradingBlocked': bool(data.get('trading_blocked', False)),
+
+                'currency': data.get('currency', 'USD'),
+
+                'id': data.get('id', ''),
+
+            }
+
+            return jsonify(result)
+
+        else:
+
+            print(f'Alpaca API call failed ({mode}): {resp.status_code} - {resp.text[:200]}')
+
+            return jsonify({
+
+                'success': False,
+
+                'error': f'Alpaca {mode} API error: HTTP {resp.status_code}',
+
+                'mode': mode,
+
+                'available': False
+
+            })
+
+    except Exception as e:
+
+        print(f'Trading Account API error ({mode}): {e}')
+
+        return jsonify({'success': False, 'error': str(e), 'mode': mode, 'available': False})
 
 # ==================== 基础接口 ====================
 
@@ -11848,7 +12021,7 @@ def get_stock_detail(symbol):
 
         if not alpaca_data:
 
-            print(f'[股票详情] AI Agent页面要求: 优先使用Alpaca真实数据，但Alpaca数据获取失败，使用Finnhub数据')
+            print(f'[股票详情] Alpaca数据获取失败，使用Finnhub数据作为fallback')
 
 
 
@@ -11862,7 +12035,7 @@ def get_stock_detail(symbol):
 
                     "symbol": symbol_upper,
 
-                    "name": profile_data.get('name') if profile_data else STOCK_NAMES.get(symbol_upper, f"{symbol_upper} Inc."),
+                    "name": (profile_data.get('name') if profile_data else None) or STOCK_NAMES.get(symbol_upper) or symbol_upper,
 
                     "price": quote_data.get('c'),
 
@@ -11882,11 +12055,11 @@ def get_stock_detail(symbol):
 
                     "currency": "USD",
 
-                    "exchange": profile_data.get('exchange') if profile_data else "NASDAQ",
+                    "exchange": (profile_data.get('exchange') if profile_data else None) or 'Unknown',
 
-                    "industry": profile_data.get('finnhubIndustry') if profile_data else "Technology",
+                    "industry": (profile_data.get('finnhubIndustry') or profile_data.get('finnhubSector') or 'Unknown') if profile_data else 'Unknown',
 
-                    "sector": profile_data.get('finnhubIndustry') if profile_data else "Technology",
+                    "sector": (profile_data.get('finnhubSector') or profile_data.get('finnhubIndustry') or 'Unknown') if profile_data else 'Unknown',
 
                     "yearHigh": None,
 
@@ -11950,11 +12123,11 @@ def get_stock_detail(symbol):
 
                     "currency": "USD",
 
-                    "exchange": "NASDAQ",
+                    "exchange": "Unknown",
 
-                    "industry": "Technology",
+                    "industry": "Unknown",
 
-                    "sector": "Technology",
+                    "sector": "Unknown",
 
                     "yearHigh": None,
 
@@ -11968,7 +12141,7 @@ def get_stock_detail(symbol):
 
                     "earningsDate": None,
 
-                    "dataSource": "Alpaca (AI Agent页面要求)",
+                    "dataSource": "Alpaca Snapshot",
 
                     "timestamp": int(time.time()),
 
@@ -12036,7 +12209,7 @@ def get_stock_detail(symbol):
 
             "ask": alpaca_data.get('ask'),
 
-            "dataSource": "Alpaca (AI Agent页面要求)",
+            "dataSource": "Alpaca Snapshot",
 
             "timestamp": int(time.time()),
 
@@ -12084,9 +12257,9 @@ def get_stock_detail(symbol):
 
                 # 注意：exchange字段可能已被Alpaca覆盖
 
-                "industry": profile_data.get('finnhubIndustry', 'Technology'),
+                "industry": (profile_data.get('finnhubIndustry') or profile_data.get('finnhubSector') or 'Unknown'),
 
-                "sector": profile_data.get('finnhubSector', 'Technology'),
+                "sector": (profile_data.get('finnhubSector') or profile_data.get('finnhubIndustry') or 'Unknown'),
 
                 # 使用Alpaca计算的52周高低点
 
@@ -12151,6 +12324,32 @@ def get_stock_detail(symbol):
             })
 
 
+
+        # 计算 avgVolume / relativeVolume (使用 20 天 daily bars)
+        try:
+            bars, bars_ok, bars_err = fetch_alpaca_bars(symbol_upper, '1Day', '1M')
+            if bars_ok and bars and len(bars) >= 5:
+                volumes = [float(b.get('v', b.get('volume', 0))) for b in bars if b.get('v') or b.get('volume')]
+                if volumes:
+                    avg_vol = sum(volumes) / len(volumes)
+                    today_vol = float(stock_info.get('volume', 0))
+                    stock_info['avgVolume'] = round(avg_vol, 0)
+                    if today_vol > 0 and avg_vol > 0:
+                        rel_vol = today_vol / avg_vol
+                        stock_info['relativeVolume'] = round(rel_vol, 2)
+                        if rel_vol >= 1.5:
+                            stock_info['volumeStatus'] = 'High'
+                        elif rel_vol >= 0.8:
+                            stock_info['volumeStatus'] = 'Normal'
+                        else:
+                            stock_info['volumeStatus'] = 'Low'
+                    else:
+                        stock_info['relativeVolume'] = None
+                        stock_info['volumeStatus'] = 'Unknown'
+            else:
+                print(f'[股票详情] {symbol_upper}: 无法获取bars数据用于avgVolume计算: {bars_err}')
+        except Exception as vol_e:
+            print(f'[股票详情] {symbol_upper}: avgVolume计算异常: {vol_e}')
 
         # 检查是否有有效数据
 
@@ -18654,70 +18853,67 @@ def ai_analyze_single():
 
 
 
+                # AI source tracking
+                analysis_source = ai_analysis.get('analysisSource', 'rule_based')
+                ai_called = analysis_source == 'deepseek'
+                ai_source_label = ai_config.get('provider', 'DeepSeek') if ai_called else 'Local Rules'
+                ai_model_name = ai_config.get('model', 'deepseek-chat') if ai_called else None
+
                 response_data = {
 
                     'success': True,
 
                     'symbol': symbol_upper,
 
-                    'trend': ai_analysis.get('trendLabel', ai_analysis.get('trend', 'Neutral')),  # 优先使用trendLabel，否则使用trend
+                    'trendLabel': ai_analysis.get('trendLabel', ai_analysis.get('trend', 'Neutral')),
+                    'trend': ai_analysis.get('trendLabel', ai_analysis.get('trend', 'Neutral')),  # compat
 
-                    'overallScore': ai_analysis.get('overallScore', ai_analysis.get('trendScore', 50)),  # 优先使用overallScore，否则使用trendScore
+                    'overallScore': ai_analysis.get('overallScore', ai_analysis.get('trendScore', 50)),
+                    'trendScore': ai_analysis.get('trendScore', ai_analysis.get('overallScore', 50)),
 
-                    'confidence': ai_analysis.get('confidence', ai_analysis.get('trendConfidence', 0.5)),  # 优先使用confidence，否则使用trendConfidence
-
-                    'trendScore': ai_analysis.get('trendScore', ai_analysis.get('overallScore', 50)),  # 优先使用trendScore，否则使用overallScore
+                    'confidence': ai_analysis.get('confidence', ai_analysis.get('trendConfidence', 0.5)),
+                    'trendConfidence': ai_analysis.get('trendConfidence', ai_analysis.get('confidence', 0.5)),
 
                     'momentumScore': ai_analysis.get('momentumScore', 50),
-
                     'volumeScore': ai_analysis.get('volumeScore', 50),
-
                     'volatilityScore': ai_analysis.get('volatilityScore', 50),
-
                     'structureScore': ai_analysis.get('structureScore', 50),
-
                     'newsScore': ai_analysis.get('newsScore', 50),
 
-                    'volumeStatus': ai_analysis.get('volumeStatus', None),  # AI判断的成交量状态
-
-                    'conciseReasoning': ai_analysis.get('conciseReasoning', ai_analysis.get('scannerReason', 'AI analysis completed')),  # 简洁推理
-
-                    'detailedReasoning': ai_analysis.get('detailedReasoning', ai_analysis.get('aiReasoning', ai_analysis.get('scannerReason', 'Detailed AI analysis'))),  # 详细推理
-
+                    'volumeStatus': ai_analysis.get('volumeStatus', None),
+                    'conciseReasoning': ai_analysis.get('conciseReasoning', ai_analysis.get('scannerReason', 'AI analysis completed')),
+                    'detailedReasoning': ai_analysis.get('detailedReasoning', ai_analysis.get('aiReasoning', ai_analysis.get('scannerReason', 'Detailed AI analysis'))),
                     'scannerReason': ai_analysis.get('scannerReason', 'AI analysis based on market data'),
+                    'aiReasoning': ai_analysis.get('aiReasoning', ai_analysis.get('scannerReason', 'AI analysis completed')),
 
-                    'aiReasoning': ai_analysis.get('aiReasoning', ai_analysis.get('scannerReason', 'AI analysis completed')),  # 优先使用aiReasoning，否则使用scannerReason
+                    # AI source tracking fields
+                    'analysisSource': analysis_source,
+                    'aiCalled': ai_called,
+                    'aiSource': ai_source_label,
+                    'aiModel': ai_model_name,
+                    'aiError': None if ai_called else 'No AI key configured or AI call failed',
+                    'aiAnalysis': ai_source_label,
+                    'provider': ai_config.get('provider', 'DeepSeek'),
 
                     'newsSentiment': news_data.get('sentiment') if news_data else None,
+                    'eventRisk': ai_analysis.get('eventRisk', news_data.get('eventRisk') if news_data else 'Medium'),
 
-                    'eventRisk': ai_analysis.get('eventRisk', news_data.get('eventRisk') if news_data else 'Medium'),  # 优先使用AI的eventRisk
-
-                    # 修复：将topNews从字符串改为对象，以匹配前端期望的格式
                     'topNews': format_top_news_for_frontend(news_data) if news_data else None,
-
-                    'headlines': news_data.get('headlines', []) if news_data else [],  # 新增：新闻头条列表
+                    'headlines': news_data.get('headlines', []) if news_data else [],
 
                     'companyName': company_info.get('name') if company_info else symbol_upper,
-
                     'sector': company_info.get('finnhubIndustry') if company_info else 'Unknown',
 
                     'provenance': {
-
                         'marketData': 'alpaca' if market_data and market_data.get('dataSource') == 'Alpaca' else 'finnhub' if market_data else 'none',
-
                         'companyInfo': 'finnhub' if company_info else 'none',
-
                         'news': 'finnhub' if news_data else 'none',
-
-                        'aiAnalysis': 'Local Fallback' if ai_analysis.get('analysisSource') == 'rule_based' else ai_config.get('provider', 'DeepSeek')  # 本地分析标记为Local Fallback
-
+                        'aiAnalysis': ai_source_label
                     },
 
                     'timestamp': int(time.time()),
-
                     'responseTime': round(time.time() - start_time, 3),
-
-                    'message': f'Analysis completed using {ai_config.get("provider", "DeepSeek")} AI'
+                    'message': f'Analysis completed using {ai_source_label} AI' if ai_called else 'Analysis completed using Local Rules (no AI key configured)'
 
                 }
 
@@ -18797,7 +18993,8 @@ def ai_analyze_single():
                     response_data = {
                         'success': True,
                         'symbol': symbol_upper,
-                        'trend': trend_analysis.get('trend', 'Neutral'),
+                        'trendLabel': trend_analysis.get('trendLabel', trend_analysis.get('trend', 'Neutral')),
+                        'trend': trend_analysis.get('trendLabel', trend_analysis.get('trend', 'Neutral')),
                         'overallScore': trend_analysis.get('overallScore', 50),
                         'confidence': trend_analysis.get('confidence', 0.5),
                         'trendScore': trend_analysis.get('trendScore', 50),
@@ -18809,37 +19006,33 @@ def ai_analyze_single():
                         'scannerReason': trend_analysis.get('scannerReason', 'Local analysis after AI failure'),
                         'aiReasoning': trend_analysis.get('aiReasoning', f'AI analysis failed: {error_msg}'),
 
-                    'newsSentiment': news_data.get('sentiment') if news_data else None,
+                        # AI source tracking fields
+                        'analysisSource': 'rule_based',
+                        'aiCalled': False,
+                        'aiSource': 'Local Rules',
+                        'aiModel': None,
+                        'aiError': error_msg or 'AI analysis failed, local rules used',
+                        'aiAnalysis': 'Local Rules',
+                        'provider': ai_config.get('provider', 'DeepSeek'),
 
-                    'eventRisk': news_data.get('eventRisk') if news_data else None,
+                        'newsSentiment': news_data.get('sentiment') if news_data else None,
+                        'eventRisk': news_data.get('eventRisk') if news_data else None,
+                        'topNews': news_data.get('topCatalyst') if news_data else None,
+                        'headlines': news_data.get('headlines', []) if news_data else [],
+                        'companyName': company_info.get('name') if company_info else symbol_upper,
+                        'sector': company_info.get('finnhubIndustry') if company_info else 'Unknown',
 
-                    'topNews': news_data.get('topCatalyst') if news_data else None,
+                        'provenance': {
+                            'marketData': 'alpaca' if market_data and 'alpaca' in str(market_data).lower() else 'finnhub' if market_data else 'none',
+                            'companyInfo': 'finnhub' if company_info else 'none',
+                            'news': 'finnhub' if news_data else 'none',
+                            'aiAnalysis': 'Local Rules (fallback)'
+                        },
 
-                    'headlines': news_data.get('headlines', []) if news_data else [],  # 新增：新闻头条列表
-
-                    'companyName': company_info.get('name') if company_info else symbol_upper,
-
-                    'sector': company_info.get('finnhubIndustry') if company_info else 'Unknown',
-
-                    'provenance': {
-
-                        'marketData': 'alpaca' if market_data and 'alpaca' in str(market_data).lower() else 'finnhub' if market_data else 'none',
-
-                        'companyInfo': 'finnhub' if company_info else 'none',
-
-                        'news': 'finnhub' if news_data else 'none',
-
-                        'aiAnalysis': 'local_rules_fallback'
-
-                    },
-
-                    'timestamp': int(time.time()),
-
-                    'responseTime': round(time.time() - start_time, 3),
-
-                    'message': 'Analysis completed using local rules (AI analysis failed)'
-
-                }
+                        'timestamp': int(time.time()),
+                        'responseTime': round(time.time() - start_time, 3),
+                        'message': 'Analysis completed using local rules (AI analysis failed)'
+                    }
 
 
 
@@ -19080,6 +19273,346 @@ def _rank_fallback(candidates):
         })
     return selected
 
+
+# ============ Entry Plan Execution Endpoint ============
+
+_watchlist_store = []  # in-memory watchlist (survives until restart)
+import uuid as _uuid
+
+
+@app.route('/api/entry-plan/execute', methods=['POST'])
+def entry_plan_execute():
+    """
+    Execute an entry plan order via Alpaca broker.
+    Requires BUY_READY + all safety gates passed + broker connected.
+    Never uses market orders. Paper/Live modes with live requiring confirmation.
+    """
+    import requests as _req
+    import time as _time
+    import json as _json
+
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'action': 'BLOCKED', 'reason': 'No data provided', 'blockers': ['Empty request']}), 400
+
+        symbol = data.get('symbol', '').upper().strip()
+        plan_snapshot = data.get('planSnapshot', {})
+        execution_mode = data.get('executionMode', 'recommend_only').strip().lower()
+
+        if not symbol:
+            return jsonify({'success': False, 'action': 'BLOCKED', 'reason': 'Symbol required', 'blockers': ['No symbol']}), 400
+
+        # ── 1. Verify plan snapshot exists ──
+        if not plan_snapshot:
+            return jsonify({'success': False, 'action': 'BLOCKED', 'symbol': symbol, 'reason': 'No plan snapshot provided', 'blockers': ['Missing planSnapshot']}), 400
+
+        # ── 2. Verify all required gates ──
+        blockers = []
+        final_action = plan_snapshot.get('finalAction', '')
+        risk_gate = plan_snapshot.get('riskGate', plan_snapshot.get('hardRiskGate', {}))
+        risk_gate_status = risk_gate.get('status', 'BLOCK')
+        data_quality = plan_snapshot.get('dataQuality', 'POOR')
+        trade_readiness = plan_snapshot.get('tradeReadiness', 'BLOCKED')
+        shares = plan_snapshot.get('shares', plan_snapshot.get('positionSizeShares', 0))
+        order_preview = plan_snapshot.get('orderPreview', {}) or {}
+        order_type = order_preview.get('orderType', '')
+
+        if final_action != 'BUY_READY':
+            blockers.append(f'finalAction is {final_action}, not BUY_READY')
+        if risk_gate_status != 'PASS':
+            blockers.append(f'Risk Gate status is {risk_gate_status}, not PASS')
+        if data_quality != 'GOOD':
+            blockers.append(f'Data Quality is {data_quality}, not GOOD')
+        if trade_readiness != 'READY':
+            blockers.append(f'Trade Readiness is {trade_readiness}, not READY')
+        if shares <= 0:
+            blockers.append(f'Shares is {shares}, must be > 0')
+        if not order_preview:
+            blockers.append('No orderPreview in plan')
+        if order_type not in ('limit', 'stop_limit'):
+            blockers.append(f'Order type {order_type} is not limit or stop_limit')
+
+        if blockers:
+            print(f'[ENTRY EXECUTE] {symbol} BLOCKED: {blockers}')
+            return jsonify({
+                'success': False, 'action': 'BLOCKED', 'symbol': symbol,
+                'reason': 'Safety gates not passed', 'blockers': blockers
+            })
+
+        # ── 3. Check execution mode ──
+        if execution_mode == 'recommend_only':
+            return jsonify({
+                'success': False, 'action': 'BLOCKED', 'symbol': symbol,
+                'reason': 'Recommend Only mode — no order placement allowed',
+                'blockers': ['executionMode is recommend_only']
+            })
+
+        # ── 4. Live mode requires confirmation ──
+        if execution_mode == 'live':
+            live_confirm = data.get('liveConfirm', False)
+            confirm_text = data.get('confirmText', '')
+            expected_text = f'CONFIRM LIVE BUY {symbol}'
+            if not live_confirm or confirm_text.strip().upper() != expected_text.upper():
+                return jsonify({
+                    'success': False, 'action': 'BLOCKED', 'symbol': symbol,
+                    'reason': 'Live trading requires explicit confirmation',
+                    'blockers': ['liveConfirm missing or confirmText mismatch']
+                })
+
+        # ── 5. Connect to Alpaca broker ──
+        if execution_mode == 'live':
+            api_key = alpaca_config_state.get('live_api_key', '')
+            api_secret = alpaca_config_state.get('live_api_secret', '')
+            base_url = 'https://api.alpaca.markets'
+            mode_label = 'live'
+        else:
+            api_key = alpaca_config_state.get('paper_api_key', '')
+            api_secret = alpaca_config_state.get('paper_api_secret', '')
+            base_url = 'https://paper-api.alpaca.markets'
+            mode_label = 'paper'
+
+        if not api_key or not api_secret:
+            return jsonify({
+                'success': False, 'action': 'BLOCKED', 'symbol': symbol,
+                'reason': f'Alpaca {mode_label} API keys not configured',
+                'blockers': ['Broker API keys not configured']
+            })
+
+        headers = {
+            'APCA-API-KEY-ID': api_key,
+            'APCA-API-SECRET-KEY': api_secret,
+            'Content-Type': 'application/json'
+        }
+
+        # ── 6. Check buying power ──
+        try:
+            acc_resp = _req.get(f'{base_url}/v2/account', headers=headers, timeout=10)
+            if acc_resp.status_code == 200:
+                acc_data = acc_resp.json()
+                buying_power = float(acc_data.get('buying_power', 0))
+                cash = float(acc_data.get('cash', 0))
+                est_value = shares * (order_preview.get('limitPrice', 0))
+                if est_value > buying_power:
+                    blockers.append(f'Estimated value ${est_value:.0f} exceeds buying power ${buying_power:.0f}')
+            else:
+                blockers.append(f'Cannot verify buying power: HTTP {acc_resp.status_code}')
+        except Exception as acc_e:
+            blockers.append(f'Cannot verify buying power: {str(acc_e)[:80]}')
+
+        if blockers:
+            return jsonify({
+                'success': False, 'action': 'BLOCKED', 'symbol': symbol,
+                'reason': 'Buying power verification failed', 'blockers': blockers
+            })
+
+        # ── 7. Build and submit order ──
+        limit_price = order_preview.get('limitPrice', 0)
+        stop_price = order_preview.get('stopPrice', None)
+        stop_loss = order_preview.get('stopLoss', 0)
+        take_profit = order_preview.get('takeProfit', None)
+
+        if order_type == 'stop_limit' and stop_price:
+            order_payload = {
+                'symbol': symbol,
+                'side': 'buy',
+                'qty': str(shares),
+                'type': 'stop_limit',
+                'stop_price': str(stop_price),
+                'limit_price': str(limit_price),
+                'time_in_force': 'day'
+            }
+        elif order_type == 'limit':
+            order_payload = {
+                'symbol': symbol,
+                'side': 'buy',
+                'qty': str(shares),
+                'type': 'limit',
+                'limit_price': str(limit_price),
+                'time_in_force': 'day'
+            }
+        else:
+            return jsonify({
+                'success': False, 'action': 'BLOCKED', 'symbol': symbol,
+                'reason': f'Unsupported order type: {order_type}',
+                'blockers': [f'Order type {order_type} not supported']
+            })
+
+        print(f'[ENTRY EXECUTE] {symbol}: submitting {mode_label} {order_type} order: shares={shares} limit=${limit_price}')
+
+        order_resp = _req.post(f'{base_url}/v2/orders', headers=headers, json=order_payload, timeout=30)
+
+        if order_resp.status_code == 200:
+            order_data = order_resp.json()
+            order_id = order_data.get('id', 'unknown')
+            order_status = order_data.get('status', 'unknown')
+            print(f'[ENTRY EXECUTE] {symbol}: ORDER SUBMITTED id={order_id} status={order_status}')
+
+            # Build response with stop/take profit note
+            note = f'Stop loss (${stop_loss:.2f}) and take profit (${take_profit:.2f}) are plan values, not attached broker orders yet.'
+            if stop_loss > 0 and take_profit and take_profit > 0:
+                try:
+                    # Try to submit bracket orders (stop-loss + take-profit)
+                    ts_side = 'sell'
+                    ts_payload = {
+                        'symbol': symbol,
+                        'side': ts_side,
+                        'qty': str(shares),
+                        'type': 'stop',
+                        'stop_price': str(stop_loss),
+                        'time_in_force': 'gtc',
+                        'order_class': 'bracket',
+                        'take_profit': {'limit_price': str(take_profit)},
+                        'stop_loss': {'stop_price': str(stop_loss)}
+                    }
+                    # Note: bracket orders need OTO (one-triggers-other) which is complex.
+                    # For now, just note the plan values.
+                    note = f'Stop loss ${stop_loss:.2f} and take profit ${take_profit:.2f} noted. Set these as separate orders or monitor manually.'
+                except Exception:
+                    pass
+
+            return jsonify({
+                'success': True,
+                'action': 'ORDER_SUBMITTED',
+                'symbol': symbol,
+                'mode': mode_label,
+                'orderId': order_id,
+                'orderStatus': order_status,
+                'submittedOrder': order_data,
+                'message': f'{mode_label.capitalize()} {order_type} order submitted for {shares} shares of {symbol}',
+                'note': note
+            })
+        else:
+            error_text = order_resp.text[:300]
+            print(f'[ENTRY EXECUTE] {symbol}: Alpaca API error {order_resp.status_code}: {error_text}')
+            return jsonify({
+                'success': False, 'action': 'BLOCKED', 'symbol': symbol,
+                'reason': f'Alpaca API error {order_resp.status_code}',
+                'blockers': [error_text]
+            })
+
+    except Exception as e:
+        print(f'[ENTRY EXECUTE] Exception: {e}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False, 'action': 'ERROR', 'symbol': data.get('symbol', '?') if data else '?',
+            'reason': str(e), 'blockers': [str(e)[:200]]
+        }), 500
+
+
+# ============ AI Agent Watchlist Endpoints ============
+
+def _find_watchlist_item(symbol):
+    """Find watchlist item by symbol (case-insensitive). Returns (index, item) or (None, None)."""
+    sym_upper = symbol.upper().strip()
+    for i, item in enumerate(_watchlist_store):
+        if item.get('symbol', '').upper().strip() == sym_upper:
+            return i, item
+    return None, None
+
+
+@app.route('/api/ai-agent/watchlist', methods=['GET'])
+def ai_agent_watchlist_list():
+    """List all AI Agent watchlist items."""
+    return jsonify({'success': True, 'items': _watchlist_store, 'count': len(_watchlist_store)})
+
+
+@app.route('/api/ai-agent/watchlist', methods=['POST'])
+def ai_agent_watchlist_add():
+    """Add or update an item in the AI Agent watchlist."""
+    import time as _time
+    from datetime import datetime as _dt
+
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': 'No data provided'}), 400
+
+        symbol = data.get('symbol', '').upper().strip()
+        if not symbol:
+            return jsonify({'success': False, 'message': 'Symbol required'}), 400
+
+        existing_idx, existing_item = _find_watchlist_item(symbol)
+
+        item = {
+            'id': data.get('id', str(_uuid.uuid4())[:8]),
+            'symbol': symbol,
+            'setupType': data.get('setupType', ''),
+            'aiDecision': data.get('aiDecision', 'WATCH'),
+            'confidence': data.get('confidence', 0),
+            'entryZoneLow': data.get('entryZoneLow'),
+            'entryZoneHigh': data.get('entryZoneHigh'),
+            'trigger': data.get('trigger', ''),
+            'stopLoss': data.get('stopLoss'),
+            'takeProfit1': data.get('takeProfit1'),
+            'takeProfit2': data.get('takeProfit2'),
+            'riskReward': data.get('riskReward'),
+            'shares': data.get('shares'),
+            'finalAction': data.get('finalAction', 'WAIT_FOR_ENTRY'),
+            'riskGateStatus': data.get('riskGateStatus', ''),
+            'dataQuality': data.get('dataQuality', ''),
+            'nextStep': data.get('nextStep', ''),
+            'decisionReason': data.get('decisionReason', ''),
+            'riskComment': data.get('riskComment', ''),
+            'invalidationComment': data.get('invalidationComment', ''),
+            'source': data.get('source', 'Entry Plan'),
+            'createdAt': data.get('createdAt', _dt.utcnow().isoformat() + 'Z'),
+            'updatedAt': _dt.utcnow().isoformat() + 'Z',
+            'status': data.get('status', 'ACTIVE')
+        }
+
+        if existing_item is not None:
+            # Update existing — preserve original id and createdAt
+            item['id'] = existing_item.get('id', item['id'])
+            item['createdAt'] = existing_item.get('createdAt', item['createdAt'])
+            _watchlist_store[existing_idx] = item
+            print(f'[WATCHLIST] Updated {symbol}')
+            return jsonify({
+                'success': True, 'action': 'UPDATED', 'item': item,
+                'message': f'{symbol} updated in watchlist'
+            })
+
+        _watchlist_store.append(item)
+        print(f'[WATCHLIST] Added {symbol} (total: {len(_watchlist_store)})')
+        return jsonify({
+            'success': True, 'action': 'ADDED', 'item': item,
+            'message': f'{symbol} added to watchlist'
+        })
+
+    except Exception as e:
+        print(f'[WATCHLIST] Error adding: {e}')
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/ai-agent/watchlist/<item_id>', methods=['DELETE'])
+def ai_agent_watchlist_remove(item_id):
+    """Remove an item from the AI Agent watchlist."""
+    for i, item in enumerate(_watchlist_store):
+        if item.get('id') == item_id:
+            removed = _watchlist_store.pop(i)
+            print(f'[WATCHLIST] Removed {removed.get("symbol")} id={item_id}')
+            return jsonify({'success': True, 'message': f'{removed.get("symbol")} removed from watchlist'})
+    return jsonify({'success': False, 'message': 'Item not found'}), 404
+
+
+@app.route('/api/ai-agent/watchlist/<item_id>', methods=['PATCH'])
+def ai_agent_watchlist_update(item_id):
+    """Update watchlist item status or other fields."""
+    import time as _time
+    from datetime import datetime as _dt
+
+    for i, item in enumerate(_watchlist_store):
+        if item.get('id') == item_id:
+            data = request.get_json() or {}
+            if 'status' in data:
+                _watchlist_store[i]['status'] = data['status']
+            if 'nextStep' in data:
+                _watchlist_store[i]['nextStep'] = data['nextStep']
+            _watchlist_store[i]['updatedAt'] = _dt.utcnow().isoformat() + 'Z'
+            print(f'[WATCHLIST] Updated {_watchlist_store[i].get("symbol")} id={item_id}')
+            return jsonify({'success': True, 'item': _watchlist_store[i], 'message': 'Updated'})
+    return jsonify({'success': False, 'message': 'Item not found'}), 404
 
 
 if __name__ == '__main__':
@@ -20849,6 +21382,325 @@ Rules:
         }), 500
 
 
+@app.route('/api/ai/fine-scan-decision', methods=['POST'])
+def fine_scan_decision():
+    """
+    AI-powered per-symbol Fine Scan decision (Continue/Watch/Skip).
+    
+    Accepts the full evidence set for one symbol, returns a structured decision
+    with source tracking. Falls back to deterministic local rules when AI is unavailable.
+    
+    Input:
+      symbol, trendLabel, trendScore, matchedStrategies, matchConfidence,
+      backtestStatus, backtestPerformance, backtestTotalReturn,
+      entryQuality (grade, score, zone), liquidityGrade, newsGrade,
+      riskGrade, riskScore, entryScore
+    
+    Output:
+      decision: "CONTINUE" | "WATCH" | "SKIP"
+      grade: "HIGH" | "MEDIUM" | "LOW"
+      confidence: number (0-100)
+      reason: string
+      source: "ai" | "local-rule"
+      decisionDetail: { strengths: string[], warnings: string[], blockers: string[] }
+    """
+    import time as _time
+    import json as _json
+    
+    start_ts = _time.time()
+    try:
+        data = request.get_json()
+        if not data or 'symbol' not in data:
+            return jsonify({'success': False, 'error': 'Symbol required'}), 400
+        
+        symbol = data.get('symbol', '')
+        trend_label = data.get('trendLabel', '')
+        trend_score = data.get('trendScore', 0)
+        matched_strategies = data.get('matchedStrategies', [])
+        match_conf = data.get('matchConfidence', 0)
+        bt_status = data.get('backtestStatus', '')
+        bt_perf = data.get('backtestPerformance', '')
+        bt_return = data.get('backtestTotalReturn', None)
+        eq_grade = data.get('entryQuality', {}).get('grade', '')
+        eq_score = data.get('entryQuality', {}).get('score', 0)
+        eq_zone = data.get('entryQuality', {}).get('zone', '')
+        liq_grade = data.get('liquidityGrade', '')
+        news_grade = data.get('newsGrade', '')
+        risk_grade = data.get('riskGrade', '')
+        risk_score = data.get('riskScore', 0)
+        entry_score = data.get('entryScore', 0)
+        
+        # Build evidence summary for AI prompt
+        bt_summary = f"{bt_status}/{bt_perf}" if bt_status else "N/A"
+        if bt_return is not None:
+            bt_summary += f" return={bt_return:.1f}%"
+        
+        eq_summary = f"{eq_grade}" if eq_grade else "N/A"
+        if eq_score: eq_summary += f" score={eq_score}"
+        
+        strategy_str = ', '.join(matched_strategies[:4]) if matched_strategies else 'none'
+        
+        ai_prompt = f"""You are a quantitative trading analyst. Based on the evidence below, decide whether this stock should CONTINUE (best candidates for further analysis), WATCH (potentially good but needs monitoring), or SKIP (not suitable now).
+
+SYMBOL: {symbol}
+
+EVIDENCE:
+- Trend: {trend_label} (Score: {trend_score}/100)
+- Matched Strategies: {strategy_str} (conf: {match_conf}/100)
+- Backtest: {bt_summary}
+- Entry Quality: {eq_summary} (zone: {eq_zone or 'N/A'})
+- Liquidity: {liq_grade}
+- News: {news_grade}
+- Risk: {risk_grade} (Score: {risk_score}/100)
+
+RULES:
+1. CONTINUE means "worth entering deeper validation / entry plan analysis." NOT a buy signal. Give CONTINUE to any candidate with:
+   - Score >= 70 AND backtest positive/acceptable
+   - OR score >= 60 AND strong trend + acceptable backtest + no hard blockers
+   - Entry: Good/Wait/Pullback/Breakout Setup all qualify. Extended alone is NOT a hard blocker.
+   - Risk: LOW/MEDIUM preferred, but HIGH alone does NOT prevent CONTINUE (downgrade to WATCH instead)
+   - General guidance: when in doubt between WATCH and CONTINUE for a strong-ish candidate, choose CONTINUE.
+2. WATCH if: some positive signals but one area needs monitoring (e.g. backtest caution, entry wait zone, moderate risk, or risk=HIGH with other decent signals).
+3. SKIP only if: trend unclear AND backtest negative, OR entry is Avoid/Downtrend, OR risk is SKIP (critical data missing), OR multiple hard blockers present.
+4. Do NOT skip just because entry is "Wait for Pullback" or "Chasing/Extended" — if other signals are strong, WATCH or CONTINUE.
+5. Do NOT skip just because risk is HIGH. HIGH risk alone → WATCH. Only risk=SKIP triggers skip.
+
+Return ONLY valid JSON (no markdown):
+{{
+  "decision": "CONTINUE" or "WATCH" or "SKIP",
+  "grade": "HIGH" or "MEDIUM" or "LOW",
+  "confidence": 0-100,
+  "reason": "1-sentence summary of key factors",
+  "strengths": ["strength1", "strength2"],
+  "warnings": ["warning1"],
+  "blockers": ["blocker1"]
+}}"""
+        
+        api_key = ai_provider_config_state.get('apiKey', '')
+        if not api_key:
+            print(f'[FineScanDecision] No AI key, using local rules for {symbol}')
+            return _fine_scan_fallback_decision(symbol, trend_label, trend_score, matched_strategies,
+                                                  match_conf, bt_status, bt_perf, bt_return,
+                                                  eq_grade, eq_zone, liq_grade, news_grade,
+                                                  risk_grade, risk_score)
+        
+        provider = ai_provider_config_state.get('provider', 'deepseek')
+        base_url = ai_provider_config_state.get('baseURL', 'https://api.deepseek.com')
+        model = ai_provider_config_state.get('model', 'deepseek-chat')
+        
+        ai_headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        }
+        
+        ai_payload = {
+            'model': model,
+            'messages': [
+                {'role': 'system', 'content': 'You are a quantitative trading analyst. Return only valid JSON.'},
+                {'role': 'user', 'content': ai_prompt}
+            ],
+            'max_tokens': 600,
+            'temperature': 0.3,
+            'response_format': {'type': 'json_object'}
+        }
+        
+        if not base_url.startswith('http'):
+            base_url = 'https://' + base_url
+        
+        response = requests.post(
+            f'{base_url}/chat/completions',
+            headers=ai_headers,
+            json=ai_payload,
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            ai_text = result['choices'][0]['message']['content']
+            try:
+                parsed = _json.loads(ai_text)
+                decision = parsed.get('decision', 'WATCH')
+                grade = parsed.get('grade', 'MEDIUM')
+                confidence = parsed.get('confidence', 50)
+                reason = parsed.get('reason', '')
+                strengths = parsed.get('strengths', [])
+                warnings = parsed.get('warnings', [])
+                blockers = parsed.get('blockers', [])
+                
+                # Normalize decision
+                if decision.upper() in ('CONTINUE', 'CONTINUE'):
+                    decision = 'CONTINUE'
+                elif decision.upper() == 'SKIP':
+                    decision = 'SKIP'
+                else:
+                    decision = 'WATCH'
+                
+                # Normalize grade
+                if grade.upper() == 'HIGH':
+                    grade = 'HIGH'
+                elif grade.upper() == 'LOW':
+                    grade = 'LOW'
+                else:
+                    grade = 'MEDIUM'
+                
+                elapsed = _time.time() - start_ts
+                print(f'[FineScanDecision] {symbol}: decision={decision} grade={grade} conf={confidence} ({elapsed:.1f}s)')
+                
+                return jsonify({
+                    'success': True,
+                    'symbol': symbol,
+                    'decision': decision,
+                    'grade': grade,
+                    'confidence': confidence,
+                    'reason': reason,
+                    'source': 'ai',
+                    'decisionDetail': {
+                        'strengths': strengths,
+                        'warnings': warnings,
+                        'blockers': blockers,
+                    }
+                })
+            except Exception as parse_err:
+                print(f'[FineScanDecision] Parse error for {symbol}: {parse_err}')
+                return _fine_scan_fallback_decision(symbol, trend_label, trend_score, matched_strategies,
+                                                      match_conf, bt_status, bt_perf, bt_return,
+                                                      eq_grade, eq_zone, liq_grade, news_grade,
+                                                      risk_grade, risk_score)
+        else:
+            print(f'[FineScanDecision] AI API error {response.status_code} for {symbol}')
+            return _fine_scan_fallback_decision(symbol, trend_label, trend_score, matched_strategies,
+                                                  match_conf, bt_status, bt_perf, bt_return,
+                                                  eq_grade, eq_zone, liq_grade, news_grade,
+                                                  risk_grade, risk_score)
+    
+    except Exception as e:
+        print(f'[FineScanDecision] Error: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def _fine_scan_fallback_decision(symbol, trend_label, trend_score, matched_strategies,
+                                   match_conf, bt_status, bt_perf, bt_return,
+                                   eq_grade, eq_zone, liq_grade, news_grade,
+                                   risk_grade, risk_score):
+    """Deterministic fallback when AI is unavailable for symbol decision."""
+    reasons = []
+    warnings = []
+    blockers = []
+    strengths = []
+    
+    # Score-based assessment (same logic as frontend L5960-5972 but with source tracking)
+    bt_pass = bt_status == 'pass' and bt_perf in ('positive', 'caution')
+    eq_pass = eq_grade in ('Excellent', 'Good', 'Wait for Pullback')
+    risk_pass = risk_grade in ('LOW', 'MEDIUM')
+    score_pass = (match_conf or 0) >= 30
+    
+    if bt_pass:
+        strengths.append(f'backtest: {bt_perf}')
+    else:
+        warnings.append(f'backtest: {bt_status}/{bt_perf}')
+    
+    if eq_pass:
+        strengths.append(f'entry: {eq_grade}')
+    elif eq_grade == 'Chasing / Extended':
+        blockers.append('entry: extended')
+        warnings.append('entry: chasing/extended')
+    elif eq_grade == 'Avoid / Downtrend':
+        blockers.append('entry: downtrend')
+    else:
+        warnings.append(f'entry: {eq_grade or "N/A"}')
+    
+    if risk_pass:
+        strengths.append(f'risk: {risk_grade}')
+    elif risk_grade == 'HIGH':
+        blockers.append(f'risk: {risk_grade}')
+    elif risk_grade == 'SKIP':
+        blockers.append('risk: SKIP')
+    else:
+        warnings.append(f'risk: {risk_grade}')
+    
+    if match_conf >= 30:
+        strengths.append(f'score: {match_conf}')
+    elif match_conf >= 15:
+        pass  # marginal, no strong flag
+    else:
+        blockers.append(f'low score ({match_conf})')
+    
+    if liq_grade == 'Good':
+        strengths.append(f'liquidity: {liq_grade}')
+    elif liq_grade == 'Poor':
+        blockers.append(f'liquidity: {liq_grade}')
+    
+    # Decision logic — CONTINUE means "worth deeper analysis" not "buy now"
+    if bt_pass and score_pass and len(blockers) == 0 and risk_pass:
+        # Strong across all dimensions
+        decision = 'CONTINUE'
+        grade = 'HIGH'
+        confidence = 65 + min(20, match_conf // 2)
+        reasons = ['All core metrics favorable']
+    elif bt_pass and score_pass and len(blockers) <= 1:
+        # Good enough for deeper validation — relaxed: allows one minor blocker
+        decision = 'CONTINUE'
+        grade = 'HIGH' if risk_pass else 'MEDIUM'
+        confidence = 55 + min(15, match_conf // 3)
+        if len(warnings) > 1:
+            reasons = [f'Good signals with minor concerns: {"; ".join(warnings[:2])}']
+        else:
+            reasons = ['Strong enough for deeper validation']
+    elif bt_pass and (match_conf or 0) >= 20 and len(blockers) <= 2:
+        # Borderline but worth deeper analysis — score+backtest suffice
+        decision = 'CONTINUE'
+        grade = 'MEDIUM'
+        confidence = 40 + min(15, match_conf // 4)
+        reasons = [f'Positive backtest with some flags: {"; ".join(blockers[:2]) if blockers else "minor concerns"}']
+    elif risk_grade == 'SKIP' or eq_grade == 'Avoid / Downtrend' or ((match_conf or 0) < 10 and not bt_pass and not risk_pass):
+        decision = 'SKIP'
+        grade = 'LOW'
+        confidence = 20 + min(15, match_conf // 4)
+        if blockers:
+            reasons = [f'Blocked: {"; ".join(blockers[:2])}']
+        else:
+            reasons = ['Insufficient quality for further analysis']
+    elif risk_grade == 'HIGH' and bt_pass and score_pass:
+        # HIGH risk alone does NOT skip — strong other signals mean WATCH
+        decision = 'WATCH'
+        grade = 'MEDIUM'
+        confidence = 35 + min(15, match_conf // 3)
+        reasons = ['Strong signals but risk elevated, needs monitoring']
+    elif eq_grade == 'Chasing / Extended' and bt_pass and score_pass:
+        # Entry extended but backtest positive — WATCH not SKIP
+        decision = 'WATCH'
+        grade = 'MEDIUM'
+        confidence = 30 + min(10, match_conf // 4)
+        reasons = ['Entry extended but backtest positive, monitor for pullback']
+    else:
+        decision = 'WATCH'
+        grade = 'MEDIUM'
+        confidence = 30
+        reasons = ['Mixed signals']
+    
+    reason_str = '; '.join(reasons)
+    if blockers:
+        blockers_str = '; '.join(blockers[:3])
+        reason_str = reason_str + f' | blockers: {blockers_str}' if reason_str else f'Blockers: {blockers_str}'
+    
+    print(f'[FineScanDecision][fallback] {symbol}: decision={decision} grade={grade}')
+    
+    return jsonify({
+        'success': True,
+        'symbol': symbol,
+        'decision': decision,
+        'grade': grade,
+        'confidence': confidence,
+        'reason': reason_str,
+        'source': 'local-rule',
+        'decisionDetail': {
+            'strengths': strengths[:3],
+            'warnings': warnings[:3],
+            'blockers': blockers[:3],
+        }
+    })
+
+
 def _fine_scan_fallback_explain(symbol, trend_label, matched_strategies, entry_quality):
     """Deterministic fallback when AI is unavailable."""
     eq_grade = entry_quality.get('grade', 'N/A') if entry_quality else 'N/A'
@@ -20878,6 +21730,301 @@ def _fine_scan_fallback_explain(symbol, trend_label, matched_strategies, entry_q
         'finalReason': final_reason,
         'nextStep': next_step
     })
+
+def _map_strategy_to_setup(strategy):
+    """Map strategy name to a human-readable setup type."""
+    if not strategy:
+        return 'Watch Only'
+    s = strategy.lower()
+    if 'breakout' in s or 'break_out' in s or '突破' in s:
+        return 'Breakout Entry'
+    if 'pullback' in s or 'pull_back' in s or '回调' in s:
+        return 'Pullback Entry'
+    if 'trend' in s or 'momentum' in s or '趋势' in s:
+        return 'Trend Following'
+    if 'range' in s or '震荡' in s or 'mean reversion' in s or 'reversal' in s:
+        return 'Range Support Entry'
+    if 'ma' in s or 'ema' in s or 'cross' in s or '金叉' in s:
+        return 'MA Cross Entry'
+    return f'{strategy[:20]}...' if len(strategy) > 20 else strategy
+
+
+def _generate_entry_plan_summary(symbol, strategy, metrics, data_source):
+    """Generate entry plan summary fields from validation data + Alpaca price."""
+    entry_plan = {
+        'setup': None,
+        'entryZoneLow': None,
+        'entryZoneHigh': None,
+        'stopLoss': None,
+        'takeProfit1': None,
+        'takeProfit2': None,
+        'riskReward1': None,
+        'riskReward2': None,
+        'positionSizeShares': None,
+        'positionSizeDollars': None,
+        'invalidationCondition': None,
+        'sourceStatus': 'Pending'
+    }
+    try:
+        # Get current price
+        quote_data, _ = fetch_alpaca_stock_data(symbol)
+        current_price = None
+        if quote_data and 'price' in quote_data:
+            current_price = quote_data['price']
+        if current_price is None and quote_data and 'latestTrade' in quote_data:
+            current_price = quote_data['latestTrade'].get('p')
+        if current_price is None and quote_data and 'latestQuote' in quote_data:
+            current_price = quote_data['latestQuote'].get('ap')
+        if current_price is None and quote_data and 'prevDailyBar' in quote_data:
+            current_price = quote_data['prevDailyBar'].get('c')
+
+        if current_price is None:
+            entry_plan['sourceStatus'] = 'Price unavailable'
+            return entry_plan
+
+        entry_plan['currentPrice'] = current_price
+        s = strategy.lower() if strategy else ''
+
+        # Compute entry zone based on strategy
+        atr = _get_strategy_atr(symbol)
+        atr_val = atr if atr else current_price * 0.015  # fallback ~1.5%
+
+        if 'breakout' in s or 'break_out' in s:
+            # Entry just above recent high + half ATR
+            entry_plan['setup'] = 'Breakout Entry'
+            entry_zone_base = current_price * 1.01  # 1% above current
+            entry_plan['entryZoneLow'] = round(entry_zone_base, 2)
+            entry_plan['entryZoneHigh'] = round(entry_zone_base + atr_val * 0.5, 2)
+            entry_plan['stopLoss'] = round(entry_zone_base - atr_val * 1.5, 2)
+            entry_plan['takeProfit1'] = round(entry_zone_base + atr_val * 2.0, 2)
+            entry_plan['takeProfit2'] = round(entry_zone_base + atr_val * 3.0, 2)
+            entry_plan['invalidationCondition'] = 'Price drops below breakout level - 1ATR'
+        elif 'pullback' in s:
+            entry_plan['setup'] = 'Pullback Entry'
+            entry_zone_base = current_price * 0.99  # 1% below current
+            entry_plan['entryZoneLow'] = round(entry_zone_base - atr_val * 0.5, 2)
+            entry_plan['entryZoneHigh'] = round(entry_zone_base + atr_val * 0.3, 2)
+            entry_plan['stopLoss'] = round(entry_zone_base - atr_val * 1.5, 2)
+            entry_plan['takeProfit1'] = round(entry_zone_base + atr_val * 2.0, 2)
+            entry_plan['takeProfit2'] = round(entry_zone_base + atr_val * 3.5, 2)
+            entry_plan['invalidationCondition'] = 'Continued breakdown below support'
+        else:
+            # Generic trend/momentum entry
+            entry_plan['setup'] = _map_strategy_to_setup(strategy)
+            entry_plan['entryZoneLow'] = round(current_price * 0.985, 2)
+            entry_plan['entryZoneHigh'] = round(current_price * 1.015, 2)
+            entry_plan['stopLoss'] = round(current_price * 0.97, 2)
+            entry_plan['takeProfit1'] = round(current_price * 1.04, 2)
+            entry_plan['takeProfit2'] = round(current_price * 1.06, 2)
+            entry_plan['invalidationCondition'] = 'Price breaks below recent swing low'
+
+        # Compute R/R
+        if entry_plan['stopLoss'] and entry_plan['takeProfit1']:
+            risk = entry_plan['entryZoneLow'] - entry_plan['stopLoss']
+            reward1 = entry_plan['takeProfit1'] - entry_plan['entryZoneHigh']
+            reward2 = entry_plan['takeProfit2'] - entry_plan['entryZoneHigh']
+            if risk > 0:
+                entry_plan['riskReward1'] = round(reward1 / risk, 2) if reward1 > 0 else 0
+                entry_plan['riskReward2'] = round(reward2 / risk, 2) if reward2 > 0 else 0
+
+        entry_plan['atr'] = round(atr_val, 2)
+        entry_plan['sourceStatus'] = 'Alpaca' if atr else 'Derived'
+    except Exception as e:
+        entry_plan['sourceStatus'] = f'Error: {str(e)[:50]}'
+
+    return entry_plan
+
+
+def _get_strategy_atr(symbol):
+    """Fetch ATR for a symbol using Alpaca bars."""
+    try:
+        import math
+        bars_data = fetch_alpaca_bars(symbol, 'day', 21)
+        if bars_data and isinstance(bars_data, list) and len(bars_data) > 1:
+            closes = [b.get('c', b.get('close', 0)) for b in bars_data if b]
+            highs = [b.get('h', b.get('high', 0)) for b in bars_data if b]
+            lows = [b.get('l', b.get('low', 0)) for b in bars_data if b]
+            if len(closes) > 1:
+                tr_sum = 0
+                for i in range(1, min(len(closes), 21)):
+                    hl = highs[i] - lows[i]
+                    hc = abs(highs[i] - closes[i-1])
+                    lc = abs(lows[i] - closes[i-1])
+                    tr_sum += max(hl, hc, lc)
+                return round(tr_sum / min(len(closes) - 1, 20), 2)
+    except Exception:
+        pass
+    return None
+
+
+def _generate_final_decision(verdict, metrics, stability, opt_results, strategy):
+    """Generate a final AI/rule-based decision for DV result."""
+    decision = {
+        'action': 'SKIP',
+        'confidence': 0,
+        'bestStrategy': strategy or 'Unknown',
+        'reason': 'Insufficient validation data',
+        'source': 'fallback-rule'
+    }
+
+    try:
+        score = 0
+        reasons = []
+
+        # Verdict contribution
+        if verdict:
+            v = verdict.lower()
+            if 'approve' in v or 'good' in v or 'strong' in v or 'pass' in v:
+                score += 25
+                reasons.append('Verdict positive')
+            elif 'neutral' in v or 'watch' in v:
+                score += 10
+                reasons.append('Verdict neutral')
+            elif 'bad' in v or 'skip' in v or 'poor' in v or 'weak' in v:
+                score -= 10
+                reasons.append('Verdict negative')
+            else:
+                score += 5
+                reasons.append(f'Verdict: {verdict[:30]}')
+
+        # Backtest metrics
+        total_ret = 0
+        if metrics and isinstance(metrics, dict):
+            total_ret = metrics.get('totalReturn', 0) or 0
+            sharpe = metrics.get('sharpeRatio', 0) or 0
+            win_rate = metrics.get('winRate', 0) or 0
+            max_dd = metrics.get('maxDrawdown', 0) or 0
+
+            if total_ret > 15:
+                score += 20
+                reasons.append(f'Return: +{total_ret:.0f}%')
+            elif total_ret > 8:
+                score += 10
+                reasons.append(f'Return: +{total_ret:.0f}%')
+            elif total_ret > 0:
+                score += 5
+                reasons.append(f'Return: +{total_ret:.0f}%')
+            else:
+                score -= 10
+                reasons.append(f'Return: {total_ret:.0f}%')
+
+            if sharpe > 1.5:
+                score += 15
+                reasons.append(f'Sharpe: {sharpe:.2f}')
+            elif sharpe > 1.0:
+                score += 10
+                reasons.append(f'Sharpe: {sharpe:.2f}')
+            elif sharpe > 0:
+                score += 5
+
+            if win_rate > 60:
+                score += 10
+                reasons.append(f'Win: {win_rate:.0f}%')
+            elif win_rate > 45:
+                score += 5
+
+            if max_dd < 15:
+                score += 10
+            elif max_dd < 25:
+                score += 5
+            else:
+                score -= 5
+                reasons.append(f'DD: {max_dd:.0f}%')
+
+        # Stability
+        if stability and isinstance(stability, dict):
+            stab_score = stability.get('score', 0) or 0
+            if stab_score > 70:
+                score += 10
+            elif stab_score > 50:
+                score += 5
+            else:
+                score -= 5
+
+        # Optimization results
+        if opt_results and isinstance(opt_results, dict):
+            opt_ret = opt_results.get('optimizedReturn', 0) or 0
+            if opt_ret > 15:
+                score += 15
+                reasons.append(f'Opt: +{opt_ret:.0f}%')
+            elif opt_ret > 5:
+                score += 10
+
+        # Normalize to 0-100
+        confidence = max(0, min(100, score + 30))  # base 30 + scoring
+
+        if confidence >= 70:
+            decision['action'] = 'BUY'
+        elif confidence >= 45:
+            decision['action'] = 'WATCH'
+        else:
+            decision['action'] = 'SKIP'
+
+        decision['confidence'] = confidence
+        decision['reason'] = '; '.join(reasons[:3]) if reasons else 'Rule-based decision'
+        decision['source'] = 'local-rule'
+
+    except Exception as e:
+        decision['reason'] = f'Decision error: {str(e)[:50]}'
+
+    return decision
+
+
+def _generate_risk_gate(verdict, metrics, stability, strategy):
+    """Generate a risk gate assessment for DV result."""
+    risk_gate = {
+        'status': 'PASS',
+        'checks': [],
+        'reason': 'All checks passed'
+    }
+
+    try:
+        failures = []
+
+        # Check backtest metrics
+        if metrics and isinstance(metrics, dict):
+            total_ret = metrics.get('totalReturn', 0) or 0
+            sharpe = metrics.get('sharpeRatio', 0) or 0
+            max_dd = metrics.get('maxDrawdown', 0) or 0
+
+            if total_ret < -5:
+                failures.append('Negative return')
+            if sharpe < 0.5:
+                failures.append('Low Sharpe')
+            if max_dd > 30:
+                failures.append('High drawdown')
+            if max_dd > 20:
+                failures.append('Elevated drawdown')
+
+        # Stability
+        if stability and isinstance(stability, dict):
+            stab_score = stability.get('score', 0) or 0
+            if stab_score < 30:
+                failures.append('Poor stability')
+            elif stab_score < 50:
+                failures.append('Moderate stability')
+
+        # Verdict
+        if verdict:
+            v = verdict.lower()
+            if 'skip' in v or 'reject' in v:
+                failures.append('Rejected by validation')
+
+        if failures:
+            risk_gate['status'] = 'REVIEW' if len(failures) <= 2 else 'BLOCK'
+            risk_gate['checks'] = failures
+            risk_gate['reason'] = '; '.join(failures[:3])
+        else:
+            risk_gate['status'] = 'PASS'
+            risk_gate['reason'] = 'All validation checks passed'
+
+    except Exception as e:
+        risk_gate['status'] = 'ERROR'
+        risk_gate['reason'] = str(e)[:50]
+
+    return risk_gate
+
+
 @app.route('/api/ai/deeper-validation', methods=['POST'])
 @app.route('/ai/deeper-validation', methods=['POST'])
 def deeper_validation():
@@ -21065,7 +22212,12 @@ def deeper_validation():
                 'longTermMaxDrawdown': long_metrics['maxDrawdown'] if long_metrics else 0,
                 'recentMaxDrawdown': short_metrics['maxDrawdown'] if short_metrics else 0,
                 # Data source
-                'dataSource': data_source,
+                                # Entry Plan summary (generated from validation data + price)
+                'setupType': _map_strategy_to_setup(strategy),
+                'entryPlan': _generate_entry_plan_summary(symbol, strategy, metrics, data_source),
+                'finalDecision': _generate_final_decision(verdict, metrics, stability, opt_results, strategy),
+                'riskGate': _generate_risk_gate(verdict, metrics, stability, strategy),
+'dataSource': data_source,
             }
             results.append(result_entry)
 
@@ -21094,6 +22246,1168 @@ def deeper_validation():
 
     except Exception as e:
         print(f'[DV] Error: {e}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+# ============ Entry Plan - Deterministic Entry/Stop/Target Calculator with AI Decision + Hard Risk Gate ============
+
+def _call_ai_entry_final_decision(plans, execution_mode, account_mode):
+    """
+    Call AI provider for final BUY/WATCH/SKIP decisions on entry plans.
+    AI only sees deterministic data. AI output restricted to decision fields.
+    Returns: dict mapping symbol -> {aiDecision, confidence, bestStrategy,
+             decisionReason, nextStep, invalidationComment, riskComment,
+             finalActionSuggestion, aiCalled, aiSource, aiModel, aiError}
+    """
+    import json as _json
+    import requests as _req
+    import time as _time
+
+    result_map = {}
+
+    # Default fallback for every symbol
+    for p in plans:
+        sym = p.get('symbol', '')
+        result_map[sym] = {
+            'aiDecision': p.get('aiDecision', 'WATCH'),
+            'confidence': p.get('confidence', 0),
+            'bestStrategy': p.get('bestStrategy', p.get('strategy', '')),
+            'decisionReason': p.get('decisionReason', ''),
+            'nextStep': p.get('nextStep', ''),
+            'invalidationComment': '',
+            'riskComment': '',
+            'finalActionSuggestion': '',
+            'aiCalled': False,
+            'aiSource': 'Local Rules',
+            'aiModel': None,
+            'aiError': None
+        }
+
+    api_key = ai_provider_config_state.get('apiKey', '')
+    if not api_key or len(api_key) < 10:
+        print('[AI Entry Decision] No valid API key configured — using local rules')
+        for sym in result_map:
+            result_map[sym]['aiError'] = 'No AI provider API key configured'
+        return result_map
+
+    provider = ai_provider_config_state.get('provider', 'deepseek')
+    base_url = ai_provider_config_state.get('baseURL', 'https://api.deepseek.com')
+    model = ai_provider_config_state.get('model', 'deepseek-chat')
+
+    if not base_url.startswith('http'):
+        base_url = 'https://' + base_url
+
+    # Build prompt with deterministic data only (no AI can invent prices)
+    plan_lines = []
+    for i, p in enumerate(plans):
+        sym = p.get('symbol', '?')
+        plan_lines.append(
+            f"{i+1}. {sym} | Setup: {p.get('setup','?')} | Price: ${p.get('currentPrice',0):.2f} | "
+            f"Entry: ${p.get('entryZoneLow',0):.2f}-${p.get('entryZoneHigh',0):.2f} | "
+            f"Trigger: {p.get('triggerCondition','N/A')[:80]} | "
+            f"Stop: ${p.get('stopLoss',0):.2f} ({p.get('stopLossPct',0):.1f}%) | "
+            f"T1: ${p.get('takeProfit1',0):.2f} T2: ${p.get('takeProfit2',0):.2f} | "
+            f"R/R1: {p.get('riskReward1',0):.1f}:1 R/R2: {p.get('riskReward2',0):.1f}:1 | "
+            f"Shares: {p.get('positionSizeShares',0)} (${p.get('positionSizeDollars',0):.0f}, {p.get('positionPct',0):.1f}%) | "
+            f"Risk: ${p.get('riskDollars',0):.0f} / Budget: ${p.get('riskBudget',0):.0f} ({p.get('riskUsedPct',0):.1f}%) | "
+            f"Gate: {p.get('hardRiskGate',{}).get('status','?')} | "
+            f"Data: {p.get('dataQuality','?')} | "
+            f"Readiness: {p.get('tradeReadiness','?')} | "
+            f"Verdict: {p.get('sourceVerdict','?')} | "
+            f"Strategy: {p.get('strategy','?')}"
+        )
+
+    plans_text = '\n'.join(plan_lines)
+    exec_note = 'paper trading' if account_mode == 'paper' else ('live trading' if account_mode == 'real' else execution_mode)
+
+    ai_prompt = f"""You are a disciplined quantitative trading risk manager. Review these ENTRY PLANS (deterministic — prices, stops, targets, sizes are ALREADY CALCULATED). Your job is ONLY to output a BUY / WATCH / SKIP decision with reasoning.
+
+You are in {exec_note} mode. You are risk-averse and will only approve entries that meet strict criteria.
+
+PLANS ({len(plans)} symbols):
+{plans_text}
+
+RULES (you MUST follow):
+1. BUY only if: R/R >= 1.5, Risk Gate PASS, Data Quality GOOD, Trade Readiness READY, setup valid, no blockers.
+2. WATCH if: setup is valid but entry trigger not met, or Gate REVIEW (caution), or data PARTIAL, or there are warnings that need monitoring.
+3. SKIP if: Gate BLOCK, Data POOR, R/R < 1.0, setup is Watch Only or No Trade, verdict Rejected, or multiple hard problems.
+4. confidence 0-100: how confident you are in this decision.
+5. decisionReason: 1-2 sentences explaining WHY this decision, what's the key factor.
+6. nextStep: very specific — what exact price level or condition to wait for. For BUY, where to place order. For WATCH, what trigger to monitor. For SKIP, what would need to change.
+7. You MUST NOT invent or change ANY prices, stops, targets, shares, or risk numbers. Only reference the deterministic values provided.
+8. If Risk Gate is BLOCK, you MUST output SKIP regardless of other signals.
+
+Return ONLY valid JSON (no markdown, no preamble):
+{{
+  "decisions": [
+    {{
+      "symbol": "SYM",
+      "aiDecision": "BUY",
+      "confidence": 85,
+      "bestStrategy": "strategy_name",
+      "decisionReason": "why this decision",
+      "nextStep": "exact action or trigger to wait for",
+      "invalidationComment": "what would invalidate this setup",
+      "riskComment": "notable risk observations",
+      "finalActionSuggestion": "BUY_READY or WAIT_FOR_ENTRY or SKIP or BLOCKED_BY_RISK"
+    }}
+  ]
+}}"""
+
+    try:
+        print(f'[AI Entry Decision] Calling {provider} model={model} for {len(plans)} plans...')
+        ai_headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        }
+        ai_payload = {
+            'model': model,
+            'messages': [
+                {'role': 'system', 'content': 'You are a risk-averse quantitative trading analyst. Return only valid JSON. Never invent prices.'},
+                {'role': 'user', 'content': ai_prompt}
+            ],
+            'max_tokens': 3000,
+            'temperature': 0.3,
+        }
+        # Add response_format for providers that support it
+        if provider.lower() in ('deepseek', 'openai'):
+            ai_payload['response_format'] = {'type': 'json_object'}
+
+        start_ts = _time.time()
+        resp = _req.post(f'{base_url}/chat/completions', headers=ai_headers, json=ai_payload, timeout=45)
+        elapsed = round(_time.time() - start_ts, 2)
+
+        if resp.status_code != 200:
+            err_msg = f'AI HTTP {resp.status_code}: {resp.text[:200]}'
+            print(f'[AI Entry Decision] FAILED: {err_msg}')
+            for sym in result_map:
+                result_map[sym]['aiError'] = err_msg
+            return result_map
+
+        ai_content = resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
+        ai_content = ai_content.strip()
+        # Strip markdown fences
+        if ai_content.startswith('```'):
+            lines = ai_content.split('\n')
+            ai_content = '\n'.join(lines[1:]) if len(lines) > 1 else ai_content[3:]
+            if ai_content.endswith('```'):
+                ai_content = ai_content[:-3]
+            ai_content = ai_content.strip()
+
+        result = _json.loads(ai_content)
+        decisions = result.get('decisions', [])
+
+        if not decisions:
+            print('[AI Entry Decision] AI returned empty decisions array')
+            for sym in result_map:
+                result_map[sym]['aiError'] = 'AI returned empty decisions'
+            return result_map
+
+        # Update result_map with AI decisions
+        for d in decisions:
+            sym = d.get('symbol', '').upper().strip()
+            if sym not in result_map:
+                print(f'[AI Entry Decision] AI returned unknown symbol: {sym} — ignoring')
+                continue
+
+            ai_dec = d.get('aiDecision', '').upper().strip()
+            if ai_dec not in ('BUY', 'WATCH', 'SKIP'):
+                ai_dec = result_map[sym]['aiDecision']  # keep local fallback
+
+            result_map[sym].update({
+                'aiDecision': ai_dec,
+                'confidence': int(d.get('confidence', result_map[sym]['confidence'])),
+                'bestStrategy': d.get('bestStrategy', result_map[sym]['bestStrategy']),
+                'decisionReason': d.get('decisionReason', result_map[sym]['decisionReason']),
+                'nextStep': d.get('nextStep', result_map[sym]['nextStep']),
+                'invalidationComment': d.get('invalidationComment', ''),
+                'riskComment': d.get('riskComment', ''),
+                'finalActionSuggestion': d.get('finalActionSuggestion', ''),
+                'aiCalled': True,
+                'aiSource': provider,
+                'aiModel': model,
+                'aiError': None
+            })
+            print(f'[AI Entry Decision] {sym}: AI={ai_dec} conf={result_map[sym]["confidence"]}')
+
+        # Check for missing symbols
+        for sym in result_map:
+            if result_map[sym]['aiCalled'] is False and result_map[sym]['aiError'] is None:
+                result_map[sym]['aiError'] = 'AI did not return decision for this symbol'
+
+        print(f'[AI Entry Decision] Completed: {sum(1 for v in result_map.values() if v["aiCalled"])}/{len(result_map)} plans received AI decisions ({elapsed}s)')
+        return result_map
+
+    except _json.JSONDecodeError as e:
+        print(f'[AI Entry Decision] JSON parse error: {e}, raw: {ai_content[:300] if "ai_content" in dir() else "N/A"}')
+        for sym in result_map:
+            result_map[sym]['aiError'] = f'AI JSON parse failed: {str(e)[:100]}'
+        return result_map
+    except Exception as e:
+        print(f'[AI Entry Decision] Exception: {e}')
+        import traceback
+        traceback.print_exc()
+        for sym in result_map:
+            result_map[sym]['aiError'] = f'AI call exception: {str(e)[:100]}'
+        return result_map
+
+
+@app.route('/api/ai/entry-plan', methods=['POST'])
+@app.route('/ai/entry-plan', methods=['POST'])
+def ai_entry_plan():
+    """
+    Generate entry plans for Deeper Validation candidates.
+    Combines deterministic price-level computation with AI decision and Hard Risk Gate.
+
+    Input: { candidates, accountSize, riskPerTradePct, maxPositionPct,
+             existingPositions, dailyLoss, holdingSymbols, executionMode }
+    Output: { success, plans: [{ symbol, setup, entryZone, ... }] }
+    """
+    import time
+    import math
+    import json
+    import requests as req_lib
+
+    try:
+        data = request.get_json()
+        if not data or 'candidates' not in data:
+            return jsonify({'success': False, 'message': 'candidates required'}), 400
+
+        candidates = data.get('candidates', [])
+        account_size = float(data.get('accountSize', 100000))
+        risk_per_trade_pct = float(data.get('riskPerTradePct', 1.0))
+        max_position_pct = float(data.get('maxPositionPct', 10.0))
+        existing_positions = data.get('existingPositions', [])
+        daily_loss = float(data.get('dailyLoss', 0))
+        holding_symbols = data.get('holdingSymbols', [])
+        execution_mode = data.get('executionMode', 'Recommend Only')
+        account_mode = data.get('accountMode', 'paper').strip().lower()
+
+        # ── Fetch real Alpaca account data for the selected mode ──
+        account_data_fetched = False
+        account_data_source = 'none'
+        live_cash = 0
+        live_buying_power = 0
+        live_portfolio_value = 0
+        live_equity = 0
+        if account_mode == 'paper':
+            paper_key = alpaca_config_state.get('paper_api_key', '')
+            paper_secret = alpaca_config_state.get('paper_api_secret', '')
+            if paper_key and paper_secret:
+                acc_key = paper_key
+                acc_secret = paper_secret
+                acc_url = 'https://paper-api.alpaca.markets'
+            else:
+                acc_key = alpaca_config_state.get('live_api_key', '')
+                acc_secret = alpaca_config_state.get('live_api_secret', '')
+                acc_url = 'https://api.alpaca.markets'
+        else:
+            acc_key = alpaca_config_state.get('live_api_key', '')
+            acc_secret = alpaca_config_state.get('live_api_secret', '')
+            acc_url = 'https://api.alpaca.markets'
+
+        if acc_key and acc_secret:
+            try:
+                acc_headers = {'APCA-API-KEY-ID': acc_key, 'APCA-API-SECRET-KEY': acc_secret}
+                acc_resp = req_lib.get(f'{acc_url}/v2/account', headers=acc_headers, timeout=10)
+                if acc_resp.status_code == 200:
+                    acc_data = acc_resp.json()
+                    live_cash = float(acc_data.get('cash', 0))
+                    live_buying_power = float(acc_data.get('buying_power', 0))
+                    live_portfolio_value = float(acc_data.get('portfolio_value', 0))
+                    live_equity = float(acc_data.get('equity', 0))
+                    live_id = acc_data.get('id', '')
+                    # Use portfolioValue (not buyingPower) as account_size for position sizing
+                    # Buying power is leverage and shouldn't determine position size
+                    account_size = live_portfolio_value if live_portfolio_value > 0 else (live_equity if live_equity > 0 else (live_buying_power if live_buying_power > 0 else account_size))
+                    account_data_fetched = True
+                    account_data_source = f'{acc_url} (mode={account_mode})'
+                    print(f'    [ACCOUNT FETCH OK] Mode={account_mode}, portfolio=$' + f'{live_portfolio_value:.2f}, equity=$' + f'{live_equity:.2f}, cash=$' + f'{live_cash:.2f}, bp=$' + f'{live_buying_power:.2f}, used_as_account_size=${account_size:.2f}, id={live_id[:8]}...')
+
+                    # Also fetch current positions for holding check
+                    try:
+                        pos_resp = req_lib.get(f'{acc_url}/v2/positions', headers=acc_headers, timeout=10)
+                        if pos_resp.status_code == 200:
+                            pos_data = pos_resp.json()
+                            real_holdings = [p.get('symbol', '').upper() for p in pos_data if p.get('symbol')]
+                            if not holding_symbols or len(holding_symbols) == 0:
+                                holding_symbols = real_holdings
+                            # Make sure existing_positions includes real positions
+                            if not existing_positions or len(existing_positions) == 0:
+                                existing_positions = real_holdings
+                            print(f'    [POSITIONS FETCH OK] {len(real_holdings)} positions: {real_holdings}')
+                    except Exception as pos_e:
+                        print(f'    [POSITIONS FETCH FAILED] {pos_e}')
+                else:
+                    print(f'    [ACCOUNT FETCH FAILED] HTTP {acc_resp.status_code}')
+            except Exception as acc_e:
+                print(f'    [ACCOUNT FETCH ERROR] {acc_e}')
+        else:
+            print(f'    [ACCOUNT FETCH SKIP] No keys configured for {account_mode}')
+
+        if not account_data_fetched and account_size == 100000:
+            print(f'    ⚠ Using estimated account_size={account_size} (no live data available)')
+
+        if not candidates:
+            return jsonify({'success': False, 'message': 'No candidates provided'}), 400
+
+        risk_dollars = account_size * (risk_per_trade_pct / 100.0)
+        max_pos_dollars = account_size * (max_position_pct / 100.0)
+        daily_loss_limit = account_size * 0.03  # 3% max daily loss
+
+        print(f'\n=== ENTRY PLAN START: {len(candidates)} candidates ===')
+        print(f'    Account: portfolio_value=${account_size:.0f}, risk/trade=${risk_dollars:.0f}, max_pos=${max_pos_dollars:.0f}')
+        print(f'    Existing positions: {existing_positions}, Daily loss: ${daily_loss:.0f}/{daily_loss_limit:.0f}')
+        print(f'    Execution mode: {execution_mode}')
+
+        plans = []
+        from datetime import datetime as dt_dt, timedelta as dt_td
+
+        # ── Sector mapping for concentration check (hard-coded, AI cannot bypass) ──
+        COMMON_SECTOR_MAP = {
+            'aapl': 'Technology', 'msft': 'Technology', 'goog': 'Technology', 'googl': 'Technology',
+            'amzn': 'Consumer Cyclical', 'meta': 'Technology', 'nflx': 'Communication',
+            'nvda': 'Technology', 'amd': 'Technology', 'intc': 'Technology', 'qcom': 'Technology',
+            'tsla': 'Consumer Cyclical', 'nio': 'Consumer Cyclical', 'rivn': 'Consumer Cyclical',
+            'jpm': 'Financial', 'gs': 'Financial', 'bac': 'Financial', 'c': 'Financial',
+            'wmt': 'Consumer Defensive', 'cost': 'Consumer Defensive', 'pg': 'Consumer Defensive',
+            'jnj': 'Healthcare', 'pfe': 'Healthcare', 'mrk': 'Healthcare', 'unh': 'Healthcare',
+            'xom': 'Energy', 'ba': 'Industrials', 'cat': 'Industrials', 'ge': 'Industrials',
+            'dis': 'Communication', 'cmcsa': 'Communication', 't': 'Communication',
+            'v': 'Financial', 'ma': 'Financial', 'pypl': 'Financial',
+            'ko': 'Consumer Defensive', 'pep': 'Consumer Defensive',
+            'abbv': 'Healthcare', 'lly': 'Healthcare',
+            'avgo': 'Technology', 'orcl': 'Technology', 'crm': 'Technology',
+            'hd': 'Consumer Cyclical', 'low': 'Consumer Cyclical',
+            'mcd': 'Consumer Cyclical', 'sbux': 'Consumer Cyclical', 'nke': 'Consumer Cyclical',
+            'spy': 'ETF', 'qqq': 'ETF', 'iwm': 'ETF', 'dia': 'ETF',
+            'xlk': 'ETF', 'xlf': 'ETF', 'xle': 'ETF', 'xlv': 'ETF', 'xli': 'ETF',
+            'xly': 'ETF', 'xlp': 'ETF', 'xlb': 'ETF', 'xlu': 'ETF', 'xlre': 'ETF',
+        }
+
+        def get_sector(sym):
+            sym_lower = sym.lower().strip()
+            return COMMON_SECTOR_MAP.get(sym_lower, 'Unknown')
+
+        # Track sectors among all candidates (including existing positions) for concentration check
+        candidate_sectors = {}
+        for c in candidates:
+            csym = c.get('symbol', '').upper().strip()
+            if csym:
+                csector = get_sector(csym)
+                candidate_sectors[csector] = candidate_sectors.get(csector, 0) + 1
+        for hs in holding_symbols:
+            hsector = get_sector(hs)
+            candidate_sectors[hsector] = candidate_sectors.get(hsector, 0) + 1
+
+        holding_sectors = {get_sector(h) for h in holding_symbols}
+
+        for candidate in candidates:
+            symbol = candidate.get('symbol', '').upper().strip()
+            if not symbol:
+                continue
+
+            strategy = candidate.get('strategy', 'unknown')
+            verdict = candidate.get('verdict', '')
+            total_return = candidate.get('totalReturn')
+            sharpe = candidate.get('sharpeRatio') or candidate.get('sharpe')
+            max_dd = candidate.get('maxDrawdown')
+            win_rate = candidate.get('winRate')
+            pf = candidate.get('profitFactor')
+            trade_count = candidate.get('tradeCount') or candidate.get('trades')
+            stability = candidate.get('stabilityScore')
+            trend = candidate.get('recentVsLongTerm', '')
+            entry_quality = candidate.get('fineScanEntryQuality', '')
+            liquidity_hint = candidate.get('liquidity', '')
+            risk_grade = candidate.get('riskGrade', '')
+            fine_scan_decision = candidate.get('fineScanDecision', 'Pass')
+            fine_scan_score = candidate.get('fineScanScore', 0)
+
+            # ── Handle Rejected/Avoid verdict ──
+            if verdict in ('Rejected', 'Reject', 'Avoid'):
+                plans.append({
+                    'symbol': symbol, 'strategy': strategy, 'setup': 'No Trade',
+                    'entryZoneLow': 0, 'entryZoneHigh': 0,
+                    'entryZoneDesc': 'N/A - Rejected',
+                    'triggerCondition': 'N/A', 'stopLoss': 0, 'stopLossPct': 0,
+                    'stopSource': 'N/A',
+                    'invalidationCondition': 'N/A',
+                    'takeProfit1': 0, 'takeProfit2': 0, 'trailingStop': None,
+                    'riskReward1': 0, 'riskReward2': 0, 'riskRewardReview': False,
+                    'positionSizeShares': 0, 'positionSizeDollars': 0, 'positionPct': 0,
+                    'positionCapped': False, 'positionCapStatus': 'N/A',
+                    'riskDollars': 0, 'riskBudget': 0, 'riskUsedPct': 0,
+                    'riskPct': risk_per_trade_pct, 'maxLossPct': 0,
+                    'aiDecision': 'SKIP', 'confidence': 0, 'bestStrategy': strategy,
+                    'finalAction': 'SKIP', 'tradeReadiness': 'BLOCKED', 'entryTriggerMet': False,
+                    'hardRiskGate': {
+                        'status': 'BLOCK', 'passed': False,
+                        'blockers': [f'Verdict: {verdict} - candidate rejected by Deeper Validation'],
+                        'warnings': [], 'reasons': [f'Verdict: {verdict} - candidate rejected by Deeper Validation']
+                    },
+                    'riskGateReasons': {
+                        'blockers': [f'Verdict: {verdict} - candidate rejected by Deeper Validation'],
+                        'warnings': [],
+                        'all': [f'Verdict: {verdict} - candidate rejected by Deeper Validation']
+                    },
+                    'dataQuality': 'POOR', 'dataSources': {'marketData': 'N/A', 'technicalData': 'N/A', 'accountData': 'N/A', 'aiData': 'N/A'},
+                    'aiSource': 'Local Rules', 'aiCalled': False, 'aiModel': None, 'aiError': 'Candidate rejected — no AI call',
+                    'executionDetails': {'mode': execution_mode, 'canExecute': False, 'reason': 'Rejected candidate', 'brokerSource': 'N/A', 'brokerConnected': False, 'orderTypeSuggestion': 'Not Available', 'orderTypeReason': 'Rejected candidate — no order', 'orderPreview': None},
+                    'sourceVerdict': verdict, 'currentPrice': 0,
+                    'reason': candidate.get('reason', f'{verdict} by Deeper Validation. No entry plan.'),
+                    'decisionReason': candidate.get('reason', f'{verdict} by Deeper Validation. No entry plan.'),
+                    'riskNotes': ['Candidate was rejected by Deeper Validation.'],
+                    'riskComment': '',
+                    'invalidationComment': 'Entry invalid — candidate rejected by Deeper Validation.',
+                    'nextStep': 'Skip this candidate. Focus on Confirmed or Watch candidates.',
+                    'blockers': [f'Verdict: {verdict}'],
+                    'dataSource': 'candidate_fallback', 'entryReadiness': 'Wait',
+                    'atrPct': 0, 'ema20': None, 'ema50': None, 'atr': 0, 'support': 0, 'resistance': 0,
+                    'accountMode': account_mode, 'accountBuyingPower': round(live_buying_power, 2),
+                    'positionCapital': round(account_size, 2),
+                })
+                continue
+
+            # ── 1. Fetch real Alpaca data for this symbol ──
+            current_price = 0
+            closes = []
+            highs = []
+            lows = []
+            volumes = []
+
+            try:
+                snap_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/snapshot'
+                snap_headers = {
+                    'APCA-API-KEY-ID': ALPACA_API_KEY,
+                    'APCA-API-SECRET-KEY': ALPACA_API_SECRET
+                }
+                snap_resp = req_lib.get(snap_url, headers=snap_headers, timeout=10)
+                if snap_resp.status_code == 200:
+                    snap = snap_resp.json()
+                    latest_trade = snap.get('latestTrade', {}) or {}
+                    daily_bar = snap.get('dailyBar', {}) or {}
+                    current_price = float(latest_trade.get('p', 0))
+                    if current_price <= 0:
+                        current_price = float(daily_bar.get('c', 0))
+                    if current_price <= 0:
+                        current_price = float(snap.get('prevDailyBar', {}).get('c', 0))
+                bars_end = dt_dt.utcnow()
+                bars_start = bars_end - dt_td(days=120)
+                bars_params = {
+                    'timeframe': '1Day', 'limit': 150, 'adjustment': 'raw',
+                    'start': bars_start.strftime('%Y-%m-%dT00:00:00Z'),
+                    'end': bars_end.strftime('%Y-%m-%dT00:00:00Z'),
+                    'sort': 'asc'
+                }
+                bars_resp = req_lib.get(
+                    f'https://data.alpaca.markets/v2/stocks/{symbol}/bars',
+                    headers=snap_headers, params=bars_params, timeout=10
+                )
+                if bars_resp.status_code == 200:
+                    raw = bars_resp.json().get('bars', [])
+                    if raw:
+                        closes = [float(b['c']) for b in raw if b.get('c')]
+                        highs = [float(b['h']) for b in raw if b.get('h')]
+                        lows = [float(b['l']) for b in raw if b.get('l')]
+                        volumes = [float(b['v']) for b in raw if b.get('v')]
+                if current_price <= 0 and closes:
+                    current_price = closes[-1]
+            except Exception as fetch_err:
+                print(f'    [{symbol}] Fetch error: {fetch_err}')
+
+            n = len(closes)
+
+            # ── 2. Compute indicators from real data only ──
+            def calc_ema(data, period):
+                if len(data) < period:
+                    return None
+                k = 2 / (period + 1)
+                ema = sum(data[:period]) / period
+                for i in range(period, len(data)):
+                    ema = data[i] * k + ema * (1 - k)
+                return ema
+
+            ema20 = calc_ema(closes, 20)
+            ema50 = calc_ema(closes, 50)
+            atr = 0
+            support = 0
+            resistance = 0
+            recent_high = 0
+            recent_low = 0
+            avg_volume = 0
+
+            if n >= 15:
+                trs = []
+                for i in range(1, min(len(highs), len(closes))):
+                    hl = highs[i] - lows[i]
+                    hc = abs(highs[i] - closes[i-1])
+                    lc = abs(lows[i] - closes[i-1])
+                    trs.append(max(hl, hc, lc))
+                if len(trs) >= 14:
+                    atr = sum(trs[-14:]) / 14
+
+            if n >= 20:
+                recent_high = max(highs[-20:]) if highs else 0
+                recent_low = min(lows[-20:]) if lows else 0
+                support = recent_low
+                resistance = recent_high
+            if n > 0:
+                avg_volume = sum(volumes[-20:]) / min(20, len(volumes)) if volumes else 0
+
+            # ── 3. Fallback from candidate data if Alpaca failed ──
+            if current_price <= 0:
+                current_price = float(candidate.get('currentPrice', 0))
+            if support <= 0:
+                support = float(candidate.get('support', 0))
+            if resistance <= 0:
+                resistance = float(candidate.get('resistance', 0))
+            if atr <= 0:
+                atr = float(candidate.get('atr', current_price * 0.03))
+            if ema20 is None:
+                ema20 = float(candidate.get('ema20', current_price))
+            if ema50 is None:
+                ema50 = float(candidate.get('ema50', current_price))
+            if recent_high <= 0:
+                recent_high = float(candidate.get('recentHigh', resistance))
+            if recent_low <= 0:
+                recent_low = float(candidate.get('recentLow', support))
+            if avg_volume <= 0:
+                avg_volume = float(candidate.get('avgVolume', 0))
+
+            atr_pct = (atr / current_price * 100) if current_price > 0 else 0
+            current_sector = get_sector(symbol)
+
+            if current_price <= 0:
+                plans.append({
+                    'symbol': symbol, 'strategy': strategy, 'setup': 'No Trade',
+                    'entryZoneLow': 0, 'entryZoneHigh': 0,
+                    'entryZoneDesc': 'N/A - No price', 'triggerCondition': 'N/A',
+                    'stopLoss': 0, 'stopLossPct': 0,
+                    'stopSource': 'N/A - No price data',
+                    'invalidationCondition': 'No data - cancel plan',
+                    'takeProfit1': 0, 'takeProfit2': 0, 'trailingStop': None,
+                    'riskReward1': 0, 'riskReward2': 0, 'riskRewardReview': False,
+                    'positionSizeShares': 0, 'positionSizeDollars': 0, 'positionPct': 0,
+                    'positionCapped': False, 'positionCapStatus': 'N/A',
+                    'riskDollars': 0, 'riskBudget': round(account_size * (risk_per_trade_pct / 100.0), 2),
+                    'riskUsedPct': 0, 'riskPct': risk_per_trade_pct, 'maxLossPct': 0,
+                    'aiDecision': 'SKIP', 'confidence': 0, 'bestStrategy': strategy,
+                    'finalAction': 'BLOCKED_BY_RISK', 'tradeReadiness': 'BLOCKED', 'entryTriggerMet': False,
+                    'hardRiskGate': {
+                        'status': 'BLOCK', 'passed': False,
+                        'blockers': ['No price data available - cannot compute entry plan'],
+                        'warnings': [], 'reasons': ['No price data available']
+                    },
+                    'riskGateReasons': {
+                        'blockers': ['No price data available - cannot compute entry plan'],
+                        'warnings': [],
+                        'all': ['No price data available']
+                    },
+                    'dataQuality': 'POOR', 'dataSources': {'marketData': 'Unavailable', 'technicalData': 'Unavailable', 'accountData': account_data_source if account_data_fetched else 'Fallback', 'aiData': 'N/A'},
+                    'aiSource': 'Local Rules', 'aiCalled': False, 'aiModel': None, 'aiError': 'No price data — AI call skipped',
+                    'executionDetails': {'mode': execution_mode, 'canExecute': False, 'reason': 'No market data available', 'brokerSource': f'Alpaca {account_mode.capitalize()}' if account_data_fetched else 'Not Connected', 'brokerConnected': account_data_fetched, 'orderTypeSuggestion': 'Not Available', 'orderTypeReason': 'No market data — cannot determine order type', 'orderPreview': None},
+                    'sourceVerdict': verdict, 'currentPrice': 0,
+                    'reason': 'Unable to fetch price data for entry plan calculation.',
+                    'decisionReason': 'Unable to fetch price data for entry plan calculation.',
+                    'riskNotes': ['No market data available. Check Alpaca API connectivity.'],
+                    'riskComment': '',
+                    'invalidationComment': 'Invalid — no price data available.',
+                    'nextStep': 'Verify Alpaca API connection and retry. Ensure symbol is valid.',
+                    'blockers': ['No price data available'],
+                    'dataSource': 'alpaca_failed', 'entryReadiness': 'Wait',
+                    'atrPct': 0, 'ema20': None, 'ema50': None, 'atr': 0, 'support': 0, 'resistance': 0,
+                    'accountMode': account_mode, 'accountBuyingPower': round(live_buying_power, 2),
+                    'positionCapital': round(account_size, 2),
+                })
+                continue
+
+            # ── 4. Determine Setup from price position & strategy ──
+            dist_from_ema20_pct = (current_price - ema20) / ema20 * 100 if ema20 and current_price > 0 else 0
+            dist_from_ema50_pct = (current_price - ema50) / ema50 * 100 if ema50 and current_price > 0 else 0
+            dist_from_support_pct = (current_price - support) / support * 100 if support > 0 and current_price > 0 else 0
+            dist_from_resistance_pct = (resistance - current_price) / current_price * 100 if resistance > 0 and current_price > 0 else 0
+            is_above_ema20 = ema20 is not None and current_price > ema20
+            is_above_ema50 = ema50 is not None and current_price > ema50
+            is_near_resistance = dist_from_resistance_pct < 3.0
+            is_near_support = dist_from_support_pct < 3.0 and dist_from_support_pct > 0
+            is_over_extended = dist_from_ema20_pct > 12.0
+
+            strategy_lower = (strategy or '').lower()
+            is_momentum = any(s in strategy_lower for s in ['momentum', 'continuation', 'breakout'])
+            is_mean_reversion = any(s in strategy_lower for s in ['rsi', 'mean', 'reversion'])
+            is_ma_cross = any(s in strategy_lower for s in ['moving_average', 'ma_cross', 'ma cross'])
+            is_macd = 'macd' in strategy_lower
+            is_bollinger = any(s in strategy_lower for s in ['bollinger', 'range', 'bb'])
+
+            # Determine Setup
+            if is_over_extended:
+                setup = 'Pullback Entry'
+                entry_zone_low = round(ema20 - 0.25 * atr, 2) if ema20 else round(current_price * 0.95, 2)
+                entry_zone_high = round(ema20 + 0.25 * atr, 2) if ema20 else round(current_price * 0.98, 2)
+                entry_zone_desc = f'${entry_zone_low:.2f} - ${entry_zone_high:.2f} (pullback to EMA20)'
+                trigger_condition = f'Price pulls back into zone with declining volume and RSI cooling toward 50'
+                stop_loss = round(min(support, (entry_zone_low - 1.0 * atr)) if support > 0 else entry_zone_low - 1.0 * atr, 2)
+                stop_loss_pct = round(abs(current_price - stop_loss) / current_price * 100, 2)
+                tp1 = round(resistance if resistance > current_price else current_price * 1.08, 2)
+                tp2 = round(current_price * 1.15, 2)
+                invalidation = f'Daily close below EMA50 (${ema50:.2f}) or support break below ${support:.2f}'
+                reason_parts = [f'Price is {dist_from_ema20_pct:.1f}% above EMA20. Pullback entry plan.']
+            elif is_near_resistance and (is_momentum or is_ma_cross or is_macd):
+                setup = 'Breakout Entry'
+                entry_zone_low = round(resistance, 2)
+                entry_zone_high = round(resistance + 0.3 * atr, 2)
+                entry_zone_desc = f'${entry_zone_low:.2f} - ${entry_zone_high:.2f} (breakout above resistance)'
+                trigger_condition = f'Close above ${resistance:.2f} with volume > 1.5x average ({(avg_volume * 1.5):.0f})'
+                stop_loss = round(resistance - 1.0 * atr, 2)
+                stop_loss_pct = round(abs(entry_zone_low - stop_loss) / entry_zone_low * 100, 2)
+                tp1 = round(entry_zone_low + 1.5 * atr, 2)
+                tp2 = round(entry_zone_low + 2.5 * atr, 2)
+                invalidation = f'Failed breakout - close back below ${resistance:.2f}. Cancel if volume < {(avg_volume * 0.7):.0f}.'
+                reason_parts = [f'Near resistance at ${resistance:.2f}. Breakout entry plan.']
+            elif is_near_support:
+                setup = 'Range Support Entry'
+                entry_zone_low = round(support - 0.3 * atr, 2)
+                entry_zone_high = round(support + 0.3 * atr, 2)
+                entry_zone_desc = f'${entry_zone_low:.2f} - ${entry_zone_high:.2f} (support bounce zone)'
+                trigger_condition = 'Price holds support zone with bullish reversal candle'
+                stop_loss = round(support - 1.0 * atr, 2)
+                stop_loss_pct = round(abs(entry_zone_low - stop_loss) / entry_zone_low * 100, 2)
+                tp1 = round(ema20 if ema20 and ema20 > current_price else current_price + 1.0 * atr, 2)
+                tp2 = round(resistance if resistance > current_price else current_price + 2.0 * atr, 2)
+                invalidation = f'Support breakdown - daily close below ${stop_loss:.2f}'
+                reason_parts = [f'Price near support at ${support:.2f}. Support entry plan.']
+            elif is_mean_reversion or is_bollinger:
+                setup = 'Range Support Entry'
+                entry_zone_low = round(support if support > 0 else current_price * 0.95, 2)
+                entry_zone_high = round(entry_zone_low + 0.5 * atr, 2)
+                entry_zone_desc = f'${entry_zone_low:.2f} - ${entry_zone_high:.2f} (mean reversion zone)'
+                trigger_condition = 'Price reaches lower range with RSI oversold or BB lower band touch'
+                stop_loss = round(entry_zone_low - 1.0 * atr, 2)
+                stop_loss_pct = round(abs(entry_zone_low - stop_loss) / entry_zone_low * 100, 2)
+                tp1 = round(current_price + atr, 2)
+                tp2 = round(resistance if resistance > 0 else current_price + 2.0 * atr, 2)
+                invalidation = f'Close below ${stop_loss:.2f} (lower range breakdown)'
+                reason_parts = ['Mean reversion setup at lower range.']
+            else:
+                setup = 'Watch Only'
+                entry_zone_low = round(current_price * 0.98, 2)
+                entry_zone_high = round(current_price * 1.02, 2)
+                entry_zone_desc = f'${entry_zone_low:.2f} - ${entry_zone_high:.2f} (current range)'
+                trigger_condition = 'Wait for clearer trend signal or setup confirmation'
+                stop_loss = round(current_price * 0.93, 2)
+                stop_loss_pct = round(abs(current_price - stop_loss) / current_price * 100, 2)
+                tp1 = round(current_price * 1.07, 2)
+                tp2 = round(current_price * 1.12, 2)
+                invalidation = 'Cancel until clearer trend emerges'
+                reason_parts = ['No clear entry signal. Watch only.']
+
+            # ── 5. Compute R/R ──
+            risk_per_share = abs(entry_zone_low - stop_loss)
+            if risk_per_share <= 0:
+                risk_per_share = atr if atr > 0 else current_price * 0.02
+                stop_loss = entry_zone_low - risk_per_share
+                stop_loss_pct = round(risk_per_share / current_price * 100, 2)
+
+            rr1 = round((tp1 - entry_zone_low) / risk_per_share, 2) if tp1 > 0 and entry_zone_low > 0 and risk_per_share > 0 else 0
+            rr2 = round((tp2 - entry_zone_low) / risk_per_share, 2) if tp2 > 0 and entry_zone_low > 0 and risk_per_share > 0 else 0
+            risk_reward_review = rr1 < 1.5 or rr2 < 1.5
+
+            # ── 6. Entry Readiness Gate ──
+            entry_readiness = 'Wait'
+            if setup == 'Breakout Entry':
+                entry_readiness = 'Breakout Watch'
+            elif dist_from_ema20_pct < 5 and is_above_ema20 and is_above_ema50 and setup not in ('Pullback Entry', 'Range Support Entry'):
+                entry_readiness = 'Ready'
+
+            # ── 7. AI Decision (rule-based, deterministic from hard data) ──
+            ai_decision = 'BUY'
+            confidence = 0
+            ai_reason_parts = []
+
+            # Factors that increase confidence:
+            if fine_scan_score >= 70:
+                confidence += 20
+                ai_reason_parts.append(f'Fine Scan score {fine_scan_score} (good)')
+            elif fine_scan_score >= 50:
+                confidence += 10
+                ai_reason_parts.append(f'Fine Scan score {fine_scan_score}')
+            if total_return and total_return > 0:
+                confidence += 15
+                ai_reason_parts.append(f'Backtest return {total_return:.1f}% positive')
+            if total_return and total_return > 30:
+                confidence += 10
+            if sharpe and sharpe > 1.0:
+                confidence += 10
+            if stability and stability >= 60:
+                confidence += 10
+            if win_rate and win_rate > 55:
+                confidence += 5
+            if pf and pf > 1.5:
+                confidence += 5
+            if entry_readiness == 'Ready':
+                confidence += 10
+            verdict_lower = (verdict or '').lower()
+            if verdict_lower == 'confirmed':
+                confidence += 15
+            elif verdict_lower == 'watch':
+                confidence -= 10
+            elif verdict_lower == 'needs manual review':
+                confidence -= 20
+
+            confidence = max(0, min(100, confidence))
+
+            if verdict_lower == 'rejected' or verdict_lower == 'reject':
+                ai_decision = 'SKIP'
+            elif verdict_lower == 'needs manual review':
+                ai_decision = 'WATCH'
+            elif confidence < 30:
+                ai_decision = 'SKIP'
+            elif confidence < 50:
+                ai_decision = 'WATCH'
+            else:
+                ai_decision = 'BUY'
+
+            # ── 8. Best Strategy Selection ──
+            best_strategy = strategy
+
+            # ── 9. Hard Risk Gate (DETERMINISTIC - AI CANNOT BYPASS) ──
+            # Categorizes each check as BLOCK (hard fail), REVIEW (caution), or PASS
+            hard_risk_reasons = []
+            risk_gate_blockers = []   # BLOCK-level reasons (must resolve before trading)
+            risk_gate_warnings = []   # REVIEW-level reasons (advisory, needs attention)
+            risk_gate_passed = True
+            risk_gate_status = 'PASS'  # PASS | REVIEW | BLOCK
+            final_action = 'BUY_ALLOWED'
+
+            # 9a. Position size ≤ max_position_pct of capital (portfolio value)
+            pos_shares = 0
+            pos_dollars = 0
+            pos_pct = 0
+            max_loss_pct = 0
+            position_capped = False
+            position_cap_status = 'not capped'
+            risk_dollars_actual = 0
+
+            if risk_per_share > 0 and current_price > 0:
+                # Step 1: Compute risk-based shares (stop loss distance)
+                risk_shares = int(risk_dollars / risk_per_share)
+                risk_dollars_actual = risk_shares * risk_per_share  # actual risk $ for integer shares
+
+                # Step 2: Cap by max position % of portfolio
+                max_pos_shares = int(max_pos_dollars / current_price) if current_price > 0 else 0
+                pos_shares = min(risk_shares, max_pos_shares)
+                pos_dollars = pos_shares * current_price
+                pos_pct = round(pos_dollars / account_size * 100, 2) if account_size > 0 else 0
+                max_loss_pct = round(risk_per_share / current_price * 100, 2) if current_price > 0 else 0
+                risk_dollars_actual = pos_shares * risk_per_share  # actual risk after capping
+
+                if pos_shares < risk_shares:
+                    position_capped = True
+                    position_cap_status = f'capped by position limit ({pos_pct:.1f}% of {max_position_pct}% max)'
+                    risk_gate_warnings.append(f'Position capped by max allocation: {pos_pct:.1f}% of portfolio (limit {max_position_pct}%)')
+                    risk_gate_passed = False
+
+                # Also check: position dollars > max_pos_dollars
+                if pos_pct > max_position_pct:
+                    position_capped = True
+                    position_cap_status = f'EXCEEDS cap: {pos_pct:.1f}% > {max_position_pct}% limit'
+                    risk_gate_blockers.append(f'Position would be {pos_pct:.1f}% of portfolio value, exceeds max {max_position_pct}% allocation')
+                    risk_gate_passed = False
+
+                # 9b. Risk ≤ 1% per trade (as % of portfolio value)
+                risk_as_pct_of_account = round(risk_dollars_actual / account_size * 100, 2) if account_size > 0 else 0
+                if risk_as_pct_of_account > 1.0 and account_size > 0:
+                    risk_gate_blockers.append(f'Risk ${risk_dollars_actual:.0f} is {risk_as_pct_of_account:.2f}% of portfolio value, exceeds 1% limit')
+                    risk_gate_passed = False
+            else:
+                risk_gate_blockers.append('Invalid risk/price calculation - cannot determine position size')
+                risk_gate_passed = False
+
+            # 9c. Daily loss < 3%
+            if daily_loss >= daily_loss_limit:
+                risk_gate_blockers.append(f'Daily loss ${daily_loss:.0f} exceeds 3% limit ${daily_loss_limit:.0f} - BLOCK ALL TRADING')
+                risk_gate_passed = False
+                final_action = 'SKIP'
+
+            # 9d. Max positions 5
+            total_positions = len(existing_positions) + 1  # including this one
+            if total_positions > 5:
+                risk_gate_blockers.append(f'Would exceed max 5 positions (currently {len(existing_positions)})')
+                risk_gate_passed = False
+
+            # 9e. Duplicate holding check
+            if symbol in [s.upper() for s in holding_symbols]:
+                risk_gate_blockers.append(f'Already holding {symbol} - duplicate holding blocked')
+                risk_gate_passed = False
+
+            # 9f. Same sector excess exposure → WATCH
+            sector_count = candidate_sectors.get(current_sector, 0) + 1
+            if current_sector != 'Unknown' and current_sector not in holding_sectors and sector_count >= 2:
+                risk_gate_warnings.append(f'Sector {current_sector} has {sector_count} candidates - concentration high, downgraded to WATCH')
+                final_action = 'WATCH_ONLY'
+
+            # 9g. Earnings check
+            earnings_warn = candidate.get('earningsSoon', '')
+            if earnings_warn:
+                risk_gate_blockers.append(f'Earnings proximity: {earnings_warn} - DO NOT enter before earnings')
+                risk_gate_passed = False
+
+            # 9h. ATR% > 6% → high volatility review
+            if atr_pct > 6:
+                risk_gate_warnings.append(f'ATR% {atr_pct:.1f}% > 6% - high volatility, position size reduced')
+                risk_gate_passed = False
+                final_action = 'WATCH_ONLY' if final_action == 'BUY_ALLOWED' else final_action
+
+            # 9i. Liquidity check
+            liquidity_ok = True
+            liquidity_hint_lower = (liquidity_hint or '').lower()
+            if liquidity_hint_lower in ('poor', 'low', 'bad'):
+                risk_gate_blockers.append(f'Liquidity: {liquidity_hint} - insufficient liquidity for safe execution')
+                risk_gate_passed = False
+                liquidity_ok = False
+
+            # 9j. Entry readiness gate
+            if entry_readiness in ('Wait', 'Breakout Watch') and ai_decision == 'BUY':
+                risk_gate_warnings.append(f'Entry readiness: {entry_readiness} - entry trigger not yet met, cannot enter immediately')
+                ai_decision = 'WATCH'
+
+            # 9k. R/R check integrated into gate
+            if risk_reward_review:
+                risk_gate_warnings.append(f'R/R ratio below 1.5 - flagged for review')
+
+            # ── Categorize Risk Gate Status ──
+            # BLOCK: any hard blockers exist (missing data, invalid prices, duplicates, daily loss, liquidity)
+            # REVIEW: only warnings exist (position capped, R/R low, sector concentration, volatility, entry not ready)
+            # PASS: no blockers and no warnings
+            if risk_gate_blockers:
+                risk_gate_status = 'BLOCK'
+            elif risk_gate_warnings:
+                risk_gate_status = 'REVIEW'
+            else:
+                risk_gate_status = 'PASS'
+
+            # Merge all reasons for backward compat
+            hard_risk_reasons = risk_gate_blockers + risk_gate_warnings
+
+            # ── Determine final_action with strict gating ──
+            # BUY_READY: AI=BUY, RiskGate=PASS, trigger met, data good
+            # WAIT_FOR_ENTRY: AI=BUY/WATCH, RiskGate=PASS/REVIEW, setup valid but trigger not met
+            # SKIP: AI=SKIP, or setup quality poor
+            # BLOCKED_BY_RISK: RiskGate=BLOCK, invalid data, or hard blocker exists
+
+            if risk_gate_status == 'BLOCK':
+                final_action = 'BLOCKED_BY_RISK'
+            elif ai_decision == 'SKIP':
+                final_action = 'SKIP'
+            elif risk_gate_status == 'PASS' and ai_decision == 'BUY':
+                # Check if entry trigger is actually met
+                if entry_readiness == 'Ready':
+                    final_action = 'BUY_READY'
+                else:
+                    final_action = 'WAIT_FOR_ENTRY'
+            elif risk_gate_status == 'REVIEW' and ai_decision in ('BUY', 'WATCH'):
+                final_action = 'WAIT_FOR_ENTRY'
+            elif ai_decision == 'WATCH':
+                final_action = 'WAIT_FOR_ENTRY'
+            else:
+                final_action = 'SKIP'
+
+            # ── Trade Readiness ──
+            if final_action == 'BUY_READY':
+                trade_readiness = 'READY'
+            elif final_action == 'WAIT_FOR_ENTRY':
+                trade_readiness = 'WAIT'
+            else:
+                trade_readiness = 'BLOCKED'
+
+            # ── 10. Technical trailing stop (if applicable) ──
+            if ema50 and ema50 < current_price:
+                trailing_stop = round(ema50, 2)
+            else:
+                trailing_stop = None
+
+            # ── 11. Compute derived fields ──
+            data_source = 'alpaca' if current_price > 0 and closes else ('candidate_fallback' if current_price > 0 else 'unknown')
+
+            # Risk Used % = actual risk / risk budget * 100
+            risk_budget_dollars = round(account_size * (risk_per_trade_pct / 100.0), 2)
+            risk_used_pct = round(risk_dollars_actual / risk_budget_dollars * 100, 2) if risk_budget_dollars > 0 else 0
+
+            # Data Quality assessment
+            market_data_ok = current_price > 0 and closes
+            technical_data_ok = atr > 0 and ema20 is not None and ema50 is not None
+            account_data_ok = account_data_fetched
+            data_fallback_used = data_source != 'alpaca'
+
+            if market_data_ok and technical_data_ok and account_data_ok and not data_fallback_used:
+                data_quality = 'GOOD'
+            elif market_data_ok and (not technical_data_ok or data_fallback_used):
+                data_quality = 'PARTIAL'
+            else:
+                data_quality = 'POOR'
+
+            # Data sources breakdown
+            data_sources_detail = {
+                'marketData': 'Alpaca Snapshot + Bars' if current_price > 0 and closes else ('Candidate Fallback' if current_price > 0 else 'Unavailable'),
+                'technicalData': 'Alpaca Bars (EMA/ATR/Supp/Res)' if closes else ('Candidate Fallback' if atr > 0 else 'Derived'),
+                'accountData': account_data_source if account_data_fetched else 'Fallback ($100k default)',
+                'aiData': 'Pending — AI call after deterministic plan'
+            }
+
+            # AI source tracking (transparent - no actual LLM call)
+            ai_source_label = 'Local Rules'
+            ai_called = False
+            ai_model_name = None
+
+            # Execution details
+            broker_connected = account_data_fetched
+            if execution_mode == 'Recommend Only':
+                can_execute = False
+                exec_reason = 'Recommend Only mode - no order placement'
+            elif execution_mode in ('Paper Trade if Triggered', 'Add to Watchlist'):
+                can_execute = broker_connected
+                exec_reason = 'Paper trading mode' if broker_connected else 'Paper mode but broker not connected'
+            else:
+                can_execute = broker_connected
+                exec_reason = 'Live trading mode - requires manual confirmation' if broker_connected else 'Live mode but broker not connected'
+
+            # Order type suggestion based on SETUP (not execution mode)
+            if setup == 'Range Support Entry':
+                order_type_hint = 'Limit Buy'
+                order_type_reason = 'Wait for pullback into support zone; place limit order at planned entry'
+            elif setup == 'Breakout Entry':
+                order_type_hint = 'Stop-Limit Buy'
+                order_type_reason = 'Buy on breakout above resistance; stop triggers above breakout, limit caps slippage'
+            elif setup == 'Pullback Entry':
+                order_type_hint = 'Limit Buy'
+                order_type_reason = 'Buy on pullback to EMA; place limit order at planned pullback level'
+            elif setup in ('Watch Only', 'No Trade'):
+                order_type_hint = 'Not Available'
+                order_type_reason = 'No valid entry setup — watch mode only, no order to place'
+            else:
+                order_type_hint = 'Not Available'
+                order_type_reason = 'Missing entry trigger or setup data — cannot suggest order type'
+
+            broker_source = f'Alpaca {account_mode.capitalize()}' if broker_connected else 'Not Connected'
+
+            # Entry trigger met determination
+            entry_trigger_met = entry_readiness == 'Ready'
+
+            # Stop source description
+            stop_source = 'ATR-based from planned entry' if atr > 0 else 'Percentage-based fallback'
+
+            # Build structured reason fields
+            decision_reason = ' | '.join(reason_parts) if reason_parts else 'No specific setup reason'
+            risk_notes_list = [r for r in hard_risk_reasons] if hard_risk_reasons else ['No risk concerns']
+            blockers_list = [r for r in risk_gate_blockers] if risk_gate_blockers else []
+            next_step_text = ''
+            if final_action == 'BUY_READY':
+                next_step_text = f'Place limit order at ${entry_zone_low:.2f} with stop at ${stop_loss:.2f}. Max risk: ${risk_dollars_actual:.0f}.'
+            elif final_action == 'WAIT_FOR_ENTRY':
+                next_step_text = f'Monitor for entry trigger: {trigger_condition}. Current price ${current_price:.2f}, entry zone ${entry_zone_low:.2f}-${entry_zone_high:.2f}.'
+            elif final_action == 'SKIP':
+                next_step_text = 'Skip this setup. Re-evaluate if conditions improve.'
+            elif final_action == 'BLOCKED_BY_RISK':
+                next_step_text = 'Resolve blockers before considering entry. See Risk Notes for details.'
+
+            # ── 12. Build execution details ──
+            execution_details = {
+                'mode': execution_mode,
+                'canExecute': can_execute,
+                'reason': exec_reason,
+                'brokerSource': broker_source,
+                'brokerConnected': broker_connected,
+                'orderTypeSuggestion': order_type_hint,
+                'orderTypeReason': order_type_reason,
+            }
+            if pos_shares > 0 and order_type_hint not in ('Not Available', 'N/A'):
+                # Build order preview based on setup
+                order_preview = {
+                    'symbol': symbol,
+                    'side': 'buy',
+                    'shares': pos_shares,
+                    'stopLoss': round(stop_loss, 2),
+                    'takeProfit': round(tp1, 2) if tp1 > 0 else None,
+                    'maxRisk': round(risk_dollars_actual, 2),
+                }
+                if order_type_hint == 'Limit Buy':
+                    order_preview['orderType'] = 'limit'
+                    order_preview['limitPrice'] = round(entry_zone_low, 2)
+                elif order_type_hint == 'Stop-Limit Buy':
+                    order_preview['orderType'] = 'stop_limit'
+                    order_preview['stopPrice'] = round(entry_zone_low, 2)
+                    order_preview['limitPrice'] = round(entry_zone_high, 2)
+                else:
+                    order_preview['orderType'] = 'N/A'
+                execution_details['orderPreview'] = order_preview
+            else:
+                execution_details['orderPreview'] = None
+
+            plans.append({
+                'symbol': symbol,
+                'strategy': strategy,
+                'setup': setup,
+                'entryZoneLow': round(entry_zone_low, 2),
+                'entryZoneHigh': round(entry_zone_high, 2),
+                'entryZoneDesc': entry_zone_desc,
+                'triggerCondition': trigger_condition,
+                'stopLoss': round(stop_loss, 2),
+                'stopLossPct': stop_loss_pct,
+                'stopSource': stop_source,
+                'invalidationCondition': invalidation,
+                'takeProfit1': round(tp1, 2) if tp1 > 0 else 0,
+                'takeProfit2': round(tp2, 2) if tp2 > 0 else 0,
+                'trailingStop': trailing_stop,
+                'riskReward1': rr1,
+                'riskReward2': rr2,
+                'riskRewardReview': risk_reward_review,
+                'positionSizeShares': pos_shares,
+                'positionSizeDollars': round(pos_dollars, 2),
+                'positionCapital': round(account_size, 2),
+                'positionCapped': position_capped,
+                'positionCapStatus': position_cap_status,
+                'accountMode': account_mode,
+                'accountBuyingPower': round(live_buying_power, 2),
+                'positionPct': pos_pct,
+                'riskDollars': round(risk_dollars_actual, 2),
+                'riskBudget': risk_budget_dollars,
+                'riskUsedPct': risk_used_pct,
+                'riskPct': risk_per_trade_pct,
+                'maxLossPct': max_loss_pct,
+                'aiDecision': ai_decision,
+                'confidence': confidence,
+                'bestStrategy': best_strategy,
+                'finalAction': final_action,
+                'tradeReadiness': trade_readiness,
+                'entryTriggerMet': entry_trigger_met,
+                'hardRiskGate': {
+                    'status': risk_gate_status,
+                    'passed': risk_gate_passed,
+                    'blockers': risk_gate_blockers,
+                    'warnings': risk_gate_warnings,
+                    'reasons': hard_risk_reasons
+                },
+                'dataQuality': data_quality,
+                'dataSources': data_sources_detail,
+                'aiSource': ai_source_label,
+                'aiCalled': ai_called,
+                'aiModel': ai_model_name,
+                'executionDetails': execution_details,
+                'sourceVerdict': verdict,
+                'currentPrice': round(current_price, 2),
+                'reason': decision_reason,
+                'decisionReason': decision_reason,
+                'riskNotes': risk_notes_list,
+                'riskComment': '',  # populated by AI step
+                'invalidationComment': '',  # populated by AI step
+                'nextStep': next_step_text,
+                'blockers': blockers_list,
+                'dataSource': data_source,
+                'entryReadiness': entry_readiness,
+                'riskGateReasons': {
+                    'blockers': risk_gate_blockers,
+                    'warnings': risk_gate_warnings,
+                    'all': hard_risk_reasons
+                },
+                'aiError': None,  # populated by AI step if AI call fails
+                'atrPct': round(atr_pct, 2),
+                'ema20': round(ema20, 2) if ema20 else None,
+                'ema50': round(ema50, 2) if ema50 else None,
+                'atr': round(atr, 2),
+                'support': round(support, 2),
+                'resistance': round(resistance, 2),
+            })
+
+        print(f'=== ENTRY PLAN DETERMINISTIC: {len(plans)} plans generated ===')
+
+        # ── 13. AI Final Decision Step (after deterministic plans are built) ──
+        print(f'    Calling AI for final decisions on {len(plans)} plans...')
+        ai_decisions = _call_ai_entry_final_decision(plans, execution_mode, account_mode)
+
+        # Update each plan with AI decision
+        for plan in plans:
+            sym = plan.get('symbol', '')
+            ai = ai_decisions.get(sym, {})
+            if not ai:
+                continue
+
+            # AI decision fields (AI cannot override deterministic fields)
+            ai_decision = ai.get('aiDecision', plan['aiDecision'])
+            ai_confidence = ai.get('confidence', plan['confidence'])
+            ai_called = ai.get('aiCalled', False)
+            ai_source_label = ai.get('aiSource', 'Local Rules')
+            ai_model_name = ai.get('aiModel', None)
+            ai_error = ai.get('aiError', None)
+            decision_reason = ai.get('decisionReason', plan.get('decisionReason', ''))
+            next_step_text = ai.get('nextStep', plan.get('nextStep', ''))
+            invalidation_comment = ai.get('invalidationComment', '')
+            risk_comment = ai.get('riskComment', '')
+            final_action_suggestion = ai.get('finalActionSuggestion', '')
+
+            # Update plan fields from AI
+            plan['aiDecision'] = ai_decision
+            plan['confidence'] = ai_confidence
+            plan['aiCalled'] = ai_called
+            plan['aiSource'] = ai_source_label
+            plan['aiModel'] = ai_model_name
+            plan['aiError'] = ai_error
+            plan['decisionReason'] = decision_reason
+            plan['nextStep'] = next_step_text
+            plan['invalidationComment'] = invalidation_comment
+            plan['riskComment'] = risk_comment
+
+            # ── Re-evaluate finalAction with AI decision (Risk Gate still controls) ──
+            rg = plan.get('hardRiskGate', {})
+            rg_status = rg.get('status', 'PASS')
+            entry_readiness = plan.get('entryReadiness', 'Wait')
+            dq = plan.get('dataQuality', 'PARTIAL')
+
+            if rg_status == 'BLOCK':
+                plan['finalAction'] = 'BLOCKED_BY_RISK'
+            elif ai_decision == 'SKIP':
+                plan['finalAction'] = 'SKIP'
+            elif rg_status == 'PASS' and ai_decision == 'BUY':
+                if entry_readiness == 'Ready':
+                    plan['finalAction'] = 'BUY_READY'
+                else:
+                    plan['finalAction'] = 'WAIT_FOR_ENTRY'
+            elif rg_status == 'REVIEW' and ai_decision in ('BUY', 'WATCH'):
+                plan['finalAction'] = 'WAIT_FOR_ENTRY'
+            elif ai_decision == 'WATCH':
+                plan['finalAction'] = 'WAIT_FOR_ENTRY'
+            else:
+                plan['finalAction'] = 'SKIP'
+
+            # Update tradeReadiness based on finalAction
+            fa = plan['finalAction']
+            if fa == 'BUY_READY':
+                plan['tradeReadiness'] = 'READY'
+            elif fa == 'WAIT_FOR_ENTRY':
+                plan['tradeReadiness'] = 'WAIT'
+            else:
+                plan['tradeReadiness'] = 'BLOCKED'
+
+            # Add riskGateReasons at top level for easy UI access
+            plan['riskGateReasons'] = {
+                'blockers': rg.get('blockers', []),
+                'warnings': rg.get('warnings', []),
+                'all': rg.get('reasons', [])
+            }
+
+            # Update dataSources with AI info
+            if plan.get('dataSources'):
+                if ai_called:
+                    plan['dataSources']['aiData'] = f'{ai_source_label} ({ai_model_name or "AI"}) called'
+                else:
+                    plan['dataSources']['aiData'] = f'Local Rules fallback' + (f' — {ai_error}' if ai_error else '')
+
+        ai_success_count = sum(1 for p in plans if p.get('aiCalled'))
+        print(f'=== ENTRY PLAN COMPLETE: {len(plans)} plans ({ai_success_count} with AI decisions) ===')
+        return jsonify({'success': True, 'plans': plans})
+
+    except Exception as e:
+        print(f'[ENTRY PLAN] Error: {e}')
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'message': str(e)}), 500

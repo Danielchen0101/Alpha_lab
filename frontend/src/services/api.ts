@@ -132,6 +132,75 @@ export const deeperValidationAPI = {
   },
 };
 
+// Entry Plan API (deterministic entry/stop/target calculator)
+export const entryPlanAPI = {
+  generate: (candidates: any[], accountSize = 100000, riskPerTradePct = 1, maxPositionPct = 10,
+             existingPositions: any[] = [], dailyLoss = 0, holdingSymbols: string[] = [],
+             executionMode = 'Recommend Only', accountMode = 'paper') => {
+    return api.post('/ai/entry-plan', {
+      candidates, accountSize, riskPerTradePct, maxPositionPct,
+      existingPositions, dailyLoss, holdingSymbols, executionMode, accountMode
+    });
+  },
+  execute: (data: {
+    symbol: string;
+    planSnapshot: any;
+    executionMode: string;
+    liveConfirm?: boolean;
+    confirmText?: string;
+  }) => {
+    return api.post('/entry-plan/execute', data);
+  },
+};
+
+// AI Agent Watchlist API
+export const aiAgentWatchlistAPI = {
+  list: () => api.get('/ai-agent/watchlist'),
+  add: (item: any) => api.post('/ai-agent/watchlist', item),
+  remove: (id: string) => api.delete(`/ai-agent/watchlist/${id}`),
+  updateStatus: (id: string, data: { status?: string; nextStep?: string }) =>
+    api.patch(`/ai-agent/watchlist/${id}`, data),
+};
+
+// Fine Scan AI Decision (per-symbol Continue/Watch/Skip + Grade with source tracking)
+export const fineScanDecisionAPI = {
+  decide: (data: FineScanDecisionRequest) => {
+    return api.post('/ai/fine-scan-decision', data);
+  },
+};
+
+export interface FineScanDecisionRequest {
+  symbol: string;
+  trendLabel: string;
+  trendScore: number;
+  matchedStrategies: string[];
+  matchConfidence: number;
+  backtestStatus: string;
+  backtestPerformance: string;
+  backtestTotalReturn?: number;
+  entryQuality: { grade?: string; score?: number; zone?: string; };
+  liquidityGrade: string;
+  newsGrade: string;
+  riskGrade: string;
+  riskScore: number;
+  entryScore: number;
+}
+
+export interface FineScanDecisionResponse {
+  success: boolean;
+  symbol: string;
+  decision: 'CONTINUE' | 'WATCH' | 'SKIP';
+  grade: 'HIGH' | 'MEDIUM' | 'LOW';
+  confidence: number;
+  reason: string;
+  source: 'ai' | 'local-rule';
+  decisionDetail: {
+    strengths: string[];
+    warnings: string[];
+    blockers: string[];
+  };
+}
+
 // Fine Scan AI Explanation Layer (generates narrative text only, no metrics)
 export const fineScanExplainAPI = {
   explain: (data: FineScanExplainRequest) => {
@@ -185,6 +254,31 @@ export interface FineScanExplainResponse {
   keySignalExplanation: string;
   finalReason: string;
   nextStep: string;
+}
+
+// Trading Account Mode API (paper / real)
+export const tradingAccountAPI = {
+  getAccount: (mode: 'paper' | 'real') => {
+    return api.get<TradingAccountResponse>(`/trading/account?mode=${mode}`);
+  },
+};
+
+export interface TradingAccountResponse {
+  success: boolean;
+  mode: 'paper' | 'real';
+  available: boolean;
+  error?: string;
+  status?: string;
+  cash?: number;
+  equity?: number;
+  buyingPower?: number;
+  portfolioValue?: number;
+  longMarketValue?: number;
+  shortMarketValue?: number;
+  patternDayTrader?: boolean;
+  tradingBlocked?: boolean;
+  currency?: string;
+  id?: string;
 }
 
 export { scannerApi };
