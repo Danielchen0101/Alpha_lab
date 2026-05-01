@@ -3,10 +3,8 @@
  */
 
 import axios from 'axios';
+import { supabase } from '../lib/supabaseClient';
 
-// 使用相对路径，依赖React代理
-// 开发环境：/api/* → http://127.0.0.1:8889/api/* (通过package.json proxy)
-// 生产环境：通过环境变量REACT_APP_API_BASE_URL配置
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '/api';
 
 const api = axios.create({
@@ -17,13 +15,12 @@ const api = axios.create({
   },
 });
 
-// 添加请求拦截器用于 JWT 认证
+// Attach Supabase access token to all requests
 api.interceptors.request.use(
-  (config) => {
-    // 从 localStorage 获取 token
-    const token = localStorage.getItem('access_token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
+  async (config) => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      config.headers.Authorization = `Bearer ${session.access_token}`;
     }
     return config;
   },
@@ -50,9 +47,9 @@ api.interceptors.response.use(
       
       // 处理认证错误
       if (error.response.status === 401) {
-        localStorage.removeItem('access_token');
-        localStorage.removeItem('user');
-        window.location.href = '/login';
+        supabase.auth.signOut().then(() => {
+          window.location.href = '/signin';
+        });
       }
     }
     return Promise.reject(error);
@@ -126,31 +123,20 @@ export const alpacaApi = {
   getTradingHealth: () => api.get('/trading/health'),
 };
 
-// ========== 认证辅助函数 ==========
+// ========== 认证辅助函数 (Supabase) ==========
 
-// 保存认证信息
-export const saveAuthData = (token: string, user: any) => {
-  localStorage.setItem('access_token', token);
-  localStorage.setItem('user', JSON.stringify(user));
-  api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+export const getCurrentUser = async () => {
+  const { data: { session } } = await supabase.auth.getSession();
+  return session?.user ?? null;
 };
 
-// 获取当前用户
-export const getCurrentUser = () => {
-  const userStr = localStorage.getItem('user');
-  return userStr ? JSON.parse(userStr) : null;
+export const isAuthenticated = async () => {
+  const { data: { session } } = await supabase.auth.getSession();
+  return !!session;
 };
 
-// 检查是否已登录
-export const isAuthenticated = () => {
-  return !!localStorage.getItem('access_token');
-};
-
-// 登出
-export const logout = () => {
-  localStorage.removeItem('access_token');
-  localStorage.removeItem('user');
-  delete api.defaults.headers.common['Authorization'];
+export const logout = async () => {
+  await supabase.auth.signOut();
 };
 
 // ========== 交易辅助函数 ==========

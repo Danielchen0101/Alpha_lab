@@ -17,8 +17,8 @@ interface AuthState {
 
 const initialState: AuthState = {
   user: null,
-  token: localStorage.getItem('token'),
-  isAuthenticated: !!localStorage.getItem('token'),
+  token: null,
+  isAuthenticated: false,
   loading: false,
   error: null,
 };
@@ -27,14 +27,12 @@ export const login = createAsyncThunk(
   'auth/login',
   async (credentials: { username: string; password: string }) => {
     const response = await authAPI.login(credentials);
-    // 修复类型错误：response 已经是解析后的数据
-    localStorage.setItem('token', (response as any).token);
     return response;
   }
 );
 
 export const logout = createAsyncThunk('auth/logout', async () => {
-  localStorage.removeItem('token');
+  // No-op: real auth handled by Supabase AuthContext
 });
 
 const authSlice = createSlice({

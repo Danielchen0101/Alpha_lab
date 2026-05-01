@@ -111,7 +111,7 @@ const DrawdownChart: React.FC<DrawdownChartProps> = ({ data, equityData, height 
               color: point.drawdown < 0 ? '#cf1322' : '#3f8600',
               fontSize: '13px'
             }}>
-              {point.drawdown.toFixed(2)}%
+              {Number(point.drawdown).toFixed(2)}%
             </span>
           </p>
           
@@ -156,7 +156,7 @@ const DrawdownChart: React.FC<DrawdownChartProps> = ({ data, equityData, height 
           />
           <YAxis 
             tick={{ fontSize: 12 }}  // 增大字体
-            tickFormatter={(value) => `${value.toFixed(1)}%`}
+            tickFormatter={(value) => `${Number(value).toFixed(1)}%`}
             domain={[maxDrawdown - 1, 0]} // 固定顶部为0%，底部留1%空间
             tickMargin={10}
             allowDataOverflow={false}
@@ -277,7 +277,7 @@ const DrawdownChart: React.FC<DrawdownChartProps> = ({ data, equityData, height 
               boxShadow: '0 0 2px rgba(0,0,0,0.3)'
             }}></span>
             Max Drawdown: <span style={{ marginLeft: '4px', fontWeight: '700' }}>
-              {maxDrawdown.toFixed(2)}%
+              {Number(maxDrawdown).toFixed(2)}%
             </span>
             {maxDrawdownPoint.date && (
               <span style={{ marginLeft: '8px', color: '#999', fontWeight: '500', fontSize: '12px' }}>

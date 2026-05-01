@@ -1,17 +1,11 @@
 import axios from 'axios';
+import { supabase } from '../lib/supabaseClient';
 
-// 使用相对路径，依赖React代理
-// 开发环境：/api/* → http://127.0.0.1:8889/api/* (通过package.json proxy)
-// 生产环境：通过环境变量REACT_APP_API_BASE_URL配置
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '/api';
-
-// 调试：输出环境变量
-console.log('[api.ts调试] API_BASE_URL:', API_BASE_URL);
-console.log('[api.ts调试] REACT_APP_API_BASE_URL:', process.env.REACT_APP_API_BASE_URL);
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 30000, // 增加到30秒，避免Backtest超时
+  timeout: 30000,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -20,48 +14,39 @@ const api = axios.create({
 // 为scanner AI分析创建专用实例，没有timeout限制
 const scannerApi = axios.create({
   baseURL: API_BASE_URL,
-  // 不设置timeout，让scanner可以等待AI分析完成
   headers: {
     'Content-Type': 'application/json',
   },
 });
 
-// 添加请求拦截器用于调试（仅记录优化请求）
-api.interceptors.request.use(
-  (config) => {
-    if (config.url && config.url.includes('/backtest/optimize')) {
-      console.log('=== OPTIMIZATION REQUEST ===');
-      console.log('URL:', config.url);
-      console.log('Method:', config.method);
-      console.log('Data:', config.data);
-    }
-    return config;
-  },
-  (error) => {
-    console.error('Request error:', error);
-    return Promise.reject(error);
+// Attach Supabase access token to all requests
+const attachSupabaseToken = async (config: any) => {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (session?.access_token) {
+    config.headers.Authorization = `Bearer ${session.access_token}`;
   }
-);
+  return config;
+};
 
-// 添加响应拦截器用于调试（仅记录优化响应）
-api.interceptors.response.use(
-  (response) => {
-    if (response.config.url && response.config.url.includes('/backtest/optimize')) {
-      console.log('=== OPTIMIZATION RESPONSE ===');
-      console.log('Status:', response.status);
-      console.log('Success:', response.data?.success);
-    }
-    return response;
-  },
-  (error) => {
-    console.error('Response error:', error.message);
-    if (error.response) {
-      console.error('Status:', error.response.status);
-      console.error('Data:', error.response.data);
-    }
-    return Promise.reject(error);
+scannerApi.interceptors.request.use(attachSupabaseToken);
+
+// Attach Supabase token to all requests
+api.interceptors.request.use(attachSupabaseToken);
+
+// Global 401 interceptor: clear session and redirect to signin
+const handle401 = async (error: any) => {
+  if (error.response?.status === 401) {
+    try {
+      const { supabase } = await import('../lib/supabaseClient');
+      await supabase.auth.signOut();
+    } catch {}
+    window.location.href = '/signin';
   }
-);
+  return Promise.reject(error);
+};
+
+api.interceptors.response.use((response) => response, handle401);
+scannerApi.interceptors.response.use((response) => response, handle401);
 
 // Auth API
 export const authAPI = {
@@ -94,8 +79,6 @@ export const backtraderAPI = {
   getBacktestResults: (id: string) => api.get(`/backtest/results/${id}`),
   getBacktestHistory: () => api.get('/backtest/history'),
   runParameterOptimization: (config: any) => {
-    console.log('=== API CALL: runParameterOptimization ===');
-    console.log('Request config:', JSON.stringify(config, null, 2));
     return api.post('/backtest/optimize', config);
   },
 };

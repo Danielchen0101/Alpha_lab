@@ -67,6 +67,7 @@ def safe_print_news(news_data, prefix=''):
 
 
 from flask_cors import CORS
+import jwt as pyjwt
 
 import time
 
@@ -85,6 +86,42 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
 import dateutil.parser
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+# ===== Supabase & Fernet =====
+SUPABASE_URL = os.getenv('SUPABASE_URL', '')
+SUPABASE_SERVICE_ROLE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY', '')
+
+supabase_admin = None
+fernet = None
+
+try:
+    from supabase import create_client as create_supabase_client
+    supabase_admin = create_supabase_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    print(f"[Supabase] Service role client initialized (URL: {SUPABASE_URL[:40]}...)")
+except ImportError:
+    print("[Supabase] supabase package not installed — per-user config disabled")
+except Exception as e:
+    print(f"[Supabase] Init failed: {type(e).__name__}: {e}")
+
+try:
+    from cryptography.fernet import Fernet
+    _fernet_key = os.getenv('FERNET_KEY', '')
+    if not _fernet_key:
+        _fernet_key = Fernet.generate_key().decode()
+        print("[Fernet] Generated ephemeral key (encrypted values won't survive restart)")
+    else:
+        print("[Fernet] Loaded key from env")
+    fernet = Fernet(_fernet_key.encode() if isinstance(_fernet_key, str) else _fernet_key)
+except ImportError:
+    print("[Fernet] cryptography package not installed — encryption disabled")
+except Exception as e:
+    print(f"[Fernet] Init failed: {e}")
 
 # 导入技术指标模块
 try:
@@ -136,6 +173,165 @@ CORS(
     supports_credentials=True
 )
 
+# ==================== Auth ====================
+
+APP_SECRET_KEY = os.getenv('APP_SECRET_KEY', 'dev-secret-change-me')
+ADMIN_EMAIL = os.getenv('ALPHALAB_ADMIN_EMAIL', 'admin@example.com')
+ADMIN_PASSWORD = os.getenv('ALPHALAB_ADMIN_PASSWORD', '')
+
+# Dev fallback admin — always available for local/demo use
+DEV_ADMIN_EMAIL = '1'
+DEV_ADMIN_PASSWORD = '1'
+
+@app.route('/api/auth/login', methods=['POST'])
+def auth_login():
+    data = request.get_json() or {}
+    email = data.get('email', '')
+    password = data.get('password', '')
+
+    # 1) Dev fallback admin (works regardless of env config)
+    if email == DEV_ADMIN_EMAIL and password == DEV_ADMIN_PASSWORD:
+        token = pyjwt.encode({'email': email, 'role': 'admin', 'exp': datetime.utcnow() + timedelta(days=7)}, APP_SECRET_KEY, algorithm='HS256')
+        return jsonify({'success': True, 'token': token, 'user': {'email': email, 'role': 'admin'}})
+
+    # 2) Env-configured admin
+    if ADMIN_PASSWORD and email == ADMIN_EMAIL and password == ADMIN_PASSWORD:
+        token = pyjwt.encode({'email': email, 'exp': datetime.utcnow() + timedelta(days=7)}, APP_SECRET_KEY, algorithm='HS256')
+        return jsonify({'success': True, 'token': token, 'user': {'email': email}})
+
+    return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
+
+@app.route('/api/auth/me', methods=['GET'])
+def auth_me():
+    auth_header = request.headers.get('Authorization', '')
+    token = auth_header.replace('Bearer ', '') if auth_header.startswith('Bearer ') else ''
+    if not token:
+        return jsonify({'success': False, 'message': 'No token provided'}), 401
+    try:
+        data = pyjwt.decode(token, APP_SECRET_KEY, algorithms=['HS256'])
+        return jsonify({'success': True, 'user': {'email': data['email']}})
+    except pyjwt.ExpiredSignatureError:
+        return jsonify({'success': False, 'message': 'Token expired'}), 401
+    except pyjwt.InvalidTokenError:
+        return jsonify({'success': False, 'message': 'Invalid token'}), 401
+
+@app.route('/api/auth/logout', methods=['POST'])
+def auth_logout():
+    return jsonify({'success': True})
+
+
+# ==================== Supabase Helpers ====================
+
+def get_supabase_user():
+    """Verify Supabase access token from Authorization header. Returns user dict or None."""
+    if not supabase_admin:
+        safe_print('[Auth] supabase_admin is None — cannot verify token')
+        return None
+    auth_header = request.headers.get('Authorization', '')
+    has_token = auth_header.startswith('Bearer ') if auth_header else False
+    safe_print(f'[Auth] Authorization header present: {bool(auth_header)}, has Bearer: {has_token}')
+    token = auth_header.replace('Bearer ', '') if auth_header.startswith('Bearer ') else ''
+    if not token:
+        safe_print('[Auth] No token found in header')
+        return None
+    try:
+        resp = supabase_admin.auth.get_user(token)
+        safe_print(f'[Auth] get_user response: {resp is not None}, has user: {resp.user is not None if resp else False}')
+        if resp and resp.user:
+            return {'id': resp.user.id, 'email': resp.user.email}
+    except Exception as e:
+        safe_print(f'[Auth] Supabase token verification failed: {type(e).__name__}: {e}')
+    return None
+
+
+def encrypt_value(value):
+    """Fernet-encrypt a string value. Returns 'enc:<ciphertext>' or None."""
+    if not fernet or not value:
+        return value
+    try:
+        return 'enc:' + fernet.encrypt(value.encode()).decode()
+    except Exception as e:
+        safe_print(f'[Fernet] Encrypt failed: {e}')
+        return value
+
+
+def decrypt_value(value):
+    """Decrypt a Fernet-encrypted value (prefixed with 'enc:'). Returns plaintext or original value."""
+    if not fernet or not isinstance(value, str) or not value.startswith('enc:'):
+        return value
+    try:
+        return fernet.decrypt(value[4:].encode()).decode()
+    except Exception as e:
+        safe_print(f'[Fernet] Decrypt failed: {e}')
+        return value
+
+
+SENSITIVE_FIELDS = {
+    'ai_provider': ['apiKey'],
+    'alpaca': [
+        'paper_api_key', 'paper_api_secret', 
+        'live_api_key', 'live_api_secret',
+        'market_data_api_key', 'market_data_api_secret'
+    ],
+    'alpaca_market_data': ['api_key', 'api_secret'],
+    'finnhub': ['api_key'],
+}
+
+
+def get_user_config(user_id, config_type):
+    """Fetch and decrypt user config from Supabase. Returns dict or None."""
+    if not supabase_admin:
+        return None
+    try:
+        resp = supabase_admin.table('user_api_configs').select('config').eq('user_id', user_id).eq('config_type', config_type).execute()
+        if resp.data:
+            config = dict(resp.data[0]['config'])
+            for field in SENSITIVE_FIELDS.get(config_type, []):
+                if field in config:
+                    config[field] = decrypt_value(config[field])
+            return config
+    except Exception as e:
+        safe_print(f'[Supabase] get_user_config failed: {e}')
+    return None
+
+
+def save_user_config(user_id, config_type, config_data):
+    """Encrypt sensitive fields and upsert config to Supabase.
+    Returns (True, None) on success, (False, error_message) on failure."""
+    if not supabase_admin:
+        return False, 'Supabase client not initialized'
+    try:
+        config_to_save = dict(config_data)
+        for field in SENSITIVE_FIELDS.get(config_type, []):
+            if field in config_to_save and config_to_save[field]:
+                config_to_save[field] = encrypt_value(config_to_save[field])
+        row = {
+            'user_id': user_id,
+            'config_type': config_type,
+            'config': config_to_save,
+            'updated_at': datetime.utcnow().isoformat() + 'Z',
+        }
+        # Try upsert with on_conflict first, fall back to delete+insert
+        try:
+            supabase_admin.table('user_api_configs').upsert(row, on_conflict='user_id,config_type').execute()
+        except Exception as upsert_err:
+            safe_print(f'[Supabase] upsert with on_conflict failed, trying delete+insert: {upsert_err}')
+            supabase_admin.table('user_api_configs').delete().eq('user_id', user_id).eq('config_type', config_type).execute()
+            supabase_admin.table('user_api_configs').insert(row).execute()
+        return True, None
+    except Exception as e:
+        safe_print(f'[Supabase] save_user_config failed: {e}')
+        return False, str(e)[:200]
+
+
+def mask_key(key):
+    """Mask a sensitive key for display."""
+    if not key:
+        return ''
+    if len(key) <= 8:
+        return '****'
+    return key[:4] + '****' + key[-4:]
+
 
 
 # ==================== 配置导入 ====================
@@ -172,13 +368,8 @@ try:
 
     )
 
-    print(f"[配置加载] Finnhub API Key: {FINNHUB_API_KEY[:10]}...")
-
-    print(f"[配置加载] Alpaca API Key: {ALPACA_API_KEY[:10]}...")
-
-    print(f"[配置加载] Alpaca API Key 完整预览: {ALPACA_API_KEY[:6]}...{ALPACA_API_KEY[-4:] if len(ALPACA_API_KEY) > 10 else ALPACA_API_KEY}")
-
-    print(f"[配置加载] Alpaca API Secret 长度: {len(ALPACA_API_SECRET) if ALPACA_API_SECRET else 0}")
+    print(f"[配置加载] Finnhub hasKey={bool(FINNHUB_API_KEY)}")
+    print(f"[配置加载] Alpaca hasKey={bool(ALPACA_API_KEY)} hasSecret={bool(ALPACA_API_SECRET)}")
 
     print(f"[配置加载] 默认股票列表: {DEFAULT_SYMBOLS}")
 
@@ -285,13 +476,15 @@ class _NvidiaRateLimiter:
 
 _nvidia_limiter = _NvidiaRateLimiter()
 
-def _is_nvidia_provider():
-    p = ai_provider_config_state.get('provider', '').upper()
+def _is_nvidia_provider(provider=None):
+    """Check if the given provider (or global fallback) is NVIDIA NIM."""
+    p = (provider or ai_provider_config_state.get('provider', '')).upper()
     return 'NVIDIA' in p
 
-def ai_chat_request(url, headers=None, json_data=None, timeout=30):
-    """Post to /chat/completions. Applies NVIDIA rate limiting when provider is NVIDIA NIM."""
-    if _is_nvidia_provider():
+def ai_chat_request(url, headers=None, json_data=None, timeout=30, provider=None):
+    """Post to /chat/completions. Applies NVIDIA rate limiting ONLY when provider is NVIDIA NIM.
+    `provider` should be passed from the caller's resolved config to avoid global-state mismatch."""
+    if _is_nvidia_provider(provider):
         _nvidia_limiter.wait_if_needed()
         for attempt in range(3):
             resp = requests.post(url, headers=headers, json=json_data, timeout=timeout)
@@ -319,7 +512,12 @@ ai_provider_config_state = {
 
     'baseURL': 'https://api.deepseek.com',
 
-    'model': 'deepseek-chat'
+    'model': 'deepseek-chat',
+
+    # AI test status tracking
+    'aiTestStatus': 'not_tested',  # not_tested | saved | connected | error
+    'lastTestedAt': None,
+    'lastTestError': None,
 
 }
 
@@ -347,6 +545,15 @@ def save_ai_config_to_file():
         print(f'[AI配置] 保存配置到文件失败: {e}')
         return False
 
+
+def get_ai_test_status():
+    """Return current AI test status dict for API responses."""
+    return {
+        'testStatus': ai_provider_config_state.get('aiTestStatus', 'not_tested'),
+        'lastTestedAt': ai_provider_config_state.get('lastTestedAt'),
+        'lastTestError': ai_provider_config_state.get('lastTestError'),
+    }
+
 def load_ai_config_from_file():
     """从文件加载AI配置"""
     try:
@@ -355,9 +562,17 @@ def load_ai_config_from_file():
                 saved_config = json.load(f)
 
             # 更新内存配置
-            for key in ['provider', 'apiKey', 'baseURL', 'baseUrl', 'model']:
+            for key in ['provider', 'apiKey', 'baseURL', 'baseUrl', 'model',
+                         'aiTestStatus', 'lastTestedAt', 'lastTestError']:
                 if key in saved_config:
                     ai_provider_config_state[key] = saved_config[key]
+
+            # Auto-downgrade inconsistent state: connected with empty key
+            if ai_provider_config_state.get('aiTestStatus') == 'connected' and \
+               not ai_provider_config_state.get('apiKey', '').strip():
+                print('[AI配置] 检测到 aiTestStatus=connected 但 apiKey 为空，自动降级为 not_tested')
+                ai_provider_config_state['aiTestStatus'] = 'not_tested'
+                ai_provider_config_state['lastTestError'] = 'Auto-downgraded: key was empty'
 
             print(f'[AI配置] 从文件加载配置成功: {AI_CONFIG_FILE}')
             return True
@@ -403,9 +618,7 @@ secret_len = len(alpaca_config_state['live_api_secret']) if alpaca_config_state[
 
 print(f"[Alpaca配置] 环境: {alpaca_config_state['environment']}")
 
-print(f"[Alpaca配置] Live API Key (掩码): {key_preview}")
-
-print(f"[Alpaca配置] Live API Secret 长度: {secret_len} 字符")
+print(f"[Alpaca配置] Live hasKey={bool(alpaca_config_state['live_api_key'])} hasSecret={bool(alpaca_config_state['live_api_secret'])}")
 
 
 
@@ -517,28 +730,11 @@ def fetch_alpaca_stock_data(symbol):
 
     try:
 
-        # 获取Alpaca配置
-
-        environment = alpaca_config_state.get('environment', 'paper')
-
-
-
-        if environment == 'paper':
-
-            api_key = alpaca_config_state.get('paper_api_key')
-
-            api_secret = alpaca_config_state.get('paper_api_secret')
-
-            base_url = 'https://paper-api.alpaca.markets'
-
-        else:
-
-            api_key = alpaca_config_state.get('live_api_key')
-
-            api_secret = alpaca_config_state.get('live_api_secret')
-
-            base_url = 'https://api.alpaca.markets'
-
+        # 获取Alpaca配置 (market_data: data.alpaca.markets)
+        _resolved_alpaca, _alpaca_src = resolve_alpaca_config('market_data', require_user_config=True)
+        api_key = _resolved_alpaca.get('api_key', '')
+        api_secret = _resolved_alpaca.get('api_secret', '')
+        base_url = 'https://data.alpaca.markets'
 
 
         # 检查API密钥
@@ -1045,13 +1241,15 @@ def fetch_alpaca_stock_data(symbol):
 
 
 
-def fetch_alpaca_stock_data_snapshot(symbols):
+def fetch_alpaca_stock_data_snapshot(symbols, config=None):
 
     """
 
     使用Alpaca snapshots endpoint一次性获取多个股票数据
 
     返回: {symbol: data_dict, ...}, 错误信息字典
+
+    config: optional dict from resolve_alpaca_config('market_data') — uses per-user Supabase config if provided
 
     """
 
@@ -1061,29 +1259,25 @@ def fetch_alpaca_stock_data_snapshot(symbols):
 
 
 
-    print(f'[Alpaca数据] 使用snapshots endpoint获取股票数据: {symbols}')
+    # 获取Alpaca market data配置 — always use market_data mode (data.alpaca.markets)
 
+    if config:
 
+        api_key = config.get('api_key', '')
 
-    # 获取Alpaca配置
+        api_secret = config.get('api_secret', '')
 
-    environment = alpaca_config_state.get('environment', 'paper')
-
-
-
-    # 统一使用 alpaca_config_state 中的凭据（已从 config.py 导入）
-
-    if environment == 'paper':
-
-        api_key = alpaca_config_state.get('paper_api_key')
-
-        api_secret = alpaca_config_state.get('paper_api_secret')
+        config_source = 'passed_config'
 
     else:
 
-        api_key = alpaca_config_state.get('live_api_key')
+        cfg, cfg_src = resolve_alpaca_config('market_data', require_user_config=True)
 
-        api_secret = alpaca_config_state.get('live_api_secret')
+        api_key = cfg.get('api_key', '')
+
+        api_secret = cfg.get('api_secret', '')
+
+        config_source = cfg_src
 
 
 
@@ -1091,9 +1285,9 @@ def fetch_alpaca_stock_data_snapshot(symbols):
 
     if not api_key or not api_secret:
 
-        print(f'[Alpaca数据] API密钥未配置')
+        safe_print(f'[Alpaca数据] API密钥未配置 (config_source={config_source})')
 
-        return {}, {symbol: 'Alpaca API密钥未配置' for symbol in symbols}
+        return {}, {symbol: 'Alpaca market data API key not configured. Save keys in Settings > Alpaca Market Data or Paper Trading.' for symbol in symbols}
 
 
 
@@ -1111,27 +1305,17 @@ def fetch_alpaca_stock_data_snapshot(symbols):
 
     symbols_param = ','.join([s.upper() for s in symbols])
 
-    snapshots_url = f'{_get_market_data_base_url()}/v2/stocks/snapshots?symbols={symbols_param}'
+    base_url = 'https://data.alpaca.markets'
+
+    snapshots_url = f'{base_url}/v2/stocks/snapshots?symbols={symbols_param}'
 
 
 
     try:
 
-        # 最小调试信息（安全掩码）
+        # Debug logging (safe — no key printed)
 
-        key_preview = f"{api_key[:6]}...{api_key[-4:]}" if api_key else "None"
-
-        secret_len = len(api_secret) if api_secret else 0
-
-        print(f'[Alpaca数据] 请求URL: {snapshots_url}')
-
-        print(f'[Alpaca数据] 使用环境: {environment}')
-
-        print(f'[Alpaca数据] API Key (掩码): {key_preview}')
-
-        print(f'[Alpaca数据] API Secret 长度: {secret_len} 字符')
-
-
+        safe_print(f'[Alpaca数据] symbol={symbols[0]} configKind=market_data configSource={config_source} baseUrl={base_url} hasApiKey={bool(api_key)} hasSecretKey={bool(api_secret)} endpoint=/v2/stocks/snapshots')
 
         response = requests.get(snapshots_url, headers=market_headers, timeout=10)
 
@@ -1139,13 +1323,18 @@ def fetch_alpaca_stock_data_snapshot(symbols):
 
         if response.status_code != 200:
 
-            print(f'[Alpaca数据] snapshots endpoint获取失败: {response.status_code}')
+            err_body = response.text[:300]
+            safe_print(f'[Alpaca数据] snapshots endpoint获取失败: status={response.status_code} configSource={config_source} baseUrl={base_url} response={err_body}')
 
-            print(f'[Alpaca数据] 响应头: {dict(response.headers)}')
+            error_msg = f'Alpaca market data API returned {response.status_code}'
+            if response.status_code == 401:
+                error_msg = 'Alpaca market data API key invalid or expired'
+            elif response.status_code == 403:
+                error_msg = 'Alpaca market data API key lacks permission'
+            elif response.status_code == 429:
+                error_msg = 'Alpaca market data API rate limited'
 
-            print(f'[Alpaca数据] 响应体: {response.text[:500]}')
-
-            return {}, {symbol: f'Alpaca snapshots API失败: {response.status_code}' for symbol in symbols}
+            return {}, {symbol: error_msg for symbol in symbols}
 
 
 
@@ -1509,23 +1698,10 @@ def get_52week_high_low(symbol):
 
 
 
-        # 获取Alpaca配置
-
-        environment = alpaca_config_state.get('environment', 'paper')
-
-        if environment == 'paper':
-
-            api_key = alpaca_config_state.get('paper_api_key')
-
-            api_secret = alpaca_config_state.get('paper_api_secret')
-
-        else:
-
-            api_key = alpaca_config_state.get('live_api_key')
-
-            api_secret = alpaca_config_state.get('live_api_secret')
-
-
+        # 获取Alpaca配置 (market_data: data.alpaca.markets)
+        _resolved_alpaca, _alpaca_src = resolve_alpaca_config('market_data', require_user_config=True)
+        api_key = _resolved_alpaca.get('api_key', '')
+        api_secret = _resolved_alpaca.get('api_secret', '')
 
         if not api_key or not api_secret:
 
@@ -1781,28 +1957,12 @@ def fetch_alpaca_bars(symbol, timeframe, range_param):
 
 
 
-        # 根据环境配置选择API key
-
-        environment = alpaca_config_state.get('environment', 'paper')
-
-
-
-        if environment == 'paper':
-
-            api_key = alpaca_config_state.get('paper_api_key')
-
-            api_secret = alpaca_config_state.get('paper_api_secret')
-
-        else:
-
-            api_key = alpaca_config_state.get('live_api_key')
-
-            api_secret = alpaca_config_state.get('live_api_secret')
-
-
+        # 根据环境配置选择API key (market_data: data.alpaca.markets)
+        _resolved_alpaca, _alpaca_src = resolve_alpaca_config('market_data', require_user_config=True)
+        api_key = _resolved_alpaca.get('api_key', '')
+        api_secret = _resolved_alpaca.get('api_secret', '')
 
         base_url = f'{_get_market_data_base_url()}/v2'
-
 
 
         # 检查API密钥
@@ -2149,7 +2309,7 @@ def fetch_alpaca_bars(symbol, timeframe, range_param):
 
         print(f'[Alpaca bars] 当前UTC时间: {datetime.datetime.now(pytz.UTC).strftime("%Y-%m-%d %H:%M:%S")} UTC')
 
-        print(f'[Alpaca bars] 环境: {environment}, API Key前5位: {api_key[:5]}...')
+        safe_print(f'[Alpaca bars] 环境: {environment}, hasKey={bool(api_key)}')
 
 
 
@@ -2989,9 +3149,10 @@ def generate_alpaca_based_history(symbol, interval, range_param, realtime_data):
 
 # ==================== Finnhub API 函数 ====================
 
-def fetch_finnhub_quote(symbol):
+def fetch_finnhub_quote(symbol, finnhub_cfg=None):
 
-    """获取Finnhub报价数据（带缓存）"""
+    """获取Finnhub报价数据（带缓存）
+    finnhub_cfg: optional dict from resolve_finnhub_config()"""
 
     cache_key = get_cache_key(symbol, 'quote')
 
@@ -3007,15 +3168,21 @@ def fetch_finnhub_quote(symbol):
 
 
 
+    if finnhub_cfg is None:
+        finnhub_cfg, _fh_src = resolve_finnhub_config(require_user_config=True)
+    api_key = finnhub_cfg.get('api_key', '')
+
+    base_url = (finnhub_cfg or {}).get('base_url', 'https://finnhub.io/api/v1')
+
     try:
 
-        url = "https://finnhub.io/api/v1/quote"
+        url = f"{base_url}/quote"
 
         params = {
 
             'symbol': symbol.upper(),
 
-            'token': FINNHUB_API_KEY
+            'token': api_key
 
         }
 
@@ -3163,7 +3330,7 @@ def generate_mock_quote_data(symbol):
 
 
 
-def fetch_finnhub_profile(symbol):
+def fetch_finnhub_profile(symbol, finnhub_cfg=None):
 
     """获取Finnhub profile数据（带缓存）"""
 
@@ -3181,15 +3348,21 @@ def fetch_finnhub_profile(symbol):
 
 
 
+    if finnhub_cfg is None:
+        finnhub_cfg, _fh_src = resolve_finnhub_config(require_user_config=True)
+    api_key = finnhub_cfg.get('api_key', '')
+
+    base_url = finnhub_cfg.get('base_url', 'https://finnhub.io/api/v1')
+
     try:
 
-        url = "https://finnhub.io/api/v1/stock/profile2"
+        url = f"{base_url}/stock/profile2"
 
         params = {
 
             'symbol': symbol.upper(),
 
-            'token': FINNHUB_API_KEY
+            'token': api_key
 
         }
 
@@ -3263,7 +3436,7 @@ def fetch_finnhub_profile(symbol):
 
 
 
-def fetch_finnhub_company_news(symbol, days_back=7):
+def fetch_finnhub_company_news(symbol, days_back=7, finnhub_cfg=None):
 
     """获取Finnhub公司新闻数据"""
 
@@ -3293,7 +3466,13 @@ def fetch_finnhub_company_news(symbol, days_back=7):
 
 
 
-        url = "https://finnhub.io/api/v1/company-news"
+        if finnhub_cfg is None:
+            finnhub_cfg, _fh_src = resolve_finnhub_config(require_user_config=True)
+        api_key = finnhub_cfg.get('api_key', '')
+
+        base_url = (finnhub_cfg or {}).get('base_url', 'https://finnhub.io/api/v1')
+
+        url = f"{base_url}/company-news"
 
         params = {
 
@@ -3303,7 +3482,7 @@ def fetch_finnhub_company_news(symbol, days_back=7):
 
             'to': end_date.strftime('%Y-%m-%d'),
 
-            'token': FINNHUB_API_KEY
+            'token': api_key
 
         }
 
@@ -4125,28 +4304,12 @@ def fetch_alpaca_bars_for_backtest(symbol, timeframe, start_date_utc, end_date_u
 
 
 
-        # 根据环境配置选择API key
-
-        environment = alpaca_config_state.get('environment', 'paper')
-
-
-
-        if environment == 'paper':
-
-            api_key = alpaca_config_state.get('paper_api_key')
-
-            api_secret = alpaca_config_state.get('paper_api_secret')
-
-        else:
-
-            api_key = alpaca_config_state.get('live_api_key')
-
-            api_secret = alpaca_config_state.get('live_api_secret')
-
-
+        # 根据环境配置选择API key (market_data: data.alpaca.markets)
+        _resolved_alpaca, _alpaca_src = resolve_alpaca_config('market_data', require_user_config=True)
+        api_key = _resolved_alpaca.get('api_key', '')
+        api_secret = _resolved_alpaca.get('api_secret', '')
 
         base_url = f'{_get_market_data_base_url()}/v2'
-
 
 
         # 检查API密钥
@@ -4515,7 +4678,8 @@ def get_finnhub_history(symbol, interval, range_param):
 
 
 
-        url = f"{FINNHUB_BASE_URL}/stock/candle"
+        _fcfg, _fcfg_src = resolve_finnhub_config(require_user_config=True)
+        url = f"{_fcfg.get('base_url', 'https://finnhub.io/api/v1')}/stock/candle"
 
         params = {
 
@@ -4527,13 +4691,13 @@ def get_finnhub_history(symbol, interval, range_param):
 
             'to': end_timestamp,
 
-            'token': FINNHUB_API_KEY
+            'token': _fcfg.get('api_key', '')
 
         }
 
 
 
-        print(f"[Finnhub历史数据] 请求: {url}, 参数: {params}")
+        print(f"[Finnhub历史数据] 请求: {url}")
 
         response = requests.get(url, params=params, timeout=10)
 
@@ -4804,23 +4968,47 @@ def ai_provider_config():
 
         if request.method == 'GET':
 
-            # 返回当前配置状态，不添加任何硬编码key
+            # Read from per-user Supabase config (strict: no global fallback)
+            resolved, _src = resolve_ai_config(require_user_config=True)
+            has_key = bool(resolved.get('apiKey'))
 
-            config_to_return = dict(ai_provider_config_state)
+            # Return masked key for display (never expose real key)
+            display_key = mask_key(resolved['apiKey']) if has_key else ''
 
+            config_to_return = {
+                'provider': resolved.get('provider', 'DeepSeek'),
+                'apiKey': display_key,
+                'baseUrl': resolved.get('baseURL', 'https://api.deepseek.com'),
+                'model': resolved.get('model', 'deepseek-chat'),
+            }
 
+            # Read testStatus from Supabase user config
+            user = get_supabase_user()
+            test_status = 'not_configured'
+            last_tested_at = None
+            last_test_error = None
+            if user:
+                user_cfg = get_user_config(user['id'], 'ai_provider')
+                if user_cfg:
+                    test_status = user_cfg.get('aiTestStatus', 'not_tested')
+                    last_tested_at = user_cfg.get('lastTestedAt')
+                    last_test_error = user_cfg.get('lastTestError')
 
             resp_data = {
                 'success': True,
                 'config': config_to_return,
-                'hasUserKey': bool(config_to_return.get('apiKey')),
-                'message': 'User must configure API key in AI Configuration page' if not config_to_return.get('apiKey') else 'Configuration loaded'
+                'hasUserKey': has_key,
+                'message': 'Configuration loaded' if has_key else 'User must configure API key in Settings page',
+                'testStatus': test_status,
+                'lastTestedAt': last_tested_at,
+                'lastTestError': last_test_error,
             }
 
             provider_upper = config_to_return.get('provider', '').upper()
             if 'NVIDIA' in provider_upper:
                 resp_data['rateLimit'] = {'rpm': _nvidia_limiter.RPM, 'minIntervalMs': int(_nvidia_limiter.MIN_INTERVAL * 1000)}
 
+            print(f'[AI Config GET] source={"supabase" if user else "global"}, hasKey={has_key}, provider={config_to_return["provider"]}')
             return jsonify(resp_data)
 
         else:
@@ -4829,51 +5017,62 @@ def ai_provider_config():
 
             data = request.get_json()
 
-            print('=== DeepSeek 配置保存请求 ===')
+            print('[AI Config POST] Save request received')
 
-            print('原始数据:', data)
+            # Save to Supabase per-user config if authenticated
+            user = get_supabase_user()
+            if user:
+                # Merge with existing config
+                existing = get_user_config(user['id'], 'ai_provider') or {}
+                key_changed = False
+                for key in ['provider', 'apiKey', 'baseURL', 'baseUrl', 'model']:
+                    if key in data and data[key]:
+                        if key == 'apiKey' and '****' in str(data[key]):
+                            continue  # Skip masked keys
+                        if key == 'apiKey' and data[key] != existing.get('apiKey'):
+                            key_changed = True
+                        existing[key] = data[key]
+                # Only reset test status if the API key actually changed
+                if key_changed:
+                    existing['aiTestStatus'] = 'saved'
+                    existing['lastTestError'] = None
+                save_user_config(user['id'], 'ai_provider', existing)
+                print(f'[AI Config POST] Saved to Supabase for user {user["id"][:8]}...')
+            else:
+                # Global state fallback for dev only
+                if 'provider' in data:
+                    ai_provider_config_state['provider'] = data['provider']
+                if 'apiKey' in data:
+                    ai_provider_config_state['apiKey'] = data['apiKey']
+                if 'baseUrl' in data:
+                    ai_provider_config_state['baseURL'] = data['baseUrl']
+                if 'baseURL' in data:
+                    ai_provider_config_state['baseURL'] = data['baseURL']
+                if 'model' in data:
+                    ai_provider_config_state['model'] = data['model']
+                ai_provider_config_state['aiTestStatus'] = 'saved'
+                ai_provider_config_state['lastTestError'] = None
+                save_ai_config_to_file()
+                print('[AI Config POST] No Supabase user, saved to global state only')
 
-
-
-            # 更新所有配置字段
-
-            if 'provider' in data:
-
-                ai_provider_config_state['provider'] = data['provider']
-
-            if 'apiKey' in data:
-
-                ai_provider_config_state['apiKey'] = data['apiKey']
-
-            if 'baseUrl' in data:
-
-                ai_provider_config_state['baseURL'] = data['baseUrl']
-
-            if 'baseURL' in data:  # 也支持大写
-
-                ai_provider_config_state['baseURL'] = data['baseURL']
-
-            if 'model' in data:
-
-                ai_provider_config_state['model'] = data['model']
-
-
-
-            # 确保返回baseUrl字段（前端期望）
-            config_to_return = dict(ai_provider_config_state)
-            if 'baseURL' in config_to_return and 'baseUrl' not in config_to_return:
-                config_to_return['baseUrl'] = config_to_return['baseURL']
+            # Return masked key
+            resolved, _src = resolve_ai_config(require_user_config=True)
+            has_key = bool(resolved.get('apiKey'))
+            display_key = mask_key(resolved['apiKey']) if has_key else ''
+            config_to_return = {
+                'provider': resolved.get('provider', 'DeepSeek'),
+                'apiKey': display_key,
+                'baseUrl': resolved.get('baseURL', 'https://api.deepseek.com'),
+                'model': resolved.get('model', 'deepseek-chat'),
+            }
 
             response = {
                 'success': True,
                 'config': config_to_return,
-                'message': '配置保存成功'
+                'message': '配置保存成功',
+                'testStatus': 'saved',
             }
 
-            print('返回响应:', response)
-
-            # 保存配置到文件
-            save_ai_config_to_file()
             return jsonify(response)
 
     except Exception as e:
@@ -4896,133 +5095,242 @@ def ai_provider_test():
 
         api_key = data.get('apiKey', '')
 
-        # 检测掩码密钥
-        if api_key and '****' in api_key:
+        # 检测掩码密钥 — masked keys are not real keys
+        if api_key and ('****' in api_key or '•' in api_key):
             api_key = ''
 
-        # 如果请求中没有有效密钥，从已保存的配置读取
-        if not api_key:
-            api_key = ai_provider_config_state.get('apiKey', '')
+        # Resolve API key: per-user Supabase config ONLY (no global fallback)
+        base_url = data.get('baseUrl', '')
+        model = data.get('model', '')
+        provider = data.get('provider', '')
 
+        user = get_supabase_user()
+        if not user:
+            return jsonify({
+                'success': False,
+                'message': 'Authentication required. Please sign in.',
+                'valid': False,
+                'testStatus': 'auth_required'
+            })
+
+        user_cfg = get_user_config(user['id'], 'ai_provider') or {}
+        if not api_key:
+            api_key = user_cfg.get('apiKey', '')
+        if not base_url:
+            base_url = user_cfg.get('baseURL', user_cfg.get('baseUrl', ''))
+        if not model:
+            model = user_cfg.get('model', '')
+        if not provider:
+            provider = user_cfg.get('provider', '')
+
+        # No global fallback - require user config
         if not api_key:
             return jsonify({
                 'success': False,
                 'message': '未配置 API 密钥，请先在 Settings 保存配置',
-                'valid': False
+                'valid': False,
+                'testStatus': 'not_configured'
             })
 
-
+        # Default base_url/model/provider if still empty
+        if not base_url:
+            base_url = 'https://api.deepseek.com'
+        if not model:
+            model = 'deepseek-chat'
+        if not provider:
+            provider = 'DeepSeek'
 
         # 测试 API 密钥
-
         headers = {
-
             'Authorization': f'Bearer {api_key}',
-
             'Content-Type': 'application/json'
-
         }
 
-
-
-        base_url = data.get('baseUrl', 'https://api.deepseek.com')
-
         if not base_url.startswith('http'):
-
             base_url = 'https://' + base_url
 
+        safe_print(f'[AI Test] user={user["id"][:8]}... provider={provider}, base_url={base_url}, model={model}')
 
+        now_str = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+
+        provider_upper = provider.upper()
 
         try:
-
-            test_response = ai_chat_request(
-
-                f'{base_url}/chat/completions',
-
-                headers=headers,
-
-                json_data={
-
-                    'model': data.get('model', 'deepseek-chat'),
-
-                    'messages': [
-
-                        {'role': 'system', 'content': 'You are a connection test.'},
-
-                        {'role': 'user', 'content': 'Reply with OK only.'}
-
-                    ],
-
-                    'temperature': 0,
-
+            # Provider-specific request construction
+            if 'CLAUDE' in provider_upper or 'ANTHROPIC' in provider_upper:
+                # Claude / Anthropic: uses /messages endpoint with x-api-key header
+                claude_headers = {
+                    'x-api-key': api_key,
+                    'anthropic-version': '2023-06-01',
+                    'content-type': 'application/json'
+                }
+                test_url = f'{base_url}/messages'
+                test_payload = {
+                    'model': model,
                     'max_tokens': 16,
-
-                    'stream': False
-
-                },
-
-                timeout=15
-
-            )
-
-
+                    'messages': [{'role': 'user', 'content': 'Reply with OK only.'}]
+                }
+                test_response = requests.post(test_url, headers=claude_headers, json=test_payload, timeout=15)
+            elif 'GEMINI' in provider_upper or 'GOOGLE' in provider_upper:
+                # Gemini / Google: uses generateContent endpoint with key query param
+                test_url = f'{base_url}/models/{model}:generateContent?key={api_key}'
+                gemini_headers = {'content-type': 'application/json'}
+                test_payload = {
+                    'contents': [{'parts': [{'text': 'Reply with OK only.'}]}],
+                    'generationConfig': {'maxOutputTokens': 16}
+                }
+                test_response = requests.post(test_url, headers=gemini_headers, json=test_payload, timeout=15)
+            else:
+                # OpenAI-compatible (DeepSeek, OpenAI, NVIDIA, Mimo, Custom)
+                test_response = ai_chat_request(
+                    f'{base_url}/chat/completions',
+                    headers=headers,
+                    json_data={
+                        'model': model,
+                        'messages': [
+                            {'role': 'system', 'content': 'You are a connection test.'},
+                            {'role': 'user', 'content': 'Reply with OK only.'}
+                        ],
+                        'temperature': 0,
+                        'max_tokens': 16,
+                        'stream': False
+                    },
+                    timeout=15,
+                    provider=provider
+                )
 
             if test_response.status_code == 200:
-
                 resp_data = test_response.json()
-
-                content = resp_data.get('choices', [{}])[0].get('message', {}).get('content', '')
+                # Provider-specific response parsing
+                if 'CLAUDE' in provider_upper or 'ANTHROPIC' in provider_upper:
+                    content = ''
+                    for block in resp_data.get('content', []):
+                        if block.get('type') == 'text':
+                            content += block.get('text', '')
+                elif 'GEMINI' in provider_upper or 'GOOGLE' in provider_upper:
+                    content = ''
+                    candidates = resp_data.get('candidates', [])
+                    if candidates:
+                        parts = candidates[0].get('content', {}).get('parts', [])
+                        if parts:
+                            content = parts[0].get('text', '')
+                else:
+                    content = resp_data.get('choices', [{}])[0].get('message', {}).get('content', '')
 
                 if content:
+                    # Persist test success to Supabase user config
+                    update_data = {
+                        'aiTestStatus': 'connected',
+                        'lastTestedAt': now_str,
+                        'lastTestError': None,
+                    }
+                    existing = user_cfg.copy()
+                    existing.update(update_data)
+                    save_user_config(user['id'], 'ai_provider', existing)
+                    safe_print(f'[AI Test] SUCCESS user={user["id"][:8]}... provider={provider} model={model}')
 
-                    return jsonify({'success': True, 'message': 'API 连接测试成功', 'valid': True})
-
+                    result = {
+                        'success': True,
+                        'message': 'API 连接测试成功',
+                        'valid': True,
+                        'testStatus': 'connected',
+                        'lastTestedAt': now_str,
+                        'lastTestError': None,
+                    }
+                    # Add NVIDIA rate limit info
+                    if 'NVIDIA' in provider_upper:
+                        result['rateLimit'] = {
+                            'rpm': _nvidia_limiter.RPM,
+                            'minInterval': _nvidia_limiter.MIN_INTERVAL,
+                            'window': _nvidia_limiter.WINDOW
+                        }
+                    return jsonify(result)
                 else:
+                    # Empty response
+                    update_data = {
+                        'aiTestStatus': 'error',
+                        'lastTestedAt': now_str,
+                        'lastTestError': 'API 返回空内容',
+                    }
+                    existing = user_cfg.copy()
+                    existing.update(update_data)
+                    save_user_config(user['id'], 'ai_provider', existing)
 
-                    return jsonify({'success': False, 'message': 'API 返回空内容', 'valid': False})
-
+                    return jsonify({
+                        'success': False,
+                        'message': 'API 返回空内容',
+                        'valid': False,
+                        'testStatus': 'error',
+                        'lastTestedAt': now_str,
+                        'lastTestError': 'API 返回空内容',
+                    })
             else:
-
                 status_messages = {
-
                     401: 'API 密钥无效或已过期',
-
                     403: 'API 密钥无权限访问该模型或 endpoint',
-
                     404: '模型不可用或 Base URL 不正确',
-
                     429: 'API 请求频率超限，请稍后再试',
-
                 }
+                msg = status_messages.get(test_response.status_code, '')
 
-                msg = status_messages.get(test_response.status_code, f'API 测试失败，状态码: {test_response.status_code}')
+                try:
+                    err_body = test_response.json()
+                    err_detail = err_body.get('error', {}).get('message', '') if isinstance(err_body.get('error'), dict) else str(err_body.get('error', ''))
+                    if err_detail:
+                        msg = f'{msg} — {err_detail}' if msg else err_detail
+                except Exception:
+                    pass
 
-                return jsonify({'success': False, 'message': msg, 'valid': False})
+                if not msg:
+                    msg = f'API 测试失败，状态码: {test_response.status_code}'
+
+                # Persist failure to Supabase
+                update_data = {
+                    'aiTestStatus': 'error',
+                    'lastTestedAt': now_str,
+                    'lastTestError': msg,
+                }
+                existing = user_cfg.copy()
+                existing.update(update_data)
+                save_user_config(user['id'], 'ai_provider', existing)
+                safe_print(f'[AI Test] FAILED user={user["id"][:8]}... status={test_response.status_code}')
+
+                return jsonify({
+                    'success': False,
+                    'message': msg,
+                    'valid': False,
+                    'testStatus': 'error',
+                    'lastTestedAt': now_str,
+                    'lastTestError': msg,
+                    'providerStatus': test_response.status_code,
+                })
 
         except Exception as e:
+            error_msg = f'API 测试异常: {str(e)[:100]}'
+            update_data = {
+                'aiTestStatus': 'error',
+                'lastTestedAt': now_str,
+                'lastTestError': error_msg,
+            }
+            existing = user_cfg.copy()
+            existing.update(update_data)
+            save_user_config(user['id'], 'ai_provider', existing)
 
             return jsonify({
-
                 'success': False,
-
-                'message': f'API 测试异常: {str(e)[:100]}',
-
-                'valid': False
-
+                'message': error_msg,
+                'valid': False,
+                'testStatus': 'error',
+                'lastTestedAt': now_str,
+                'lastTestError': error_msg,
             })
 
     except Exception as e:
-
         print(f'AI Provider Test 错误: {e}')
-
         return jsonify({
-
             'success': False,
-
             'message': f'处理请求时发生错误: {str(e)[:100]}',
-
             'valid': False
-
         })
 
 
@@ -5167,22 +5475,87 @@ def config_alpaca_test():
 def config_market_data():
     """GET: return market data config. POST: save market data config."""
     try:
+        # Load base_url/feed from JSON file (not sensitive)
+        file_cfg = _load_json_config(MARKET_DATA_CONFIG_FILE, {
+            'data_base_url': 'https://data.alpaca.markets',
+            'feed': 'iex',
+        })
+
         if request.method == 'GET':
-            cfg = _load_json_config(MARKET_DATA_CONFIG_FILE, {
-                'data_base_url': 'https://data.alpaca.markets',
-                'feed': 'iex',
-            })
-            return jsonify({'success': True, 'config': cfg})
+            result = {
+                'data_base_url': file_cfg.get('data_base_url', 'https://data.alpaca.markets'),
+                'feed': file_cfg.get('feed', 'iex'),
+            }
+            # Load API keys from Supabase if authenticated
+            user = get_supabase_user()
+            if user:
+                md_cfg = get_user_config(user['id'], 'alpaca_market_data')
+                if md_cfg and md_cfg.get('api_key'):
+                    result['hasApiKey'] = True
+                    result['hasSecretKey'] = bool(md_cfg.get('api_secret'))
+                    result['api_key_masked'] = mask_key(md_cfg['api_key'])
+                    if md_cfg.get('api_secret'):
+                        result['api_secret_masked'] = mask_key(md_cfg['api_secret'])
+                    result['credentialSource'] = 'real_trading'
+                else:
+                    # Fallback: read from Real Trading config and auto-sync
+                    alpaca_cfg = get_user_config(user['id'], 'alpaca')
+                    if alpaca_cfg and alpaca_cfg.get('live_api_key') and alpaca_cfg.get('live_api_secret'):
+                        live_key = alpaca_cfg['live_api_key']
+                        live_secret = alpaca_cfg['live_api_secret']
+                        if '****' not in str(live_key):
+                            # Auto-sync to alpaca_market_data
+                            save_user_config(user['id'], 'alpaca_market_data', {
+                                'api_key': live_key,
+                                'api_secret': live_secret,
+                            })
+                            safe_print(f'[Market Data GET] Auto-synced from Real Trading for user {user["id"][:8]}...')
+                            result['hasApiKey'] = True
+                            result['hasSecretKey'] = True
+                            result['api_key_masked'] = mask_key(live_key)
+                            result['api_secret_masked'] = mask_key(live_secret)
+                            result['credentialSource'] = 'real_trading'
+                        else:
+                            # Masked key in Real Trading config — can't sync
+                            result['hasApiKey'] = False
+                            result['hasSecretKey'] = False
+                            result['credentialSource'] = 'none'
+                    else:
+                        result['hasApiKey'] = False
+                        result['hasSecretKey'] = False
+                        result['credentialSource'] = 'none'
+            return jsonify({'success': True, 'config': result})
         else:
             data = request.get_json() or {}
-            cfg = _load_json_config(MARKET_DATA_CONFIG_FILE, {
-                'data_base_url': 'https://data.alpaca.markets',
-                'feed': 'iex',
-            })
-            for k in ['data_base_url', 'feed']:
-                if k in data and data[k]:
-                    cfg[k] = data[k]
-            _save_json_config(MARKET_DATA_CONFIG_FILE, cfg)
+            # Save base_url/feed to JSON file (always force data.alpaca.markets)
+            file_cfg['data_base_url'] = 'https://data.alpaca.markets'
+            if data.get('feed'):
+                file_cfg['feed'] = data['feed']
+            _save_json_config(MARKET_DATA_CONFIG_FILE, file_cfg)
+
+            # Always sync API keys from Real Trading config — never rely on masked UI values
+            user = get_supabase_user()
+            if user:
+                alpaca_cfg = get_user_config(user['id'], 'alpaca')
+                if alpaca_cfg and alpaca_cfg.get('live_api_key') and alpaca_cfg.get('live_api_secret'):
+                    live_key = alpaca_cfg['live_api_key']
+                    live_secret = alpaca_cfg['live_api_secret']
+                    if '****' not in str(live_key):
+                        save_user_config(user['id'], 'alpaca_market_data', {
+                            'api_key': live_key,
+                            'api_secret': live_secret,
+                        })
+                        safe_print(f'[Market Data SAVE] Synced from Real Trading for user {user["id"][:8]}...')
+                        return jsonify({
+                            'success': True,
+                            'message': 'Market data config saved (synced from Real Trading)',
+                            'maskedApiKey': mask_key(live_key),
+                            'maskedSecretKey': mask_key(live_secret),
+                        })
+                    else:
+                        return jsonify({'success': False, 'message': 'Real Trading key appears masked. Please re-save Real Trading settings with a valid key.'})
+                else:
+                    return jsonify({'success': False, 'message': 'Alpaca Real Trading credentials are required before saving Market Data settings.'})
             return jsonify({'success': True, 'message': 'Market data config saved'})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
@@ -5192,20 +5565,43 @@ def config_market_data():
 def config_market_data_test():
     """Test market data connection by fetching AAPL snapshot."""
     try:
-        cfg = _load_json_config(MARKET_DATA_CONFIG_FILE, {
-            'data_base_url': 'https://data.alpaca.markets',
-            'feed': 'iex',
-        })
-        data_url = cfg.get('data_base_url', 'https://data.alpaca.markets')
+        data_url = 'https://data.alpaca.markets'
+        cfg = _load_json_config(MARKET_DATA_CONFIG_FILE, {'feed': 'iex'})
         feed = cfg.get('feed', 'iex')
 
-        # Use Alpaca keys for market data auth (paper or live both work)
-        alpaca_cfg = _load_json_config(ALPACA_CONFIG_FILE, dict(alpaca_config_state))
-        api_key = alpaca_cfg.get('paper_api_key') or alpaca_cfg.get('live_api_key') or alpaca_config_state.get('paper_api_key') or alpaca_config_state.get('live_api_key', '')
-        api_secret = alpaca_cfg.get('paper_api_secret') or alpaca_cfg.get('live_api_secret') or alpaca_config_state.get('paper_api_secret') or alpaca_config_state.get('live_api_secret', '')
+        # Use market data config (strict user config)
+        md_resolved, md_source = resolve_alpaca_config('market_data', require_user_config=True)
+        api_key = md_resolved.get('api_key', '')
+        api_secret = md_resolved.get('api_secret', '')
+
+        # Auto-sync from Real Trading if no dedicated Market Data config
+        if not api_key:
+            user = get_supabase_user()
+            if user:
+                alpaca_cfg = get_user_config(user['id'], 'alpaca')
+                if alpaca_cfg and alpaca_cfg.get('live_api_key') and alpaca_cfg.get('live_api_secret'):
+                    live_key = alpaca_cfg['live_api_key']
+                    live_secret = alpaca_cfg['live_api_secret']
+                    if '****' not in str(live_key):
+                        save_user_config(user['id'], 'alpaca_market_data', {
+                            'api_key': live_key,
+                            'api_secret': live_secret,
+                        })
+                        api_key = live_key
+                        api_secret = live_secret
+                        md_source = 'real_trading'
+                        safe_print(f'[Market Data TEST] Auto-synced from Real Trading for user {user["id"][:8]}...')
+
+        debug = {
+            'keySource': md_source,
+            'hasApiKey': bool(api_key),
+            'hasSecretKey': bool(api_secret),
+            'baseUrl': data_url,
+            'feed': feed,
+        }
 
         if not api_key:
-            return jsonify({'success': False, 'message': 'No Alpaca API key configured (needed for market data auth)'})
+            return jsonify({'success': False, 'message': 'No Alpaca API key configured. Save Real Trading settings first.', 'debug': debug})
 
         headers = {
             'APCA-API-KEY-ID': api_key,
@@ -5214,9 +5610,13 @@ def config_market_data_test():
         resp = requests.get(f'{data_url}/v2/stocks/AAPL/snapshot', headers=headers,
                           params={'feed': feed}, timeout=10)
         if resp.status_code == 200:
-            return jsonify({'success': True, 'message': f'Market data OK (feed={feed})'})
+            debug['credentialSource'] = 'real_trading'
+            debug['maskedApiKey'] = mask_key(api_key)
+            debug['maskedSecretKey'] = mask_key(api_secret)
+            return jsonify({'success': True, 'message': f'Market data OK (feed={feed})', 'debug': debug})
         else:
-            return jsonify({'success': False, 'message': f'HTTP {resp.status_code}: {resp.text[:200]}'})
+            debug['credentialSource'] = 'real_trading'
+            return jsonify({'success': False, 'message': f'HTTP {resp.status_code}: {resp.text[:200]}', 'debug': debug})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)[:200]})
 
@@ -5226,6 +5626,7 @@ def config_market_data_test():
 @app.route('/api/config/finnhub', methods=['GET', 'POST'])
 def config_finnhub():
     """GET: return masked Finnhub config. POST: save Finnhub config."""
+    global FINNHUB_API_KEY
     try:
         if request.method == 'GET':
             cfg = _load_json_config(FINNHUB_CONFIG_FILE, {
@@ -5251,6 +5652,8 @@ def config_finnhub():
             if 'base_url' in data and data['base_url']:
                 cfg['base_url'] = data['base_url']
             _save_json_config(FINNHUB_CONFIG_FILE, cfg)
+            if cfg.get('api_key'):
+                FINNHUB_API_KEY = cfg['api_key']
             return jsonify({'success': True, 'message': 'Finnhub config saved'})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
@@ -5346,51 +5749,19 @@ def ai_alpaca_account():
 
 
 
-        # 如果没有配置API密钥，返回模拟数据但标记为模拟
+        # 如果没有配置API密钥，返回明确错误
 
         if not api_key or not api_secret:
 
-            print('Alpaca API 密钥未配置，返回模拟数据')
-
             return jsonify({
 
-                'success': True,
+                'success': False,
 
-                'data': {
+                'needsConfig': True,
 
-                    'accountNumber': 'PA3YPSJY0D4E',
+                'message': 'Alpaca API key not configured. Please configure in Settings.'
 
-                    'status': 'ACTIVE',
-
-                    'cash': 100000.0,
-
-                    'equity': 100000.0,
-
-                    'buyingPower': 198162.55,
-
-                    'portfolioValue': 100000.0,
-
-                    'longMarketValue': 0.0,
-
-                    'shortMarketValue': 0.0,
-
-                    'patternDayTrader': False,
-
-                    'tradingBlocked': False,
-
-                    'transfersBlocked': False,
-
-                    'accountBlocked': False,
-
-                    'currency': 'USD',
-
-                    'isMockData': True,
-
-                    'message': 'Alpaca API 密钥未配置，显示模拟数据'
-
-                }
-
-            })
+            }), 402
 
 
 
@@ -5462,47 +5833,13 @@ def ai_alpaca_account():
 
             print(f'Alpaca API 调用失败: {response.status_code} - {response.text}')
 
-            # API调用失败时返回模拟数据
-
             return jsonify({
 
-                'success': True,
+                'success': False,
 
-                'data': {
+                'message': f'Alpaca API error: {response.status_code}'
 
-                    'accountNumber': 'PA3YPSJY0D4E',
-
-                    'status': 'ACTIVE',
-
-                    'cash': 100000.0,
-
-                    'equity': 100000.0,
-
-                    'buyingPower': 198162.55,
-
-                    'portfolioValue': 100000.0,
-
-                    'longMarketValue': 0.0,
-
-                    'shortMarketValue': 0.0,
-
-                    'patternDayTrader': False,
-
-                    'tradingBlocked': False,
-
-                    'transfersBlocked': False,
-
-                    'accountBlocked': False,
-
-                    'currency': 'USD',
-
-                    'isMockData': True,
-
-                    'message': f'Alpaca API 调用失败 ({response.status_code})，显示模拟数据'
-
-                }
-
-            })
+            }), response.status_code
 
 
 
@@ -5512,43 +5849,11 @@ def ai_alpaca_account():
 
         return jsonify({
 
-            'success': True,
+            'success': False,
 
-            'data': {
+            'message': f'Alpaca account error: {str(e)}'
 
-                'accountNumber': 'PA3YPSJY0D4E',
-
-                'status': 'ACTIVE',
-
-                'cash': 100000.0,
-
-                'equity': 100000.0,
-
-                'buyingPower': 198162.55,
-
-                'portfolioValue': 100000.0,
-
-                'longMarketValue': 0.0,
-
-                'shortMarketValue': 0.0,
-
-                'patternDayTrader': False,
-
-                'tradingBlocked': False,
-
-                'transfersBlocked': False,
-
-                'accountBlocked': False,
-
-                'currency': 'USD',
-
-                'isMockData': True,
-
-                'message': f'接口异常: {str(e)}，显示模拟数据'
-
-            }
-
-        })
+        }), 500
 
 
 
@@ -5584,67 +5889,19 @@ def ai_alpaca_positions():
 
 
 
-        # 如果没有配置API密钥，返回模拟数据但标记为模拟
+        # 如果没有配置API密钥，返回明确错误
 
         if not api_key or not api_secret:
 
-            print('Alpaca API 密钥未配置，返回模拟持仓数据')
-
             return jsonify({
 
-                'success': True,
+                'success': False,
 
-                'data': [
+                'needsConfig': True,
 
-                    {
+                'message': 'Alpaca API key not configured. Please configure in Settings.'
 
-                        'symbol': 'AAPL',
-
-                        'qty': 10,
-
-                        'avgEntryPrice': 175.50,
-
-                        'currentPrice': 178.25,
-
-                        'marketValue': 1782.50,
-
-                        'unrealizedPL': 27.50,
-
-                        'unrealizedPLPercent': 1.57,
-
-                        'isMockData': True
-
-                    },
-
-                    {
-
-                        'symbol': 'MSFT',
-
-                        'qty': 5,
-
-                        'avgEntryPrice': 420.75,
-
-                        'currentPrice': 425.30,
-
-                        'marketValue': 2126.50,
-
-                        'unrealizedPL': 22.75,
-
-                        'unrealizedPLPercent': 1.08,
-
-                        'isMockData': True
-
-                    }
-
-                ],
-
-                'count': 2,
-
-                'isMockData': True,
-
-                'message': 'Alpaca API 密钥未配置，显示模拟持仓数据'
-
-            })
+            }), 402
 
 
 
@@ -5902,63 +6159,17 @@ def ai_alpaca_positions():
 
             print(f'Alpaca 持仓 API 调用失败: {response.status_code} - {response.text}')
 
-            # API调用失败时返回模拟数据
+            # API调用失败时返回错误
 
             return jsonify({
 
-                'success': True,
+                'success': False,
 
-                'data': [
+                'message': f'Alpaca API error: {response.status_code}',
 
-                    {
+                'data': []
 
-                        'symbol': 'AAPL',
-
-                        'qty': 10,
-
-                        'avgEntryPrice': 175.50,
-
-                        'currentPrice': 178.25,
-
-                        'marketValue': 1782.50,
-
-                        'unrealizedPL': 27.50,
-
-                        'unrealizedPLPercent': 1.57,
-
-                        'isMockData': True
-
-                    },
-
-                    {
-
-                        'symbol': 'MSFT',
-
-                        'qty': 5,
-
-                        'avgEntryPrice': 420.75,
-
-                        'currentPrice': 425.30,
-
-                        'marketValue': 2126.50,
-
-                        'unrealizedPL': 22.75,
-
-                        'unrealizedPLPercent': 1.08,
-
-                        'isMockData': True
-
-                    }
-
-                ],
-
-                'count': 2,
-
-                'isMockData': True,
-
-                'message': f'Alpaca API 调用失败 ({response.status_code})，显示模拟持仓数据'
-
-            })
+            }), response.status_code
 
 
 
@@ -5968,59 +6179,13 @@ def ai_alpaca_positions():
 
         return jsonify({
 
-            'success': True,
+            'success': False,
 
-            'data': [
+            'message': f'Alpaca positions error: {str(e)}',
 
-                {
+            'data': []
 
-                    'symbol': 'AAPL',
-
-                    'qty': 10,
-
-                    'avgEntryPrice': 175.50,
-
-                    'currentPrice': 178.25,
-
-                    'marketValue': 1782.50,
-
-                    'unrealizedPL': 27.50,
-
-                    'unrealizedPLPercent': 1.57,
-
-                    'isMockData': True
-
-                },
-
-                {
-
-                    'symbol': 'MSFT',
-
-                    'qty': 5,
-
-                    'avgEntryPrice': 420.75,
-
-                    'currentPrice': 425.30,
-
-                    'marketValue': 2126.50,
-
-                    'unrealizedPL': 22.75,
-
-                    'unrealizedPLPercent': 1.08,
-
-                    'isMockData': True
-
-                }
-
-            ],
-
-            'count': 2,
-
-            'isMockData': True,
-
-            'message': f'接口异常: {str(e)}，显示模拟持仓数据'
-
-        })
+        }), 500
 
 
 
@@ -6078,95 +6243,17 @@ def ai_alpaca_orders():
 
         if not api_key or not api_secret:
 
-            print('Alpaca API 密钥未配置，返回模拟订单数据')
+            return jsonify({
 
-            response = {
+                'success': False,
 
-                'success': True,
+                'needsConfig': True,
 
-                'data': [
+                'message': 'Alpaca API key not configured. Please configure in Settings.',
 
-                    {
+                'data': []
 
-                        'id': 'order-002',
-
-                        'symbol': 'NVDA',
-
-                        'qty': 2,
-
-                        'filled_qty': 0,
-
-                        'filledQty': 0,
-
-                        'side': 'buy',
-
-                        'type': 'limit',
-
-                        'limit_price': 950.00,
-
-                        'limitPrice': 950.00,
-
-                        'status': 'accepted',
-
-                        'created_at': '2026-04-05T10:30:00Z',
-
-                        'createdAt': '2026-04-05T10:30:00Z',
-
-                        'time_in_force': 'gtc',
-
-                        'timeInForce': 'gtc',
-
-                        'isMockData': True
-
-                    },
-
-                    {
-
-                        'id': 'order-003',
-
-                        'symbol': 'GOOGL',
-
-                        'qty': 3,
-
-                        'filled_qty': 0,
-
-                        'filledQty': 0,
-
-                        'side': 'buy',
-
-                        'type': 'market',
-
-                        'status': 'accepted',
-
-                        'created_at': '2026-04-05T11:15:00Z',
-
-                        'createdAt': '2026-04-05T11:15:00Z',
-
-                        'time_in_force': 'day',
-
-                        'timeInForce': 'day',
-
-                        'isMockData': True
-
-                    }
-
-                ],
-
-                'count': 2,
-
-                'status_filter': status,
-
-                'limit': limit,
-
-                'isMockData': True,
-
-                'message': 'Alpaca API 密钥未配置，显示模拟订单数据'
-
-            }
-
-            print('返回模拟订单数据 (status=%s, limit=%s)' % (status, limit))
-
-            return jsonify(response)
+            }), 402
 
 
 
@@ -6204,9 +6291,7 @@ def ai_alpaca_orders():
 
         print(f'环境: {environment}')
 
-        print(f'API密钥: {api_key[:6]}...{api_key[-4:]}')
-
-        print(f'API Secret: {api_secret[:6]}...{api_secret[-4:]}')
+        safe_print(f'[Alpaca] hasKey={bool(api_key)} hasSecret={bool(api_secret)}')
 
 
 
@@ -6506,93 +6591,15 @@ def ai_alpaca_orders():
 
             print(f'Alpaca 订单 API 调用失败: {response.status_code} - {response.text}')
 
-            # API调用失败时返回模拟数据
+            return jsonify({
 
-            response = {
+                'success': False,
 
-                'success': True,
+                'message': f'Alpaca API error: {response.status_code}',
 
-                'data': [
+                'data': []
 
-                    {
-
-                        'id': 'order-002',
-
-                        'symbol': 'NVDA',
-
-                        'qty': 2,
-
-                        'filled_qty': 0,
-
-                        'filledQty': 0,
-
-                        'side': 'buy',
-
-                        'type': 'limit',
-
-                        'limit_price': 950.00,
-
-                        'limitPrice': 950.00,
-
-                        'status': 'accepted',
-
-                        'created_at': '2026-04-05T10:30:00Z',
-
-                        'createdAt': '2026-04-05T10:30:00Z',
-
-                        'time_in_force': 'gtc',
-
-                        'timeInForce': 'gtc',
-
-                        'isMockData': True
-
-                    },
-
-                    {
-
-                        'id': 'order-003',
-
-                        'symbol': 'GOOGL',
-
-                        'qty': 3,
-
-                        'filled_qty': 0,
-
-                        'filledQty': 0,
-
-                        'side': 'buy',
-
-                        'type': 'market',
-
-                        'status': 'accepted',
-
-                        'created_at': '2026-04-05T11:15:00Z',
-
-                        'createdAt': '2026-04-05T11:15:00Z',
-
-                        'time_in_force': 'day',
-
-                        'timeInForce': 'day',
-
-                        'isMockData': True
-
-                    }
-
-                ],
-
-                'count': 2,
-
-                'status_filter': status,
-
-                'limit': limit,
-
-                'isMockData': True,
-
-                'message': f'Alpaca API 调用失败 ({response.status_code})，显示模拟订单数据'
-
-            }
-
-            return jsonify(response)
+            }), response.status_code
 
 
 
@@ -6600,91 +6607,15 @@ def ai_alpaca_orders():
 
         print(f'Alpaca 订单接口错误: {e}')
 
-        response = {
+        return jsonify({
 
-            'success': True,
+            'success': False,
 
-            'data': [
+            'message': f'Alpaca orders error: {str(e)}',
 
-                {
+            'data': []
 
-                    'id': 'order-002',
-
-                    'symbol': 'NVDA',
-
-                    'qty': 2,
-
-                    'filled_qty': 0,
-
-                    'filledQty': 0,
-
-                    'side': 'buy',
-
-                    'type': 'limit',
-
-                    'limit_price': 950.00,
-
-                    'limitPrice': 950.00,
-
-                    'status': 'accepted',
-
-                    'created_at': '2026-04-05T10:30:00Z',
-
-                    'createdAt': '2026-04-05T10:30:00Z',
-
-                    'time_in_force': 'gtc',
-
-                    'timeInForce': 'gtc',
-
-                    'isMockData': True
-
-                },
-
-                {
-
-                    'id': 'order-003',
-
-                    'symbol': 'GOOGL',
-
-                    'qty': 3,
-
-                    'filled_qty': 0,
-
-                    'filledQty': 0,
-
-                    'side': 'buy',
-
-                    'type': 'market',
-
-                    'status': 'accepted',
-
-                    'created_at': '2026-04-05T11:15:00Z',
-
-                    'createdAt': '2026-04-05T11:15:00Z',
-
-                    'time_in_force': 'day',
-
-                    'timeInForce': 'day',
-
-                    'isMockData': True
-
-                }
-
-            ],
-
-            'count': 2,
-
-            'status_filter': status,
-
-            'limit': limit,
-
-            'isMockData': True,
-
-            'message': f'接口异常: {str(e)}，显示模拟订单数据'
-
-        }
-
-        return jsonify(response)
+        }), 500
 
 
 
@@ -6942,15 +6873,7 @@ def ai_alpaca_orders_history():
 
             print('=== DEBUG: Alpaca API 密钥检查 ===')
 
-            print(f'API Key 存在: {bool(api_key)}')
-
-            print(f'API Secret 存在: {bool(api_secret)}')
-
-            print(f'环境: {environment}')
-
-            print(f'API Key 前10位: {api_key[:10] if api_key else "N/A"}')
-
-            print('=== DEBUG 结束 ===')
+            safe_print(f'[Alpaca Debug] hasKey={bool(api_key)} hasSecret={bool(api_secret)} env={environment}')
 
             print('Alpaca API 密钥未配置，返回空数据')
 
@@ -7008,9 +6931,7 @@ def ai_alpaca_orders_history():
 
         print(f'环境: {environment}')
 
-        print(f'API密钥: {api_key[:6]}...{api_key[-4:]}')
-
-        print(f'API Secret: {api_secret[:6]}...{api_secret[-4:]}')
+        safe_print(f'[Alpaca] hasKey={bool(api_key)} hasSecret={bool(api_secret)}')
 
 
 
@@ -7316,111 +7237,15 @@ def ai_alpaca_orders_history():
 
             print(f'Alpaca 历史订单 API 调用失败: {response.status_code} - {response.text}')
 
-            # API调用失败时返回模拟数据
+            return jsonify({
 
-            import random
+                'success': False,
 
-            import datetime
+                'message': f'Alpaca API error: {response.status_code}',
 
-            data = []
+                'data': []
 
-
-
-            # 生成更真实的模拟数据
-
-            statuses = ['filled', 'canceled', 'expired', 'rejected', 'accepted', 'pending_new', 'pending_cancel', 'stopped', 'suspended', 'calculated']
-
-            sides = ['buy', 'sell']
-
-            types = ['market', 'limit', 'stop', 'stop_limit']
-
-            symbols = ['AAPL', 'MSFT', 'GOOGL', 'NVDA', 'TSLA', 'AMZN', 'META', 'NFLX', 'AMD', 'INTC']
-
-
-
-            for i in range(min(int(limit), 30)):
-
-                symbol = symbols[i % len(symbols)]
-
-                qty = (i % 20) + 1
-
-                filled_qty = qty if i % 4 == 0 else (qty // 2 if i % 3 == 0 else 0)
-
-                status_idx = i % len(statuses)
-
-                order_status = statuses[status_idx]
-
-
-
-                # 生成更真实的时间戳
-
-                days_ago = i % 30
-
-                hours_ago = i % 24
-
-                minutes_ago = i % 60
-
-                created_at = (datetime.datetime.now() - datetime.timedelta(days=days_ago, hours=hours_ago, minutes=minutes_ago)).isoformat() + 'Z'
-
-
-
-                data.append({
-
-                    'id': f'order-{i:04d}',
-
-                    'symbol': symbol,
-
-                    'qty': qty,
-
-                    'quantity': qty,  # 前端使用的字段
-
-                    'filled_qty': filled_qty,
-
-                    'filledQty': filled_qty,  # 前端使用的字段
-
-                    'side': sides[i % 2],
-
-                    'type': types[i % len(types)],
-
-                    'limit_price': 100.0 + (i * 5) if i % 3 != 0 else None,
-
-                    'limitPrice': 100.0 + (i * 5) if i % 3 != 0 else None,  # 前端使用的字段
-
-                    'status': order_status,
-
-                    'created_at': created_at,
-
-                    'createdAt': created_at,  # 前端使用的字段
-
-                    'time_in_force': 'gtc',
-
-                    'timeInForce': 'gtc',  # 前端使用的字段
-
-                    'isMockData': True
-
-                })
-
-
-
-            response = {
-
-                'success': True,
-
-                'data': data,
-
-                'count': len(data),
-
-                'limit': limit,
-
-                'status_filter': status,
-
-                'isMockData': True,
-
-                'message': f'Alpaca API 调用失败 ({response.status_code})，显示模拟历史订单数据'
-
-            }
-
-            return jsonify(response)
+            }), response.status_code
 
 
 
@@ -7428,110 +7253,280 @@ def ai_alpaca_orders_history():
 
         print(f'Alpaca 历史订单接口错误: {e}')
 
-        import random
+        return jsonify({
 
-        import datetime
+            'success': False,
 
-        data = []
+            'message': f'Alpaca order history error: {str(e)}',
 
+            'data': []
 
-
-        # 生成更真实的模拟数据
-
-        statuses = ['filled', 'canceled', 'expired', 'rejected', 'accepted', 'pending_new', 'pending_cancel', 'stopped', 'suspended', 'calculated']
-
-        sides = ['buy', 'sell']
-
-        types = ['market', 'limit', 'stop', 'stop_limit']
-
-        symbols = ['AAPL', 'MSFT', 'GOOGL', 'NVDA', 'TSLA', 'AMZN', 'META', 'NFLX', 'AMD', 'INTC']
+        }), 500
 
 
+def resolve_ai_config(require_user_config=False):
+    """Return AI config: per-user from Supabase if authenticated, else global fallback.
+    When require_user_config=True, never falls back to global/env. Returns (config, source) tuple.
+    Returns dict with keys: apiKey, baseURL, model, provider"""
+    user = get_supabase_user()
+    if user:
+        user_cfg = get_user_config(user['id'], 'ai_provider')
+        if user_cfg:
+            api_key = user_cfg.get('apiKey', '')
+            has_key = bool(api_key and api_key.strip())
+            key_is_masked = '****' in api_key if api_key else False
+            if has_key and not key_is_masked:
+                safe_print(f'[resolve_ai_config] source=supabase user={user["id"][:8]}... hasKey=True provider={user_cfg.get("provider","")} maskedKey={mask_key(api_key)}')
+                result = {
+                    'apiKey': api_key,
+                    'baseURL': user_cfg.get('baseURL', user_cfg.get('baseUrl', '')),
+                    'model': user_cfg.get('model', 'deepseek-chat'),
+                    'provider': user_cfg.get('provider', 'DeepSeek'),
+                    'testStatus': user_cfg.get('aiTestStatus', 'not_tested'),
+                    'lastTestedAt': user_cfg.get('lastTestedAt'),
+                    'lastTestError': user_cfg.get('lastTestError'),
+                }
+                return (result, 'user_config/supabase') if require_user_config else result
+            elif key_is_masked:
+                safe_print(f'[resolve_ai_config] source=supabase user={user["id"][:8]}... WARNING: stored key appears masked')
+            else:
+                safe_print(f'[resolve_ai_config] source=supabase user={user["id"][:8]}... hasKey=False (empty apiKey in DB)')
+        else:
+            safe_print(f'[resolve_ai_config] source=supabase user={user["id"][:8]}... no config row in DB')
+    else:
+        safe_print(f'[resolve_ai_config] no authenticated user (no token or invalid token)')
 
-        for i in range(min(int(limit), 30)):
+    if require_user_config:
+        safe_print(f'[resolve_ai_config] require_user_config=True but no user config found')
+        return ({
+            'apiKey': '',
+            'baseURL': '',
+            'model': '',
+            'provider': '',
+            'testStatus': 'not_configured',
+            'lastTestedAt': None,
+            'lastTestError': None,
+        }, 'missing')
 
-            symbol = symbols[i % len(symbols)]
-
-            qty = (i % 20) + 1
-
-            filled_qty = qty if i % 4 == 0 else (qty // 2 if i % 3 == 0 else 0)
-
-            status_idx = i % len(statuses)
-
-            order_status = statuses[status_idx]
-
-
-
-            # 生成更真实的时间戳
-
-            days_ago = i % 30
-
-            hours_ago = i % 24
-
-            minutes_ago = i % 60
-
-            created_at = (datetime.datetime.now() - datetime.timedelta(days=days_ago, hours=hours_ago, minutes=minutes_ago)).isoformat() + 'Z'
-
-
-
-            data.append({
-
-                'id': f'order-{i:04d}',
-
-                'symbol': symbol,
-
-                'qty': qty,
-
-                'quantity': qty,  # 前端使用的字段
-
-                'filled_qty': filled_qty,
-
-                'filledQty': filled_qty,  # 前端使用的字段
-
-                'side': sides[i % 2],
-
-                'type': types[i % len(types)],
-
-                'limit_price': 100.0 + (i * 5) if i % 3 != 0 else None,
-
-                'limitPrice': 100.0 + (i * 5) if i % 3 != 0 else None,  # 前端使用的字段
-
-                'status': order_status,
-
-                'created_at': created_at,
-
-                'createdAt': created_at,  # 前端使用的字段
-
-                'time_in_force': 'gtc',
-
-                'timeInForce': 'gtc',  # 前端使用的字段
-
-                'isMockData': True
-
-            })
+    # Fallback to global config (only when require_user_config=False)
+    has_global = bool(ai_provider_config_state.get('apiKey'))
+    safe_print(f'[resolve_ai_config] source=global hasKey={has_global}')
+    return {
+        'apiKey': ai_provider_config_state.get('apiKey', ''),
+        'baseURL': ai_provider_config_state.get('baseURL', ai_provider_config_state.get('baseUrl', '')),
+        'model': ai_provider_config_state.get('model', 'deepseek-chat'),
+        'provider': ai_provider_config_state.get('provider', 'DeepSeek'),
+        'testStatus': ai_provider_config_state.get('aiTestStatus', 'not_tested'),
+        'lastTestedAt': ai_provider_config_state.get('lastTestedAt'),
+        'lastTestError': ai_provider_config_state.get('lastTestError'),
+    }
 
 
+def resolve_alpaca_config(mode='paper', require_user_config=False):
+    """Return Alpaca config: per-user from Supabase if authenticated, else global fallback.
+    mode: 'paper', 'live', or 'market_data'
+    When require_user_config=True, never falls back to global/env. Returns (config, source) tuple.
+    Returns dict with keys: api_key, api_secret, base_url
+    For market_data mode: base_url is ALWAYS https://data.alpaca.markets"""
+    user = get_supabase_user()
 
-        response = {
+    # --- market_data mode: separate config type ---
+    if mode == 'market_data':
+        if user:
+            # 1. Try dedicated market_data config from Supabase (alpaca_market_data table)
+            md_cfg = get_user_config(user['id'], 'alpaca_market_data')
+            if md_cfg:
+                key = md_cfg.get('api_key', '')
+                secret = md_cfg.get('api_secret', '')
+                if key and secret and '****' not in key:
+                    safe_print(f'[resolve_alpaca_config] source=supabase user={user["id"][:8]}... mode=market_data hasKey=True (dedicated)')
+                    result = {'api_key': key, 'api_secret': secret, 'base_url': 'https://data.alpaca.markets'}
+                    return (result, 'saved_market_data') if require_user_config else result
 
-            'success': True,
+            # 2. Fall back to broker config (alpaca table) paper_api_key/paper_api_secret
+            #    These keys work with data.alpaca.markets too — just use different host
+            broker_cfg = get_user_config(user['id'], 'alpaca')
+            if broker_cfg:
+                paper_key = broker_cfg.get('paper_api_key', '')
+                paper_secret = broker_cfg.get('paper_api_secret', '')
+                if paper_key and paper_secret and '****' not in paper_key:
+                    safe_print(f'[resolve_alpaca_config] source=supabase user={user["id"][:8]}... mode=market_data hasKey=True (paper_fallback)')
+                    result = {'api_key': paper_key, 'api_secret': paper_secret, 'base_url': 'https://data.alpaca.markets'}
+                    return (result, 'paper_fallback') if require_user_config else result
 
-            'data': data,
+            safe_print(f'[resolve_alpaca_config] source=supabase user={user["id"][:8]}... mode=market_data hasKey=False (no config)')
+        else:
+            safe_print(f'[resolve_alpaca_config] no authenticated user (market_data)')
 
-            'count': len(data),
+        if require_user_config:
+            safe_print(f'[resolve_alpaca_config] require_user_config=True but no market_data config found')
+            return ({'api_key': '', 'api_secret': '', 'base_url': 'https://data.alpaca.markets'}, 'missing')
 
-            'limit': limit,
+        # Global fallback for market_data (only when require_user_config=False)
+        fallback_key = alpaca_config_state.get('paper_api_key', ALPACA_API_KEY)
+        fallback_secret = alpaca_config_state.get('paper_api_secret', ALPACA_API_SECRET)
+        safe_print(f'[resolve_alpaca_config] source=global mode=market_data hasKey={bool(fallback_key)}')
+        return {'api_key': fallback_key, 'api_secret': fallback_secret, 'base_url': 'https://data.alpaca.markets'}
 
-            'status_filter': status,
+    # --- paper / live mode ---
+    if user:
+        user_cfg = get_user_config(user['id'], 'alpaca')
+        if user_cfg:
+            if mode == 'paper':
+                key = user_cfg.get('paper_api_key', '')
+                secret = user_cfg.get('paper_api_secret', '')
+                url = user_cfg.get('paper_base_url', 'https://paper-api.alpaca.markets')
+            else:
+                key = user_cfg.get('live_api_key', '')
+                secret = user_cfg.get('live_api_secret', '')
+                url = user_cfg.get('live_base_url', 'https://api.alpaca.markets')
+            if key and secret:
+                print(f'[resolve_alpaca_config] source=supabase user={user["id"][:8]}... mode={mode} hasKey=True')
+                result = {'api_key': key, 'api_secret': secret, 'base_url': url}
+                return (result, 'user_config/supabase') if require_user_config else result
+            print(f'[resolve_alpaca_config] source=supabase user={user["id"][:8]}... mode={mode} hasKey=False (incomplete config)')
+        else:
+            print(f'[resolve_alpaca_config] source=supabase user={user["id"][:8]}... mode={mode} no config in DB')
+    else:
+        print(f'[resolve_alpaca_config] no authenticated user')
 
-            'isMockData': True,
+    if require_user_config:
+        print(f'[resolve_alpaca_config] require_user_config=True but no user config found')
+        return ({}, 'missing')
 
-            'message': f'接口异常: {str(e)}，显示模拟历史订单数据'
-
+    # Fallback to global config (only when require_user_config=False)
+    has_global = bool(alpaca_config_state.get(f'{mode}_api_key') or ALPACA_API_KEY)
+    print(f'[resolve_alpaca_config] source=global mode={mode} hasKey={has_global}')
+    if mode == 'paper':
+        return {
+            'api_key': alpaca_config_state.get('paper_api_key', ALPACA_API_KEY),
+            'api_secret': alpaca_config_state.get('paper_api_secret', ALPACA_API_SECRET),
+            'base_url': alpaca_config_state.get('paper_base_url', 'https://paper-api.alpaca.markets'),
         }
+    return {
+        'api_key': alpaca_config_state.get('live_api_key', ALPACA_API_KEY),
+        'api_secret': alpaca_config_state.get('live_api_secret', ALPACA_API_SECRET),
+        'base_url': alpaca_config_state.get('live_base_url', 'https://api.alpaca.markets'),
+    }
 
-        return jsonify(response)
 
+def resolve_finnhub_config(require_user_config=False):
+    """Return Finnhub config: per-user from Supabase if authenticated, else global fallback.
+    When require_user_config=True, never falls back to global/env. Returns (config, source) tuple.
+    Returns dict with keys: api_key, base_url"""
+    user = get_supabase_user()
+    if user:
+        user_cfg = get_user_config(user['id'], 'finnhub')
+        if user_cfg:
+            api_key = user_cfg.get('api_key', '')
+            has_key = bool(api_key and api_key.strip())
+            key_is_masked = '****' in api_key if api_key else False
+            if has_key and not key_is_masked:
+                safe_print(f'[resolve_finnhub_config] source=supabase user={user["id"][:8]}... hasKey=True maskedKey={mask_key(api_key)}')
+                result = {
+                    'api_key': api_key,
+                    'base_url': user_cfg.get('base_url', 'https://finnhub.io/api/v1'),
+                }
+                return (result, 'user_config/supabase') if require_user_config else result
+            elif key_is_masked:
+                safe_print(f'[resolve_finnhub_config] source=supabase user={user["id"][:8]}... WARNING: stored key appears masked')
+            else:
+                safe_print(f'[resolve_finnhub_config] source=supabase user={user["id"][:8]}... hasKey=False (empty)')
+        else:
+            safe_print(f'[resolve_finnhub_config] source=supabase user={user["id"][:8]}... no config row')
+    else:
+        safe_print(f'[resolve_finnhub_config] no authenticated user')
+
+    if require_user_config:
+        safe_print(f'[resolve_finnhub_config] require_user_config=True but no user config found')
+        return ({}, 'missing')
+
+    # Fallback to global config (only when require_user_config=False)
+    has_global = bool(FINNHUB_API_KEY)
+    safe_print(f'[resolve_finnhub_config] source=global hasKey={has_global}')
+    return {
+        'api_key': FINNHUB_API_KEY,
+        'base_url': FINNHUB_BASE_URL if 'FINNHUB_BASE_URL' in dir() else 'https://finnhub.io/api/v1',
+    }
+
+
+# ── Strict user-only resolvers for Dashboard (no global .env fallback) ──
+
+def resolve_alpaca_config_strict_user(mode='paper'):
+    """Resolve Alpaca config from authenticated user's Supabase config ONLY.
+    Never falls back to global .env / config.py keys.
+    Returns (config_dict, status_string).
+    status: 'ok' | 'auth_required' | 'config_required'
+    For market_data mode: base_url is ALWAYS https://data.alpaca.markets
+    """
+    user = get_supabase_user()
+    if not user:
+        return {}, 'auth_required'
+
+    if mode == 'market_data':
+        # 1. Try dedicated alpaca_market_data config type
+        md_cfg = get_user_config(user['id'], 'alpaca_market_data')
+        if md_cfg:
+            key = md_cfg.get('api_key', '')
+            secret = md_cfg.get('api_secret', '')
+            if key and secret and '****' not in key:
+                safe_print(f'[resolve_alpaca_config_strict] user={user["id"][:8]}... mode=market_data hasKey=True (dedicated)')
+                return {'api_key': key, 'api_secret': secret, 'base_url': 'https://data.alpaca.markets'}, 'ok'
+
+        # 2. Fall back to broker config (alpaca table) paper_api_key/paper_api_secret
+        broker_cfg = get_user_config(user['id'], 'alpaca')
+        if broker_cfg:
+            paper_key = broker_cfg.get('paper_api_key', '')
+            paper_secret = broker_cfg.get('paper_api_secret', '')
+            if paper_key and paper_secret and '****' not in paper_key:
+                safe_print(f'[resolve_alpaca_config_strict] user={user["id"][:8]}... mode=market_data hasKey=True (paper_fallback)')
+                return {'api_key': paper_key, 'api_secret': paper_secret, 'base_url': 'https://data.alpaca.markets'}, 'ok'
+
+        safe_print(f'[resolve_alpaca_config_strict] user={user["id"][:8]}... mode=market_data no config found')
+        return {}, 'config_required'
+
+    user_cfg = get_user_config(user['id'], 'alpaca')
+    if not user_cfg:
+        return {}, 'config_required'
+
+    if mode == 'paper':
+        key = user_cfg.get('paper_api_key', '')
+        secret = user_cfg.get('paper_api_secret', '')
+        url = user_cfg.get('paper_base_url', 'https://paper-api.alpaca.markets')
+    else:
+        key = user_cfg.get('live_api_key', '')
+        secret = user_cfg.get('live_api_secret', '')
+        url = user_cfg.get('live_base_url', 'https://api.alpaca.markets')
+    if key and secret:
+        safe_print(f'[resolve_alpaca_config_strict] user={user["id"][:8]}... mode={mode} hasKey=True')
+        return {'api_key': key, 'api_secret': secret, 'base_url': url}, 'ok'
+    safe_print(f'[resolve_alpaca_config_strict] user={user["id"][:8]}... mode={mode} incomplete config')
+    return {}, 'config_required'
+
+
+def resolve_finnhub_config_strict_user():
+    """Resolve Finnhub config from authenticated user's Supabase config ONLY.
+    Never falls back to global .env / config.py keys.
+    Returns (config_dict, status_string).
+    status: 'ok' | 'auth_required' | 'config_required'
+    """
+    user = get_supabase_user()
+    if not user:
+        return {}, 'auth_required'
+    user_cfg = get_user_config(user['id'], 'finnhub')
+    if not user_cfg:
+        return {}, 'config_required'
+    api_key = user_cfg.get('api_key', '')
+    has_key = bool(api_key and api_key.strip())
+    key_is_masked = '****' in api_key if api_key else False
+    if has_key and not key_is_masked:
+        safe_print(f'[resolve_finnhub_config_strict] user={user["id"][:8]}... hasKey=True')
+        return {
+            'api_key': api_key,
+            'base_url': user_cfg.get('base_url', 'https://finnhub.io/api/v1'),
+        }, 'ok'
+    safe_print(f'[resolve_finnhub_config_strict] user={user["id"][:8]}... no valid key')
+    return {}, 'config_required'
 
 
 @app.route('/api/ai/chat', methods=['POST'])
@@ -7562,7 +7557,8 @@ def ai_chat():
 
         # 检查是否有有效的 API 密钥
 
-        api_key = ai_provider_config_state.get('apiKey', '')
+        _ai_cfg, _ai_cfg_src = resolve_ai_config(require_user_config=True)
+        api_key = _ai_cfg.get('apiKey', '')
 
 
 
@@ -7596,7 +7592,7 @@ def ai_chat():
 
         # 如果有有效的 API 密钥，调用真实的 DeepSeek API
 
-        print(f'使用 API 密钥调用 DeepSeek: {api_key[:10]}...')
+        safe_print(f'[DeepSeek] hasKey={bool(api_key)} provider={provider}')
 
 
 
@@ -7640,7 +7636,7 @@ def ai_chat():
 
         payload = {
 
-            'model': ai_provider_config_state.get('model', 'deepseek-chat'),
+            'model': _ai_cfg['model'],
 
             'messages': messages,
 
@@ -7652,7 +7648,7 @@ def ai_chat():
 
 
 
-        base_url = ai_provider_config_state.get('baseURL', 'https://api.deepseek.com')
+        base_url = _ai_cfg['baseURL'] or 'https://api.deepseek.com'
 
         if not base_url.startswith('http'):
 
@@ -7660,7 +7656,7 @@ def ai_chat():
 
 
 
-        # 调用 DeepSeek API
+        # 调用 AI Provider API
 
         try:
 
@@ -7672,7 +7668,8 @@ def ai_chat():
 
                 json_data=payload,
 
-                timeout=30
+                timeout=30,
+                provider=_ai_cfg.get('provider')
 
             )
 
@@ -7782,6 +7779,349 @@ def ai_chat():
 
 
 
+# ==================== Config Status Endpoint ====================
+
+@app.route('/api/config/status', methods=['GET'])
+def config_status():
+    """Return true config state for all services. Used by frontend status bar and scanner pre-flight."""
+    user = get_supabase_user()
+    user_id = user['id'] if user else None
+
+    # AI Provider — read from Supabase user config only
+    ai_has_key = False
+    ai_source = 'missing'
+    ai_provider = ''
+    ai_model = ''
+    ai_test_status = 'not_configured'
+    ai_last_tested_at = None
+    ai_last_test_error = None
+
+    ai_key_is_masked = False
+    if user:
+        user_cfg = get_user_config(user['id'], 'ai_provider')
+        if user_cfg:
+            api_key = user_cfg.get('apiKey', '')
+            has_key = bool(api_key and api_key.strip())
+            key_is_masked = '****' in api_key if api_key else False
+            ai_key_is_masked = key_is_masked
+            safe_print(f'[config/status] user={user["id"][:8]}... hasKey={has_key} keyIsMasked={key_is_masked} keyLen={len(api_key) if api_key else 0} testStatus={user_cfg.get("aiTestStatus","")}')
+            if has_key and not key_is_masked:
+                ai_has_key = True
+                ai_source = 'user_config/supabase'
+            elif key_is_masked:
+                ai_test_status = 'invalid_key_saved'
+                ai_last_test_error = 'Stored AI key is masked. Re-enter the real API key in Settings.'
+            ai_provider = user_cfg.get('provider', '')
+            ai_model = user_cfg.get('model', '')
+            if not key_is_masked:
+                ai_test_status = user_cfg.get('aiTestStatus', 'not_tested')
+            ai_last_tested_at = user_cfg.get('lastTestedAt')
+            if not key_is_masked:
+                ai_last_test_error = user_cfg.get('lastTestError')
+
+    # Alpaca — strict user config only (no global/env fallback)
+    alpaca_paper, alpaca_paper_source = resolve_alpaca_config('paper', require_user_config=True)
+    alpaca_live, alpaca_live_source = resolve_alpaca_config('live', require_user_config=True)
+    alpaca_md, alpaca_md_source = resolve_alpaca_config('market_data', require_user_config=True)
+    alpaca_has_paper = bool(alpaca_paper.get('api_key') and alpaca_paper.get('api_secret'))
+    alpaca_has_live = bool(alpaca_live.get('api_key') and alpaca_live.get('api_secret'))
+    alpaca_has_md = bool(alpaca_md.get('api_key') and alpaca_md.get('api_secret'))
+
+    # Finnhub — strict user config only (no global/env fallback)
+    finnhub_cfg, finnhub_source = resolve_finnhub_config(require_user_config=True)
+    finnhub_has_key = bool(finnhub_cfg.get('api_key') and finnhub_cfg['api_key'].strip())
+
+    return jsonify({
+        'success': True,
+        'authPresent': bool(user),
+        'userResolved': bool(user),
+        'authSource': 'supabase' if user else 'none',
+        'user': {
+            'authenticated': bool(user),
+            'userResolved': bool(user),
+            'userId': user_id[:8] + '...' if user_id else None,
+        },
+        'ai': {
+            'configured': ai_has_key,
+            'keyIsMasked': ai_key_is_masked,
+            'provider': ai_provider,
+            'model': ai_model,
+            'keySource': ai_source,
+            'testStatus': ai_test_status,
+            'lastTestedAt': ai_last_tested_at,
+            'lastTestError': ai_last_test_error,
+        },
+        'alpaca': {
+            'paperConfigured': alpaca_has_paper,
+            'liveConfigured': alpaca_has_live,
+            'paperKeySource': alpaca_paper_source,
+            'liveKeySource': alpaca_live_source,
+        },
+        'alpacaMarketData': {
+            'configured': alpaca_has_md,
+            'baseUrl': 'https://data.alpaca.markets',
+            'keySource': alpaca_md_source,
+            'credentialSource': 'real_trading' if alpaca_has_md else 'none',
+            'maskedApiKey': mask_key(alpaca_md.get('api_key', '')) if alpaca_has_md else None,
+            'maskedSecretKey': mask_key(alpaca_md.get('api_secret', '')) if alpaca_has_md else None,
+        },
+        'finnhub': {
+            'configured': finnhub_has_key,
+            'keySource': finnhub_source,
+        },
+    })
+
+
+# ==================== Per-User Config Routes (Supabase) ====================
+
+@app.route('/api/settings/ai-config', methods=['GET', 'POST'])
+def settings_ai_config():
+    if not supabase_admin:
+        return jsonify({'success': False, 'error': 'Supabase not configured on server'}), 503
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return jsonify({'success': False, 'error': 'Authentication required', 'details': 'Missing Supabase access token'}), 401
+    user = get_supabase_user()
+    if not user:
+        return jsonify({'success': False, 'error': 'Authentication failed', 'details': 'Invalid or expired Supabase token'}), 401
+
+    if request.method == 'GET':
+        config = get_user_config(user['id'], 'ai_provider')
+        if config:
+            masked = dict(config)
+            if masked.get('apiKey'):
+                masked['apiKey'] = mask_key(masked['apiKey'])
+            # Return testStatus from Supabase user config
+            test_status = config.get('aiTestStatus', 'not_tested')
+            return jsonify({
+                'success': True,
+                'config': masked,
+                'hasUserKey': bool(config.get('apiKey')),
+                'testStatus': test_status,
+                'lastTestedAt': config.get('lastTestedAt'),
+                'lastTestError': config.get('lastTestError'),
+            })
+        return jsonify({'success': True, 'config': {}, 'hasUserKey': False, 'testStatus': 'not_configured'})
+
+    # POST
+    data = request.get_json() or {}
+    config_data = {}
+    for key in ['provider', 'apiKey', 'baseURL', 'baseUrl', 'model']:
+        if key in data and data[key]:
+            config_data[key] = data[key]
+    if not config_data:
+        return jsonify({'success': False, 'message': 'No config data provided'}), 400
+
+    # Diagnostic logging (safe — no key printed)
+    raw_key = data.get('apiKey', '')
+    key_is_masked = '****' in raw_key if raw_key else False
+    safe_print(f'[AI Config SAVE] route=/api/settings/ai-config authExists=True userId={user["id"][:8]}... email={user.get("email","")} config_type=ai_provider provider={data.get("provider","")} model={data.get("model","")} hasApiKey={bool(raw_key)} keyIsMasked={key_is_masked} maskedKey={mask_key(raw_key)}')
+
+    # Merge with existing config (don't overwrite fields not sent)
+    existing = get_user_config(user['id'], 'ai_provider') or {}
+    # Don't overwrite apiKey if masked value sent
+    if 'apiKey' in config_data and '****' in config_data['apiKey']:
+        safe_print(f'[AI Config SAVE] Skipping masked apiKey — keeping existing key')
+        config_data.pop('apiKey')
+    # Only reset test status if the API key actually changed
+    key_changed = 'apiKey' in config_data and config_data.get('apiKey') != existing.get('apiKey')
+    existing.update(config_data)
+    if key_changed:
+        existing['aiTestStatus'] = 'saved'
+        existing['lastTestError'] = None
+        safe_print(f'[AI Config SAVE] Key changed — reset testStatus to saved')
+    else:
+        safe_print(f'[AI Config SAVE] Key unchanged — keeping testStatus={existing.get("aiTestStatus", "not_tested")}')
+    ok, err = save_user_config(user['id'], 'ai_provider', existing)
+    if ok:
+        safe_print(f'[AI Config SAVE] Success — saved fields: {list(existing.keys())}')
+        return jsonify({
+            'success': True,
+            'message': 'AI config saved',
+            'testStatus': 'saved',
+            'lastTestedAt': existing.get('lastTestedAt'),
+            'lastTestError': None,
+        })
+    safe_print(f'[AI Config SAVE] Failed: {err}')
+    return jsonify({'success': False, 'message': f'Save failed: {err}'}), 500
+
+
+@app.route('/api/settings/auth-debug', methods=['GET'])
+def settings_auth_debug():
+    """Diagnostic endpoint — returns auth chain status without exposing secrets."""
+    auth_header = request.headers.get('Authorization', '')
+    has_header = bool(auth_header)
+    has_bearer = auth_header.startswith('Bearer ') if auth_header else False
+    token_len = len(auth_header.replace('Bearer ', '')) if has_bearer else 0
+    user = get_supabase_user()
+    return jsonify({
+        'supabase_admin_initialized': supabase_admin is not None,
+        'fernet_initialized': fernet is not None,
+        'auth_header_present': has_header,
+        'has_bearer_prefix': has_bearer,
+        'token_length': token_len,
+        'user_resolved': user is not None,
+        'user_id': user['id'] if user else None,
+        'user_email': user['email'] if user else None,
+    })
+
+
+@app.route('/api/settings/config-chain-debug', methods=['GET'])
+def config_chain_debug():
+    """Diagnostic endpoint — disabled in production. Only available in development."""
+    import os
+    if os.environ.get('FLASK_ENV') != 'development' and not os.environ.get('DEBUG_ENDPOINTS'):
+        return jsonify({'success': False, 'error': 'This endpoint is disabled in production'}), 403
+
+    user = get_supabase_user()
+    result = {
+        'authFromHeader': {
+            'present': bool(request.headers.get('Authorization')),
+            'userResolved': user is not None,
+        },
+        'ai': {},
+        'alpaca': {},
+        'finnhub': {},
+    }
+
+    # Test AI config resolution
+    ai_cfg, _ai_cfg_src = resolve_ai_config(require_user_config=True)
+    ai_has_key = bool(ai_cfg.get('apiKey') and ai_cfg['apiKey'].strip())
+    result['ai'] = {
+        'configSource': _ai_cfg_src,
+        'provider': ai_cfg.get('provider', ''),
+        'model': ai_cfg.get('model', ''),
+        'hasApiKey': ai_has_key,
+        **get_ai_test_status(),
+    }
+
+    return jsonify(result)
+
+
+@app.route('/api/settings/broker-config', methods=['GET', 'POST'])
+def settings_broker_config():
+    if not supabase_admin:
+        return jsonify({'success': False, 'error': 'Supabase not configured on server'}), 503
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return jsonify({'success': False, 'error': 'Authentication required', 'details': 'Missing Supabase access token'}), 401
+    user = get_supabase_user()
+    if not user:
+        return jsonify({'success': False, 'error': 'Authentication failed', 'details': 'Invalid or expired Supabase token'}), 401
+
+    if request.method == 'GET':
+        config = get_user_config(user['id'], 'alpaca')
+        if config:
+            masked = {}
+            for k, v in config.items():
+                if k in SENSITIVE_FIELDS.get('alpaca', []) and v:
+                    masked[k + '_masked'] = mask_key(v)
+                    masked[k] = mask_key(v)
+                else:
+                    masked[k] = v
+            return jsonify({'success': True, 'config': masked})
+        return jsonify({'success': True, 'config': {}})
+
+    # POST
+    data = request.get_json() or {}
+    existing = get_user_config(user['id'], 'alpaca') or {}
+    for key in ['paper_api_key', 'paper_api_secret', 'paper_base_url', 'live_api_key', 'live_api_secret', 'live_base_url', 'environment']:
+        if key in data and data[key]:
+            if '****' in str(data[key]):
+                continue  # Skip masked values
+            existing[key] = data[key]
+    ok, err = save_user_config(user['id'], 'alpaca', existing)
+    if ok:
+        result = {'success': True, 'message': 'Broker config saved'}
+        # Sync Real Trading keys → Market Data config
+        live_key = existing.get('live_api_key', '')
+        live_secret = existing.get('live_api_secret', '')
+        if live_key and live_secret and '****' not in str(live_key):
+            md_existing = get_user_config(user['id'], 'alpaca_market_data') or {}
+            md_existing['api_key'] = live_key
+            md_existing['api_secret'] = live_secret
+            save_user_config(user['id'], 'alpaca_market_data', md_existing)
+            safe_print(f'[Broker Config] Synced Real Trading keys → alpaca_market_data for user {user["id"][:8]}...')
+            result['marketDataSynced'] = True
+            result['maskedMarketDataApiKey'] = mask_key(live_key)
+            result['maskedMarketDataSecretKey'] = mask_key(live_secret)
+        return jsonify(result)
+    return jsonify({'success': False, 'message': f'Save failed: {err}'}), 500
+
+
+@app.route('/api/settings/finnhub-config', methods=['GET', 'POST'])
+def settings_finnhub_config():
+    if not supabase_admin:
+        return jsonify({'success': False, 'error': 'Supabase not configured on server'}), 503
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return jsonify({'success': False, 'error': 'Authentication required', 'details': 'Missing Supabase access token'}), 401
+    user = get_supabase_user()
+    if not user:
+        return jsonify({'success': False, 'error': 'Authentication failed', 'details': 'Invalid or expired Supabase token'}), 401
+
+    if request.method == 'GET':
+        config = get_user_config(user['id'], 'finnhub')
+        if config:
+            masked = dict(config)
+            if masked.get('api_key'):
+                masked['api_key'] = mask_key(masked['api_key'])
+                masked['api_key_masked'] = masked['api_key']
+            return jsonify({'success': True, 'config': masked})
+        return jsonify({'success': True, 'config': {}})
+
+    # POST
+    data = request.get_json() or {}
+    raw_fh_key = data.get('api_key', '')
+    fh_key_masked = '****' in raw_fh_key if raw_fh_key else False
+    safe_print(f'[Finnhub Config SAVE] authExists=True userId={user["id"][:8]}... config_type=finnhub hasApiKey={bool(raw_fh_key)} keyIsMasked={fh_key_masked}')
+    existing = get_user_config(user['id'], 'finnhub') or {}
+    for key in ['api_key', 'base_url']:
+        if key in data and data[key]:
+            if '****' in str(data[key]):
+                safe_print(f'[Finnhub Config SAVE] Skipping masked {key}')
+                continue
+            existing[key] = data[key]
+    ok, err = save_user_config(user['id'], 'finnhub', existing)
+    if ok:
+        safe_print(f'[Finnhub Config SAVE] Success — saved fields: {list(existing.keys())}')
+        return jsonify({'success': True, 'message': 'Finnhub config saved'})
+    safe_print(f'[Finnhub Config SAVE] Failed: {err}')
+    return jsonify({'success': False, 'message': f'Save failed: {err}'}), 500
+
+
+@app.route('/api/settings/finnhub-config/test', methods=['POST'])
+def settings_finnhub_config_test():
+    """Test Finnhub connection using per-user Supabase config."""
+    if not supabase_admin:
+        return jsonify({'success': False, 'error': 'Supabase not configured on server'}), 503
+    user = get_supabase_user()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+
+    cfg = get_user_config(user['id'], 'finnhub')
+    if not cfg:
+        return jsonify({'success': False, 'message': 'No Finnhub config saved. Please save your API key first.'})
+
+    api_key = cfg.get('api_key', '')
+    if not api_key:
+        return jsonify({'success': False, 'message': 'No Finnhub API key configured. Please save your API key first.'})
+
+    base_url = cfg.get('base_url', 'https://finnhub.io/api/v1')
+    try:
+        resp = requests.get(f'{base_url}/quote', params={'symbol': 'AAPL', 'token': api_key}, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if 'c' in data and data['c'] > 0:
+                return jsonify({'success': True, 'message': f'Finnhub OK — AAPL price: ${data["c"]}'})
+            else:
+                return jsonify({'success': False, 'message': 'Finnhub responded but no data (check API key)'})
+        else:
+            return jsonify({'success': False, 'message': f'Finnhub returned HTTP {resp.status_code}'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Finnhub connection error: {str(e)}'})
+
+
 # ==================== AI Trading 分析接口 ====================
 
 
@@ -7806,7 +8146,8 @@ def ai_trade_preview():
 
         # 检查是否有有效的 API 密钥
 
-        api_key = ai_provider_config_state.get('apiKey', '')
+        _ai_cfg, _ai_cfg_src = resolve_ai_config(require_user_config=True)
+        api_key = _ai_cfg.get('apiKey', '')
 
 
 
@@ -7850,7 +8191,7 @@ def ai_trade_preview():
 
         # 如果有有效的 API 密钥，调用 DeepSeek 进行交易分析
 
-        print(f'使用 API 密钥进行交易分析: {api_key[:10]}...')
+        safe_print(f'[TradingAnalysis] hasKey={bool(api_key)}')
 
 
 
@@ -7906,7 +8247,7 @@ def ai_trade_preview():
 
         payload = {
 
-            'model': ai_provider_config_state.get('model', 'deepseek-chat'),
+            'model': _ai_cfg['model'],
 
             'messages': [{'role': 'user', 'content': analysis_prompt}],
 
@@ -7918,7 +8259,7 @@ def ai_trade_preview():
 
 
 
-        base_url = ai_provider_config_state.get('baseURL', 'https://api.deepseek.com')
+        base_url = _ai_cfg['baseURL'] or 'https://api.deepseek.com'
 
         if not base_url.startswith('http'):
 
@@ -7926,7 +8267,7 @@ def ai_trade_preview():
 
 
 
-        # 调用 DeepSeek API
+        # 调用 AI Provider API
 
         try:
 
@@ -7938,7 +8279,8 @@ def ai_trade_preview():
 
                 json_data=payload,
 
-                timeout=30
+                timeout=30,
+                provider=_ai_cfg.get('provider')
 
             )
 
@@ -8184,7 +8526,8 @@ def ai_trade_analyze_with_context():
 
         # 检查是否有有效的 API 密钥
 
-        api_key = ai_provider_config_state.get('apiKey', '')
+        _ai_cfg, _ai_cfg_src = resolve_ai_config(require_user_config=True)
+        api_key = _ai_cfg.get('apiKey', '')
 
 
 
@@ -8226,7 +8569,7 @@ def ai_trade_analyze_with_context():
 
         # 如果有有效的 API 密钥，调用 DeepSeek 进行带上下文的交易分析
 
-        print(f'使用 API 密钥进行带上下文的交易分析: {api_key[:10]}...')
+        safe_print(f'[TradingAnalysis-Context] hasKey={bool(api_key)}')
 
 
 
@@ -8250,7 +8593,7 @@ def ai_trade_analyze_with_context():
 
         payload = {
 
-            'model': ai_provider_config_state.get('model', 'deepseek-chat'),
+            'model': _ai_cfg['model'],
 
             'messages': [{'role': 'user', 'content': analysis_prompt}],
 
@@ -8264,7 +8607,7 @@ def ai_trade_analyze_with_context():
 
 
 
-        base_url = ai_provider_config_state.get('baseURL', 'https://api.deepseek.com')
+        base_url = _ai_cfg['baseURL'] or 'https://api.deepseek.com'
 
         if not base_url.startswith('http'):
 
@@ -8272,7 +8615,7 @@ def ai_trade_analyze_with_context():
 
 
 
-        # 调用 DeepSeek API
+        # 调用 AI Provider API
 
         try:
 
@@ -8284,7 +8627,8 @@ def ai_trade_analyze_with_context():
 
                 json_data=payload,
 
-                timeout=30
+                timeout=30,
+                provider=_ai_cfg.get('provider')
 
             )
 
@@ -9376,11 +9720,11 @@ def ai_market_scanner():
 
                     batch_data[symbol] = {
 
-                        'price': 0,
+                        'price': None,
 
-                        'changePercent': 0,
+                        'changePercent': None,
 
-                        'volume': 0,
+                        'volume': None,
 
                         'dataSource': 'Failed'
 
@@ -9392,11 +9736,11 @@ def ai_market_scanner():
 
                 batch_data[symbol] = {
 
-                    'price': 0,
+                    'price': None,
 
-                    'changePercent': 0,
+                    'changePercent': None,
 
-                    'volume': 0,
+                    'volume': None,
 
                     'dataSource': 'Error'
 
@@ -9422,21 +9766,21 @@ def ai_market_scanner():
 
                 data = batch_data[symbol]
 
-                price = data.get('price', 0)
+                price = data.get('price')
 
-                volume = data.get('volume', 0)
+                volume = data.get('volume')
 
-                change_pct = data.get('changePercent', 0)
+                change_pct = data.get('changePercent')
 
 
 
                 # 快速筛选条件
 
-                if (price > 1 and  # 价格高于$1
+                if (price is not None and price > 1 and  # 价格高于$1
 
-                    volume > 1000 and  # 成交量大于1k
+                    volume is not None and volume > 1000 and  # 成交量大于1k
 
-                    abs(change_pct) < 50):  # 涨跌幅小于50%
+                    change_pct is not None and abs(change_pct) < 50):  # 涨跌幅小于50%
 
                     shortlist.append(symbol)
 
@@ -9458,7 +9802,16 @@ def ai_market_scanner():
 
         # 第三层：简化分析（不调用AI）
 
-        print('=== 第三层：简化分析 ===')
+        print('=== 第三层：AI分析 ===')
+
+        # Check AI config once before the loop
+        _ai_cfg, _ai_src = resolve_ai_config(require_user_config=True)
+        _ai_has_key = bool(_ai_cfg.get('apiKey') and _ai_cfg['apiKey'].strip())
+        _ai_test_status = _ai_cfg.get('testStatus', 'not_configured')
+        _ai_provider = _ai_cfg.get('provider', '')
+        _ai_model = _ai_cfg.get('model', '')
+        _ai_can_call = _ai_has_key and _ai_test_status == 'connected'
+        print(f'[Scanner AI] can_call={_ai_can_call} provider={_ai_provider} model={_ai_model} source={_ai_src} testStatus={_ai_test_status}')
 
         results = []
 
@@ -9474,47 +9827,47 @@ def ai_market_scanner():
 
                 stock_data = batch_data.get(symbol, {})
 
+                price = stock_data.get('price')
 
+                change_pct = stock_data.get('changePercent')
 
-                # 简化分析：基于价格变化判断趋势
-
-                price = stock_data.get('price', 0)
-
-                change_pct = stock_data.get('changePercent', 0)
-
-                volume = stock_data.get('volume', 0)
+                volume = stock_data.get('volume')
 
 
 
-                # 简单趋势判断
+                # AI analysis
+                ai_result = None
+                if _ai_can_call:
+                    try:
+                        print(f'[Scanner AI] 调用AI分析 {symbol}')
+                        ai_result = analyze_trend_with_deepseek(symbol, stock_data, None, None)
+                        print(f'[Scanner AI] {symbol} AI分析完成: success={ai_result.get("success")}')
+                    except Exception as ai_e:
+                        print(f'[Scanner AI] {symbol} AI分析异常: {ai_e}')
+                        ai_result = {'success': False, 'error': str(ai_e), 'aiError': True}
 
-                if change_pct > 2:
+                # Extract AI fields
+                ai_called = _ai_can_call
+                ai_source = _ai_src if _ai_can_call else 'not_configured'
+                ai_error = None
+                trend_label = None
+                trend_score = None
+                trend_confidence = None
+                ai_reasoning = None
+                scanner_reason = None
 
-                    trend_label = 'Bullish'
-
-                    trend_score = 70
-
-                elif change_pct < -2:
-
-                    trend_label = 'Bearish'
-
-                    trend_score = 30
-
+                if ai_result and ai_result.get('success'):
+                    trend_label = ai_result.get('trendLabel')
+                    trend_score = ai_result.get('trendScore')
+                    trend_confidence = ai_result.get('trendConfidence')
+                    ai_reasoning = ai_result.get('aiReasoning')
+                    scanner_reason = ai_result.get('scannerReason')
+                elif ai_result:
+                    ai_error = ai_result.get('error', 'AI analysis failed')
+                    scanner_reason = ai_error
                 else:
-
-                    trend_label = 'Neutral'
-
-                    trend_score = 50
-
-
-
-                # 如果成交量高，加强趋势信号
-
-                if volume > 100000 and abs(change_pct) > 1:
-
-                    trend_label = f'Strong {trend_label}'
-
-                    trend_score = trend_score + 10 if trend_score > 50 else trend_score - 10
+                    ai_error = 'ai_not_configured' if not _ai_has_key else 'ai_not_tested' if _ai_test_status != 'connected' else 'ai_not_called'
+                    scanner_reason = ai_error
 
 
 
@@ -9522,7 +9875,7 @@ def ai_market_scanner():
 
                     'symbol': symbol,
 
-                    'companyName': stock_data.get('name') or symbol,
+                    'companyName': stock_data.get('name') or None,
 
                     'price': price,
 
@@ -9532,11 +9885,11 @@ def ai_market_scanner():
 
                     'volume': volume,
 
-                    'hasValidVolume': volume > 0,
+                    'hasValidVolume': bool(volume and volume > 0),
 
                     'dataSource': stock_data.get('dataSource', 'unknown'),
 
-                    'sector': stock_data.get('sector', 'Unknown'),
+                    'sector': stock_data.get('sector') or None,
 
                     'newsSentiment': None,
 
@@ -9552,19 +9905,23 @@ def ai_market_scanner():
 
                     'trendScore': trend_score,
 
-                    'trendConfidence': None,
+                    'trendConfidence': trend_confidence,
 
-                    'scannerReason': f'Price change: {change_pct:.2f}%, Volume: {volume}',
+                    'scannerReason': scanner_reason,
 
-                    'analysisSource': 'rule_based',
+                    'analysisSource': 'ai' if _ai_can_call else 'unavailable',
 
-                    'aiCalled': False,
+                    'aiCalled': ai_called,
 
-                    'aiSource': 'unavailable',
+                    'aiSource': ai_source,
 
-                    'aiModel': None,
+                    'aiProvider': _ai_provider if _ai_can_call else None,
 
-                    'aiError': 'No AI call in simplified scanner',
+                    'aiModel': _ai_model if _ai_can_call else None,
+
+                    'aiError': ai_error,
+
+                    'aiReasoning': ai_reasoning,
 
                     'dataQuality': 'PARTIAL' if not (price and volume) else 'GOOD',
 
@@ -9576,7 +9933,7 @@ def ai_market_scanner():
 
                         'news': 'Not fetched',
 
-                        'aiData': 'Not called (simplified scanner)'
+                        'aiData': ai_source
 
                     },
 
@@ -10208,13 +10565,16 @@ def get_stock_data_for_scanner(symbol):
 
         }
 
-def fetch_finnhub_news(symbol):
+def fetch_finnhub_news(symbol, finnhub_cfg=None):
     """从Finnhub获取股票新闻"""
     try:
-        print(f'[Finnhub新闻] 获取 {symbol} 新闻')
+        if finnhub_cfg is None:
+            finnhub_cfg, _fh_src = resolve_finnhub_config(require_user_config=True)
+        api_key = finnhub_cfg.get('api_key', '')
+        base_url = finnhub_cfg.get('base_url', 'https://finnhub.io/api/v1')
 
         # 检查API密钥
-        if not FINNHUB_API_KEY:
+        if not api_key:
             print(f'[Finnhub新闻] Finnhub API密钥未配置')
             return None
 
@@ -10231,12 +10591,12 @@ def fetch_finnhub_news(symbol):
         to_str = to_date.strftime('%Y-%m-%d')
 
         # 构建API URL
-        url = f'{FINNHUB_BASE_URL}/company-news'
+        url = f'{base_url}/company-news'
         params = {
             'symbol': symbol,
             'from': from_str,
             'to': to_str,
-            'token': FINNHUB_API_KEY
+            'token': api_key
         }
 
         print(f'[Finnhub新闻] 请求URL: {url}')
@@ -10446,40 +10806,33 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
 
         # 检查是否有用户配置的API密钥
-        api_key = ai_provider_config_state.get('apiKey', '')
-
-        print(f'[DeepSeek分析] API密钥检查: 长度={len(api_key)}, 前10位={api_key[:10] if api_key else "N/A"}')
-        print(f'[DeepSeek分析] AI配置状态: {ai_provider_config_state}')
+        _resolved_ai, _ai_source = resolve_ai_config(require_user_config=True)
+        api_key = _resolved_ai.get('apiKey', '')
+        safe_print(f'[DeepSeek分析] API密钥检查: source={_ai_source}, hasKey={bool(api_key and api_key.strip())}, len={len(api_key)}, provider={_resolved_ai.get("provider","")}')
 
         # 严格验证：必须由用户在AI Configuration页面配置API密钥
         if not api_key or api_key.strip() == '':
-            print(f'[DeepSeek分析] 错误: 用户未在AI Configuration页面配置API密钥 {symbol}')
+            safe_print(f'[DeepSeek分析] 错误: 用户未在AI Configuration页面配置API密钥 {symbol}')
             return {
-                'error': 'No user-provided AI API key found',
+                'success': False,
+                'error': 'AI provider is not configured for this user. Open Settings and save your AI API key.',
                 'stage': 'ai_config',
-                'provider': ai_provider_config_state.get('provider', 'DeepSeek'),
+                'aiError': True,
+                'skipRetry': True,
+                'provider': _resolved_ai.get('provider', 'DeepSeek'),
+                'providerStatus': None,
+                'providerMessage': 'No API key configured',
                 'trendLabel': None,
-
                 'trendScore': None,
-
                 'trendConfidence': None,
-
                 'scannerReason': None,
-
                 'trendScoreDetail': None,
-
                 'momentumScore': None,
-
                 'volumeScore': None,
-
                 'volatilityScore': None,
-
                 'structureScore': None,
-
                 'newsScore': None,
-
                 'aiReasoning': None
-
             }
 
 
@@ -10520,13 +10873,13 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
             'volume': stock_data.get('volume'),  # 保留None如果缺失
 
-            'sector': profile_data.get('finnhubSector', 'Unknown'),
+            'sector': profile_data.get('finnhubSector') or None,
 
-            'newsSentiment': news_data.get('sentiment', 'Mixed'),
+            'newsSentiment': news_data.get('sentiment') or None,
 
-            'eventRisk': news_data.get('eventRisk', 'Low'),
+            'eventRisk': news_data.get('eventRisk') or None,
 
-            'topCatalyst': news_data.get('topCatalyst', 'No recent catalyst'),
+            'topCatalyst': news_data.get('topCatalyst') or None,
 
             'newsCount': news_data.get('newsCount', 0)
 
@@ -10738,7 +11091,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         payload = {
 
-            'model': ai_provider_config_state.get('model', 'deepseek-chat'),
+            'model': _resolved_ai.get('model', 'deepseek-chat'),
 
             'messages': [{'role': 'user', 'content': prompt}],
 
@@ -10752,7 +11105,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
 
 
-        base_url = ai_provider_config_state.get('baseURL', 'https://api.deepseek.com')
+        base_url = _resolved_ai.get('baseURL', 'https://api.deepseek.com')
 
         if not base_url.startswith('http'):
 
@@ -10766,7 +11119,8 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
             headers=headers,
 
-            json_data=payload
+            json_data=payload,
+            provider=_resolved_ai.get('provider')
 
             # 移除timeout，让AI分析可以自由完成，不人为限制时间
 
@@ -10780,7 +11134,30 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
             ai_response = result['choices'][0]['message']['content']
 
-
+            # Check for empty response content
+            if not ai_response or not ai_response.strip():
+                print(f'[DeepSeek分析] 错误: AI返回空内容 {symbol}')
+                return {
+                    'success': False,
+                    'error': 'AI returned empty response',
+                    'stage': 'ai_empty_response',
+                    'aiError': True,
+                    'skipRetry': True,
+                    'provider': _resolved_ai.get('provider', 'DeepSeek'),
+                    'providerStatus': 200,
+                    'providerMessage': 'Empty response content',
+                    'trendLabel': None,
+                    'trendScore': None,
+                    'trendConfidence': None,
+                    'scannerReason': None,
+                    'trendScoreDetail': None,
+                    'momentumScore': None,
+                    'volumeScore': None,
+                    'volatilityScore': None,
+                    'structureScore': None,
+                    'newsScore': None,
+                    'aiReasoning': None
+                }
 
             # 打印AI原始响应以便调试
 
@@ -10935,8 +11312,11 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
                 print(f'DeepSeek分析 {symbol} 成功: {analysis_result["trendLabel"]}')
 
                 # 标记分析来源
-
                 analysis_result['analysisSource'] = 'deepseek'
+                analysis_result['aiUsed'] = True
+                analysis_result['provider'] = _resolved_ai.get('provider', 'DeepSeek')
+                analysis_result['model'] = _resolved_ai.get('model', 'deepseek-chat')
+                analysis_result['configSource'] = _ai_source
 
                 return analysis_result
 
@@ -10947,59 +11327,56 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
                 print(f'解析DeepSeek响应失败: {str(e)}，返回null数据')
 
                 return {
-
+                    'success': False,
+                    'error': f'AI response parsing failed: {str(e)[:100]}',
+                    'stage': 'ai_parse',
+                    'aiError': True,
+                    'skipRetry': True,
+                    'provider': _resolved_ai.get('provider', 'DeepSeek'),
+                    'providerStatus': None,
+                    'providerMessage': str(e)[:200],
                     'trendLabel': None,
-
                     'trendScore': None,
-
                     'trendConfidence': None,
-
                     'scannerReason': None,
-
                     'trendScoreDetail': None,
-
                     'momentumScore': None,
-
                     'volumeScore': None,
-
                     'volatilityScore': None,
-
                     'structureScore': None,
-
                     'newsScore': None,
-
                     'aiReasoning': None
-
                 }
 
         else:
 
-            print(f'DeepSeek API调用失败: {response.status_code}，返回null数据')
+            error_body = ''
+            try:
+                error_body = response.text[:200]
+            except:
+                pass
+            print(f'DeepSeek API调用失败: {response.status_code}，响应: {error_body}')
 
             return {
-
+                'success': False,
+                'error': f'AI API returned status {response.status_code}: {error_body}',
+                'stage': 'ai_api_call',
+                'aiError': True,
+                'skipRetry': True,
+                'provider': _resolved_ai.get('provider', 'DeepSeek'),
+                'providerStatus': response.status_code,
+                'providerMessage': error_body[:200],
                 'trendLabel': None,
-
                 'trendScore': None,
-
                 'trendConfidence': None,
-
                 'scannerReason': None,
-
                 'trendScoreDetail': None,
-
                 'momentumScore': None,
-
                 'volumeScore': None,
-
                 'volatilityScore': None,
-
                 'structureScore': None,
-
                 'newsScore': None,
-
                 'aiReasoning': None
-
             }
 
 
@@ -11009,9 +11386,14 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
         print(f'DeepSeek分析失败: {str(e)}，不使用本地fallback，返回空AI数据')
 
         return {
+            'success': False,
             'error': f'AI analysis failed: {str(e)[:100]}',
             'stage': 'ai_exception',
-            'provider': ai_provider_config_state.get('provider', 'unknown'),
+            'aiError': True,
+            'skipRetry': True,
+            'provider': _resolved_ai.get('provider', 'unknown') if '_resolved_ai' in locals() else 'unknown',
+            'providerStatus': None,
+            'providerMessage': str(e)[:200],
             'trendLabel': None,
             'trendScore': None,
             'trendConfidence': None,
@@ -11235,9 +11617,9 @@ def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
 
         # 6. 新闻分析 (10%)
 
-        sentiment = news_data.get('sentiment', 'Mixed') if news_data else 'Mixed'
+        sentiment = news_data.get('sentiment') if news_data else None
 
-        event_risk = news_data.get('eventRisk', 'Low') if news_data else 'Low'
+        event_risk = news_data.get('eventRisk') if news_data else None
 
 
 
@@ -11397,11 +11779,11 @@ def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
 
         return {
 
-            'trendLabel': 'Neutral',
+            'trendLabel': None,
 
-            'trendScore': 50,
+            'trendScore': None,
 
-            'trendConfidence': 0.5,
+            'trendConfidence': None,
 
             'scannerReason': f'Analysis error: {str(e)[:50]}'
 
@@ -11632,49 +12014,21 @@ def get_trading_account():
 
         return jsonify({'success': False, 'error': f'Invalid mode: {mode}. Use "paper" or "real".', 'mode': mode, 'available': False})
 
-    # Determine base URL and credentials
-
-    if mode == 'real':
-
-        api_key = alpaca_config_state.get('live_api_key', '')
-
-        api_secret = alpaca_config_state.get('live_api_secret', '')
-
-        base_url = 'https://api.alpaca.markets'
-
-    else:
-
-        # mode == 'paper': use paper credentials if configured, else use live
-
-        paper_key = alpaca_config_state.get('paper_api_key', '')
-
-        paper_secret = alpaca_config_state.get('paper_api_secret', '')
-
-        if paper_key and paper_secret:
-
-            api_key = paper_key
-
-            api_secret = paper_secret
-
-            base_url = 'https://paper-api.alpaca.markets'
-
-        else:
-
-            # No paper keys configured - reuse live credentials on live base URL
-
-            api_key = alpaca_config_state.get('live_api_key', '')
-
-            api_secret = alpaca_config_state.get('live_api_secret', '')
-
-            base_url = 'https://api.alpaca.markets'
+    # Determine base URL and credentials — strict user config only
+    resolved, _alpaca_src = resolve_alpaca_config(mode, require_user_config=True)
+    api_key = resolved.get('api_key', '')
+    api_secret = resolved.get('api_secret', '')
+    base_url = resolved.get('base_url', 'https://paper-api.alpaca.markets' if mode == 'paper' else 'https://api.alpaca.markets')
 
     if not api_key or not api_secret:
 
-        error_msg = 'Real trading account is not configured' if mode == 'real' else 'Trading account is not configured'
+        reason = f'alpaca_{mode}_not_configured'
+
+        error_msg = f'Alpaca {mode} trading account is not configured. Please save your API keys in Settings.'
 
         print(f'=== {error_msg} ===')
 
-        return jsonify({'success': False, 'error': error_msg, 'mode': mode, 'available': False})
+        return jsonify({'success': False, 'error': error_msg, 'mode': mode, 'available': False, 'configured': False, 'reason': reason})
 
     try:
 
@@ -11765,6 +12119,380 @@ def get_status():
 
 
 
+@app.route('/api/dashboard/status', methods=['GET'])
+
+def dashboard_status():
+
+    """Return per-user config state for Dashboard System Status panel.
+    Uses strict user-only resolvers — never falls back to global .env keys."""
+
+    try:
+
+        alpaca_cfg, alpaca_status = resolve_alpaca_config('market_data', require_user_config=True)
+
+        finnhub_cfg, finnhub_status = resolve_finnhub_config_strict_user()
+
+        has_alpaca = alpaca_status in ('saved_market_data', 'paper_fallback') and bool(alpaca_cfg.get('api_key'))
+
+        has_finnhub = finnhub_status == 'ok'
+
+        # Determine overall auth/config status
+        if alpaca_status == 'auth_required' and finnhub_status == 'auth_required':
+            return jsonify({
+                'marketData': 'AUTH_REQUIRED',
+                'quoteFeed': 'AUTH_REQUIRED',
+                'brokerConnection': 'AUTH_REQUIRED',
+                'environment': 'Unknown',
+                'configStatus': 'auth_required',
+            })
+
+        if has_alpaca:
+
+            market_data_status = 'ONLINE'
+
+            broker_status = 'PAPER'
+
+        elif has_finnhub:
+
+            market_data_status = 'ONLINE'
+
+            broker_status = 'CONFIG_REQUIRED'
+
+        else:
+
+            market_data_status = 'CONFIG_REQUIRED'
+
+            broker_status = 'CONFIG_REQUIRED'
+
+        quote_feed_status = 'ONLINE' if (has_alpaca or has_finnhub) else 'CONFIG_REQUIRED'
+
+        return jsonify({
+
+            'marketData': market_data_status,
+
+            'quoteFeed': quote_feed_status,
+
+            'brokerConnection': broker_status,
+
+            'environment': 'Alpaca Sandbox (Paper) — per-user',
+
+            'hasAlpacaConfig': has_alpaca,
+
+            'hasFinnhubConfig': has_finnhub,
+
+            'configStatus': 'ok' if (has_alpaca or has_finnhub) else 'config_required',
+
+        })
+
+    except Exception as e:
+
+        return jsonify({
+
+            'marketData': 'ERROR',
+
+            'quoteFeed': 'ERROR',
+
+            'brokerConnection': 'UNKNOWN',
+
+            'environment': 'Unknown',
+
+            'configStatus': 'error',
+
+            'error': str(e),
+
+        }), 200
+
+
+
+@app.route('/api/market/search', methods=['GET'])
+@app.route('/market/search', methods=['GET'])
+def market_search():
+    """Search for stocks by symbol or company name.
+    Uses per-user Alpaca + Finnhub config from Supabase. No .env fallback.
+    Returns matching stock data with Alpaca as primary price source.
+    """
+    start_time = time.time()
+    try:
+        q = request.args.get('q', '').strip()
+        if not q:
+            return jsonify({"results": [], "count": 0, "status": "empty_query"}), 200
+
+        # Normalize: uppercase for symbol matching
+        q_upper = q.upper()
+
+        # Resolve per-user config (strict, no .env fallback)
+        alpaca_cfg, alpaca_status = resolve_alpaca_config('market_data', require_user_config=True)
+        finnhub_cfg, finnhub_status = resolve_finnhub_config_strict_user()
+        has_alpaca = alpaca_status in ('saved_market_data', 'paper_fallback') and bool(alpaca_cfg.get('api_key'))
+        has_finnhub = finnhub_status == 'ok'
+
+        # Auth/config checks
+        if alpaca_status == 'missing' and finnhub_status == 'auth_required':
+            return jsonify({"results": [], "count": 0, "configStatus": "auth_required"}), 200
+        if not has_alpaca and not has_finnhub:
+            return jsonify({"results": [], "count": 0, "configStatus": "config_required"}), 200
+
+        results = []
+        seen_symbols = set()
+
+        # --- Step 1: Try direct symbol lookup via Alpaca ---
+        # Detect if query looks like a ticker: 1-10 chars, letters/dots only
+        import re
+        is_ticker_like = bool(re.match(r'^[A-Za-z.]{1,10}$', q))
+
+        if is_ticker_like and has_alpaca:
+            snapshots, _ = fetch_alpaca_stock_data_snapshot([q_upper], config=alpaca_cfg)
+            if q_upper in snapshots and snapshots[q_upper].get('price') is not None:
+                stock = snapshots[q_upper]
+                stock['symbol'] = q_upper
+                stock['priceSource'] = 'alpaca'
+                stock['matchType'] = 'symbol'
+                # Try to get company name from Finnhub profile
+                if has_finnhub:
+                    try:
+                        profile_data, _ = fetch_finnhub_profile(q_upper, finnhub_cfg)
+                        if profile_data:
+                            if profile_data.get('name'):
+                                stock['name'] = profile_data['name']
+                            if profile_data.get('finnhubIndustry'):
+                                stock['industry'] = profile_data['finnhubIndustry']
+                                stock.setdefault('sector', profile_data['finnhubIndustry'])
+                            if profile_data.get('marketCapitalization'):
+                                stock['marketCap'] = profile_data['marketCapitalization'] * 1000000
+                    except Exception:
+                        pass
+                results.append(stock)
+                seen_symbols.add(q_upper)
+
+        # --- Step 2: Finnhub symbol/company search for broader matches ---
+        if has_finnhub and len(results) < 10:
+            try:
+                finnhub_base = finnhub_cfg.get('base_url', 'https://finnhub.io/api/v1')
+                search_url = f"{finnhub_base}/search"
+                search_params = {'q': q, 'token': finnhub_cfg['api_key']}
+                resp = requests.get(search_url, params=search_params, timeout=5)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    matches = data.get('result', [])
+                    # Filter to common stock types, take top 10
+                    candidate_symbols = []
+                    for m in matches:
+                        sym = m.get('symbol', '')
+                        if sym and sym not in seen_symbols:
+                            # Finnhub search returns various types; prefer common stocks
+                            candidate_symbols.append(sym)
+                            if len(candidate_symbols) >= 10:
+                                break
+
+                    # Batch fetch via Alpaca for matched symbols
+                    if candidate_symbols and has_alpaca:
+                        batch_results, _ = fetch_alpaca_stock_data_snapshot(candidate_symbols, config=alpaca_cfg)
+                        for sym in candidate_symbols:
+                            if sym in batch_results and batch_results[sym].get('price') is not None:
+                                stock = batch_results[sym]
+                                stock['symbol'] = sym
+                                stock['priceSource'] = 'alpaca'
+                                stock['matchType'] = 'company'
+                                results.append(stock)
+                                seen_symbols.add(sym)
+
+                    # For symbols where Alpaca had no data, try Finnhub quote fallback
+                    if not has_alpaca:
+                        # No Alpaca at all — use Finnhub quote for all matches
+                        for m in matches[:10]:
+                            sym = m.get('symbol', '')
+                            if sym and sym not in seen_symbols:
+                                desc = m.get('description', '')
+                                try:
+                                    quote_data, quote_err = fetch_finnhub_quote(sym, finnhub_cfg)
+                                    if quote_data and not quote_err:
+                                        stock = {
+                                            'symbol': sym,
+                                            'name': desc or sym,
+                                            'price': quote_data.get('c'),
+                                            'change': quote_data.get('d'),
+                                            'changePercent': quote_data.get('dp'),
+                                            'previousClose': quote_data.get('pc'),
+                                            'dayHigh': quote_data.get('h'),
+                                            'dayLow': quote_data.get('l'),
+                                            'open': quote_data.get('o'),
+                                            'volume': quote_data.get('v'),
+                                            'priceSource': 'finnhub_fallback',
+                                            'matchType': 'company',
+                                            'dataSource': 'Finnhub',
+                                            'timestamp': int(time.time()),
+                                        }
+                                        results.append(stock)
+                                        seen_symbols.add(sym)
+                                except Exception:
+                                    pass
+            except Exception as e:
+                safe_print(f'[Market Search] Finnhub search error: {e}')
+
+        # --- Step 3: Build response ---
+        if not results:
+            return jsonify({
+                "results": [],
+                "count": 0,
+                "status": "not_found",
+                "query": q,
+                "message": "No matching company or symbol found. Please check your input.",
+                "responseTime": round(time.time() - start_time, 3),
+            }), 200
+
+        return jsonify({
+            "results": results,
+            "count": len(results),
+            "status": "ok",
+            "query": q,
+            "responseTime": round(time.time() - start_time, 3),
+        }), 200
+
+    except Exception as e:
+        return jsonify({
+            "results": [],
+            "count": 0,
+            "status": "error",
+            "error": str(e),
+        }), 200
+
+
+# ── User Market Symbols CRUD ──
+
+@app.route('/api/market/user-symbols', methods=['GET'])
+@app.route('/market/user-symbols', methods=['GET'])
+def get_user_market_symbols():
+    """Get the authenticated user's saved market symbols.
+    Returns list of symbols. Falls back to DEFAULT_SYMBOLS if user has none saved.
+    """
+    try:
+        user = get_supabase_user()
+        if not user:
+            return jsonify({"symbols": [], "status": "auth_required"}), 200
+
+        user_cfg = get_user_config(user['id'], 'market_symbols')
+        if user_cfg and isinstance(user_cfg.get('symbols'), list):
+            symbols = user_cfg['symbols']
+            return jsonify({"symbols": symbols, "count": len(symbols), "status": "ok"}), 200
+
+        # No saved symbols — return defaults
+        return jsonify({"symbols": DEFAULT_SYMBOLS, "count": len(DEFAULT_SYMBOLS), "status": "default"}), 200
+
+    except Exception as e:
+        return jsonify({"symbols": [], "status": "error", "error": str(e)}), 200
+
+
+@app.route('/api/market/user-symbols', methods=['POST'])
+@app.route('/market/user-symbols', methods=['POST'])
+def add_user_market_symbols():
+    """Add symbols to the authenticated user's saved list.
+    Expects JSON body: {"symbols": ["AAPL", "TSLA", ...]}
+    Enforces MAX_MARKET_SYMBOLS = 100 limit.
+    """
+    MAX_MARKET_SYMBOLS = 100
+    try:
+        user = get_supabase_user()
+        if not user:
+            return jsonify({"status": "auth_required"}), 200
+
+        data = request.get_json(force=True)
+        new_symbols = data.get('symbols', [])
+        if not isinstance(new_symbols, list) or not new_symbols:
+            return jsonify({"status": "error", "error": "symbols must be a non-empty list"}), 400
+
+        # Normalize
+        new_symbols = [s.strip().upper() for s in new_symbols if isinstance(s, str) and s.strip()]
+
+        # Get current saved symbols
+        user_cfg = get_user_config(user['id'], 'market_symbols')
+        current_symbols = []
+        if user_cfg and isinstance(user_cfg.get('symbols'), list):
+            current_symbols = user_cfg['symbols']
+
+        # Merge: add new symbols that aren't already in the list
+        added = []
+        for sym in new_symbols:
+            if sym not in current_symbols:
+                if len(current_symbols) + len(added) >= MAX_MARKET_SYMBOLS:
+                    return jsonify({
+                        "status": "limit_reached",
+                        "error": f"Maximum of {MAX_MARKET_SYMBOLS} symbols reached. Please remove some before adding more.",
+                        "added": added,
+                        "symbols": current_symbols + added,
+                        "count": len(current_symbols) + len(added),
+                    }), 200
+                added.append(sym)
+
+        if not added:
+            return jsonify({
+                "status": "ok",
+                "added": [],
+                "symbols": current_symbols,
+                "count": len(current_symbols),
+                "message": "All symbols already in list",
+            }), 200
+
+        # Save updated list
+        updated_symbols = current_symbols + added
+        ok, err = save_user_config(user['id'], 'market_symbols', {'symbols': updated_symbols})
+        if not ok:
+            return jsonify({"status": "error", "error": f"Failed to save: {err}"}), 500
+
+        return jsonify({
+            "status": "ok",
+            "added": added,
+            "symbols": updated_symbols,
+            "count": len(updated_symbols),
+        }), 200
+
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 200
+
+
+@app.route('/api/market/user-symbols/<symbol>', methods=['DELETE'])
+@app.route('/market/user-symbols/<symbol>', methods=['DELETE'])
+def delete_user_market_symbol(symbol):
+    """Remove a symbol from the authenticated user's saved list."""
+    try:
+        user = get_supabase_user()
+        if not user:
+            return jsonify({"status": "auth_required"}), 200
+
+        symbol_upper = symbol.strip().upper()
+
+        # Get current saved symbols
+        user_cfg = get_user_config(user['id'], 'market_symbols')
+        current_symbols = []
+        if user_cfg and isinstance(user_cfg.get('symbols'), list):
+            current_symbols = user_cfg['symbols']
+
+        if symbol_upper not in current_symbols:
+            return jsonify({
+                "status": "ok",
+                "removed": symbol_upper,
+                "symbols": current_symbols,
+                "count": len(current_symbols),
+                "message": "Symbol not in list",
+            }), 200
+
+        # Remove and save
+        updated_symbols = [s for s in current_symbols if s != symbol_upper]
+        ok, err = save_user_config(user['id'], 'market_symbols', {'symbols': updated_symbols})
+        if not ok:
+            return jsonify({"status": "error", "error": f"Failed to save: {err}"}), 500
+
+        return jsonify({
+            "status": "ok",
+            "removed": symbol_upper,
+            "symbols": updated_symbols,
+            "count": len(updated_symbols),
+        }), 200
+
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 200
+
+
+
 @app.route('/api/market/stocks', methods=['GET'])
 
 @app.route('/market/stocks', methods=['GET'])
@@ -11813,9 +12541,39 @@ def get_market_stocks():
 
 
 
-        # 调用snapshots endpoint
+        # 使用 market_data config (data.alpaca.markets) — strict user-only, no .env fallback
+        alpaca_cfg, alpaca_status = resolve_alpaca_config('market_data', require_user_config=True)
+        finnhub_cfg, finnhub_status = resolve_finnhub_config_strict_user()
+        has_alpaca = alpaca_status in ('saved_market_data', 'paper_fallback') and bool(alpaca_cfg.get('api_key'))
+        has_finnhub = finnhub_status == 'ok'
 
-        snapshots_results, snapshots_errors = fetch_alpaca_stock_data_snapshot(symbols)
+        # 没有登录用户 → auth_required
+        if alpaca_status == 'auth_required' and finnhub_status == 'auth_required':
+            return jsonify({
+                "stocks": [],
+                "count": 0,
+                "configStatus": "auth_required",
+                "configDetail": "Authentication required. Please sign in again.",
+                "dataSource": "None",
+                "successCount": 0,
+                "failedCount": len(symbols),
+            }), 200
+
+        # 登录了但没有配置任何 key → config_required
+        if not has_alpaca and not has_finnhub:
+            return jsonify({
+                "stocks": [],
+                "count": 0,
+                "configStatus": "config_required",
+                "configDetail": "No Alpaca or Finnhub API keys configured. Please configure in Settings / Configuration.",
+                "dataSource": "None",
+                "successCount": 0,
+                "failedCount": len(symbols),
+            }), 200
+
+        # 调用snapshots endpoint (传入已解析的config)
+
+        snapshots_results, snapshots_errors = fetch_alpaca_stock_data_snapshot(symbols, config=alpaca_cfg if has_alpaca else None)
 
 
 
@@ -11823,37 +12581,38 @@ def get_market_stocks():
 
         profile_results = {}
 
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        if has_finnhub:
+            with ThreadPoolExecutor(max_workers=5) as executor:
 
-            # 提交所有profile获取任务
+                # 提交所有profile获取任务
 
-            future_to_symbol = {
+                future_to_symbol = {
 
-                executor.submit(fetch_finnhub_profile, symbol): symbol
+                    executor.submit(fetch_finnhub_profile, symbol, finnhub_cfg): symbol
 
-                for symbol in symbols
+                    for symbol in symbols
 
-            }
+                }
 
 
 
-            # 收集结果
+                # 收集结果
 
-            for future in as_completed(future_to_symbol):
+                for future in as_completed(future_to_symbol):
 
-                symbol = future_to_symbol[future]
+                    symbol = future_to_symbol[future]
 
-                try:
+                    try:
 
-                    profile_data, profile_error = future.result()
+                        profile_data, profile_error = future.result()
 
-                    if profile_data and not profile_error:
+                        if profile_data and not profile_error:
 
-                        profile_results[symbol] = profile_data
+                            profile_results[symbol] = profile_data
 
-                except Exception as e:
+                    except Exception as e:
 
-                    print(f"[Finnhub Profile] 获取{symbol} profile数据异常: {e}")
+                        print(f"[Finnhub Profile] 获取{symbol} profile数据异常: {e}")
 
 
 
@@ -11876,10 +12635,12 @@ def get_market_stocks():
                     success_count += 1
 
                     stock_data['dataSource'] = "Alpaca"
+                    stock_data['priceSource'] = "alpaca"
 
                 else:
 
                     stock_data['dataSource'] = "Alpaca (无价格数据)"
+                    stock_data['priceSource'] = "missing"
 
 
 
@@ -11972,6 +12733,7 @@ def get_market_stocks():
                     "sector": None,
 
                     "dataSource": "Alpaca (API调用失败)",
+                    "priceSource": "missing",
 
                     "timestamp": int(time.time()),
 
@@ -11987,7 +12749,7 @@ def get_market_stocks():
 
                     print(f'[Market Stocks] Alpaca失败，尝试Finnhub quote回退: {symbol}')
 
-                    finnhub_quote, finnhub_error = fetch_finnhub_quote(symbol)
+                    finnhub_quote, finnhub_error = fetch_finnhub_quote(symbol, finnhub_cfg) if has_finnhub else (None, 'Finnhub not configured')
 
                     if finnhub_quote and not finnhub_error:
 
@@ -12010,6 +12772,7 @@ def get_market_stocks():
                         stock_data['volume'] = finnhub_quote.get('v')
 
                         stock_data['dataSource'] = 'Finnhub (Alpaca失败回退)'
+                        stock_data['priceSource'] = 'finnhub_fallback'
 
                         stock_data['error'] = None  # 清除错误，因为现在有数据了
 
@@ -12125,7 +12888,13 @@ def get_market_stocks():
 
             },
 
-            "alpacaErrorCount": len(snapshots_errors) if snapshots_errors else 0
+            "alpacaErrorCount": len(snapshots_errors) if snapshots_errors else 0,
+
+            "configStatus": "ok" if (has_alpaca or has_finnhub) else "config_required",
+
+            "hasAlpacaConfig": has_alpaca,
+
+            "hasFinnhubConfig": has_finnhub
 
         }
 
@@ -12213,11 +12982,7 @@ def debug_alpaca():
 
 
 
-        print(f'[Debug Alpaca] 测试URL: {test_url}')
-
-        print(f'[Debug Alpaca] 环境: {environment}')
-
-        print(f'[Debug Alpaca] API Key前10位: {api_key[:10] if api_key else "None"}...')
+        safe_print(f'[Debug Alpaca] testUrl={test_url} env={environment} hasKey={bool(api_key)}')
 
 
 
@@ -12229,9 +12994,8 @@ def debug_alpaca():
 
             "environment": environment,
 
-            "apiKeyPreview": f"{api_key[:10]}...{api_key[-4:] if api_key and len(api_key) > 14 else ''}" if api_key else "None",
-
-            "apiSecretPreview": f"{api_secret[:10]}...{api_secret[-4:] if api_secret and len(api_secret) > 14 else ''}" if api_secret else "None",
+            "hasApiKey": bool(api_key),
+            "hasApiSecret": bool(api_secret),
 
             "testUrl": test_url,
 
@@ -12289,7 +13053,16 @@ def get_stock_detail(symbol):
 
         print(f'[股票详情] 开始获取 {symbol_upper} 数据，优先使用Alpaca')
 
+        # Resolve per-user config (strict, no .env fallback)
+        alpaca_cfg, alpaca_status = resolve_alpaca_config('market_data', require_user_config=True)
+        finnhub_cfg, finnhub_status = resolve_finnhub_config_strict_user()
+        has_alpaca = alpaca_status in ('saved_market_data', 'paper_fallback') and bool(alpaca_cfg.get('api_key'))
+        has_finnhub = finnhub_status == 'ok'
 
+        if alpaca_status == 'auth_required' and finnhub_status == 'auth_required':
+            return jsonify({"symbol": symbol_upper, "error": "Authentication required", "configStatus": "auth_required"}), 200
+        if not has_alpaca and not has_finnhub:
+            return jsonify({"symbol": symbol_upper, "error": "No API keys configured", "configStatus": "config_required"}), 200
 
         # 首先尝试获取Alpaca实时数据
 
@@ -12301,7 +13074,7 @@ def get_stock_detail(symbol):
 
             print(f'[股票详情] 调用Alpaca snapshots接口')
 
-            snapshots_results, snapshots_errors = fetch_alpaca_stock_data_snapshot([symbol_upper])
+            snapshots_results, snapshots_errors = fetch_alpaca_stock_data_snapshot([symbol_upper], config=alpaca_cfg if has_alpaca else None)
 
             print(f'[股票详情] snapshots_results keys: {list(snapshots_results.keys())}')
 
@@ -12337,17 +13110,21 @@ def get_stock_detail(symbol):
 
         # 并行获取Finnhub数据（用于补充公司信息）
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        quote_data, quote_error = None, 'Finnhub not configured'
+        profile_data, profile_error = None, 'Finnhub not configured'
 
-            future_quote = executor.submit(fetch_finnhub_quote, symbol_upper)
+        if has_finnhub:
+            with ThreadPoolExecutor(max_workers=2) as executor:
 
-            future_profile = executor.submit(fetch_finnhub_profile, symbol_upper)
+                future_quote = executor.submit(fetch_finnhub_quote, symbol_upper, finnhub_cfg)
+
+                future_profile = executor.submit(fetch_finnhub_profile, symbol_upper, finnhub_cfg)
 
 
 
-            quote_data, quote_error = future_quote.result()
+                quote_data, quote_error = future_quote.result()
 
-            profile_data, profile_error = future_profile.result()
+                profile_data, profile_error = future_profile.result()
 
 
 
@@ -12361,51 +13138,7 @@ def get_stock_detail(symbol):
 
 
 
-        # 股票名称映射
-
-        STOCK_NAMES = {
-
-            'AAPL': 'Apple Inc.',
-
-            'MSFT': 'Microsoft Corporation',
-
-            'GOOGL': 'Alphabet Inc.',
-
-            'AMZN': 'Amazon.com Inc.',
-
-            'TSLA': 'Tesla Inc.',
-
-            'NVDA': 'NVIDIA Corporation',
-
-            'META': 'Meta Platforms Inc.',
-
-            'JPM': 'JPMorgan Chase & Co.',
-
-            'JNJ': 'Johnson & Johnson',
-
-            'V': 'Visa Inc.',
-
-            'AMD': 'Advanced Micro Devices Inc.',
-
-            'NFLX': 'Netflix Inc.',
-
-            'INTC': 'Intel Corporation',
-
-            'PYPL': 'PayPal Holdings Inc.',
-
-            'ADBE': 'Adobe Inc.',
-
-            'CSCO': 'Cisco Systems Inc.',
-
-            'PEP': 'PepsiCo Inc.',
-
-            'COST': 'Costco Wholesale Corporation',
-
-            'DIS': 'The Walt Disney Company',
-
-            'WMT': 'Walmart Inc.'
-
-        }
+        # Company names come from Finnhub profile data — no hardcoded fallback
 
 
 
@@ -12427,7 +13160,7 @@ def get_stock_detail(symbol):
 
                     "symbol": symbol_upper,
 
-                    "name": (profile_data.get('name') if profile_data else None) or STOCK_NAMES.get(symbol_upper) or symbol_upper,
+                    "name": profile_data.get('name') if profile_data else None,
 
                     "price": quote_data.get('c'),
 
@@ -12443,15 +13176,15 @@ def get_stock_detail(symbol):
 
                     "previousClose": quote_data.get('pc'),
 
-                    "marketCap": profile_data.get('marketCapitalization') if profile_data else None,
+                    "marketCap": (profile_data.get('marketCapitalization', 0) * 1000000) if profile_data and profile_data.get('marketCapitalization') else None,
 
                     "currency": "USD",
 
-                    "exchange": (profile_data.get('exchange') if profile_data else None) or 'Unknown',
+                    "exchange": profile_data.get('exchange') if profile_data else None,
 
-                    "industry": (profile_data.get('finnhubIndustry') or profile_data.get('finnhubSector') or 'Unknown') if profile_data else 'Unknown',
+                    "industry": (profile_data.get('finnhubIndustry') or profile_data.get('finnhubSector')) if profile_data else None,
 
-                    "sector": (profile_data.get('finnhubSector') or profile_data.get('finnhubIndustry') or 'Unknown') if profile_data else 'Unknown',
+                    "sector": (profile_data.get('finnhubSector') or profile_data.get('finnhubIndustry')) if profile_data else None,
 
                     "yearHigh": None,
 
@@ -12466,6 +13199,7 @@ def get_stock_detail(symbol):
                     "earningsDate": None,
 
                     "dataSource": "Finnhub (Alpaca失败回退)",
+                    "priceSource": "finnhub_fallback",
 
                     "timestamp": int(time.time()),
 
@@ -12495,7 +13229,7 @@ def get_stock_detail(symbol):
 
                     "symbol": symbol_upper,
 
-                    "name": STOCK_NAMES.get(symbol_upper, f"{symbol_upper} Inc."),
+                    "name": None,
 
                     "price": None,
 
@@ -12515,11 +13249,11 @@ def get_stock_detail(symbol):
 
                     "currency": "USD",
 
-                    "exchange": "Unknown",
+                    "exchange": None,
 
-                    "industry": "Unknown",
+                    "industry": None,
 
-                    "sector": "Unknown",
+                    "sector": None,
 
                     "yearHigh": None,
 
@@ -12534,6 +13268,7 @@ def get_stock_detail(symbol):
                     "earningsDate": None,
 
                     "dataSource": "Alpaca Snapshot",
+                    "priceSource": "missing",
 
                     "timestamp": int(time.time()),
 
@@ -12577,7 +13312,7 @@ def get_stock_detail(symbol):
 
             "symbol": symbol_upper,
 
-            "name": STOCK_NAMES.get(symbol_upper, f"{symbol_upper} Inc."),
+            "name": None,
 
             "price": current_price,
 
@@ -12595,13 +13330,14 @@ def get_stock_detail(symbol):
 
             "volume": alpaca_data.get('volume'),
 
-            "exchange": alpaca_data.get('exchange', 'NASDAQ'),
+            "exchange": alpaca_data.get('exchange'),
 
             "bid": alpaca_data.get('bid'),
 
             "ask": alpaca_data.get('ask'),
 
             "dataSource": "Alpaca Snapshot",
+            "priceSource": "alpaca",
 
             "timestamp": int(time.time()),
 
@@ -12649,9 +13385,9 @@ def get_stock_detail(symbol):
 
                 # 注意：exchange字段可能已被Alpaca覆盖
 
-                "industry": (profile_data.get('finnhubIndustry') or profile_data.get('finnhubSector') or 'Unknown'),
+                "industry": profile_data.get('finnhubIndustry') or profile_data.get('finnhubSector') or None,
 
-                "sector": (profile_data.get('finnhubSector') or profile_data.get('finnhubIndustry') or 'Unknown'),
+                "sector": profile_data.get('finnhubSector') or profile_data.get('finnhubIndustry') or None,
 
                 # 使用Alpaca计算的52周高低点
 
@@ -17387,7 +18123,7 @@ def ai_alpaca_portfolio_history():
 
         print(f'Params: {params}')
 
-        print(f'API Key: {api_key[:6]}...{api_key[-4:]}')
+        safe_print(f'[API] hasKey={bool(api_key)}')
 
         print(f'Environment: {environment}')
 
@@ -17987,7 +18723,8 @@ def infer_sector_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         # 检查是否有有效的API密钥
 
-        api_key = ai_provider_config_state.get('apiKey', '')
+        _resolved_ai, _ai_src = resolve_ai_config(require_user_config=True)
+        api_key = _resolved_ai.get('apiKey', '')
 
 
 
@@ -18085,7 +18822,7 @@ def infer_sector_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         payload = {
 
-            'model': ai_provider_config_state.get('model', 'deepseek-chat'),
+            'model': _resolved_ai.get('model', 'deepseek-chat'),
 
             'messages': [{'role': 'user', 'content': prompt}],
 
@@ -18099,7 +18836,7 @@ def infer_sector_with_deepseek(symbol, stock_data, news_data, profile_data):
 
 
 
-        base_url = ai_provider_config_state.get('baseURL', 'https://api.deepseek.com')
+        base_url = _resolved_ai.get('baseURL', 'https://api.deepseek.com')
 
         if not base_url.startswith('http'):
 
@@ -18115,7 +18852,8 @@ def infer_sector_with_deepseek(symbol, stock_data, news_data, profile_data):
 
             json_data=payload,
 
-            timeout=10
+            timeout=10,
+            provider=_resolved_ai.get('provider')
 
         )
 
@@ -18175,7 +18913,7 @@ def infer_sector_with_deepseek(symbol, stock_data, news_data, profile_data):
 
 
 
-def get_alpaca_news_data(symbol):
+def get_alpaca_news_data(symbol, alpaca_cfg=None):
 
     """从Alpaca获取股票新闻数据（辅助函数）"""
 
@@ -18185,19 +18923,20 @@ def get_alpaca_news_data(symbol):
 
 
 
-        # 检查Alpaca配置
-
-        alpaca_api_key = os.environ.get('APCA_API_KEY_ID')
-
-        alpaca_secret_key = os.environ.get('APCA_API_SECRET_KEY')
-
-
+        # 检查Alpaca配置 — use passed config or resolve from Supabase
+        if alpaca_cfg:
+            alpaca_api_key = alpaca_cfg.get('api_key', '')
+            alpaca_secret_key = alpaca_cfg.get('api_secret', '')
+        else:
+            _resolved, _src = resolve_alpaca_config('market_data', require_user_config=True)
+            alpaca_api_key = _resolved.get('api_key', '')
+            alpaca_secret_key = _resolved.get('api_secret', '')
 
         if not alpaca_api_key or not alpaca_secret_key:
 
             print(f'[Alpaca新闻] Alpaca API密钥未配置')
 
-            return None
+            return {'success': False, 'reason': 'alpaca_not_configured'}
 
 
 
@@ -18467,6 +19206,12 @@ def get_stock_news(symbol):
 
         source = None
 
+        # Resolve per-user configs (strict: no global/env fallback)
+        alpaca_cfg, _alpaca_src = resolve_alpaca_config('market_data', require_user_config=True)
+        finnhub_cfg, _finnhub_src = resolve_finnhub_config(require_user_config=True)
+        alpaca_configured = bool(alpaca_cfg.get('api_key'))
+        finnhub_configured = bool(finnhub_cfg.get('api_key'))
+
 
 
         # 1. 先尝试Alpaca新闻API
@@ -18475,7 +19220,7 @@ def get_stock_news(symbol):
 
             print(f'[新闻接口] 尝试Alpaca新闻API: {symbol_upper}')
 
-            alpaca_news = get_alpaca_news_data(symbol_upper)
+            alpaca_news = get_alpaca_news_data(symbol_upper, alpaca_cfg)
 
             if alpaca_news and alpaca_news.get('success') and alpaca_news.get('news'):
 
@@ -18503,7 +19248,7 @@ def get_stock_news(symbol):
 
                 print(f'[新闻接口] 尝试Finnhub新闻API: {symbol_upper}')
 
-                finnhub_news = fetch_finnhub_news(symbol_upper)
+                finnhub_news = fetch_finnhub_news(symbol_upper, finnhub_cfg=finnhub_cfg)
 
                 if finnhub_news:
 
@@ -18539,7 +19284,11 @@ def get_stock_news(symbol):
                 'news': [],
                 'source': 'none',
                 'hasNews': False,
-                'newsCount': 0
+                'newsCount': 0,
+                'dataSources': {
+                    'alpacaNewsConfigured': alpaca_configured,
+                    'finnhubConfigured': finnhub_configured,
+                }
             })
 
 
@@ -18666,7 +19415,12 @@ def get_stock_news(symbol):
 
             'responseTime': round(time.time() - start_time, 3),
 
-            'message': f'Found {len(news_items)} news items from {source.capitalize()}'
+            'message': f'Found {len(news_items)} news items from {source.capitalize()}',
+
+            'dataSources': {
+                'alpacaNewsConfigured': alpaca_configured,
+                'finnhubConfigured': finnhub_configured,
+            }
 
         }
 
@@ -18805,6 +19559,68 @@ def ai_analyze_single():
 
         print(f'[AI分析接口] 分析股票: {symbol_upper}')
 
+        # Check AI config and test status from Supabase user config
+        ai_cfg, ai_source = resolve_ai_config(require_user_config=True)
+        ai_has_key = bool(ai_cfg.get('apiKey') and ai_cfg['apiKey'].strip())
+        ai_test_status = ai_cfg.get('testStatus', 'not_configured')
+
+        # Detect masked key (stored key contains ****)
+        ai_key_is_masked = False
+        if not ai_has_key:
+            user = get_supabase_user()
+            if user:
+                raw_cfg = get_user_config(user['id'], 'ai_provider')
+                if raw_cfg and raw_cfg.get('apiKey') and '****' in raw_cfg['apiKey']:
+                    ai_key_is_masked = True
+
+        if not ai_has_key:
+            if ai_key_is_masked:
+                return jsonify({
+                    'success': False,
+                    'symbol': symbol_upper,
+                    'error': 'Stored AI key is masked. Re-enter the real API key in Settings.',
+                    'stage': 'ai_config',
+                    'aiError': True,
+                    'skipRetry': True,
+                    'analysisSource': 'unavailable',
+                    'aiCalled': False,
+                    'debug': {'configSource': ai_source, 'hasApiKey': False, 'keyIsMasked': True, 'testStatus': ai_test_status}
+                })
+            return jsonify({
+                'success': False,
+                'symbol': symbol_upper,
+                'error': 'AI Provider is not configured for this user. Open Settings and save your AI API key.',
+                'stage': 'ai_config',
+                'aiError': True,
+                'analysisSource': 'unavailable',
+                'aiCalled': False,
+                'aiSource': 'unavailable',
+                'skipRetry': True,
+                'debug': {
+                    'configSource': ai_source,
+                    'hasApiKey': False,
+                    'testStatus': ai_test_status,
+                }
+            })
+
+        if ai_test_status != 'connected':
+            return jsonify({
+                'success': False,
+                'symbol': symbol_upper,
+                'error': f'AI Provider has not passed Test AI Connection (status: {ai_test_status}). Go to Settings and click Test AI Connection.',
+                'stage': 'ai_not_tested',
+                'aiError': True,
+                'analysisSource': 'unavailable',
+                'aiCalled': False,
+                'aiSource': 'unavailable',
+                'skipRetry': True,
+                'debug': {
+                    'configSource': ai_source,
+                    'hasApiKey': True,
+                    'testStatus': ai_test_status,
+                }
+            })
+
 
 
         # 1. 获取市场数据 - 强制使用与UI完全相同的标准化数据
@@ -18817,107 +19633,22 @@ def ai_analyze_single():
 
         try:
 
-            print(f'[AI分析接口] 获取标准化市场数据 (与UI相同): {symbol_upper}')
+            print(f'[AI分析接口] 获取标准化市场数据: {symbol_upper}')
 
 
 
-            # 方法1: 直接调用UI使用的接口
-
-            print(f'[AI分析接口] 方法1: 调用UI接口 /api/market/stocks')
+            # 直接调用 snapshots 函数 (使用 market_data config)
+            alpaca_cfg, alpaca_src = resolve_alpaca_config('market_data', require_user_config=True)
 
             try:
 
-                ui_response = requests.get(
-
-                    f'http://127.0.0.1:8889/api/market/stocks',
-
-                    params={'symbols': symbol_upper},
-
-                    timeout=5
-
-                )
-
-
-
-                if ui_response.status_code == 200:
-
-                    ui_data = ui_response.json()
-
-                    if ui_data.get('stocks') and len(ui_data['stocks']) > 0:
-
-                        ui_stock = ui_data['stocks'][0]
-
-                        print(f'[AI分析接口] 从UI接口获取数据成功')
-
-                        print(f'[AI分析接口] UI数据: price={ui_stock.get("price")}, change%={ui_stock.get("changePercent")}, volume={ui_stock.get("volume")}')
-
-
-
-                        # 创建标准化的market_data结构
-
-                        market_data = {
-
-                            'price': ui_stock.get('price'),
-
-                            'changePercent': ui_stock.get('changePercent'),
-
-                            'volume': ui_stock.get('volume'),
-
-                            'dayHigh': ui_stock.get('dayHigh'),
-
-                            'dayLow': ui_stock.get('dayLow'),
-
-                            'previousClose': ui_stock.get('previousClose'),
-
-                            'dataSource': ui_stock.get('dataSource'),
-
-                            'sessionType': ui_stock.get('sessionType'),
-
-                            'isFallback': ui_stock.get('isFallback'),
-
-                            'symbol': symbol_upper,
-
-                            'name': ui_stock.get('name'),
-
-                            'currency': ui_stock.get('currency'),
-
-                            'exchange': ui_stock.get('exchange'),
-
-                            'sector': ui_stock.get('sector'),
-
-                            'industry': ui_stock.get('industry')
-
-                        }
-
-                        print(f'[AI分析接口] 使用UI标准化市场数据')
-
-            except Exception as ui_error:
-
-                print(f'[AI分析接口] UI接口调用失败: {ui_error}')
-
-
-
-            # 方法2: 如果UI接口失败，使用snapshots函数
-
-            if not market_data:
-
-                print(f'[AI分析接口] 方法2: 使用snapshots函数')
-
-                alpaca_data_dict, alpaca_errors = fetch_alpaca_stock_data_snapshot([symbol_upper])
-
-
+                alpaca_data_dict, alpaca_errors = fetch_alpaca_stock_data_snapshot([symbol_upper], config=alpaca_cfg if alpaca_src in ('saved_market_data', 'user_config/supabase') else None)
 
                 if symbol_upper in alpaca_data_dict:
 
                     alpaca_data = alpaca_data_dict[symbol_upper]
 
-                    print(f'[AI分析接口] 使用Alpaca snapshots市场数据')
-
-                    print(f'[AI分析接口] Alpaca数据: price={alpaca_data.get("price")}, change%={alpaca_data.get("changePercent")}, volume={alpaca_data.get("volume")}')
-
-
-
-                    # 创建标准化的market_data结构
+                    print(f'[AI分析接口] Alpaca snapshots数据: price={alpaca_data.get("price")}, change%={alpaca_data.get("changePercent")}, volume={alpaca_data.get("volume")}')
 
                     market_data = {
 
@@ -18955,9 +19686,17 @@ def ai_analyze_single():
 
                 else:
 
-                    print(f'[AI分析接口] Alpaca snapshots数据获取失败: {alpaca_errors.get(symbol_upper, "Unknown error")}')
+                    err_reason = alpaca_errors.get(symbol_upper, 'alpaca_market_data_unavailable')
 
-                    market_data = None
+                    print(f'[AI分析接口] Alpaca数据获取失败: {err_reason}')
+
+                    market_data = {'error': err_reason, 'symbol': symbol_upper}
+
+            except Exception as snap_err:
+
+                print(f'[AI分析接口] snapshots调用异常: {snap_err}')
+
+                market_data = {'error': f'alpaca_market_data_unavailable: {snap_err}', 'symbol': symbol_upper}
 
 
 
@@ -19053,9 +19792,8 @@ def ai_analyze_single():
 
         print(f'[AI分析接口] 使用AI配置进行分析')
 
-        print(f'[AI分析接口] 当前AI配置状态: {ai_provider_config_state}')
-
-        ai_config = ai_provider_config_state
+        ai_config, _ai_src = resolve_ai_config(require_user_config=True)
+        print(f'[AI分析接口] 当前AI配置状态: provider={ai_config.get("provider")}, hasKey={bool(ai_config.get("apiKey"))}')
 
 
 
@@ -19099,81 +19837,22 @@ def ai_analyze_single():
 
             print(f'[AI分析接口] 调用analyze_trend_with_deepseek时发生错误: {e}')
 
-            print(f'[AI分析接口] AI分析失败，返回null数据')
-
-
-
-            # AI分析失败时返回null数据，不生成本地规则数据
-
+            # AI分析失败时返回 success:false + aiError:true
             response_data = {
-
-                'success': True,
-
+                'success': False,
                 'symbol': symbol_upper,
-
-                'trend': None,  # AI分析失败，返回null
-
-                'overallScore': None,  # AI分析失败，返回null
-
-                'confidence': None,  # AI分析失败，返回null
-
-                'trendScore': None,
-
-                'momentumScore': None,
-
-                'volumeScore': None,
-
-                'volatilityScore': None,
-
-                'structureScore': None,
-
-                'newsScore': None,
-
-                'scannerReason': None,
-
-                'aiReasoning': None,  # AI分析失败，返回null
-
-                'volumeStatus': None,  # AI分析失败，返回null
-
-                'conciseReasoning': None,  # AI分析失败，返回null
-
-                'detailedReasoning': None,  # AI分析失败，返回null
-
-                'newsSentiment': news_data.get('sentiment') if news_data else None,
-
-                'eventRisk': news_data.get('eventRisk') if news_data else None,
-
-                'topNews': news_data.get('topCatalyst') if news_data else None,
-
-                'headlines': news_data.get('headlines', []) if news_data else [],  # 新增：新闻头条列表
-
-                'companyName': company_info.get('name') if company_info else None,  # 如果没有公司信息，返回null
-
-                'sector': company_info.get('finnhubIndustry') if company_info else None,  # 如果没有行业信息，返回null
-
-                'provenance': {
-
-                    'marketData': 'alpaca' if market_data and market_data.get('dataSource') == 'Alpaca' else 'finnhub' if market_data else 'none',
-
-                    'companyInfo': 'finnhub' if company_info else 'none',
-
-                    'news': 'finnhub' if news_data else 'none',
-
-                    'aiAnalysis': 'AI Failed'  # AI分析失败，明确标记
-
-                },
-
-                'timestamp': int(time.time()),
-
-                'responseTime': round(time.time() - start_time, 3),
-
-                'message': 'AI analysis failed - no local rules fallback'
-
+                'error': f'AI analysis failed: {str(e)[:100]}',
+                'stage': 'ai_analysis',
+                'aiError': True,
+                'analysisSource': 'unavailable',
+                'aiCalled': True,
+                'aiSource': 'unavailable',
+                'skipRetry': True,
+                'providerStatus': None,
+                'providerMessage': str(e)[:200],
             }
 
-
-
-            print(f'[AI分析接口] AI分析失败，返回null数据: {response_data}')
+            print(f'[AI分析接口] AI分析失败，返回错误: {response_data}')
 
         else:
 
@@ -19257,8 +19936,8 @@ def ai_analyze_single():
 
                     'symbol': symbol_upper,
 
-                    'trendLabel': ai_analysis.get('trendLabel', ai_analysis.get('trend', 'Neutral')),
-                    'trend': ai_analysis.get('trendLabel', ai_analysis.get('trend', 'Neutral')),  # compat
+                    'trendLabel': ai_analysis.get('trendLabel') or ai_analysis.get('trend') or None,
+                    'trend': ai_analysis.get('trendLabel') or ai_analysis.get('trend') or None,  # compat
 
                     'overallScore': ai_analysis.get('overallScore', ai_analysis.get('trendScore', 50)),
                     'trendScore': ai_analysis.get('trendScore', ai_analysis.get('overallScore', 50)),
@@ -19285,7 +19964,9 @@ def ai_analyze_single():
                     'aiModel': ai_model_name,
                     'aiError': None if ai_called else 'No AI key configured or AI call failed',
                     'aiAnalysis': ai_source_label,
-                    'provider': ai_config.get('provider', 'DeepSeek'),
+                    'provider': ai_analysis.get('provider', ai_config.get('provider', 'DeepSeek')),
+                    'aiUsed': ai_analysis.get('aiUsed', ai_called),
+                    'configSource': ai_analysis.get('configSource', 'unknown'),
 
                     'newsSentiment': news_data.get('sentiment') if news_data else None,
                     'eventRisk': ai_analysis.get('eventRisk', news_data.get('eventRisk') if news_data else 'Medium'),
@@ -19293,8 +19974,8 @@ def ai_analyze_single():
                     'topNews': format_top_news_for_frontend(news_data) if news_data else None,
                     'headlines': news_data.get('headlines', []) if news_data else [],
 
-                    'companyName': company_info.get('name') if company_info else symbol_upper,
-                    'sector': company_info.get('finnhubIndustry') if company_info else 'Unknown',
+                    'companyName': company_info.get('name') if company_info else None,
+                    'sector': company_info.get('finnhubIndustry') if company_info else None,
 
                     'provenance': {
                         'marketData': 'alpaca' if market_data and market_data.get('dataSource') == 'Alpaca' else 'finnhub' if market_data else 'none',
@@ -19317,7 +19998,8 @@ def ai_analyze_single():
 
                     # 获取AI API密钥
 
-                    ai_api_key = ai_provider_config_state.get('apiKey', '')
+                    ai_api_key, _dbg_src = resolve_ai_config(require_user_config=True)
+                    ai_api_key = ai_api_key.get('apiKey', '')
 
                     # 获取Alpaca环境
 
@@ -19356,17 +20038,28 @@ def ai_analyze_single():
                 error_msg = ai_analysis.get('error', '') if ai_analysis else ''
                 stage = ai_analysis.get('stage', '') if ai_analysis else ''
 
-                if 'No user-provided AI API key' in error_msg or stage == 'ai_config':
-                    # 用户未配置API key，直接返回错误，不进行本地规则回退
-                    print(f'[AI分析接口] 用户未配置API key，返回明确错误: {error_msg}')
+                if stage == 'ai_config' or 'not configured' in error_msg.lower() or 'No user-provided AI API key' in error_msg:
+                    # 用户未配置API key，返回带诊断信息的错误
+                    _dbg_user = get_supabase_user()
+                    _dbg_cfg, _dbg_source = resolve_ai_config(require_user_config=True)
+                    safe_print(f'[AI分析接口] AI config missing: authPresent={bool(_dbg_user)}, source={_dbg_source}, provider={_dbg_cfg.get("provider","")}')
 
                     return jsonify({
                         'success': False,
                         'symbol': symbol_upper,
-                        'error': error_msg,
-                        'stage': stage,
+                        'error': 'AI provider is not configured for this user. Open Settings and save your AI API key.',
+                        'stage': 'ai_config',
                         'provider': ai_analysis.get('provider', 'DeepSeek') if ai_analysis else 'DeepSeek',
                         'hasAiData': False,
+                        'debug': {
+                            'authPresent': bool(_dbg_user),
+                            'userResolved': bool(_dbg_user),
+                            'userId': _dbg_user['id'][:8] + '...' if _dbg_user else None,
+                            'configSource': _dbg_source,
+                            'provider': _dbg_cfg.get('provider', ''),
+                            'model': _dbg_cfg.get('model', ''),
+                            'hasApiKey': bool(_dbg_cfg.get('apiKey')),
+                        },
                         'provenance': {
                             'marketData': 'alpaca' if market_data and market_data.get('dataSource') == 'Alpaca' else 'finnhub' if market_data else 'none',
                             'companyInfo': 'finnhub' if company_info else 'none',
@@ -19375,7 +20068,7 @@ def ai_analyze_single():
                         },
                         'timestamp': int(time.time()),
                         'responseTime': round(time.time() - start_time, 3),
-                        'message': 'AI analysis failed - user must configure API key in AI Configuration page'
+                        'message': 'AI Provider is not configured. Open Settings and save your AI API key.'
                     })
                 else:
                     # AI failed — return unavailable, do NOT use local rules as fake AI
@@ -19388,6 +20081,9 @@ def ai_analyze_single():
                         'stage': ai_analysis.get('stage', 'ai_call') if ai_analysis else 'ai_call',
                         'provider': ai_analysis.get('provider', 'unknown') if ai_analysis else 'unknown',
                         'hasAiData': False,
+                        'skipRetry': True,
+                        'providerStatus': ai_analysis.get('providerStatus') if ai_analysis else None,
+                        'providerMessage': ai_analysis.get('providerMessage') if ai_analysis else None,
 
                         'trendLabel': None,
                         'trend': None,
@@ -19413,8 +20109,8 @@ def ai_analyze_single():
                         'eventRisk': news_data.get('eventRisk') if news_data else None,
                         'topNews': news_data.get('topCatalyst') if news_data else None,
                         'headlines': news_data.get('headlines', []) if news_data else [],
-                        'companyName': company_info.get('name') if company_info else symbol_upper,
-                        'sector': company_info.get('finnhubIndustry') if company_info else 'Unknown',
+                        'companyName': company_info.get('name') if company_info else None,
+                        'sector': company_info.get('finnhubIndustry') if company_info else None,
 
                         'provenance': {
                             'marketData': 'alpaca' if market_data and market_data.get('dataSource') == 'Alpaca' else 'finnhub' if market_data else 'none',
@@ -19530,7 +20226,8 @@ Candidates:
 
 Return ONLY the JSON. No preamble."""
         # Read AI config
-        api_key = ai_provider_config_state.get('apiKey', '')
+        _resolved_ai, _ai_src = resolve_ai_config(require_user_config=True)
+        api_key = _resolved_ai.get('apiKey', '')
         if not api_key or len(api_key) < 10:
             return jsonify({
                 'success': False,
@@ -19540,9 +20237,9 @@ Return ONLY the JSON. No preamble."""
                 'selected': []
             })
 
-        provider = ai_provider_config_state.get('provider', 'deepseek')
-        base_url = ai_provider_config_state.get('baseURL', 'https://api.deepseek.com')
-        model = ai_provider_config_state.get('model', 'deepseek-chat')
+        provider = _resolved_ai.get('provider', 'deepseek')
+        base_url = _resolved_ai.get('baseURL', 'https://api.deepseek.com')
+        model = _resolved_ai.get('model', 'deepseek-chat')
 
         ai_headers = {
             'Authorization': f'Bearer {api_key}',
@@ -19562,7 +20259,7 @@ Return ONLY the JSON. No preamble."""
         if not base_url.startswith('http'):
             base_url = 'https://' + base_url
 
-        resp = ai_chat_request(f'{base_url}/chat/completions', headers=ai_headers, json_data=ai_payload, timeout=30)
+        resp = ai_chat_request(f'{base_url}/chat/completions', headers=ai_headers, json_data=ai_payload, timeout=30, provider=_resolved_ai.get('provider'))
 
         if resp.status_code != 200:
             print(f'[FINE SCAN SELECT] AI HTTP {resp.status_code}: {resp.text[:200]}')
@@ -20124,10 +20821,11 @@ def ai_entry_quality():
         latest_quote = {}
 
         try:
-            snap_url = f'{_get_market_data_base_url()}/v2/stocks/{symbol}/snapshot'
+            _acfg, _acfg_src = resolve_alpaca_config('market_data', require_user_config=True)
+            snap_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/snapshot'
             snap_headers = {
-                'APCA-API-KEY-ID': ALPACA_API_KEY,
-                'APCA-API-SECRET-KEY': ALPACA_API_SECRET
+                'APCA-API-KEY-ID': _acfg['api_key'],
+                'APCA-API-SECRET-KEY': _acfg['api_secret']
             }
             snap_resp = req_lib.get(snap_url, headers=snap_headers, timeout=10)
             if snap_resp.status_code == 200:
@@ -20154,7 +20852,7 @@ def ai_entry_quality():
         bars = []
 
         try:
-            bars_url = f'{_get_market_data_base_url()}/v2/stocks/{symbol}/bars'
+            bars_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/bars'
             # Calculate date range
             from datetime import datetime as dt_dt, timedelta as dt_td
             bars_end = dt_dt.utcnow()
@@ -20165,9 +20863,10 @@ def ai_entry_quality():
                 'end': bars_end.strftime('%Y-%m-%dT00:00:00Z'),
                 'sort': 'asc'
             }
+            _acfg2, _acfg2_src = resolve_alpaca_config('market_data', require_user_config=True)
             snap_headers = {
-                'APCA-API-KEY-ID': ALPACA_API_KEY,
-                'APCA-API-SECRET-KEY': ALPACA_API_SECRET
+                'APCA-API-KEY-ID': _acfg2['api_key'],
+                'APCA-API-SECRET-KEY': _acfg2['api_secret']
             }
             bars_resp = req_lib.get(bars_url, headers=snap_headers, params=bars_params, timeout=10)
             if bars_resp.status_code == 200:
@@ -20690,9 +21389,10 @@ def ai_fine_scan_advanced():
         print(f'[FINESCAN] entry_details keys: {list(entry_details.keys()) if entry_details else "None"}')
         print(f'[FINESCAN] entry_details price: {entry_details.get("current_price", "N/A") if entry_details else "N/A"}')
 
+        _acfg, _acfg_src = resolve_alpaca_config('market_data', require_user_config=True)
         headers = {
-            'APCA-API-KEY-ID': ALPACA_API_KEY,
-            'APCA-API-SECRET-KEY': ALPACA_API_SECRET,
+            'APCA-API-KEY-ID': _acfg.get('api_key', ''),
+            'APCA-API-SECRET-KEY': _acfg.get('api_secret', ''),
         }
 
         # Source status tracking
@@ -20762,7 +21462,7 @@ def ai_fine_scan_advanced():
                 today_vol = float(daily_bar.get('v', 0)) if daily_bar else 0
 
                 # Recent 21 bars for avg volume
-                bars_url = f'{_get_market_data_base_url()}/v2/stocks/{symbol}/bars'
+                bars_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/bars'
                 bars_params = {'timeframe': '1Day', 'limit': 21, 'adjustment': 'raw', 'feed': 'sip', 'sort': 'desc'}
                 bars_resp = requests.get(bars_url, headers=headers, params=bars_params, timeout=10)
                 vol_list = []
@@ -20973,9 +21673,11 @@ def ai_fine_scan_advanced():
         # 7c. Check Finnhub earnings calendar
         earnings_soon = False
         try:
-            if FINNHUB_API_KEY:
-                ec_url = 'https://finnhub.io/api/v1/calendar/earnings'
-                ec_params = {'symbol': symbol, 'token': FINNHUB_API_KEY}
+            _fcfg, _fcfg_src = resolve_finnhub_config(require_user_config=True)
+            _fkey = _fcfg.get('api_key', '')
+            if _fkey:
+                ec_url = f"{_fcfg.get('base_url', 'https://finnhub.io/api/v1')}/calendar/earnings"
+                ec_params = {'symbol': symbol, 'token': _fkey}
                 ec_resp = requests.get(ec_url, params=ec_params, timeout=10)
                 if ec_resp.status_code == 200:
                     source_status['finnhub_earnings'] = 'ok'
@@ -21103,7 +21805,8 @@ def ai_fine_scan_advanced():
         else:
             # 8a. AI risk assessment
             try:
-                api_key = ai_provider_config_state.get('apiKey', '')
+                _resolved_ai, _ai_src = resolve_ai_config(require_user_config=True)
+                api_key = _resolved_ai.get('apiKey', '')
                 if api_key and len(api_key) >= 10:
                     # Build structured input for AI
                     ai_input = {
@@ -21147,9 +21850,9 @@ HIGH = poor liq, high event risk, poor entry
 SKIP = critical data missing, severe risk combo
 Example: MEDIUM | mixed news, moderate liquidity"""
 
-                    provider = ai_provider_config_state.get('provider', 'deepseek')
-                    base_url = ai_provider_config_state.get('baseURL', 'https://api.deepseek.com')
-                    model = ai_provider_config_state.get('model', 'deepseek-chat')
+                    provider = _resolved_ai.get('provider', 'deepseek')
+                    base_url = _resolved_ai.get('baseURL', 'https://api.deepseek.com')
+                    model = _resolved_ai.get('model', 'deepseek-chat')
 
                     ai_headers = {
                         'Authorization': f'Bearer {api_key}',
@@ -21169,7 +21872,7 @@ Example: MEDIUM | mixed news, moderate liquidity"""
                     if not base_url.startswith('http'):
                         base_url = 'https://' + base_url
 
-                    ai_resp = ai_chat_request(f'{base_url}/chat/completions', headers=ai_headers, json_data=ai_payload, timeout=15)
+                    ai_resp = ai_chat_request(f'{base_url}/chat/completions', headers=ai_headers, json_data=ai_payload, timeout=15, provider=_resolved_ai.get('provider'))
 
                     if ai_resp.status_code == 200:
                         source_status['ai_risk'] = 'ok'
@@ -21724,7 +22427,8 @@ Rules:
 7. Do NOT fabricate a new trend label. Describe what the data shows.
 """
         
-        api_key = ai_provider_config_state.get('apiKey', '')
+        _resolved_ai, _ai_src = resolve_ai_config(require_user_config=True)
+        api_key = _resolved_ai.get('apiKey', '')
         if not api_key:
             print('[FineScanExplain] No AI API key configured, returning unavailable')
             return jsonify({
@@ -21744,14 +22448,14 @@ Rules:
         }
         
         payload = {
-            'model': ai_provider_config_state.get('model', 'deepseek-chat'),
+            'model': _resolved_ai.get('model', 'deepseek-chat'),
             'messages': [{'role': 'user', 'content': prompt}],
             'max_tokens': 800,
             'temperature': 0.3,
             'response_format': {'type': 'json_object'}
         }
-        
-        base_url = ai_provider_config_state.get('baseURL', 'https://api.deepseek.com')
+
+        base_url = _resolved_ai.get('baseURL', 'https://api.deepseek.com')
         if not base_url.startswith('http'):
             base_url = 'https://' + base_url
         
@@ -21759,7 +22463,8 @@ Rules:
             f'{base_url}/chat/completions',
             headers=headers,
             json_data=payload,
-            timeout=30
+            timeout=30,
+            provider=_resolved_ai.get('provider')
         )
         
         if response.status_code == 200:
@@ -21914,7 +22619,8 @@ Return ONLY valid JSON (no markdown):
   "blockers": ["blocker1"]
 }}"""
         
-        api_key = ai_provider_config_state.get('apiKey', '')
+        _resolved_ai, _ai_src = resolve_ai_config(require_user_config=True)
+        api_key = _resolved_ai.get('apiKey', '')
         if not api_key:
             print(f'[FineScanDecision] No AI key, returning unavailable for {symbol}')
             return jsonify({
@@ -21928,10 +22634,10 @@ Return ONLY valid JSON (no markdown):
                 'reason': None,
                 'decisionDetail': {'strengths': [], 'warnings': [], 'blockers': ['AI not configured']}
             })
-        
-        provider = ai_provider_config_state.get('provider', 'deepseek')
-        base_url = ai_provider_config_state.get('baseURL', 'https://api.deepseek.com')
-        model = ai_provider_config_state.get('model', 'deepseek-chat')
+
+        provider = _resolved_ai.get('provider', 'deepseek')
+        base_url = _resolved_ai.get('baseURL', 'https://api.deepseek.com')
+        model = _resolved_ai.get('model', 'deepseek-chat')
         
         ai_headers = {
             'Authorization': f'Bearer {api_key}',
@@ -21956,7 +22662,8 @@ Return ONLY valid JSON (no markdown):
             f'{base_url}/chat/completions',
             headers=ai_headers,
             json_data=ai_payload,
-            timeout=30
+            timeout=30,
+            provider=_resolved_ai.get('provider')
         )
         
         if response.status_code == 200:
@@ -22794,16 +23501,17 @@ def _call_ai_entry_final_decision(plans, execution_mode, account_mode):
             'aiError': None
         }
 
-    api_key = ai_provider_config_state.get('apiKey', '')
+    _resolved_ai, _ai_src = resolve_ai_config(require_user_config=True)
+    api_key = _resolved_ai.get('apiKey', '')
     if not api_key or len(api_key) < 10:
         print('[AI Entry Decision] No valid API key configured — using local rules')
         for sym in result_map:
             result_map[sym]['aiError'] = 'No AI provider API key configured'
         return result_map
 
-    provider = ai_provider_config_state.get('provider', 'deepseek')
-    base_url = ai_provider_config_state.get('baseURL', 'https://api.deepseek.com')
-    model = ai_provider_config_state.get('model', 'deepseek-chat')
+    provider = _resolved_ai.get('provider', 'deepseek')
+    base_url = _resolved_ai.get('baseURL', 'https://api.deepseek.com')
+    model = _resolved_ai.get('model', 'deepseek-chat')
 
     if not base_url.startswith('http'):
         base_url = 'https://' + base_url
@@ -22885,7 +23593,7 @@ Return ONLY valid JSON (no markdown, no preamble):
             ai_payload['response_format'] = {'type': 'json_object'}
 
         start_ts = _time.time()
-        resp = ai_chat_request(f'{base_url}/chat/completions', headers=ai_headers, json_data=ai_payload, timeout=45)
+        resp = ai_chat_request(f'{base_url}/chat/completions', headers=ai_headers, json_data=ai_payload, timeout=45, provider=provider)
         elapsed = round(_time.time() - start_ts, 2)
 
         if resp.status_code != 200:
@@ -23187,10 +23895,11 @@ def ai_entry_plan():
             volumes = []
 
             try:
-                snap_url = f'{_get_market_data_base_url()}/v2/stocks/{symbol}/snapshot'
+                _acfg, _acfg_src = resolve_alpaca_config('market_data', require_user_config=True)
+                snap_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/snapshot'
                 snap_headers = {
-                    'APCA-API-KEY-ID': ALPACA_API_KEY,
-                    'APCA-API-SECRET-KEY': ALPACA_API_SECRET
+                    'APCA-API-KEY-ID': _acfg['api_key'],
+                    'APCA-API-SECRET-KEY': _acfg['api_secret']
                 }
                 snap_resp = req_lib.get(snap_url, headers=snap_headers, timeout=10)
                 if snap_resp.status_code == 200:
@@ -24054,15 +24763,18 @@ def fetch_mtf_candles(symbol, resolution, days_back, label):
     start_ts = end_ts - days_back * 24 * 3600
 
     # ---- 1) Try Finnhub ----
-    if FINNHUB_API_KEY:
+    _fcfg, _fcfg_src = resolve_finnhub_config(require_user_config=True)
+    _fkey = _fcfg.get('api_key', '')
+    _fbase = _fcfg.get('base_url', 'https://finnhub.io/api/v1')
+    if _fkey:
         try:
-            finnhub_url = f"{FINNHUB_BASE_URL}/stock/candle"
+            finnhub_url = f"{_fbase}/stock/candle"
             params = {
                 'symbol': symbol,
                 'resolution': resolution,
                 'from': start_ts,
                 'to': end_ts,
-                'token': FINNHUB_API_KEY
+                'token': _fkey
             }
             print(f'[MTF] Finnhub {label}({resolution}d{days_back}): {symbol}')
             resp = requests.get(finnhub_url, params=params, timeout=10)
@@ -24144,8 +24856,9 @@ def fetch_mtf_candles(symbol, resolution, days_back, label):
     # ---- 3) Both failed ----
     # Build error reason
     parts = []
-    if not FINNHUB_API_KEY:
-        parts.append('finnhub no key')
+    _fh_cfg, _fh_src = resolve_finnhub_config(require_user_config=True)
+    if not _fh_cfg.get('api_key'):
+        parts.append('finnhub not configured')
     else:
         parts.append('finnhub fail')
     parts.append('alpaca fail')

@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { Card, Table, Tag, Input, Select, Button, Row, Col, Statistic, Space, Alert, message, Empty, Spin, Skeleton } from 'antd';
-import { SearchOutlined, LineChartOutlined, PlayCircleOutlined, BarChartOutlined, ReloadOutlined, EyeOutlined, StarOutlined } from '@ant-design/icons';
+import { SearchOutlined, LineChartOutlined, PlayCircleOutlined, BarChartOutlined, ReloadOutlined, EyeOutlined, StarOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import marketDataService, { StockData, formatCurrency, formatPercent, safeNumber, safeToFixed } from '../services/marketDataService';
+import marketDataService, { StockData, searchStockData, formatCurrency, formatPercent, safeNumber, safeToFixed, getUserMarketSymbols, addUserMarketSymbols, deleteUserMarketSymbol } from '../services/marketDataService';
 import { sharedDataService } from '../services/sharedDataService';
+import { formatMarketCap } from '../utils/format';
 import { useLanguage } from '../contexts/LanguageContext';
 import DataSourceBadge from '../components/DataSourceBadge';
+
+const MAX_MARKET_SYMBOLS = 100;
 
 const { Option } = Select;
 
@@ -23,48 +26,14 @@ const Market: React.FC = () => {
   const [isFetching, setIsFetching] = useState(false);
   const [searching, setSearching] = useState(false);
   const [watchlist, setWatchlist] = useState<any[]>([]);
+  const [userSymbols, setUserSymbols] = useState<string[]>([]);
+  const [addingSymbol, setAddingSymbol] = useState(false);
   const navigate = useNavigate();
 
   const STORAGE_KEY = "quant_watchlist";
 
   // 默认股票列表（与后端保持一致，优先主流科技股）
   const DEFAULT_SYMBOLS = ['AAPL', 'TSLA', 'AMD', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NFLX', 'INTC'];
-
-  // 格式化市值函数（与Dashboard一致）
-  const formatMarketCap = (value: number | null | undefined): string => {
-    if (value === null || value === undefined || value === 0) return '--';
-    
-    const num = Number(value);
-    if (isNaN(num)) return '--';
-    
-    // 万亿 (Trillion) - 1万亿 = 1e12
-    if (num >= 1e12) {
-      const trillions = num / 1e12;
-      // 对于万亿级别，显示1位小数，除非是整数
-      return `$${trillions.toFixed(trillions >= 100 ? 0 : trillions >= 10 ? 1 : 2)}T`;
-    }
-    
-    // 十亿 (Billion) - 10亿 = 1e9
-    if (num >= 1e9) {
-      const billions = num / 1e9;
-      // 对于十亿级别，显示1位小数
-      return `$${billions.toFixed(billions >= 100 ? 0 : billions >= 10 ? 1 : 2)}B`;
-    }
-    
-    // 百万 (Million) - 1百万 = 1e6
-    if (num >= 1e6) {
-      const millions = num / 1e6;
-      return `$${millions.toFixed(millions >= 10 ? 0 : 1)}M`;
-    }
-    
-    // 千 (Thousand) - 1千 = 1e3
-    if (num >= 1e3) {
-      const thousands = num / 1e3;
-      return `$${thousands.toFixed(thousands >= 100 ? 0 : thousands >= 10 ? 1 : 2)}K`;
-    }
-    
-    return `$${num.toFixed(2)}`;
-  };
 
   // 格式化成交量函数
   const formatVolume = (volume: number | null): string => {
@@ -98,9 +67,9 @@ const Market: React.FC = () => {
   useEffect(() => {
     // 延迟加载数据，让用户先看到页面框架
     const loadTimer = setTimeout(() => {
-      fetchMarketData();
+      initializeMarket();
     }, 100); // 100ms延迟，足够渲染初始界面
-    
+
     // 从localStorage加载watchlist
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
@@ -113,17 +82,17 @@ const Market: React.FC = () => {
         console.error('Failed to parse watchlist from localStorage:', err);
       }
     }
-    
+
     // 清理定时器
     return () => {
       clearTimeout(loadTimer);
     };
   }, []);
 
-  // 过滤和排序股票
+  // 过滤和排序股票（不依赖searchText，搜索只在点击按钮/Enter时触发API调用）
   useEffect(() => {
     filterAndSortStocks();
-  }, [stocks, searchText, selectedSector, sortField, sortOrder]);
+  }, [stocks, selectedSector, sortField, sortOrder]);
 
   // 监听localStorage变化，实现页面间watchlist同步
   useEffect(() => {
@@ -152,15 +121,6 @@ const Market: React.FC = () => {
 
   const filterAndSortStocks = () => {
     let result = [...stocks];
-
-    // 按搜索文本过滤 - 对Alpaca数据更友好
-    if (searchText.trim()) {
-      const searchLower = searchText.toLowerCase();
-      result = result.filter(stock =>
-        stock.symbol.toLowerCase().includes(searchLower) ||
-        (stock.name && stock.name.toLowerCase().includes(searchLower))
-      );
-    }
 
     // 按行业过滤
     if (selectedSector !== 'all') {
@@ -198,32 +158,68 @@ const Market: React.FC = () => {
     setFilteredStocks(result);
   };
 
-  const fetchMarketData = async () => {
+  const initializeMarket = async () => {
+    try {
+      setLoading(true);
+      setError('');
+
+      // Step 1: Load user's saved symbols from backend
+      console.log('[Market] Loading user symbols...');
+      const { symbols: savedSymbols, status } = await getUserMarketSymbols();
+
+      let symbolsToLoad: string[];
+      if (status === 'ok' && savedSymbols.length > 0) {
+        symbolsToLoad = savedSymbols;
+        setUserSymbols(savedSymbols);
+        console.log('[Market] Loaded user symbols:', savedSymbols);
+      } else {
+        // No saved symbols, use defaults
+        symbolsToLoad = DEFAULT_SYMBOLS;
+        setUserSymbols(DEFAULT_SYMBOLS);
+        console.log('[Market] Using default symbols:', DEFAULT_SYMBOLS);
+      }
+
+      // Step 2: Fetch market data for these symbols
+      await fetchMarketData(symbolsToLoad);
+    } catch (err: any) {
+      console.error('[Market] Initialization failed:', err);
+      setError(`Initialization failed: ${err.message}`);
+      // Fallback to defaults
+      await fetchMarketData(DEFAULT_SYMBOLS);
+    }
+  };
+
+  const fetchMarketData = async (symbols?: string[]) => {
     // 如果已经在请求中，直接返回
     if (isFetching) {
       console.log('[Market优化] 请求已在进行中，跳过重复请求');
       return;
     }
-    
+
     try {
       setIsFetching(true);
       setLoading(true);
       setError('');
-      
+
       console.log('[Market优化] 正在获取市场数据...');
-      
-      // 使用共享数据服务
-      const stockData = await sharedDataService.getStocks();
-      
+
+      let stockData: StockData[];
+      if (symbols && symbols.length > 0) {
+        // Fetch data for specific symbols
+        stockData = await marketDataService.getStocks(symbols);
+      } else {
+        // Fallback to shared data service (uses default symbols)
+        stockData = await sharedDataService.getStocks();
+      }
+
       if (stockData.length > 0) {
         console.log('[Market优化] 市场数据加载成功');
         console.log('[Market优化] 数据来源:', stockData[0]?.dataSource || 'Alpaca');
         console.log('[Market优化] 股票数量:', stockData.length);
-        console.log('[Market优化] 缓存有效:', sharedDataService.isCacheValid());
-        
+
         // 过滤掉有错误的股票
         const validStocks = stockData.filter(stock => !stock.error);
-        
+
         if (validStocks.length === 0) {
           setError('没有获取到有效的股票数据');
           message.warning('没有获取到有效的股票数据');
@@ -248,56 +244,54 @@ const Market: React.FC = () => {
     }
   };
 
-  const searchStockBySymbol = async (symbol: string) => {
-    // 检查是否已经是有效的股票 symbol（全大写字母，长度 1-5）
-    const isValidSymbol = /^[A-Z]{1,5}$/.test(symbol);
-    if (!isValidSymbol) {
-      message.warning(`无效的股票代码: ${symbol}，请输入1-5个大写字母`);
-      return false;
-    }
-    
-    // 检查是否已经在 stocks 列表中
-    const existingStock = stocks.find(s => s.symbol.toUpperCase() === symbol.toUpperCase());
+  const searchStockBySymbol = async (query: string) => {
+    const q = query.trim();
+    if (!q) return false;
+
+    // Check if already in stocks list (case-insensitive symbol match)
+    const qUpper = q.toUpperCase();
+    const existingStock = stocks.find(s => s.symbol.toUpperCase() === qUpper);
     if (existingStock) {
-      message.info(`${symbol} 已在股票列表中`);
+      message.info(`${qUpper} is already in the list`);
       return true;
     }
-    
+
     try {
       setSearching(true);
-      console.log(`正在搜索股票: ${symbol}`);
-      
-      // 使用市场数据服务搜索股票
-      const tickers = await marketDataService.searchStocks(symbol, 10);
-      
-      if (tickers.length > 0) {
-        // 查找精确匹配的股票
-        const exactMatch = tickers.find(ticker => 
-          ticker.symbol.toUpperCase() === symbol.toUpperCase()
-        );
-        
-        if (exactMatch) {
-          // 获取该股票的详细信息
-          const stockData = await marketDataService.getStockData(symbol);
-          
-          // 添加到 stocks 列表
-          setStocks(prev => [...prev, stockData]);
-          message.success(`已添加 ${symbol} (${stockData.name || '未命名'}) 到市场数据`);
-          return true;
-        } else {
-          // 显示搜索结果供用户选择
-          const suggestions = tickers.map(t => `${t.symbol} - ${t.name}`).join(', ');
-          message.info(`未找到精确匹配，相关结果: ${suggestions}`);
-          return false;
-        }
-      } else {
-        message.warning(`未找到股票: ${symbol}`);
+      console.log(`[Market] Searching: "${q}"`);
+
+      // Use the new search endpoint — backend handles symbol detection + company name search
+      const { stocks: results, status, message: msg } = await searchStockData(q);
+
+      if (status === 'not_found' || results.length === 0) {
+        message.warning(msg || 'No matching company or symbol found. Please check your input.');
         return false;
       }
+
+      // Filter out duplicates already in the list
+      const existingSymbols = new Set(stocks.map(s => s.symbol.toUpperCase()));
+      const newStocks = results.filter(s => !existingSymbols.has(s.symbol.toUpperCase()));
+
+      if (newStocks.length === 0) {
+        message.info(`${results.map(s => s.symbol).join(', ')} already in the list`);
+        return true;
+      }
+
+      // Add new stocks to the list
+      setStocks(prev => [...prev, ...newStocks]);
+      const addedNames = newStocks.map(s => s.symbol).join(', ');
+      message.success(`Added ${addedNames} (source: ${newStocks[0]?.dataSource || 'Alpaca'})`);
+      return true;
     } catch (error: any) {
-      console.error(`搜索股票 ${symbol} 失败:`, error);
-      const errorMessage = error.message || '未知错误';
-      message.error(`搜索失败: ${errorMessage}`);
+      console.error(`[Market] Search failed for "${q}":`, error);
+      const errorCode = error.code || '';
+      if (errorCode === 'AUTH_REQUIRED') {
+        message.error('Authentication required. Please sign in again.');
+      } else if (errorCode === 'CONFIG_REQUIRED') {
+        message.error('API keys not configured. Please configure in Settings.');
+      } else {
+        message.error(`Search failed: ${error.message || 'Unknown error'}`);
+      }
       return false;
     } finally {
       setSearching(false);
@@ -305,9 +299,72 @@ const Market: React.FC = () => {
   };
 
   const handleSearch = async () => {
-    const symbol = searchText.trim().toUpperCase();
-    if (symbol) {
-      await searchStockBySymbol(symbol);
+    const q = searchText.trim();
+    if (q) {
+      await searchStockBySymbol(q);
+      setSearchText(''); // Clear search input after search
+    }
+  };
+
+  const addSymbolToUserList = async (symbol: string) => {
+    if (addingSymbol) return;
+
+    // Check limit
+    if (userSymbols.length >= MAX_MARKET_SYMBOLS) {
+      message.warning(`Maximum of ${MAX_MARKET_SYMBOLS} symbols reached. Please remove some before adding more.`);
+      return;
+    }
+
+    // Check if already in user list
+    if (userSymbols.includes(symbol.toUpperCase())) {
+      message.info(`${symbol} is already in your list`);
+      return;
+    }
+
+    try {
+      setAddingSymbol(true);
+      const result = await addUserMarketSymbols([symbol]);
+
+      if (result.status === 'limit_reached') {
+        message.warning(result.error || `Maximum of ${MAX_MARKET_SYMBOLS} symbols reached.`);
+        return;
+      }
+
+      if (result.status === 'ok') {
+        setUserSymbols(result.symbols);
+        message.success(`Added ${symbol} to your list`);
+
+        // If the stock data is not in the current list, fetch it
+        if (!stocks.find(s => s.symbol.toUpperCase() === symbol.toUpperCase())) {
+          const stockData = await marketDataService.getStocks([symbol]);
+          if (stockData.length > 0) {
+            setStocks(prev => [...prev, ...stockData]);
+          }
+        }
+      } else {
+        message.error(`Failed to add ${symbol}: ${result.error || 'Unknown error'}`);
+      }
+    } catch (err: any) {
+      message.error(`Failed to add ${symbol}: ${err.message}`);
+    } finally {
+      setAddingSymbol(false);
+    }
+  };
+
+  const removeSymbolFromUserList = async (symbol: string) => {
+    try {
+      const result = await deleteUserMarketSymbol(symbol);
+
+      if (result.status === 'ok') {
+        setUserSymbols(result.symbols);
+        // Remove from displayed stocks
+        setStocks(prev => prev.filter(s => s.symbol.toUpperCase() !== symbol.toUpperCase()));
+        message.success(`Removed ${symbol} from your list`);
+      } else {
+        message.error(`Failed to remove ${symbol}`);
+      }
+    } catch (err: any) {
+      message.error(`Failed to remove ${symbol}: ${err.message}`);
     }
   };
 
@@ -638,35 +695,58 @@ const Market: React.FC = () => {
     {
       title: 'Actions',
       key: 'actions',
-      width: 125,
-      render: (_: any, record: StockData) => (
-        <Space size={2} style={{ justifyContent: 'center', width: '100%' }}>
-          <Button
-            type="primary"
-            size="small"
-            icon={<LineChartOutlined />}
-            onClick={() => handleAnalyze(record.symbol)}
-            style={{ fontSize: '14px', fontWeight: 500, padding: '0 12px', height: '32px', minWidth: '78px' }}
-          >
-            Analyze
-          </Button>
-          <Button
-            size="small"
-            icon={<PlayCircleOutlined />}
-            onClick={() => handleBacktest(record.symbol)}
-            style={{ fontSize: '14px', fontWeight: 500, padding: '0 12px', height: '32px', minWidth: '78px' }}
-          >
-            Backtest
-          </Button>
-          <Button
-            size="small"
-            type={isInWatchlist(record.symbol) ? 'primary' : 'default'}
-            icon={<StarOutlined />}
-            onClick={() => toggleWatchlist(record.symbol)}
-            style={{ minWidth: '32px', width: '32px', height: '32px', padding: '0' }}
-          />
-        </Space>
-      ),
+      width: 180,
+      render: (_: any, record: StockData) => {
+        const isInList = userSymbols.includes(record.symbol.toUpperCase());
+        return (
+          <Space size={2} style={{ justifyContent: 'center', width: '100%' }}>
+            <Button
+              type="primary"
+              size="small"
+              icon={<LineChartOutlined />}
+              onClick={() => handleAnalyze(record.symbol)}
+              style={{ fontSize: '14px', fontWeight: 500, padding: '0 12px', height: '32px', minWidth: '78px' }}
+            >
+              Analyze
+            </Button>
+            <Button
+              size="small"
+              icon={<PlayCircleOutlined />}
+              onClick={() => handleBacktest(record.symbol)}
+              style={{ fontSize: '14px', fontWeight: 500, padding: '0 12px', height: '32px', minWidth: '78px' }}
+            >
+              Backtest
+            </Button>
+            {isInList ? (
+              <Button
+                size="small"
+                danger
+                icon={<DeleteOutlined />}
+                onClick={() => removeSymbolFromUserList(record.symbol)}
+                style={{ minWidth: '32px', width: '32px', height: '32px', padding: '0' }}
+                title="Remove from list"
+              />
+            ) : (
+              <Button
+                size="small"
+                type="default"
+                icon={<PlusOutlined />}
+                onClick={() => addSymbolToUserList(record.symbol)}
+                disabled={userSymbols.length >= MAX_MARKET_SYMBOLS}
+                style={{ minWidth: '32px', width: '32px', height: '32px', padding: '0' }}
+                title={userSymbols.length >= MAX_MARKET_SYMBOLS ? `Max ${MAX_MARKET_SYMBOLS} symbols reached` : 'Add to list'}
+              />
+            )}
+            <Button
+              size="small"
+              type={isInWatchlist(record.symbol) ? 'primary' : 'default'}
+              icon={<StarOutlined />}
+              onClick={() => toggleWatchlist(record.symbol)}
+              style={{ minWidth: '32px', width: '32px', height: '32px', padding: '0' }}
+            />
+          </Space>
+        );
+      },
     },
   ];
 
@@ -678,249 +758,414 @@ const Market: React.FC = () => {
     }
   };
 
-  // Market Cap列专用样式 - 居中对齐
-  const marketCapColumnStyle = `
-    /* 强制Market Cap列及其所有子元素 */
-    .market-cap-column,
-    .market-cap-column * {
-      box-sizing: border-box !important;
+  // Market Cap列专用样式
+  const marketPageStyles = `
+    .market-container {
+      padding: 24px;
+      background-color: #f8fafc;
+      min-height: calc(100vh - 112px);
     }
     
-    /* 列容器 */
-    .market-cap-column {
-      text-align: center !important;
-      width: 105px !important;
-      min-width: 105px !important;
-      max-width: 105px !important;
+    .market-card {
+      border-radius: 12px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.03);
+      border: 1px solid #e2e8f0;
+      overflow: hidden;
     }
     
-    /* 表头单元格 - 居中对齐 */
-    .market-cap-column .ant-table-thead > tr > th.ant-table-cell {
-      padding: 10px 8px !important;
-      text-align: center !important;
-      background-color: #fafafa !important;
-      border-bottom: 2px solid #e8e8e8 !important;
-      width: 105px !important;
-      min-width: 105px !important;
-      max-width: 105px !important;
+    .market-header {
+      margin-bottom: 24px;
     }
     
-    /* 数据单元格 - 居中对齐 */
-    .market-cap-column .ant-table-tbody > tr > td.ant-table-cell {
-      padding: 0 8px !important;
-      text-align: center !important;
-      vertical-align: middle !important;
-      width: 105px !important;
-      min-width: 105px !important;
-      max-width: 105px !important;
+    .market-title {
+      font-size: 24px;
+      font-weight: 800;
+      color: #1a202c;
+      margin-bottom: 4px;
+      letter-spacing: -0.5px;
     }
     
-    /* 单元格内部内容 */
-    .market-cap-column .ant-table-cell > div,
-    .market-cap-column .ant-table-cell .ant-table-cell-content {
-      text-align: center !important;
-      width: 100% !important;
+    .market-subtitle {
+      font-size: 14px;
+      color: #718096;
+      font-weight: 500;
+    }
+    
+    .metric-card {
+      transition: all 0.2s ease-in-out;
+      border: 1px solid #edf2f7;
+      border-radius: 10px;
+    }
+    
+    .metric-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+      border-color: #e2e8f0;
+    }
+    
+    .search-toolbar {
+      background: #ffffff;
+      padding: 16px 32px;
+      border-radius: 10px;
+      border: 1px solid #edf2f7;
+      margin-bottom: 20px;
+    }
+    
+    .market-table .ant-table-thead > tr > th {
+      background: #f8fafc;
+      color: #4a5568;
+      font-weight: 600;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 12px 16px;
+      border-bottom: 2px solid #edf2f7;
+    }
+    
+    .market-table .ant-table-thead > tr > th:first-child {
+      padding-left: 40px !important;
+    }
+    
+    .market-table .ant-table-tbody > tr > td {
+      padding: 14px 16px;
+      border-bottom: 1px solid #f1f5f9;
+    }
+    
+    .market-table .ant-table-tbody > tr > td:first-child {
+      padding-left: 40px !important;
+    }
+    
+    .market-table .ant-table-tbody > tr:hover > td {
+      background: #f1f5f9 !important;
+    }
+    
+    .symbol-tag {
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, Monaco, Consolas, monospace;
+      font-weight: 700;
+      color: #2d3748;
+      font-size: 15px;
+    }
+    
+    .company-name {
+      font-size: 12px;
+      color: #718096;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 150px;
+    }
+    
+    .price-text {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      font-weight: 700;
+      font-size: 16px;
+      font-feature-settings: "tnum";
+    }
+    
+    .action-btn {
+      border-radius: 6px;
+      font-weight: 600;
+      transition: all 0.2s;
+    }
+    
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 10px;
+      border-radius: 20px;
+      background: #f1f5f9;
+      color: #475569;
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid #e2e8f0;
+    }
+    
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #10b981;
+      margin-right: 6px;
     }
   `;
 
   return (
-    <div style={{ padding: '16px' }}>
-      <style>{marketCapColumnStyle}</style>
-      <Row gutter={[16, 16]}>
-        <Col span={24}>
-          <Card 
-            title="Market Overview"
-            extra={
-              <Space align="center" size={12}>
-                <Button 
-                  icon={<ReloadOutlined />} 
-                  onClick={fetchMarketData}
-                  loading={loading}
-                >
-                  Refresh
-                </Button>
-                {stocks.length > 0 && stocks[0]?.dataSource ? (
-                  <DataSourceBadge source={stocks[0].dataSource} />
-                ) : (
-                  <DataSourceBadge source="Alpaca" />
-                )}
-              </Space>
-            }
-            bodyStyle={{ padding: '16px' }}
-            headStyle={{ fontSize: '16px', fontWeight: 600 }}
-          >
-            {error && (
-              <Alert
-                message="Error"
-                description={error}
-                type="error"
-                showIcon
-                style={{ marginBottom: '16px' }}
-                action={
-                  <Button size="small" onClick={fetchMarketData}>
-                    Retry
-                  </Button>
-                }
-              />
-            )}
+    <div className="market-container">
+      <style>{marketPageStyles}</style>
+      
+      {/* Header Area */}
+      <div className="market-header">
+        <Row justify="space-between" align="bottom">
+          <Col>
+            <div className="market-title">Market Overview</div>
+            <div className="market-subtitle">
+              Real-time equity universe and intelligent action center
+              <span style={{ marginLeft: '16px', fontSize: '12px', color: '#a0aec0' }}>
+                ({userSymbols.length}/{MAX_MARKET_SYMBOLS} symbols)
+              </span>
+            </div>
+          </Col>
+          <Col>
+            <Space size={12}>
+              <Button
+                className="action-btn"
+                icon={<ReloadOutlined spin={loading} />}
+                onClick={() => initializeMarket()}
+                loading={loading}
+              >
+                Refresh Data
+              </Button>
+            </Space>
+          </Col>
+        </Row>
+      </div>
 
-            {/* 搜索和过滤 - 放大优化 */}
-            <Row gutter={[12, 12]} style={{ marginBottom: '16px' }}>
-              <Col xs={24} sm={12} md={8} lg={6}>
-                <Input
-                  placeholder="Search symbol or name..."
-                  prefix={<SearchOutlined />}
-                  value={searchText}
-                  onChange={(e) => setSearchText(e.target.value)}
-                  onPressEnter={handleSearch}
-                  suffix={searching ? <Spin size="small" /> : null}
-                />
-              </Col>
-              <Col xs={24} sm={12} md={8} lg={6}>
-                <Select
-                  style={{ width: '100%' }}
-                  placeholder="Filter by sector"
-                  value={selectedSector}
-                  onChange={setSelectedSector}
-                >
-                  <Option value="all">All Sectors</Option>
-                  {getAllSectors().map(sector => (
-                    <Option key={sector} value={sector}>{sector}</Option>
-                  ))}
-                </Select>
-              </Col>
-              <Col xs={24} sm={12} md={8} lg={6}>
-                <Button 
-                  type="primary" 
-                  icon={<SearchOutlined />} 
-                  onClick={handleSearch}
-                  loading={searching}
-                  style={{ width: '100%' }}
-                >
-                  Search
-                </Button>
-              </Col>
-            </Row>
-
-            {/* 市场统计 - 紧凑专业卡片 */}
-            <Row gutter={[12, 12]} style={{ marginBottom: '16px' }}>
-              <Col xs={12} sm={6}>
-                <Card size="small" bodyStyle={{ padding: '12px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <div>
-                      <div style={{ fontSize: '11px', color: '#8c8c8c', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.3px' }}>Total Stocks</div>
-                      <div style={{ fontSize: '26px', fontWeight: 700, color: '#1f1f1f', marginTop: '6px' }}>{marketStats.totalStocks}</div>
-                    </div>
-                    <EyeOutlined style={{ fontSize: '18px', color: '#bfbfbf', opacity: 0.7 }} />
-                  </div>
-                </Card>
-              </Col>
-              <Col xs={12} sm={6}>
-                <Card size="small" bodyStyle={{ padding: '12px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <div>
-                      <div style={{ fontSize: '11px', color: '#8c8c8c', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.3px' }}>Gainers</div>
-                      <div style={{ fontSize: '26px', fontWeight: 700, color: '#52c41a', marginTop: '6px' }}>{marketStats.gainers}</div>
-                    </div>
-                    <BarChartOutlined style={{ fontSize: '18px', color: '#52c41a', opacity: 0.7 }} />
-                  </div>
-                </Card>
-              </Col>
-              <Col xs={12} sm={6}>
-                <Card size="small" bodyStyle={{ padding: '12px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <div>
-                      <div style={{ fontSize: '11px', color: '#8c8c8c', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.3px' }}>Losers</div>
-                      <div style={{ fontSize: '26px', fontWeight: 700, color: '#ff4d4f', marginTop: '6px' }}>{marketStats.losers}</div>
-                    </div>
-                    <BarChartOutlined style={{ fontSize: '18px', color: '#ff4d4f', opacity: 0.7 }} />
-                  </div>
-                </Card>
-              </Col>
-              <Col xs={12} sm={6}>
-                <Card size="small" bodyStyle={{ padding: '12px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <div>
-                      <div style={{ fontSize: '11px', color: '#8c8c8c', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.3px' }}>Avg Change</div>
-                      <div style={{ 
-                        fontSize: '26px', 
-                        fontWeight: 700, 
-                        color: marketStats.avgChange > 0 ? '#52c41a' : marketStats.avgChange < 0 ? '#ff4d4f' : '#666',
-                        marginTop: '6px'
-                      }}>
-                        {safeToFixed(marketStats.avgChange, 2)}%
-                      </div>
-                    </div>
-                    <BarChartOutlined style={{ 
-                      fontSize: '18px', 
-                      color: marketStats.avgChange > 0 ? '#52c41a' : marketStats.avgChange < 0 ? '#ff4d4f' : '#666',
-                      opacity: 0.7 
-                    }} />
-                  </div>
-                </Card>
-              </Col>
-            </Row>
-
-            {loading ? (
-              // 表格骨架屏
-              <Card>
-                <Skeleton active paragraph={{ rows: 10 }} />
-              </Card>
-            ) : filteredStocks.length === 0 ? (
-              <Empty
-                description="No stocks found matching your criteria"
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-              />
-            ) : (
-              <Table
-                columns={columns}
-                dataSource={filteredStocks}
-                rowKey="symbol"
-                size="middle"
-                onChange={handleTableChange}
-                pagination={{
-                  pageSize: 20,
-                  showSizeChanger: filteredStocks.length > 20,
-                  showQuickJumper: filteredStocks.length > 20,
-                  showTotal: filteredStocks.length > 20 ? (total, range) => `${range[0]}-${range[1]} of ${total} stocks` : undefined,
-                  size: 'small',
-                  hideOnSinglePage: true
-                }}
-                scroll={{ x: 'max-content' }}
-                style={{ marginTop: '8px' }}
-                components={{
-                  header: {
-                    cell: (props: any) => (
-                      <th {...props} style={{ 
-                        ...props.style, 
-                        fontSize: '13px',
-                        fontWeight: 500,
-                        color: '#595959',
-                        padding: '10px 8px',
-                        backgroundColor: '#fafafa',
-                        borderBottom: '2px solid #e8e8e8'
-                      }} />
-                    ),
-                  },
-                }}
-              />
-            )}
-
-            {lastUpdated && (
-              <div style={{ 
-                marginTop: '12px', 
-                textAlign: 'right', 
-                fontSize: '11px', 
-                color: '#8c8c8c',
-                fontWeight: 500,
-                paddingRight: '4px'
-              }}>
-                Updated: {lastUpdated.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-              </div>
-            )}
+      {/* Summary Metrics */}
+      <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
+        <Col xs={24} sm={12} md={6}>
+          <Card size="small" className="metric-card" bodyStyle={{ padding: '20px' }}>
+            <Statistic 
+              title={<span style={{ color: '#718096', fontWeight: 600, fontSize: '12px', textTransform: 'uppercase' }}>Total Stocks</span>}
+              value={marketStats.totalStocks}
+              valueStyle={{ fontWeight: 800, fontSize: '28px', color: '#1a202c' }}
+              prefix={<EyeOutlined style={{ color: '#3182ce', marginRight: '8px', fontSize: '20px' }} />}
+            />
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} md={6}>
+          <Card size="small" className="metric-card" bodyStyle={{ padding: '20px' }}>
+            <Statistic 
+              title={<span style={{ color: '#718096', fontWeight: 600, fontSize: '12px', textTransform: 'uppercase' }}>Market Gainers</span>}
+              value={marketStats.gainers}
+              valueStyle={{ fontWeight: 800, fontSize: '28px', color: '#38a169' }}
+              prefix={<BarChartOutlined style={{ color: '#38a169', marginRight: '8px', fontSize: '20px' }} />}
+            />
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} md={6}>
+          <Card size="small" className="metric-card" bodyStyle={{ padding: '20px' }}>
+            <Statistic 
+              title={<span style={{ color: '#718096', fontWeight: 600, fontSize: '12px', textTransform: 'uppercase' }}>Market Losers</span>}
+              value={marketStats.losers}
+              valueStyle={{ fontWeight: 800, fontSize: '28px', color: '#e53e3e' }}
+              prefix={<BarChartOutlined style={{ color: '#e53e3e', marginRight: '8px', fontSize: '20px' }} rotate={180} />}
+            />
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} md={6}>
+          <Card size="small" className="metric-card" bodyStyle={{ padding: '20px' }}>
+            <Statistic 
+              title={<span style={{ color: '#718096', fontWeight: 600, fontSize: '12px', textTransform: 'uppercase' }}>Avg Change</span>}
+              value={marketStats.avgChange}
+              precision={2}
+              suffix="%"
+              valueStyle={{ 
+                fontWeight: 800, 
+                fontSize: '28px', 
+                color: marketStats.avgChange >= 0 ? '#38a169' : '#e53e3e' 
+              }}
+              prefix={<LineChartOutlined style={{ 
+                color: marketStats.avgChange >= 0 ? '#38a169' : '#e53e3e', 
+                marginRight: '8px', 
+                fontSize: '20px' 
+              }} />}
+            />
           </Card>
         </Col>
       </Row>
+
+      <Card className="market-card" bodyStyle={{ padding: 0 }}>
+        {/* Toolbar */}
+        <div className="search-toolbar" style={{ border: 'none', borderRadius: 0, borderBottom: '1px solid #edf2f7' }}>
+          <Row gutter={16}>
+            <Col flex="auto">
+              <Input
+                placeholder="Search by symbol or company name..."
+                prefix={<SearchOutlined style={{ color: '#a0aec0' }} />}
+                value={searchText}
+                onChange={(e) => setSearchText(e.target.value)}
+                onPressEnter={handleSearch}
+                style={{ borderRadius: '8px', height: '40px' }}
+                suffix={searching ? <Spin size="small" /> : null}
+              />
+            </Col>
+            <Col xs={24} sm={8} md={6}>
+              <Select
+                style={{ width: '100%' }}
+                placeholder="Filter by sector"
+                value={selectedSector}
+                onChange={setSelectedSector}
+                size="large"
+                dropdownStyle={{ borderRadius: '8px' }}
+              >
+                <Option value="all">All Sectors</Option>
+                {getAllSectors().map(sector => (
+                  <Option key={sector} value={sector}>{sector}</Option>
+                ))}
+              </Select>
+            </Col>
+            <Col>
+              <Button 
+                type="primary" 
+                icon={<SearchOutlined />} 
+                onClick={handleSearch}
+                loading={searching}
+                className="action-btn"
+                style={{ height: '40px', padding: '0 24px' }}
+              >
+                Search
+              </Button>
+            </Col>
+          </Row>
+        </div>
+
+        {error && (
+          <div style={{ padding: '16px' }}>
+            <Alert
+              message="Data Sync Error"
+              description={error}
+              type="error"
+              showIcon
+              action={<Button size="small" type="default" onClick={() => initializeMarket()}>Retry</Button>}
+            />
+          </div>
+        )}
+
+        {loading ? (
+          <div style={{ padding: '40px' }}>
+            <Skeleton active paragraph={{ rows: 12 }} />
+          </div>
+        ) : filteredStocks.length === 0 ? (
+          <div style={{ padding: '80px 0' }}>
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={<span style={{ color: '#a0aec0' }}>No instruments found matching your filters</span>}
+            />
+          </div>
+        ) : (
+          <Table
+            className="market-table"
+            columns={columns.map(col => {
+              if (col.key === 'symbol') {
+                return {
+                  ...col,
+                  render: (symbol: string, record: StockData) => (
+                    <Space direction="vertical" size={0}>
+                      <span className="symbol-tag">{symbol}</span>
+                      <span className="company-name">{record.name || symbol}</span>
+                    </Space>
+                  )
+                };
+              }
+              if (col.key === 'price') {
+                return {
+                  ...col,
+                  render: (price: number | null) => (
+                    <span className="price-text">
+                      {price !== null ? `$${safeToFixed(price, 2)}` : '--'}
+                    </span>
+                  )
+                };
+              }
+              if (col.key === 'changePercent') {
+                return {
+                  ...col,
+                  render: (val: number | null) => {
+                    if (val === null) return '--';
+                    const color = val > 0 ? '#38a169' : val < 0 ? '#e53e3e' : '#718096';
+                    const bgColor = val > 0 ? '#f0fff4' : val < 0 ? '#fff5f5' : '#f7fafc';
+                    return (
+                      <Tag color={val > 0 ? 'green' : val < 0 ? 'red' : 'default'} style={{ 
+                        borderRadius: '6px', 
+                        fontWeight: 700, 
+                        border: 'none',
+                        padding: '4px 8px',
+                        fontSize: '13px',
+                        minWidth: '65px',
+                        textAlign: 'center'
+                      }}>
+                        {val > 0 ? '+' : ''}{safeToFixed(val, 2)}%
+                      </Tag>
+                    );
+                  }
+                };
+              }
+              if (col.key === 'actions') {
+                return {
+                  ...col,
+                  render: (_: any, record: StockData) => (
+                    <Space size={8}>
+                      <Button
+                        type="primary"
+                        size="small"
+                        className="action-btn"
+                        icon={<LineChartOutlined />}
+                        onClick={() => handleAnalyze(record.symbol)}
+                        style={{ background: '#3182ce', borderColor: '#3182ce' }}
+                      >
+                        Analyze
+                      </Button>
+                      <Button
+                        size="small"
+                        className="action-btn"
+                        icon={<PlayCircleOutlined />}
+                        onClick={() => handleBacktest(record.symbol)}
+                      >
+                        Backtest
+                      </Button>
+                      <Button
+                        size="small"
+                        type={isInWatchlist(record.symbol) ? 'primary' : 'default'}
+                        icon={isInWatchlist(record.symbol) ? <StarOutlined style={{ color: '#fff' }} /> : <StarOutlined />}
+                        onClick={() => toggleWatchlist(record.symbol)}
+                        className="action-btn"
+                        style={isInWatchlist(record.symbol) ? { background: '#ecc94b', borderColor: '#ecc94b' } : {}}
+                      />
+                    </Space>
+                  )
+                };
+              }
+              return col;
+            })}
+            dataSource={filteredStocks}
+            rowKey="symbol"
+            size="middle"
+            onChange={handleTableChange}
+            pagination={{
+              pageSize: 15,
+              showSizeChanger: true,
+              showTotal: (total, range) => (
+                <span style={{ color: '#718096', fontSize: '13px' }}>
+                  Showing {range[0]}-{range[1]} of {total} assets
+                </span>
+              ),
+              position: ['bottomRight']
+            }}
+            scroll={{ x: 'max-content' }}
+          />
+        )}
+
+        {/* Footer Info */}
+        <div style={{ 
+          padding: '16px 24px', 
+          borderTop: '1px solid #edf2f7', 
+          display: 'flex', 
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          background: '#f8fafc'
+        }}>
+          <div className="status-pill">
+            <div className="status-dot"></div>
+            Data Source: <span style={{ marginLeft: '4px', color: '#2d3748' }}>{stocks[0]?.dataSource || 'Alpaca Markets'}</span>
+          </div>
+          
+          {lastUpdated && (
+            <div style={{ fontSize: '12px', color: '#718096', fontWeight: 500 }}>
+              Last synchronized: {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            </div>
+          )}
+        </div>
+      </Card>
     </div>
   );
 };

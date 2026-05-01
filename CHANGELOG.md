@@ -5,6 +5,46 @@ All notable changes to the Professional Quantitative Trading Platform will be do
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-05-01
+
+### Added
+- Supabase-authenticated login required for all protected routes
+- Global 401 response interceptor: expired sessions auto-sign-out and redirect to /signin
+- Masked key detection for AI Provider: warns when stored key contains `****`
+- `keyIsMasked` field in `/api/config/status` response
+- Specific error message for masked keys in AI analysis endpoints
+- Remember my email: saves email to localStorage on login, prefills on page load (never saves password, never auto-logs in)
+- Alpaca Market Data auto-sync from Real Trading credentials on save
+- Provider-specific API test handling (Claude `/messages`, Gemini `generateContent`, OpenAI-compatible)
+- NVIDIA NIM, Mimo, Custom provider support in Settings UI
+- Per-user encrypted config storage via Supabase (Fernet `enc:` prefix)
+
+### Changed
+- AI Provider / Market Scanner no-fallback policy: all config must come from user-saved Supabase data
+- Market Data base URL always forced to `data.alpaca.markets`
+- `aiTestStatus` only resets when API key actually changes (not on every save)
+- Backend logs use `hasKey=True/False` and `maskedKey=...` instead of printing key prefixes
+- Removed NVIDIA-specific rate limiting from non-NVIDIA providers
+- `ai_chat_request()` now accepts `provider` parameter for provider-aware rate limiting
+- Login page checkbox label changed from "Remember me" to "Remember my email"
+
+### Fixed
+- `authSlice.ts` no longer sets `isAuthenticated` from localStorage token (was a critical auth bypass)
+- Missing `useRef` declarations in Portfolio.tsx (`stopRequestedRef`, `marketScannerStopRequestedRef`, `marketScannerIsScanningRef`)
+- Removed hardcoded Supabase service role key from backend source
+- Removed 11 `print()` calls that leaked API key prefixes (6-10 chars) in backend logs
+- Removed debug `console.log` for session/token presence in Configuration.tsx and api.ts
+- Removed `apiKeyPreview`/`apiSecretPreview` from debug endpoint (replaced with boolean `hasApiKey`/`hasApiSecret`)
+- Scanner now returns `None` instead of `0` for failed price/volume data
+
+### Security
+- All protected routes require verified Supabase session (no localStorage bypass)
+- API keys/secrets Fernet-encrypted in Supabase, only masked values returned to frontend
+- Global 401 interceptor on both `api` and `scannerApi` axios instances
+- Backend never logs full or partial API keys/secrets
+- `.env` and config JSON files excluded via `.gitignore`
+- No hardcoded credentials in source code
+
 ## [1.7.3] - 2026-04-16
 
 ### Added
