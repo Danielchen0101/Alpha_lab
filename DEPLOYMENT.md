@@ -24,6 +24,9 @@ Set the following in Render Dashboard → Environment:
 | `AI_API_KEY` | AI provider API key | `your_ai_key` |
 | `AI_BASE_URL` | AI provider base URL | `https://api.deepseek.com` |
 | `AI_MODEL` | AI model name | `deepseek-chat` |
+| `ALPHALAB_ADMIN_EMAIL` | Admin login email | `admin@example.com` |
+| `ALPHALAB_ADMIN_PASSWORD` | Admin login password | `your_secure_password` |
+| `APP_SECRET_KEY` | JWT signing secret | `your_random_secret_key` |
 
 > Do NOT commit real API keys. Use Render's environment variable panel.
 

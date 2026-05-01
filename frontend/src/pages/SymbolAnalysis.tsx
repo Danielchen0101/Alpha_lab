@@ -17,6 +17,7 @@ import marketDataService, {
   calculateRSI
 } from '../services/marketDataService';
 import DataSourceBadge from '../components/DataSourceBadge';
+import { formatMarketCap } from '../utils/format';
 
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '/api';
 
@@ -3519,45 +3520,6 @@ const SymbolAnalysis: React.FC = () => {
 
   const isPositive = safeNumber(stockData.change) > 0;
   const isNegative = safeNumber(stockData.change) < 0;
-
-  // 格式化市值为缩写格式
-  const formatMarketCap = (value: number | null | undefined): string => {
-    if (value === null || value === undefined || value === 0) return '--';
-    
-    const num = Number(value);
-    if (isNaN(num)) return '--';
-    
-    // 注意：后端返回的marketCap已经是实际美元值，不需要再乘以1000000
-    // 之前的注释有误：Finnhub API返回的是实际美元值，不是百万为单位
-    const actualValue = num; // 直接使用原始值
-    
-    // 万亿 (Trillion)
-    if (actualValue >= 1e12) {
-      const trillions = actualValue / 1e12;
-      return `$${trillions.toFixed(trillions >= 10 ? 0 : 1)}T`;
-    }
-    
-    // 十亿 (Billion)
-    if (actualValue >= 1e9) {
-      const billions = actualValue / 1e9;
-      return `$${billions.toFixed(billions >= 10 ? 0 : 1)}B`;
-    }
-    
-    // 百万 (Million)
-    if (actualValue >= 1e6) {
-      const millions = actualValue / 1e6;
-      return `$${millions.toFixed(millions >= 10 ? 0 : 1)}M`;
-    }
-    
-    // 千 (Thousand)
-    if (actualValue >= 1e3) {
-      const thousands = actualValue / 1e3;
-      return `$${thousands.toFixed(thousands >= 10 ? 0 : 1)}K`;
-    }
-    
-    // 小于1000
-    return `$${actualValue.toFixed(2)}`;
-  };
 
   return (
     <div style={{ padding: '16px' }}>

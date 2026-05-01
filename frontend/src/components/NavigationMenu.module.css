@@ -1,57 +1,172 @@
-/* NavigationMenu.module.css - Sidebar 菜单项对齐修复 */
+/* NavigationMenu.module.css - Sidebar Comprehensive Redesign */
 
-/* 覆盖 Ant Design Menu 的默认样式 */
-.navigationMenu :global(.ant-menu-dark.ant-menu-inline .ant-menu-item) {
-  height: 44px !important;
-  line-height: 44px !important;
-  margin: 0 !important;
-  padding: 0 16px !important;
-  display: flex !important;
-  align-items: center !important;
-  border: none !important;
-  border-radius: 0 !important;
-  transition: none !important;
+.navigationMenuContainer {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 96px); /* Logo height + margins */
 }
 
-/* 确保激活态和未激活态使用相同的 padding */
-.navigationMenu :global(.ant-menu-dark.ant-menu-inline .ant-menu-item-selected) {
-  padding: 0 16px !important;
+.menuScrollArea {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
-/* 覆盖 Ant Design 的图标容器 */
-.navigationMenu :global(.ant-menu-item .ant-menu-item-icon) {
-  margin-right: 12px !important;
-  width: 20px !important;
-  display: flex !important;
-  justify-content: center !important;
-  align-items: center !important;
-  font-size: 16px !important;
-  line-height: 1 !important;
-  flex-shrink: 0 !important;
+/* Custom Scrollbar for dark theme */
+.menuScrollArea::-webkit-scrollbar {
+  width: 4px;
+}
+.menuScrollArea::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
 }
 
-/* 覆盖文字容器 */
-.navigationMenu :global(.ant-menu-title-content) {
-  flex: 1 !important;
-  font-size: 14px !important;
-  font-weight: 400 !important;
-  line-height: 44px !important;
-  overflow: hidden !important;
-  text-overflow: ellipsis !important;
-  white-space: nowrap !important;
+/* Menu Group Divider */
+.menuDivider {
+  padding: 16px 24px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.35);
+  letter-spacing: 1px;
+  text-transform: uppercase;
 }
 
-/* 确保 Link 组件不影响布局 */
-.navigationMenu :global(.ant-menu-item a) {
-  display: flex !important;
-  align-items: center !important;
-  width: 100% !important;
-  height: 100% !important;
-  color: inherit !important;
-  text-decoration: none !important;
-}
-
-/* 菜单容器样式 */
-.navigationMenu :global(.ant-menu-dark.ant-menu-inline) {
+/* Sidebar Menu Base */
+.sidebarMenu {
+  background: transparent !important;
   border-right: none !important;
+}
+
+/* Menu Item Customization */
+.sidebarMenu :global(.ant-menu-item) {
+  height: 48px !important;
+  line-height: 48px !important;
+  margin: 4px 12px !important;
+  border-radius: 8px !important;
+  width: calc(100% - 24px) !important;
+  color: rgba(255, 255, 255, 0.65) !important;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.sidebarMenu :global(.ant-menu-item:hover) {
+  color: #fff !important;
+  background-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Active Item Style */
+.sidebarMenu :global(.ant-menu-item-selected) {
+  background-color: rgba(24, 144, 255, 0.15) !important;
+  color: #1890ff !important;
+  font-weight: 600 !important;
+}
+
+/* Active Rail Indicator */
+.sidebarMenu :global(.ant-menu-item-selected::after) {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  background: #1890ff;
+  border-radius: 0 4px 4px 0;
+  box-shadow: 0 0 8px rgba(24, 144, 255, 0.5);
+  transform: scaleY(1);
+  transition: transform 0.2s;
+}
+
+/* Icon Alignment */
+.sidebarMenu :global(.ant-menu-item .anticon) {
+  font-size: 18px !important;
+  min-width: 18px !important;
+  margin-right: 12px !important;
+  transition: transform 0.2s !important;
+}
+
+.sidebarMenu :global(.ant-menu-item:hover .anticon) {
+  transform: translateX(2px);
+}
+
+/* Collapsed State Tweaks */
+:global(.ant-layout-sider-collapsed) .sidebarMenu :global(.ant-menu-item) {
+  margin: 8px 16px !important;
+  width: 48px !important;
+  padding: 0 15px !important;
+}
+
+:global(.ant-layout-sider-collapsed) .sidebarMenu :global(.ant-menu-item-selected::after) {
+  left: -16px;
+}
+
+/* Sidebar Footer */
+.sidebarFooter {
+  padding: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.expandedStatus {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.statusRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.statusLabel {
+  font-size: 10px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.4);
+  letter-spacing: 0.5px;
+}
+
+.statusTag {
+  font-size: 10px !important;
+  padding: 0 6px !important;
+  height: 18px !important;
+  line-height: 16px !important;
+  border-radius: 4px !important;
+  margin: 0 !important;
+  font-weight: 600 !important;
+  border: none !important;
+}
+
+.statusInfo {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.statusDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  box-shadow: 0 0 6px rgba(82, 196, 26, 0.4);
+}
+
+.statusText {
+  font-size: 12px;
+  color: #52c41a;
+  font-weight: 500;
+}
+
+.collapsedStatus {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 32px;
+}
+
+/* Ant Design Tooltip Styling (Global) */
+:global(.ant-tooltip-inner) {
+  background-color: #1f1f1f !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3) !important;
 }

@@ -335,18 +335,16 @@ const BacktestAnalysis = () => {
                       tick={{ fontSize: 11 }}
                       domain={[getEquityRange().min, getEquityRange().max]}
                       tickFormatter={(value) => {
-                        if (value >= 1000000) {
-                          return `$${(value / 1000000).toFixed(1)}M`;
-                        } else if (value >= 1000) {
-                          return `$${(value / 1000).toFixed(1)}K`;
-                        }
-                        return `$${value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+                        const val = Number(value);
+                        if (val >= 1000000) return `$${(val / 1000000).toFixed(1)}M`;
+                        if (val >= 1000) return `$${(val / 1000).toFixed(1)}K`;
+                        return `$${val.toFixed(0)}`;
                       }}
                     />
                     <Tooltip 
-                      formatter={(value, name) => {
+                      formatter={(value: any, name: string) => {
                         if (name === 'Portfolio Value') {
-                          return [`$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, name];
+                          return [`$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, name];
                         }
                         return [value, name];
                       }}
@@ -416,11 +414,11 @@ const BacktestAnalysis = () => {
                     />
                     <YAxis 
                       tick={{ fontSize: 11 }}
-                      tickFormatter={(value) => `${safeToFixed(value, 1)}%`}
+                      tickFormatter={(value) => `${Number(value).toFixed(1)}%`}
                       domain={getDrawdownYAxisRange()}
                     />
                     <Tooltip 
-                      formatter={(value: number) => [`${safeToFixed(value, 2)}%`, 'Drawdown']}
+                      formatter={(value: any) => [`${Number(value).toFixed(2)}%`, 'Drawdown']}
                       labelFormatter={(label) => `Date: ${new Date(label).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}`}
                     />
                     <Legend />

@@ -583,14 +583,16 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                 color: '#1890ff',
                 fontSize: '13px'
               }}>
-                ${dataPoint.close.toLocaleString('en-US', {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2
-                })}
+                {dataPoint.close !== null && dataPoint.close !== undefined ? 
+                  `$${Number(dataPoint.close).toLocaleString('en-US', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2
+                  })}` : '--'
+                }
               </span>
             </div>
             
-            {dataPoint.sma20 !== undefined && (
+            {dataPoint.sma20 !== undefined && dataPoint.sma20 !== null && (
               <div style={{ 
                 fontSize: '10px', 
                 color: '#8c8c8c',
@@ -601,7 +603,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               }}>
                 <span style={{ color: '#52c41a', fontWeight: '500' }}>SMA 20</span>
                 <span style={{ fontWeight: '600', color: '#333' }}>
-                  ${dataPoint.sma20.toLocaleString('en-US', {
+                  ${Number(dataPoint.sma20).toLocaleString('en-US', {
                     minimumFractionDigits: 2,
                     maximumFractionDigits: 2
                   })}
@@ -609,7 +611,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               </div>
             )}
             
-            {dataPoint.sma50 !== undefined && (
+            {dataPoint.sma50 !== undefined && dataPoint.sma50 !== null && (
               <div style={{ 
                 fontSize: '10px', 
                 color: '#8c8c8c',
@@ -620,7 +622,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               }}>
                 <span style={{ color: '#fa8c16', fontWeight: '500' }}>SMA 50</span>
                 <span style={{ fontWeight: '600', color: '#333' }}>
-                  ${dataPoint.sma50.toLocaleString('en-US', {
+                  ${Number(dataPoint.sma50).toLocaleString('en-US', {
                     minimumFractionDigits: 2,
                     maximumFractionDigits: 2
                   })}
@@ -1026,8 +1028,10 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               domain={[minPrice - pricePadding, maxPrice + pricePadding]}
               tick={{ fontSize: 11, fill: '#666' }} // 增大字号
               tickFormatter={(value) => {
-                // 专业的价格格式：整数部分逗号分隔，两位小数
-                return `$${value.toLocaleString('en-US', {
+                const val = Number(value);
+                if (isNaN(val)) return '$0.00';
+                // Professional prices format: integer part comma separated, two decimals
+                return `$${val.toLocaleString('en-US', {
                   minimumFractionDigits: 2,
                   maximumFractionDigits: 2
                 })}`;
@@ -1205,9 +1209,11 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               <YAxis 
                 tick={{ fontSize: 10, fill: '#666' }} // 增大字号
                 tickFormatter={(value) => {
-                  if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
-                  if (value >= 1000) return `${(value / 1000).toFixed(0)}K`;
-                  return value;
+                  const val = Number(value);
+                  if (isNaN(val)) return '0';
+                  if (val >= 1000000) return `${(val / 1000000).toFixed(1)}M`;
+                  if (val >= 1000) return `${(val / 1000).toFixed(0)}K`;
+                  return val.toFixed(0);
                 }}
                 axisLine={{ stroke: '#d9d9d9' }}
                 tickLine={{ stroke: '#d9d9d9' }}

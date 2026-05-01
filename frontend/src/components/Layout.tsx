@@ -70,8 +70,9 @@ const AppLayout: React.FC<LayoutProps> = ({ children }) => {
 
   const handleMenuClick = ({ key }: { key: string }) => {
     if (key === 'logout') {
-      localStorage.removeItem('token');
-      navigate('/login');
+      import('../lib/supabaseClient').then(({ supabase }) => {
+        supabase.auth.signOut().then(() => navigate('/signin'));
+      });
     } else if (key === 'profile') {
       navigate('/profile');
     } else if (key === 'settings') {

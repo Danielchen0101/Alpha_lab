@@ -4,6 +4,7 @@ import { Card, Table, Button, Input, Space, Alert, Empty, Tag, message, Statisti
 import { PlusOutlined, PlayCircleOutlined, DeleteOutlined, EyeOutlined, LineChartOutlined } from '@ant-design/icons';
 import { useLanguage } from '../contexts/LanguageContext';
 import marketDataService from '../services/marketDataService';
+import { formatMarketCap } from '../utils/format';
 
 const STORAGE_KEY = "quant_watchlist_symbols";
 
@@ -92,42 +93,6 @@ const Watchlist: React.FC = () => {
     
     // 默认返回"No clear setup"
     return 'No clear setup';
-  };
-
-  // 格式化市值函数（与Market页面一致）
-  const formatMarketCap = (value: number | null | undefined): string => {
-    if (value === null || value === undefined || value === 0) return '--';
-    
-    const num = Number(value);
-    if (isNaN(num)) return '--';
-    
-    // 万亿 (Trillion) - 1万亿 = 1e12
-    if (num >= 1e12) {
-      const trillions = num / 1e12;
-      // 对于万亿级别，显示2位小数
-      return `$${trillions.toFixed(2)}T`;
-    }
-    
-    // 十亿 (Billion) - 10亿 = 1e9
-    if (num >= 1e9) {
-      const billions = num / 1e9;
-      // 对于十亿级别，显示2位小数
-      return `$${billions.toFixed(2)}B`;
-    }
-    
-    // 百万 (Million) - 1百万 = 1e6
-    if (num >= 1e6) {
-      const millions = num / 1e6;
-      return `$${millions.toFixed(2)}M`;
-    }
-    
-    // 千 (Thousand) - 1千 = 1e3
-    if (num >= 1e3) {
-      const thousands = num / 1e3;
-      return `$${thousands.toFixed(2)}K`;
-    }
-    
-    return `$${num.toFixed(2)}`;
   };
 
   // Load watchlist from localStorage on component mount and listen for changes

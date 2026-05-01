@@ -1,18 +1,32 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Typography, Card, Form, Input, Select, Button, Space, Collapse, Tag, message, Spin, Row, Col, Divider,
 } from 'antd';
 import {
   SettingOutlined, CheckCircleOutlined, CloseCircleOutlined, QuestionCircleOutlined,
   SaveOutlined, ApiOutlined, ExperimentOutlined, BankOutlined, CloudOutlined, EyeOutlined, EyeInvisibleOutlined,
+  LogoutOutlined, UserOutlined,
 } from '@ant-design/icons';
 import axios from 'axios';
+import { supabase } from '../lib/supabaseClient';
+import { useAuth } from '../contexts/AuthContext';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
 
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '/api';
 const api = axios.create({ baseURL: API_BASE_URL, timeout: 15000 });
+
+// Per-user API instance with Supabase auth token
+const userApi = axios.create({ baseURL: API_BASE_URL, timeout: 15000 });
+userApi.interceptors.request.use(async (config) => {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (session?.access_token) {
+    config.headers.Authorization = `Bearer ${session.access_token}`;
+  }
+  return config;
+});
 
 // --- Masking helper ---
 const maskKey = (key: string): string => {
@@ -21,9 +35,20 @@ const maskKey = (key: string): string => {
   return key.slice(0, 4) + '****' + key.slice(-4);
 };
 
+// --- Auth check helper ---
+const requireSession = async (): Promise<string | null> => {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) {
+    message.error('Please sign in before saving settings.');
+    return null;
+  }
+  return session.access_token;
+};
+
 // --- Status badge ---
 const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
   if (status === 'connected') return <Tag icon={<CheckCircleOutlined />} color="success">Connected</Tag>;
+  if (status === 'saved') return <Tag icon={<CheckCircleOutlined />} color="blue">Saved</Tag>;
   if (status === 'error') return <Tag icon={<CloseCircleOutlined />} color="error">Error</Tag>;
   return <Tag icon={<QuestionCircleOutlined />} color="default">Not tested</Tag>;
 };
@@ -35,6 +60,7 @@ const AlpacaPaperSection: React.FC = () => {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState('not_tested');
   const [showKey, setShowKey] = useState(false);
   const [showSecret, setShowSecret] = useState(false);
@@ -42,7 +68,7 @@ const AlpacaPaperSection: React.FC = () => {
 
   useEffect(() => {
     setLoading(true);
-    api.get('/config/alpaca').then(res => {
+    userApi.get('/settings/broker-config').then(res => {
       if (res.data?.success) {
         const cfg = res.data.config || {};
         form.setFieldsValue({
@@ -51,23 +77,25 @@ const AlpacaPaperSection: React.FC = () => {
           paper_base_url: cfg.paper_base_url || 'https://paper-api.alpaca.markets',
         });
         setHasSaved(!!cfg.paper_api_key);
-        if (cfg.paper_api_key) setStatus('not_tested');
       }
     }).catch(() => {}).finally(() => setLoading(false));
   }, [form]);
 
   const handleSave = async () => {
     try {
+      const token = await requireSession();
+      if (!token) return;
+      setSaving(true);
       const values = await form.validateFields();
       const payload: any = { paper_base_url: values.paper_base_url };
       if (values.paper_api_key && !values.paper_api_key.includes('****')) payload.paper_api_key = values.paper_api_key;
       if (values.paper_api_secret && !values.paper_api_secret.includes('****')) payload.paper_api_secret = values.paper_api_secret;
-      const res = await api.post('/config/alpaca', payload);
+      const res = await userApi.post('/settings/broker-config', payload);
       if (res.data?.success) {
         message.success('Paper trading settings saved');
         setHasSaved(true);
-        // Reload masked values
-        const reload = await api.get('/config/alpaca');
+        setStatus('not_tested');
+        const reload = await userApi.get('/settings/broker-config');
         if (reload.data?.success) {
           const cfg = reload.data.config || {};
           form.setFieldsValue({
@@ -79,8 +107,10 @@ const AlpacaPaperSection: React.FC = () => {
         message.error(res.data?.message || 'Save failed');
       }
     } catch (e: any) {
-      if (e.errorFields) return; // validation error
-      message.error('Save failed');
+      if (e.errorFields) return;
+      message.error(e.response?.data?.message || e.message || 'Save failed');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -131,8 +161,8 @@ const AlpacaPaperSection: React.FC = () => {
           </Col>
         </Row>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>Test Connection</Button>
-          <Button type="primary" onClick={handleSave} icon={<SaveOutlined />}>Save Paper Settings</Button>
+          <Button onClick={handleTest} loading={testing} disabled={testing || saving} icon={<ExperimentOutlined />}>Test Connection</Button>
+          <Button type="primary" onClick={handleSave} loading={saving} disabled={saving || testing} icon={<SaveOutlined />}>Save Paper Settings</Button>
         </div>
       </Form>
     </Card>
@@ -142,10 +172,11 @@ const AlpacaPaperSection: React.FC = () => {
 // =====================================================================
 // Section B: Alpaca Real Trading
 // =====================================================================
-const AlpacaRealSection: React.FC = () => {
+const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string; secretKey: string }) => void }> = ({ onMarketDataSynced }) => {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState('not_tested');
   const [showKey, setShowKey] = useState(false);
   const [showSecret, setShowSecret] = useState(false);
@@ -153,7 +184,7 @@ const AlpacaRealSection: React.FC = () => {
 
   useEffect(() => {
     setLoading(true);
-    api.get('/config/alpaca').then(res => {
+    userApi.get('/settings/broker-config').then(res => {
       if (res.data?.success) {
         const cfg = res.data.config || {};
         form.setFieldsValue({
@@ -168,15 +199,19 @@ const AlpacaRealSection: React.FC = () => {
 
   const handleSave = async () => {
     try {
+      const token = await requireSession();
+      if (!token) return;
+      setSaving(true);
       const values = await form.validateFields();
       const payload: any = { live_base_url: values.live_base_url };
       if (values.live_api_key && !values.live_api_key.includes('****')) payload.live_api_key = values.live_api_key;
       if (values.live_api_secret && !values.live_api_secret.includes('****')) payload.live_api_secret = values.live_api_secret;
-      const res = await api.post('/config/alpaca', payload);
+      const res = await userApi.post('/settings/broker-config', payload);
       if (res.data?.success) {
         message.success('Real trading settings saved');
         setHasSaved(true);
-        const reload = await api.get('/config/alpaca');
+        setStatus('not_tested');
+        const reload = await userApi.get('/settings/broker-config');
         if (reload.data?.success) {
           const cfg = reload.data.config || {};
           form.setFieldsValue({
@@ -184,12 +219,21 @@ const AlpacaRealSection: React.FC = () => {
             live_api_secret: cfg.live_api_secret_masked || '',
           });
         }
+        // Trigger Market Data reload if keys were synced
+        if (res.data.marketDataSynced && onMarketDataSynced) {
+          onMarketDataSynced({
+            apiKey: res.data.maskedMarketDataApiKey || '',
+            secretKey: res.data.maskedMarketDataSecretKey || '',
+          });
+        }
       } else {
         message.error(res.data?.message || 'Save failed');
       }
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error('Save failed');
+      message.error(e.response?.data?.message || e.message || 'Save failed');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -240,8 +284,8 @@ const AlpacaRealSection: React.FC = () => {
           </Col>
         </Row>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>Test Connection</Button>
-          <Button type="primary" onClick={handleSave} icon={<SaveOutlined />}>Save Real Settings</Button>
+          <Button onClick={handleTest} loading={testing} disabled={testing || saving} icon={<ExperimentOutlined />}>Test Connection</Button>
+          <Button type="primary" onClick={handleSave} loading={saving} disabled={saving || testing} icon={<SaveOutlined />}>Save Real Settings</Button>
         </div>
       </Form>
     </Card>
@@ -251,48 +295,68 @@ const AlpacaRealSection: React.FC = () => {
 // =====================================================================
 // Section C: Alpaca Market Data
 // =====================================================================
-const MarketDataSection: React.FC = () => {
+const MarketDataSection: React.FC<{ reloadKey?: number }> = ({ reloadKey }) => {
   const [form] = Form.useForm();
   const [testing, setTesting] = useState(false);
   const [status, setStatus] = useState('not_tested');
+  const [credentialSource, setCredentialSource] = useState<string>('none');
 
-  useEffect(() => {
-    api.get('/config/market-data').then(res => {
+  const loadConfig = () => {
+    userApi.get('/config/market-data').then(res => {
       if (res.data?.success) {
         const cfg = res.data.config || {};
         form.setFieldsValue({
           data_base_url: cfg.data_base_url || 'https://data.alpaca.markets',
           feed: cfg.feed || 'iex',
+          api_key: cfg.api_key_masked || '',
+          api_secret: cfg.api_secret_masked || '',
         });
+        setCredentialSource(cfg.credentialSource || 'none');
       }
     }).catch(() => {});
-  }, [form]);
+  };
+
+  useEffect(() => { loadConfig(); }, [form, reloadKey]);
 
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
-      const res = await api.post('/config/market-data', values);
+      const payload: any = {
+        data_base_url: values.data_base_url,
+        feed: values.feed,
+      };
+      if (values.api_key && !values.api_key.includes('****')) {
+        payload.api_key = values.api_key;
+      }
+      if (values.api_secret && !values.api_secret.includes('****')) {
+        payload.api_secret = values.api_secret;
+      }
+      const res = await userApi.post('/config/market-data', payload);
       if (res.data?.success) {
         message.success('Market data settings saved');
+        loadConfig();
       } else {
         message.error(res.data?.message || 'Save failed');
       }
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error('Save failed');
+      const msg = e.response?.data?.message || e.message || 'Save failed';
+      message.error(msg);
     }
   };
 
   const handleTest = async () => {
     setTesting(true);
     try {
-      const res = await api.post('/config/market-data/test');
+      const res = await userApi.post('/config/market-data/test');
+      const d = res.data?.debug;
+      const debugHint = d ? ` (source=${d.keySource}, baseUrl=${d.baseUrl})` : '';
       if (res.data?.success) {
         setStatus('connected');
-        message.success('Market data connection OK');
+        message.success(`Market data connected${debugHint}`);
       } else {
         setStatus('error');
-        message.error(res.data?.message || 'Connection failed');
+        message.error((res.data?.message || 'Connection failed') + debugHint);
       }
     } catch (e: any) {
       setStatus('error');
@@ -302,14 +366,18 @@ const MarketDataSection: React.FC = () => {
     }
   };
 
+  const hasKeys = credentialSource === 'real_trading';
+
   return (
     <Card title={<Space><CloudOutlined />Alpaca Market Data</Space>} extra={<StatusBadge status={status} />} style={{ marginBottom: 16 }}>
-      <Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>Market data endpoint for bars, snapshots, and quotes. Separate from trading endpoints.</Text>
+      <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>Market data endpoint for bars, snapshots, and quotes. Uses Alpaca Real Trading credentials with data.alpaca.markets endpoint.</Text>
+      {hasKeys && <Text type="success" style={{ display: 'block', marginBottom: 16 }}>Credential Source: Alpaca Real Trading (auto-synced)</Text>}
+      {!hasKeys && <Text type="warning" style={{ display: 'block', marginBottom: 16 }}>Configure Alpaca Real Trading first, then Market Data keys will be auto-synced.</Text>}
       <Form form={form} layout="vertical">
         <Row gutter={16}>
           <Col span={12}>
             <Form.Item name="data_base_url" label="Market Data Base URL">
-              <Input placeholder="https://data.alpaca.markets" />
+              <Input disabled placeholder="https://data.alpaca.markets" />
             </Form.Item>
           </Col>
           <Col span={12}>
@@ -318,6 +386,18 @@ const MarketDataSection: React.FC = () => {
                 <Option value="iex">IEX (free tier)</Option>
                 <Option value="sip">SIP (paid tier)</Option>
               </Select>
+            </Form.Item>
+          </Col>
+        </Row>
+        <Row gutter={16}>
+          <Col span={12}>
+            <Form.Item name="api_key" label="Market Data API Key (auto-synced from Real Trading)">
+              <Input.Password placeholder={hasKeys ? undefined : 'Configure Real Trading first'} disabled={hasKeys} />
+            </Form.Item>
+          </Col>
+          <Col span={12}>
+            <Form.Item name="api_secret" label="Market Data API Secret (auto-synced from Real Trading)">
+              <Input.Password placeholder={hasKeys ? undefined : 'Configure Real Trading first'} disabled={hasKeys} />
             </Form.Item>
           </Col>
         </Row>
@@ -333,48 +413,96 @@ const MarketDataSection: React.FC = () => {
 // =====================================================================
 // Section D: AI Provider
 // =====================================================================
-const AI_PROVIDER_DEFAULTS: Record<string, { baseUrl: string; model: string }> = {
-  DeepSeek: { baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
-  OpenAI: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4' },
-  Claude: { baseUrl: 'https://api.anthropic.com/v1', model: 'claude-3-sonnet-20240229' },
-  'NVIDIA NIM': { baseUrl: 'https://integrate.api.nvidia.com/v1', model: 'deepseek-ai/deepseek-r1' },
+const PROVIDER_MODELS: Record<string, { baseUrl: string; models: string[] }> = {
+  DeepSeek: {
+    baseUrl: 'https://api.deepseek.com',
+    models: ['deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-chat', 'deepseek-coder', 'deepseek-reasoner'],
+  },
+  OpenAI: {
+    baseUrl: 'https://api.openai.com/v1',
+    models: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-4', 'gpt-3.5-turbo'],
+  },
+  Claude: {
+    baseUrl: 'https://api.anthropic.com/v1',
+    models: ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+  },
+  Gemini: {
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    models: ['gemini-3.1-pro-preview', 'gemini-3-flash-preview', 'gemini-3.1-flash-lite-preview', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+  },
+  'NVIDIA NIM': {
+    baseUrl: 'https://integrate.api.nvidia.com/v1',
+    models: ['meta/llama-3.1-8b-instruct', 'meta/llama-3.1-70b-instruct', 'meta/llama-3.1-405b-instruct', 'mistralai/mistral-7b-instruct-v0.3', 'google/gemma-2-9b-it'],
+  },
+  Mimo: {
+    baseUrl: 'https://api.mimo.ai/v1',
+    models: ['mimo-7b', 'mimo-13b'],
+  },
+  Custom: {
+    baseUrl: '',
+    models: [],
+  },
 };
+const PROVIDER_NAMES = Object.keys(PROVIDER_MODELS);
 
 const AIProviderSection: React.FC = () => {
   const [form] = Form.useForm();
   const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState('not_tested');
   const [showKey, setShowKey] = useState(false);
   const [hasSaved, setHasSaved] = useState(false);
   const [customModel, setCustomModel] = useState(false);
-  const [rateLimitInfo, setRateLimitInfo] = useState<{ rpm: number; minIntervalMs: number } | null>(null);
+  const [keyIsMasked, setKeyIsMasked] = useState(false);
+
+  const currentProvider = Form.useWatch('provider', form) || 'DeepSeek';
+  const modelOptions = PROVIDER_MODELS[currentProvider]?.models || [];
 
   useEffect(() => {
-    api.get('/ai/provider/config').then(res => {
+    userApi.get('/settings/ai-config').then(res => {
       if (res.data?.success) {
         const cfg = res.data.config || {};
-        const model = cfg.model || 'deepseek-chat';
-        const isKnown = KNOWN_MODELS.includes(model);
+        const provider = cfg.provider || 'DeepSeek';
+        const model = cfg.model || PROVIDER_MODELS[provider]?.models[0] || '';
+        const providerModels = PROVIDER_MODELS[provider]?.models || [];
+        const isKnown = providerModels.includes(model);
         setCustomModel(!isKnown);
+        // Detect if stored key is masked (contains ****)
+        const rawKey = cfg.apiKey || '';
+        const masked = rawKey.includes('****');
+        setKeyIsMasked(masked);
         form.setFieldsValue({
-          provider: cfg.provider || 'DeepSeek',
+          provider,
           model: isKnown ? model : '__custom__',
           customModel: isKnown ? '' : model,
-          apiKey: cfg.apiKey ? maskKey(cfg.apiKey) : '',
-          baseUrl: cfg.baseUrl || cfg.baseURL || 'https://api.deepseek.com',
+          apiKey: masked ? '' : rawKey,
+          baseUrl: cfg.baseUrl || cfg.baseURL || PROVIDER_MODELS[provider]?.baseUrl || '',
         });
-        setHasSaved(!!cfg.apiKey);
-        if (cfg.apiKey) setStatus('not_tested');
-        setRateLimitInfo(res.data.rateLimit || null);
+        setHasSaved(!!cfg.apiKey && !masked);
+        // Load persisted test status from backend
+        if (masked) {
+          setStatus('error');
+        } else {
+          const testStatus = res.data.testStatus || 'not_tested';
+          if (testStatus === 'connected') {
+            setStatus('connected');
+          } else if (testStatus === 'error') {
+            setStatus('error');
+          } else if (testStatus === 'saved' || !!cfg.apiKey) {
+            setStatus('saved');
+          } else {
+            setStatus('not_tested');
+          }
+        }
       }
     }).catch(() => {});
   }, [form]);
 
   const handleProviderChange = (value: string) => {
-    const defaults = AI_PROVIDER_DEFAULTS[value];
-    if (defaults) {
-      form.setFieldsValue({ baseUrl: defaults.baseUrl, model: defaults.model });
-      setCustomModel(false);
+    const p = PROVIDER_MODELS[value];
+    if (p) {
+      form.setFieldsValue({ baseUrl: p.baseUrl, model: p.models[0] || '__custom__' });
+      setCustomModel(!p.models[0]);
     }
   };
 
@@ -382,14 +510,11 @@ const AIProviderSection: React.FC = () => {
     setCustomModel(value === '__custom__');
   };
 
-  const KNOWN_MODELS = [
-    'deepseek-chat', 'deepseek-coder', 'deepseek-ai/deepseek-r1',
-    'meta/llama-3.1-70b-instruct', 'gpt-4', 'gpt-3.5-turbo',
-    'claude-3-opus', 'claude-3-sonnet',
-  ];
-
   const handleSave = async () => {
     try {
+      const token = await requireSession();
+      if (!token) return;
+      setSaving(true);
       const values = await form.validateFields();
       const modelValue = customModel ? values.customModel : values.model;
       const payload: any = {
@@ -400,51 +525,73 @@ const AIProviderSection: React.FC = () => {
       if (values.apiKey && !values.apiKey.includes('****')) {
         payload.apiKey = values.apiKey;
       }
-      const res = await api.post('/ai/provider/config', payload);
+      const res = await userApi.post('/settings/ai-config', payload);
       if (res.data?.success) {
         message.success('AI provider settings saved');
         setHasSaved(true);
-        const reload = await api.get('/ai/provider/config');
+        // Use backend testStatus if available, otherwise 'saved'
+        const testStatus = res.data.testStatus || 'saved';
+        setStatus(testStatus === 'connected' ? 'connected' : 'saved');
+        const reload = await userApi.get('/settings/ai-config');
         if (reload.data?.success) {
           const cfg = reload.data.config || {};
           const model = cfg.model || modelValue;
-          const isKnown = KNOWN_MODELS.includes(model);
+          const providerModels = PROVIDER_MODELS[values.provider]?.models || [];
+          const isKnown = providerModels.includes(model);
           setCustomModel(!isKnown);
           form.setFieldsValue({
-            apiKey: cfg.apiKey ? maskKey(cfg.apiKey) : '',
+            apiKey: cfg.apiKey || '',
             model: isKnown ? model : '__custom__',
             customModel: isKnown ? '' : model,
           });
+          // Update status from reload
+          const reloadStatus = reload.data.testStatus || 'saved';
+          if (reloadStatus === 'connected') setStatus('connected');
+          else if (reloadStatus === 'error') setStatus('error');
+          else setStatus('saved');
         }
       } else {
         message.error(res.data?.message || 'Save failed');
       }
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error('Save failed');
+      message.error(e.response?.data?.message || e.message || 'Save failed');
+    } finally {
+      setSaving(false);
     }
   };
 
   const handleTest = async () => {
     setTesting(true);
     try {
+      const token = await requireSession();
+      if (!token) { setTesting(false); return; }
       const values = form.getFieldsValue();
       const modelValue = customModel ? values.customModel : values.model;
-      const res = await api.post('/ai/provider/test', {
+      if (!modelValue) {
+        message.error('Please select or enter a model name');
+        setTesting(false); return;
+      }
+      const payload: any = {
         baseUrl: values.baseUrl,
         model: modelValue,
         provider: values.provider,
-      });
+      };
+      if (values.apiKey && !values.apiKey.includes('****') && !values.apiKey.includes('•')) {
+        payload.apiKey = values.apiKey;
+      }
+      const res = await userApi.post('/ai/provider/test', payload);
       if (res.data?.success) {
-        setStatus('connected');
+        setStatus(res.data.testStatus || 'connected');
         message.success('AI provider connection OK');
       } else {
-        setStatus('error');
+        setStatus(res.data.testStatus || 'error');
         message.error(res.data?.message || 'Connection failed');
       }
     } catch (e: any) {
       setStatus('error');
-      message.error(e.response?.data?.message || 'Connection failed');
+      const detail = e.response?.data?.message || e.response?.data?.error || e.message;
+      message.error(detail || 'Connection failed');
     } finally {
       setTesting(false);
     }
@@ -452,29 +599,31 @@ const AIProviderSection: React.FC = () => {
 
   return (
     <Card title={<Space><ApiOutlined />AI Provider Configuration</Space>} extra={<StatusBadge status={status} />} style={{ marginBottom: 16 }}>
-      <Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>Configure the AI provider used by Scanner, Fine Scan, Deeper Validation, and Entry Plan.</Text>
-      <Form form={form} layout="vertical">
+      <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>Configure the AI provider used by Scanner, Fine Scan, Deeper Validation, and Entry Plan.</Text>
+      {keyIsMasked && (
+        <Text type="danger" style={{ display: 'block', marginBottom: 16, fontWeight: 600 }}>
+          Stored AI key is invalid because a masked value was saved. Please re-enter the real API key below and click Save, then Test AI Connection.
+        </Text>
+      )}
+      <Form form={form} layout="vertical" initialValues={{ provider: 'DeepSeek', model: 'deepseek-v4-pro', baseUrl: 'https://api.deepseek.com' }}>
         <Row gutter={16}>
           <Col span={6}>
             <Form.Item name="provider" label="Provider">
               <Select onChange={handleProviderChange}>
-                <Option value="DeepSeek">DeepSeek</Option>
-                <Option value="OpenAI">OpenAI</Option>
-                <Option value="Claude">Claude</Option>
-                <Option value="NVIDIA NIM">NVIDIA NIM</Option>
+                {PROVIDER_NAMES.map(p => <Option key={p} value={p}>{p}</Option>)}
               </Select>
             </Form.Item>
           </Col>
           <Col span={6}>
             <Form.Item name="model" label="Model">
               <Select showSearch onChange={handleModelChange}>
-                {KNOWN_MODELS.map(m => <Option key={m} value={m}>{m}</Option>)}
-                <Option value="__custom__">Other (custom model)...</Option>
+                {modelOptions.map(m => <Option key={m} value={m}>{m}</Option>)}
+                <Option value="__custom__">Custom model...</Option>
               </Select>
             </Form.Item>
             {customModel && (
               <Form.Item name="customModel" label="Custom Model Name" rules={[{ required: true, message: 'Enter model name' }]}>
-                <Input placeholder="e.g. deepseek-ai/deepseek-r1" onChange={(e) => form.setFieldsValue({ model: e.target.value })} />
+                <Input placeholder="e.g. deepseek-ai/deepseek-r1" />
               </Form.Item>
             )}
           </Col>
@@ -493,15 +642,10 @@ const AIProviderSection: React.FC = () => {
           </Col>
         </Row>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>Test AI Connection</Button>
-          <Button type="primary" onClick={handleSave} icon={<SaveOutlined />}>Save AI Settings</Button>
+          <Button onClick={handleTest} loading={testing} disabled={testing || saving} icon={<ExperimentOutlined />}>Test AI Connection</Button>
+          <Button type="primary" onClick={handleSave} loading={saving} disabled={saving || testing} icon={<SaveOutlined />}>Save AI Settings</Button>
         </div>
       </Form>
-      {rateLimitInfo && (
-        <div style={{ marginTop: 8 }}>
-          <Text type="secondary" style={{ fontSize: 12 }}>Rate limit: {rateLimitInfo.rpm} RPM / min interval {rateLimitInfo.minIntervalMs}ms</Text>
-        </div>
-      )}
     </Card>
   );
 };
@@ -512,33 +656,38 @@ const AIProviderSection: React.FC = () => {
 const FinnhubSection: React.FC = () => {
   const [form] = Form.useForm();
   const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState('not_tested');
   const [showKey, setShowKey] = useState(false);
   const [hasSaved, setHasSaved] = useState(false);
 
   useEffect(() => {
-    api.get('/config/finnhub').then(res => {
+    userApi.get('/settings/finnhub-config').then(res => {
       if (res.data?.success) {
         const cfg = res.data.config || {};
         form.setFieldsValue({
-          api_key: cfg.api_key_masked || '',
+          api_key: cfg.api_key_masked || cfg.api_key || '',
           base_url: cfg.base_url || 'https://finnhub.io/api/v1',
         });
-        setHasSaved(!!cfg.api_key);
+        setHasSaved(!!cfg.api_key_masked || !!cfg.api_key);
       }
     }).catch(() => {});
   }, [form]);
 
   const handleSave = async () => {
     try {
+      const token = await requireSession();
+      if (!token) return;
+      setSaving(true);
       const values = await form.validateFields();
       const payload: any = { base_url: values.base_url };
       if (values.api_key && !values.api_key.includes('****')) payload.api_key = values.api_key;
-      const res = await api.post('/config/finnhub', payload);
+      const res = await userApi.post('/settings/finnhub-config', payload);
       if (res.data?.success) {
         message.success('Finnhub settings saved');
         setHasSaved(true);
-        const reload = await api.get('/config/finnhub');
+        setStatus('not_tested');
+        const reload = await userApi.get('/settings/finnhub-config');
         if (reload.data?.success) {
           const cfg = reload.data.config || {};
           form.setFieldsValue({ api_key: cfg.api_key_masked || '' });
@@ -548,17 +697,21 @@ const FinnhubSection: React.FC = () => {
       }
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error('Save failed');
+      message.error(e.response?.data?.message || e.message || 'Save failed');
+    } finally {
+      setSaving(false);
     }
   };
 
   const handleTest = async () => {
     setTesting(true);
     try {
-      const res = await api.post('/config/finnhub/test');
+      const token = await requireSession();
+      if (!token) { setTesting(false); return; }
+      const res = await userApi.post('/settings/finnhub-config/test');
       if (res.data?.success) {
         setStatus('connected');
-        message.success('Finnhub connection OK');
+        message.success(res.data?.message || 'Finnhub connection OK');
       } else {
         setStatus('error');
         message.error(res.data?.message || 'Connection failed');
@@ -591,8 +744,8 @@ const FinnhubSection: React.FC = () => {
           </Col>
         </Row>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>Test Finnhub Connection</Button>
-          <Button type="primary" onClick={handleSave} icon={<SaveOutlined />}>Save Finnhub Settings</Button>
+          <Button onClick={handleTest} loading={testing} disabled={testing || saving} icon={<ExperimentOutlined />}>Test Finnhub Connection</Button>
+          <Button type="primary" onClick={handleSave} loading={saving} disabled={saving || testing} icon={<SaveOutlined />}>Save Finnhub Settings</Button>
         </div>
       </Form>
     </Card>
@@ -603,15 +756,35 @@ const FinnhubSection: React.FC = () => {
 // Main Configuration Page
 // =====================================================================
 const Configuration: React.FC = () => {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+  const [marketDataReloadKey, setMarketDataReloadKey] = useState(0);
+
+  const handleSignOut = async () => {
+    await logout();
+    navigate('/signin');
+  };
+
   return (
     <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-      <Title level={2}>
-        <SettingOutlined style={{ marginRight: 12 }} />
-        Configuration
-      </Title>
-      <Text type="secondary" style={{ display: 'block', marginBottom: 24 }}>
-        Configure API connections for Alpaca, Finnhub, and AI providers. Changes take effect immediately.
-      </Text>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
+        <div>
+          <Title level={2} style={{ marginBottom: 4 }}>
+            <SettingOutlined style={{ marginRight: 12 }} />
+            Configuration
+          </Title>
+          <Text type="secondary">
+            Configure API connections for Alpaca, Finnhub, and AI providers.
+          </Text>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+          <Space>
+            <UserOutlined />
+            <Text type="secondary">{user?.email || 'Unknown'}</Text>
+          </Space>
+          <Button icon={<LogoutOutlined />} onClick={handleSignOut}>Sign Out</Button>
+        </div>
+      </div>
 
       <Collapse
         defaultActiveKey={['paper', 'ai']}
@@ -625,12 +798,12 @@ const Configuration: React.FC = () => {
           {
             key: 'real',
             label: <Text strong>B. Alpaca Real Trading</Text>,
-            children: <AlpacaRealSection />,
+            children: <AlpacaRealSection onMarketDataSynced={() => setMarketDataReloadKey(k => k + 1)} />,
           },
           {
             key: 'data',
             label: <Text strong>C. Alpaca Market Data</Text>,
-            children: <MarketDataSection />,
+            children: <MarketDataSection reloadKey={marketDataReloadKey} />,
           },
           {
             key: 'ai',

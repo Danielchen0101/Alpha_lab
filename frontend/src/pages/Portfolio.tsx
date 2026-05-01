@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+﻿import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Card, Typography, Space, Statistic, Row, Col,
@@ -20,6 +20,8 @@ import { backtraderAPI, marketAPI, entryQualityAPI, fineScanAdvancedAPI, deeperV
 import api, { scannerApi } from '../services/api';
 import marketDataService from '../services/marketDataService';
 import alpacaBrokerService, { AlpacaPosition, AlpacaOrder } from '../services/alpacaBrokerService';
+import { scannerStateStore } from '../services/scannerStateStore';
+import { startMarketScanner, stopMarketScannerByUser, isScanRunning } from '../services/scannerRunnerService';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -56,56 +58,140 @@ const CollapsibleStageSection: React.FC<CollapsibleStageSectionProps> = ({
   summaryChips, actionButton, isRunning, expanded, onToggle, children
 }) => {
   const statusTagColor = statusColor || (isRunning ? 'processing' : 'default');
+  
+  // Custom styles for different status colors to match professional palette
+  const getStatusStyle = () => {
+    if (isRunning) return { background: 'rgba(24, 144, 255, 0.05)', border: '1px solid #91caff' };
+    if (statusColor === 'success') return { background: 'rgba(82, 196, 26, 0.03)', border: '1px solid #b7eb8f' };
+    if (statusColor === 'error') return { background: 'rgba(255, 77, 79, 0.03)', border: '1px solid #ffa39e' };
+    return { background: '#fff', border: '1px solid #f0f0f0' };
+  };
+
+  const sectionStyle = getStatusStyle();
+
   return (
-    <div style={{ marginBottom: 16 }}>
+    <div style={{ 
+      marginBottom: 20, 
+      borderRadius: 12, 
+      overflow: 'hidden',
+      boxShadow: expanded ? '0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.05)' : '0 2px 8px rgba(0, 0, 0, 0.03)',
+      transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+      border: sectionStyle.border
+    }}>
       <div
         onClick={onToggle}
         style={{
-          display: 'flex', alignItems: 'center', height: expanded ? 56 : 52,
-          padding: '0 16px', background: isRunning ? '#f0f7ff' : '#fafafa',
-          border: `1px solid ${isRunning ? '#91caff' : '#e8e8e8'}`,
-          borderRadius: expanded ? '6px 6px 0 0' : 6,
-          cursor: 'pointer', transition: 'all 0.2s',
+          display: 'flex', 
+          alignItems: 'center', 
+          height: 60,
+          padding: '0 20px', 
+          background: sectionStyle.background,
+          cursor: 'pointer', 
+          transition: 'all 0.2s',
           userSelect: 'none',
+          borderBottom: expanded ? sectionStyle.border : 'none'
         }}
       >
         {/* Expand icon */}
-        <span style={{ marginRight: 8, fontSize: 12, color: '#888', flexShrink: 0 }}>
+        <span style={{ 
+          marginRight: 12, 
+          fontSize: 10, 
+          color: expanded ? '#1890ff' : '#bfbfbf', 
+          flexShrink: 0,
+          transition: 'transform 0.3s'
+        }}>
           {expanded ? <CaretDownOutlined /> : <CaretRightOutlined />}
         </span>
 
         {/* Title + Icon */}
-        <span style={{ fontSize: 15, fontWeight: 600, color: '#1a1a1a', marginRight: 12, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
-          {icon}
+        <span style={{ 
+          fontSize: 16, 
+          fontWeight: 700, 
+          color: '#262626', 
+          marginRight: 16, 
+          flexShrink: 0, 
+          display: 'flex', 
+          alignItems: 'center', 
+          gap: 10 
+        }}>
+          <span style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            justifyContent: 'center',
+            width: 32,
+            height: 32,
+            borderRadius: 8,
+            background: isRunning ? '#1890ff15' : '#f5f5f5',
+            color: isRunning ? '#1890ff' : '#595959',
+            fontSize: 18
+          }}>
+            {icon}
+          </span>
           {title}
         </span>
 
         {/* Status badge */}
         {statusText && (
-          <Tag color={statusTagColor} style={{ margin: 0, fontSize: 11, lineHeight: '18px', padding: '0 6px', marginRight: 10 }}>
+          <Tag 
+            color={statusTagColor} 
+            style={{ 
+              margin: 0, 
+              fontSize: 10, 
+              fontWeight: 700,
+              letterSpacing: '0.02em',
+              lineHeight: '20px', 
+              padding: '0 10px', 
+              marginRight: 12,
+              borderRadius: 20,
+              textTransform: 'uppercase',
+              border: 'none',
+              boxShadow: isRunning ? '0 0 0 2px rgba(24, 144, 255, 0.1)' : 'none'
+            }}
+          >
+            {isRunning && <SyncOutlined spin style={{ marginRight: 6 }} />}
             {statusText}
           </Tag>
         )}
 
         {/* Progress bar (compact 6px) */}
         {progressValue !== null && progressValue !== undefined && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginRight: 10, minWidth: 120, flexShrink: 0 }}>
-            <div style={{ flex: 1, height: 6, background: '#e8e8e8', borderRadius: 3, overflow: 'hidden' }}>
-              <div style={{ width: `${Math.min(100, Math.max(0, progressValue))}%`, height: '100%', background: isRunning ? '#1890ff' : '#52c41a', borderRadius: 3, transition: 'width 0.3s' }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginRight: 16, minWidth: 150, flexShrink: 0 }}>
+            <div style={{ flex: 1, height: 6, background: '#f0f0f0', borderRadius: 10, overflow: 'hidden' }}>
+              <div 
+                style={{ 
+                  width: `${Math.min(100, Math.max(0, progressValue))}%`, 
+                  height: '100%', 
+                  background: isRunning ? 'linear-gradient(90deg, #1890ff, #69b1ff)' : '#52c41a', 
+                  borderRadius: 10, 
+                  transition: 'width 0.8s cubic-bezier(0.4, 0, 0.2, 1)' 
+                }} 
+              />
             </div>
-            <span style={{ fontSize: 11, color: '#888', minWidth: 28, textAlign: 'right' }}>{Math.round(progressValue)}%</span>
+            <span style={{ fontSize: 12, fontWeight: 600, color: '#8c8c8c', minWidth: 32, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+              {Math.round(progressValue)}%
+            </span>
           </div>
         )}
+        
         {progressText && (progressValue === null || progressValue === undefined) && (
-          <span style={{ fontSize: 11, color: '#888', marginRight: 10 }}>{progressText}</span>
+          <span style={{ fontSize: 12, color: '#8c8c8c', marginRight: 16, fontStyle: 'italic' }}>{progressText}</span>
         )}
 
         {/* Summary chips */}
         {summaryChips && summaryChips.length > 0 && (
-          <div style={{ display: 'flex', gap: 6, marginRight: 10, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 8, marginRight: 16, flexWrap: 'wrap' }}>
             {summaryChips.map((chip, i) => (
-              <span key={i} style={{ fontSize: 11, color: chip.color || '#595959', background: '#f5f5f5', borderRadius: 3, padding: '1px 6px', lineHeight: '18px' }}>
-                {chip.label}: <strong>{chip.value}</strong>
+              <span key={i} style={{ 
+                fontSize: 11, 
+                fontWeight: 500,
+                color: '#595959', 
+                background: '#f5f5f5', 
+                borderRadius: 4, 
+                padding: '2px 8px', 
+                lineHeight: '18px',
+                border: '1px solid #f0f0f0'
+              }}>
+                <span style={{ color: '#8c8c8c' }}>{chip.label}:</span> <span style={{ color: chip.color || '#262626', fontWeight: 700 }}>{chip.value}</span>
               </span>
             ))}
           </div>
@@ -116,7 +202,7 @@ const CollapsibleStageSection: React.FC<CollapsibleStageSectionProps> = ({
 
         {/* Action button */}
         {actionButton && (
-          <div onClick={(e) => e.stopPropagation()}>
+          <div onClick={(e) => e.stopPropagation()} style={{ marginLeft: 16 }}>
             {actionButton}
           </div>
         )}
@@ -124,7 +210,7 @@ const CollapsibleStageSection: React.FC<CollapsibleStageSectionProps> = ({
 
       {/* Expanded content */}
       {expanded && (
-        <div style={{ border: '1px solid #e8e8e8', borderTop: 'none', borderRadius: '0 0 6px 6px', padding: '16px', background: '#fff' }}>
+        <div style={{ padding: '24px', background: '#fff' }}>
           {children}
         </div>
       )}
@@ -245,6 +331,16 @@ const Portfolio: React.FC = (): React.ReactElement => {
     provider: 'DeepSeek'
   });
 
+  // Real config status from backend /api/config/status
+  const [configStatus, setConfigStatus] = useState<{
+    ai: boolean;
+    aiTestStatus: string;  // not_tested | saved | connected | error
+    aiLastTestError: string | null;
+    alpaca: boolean;
+    finnhub: boolean;
+    loaded: boolean;
+  }>({ ai: false, aiTestStatus: 'not_tested', aiLastTestError: null, alpaca: false, finnhub: false, loaded: false });
+
   const [aiConfigForm] = Form.useForm();
   const [testingConnection, setTestingConnection] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
@@ -252,48 +348,144 @@ const Portfolio: React.FC = (): React.ReactElement => {
   // Alpaca Paper Trading 真实账户状态
   const [alpacaOrders, setAlpacaOrders] = useState<any[]>([]);
 
-  // Market Scanner 状态
-  const [marketScannerStatus, setMarketScannerStatus] = useState({
-    status: 'stopped' as 'stopped' | 'running' | 'scheduled',
-    lastScanTime: null as string | null,
-    nextScanTime: null as string | null,
-    progress: 0,
-    totalSymbols: 0,
-    scannedSymbols: 0,
-    // 新增字段用于详细进度显示
-    currentSymbol: null as string | null,
-    currentStatus: null as 'initializing' | 'scanning' | 'retrying' | 'validating' | 'validated' | 'queued' | 'queued_for_retry' | 'rendering' | 'completed' | 'failed' | 'error' | 'idle' | 'stopped' | null,
-    currentBatch: null as number | null,
-    batchProgress: null as string | null,
-    retryAttempt: 0,
-    maxRetryAttempts: 3
-  });
-  const [marketScannerResults, setMarketScannerResults] = useState<any[]>([]);
+  // ── Persistent Scanner State (from scannerStateStore) ──
+  const [scannerSnapshot, setScannerSnapshot] = useState(() => scannerStateStore.getState());
 
-  // Preferred Continue Scan List 状态
-  const [continueScanStatus, setContinueScanStatus] = useState<'idle' | 'processing' | 'completed' | 'error'>('idle');
-  console.log('continueScanStatus defined');
-  const [continueScanProgress, setContinueScanProgress] = useState(0);
-  const [preferredContinueScanList, setPreferredContinueScanList] = useState<any[]>([]);
-const [preferredContinuePage, setPreferredContinuePage] = useState(1);
+  useEffect(() => {
+    const unsubscribe = scannerStateStore.subscribe((state) => {
+      setScannerSnapshot(state);
+    });
+    return unsubscribe;
+  }, []);
 
-  // Continue Scan 进度详情
-  const [continueScanDetails, setContinueScanDetails] = useState({
-    currentStage: '' as string,
-    startTime: null as number | null,
-    estimatedTimeRemaining: null as number | null,
-    processedCount: 0,
-    totalCount: 0
-  });
+  // Hydrate from store on mount — use module-level isScanRunning() to detect page refresh vs route change
+  useEffect(() => {
+    if (!isScanRunning()) {
+      // No active scan at module level — either page was refreshed (scan loop lost) or no scan was running
+      const state = scannerStateStore.getState();
+      if (state.marketScanner.status === 'running') {
+        scannerStateStore.updateMarketScanner({ status: 'stopped', currentStatus: 'idle', detailedScanStatus: { ...state.marketScanner.detailedScanStatus, currentStatus: 'stopped', statusMessage: 'Scan interrupted by page refresh. Results preserved.' } });
+      }
+      if (state.continueScan.status === 'processing') {
+        scannerStateStore.updateContinueScan({ status: 'idle' });
+      }
+      if (state.fineScan.status === 'running') {
+        scannerStateStore.updateFineScan({ status: 'stopped', message: 'Scan interrupted by page refresh. Results preserved.' });
+      }
+      if (state.deeperValidation.status === 'loading') {
+        scannerStateStore.updateDeeperValidation({ status: 'idle' });
+      }
+      if (state.entryPlan.status === 'loading') {
+        scannerStateStore.updateEntryPlan({ status: 'idle' });
+      }
+    }
+    // On route change: isScanRunning() returns true — scan loop continues in background, store keeps updating
+  }, []);
 
+  // Derived state from store (backward-compatible names)
+  const marketScannerStatus = scannerSnapshot.marketScanner;
+  const marketScannerResults = scannerSnapshot.marketScanner.results;
+  const continueScanStatus = scannerSnapshot.continueScan.status;
+  const continueScanProgress = scannerSnapshot.continueScan.progress;
+  const preferredContinueScanList = scannerSnapshot.continueScan.results;
+  const continueScanDetails = scannerSnapshot.continueScan.details;
+  const fineScanStatus = scannerSnapshot.fineScan.status;
+  const fineScanResults = scannerSnapshot.fineScan.results;
+  const fineScanProgress = scannerSnapshot.fineScan.progress;
+  const fineScanStepProgress = scannerSnapshot.fineScan.stepProgress;
+  const fineScanCurrentStep = scannerSnapshot.fineScan.currentStep;
+  const fineScanMessage = scannerSnapshot.fineScan.message;
+  const fineScanExpandedRows = scannerSnapshot.fineScan.expandedRows;
 
-  // Fine Scan 状态
-  const [fineScanStatus, setFineScanStatus] = useState('idle');     
-  const [fineScanResults, setFineScanResults] = useState<any[]>([]);
-  const [fineScanProgress, setFineScanProgress] = useState(0);
-  const [fineScanStepProgress, setFineScanStepProgress] = useState(0);
-  const [fineScanCurrentStep, setFineScanCurrentStep] = useState<string>('');
-  const [fineScanMessage, setFineScanMessage] = useState<string>('');
+  // Deeper Validation and Entry Plan from store
+  const deeperValidationStatus = scannerSnapshot.deeperValidation.status;
+  const deeperValidationResults = scannerSnapshot.deeperValidation.results;
+  const entryPlanStatus = scannerSnapshot.entryPlan.status;
+  const entryPlanResults = scannerSnapshot.entryPlan.results;
+
+  // Setter wrappers that update the store
+  const setMarketScannerStatus = useCallback((updater: any) => {
+    const current = scannerStateStore.getState().marketScanner;
+    const next = typeof updater === 'function' ? updater(current) : updater;
+    scannerStateStore.updateMarketScanner(next);
+  }, []);
+
+  const setMarketScannerResults = useCallback((results: any) => {
+    const next = typeof results === 'function' ? results(scannerStateStore.getState().marketScanner.results) : results;
+    scannerStateStore.setMarketScannerResults(next);
+  }, []);
+
+  const setContinueScanStatus = useCallback((status: any) => {
+    scannerStateStore.updateContinueScan({ status });
+  }, []);
+
+  const setContinueScanProgress = useCallback((progress: number) => {
+    scannerStateStore.updateContinueScan({ progress });
+  }, []);
+
+  const setPreferredContinueScanList = useCallback((results: any) => {
+    const next = typeof results === 'function' ? results(scannerStateStore.getState().continueScan.results) : results;
+    scannerStateStore.setContinueScanResults(next);
+  }, []);
+
+  const setContinueScanDetails = useCallback((updater: any) => {
+    const current = scannerStateStore.getState().continueScan.details;
+    const next = typeof updater === 'function' ? updater(current) : updater;
+    scannerStateStore.updateContinueScan({ details: next });
+  }, []);
+
+  const setFineScanStatus = useCallback((status: any) => {
+    scannerStateStore.updateFineScan({ status });
+  }, []);
+
+  const setFineScanResults = useCallback((results: any) => {
+    const next = typeof results === 'function' ? results(scannerStateStore.getState().fineScan.results) : results;
+    scannerStateStore.setFineScanResults(next);
+  }, []);
+
+  const setFineScanProgress = useCallback((progress: number) => {
+    scannerStateStore.updateFineScan({ progress });
+  }, []);
+
+  const setFineScanStepProgress = useCallback((stepProgress: number) => {
+    scannerStateStore.updateFineScan({ stepProgress });
+  }, []);
+
+  const setFineScanCurrentStep = useCallback((currentStep: string) => {
+    scannerStateStore.updateFineScan({ currentStep });
+  }, []);
+
+  const setFineScanMessage = useCallback((message: string) => {
+    scannerStateStore.updateFineScan({ message });
+  }, []);
+
+  const setFineScanExpandedRows = useCallback((rows: any) => {
+    const next = typeof rows === 'function' ? rows(scannerStateStore.getState().fineScan.expandedRows) : rows;
+    scannerStateStore.updateFineScan({ expandedRows: next });
+  }, []);
+
+  // Deeper Validation store-backed setters
+  const setDeeperValidationStatus = useCallback((status: any) => {
+    scannerStateStore.updateDeeperValidation({ status });
+  }, []);
+
+  const setDeeperValidationResults = useCallback((results: any) => {
+    const next = typeof results === 'function' ? results(scannerStateStore.getState().deeperValidation.results) : results;
+    scannerStateStore.setDeeperValidationResults(next);
+  }, []);
+
+  // Entry Plan store-backed setters
+  const setEntryPlanStatus = useCallback((status: any) => {
+    scannerStateStore.updateEntryPlan({ status });
+  }, []);
+
+  const setEntryPlanResults = useCallback((results: any) => {
+    const next = typeof results === 'function' ? results(scannerStateStore.getState().entryPlan.results) : results;
+    scannerStateStore.setEntryPlanResults(next);
+  }, []);
+
+  const [preferredContinuePage, setPreferredContinuePage] = useState(1);
+
   // Trading Account Mode
   const [tradingAccountMode, setTradingAccountMode] = useState<'paper' | 'real'>(() => {
     const saved = localStorage.getItem('tradingAccountMode');
@@ -308,11 +500,12 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
   const [aiWatchlistAutoRefresh, setAiWatchlistAutoRefresh] = useState(false);
   const [aiWatchlistCountdown, setAiWatchlistCountdown] = useState(60);
   const aiWatchlistTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [fineScanExpandedRows, setFineScanExpandedRows] = useState<string[]>([]);
 
   // AI调用互斥控制
   const [aiCallInProgress, setAiCallInProgress] = useState(false);
   const aiCallInProgressRef = useRef(false);
+
+  // Scanner stop controls are in scannerRunnerService.ts (module-level)
 
   // Trading Account Mode handler
   const handleTradingAccountModeChange = async (mode: 'paper' | 'real') => {
@@ -376,7 +569,7 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
 
       // 阶段A: 初始化 (0%)
       setContinueScanProgress(0);
-      setContinueScanDetails(prev => ({
+      setContinueScanDetails((prev: any) => ({
         ...prev,
         currentStage: 'Initializing rule-based scan...',
         processedCount: 0,
@@ -389,7 +582,7 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
         setPreferredContinueScanList([]);
         setContinueScanStatus('completed');
         setContinueScanProgress(100);
-        setContinueScanDetails(prev => ({
+        setContinueScanDetails((prev: any) => ({
           ...prev,
           currentStage: 'No market scan results available',
           estimatedTimeRemaining: 0
@@ -400,7 +593,7 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
 
       // 阶段B: 读取market scan results (20%)
       setContinueScanProgress(20);
-      setContinueScanDetails(prev => ({
+      setContinueScanDetails((prev: any) => ({
         ...prev,
         currentStage: 'Loading market scan results...'
       }));
@@ -425,7 +618,7 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
 
       // 阶段C: 过滤bullish/strong bullish候选 (40%)
       setContinueScanProgress(40);
-      setContinueScanDetails(prev => ({
+      setContinueScanDetails((prev: any) => ({
         ...prev,
         currentStage: 'Filtering bullish candidates...',
         estimatedTimeRemaining: null
@@ -433,7 +626,7 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
 
       // 阶段D: 计算priority score (60%)
       setContinueScanProgress(60);
-      setContinueScanDetails(prev => ({
+      setContinueScanDetails((prev: any) => ({
         ...prev,
         currentStage: 'Calculating priority scores...',
         estimatedTimeRemaining: null
@@ -448,7 +641,7 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
         // 更新进度
         const progress = Math.round((i / allCandidates.length) * 20); // 60% - 80%
         setContinueScanProgress(60 + progress);
-        setContinueScanDetails(prev => ({
+        setContinueScanDetails((prev: any) => ({
           ...prev,
           processedCount: i + 1
         }));
@@ -458,7 +651,7 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
           console.log('New market scan started, aborting continue scan');
           setContinueScanStatus('error');
           setContinueScanProgress(0);
-          setContinueScanDetails(prev => ({
+          setContinueScanDetails((prev: any) => ({
             ...prev,
             currentStage: 'Continue scan aborted: new market scan started',
             estimatedTimeRemaining: null
@@ -608,7 +801,7 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
 
       // 阶段E: 排序和限制数量 (80%)
       setContinueScanProgress(80);
-      setContinueScanDetails(prev => ({
+      setContinueScanDetails((prev: any) => ({
         ...prev,
         currentStage: 'Sorting and limiting candidates...',
         estimatedTimeRemaining: null
@@ -622,7 +815,7 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
 
       // 阶段F: 完成处理 (100%)
       setContinueScanProgress(100);
-      setContinueScanDetails(prev => ({
+      setContinueScanDetails((prev: any) => ({
         ...prev,
         currentStage: 'Finalizing continue scan list...',
         estimatedTimeRemaining: 0
@@ -638,7 +831,7 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
       console.error('Continue scan processing failed:', error);
       setContinueScanStatus('error');
       setContinueScanProgress(0);
-      setContinueScanDetails(prev => ({
+      setContinueScanDetails((prev: any) => ({
         ...prev,
         currentStage: `Error: ${error instanceof Error ? error.message : String(error)}`,
         estimatedTimeRemaining: null
@@ -675,7 +868,7 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
 
         // 更新进度
         const progressPercent = Math.round(((batchIndex * batchSize) / candidates.length) * 100);
-        setContinueScanDetails(prev => ({
+        setContinueScanDetails((prev: any) => ({
           ...prev,
           currentStage: `Generating AI reasons: batch ${batchIndex + 1}/${batches.length}`,
           estimatedTimeRemaining: Math.max(1, (batches.length - batchIndex) * 3) // 估算剩余时间
@@ -687,7 +880,7 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
 
           try {
             // 更新状态为processing
-            setPreferredContinueScanList(prev => {
+            setPreferredContinueScanList((prev: any) => {
               const newList = [...prev];
               if (newList[globalIndex]) {
                 newList[globalIndex] = {
@@ -720,7 +913,7 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
               const aiReason = aiResponse.decision.reason;
 
               // 更新列表中的selection reason
-              setPreferredContinueScanList(prev => {
+              setPreferredContinueScanList((prev: any) => {
                 const newList = [...prev];
                 if (newList[globalIndex]) {
                   newList[globalIndex] = {
@@ -741,7 +934,7 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
               // AI调用失败，使用fallback reason
               const fallbackReason = generateFallbackReason(candidate);
 
-              setPreferredContinueScanList(prev => {
+              setPreferredContinueScanList((prev: any) => {
                 const newList = [...prev];
                 if (newList[globalIndex]) {
                   newList[globalIndex] = {
@@ -764,7 +957,7 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
             // 错误处理：使用fallback reason
             const fallbackReason = generateFallbackReason(candidate);
 
-            setPreferredContinueScanList(prev => {
+            setPreferredContinueScanList((prev: any) => {
               const newList = [...prev];
               if (newList[globalIndex]) {
                 newList[globalIndex] = {
@@ -790,7 +983,7 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
       }
 
       console.log('AI reason generation completed for all candidates');
-      setContinueScanDetails(prev => ({
+      setContinueScanDetails((prev: any) => ({
         ...prev,
         currentStage: 'AI reason generation completed',
         estimatedTimeRemaining: 0
@@ -798,7 +991,7 @@ const [preferredContinuePage, setPreferredContinuePage] = useState(1);
 
     } catch (error) {
       console.error('AI reason generation failed:', error);
-      setContinueScanDetails(prev => ({
+      setContinueScanDetails((prev: any) => ({
         ...prev,
         currentStage: `AI generation error: ${error instanceof Error ? error.message : String(error)}`,
         estimatedTimeRemaining: null
@@ -1048,38 +1241,25 @@ Please respond in this exact JSON format:
     sortBy: 'trendScore' as 'trendScore' | 'volume' | 'changePct' | 'newsSentiment',
     sortOrder: 'desc' as 'asc' | 'desc'
   });
-  const marketScannerStopRequestedRef = useRef(false);
-  const marketScannerIsScanningRef = useRef(false);
-
   // 展开行状态
   const [expandedRows, setExpandedRows] = useState<string[]>([]);
-
-  // 扫描控制标记
-  const stopRequestedRef = useRef(false);
-  const activeSymbolsRef = useRef<string[]>([]);
-  const retryCountRef = useRef<number>(0);
-  const validatedCountRef = useRef<number>(0);
 
   // 跟踪是否已经处理过当前批次的market scan results
   const processedResultsSignatureRef = useRef<string>('');
 
-  // 详细扫描状态
-  const [detailedScanStatus, setDetailedScanStatus] = useState({
-    currentStatus: 'idle' as 'idle' | 'scanning' | 'stopping' | 'stopped' | 'completed' | 'error',
-    processedCount: 0,
-    totalCount: 0,
-    percent: 0,
-    activeSymbols: [] as string[],
-    retryCount: 0,
-    validatedCount: 0,
-    lastScanAt: null as string | null,
-    nextScanAt: null as string | null,
-    statusMessage: '' as string
-  });
+  // 详细扫描状态 (from store)
+  const detailedScanStatus = scannerSnapshot.marketScanner.detailedScanStatus;
+
+  const setDetailedScanStatus = useCallback((updater: any) => {
+    const current = scannerStateStore.getState().marketScanner.detailedScanStatus;
+    const next = typeof updater === 'function' ? updater(current) : updater;
+    scannerStateStore.updateMarketScanner({ detailedScanStatus: next });
+  }, []);
 
   // Step 3: 加载 AI 配置（接入真实配置系统）
   useEffect(() => {
     loadAiConfig();
+    fetchConfigStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1089,12 +1269,9 @@ Please respond in this exact JSON format:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 组件卸载时清理
-  useEffect(() => {
-    return () => {
-      stopRequestedRef.current = true;
-    };
-  }, []);
+  // 组件卸载时清理 — do NOT stop the scan runner
+  // The scan loop runs at module level via scannerRunnerService and updates the store.
+  // Only user clicking Stop should call stopMarketScannerByUser().
 
   // 同步 AI 调用状态到 ref
   useEffect(() => {
@@ -1154,6 +1331,24 @@ Please respond in this exact JSON format:
       }
     }
   }, [marketScannerResults, continueScanStatus, detailedScanStatus.currentStatus]);
+
+  const fetchConfigStatus = async () => {
+    try {
+      const resp = await api.get('/config/status');
+      if (resp.data?.success) {
+        setConfigStatus({
+          ai: resp.data.ai?.configured || false,
+          aiTestStatus: resp.data.ai?.testStatus || 'not_tested',
+          aiLastTestError: resp.data.ai?.lastTestError || null,
+          alpaca: resp.data.alpaca?.paperConfigured || false,
+          finnhub: resp.data.finnhub?.configured || false,
+          loaded: true,
+        });
+      }
+    } catch (e) {
+      console.warn('Failed to fetch config status:', e);
+    }
+  };
 
   const loadAiConfig = async () => {
     try {
@@ -1314,1076 +1509,7 @@ Please respond in this exact JSON format:
     }
   };
 
-  // Market Scanner 函数
-  const runMarketScanner = async (): Promise<void> => {
-    // 重置停止标记
-    stopRequestedRef.current = false;
-    marketScannerStopRequestedRef.current = false;
-
-    // 设置扫描状态 ref
-    marketScannerIsScanningRef.current = true;
-
-    // 设置详细状态
-    setDetailedScanStatus(prev => ({
-      ...prev,
-      currentStatus: 'scanning',
-      processedCount: 0,
-      percent: 0,
-      activeSymbols: [],
-      retryCount: 0,
-      validatedCount: 0,
-      statusMessage: 'Starting scan...'
-    }));
-
-    setMarketScannerStatus(prev => ({ ...prev, status: 'running', progress: 0 }));
-    setMarketScannerResults([]);
-
-    try {
-      console.log('开始市场扫描...');
-
-      // 1. 获取固定50个symbol universe (30个科技股 + 20个非科技股)
-      const tradingSymbols = await getTradingUniverse();
-
-      if (!tradingSymbols || tradingSymbols.length === 0) {
-        console.warn('没有获取到可交易股票列表，使用默认股票池');
-        // 使用默认股票池作为后备
-        const defaultSymbols = [
-          'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META',
-          'TSLA', 'NVDA', 'AMD', 'AVGO', 'INTC',
-          'JPM', 'XOM', 'WMT', 'HD', 'JNJ',
-          'PG', 'KO', 'PEP', 'V', 'MA'
-        ];
-        await scanSymbols(defaultSymbols);
-      } else {
-        // 使用完整的50个symbol universe
-        console.log(`开始扫描固定universe: ${tradingSymbols.length}个symbol`);
-        await scanSymbols(tradingSymbols);
-      }
-
-      // 检查是否被停止
-      if (stopRequestedRef.current || marketScannerStopRequestedRef.current) {
-        console.log('扫描被用户停止');
-        setDetailedScanStatus(prev => ({
-          ...prev,
-          currentStatus: 'stopped',
-          statusMessage: 'Scan stopped by user'
-        }));
-        setMarketScannerStatus(prev => ({ ...prev, status: 'stopped' }));
-        marketScannerIsScanningRef.current = false;
-        return;
-      }
-
-      // 扫描完成，更新最后扫描时间
-      const now = new Date().toISOString();
-      setDetailedScanStatus(prev => ({
-        ...prev,
-        currentStatus: 'completed',
-        lastScanAt: now,
-        statusMessage: 'Scan completed'
-      }));
-      setMarketScannerStatus(prev => ({ ...prev, status: 'stopped', lastScanTime: now }));
-
-      // 清除扫描状态 ref
-      marketScannerIsScanningRef.current = false;
-
-      console.log('市场扫描完成');
-
-    } catch (error: any) {
-      console.error('=== 市场扫描失败 - 外层catch捕获的完整错误 ===');
-      console.error('错误消息:', error?.message);
-      console.error('错误堆栈:', error?.stack);
-      console.error('错误名称:', error?.name);
-      console.error('错误代码:', error?.code);
-      console.error('完整错误对象:', error);
-
-      // 如果是Axios错误，打印更多信息
-      if (error?.isAxiosError) {
-        console.error('Axios错误详情:');
-        console.error('状态码:', error?.response?.status);
-        console.error('状态文本:', error?.response?.statusText);
-        console.error('响应数据:', error?.response?.data);
-        console.error('请求URL:', error?.config?.url);
-        console.error('请求方法:', error?.config?.method);
-      }
-
-      setDetailedScanStatus(prev => ({
-        ...prev,
-        currentStatus: 'error',
-        statusMessage: `Error: ${error.message || 'Unknown error'}`
-      }));
-      setMarketScannerStatus(prev => ({ ...prev, status: 'stopped' }));
-      // 清除扫描状态 ref
-      marketScannerIsScanningRef.current = false;
-      message.error('市场扫描失败');
-    }
-  };
-
-  const getTradingUniverse = async (): Promise<string[]> => {
-    try {
-      // 固定50个symbol universe：30个科技股 + 20个非科技股
-
-      // 1. 科技股 (30个) - 必须包含：AAPL, TSLA, NVDA, AMD, RKLB, SNDK
-      const techStocks = [
-        // 必须包含的科技股 (6个)
-        'AAPL', 'TSLA', 'NVDA', 'AMD', 'RKLB', 'SNDK',
-
-        // 其他热门科技股 (24个)
-        'MSFT', 'GOOGL', 'AMZN', 'META', 'AVGO', 'INTC',
-        'QCOM', 'TXN', 'MU', 'AMAT', 'LRCX', 'KLAC',
-        'ASML', 'ADBE', 'CRM', 'ORCL', 'IBM', 'CSCO',
-        'ACN', 'NOW', 'SNOW', 'DDOG', 'CRWD', 'ZS'
-      ];
-
-      // 2. 非科技股 (20个) - 不能包含科技股
-      const nonTechStocks = [
-        // 金融 (5个)
-        'JPM', 'BAC', 'WFC', 'GS', 'C',
-
-        // 医疗 (4个)
-        'JNJ', 'UNH', 'PFE', 'MRK',
-
-        // 消费 (4个)
-        'WMT', 'PG', 'KO', 'PEP',
-
-        // 工业 (3个)
-        'CAT', 'HON', 'BA',
-
-        // 能源 (2个)
-        'XOM', 'CVX',
-
-        // 材料 (1个)
-        'LIN',
-
-        // 公用事业 (1个)
-        'NEE'
-      ];
-
-      // 3. 合并并确保总数正好50个
-      const allStocks = [...techStocks, ...nonTechStocks];
-
-      // 验证数量
-      if (techStocks.length !== 30) {
-        console.error(`科技股数量错误: ${techStocks.length}, 应为30个`);
-      }
-      if (nonTechStocks.length !== 20) {
-        console.error(`非科技股数量错误: ${nonTechStocks.length}, 应为20个`);
-      }
-      if (allStocks.length !== 50) {
-        console.error(`总股票数量错误: ${allStocks.length}, 应为50个`);
-      }
-
-      console.log(`固定universe生成完成: ${techStocks.length}个科技股 + ${nonTechStocks.length}个非科技股 = ${allStocks.length}个symbol`);
-      console.log(`科技股: ${techStocks.slice(0, 10).join(', ')}${techStocks.length > 10 ? '...' : ''}`);
-      console.log(`非科技股: ${nonTechStocks.slice(0, 10).join(', ')}${nonTechStocks.length > 10 ? '...' : ''}`);
-
-      return allStocks;
-    } catch (error) {
-      console.error('获取交易股票列表失败:', error);
-      return [];
-    }
-  };
-
-  // 处理单个symbol的函数
-  // eslint-disable-next-line no-unreachable
-  const processSingleSymbol = async (symbol: string, retryCount: number = 0): Promise<any> => {
-    try {
-      console.log(`[${symbol}] === 开始处理symbol (第${retryCount + 1}次尝试) ===`);
-
-      // 获取股票数据
-      console.log(`[${symbol}] 开始获取stockData...`);
-      const stockData = await marketDataService.getStockData(symbol);
-      console.log(`[${symbol}] stockData获取完成:`, {
-        hasPrice: stockData?.price !== null && stockData?.price !== undefined,
-        price: stockData?.price,
-        hasVolume: stockData?.volume !== null && stockData?.volume !== undefined,
-        volume: stockData?.volume,
-        changePct: stockData?.changePct,
-        changePercent: stockData?.changePercent,
-        dayHigh: stockData?.dayHigh,
-        dayLow: stockData?.dayLow
-      });
-
-      // 获取新闻数据（真实API）
-      console.log(`[${symbol}] 开始获取newsData...`);
-      const newsData = await getStockNews(symbol);
-      console.log(`[${symbol}] newsData获取完成:`, {
-        hasSentiment: !!newsData?.sentiment,
-        sentiment: newsData?.sentiment,
-        hasTopNews: !!newsData?.topNews,
-        topNews: newsData?.topNews
-      });
-
-      // 获取公司名（真实API）
-      console.log(`[${symbol}] 开始获取companyName...`);
-      const companyName = await getCompanyName(symbol);
-      console.log(`[${symbol}] companyName获取完成:`, companyName);
-
-      // 计算趋势分数和标签（真实AI分析）
-      console.log(`[${symbol}] 开始analyzeTrend...`);
-      const trendAnalysis = await analyzeTrend(symbol, stockData, newsData);
-      console.log(`[${symbol}] analyzeTrend完成:`, {
-        hasTrendLabel: !!trendAnalysis.trendLabel,
-        trendLabel: trendAnalysis.trendLabel,
-        hasTrendScore: !!trendAnalysis.trendScore,
-        trendScore: trendAnalysis.trendScore,
-        hasAiReasoning: !!trendAnalysis.aiReasoning
-      });
-
-      // 创建结果对象
-      const result = {
-        symbol,
-        companyName: trendAnalysis.companyName || companyName,
-        trendLabel: trendAnalysis.trendLabel,
-        trendScore: trendAnalysis.trendScore || trendAnalysis.overallScore || null,
-        trendConfidence: trendAnalysis.trendConfidence || trendAnalysis.confidence || null,
-        price: stockData.price || null,
-        changePct: stockData.changePct || stockData.changePercent || null, // 使用changePct字段
-        changePercent: stockData.changePercent || null, // 保留原字段
-        volume: stockData.volume || null,
-        marketCap: stockData.marketCap || null,
-        dayHigh: stockData.dayHigh || null, // 添加dayHigh
-        dayLow: stockData.dayLow || null,   // 添加dayLow
-        newsSentiment: trendAnalysis.newsSentiment || newsData.sentiment,
-        eventRisk: trendAnalysis.eventRisk || newsData.eventRisk,
-        topNews: trendAnalysis.topNews || newsData.topNews,
-        sector: stockData.sector || trendAnalysis.sector,
-        scannerReason: trendAnalysis.scannerReason,
-        trendScoreDetail: trendAnalysis.trendScoreDetail,
-        momentumScore: trendAnalysis.momentumScore,
-        volumeScore: trendAnalysis.volumeScore,
-        volatilityScore: trendAnalysis.volatilityScore,
-        structureScore: trendAnalysis.structureScore,
-        newsScore: trendAnalysis.newsScore,
-        aiReasoning: trendAnalysis.aiReasoning,
-        detailedReasoning: trendAnalysis.detailedReasoning,
-        conciseReasoning: trendAnalysis.conciseReasoning,
-        volumeStatus: trendAnalysis.volumeStatus,
-        provenance: trendAnalysis.provenance || {
-          marketData: stockData.dataSource || 'Unknown',
-          companyInfo: (stockData as any).profileSource || 'Finnhub',
-          news: newsData?.source || 'Unknown',
-          aiAnalysis: trendAnalysis.analysisSource === 'deepseek' ? 'DeepSeek' :
-                     trendAnalysis.analysisSource === 'unavailable' ? 'unavailable' :
-                     trendAnalysis.analysisSource === 'rule_based' ? 'Local Rules' : 'Unknown'
-        },
-        dataSource: stockData.dataSource || 'Unknown',
-        analysisStatus: trendAnalysis.trendLabel ? 'success' as 'success' : 'partial' as 'partial',
-        analysisError: trendAnalysis.aiError || null,
-
-        // AI source tracking
-        aiCalled: trendAnalysis.aiCalled !== undefined ? trendAnalysis.aiCalled : (trendAnalysis.analysisSource === 'deepseek'),
-        aiSource: trendAnalysis.aiSource || (trendAnalysis.analysisSource === 'deepseek' ? 'DeepSeek' :
-                 trendAnalysis.analysisSource === 'unavailable' ? 'unavailable' :
-                 trendAnalysis.analysisSource === 'rule_based' ? 'Local Rules' : 'Unknown'),
-        aiModel: trendAnalysis.aiModel || null,
-        aiError: trendAnalysis.aiError || null,
-        timestamp: new Date().toISOString()
-      };
-
-      console.log(`[${symbol}] 处理成功:`, {
-        trendLabel: result.trendLabel,
-        trendScore: result.trendScore,
-        changePct: result.changePct,
-        sector: result.sector
-      });
-
-      // 检查数据完整性
-      const validation = validateSymbolData(result);
-      if (!validation.valid) {
-        console.warn(`[${symbol}] 关键字段缺失，需要重试。缺失关键字段: ${validation.missingFields.join(', ')}`);
-        console.log(`[${symbol}] 详细字段状态:`, {
-          symbol: result.symbol,
-          price: result.price,
-          changePct: result.changePct,
-          changePercent: result.changePercent,
-          volume: result.volume,
-          trendLabel: result.trendLabel,
-          trendScore: result.trendScore,
-          aiReasoning: result.aiReasoning
-        });
-
-        // 如果还有重试次数，抛出错误以触发重试
-        if (retryCount < 2) { // 最多重试2次（加上当前这次共3次）
-          throw new Error(`关键字段缺失，需要重试。缺失字段: ${validation.missingFields.join(', ')}`);
-        } else {
-          console.error(`[${symbol}] 已达到最大重试次数(3)，关键字段仍缺失`);
-          // 即使关键字段缺失，也返回结果，但标记为部分成功
-          result.analysisStatus = 'partial' as 'partial';
-          (result as any).analysisError = `关键字段缺失: ${validation.missingFields.join(', ')}`;
-        }
-      }
-
-      return result;
-
-    } catch (error: any) {
-      console.error(`扫描 ${symbol} 失败:`, error);
-
-      // 创建失败结果
-      const failedResult = {
-        symbol,
-        companyName: null,
-        trendLabel: null,
-        trendScore: null,
-        trendConfidence: null,
-        price: null,
-        changePct: null,
-        changePercent: null,
-        volume: null,
-        marketCap: null,
-        newsSentiment: null,
-        eventRisk: null,
-        topNews: null,
-        sector: null,
-        scannerReason: null,
-        trendScoreDetail: null,
-        momentumScore: null,
-        volumeScore: null,
-        volatilityScore: null,
-        structureScore: null,
-        newsScore: null,
-        aiReasoning: null,
-        detailedReasoning: null,
-        conciseReasoning: null,
-        volumeStatus: null,
-        analysisStatus: 'failed' as 'failed',
-        analysisError: error?.message || 'Unknown error',
-        timestamp: new Date().toISOString()
-      };
-
-      console.warn(`[${symbol}] 处理失败:`, {
-        analysisStatus: 'failed',
-        analysisError: error?.message
-      });
-
-      return failedResult;
-    }
-  };
-
-    const scanSymbols = async (symbols: string[]): Promise<void> => {
-    try {
-      console.log('=== scanSymbols 开始执行（小并发滑动窗口） ===');
-      console.log('总symbols数:', symbols.length);
-      console.log('symbols列表:', symbols);
-
-      const totalSymbols = symbols.length;
-      const RENDER_BATCH_SIZE = 10; // 每10个完整结果渲染一批
-
-      // 更新详细状态
-      setDetailedScanStatus(prev => ({
-        ...prev,
-        totalCount: totalSymbols,
-        processedCount: 0,
-        percent: 0,
-        activeSymbols: [],
-        retryCount: 0,
-        validatedCount: 0,
-        statusMessage: `Starting scan of ${totalSymbols} symbols`
-      }));
-
-      // 并发配置（按照用户要求）
-      const CONCURRENT_CONFIG = {
-        windowSize: 3,           // 滑动窗口大小：同时处理3个symbols
-        marketDataConcurrent: 3, // 市场数据并发数
-        finnhubConcurrent: 2,    // Finnhub并发数
-        aiConcurrent: 2,         // AI分析并发数
-        maxRetries: 3            // 最大重试次数
-      };
-
-      console.log('并发配置:', CONCURRENT_CONFIG);
-
-      setMarketScannerStatus(prev => ({
-        ...prev,
-        totalSymbols,
-        scannedSymbols: 0,
-        currentStatus: 'initializing',
-        currentSymbol: '',
-        currentBatch: 0,
-        batchProgress: '',
-        retryAttempt: 0,
-        maxRetryAttempts: CONCURRENT_CONFIG.maxRetries
-      }));
-
-      // 1. 清空结果，从头开始
-      console.log('=== 清空结果，开始滑动窗口扫描 ===');
-      setMarketScannerResults([]);
-
-      // 2. 初始化数据结构
-      const pendingSymbols = [...symbols]; // 待处理的symbols队列
-      const validatedBuffer: any[] = [];   // 已验证的完整结果缓冲区
-      const retryQueue: Array<{symbol: string, retryCount: number, lastError?: string}> = []; // 重试队列
-      const processingSlots = new Set<string>(); // 正在处理的symbols
-      const failedSymbols: Array<{symbol: string, error: string}> = []; // 失败symbols记录
-
-      let totalProcessed = 0;
-      let totalValidated = 0;
-      let totalRetries = 0;
-
-      // 单个symbol处理函数
-      const startProcessing = async (symbol: string, retryCount: number, lastError?: string) => {
-        // 检查停止标记
-        if (stopRequestedRef.current) {
-          console.log(`[${symbol}] 停止请求已收到，跳过处理`);
-          return;
-        }
-
-        processingSlots.add(symbol);
-        totalProcessed++;
-
-        // 更新状态
-        setMarketScannerStatus(prev => ({
-          ...prev,
-          currentSymbol: symbol,
-          currentStatus: retryCount > 0 ? 'retrying' : 'scanning',
-          retryAttempt: retryCount
-        }));
-
-        console.log(`[${symbol}] 开始处理 (重试 ${retryCount}/${CONCURRENT_CONFIG.maxRetries})`);
-        if (lastError) {
-          console.log(`[${symbol}] 上次错误: ${lastError}`);
-        }
-
-        try {
-          // 处理单个symbol，传递重试计数
-          const result = await processSingleSymbol(symbol, retryCount);
-
-          // 严格校验数据（按照用户要求的校验规则）
-          const validation = validateSymbolData(result);
-
-          if (validation.valid && result.analysisStatus !== 'partial') {
-            // 校验通过且数据完整，加入validatedBuffer
-            console.log(`[${symbol}] ✅ 数据校验通过 (第${retryCount + 1}次尝试)`);
-            validatedBuffer.push(result);
-            totalValidated++;
-
-            // 更新状态
-            setMarketScannerStatus(prev => ({
-              ...prev,
-              currentStatus: 'validated',
-              batchProgress: `${validatedBuffer.length}/${RENDER_BATCH_SIZE}`
-            }));
-
-          } else if (retryCount < CONCURRENT_CONFIG.maxRetries) {
-            // 准备重试
-            console.log(`[${symbol}] ❌ 数据校验失败: ${validation.error}`);
-            console.log(`[${symbol}] 准备重试 (${retryCount + 1}/${CONCURRENT_CONFIG.maxRetries})`);
-
-            retryQueue.push({
-              symbol,
-              retryCount,
-              lastError: validation.error
-            });
-
-            // 更新状态
-            setMarketScannerStatus(prev => ({
-              ...prev,
-              currentStatus: 'queued_for_retry'
-            }));
-
-          } else {
-            // 超过最大重试次数，标记失败
-            console.warn(`[${symbol}] ❌ 超过最大重试次数，标记失败: ${validation.error}`);
-            failedSymbols.push({
-              symbol,
-              error: validation.error || 'Unknown error'
-            });
-
-            // 更新状态
-            setMarketScannerStatus(prev => ({
-              ...prev,
-              currentStatus: 'failed'
-            }));
-          }
-
-        } catch (error: any) {
-          console.error(`[${symbol}] 处理异常:`, error);
-
-          // 检查是否是数据不完整错误
-          const isDataIncompleteError = error.message?.includes('数据不完整');
-
-          if (retryCount < CONCURRENT_CONFIG.maxRetries) {
-            // 准备重试
-            console.log(`[${symbol}] 准备重试异常 (${retryCount + 1}/${CONCURRENT_CONFIG.maxRetries})`);
-            console.log(`[${symbol}] 错误类型: ${isDataIncompleteError ? '数据不完整' : '其他错误'}`);
-
-            retryQueue.push({
-              symbol,
-              retryCount,
-              lastError: error.message || 'Processing error'
-            });
-
-          } else {
-            // 超过最大重试次数，标记失败
-            console.warn(`[${symbol}] ❌ 超过最大重试次数，标记失败: ${error.message}`);
-            console.log(`[${symbol}] 最终状态: ${isDataIncompleteError ? '数据仍不完整' : '处理失败'}`);
-
-            failedSymbols.push({
-              symbol,
-              error: error.message || 'Unknown error'
-            });
-          }
-
-        } finally {
-          // 释放slot
-          processingSlots.delete(symbol);
-          console.log(`[${symbol}] 处理完成，释放slot，当前活动slots: ${Array.from(processingSlots).join(', ') || 'none'}`);
-        }
-      };
-
-      // 渲染已验证的批次
-      const renderValidatedBatch = () => {
-        const batchToRender = validatedBuffer.splice(0, RENDER_BATCH_SIZE);
-        console.log(`=== 渲染批次 (${batchToRender.length}个symbols) ===`);
-        console.log('渲染symbols:', batchToRender.map(r => r.symbol).join(', '));
-
-        setMarketScannerStatus(prev => ({
-          ...prev,
-          currentStatus: 'rendering',
-          currentSymbol: `Rendering ${batchToRender.length} symbols`
-        }));
-
-        // 使用函数式更新确保追加正确
-        setMarketScannerResults(prevResults => {
-          const newResults = [...prevResults, ...batchToRender];
-          console.log(`追加后结果数量: ${newResults.length}`);
-          return newResults;
-        });
-
-        console.log('UI更新完成');
-
-        setMarketScannerStatus(prev => ({
-          ...prev,
-          currentStatus: 'scanning',
-          batchProgress: `${validatedBuffer.length}/${RENDER_BATCH_SIZE}`
-        }));
-      };
-
-      // 3. 初始化滑动窗口
-      console.log('=== 初始化滑动窗口 ===');
-      while (processingSlots.size < CONCURRENT_CONFIG.windowSize && pendingSymbols.length > 0) {
-        const symbol = pendingSymbols.shift()!;
-        startProcessing(symbol, 0);
-      }
-
-      console.log(`初始窗口: ${Array.from(processingSlots).join(', ')}`);
-      console.log(`剩余待处理: ${pendingSymbols.length} symbols`);
-
-      // 4. 主处理循环
-      console.log('=== 开始主处理循环 ===');
-      while (processingSlots.size > 0 || pendingSymbols.length > 0 || retryQueue.length > 0) {
-        // 检查停止标记
-        if (stopRequestedRef.current) {
-          console.log('检测到停止请求，退出扫描循环');
-          break;
-        }
-
-        // 等待一小段时间，避免CPU占用过高
-        await new Promise(resolve => setTimeout(resolve, 100));
-
-        // 更新进度状态（按照用户要求的进度条规则）
-        const progressPercent = Math.round((totalProcessed / totalSymbols) * 100);
-        const validatedProgress = `${totalValidated}/${RENDER_BATCH_SIZE}`;
-        const activeSymbols = Array.from(processingSlots);
-
-        // 更新详细状态
-        setDetailedScanStatus(prev => ({
-          ...prev,
-          processedCount: totalProcessed,
-          percent: progressPercent,
-          activeSymbols: activeSymbols,
-          retryCount: totalRetries,
-          validatedCount: totalValidated,
-          statusMessage: activeSymbols.length > 0
-            ? `Scanning: ${activeSymbols.join(', ')}`
-            : 'Processing queue...'
-        }));
-
-        setMarketScannerStatus(prev => ({
-          ...prev,
-          progress: progressPercent,
-          scannedSymbols: totalProcessed,
-          currentStatus: processingSlots.size > 0 ? 'scanning' : 'idle',
-          currentSymbol: activeSymbols.join(', ') || 'Waiting...',
-          batchProgress: validatedProgress,
-          retryAttempt: totalRetries
-        }));
-
-        // 处理retryQueue（优先级较低）
-        if (processingSlots.size < CONCURRENT_CONFIG.windowSize && retryQueue.length > 0) {
-          const retryItem = retryQueue.shift()!;
-          console.log(`[retryQueue] 处理重试: ${retryItem.symbol} (重试 ${retryItem.retryCount + 1}/${CONCURRENT_CONFIG.maxRetries})`);
-          startProcessing(retryItem.symbol, retryItem.retryCount + 1, retryItem.lastError);
-          totalRetries++;
-        }
-
-        // 处理新symbols
-        if (processingSlots.size < CONCURRENT_CONFIG.windowSize && pendingSymbols.length > 0) {
-          const symbol = pendingSymbols.shift()!;
-          startProcessing(symbol, 0);
-        }
-
-        // 检查是否需要渲染（收集到10个完整结果就渲染）
-        if (validatedBuffer.length >= RENDER_BATCH_SIZE) {
-          renderValidatedBatch();
-        }
-      }
-
-      // 5. 处理最后一批（可能不满10个）- only if not stopped
-      if (!stopRequestedRef.current && !marketScannerStopRequestedRef.current) {
-        console.log('=== 处理最后一批 ===');
-        if (validatedBuffer.length > 0) {
-          renderValidatedBatch();
-        }
-      }
-
-      // 6. 扫描完成或被停止
-      if (stopRequestedRef.current || marketScannerStopRequestedRef.current) {
-        console.log('=== 扫描被用户停止 ===');
-        console.log(`已处理: ${totalProcessed}, 已验证: ${totalValidated}, 失败: ${failedSymbols.length}`);
-
-        setMarketScannerStatus(prev => ({
-          ...prev,
-          progress: Math.round((totalProcessed / totalSymbols) * 100),
-          scannedSymbols: totalProcessed,
-          currentStatus: 'stopped',
-          currentSymbol: 'Stopped by user',
-          batchProgress: `Stopped at ${totalProcessed}/${totalSymbols}`,
-          retryAttempt: totalRetries
-        }));
-
-        setDetailedScanStatus(prev => ({
-          ...prev,
-          currentStatus: 'stopped',
-          processedCount: totalProcessed,
-          totalCount: totalSymbols,
-          percent: Math.round((totalProcessed / totalSymbols) * 100),
-          validatedCount: totalValidated,
-          lastScanAt: new Date().toISOString(),
-          statusMessage: `Stopped at ${totalProcessed}/${totalSymbols} symbols — ${marketScannerResults.length + validatedBuffer.length} results retained`
-        }));
-
-        marketScannerIsScanningRef.current = false;
-        return;
-      }
-
-      console.log('=== 扫描完成 ===');
-      console.log(`总处理: ${totalProcessed}, 成功: ${totalValidated}, 失败: ${failedSymbols.length}, 重试: ${totalRetries}`);
-
-      if (failedSymbols.length > 0) {
-        console.warn('失败的symbols:', failedSymbols);
-      }
-
-      // 设置market scanner状态
-      setMarketScannerStatus(prev => ({
-        ...prev,
-        progress: 100,
-        scannedSymbols: totalProcessed,
-        currentStatus: 'completed',
-        currentSymbol: 'Scan completed',
-        batchProgress: 'Completed',
-        retryAttempt: totalRetries
-      }));
-
-      // 同时设置detailed scan状态为completed
-      setDetailedScanStatus(prev => ({
-        ...prev,
-        currentStatus: 'completed',
-        processedCount: totalProcessed,
-        totalCount: totalSymbols,
-        percent: 100,
-        validatedCount: totalValidated,
-        lastScanAt: new Date().toISOString(),
-        statusMessage: `Scan completed: ${totalValidated}/${totalSymbols} symbols validated`
-      }));
-
-    } catch (error: any) {
-      console.error('scanSymbols 主循环异常:', error);
-      setMarketScannerStatus(prev => ({
-        ...prev,
-        currentStatus: 'error',
-        currentSymbol: `Error: ${error.message}`,
-        analysisError: error.message
-      }));
-    }
-  };
-
-  const getCompanyName = async (symbol: string): Promise<string> => {
-    try {
-      // 从marketDataService获取真实公司名
-      const stockData = await marketDataService.getStockData(symbol);
-      if (stockData?.name) {
-        return stockData.name;
-      }
-      // 如果API没有返回公司名，返回symbol
-      return symbol;
-    } catch (error) {
-      console.warn(`无法获取${symbol}的公司名:`, error);
-      // 不返回假数据，返回symbol
-      return symbol;
-    }
-  };
-
-  const getStockNews = async (symbol: string): Promise<any> => {
-    try {
-      console.log(`[DEBUG] 开始获取 ${symbol} 新闻`);
-
-      // 调用新的新闻接口
-      const response = await api.get(`/market/news/${symbol}`);
-
-      console.log(`[DEBUG] ${symbol} 新闻响应状态:`, response.status);
-      console.log(`[DEBUG] ${symbol} 新闻响应数据:`, response.data);
-      console.log(`[DEBUG] ${symbol} 新闻success字段:`, response.data?.success);
-      console.log(`[DEBUG] ${symbol} 新闻sentiment字段:`, response.data?.sentiment);
-      console.log(`[DEBUG] ${symbol} 新闻eventRisk字段:`, response.data?.eventRisk);
-      console.log(`[DEBUG] ${symbol} 新闻topNews字段:`, response.data?.topNews);
-
-      if (response.data?.success) {
-        const newsData = response.data;
-        console.log(`[DEBUG] ${symbol} 新闻获取成功:`, newsData);
-
-        return {
-          sentiment: newsData.sentiment || null,
-          eventRisk: newsData.eventRisk || null,
-          topCatalyst: newsData.topNews?.title || null,
-          newsItems: newsData.news || [],
-          source: newsData.source || null,
-          topNews: newsData.topNews || null,
-          newsCount: newsData.newsCount || 0,
-          hasNews: newsData.hasNews || false
-        };
-      } else {
-        console.error(`[DEBUG] ${symbol} 新闻获取失败:`, response.data?.error);
-        // 返回空数据
-        return {
-          sentiment: null,
-          eventRisk: null,
-          topCatalyst: null,
-          newsItems: [],
-          source: null,
-          topNews: null,
-          newsCount: 0,
-          hasNews: false
-        };
-      }
-
-    } catch (error: any) {
-      console.error(`[DEBUG] 获取 ${symbol} 新闻异常:`, error.message, error.response?.data);
-      // 返回空数据，而不是模拟数据
-      return {
-        sentiment: null,
-        eventRisk: null,
-        topCatalyst: null,
-        newsItems: [],
-        source: null,
-        topNews: null,
-        newsCount: 0,
-        hasNews: false
-      };
-    }
-  };
-
-  // Symbol数据完整性校验函数
-  const validateSymbolData = (data: any): { valid: boolean; missingFields: string[]; error?: string } => {
-    const missingFields: string[] = [];
-
-    // 辅助函数：检查真正的空值（null/undefined/空字符串），0是有效值
-    const isReallyEmpty = (value: any): boolean => {
-      return value === null || value === undefined || value === '';
-    };
-
-    // ========== 关键字段（缺了才重扫） ==========
-    // 1. symbol - 必须存在且非空
-    if (isReallyEmpty(data?.symbol)) missingFields.push('symbol');
-
-    // 2. price - 必须存在，0是有效价格
-    if (isReallyEmpty(data?.price)) missingFields.push('price');
-
-    // 3. changePct/changePercent - 必须存在，0是有效涨跌幅
-    if (isReallyEmpty(data?.changePct) && isReallyEmpty(data?.changePercent)) {
-      missingFields.push('changePct/changePercent');
-    }
-
-    // 4. volume - 必须存在，0是有效成交量
-    if (isReallyEmpty(data?.volume)) missingFields.push('volume');
-
-    // 5. trendLabel - 必须存在且非空
-    if (isReallyEmpty(data?.trendLabel)) missingFields.push('trendLabel');
-
-    // 6. overallScore/trendScore - 必须存在，0是有效分数
-    if (isReallyEmpty(data?.overallScore) && isReallyEmpty(data?.trendScore)) {
-      missingFields.push('overallScore/trendScore');
-    }
-
-    // 7. aiReasoning - 必须存在且非空
-    if (isReallyEmpty(data?.aiReasoning)) missingFields.push('aiReasoning');
-
-    // ========== 非关键增强字段（只记录，不触发重扫） ==========
-    const enhancementFields: string[] = [];
-
-    // 价格范围字段
-    if (isReallyEmpty(data?.dayHigh)) enhancementFields.push('dayHigh');
-    if (isReallyEmpty(data?.dayLow)) enhancementFields.push('dayLow');
-
-    // 新闻相关字段
-    if (isReallyEmpty(data?.newsSentiment)) enhancementFields.push('newsSentiment');
-    if (isReallyEmpty(data?.eventRisk)) enhancementFields.push('eventRisk');
-
-    // 6维度分数字段
-    if (isReallyEmpty(data?.momentumScore)) enhancementFields.push('momentumScore');
-    if (isReallyEmpty(data?.volumeScore)) enhancementFields.push('volumeScore');
-    if (isReallyEmpty(data?.volatilityScore)) enhancementFields.push('volatilityScore');
-    if (isReallyEmpty(data?.structureScore)) enhancementFields.push('structureScore');
-    if (isReallyEmpty(data?.newsScore)) enhancementFields.push('newsScore');
-
-    // 记录增强字段缺失情况（只记录，不影响验证结果）
-    if (enhancementFields.length > 0) {
-      console.log(`[${data?.symbol}] 增强字段缺失（不影响验证）: ${enhancementFields.join(', ')}`);
-    }
-
-    // 至少一个有效的AI判断字段（非空）
-    const hasValidAIField = !isReallyEmpty(data?.trendLabel) ||
-                           !isReallyEmpty(data?.trendScore) ||
-                           !isReallyEmpty(data?.aiReasoning);
-
-    // provenance检查（如果有的话）
-    const hasProvenance = data?.provenance || data?.source;
-    if (!hasProvenance) {
-      // 不是必须字段，但记录警告
-      console.warn(`[${data?.symbol}] 缺少provenance/source字段`);
-    }
-
-    const valid = missingFields.length === 0 && hasValidAIField;
-
-    return {
-      valid,
-      missingFields,
-      error: valid ? undefined : `Missing critical fields: ${missingFields.join(', ')}${!hasValidAIField ? ' (no valid AI field)' : ''}`
-    };
-  };
-
-  const analyzeTrend = async (symbol: string, stockData: any, newsData: any): Promise<TrendAnalysis> => {
-    try {
-      console.log(`[AI DEBUG] ====== 开始AI分析 ${symbol} ======`);
-      console.log(`[AI DEBUG] symbol before analyze =`, symbol);
-      console.log(`[AI DEBUG] request payload =`, { symbol });
-      const requestStartTime = Date.now();
-
-      // 调用新的单只股票AI分析接口 - 使用scanner专用api（无timeout限制）
-      const response = await scannerApi.post('/ai/analyze/single', {
-        symbol: symbol
-      });
-
-      const requestEndTime = Date.now();
-      const requestDuration = requestEndTime - requestStartTime;
-      console.log(`[AI DEBUG] API请求耗时: ${requestDuration}ms`);
-
-      console.log(`[AI DEBUG] raw analyze response =`, response.data);
-      console.log(`[AI DEBUG] response status =`, response.status);
-      console.log(`[AI DEBUG] response success =`, response.data?.success);
-
-      if (response.data?.success) {
-        const result = response.data;
-        console.log(`[AI DEBUG] AI分析 ${symbol} 成功:`, {
-          trendLabel: result.trendLabel,
-          trendScore: result.trendScore,
-          overallScore: result.overallScore,
-          aiReasoning: result.aiReasoning ? '有' : '无'
-        });
-
-        // 调试：检查关键字段 - V3格式
-        console.log(`[DEBUG] AI分析 ${symbol} - trendLabel字段:`, result.trendLabel);
-        console.log(`[DEBUG] AI分析 ${symbol} - trendScore字段:`, result.trendScore);
-        console.log(`[DEBUG] AI分析 ${symbol} - momentumLabel字段:`, result.momentumLabel);
-        console.log(`[DEBUG] AI分析 ${symbol} - momentumScore字段:`, result.momentumScore);
-        console.log(`[DEBUG] AI分析 ${symbol} - volatilityLabel字段:`, result.volatilityLabel);
-        console.log(`[DEBUG] AI分析 ${symbol} - volatilityScore字段:`, result.volatilityScore);
-        console.log(`[DEBUG] AI分析 ${symbol} - volumeLabel字段:`, result.volumeLabel);
-        console.log(`[DEBUG] AI分析 ${symbol} - volumeScore字段:`, result.volumeScore);
-        console.log(`[DEBUG] AI分析 ${symbol} - structureLabel字段:`, result.structureLabel);
-        console.log(`[DEBUG] AI分析 ${symbol} - structureScore字段:`, result.structureScore);
-        console.log(`[DEBUG] AI分析 ${symbol} - newsLabel字段:`, result.newsLabel);
-        console.log(`[DEBUG] AI分析 ${symbol} - newsScore字段:`, result.newsScore);
-        console.log(`[DEBUG] AI分析 ${symbol} - riskLevel字段:`, result.riskLevel);
-        console.log(`[DEBUG] AI分析 ${symbol} - overallScore字段:`, result.overallScore);
-        console.log(`[DEBUG] AI分析 ${symbol} - aiReasoning字段:`, result.aiReasoning);
-        console.log(`[DEBUG] AI分析 ${symbol} - conciseReason字段:`, result.conciseReason);
-
-        // 向后兼容：检查V2格式字段
-        console.log(`[DEBUG] AI分析 ${symbol} - trend字段(V2):`, result.trend);
-        console.log(`[DEBUG] AI分析 ${symbol} - confidence字段(V2):`, result.confidence);
-        console.log(`[DEBUG] AI分析 ${symbol} - newsSentiment字段(V2):`, result.newsSentiment);
-        console.log(`[DEBUG] AI分析 ${symbol} - eventRisk字段(V2):`, result.eventRisk);
-        console.log(`[DEBUG] AI分析 ${symbol} - volumeStatus字段(V2):`, result.volumeStatus);
-        console.log(`[DEBUG] AI分析 ${symbol} - conciseReasoning字段(V2):`, result.conciseReasoning);
-        console.log(`[DEBUG] AI分析 ${symbol} - detailedReasoning字段(V2):`, result.detailedReasoning);
-        console.log(`[DEBUG] AI分析 ${symbol} - scannerReason字段(V2):`, result.scannerReason);
-        console.log(`[DEBUG] AI分析 ${symbol} - companyName字段:`, result.companyName);
-        console.log(`[DEBUG] AI分析 ${symbol} - sector字段:`, result.sector);
-
-        // 构建trendAnalysis对象 - 优先使用V3格式，回退到V2格式
-        const trendAnalysis: TrendAnalysis = {
-          // V3字段
-          trendLabel: result.trendLabel || result.trend || null,
-          trendScore: result.trendScore || result.overallScore || null,
-          momentumLabel: result.momentumLabel || null,
-          momentumScore: result.momentumScore || null,
-          volatilityLabel: result.volatilityLabel || null,
-          volatilityScore: result.volatilityScore || null,
-          volumeLabel: (result.volumeLabel as 'low' | 'normal' | 'high') || result.volumeStatus || null,
-          volumeScore: result.volumeScore || null,
-          structureLabel: result.structureLabel || null,
-          structureScore: result.structureScore || null,
-          newsLabel: (result.newsLabel as 'positive' | 'neutral' | 'negative') || result.newsSentiment || null,
-          newsScore: result.newsScore || null,
-          riskLevel: (result.riskLevel as 'low' | 'medium' | 'high') || result.eventRisk || null,
-
-          // V2兼容字段
-          trendConfidence: result.confidence || null,
-          scannerReason: result.scannerReason || result.conciseReason || null,
-          trendScoreDetail: result.trendScore || null,
-          volumeStatus: result.volumeStatus || result.volumeLabel || null,
-          conciseReasoning: result.conciseReasoning || result.conciseReason || null,
-          detailedReasoning: result.detailedReasoning || result.aiReasoning || null,
-          aiReasoning: result.aiReasoning || null,
-          newsSentiment: result.newsSentiment || result.newsLabel || null,
-          eventRisk: result.eventRisk || result.riskLevel || null,
-          topNews: result.topNews || null,
-          companyName: result.companyName || null,
-          sector: result.sector || null,
-
-          // 确保所有字段都有值
-          overallScore: result.overallScore || result.trendScore || null,
-          conciseReason: result.conciseReason || result.conciseReasoning || null,
-
-          // AI source tracking
-          analysisSource: result.analysisSource || result.aiAnalysis || null,
-          aiCalled: result.aiCalled !== undefined ? result.aiCalled : (result.analysisSource === 'deepseek' || result.analysisSource === 'gemini' || result.analysisSource === 'openai'),
-          aiSource: result.aiSource || result.provider || (result.analysisSource === 'deepseek' ? 'DeepSeek' : result.analysisSource === 'rule_based' ? 'Local Rules' : null),
-          aiModel: result.aiModel || result.model || null,
-          aiError: result.aiError || result.message || null,
-        };
-
-        console.log(`[AI DEBUG] normalized trendAnalysis (V3) =`, {
-          symbol,
-          // V3核心字段
-          trendLabel: trendAnalysis.trendLabel,
-          trendScore: trendAnalysis.trendScore,
-          momentumLabel: trendAnalysis.momentumLabel,
-          momentumScore: trendAnalysis.momentumScore,
-          volumeLabel: trendAnalysis.volumeLabel,
-          volumeScore: trendAnalysis.volumeScore,
-          newsLabel: trendAnalysis.newsLabel,
-          newsScore: trendAnalysis.newsScore,
-          riskLevel: trendAnalysis.riskLevel,
-          overallScore: trendAnalysis.overallScore,
-          // 关键推理字段
-          aiReasoning: trendAnalysis.aiReasoning,
-          conciseReason: trendAnalysis.conciseReason
-        });
-
-        console.log(`[AI DEBUG] ====== AI分析 ${symbol} 完成 (成功) ======`);
-        return trendAnalysis;
-      } else {
-        // 后端返回success: false，返回null数据
-        console.warn(`[AI DEBUG] AI分析 ${symbol} 后端返回success: false，返回null数据`);
-        console.warn(`[AI DEBUG] AI分析 ${symbol} 错误信息:`, response.data?.error);
-        console.log(`[AI DEBUG] ====== AI分析 ${symbol} 完成 (失败: success=false) ======`);
-
-        // 返回null数据，不伪造任何值 - 包含所有V3字段
-        // 保留后端返回的real news/profile data和AI source tracking
-        const errorData = response.data || {};
-        return {
-          // V3字段
-          trendLabel: null,
-          trendScore: null,
-          momentumLabel: null,
-          momentumScore: null,
-          volatilityLabel: null,
-          volatilityScore: null,
-          volumeLabel: null,
-          volumeScore: null,
-          structureLabel: null,
-          structureScore: null,
-          newsLabel: null,
-          newsScore: null,
-          riskLevel: null,
-          overallScore: null,
-          conciseReason: null,
-
-          // V2兼容字段
-          trendConfidence: null,
-          scannerReason: null,
-          trendScoreDetail: null,
-          volumeStatus: null,
-          conciseReasoning: null,
-          detailedReasoning: null,
-          aiReasoning: null,
-          newsSentiment: errorData.newsSentiment || null,
-          eventRisk: errorData.eventRisk || null,
-          topNews: errorData.topNews || null,
-          companyName: errorData.companyName || null,
-          sector: errorData.sector || null,
-
-          // AI source tracking - mark as unavailable
-          analysisSource: 'unavailable',
-          aiCalled: true,
-          aiSource: 'unavailable',
-          aiModel: null,
-          aiError: errorData.error || 'AI analysis failed',
-        };
-      }
-    } catch (error: any) {
-      console.error(`[AI DEBUG] AI分析 ${symbol} 异常:`, error.message, error.response?.data);
-      console.error(`[AI DEBUG] 异常类型:`, error.constructor.name);
-      console.error(`[AI DEBUG] 异常堆栈:`, error.stack);
-      console.log(`[AI DEBUG] ====== AI分析 ${symbol} 完成 (异常) ======`);
-      // AI分析失败时，返回null数据，不伪造任何值 - 包含所有V3字段
-      return {
-        // V3字段
-        trendLabel: null,
-        trendScore: null,
-        momentumLabel: null,
-        momentumScore: null,
-        volatilityLabel: null,
-        volatilityScore: null,
-        volumeLabel: null,
-        volumeScore: null,
-        structureLabel: null,
-        structureScore: null,
-        newsLabel: null,
-        newsScore: null,
-        riskLevel: null,
-        overallScore: null,
-        conciseReason: null,
-
-        // V2兼容字段
-        trendConfidence: null,
-        scannerReason: null,
-        trendScoreDetail: null,
-        volumeStatus: null,
-        conciseReasoning: null,
-        detailedReasoning: null,
-        aiReasoning: null,
-        newsSentiment: null,
-        eventRisk: null,
-        topNews: null,
-        companyName: null,
-        sector: null,
-
-        // AI source tracking - mark as unavailable
-        analysisSource: 'unavailable',
-        aiCalled: true,
-        aiSource: 'unavailable',
-        aiModel: null,
-        aiError: error?.message || 'AI analysis exception',
-      };
-    }
-  };
-
-  const calculateRelativeVolume = (volume: number | null, symbol: string): string | null => {
-    // 基于真实成交量计算相对成交量
-    // 暂时返回null，等待真实平均成交量数据
-    return null;
-  };
+  // Market Scanner functions are in scannerRunnerService.ts
 
   const getTrendLabel = (score: number): string => {
     if (score >= 80) return 'Strong Bullish';
@@ -2558,20 +1684,13 @@ Please respond in this exact JSON format:
   };
 
   const handleToggleMarketScanner = (): void => {
-    if (marketScannerIsScanningRef.current) {
-      // Stop the running scan
-      stopRequestedRef.current = true;
-      marketScannerStopRequestedRef.current = true;
-      setDetailedScanStatus(prev => ({
-        ...prev,
-        currentStatus: 'stopping',
-        statusMessage: 'Stopping scan...'
-      }));
+    if (isScanRunning()) {
+      // Stop the running scan — only user action can stop
+      stopMarketScannerByUser();
       message.info('Stopping scanner...');
-      // The scan loop checks stopRequestedRef and will exit
     } else {
-      // Start a new scan
-      runMarketScanner();
+      // Start a new scan via module-level service
+      startMarketScanner();
     }
   };
 
@@ -5879,13 +4998,11 @@ Please respond in this exact JSON format:
   };
 
 
-  // ===== Deeper Validation State =====
-  const [deeperValidationStatus, setDeeperValidationStatus] = useState<'idle' | 'loading' | 'completed' | 'error'>('idle');
-  const [deeperValidationResults, setDeeperValidationResults] = useState<any[] | null>(null);
+  // ===== Deeper Validation State ===== (now in scannerStateStore)
+  // deeperValidationStatus and deeperValidationResults are read from store snapshot above
 
-  // ===== Entry Plan State =====
-  const [entryPlanStatus, setEntryPlanStatus] = useState<'idle' | 'loading' | 'completed' | 'error'>('idle');
-  const [entryPlanResults, setEntryPlanResults] = useState<any[] | null>(null);
+  // ===== Entry Plan State ===== (now in scannerStateStore)
+  // entryPlanStatus and entryPlanResults are read from store snapshot above
   const [expandedEntryPlanSymbol, setExpandedEntryPlanSymbol] = useState<string | null>(null);
   const [entryPlanAccountSize, setEntryPlanAccountSize] = useState<number>(100000);
   const [entryPlanRiskPerTrade, setEntryPlanRiskPerTrade] = useState<number>(1);
@@ -5969,8 +5086,8 @@ Please respond in this exact JSON format:
   };
 
   const injectDevTestCandidate = () => {
-    setPreferredContinueScanList(prev => {
-      const exists = prev.some(c => c.isDevTest);
+    setPreferredContinueScanList((prev: any) => {
+      const exists = prev.some((c: any) => c.isDevTest);
       if (exists) return prev;
       return [DEV_TEST_CANDIDATE, ...prev];
     });
@@ -5979,7 +5096,7 @@ Please respond in this exact JSON format:
   };
 
   const removeDevTestCandidate = () => {
-    setPreferredContinueScanList(prev => prev.filter(c => !c.isDevTest));
+    setPreferredContinueScanList((prev: any) => prev.filter((c: any) => !c.isDevTest));
     message.info('DEV TEST candidate removed');
   };
 
@@ -6686,46 +5803,77 @@ function renderDVDetailPanel(record: any) {
 }
 
   return (
-    <div>
-      <Title level={2}><RobotOutlined style={{ marginRight: '12px' }} />AI Agent</Title>
-      <Text type="secondary">AI-powered stock recommendations and trading automation</Text>
+    <div className="ai-agent-page-container" style={{ padding: '0 8px 40px 8px' }}>
+      <style>{`
+        .ai-agent-page-container { animation: fadeIn 0.5s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .premium-card { border-radius: 12px !important; border: 1px solid #f0f0f0 !important; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03) !important; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important; }
+        .premium-card:hover { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06) !important; transform: translateY(-2px) !important; }
+        .status-strip { background: linear-gradient(90deg, #fafafa 0%, #ffffff 100%); border-radius: 10px; padding: 12px 20px; border: 1px solid #f0f0f0; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+        .stat-box { display: flex; flex-direction: column; gap: 4px; }
+        .stat-label { font-size: 11px; color: #8c8c8c; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+        .stat-value { font-size: 14px; font-weight: 700; color: #262626; }
+        .compact-table .ant-table-thead > tr > th { background: #fafafa !important; font-size: 11px !important; text-transform: uppercase !important; letter-spacing: 0.3px !important; padding: 10px 8px !important; }
+      `}</style>
+
+      {/* ── Page Header ── */}
+      <div style={{ marginBottom: 32, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
+            <div style={{ width: 40, height: 40, borderRadius: '10px', background: 'linear-gradient(135deg, #1890ff 0%, #003a8c 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 22, boxShadow: '0 4px 12px rgba(24, 144, 255, 0.3)' }}>
+              <RobotOutlined />
+            </div>
+            <Title level={1} style={{ margin: 0, fontSize: 28, fontWeight: 800, letterSpacing: '-0.5px', color: '#1a1a1a' }}>AI Agent Orchestrator</Title>
+          </div>
+          <Text type="secondary" style={{ fontSize: 15, marginLeft: 52 }}>Autonomous intelligence for market screening, technical verification, and automated trading.</Text>
+        </div>
+        <div style={{ display: 'flex', gap: 12 }}>
+           <Badge status="processing" text={<Text strong style={{ color: '#52c41a', fontSize: 12 }}>SYSTEM ONLINE</Text>} />
+        </div>
+      </div>
 
       <Divider />
 
-      {/* 1. AI Configuration — compact status bar, full config in Settings */}
+      {/* 1. AI Configuration — compact status strip */}
       <div style={{ marginBottom: 24 }}>
-        <Card bodyStyle={{ padding: '12px 20px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: '13px', color: '#595959' }}>
-                <strong>AI Provider:</strong> {aiConfig.provider || 'Not set'}
-              </span>
-              <span style={{ fontSize: '13px', color: '#595959' }}>
-                <strong>Model:</strong> {aiConfig.model || 'Not set'}
-              </span>
-              <span style={{ fontSize: '13px', color: '#595959' }}>
-                <strong>AI Status:</strong>{' '}
-                {aiConfig.apiKey ? (
-                  <Tag color="success">Connected</Tag>
-                ) : (
-                  <Tag color="default">Not configured</Tag>
-                )}
-              </span>
-              <span style={{ fontSize: '13px', color: '#595959' }}>
-                <strong>Alpaca Mode:</strong>{' '}
-                <Tag color={tradingAccountMode === 'paper' ? 'blue' : 'red'}>
-                  {tradingAccountMode === 'paper' ? 'Paper' : 'Real'}
-                </Tag>
+        <div className="status-strip">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap' }}>
+            <div className="stat-box">
+              <span className="stat-label">AI Provider</span>
+              <span className="stat-value" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                {aiConfig.provider || 'Not set'}
+                <Tag color="blue" bordered={false} style={{ margin: 0, fontSize: 10, lineHeight: '16px' }}>V3</Tag>
               </span>
             </div>
-            <Button
-              icon={<SettingOutlined />}
-              onClick={() => navigate('/settings/configuration')}
-            >
-              Manage Settings
-            </Button>
+            <Divider type="vertical" style={{ height: 32, margin: 0 }} />
+            <div className="stat-box">
+              <span className="stat-label">Model</span>
+              <span className="stat-value">{aiConfig.model || 'Not set'}</span>
+            </div>
+            <Divider type="vertical" style={{ height: 32, margin: 0 }} />
+            <div className="stat-box">
+              <span className="stat-label">AI Status</span>
+              {configStatus.loaded ? (
+                configStatus.aiTestStatus === 'connected' ? <Tag color="success" style={{ margin: 0, borderRadius: 10, fontWeight: 700, fontSize: 10 }}>CONNECTED</Tag> :
+                configStatus.aiTestStatus === 'saved' ? <Tag color="warning" style={{ margin: 0, borderRadius: 10, fontWeight: 700, fontSize: 10 }}>NOT TESTED</Tag> :
+                configStatus.aiTestStatus === 'error' ? <Tag color="error" style={{ margin: 0, borderRadius: 10, fontWeight: 700, fontSize: 10 }}>ERROR</Tag> :
+                configStatus.ai ? <Tag color="warning" style={{ margin: 0, borderRadius: 10, fontWeight: 700, fontSize: 10 }}>NOT TESTED</Tag> :
+                <Tag color="default" style={{ margin: 0, borderRadius: 10, fontWeight: 700, fontSize: 10 }}>NOT CONFIGURED</Tag>
+              ) : <Spin size="small" />}
+            </div>
+            <Divider type="vertical" style={{ height: 32, margin: 0 }} />
+            <div className="stat-box">
+              <span className="stat-label">Market Data</span>
+              {configStatus.loaded ? <Tag color="processing" style={{ margin: 0, borderRadius: 10, fontWeight: 700, fontSize: 10 }}>ALPACA</Tag> : <Spin size="small" />}
+            </div>
+            <Divider type="vertical" style={{ height: 32, margin: 0 }} />
+            <div className="stat-box">
+              <span className="stat-label">Trading</span>
+              {configStatus.loaded ? (configStatus.alpaca ? <Tag color="processing" style={{ margin: 0, borderRadius: 10, fontWeight: 700, fontSize: 10 }}>PAPER</Tag> : <Tag color="default" style={{ margin: 0, borderRadius: 10, fontWeight: 700, fontSize: 10 }}>NOT LINKED</Tag>) : <Spin size="small" />}
+            </div>
           </div>
-        </Card>
+          <Button type="text" icon={<SettingOutlined />} onClick={() => navigate('/settings/configuration')} style={{ color: '#1890ff', fontWeight: 600, fontSize: 13 }}>Manage Settings</Button>
+        </div>
       </div>
 
       {/* 1.5 Trading Account Mode */}
@@ -7185,8 +6333,9 @@ function renderDVDetailPanel(record: any) {
               </div>
               <Text type="secondary" style={{ fontSize: '13px' }}>
                 {marketScannerResults.length > 0
-                  ? `${marketScannerResults.filter((r: any) => r.price != null && r.volume > 0 && r.trendLabel != null).length} good / ${marketScannerResults.filter((r: any) => (r.price != null || r.volume > 0 || r.trendLabel != null) && !(r.price != null && r.volume > 0 && r.trendLabel != null)).length} partial`
-                  : '—'}
+                  ? `${marketScannerResults.filter((r: any) => r.price != null && r.volume > 0).length} good / ${marketScannerResults.filter((r: any) => (r.price != null || r.volume > 0) && !(r.price != null && r.volume > 0)).length} partial`
+                  : !configStatus.alpaca ? 'Not configured' :
+                    detailedScanStatus.currentStatus === 'scanning' ? 'Collecting...' : 'No data yet'}
               </Text>
             </Col>
 
@@ -7197,7 +6346,10 @@ function renderDVDetailPanel(record: any) {
               <Text type="secondary" style={{ fontSize: '13px' }}>
                 {marketScannerResults.length > 0
                   ? `${marketScannerResults.filter((r: any) => r.aiCalled).length} AI / ${marketScannerResults.filter((r: any) => !r.aiCalled).length} Local Rules`
-                  : '—'}
+                  : configStatus.aiTestStatus === 'connected' ? 'Connected' :
+                    configStatus.aiTestStatus === 'saved' ? 'Not tested' :
+                    configStatus.aiTestStatus === 'error' ? 'Error' :
+                    configStatus.ai ? 'Not tested' : 'Rule-based only'}
               </Text>
             </Col>
           </Row>
@@ -7232,7 +6384,8 @@ function renderDVDetailPanel(record: any) {
                     <span style={{ fontWeight: 600 }}>{detailedScanStatus.processedCount}</span> / {detailedScanStatus.totalCount} Symbols Processed
                   </div>
                   <div style={{ fontSize: 12, color: '#8c8c8c' }}>
-                    {detailedScanStatus.validatedCount} Validated • {detailedScanStatus.retryCount} Retries
+                    {detailedScanStatus.validatedCount} Validated • {detailedScanStatus.failedCount > 0 && `${detailedScanStatus.failedCount} Failed • `}{detailedScanStatus.retryCount} Retries
+                    {detailedScanStatus.lastFailureReason && <div style={{ fontSize: 11, color: '#ff4d4f', marginTop: 2 }}>Last failure: {detailedScanStatus.lastFailureReason}</div>}
                   </div>
                 </div>
               </div>
@@ -8274,11 +7427,11 @@ function renderDVDetailPanel(record: any) {
                 expandedRowRender: (record: any) => renderFineScanDetailPanel(record),
                 rowExpandable: (record: any) => true,
                 expandedRowKeys: fineScanExpandedRows,
-                onExpand: (expanded, record) => {
+                onExpand: (expanded: any, record: any) => {
                   if (expanded) {
-                    setFineScanExpandedRows(prev => [...prev, record.symbol]);
+                    setFineScanExpandedRows((prev: any) => [...prev, record.symbol]);
                   } else {
-                    setFineScanExpandedRows(prev => prev.filter(s => s !== record.symbol));
+                    setFineScanExpandedRows((prev: any) => prev.filter((s: any) => s !== record.symbol));
                   }
                 }
               }}

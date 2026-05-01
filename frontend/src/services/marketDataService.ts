@@ -5,6 +5,7 @@
  */
 
 import axios from 'axios';
+import { supabase } from '../lib/supabaseClient';
 
 // 使用相对路径，依赖React代理
 // 开发环境：/api/* → http://127.0.0.1:8889/api/* (通过package.json proxy)
@@ -24,6 +25,17 @@ const api = axios.create({
     'Content-Type': 'application/json',
   },
 });
+
+// Attach Supabase access token so backend can resolve per-user config
+const attachSupabaseToken = async (config: any) => {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (session?.access_token) {
+    config.headers.Authorization = `Bearer ${session.access_token}`;
+  }
+  return config;
+};
+
+api.interceptors.request.use(attachSupabaseToken);
 
 // 添加请求拦截器用于调试
 api.interceptors.request.use(
@@ -92,6 +104,7 @@ export interface StockData {
   dayLow: number | null;
   previousClose: number | null;
   dataSource: string;
+  priceSource?: string;
   timestamp: string;
   error?: string;
   peRatio?: number | null;
@@ -314,6 +327,26 @@ export const calculateRSI = (data: number[], period: number = 14): number[] => {
 // ========== Core API Functions ==========
 
 /**
+ * Get dashboard system status (per-user config state)
+ */
+export const getDashboardStatus = async (): Promise<{
+  marketData: string;
+  quoteFeed: string;
+  brokerConnection: string;
+  environment: string;
+}> => {
+  try {
+    const response = await api.get('/dashboard/status');
+    if (response.data) {
+      return response.data;
+    }
+    return { marketData: 'ERROR', quoteFeed: 'ERROR', brokerConnection: 'UNKNOWN', environment: 'Unknown' };
+  } catch {
+    return { marketData: 'ERROR', quoteFeed: 'ERROR', brokerConnection: 'UNKNOWN', environment: 'Unknown' };
+  }
+};
+
+/**
  * Get list of stocks for Market page
  * @param symbols Optional array of symbols to filter (if provided, returns data for those symbols only)
  */
@@ -342,7 +375,7 @@ export const getStocks = async (symbols?: string[], dashboard?: boolean): Promis
     console.log(`[marketDataService调试] 请求参数:`, params);
     
     const response = await api.get('/market/stocks', { params });
-    
+
     console.log(`[前端调试] 收到响应:`, {
       status: response.status,
       dataKeys: Object.keys(response.data),
@@ -350,7 +383,19 @@ export const getStocks = async (symbols?: string[], dashboard?: boolean): Promis
       stocksCount: response.data.stocks?.length || 0,
       responseStructure: response.data
     });
-    
+
+    // Check if backend reports auth or config issues
+    if (response.data?.configStatus === 'auth_required') {
+      const err: any = new Error('Authentication required: please sign in again.');
+      err.code = 'AUTH_REQUIRED';
+      throw err;
+    }
+    if (response.data?.configStatus === 'config_required') {
+      const err: any = new Error('Configuration required: please configure your API keys in Settings.');
+      err.code = 'CONFIG_REQUIRED';
+      throw err;
+    }
+
     if (response.data && response.data.stocks) {
       const stocks = response.data.stocks.map((stock: any) => ({
         ...stock,
@@ -362,20 +407,25 @@ export const getStocks = async (symbols?: string[], dashboard?: boolean): Promis
         dataSource: stock.dataSource || response.data.source || 'Finnhub',
         timestamp: new Date().toISOString(),
       }));
-      
+
       console.log(`[前端调试] 成功处理 ${stocks.length} 支股票`);
       return stocks;
     }
-    
+
     console.warn(`[前端调试] 响应中没有 stocks 字段，返回空数组`);
     return [];
   } catch (error: any) {
     console.error('[前端调试] Failed to fetch stocks:', error);
     console.error('[前端调试] 错误详情:', {
       message: error.message,
+      code: error.code,
       response: error.response?.data,
       status: error.response?.status
     });
+    // Preserve config/auth codes for Dashboard to handle
+    if (error.code === 'CONFIG_REQUIRED' || error.code === 'AUTH_REQUIRED') {
+      throw error;
+    }
     throw new Error(error.response?.data?.error || error.message || 'Failed to fetch stocks');
   }
 };
@@ -472,22 +522,84 @@ export const searchStocks = async (query: string, limit?: number): Promise<Searc
     const response = await api.get('/market/search', {
       params: { q: query },
     });
-    
+
     if (response.data && response.data.results) {
       let results = response.data.results;
-      
+
       // Apply limit if provided
       if (limit && limit > 0) {
         results = results.slice(0, limit);
       }
-      
+
       return results;
     }
-    
+
     return [];
   } catch (error: any) {
     console.error('Failed to search stocks:', error);
     throw new Error(error.response?.data?.error || error.message || 'Failed to search stocks');
+  }
+};
+
+/**
+ * Search stocks and return full StockData (with prices from Alpaca/Finnhub).
+ * Backend returns complete stock objects, not just symbol/name pairs.
+ * @param query Search query string
+ */
+export const searchStockData = async (query: string): Promise<{ stocks: StockData[]; status: string; message?: string }> => {
+  try {
+    const response = await api.get('/market/search', {
+      params: { q: query },
+    });
+
+    const data = response.data;
+    const status = data?.status || 'unknown';
+
+    if (status === 'auth_required') {
+      const err: any = new Error('Authentication required: please sign in again.');
+      err.code = 'AUTH_REQUIRED';
+      throw err;
+    }
+    if (status === 'config_required') {
+      const err: any = new Error('Configuration required: please configure your API keys in Settings.');
+      err.code = 'CONFIG_REQUIRED';
+      throw err;
+    }
+
+    if (data && data.results && data.results.length > 0) {
+      const stocks: StockData[] = data.results.map((stock: any) => ({
+        symbol: stock.symbol,
+        name: stock.name || stock.symbol,
+        price: stock.price ?? null,
+        change: stock.change ?? null,
+        changePercent: stock.changePercent ?? null,
+        volume: stock.volume ?? null,
+        marketCap: stock.marketCap ?? null,
+        sector: stock.sector ?? null,
+        industry: stock.industry ?? null,
+        currency: stock.currency || 'USD',
+        dayOpen: stock.open ?? stock.dayOpen ?? null,
+        dayHigh: stock.dayHigh ?? null,
+        dayLow: stock.dayLow ?? null,
+        previousClose: stock.previousClose ?? null,
+        dataSource: stock.dataSource || 'Alpaca',
+        priceSource: stock.priceSource || 'unknown',
+        timestamp: new Date().toISOString(),
+      }));
+      return { stocks, status: 'ok' };
+    }
+
+    return {
+      stocks: [],
+      status: status,
+      message: data?.message || 'No matching company or symbol found. Please check your input.',
+    };
+  } catch (error: any) {
+    if (error.code === 'CONFIG_REQUIRED' || error.code === 'AUTH_REQUIRED') {
+      throw error;
+    }
+    console.error('Search failed:', error);
+    throw new Error(error.response?.data?.error || error.message || 'Search failed. Please check API configuration or try again.');
   }
 };
 
@@ -506,6 +618,50 @@ export const getBatchStockData = async (symbols: string[]): Promise<StockData[]>
   }
 };
 
+// ========== User Market Symbols API ==========
+
+export const getUserMarketSymbols = async (): Promise<{ symbols: string[]; status: string }> => {
+  try {
+    const response = await api.get('/market/user-symbols');
+    return {
+      symbols: response.data?.symbols || [],
+      status: response.data?.status || 'unknown',
+    };
+  } catch (error: any) {
+    console.error('Failed to get user market symbols:', error);
+    return { symbols: [], status: 'error' };
+  }
+};
+
+export const addUserMarketSymbols = async (symbols: string[]): Promise<{ symbols: string[]; added: string[]; status: string; error?: string }> => {
+  try {
+    const response = await api.post('/market/user-symbols', { symbols });
+    return {
+      symbols: response.data?.symbols || [],
+      added: response.data?.added || [],
+      status: response.data?.status || 'unknown',
+      error: response.data?.error,
+    };
+  } catch (error: any) {
+    console.error('Failed to add user market symbols:', error);
+    return { symbols: [], added: [], status: 'error', error: error.message };
+  }
+};
+
+export const deleteUserMarketSymbol = async (symbol: string): Promise<{ symbols: string[]; removed: string; status: string }> => {
+  try {
+    const response = await api.delete(`/market/user-symbols/${symbol}`);
+    return {
+      symbols: response.data?.symbols || [],
+      removed: response.data?.removed || symbol,
+      status: response.data?.status || 'unknown',
+    };
+  } catch (error: any) {
+    console.error('Failed to delete user market symbol:', error);
+    return { symbols: [], removed: symbol, status: 'error' };
+  }
+};
+
 // ========== Service Object ==========
 
 const marketDataService = {
@@ -514,8 +670,15 @@ const marketDataService = {
   getStockData,
   getStockHistory,
   searchStocks,
+  searchStockData,
   getBatchStockData,
-  
+  getDashboardStatus,
+
+  // User Market Symbols API
+  getUserMarketSymbols,
+  addUserMarketSymbols,
+  deleteUserMarketSymbol,
+
   // Utility functions
   formatCurrency,
   formatPercent,
@@ -525,7 +688,7 @@ const marketDataService = {
   calculateSMA,
   calculateEMA,
   calculateRSI,
-  
+
   // Constants
   TIMEFRAMES,
 };

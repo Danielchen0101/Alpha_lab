@@ -43,10 +43,18 @@ const AppHeader: React.FC = () => {
         boxShadow: '0 1px 4px rgba(0,21,41,.08)',
       }}
     >
-      <div>
-        <Text strong style={{ fontSize: '18px' }}>
-          量化交易平台
-        </Text>
+      <div style={{ background: 'transparent', display: 'flex', alignItems: 'center' }}>
+        <img 
+          src="/brand/alphalab-logo.png" 
+          alt="AlphaLab" 
+          style={{ 
+            height: '36px', 
+            width: 'auto', 
+            objectFit: 'contain', 
+            background: 'transparent',
+            display: 'block'
+          }} 
+        />
       </div>
 
       <Space size="large">

@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Card, Row, Col, Button, Spin, Alert, Empty, Tag, Typography, Space } from 'antd';
+import { Card, Row, Col, Button, Spin, Alert, Empty, Tag, Typography, Space, Divider } from 'antd';
 import { ReloadOutlined, DashboardOutlined, RiseOutlined, FallOutlined, LineChartOutlined, EyeOutlined, PieChartOutlined, BarChartOutlined, ClockCircleOutlined, DatabaseOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { StockData, safeNumber, safeToFixed } from '../services/marketDataService';
+import { StockData, safeNumber, safeToFixed, getDashboardStatus } from '../services/marketDataService';
 import { sharedDataService } from '../services/sharedDataService';
 import DataSourceBadge from '../components/DataSourceBadge';
+import { formatMarketCap } from '../utils/format';
 
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 
@@ -61,10 +62,18 @@ const Dashboard: React.FC = () => {
   const [marketData, setMarketData] = useState<StockData[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [needsConfig, setNeedsConfig] = useState(false);
+  const [needsAuth, setNeedsAuth] = useState(false);
   const [lastFetched, setLastFetched] = useState<number | null>(null);
   const [watchlist, setWatchlist] = useState<any[]>([]);
   // marketStats现在由useMemo计算，见下方
   const [sectorData, setSectorData] = useState<SectorData[]>([]);
+  const [systemStatus, setSystemStatus] = useState<{
+    marketData: string;
+    quoteFeed: string;
+    brokerConnection: string;
+    environment: string;
+  }>({ marketData: 'CONFIG_REQUIRED', quoteFeed: 'CONFIG_REQUIRED', brokerConnection: 'CONFIG_REQUIRED', environment: 'Unknown' });
 
   // 添加请求锁，防止重复请求
   const [isFetching, setIsFetching] = useState(false);
@@ -207,12 +216,14 @@ const Dashboard: React.FC = () => {
     try {
       setIsFetching(true);
       setLoading(true);
-      setError(''); // 明确清除错误状态
+      setError('');
+      setNeedsConfig(false);
+      setNeedsAuth(false);
 
       console.log('[Dashboard优化] 开始获取市场数据...');
-      
+
       // 使用共享数据服务，避免重复请求
-      const stocks = forceRefresh 
+      const stocks = forceRefresh
         ? await sharedDataService.refreshStocks()
         : await sharedDataService.getStocks();
 
@@ -234,7 +245,15 @@ const Dashboard: React.FC = () => {
     } catch (err: any) {
       console.error('[Dashboard优化] 获取市场数据失败:', err);
       const errorMessage = err.message || 'Failed to load market data';
+      const errorCode = err.code || '';
       setError(errorMessage);
+      setNeedsAuth(false);
+      setNeedsConfig(false);
+      if (errorCode === 'AUTH_REQUIRED' || errorMessage.includes('Authentication required')) {
+        setNeedsAuth(true);
+      } else if (errorCode === 'CONFIG_REQUIRED' || errorMessage.includes('not configured') || errorMessage.includes('needsConfig') || errorMessage.includes('Configuration required')) {
+        setNeedsConfig(true);
+      }
 
       // 清空数据，避免显示旧数据
       setMarketData([]);
@@ -324,7 +343,20 @@ const Dashboard: React.FC = () => {
       .slice(0, 8); // 最多显示8个
   };
 
-  const refresh = () => fetchMarketData(true); // 强制刷新，忽略缓存
+  const refresh = () => {
+    fetchMarketData(true); // 强制刷新，忽略缓存
+    fetchSystemStatus();
+  };
+
+  // 获取系统状态（per-user config state）
+  const fetchSystemStatus = async () => {
+    try {
+      const status = await getDashboardStatus();
+      setSystemStatus(status);
+    } catch {
+      // Keep default CONFIG_REQUIRED state
+    }
+  };
 
   useEffect(() => {
     // 组件加载时清除所有错误状态
@@ -333,6 +365,7 @@ const Dashboard: React.FC = () => {
     // 延迟加载数据，让用户先看到页面框架
     const loadTimer = setTimeout(() => {
       fetchMarketData();
+      fetchSystemStatus();
     }, 100); // 100ms延迟，足够渲染初始界面
 
     // 从localStorage加载watchlist symbols（仅用于初始化状态）
@@ -535,45 +568,6 @@ const Dashboard: React.FC = () => {
     return stableColors[hash % stableColors.length];
   };
 
-  /**
-   * 格式化市值显示为缩写格式（如 $14.2T, $1.5B, $750M）
-   */
-  const formatMarketCap = (value: number | null | undefined): string => {
-    if (value === null || value === undefined || value === 0) return '--';
-
-    const num = Number(value);
-    if (isNaN(num)) return '--';
-
-    // 万亿 (Trillion) - 1万亿 = 1e12
-    if (num >= 1e12) {
-      const trillions = num / 1e12;
-      // 对于万亿级别，显示1位小数，除非是整数
-      return `$${trillions.toFixed(trillions >= 100 ? 0 : trillions >= 10 ? 1 : 2)}T`;
-    }
-
-    // 十亿 (Billion) - 10亿 = 1e9
-    if (num >= 1e9) {
-      const billions = num / 1e9;
-      // 对于十亿级别，显示1位小数
-      return `$${billions.toFixed(billions >= 100 ? 0 : billions >= 10 ? 1 : 2)}B`;
-    }
-
-    // 百万 (Million) - 1百万 = 1e6
-    if (num >= 1e6) {
-      const millions = num / 1e6;
-      return `$${millions.toFixed(millions >= 10 ? 0 : 1)}M`;
-    }
-
-    // 千 (Thousand)
-    if (num >= 1e3) {
-      const thousands = num / 1e3;
-      return `$${thousands.toFixed(thousands >= 10 ? 0 : 1)}K`;
-    }
-
-    // 小于1000
-    return `$${num.toFixed(2)}`;
-  };
-
   const StatCard = ({ title, value, icon, color = '#1890ff', suffix = '', formatValue = (v: any) => v, valueColor }: { title: string; value: any; icon: React.ReactNode; color?: string; suffix?: string; formatValue?: (v: any) => string; valueColor?: string }) => (
     <Card
       hoverable
@@ -672,1128 +666,478 @@ const Dashboard: React.FC = () => {
   );
 
   return (
-    <div style={{ padding: '20px 28px', width: '100%', maxWidth: 'none', margin: 0 }}>
-      <Row gutter={[16, 16]} style={{ marginBottom: '32px' }}>
-        <Col span={24}>
-          <Card style={{ padding: '16px 20px', borderRadius: '10px' }} bodyStyle={{ padding: 0 }}>
-            <Row align="middle" justify="space-between">
-              <Col>
-                <Space align="center" size={12}>
-                  <DashboardOutlined style={{ fontSize: '24px', color: '#1890ff' }} />
-                  <Space direction="vertical" size={4}>
-                    <Title level={3} style={{ margin: 0, fontWeight: 600, fontSize: '20px' }}>Dashboard</Title>
-                    <Text type="secondary" style={{ fontSize: '12px', color: '#8c8c8c' }}>Real-time market overview</Text>
-                  </Space>
-                </Space>
-              </Col>
-              <Col>
-                <Space align="center" size={12}>
-                  <Space size={8}>
-                    <Text type="secondary" style={{ fontSize: '12px', color: '#8c8c8c' }}>
-                      <ClockCircleOutlined style={{ marginRight: '4px', fontSize: '11px' }} />
-                      {lastFetched ? new Date(lastFetched).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Never'}
-                    </Text>
-                    <Button type="primary" icon={<ReloadOutlined />} onClick={refresh} loading={loading} size="small">Refresh</Button>
-                  </Space>
-                  {marketData.length > 0 && marketData[0]?.dataSource ? (
-                    <DataSourceBadge source={marketData[0].dataSource} />
-                  ) : (
-                    <DataSourceBadge source="Alpaca" />
-                  )}
-                </Space>
-              </Col>
-            </Row>
-          </Card>
-        </Col>
-      </Row>
+    <div className="dashboard-container" style={{ padding: '24px 32px', maxWidth: '1600px', margin: '0 auto' }}>
+      <style>{`
+        .dashboard-container {
+          animation: fadeIn 0.5s ease-out;
+        }
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(10px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .premium-card {
+          border-radius: 12px !important;
+          border: 1px solid #f0f0f0 !important;
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03) !important;
+          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+          background: #fff !important;
+        }
+        .premium-card:hover {
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06) !important;
+          transform: translateY(-2px) !important;
+          border-color: #e6e6e6 !important;
+        }
+        .metric-card {
+          padding: 20px !important;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+          height: 100%;
+        }
+        .metric-label {
+          font-size: 11px;
+          text-transform: uppercase;
+          letter-spacing: 0.8px;
+          color: #8c8c8c;
+          font-weight: 700;
+          margin-bottom: 8px;
+        }
+        .metric-value {
+          font-size: 24px;
+          font-weight: 800;
+          color: #1a1a1a;
+          line-height: 1.1;
+          font-family: 'SF Pro Display', -apple-system, system-ui, sans-serif;
+        }
+        .metric-icon {
+          position: absolute;
+          right: 20px;
+          top: 20px;
+          font-size: 20px;
+          opacity: 0.15;
+          color: #1890ff;
+        }
+        .status-dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          display: inline-block;
+          margin-right: 8px;
+        }
+        .empty-state-container {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          height: 100%;
+          padding: 40px 20px;
+          text-align: center;
+        }
+        .ant-table-thead > tr > th {
+          background: #fafafa !important;
+          font-size: 11px !important;
+          text-transform: uppercase !important;
+          letter-spacing: 0.5px !important;
+          font-weight: 700 !important;
+        }
+        .refresh-btn:hover {
+          transform: rotate(30deg);
+        }
+      `}</style>
 
-      {loading && (
-        <Row justify="center" style={{ marginBottom: '24px' }}>
-          <Col>
-            <Spin size="large" tip="Loading market data..." />
-          </Col>
-        </Row>
-      )}
-
-      {error && (
-        <Row style={{ marginBottom: '24px' }}>
-          <Col span={24}>
-            <Alert message="Error Loading Data" description={error} type="error" showIcon closable onClose={() => setError('')} />
-          </Col>
-        </Row>
-      )}
-
-      {/* 显示API调用失败的消息 */}
-      {!loading && !error && marketData.length > 0 && marketData.every(stock => stock.price === null) && (
-        <Row style={{ marginBottom: '24px' }}>
-          <Col span={24}>
-            <Alert 
-              message="API Connection Issue" 
-              description="Unable to fetch real-time market data. Please check your API configuration. Displaying empty data instead of simulated data." 
-              type="warning" 
-              showIcon 
-            />
-          </Col>
-        </Row>
-      )}
-
-      <div style={{
-        display: 'flex',
-        flexWrap: 'wrap',
-        gap: '12px',
-        marginBottom: '24px',
-        marginLeft: '-6px',
-        marginRight: '-6px'
-      }}>
-        <div style={{ flex: '1 1 0', minWidth: '180px', padding: '0 6px' }}>
-          <StatCard title="Total Symbols" value={marketStats.totalSymbols} icon={<DatabaseOutlined />} color="#595959" />
+      {/* ── Dashboard Header ── */}
+      <div style={{ marginBottom: 32, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
+            <div style={{ 
+              width: 36, height: 36, borderRadius: '8px', background: 'linear-gradient(135deg, #1890ff 0%, #003a8c 100%)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 20,
+              boxShadow: '0 4px 12px rgba(24, 144, 255, 0.3)'
+            }}>
+              <DashboardOutlined />
+            </div>
+            <Title level={1} style={{ margin: 0, fontSize: 26, fontWeight: 800, letterSpacing: '-0.5px', color: '#1a1a1a' }}>Market Dashboard</Title>
+          </div>
+          <Text type="secondary" style={{ fontSize: 14, marginLeft: 48 }}>Real-time overview of quantitative market dynamics and system health.</Text>
         </div>
-        <div style={{ flex: '1 1 0', minWidth: '180px', padding: '0 6px' }}>
-          <StatCard title="Market Gainers" value={marketStats.gainers} icon={<RiseOutlined />} color="#52c41a" valueColor="#52c41a" />
-        </div>
-        <div style={{ flex: '1 1 0', minWidth: '180px', padding: '0 6px' }}>
-          <StatCard title="Market Losers" value={marketStats.losers} icon={<FallOutlined />} color="#ff4d4f" valueColor="#ff4d4f" />
-        </div>
-        <div style={{ flex: '1 1 0', minWidth: '180px', padding: '0 6px' }}>
-          <StatCard title="Average Change" value={marketStats.avgChange} icon={<LineChartOutlined />} color={marketStats.avgChange > 0 ? '#52c41a' : marketStats.avgChange < 0 ? '#ff4d4f' : '#595959'} valueColor={marketStats.avgChange > 0 ? '#52c41a' : marketStats.avgChange < 0 ? '#ff4d4f' : '#595959'} suffix="%" formatValue={(v) => v > 0 ? `+${v.toFixed(2)}` : v.toFixed(2)} />
-        </div>
-        <div style={{ flex: '1 1 0', minWidth: '180px', padding: '0 6px' }}>
-          <StatCard title="Total Market Cap" value={marketStats.totalMarketCap} icon={<BarChartOutlined />} color="#1d39c4" formatValue={formatMarketCap} />
-        </div>
-        <div style={{ flex: '1 1 0', minWidth: '180px', padding: '0 6px' }}>
-          {/* 自定义 Largest Move 卡片 */}
-          <Card
-            hoverable
-            style={{
-              height: '116px',
-              borderRadius: '10px',
-              border: '1px solid #e8e8e8',
-              borderTop: '1px solid #f5f5f5',
-              boxShadow: '0 2px 10px rgba(0,0,0,0.05), 0 1px 4px rgba(0,0,0,0.04)',
-              background: '#ffffff',
-              transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
-              cursor: 'pointer',
-              position: 'relative',
-              overflow: 'hidden',
-              '&:hover': {
-                transform: 'translateY(-3px)',
-                boxShadow: '0 8px 25px rgba(0,0,0,0.1), 0 4px 12px rgba(0,0,0,0.06)',
-                borderColor: '#d9d9d9'
-              }
-            } as any}
-            onClick={() => {
-              if (marketStats.largestMoveStock) {
-                // 点击时跳转到该股票详情
-                navigate(`/market?symbol=${marketStats.largestMoveStock.symbol}`);
-              }
-            }}
+        <Space size={16}>
+          <div style={{ textAlign: 'right' }}>
+            <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 600, textTransform: 'uppercase', marginBottom: 2 }}>Last Updated</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#595959', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <ClockCircleOutlined style={{ fontSize: 12, color: '#1890ff' }} />
+              {lastFetched ? new Date(lastFetched).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'N/A'}
+            </div>
+          </div>
+          <Button 
+            type="primary" 
+            icon={<ReloadOutlined className={loading ? 'anticon-spin' : ''} />} 
+            onClick={refresh} 
+            loading={loading}
+            style={{ borderRadius: '8px', fontWeight: 600, height: 40, padding: '0 20px' }}
           >
-            {/* 标题行 */}
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              marginBottom: '8px'
-            }}>
-              <Text type="secondary" style={{
-                fontSize: '12px',
-                color: '#595959',
-                fontWeight: 500,
-                letterSpacing: 'normal',
-                textTransform: 'none',
-                fontFamily: 'inherit'
-              }}>
-                Largest Move
-              </Text>
-              <span style={{
-                color: '#bfbfbf',
-                fontSize: '12px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                opacity: 0.7
-              }}>
-                <LineChartOutlined />
-              </span>
-            </div>
-
-            {/* 内容区域 */}
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'flex-start',
-              justifyContent: 'center',
-              height: 'calc(100% - 28px)'
-            }}>
-              {/* 股票代码 - 大字体 */}
-              <div style={{
-                fontSize: '18px',
-                fontWeight: 600,
-                lineHeight: '24px',
-                color: '#262626',
-                marginBottom: '4px'
-              }}>
-                {marketStats.largestMoveStock ? marketStats.largestMoveStock.symbol : '--'}
-              </div>
-
-              {/* 涨跌幅 - 根据涨跌显示颜色 */}
-              {marketStats.largestMoveStock && (
-                <div style={{
-                  fontSize: '14px',
-                  fontWeight: 500,
-                  lineHeight: '20px',
-                  color: marketStats.largestMoveStock.changePercent > 0 ? '#52c41a' : marketStats.largestMoveStock.changePercent < 0 ? '#ff4d4f' : '#595959'
-                }}>
-                  {marketStats.largestMoveStock.changePercent > 0 ? '+' : ''}{marketStats.largestMoveStock.changePercent.toFixed(2)}%
-                </div>
-              )}
-            </div>
-          </Card>
-        </div>
-        <div style={{ flex: '1 1 0', minWidth: '180px', padding: '0 6px' }}>
-          {/* 自定义 Largest Cap 卡片，优化 typography 和 spacing */}
-          <Card
-            hoverable
-            style={{
-              height: '116px',
-              borderRadius: '10px',
-              border: '1px solid #e8e8e8',
-              borderTop: '1px solid #f5f5f5',
-              boxShadow: '0 2px 10px rgba(0,0,0,0.05), 0 1px 4px rgba(0,0,0,0.04)',
-              background: '#ffffff',
-              transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
-              cursor: 'pointer',
-              position: 'relative',
-              overflow: 'hidden',
-              '&:hover': {
-                transform: 'translateY(-3px)',
-                boxShadow: '0 8px 24px rgba(0,0,0,0.10), 0 4px 12px rgba(0,0,0,0.06)',
-                borderColor: '#d4d4d4',
-              },
-              '&:active': {
-                transform: 'translateY(-1px)',
-                boxShadow: '0 4px 16px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.05)',
-              }
-            } as any}
-            bodyStyle={{
-              padding: '22px 18px',
-              height: '100%',
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'center',
-              position: 'relative',
-              zIndex: 1
-            }}
-          >
-            {/* 底部强调线 */}
-            <div style={{
-              position: 'absolute',
-              bottom: 0,
-              left: 0,
-              right: 0,
-              height: '2px',
-              background: `linear-gradient(90deg, #59595920 0%, #59595910 50%, transparent 100%)`,
-              opacity: 0.6,
-              transition: 'all 0.25s ease',
-              '&:hover': {
-                opacity: 0.9,
-                height: '3px',
-              }
-            } as any} />
-
-            {/* 标题行 - 增大标签，更明显 */}
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              marginBottom: '10px'  // 增加间距
-            }}>
-              <Text type="secondary" style={{
-                fontSize: '13px',  // 增大标签字体
-                color: '#404040',  // 稍微深一点，更明显
-                fontWeight: 600,   // 加重字重
-                letterSpacing: '0.1px',
-                textTransform: 'none',
-                fontFamily: 'inherit'
-              }}>
-                Largest Cap
-              </Text>
-              <span style={{
-                color: '#bfbfbf',
-                fontSize: '12px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                opacity: 0.7
-              }}>
-                <DatabaseOutlined />
-              </span>
-            </div>
-
-            {/* 数值行 - 减小数据字体，优化间距 */}
-            <div style={{
-              display: 'flex',
-              alignItems: 'baseline',
-              gap: '6px',  // NVDA 和 $4.4T 之间的自然间距
-              marginTop: '4px'  // 减少顶部间距
-            }}>
-              {/* 股票代码 */}
-              <div style={{
-                fontSize: '20px',  // 减小字体
-                fontWeight: 600,
-                color: '#1a1a1a',
-                lineHeight: 1.1,
-                fontFeatureSettings: '"tnum", "ss01", "zero"',
-                letterSpacing: '-0.2px',
-                fontFamily: "'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-                textShadow: '0 1px 1px rgba(0,0,0,0.02)'
-              }}>
-                {marketStats.largestCapStock ? marketStats.largestCapStock.symbol : '--'}
-              </div>
-
-              {/* 市值 - 更小字体，作为补充信息 */}
-              {marketStats.largestCapStock && (
-                <div style={{
-                  fontSize: '14px',  // 明显小于股票代码
-                  fontWeight: 500,
-                  color: '#595959',   // 更中性颜色
-                  lineHeight: 1.1,
-                  fontFeatureSettings: '"tnum", "ss01"',
-                  letterSpacing: 'normal',
-                  fontFamily: "'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-                  opacity: 0.9
-                }}>
-                  {formatMarketCap(marketStats.largestCapStock.marketCap)}
-                </div>
-              )}
-            </div>
-          </Card>
-        </div>
+            Refresh Data
+          </Button>
+          {marketData.length > 0 && marketData[0]?.dataSource && (
+            <DataSourceBadge source={marketData[0].dataSource} />
+          )}
+        </Space>
       </div>
 
-      <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
-        <Col xs={24} lg={12} xl={12}>
-          <Card
-            title={<Space><RiseOutlined style={{ color: '#52c41a' }} /><Text strong>Top Gainers</Text></Space>}
-            size="small"
-            style={{
-              height: '320px',
-              display: 'flex',
-              flexDirection: 'column',
-              width: '100%'
-            }}
-            bodyStyle={{
-              padding: '16px 20px',
-              flex: 1,
-              display: 'flex',
-              flexDirection: 'column',
-              overflow: 'hidden'
-            }}
+      {/* ── Warnings & Alerts ── */}
+      {(needsAuth || needsConfig || error || (marketData.length > 0 && marketData.every(stock => stock.price === null))) && (
+        <div style={{ marginBottom: 24 }}>
+          {needsAuth && (
+            <Alert
+              message={<Text strong>Authentication Required</Text>}
+              description="Your session has expired. Please sign in again to view market data."
+              type="warning"
+              showIcon
+              style={{ borderRadius: 10, border: '1px solid #ffe58f', background: '#fffbe6' }}
+            />
+          )}
+          {needsConfig && !needsAuth && (
+            <Alert
+              message={<Text strong>API Configuration Required</Text>}
+              description="Market data API keys are missing. Please configure Alpaca or Finnhub keys in Settings."
+              type="warning"
+              showIcon
+              action={<Button size="small" type="primary" onClick={() => navigate('/configuration')}>Configure</Button>}
+              style={{ borderRadius: 10, border: '1px solid #ffe58f', background: '#fffbe6' }}
+            />
+          )}
+          {error && !needsAuth && !needsConfig && (
+            <Alert
+              message={<Text strong>{error.includes('Network Error') || error.includes('ECONNREFUSED') ? 'Backend Connection Error' : 'API Error'}</Text>}
+              description={error.includes('Network Error') || error.includes('ECONNREFUSED') ? 'Cannot reach the backend server. Please ensure it is running.' : error}
+              type="error"
+              showIcon
+              style={{ borderRadius: 10, marginTop: 12 }}
+            />
+          )}
+          {!loading && !error && !needsAuth && !needsConfig && marketData.length > 0 && marketData.every(stock => stock.price === null) && (
+            <Alert
+              message={<Text strong>API Error</Text>}
+              description="Market data API returned no prices. Verify your API keys in Configuration or check API rate limits."
+              type="warning"
+              showIcon
+              action={<Button size="small" onClick={() => navigate('/configuration')}>Check Config</Button>}
+              style={{ borderRadius: 10, border: '1px solid #ffe58f', background: '#fffbe6', marginTop: 12 }}
+            />
+          )}
+        </div>
+      )}
+
+      {/* ── Summary Metrics Grid ── */}
+      <Row gutter={[16, 16]} style={{ marginBottom: 32 }}>
+        <Col xs={12} sm={8} lg={4}>
+          <Card className="premium-card" bodyStyle={{ padding: 0 }}>
+            <div className="metric-card">
+              <span className="metric-label">Total Symbols</span>
+              <span className="metric-value">{marketStats.totalSymbols || '—'}</span>
+              <DatabaseOutlined className="metric-icon" />
+            </div>
+          </Card>
+        </Col>
+        <Col xs={12} sm={8} lg={4}>
+          <Card className="premium-card" bodyStyle={{ padding: 0 }}>
+            <div className="metric-card">
+              <span className="metric-label">Gainers</span>
+              <span className="metric-value" style={{ color: '#52c41a' }}>{marketStats.gainers || '0'}</span>
+              <RiseOutlined className="metric-icon" style={{ color: '#52c41a' }} />
+            </div>
+          </Card>
+        </Col>
+        <Col xs={12} sm={8} lg={4}>
+          <Card className="premium-card" bodyStyle={{ padding: 0 }}>
+            <div className="metric-card">
+              <span className="metric-label">Losers</span>
+              <span className="metric-value" style={{ color: '#ff4d4f' }}>{marketStats.losers || '0'}</span>
+              <FallOutlined className="metric-icon" style={{ color: '#ff4d4f' }} />
+            </div>
+          </Card>
+        </Col>
+        <Col xs={12} sm={8} lg={4}>
+          <Card className="premium-card" bodyStyle={{ padding: 0 }}>
+            <div className="metric-card">
+              <span className="metric-label">Avg Change</span>
+              <span className="metric-value" style={{ color: marketStats.avgChange > 0 ? '#52c41a' : marketStats.avgChange < 0 ? '#ff4d4f' : '#1a1a1a' }}>
+                {marketStats.avgChange !== 0 ? (marketStats.avgChange > 0 ? '+' : '') + marketStats.avgChange.toFixed(2) + '%' : '0.00%'}
+              </span>
+              <LineChartOutlined className="metric-icon" />
+            </div>
+          </Card>
+        </Col>
+        <Col xs={12} sm={8} lg={4}>
+          <Card className="premium-card" bodyStyle={{ padding: 0 }}>
+            <div className="metric-card">
+              <span className="metric-label">Mkt Cap</span>
+              <span className="metric-value">{formatMarketCap(marketStats.totalMarketCap)}</span>
+              <BarChartOutlined className="metric-icon" style={{ color: '#2f54eb' }} />
+            </div>
+          </Card>
+        </Col>
+        <Col xs={12} sm={8} lg={4}>
+          <Card className="premium-card" bodyStyle={{ padding: 0 }}>
+            <div className="metric-card">
+              <span className="metric-label">Largest Move</span>
+              <span className="metric-value" style={{ fontSize: 18 }}>
+                {marketStats.largestMoveStock ? marketStats.largestMoveStock.symbol : '—'}
+                {marketStats.largestMoveStock && (
+                  <span style={{ fontSize: 13, marginLeft: 6, color: marketStats.largestMoveStock.changePercent > 0 ? '#52c41a' : '#ff4d4f' }}>
+                    ({marketStats.largestMoveStock.changePercent > 0 ? '+' : ''}{marketStats.largestMoveStock.changePercent.toFixed(1)}%)
+                  </span>
+                )}
+              </span>
+              <RiseOutlined className="metric-icon" />
+            </div>
+          </Card>
+        </Col>
+      </Row>
+
+      {/* ── Market Movers ── */}
+      <Row gutter={[24, 24]} style={{ marginBottom: 32 }}>
+        <Col xs={24} lg={12}>
+          <Card 
+            className="premium-card" 
+            title={<span style={{ fontWeight: 700, fontSize: 15 }}><RiseOutlined style={{ color: '#52c41a', marginRight: 8 }} />Top Gainers</span>}
+            bodyStyle={{ padding: '8px 0', minHeight: 340 }}
           >
             {getTopGainers().length === 0 ? (
-              <div style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flex: 1,
-                height: '100%',
-                padding: '20px'
-              }}>
-                <Text type="secondary" style={{ fontSize: '12px', color: '#8c8c8c', textAlign: 'center', lineHeight: 1.4 }}>
-                  {marketData.length === 0 ? 'No market data available' : 
-                   marketData.every(stock => stock.price === null) ? 'Real-time data unavailable' : 
-                   'No advancing stocks in current market session'}
-                </Text>
+              <div className="empty-state-container">
+                <RiseOutlined style={{ fontSize: 32, color: '#f0f0f0', marginBottom: 12 }} />
+                <Text strong style={{ color: '#bfbfbf' }}>No gainers found</Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>Configure market data API to populate this panel.</Text>
               </div>
             ) : (
-              <div style={{
-                flex: 1,
-                overflowY: 'auto',
-                paddingRight: '8px',
-                marginRight: '-8px'
-              }}>
-                {/* 显示所有上涨股票 */}
-                {getTopGainers().map((stock) => {
-                  const changePercent = getChangePercent(stock);
-                  return (
-                    <div key={stock.symbol} style={{
-                      padding: '10px 0',
-                      borderBottom: '1px solid #f5f5f5',
-                      cursor: 'pointer',
-                      transition: 'background-color 0.2s ease',
-                      '&:hover': {
-                        backgroundColor: '#fafafa'
-                      }
-                    } as any} onClick={() => handleSymbolClick(stock.symbol)}>
-                      <Row justify="space-between" align="middle" style={{ width: '100%' }}>
-                        <Col style={{ flex: 1, minWidth: 0, paddingRight: '12px' }}>
-                          <Space direction="vertical" size={1} style={{ width: '100%' }}>
-                            <Text strong style={{ fontSize: '16px', fontWeight: 700, letterSpacing: '-0.2px' }} ellipsis>{stock.symbol}</Text>
-                            <Text type="secondary" style={{ fontSize: '10px', color: '#8c8c8c', fontWeight: 400 }} ellipsis>{stock.name || 'N/A'}</Text>
-                          </Space>
-                        </Col>
-                        <Col style={{ flexShrink: 0 }}>
-                          <Space align="center" size={8}>
-                            <Text strong style={{ fontSize: '16px', fontWeight: 700, whiteSpace: 'nowrap', fontFeatureSettings: '"tnum"' }}>${safeNumber(stock.price).toFixed(2)}</Text>
-                            <Tag color="green" style={{
-                              margin: 0,
-                              fontSize: '10px',
-                              padding: '2px 8px',
-                              fontWeight: 500,
-                              borderRadius: '10px',
-                              minWidth: '55px',
-                              textAlign: 'center'
-                            }}>{formatChangePercent(changePercent)}</Tag>
-                          </Space>
-                        </Col>
-                      </Row>
+              <div style={{ padding: '0 16px' }}>
+                {getTopGainers().slice(0, 6).map((stock, i) => (
+                  <div key={stock.symbol} onClick={() => handleSymbolClick(stock.symbol)} style={{ 
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0',
+                    borderBottom: i === 5 ? 'none' : '1px solid #f5f5f5', cursor: 'pointer'
+                  }}>
+                    <Space direction="vertical" size={0}>
+                      <Text strong style={{ fontSize: 14 }}>{stock.symbol}</Text>
+                      <Text type="secondary" style={{ fontSize: 11 }}>{stock.name || 'N/A'}</Text>
+                    </Space>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontWeight: 700, fontSize: 14 }}>${safeToFixed(stock.price, 2)}</div>
+                      <Tag color="green" style={{ margin: 0, borderRadius: 12, fontSize: 10, fontWeight: 700 }}>
+                        +{getChangePercent(stock)?.toFixed(2)}%
+                      </Tag>
                     </div>
-                  );
-                })}
-
-                {/* 显示所有上涨股票，无需截断提示 */}
+                  </div>
+                ))}
               </div>
             )}
           </Card>
         </Col>
-        <Col xs={24} lg={12} xl={12}>
-          <Card
-            title={<Space><FallOutlined style={{ color: '#ff4d4f' }} /><Text strong>Top Losers</Text></Space>}
-            size="small"
-            style={{
-              height: '320px',
-              display: 'flex',
-              flexDirection: 'column',
-              width: '100%'
-            }}
-            bodyStyle={{
-              padding: '16px 20px',
-              flex: 1,
-              display: 'flex',
-              flexDirection: 'column',
-              overflow: 'hidden'
-            }}
+        <Col xs={24} lg={12}>
+          <Card 
+            className="premium-card" 
+            title={<span style={{ fontWeight: 700, fontSize: 15 }}><FallOutlined style={{ color: '#ff4d4f', marginRight: 8 }} />Top Losers</span>}
+            bodyStyle={{ padding: '8px 0', minHeight: 340 }}
           >
             {getTopLosers().length === 0 ? (
-              <div style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flex: 1,
-                height: '100%'
-              }}>
-                <Text type="secondary" style={{ fontSize: '13px' }}>
-                  {marketData.length === 0 ? 'No market data available' : 
-                   marketData.every(stock => stock.price === null) ? 'Real-time data unavailable' : 
-                   'No losers in current market'}
-                </Text>
+              <div className="empty-state-container">
+                <FallOutlined style={{ fontSize: 32, color: '#f0f0f0', marginBottom: 12 }} />
+                <Text strong style={{ color: '#bfbfbf' }}>No losers found</Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>Configure market data API to populate this panel.</Text>
               </div>
             ) : (
-              <div style={{
-                flex: 1,
-                overflowY: 'auto',
-                paddingRight: '8px',
-                marginRight: '-8px'
-              }}>
-                {/* 显示所有下跌股票，如果超过8条则添加滚动提示 */}
-                {getTopLosers().map((stock) => {
-                  const changePercent = getChangePercent(stock);
-                  return (
-                    <div key={stock.symbol} style={{
-                      padding: '10px 0',
-                      borderBottom: '1px solid #f5f5f5',
-                      cursor: 'pointer',
-                      transition: 'background-color 0.2s ease',
-                      '&:hover': {
-                        backgroundColor: '#fafafa'
-                      }
-                    } as any} onClick={() => handleSymbolClick(stock.symbol)}>
-                      <Row justify="space-between" align="middle" style={{ width: '100%' }}>
-                        <Col style={{ flex: 1, minWidth: 0, paddingRight: '12px' }}>
-                          <Space direction="vertical" size={1} style={{ width: '100%' }}>
-                            <Text strong style={{ fontSize: '16px', fontWeight: 700, letterSpacing: '-0.2px' }} ellipsis>{stock.symbol}</Text>
-                            <Text type="secondary" style={{ fontSize: '10px', color: '#8c8c8c', fontWeight: 400 }} ellipsis>{stock.name || 'N/A'}</Text>
-                          </Space>
-                        </Col>
-                        <Col style={{ flexShrink: 0 }}>
-                          <Space align="center" size={8}>
-                            <Text strong style={{ fontSize: '16px', fontWeight: 700, whiteSpace: 'nowrap', fontFeatureSettings: '"tnum"' }}>${safeNumber(stock.price).toFixed(2)}</Text>
-                            <Tag color="red" style={{
-                              margin: 0,
-                              fontSize: '10px',
-                              padding: '2px 8px',
-                              fontWeight: 500,
-                              borderRadius: '10px',
-                              minWidth: '55px',
-                              textAlign: 'center'
-                            }}>{formatChangePercent(changePercent)}</Tag>
-                          </Space>
-                        </Col>
-                      </Row>
+              <div style={{ padding: '0 16px' }}>
+                {getTopLosers().slice(0, 6).map((stock, i) => (
+                  <div key={stock.symbol} onClick={() => handleSymbolClick(stock.symbol)} style={{ 
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0',
+                    borderBottom: i === 5 ? 'none' : '1px solid #f5f5f5', cursor: 'pointer'
+                  }}>
+                    <Space direction="vertical" size={0}>
+                      <Text strong style={{ fontSize: 14 }}>{stock.symbol}</Text>
+                      <Text type="secondary" style={{ fontSize: 11 }}>{stock.name || 'N/A'}</Text>
+                    </Space>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontWeight: 700, fontSize: 14 }}>${safeToFixed(stock.price, 2)}</div>
+                      <Tag color="red" style={{ margin: 0, borderRadius: 12, fontSize: 10, fontWeight: 700 }}>
+                        {getChangePercent(stock)?.toFixed(2)}%
+                      </Tag>
                     </div>
-                  );
-                })}
-
-                {/* 显示所有下跌股票，无需截断提示 */}
+                  </div>
+                ))}
               </div>
             )}
           </Card>
         </Col>
       </Row>
 
-      <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
-        <Col xs={24} lg={10} xl={10}>
-          <Card
-            title={<Space><PieChartOutlined /><Text strong style={{ fontSize: '15px', fontWeight: 600 }}>Sector Distribution</Text></Space>}
-            size="small"
-            style={{ height: '300px' }}
-            bodyStyle={{
-              padding: '16px',
-              height: '100%',
-              display: 'flex',
-              flexDirection: 'column'
-            }}
+      {/* ── Mid-level Analytics ── */}
+      <Row gutter={[24, 24]} style={{ marginBottom: 32 }}>
+        <Col xs={24} lg={10}>
+          <Card 
+            className="premium-card" 
+            title={<span style={{ fontWeight: 700, fontSize: 15 }}><PieChartOutlined style={{ marginRight: 8 }} />Sector Distribution</span>}
+            bodyStyle={{ height: 320, padding: 24 }}
           >
             {sectorData.length === 0 ? (
-              <div style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flex: 1,
-                height: '100%'
-              }}>
-                <Text type="secondary" style={{ fontSize: '13px' }}>
-                  {marketData.length === 0 ? 'No market data available' : 
-                   marketData.every(stock => stock.sector === null || stock.sector === '') ? 'Sector data unavailable' : 
-                   'No sector data available'}
-                </Text>
+              <div className="empty-state-container">
+                <PieChartOutlined style={{ fontSize: 32, color: '#f0f0f0', marginBottom: 12 }} />
+                <Text type="secondary">Sector data unavailable</Text>
               </div>
             ) : (
-              <div style={{
-                flex: 1,
-                display: 'flex',
-                flexDirection: 'row',
-                gap: '20px',
-                height: '100%',
-                justifyContent: 'center',
-                alignItems: 'flex-start',
-                paddingTop: '8px'
-              }}>
-                {/* 左侧：优化后的环形图 */}
-                <div style={{ flex: '0 0 130px', display: 'flex', alignItems: 'center', justifyContent: 'center', paddingTop: '4px' }}>
-                  <div style={{ position: 'relative', width: '120px', height: '120px' }}>
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie
-                          data={sectorData.slice(0, 5)}
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={40}
-                          outerRadius={55}
-                          paddingAngle={1}
-                          dataKey="percentage"
-                        >
-                          {sectorData.slice(0, 5).map((sector, index) => (
-                            <Cell key={`cell-${index}`} fill={getSectorColor(sector.name)} />
-                          ))}
-                        </Pie>
-                        <Tooltip
-                          formatter={(value: any) => [`${Number(value).toFixed(1)}%`, 'Weight']}
-                          labelFormatter={(label) => `Sector: ${label}`}
-                        />
-                      </PieChart>
-                    </ResponsiveContainer>
-                    {/* 中心显示总数 */}
-                    <div style={{
-                      position: 'absolute',
-                      top: '50%',
-                      left: '50%',
-                      transform: 'translate(-50%, -50%)',
-                      textAlign: 'center',
-                      pointerEvents: 'none'
-                    }}>
-                      <div style={{ fontSize: '18px', fontWeight: 600, color: '#1f1f1f', lineHeight: 1.2 }}>
-                        {marketStats.totalSymbols}
-                      </div>
-                      <div style={{ fontSize: '10px', color: '#8c8c8c', marginTop: '2px' }}>
-                        Symbols
-                      </div>
+              <div style={{ display: 'flex', height: '100%', alignItems: 'center' }}>
+                <div style={{ width: '50%', height: '100%' }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={sectorData}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={60}
+                        outerRadius={80}
+                        paddingAngle={5}
+                        dataKey="percentage"
+                      >
+                        {sectorData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={getSectorColor(entry.name)} />
+                        ))}
+                      </Pie>
+                      <Tooltip />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                <div style={{ width: '50%', paddingLeft: 20 }}>
+                  {sectorData.slice(0, 5).map(sector => (
+                    <div key={sector.name} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
+                      <Space size={8}>
+                        <div style={{ width: 8, height: 8, borderRadius: '50%', background: getSectorColor(sector.name) }} />
+                        <Text style={{ fontSize: 12, fontWeight: 500 }}>{sector.name}</Text>
+                      </Space>
+                      <Text strong style={{ fontSize: 12 }}>{sector.percentage.toFixed(1)}%</Text>
                     </div>
-                  </div>
-                </div>
-
-                {/* 右侧：优化后的sector列表 */}
-                <div style={{ flex: 1, height: '100%', display: 'flex', flexDirection: 'column' }}>
-                  <div style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    height: '100%',
-                    justifyContent: 'flex-start',
-                    paddingTop: '4px'
-                  }}>
-                    {sectorData.slice(0, 5).map((sector, index) => {
-                      const sectorColor = getSectorColor(sector.name);
-                      return (
-                        <div key={sector.name} style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          height: '36px',
-                          padding: '0 4px',
-                          borderBottom: index < Math.min(sectorData.length, 5) - 1 ? '1px solid #f5f5f5' : 'none'
-                        }}>
-                          {/* 颜色标识 */}
-                          <div style={{
-                            width: '12px',
-                            height: '12px',
-                            borderRadius: '2px',
-                            backgroundColor: sectorColor,
-                            marginRight: '12px',
-                            flexShrink: 0
-                          }} />
-
-                          {/* sector名称 - 左对齐 */}
-                          <div style={{ flex: 1, minWidth: 0, marginRight: '16px' }}>
-                            <Text style={{
-                              fontSize: '14px',
-                              fontWeight: 500,
-                              color: '#1f1f1f',
-                              lineHeight: '36px'
-                            }} ellipsis>
-                              {sector.name}
-                            </Text>
-                          </div>
-
-                          {/* 权重百分比 - 右对齐 */}
-                          <div style={{
-                            width: '70px',
-                            textAlign: 'right',
-                            marginRight: '16px'
-                          }}>
-                            <Text style={{
-                              fontSize: '14px',
-                              fontWeight: 600,
-                              color: '#1f1f1f',
-                              lineHeight: '36px'
-                            }}>
-                              {sector.percentage.toFixed(1)}%
-                            </Text>
-                          </div>
-
-                          {/* 股票数量 - 右对齐，有适当右边距 */}
-                          <div style={{
-                            width: '50px',
-                            textAlign: 'right',
-                            paddingRight: '8px'
-                          }}>
-                            <Text type="secondary" style={{
-                              fontSize: '13px',
-                              color: '#595959',
-                              fontWeight: 400,
-                              lineHeight: '36px'
-                            }}>
-                              {sector.count}
-                            </Text>
-                          </div>
-                        </div>
-                      );
-                    })}
-
-                    {/* 如果超过5个sector，显示Other */}
-                    {sectorData.length > 5 && (
-                      <div style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        height: '36px',
-                        padding: '0 4px',
-                        marginTop: '4px',
-                        borderTop: '1px solid #f5f5f5'
-                      }}>
-                        <div style={{
-                          width: '12px',
-                          height: '12px',
-                          borderRadius: '2px',
-                          backgroundColor: '#d9d9d9',
-                          marginRight: '12px',
-                          flexShrink: 0
-                        }} />
-
-                        <div style={{ flex: 1, minWidth: 0, marginRight: '16px' }}>
-                          <Text style={{
-                            fontSize: '14px',
-                            fontWeight: 500,
-                            color: '#8c8c8c',
-                            lineHeight: '36px'
-                          }}>
-                            Other
-                          </Text>
-                        </div>
-
-                        <div style={{
-                          width: '70px',
-                          textAlign: 'right',
-                          marginRight: '16px'
-                        }}>
-                          <Text style={{
-                            fontSize: '14px',
-                            fontWeight: 600,
-                            color: '#8c8c8c',
-                            lineHeight: '36px'
-                          }}>
-                            {sectorData.slice(5).reduce((sum, s) => sum + s.percentage, 0).toFixed(1)}%
-                          </Text>
-                        </div>
-
-                        <div style={{
-                          width: '50px',
-                          textAlign: 'right',
-                          paddingRight: '8px'
-                        }}>
-                          <Text type="secondary" style={{
-                            fontSize: '13px',
-                            color: '#8c8c8c',
-                            fontWeight: 400,
-                            lineHeight: '36px'
-                          }}>
-                            {sectorData.slice(5).reduce((sum, s) => sum + s.count, 0)}
-                          </Text>
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                  ))}
                 </div>
               </div>
             )}
           </Card>
         </Col>
-        <Col xs={24} lg={8} xl={7}>
-          <Card
-            title={<Space><BarChartOutlined /><Text strong style={{ fontSize: '15px', fontWeight: 600 }}>Market Breadth</Text></Space>}
-            size="small"
-            style={{ height: '300px' }}
-            bodyStyle={{
-              padding: '16px',
-              height: '100%',
-              display: 'flex',
-              flexDirection: 'column'
-            }}
+        <Col xs={24} sm={12} lg={7}>
+          <Card 
+            className="premium-card" 
+            title={<span style={{ fontWeight: 700, fontSize: 15 }}><BarChartOutlined style={{ marginRight: 8 }} />Market Breadth</span>}
+            bodyStyle={{ height: 320, padding: 24, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}
           >
-            <div style={{
-              flex: 1,
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'center',
-              paddingTop: '8px'
-            }}>
-              {/* 上半部分：紧凑的三列统计 */}
-              <div style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: '24px'
-              }}>
-                {/* Advancing */}
-                <div style={{ flex: 1, textAlign: 'center' }}>
-                  <div style={{
-                    fontSize: '32px',
-                    fontWeight: 700,
-                    color: '#52c41a',
-                    lineHeight: 1,
-                    marginBottom: '4px'
-                  }}>
-                    {marketStats.gainers}
-                  </div>
-                  <Text type="secondary" style={{
-                    fontSize: '11px',
-                    color: '#8c8c8c',
-                    fontWeight: 500,
-                    letterSpacing: '0.3px'
-                  }}>
-                    Advancing
-                  </Text>
-                </div>
-
-                {/* Declining */}
-                <div style={{ flex: 1, textAlign: 'center' }}>
-                  <div style={{
-                    fontSize: '32px',
-                    fontWeight: 700,
-                    color: '#ff4d4f',
-                    lineHeight: 1,
-                    marginBottom: '4px'
-                  }}>
-                    {marketStats.losers}
-                  </div>
-                  <Text type="secondary" style={{
-                    fontSize: '11px',
-                    color: '#8c8c8c',
-                    fontWeight: 500,
-                    letterSpacing: '0.3px'
-                  }}>
-                    Declining
-                  </Text>
-                </div>
-
-                {/* Flat */}
-                <div style={{ flex: 1, textAlign: 'center' }}>
-                  <div style={{
-                    fontSize: '32px',
-                    fontWeight: 700,
-                    color: '#666',
-                    lineHeight: 1,
-                    marginBottom: '4px'
-                  }}>
-                    {marketStats.totalSymbols - marketStats.gainers - marketStats.losers}
-                  </div>
-                  <Text type="secondary" style={{
-                    fontSize: '11px',
-                    color: '#8c8c8c',
-                    fontWeight: 500,
-                    letterSpacing: '0.3px'
-                  }}>
-                    Flat
-                  </Text>
-                </div>
-              </div>
-
-              {/* 下半部分：摘要信息区 */}
-              <div style={{
-                textAlign: 'center',
-                paddingTop: '16px',
-                borderTop: '1px solid #f0f0f0'
-              }}>
-                {/* 市场状态标签 */}
-                <div style={{ marginBottom: '8px' }}>
-                  <Text type="secondary" style={{
-                    fontSize: '11px',
-                    color: '#8c8c8c',
-                    fontWeight: 500,
-                    letterSpacing: '0.3px'
-                  }}>
-                    Market Status
-                  </Text>
-                  <Tag
-                    color={marketStats.avgChange > 0.5 ? 'green' : marketStats.avgChange < -0.5 ? 'red' : 'default'}
-                    style={{
-                      fontSize: '11px',
-                      padding: '3px 10px',
-                      marginLeft: '6px',
-                      fontWeight: 600,
-                      borderRadius: '12px',
-                      height: '24px',
-                      lineHeight: '18px'
-                    }}
-                  >
-                    {marketStats.avgChange > 0.5 ? 'Bullish' : marketStats.avgChange < -0.5 ? 'Bearish' : 'Neutral'}
-                  </Tag>
-                </div>
-
-                {/* Average Change */}
-                <div>
-                  <Text type="secondary" style={{
-                    fontSize: '12px',
-                    color: '#8c8c8c',
-                    fontWeight: 500,
-                    marginRight: '8px'
-                  }}>
-                    Average Change
-                  </Text>
-                  <Text strong style={{
-                    fontSize: '18px',
-                    color: marketStats.avgChange > 0 ? '#52c41a' : marketStats.avgChange < 0 ? '#ff4d4f' : '#666',
-                    fontWeight: 600
-                  }}>
-                    {marketStats.avgChange > 0 ? '+' : ''}{marketStats.avgChange.toFixed(2)}%
-                  </Text>
-                </div>
-              </div>
-            </div>
-          </Card>
-        </Col>
-        <Col xs={24} lg={6} xl={7}>
-          <Card
-            title={<Space><EyeOutlined /><Text strong style={{ fontSize: '15px', fontWeight: 600 }}>System Status</Text></Space>}
-            size="small"
-            style={{ height: '300px' }}
-            bodyStyle={{
-              padding: '16px',
-              height: '100%',
-              display: 'flex',
-              flexDirection: 'column'
-            }}
-          >
-            <div style={{
-              flex: 1,
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'center'
-            }}>
-              {/* 状态列表 - 专业状态面板 */}
-              <div style={{
-                display: 'flex',
-                flexDirection: 'column'
-              }}>
-                {/* Market Data */}
-                <div style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  height: '40px',
-                  borderBottom: '1px solid #f0f0f0'
-                }}>
-                  <Space align="center" size={10}>
-                    <div style={{
-                      width: '12px',
-                      height: '12px',
-                      borderRadius: '50%',
-                      backgroundColor: '#52c41a',
-                      boxShadow: '0 0 0 3px #52c41a15'
-                    }} />
-                    <Text style={{ fontSize: '14px', fontWeight: 600, color: '#1f1f1f' }}>Market Data</Text>
-                  </Space>
-                  <div style={{
-                    fontSize: '12px',
-                    fontWeight: 600,
-                    color: '#ffffff',
-                    backgroundColor: marketData.length > 0 && !marketData.every(stock => stock.price === null) ? '#52c41a' : '#faad14',
-                    padding: '5px 14px',
-                    borderRadius: '12px',
-                    width: '80px',
-                    textAlign: 'center',
-                    letterSpacing: '0.3px',
-                    boxSizing: 'border-box'
-                  }}>{marketData.length > 0 && !marketData.every(stock => stock.price === null) ? 'LIVE' : 'OFFLINE'}</div>
-                </div>
-
-                {/* Quote Feed */}
-                <div style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  height: '40px',
-                  borderBottom: '1px solid #f0f0f0'
-                }}>
-                  <Text style={{ fontSize: '14px', fontWeight: 500, color: '#595959' }}>Quote Feed</Text>
-                  <div style={{
-                    fontSize: '12px',
-                    fontWeight: 600,
-                    color: '#ffffff',
-                    backgroundColor: marketData.length > 0 && !marketData.every(stock => stock.price === null) ? '#52c41a' : '#ff4d4f',
-                    padding: '5px 14px',
-                    borderRadius: '12px',
-                    width: '80px',
-                    textAlign: 'center',
-                    letterSpacing: '0.3px',
-                    boxSizing: 'border-box'
-                  }}>{marketData.length > 0 && !marketData.every(stock => stock.price === null) ? 'HEALTHY' : 'ERROR'}</div>
-                </div>
-
-                {/* Broker Connection */}
-                <div style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  height: '40px',
-                  borderBottom: '1px solid #f0f0f0'
-                }}>
-                  <Text style={{ fontSize: '14px', fontWeight: 500, color: '#595959' }}>Broker Connection</Text>
-                  <div style={{
-                    fontSize: '12px',
-                    fontWeight: 600,
-                    color: '#595959',
-                    backgroundColor: '#f5f5f5',
-                    padding: '5px 14px',
-                    borderRadius: '12px',
-                    width: '80px',
-                    textAlign: 'center',
-                    letterSpacing: '0.3px',
-                    border: '1px solid #e8e8e8',
-                    boxSizing: 'border-box'
-                  }}>PAPER</div>
-                </div>
-
-                {/* Symbols Loaded */}
-                <div style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  height: '40px'
-                }}>
-                  <Text style={{ fontSize: '14px', fontWeight: 500, color: '#595959' }}>Symbols Loaded</Text>
-                  <Text strong style={{
-                    fontSize: '18px',
-                    fontWeight: 700,
-                    color: '#1f1f1f',
-                    fontFeatureSettings: '"tnum"'
-                  }}>{marketStats.totalSymbols}</Text>
-                </div>
-              </div>
-
-              {/* 底部信息 - 简洁版本 */}
-              <div style={{
-                marginTop: '24px',
-                paddingTop: '16px',
-                borderTop: '1px solid #f0f0f0'
-              }}>
-                <Row justify="space-between" align="middle">
-                  <Col>
-                    {marketData.length > 0 && marketData[0]?.dataSource ? (
-                      <DataSourceBadge source={marketData[0].dataSource} />
-                    ) : (
-                      <DataSourceBadge source="Alpaca" />
-                    )}
-                  </Col>
-                  <Col>
-                    <Text type="secondary" style={{
-                      fontSize: '12px',
-                      color: '#8c8c8c',
-                      fontWeight: 500,
-                      paddingRight: '4px'
-                    }}>
-                      {lastFetched ? new Date(lastFetched).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Never'}
-                    </Text>
-                  </Col>
-                </Row>
-              </div>
-            </div>
-          </Card>
-        </Col>
-      </Row>
-
-
-
-      <Row gutter={[20, 20]} style={{ marginBottom: '24px' }}>
-        <Col span={24}>
-          <Card title={<Space><EyeOutlined /><Text strong style={{ fontSize: '15px', fontWeight: 600 }}>Watchlist Snapshot</Text></Space>} extra={<Button type="link" size="small" onClick={handleManageWatchlist} style={{ fontSize: '12px', fontWeight: 500 }}>Manage Watchlist</Button>}>
-            {getWatchlistSymbols().length === 0 ? (
-              <Empty description="Watchlist is empty. Add stocks from Market page or click 'Manage Watchlist'." image={Empty.PRESENTED_IMAGE_SIMPLE} />
-            ) : getWatchlistData().length === 0 ? (
-              <Empty description="Watchlist stocks not found in current market data. Try refreshing." image={Empty.PRESENTED_IMAGE_SIMPLE} />
-            ) : (
-              <Row gutter={[16, 16]}>
-                {getWatchlistData().map((stock) => {
-                  const changePercent = getChangePercent(stock);
-                  return (
-                    <Col xs={24} sm={12} md={8} lg={6} xl={4} xxl={3} key={stock.symbol}>
-                      <Card size="small" hoverable onClick={() => handleSymbolClick(stock.symbol)} style={{ cursor: 'pointer', height: '140px' }} bodyStyle={{ padding: '12px' }}>
-                        {/* 完整一体化信息卡 */}
-                        <div style={{
-                          display: 'flex',
-                          flexDirection: 'column',
-                          height: '100%',
-                          justifyContent: 'space-between'
-                        }}>
-                          {/* 顶部区域：Symbol + 涨跌badge */}
-                          <div style={{
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'flex-start',
-                            marginBottom: '8px'
-                          }}>
-                            <Text strong style={{
-                              fontSize: '16px',
-                              fontWeight: 700,
-                              letterSpacing: '-0.2px',
-                              lineHeight: 1.2
-                            }} ellipsis>{stock.symbol}</Text>
-                            <Tag color={changePercent === null ? 'default' : changePercent > 0 ? 'green' : 'red'} style={{
-                              margin: 0,
-                              fontSize: '10px',
-                              padding: '2px 8px',
-                              fontWeight: 600,
-                              borderRadius: '10px',
-                              minWidth: '50px',
-                              textAlign: 'center',
-                              flexShrink: 0
-                            }}>
-                              {formatChangePercent(changePercent)}
-                            </Tag>
-                          </div>
-
-                          {/* 中部区域：公司名 + 价格 */}
-                          <div style={{
-                            flex: 1,
-                            display: 'flex',
-                            flexDirection: 'column',
-                            justifyContent: 'center',
-                            marginBottom: '8px'
-                          }}>
-                            <Text type="secondary" style={{
-                              fontSize: '11px',
-                              color: '#595959',
-                              fontWeight: 500,
-                              lineHeight: 1.2,
-                              marginBottom: '6px'
-                            }} ellipsis>{stock.name || 'N/A'}</Text>
-                            <Text strong style={{
-                              fontSize: '20px',
-                              color: '#1890ff',
-                              fontWeight: 700,
-                              fontFeatureSettings: '"tnum"',
-                              lineHeight: 1
-                            }}>{stock.price !== null && stock.price !== undefined ? `$${safeToFixed(stock.price, 2)}` : '--'}</Text>
-                          </div>
-
-                          {/* 底部区域：Volume + Market Cap - 往上提，去掉分割线 */}
-                          <div>
-                            <div style={{
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                              alignItems: 'flex-end'
-                            }}>
-                              {/* CHANGE 列 - 显示涨跌额，而不是百分比 */}
-                              <div style={{ flex: 1 }}>
-                                <div style={{
-                                  fontSize: '9px',
-                                  color: '#8c8c8c',
-                                  fontWeight: 600,
-                                  letterSpacing: '0.4px',
-                                  textTransform: 'uppercase',
-                                  marginBottom: '2px'
-                                }}>CHANGE</div>
-                                <div style={{
-                                  fontSize: '11px',
-                                  color: stock.change && stock.change > 0 ? '#237804' : stock.change && stock.change < 0 ? '#a8071a' : '#595959',
-                                  fontWeight: 500,
-                                  fontFeatureSettings: '"tnum"'
-                                }}>
-                                  {stock.change !== null && stock.change !== undefined
-                                    ? (stock.change > 0 ? '+' : '') + stock.change.toFixed(2)
-                                    : '--'}
-                                </div>
-                              </div>
-
-                              {/* Market Cap 列 */}
-                              <div style={{ flex: 1, textAlign: 'right' }}>
-                                <div style={{
-                                  fontSize: '9px',
-                                  color: '#8c8c8c',
-                                  fontWeight: 600,
-                                  letterSpacing: '0.4px',
-                                  textTransform: 'uppercase',
-                                  marginBottom: '2px'
-                                }}>MKT CAP</div>
-                                <div style={{
-                                  fontSize: '11px',
-                                  color: '#595959',
-                                  fontWeight: 500,
-                                  fontFeatureSettings: '"tnum"'
-                                }}>{formatMarketCap(stock.marketCap)}</div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </Card>
-                    </Col>
-                  );
-                })}
+            <div style={{ textAlign: 'center', marginBottom: 30 }}>
+              <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', marginBottom: 8 }}>Advancing vs Declining</div>
+              <Row gutter={16} align="middle" justify="center">
+                <Col>
+                  <div style={{ fontSize: 32, fontWeight: 800, color: '#52c41a' }}>{marketStats.gainers}</div>
+                  <Text type="secondary" style={{ fontSize: 10, fontWeight: 700 }}>UP</Text>
+                </Col>
+                <Col>
+                  <Divider type="vertical" style={{ height: 40, borderLeft: '2px solid #f0f0f0' }} />
+                </Col>
+                <Col>
+                  <div style={{ fontSize: 32, fontWeight: 800, color: '#ff4d4f' }}>{marketStats.losers}</div>
+                  <Text type="secondary" style={{ fontSize: 10, fontWeight: 700 }}>DOWN</Text>
+                </Col>
               </Row>
-            )}
+            </div>
+            <div style={{ background: '#fafafa', borderRadius: 12, padding: 16, border: '1px solid #f0f0f0' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                <Text style={{ fontSize: 12, color: '#595959' }}>Overall Status</Text>
+                <Tag color={marketStats.avgChange > 0 ? 'green' : marketStats.avgChange < 0 ? 'red' : 'default'} style={{ margin: 0, fontWeight: 700, borderRadius: 4 }}>
+                  {marketStats.avgChange > 0.5 ? 'BULLISH' : marketStats.avgChange < -0.5 ? 'BEARISH' : 'NEUTRAL'}
+                </Tag>
+              </div>
+              <div style={{ height: 8, background: '#eee', borderRadius: 4, overflow: 'hidden', display: 'flex' }}>
+                <div style={{ height: '100%', background: '#52c41a', width: `${marketStats.totalSymbols > 0 ? (marketStats.gainers / marketStats.totalSymbols) * 100 : 0}%` }} />
+                <div style={{ height: '100%', background: '#ff4d4f', width: `${marketStats.totalSymbols > 0 ? (marketStats.losers / marketStats.totalSymbols) * 100 : 0}%` }} />
+              </div>
+            </div>
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={7}>
+          <Card 
+            className="premium-card" 
+            title={<span style={{ fontWeight: 700, fontSize: 15 }}><DatabaseOutlined style={{ marginRight: 8 }} />System Status</span>}
+            bodyStyle={{ height: 320, padding: '16px 20px' }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 10 }}>
+              {[
+                { label: 'Market Data', status: systemStatus.marketData },
+                { label: 'Quote Feed', status: systemStatus.quoteFeed },
+                { label: 'Broker Connection', status: systemStatus.brokerConnection },
+                { label: 'Symbols', status: marketStats.totalSymbols.toString(), isTag: false }
+              ].map(item => (
+                <div key={item.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text style={{ fontSize: 13, color: '#595959', fontWeight: 500 }}>{item.label}</Text>
+                  {item.isTag === false ? (
+                    <Text strong style={{ fontSize: 14 }}>{item.status}</Text>
+                  ) : (
+                    <Tag color={item.status === 'ONLINE' || item.status === 'HEALTHY' ? 'success' : item.status === 'PAPER' || item.status === 'LIVE' ? 'blue' : item.status === 'CONFIG_REQUIRED' || item.status === 'AUTH_REQUIRED' ? 'warning' : 'error'}
+                         style={{ margin: 0, fontWeight: 700, borderRadius: 4, fontSize: 10 }}>
+                      {item.status === 'CONFIG_REQUIRED' ? 'CONFIG REQUIRED' : item.status === 'AUTH_REQUIRED' ? 'SIGN IN' : item.status}
+                    </Tag>
+                  )}
+                </div>
+              ))}
+              <Divider style={{ margin: '8px 0' }} />
+              <div style={{ background: '#f9f9f9', padding: '10px 12px', borderRadius: 8, border: '1px solid #f0f0f0' }}>
+                <div style={{ fontSize: 10, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', marginBottom: 4 }}>Environment</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ width: 6, height: 6, borderRadius: '50%', background: systemStatus.marketData === 'CONFIG_REQUIRED' || systemStatus.marketData === 'AUTH_REQUIRED' ? '#faad14' : '#1890ff' }} />
+                  <Text strong style={{ fontSize: 12 }}>{systemStatus.environment || 'Unknown'}</Text>
+                </div>
+              </div>
+            </div>
           </Card>
         </Col>
       </Row>
+
+      {/* ── Watchlist Snapshot ── */}
+      <Card 
+        className="premium-card" 
+        title={<span style={{ fontWeight: 700, fontSize: 16 }}><EyeOutlined style={{ color: '#1890ff', marginRight: 8 }} />Watchlist Snapshot</span>}
+        extra={<Button type="link" onClick={handleManageWatchlist} style={{ fontWeight: 600 }}>Manage All</Button>}
+      >
+        {getWatchlistSymbols().length === 0 ? (
+          <div className="empty-state-container">
+            <EyeOutlined style={{ fontSize: 32, color: '#f0f0f0', marginBottom: 12 }} />
+            <Text type="secondary">Your watchlist is empty.</Text>
+            <Button type="link" onClick={() => navigate('/market')} style={{ marginTop: 8 }}>Explore Market</Button>
+          </div>
+        ) : getWatchlistData().length === 0 ? (
+          <div className="empty-state-container">
+            <ReloadOutlined style={{ fontSize: 32, color: '#f0f0f0', marginBottom: 12 }} />
+            <Text type="secondary">Waiting for market data synchronization...</Text>
+          </div>
+        ) : (
+          <Row gutter={[16, 16]}>
+            {getWatchlistData().map((stock) => {
+              const change = getChangePercent(stock);
+              return (
+                <Col xs={24} sm={12} md={8} lg={6} xl={4} key={stock.symbol}>
+                  <Card 
+                    hoverable 
+                    onClick={() => handleSymbolClick(stock.symbol)}
+                    bodyStyle={{ padding: '16px' }}
+                    style={{ borderRadius: 10, border: '1px solid #f0f0f0', background: '#fafafa' }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+                      <Text strong style={{ fontSize: 15 }}>{stock.symbol}</Text>
+                      <Tag color={change && change > 0 ? 'green' : change && change < 0 ? 'red' : 'default'} style={{ margin: 0, borderRadius: 4, fontSize: 10, fontWeight: 700 }}>
+                        {change !== null ? (change > 0 ? '+' : '') + change.toFixed(1) + '%' : '—'}
+                      </Tag>
+                    </div>
+                    <div style={{ fontSize: 18, fontWeight: 800, color: '#1a1a1a', marginBottom: 4 }}>
+                      ${safeToFixed(stock.price, 2)}
+                    </div>
+                    <Text type="secondary" style={{ fontSize: 11 }} ellipsis>{stock.name || 'N/A'}</Text>
+                  </Card>
+                </Col>
+              );
+            })}
+          </Row>
+        )}
+      </Card>
     </div>
   );
 };
