@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { Card, Row, Col, Statistic, Table, Typography, Progress, Tag, Button, message, Popconfirm, Input, InputNumber, Select, Radio, Form } from 'antd';
+import { Card, Row, Col, Statistic, Table, Typography, Progress, Tag, Button, message, Popconfirm, InputNumber, Select, Radio } from 'antd';
 import { ArrowUpOutlined, ArrowDownOutlined, PieChartOutlined, DollarOutlined, WalletOutlined, LineChartOutlined, PlusOutlined, MinusOutlined, ReloadOutlined, PlayCircleOutlined, PauseCircleOutlined, FolderOpenOutlined } from '@ant-design/icons';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import {
@@ -9,7 +9,6 @@ import {
   generateSMASignal,
   generateMACrossoverSignal,
   updatePriceHistory,
-  calculateSMA,
   calculateMarketValue,
   calculateTotalEquity,
   calculateTotalPnL,
@@ -18,7 +17,6 @@ import {
   DEFAULT_PAPER_TRADING_CONFIG,
   DEFAULT_PORTFOLIO,
   type PortfolioState,
-  type Position,
   type Trade,
   type TradeOrder,
   type StrategySignal,
@@ -239,7 +237,6 @@ const LocalPaperTrading: React.FC = () => {
     }
 
     // 检查是否已经保存过（通过 startTime 判断）
-    const sessionKey = sessionSnapshot.startTime;
     if (savedBatchIndexRef.current === currentBatchIndex) {
       console.log('Batch preset already saved:', currentBatchIndex);
       return false;

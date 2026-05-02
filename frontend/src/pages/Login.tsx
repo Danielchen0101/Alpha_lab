@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, Navigate } from 'react-router-dom';
-import { Card, Form, Input, Button, Typography, Alert, Space } from 'antd';
+import { Card, Form, Input, Button, Typography, Alert } from 'antd';
 import { UserOutlined, LockOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -50,9 +50,9 @@ const Login: React.FC = () => {
         </Form>
 
         <div style={{ textAlign: 'center' }}>
-          <a onClick={() => navigate('/')} style={{ color: '#1890ff', cursor: 'pointer' }}>
+          <button onClick={() => navigate('/')} style={{ color: '#1890ff', cursor: 'pointer', background: 'none', border: 'none', padding: 0, font: 'inherit' }}>
             <ArrowLeftOutlined /> Back to Home
-          </a>
+          </button>
         </div>
       </Card>
     </div>

@@ -150,9 +150,9 @@ const SignIn: React.FC = () => {
               <Form.Item name="remember" valuePropName="checked" noStyle>
                 <Checkbox style={{ color: '#94a3b8' }}>Remember my email</Checkbox>
               </Form.Item>
-              <a href="#" style={{ color: '#1890ff', fontSize: 14, fontWeight: 500 }} onClick={(e) => e.preventDefault()}>
+              <button type="button" style={{ color: '#1890ff', fontSize: 14, fontWeight: 500, background: 'none', border: 'none', padding: 0, cursor: 'pointer' }} onClick={(e) => e.preventDefault()}>
                 Forgot password?
-              </a>
+              </button>
             </div>
             <Form.Item>
               <Button

@@ -1,5 +1,5 @@
 // English language pack
-export default {
+const messages = {
   // Common
   common: {
     loading: 'Loading...',
@@ -325,3 +325,5 @@ export default {
     currentLanguage: 'Current Language',
   },
 };
+
+export default messages;

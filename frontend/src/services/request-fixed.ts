@@ -1,4 +1,4 @@
-import type { AxiosRequestConfig, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
+import type { AxiosResponse, InternalAxiosRequestConfig } from 'axios';
 import axios from 'axios';
 import { errorManager } from './error-manager';
 
@@ -20,23 +20,6 @@ function showDeduplicatedError(error: any, customMessage?: string) {
   return errorManager.showError(error, customMessage);
 }
 
-// Get detailed error description
-function getErrorDescription(error: any): string {
-  const url = error?.config?.url || 'Unknown endpoint';
-  const method = error?.config?.method?.toUpperCase() || 'Unknown method';
-  const status = error?.response?.status;
-  const statusText = error?.response?.statusText || 'Unknown status';
-  
-  if (status) {
-    return `${method} ${url} - ${status} ${statusText}`;
-  } else if (error.code === 'ECONNABORTED') {
-    return `Request timeout: ${method} ${url}`;
-  } else if (error.code === 'NETWORK_ERROR') {
-    return `Network error: Cannot connect to server`;
-  } else {
-    return `${method} ${url} - ${error.message || 'Unknown error'}`;
-  }
-}
 
 // Create axios instance with improved error handling
 const request = axios.create({

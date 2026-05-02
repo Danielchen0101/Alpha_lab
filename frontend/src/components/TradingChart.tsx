@@ -1,14 +1,13 @@
 import React, { useState } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Scatter, BarChart, Bar, ResponsiveContainer, Cell } from 'recharts';
-import { Checkbox, Space, Card, Row, Col } from 'antd';
-import { 
-  parseDateSafe, 
-  formatDateForChart, 
-  formatDateToYYYYMMDD, 
-  filterValidDates, 
+import { Checkbox, Space, Row, Col } from 'antd';
+import {
+  parseDateSafe,
+  formatDateForChart,
+  filterValidDates,
   sortByDateAsc,
   getTooltipDate,
-  debugDates 
+  debugDates
 } from '../utils/dateUtils';
 
 interface ChartDataItem {
@@ -73,7 +72,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
   }
 
   // Prepare data for Recharts with volume color calculation
-  const chartData = data.map((item, index) => {
+  const _chartData = data.map((item, index) => {
     // Calculate volume color based on price movement - Softer colors
     let volumeColor = '#cccccc'; // Softer default gray
     if (item.volume !== undefined && item.volume > 0) {
@@ -711,7 +710,6 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
       if (!dataPoint) return null;
 
       const isUp = dataPoint.volumeColor === '#95de64';
-      const direction = isUp ? 'Up' : 'Down';
       const directionColor = isUp ? '#52c41a' : '#f5222d';
 
       return (

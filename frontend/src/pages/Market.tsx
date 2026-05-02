@@ -2,11 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { Card, Table, Tag, Input, Select, Button, Row, Col, Statistic, Space, Alert, message, Empty, Spin, Skeleton } from 'antd';
 import { SearchOutlined, LineChartOutlined, PlayCircleOutlined, BarChartOutlined, ReloadOutlined, EyeOutlined, StarOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import marketDataService, { StockData, searchStockData, formatCurrency, formatPercent, safeNumber, safeToFixed, getUserMarketSymbols, addUserMarketSymbols, deleteUserMarketSymbol } from '../services/marketDataService';
+import marketDataService, { StockData, searchStockData, safeNumber, safeToFixed, getUserMarketSymbols, addUserMarketSymbols, deleteUserMarketSymbol } from '../services/marketDataService';
 import { sharedDataService } from '../services/sharedDataService';
 import { formatMarketCap } from '../utils/format';
-import { useLanguage } from '../contexts/LanguageContext';
-import DataSourceBadge from '../components/DataSourceBadge';
 
 const MAX_MARKET_SYMBOLS = 100;
 
@@ -22,7 +20,7 @@ const Market: React.FC = () => {
   const [sortField, setSortField] = useState<string>('symbol');
   const [sortOrder, setSortOrder] = useState<'ascend' | 'descend'>('ascend');
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const [lastFetched, setLastFetched] = useState<number | null>(null);
+  const [, setLastFetched] = useState<number | null>(null);
   const [isFetching, setIsFetching] = useState(false);
   const [searching, setSearching] = useState(false);
   const [watchlist, setWatchlist] = useState<any[]>([]);
@@ -36,7 +34,7 @@ const Market: React.FC = () => {
   const DEFAULT_SYMBOLS = ['AAPL', 'TSLA', 'AMD', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NFLX', 'INTC'];
 
   // 格式化成交量函数
-  const formatVolume = (volume: number | null): string => {
+  const _formatVolume = (volume: number | null): string => {
     if (volume === null || volume === undefined || volume === 0) return '--';
     
     const num = Number(volume);
@@ -1072,8 +1070,6 @@ const Market: React.FC = () => {
                   ...col,
                   render: (val: number | null) => {
                     if (val === null) return '--';
-                    const color = val > 0 ? '#38a169' : val < 0 ? '#e53e3e' : '#718096';
-                    const bgColor = val > 0 ? '#f0fff4' : val < 0 ? '#fff5f5' : '#f7fafc';
                     return (
                       <Tag color={val > 0 ? 'green' : val < 0 ? 'red' : 'default'} style={{ 
                         borderRadius: '6px', 

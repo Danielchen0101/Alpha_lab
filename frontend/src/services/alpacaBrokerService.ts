@@ -229,4 +229,5 @@ class AlpacaBrokerService {
   }
 }
 
-export default new AlpacaBrokerService();
+const alpacaBrokerService = new AlpacaBrokerService();
+export default alpacaBrokerService;

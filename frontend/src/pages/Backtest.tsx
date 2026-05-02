@@ -298,7 +298,7 @@ const Backtest: React.FC = () => {
   };
 
   // 清理所有状态 - 切换股票时调用
-  const clearAllStates = () => {
+  const _clearAllStates = () => {
     setBacktestResult(null);
     setError('');
     setLoading(false);
@@ -448,7 +448,7 @@ const Backtest: React.FC = () => {
       const strategy = backtestResult.parameters?.strategy || 'Unknown';
       const startDate = backtestResult.parameters?.startDate || '';
       const endDate = backtestResult.parameters?.endDate || '';
-      const period = startDate && endDate ? `${startDate} to ${endDate}` : '';
+      const _period = startDate && endDate ? `${startDate} to ${endDate}` : '';
 
       const historyItem: BacktestHistoryItem = {
         backtestId: backtestResult.backtestId || `local_${Date.now()}`,
@@ -1230,7 +1230,7 @@ const Backtest: React.FC = () => {
   };
 
   // 计算持仓天数函数
-  const calculateHoldingDays = (entryDate: string, exitDate: string): number => {
+  const _calculateHoldingDays = (entryDate: string, exitDate: string): number => {
     if (!entryDate || !exitDate) return 1;
 
     try {
@@ -1328,7 +1328,7 @@ const Backtest: React.FC = () => {
     };
   };
 
-  const unifiedStats = calculateUnifiedStats();
+  const _unifiedStats = calculateUnifiedStats();
 
   const resultData = backtestResult ? [
     { key: 'strategy', metric: 'Strategy', value: strategyNames[backtestResult.parameters?.strategy] || backtestResult.parameters?.strategy || 'Unknown', description: 'Strategy used for backtest' },

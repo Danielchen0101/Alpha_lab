@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Card, Row, Col, Button, Spin, Alert, Empty, Tag, Typography, Space, Divider } from 'antd';
+import { Card, Row, Col, Button, Alert, Tag, Typography, Space, Divider } from 'antd';
 import { ReloadOutlined, DashboardOutlined, RiseOutlined, FallOutlined, LineChartOutlined, EyeOutlined, PieChartOutlined, BarChartOutlined, ClockCircleOutlined, DatabaseOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { StockData, safeNumber, safeToFixed, getDashboardStatus } from '../services/marketDataService';
@@ -11,18 +11,6 @@ import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 
 const { Title, Text } = Typography;
 
-interface MarketStats {
-  totalSymbols: number;
-  gainers: number;
-  losers: number;
-  avgChange: number;
-  totalMarketCap: number;
-  avgVolume: number;
-  totalVolume: number;
-  largestCapStock: { symbol: string; marketCap: number } | null;
-  largestMoveStock: { symbol: string; changePercent: number } | null;
-  sectorsCovered: number;
-}
 
 interface SectorData {
   name: string;
@@ -266,13 +254,13 @@ const Dashboard: React.FC = () => {
 
   // getChangePercent函数已移动到组件顶部，见下方
 
-  const formatChangePercent = (value: number | null): string => {
+  const _formatChangePercent = (value: number | null): string => {
     if (value === null) return '--';
     const sign = value > 0 ? '+' : '';
     return `${sign}${value.toFixed(2)}%`;
   };
 
-  const formatVolume = (volume: number | null): string => {
+  const _formatVolume = (volume: number | null): string => {
     // Alpaca API可能不提供成交量数据，所以volume可能是null或0
     // 明确告诉用户数据不可用，而不是显示'--'
     if (volume === null || volume === undefined || volume === 0) return 'N/A';
@@ -568,7 +556,7 @@ const Dashboard: React.FC = () => {
     return stableColors[hash % stableColors.length];
   };
 
-  const StatCard = ({ title, value, icon, color = '#1890ff', suffix = '', formatValue = (v: any) => v, valueColor }: { title: string; value: any; icon: React.ReactNode; color?: string; suffix?: string; formatValue?: (v: any) => string; valueColor?: string }) => (
+  const _StatCard = ({ title, value, icon, color = '#1890ff', suffix = '', formatValue = (v: any) => v, valueColor }: { title: string; value: any; icon: React.ReactNode; color?: string; suffix?: string; formatValue?: (v: any) => string; valueColor?: string }) => (
     <Card
       hoverable
       style={{

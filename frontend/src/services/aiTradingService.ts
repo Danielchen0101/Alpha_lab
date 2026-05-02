@@ -892,4 +892,5 @@ class AITradingService {
   }
 }
 
-export default new AITradingService();
+const aiTradingService = new AITradingService();
+export default aiTradingService;

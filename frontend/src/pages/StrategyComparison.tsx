@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { Card, Table, Tag, Empty, Spin, Alert } from "antd";
+import { Card, Table, Empty, Spin, Alert } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useLocation } from "react-router-dom";
-import { backtraderAPI } from "../services/api";
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   ScatterChart, Scatter, ZAxis, Cell,

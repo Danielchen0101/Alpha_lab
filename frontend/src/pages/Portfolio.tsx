@@ -1,9 +1,9 @@
-﻿import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Card, Typography, Space, Statistic, Row, Col,
   Button, Divider, Table, Tag, Select, Form, Input, InputNumber,
-  message, Progress, Empty, Badge, Alert, Tooltip, Spin, Modal, Pagination
+  message, Progress, Badge, Alert, Tooltip, Spin, Modal, Pagination
 } from 'antd';
 import {
   LineChartOutlined, BarChartOutlined,
@@ -11,13 +11,13 @@ import {
   ThunderboltOutlined, CheckCircleOutlined, ClockCircleOutlined,
   RobotOutlined, CloseCircleOutlined, ExclamationCircleOutlined, SyncOutlined, LoadingOutlined,
   ArrowUpOutlined, ArrowDownOutlined, ArrowRightOutlined, MinusOutlined,
-  SortDescendingOutlined, SortAscendingOutlined, InfoCircleOutlined,
+  InfoCircleOutlined,
   CaretDownOutlined, CaretRightOutlined,
   DeleteOutlined, ReloadOutlined, PlusOutlined, CheckOutlined, EyeOutlined
 } from '@ant-design/icons';
 import aiTradingService, { AIProviderConfig } from '../services/aiTradingService';
 import { backtraderAPI, marketAPI, entryQualityAPI, fineScanAdvancedAPI, deeperValidationAPI, entryPlanAPI, fineScanExplainAPI, fineScanDecisionAPI, tradingAccountAPI, aiAgentWatchlistAPI } from '../services/api';
-import api, { scannerApi } from '../services/api';
+import api from '../services/api';
 import marketDataService from '../services/marketDataService';
 import alpacaBrokerService, { AlpacaPosition, AlpacaOrder } from '../services/alpacaBrokerService';
 import { scannerStateStore } from '../services/scannerStateStore';
@@ -32,7 +32,7 @@ const { Title, Text } = Typography;
 const { Option } = Select;
 
 // Small inline tag used in Entry Quality detail panel
-const DetailTag: React.FC<{ label: string; value: string; color?: string }> = ({ label, value, color }) => (
+const _DetailTag: React.FC<{ label: string; value: string; color?: string }> = ({ label, value, color }) => (
   <div style={{
     padding: '2px 8px', backgroundColor: '#fff', borderRadius: 3,
     border: '1px solid #e8e8e8', fontSize: '9px', lineHeight: '1.6'
@@ -224,7 +224,7 @@ const CollapsibleStageSection: React.FC<CollapsibleStageSectionProps> = ({
 };
 
 // AI分析结果类型定义 - V3格式
-interface AIAnalysisResult {
+interface _AIAnalysisResult {
   // 基础字段
   success: boolean;
   symbol: string;
@@ -270,7 +270,7 @@ interface AIAnalysisResult {
 }
 
 // 趋势分析结果类型
-interface TrendAnalysis {
+interface _TrendAnalysis {
   // 核心趋势字段
   trendLabel: string | null;
   trendScore: number | null;
@@ -347,8 +347,8 @@ const Portfolio: React.FC = (): React.ReactElement => {
   }>({ ai: false, aiTestStatus: 'not_tested', aiLastTestError: null, alpaca: false, finnhub: false, loaded: false });
 
   const [aiConfigForm] = Form.useForm();
-  const [testingConnection, setTestingConnection] = useState(false);
-  const [savingConfig, setSavingConfig] = useState(false);
+  const [, setTestingConnection] = useState(false);
+  const [, setSavingConfig] = useState(false);
 
   // Alpaca Paper Trading 真实账户状态
   const [alpacaOrders, setAlpacaOrders] = useState<any[]>([]);
@@ -403,8 +403,8 @@ const Portfolio: React.FC = (): React.ReactElement => {
   const fineScanStatus = scannerSnapshot.fineScan.status;
   const fineScanResults = scannerSnapshot.fineScan.results;
   const fineScanProgress = scannerSnapshot.fineScan.progress;
-  const fineScanStepProgress = scannerSnapshot.fineScan.stepProgress;
-  const fineScanCurrentStep = scannerSnapshot.fineScan.currentStep;
+  const _fineScanStepProgress = scannerSnapshot.fineScan.stepProgress;
+  const _fineScanCurrentStep = scannerSnapshot.fineScan.currentStep;
   const fineScanMessage = scannerSnapshot.fineScan.message;
   const fineScanExpandedRows = scannerSnapshot.fineScan.expandedRows;
 
@@ -415,13 +415,13 @@ const Portfolio: React.FC = (): React.ReactElement => {
   const entryPlanResults = scannerSnapshot.entryPlan.results;
 
   // Setter wrappers that update the store
-  const setMarketScannerStatus = useCallback((updater: any) => {
+  const _setMarketScannerStatus = useCallback((updater: any) => {
     const current = scannerStateStore.getState().marketScanner;
     const next = typeof updater === 'function' ? updater(current) : updater;
     scannerStateStore.updateMarketScanner(next);
   }, []);
 
-  const setMarketScannerResults = useCallback((results: any) => {
+  const _setMarketScannerResults = useCallback((results: any) => {
     const next = typeof results === 'function' ? results(scannerStateStore.getState().marketScanner.results) : results;
     scannerStateStore.setMarketScannerResults(next);
   }, []);
@@ -848,10 +848,10 @@ const Portfolio: React.FC = (): React.ReactElement => {
 
           // AI source tracking from scanner result
           const originalData = candidate.originalData || {};
-          const scannerAiCalled = originalData.aiCalled === true;
-          const scannerAiSource = originalData.aiSource || 'Local Rules';
-          const scannerAiModel = originalData.aiModel || null;
-          const scannerAiError = originalData.aiError || null;
+          const _scannerAiCalled = originalData.aiCalled === true;
+          const _scannerAiSource = originalData.aiSource || 'Local Rules';
+          const _scannerAiModel = originalData.aiModel || null;
+          const _scannerAiError = originalData.aiError || null;
 
           ruleEvaluatedCandidates.push({
             ...originalData,
@@ -937,7 +937,7 @@ const Portfolio: React.FC = (): React.ReactElement => {
   };
 
   // AI生成selection reason的函数
-  const generateAiSelectionReasons = async (candidates: any[]) => {
+  const _generateAiSelectionReasons = async (candidates: any[]) => {
     if (!candidates || candidates.length === 0) return;
 
     // 检查是否有新的Market Scan开始
@@ -964,7 +964,7 @@ const Portfolio: React.FC = (): React.ReactElement => {
         const batch = batches[batchIndex];
 
         // 更新进度
-        const progressPercent = Math.round(((batchIndex * batchSize) / candidates.length) * 100);
+        const _progressPercent = Math.round(((batchIndex * batchSize) / candidates.length) * 100);
         setContinueScanDetails((prev: any) => ({
           ...prev,
           currentStage: `Generating AI reasons: batch ${batchIndex + 1}/${batches.length}`,
@@ -1101,7 +1101,7 @@ const Portfolio: React.FC = (): React.ReactElement => {
 
   // Fallback reason生成函数
   // Continue Scan专用的AI评估函数
-  const evaluateContinueScanCandidate = async (symbol: string, context: any): Promise<any> => {
+  const _evaluateContinueScanCandidate = async (symbol: string, context: any): Promise<any> => {
     try {
       console.log('Evaluating continue scan candidate:', { symbol, context });
 
@@ -1299,7 +1299,7 @@ Please respond in this exact JSON format:
   };
 
   // Fallback priority计算函数（当AI调用失败时使用）
-  const calculateFallbackPriority = (candidate: any): number => {
+  const _calculateFallbackPriority = (candidate: any): number => {
     const trend = candidate.trendLabel;
     const score = candidate.overallScore || candidate.trendScore || 0;
     const risk = candidate.eventRisk || 'Medium';
@@ -1347,7 +1347,7 @@ Please respond in this exact JSON format:
   // 详细扫描状态 (from store)
   const detailedScanStatus = scannerSnapshot.marketScanner.detailedScanStatus;
 
-  const setDetailedScanStatus = useCallback((updater: any) => {
+  const _setDetailedScanStatus = useCallback((updater: any) => {
     const current = scannerStateStore.getState().marketScanner.detailedScanStatus;
     const next = typeof updater === 'function' ? updater(current) : updater;
     scannerStateStore.updateMarketScanner({ detailedScanStatus: next });
@@ -1496,7 +1496,7 @@ Please respond in this exact JSON format:
   };
 
   // 加载 Alpaca Paper Trading 真实账户数据
-  const loadAlpacaAccount = async () => {
+  const _loadAlpacaAccount = async () => {
     try {
       console.log('开始加载 Alpaca Paper Trading 账户数据...');
 
@@ -1540,7 +1540,7 @@ Please respond in this exact JSON format:
   };
 
   // Step 3: AI 配置保存（接入真实配置系统）
-  const handleSaveAiConfig = async (values: any) => {
+  const _handleSaveAiConfig = async (values: any) => {
     setSavingConfig(true);
     try {
       // 构建符合 AIProviderConfig 接口的配置对象
@@ -1575,7 +1575,7 @@ Please respond in this exact JSON format:
   };
 
   // Step 3: 测试 AI 连接（接入真实测试系统）
-  const handleTestConnection = async () => {
+  const _handleTestConnection = async () => {
     setTestingConnection(true);
     try {
       // 获取当前表单值
@@ -1608,7 +1608,7 @@ Please respond in this exact JSON format:
 
   // Market Scanner functions are in scannerRunnerService.ts
 
-  const getTrendLabel = (score: number): string => {
+  const _getTrendLabel = (score: number): string => {
     if (score >= 80) return 'Strong Bullish';
     if (score >= 60) return 'Bullish';
     if (score >= 40) return 'Neutral';
@@ -1651,12 +1651,12 @@ Please respond in this exact JSON format:
       </div>
     );
   };
-  const generateScannerReason = (symbol: string, score: number, newsData: any, stockData: any): string | null => {
+  const _generateScannerReason = (symbol: string, score: number, newsData: any, stockData: any): string | null => {
     // 不再使用模板句子，返回null让AI分析提供真实reasoning
     return null;
   };
 
-  const updateScannerSummary = (results: any[]): void => {
+  const _updateScannerSummary = (results: any[]): void => {
     // 修复：全部使用 null-safe 检查
     const bullishCount = results.filter(r => (r.trendLabel || '').includes('Bullish')).length;
     const bearishCount = results.filter(r => (r.trendLabel || '').includes('Bearish')).length;
@@ -1759,7 +1759,7 @@ Please respond in this exact JSON format:
 
 
   // 获取bullish候选数量（用于UI显示）
-  const getBullishCandidatesCount = (): number => {
+  const _getBullishCandidatesCount = (): number => {
     if (!marketScannerResults || marketScannerResults.length === 0) {
       return 0;
     }
@@ -1791,7 +1791,7 @@ Please respond in this exact JSON format:
     }
   };
 
-  const handleSymbolClick = (symbol: string): void => {
+  const _handleSymbolClick = (symbol: string): void => {
     // 将选中的symbol添加到AI Recommendations扫描
     message.info(`已将 ${symbol} 添加到分析队列`);
     // 这里可以实现将symbol添加到AI分析队列的逻辑
@@ -2375,16 +2375,17 @@ Please respond in this exact JSON format:
                   }}>
                     {record.topNews ? (
                       <div>
-                        <a href="#" className="scanner-detail-news-title" onClick={(e) => e.preventDefault()} style={{
+                        <span role="button" tabIndex={0} className="scanner-detail-news-title" onClick={(e) => e.preventDefault()} onKeyDown={(e) => e.preventDefault()} style={{
                           fontSize: '14px',
                           fontWeight: 700,
                           color: '#1890ff',
                           marginBottom: '8px',
                           display: 'block',
-                          lineHeight: '1.4'
+                          lineHeight: '1.4',
+                          cursor: 'pointer'
                         }}>
                           {record.topNews.title}
-                        </a>
+                        </span>
                         <div style={{ 
                           fontSize: '11px', 
                           color: '#bfbfbf', 
@@ -2437,7 +2438,7 @@ Please respond in this exact JSON format:
     );
   };
 
-  const getCandidateSymbols = async (): Promise<{symbols: string[], source: string, scanType: string}> => {
+  const _getCandidateSymbols = async (): Promise<{symbols: string[], source: string, scanType: string}> => {
     try {
       console.log('开始从Preferred Continue Scan List获取候选股票...');
 
@@ -2531,7 +2532,7 @@ Please respond in this exact JSON format:
   };
 
   // 格式化时间显示
-  const formatTimeDisplay = (isoString: string | null): string => {
+  const _formatTimeDisplay = (isoString: string | null): string => {
     if (!isoString) return 'N/A';
     try {
       const date = new Date(isoString);
@@ -2544,7 +2545,7 @@ Please respond in this exact JSON format:
 
   // 辅助函数：基于候选数据生成AI Reasoning
   // 辅助函数：确定Backtest状态
-  const determineBacktestStatus = (candidate: any): string => {
+  const _determineBacktestStatus = (candidate: any): string => {
     const score = candidate.overallScore || candidate.trendScore || 0;
 
     if (score >= 80) {
@@ -2557,7 +2558,7 @@ Please respond in this exact JSON format:
   };
 
   // 辅助函数：确定Optimization状态
-  const determineOptimizationStatus = (candidate: any): string => {
+  const _determineOptimizationStatus = (candidate: any): string => {
     const priority = candidate.priorityScore || 0;
 
     if (priority >= 80) {
@@ -2570,7 +2571,7 @@ Please respond in this exact JSON format:
   };
 
   // 辅助函数：计算Suggested Qty
-  const calculateSuggestedQty = (action: string, confidencePercent: number, candidate: any): number => {
+  const _calculateSuggestedQty = (action: string, confidencePercent: number, candidate: any): number => {
     if (action !== 'BUY') {
       return 0;
     }
@@ -2614,7 +2615,7 @@ Please respond in this exact JSON format:
   };
 
   // 辅助函数：确定推荐状态
-  const determineRecommendationStatus = (aiResponse: any, candidate: any): string => {
+  const _determineRecommendationStatus = (aiResponse: any, candidate: any): string => {
     if (!aiResponse.success) {
       return 'error';
     }
@@ -2632,7 +2633,7 @@ Please respond in this exact JSON format:
   };
 
   // 辅助函数：生成fallback推荐（AI不可用时）
-  const generateFallbackRecommendation = (candidate: any): any => {
+  const _generateFallbackRecommendation = (candidate: any): any => {
     const trend = candidate.trendLabel || 'N/A';
     const score = candidate.overallScore ?? candidate.trendScore ?? null;
     const risk = candidate.eventRisk || 'N/A';
@@ -2653,7 +2654,7 @@ Please respond in this exact JSON format:
   };
 
   // 辅助函数：计算推荐汇总统计
-  const calculateRecommendationSummary = (recommendations: any[]): any => {
+  const _calculateRecommendationSummary = (recommendations: any[]): any => {
     const total = recommendations.length;
     const successful = recommendations.filter(r => r.status === 'success').length;
     const errors = recommendations.filter(r => r.status === 'error').length;
@@ -2724,7 +2725,7 @@ Please respond in this exact JSON format:
   // ========== 策略路由相关辅助函数 ==========
 
   // 从AI决策中提取市场类型
-  const extractMarketTypeFromDecision = (decision: any): string => {
+  const _extractMarketTypeFromDecision = (decision: any): string => {
     const reason = decision.reason || '';
     const reasonLower = reason.toLowerCase();
 
@@ -2743,7 +2744,7 @@ Please respond in this exact JSON format:
   };
 
   // 根据市场类型选择策略
-  const selectStrategiesForMarketType = (marketType: string, candidate: any): string[] => {
+  const _selectStrategiesForMarketType = (marketType: string, candidate: any): string[] => {
     const trend = candidate.trendLabel || 'Neutral';
     const score = candidate.overallScore || candidate.trendScore || 0;
     const risk = candidate.eventRisk || 'Medium';
@@ -2776,7 +2777,7 @@ Please respond in this exact JSON format:
   };
 
   // 基于规则确定市场类型（AI路由失败时的fallback）
-  const determineMarketTypeByRules = (candidate: any, marketData: any): string => {
+  const _determineMarketTypeByRules = (candidate: any, marketData: any): string => {
     const trend = candidate.trendLabel || 'Neutral';
     const score = candidate.overallScore || candidate.trendScore || 0;
     const changePercent = marketData?.changePercent || candidate.changePct || candidate.priceChange || 0;
@@ -2807,7 +2808,7 @@ Please respond in this exact JSON format:
   };
 
   // 生成包含策略路由的AI Reasoning
-  const generateAiReasoningWithStrategyRouting = (candidate: any, decision: any, marketType: string, selectedStrategies: string[]): string => {
+  const _generateAiReasoningWithStrategyRouting = (candidate: any, decision: any, marketType: string, selectedStrategies: string[]): string => {
     const trend = candidate.trendLabel || 'Neutral';
     const score = candidate.overallScore || candidate.trendScore || 0;
     const risk = candidate.eventRisk || 'Medium';
@@ -2840,7 +2841,7 @@ Please respond in this exact JSON format:
   };
 
   // 基于策略路由确定Backtest状态
-  const determineBacktestStatusWithRouting = (candidate: any, marketType: string, selectedStrategies: string[]): string => {
+  const _determineBacktestStatusWithRouting = (candidate: any, marketType: string, selectedStrategies: string[]): string => {
     const score = candidate.overallScore || candidate.trendScore || 0;
     const strategyCount = selectedStrategies.length;
 
@@ -2858,7 +2859,7 @@ Please respond in this exact JSON format:
   };
 
   // 基于策略路由确定Optimization状态
-  const determineOptimizationStatusWithRouting = (candidate: any, marketType: string, selectedStrategies: string[]): string => {
+  const _determineOptimizationStatusWithRouting = (candidate: any, marketType: string, selectedStrategies: string[]): string => {
     const priority = candidate.priorityScore || 0;
     const strategyCount = selectedStrategies.length;
 
@@ -2927,7 +2928,7 @@ Please respond in this exact JSON format:
   };
 
   // 基于策略路由确定推荐状态
-  const determineRecommendationStatusWithRouting = (aiResponse: any, candidate: any, marketType: string): string => {
+  const _determineRecommendationStatusWithRouting = (aiResponse: any, candidate: any, marketType: string): string => {
     if (!aiResponse.success) {
       return 'error';
     }
@@ -2952,7 +2953,7 @@ Please respond in this exact JSON format:
   // ========== 回测相关辅助函数 ==========
 
   // 运行策略回测 - 真正调用平台内已有的backtest功能
-  const runStrategyBacktests = async (symbol: string, strategies: string[], candidate: any, marketData: any): Promise<any[]> => {
+  const _runStrategyBacktests = async (symbol: string, strategies: string[], candidate: any, marketData: any): Promise<any[]> => {
     const backtestResults = [];
 
     for (const strategy of strategies) {
@@ -3053,7 +3054,7 @@ Please respond in this exact JSON format:
   };
 
   // 运行参数优化 - 真正调用平台内已有的parameter optimization功能
-  const runParameterOptimizations = async (symbol: string, strategies: string[], backtestResults: any[]): Promise<any[]> => {
+  const _runParameterOptimizations = async (symbol: string, strategies: string[], backtestResults: any[]): Promise<any[]> => {
     const optimizationResults: any[] = [];
 
     // 只对回测成功的策略进行优化
@@ -3206,7 +3207,7 @@ Please respond in this exact JSON format:
   };
 
   // 获取优化参数范围
-  const getOptimizationParameters = (strategy: string): any => {
+  const _getOptimizationParameters = (strategy: string): any => {
     const optimizationParams: Record<string, any> = {
       'Moving Average': {
         shortPeriod: { min: 5, max: 30, step: 5 },
@@ -3372,7 +3373,7 @@ Please respond in this exact JSON format:
   };
 
   // 从回测响应中提取总回报
-  const extractTotalReturn = (responseData: any): number => {
+  const _extractTotalReturn = (responseData: any): number => {
     if (!responseData?.result) return 0;
 
     // 尝试不同的字段名
@@ -3383,7 +3384,7 @@ Please respond in this exact JSON format:
   };
 
   // 从回测响应中提取夏普比率
-  const extractSharpeRatio = (responseData: any): number => {
+  const _extractSharpeRatio = (responseData: any): number => {
     if (!responseData?.result) return 0;
 
     return responseData.result.results?.sharpeRatio ||
@@ -3392,7 +3393,7 @@ Please respond in this exact JSON format:
   };
 
   // 从回测响应中提取胜率
-  const extractWinRate = (responseData: any): number => {
+  const _extractWinRate = (responseData: any): number => {
     if (!responseData?.result) return 0;
 
     return responseData.result.results?.winRate ||
@@ -3401,7 +3402,7 @@ Please respond in this exact JSON format:
   };
 
   // 从回测响应中提取最大回撤
-  const extractMaxDrawdown = (responseData: any): number => {
+  const _extractMaxDrawdown = (responseData: any): number => {
     if (!responseData?.result) return 0;
 
     return responseData.result.results?.maxDrawdown ||
@@ -3410,7 +3411,7 @@ Please respond in this exact JSON format:
   };
 
   // 从回测响应中提取交易次数
-  const extractTradeCount = (responseData: any): number => {
+  const _extractTradeCount = (responseData: any): number => {
     if (!responseData?.result) return 0;
 
     return responseData.result.results?.tradeCount ||
@@ -3419,7 +3420,7 @@ Please respond in this exact JSON format:
   };
 
   // 生成回测摘要
-  const generateBacktestSummary = (backtestResults: any[]): string => {
+  const _generateBacktestSummary = (backtestResults: any[]): string => {
     const completedResults = backtestResults.filter(r => r.status === 'completed');
 
     if (completedResults.length === 0) {
@@ -3435,7 +3436,7 @@ Please respond in this exact JSON format:
   };
 
   // 找到最佳策略
-  const findBestStrategy = (backtestResults: any[]): string => {
+  const _findBestStrategy = (backtestResults: any[]): string => {
     const completedResults = backtestResults.filter(r => r.status === 'completed');
 
     if (completedResults.length === 0) {
@@ -3450,7 +3451,7 @@ Please respond in this exact JSON format:
   };
 
   // 找到最佳策略回报
-  const findBestStrategyReturn = (backtestResults: any[]): number => {
+  const _findBestStrategyReturn = (backtestResults: any[]): number => {
     const completedResults = backtestResults.filter(r => r.status === 'completed');
 
     if (completedResults.length === 0) {
@@ -3465,7 +3466,7 @@ Please respond in this exact JSON format:
   };
 
   // 确定整体回测状态
-  const determineOverallBacktestStatus = (backtestResults: any[]): string => {
+  const _determineOverallBacktestStatus = (backtestResults: any[]): string => {
     const completedCount = backtestResults.filter(r => r.status === 'completed').length;
     const totalCount = backtestResults.length;
 
@@ -3481,7 +3482,7 @@ Please respond in this exact JSON format:
   };
 
   // 基于回测结果确定Action
-  const determineActionFromBacktestResults = (backtestResults: any[], defaultAction: string): string => {
+  const _determineActionFromBacktestResults = (backtestResults: any[], defaultAction: string): string => {
     const completedResults = backtestResults.filter(r => r.status === 'completed');
 
     if (completedResults.length === 0) {
@@ -3502,7 +3503,7 @@ Please respond in this exact JSON format:
   };
 
   // 基于回测结果调整置信度
-  const adjustConfidenceWithBacktestResults = (baseConfidence: number, backtestResults: any[]): number => {
+  const _adjustConfidenceWithBacktestResults = (baseConfidence: number, backtestResults: any[]): number => {
     const completedResults = backtestResults.filter(r => r.status === 'completed');
 
     if (completedResults.length === 0) {
@@ -3526,7 +3527,7 @@ Please respond in this exact JSON format:
   };
 
   // 生成包含回测结果的AI Reasoning
-  const generateAiReasoningWithBacktestResults = (candidate: any, decision: any, marketType: string, selectedStrategies: string[], backtestResults: any[]): string => {
+  const _generateAiReasoningWithBacktestResults = (candidate: any, decision: any, marketType: string, selectedStrategies: string[], backtestResults: any[]): string => {
     const trend = candidate.trendLabel || 'Neutral';
     const score = candidate.overallScore || candidate.trendScore || 0;
     const risk = candidate.eventRisk || 'Medium';
@@ -3565,7 +3566,7 @@ Please respond in this exact JSON format:
   };
 
   // 基于回测结果计算Suggested Qty
-  const calculateSuggestedQtyWithBacktestResults = (action: string, confidencePercent: number, candidate: any, marketType: string, backtestResults: any[]): number => {
+  const _calculateSuggestedQtyWithBacktestResults = (action: string, confidencePercent: number, candidate: any, marketType: string, backtestResults: any[]): number => {
     if (action !== 'BUY') {
       return 0;
     }
@@ -3612,7 +3613,7 @@ Please respond in this exact JSON format:
   };
 
   // 基于回测结果确定推荐状态
-  const determineRecommendationStatusWithBacktestResults = (aiResponse: any, candidate: any, marketType: string, backtestResults: any[]): string => {
+  const _determineRecommendationStatusWithBacktestResults = (aiResponse: any, candidate: any, marketType: string, backtestResults: any[]): string => {
     if (!aiResponse.success) {
       return 'error';
     }
@@ -3641,7 +3642,7 @@ Please respond in this exact JSON format:
   };
 
   // 基于回测结果确定优化状态
-  const determineOptimizationStatusWithBacktestResults = (candidate: any, marketType: string, selectedStrategies: string[], backtestResults: any[]): string => {
+  const _determineOptimizationStatusWithBacktestResults = (candidate: any, marketType: string, selectedStrategies: string[], backtestResults: any[]): string => {
     const completedResults = backtestResults.filter(r => r.status === 'completed');
 
     if (completedResults.length === 0) {
@@ -3663,7 +3664,7 @@ Please respond in this exact JSON format:
   // ========== 优化结果相关辅助函数 ==========
 
   // 生成优化摘要
-  const generateOptimizationSummary = (optimizationResults: any[]): string => {
+  const _generateOptimizationSummary = (optimizationResults: any[]): string => {
     const completedResults = optimizationResults.filter(r => r.status === 'completed');
 
     if (completedResults.length === 0) {
@@ -3679,7 +3680,7 @@ Please respond in this exact JSON format:
   };
 
   // 找到最佳优化策略
-  const findBestOptimizedStrategy = (optimizationResults: any[]): string => {
+  const _findBestOptimizedStrategy = (optimizationResults: any[]): string => {
     const completedResults = optimizationResults.filter(r => r.status === 'completed');
 
     if (completedResults.length === 0) {
@@ -3694,7 +3695,7 @@ Please respond in this exact JSON format:
   };
 
   // 找到最佳优化回报
-  const findBestOptimizedReturn = (optimizationResults: any[]): number => {
+  const _findBestOptimizedReturn = (optimizationResults: any[]): number => {
     const completedResults = optimizationResults.filter(r => r.status === 'completed');
 
     if (completedResults.length === 0) {
@@ -3709,7 +3710,7 @@ Please respond in this exact JSON format:
   };
 
   // 确定整体优化状态
-  const determineOverallOptimizationStatus = (optimizationResults: any[]): string => {
+  const _determineOverallOptimizationStatus = (optimizationResults: any[]): string => {
     const completedCount = optimizationResults.filter(r => r.status === 'completed').length;
     const totalCount = optimizationResults.length;
 
@@ -3725,7 +3726,7 @@ Please respond in this exact JSON format:
   };
 
   // 基于回测和优化结果确定Action
-  const determineActionFromBacktestAndOptimizationResults = (backtestResults: any[], optimizationResults: any[], defaultAction: string): string => {
+  const _determineActionFromBacktestAndOptimizationResults = (backtestResults: any[], optimizationResults: any[], defaultAction: string): string => {
     const completedBacktests = backtestResults.filter(r => r.status === 'completed');
     const completedOptimizations = optimizationResults.filter(r => r.status === 'completed');
 
@@ -3759,7 +3760,7 @@ Please respond in this exact JSON format:
   };
 
   // 基于回测和优化结果调整置信度
-  const adjustConfidenceWithBacktestAndOptimizationResults = (baseConfidence: number, backtestResults: any[], optimizationResults: any[]): number => {
+  const _adjustConfidenceWithBacktestAndOptimizationResults = (baseConfidence: number, backtestResults: any[], optimizationResults: any[]): number => {
     const completedBacktests = backtestResults.filter(r => r.status === 'completed');
     const completedOptimizations = optimizationResults.filter(r => r.status === 'completed');
 
@@ -3803,7 +3804,7 @@ Please respond in this exact JSON format:
   };
 
   // 生成包含回测和优化结果的AI Reasoning
-  const generateAiReasoningWithBacktestAndOptimizationResults = (candidate: any, decision: any, marketType: string, selectedStrategies: string[], backtestResults: any[], optimizationResults: any[]): string => {
+  const _generateAiReasoningWithBacktestAndOptimizationResults = (candidate: any, decision: any, marketType: string, selectedStrategies: string[], backtestResults: any[], optimizationResults: any[]): string => {
     const trend = candidate.trendLabel || 'Neutral';
     const score = candidate.overallScore || candidate.trendScore || 0;
     const risk = candidate.eventRisk || 'Medium';
@@ -3852,7 +3853,7 @@ Please respond in this exact JSON format:
   };
 
   // 基于回测和优化结果计算Suggested Qty
-  const calculateSuggestedQtyWithBacktestAndOptimizationResults = (action: string, confidencePercent: number, candidate: any, marketType: string, backtestResults: any[], optimizationResults: any[]): number => {
+  const _calculateSuggestedQtyWithBacktestAndOptimizationResults = (action: string, confidencePercent: number, candidate: any, marketType: string, backtestResults: any[], optimizationResults: any[]): number => {
     if (action !== 'BUY') {
       return 0;
     }
@@ -3911,7 +3912,7 @@ Please respond in this exact JSON format:
   };
 
   // 基于回测和优化结果确定推荐状态
-  const determineRecommendationStatusWithBacktestAndOptimizationResults = (aiResponse: any, candidate: any, marketType: string, backtestResults: any[], optimizationResults: any[]): string => {
+  const _determineRecommendationStatusWithBacktestAndOptimizationResults = (aiResponse: any, candidate: any, marketType: string, backtestResults: any[], optimizationResults: any[]): string => {
     if (!aiResponse.success) {
       return 'error';
     }
@@ -3950,7 +3951,7 @@ Please respond in this exact JSON format:
   };
 
   // 生成展开详情需要的backtestKeyResults
-  const generateBacktestKeyResults = (backtestResults: any[]): any => {
+  const _generateBacktestKeyResults = (backtestResults: any[]): any => {
     const completedResults = backtestResults.filter(r => r.status === 'completed');
 
     if (completedResults.length === 0) {
@@ -3973,7 +3974,7 @@ Please respond in this exact JSON format:
   };
 
   // 生成展开详情需要的optimizationKeyResults
-  const generateOptimizationKeyResults = (optimizationResults: any[]): any => {
+  const _generateOptimizationKeyResults = (optimizationResults: any[]): any => {
     const completedResults = optimizationResults.filter(r => r.status === 'completed');
 
     if (completedResults.length === 0) {
@@ -5131,8 +5132,8 @@ Please respond in this exact JSON format:
   // ===== Entry Plan State ===== (now in scannerStateStore)
   // entryPlanStatus and entryPlanResults are read from store snapshot above
   const [expandedEntryPlanSymbol, setExpandedEntryPlanSymbol] = useState<string | null>(null);
-  const [entryPlanAccountSize, setEntryPlanAccountSize] = useState<number>(100000);
-  const [entryPlanRiskPerTrade, setEntryPlanRiskPerTrade] = useState<number>(1);
+  const [entryPlanAccountSize, _setEntryPlanAccountSize] = useState<number>(100000);
+  const [entryPlanRiskPerTrade, _setEntryPlanRiskPerTrade] = useState<number>(1);
   const [entryPlanExecutionMode, setEntryPlanExecutionMode] = useState<string>('Recommend Only');
 
   // ===== Entry Plan Execution State =====

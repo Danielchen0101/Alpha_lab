@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Typography, Card, Form, Input, Select, Button, Space, Collapse, Tag, message, Spin, Row, Col, Divider,
+  Typography, Card, Form, Input, Select, Button, Space, Collapse, Tag, message, Row, Col,
 } from 'antd';
 import {
   SettingOutlined, CheckCircleOutlined, CloseCircleOutlined, QuestionCircleOutlined,
-  SaveOutlined, ApiOutlined, ExperimentOutlined, BankOutlined, CloudOutlined, EyeOutlined, EyeInvisibleOutlined,
+  SaveOutlined, ApiOutlined, ExperimentOutlined, BankOutlined, CloudOutlined,
   LogoutOutlined, UserOutlined,
 } from '@ant-design/icons';
 import axios from 'axios';
@@ -29,7 +29,7 @@ userApi.interceptors.request.use(async (config) => {
 });
 
 // --- Masking helper ---
-const maskKey = (key: string): string => {
+const _maskKey = (key: string): string => {
   if (!key) return '';
   if (key.length <= 8) return '****';
   return key.slice(0, 4) + '****' + key.slice(-4);
@@ -58,7 +58,7 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
 // =====================================================================
 const AlpacaPaperSection: React.FC = () => {
   const [form] = Form.useForm();
-  const [loading, setLoading] = useState(false);
+  const [, setLoading] = useState(false);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState('not_tested');
@@ -174,7 +174,7 @@ const AlpacaPaperSection: React.FC = () => {
 // =====================================================================
 const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string; secretKey: string }) => void }> = ({ onMarketDataSynced }) => {
   const [form] = Form.useForm();
-  const [loading, setLoading] = useState(false);
+  const [, setLoading] = useState(false);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState('not_tested');

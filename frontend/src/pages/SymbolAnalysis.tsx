@@ -1,15 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Row, Col, Statistic, Button, Tabs, Table, Tag, Space, Spin, Empty, Alert, message, Radio } from 'antd';
-import { LineChartOutlined, BarChartOutlined, PlayCircleOutlined, ReloadOutlined, ArrowUpOutlined, ArrowDownOutlined, ArrowLeftOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import { Card, Row, Col, Button, Tabs, Space, Spin, Empty, Alert, message, Radio } from 'antd';
+import { LineChartOutlined, BarChartOutlined, PlayCircleOutlined, ReloadOutlined, ArrowUpOutlined, ArrowDownOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area, BarChart, Bar, ComposedChart, ReferenceLine, ReferenceDot, ReferenceArea } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ReferenceDot, ReferenceArea } from 'recharts';
 import marketDataService, {
   StockData,
   HistoricalDataPoint,
-  HistoricalDataResponse,
   TIMEFRAMES,
-  formatCurrency,
-  formatPercent,
   safeNumber,
   safeToFixed,
   calculateSMA,
@@ -70,7 +67,7 @@ interface ChartDataPoint {
 }
 
 // 1 Week专用：简化版 - 显示更多标签，只显示日期
-const get1WeekSimpleTicks = (chartData: ChartDataPoint[]): string[] => {
+const _get1WeekSimpleTicks = (chartData: ChartDataPoint[]): string[] => {
   const ticks: string[] = [];
   
   if (chartData.length === 0) return ticks;
@@ -104,7 +101,7 @@ const get1WeekSimpleTicks = (chartData: ChartDataPoint[]): string[] => {
 };
 
 // 1 Week专用：生成关键时间点标签（9:30和12:30优先）
-const get1WeekKeyTimeTicks = (chartData: ChartDataPoint[]): string[] => {
+const _get1WeekKeyTimeTicks = (chartData: ChartDataPoint[]): string[] => {
   const ticks: string[] = [];
   
   if (chartData.length === 0) return ticks;
@@ -415,7 +412,7 @@ const get1WeekTicks = (chartData: ChartDataPoint[], getNewYorkTimeComponents: (d
 // ========== 专业X轴标签生成函数（新方案） ==========
 
 // 1. 1 Day: 生成30分钟间隔的时间标签 (09:30 - 16:00)
-const getProfessional1DayTicks = (chartData: ChartDataPoint[]): string[] => {
+const _getProfessional1DayTicks = (chartData: ChartDataPoint[]): string[] => {
   if (!chartData || chartData.length === 0) {
     return [];
   }
@@ -883,7 +880,7 @@ const SymbolAnalysis: React.FC = () => {
   const navigate = useNavigate();
   
   // 获取Finnhub收盘价的函数
-  const fetchFinnhubClosingPrice = async (): Promise<number | null> => {
+  const _fetchFinnhubClosingPrice = async (): Promise<number | null> => {
     if (!symbol) return null;
     
     try {
@@ -972,7 +969,7 @@ const SymbolAnalysis: React.FC = () => {
   const [loading, setLoading] = useState(true);
 
   // 计算纽约时间与UTC的偏移（小时），自动处理夏令时
-  const getNewYorkUTCOffset = (date: Date) => {
+  const _getNewYorkUTCOffset = (date: Date) => {
     // 使用Intl.DateTimeFormat获取时区偏移
     const formatter = new Intl.DateTimeFormat('en-US', {
       timeZone: 'America/New_York',
@@ -1086,14 +1083,14 @@ const SymbolAnalysis: React.FC = () => {
     console.log('[1 Week 调试] === 分析完成 ===');
   };
   const [stockData, setStockData] = useState<StockData | null>(null);
-  const [backtestHistory, setBacktestHistory] = useState<BacktestHistoryItem[]>([]);
-  const [backtestLoading, setBacktestLoading] = useState(false);
+  const [, setBacktestHistory] = useState<BacktestHistoryItem[]>([]);
+  const [, setBacktestLoading] = useState(false);
   const [stockDataError, setStockDataError] = useState<string | null>(null);
-  const [historicalDataError, setHistoricalDataError] = useState<string | null>(null);
+  const [, setHistoricalDataError] = useState<string | null>(null);
 
   // 图表相关状态 - 默认显示1 Day图表
   const [selectedTimeframe, setSelectedTimeframe] = useState<string>('1D');
-  const [historicalData, setHistoricalData] = useState<HistoricalDataPoint[]>([]);
+  const [, setHistoricalData] = useState<HistoricalDataPoint[]>([]);
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
   const [dataSource, setDataSource] = useState<string>('Finnhub');
@@ -1797,12 +1794,12 @@ const SymbolAnalysis: React.FC = () => {
   };
 
   // 查看回测详情
-  const handleViewBacktest = (backtestId: string) => {
+  const _handleViewBacktest = (backtestId: string) => {
     navigate(`/backtest-analysis?backtestId=${backtestId}`);
   };
 
   // === 1 Day 专用：生成清晰的时间轴标签 ===
-  const get1DayTicks = (chartData: ChartDataPoint[]): string[] => {
+  const _get1DayTicks = (chartData: ChartDataPoint[]): string[] => {
     if (selectedTimeframe !== '1D' || !chartData || chartData.length === 0) {
       return [];
     }
@@ -2128,7 +2125,7 @@ const SymbolAnalysis: React.FC = () => {
     const { monthPoints, monthLabels } = analyzeYearlyMonths();
     
     // === 1 Year 专用：X轴格式化 ===
-    const formatYearlyXAxisTick = (value: string, index: number) => {
+    const _formatYearlyXAxisTick = (value: string, index: number) => {
       if (selectedTimeframe !== '1Y') return '';
       
       // 使用预先计算的月份标签（基于日期字符串）
@@ -2140,7 +2137,7 @@ const SymbolAnalysis: React.FC = () => {
     };
     
     // === 3 Months 专用：生成每14天一个的ticks数组 ===
-    const get3MonthsTicks = (chartData: ChartDataPoint[]): string[] => {
+    const _get3MonthsTicks = (chartData: ChartDataPoint[]): string[] => {
       if (selectedTimeframe !== '3M' || !chartData || chartData.length === 0) {
         return [];
       }
@@ -2246,7 +2243,7 @@ const SymbolAnalysis: React.FC = () => {
     };
     
     // === 3 Months 专用：X轴格式化（显示月/日格式） ===
-    const format3MonthsXAxisTick = (value: string) => {
+    const _format3MonthsXAxisTick = (value: string) => {
       if (selectedTimeframe !== '3M') return '';
       
       try {
@@ -2271,7 +2268,7 @@ const SymbolAnalysis: React.FC = () => {
     };
     
     // === 1 Month 专用：生成ticks数组（首点 + 每7天 + 尾点） ===
-    const get1MonthTicks = (chartData: ChartDataPoint[]): string[] => {
+    const _get1MonthTicks = (chartData: ChartDataPoint[]): string[] => {
       if (selectedTimeframe !== '1M' || !chartData || chartData.length === 0) {
         return [];
       }
@@ -2361,7 +2358,7 @@ const SymbolAnalysis: React.FC = () => {
     };
     
     // === 1 Month 专用：X轴格式化（显示月/日格式） ===
-    const format1MonthXAxisTick = (value: string) => {
+    const _format1MonthXAxisTick = (value: string) => {
       if (selectedTimeframe !== '1M') return '';
       
       try {
@@ -2672,7 +2669,7 @@ const SymbolAnalysis: React.FC = () => {
             )}
             
             {/* 技术指标：SMA20和SMA50（如果存在） - 优化排版 */}
-            {(data.sma20 !== undefined && !isNaN(data.sma20) || data.sma50 !== undefined && !isNaN(data.sma50)) && (
+            {((data.sma20 !== undefined && !isNaN(data.sma20)) || (data.sma50 !== undefined && !isNaN(data.sma50))) && (
               <div style={{ 
                 marginTop: '8px', 
                 paddingTop: '8px', 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Table, Card, Spin, Alert, Empty, Tag, Tooltip } from 'antd';
-import { TrophyOutlined, LineChartOutlined, InfoCircleOutlined, ExperimentOutlined } from '@ant-design/icons';
+import { TrophyOutlined, InfoCircleOutlined, ExperimentOutlined } from '@ant-design/icons';
 
 // Helper functions
 const safeNumber = (value: any): number => {

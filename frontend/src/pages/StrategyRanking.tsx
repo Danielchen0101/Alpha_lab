@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Table, Card, Spin, Alert, Empty, Tag, Tooltip } from 'antd';
-import { TrophyOutlined, LineChartOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import { TrophyOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { backtraderAPI } from '../services/api';
 
 // Helper functions

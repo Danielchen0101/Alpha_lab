@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Row, Col, Typography, List, Tag, Button, Spin, Alert, Table } from 'antd';
+import { Card, Row, Col, Typography, Tag, Button, Spin, Alert, Table } from 'antd';
 import { LineChartOutlined, ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { backtraderAPI } from '../services/api';
@@ -690,9 +690,6 @@ const Analytics: React.FC = () => {
       });
     });
     
-    // 按日期排序
-    const sortedDates = Array.from(allDates).sort();
-    
     // 对齐收益率序列（按最短序列对齐，简化实现）
     // 找到最短的序列长度
     const minLength = Math.min(...seriesWithDates.map(data => data.returnSeries.length));
@@ -709,9 +706,6 @@ const Analytics: React.FC = () => {
     }));
     
     return alignedSeries;
-    
-    // 只保留有足够共同数据点的序列
-    return alignedSeries.filter(series => series.returnSeries.length >= 3);
   };
 
   // 计算相关性矩阵
@@ -777,9 +771,9 @@ const Analytics: React.FC = () => {
   };
 
   // 根据相关性值获取颜色
-  const getCorrelationColor = (value: number): string => {
+  const _getCorrelationColor = (value: number): string => {
     if (isNaN(value)) return '#f5f5f5'; // N/A
-    
+
     if (value > 0.7) return '#fff2e8'; // 高正相关 - 淡橙
     if (value > 0.3) return '#fffbe6'; // 中等相关 - 淡黄
     if (value > -0.3) return '#f6ffed'; // 低相关 - 淡绿
@@ -787,9 +781,9 @@ const Analytics: React.FC = () => {
   };
 
   // 根据相关性值获取文字颜色
-  const getCorrelationTextColor = (value: number): string => {
+  const _getCorrelationTextColor = (value: number): string => {
     if (isNaN(value)) return '#8c8c8c'; // N/A
-    
+
     if (value > 0.7) return '#d46b08'; // 高正相关
     if (value > 0.3) return '#d4b106'; // 中等相关
     if (value > -0.3) return '#389e0d'; // 低相关

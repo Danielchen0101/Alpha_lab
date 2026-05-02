@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Card, Form, Input, InputNumber, Button, Select, Alert, Row, Col, Typography, Space, Badge, Divider } from 'antd';
 import { RocketOutlined, SettingOutlined, SearchOutlined, LineChartOutlined, ExperimentOutlined, CheckCircleOutlined, WarningOutlined } from '@ant-design/icons';
 import { backtraderAPI } from '../services/api';
-import OptimizationHeatmap, { OptimizationResult } from '../components/optimization/OptimizationHeatmap';
+import OptimizationHeatmap from '../components/optimization/OptimizationHeatmap';
 import OptimizationSummary from '../components/optimization/OptimizationSummary';
 import OptimizationResultsTable from '../components/optimization/OptimizationResultsTable';
 

@@ -1,11 +1,10 @@
 import React from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { Menu, Tag } from 'antd';
 import {
   DashboardOutlined,
   LineChartOutlined,
   BarChartOutlined,
-  UserOutlined,
   TrophyOutlined,
   UnorderedListOutlined,
   SwapOutlined,
@@ -26,7 +25,7 @@ interface NavigationMenuProps {
 const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
   const { t } = useLanguage();
   const location = useLocation();
-  const navigate = useNavigate();
+
 
   // Map routes to menu keys
   const routeToKey: Record<string, string> = {

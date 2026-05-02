@@ -1,5 +1,5 @@
 import React from 'react';
-import { Row, Col, Typography, Badge, Space, Card, Divider, Statistic } from 'antd';
+import { Row, Col, Typography, Badge, Divider } from 'antd';
 import { TrophyOutlined, ThunderboltOutlined, PercentageOutlined, RiseOutlined, FallOutlined, AimOutlined, BarChartOutlined } from '@ant-design/icons';
 import { OptimizationResult } from './OptimizationHeatmap';
 

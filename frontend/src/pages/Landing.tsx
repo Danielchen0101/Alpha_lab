@@ -1,9 +1,9 @@
 import React, { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Button, Row, Col, Space, Tag } from 'antd';
+import { Button, Row, Col, Space } from 'antd';
 import {
   RobotOutlined, CheckCircleOutlined, ArrowRightOutlined, NodeIndexOutlined,
-  LoadingOutlined, ThunderboltOutlined, SafetyOutlined, GithubOutlined,
+  LoadingOutlined, ThunderboltOutlined, GithubOutlined,
   GlobalOutlined, SearchOutlined, FilterOutlined, AimOutlined,
   ExperimentOutlined, DeploymentUnitOutlined, EyeOutlined
 } from '@ant-design/icons';

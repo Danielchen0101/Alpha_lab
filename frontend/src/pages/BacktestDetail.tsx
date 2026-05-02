@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Row, Col, Statistic, Table, Tag, Divider, Button, Spin, Alert, Empty, Tabs } from 'antd';
+import { Card, Row, Col, Statistic, Table, Tag, Button, Spin, Alert, Empty, Tabs } from 'antd';
 import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons';
 import { backtraderAPI } from '../services/api';
 import TradingChart from '../components/TradingChart';

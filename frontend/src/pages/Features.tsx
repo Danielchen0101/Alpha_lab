@@ -1,9 +1,9 @@
 import React, { useEffect } from 'react';
-import { Row, Col, Button, Tag } from 'antd';
-import { 
-  LineChartOutlined, CodeOutlined, RobotOutlined, AimOutlined, 
-  BarChartOutlined, RocketOutlined, SafetyOutlined, ApiOutlined, 
-  ArrowRightOutlined, DatabaseOutlined, AuditOutlined, AppstoreOutlined,
+import { Button } from 'antd';
+import {
+  RobotOutlined, AimOutlined,
+  BarChartOutlined, RocketOutlined, SafetyOutlined,
+  ArrowRightOutlined,
   SearchOutlined, FilterOutlined, DeploymentUnitOutlined, EyeOutlined,
   InteractionOutlined, NodeIndexOutlined, GlobalOutlined
 } from '@ant-design/icons';

@@ -1,5 +1,5 @@
 // 中文语言包
-export default {
+const messages = {
   // 通用
   common: {
     loading: '加载中...',
@@ -325,3 +325,5 @@ export default {
     currentLanguage: '当前语言',
   },
 };
+
+export default messages;

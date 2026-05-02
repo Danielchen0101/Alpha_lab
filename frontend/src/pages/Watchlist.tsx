@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Card, Table, Button, Input, Space, Alert, Empty, Tag, message, Statistic } from 'antd';
-import { PlusOutlined, PlayCircleOutlined, DeleteOutlined, EyeOutlined, LineChartOutlined } from '@ant-design/icons';
-import { useLanguage } from '../contexts/LanguageContext';
+import { Card, Table, Button, Input, Space, Empty, Tag, message } from 'antd';
+import { PlusOutlined, PlayCircleOutlined, DeleteOutlined, LineChartOutlined } from '@ant-design/icons';
+
 import marketDataService from '../services/marketDataService';
 import { formatMarketCap } from '../utils/format';
 
@@ -25,7 +25,6 @@ type WatchlistDisplayItem = {
 };
 
 const Watchlist: React.FC = () => {
-  const { t } = useLanguage();
   const navigate = useNavigate();
   const [watchlistSymbols, setWatchlistSymbols] = useState<string[]>([]); // 只存储symbol
   const [watchlistData, setWatchlistData] = useState<WatchlistDisplayItem[]>([]); // 显示用的真实数据

@@ -246,9 +246,9 @@ const SignUp: React.FC = () => {
                 }]}>
                   <Checkbox style={{ color: '#94a3b8' }}>
                     I agree to the{' '}
-                    <a href="#" style={{ color: '#1890ff' }} onClick={(e) => e.preventDefault()}>Terms of Service</a>
+                    <button type="button" style={{ color: '#1890ff', background: 'none', border: 'none', padding: 0, cursor: 'pointer', font: 'inherit' }} onClick={(e) => e.preventDefault()}>Terms of Service</button>
                     {' '}and{' '}
-                    <a href="#" style={{ color: '#1890ff' }} onClick={(e) => e.preventDefault()}>Privacy Policy</a>
+                    <button type="button" style={{ color: '#1890ff', background: 'none', border: 'none', padding: 0, cursor: 'pointer', font: 'inherit' }} onClick={(e) => e.preventDefault()}>Privacy Policy</button>
                   </Checkbox>
                 </Form.Item>
                 <Form.Item>
