@@ -9,8 +9,8 @@ const STORAGE_KEY = 'alpha_lab_scanner_state_v1';
 export type ScannerStatus = 'idle' | 'running' | 'completed' | 'failed' | 'stopped' | 'scheduled';
 export type ContinueScanStatus = 'idle' | 'processing' | 'completed' | 'error';
 export type FineScanStatus = 'idle' | 'running' | 'completed' | 'failed' | 'stopped' | 'error';
-export type DeeperValidationStatus = 'idle' | 'loading' | 'completed' | 'error';
-export type EntryPlanStatus = 'idle' | 'loading' | 'completed' | 'error';
+export type DeeperValidationStatus = 'idle' | 'loading' | 'completed' | 'error' | 'stopped';
+export type EntryPlanStatus = 'idle' | 'loading' | 'completed' | 'error' | 'stopped';
 
 export interface MarketScannerState {
   status: ScannerStatus;
@@ -66,16 +66,23 @@ export interface FineScanState {
   results: any[];
   expandedRows: string[];
   outputLogs: string[];
+  stopRequested: boolean;
+  runId: string | null;
+  lastUpdated: string | null;
 }
 
 export interface DeeperValidationState {
   status: DeeperValidationStatus;
   results: any[] | null;
+  runId: string | null;
+  lastUpdated: string | null;
 }
 
 export interface EntryPlanState {
   status: EntryPlanStatus;
   results: any[] | null;
+  runId: string | null;
+  lastUpdated: string | null;
 }
 
 export interface ScannerStoreState {
@@ -143,14 +150,21 @@ const DEFAULT_STATE: ScannerStoreState = {
     results: [],
     expandedRows: [],
     outputLogs: [],
+    stopRequested: false,
+    runId: null,
+    lastUpdated: null,
   },
   deeperValidation: {
     status: 'idle',
     results: null,
+    runId: null,
+    lastUpdated: null,
   },
   entryPlan: {
     status: 'idle',
     results: null,
+    runId: null,
+    lastUpdated: null,
   },
   lastUpdated: null,
   version: 1,

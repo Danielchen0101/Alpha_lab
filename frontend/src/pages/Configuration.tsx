@@ -467,20 +467,20 @@ const AIProviderSection: React.FC = () => {
         const providerModels = PROVIDER_MODELS[provider]?.models || [];
         const isKnown = providerModels.includes(model);
         setCustomModel(!isKnown);
-        // Detect if stored key is masked (contains ****)
-        const rawKey = cfg.apiKey || '';
-        const masked = rawKey.includes('****');
-        setKeyIsMasked(masked);
+        // Use backend indicators — don't detect **** in returned value
+        const hasValidKey = !!res.data.hasUserKey;
+        const keyInvalid = !!res.data.apiKeyIsInvalid;
+        setKeyIsMasked(keyInvalid);
+        // Don't set masked key as form value — use placeholder "Key saved (masked)" instead
         form.setFieldsValue({
           provider,
           model: isKnown ? model : '__custom__',
           customModel: isKnown ? '' : model,
-          apiKey: masked ? '' : rawKey,
+          apiKey: '',
           baseUrl: cfg.baseUrl || cfg.baseURL || PROVIDER_MODELS[provider]?.baseUrl || '',
         });
-        setHasSaved(!!cfg.apiKey && !masked);
-        // Load persisted test status from backend
-        if (masked) {
+        setHasSaved(hasValidKey);
+        if (keyInvalid) {
           setStatus('error');
         } else {
           const testStatus = res.data.testStatus || 'not_tested';
@@ -488,7 +488,7 @@ const AIProviderSection: React.FC = () => {
             setStatus('connected');
           } else if (testStatus === 'error') {
             setStatus('error');
-          } else if (testStatus === 'saved' || !!cfg.apiKey) {
+          } else if (testStatus === 'saved' || hasValidKey) {
             setStatus('saved');
           } else {
             setStatus('not_tested');
@@ -539,12 +539,16 @@ const AIProviderSection: React.FC = () => {
           const providerModels = PROVIDER_MODELS[values.provider]?.models || [];
           const isKnown = providerModels.includes(model);
           setCustomModel(!isKnown);
+          const hasValidKey = !!reload.data.hasUserKey;
+          const keyInvalid = !!reload.data.apiKeyIsInvalid;
+          setKeyIsMasked(keyInvalid);
+          setHasSaved(hasValidKey);
+          // Don't set masked key as form value — use placeholder instead
           form.setFieldsValue({
-            apiKey: cfg.apiKey || '',
+            apiKey: '',
             model: isKnown ? model : '__custom__',
             customModel: isKnown ? '' : model,
           });
-          // Update status from reload
           const reloadStatus = reload.data.testStatus || 'saved';
           if (reloadStatus === 'connected') setStatus('connected');
           else if (reloadStatus === 'error') setStatus('error');
@@ -577,7 +581,7 @@ const AIProviderSection: React.FC = () => {
         model: modelValue,
         provider: values.provider,
       };
-      if (values.apiKey && !values.apiKey.includes('****') && !values.apiKey.includes('•')) {
+      if (values.apiKey && !values.apiKey.includes('****')) {
         payload.apiKey = values.apiKey;
       }
       const res = await userApi.post('/ai/provider/test', payload);

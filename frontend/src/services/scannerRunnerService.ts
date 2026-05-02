@@ -10,7 +10,7 @@ import marketDataService from './marketDataService';
 
 interface ActiveRun {
   id: string;
-  type: 'market-scanner' | 'continue-scan' | 'fine-scan';
+  type: 'market-scanner' | 'continue-scan' | 'fine-scan' | 'deeper-validation' | 'entry-plan';
   promise: Promise<void>;
   stopRequested: boolean;
   abortController: AbortController;
@@ -37,6 +37,121 @@ export function isScanRunning(): boolean {
 export function getActiveRun(): { id: string; type: string; startedAt: number } | null {
   if (!activeRun) return null;
   return { id: activeRun.id, type: activeRun.type, startedAt: activeRun.startedAt };
+}
+
+// ── Fine Scan tracking ──
+
+/**
+ * Register a Fine Scan async loop as active.
+ * Called from Portfolio.tsx when Fine Scan starts.
+ */
+export function registerFineScanRun(promise: Promise<void>): string {
+  const runId = generateRunId();
+  const abortController = new AbortController();
+  const run: ActiveRun = {
+    id: runId,
+    type: 'fine-scan',
+    promise,
+    stopRequested: false,
+    abortController,
+    startedAt: Date.now(),
+  };
+  activeRun = run;
+  console.log('[ScannerRunner] Registered Fine Scan run:', runId);
+  return runId;
+}
+
+/**
+ * Unregister the Fine Scan run when it completes or fails.
+ */
+export function unregisterFineScanRun(): void {
+  if (activeRun && activeRun.type === 'fine-scan') {
+    console.log('[ScannerRunner] Unregistered Fine Scan run:', activeRun.id);
+    activeRun = null;
+  }
+}
+
+/**
+ * Check if Fine Scan is currently running at the module level.
+ */
+export function isFineScanRunning(): boolean {
+  return activeRun !== null && activeRun.type === 'fine-scan' && !activeRun.stopRequested;
+}
+
+// ── Deeper Validation tracking ──
+
+/**
+ * Register a Deeper Validation async loop as active.
+ */
+export function registerDeeperValidationRun(promise: Promise<void>): string {
+  const runId = generateRunId();
+  const abortController = new AbortController();
+  const run: ActiveRun = {
+    id: runId,
+    type: 'deeper-validation',
+    promise,
+    stopRequested: false,
+    abortController,
+    startedAt: Date.now(),
+  };
+  activeRun = run;
+  console.log('[ScannerRunner] Registered Deeper Validation run:', runId);
+  return runId;
+}
+
+/**
+ * Unregister the Deeper Validation run when it completes or fails.
+ */
+export function unregisterDeeperValidationRun(): void {
+  if (activeRun && activeRun.type === 'deeper-validation') {
+    console.log('[ScannerRunner] Unregistered Deeper Validation run:', activeRun.id);
+    activeRun = null;
+  }
+}
+
+/**
+ * Check if Deeper Validation is currently running at the module level.
+ */
+export function isDeeperValidationRunning(): boolean {
+  return activeRun !== null && activeRun.type === 'deeper-validation' && !activeRun.stopRequested;
+}
+
+// ── Entry Plan tracking ──
+
+/**
+ * Register an Entry Plan async loop as active.
+ */
+export function registerEntryPlanRun(promise: Promise<void>): string {
+  const runId = generateRunId();
+  const abortController = new AbortController();
+  const run: ActiveRun = {
+    id: runId,
+    type: 'entry-plan',
+    promise,
+    stopRequested: false,
+    abortController,
+    startedAt: Date.now(),
+  };
+  activeRun = run;
+  console.log('[ScannerRunner] Registered Entry Plan run:', runId);
+  return runId;
+}
+
+/**
+ * Unregister the Entry Plan run when it completes or fails.
+ */
+export function unregisterEntryPlanRun(): void {
+  if (activeRun && activeRun.type === 'entry-plan') {
+    console.log('[ScannerRunner] Unregistered Entry Plan run:', activeRun.id);
+    activeRun = null;
+  }
+}
+
+/**
+ * Check if Entry Plan is currently running at the module level.
+ */
+export function isEntryPlanRunning(): boolean {
+  return activeRun !== null && activeRun.type === 'entry-plan' && !activeRun.stopRequested;
 }
 
 /**
@@ -140,6 +255,7 @@ async function runMarketScannerLoop(run: ActiveRun): Promise<void> {
 
   try {
     // Pre-flight config check
+    let aiAvailable = false;
     try {
       const statusResp = await api.get('/config/status');
       if (statusResp.data?.success) {
@@ -168,6 +284,18 @@ async function runMarketScannerLoop(run: ActiveRun): Promise<void> {
           });
           return;
         }
+        // Check AI provider availability
+        const aiCfg = s.ai || {};
+        if (aiCfg.configured && !aiCfg.keyIsMasked && aiCfg.testStatus === 'connected') {
+          aiAvailable = true;
+        } else {
+          const reason = aiCfg.keyIsMasked ? 'AI key is invalid (masked). Re-enter in Settings.' :
+                         !aiCfg.configured ? 'AI Provider is not configured. Configure in Settings.' :
+                         aiCfg.testStatus !== 'connected' ? `AI Provider not tested (status: ${aiCfg.testStatus}). Click Test AI Connection in Settings.` :
+                         'AI Provider is unavailable.';
+          console.warn(`[ScannerRunner] AI pre-flight: ${reason}`);
+          // Don't block scanner — market data still useful, AI analysis will use local rules
+        }
       }
     } catch (e) {
       console.warn('[ScannerRunner] Config pre-flight failed, continuing:', e);
@@ -183,9 +311,9 @@ async function runMarketScannerLoop(run: ActiveRun): Promise<void> {
         'JPM', 'XOM', 'WMT', 'HD', 'JNJ',
         'PG', 'KO', 'PEP', 'V', 'MA'
       ];
-      await scanSymbolsLoop(run, defaultSymbols);
+      await scanSymbolsLoop(run, defaultSymbols, aiAvailable);
     } else {
-      await scanSymbolsLoop(run, symbols);
+      await scanSymbolsLoop(run, symbols, aiAvailable);
     }
 
     // Check if stopped by user
@@ -237,12 +365,12 @@ async function runMarketScannerLoop(run: ActiveRun): Promise<void> {
 /**
  * Scan symbols in batches with sliding window.
  */
-async function scanSymbolsLoop(run: ActiveRun, symbols: string[]): Promise<void> {
+async function scanSymbolsLoop(run: ActiveRun, symbols: string[], aiAvailable: boolean = true): Promise<void> {
   const store = scannerStateStore;
   const totalSymbols = symbols.length;
-  const RENDER_BATCH_SIZE = 10;
+  const RENDER_BATCH_SIZE = 1;
   const CONCURRENT_CONFIG = {
-    windowSize: 3,
+    windowSize: 1,
     maxRetries: 3,
   };
 
@@ -272,6 +400,15 @@ async function scanSymbolsLoop(run: ActiveRun, symbols: string[]): Promise<void>
 
   store.setMarketScannerResults([]);
 
+  if (!aiAvailable) {
+    store.updateMarketScanner({
+      detailedScanStatus: {
+        ...store.getState().marketScanner.detailedScanStatus,
+        statusMessage: `Scanning ${totalSymbols} symbols with local rules (AI not configured)`,
+      },
+    });
+  }
+
   const pendingSymbols = [...symbols];
   const validatedBuffer: any[] = [];
   const retryQueue: Array<{ symbol: string; retryCount: number; lastError?: string }> = [];
@@ -286,7 +423,10 @@ async function scanSymbolsLoop(run: ActiveRun, symbols: string[]): Promise<void>
     if (run.stopRequested) return;
 
     processingSlots.add(symbol);
-    totalProcessed++;
+    // Only count new symbols, not retries
+    if (retryCount === 0) {
+      totalProcessed++;
+    }
 
     store.updateMarketScanner({
       currentSymbol: symbol,
@@ -325,7 +465,13 @@ async function scanSymbolsLoop(run: ActiveRun, symbols: string[]): Promise<void>
     } catch (error: any) {
       if (error.name === 'AbortError' || run.stopRequested) return;
 
-      if (retryCount < CONCURRENT_CONFIG.maxRetries) {
+      // Don't retry config/auth errors — they won't resolve by retrying
+      const isNonRetryable = error.message?.includes('not configured') ||
+                             error.message?.includes('not passed Test') ||
+                             error.message?.includes('API key');
+      if (isNonRetryable || (error.skipRetry)) {
+        failedSymbols.push({ symbol, error: error.message });
+      } else if (retryCount < CONCURRENT_CONFIG.maxRetries) {
         retryQueue.push({ symbol, retryCount: retryCount + 1, lastError: error.message });
         totalRetries++;
       } else {
@@ -334,17 +480,18 @@ async function scanSymbolsLoop(run: ActiveRun, symbols: string[]): Promise<void>
     } finally {
       processingSlots.delete(symbol);
 
-      // Update progress
+      // Update progress (cap at 100%)
+      const progressPct = Math.min(100, Math.round((totalProcessed / totalSymbols) * 100));
       store.updateMarketScanner({
         scannedSymbols: totalProcessed,
-        progress: Math.round((totalProcessed / totalSymbols) * 100),
+        progress: progressPct,
       });
 
       store.updateMarketScanner({
         detailedScanStatus: {
           ...store.getState().marketScanner.detailedScanStatus,
           processedCount: totalProcessed,
-          percent: Math.round((totalProcessed / totalSymbols) * 100),
+          percent: progressPct,
           validatedCount: totalValidated,
           failedCount: failedSymbols.length,
           retryCount: totalRetries,
@@ -398,19 +545,38 @@ async function scanSymbolsLoop(run: ActiveRun, symbols: string[]): Promise<void>
  * Process a single symbol: fetch market data, news, AI analysis, validate.
  */
 async function processSingleSymbol(symbol: string, retryCount: number = 0): Promise<any> {
+  const store = scannerStateStore;
   try {
     console.log(`[ScannerRunner] [${symbol}] Processing (attempt ${retryCount + 1})`);
 
-    // Fetch market data
+    // Stage 1: Market Data
+    store.updateMarketScanner({
+      detailedScanStatus: {
+        ...store.getState().marketScanner.detailedScanStatus,
+        statusMessage: `${symbol} — Market Data`,
+      },
+    });
     const stockData = await marketDataService.getStockData(symbol);
 
-    // Fetch news data
+    // Stage 2: News
+    store.updateMarketScanner({
+      detailedScanStatus: {
+        ...store.getState().marketScanner.detailedScanStatus,
+        statusMessage: `${symbol} — News`,
+      },
+    });
     const newsData = await getStockNews(symbol);
 
     // Fetch company name
     const companyName = await getCompanyName(symbol);
 
-    // AI trend analysis
+    // Stage 3: AI Analysis
+    store.updateMarketScanner({
+      detailedScanStatus: {
+        ...store.getState().marketScanner.detailedScanStatus,
+        statusMessage: `${symbol} — AI Analysis`,
+      },
+    });
     const trendAnalysis = await analyzeTrend(symbol, stockData, newsData);
 
     // Build result object
@@ -469,7 +635,11 @@ async function processSingleSymbol(symbol: string, retryCount: number = 0): Prom
       const onlyAiMissing = validation.missingFields.every(f => aiOnlyFields.includes(f));
       const hasAiError = result.aiError || (result as any).analysisSource === 'unavailable';
 
-      if (onlyAiMissing && hasAiError) {
+      // If backend already flagged skipRetry (config/auth error), respect it immediately
+      if ((result as any).skipRetry) {
+        result.analysisStatus = 'partial' as 'partial';
+        (result as any).analysisError = result.aiError || 'AI unavailable';
+      } else if (onlyAiMissing && hasAiError) {
         result.analysisStatus = 'partial' as 'partial';
         (result as any).analysisError = result.aiError || 'AI analysis unavailable';
         (result as any).skipRetry = true;
@@ -480,6 +650,14 @@ async function processSingleSymbol(symbol: string, retryCount: number = 0): Prom
         (result as any).analysisError = `Missing critical fields: ${validation.missingFields.join(', ')}`;
       }
     }
+
+    // Stage 4: Completed
+    store.updateMarketScanner({
+      detailedScanStatus: {
+        ...store.getState().marketScanner.detailedScanStatus,
+        statusMessage: `${symbol} — Completed`,
+      },
+    });
 
     return result;
 
@@ -635,9 +813,14 @@ async function analyzeTrend(symbol: string, stockData: any, newsData: any): Prom
       aiSource: 'unavailable',
       aiModel: null,
       aiError: errorData.providerMessage || errorData.error || 'AI analysis failed',
+      skipRetry: errorData.skipRetry || false,
     };
   } catch (error: any) {
     console.error(`[ScannerRunner] [${symbol}] AI analysis exception:`, error.message);
+    const httpStatus = error.response?.status;
+    // Non-retryable: config/auth errors (401, 403) or backend skipRetry flag
+    const backendSkipRetry = error.response?.data?.skipRetry;
+    const isNonRetryable = backendSkipRetry || httpStatus === 401 || httpStatus === 403;
     return {
       trendLabel: null, trendScore: null, momentumLabel: null, momentumScore: null,
       volatilityLabel: null, volatilityScore: null, volumeLabel: null, volumeScore: null,
@@ -648,7 +831,8 @@ async function analyzeTrend(symbol: string, stockData: any, newsData: any): Prom
       aiReasoning: null, newsSentiment: null, eventRisk: null, topNews: null,
       companyName: null, sector: null,
       analysisSource: 'unavailable', aiCalled: true, aiSource: 'unavailable',
-      aiModel: null, aiError: error.message || 'AI analysis exception',
+      aiModel: null, aiError: error.response?.data?.error || error.message || 'AI analysis exception',
+      skipRetry: isNonRetryable,
     };
   }
 }
