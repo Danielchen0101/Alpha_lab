@@ -94,7 +94,8 @@ except ImportError:
     pass
 
 # ===== Supabase & Fernet =====
-SUPABASE_URL = os.getenv('SUPABASE_URL', '')
+# Supabase URL is a public project identifier (not a secret) — safe to hardcode as default
+SUPABASE_URL = os.getenv('SUPABASE_URL', 'https://nwpxjqgqegxttucsmvmp.supabase.co')
 SUPABASE_SERVICE_ROLE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY', '')
 
 supabase_admin = None
@@ -122,6 +123,14 @@ except ImportError:
     print("[Fernet] cryptography package not installed — encryption disabled")
 except Exception as e:
     print(f"[Fernet] Init failed: {e}")
+
+# Startup warnings for missing critical config
+if not supabase_admin:
+    print("[WARNING] supabase_admin is None — per-user config read/write will be DISABLED. "
+          "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables.")
+if not os.getenv('FERNET_KEY'):
+    print("[WARNING] FERNET_KEY not set — using ephemeral key. Encrypted config values will be "
+          "unreadable after backend restart. Set FERNET_KEY in Render environment variables.")
 
 # 导入技术指标模块
 try:
@@ -222,23 +231,65 @@ def auth_logout():
 
 # ==================== Supabase Helpers ====================
 
+# --- Caching for Supabase auth/config to avoid per-symbol API calls ---
+import hashlib
+import threading
+
+SUPABASE_AUTH_CACHE_TTL_SECONDS = 300   # 5 minutes
+SUPABASE_CONFIG_CACHE_TTL_SECONDS = 60  # 1 minute
+
+_auth_cache = {}    # token_hash -> (user_dict, timestamp)
+_config_cache = {}  # (user_id, config_type) -> (config_dict, timestamp)
+_cache_lock = threading.Lock()
+
+def _cache_get(cache, key, ttl_seconds):
+    """Return cached value if not expired, else None."""
+    with _cache_lock:
+        if key in cache:
+            value, ts = cache[key]
+            if time.time() - ts < ttl_seconds:
+                return value
+            del cache[key]
+    return None
+
+def _cache_set(cache, key, value):
+    """Store value in cache with current timestamp."""
+    with _cache_lock:
+        cache[key] = (value, time.time())
+
+def _cache_invalidate(cache, key):
+    """Remove a specific key from cache."""
+    with _cache_lock:
+        cache.pop(key, None)
+
+def _hash_token(token):
+    """Hash a bearer token for use as cache key."""
+    return hashlib.sha256(token.encode()).hexdigest()[:16]
+
 def get_supabase_user():
-    """Verify Supabase access token from Authorization header. Returns user dict or None."""
+    """Verify Supabase access token from Authorization header. Returns user dict or None.
+    Uses auth cache to avoid per-request Supabase Auth API calls."""
     if not supabase_admin:
         safe_print('[Auth] supabase_admin is None — cannot verify token')
         return None
     auth_header = request.headers.get('Authorization', '')
     has_token = auth_header.startswith('Bearer ') if auth_header else False
-    safe_print(f'[Auth] Authorization header present: {bool(auth_header)}, has Bearer: {has_token}')
-    token = auth_header.replace('Bearer ', '') if auth_header.startswith('Bearer ') else ''
-    if not token:
-        safe_print('[Auth] No token found in header')
+    if not has_token:
         return None
+    token = auth_header[7:]  # Strip 'Bearer '
+
+    # Check auth cache first
+    token_hash = _hash_token(token)
+    cached_user = _cache_get(_auth_cache, token_hash, SUPABASE_AUTH_CACHE_TTL_SECONDS)
+    if cached_user is not None:
+        return cached_user
+
     try:
         resp = supabase_admin.auth.get_user(token)
-        safe_print(f'[Auth] get_user response: {resp is not None}, has user: {resp.user is not None if resp else False}')
         if resp and resp.user:
-            return {'id': resp.user.id, 'email': resp.user.email}
+            user = {'id': resp.user.id, 'email': resp.user.email}
+            _cache_set(_auth_cache, token_hash, user)
+            return user
     except Exception as e:
         safe_print(f'[Auth] Supabase token verification failed: {type(e).__name__}: {e}')
     return None
@@ -273,25 +324,40 @@ SENSITIVE_FIELDS = {
         'live_api_key', 'live_api_secret',
         'market_data_api_key', 'market_data_api_secret'
     ],
-    'alpaca_market_data': ['api_key', 'api_secret'],
     'finnhub': ['api_key'],
 }
 
 
 def get_user_config(user_id, config_type):
-    """Fetch and decrypt user config from Supabase. Returns dict or None."""
+    """Fetch and decrypt user config from Supabase. Returns dict or None.
+    Uses config cache to avoid per-request Supabase DB queries."""
     if not supabase_admin:
+        safe_print(f'[Supabase] get_user_config: supabase_admin is None — cannot read config')
         return None
+
+    # Check config cache first
+    cache_key = (user_id, config_type)
+    cached = _cache_get(_config_cache, cache_key, SUPABASE_CONFIG_CACHE_TTL_SECONDS)
+    if cached is not None:
+        return cached
+
     try:
         resp = supabase_admin.table('user_api_configs').select('config').eq('user_id', user_id).eq('config_type', config_type).execute()
         if resp.data:
             config = dict(resp.data[0]['config'])
             for field in SENSITIVE_FIELDS.get(config_type, []):
-                if field in config:
+                if field in config and isinstance(config[field], str):
+                    original = config[field]
                     config[field] = decrypt_value(config[field])
+                    # Detect stale encryption: value was encrypted but couldn't be decrypted
+                    if original.startswith('enc:') and config[field] == original:
+                        safe_print(f'[Supabase] get_user_config WARNING: field "{field}" still encrypted after decrypt — FERNET_KEY may have changed')
+            _cache_set(_config_cache, cache_key, config)
             return config
+        else:
+            safe_print(f'[Supabase] get_user_config: no row found for user={user_id[:8]}... type={config_type}')
     except Exception as e:
-        safe_print(f'[Supabase] get_user_config failed: {e}')
+        safe_print(f'[Supabase] get_user_config failed: {type(e).__name__}: {e}')
     return None
 
 
@@ -318,6 +384,8 @@ def save_user_config(user_id, config_type, config_data):
             safe_print(f'[Supabase] upsert with on_conflict failed, trying delete+insert: {upsert_err}')
             supabase_admin.table('user_api_configs').delete().eq('user_id', user_id).eq('config_type', config_type).execute()
             supabase_admin.table('user_api_configs').insert(row).execute()
+        # Invalidate config cache for this user/config_type
+        _cache_invalidate(_config_cache, (user_id, config_type))
         return True, None
     except Exception as e:
         safe_print(f'[Supabase] save_user_config failed: {e}')
@@ -325,12 +393,51 @@ def save_user_config(user_id, config_type, config_data):
 
 
 def mask_key(key):
-    """Mask a sensitive key for display."""
-    if not key:
+    """Mask a sensitive key for display. Handles enc: encrypted values safely.
+    Returns partial mask like 'sk-****abcd' or generic '************'."""
+    if not key or not isinstance(key, str):
         return ''
-    if len(key) <= 8:
+    v = key.strip()
+    if not v:
+        return ''
+    # If value looks encrypted, try to decrypt first
+    if v.startswith('enc:'):
+        decrypted = decrypt_value(v)
+        if decrypted and isinstance(decrypted, str) and not decrypted.startswith('enc:'):
+            v = decrypted  # Successfully decrypted — mask the real value
+        else:
+            # Cannot decrypt (stale/key changed) — return generic mask, never expose enc: prefix
+            return '************'
+    # Partial mask: show prefix + **** + suffix
+    if len(v) <= 4:
         return '****'
-    return key[:4] + '****' + key[-4:]
+    if len(v) <= 8:
+        return v[:2] + '****'
+    return v[:4] + '****' + v[-4:]
+
+
+def _is_invalid_key(value):
+    """Detect masked, stale-encrypted, or otherwise invalid credential values.
+    Returns (is_invalid: bool, reason: str)."""
+    if not value or not isinstance(value, str):
+        return True, 'empty'
+    v = value.strip()
+    if not v:
+        return True, 'blank'
+    if v.startswith('enc:'):
+        return True, 'stale_encrypted'
+    if '****' in v:
+        return True, 'contains_mask'
+    if set(v) <= {'*'}:
+        return True, 'all_asterisks'
+    if set(v) <= {'•'}:
+        return True, 'all_dots'
+    lower = v.lower()
+    if 'redacted' in lower or 'masked' in lower or 'placeholder' in lower:
+        return True, 'contains_redacted_keyword'
+    if len(v) < 8:
+        return True, f'too_short(len={len(v)})'
+    return False, 'ok'
 
 
 
@@ -1328,11 +1435,11 @@ def fetch_alpaca_stock_data_snapshot(symbols, config=None):
 
             error_msg = f'Alpaca market data API returned {response.status_code}'
             if response.status_code == 401:
-                error_msg = 'Alpaca market data API key invalid or expired'
+                error_msg = 'Alpaca market data credentials rejected (401). Re-enter full Real Trading API key/secret in Settings.'
             elif response.status_code == 403:
-                error_msg = 'Alpaca market data API key lacks permission'
+                error_msg = 'Alpaca market data API key lacks permission (403). Check your Alpaca subscription tier.'
             elif response.status_code == 429:
-                error_msg = 'Alpaca market data API rate limited'
+                error_msg = 'Alpaca market data API rate limited (429)'
 
             return {}, {symbol: error_msg for symbol in symbols}
 
@@ -4998,6 +5105,7 @@ def ai_provider_config():
                 'success': True,
                 'config': config_to_return,
                 'hasUserKey': has_key,
+                'maskedApiKey': display_key,
                 'message': 'Configuration loaded' if has_key else 'User must configure API key in Settings page',
                 'testStatus': test_status,
                 'lastTestedAt': last_tested_at,
@@ -5069,6 +5177,7 @@ def ai_provider_config():
             response = {
                 'success': True,
                 'config': config_to_return,
+                'maskedApiKey': display_key,
                 'message': '配置保存成功',
                 'testStatus': 'saved',
             }
@@ -5116,6 +5225,15 @@ def ai_provider_test():
         user_cfg = get_user_config(user['id'], 'ai_provider') or {}
         if not api_key:
             api_key = user_cfg.get('apiKey', '')
+            # Validate stored key — reject masked/stale-encrypted values
+            stored_invalid, stored_reason = _is_invalid_key(api_key)
+            if stored_invalid:
+                return jsonify({
+                    'success': False,
+                    'message': f'Stored AI API key is invalid ({stored_reason}). Please re-enter the real API key in Settings and save.',
+                    'valid': False,
+                    'testStatus': 'error',
+                })
         if not base_url:
             base_url = user_cfg.get('baseURL', user_cfg.get('baseUrl', ''))
         if not model:
@@ -5430,25 +5548,44 @@ def config_alpaca():
 
 @app.route('/api/config/alpaca/test', methods=['POST'])
 def config_alpaca_test():
-    """Test Alpaca connection for paper or live mode."""
+    """Test Alpaca connection for paper or live mode.
+    Resolves keys from per-user Supabase config first, then JSON file / in-memory fallback."""
     try:
         data = request.get_json() or {}
         mode = data.get('mode', 'paper')
 
-        # Load config
-        cfg = _load_json_config(ALPACA_CONFIG_FILE, dict(alpaca_config_state))
+        api_key = ''
+        api_secret = ''
+        base_url = 'https://paper-api.alpaca.markets' if mode == 'paper' else 'https://api.alpaca.markets'
 
-        if mode == 'paper':
-            api_key = cfg.get('paper_api_key', alpaca_config_state.get('paper_api_key', ''))
-            api_secret = cfg.get('paper_api_secret', alpaca_config_state.get('paper_api_secret', ''))
-            base_url = cfg.get('paper_base_url', 'https://paper-api.alpaca.markets')
-        else:
-            api_key = cfg.get('live_api_key', alpaca_config_state.get('live_api_key', ''))
-            api_secret = cfg.get('live_api_secret', alpaca_config_state.get('live_api_secret', ''))
-            base_url = cfg.get('live_base_url', 'https://api.alpaca.markets')
+        # 1. Try per-user Supabase config first
+        user = get_supabase_user()
+        if user:
+            alpaca_cfg = get_user_config(user['id'], 'alpaca')
+            if alpaca_cfg:
+                if mode == 'paper':
+                    api_key = alpaca_cfg.get('paper_api_key', '')
+                    api_secret = alpaca_cfg.get('paper_api_secret', '')
+                    base_url = alpaca_cfg.get('paper_base_url', base_url)
+                else:
+                    api_key = alpaca_cfg.get('live_api_key', '')
+                    api_secret = alpaca_cfg.get('live_api_secret', '')
+                    base_url = alpaca_cfg.get('live_base_url', base_url)
+
+        # 2. Fallback to JSON file / in-memory state
+        if not api_key or not api_secret:
+            cfg = _load_json_config(ALPACA_CONFIG_FILE, dict(alpaca_config_state))
+            if mode == 'paper':
+                api_key = api_key or cfg.get('paper_api_key', alpaca_config_state.get('paper_api_key', ''))
+                api_secret = api_secret or cfg.get('paper_api_secret', alpaca_config_state.get('paper_api_secret', ''))
+                base_url = cfg.get('paper_base_url', base_url)
+            else:
+                api_key = api_key or cfg.get('live_api_key', alpaca_config_state.get('live_api_key', ''))
+                api_secret = api_secret or cfg.get('live_api_secret', alpaca_config_state.get('live_api_secret', ''))
+                base_url = cfg.get('live_base_url', base_url)
 
         if not api_key or not api_secret:
-            return jsonify({'success': False, 'message': f'No {mode} API key/secret configured'})
+            return jsonify({'success': False, 'message': f'No {mode} API key/secret configured. Please save your keys first.'})
 
         headers = {
             'APCA-API-KEY-ID': api_key,
@@ -5486,44 +5623,28 @@ def config_market_data():
                 'data_base_url': file_cfg.get('data_base_url', 'https://data.alpaca.markets'),
                 'feed': file_cfg.get('feed', 'iex'),
             }
-            # Load API keys from Supabase if authenticated
+            # Market data keys live in the alpaca config row (same as live trading keys)
             user = get_supabase_user()
             if user:
-                md_cfg = get_user_config(user['id'], 'alpaca_market_data')
-                if md_cfg and md_cfg.get('api_key'):
-                    result['hasApiKey'] = True
-                    result['hasSecretKey'] = bool(md_cfg.get('api_secret'))
-                    result['api_key_masked'] = mask_key(md_cfg['api_key'])
-                    if md_cfg.get('api_secret'):
-                        result['api_secret_masked'] = mask_key(md_cfg['api_secret'])
-                    result['credentialSource'] = 'real_trading'
-                else:
-                    # Fallback: read from Real Trading config and auto-sync
-                    alpaca_cfg = get_user_config(user['id'], 'alpaca')
-                    if alpaca_cfg and alpaca_cfg.get('live_api_key') and alpaca_cfg.get('live_api_secret'):
-                        live_key = alpaca_cfg['live_api_key']
-                        live_secret = alpaca_cfg['live_api_secret']
-                        if '****' not in str(live_key):
-                            # Auto-sync to alpaca_market_data
-                            save_user_config(user['id'], 'alpaca_market_data', {
-                                'api_key': live_key,
-                                'api_secret': live_secret,
-                            })
-                            safe_print(f'[Market Data GET] Auto-synced from Real Trading for user {user["id"][:8]}...')
-                            result['hasApiKey'] = True
-                            result['hasSecretKey'] = True
-                            result['api_key_masked'] = mask_key(live_key)
-                            result['api_secret_masked'] = mask_key(live_secret)
-                            result['credentialSource'] = 'real_trading'
-                        else:
-                            # Masked key in Real Trading config — can't sync
-                            result['hasApiKey'] = False
-                            result['hasSecretKey'] = False
-                            result['credentialSource'] = 'none'
+                alpaca_cfg = get_user_config(user['id'], 'alpaca')
+                if alpaca_cfg:
+                    md_key = alpaca_cfg.get('market_data_api_key', '') or alpaca_cfg.get('live_api_key', '')
+                    md_secret = alpaca_cfg.get('market_data_api_secret', '') or alpaca_cfg.get('live_api_secret', '')
+                    md_bad, _ = _is_invalid_key(md_key)
+                    if md_key and md_secret and not md_bad:
+                        result['hasApiKey'] = True
+                        result['hasSecretKey'] = True
+                        result['api_key_masked'] = mask_key(md_key)
+                        result['api_secret_masked'] = mask_key(md_secret)
+                        result['credentialSource'] = 'real_trading'
                     else:
                         result['hasApiKey'] = False
                         result['hasSecretKey'] = False
                         result['credentialSource'] = 'none'
+                else:
+                    result['hasApiKey'] = False
+                    result['hasSecretKey'] = False
+                    result['credentialSource'] = 'none'
             return jsonify({'success': True, 'config': result})
         else:
             data = request.get_json() or {}
@@ -5533,29 +5654,18 @@ def config_market_data():
                 file_cfg['feed'] = data['feed']
             _save_json_config(MARKET_DATA_CONFIG_FILE, file_cfg)
 
-            # Always sync API keys from Real Trading config — never rely on masked UI values
-            user = get_supabase_user()
-            if user:
-                alpaca_cfg = get_user_config(user['id'], 'alpaca')
-                if alpaca_cfg and alpaca_cfg.get('live_api_key') and alpaca_cfg.get('live_api_secret'):
-                    live_key = alpaca_cfg['live_api_key']
-                    live_secret = alpaca_cfg['live_api_secret']
-                    if '****' not in str(live_key):
-                        save_user_config(user['id'], 'alpaca_market_data', {
-                            'api_key': live_key,
-                            'api_secret': live_secret,
-                        })
-                        safe_print(f'[Market Data SAVE] Synced from Real Trading for user {user["id"][:8]}...')
-                        return jsonify({
-                            'success': True,
-                            'message': 'Market data config saved (synced from Real Trading)',
-                            'maskedApiKey': mask_key(live_key),
-                            'maskedSecretKey': mask_key(live_secret),
-                        })
-                    else:
-                        return jsonify({'success': False, 'message': 'Real Trading key appears masked. Please re-save Real Trading settings with a valid key.'})
-                else:
-                    return jsonify({'success': False, 'message': 'Alpaca Real Trading credentials are required before saving Market Data settings.'})
+            # If user provided market data keys, save them to Supabase
+            md_key = data.get('api_key', '')
+            md_secret = data.get('api_secret', '')
+            if md_key and md_secret and '****' not in md_key and '****' not in md_secret:
+                user = get_supabase_user()
+                if user:
+                    existing_alpaca = get_user_config(user['id'], 'alpaca') or {}
+                    existing_alpaca['market_data_api_key'] = md_key
+                    existing_alpaca['market_data_api_secret'] = md_secret
+                    save_user_config(user['id'], 'alpaca', existing_alpaca)
+                    safe_print(f'[Market Data Config] Saved market_data keys to Supabase for user {user["id"][:8]}...')
+
             return jsonify({'success': True, 'message': 'Market data config saved'})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
@@ -5566,57 +5676,71 @@ def config_market_data_test():
     """Test market data connection by fetching AAPL snapshot."""
     try:
         data_url = 'https://data.alpaca.markets'
+        endpoint_path = '/v2/stocks/AAPL/snapshot'
         cfg = _load_json_config(MARKET_DATA_CONFIG_FILE, {'feed': 'iex'})
         feed = cfg.get('feed', 'iex')
 
-        # Use market data config (strict user config)
+        # Market data keys live in the alpaca config row (same as live trading keys)
         md_resolved, md_source = resolve_alpaca_config('market_data', require_user_config=True)
         api_key = md_resolved.get('api_key', '')
         api_secret = md_resolved.get('api_secret', '')
 
-        # Auto-sync from Real Trading if no dedicated Market Data config
-        if not api_key:
-            user = get_supabase_user()
-            if user:
-                alpaca_cfg = get_user_config(user['id'], 'alpaca')
-                if alpaca_cfg and alpaca_cfg.get('live_api_key') and alpaca_cfg.get('live_api_secret'):
-                    live_key = alpaca_cfg['live_api_key']
-                    live_secret = alpaca_cfg['live_api_secret']
-                    if '****' not in str(live_key):
-                        save_user_config(user['id'], 'alpaca_market_data', {
-                            'api_key': live_key,
-                            'api_secret': live_secret,
-                        })
-                        api_key = live_key
-                        api_secret = live_secret
-                        md_source = 'real_trading'
-                        safe_print(f'[Market Data TEST] Auto-synced from Real Trading for user {user["id"][:8]}...')
+        # Validate key/secret before making request
+        key_invalid, key_reason = _is_invalid_key(api_key)
+        secret_invalid, secret_reason = _is_invalid_key(api_secret)
 
         debug = {
             'keySource': md_source,
-            'hasApiKey': bool(api_key),
-            'hasSecretKey': bool(api_secret),
+            'keyPresent': bool(api_key),
+            'secretPresent': bool(api_secret),
+            'keyLength': len(api_key) if api_key else 0,
+            'secretLength': len(api_secret) if api_secret else 0,
+            'keyPrefix': api_key[:4] if api_key and len(api_key) >= 4 else '',
+            'keySuffix': api_key[-4:] if api_key and len(api_key) >= 4 else '',
+            'isKeyInvalid': key_invalid,
+            'keyInvalidReason': key_reason,
             'baseUrl': data_url,
             'feed': feed,
+            'endpointPath': endpoint_path,
         }
 
-        if not api_key:
-            return jsonify({'success': False, 'message': 'No Alpaca API key configured. Save Real Trading settings first.', 'debug': debug})
+        if key_invalid:
+            return jsonify({
+                'success': False,
+                'message': f'Stored API key is invalid ({key_reason}). Re-enter the full Real Trading API key/secret in Settings and save again.',
+                'debug': debug,
+            })
+        if secret_invalid:
+            return jsonify({
+                'success': False,
+                'message': f'Stored API secret is invalid ({secret_reason}). Re-enter the full Real Trading API key/secret in Settings and save again.',
+                'debug': debug,
+            })
 
         headers = {
             'APCA-API-KEY-ID': api_key,
             'APCA-API-SECRET-KEY': api_secret,
         }
-        resp = requests.get(f'{data_url}/v2/stocks/AAPL/snapshot', headers=headers,
+        resp = requests.get(f'{data_url}{endpoint_path}', headers=headers,
                           params={'feed': feed}, timeout=10)
+
+        debug['statusCode'] = resp.status_code
+        debug['alpacaResponseContentType'] = resp.headers.get('content-type', '')
+        debug['alpacaResponseBodySummary'] = resp.text[:200] if resp.status_code != 200 else 'OK'
+
         if resp.status_code == 200:
-            debug['credentialSource'] = 'real_trading'
-            debug['maskedApiKey'] = mask_key(api_key)
-            debug['maskedSecretKey'] = mask_key(api_secret)
-            return jsonify({'success': True, 'message': f'Market data OK (feed={feed})', 'debug': debug})
+            debug['credentialSource'] = md_source
+            return jsonify({'success': True, 'message': f'Market data OK (feed={feed}, source={md_source})', 'debug': debug})
+        elif resp.status_code == 401:
+            debug['credentialSource'] = md_source
+            return jsonify({
+                'success': False,
+                'message': 'Alpaca rejected the market data credentials. Re-enter the full Real Trading API key/secret in Settings and save again.',
+                'debug': debug,
+            })
         else:
-            debug['credentialSource'] = 'real_trading'
-            return jsonify({'success': False, 'message': f'HTTP {resp.status_code}: {resp.text[:200]}', 'debug': debug})
+            debug['credentialSource'] = md_source
+            return jsonify({'success': False, 'message': f'Alpaca market data returned HTTP {resp.status_code} (source={md_source}, feed={feed})', 'debug': debug})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)[:200]})
 
@@ -5725,27 +5849,11 @@ def ai_alpaca_account():
 
     try:
 
-        # 尝试使用真实的 Alpaca API
-
-        environment = alpaca_config_state.get('environment', 'paper')
-
-
-
-        if environment == 'paper':
-
-            api_key = alpaca_config_state.get('paper_api_key')
-
-            api_secret = alpaca_config_state.get('paper_api_secret')
-
-            base_url = 'https://paper-api.alpaca.markets'
-
-        else:
-
-            api_key = alpaca_config_state.get('live_api_key')
-
-            api_secret = alpaca_config_state.get('live_api_secret')
-
-            base_url = 'https://api.alpaca.markets'
+        # Resolve Alpaca config from per-user Supabase (paper mode for AI Agent)
+        alpaca_cfg, alpaca_src = resolve_alpaca_config('paper', require_user_config=True)
+        api_key = alpaca_cfg.get('api_key', '')
+        api_secret = alpaca_cfg.get('api_secret', '')
+        base_url = alpaca_cfg.get('base_url', 'https://paper-api.alpaca.markets')
 
 
 
@@ -5865,27 +5973,11 @@ def ai_alpaca_positions():
 
     try:
 
-        # 尝试使用真实的 Alpaca API
-
-        environment = alpaca_config_state.get('environment', 'paper')
-
-
-
-        if environment == 'paper':
-
-            api_key = alpaca_config_state.get('paper_api_key')
-
-            api_secret = alpaca_config_state.get('paper_api_secret')
-
-            base_url = 'https://paper-api.alpaca.markets'
-
-        else:
-
-            api_key = alpaca_config_state.get('live_api_key')
-
-            api_secret = alpaca_config_state.get('live_api_secret')
-
-            base_url = 'https://api.alpaca.markets'
+        # Resolve Alpaca config from per-user Supabase (paper mode for AI Agent)
+        alpaca_cfg, alpaca_src = resolve_alpaca_config('paper', require_user_config=True)
+        api_key = alpaca_cfg.get('api_key', '')
+        api_secret = alpaca_cfg.get('api_secret', '')
+        base_url = alpaca_cfg.get('base_url', 'https://paper-api.alpaca.markets')
 
 
 
@@ -6215,27 +6307,11 @@ def ai_alpaca_orders():
 
     try:
 
-        # 尝试使用真实的 Alpaca API
-
-        environment = alpaca_config_state.get('environment', 'paper')
-
-
-
-        if environment == 'paper':
-
-            api_key = alpaca_config_state.get('paper_api_key')
-
-            api_secret = alpaca_config_state.get('paper_api_secret')
-
-            base_url = 'https://paper-api.alpaca.markets'
-
-        else:
-
-            api_key = alpaca_config_state.get('live_api_key')
-
-            api_secret = alpaca_config_state.get('live_api_secret')
-
-            base_url = 'https://api.alpaca.markets'
+        # Resolve Alpaca config from per-user Supabase (paper mode for AI Agent)
+        alpaca_cfg, alpaca_src = resolve_alpaca_config('paper', require_user_config=True)
+        api_key = alpaca_cfg.get('api_key', '')
+        api_secret = alpaca_cfg.get('api_secret', '')
+        base_url = alpaca_cfg.get('base_url', 'https://paper-api.alpaca.markets')
 
 
 
@@ -6659,29 +6735,11 @@ def ai_alpaca_place_order():
 
 
 
-        # 尝试使用真实的 Alpaca API
-
-        environment = alpaca_config_state.get('environment', 'paper')
-
-
-
-        if environment == 'paper':
-
-            api_key = alpaca_config_state.get('paper_api_key')
-
-            api_secret = alpaca_config_state.get('paper_api_secret')
-
-            base_url = 'https://paper-api.alpaca.markets'
-
-        else:
-
-            api_key = alpaca_config_state.get('live_api_key')
-
-            api_secret = alpaca_config_state.get('live_api_secret')
-
-            base_url = 'https://api.alpaca.markets'
-
-
+        # Resolve Alpaca config from per-user Supabase (paper mode for AI Agent)
+        alpaca_cfg, alpaca_src = resolve_alpaca_config('paper', require_user_config=True)
+        api_key = alpaca_cfg.get('api_key', '')
+        api_secret = alpaca_cfg.get('api_secret', '')
+        base_url = alpaca_cfg.get('base_url', 'https://paper-api.alpaca.markets')
 
         # 检查API密钥
 
@@ -6843,27 +6901,11 @@ def ai_alpaca_orders_history():
 
     try:
 
-        # 尝试使用真实的 Alpaca API
-
-        environment = alpaca_config_state.get('environment', 'paper')
-
-
-
-        if environment == 'paper':
-
-            api_key = alpaca_config_state.get('paper_api_key')
-
-            api_secret = alpaca_config_state.get('paper_api_secret')
-
-            base_url = 'https://paper-api.alpaca.markets'
-
-        else:
-
-            api_key = alpaca_config_state.get('live_api_key')
-
-            api_secret = alpaca_config_state.get('live_api_secret')
-
-            base_url = 'https://api.alpaca.markets'
+        # Resolve Alpaca config from per-user Supabase (paper mode for AI Agent)
+        alpaca_cfg, alpaca_src = resolve_alpaca_config('paper', require_user_config=True)
+        api_key = alpaca_cfg.get('api_key', '')
+        api_secret = alpaca_cfg.get('api_secret', '')
+        base_url = alpaca_cfg.get('base_url', 'https://paper-api.alpaca.markets')
 
 
 
@@ -6873,7 +6915,7 @@ def ai_alpaca_orders_history():
 
             print('=== DEBUG: Alpaca API 密钥检查 ===')
 
-            safe_print(f'[Alpaca Debug] hasKey={bool(api_key)} hasSecret={bool(api_secret)} env={environment}')
+            safe_print(f'[Alpaca Debug] hasKey={bool(api_key)} hasSecret={bool(api_secret)} src={alpaca_src}')
 
             print('Alpaca API 密钥未配置，返回空数据')
 
@@ -7267,7 +7309,7 @@ def ai_alpaca_orders_history():
 def resolve_ai_config(require_user_config=False):
     """Return AI config: per-user from Supabase if authenticated, else global fallback.
     When require_user_config=True, never falls back to global/env. Returns (config, source) tuple.
-    Returns dict with keys: apiKey, baseURL, model, provider"""
+    Returns dict with keys: apiKey, baseURL, model, provider, keyIsMasked, testStatus"""
     user = get_supabase_user()
     if user:
         user_cfg = get_user_config(user['id'], 'ai_provider')
@@ -7285,10 +7327,24 @@ def resolve_ai_config(require_user_config=False):
                     'testStatus': user_cfg.get('aiTestStatus', 'not_tested'),
                     'lastTestedAt': user_cfg.get('lastTestedAt'),
                     'lastTestError': user_cfg.get('lastTestError'),
+                    'keyIsMasked': False,
                 }
                 return (result, 'user_config/supabase') if require_user_config else result
             elif key_is_masked:
                 safe_print(f'[resolve_ai_config] source=supabase user={user["id"][:8]}... WARNING: stored key appears masked')
+                return ({
+                    'apiKey': '',
+                    'baseURL': user_cfg.get('baseURL', user_cfg.get('baseUrl', '')),
+                    'model': user_cfg.get('model', 'deepseek-chat'),
+                    'provider': user_cfg.get('provider', 'DeepSeek'),
+                    'testStatus': user_cfg.get('aiTestStatus', 'not_tested'),
+                    'lastTestedAt': user_cfg.get('lastTestedAt'),
+                    'lastTestError': user_cfg.get('lastTestError'),
+                    'keyIsMasked': True,
+                }, 'user_config/supabase') if require_user_config else {
+                    'apiKey': '', 'baseURL': '', 'model': '', 'provider': '',
+                    'testStatus': 'not_configured', 'keyIsMasked': True,
+                }
             else:
                 safe_print(f'[resolve_ai_config] source=supabase user={user["id"][:8]}... hasKey=False (empty apiKey in DB)')
         else:
@@ -7306,6 +7362,7 @@ def resolve_ai_config(require_user_config=False):
             'testStatus': 'not_configured',
             'lastTestedAt': None,
             'lastTestError': None,
+            'keyIsMasked': False,
         }, 'missing')
 
     # Fallback to global config (only when require_user_config=False)
@@ -7319,6 +7376,7 @@ def resolve_ai_config(require_user_config=False):
         'testStatus': ai_provider_config_state.get('aiTestStatus', 'not_tested'),
         'lastTestedAt': ai_provider_config_state.get('lastTestedAt'),
         'lastTestError': ai_provider_config_state.get('lastTestError'),
+        'keyIsMasked': False,
     }
 
 
@@ -7330,31 +7388,29 @@ def resolve_alpaca_config(mode='paper', require_user_config=False):
     For market_data mode: base_url is ALWAYS https://data.alpaca.markets"""
     user = get_supabase_user()
 
-    # --- market_data mode: separate config type ---
+    # --- market_data mode: keys live in the alpaca config row ---
     if mode == 'market_data':
         if user:
-            # 1. Try dedicated market_data config from Supabase (alpaca_market_data table)
-            md_cfg = get_user_config(user['id'], 'alpaca_market_data')
-            if md_cfg:
-                key = md_cfg.get('api_key', '')
-                secret = md_cfg.get('api_secret', '')
-                if key and secret and '****' not in key:
-                    safe_print(f'[resolve_alpaca_config] source=supabase user={user["id"][:8]}... mode=market_data hasKey=True (dedicated)')
-                    result = {'api_key': key, 'api_secret': secret, 'base_url': 'https://data.alpaca.markets'}
-                    return (result, 'saved_market_data') if require_user_config else result
+            alpaca_cfg = get_user_config(user['id'], 'alpaca')
+            if alpaca_cfg:
+                # Priority: market_data_api_key > live_api_key > paper_api_key
+                for src_field, src_label in [
+                    ('market_data_api_key', 'market_data_override'),
+                    ('live_api_key', 'live_auto_synced'),
+                    ('paper_api_key', 'paper_fallback'),
+                ]:
+                    key = alpaca_cfg.get(src_field, '')
+                    secret_field = src_field.replace('_api_key', '_api_secret')
+                    secret = alpaca_cfg.get(secret_field, '')
+                    key_bad, key_bad_reason = _is_invalid_key(key)
+                    if key and secret and not key_bad:
+                        safe_print(f'[resolve_alpaca_config] source=supabase user={user["id"][:8]}... mode=market_data hasKey=True ({src_label})')
+                        result = {'api_key': key, 'api_secret': secret, 'base_url': 'https://data.alpaca.markets'}
+                        return (result, src_label) if require_user_config else result
+                    elif key:
+                        safe_print(f'[resolve_alpaca_config] source=supabase user={user["id"][:8]}... mode=market_data {src_label} key INVALID ({key_bad_reason})')
 
-            # 2. Fall back to broker config (alpaca table) paper_api_key/paper_api_secret
-            #    These keys work with data.alpaca.markets too — just use different host
-            broker_cfg = get_user_config(user['id'], 'alpaca')
-            if broker_cfg:
-                paper_key = broker_cfg.get('paper_api_key', '')
-                paper_secret = broker_cfg.get('paper_api_secret', '')
-                if paper_key and paper_secret and '****' not in paper_key:
-                    safe_print(f'[resolve_alpaca_config] source=supabase user={user["id"][:8]}... mode=market_data hasKey=True (paper_fallback)')
-                    result = {'api_key': paper_key, 'api_secret': paper_secret, 'base_url': 'https://data.alpaca.markets'}
-                    return (result, 'paper_fallback') if require_user_config else result
-
-            safe_print(f'[resolve_alpaca_config] source=supabase user={user["id"][:8]}... mode=market_data hasKey=False (no config)')
+            safe_print(f'[resolve_alpaca_config] source=supabase user={user["id"][:8]}... mode=market_data hasKey=False (no valid config)')
         else:
             safe_print(f'[resolve_alpaca_config] no authenticated user (market_data)')
 
@@ -7380,11 +7436,15 @@ def resolve_alpaca_config(mode='paper', require_user_config=False):
                 key = user_cfg.get('live_api_key', '')
                 secret = user_cfg.get('live_api_secret', '')
                 url = user_cfg.get('live_base_url', 'https://api.alpaca.markets')
-            if key and secret:
+            key_bad, key_bad_reason = _is_invalid_key(key)
+            if key and secret and not key_bad:
                 print(f'[resolve_alpaca_config] source=supabase user={user["id"][:8]}... mode={mode} hasKey=True')
                 result = {'api_key': key, 'api_secret': secret, 'base_url': url}
                 return (result, 'user_config/supabase') if require_user_config else result
-            print(f'[resolve_alpaca_config] source=supabase user={user["id"][:8]}... mode={mode} hasKey=False (incomplete config)')
+            elif key and key_bad:
+                print(f'[resolve_alpaca_config] source=supabase user={user["id"][:8]}... mode={mode} key INVALID ({key_bad_reason})')
+            else:
+                print(f'[resolve_alpaca_config] source=supabase user={user["id"][:8]}... mode={mode} hasKey=False (incomplete config)')
         else:
             print(f'[resolve_alpaca_config] source=supabase user={user["id"][:8]}... mode={mode} no config in DB')
     else:
@@ -7464,23 +7524,21 @@ def resolve_alpaca_config_strict_user(mode='paper'):
         return {}, 'auth_required'
 
     if mode == 'market_data':
-        # 1. Try dedicated alpaca_market_data config type
-        md_cfg = get_user_config(user['id'], 'alpaca_market_data')
-        if md_cfg:
-            key = md_cfg.get('api_key', '')
-            secret = md_cfg.get('api_secret', '')
-            if key and secret and '****' not in key:
-                safe_print(f'[resolve_alpaca_config_strict] user={user["id"][:8]}... mode=market_data hasKey=True (dedicated)')
-                return {'api_key': key, 'api_secret': secret, 'base_url': 'https://data.alpaca.markets'}, 'ok'
-
-        # 2. Fall back to broker config (alpaca table) paper_api_key/paper_api_secret
-        broker_cfg = get_user_config(user['id'], 'alpaca')
-        if broker_cfg:
-            paper_key = broker_cfg.get('paper_api_key', '')
-            paper_secret = broker_cfg.get('paper_api_secret', '')
-            if paper_key and paper_secret and '****' not in paper_key:
-                safe_print(f'[resolve_alpaca_config_strict] user={user["id"][:8]}... mode=market_data hasKey=True (paper_fallback)')
-                return {'api_key': paper_key, 'api_secret': paper_secret, 'base_url': 'https://data.alpaca.markets'}, 'ok'
+        # Market data keys live in the alpaca config row
+        alpaca_cfg = get_user_config(user['id'], 'alpaca')
+        if alpaca_cfg:
+            for src_field, src_label in [
+                ('market_data_api_key', 'market_data_override'),
+                ('live_api_key', 'live_auto_synced'),
+                ('paper_api_key', 'paper_fallback'),
+            ]:
+                key = alpaca_cfg.get(src_field, '')
+                secret_field = src_field.replace('_api_key', '_api_secret')
+                secret = alpaca_cfg.get(secret_field, '')
+                key_bad, key_bad_reason = _is_invalid_key(key)
+                if key and secret and not key_bad:
+                    safe_print(f'[resolve_alpaca_config_strict] user={user["id"][:8]}... mode=market_data hasKey=True ({src_label})')
+                    return {'api_key': key, 'api_secret': secret, 'base_url': 'https://data.alpaca.markets'}, 'ok'
 
         safe_print(f'[resolve_alpaca_config_strict] user={user["id"][:8]}... mode=market_data no config found')
         return {}, 'config_required'
@@ -7497,9 +7555,13 @@ def resolve_alpaca_config_strict_user(mode='paper'):
         key = user_cfg.get('live_api_key', '')
         secret = user_cfg.get('live_api_secret', '')
         url = user_cfg.get('live_base_url', 'https://api.alpaca.markets')
-    if key and secret:
+    key_bad, key_bad_reason = _is_invalid_key(key)
+    if key and secret and not key_bad:
         safe_print(f'[resolve_alpaca_config_strict] user={user["id"][:8]}... mode={mode} hasKey=True')
         return {'api_key': key, 'api_secret': secret, 'base_url': url}, 'ok'
+    elif key and key_bad:
+        safe_print(f'[resolve_alpaca_config_strict] user={user["id"][:8]}... mode={mode} key INVALID ({key_bad_reason})')
+        return {}, 'config_required'
     safe_print(f'[resolve_alpaca_config_strict] user={user["id"][:8]}... mode={mode} incomplete config')
     return {}, 'config_required'
 
@@ -7779,6 +7841,56 @@ def ai_chat():
 
 
 
+# ==================== System Diagnostics ====================
+
+@app.route('/api/system/diag', methods=['GET'])
+def system_diag():
+    """Report backend init status without exposing secrets."""
+    return jsonify({
+        'supabaseInitialized': supabase_admin is not None,
+        'fernetInitialized': fernet is not None,
+        'fernetIsEphemeral': not bool(os.getenv('FERNET_KEY', '')),
+        'supabaseUrlSet': bool(os.getenv('SUPABASE_URL', '')),
+        'supabaseServiceKeySet': bool(os.getenv('SUPABASE_SERVICE_ROLE_KEY', '')),
+        'fernetKeySet': bool(os.getenv('FERNET_KEY', '')),
+    })
+
+
+@app.route('/api/system/config-diag', methods=['GET'])
+def system_config_diag():
+    """Test the full config read chain for the authenticated user. Returns counts and status (no secrets)."""
+    user = get_supabase_user()
+    if not user:
+        return jsonify({'authenticated': False, 'error': 'No valid Supabase session'}), 401
+
+    results = {}
+    for config_type in ['alpaca', 'finnhub', 'ai_provider']:
+        try:
+            cfg = get_user_config(user['id'], config_type)
+            if cfg is None:
+                results[config_type] = {'found': False, 'fields': 0}
+            else:
+                # Check for stale encryption
+                stale_fields = []
+                for field in SENSITIVE_FIELDS.get(config_type, []):
+                    val = cfg.get(field, '')
+                    if isinstance(val, str) and val.startswith('enc:'):
+                        stale_fields.append(field)
+                results[config_type] = {
+                    'found': True,
+                    'fields': len(cfg),
+                    'staleEncryptedFields': stale_fields,
+                }
+        except Exception as e:
+            results[config_type] = {'found': False, 'error': str(e)}
+
+    return jsonify({
+        'authenticated': True,
+        'userId': user['id'][:8] + '...',
+        'configs': results,
+    })
+
+
 # ==================== Config Status Endpoint ====================
 
 @app.route('/api/config/status', methods=['GET'])
@@ -7888,20 +8000,29 @@ def settings_ai_config():
     if request.method == 'GET':
         config = get_user_config(user['id'], 'ai_provider')
         if config:
-            masked = dict(config)
-            if masked.get('apiKey'):
-                masked['apiKey'] = mask_key(masked['apiKey'])
+            raw_key = config.get('apiKey', '')
+            key_invalid, key_invalid_reason = _is_invalid_key(raw_key)
+            has_valid_key = bool(raw_key) and not key_invalid
+            # Return masked key for display — never expose real key
+            masked_key = mask_key(raw_key) if has_valid_key else ''
+            result = {k: v for k, v in config.items() if k != 'apiKey'}
+            # Normalize baseURL → baseUrl for frontend form field consistency
+            if 'baseURL' in result and 'baseUrl' not in result:
+                result['baseUrl'] = result.pop('baseURL')
             # Return testStatus from Supabase user config
             test_status = config.get('aiTestStatus', 'not_tested')
             return jsonify({
                 'success': True,
-                'config': masked,
-                'hasUserKey': bool(config.get('apiKey')),
-                'testStatus': test_status,
+                'config': result,
+                'hasUserKey': has_valid_key,
+                'maskedApiKey': masked_key,
+                'apiKeyIsInvalid': key_invalid,
+                'apiKeyInvalidReason': key_invalid_reason if key_invalid else '',
+                'testStatus': test_status if has_valid_key else 'not_configured',
                 'lastTestedAt': config.get('lastTestedAt'),
                 'lastTestError': config.get('lastTestError'),
             })
-        return jsonify({'success': True, 'config': {}, 'hasUserKey': False, 'testStatus': 'not_configured'})
+        return jsonify({'success': True, 'config': {}, 'hasUserKey': False, 'maskedApiKey': '', 'testStatus': 'not_configured'})
 
     # POST
     data = request.get_json() or {}
@@ -7909,19 +8030,22 @@ def settings_ai_config():
     for key in ['provider', 'apiKey', 'baseURL', 'baseUrl', 'model']:
         if key in data and data[key]:
             config_data[key] = data[key]
+    # Normalize baseUrl → baseURL for consistency
+    if 'baseUrl' in config_data and 'baseURL' not in config_data:
+        config_data['baseURL'] = config_data.pop('baseUrl')
     if not config_data:
         return jsonify({'success': False, 'message': 'No config data provided'}), 400
 
     # Diagnostic logging (safe — no key printed)
     raw_key = data.get('apiKey', '')
-    key_is_masked = '****' in raw_key if raw_key else False
-    safe_print(f'[AI Config SAVE] route=/api/settings/ai-config authExists=True userId={user["id"][:8]}... email={user.get("email","")} config_type=ai_provider provider={data.get("provider","")} model={data.get("model","")} hasApiKey={bool(raw_key)} keyIsMasked={key_is_masked} maskedKey={mask_key(raw_key)}')
+    key_invalid, key_invalid_reason = _is_invalid_key(raw_key)
+    safe_print(f'[AI Config SAVE] route=/api/settings/ai-config userId={user["id"][:8]}... provider={data.get("provider","")} model={data.get("model","")} hasApiKey={bool(raw_key)} keyIsInvalid={key_invalid} reason={key_invalid_reason}')
 
     # Merge with existing config (don't overwrite fields not sent)
     existing = get_user_config(user['id'], 'ai_provider') or {}
-    # Don't overwrite apiKey if masked value sent
-    if 'apiKey' in config_data and '****' in config_data['apiKey']:
-        safe_print(f'[AI Config SAVE] Skipping masked apiKey — keeping existing key')
+    # Don't overwrite apiKey if incoming value is masked/invalid
+    if 'apiKey' in config_data and key_invalid:
+        safe_print(f'[AI Config SAVE] Skipping invalid apiKey ({key_invalid_reason}) — keeping existing key')
         config_data.pop('apiKey')
     # Only reset test status if the API key actually changed
     key_changed = 'apiKey' in config_data and config_data.get('apiKey') != existing.get('apiKey')
@@ -8033,15 +8157,10 @@ def settings_broker_config():
     ok, err = save_user_config(user['id'], 'alpaca', existing)
     if ok:
         result = {'success': True, 'message': 'Broker config saved'}
-        # Sync Real Trading keys → Market Data config
         live_key = existing.get('live_api_key', '')
         live_secret = existing.get('live_api_secret', '')
-        if live_key and live_secret and '****' not in str(live_key):
-            md_existing = get_user_config(user['id'], 'alpaca_market_data') or {}
-            md_existing['api_key'] = live_key
-            md_existing['api_secret'] = live_secret
-            save_user_config(user['id'], 'alpaca_market_data', md_existing)
-            safe_print(f'[Broker Config] Synced Real Trading keys → alpaca_market_data for user {user["id"][:8]}...')
+        live_bad, _ = _is_invalid_key(live_key)
+        if live_key and live_secret and not live_bad:
             result['marketDataSynced'] = True
             result['maskedMarketDataApiKey'] = mask_key(live_key)
             result['maskedMarketDataSecretKey'] = mask_key(live_secret)
@@ -12014,21 +12133,24 @@ def get_trading_account():
 
         return jsonify({'success': False, 'error': f'Invalid mode: {mode}. Use "paper" or "real".', 'mode': mode, 'available': False})
 
-    # Determine base URL and credentials — strict user config only
-    resolved, _alpaca_src = resolve_alpaca_config(mode, require_user_config=True)
+    # Determine base URL and credentials — strict user config only, no global .env fallback
+    resolved, resolve_status = resolve_alpaca_config_strict_user(mode)
+
+    if resolve_status == 'auth_required':
+        return jsonify({'success': False, 'error': 'Authentication required. Please sign in.', 'mode': mode, 'available': False, 'reason': 'auth_required'})
+
+    if resolve_status == 'config_required' or not resolved:
+        reason = 'config_required'
+        if mode == 'paper':
+            error_msg = 'Alpaca Paper Trading is not configured. Please save your Paper API Key and Secret in Settings / Configuration.'
+        else:
+            error_msg = 'Alpaca Real Trading is not configured. Please save your Real API Key and Secret in Settings / Configuration.'
+        print(f'=== {error_msg} ===')
+        return jsonify({'success': False, 'error': error_msg, 'mode': mode, 'available': False, 'configured': False, 'reason': reason})
+
     api_key = resolved.get('api_key', '')
     api_secret = resolved.get('api_secret', '')
     base_url = resolved.get('base_url', 'https://paper-api.alpaca.markets' if mode == 'paper' else 'https://api.alpaca.markets')
-
-    if not api_key or not api_secret:
-
-        reason = f'alpaca_{mode}_not_configured'
-
-        error_msg = f'Alpaca {mode} trading account is not configured. Please save your API keys in Settings.'
-
-        print(f'=== {error_msg} ===')
-
-        return jsonify({'success': False, 'error': error_msg, 'mode': mode, 'available': False, 'configured': False, 'reason': reason})
 
     try:
 
@@ -12084,11 +12206,13 @@ def get_trading_account():
 
                 'success': False,
 
-                'error': f'Alpaca {mode} API error: HTTP {resp.status_code}',
+                'error': f'Alpaca {mode} API rejected the configured credentials (HTTP {resp.status_code}). Please re-enter your API key and secret in Settings.',
 
                 'mode': mode,
 
-                'available': False
+                'available': False,
+
+                'reason': 'api_error'
 
             })
 
@@ -17935,27 +18059,11 @@ def ai_alpaca_portfolio_history():
 
     try:
 
-        # 尝试使用真实的 Alpaca API
-
-        environment = alpaca_config_state.get('environment', 'paper')
-
-
-
-        if environment == 'paper':
-
-            api_key = alpaca_config_state.get('paper_api_key')
-
-            api_secret = alpaca_config_state.get('paper_api_secret')
-
-            base_url = 'https://paper-api.alpaca.markets'
-
-        else:
-
-            api_key = alpaca_config_state.get('live_api_key')
-
-            api_secret = alpaca_config_state.get('live_api_secret')
-
-            base_url = 'https://api.alpaca.markets'
+        # Resolve Alpaca config from per-user Supabase (paper mode for AI Agent)
+        alpaca_cfg, alpaca_src = resolve_alpaca_config('paper', require_user_config=True)
+        api_key = alpaca_cfg.get('api_key', '')
+        api_secret = alpaca_cfg.get('api_secret', '')
+        base_url = alpaca_cfg.get('base_url', 'https://paper-api.alpaca.markets')
 
 
 
@@ -19563,15 +19671,7 @@ def ai_analyze_single():
         ai_cfg, ai_source = resolve_ai_config(require_user_config=True)
         ai_has_key = bool(ai_cfg.get('apiKey') and ai_cfg['apiKey'].strip())
         ai_test_status = ai_cfg.get('testStatus', 'not_configured')
-
-        # Detect masked key (stored key contains ****)
-        ai_key_is_masked = False
-        if not ai_has_key:
-            user = get_supabase_user()
-            if user:
-                raw_cfg = get_user_config(user['id'], 'ai_provider')
-                if raw_cfg and raw_cfg.get('apiKey') and '****' in raw_cfg['apiKey']:
-                    ai_key_is_masked = True
+        ai_key_is_masked = ai_cfg.get('keyIsMasked', False)
 
         if not ai_has_key:
             if ai_key_is_masked:
@@ -20451,17 +20551,13 @@ def entry_plan_execute():
                     'blockers': ['liveConfirm missing or confirmText mismatch']
                 })
 
-        # ── 5. Connect to Alpaca broker ──
-        if execution_mode == 'live':
-            api_key = alpaca_config_state.get('live_api_key', '')
-            api_secret = alpaca_config_state.get('live_api_secret', '')
-            base_url = 'https://api.alpaca.markets'
-            mode_label = 'live'
-        else:
-            api_key = alpaca_config_state.get('paper_api_key', '')
-            api_secret = alpaca_config_state.get('paper_api_secret', '')
-            base_url = 'https://paper-api.alpaca.markets'
-            mode_label = 'paper'
+        # ── 5. Connect to Alpaca broker (from per-user Supabase config) ──
+        alpaca_mode = 'live' if execution_mode == 'live' else 'paper'
+        alpaca_cfg, alpaca_src = resolve_alpaca_config(alpaca_mode, require_user_config=True)
+        api_key = alpaca_cfg.get('api_key', '')
+        api_secret = alpaca_cfg.get('api_secret', '')
+        base_url = alpaca_cfg.get('base_url', 'https://paper-api.alpaca.markets' if alpaca_mode == 'paper' else 'https://api.alpaca.markets')
+        mode_label = alpaca_mode
 
         if not api_key or not api_secret:
             return jsonify({
@@ -23709,21 +23805,12 @@ def ai_entry_plan():
         live_buying_power = 0
         live_portfolio_value = 0
         live_equity = 0
-        if account_mode == 'paper':
-            paper_key = alpaca_config_state.get('paper_api_key', '')
-            paper_secret = alpaca_config_state.get('paper_api_secret', '')
-            if paper_key and paper_secret:
-                acc_key = paper_key
-                acc_secret = paper_secret
-                acc_url = 'https://paper-api.alpaca.markets'
-            else:
-                acc_key = alpaca_config_state.get('live_api_key', '')
-                acc_secret = alpaca_config_state.get('live_api_secret', '')
-                acc_url = 'https://api.alpaca.markets'
-        else:
-            acc_key = alpaca_config_state.get('live_api_key', '')
-            acc_secret = alpaca_config_state.get('live_api_secret', '')
-            acc_url = 'https://api.alpaca.markets'
+        # Resolve Alpaca config from per-user Supabase
+        alpaca_mode = 'paper' if account_mode == 'paper' else 'live'
+        alpaca_cfg, alpaca_src = resolve_alpaca_config(alpaca_mode, require_user_config=True)
+        acc_key = alpaca_cfg.get('api_key', '')
+        acc_secret = alpaca_cfg.get('api_secret', '')
+        acc_url = alpaca_cfg.get('base_url', 'https://paper-api.alpaca.markets' if alpaca_mode == 'paper' else 'https://api.alpaca.markets')
 
         if acc_key and acc_secret:
             try:

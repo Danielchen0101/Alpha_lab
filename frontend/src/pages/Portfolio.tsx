@@ -21,7 +21,12 @@ import api, { scannerApi } from '../services/api';
 import marketDataService from '../services/marketDataService';
 import alpacaBrokerService, { AlpacaPosition, AlpacaOrder } from '../services/alpacaBrokerService';
 import { scannerStateStore } from '../services/scannerStateStore';
-import { startMarketScanner, stopMarketScannerByUser, isScanRunning } from '../services/scannerRunnerService';
+import {
+  startMarketScanner, stopMarketScannerByUser, isScanRunning,
+  registerFineScanRun, unregisterFineScanRun, isFineScanRunning,
+  registerDeeperValidationRun, unregisterDeeperValidationRun, isDeeperValidationRunning,
+  registerEntryPlanRun, unregisterEntryPlanRun, isEntryPlanRunning,
+} from '../services/scannerRunnerService';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -136,12 +141,12 @@ const CollapsibleStageSection: React.FC<CollapsibleStageSectionProps> = ({
             color={statusTagColor} 
             style={{ 
               margin: 0, 
-              fontSize: 10, 
+              fontSize: 11, 
               fontWeight: 700,
-              letterSpacing: '0.02em',
-              lineHeight: '20px', 
-              padding: '0 10px', 
-              marginRight: 12,
+              letterSpacing: '0.03em',
+              lineHeight: '22px', 
+              padding: '0 12px', 
+              marginRight: 16,
               borderRadius: 20,
               textTransform: 'uppercase',
               border: 'none',
@@ -156,7 +161,7 @@ const CollapsibleStageSection: React.FC<CollapsibleStageSectionProps> = ({
         {/* Progress bar (compact 6px) */}
         {progressValue !== null && progressValue !== undefined && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginRight: 16, minWidth: 150, flexShrink: 0 }}>
-            <div style={{ flex: 1, height: 6, background: '#f0f0f0', borderRadius: 10, overflow: 'hidden' }}>
+            <div style={{ flex: 1, height: 8, background: '#f0f0f0', borderRadius: 10, overflow: 'hidden' }}>
               <div 
                 style={{ 
                   width: `${Math.min(100, Math.max(0, progressValue))}%`, 
@@ -167,31 +172,31 @@ const CollapsibleStageSection: React.FC<CollapsibleStageSectionProps> = ({
                 }} 
               />
             </div>
-            <span style={{ fontSize: 12, fontWeight: 600, color: '#8c8c8c', minWidth: 32, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: '#595959', minWidth: 38, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
               {Math.round(progressValue)}%
             </span>
           </div>
         )}
         
         {progressText && (progressValue === null || progressValue === undefined) && (
-          <span style={{ fontSize: 12, color: '#8c8c8c', marginRight: 16, fontStyle: 'italic' }}>{progressText}</span>
+          <span style={{ fontSize: 13, color: '#8c8c8c', marginRight: 16, fontStyle: 'italic' }}>{progressText}</span>
         )}
 
         {/* Summary chips */}
         {summaryChips && summaryChips.length > 0 && (
-          <div style={{ display: 'flex', gap: 8, marginRight: 16, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 10, marginRight: 16, flexWrap: 'wrap' }}>
             {summaryChips.map((chip, i) => (
               <span key={i} style={{ 
-                fontSize: 11, 
-                fontWeight: 500,
-                color: '#595959', 
+                fontSize: 12, 
+                fontWeight: 600,
+                color: '#434343', 
                 background: '#f5f5f5', 
-                borderRadius: 4, 
-                padding: '2px 8px', 
-                lineHeight: '18px',
-                border: '1px solid #f0f0f0'
+                borderRadius: 6, 
+                padding: '3px 10px', 
+                lineHeight: '20px',
+                border: '1px solid #e8e8e8'
               }}>
-                <span style={{ color: '#8c8c8c' }}>{chip.label}:</span> <span style={{ color: chip.color || '#262626', fontWeight: 700 }}>{chip.value}</span>
+                <span style={{ color: '#8c8c8c' }}>{chip.label}:</span> <span style={{ color: chip.color || '#262626', fontWeight: 800 }}>{chip.value}</span>
               </span>
             ))}
           </div>
@@ -358,28 +363,34 @@ const Portfolio: React.FC = (): React.ReactElement => {
     return unsubscribe;
   }, []);
 
-  // Hydrate from store on mount — use module-level isScanRunning() to detect page refresh vs route change
+  // Hydrate from store on mount — use module-level checks to detect page refresh vs route change
   useEffect(() => {
-    if (!isScanRunning()) {
-      // No active scan at module level — either page was refreshed (scan loop lost) or no scan was running
-      const state = scannerStateStore.getState();
-      if (state.marketScanner.status === 'running') {
-        scannerStateStore.updateMarketScanner({ status: 'stopped', currentStatus: 'idle', detailedScanStatus: { ...state.marketScanner.detailedScanStatus, currentStatus: 'stopped', statusMessage: 'Scan interrupted by page refresh. Results preserved.' } });
-      }
-      if (state.continueScan.status === 'processing') {
-        scannerStateStore.updateContinueScan({ status: 'idle' });
-      }
-      if (state.fineScan.status === 'running') {
-        scannerStateStore.updateFineScan({ status: 'stopped', message: 'Scan interrupted by page refresh. Results preserved.' });
-      }
-      if (state.deeperValidation.status === 'loading') {
-        scannerStateStore.updateDeeperValidation({ status: 'idle' });
-      }
-      if (state.entryPlan.status === 'loading') {
-        scannerStateStore.updateEntryPlan({ status: 'idle' });
-      }
+    const state = scannerStateStore.getState();
+
+    // Market Scanner: only reset if status says running but no module-level loop exists
+    if (state.marketScanner.status === 'running' && !isScanRunning()) {
+      scannerStateStore.updateMarketScanner({
+        status: 'stopped', currentStatus: 'idle',
+        detailedScanStatus: { ...state.marketScanner.detailedScanStatus, currentStatus: 'stopped', statusMessage: 'Scan interrupted by page refresh. Results preserved.' },
+      });
     }
-    // On route change: isScanRunning() returns true — scan loop continues in background, store keeps updating
+    // Continue Scan: only reset if status says processing but no module-level loop exists
+    if (state.continueScan.status === 'processing' && !isScanRunning()) {
+      scannerStateStore.updateContinueScan({ status: 'idle' });
+    }
+    // Fine Scan: only reset if status says running but no module-level loop exists
+    if (state.fineScan.status === 'running' && !isFineScanRunning()) {
+      scannerStateStore.updateFineScan({ status: 'stopped', message: 'Scan interrupted by page refresh. Results preserved.' });
+    }
+    // Deeper Validation: only reset if status says loading but no module-level loop exists
+    if (state.deeperValidation.status === 'loading' && !isDeeperValidationRunning()) {
+      scannerStateStore.updateDeeperValidation({ status: 'stopped' });
+    }
+    // Entry Plan: only reset if status says loading but no module-level loop exists
+    if (state.entryPlan.status === 'loading' && !isEntryPlanRunning()) {
+      scannerStateStore.updateEntryPlan({ status: 'stopped' });
+    }
+    // On route change: module-level loops continue in background, store keeps updating
   }, []);
 
   // Derived state from store (backward-compatible names)
@@ -522,6 +533,59 @@ const Portfolio: React.FC = (): React.ReactElement => {
     }
   };
 
+  // ── Preflight config check (shared by Continue Scan, Fine Scan, Deeper Validation, Entry Plan) ──
+  interface PreflightResult {
+    ok: boolean;
+    sessionValid: boolean;
+    alpacaConfigured: boolean;
+    aiAvailable: boolean;
+    aiConfigured: boolean;
+    aiTestStatus: string;
+    aiKeyIsMasked: boolean;
+    error?: string;
+  }
+
+  async function preflightConfigCheck(): Promise<PreflightResult> {
+    const fail = (error: string, partial: Partial<PreflightResult> = {}): PreflightResult => ({
+      ok: false, sessionValid: false, alpacaConfigured: false, aiAvailable: false,
+      aiConfigured: false, aiTestStatus: 'not_tested', aiKeyIsMasked: false, ...partial, error,
+    });
+
+    try {
+      const statusResp = await api.get('/config/status');
+      if (!statusResp.data?.success) return fail('Failed to load configuration status.');
+
+      const s = statusResp.data;
+
+      // Session check
+      if (!s.user?.userResolved) {
+        return fail('Session expired. Please sign in again.');
+      }
+
+      // Alpaca Market Data check
+      const alpacaOk = !!(s.alpaca?.paperConfigured || s.alpaca?.liveConfigured);
+
+      // AI Provider check
+      const aiCfg = s.ai || {};
+      const aiConfigured = !!aiCfg.configured;
+      const aiTestStatus: string = aiCfg.testStatus || 'not_tested';
+      const aiKeyIsMasked = !!aiCfg.keyIsMasked;
+      const aiAvailable = aiConfigured && !aiKeyIsMasked && aiTestStatus === 'connected';
+
+      return {
+        ok: true,
+        sessionValid: true,
+        alpacaConfigured: alpacaOk,
+        aiAvailable,
+        aiConfigured,
+        aiTestStatus,
+        aiKeyIsMasked,
+      };
+    } catch (e: any) {
+      return fail('Config check failed: ' + (e.message || 'Network error'));
+    }
+  }
+
   // 手动启动Continue Scan的函数
   const handleStartContinueScan = (forceRerun: boolean = false) => {
     // 检查是否有market scan结果
@@ -576,6 +640,39 @@ const Portfolio: React.FC = (): React.ReactElement => {
         totalCount: marketScannerResults.length,
         estimatedTimeRemaining: null
       }));
+
+      // Preflight: check session and Alpaca config
+      const preflight = await preflightConfigCheck();
+      if (!preflight.ok || !preflight.sessionValid) {
+        setContinueScanStatus('error');
+        setContinueScanProgress(0);
+        setContinueScanDetails((prev: any) => ({
+          ...prev,
+          currentStage: preflight.error || 'Configuration error',
+          estimatedTimeRemaining: null,
+        }));
+        message.error(preflight.error || 'Session expired');
+        return;
+      }
+      if (!preflight.alpacaConfigured) {
+        setContinueScanStatus('error');
+        setContinueScanProgress(0);
+        setContinueScanDetails((prev: any) => ({
+          ...prev,
+          currentStage: 'Alpaca Market Data API is not configured. Configure in Settings.',
+          estimatedTimeRemaining: null,
+        }));
+        message.error('Alpaca Market Data API is not configured.');
+        return;
+      }
+      // AI is optional for Continue Scan (rule-based), but warn if unavailable
+      if (!preflight.aiAvailable) {
+        const reason = preflight.aiKeyIsMasked ? 'AI key is invalid (masked)' :
+                       !preflight.aiConfigured ? 'AI Provider not configured' :
+                       preflight.aiTestStatus !== 'connected' ? `AI Provider not tested (${preflight.aiTestStatus})` :
+                       'AI unavailable';
+        console.warn(`[ContinueScan] AI pre-flight: ${reason}. AI reason generation will be skipped.`);
+      }
 
       // 检查是否有有效的market scan结果
       if (marketScannerResults.length === 0) {
@@ -1752,9 +1849,9 @@ Please respond in this exact JSON format:
   };
 
   function FineScanDetailTag({ label, value, color }: { label: string; value: string; color?: string }) {
-    return React.createElement('span', { style: { fontSize: '9px', color: '#888', marginRight: '6px' } },
+    return React.createElement('span', { style: { fontSize: '11px', color: '#8c8c8c', marginRight: '10px' } },
       label + ': ',
-      React.createElement('span', { style: { color: color || '#333', fontWeight: 500 } }, value)
+      React.createElement('span', { style: { color: color || '#262626', fontWeight: 600 } }, value)
     );
   }
 
@@ -1781,244 +1878,244 @@ Please respond in this exact JSON format:
     const rg = record.riskGrade;
     const rd = record.riskDetails;
 
-    return React.createElement('div', { style: { padding: '10px 14px', backgroundColor: '#f8f9fa', borderRadius: 8, border: '1px solid #e8e8e8', margin: '0 6px 6px 6px', fontSize: '11px', lineHeight: '1.4' } },
+    return React.createElement('div', { style: { padding: '20px 24px', backgroundColor: '#f8f9fa', borderRadius: 12, border: '1px solid #e8e8e8', margin: '8px 12px 16px 12px', fontSize: '13px', lineHeight: '1.6' } },
 
-      // Compact Header Row — only essential identifiers, details in cards
-      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', padding: '6px 0', borderBottom: '1px solid #e8eaed', marginBottom: '8px' } },
-        React.createElement('span', { style: { fontWeight: 700, fontSize: '13px', color: '#1a1a1a' } }, record.symbol),
-        React.createElement(Tag, { color: decision === 'Continue' ? 'green' : decision === 'Watch' ? 'gold' : decision === 'NeedMoreData' ? 'orange' : 'red', style: { fontSize: '10px', margin: 0, padding: '0 5px', lineHeight: '18px' } }, decision),
-        React.createElement('span', { style: { color: '#888', fontSize: '10px' } }, 'Score ', React.createElement('span', { style: { fontWeight: 600, color: '#333' } }, record.matchConfidence || 0)),
-        React.createElement('span', { style: { color: '#aaa', fontSize: '10px' } }, '|'),
-        React.createElement('span', { style: { color: '#888', fontSize: '10px' } }, (record.matchedStrategies || []).slice(0, 2).join(', ') || bestStrat),
-        // Warnings inline
+      // Professional Header Row
+      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', paddingBottom: '12px', borderBottom: '1px solid #e8eaed', marginBottom: '16px' } },
+        React.createElement('span', { style: { fontWeight: 800, fontSize: '18px', color: '#1a1a1a', letterSpacing: '-0.5px' } }, record.symbol),
+        React.createElement(Tag, { color: decision === 'Continue' ? 'success' : decision === 'Watch' ? 'warning' : decision === 'NeedMoreData' ? 'orange' : 'error', style: { fontSize: '12px', fontWeight: 700, margin: 0, padding: '0 10px', height: '24px', lineHeight: '24px', borderRadius: '4px' } }, decision.toUpperCase()),
+        React.createElement('span', { style: { color: '#8c8c8c', fontSize: '12px', fontWeight: 500 } }, 'SCORE ', React.createElement('span', { style: { fontWeight: 700, color: '#1890ff' } }, record.matchConfidence || 0)),
+        React.createElement('span', { style: { color: '#d9d9d9', fontSize: '14px' } }, '|'),
+        React.createElement('span', { style: { color: '#595959', fontSize: '13px', fontWeight: 500 } }, (record.matchedStrategies || []).slice(0, 2).join(' · ') || bestStrat),
+
+        // Warnings inline - emphasized
         (record.decisionWarnings || []).concat((record.decisionBlockers || []).map(function(b: string) { return 'BLOCK: ' + b; })).slice(0, 2).map(function(w: string, i: number) {
           var isBlocker = w.indexOf('BLOCK: ') === 0;
-          return React.createElement('span', { key: 'hw' + i, style: { padding: '1px 5px', borderRadius: 3, background: isBlocker ? '#fff1f0' : '#fffbe6', color: isBlocker ? '#ff4d4f' : '#d48806', fontSize: '8px', border: '1px solid ' + (isBlocker ? '#ffa39e' : '#ffe58f'), whiteSpace: 'nowrap' } }, (isBlocker ? '✕ ' : '⚠ ') + (isBlocker ? w.slice(7) : w));
+          return React.createElement('span', { key: 'hw' + i, style: { padding: '2px 8px', borderRadius: 4, background: isBlocker ? '#fff1f0' : '#fffbe6', color: isBlocker ? '#ff4d4f' : '#d48806', fontSize: '11px', fontWeight: 600, border: '1px solid ' + (isBlocker ? '#ffa39e' : '#ffe58f'), whiteSpace: 'nowrap' } }, (isBlocker ? '✕ ' : '⚠ ') + (isBlocker ? w.slice(7) : w));
         }),
-        React.createElement('span', { style: { marginLeft: 'auto', display: 'flex', gap: '4px', alignItems: 'center' } },
-          React.createElement(Tag, { color: dq === 'GOOD' ? 'green' : dq === 'PARTIAL' ? 'gold' : 'red', style: { fontSize: '8px', margin: 0, padding: '0 4px', lineHeight: '16px' } }, dq),
-          perStrategy.some(function(ps: any) { return (ps.tradeCount || 0) < 3; }) ? React.createElement(Tag, { color: 'warning', style: { fontSize: '8px', margin: 0, padding: '0 4px', lineHeight: '16px' } }, 'limited') : null,
-          React.createElement(Tag, { color: aiUsed ? 'green' : 'default', style: { fontSize: '8px', margin: 0, padding: '0 4px', lineHeight: '16px' } }, aiUsed ? 'DeepSeek' : 'LR')
+
+        React.createElement('span', { style: { marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' } },
+          React.createElement(Tag, { color: dq === 'GOOD' ? 'success' : dq === 'PARTIAL' ? 'warning' : 'error', style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '0 6px', lineHeight: '18px' } }, 'DATA: ' + dq),
+          perStrategy.some(function(ps: any) { return (ps.tradeCount || 0) < 3; }) ? React.createElement(Tag, { color: 'warning', style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '0 6px', lineHeight: '18px' } }, 'LIMITED SAMPLE') : null,
+          React.createElement(Tag, { color: aiUsed ? 'cyan' : 'default', style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '0 6px', lineHeight: '18px' } }, aiUsed ? 'DEEPSEEK V3' : 'LOCAL RULES')
         )
       ),
 
-      // Provenance Chips — short labels, full source in title
-      React.createElement('div', { style: { display: 'flex', gap: '5px', flexWrap: 'wrap', marginBottom: '8px' } },
+      // Provenance Chips - cleaner look
+      React.createElement('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' } },
         (function() {
           var p = record.provenance || {};
           var chips: Array<{key: string; label: string; isAI: boolean; title: string}> = [
-            {key: 'Mkt', label: 'Market', isAI: false, title: p.marketSource || 'Scanner'},
-            {key: 'BT', label: 'BT', isAI: false, title: p.backtestSource || 'Backtest'},
-            {key: 'Opt', label: 'Opt', isAI: false, title: p.optimizationSource || 'Optimization'},
-            {key: 'Entry', label: 'Entry', isAI: false, title: p.entrySource || 'Entry Quality'},
-            {key: 'News', label: 'News', isAI: false, title: p.newsSource || 'News'},
-            {key: 'Dec', label: 'Dec ' + (record.decisionSource === 'ai' ? 'AI' : 'Rules'), isAI: record.decisionSource === 'ai', title: decisionSource},
-            {key: 'Exp', label: 'Exp ' + (aiExplained ? 'AI' : 'LR'), isAI: aiExplained, title: aiExplained ? 'DeepSeek AI' : (p.explanationSource || 'Local Rules')},
+            {key: 'Mkt', label: 'MARKET SCANNER', isAI: false, title: p.marketSource || 'Scanner'},
+            {key: 'BT', label: 'BACKTEST ENGINE', isAI: false, title: p.backtestSource || 'Backtest'},
+            {key: 'Opt', label: 'OPTIMIZER', isAI: false, title: p.optimizationSource || 'Optimization'},
+            {key: 'Entry', label: 'ENTRY ANALYSIS', isAI: false, title: p.entrySource || 'Entry Quality'},
+            {key: 'News', label: 'NEWS AGGREGATOR', isAI: false, title: p.newsSource || 'News'},
+            {key: 'Dec', label: 'DECISION: ' + (record.decisionSource === 'ai' ? 'AI' : 'RULES'), isAI: record.decisionSource === 'ai', title: decisionSource},
           ];
           return chips.map(function(c) {
-            return React.createElement('span', { key: c.key, title: c.title, style: { padding: '1px 5px', borderRadius: '3px', background: c.isAI ? '#e6fffb' : '#f0f0f0', color: c.isAI ? '#13c2c2' : '#888', fontSize: '8px', border: '1px solid ' + (c.isAI ? '#b5f5ec' : '#e0e0e0'), whiteSpace: 'nowrap', cursor: 'default' } }, c.label);
+            return React.createElement('span', { key: c.key, title: c.title, style: { padding: '2px 8px', borderRadius: '4px', background: c.isAI ? '#e6fffb' : '#f0f0f0', color: c.isAI ? '#13c2c2' : '#8c8c8c', fontSize: '10px', fontWeight: 700, border: '1px solid ' + (c.isAI ? '#b5f5ec' : '#d9d9d9'), whiteSpace: 'nowrap', cursor: 'default' } }, c.label);
           });
         })()
       ),
 
-      // Body: 2-column grid
-      React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1.2fr 0.8fr', gap: '8px' } },
+      // Body: 2-column grid with better balance
+      React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1.2fr 0.8fr', gap: '16px' } },
 
         // LEFT COLUMN
-        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
+        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '12px' } },
 
           // Match Summary
-          React.createElement('div', { style: { background: '#fff', borderRadius: 6, border: '1px solid #edf0f2', padding: '8px 10px' } },
-            React.createElement('div', { style: { fontWeight: 600, fontSize: '10px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '4px' } }, 'Match Summary'),
-            fullReason ? React.createElement('div', { style: { fontSize: '10px', color: '#444', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: '2', WebkitBoxOrient: 'vertical', overflow: 'hidden', maxHeight: '30px', marginBottom: '4px' }, title: fullReason }, fullReason) : null,
-            React.createElement('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } },
-              React.createElement(Tag, { color: record.regime === 'Trending' ? 'blue' : record.regime === 'Breakout-ready' ? 'purple' : record.regime === 'Range-bound' ? 'green' : 'default', style: { fontSize: '9px', margin: 0, padding: '0 5px', lineHeight: '16px' } }, record.regime || 'Unclear'),
-              React.createElement('span', { style: { fontSize: '9px', color: '#888' } }, 'Confidence: ' + (record.matchConfidence || 0) + '% | Score: ' + (record.scanScore || 'N/A'))
+          React.createElement('div', { style: { background: '#fff', borderRadius: 8, border: '1px solid #edf0f2', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
+            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, 'Match Summary'),
+            fullReason ? React.createElement('div', { style: { fontSize: '13px', color: '#262626', lineHeight: 1.6, marginBottom: '10px' }, title: fullReason }, fullReason) : null,
+            React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
+              React.createElement(Tag, { color: record.regime === 'Trending' ? 'blue' : record.regime === 'Breakout-ready' ? 'purple' : record.regime === 'Range-bound' ? 'green' : 'default', style: { fontSize: '11px', fontWeight: 600, margin: 0, padding: '0 8px', lineHeight: '20px' } }, record.regime || 'Unclear'),
+              React.createElement('span', { style: { fontSize: '12px', color: '#8c8c8c', fontWeight: 500 } }, 'Confidence: ' + (record.matchConfidence || 0) + '% | Scan Score: ' + (record.scanScore || 'N/A'))
             )
           ),
 
           // Backtest
-          React.createElement('div', { style: { background: '#fff', borderRadius: 6, border: '1px solid #edf0f2', padding: '8px 10px' } },
-            React.createElement('div', { style: { fontWeight: 600, fontSize: '10px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '4px' } }, 'Backtest'),
+          React.createElement('div', { style: { background: '#fff', borderRadius: 8, border: '1px solid #edf0f2', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
+            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, 'Strategy Backtest Validation'),
             perStrategy.length > 0 ? (
-              React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '9px' } },
+              React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '12px' } },
                 React.createElement('thead', null,
-                  React.createElement('tr', { style: { color: '#888', borderBottom: '1px solid #f0f0f0' } },
-                    React.createElement('th', { style: { textAlign: 'left', padding: '2px 4px', fontWeight: 500 } }, 'Strategy'),
-                    React.createElement('th', { style: { textAlign: 'right', padding: '2px 4px', fontWeight: 500 } }, 'Return'),
-                    React.createElement('th', { style: { textAlign: 'right', padding: '2px 4px', fontWeight: 500 } }, 'Sharpe'),
-                    React.createElement('th', { style: { textAlign: 'right', padding: '2px 4px', fontWeight: 500 } }, 'MaxDD'),
-                    React.createElement('th', { style: { textAlign: 'right', padding: '2px 4px', fontWeight: 500 } }, 'WR'),
-                    React.createElement('th', { style: { textAlign: 'right', padding: '2px 4px', fontWeight: 500 } }, 'Tr'),
-                    React.createElement('th', { style: { textAlign: 'center', padding: '2px 4px', fontWeight: 500 } }, 'Status')
+                  React.createElement('tr', { style: { color: '#8c8c8c', borderBottom: '1px solid #f0f0f0' } },
+                    React.createElement('th', { style: { textAlign: 'left', padding: '6px 4px', fontWeight: 600 } }, 'Strategy'),
+                    React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, 'Return'),
+                    React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, 'Sharpe'),
+                    React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, 'MaxDD'),
+                    React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, 'Win%'),
+                    React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, 'Trades'),
+                    React.createElement('th', { style: { textAlign: 'center', padding: '6px 4px', fontWeight: 600 } }, 'Status')
                   )
                 ),
                 React.createElement('tbody', null,
                   perStrategy.map(function(ps: any, i: number) {
                     return React.createElement('tr', { key: i, style: { borderBottom: '1px solid #f5f5f5' } },
-                      React.createElement('td', { style: { padding: '2px 4px', fontWeight: 500 } }, ps.strategy),
-                      React.createElement('td', { style: { padding: '2px 4px', textAlign: 'right', color: (ps.totalReturn || 0) >= 0 ? '#52c41a' : '#ff4d4f' } }, ps.totalReturn != null ? (ps.totalReturn >= 0 ? '+' : '') + Number(ps.totalReturn).toFixed(1) + '%' : '--'),
-                      React.createElement('td', { style: { padding: '2px 4px', textAlign: 'right', color: (ps.sharpe || 0) >= 0.5 ? '#333' : '#ff4d4f' } }, ps.sharpe != null ? Number(ps.sharpe).toFixed(2) : '--'),
-                      React.createElement('td', { style: { padding: '2px 4px', textAlign: 'right', color: Math.abs(ps.maxDrawdown || 0) < 15 ? '#333' : Math.abs(ps.maxDrawdown || 0) < 25 ? '#faad14' : '#ff4d4f' } }, ps.maxDrawdown != null ? Number(ps.maxDrawdown).toFixed(1) + '%' : '--'),
-                      React.createElement('td', { style: { padding: '2px 4px', textAlign: 'right' } }, ps.winRate != null ? Number(ps.winRate).toFixed(1) + '%' : '--'),
-                      React.createElement('td', { style: { padding: '2px 4px', textAlign: 'right', fontStyle: (ps.tradeCount || 0) < 3 ? 'italic' : 'normal' }, title: (ps.tradeCount || 0) < 3 ? 'Limited sample' : undefined }, ps.tradeCount != null ? String(ps.tradeCount) : '--'),
-                      React.createElement('td', { style: { padding: '2px 4px', textAlign: 'center' } },
-                        React.createElement(Tag, { color: ps.status === 'passed' ? 'green' : ps.status === 'caution' ? 'gold' : 'red', style: { fontSize: '8px', margin: 0, padding: '0 3px', lineHeight: '14px' } },
-                          ps.status === 'passed' ? 'Pos' : ps.status === 'caution' ? 'Caut' : ps.status === 'completed_losing' ? 'Loss' : '--')
+                      React.createElement('td', { style: { padding: '8px 4px', fontWeight: 600, color: '#1f1f1f' } }, ps.strategy),
+                      React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', fontWeight: 700, color: (ps.totalReturn || 0) >= 0 ? '#52c41a' : '#ff4d4f' } }, ps.totalReturn != null ? (ps.totalReturn >= 0 ? '+' : '') + Number(ps.totalReturn).toFixed(1) + '%' : '--'),
+                      React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', fontWeight: 500, color: (ps.sharpe || 0) >= 1.0 ? '#1890ff' : (ps.sharpe || 0) >= 0.5 ? '#262626' : '#ff4d4f' } }, ps.sharpe != null ? Number(ps.sharpe).toFixed(2) : '--'),
+                      React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', color: Math.abs(ps.maxDrawdown || 0) < 15 ? '#262626' : Math.abs(ps.maxDrawdown || 0) < 25 ? '#faad14' : '#ff4d4f' } }, ps.maxDrawdown != null ? Number(ps.maxDrawdown).toFixed(1) + '%' : '--'),
+                      React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', fontWeight: 500 } }, ps.winRate != null ? Number(ps.winRate).toFixed(1) + '%' : '--'),
+                      React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', fontStyle: (ps.tradeCount || 0) < 3 ? 'italic' : 'normal', color: (ps.tradeCount || 0) < 3 ? '#fa8c16' : '#595959' }, title: (ps.tradeCount || 0) < 3 ? 'Limited sample' : undefined }, ps.tradeCount != null ? String(ps.tradeCount) : '--'),
+                      React.createElement('td', { style: { padding: '8px 4px', textAlign: 'center' } },
+                        React.createElement(Tag, { color: ps.status === 'passed' ? 'success' : ps.status === 'caution' ? 'warning' : 'error', style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '0 6px', lineHeight: '18px' } },
+                          ps.status === 'passed' ? 'PASS' : ps.status === 'caution' ? 'CAUT' : ps.status === 'completed_losing' ? 'FAIL' : '--')
                       )
                     );
                   })
                 )
               )
-            ) : React.createElement('div', { style: { fontSize: '10px', color: '#999', fontStyle: 'italic' } }, 'Backtest not yet available.'),
-            record.backtestPeriod ? React.createElement('div', { style: { fontSize: '9px', color: '#aaa', marginTop: '4px' } }, 'Period: ' + record.backtestPeriod) : null
+            ) : React.createElement('div', { style: { fontSize: '13px', color: '#bfbfbf', fontStyle: 'italic', padding: '10px 0' } }, 'Backtest data not yet available for this candidate.'),
+            record.backtestPeriod ? React.createElement('div', { style: { fontSize: '11px', color: '#8c8c8c', marginTop: '8px', borderTop: '1px solid #f5f5f5', paddingTop: '6px' } }, 'Evaluation Period: ' + record.backtestPeriod) : null
           ),
 
           // Optimization
-          React.createElement('div', { style: { background: '#fff', borderRadius: 6, border: '1px solid #edf0f2', padding: '8px 10px' } },
-            React.createElement('div', { style: { fontWeight: 600, fontSize: '10px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '4px' } }, 'Optimization'),
+          React.createElement('div', { style: { background: '#fff', borderRadius: 8, border: '1px solid #edf0f2', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
+            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, 'Quick Parameter Optimization'),
             optResults.length > 0 ? (
-              React.createElement('div', { style: { fontSize: '9px' } },
-                React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '9px' } },
+              React.createElement('div', null,
+                React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '12px' } },
                   React.createElement('thead', null,
-                    React.createElement('tr', { style: { color: '#888', borderBottom: '1px solid #f0f0f0' } },
-                      React.createElement('th', { style: { textAlign: 'left', padding: '2px 4px', fontWeight: 500 } }, 'Strategy'),
-                      React.createElement('th', { style: { textAlign: 'center', padding: '2px 4px', fontWeight: 500 } }, 'Status'),
-                      React.createElement('th', { style: { textAlign: 'right', padding: '2px 4px', fontWeight: 500 } }, 'Avg Ret'),
-                      React.createElement('th', { style: { textAlign: 'right', padding: '2px 4px', fontWeight: 500 } }, 'Pos%'),
-                      React.createElement('th', { style: { textAlign: 'right', padding: '2px 4px', fontWeight: 500 } }, 'Spread')
+                    React.createElement('tr', { style: { color: '#8c8c8c', borderBottom: '1px solid #f0f0f0' } },
+                      React.createElement('th', { style: { textAlign: 'left', padding: '6px 4px', fontWeight: 600 } }, 'Strategy'),
+                      React.createElement('th', { style: { textAlign: 'center', padding: '6px 4px', fontWeight: 600 } }, 'Stability'),
+                      React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, 'Avg Return'),
+                      React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, 'Pos Ratio'),
+                      React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, 'Spread')
                     )
                   ),
                   React.createElement('tbody', null,
                     optResults.map(function(opt: any, oi: number) {
-                      var hasResults = opt.results && opt.results.length > 0;
                       return React.createElement('tr', { key: oi, style: { borderBottom: '1px solid #f5f5f5' } },
-                        React.createElement('td', { style: { padding: '2px 4px', fontWeight: 500 } }, opt.strategy),
-                        React.createElement('td', { style: { padding: '2px 4px', textAlign: 'center' } },
-                          React.createElement(Tag, { color: opt.stability === 'Stable' ? 'green' : opt.stability === 'Weak' ? 'gold' : 'red', style: { fontSize: '8px', margin: 0, padding: '0 3px', lineHeight: '14px' } },
-                            opt.stability === 'Stable' ? 'Stable' : opt.stability === 'Weak' ? 'Weak' : 'Overfit')
+                        React.createElement('td', { style: { padding: '8px 4px', fontWeight: 600, color: '#1f1f1f' } }, opt.strategy),
+                        React.createElement('td', { style: { padding: '8px 4px', textAlign: 'center' } },
+                          React.createElement(Tag, { color: opt.stability === 'Stable' ? 'success' : opt.stability === 'Weak' ? 'warning' : 'error', style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '0 6px', lineHeight: '18px' } },
+                            opt.stability === 'Stable' ? 'STABLE' : opt.stability === 'Weak' ? 'WEAK' : 'OVERFIT')
                         ),
-                        React.createElement('td', { style: { padding: '2px 4px', textAlign: 'right', color: opt.avgReturn >= 0 ? '#52c41a' : '#ff4d4f' } }, (opt.avgReturn >= 0 ? '+' : '') + opt.avgReturn + '%'),
-                        React.createElement('td', { style: { padding: '2px 4px', textAlign: 'right' } }, opt.positiveRatio + '%'),
-                        React.createElement('td', { style: { padding: '2px 4px', textAlign: 'right' } }, (opt.stdReturn || 0).toFixed(1) + '%')
+                        React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', fontWeight: 700, color: opt.avgReturn >= 0 ? '#52c41a' : '#ff4d4f' } }, (opt.avgReturn >= 0 ? '+' : '') + opt.avgReturn + '%'),
+                        React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', fontWeight: 500 } }, opt.positiveRatio + '%'),
+                        React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', color: '#8c8c8c' } }, (opt.stdReturn || 0).toFixed(1) + '%')
                       );
                     })
                   )
                 ),
-                record.quickOptSummary ? React.createElement('div', { style: { fontSize: '9px', color: '#aaa', marginTop: '4px' } }, record.quickOptSummary) : null
+                record.quickOptSummary ? React.createElement('div', { style: { fontSize: '11px', color: '#8c8c8c', marginTop: '8px', borderTop: '1px solid #f5f5f5', paddingTop: '6px' } }, record.quickOptSummary) : null
               )
-            ) : React.createElement('div', { style: { fontSize: '10px', color: '#999', fontStyle: 'italic' } }, 'Optimization not run.'),
-            record.quickOptStatus === 'running' ? React.createElement('div', { style: { fontSize: '10px', color: '#fa8c16' } }, 'In progress...') : null
+            ) : React.createElement('div', { style: { fontSize: '13px', color: '#bfbfbf', fontStyle: 'italic', padding: '10px 0' } }, 'Optimization not executed for this candidate.'),
+            record.quickOptStatus === 'running' ? React.createElement('div', { style: { fontSize: '12px', color: '#fa8c16', fontWeight: 600, marginTop: '8px' } }, '⚡ Optimization in progress...') : null
           ),
 
           // Entry Quality
-          React.createElement('div', { style: { background: '#fff', borderRadius: 6, border: '1px solid #edf0f2', padding: '8px 10px' } },
-            React.createElement('div', { style: { fontWeight: 600, fontSize: '10px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '4px' } }, 'Entry Quality'),
+          React.createElement('div', { style: { background: '#fff', borderRadius: 8, border: '1px solid #edf0f2', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
+            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, 'Surgical Entry Analysis'),
             eq && eq !== 'Error / No Data' ? (
               React.createElement('div', null,
-                React.createElement('div', { style: { marginBottom: '4px', display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' } },
-                  React.createElement('span', { style: { fontWeight: 600, color: eq === 'Good' ? '#52c41a' : eq === 'Wait for Pullback' ? '#faad14' : eq === 'Near Resistance' || eq === 'Chasing / Extended' || eq === 'Poor Reward-Risk' ? '#ff4d4f' : '#333' } }, eq),
-                  React.createElement('span', { style: { color: '#888' } }, 'Score: ' + (record.entryScore || '--') + '/100'),
-                  eqD && eqD.reward_risk_ratio != null && eqD.reward_risk_ratio < 1.5 && eq === 'Good' ? React.createElement('span', { style: { padding: '1px 5px', borderRadius: 3, background: '#fffbe6', color: '#d48806', fontSize: '8px', border: '1px solid #ffe58f' } }, '⚠ Entry capped by low R/R (' + eqD.reward_risk_ratio + ':1)') : null
+                React.createElement('div', { style: { marginBottom: '10px', display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center' } },
+                  React.createElement('span', { style: { fontSize: '15px', fontWeight: 800, color: eq === 'Good' || eq === 'Excellent' ? '#52c41a' : eq === 'Wait for Pullback' ? '#faad14' : '#ff4d4f' } }, eq),
+                  React.createElement('span', { style: { fontSize: '13px', color: '#595959', fontWeight: 500 } }, 'Setup Score: ' + (record.entryScore || '--') + '/100'),
+                  eqD && eqD.reward_risk_ratio != null && eqD.reward_risk_ratio < 1.5 && (eq === 'Good' || eq === 'Excellent') ? React.createElement('span', { style: { padding: '2px 8px', borderRadius: 4, background: '#fffbe6', color: '#d48806', fontSize: '11px', fontWeight: 600, border: '1px solid #ffe58f' } }, '⚠ R/R Capped: ' + eqD.reward_risk_ratio + ':1') : null
                 ),
-                eqD ? React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px 12px', fontSize: '9px' } },
+                eqD ? React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px 20px', fontSize: '12px', backgroundColor: '#fafafa', padding: '10px', borderRadius: '6px' } },
                   eqD.current_price != null ? React.createElement(FineScanDetailTag, { label: 'Price', value: '$' + eqD.current_price }) : null,
                   eqD.atr != null ? React.createElement(FineScanDetailTag, { label: 'ATR', value: '$' + eqD.atr + ' (' + eqD.atr_pct + '%)' }) : null,
                   eqD.support != null ? React.createElement(FineScanDetailTag, { label: 'Support', value: '$' + eqD.support }) : null,
-                  eqD.resistance != null ? React.createElement(FineScanDetailTag, { label: 'Res', value: '$' + eqD.resistance }) : null,
-                  eqD.entry_zone_low != null ? React.createElement(FineScanDetailTag, { label: 'Entry', value: '$' + eqD.entry_zone_low + '–$' + eqD.entry_zone_high }) : null,
-                  eqD.stop_distance_pct != null ? React.createElement(FineScanDetailTag, { label: 'Stop', value: eqD.stop_distance_pct + '%', color: eqD.stop_distance_pct > 5 ? '#faad14' : undefined }) : null,
+                  eqD.resistance != null ? React.createElement(FineScanDetailTag, { label: 'Resistance', value: '$' + eqD.resistance }) : null,
+                  eqD.entry_zone_low != null ? React.createElement(FineScanDetailTag, { label: 'Zone', value: '$' + eqD.entry_zone_low + '–$' + eqD.entry_zone_high }) : null,
+                  eqD.stop_distance_pct != null ? React.createElement(FineScanDetailTag, { label: 'Stop', value: eqD.stop_distance_pct + '%', color: eqD.stop_distance_pct > 5 ? '#fa8c16' : undefined }) : null,
                   eqD.reward_risk_ratio != null ? React.createElement(FineScanDetailTag, { label: 'R/R', value: eqD.reward_risk_ratio + ':1', color: eqD.reward_risk_ratio < 1.5 ? '#ff4d4f' : eqD.reward_risk_ratio < 2 ? '#faad14' : '#52c41a' }) : null
                 ) : null,
-                record.entryReason ? React.createElement('div', { style: { fontSize: '9px', color: '#aaa', marginTop: '3px', lineHeight: '1.3', display: '-webkit-box', WebkitLineClamp: '1', WebkitBoxOrient: 'vertical', overflow: 'hidden' } }, record.entryReason) : null
+                record.entryReason ? React.createElement('div', { style: { fontSize: '12px', color: '#8c8c8c', marginTop: '10px', lineHeight: '1.5', fontStyle: 'italic' } }, '“' + record.entryReason + '”') : null
               )
-            ) : React.createElement('span', { style: { color: '#bbb', fontSize: '10px' } }, 'Entry quality data unavailable')
+            ) : React.createElement('div', { style: { padding: '10px 0', color: '#bfbfbf', fontStyle: 'italic', fontSize: '13px' } }, 'Entry quality metrics currently unavailable.')
           )
         ),
 
         // RIGHT COLUMN
-        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
+        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '12px' } },
 
           // Key Signals
-          React.createElement('div', { style: { background: '#fff', borderRadius: 6, border: '1px solid #edf0f2', padding: '8px 10px' } },
-            React.createElement('div', { style: { fontWeight: 600, fontSize: '10px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '4px' } }, 'Key Signals'),
+          React.createElement('div', { style: { background: '#fff', borderRadius: 8, border: '1px solid #edf0f2', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
+            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, 'High-Conviction Signals'),
             signals.length > 0 ? (
-              React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '3px' } },
-                signals.slice(0, 6).map(function(sig: string, i: number) {
-                  return React.createElement('span', { key: i, style: { padding: '1px 6px', borderRadius: 3, backgroundColor: '#f0f5ff', color: '#1890ff', fontSize: '9px', border: '1px solid #d6e4ff' } }, sig);
+              React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px' } },
+                signals.slice(0, 8).map(function(sig: string, i: number) {
+                  return React.createElement('span', { key: i, style: { padding: '3px 10px', borderRadius: 4, backgroundColor: '#f0f5ff', color: '#1890ff', fontSize: '12px', fontWeight: 600, border: '1px solid #d6e4ff' } }, sig);
                 }),
-                signals.length > 6 ? React.createElement('span', { style: { fontSize: '9px', color: '#999' } }, '+' + (signals.length - 6)) : null
+                signals.length > 8 ? React.createElement('span', { style: { fontSize: '12px', color: '#8c8c8c', fontWeight: 500, alignSelf: 'center' } }, '+' + (signals.length - 8) + ' more') : null
               )
-            ) : React.createElement('span', { style: { color: '#bbb', fontSize: '10px' } }, '--')
+            ) : React.createElement('div', { style: { padding: '5px 0', color: '#bfbfbf', fontSize: '13px' } }, '--')
           ),
 
-          // Liquidity & Risk -- merged
-          React.createElement('div', { style: { background: '#fff', borderRadius: 6, border: '1px solid #edf0f2', padding: '8px 10px' } },
-            React.createElement('div', { style: { fontWeight: 600, fontSize: '10px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '4px' } }, 'Liquidity & Risk'),
-            React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 8px', fontSize: '9px' } },
-              React.createElement('div', null,
-                React.createElement('div', { style: { fontWeight: 500, color: '#555', marginBottom: '3px' } }, 'Liquidity'),
-                lg && lg !== 'Error' ? React.createElement('div', null,
+          // Liquidity & Risk
+          React.createElement('div', { style: { background: '#fff', borderRadius: 8, border: '1px solid #edf0f2', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
+            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, 'Liquidity & Risk Profile'),
+            React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', fontSize: '12px' } },
+              React.createElement('div', { style: { backgroundColor: '#fafafa', padding: '10px', borderRadius: '6px' } },
+                React.createElement('div', { style: { fontWeight: 700, color: '#595959', marginBottom: '6px', fontSize: '11px', textTransform: 'uppercase' } }, 'Liquidity'),
+                lg && lg !== 'Error' ? React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
                   React.createElement(FineScanDetailTag, { label: 'Grade', value: lg, color: lg === 'Good' ? '#52c41a' : lg === 'Caution' ? '#faad14' : '#ff4d4f' }),
-                  ld ? React.createElement('div', null,
-                    ld.rvol != null ? React.createElement('div', { style: { marginTop: '2px' } }, React.createElement(FineScanDetailTag, { label: 'RVOL', value: ld.rvol + 'x', color: ld.rvol >= 1.5 ? '#52c41a' : ld.rvol < 0.7 ? '#ff4d4f' : undefined })) : null,
-                    ld.spread_pct != null ? React.createElement('div', { style: { marginTop: '2px' } }, React.createElement(FineScanDetailTag, { label: 'Spread', value: ld.spread_pct + '%', color: ld.spread_pct > 1 ? '#ff4d4f' : ld.spread_pct > 0.2 ? '#faad14' : undefined })) : React.createElement('div', { style: { marginTop: '2px', color: '#bbb' } }, 'Spread: N/A')
+                  ld ? React.createElement(React.Fragment, null,
+                    ld.rvol != null ? React.createElement(FineScanDetailTag, { label: 'RVOL', value: ld.rvol + 'x', color: ld.rvol >= 1.5 ? '#52c41a' : ld.rvol < 0.7 ? '#ff4d4f' : undefined }) : null,
+                    ld.spread_pct != null ? React.createElement(FineScanDetailTag, { label: 'Spread', value: ld.spread_pct + '%', color: ld.spread_pct > 1 ? '#ff4d4f' : ld.spread_pct > 0.2 ? '#faad14' : undefined }) : null
                   ) : null
-                ) : React.createElement('span', { style: { color: '#bbb' } }, '--')
+                ) : React.createElement('span', { style: { color: '#bfbfbf', fontStyle: 'italic' } }, 'No data')
               ),
-              React.createElement('div', null,
-                React.createElement('div', { style: { fontWeight: 500, color: '#555', marginBottom: '3px' } }, 'Risk'),
-                rg && rg !== 'SKIP' ? React.createElement('div', null,
+              React.createElement('div', { style: { backgroundColor: '#fafafa', padding: '10px', borderRadius: '6px' } },
+                React.createElement('div', { style: { fontWeight: 700, color: '#595959', marginBottom: '6px', fontSize: '11px', textTransform: 'uppercase' } }, 'Risk'),
+                rg && rg !== 'SKIP' ? React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
                   React.createElement(FineScanDetailTag, { label: 'Grade', value: rg === 'LOW' ? 'Low' : rg === 'MEDIUM' ? 'Medium' : rg === 'HIGH' ? 'High' : rg, color: rg === 'LOW' ? '#52c41a' : rg === 'MEDIUM' ? '#faad14' : '#ff4d4f' }),
-                  rd ? React.createElement('div', null,
-                    React.createElement('div', { style: { marginTop: '2px' } }, React.createElement(FineScanDetailTag, { label: 'Score', value: (rd.risk_score || '--') + '/100', color: rd.risk_score >= 65 ? '#ff4d4f' : rd.risk_score >= 35 ? '#faad14' : '#52c41a' })),
-                    rd.atr_pct != null ? React.createElement('div', { style: { marginTop: '2px' } }, React.createElement(FineScanDetailTag, { label: 'ATR', value: rd.atr_pct + '%', color: rd.atr_pct > 5 ? '#ff4d4f' : undefined })) : null
+                  rd ? React.createElement(React.Fragment, null,
+                    React.createElement(FineScanDetailTag, { label: 'Score', value: (rd.risk_score || '--') + '/100', color: rd.risk_score >= 65 ? '#ff4d4f' : rd.risk_score >= 35 ? '#faad14' : '#52c41a' }),
+                    rd.atr_pct != null ? React.createElement(FineScanDetailTag, { label: 'ATR', value: rd.atr_pct + '%', color: rd.atr_pct > 5 ? '#ff4d4f' : undefined }) : null
                   ) : null
-                ) : React.createElement('span', { style: { color: '#bbb' } }, '--')
+                ) : React.createElement('span', { style: { color: '#bfbfbf', fontStyle: 'italic' } }, 'No data')
               )
             )
           ),
 
           // News & Catalyst
-          React.createElement('div', { style: { background: '#fff', borderRadius: 6, border: '1px solid #edf0f2', padding: '8px 10px' } },
-            React.createElement('div', { style: { fontWeight: 600, fontSize: '10px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '4px' } }, 'News & Catalyst'),
+          React.createElement('div', { style: { background: '#fff', borderRadius: 8, border: '1px solid #edf0f2', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
+            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, 'News & Market Catalyst'),
             ng && ng !== 'Error' ? React.createElement('div', null,
-              React.createElement('div', { style: { marginBottom: '3px' } },
-                React.createElement(FineScanDetailTag, { label: 'Grade', value: ng, color: ng === 'Catalyst' ? '#1890ff' : ng === 'Caution' ? '#faad14' : ng === 'High Event Risk' ? '#ff4d4f' : undefined }),
+              React.createElement('div', { style: { marginBottom: '8px', display: 'flex', gap: '12px' } },
+                React.createElement(FineScanDetailTag, { label: 'Sentiment', value: ng, color: ng === 'Catalyst' ? '#1890ff' : ng === 'Caution' ? '#faad14' : ng === 'High Event Risk' ? '#ff4d4f' : undefined }),
                 nd ? React.createElement(React.Fragment, null,
-                  React.createElement(FineScanDetailTag, { label: 'Count', value: String(nd.headline_count || 0) }),
-                  React.createElement(FineScanDetailTag, { label: 'Earnings', value: nd.earnings_soon ? 'Soon' : 'No', color: nd.earnings_soon ? '#faad14' : undefined })
+                  React.createElement(FineScanDetailTag, { label: 'Headlines', value: String(nd.headline_count || 0) }),
+                  React.createElement(FineScanDetailTag, { label: 'Earnings', value: nd.earnings_soon ? 'Upcoming' : 'Clear', color: nd.earnings_soon ? '#faad14' : undefined })
                 ) : null
               ),
-              nd && nd.top_headlines && nd.top_headlines.length > 0 ? React.createElement('div', { style: { fontSize: '9px', color: '#666', lineHeight: '1.4' } },
+              nd && nd.top_headlines && nd.top_headlines.length > 0 ? React.createElement('div', { style: { fontSize: '12px', color: '#595959', lineHeight: '1.6', backgroundColor: '#fcfcfc', padding: '8px', borderRadius: '4px', borderLeft: '3px solid #eee' } },
                 nd.top_headlines.slice(0, 2).map(function(h: string, i: number) {
-                  return React.createElement('div', { key: i, style: { display: '-webkit-box', WebkitLineClamp: '1', WebkitBoxOrient: 'vertical', overflow: 'hidden', maxHeight: '14px', marginBottom: '1px' }, title: h }, '• ' + h);
+                  return React.createElement('div', { key: i, style: { display: '-webkit-box', WebkitLineClamp: '1', WebkitBoxOrient: 'vertical', overflow: 'hidden', marginBottom: '4px' }, title: h }, '• ' + h);
                 }),
-                nd.top_headlines.length > 2 ? React.createElement('span', { style: { color: '#999' } }, '+' + (nd.top_headlines.length - 2) + ' more') : null
-              ) : React.createElement('span', { style: { color: '#bbb', fontSize: '9px' } }, 'No recent symbol-specific news')
-            ) : React.createElement('span', { style: { color: '#bbb', fontSize: '10px' } }, '--')
+                nd.top_headlines.length > 2 ? React.createElement('div', { style: { color: '#8c8c8c', fontSize: '11px', marginTop: '4px' } }, 'View ' + (nd.top_headlines.length - 2) + ' more headlines in terminal...') : null
+              ) : React.createElement('div', { style: { color: '#bfbfbf', fontSize: '12px', fontStyle: 'italic' } }, 'No significant recent news catalysts detected.')
+            ) : React.createElement('div', { style: { color: '#bfbfbf', fontSize: '13px' } }, 'News sentiment analysis unavailable.')
           ),
 
-          // AI Explanation / Next Step
-          React.createElement('div', { style: { background: '#fff', borderRadius: 6, border: '1px solid #edf0f2', padding: '8px 10px' } },
-            React.createElement('div', { style: { fontWeight: 600, fontSize: '10px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '4px' } }, 'AI Explanation'),
-            React.createElement('div', { style: { marginBottom: '3px' } },
-              React.createElement(FineScanDetailTag, { label: 'Source', value: aiExplained ? 'DeepSeek' : 'Local Rules', color: aiExplained ? '#52c41a' : '#fa8c16' }),
-              aiExplained ? React.createElement(FineScanDetailTag, { label: 'Model', value: 'deepseek-chat' }) : null
+          // AI Explanation / Strategic Reasoning
+          React.createElement('div', { style: { background: '#fff', borderRadius: 8, border: '1px solid #edf0f2', padding: '12px 16px', boxShadow: '0 2px 4px rgba(24, 144, 255, 0.05)' } },
+            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#1890ff', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, 'AI Agent Strategic Reasoning'),
+            React.createElement('div', { style: { marginBottom: '10px', display: 'flex', gap: '12px' } },
+              React.createElement(FineScanDetailTag, { label: 'Source', value: aiExplained ? 'DEEPSEEK-V3' : 'LOCAL RULES', color: aiExplained ? '#13c2c2' : '#fa8c16' }),
+              aiExplained ? React.createElement(FineScanDetailTag, { label: 'Tokens', value: 'Optimized' }) : null
             ),
-            record.finalReason ? React.createElement('div', { style: { fontSize: '9px', color: '#555', lineHeight: '1.4', display: '-webkit-box', WebkitLineClamp: '2', WebkitBoxOrient: 'vertical', overflow: 'hidden', maxHeight: '28px', marginBottom: '3px' }, title: record.finalReason }, record.finalReason) : null,
-            record.nextStep ? React.createElement('div', null,
-              React.createElement('div', { style: { fontSize: '9px', fontWeight: 500, color: '#333', marginBottom: '1px' } }, 'Next Step:'),
-              React.createElement('div', { style: { fontSize: '9px', color: '#1890ff', lineHeight: '1.3', display: '-webkit-box', WebkitLineClamp: '2', WebkitBoxOrient: 'vertical', overflow: 'hidden', maxHeight: '26px' }, title: record.nextStep }, record.nextStep)
+            record.finalReason ? React.createElement('div', { style: { fontSize: '13px', color: '#262626', lineHeight: '1.6', marginBottom: '12px', padding: '10px', backgroundColor: '#f0f9ff', borderRadius: '6px', border: '1px solid #e6f4ff' }, title: record.finalReason }, record.finalReason) : null,
+            record.nextStep ? React.createElement('div', { style: { borderTop: '1px solid #f0f0f0', paddingTop: '10px' } },
+              React.createElement('div', { style: { fontSize: '11px', fontWeight: 700, color: '#1890ff', textTransform: 'uppercase', marginBottom: '4px' } }, 'Recommended Next Step:'),
+              React.createElement('div', { style: { fontSize: '13px', color: '#1890ff', fontWeight: 600, lineHeight: '1.5' }, title: record.nextStep }, record.nextStep)
             ) : null,
-            !aiExplained && !record.finalReason ? React.createElement('span', { style: { color: '#bbb', fontSize: '9px' } }, 'AI explanation loading or unavailable.') : null
+            !aiExplained && !record.finalReason ? React.createElement('div', { style: { color: '#bfbfbf', fontSize: '13px', fontStyle: 'italic' } }, 'AI agent is compiling strategic reasoning for this candidate...') : null
           )
         )
       ),
-
+      // Footer spacer
+      React.createElement('div', { style: { height: '8px' } })
     );
-  };
-  const renderDetailPanel = (record: any) => {
+  };  const renderDetailPanel = (record: any) => {
     const score = record.trendScore || record.overallScore || 0;
     const scoreColor = score >= 70 ? '#52c41a' : score >= 40 ? '#faad14' : '#ff4d4f';
     const conf = record.trendConfidence ? (record.trendConfidence * (record.trendConfidence <= 1 ? 100 : 1)).toFixed(0) : 'N/A';
@@ -3907,6 +4004,13 @@ Please respond in this exact JSON format:
       return;
     }
 
+    // Register with runner service so isFineScanRunning() returns true during route changes
+    const fineScanPromise = _runFineScanLoop();
+    registerFineScanRun(fineScanPromise);
+    await fineScanPromise;
+  };
+
+  const _runFineScanLoop = async () => {
     setFineScanStatus('running');
     setFineScanProgress(0);
     setFineScanStepProgress(0);
@@ -3918,6 +4022,34 @@ Please respond in this exact JSON format:
     setDeeperValidationResults(null);
     setEntryPlanStatus('idle');
     setEntryPlanResults(null);
+
+    // Preflight: check session, Alpaca, and AI config
+    const preflight = await preflightConfigCheck();
+    if (!preflight.ok || !preflight.sessionValid) {
+      setFineScanStatus('failed');
+      setFineScanMessage(preflight.error || 'Session expired');
+      unregisterFineScanRun();
+      message.error(preflight.error || 'Session expired');
+      return;
+    }
+    if (!preflight.alpacaConfigured) {
+      setFineScanStatus('failed');
+      setFineScanMessage('Alpaca Market Data API is not configured. Configure in Settings.');
+      unregisterFineScanRun();
+      message.error('Alpaca Market Data API is not configured.');
+      return;
+    }
+    if (!preflight.aiAvailable) {
+      const reason = preflight.aiKeyIsMasked ? 'AI key is invalid (masked). Re-enter in Settings.' :
+                     !preflight.aiConfigured ? 'AI Provider not configured. Configure in Settings.' :
+                     preflight.aiTestStatus !== 'connected' ? `AI Provider not tested (${preflight.aiTestStatus}). Click Test AI Connection in Settings.` :
+                     'AI unavailable';
+      setFineScanStatus('failed');
+      setFineScanMessage(reason);
+      unregisterFineScanRun();
+      message.error(reason);
+      return;
+    }
 
     try {
       const results: any[] = [];
@@ -3932,7 +4064,7 @@ Please respond in this exact JSON format:
 
       for (let i = 0; i < candidateCount; i++) {
         const c = candidates[i];
-        const progress = Math.round(((i + 1) / candidateCount) * 100);
+        const progress = Math.min(100, Math.round(((i + 1) / candidateCount) * 100));
         setFineScanProgress(progress);
         setFineScanStepProgress(14);
         setFineScanCurrentStep('Strategy Matching');
@@ -4901,9 +5033,77 @@ Please respond in this exact JSON format:
 
         rec.scanStatus = 'completed';
 
-        // Append to results (keep scan order from Preferred Continue Scan List)
-        const scanOrderIndex = results.length;
-        results[results.length - 1].priority = scanOrderIndex;
+        // ===== AI EXPLANATION (per-symbol, inline) =====
+        // Call AI explain RIGHT NOW for this symbol, before moving to the next
+        if (matchConfidence >= 15) {
+          setFineScanStepProgress(85);
+          setFineScanCurrentStep('AI Reasoning');
+          setFineScanMessage(`[${i+1}/${candidateCount}] ${symbol}: AI reasoning...`);
+
+          try {
+            const explainData: import('../services/api').FineScanExplainRequest = {
+              symbol: rec.symbol,
+              trendLabel: rec.trendLabel || rec.trend || 'Neutral',
+              trendScore: rec.scanScore ?? null,
+              matchedStrategies: rec.matchedStrategies || [],
+              backtestMetrics: {
+                totalReturn: rec.backtestPerStrategy?.[0]?.totalReturn,
+                sharpe: rec.backtestPerStrategy?.[0]?.sharpe,
+                winRate: rec.backtestPerStrategy?.[0]?.winRate,
+                profitFactor: rec.backtestPerStrategy?.[0]?.profitFactor,
+                maxDrawdown: rec.backtestPerStrategy?.[0]?.maxDrawdown,
+                tradeCount: rec.backtestPerStrategy?.[0]?.tradeCount,
+              },
+              optimizationMetrics: {
+                stability: rec.quickOptSummary?.stability,
+                avgReturn: rec.quickOptSummary?.avgReturn,
+                positiveRatio: rec.quickOptSummary?.positiveRatio,
+              },
+              entryQuality: {
+                grade: rec.entryQuality,
+                score: rec.entryScore,
+                atr: rec.entryDetails?.atr,
+                zone: rec.entryDetails?.zone,
+              },
+              liquidity: {
+                grade: rec.liquidityGrade,
+                score: rec.liquidityScore,
+              },
+              newsSummary: {
+                grade: rec.newsGrade,
+                headlineCount: rec.newsDetails?.headlines?.length,
+              },
+              riskAssessment: {
+                grade: rec.riskGrade,
+                score: rec.riskScore,
+                reason: rec.riskReason,
+              },
+            };
+
+            const resp = (await fineScanExplainAPI.explain(explainData)).data;
+            if (resp.success) {
+              if (resp.whyMatched) rec.matchReason = resp.whyMatched;
+              if (resp.keySignalExplanation) rec.keySignalExplanation = resp.keySignalExplanation;
+              if (resp.finalReason) rec.finalReason = resp.finalReason;
+              if (resp.nextStep) rec.nextStep = resp.nextStep;
+              rec.aiExplained = true;
+              if (rec.provenance) {
+                rec.provenance.explanationSource = 'DeepSeek AI';
+                rec.provenance.aiCalled = true;
+                rec.provenance.aiSource = 'DeepSeek';
+                rec.provenance.aiModel = 'deepseek-chat';
+              }
+            } else {
+              if (rec.provenance) rec.provenance.explanationSource = 'Explain API failed';
+            }
+          } catch (e: any) {
+            console.warn(`[FineScanExplain] AI failed for ${symbol}: ${e.message}`);
+            if (rec.provenance) rec.provenance.explanationSource = 'Explain API error';
+          }
+        }
+
+        // Update UI with this symbol's COMPLETE result (including AI reasoning)
+        setFineScanMessage(`[${i+1}/${candidateCount}] ${symbol}: Completed`);
         setFineScanResults([...results]);
 
         // Rate-limit delay between symbols (500ms)
@@ -4913,86 +5113,13 @@ Please respond in this exact JSON format:
       }
       setFineScanProgress(100);
       setFineScanStatus('completed');
+      unregisterFineScanRun();
 
       message.success(`Fine Scan complete: ${results.length} candidates analyzed`);
-
-      // ===== AI EXPLANATION LAYER (fire-and-forget, best-effort) =====
-      // Only overwrites narrative fields (whyMatched, keySignalExplanation, finalReason, nextStep)
-      // Never touches: backtest metrics, optimization, entry, liquidity, risk scores
-      (async () => {
-        for (const r of results) {
-          try {
-            // Only generate AI explanations for results that had at least some data
-            if (r.matchConfidence < 15) continue;
-
-            const explainData: import('../services/api').FineScanExplainRequest = {
-              symbol: r.symbol,
-              trendLabel: r.trendLabel || r.trend || 'Neutral',
-              trendScore: r.scanScore ?? null,
-              matchedStrategies: r.matchedStrategies || [],
-              backtestMetrics: {
-                totalReturn: r.backtestPerStrategy?.[0]?.totalReturn,
-                sharpe: r.backtestPerStrategy?.[0]?.sharpe,
-                winRate: r.backtestPerStrategy?.[0]?.winRate,
-                profitFactor: r.backtestPerStrategy?.[0]?.profitFactor,
-                maxDrawdown: r.backtestPerStrategy?.[0]?.maxDrawdown,
-                tradeCount: r.backtestPerStrategy?.[0]?.tradeCount,
-              },
-              optimizationMetrics: {
-                stability: r.quickOptSummary?.stability,
-                avgReturn: r.quickOptSummary?.avgReturn,
-                positiveRatio: r.quickOptSummary?.positiveRatio,
-              },
-              entryQuality: {
-                grade: r.entryQuality,
-                score: r.entryScore,
-                atr: r.entryDetails?.atr,
-                zone: r.entryDetails?.zone,
-              },
-              liquidity: {
-                grade: r.liquidityGrade,
-                score: r.liquidityScore,
-              },
-              newsSummary: {
-                grade: r.newsGrade,
-                headlineCount: r.newsDetails?.headlines?.length,
-              },
-              riskAssessment: {
-                grade: r.riskGrade,
-                score: r.riskScore,
-                reason: r.riskReason,
-              },
-            };
-
-            const resp = (await fineScanExplainAPI.explain(explainData)).data;
-            if (resp.success) {
-              // OVERWRITE ONLY: narrative fields
-              if (resp.whyMatched) r.matchReason = resp.whyMatched;
-              if (resp.keySignalExplanation) r.keySignalExplanation = resp.keySignalExplanation;
-              if (resp.finalReason) r.finalReason = resp.finalReason;
-              if (resp.nextStep) r.nextStep = resp.nextStep;
-              // Mark as AI-enhanced for UI
-              r.aiExplained = true;
-              if (r.provenance) {
-                r.provenance.explanationSource = 'DeepSeek AI';
-                r.provenance.aiCalled = true;
-                r.provenance.aiSource = 'DeepSeek';
-                r.provenance.aiModel = 'deepseek-chat';
-              }
-            } else {
-              if (r.provenance) r.provenance.explanationSource = 'Explain API failed';
-            }
-          } catch (e: any) {
-            console.warn(`[FineScanExplain] AI failed for ${r.symbol}: ${e.message}`);
-            if (r.provenance) r.provenance.explanationSource = 'Explain API error';
-          }
-        }
-        // Refresh UI with AI-enhanced explanations
-        setFineScanResults([...results]);
-      })();
     } catch (error) {
       console.error('Fine scan error:', error);
       setFineScanStatus('error');
+      unregisterFineScanRun();
       message.error('Fine scan failed: ' + (error as any).message);
     }
   };
@@ -5400,8 +5527,42 @@ Please respond in this exact JSON format:
   const handleRunEntryPlan = useCallback(async () => {
     const candidates = getEntryPlanCandidates();
     if (!candidates.length) return;
+    // Register with runner service so isEntryPlanRunning() returns true during route changes
+    const epPromise = _runEntryPlanLoop(candidates);
+    registerEntryPlanRun(epPromise);
+    await epPromise;
+  }, [getEntryPlanCandidates, entryPlanAccountSize, entryPlanRiskPerTrade, entryPlanExecutionMode, tradingAccountMode, tradingAccountData]);
+
+  const _runEntryPlanLoop = async (candidates: any[]) => {
     setEntryPlanStatus('loading');
     setEntryPlanResults(null);
+
+    // Preflight: check session, AI config, and trading account
+    const preflight = await preflightConfigCheck();
+    if (!preflight.ok || !preflight.sessionValid) {
+      setEntryPlanStatus('error');
+      unregisterEntryPlanRun();
+      message.error(preflight.error || 'Session expired');
+      return;
+    }
+    if (!preflight.aiAvailable) {
+      const reason = preflight.aiKeyIsMasked ? 'AI key is invalid (masked). Re-enter in Settings.' :
+                     !preflight.aiConfigured ? 'AI Provider not configured. Configure in Settings.' :
+                     preflight.aiTestStatus !== 'connected' ? `AI Provider not tested (${preflight.aiTestStatus}). Click Test AI Connection in Settings.` :
+                     'AI unavailable';
+      setEntryPlanStatus('error');
+      unregisterEntryPlanRun();
+      message.error(reason);
+      return;
+    }
+    // Check trading account config (paper vs real mode)
+    if (!tradingAccountData?.success) {
+      setEntryPlanStatus('error');
+      unregisterEntryPlanRun();
+      message.error(`Trading account (${tradingAccountMode} mode) is not available. Configure Alpaca keys in Settings.`);
+      return;
+    }
+
     try {
       const candidateData = candidates.map((c: any) => ({
         symbol: c.symbol,
@@ -5454,14 +5615,70 @@ Please respond in this exact JSON format:
         }));
         setEntryPlanResults(enrichedPlans);
         setEntryPlanStatus('completed');
+        unregisterEntryPlanRun();
       } else {
         setEntryPlanStatus('error');
+        unregisterEntryPlanRun();
       }
-    } catch (err) {
+    } catch (err: any) {
+      const httpStatus = err.response?.status;
+      const backendSkipRetry = err.response?.data?.skipRetry;
+      const isConfigError = backendSkipRetry || httpStatus === 401 || httpStatus === 403;
+      const isRateLimit = httpStatus === 429;
+
+      if (isRateLimit) {
+        // 429: retry once with backoff
+        console.warn('[EntryPlan] Rate limited (429), retrying after delay...');
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        try {
+          const candidateData = candidates.map((c: any) => ({
+            symbol: c.symbol, strategy: c.strategy || c.strategyType || '', verdict: c.verdict || '',
+            totalReturn: c.totalReturn ?? c.aggregateReturn, sharpeRatio: c.sharpeRatio ?? c.sharpe,
+            maxDrawdown: c.maxDrawdown, winRate: c.winRate, profitFactor: c.profitFactor,
+            tradeCount: c.tradeCount ?? c.trades, stabilityScore: c.stabilityScore,
+            recentVsLongTerm: c.recentVsLongTerm, fineScanEntryQuality: c.fineScanEntryQuality || '',
+            liquidity: c.liquidity || '', riskGrade: c.riskGrade || '',
+            currentPrice: c.currentPrice || c.price || 0, support: c.support || 0,
+            resistance: c.resistance || 0, atr: c.atr || 0, ema20: c.ema20 || 0, ema50: c.ema50 || 0,
+            recentHigh: c.recentHigh || 0, recentLow: c.recentLow || 0, volume: c.volume || 0,
+            avgVolume: c.avgVolume || 0, fineScanDecision: c.fineScanDecision || 'Pass',
+            fineScanScore: c.fineScanScore || 50, fineScanStrategy: c.fineScanStrategy || '',
+            fineScanRisk: c.fineScanRisk || '', fineScanNews: c.fineScanNews || '',
+            entryQualityDetail: c.entryQualityDetail || '',
+          }));
+          const realAccountSize = tradingAccountData?.success
+            ? (tradingAccountData.portfolioValue ?? tradingAccountData.equity ?? tradingAccountData.buyingPower ?? entryPlanAccountSize)
+            : entryPlanAccountSize;
+          const res = await entryPlanAPI.generate(
+            candidateData, realAccountSize, entryPlanRiskPerTrade, 10,
+            [], 0, [], entryPlanExecutionMode, tradingAccountMode
+          );
+          if (res.data?.success && res.data?.plans) {
+            const devTestSymbols = new Set(candidates.filter((c: any) => c.isDevTest).map((c: any) => c.symbol));
+            const enrichedPlans = res.data.plans.map((p: any) => ({
+              ...p, isDevTest: devTestSymbols.has(p.symbol) || p.isDevTest || false,
+            }));
+            setEntryPlanResults(enrichedPlans);
+            setEntryPlanStatus('completed');
+            unregisterEntryPlanRun();
+            return;
+          }
+        } catch (retryErr: any) {
+          console.error('[EntryPlan] Retry also failed:', retryErr.message);
+        }
+      }
+
+      const errMsg = isConfigError
+        ? (err.response?.data?.error || 'Configuration error. Check AI Provider settings.')
+        : isRateLimit
+          ? 'Rate limited by AI service. Please wait and try again.'
+          : (err.message || 'Entry plan failed');
       console.error('Entry plan error:', err);
       setEntryPlanStatus('error');
+      unregisterEntryPlanRun();
+      message.error(errMsg);
     }
-  }, [getEntryPlanCandidates, entryPlanAccountSize, entryPlanRiskPerTrade, entryPlanExecutionMode, tradingAccountMode, tradingAccountData]);
+  };
 
   const selectValidationCandidates = useCallback(() => {
     if (!fineScanResults || fineScanResults.length === 0) return [];
@@ -5502,8 +5719,35 @@ Please respond in this exact JSON format:
       message.warning('No qualified Fine Scan candidates. Run Fine Scan first or adjust criteria.');
       return;
     }
+    // Register with runner service so isDeeperValidationRunning() returns true during route changes
+    const dvPromise = _runDeeperValidationLoop(selected);
+    registerDeeperValidationRun(dvPromise);
+    await dvPromise;
+  };
+
+  const _runDeeperValidationLoop = async (selected: any[]) => {
     setDeeperValidationStatus('loading');
     setDeeperValidationResults(null);
+
+    // Preflight: check session and AI config
+    const preflight = await preflightConfigCheck();
+    if (!preflight.ok || !preflight.sessionValid) {
+      setDeeperValidationStatus('error');
+      unregisterDeeperValidationRun();
+      message.error(preflight.error || 'Session expired');
+      return;
+    }
+    if (!preflight.aiAvailable) {
+      const reason = preflight.aiKeyIsMasked ? 'AI key is invalid (masked). Re-enter in Settings.' :
+                     !preflight.aiConfigured ? 'AI Provider not configured. Configure in Settings.' :
+                     preflight.aiTestStatus !== 'connected' ? `AI Provider not tested (${preflight.aiTestStatus}). Click Test AI Connection in Settings.` :
+                     'AI unavailable';
+      setDeeperValidationStatus('error');
+      unregisterDeeperValidationRun();
+      message.error(reason);
+      return;
+    }
+
     try {
       const candidates = selected.map((r: any) => {
         // Map strategies to backend-friendly names
@@ -5545,14 +5789,60 @@ Please respond in this exact JSON format:
         }));
         setDeeperValidationResults(enrichedResults);
         setDeeperValidationStatus('completed');
+        unregisterDeeperValidationRun();
         message.success(`Deeper validation completed for ${resp.results.length} results`);
       } else {
         setDeeperValidationStatus('error');
+        unregisterDeeperValidationRun();
         message.error('Validation returned no results');
       }
     } catch (err: any) {
+      const httpStatus = err.response?.status;
+      const backendSkipRetry = err.response?.data?.skipRetry;
+      const isConfigError = backendSkipRetry || httpStatus === 401 || httpStatus === 403;
+      const isRateLimit = httpStatus === 429;
+
+      if (isRateLimit) {
+        // 429: retry once with backoff
+        console.warn('[DeeperValidation] Rate limited (429), retrying after delay...');
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        try {
+          const resp = (await deeperValidationAPI.validate(
+            selected.map((r: any) => ({
+              symbol: r.symbol, decision: r.decision, selectedBy: r.selectedBy || 'Continue',
+              score: r.matchConfidence || 0, strategy: 'momentum', matchedStrategies: r.matchedStrategies || [],
+              backtestStatus: r.backtestStatus || '', optimizationStatus: r.quickOptStatus || '',
+              entryQuality: r.entryQuality || '', liquidityGrade: r.liquidityGrade || '',
+              riskGrade: r.riskGrade || '', whyMatched: r.matchReason || '',
+              decisionReason: r.decisionReason || r.finalReason || '',
+            })), '1y', 100000
+          )).data;
+          if (resp.success && Array.isArray(resp.results)) {
+            const devTestSymbols = new Set(selected.filter((r: any) => r.isDevTest).map((r: any) => r.symbol));
+            const selectedByMap = new Map(selected.map((r: any) => [r.symbol, r.selectedBy || 'Continue']));
+            const enrichedResults = resp.results.map((r: any) => ({
+              ...r, isDevTest: devTestSymbols.has(r.symbol) || r.isDevTest || false,
+              selectedBy: selectedByMap.get(r.symbol) || 'Continue',
+            }));
+            setDeeperValidationResults(enrichedResults);
+            setDeeperValidationStatus('completed');
+            unregisterDeeperValidationRun();
+            message.success(`Deeper validation completed for ${resp.results.length} results`);
+            return;
+          }
+        } catch (retryErr: any) {
+          console.error('[DeeperValidation] Retry also failed:', retryErr.message);
+        }
+      }
+
+      const errMsg = isConfigError
+        ? (err.response?.data?.error || 'Configuration error. Check AI Provider settings.')
+        : isRateLimit
+          ? 'Rate limited by AI service. Please wait and try again.'
+          : ('Validation failed: ' + (err.message || 'Unknown error'));
       setDeeperValidationStatus('error');
-      message.error('Validation failed: ' + (err.message || 'Unknown error'));
+      unregisterDeeperValidationRun();
+      message.error(errMsg);
     }
   };
 
@@ -7284,18 +7574,20 @@ function renderDVDetailPanel(record: any) {
         statusText={
           fineScanStatus === 'running' ? 'RUNNING' :
           fineScanStatus === 'completed' ? 'COMPLETED' :
+          fineScanStatus === 'stopped' ? 'STOPPED' :
           fineScanStatus === 'error' ? 'ERROR' : 'IDLE'
         }
         statusColor={
           fineScanStatus === 'running' ? 'processing' :
           fineScanStatus === 'completed' ? 'success' :
+          fineScanStatus === 'stopped' ? 'warning' :
           fineScanStatus === 'error' ? 'error' : 'default'
         }
-        progressValue={fineScanStatus === 'running' ? fineScanProgress : null}
+        progressValue={(fineScanStatus === 'running' || fineScanStatus === 'stopped') && fineScanProgress > 0 ? fineScanProgress : null}
         summaryChips={fineScanResults.length > 0 ? [
           { label: 'Scanned', value: fineScanResults.length },
           { label: 'Continue', value: fineScanResults.filter((r: any) => r.decision === 'Continue').length, color: '#52c41a' },
-          { label: 'Watch', value: fineScanResults.filter((r: any) => r.decision === 'Watch').length, color: '#d48806' },
+          { label: 'Watch', value: fineScanResults.filter((r: any) => r.decision === 'Watch').length, color: '#faad14' },
           { label: 'Reject', value: fineScanResults.filter((r: any) => r.decision === 'Reject').length, color: '#ff4d4f' },
           { label: 'Need Data', value: fineScanResults.filter((r: any) => r.decision === 'NeedMoreData').length, color: '#fa8c16' },
         ] : undefined}
@@ -7306,7 +7598,8 @@ function renderDVDetailPanel(record: any) {
             onClick={handleRunFineScan}
             disabled={fineScanStatus === 'running' || preferredContinueScanList.length === 0}
             loading={fineScanStatus === 'running'}
-            size="small"
+            size="middle"
+            style={{ borderRadius: '6px', fontWeight: 600, height: '36px' }}
           >
             {fineScanStatus === 'running' ? 'Running...' : 'Run Fine Scan'}
           </Button>
@@ -7315,9 +7608,18 @@ function renderDVDetailPanel(record: any) {
         expanded={fineScanExpanded}
         onToggle={() => setFineScanExpanded(!fineScanExpanded)}
       >
-        <Card bodyStyle={{ padding: '20px' }} style={{ borderRadius: '12px', border: '1px solid #f0f0f0' }}>
+        <Card bodyStyle={{ padding: '24px' }} style={{ borderRadius: '12px', border: '1px solid #f0f0f0', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
           {/* Header Summary Row */}
-          <div className="fine-scan-header-summary">
+          <div className="fine-scan-header-summary" style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '24px', 
+            marginBottom: '24px', 
+            padding: '12px 20px', 
+            backgroundColor: '#fafafa', 
+            borderRadius: '10px',
+            border: '1px solid #f0f0f0'
+          }}>
             {fineScanResults.length > 0 ? (() => {
               const total = fineScanResults.length;
               const contCount = fineScanResults.filter((r: any) => r.decision === 'Continue').length;
@@ -7326,70 +7628,80 @@ function renderDVDetailPanel(record: any) {
               const needDataCount = fineScanResults.filter((r: any) => r.decision === 'NeedMoreData').length;
               return (
                 <>
-                  <div className="fine-scan-stat-item">
-                    <span style={{ color: '#8c8c8c', fontWeight: 600 }}>CANDIDATES:</span>
-                    <span style={{ fontWeight: 800, color: '#1f1f1f' }}>{total}</span>
+                  <div className="fine-scan-stat-item" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ color: '#8c8c8c', fontWeight: 700, fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Candidates:</span>
+                    <span style={{ fontWeight: 800, color: '#1f1f1f', fontSize: '18px' }}>{total}</span>
                   </div>
-                  <Divider type="vertical" />
-                  <div className="fine-scan-stat-item">
-                    <span style={{ color: '#8c8c8c', fontWeight: 600 }}>CONTINUE:</span>
-                    <Tag color="success" style={{ fontWeight: 800, margin: 0 }}>{contCount}</Tag>
+                  <Divider type="vertical" style={{ height: '24px', backgroundColor: '#e8e8e8' }} />
+                  <div className="fine-scan-stat-item" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ color: '#8c8c8c', fontWeight: 700, fontSize: '13px', textTransform: 'uppercase' }}>Continue:</span>
+                    <Tag color="success" style={{ fontWeight: 800, margin: 0, fontSize: '14px', padding: '0 10px', borderRadius: '4px', lineHeight: '24px' }}>{contCount}</Tag>
                   </div>
-                  <Divider type="vertical" />
-                  <div className="fine-scan-stat-item">
-                    <span style={{ color: '#8c8c8c', fontWeight: 600 }}>WATCH:</span>
-                    <Tag color="warning" style={{ fontWeight: 800, margin: 0 }}>{watchCount}</Tag>
+                  <Divider type="vertical" style={{ height: '24px' }} />
+                  <div className="fine-scan-stat-item" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ color: '#8c8c8c', fontWeight: 700, fontSize: '13px', textTransform: 'uppercase' }}>Watch:</span>
+                    <Tag color="warning" style={{ fontWeight: 800, margin: 0, fontSize: '14px', padding: '0 10px', borderRadius: '4px', lineHeight: '24px' }}>{watchCount}</Tag>
                   </div>
-                  <Divider type="vertical" />
-                  <div className="fine-scan-stat-item">
-                    <span style={{ color: '#8c8c8c', fontWeight: 600 }}>REJECT:</span>
-                    <Tag color="error" style={{ fontWeight: 800, margin: 0 }}>{rejectCount}</Tag>
+                  <Divider type="vertical" style={{ height: '24px' }} />
+                  <div className="fine-scan-stat-item" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ color: '#8c8c8c', fontWeight: 700, fontSize: '13px', textTransform: 'uppercase' }}>Reject:</span>
+                    <Tag color="error" style={{ fontWeight: 800, margin: 0, fontSize: '14px', padding: '0 10px', borderRadius: '4px', lineHeight: '24px' }}>{rejectCount}</Tag>
                   </div>
-                  <Divider type="vertical" />
-                  <div className="fine-scan-stat-item">
-                    <span style={{ color: '#8c8c8c', fontWeight: 600 }}>NEED DATA:</span>
-                    <Tag color="warning" style={{ fontWeight: 800, margin: 0, background: '#fff7e6', borderColor: '#fa8c16', color: '#fa8c16' }}>{needDataCount}</Tag>
+                  <Divider type="vertical" style={{ height: '24px' }} />
+                  <div className="fine-scan-stat-item" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ color: '#8c8c8c', fontWeight: 700, fontSize: '13px', textTransform: 'uppercase' }}>Need Data:</span>
+                    <Tag color="orange" style={{ fontWeight: 800, margin: 0, fontSize: '14px', padding: '0 10px', borderRadius: '4px', lineHeight: '24px' }}>{needDataCount}</Tag>
                   </div>
-                  <Divider type="vertical" />
-                  <div className="fine-scan-stat-item">
-                    <span style={{ color: '#8c8c8c', fontWeight: 600 }}>AI AGENT:</span>
-                    <Tag color="cyan" style={{ fontWeight: 800, margin: 0 }}>DEEPSEEK V3</Tag>
+                  <Divider type="vertical" style={{ height: '24px' }} />
+                  <div className="fine-scan-stat-item" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: 'auto' }}>
+                    <span style={{ color: '#8c8c8c', fontWeight: 700, fontSize: '13px', textTransform: 'uppercase' }}>AI Agent:</span>
+                    <Tag color="cyan" style={{ fontWeight: 800, margin: 0, fontSize: '13px', padding: '0 10px', borderRadius: '4px', lineHeight: '24px', letterSpacing: '0.5px' }}>DEEPSEEK V3</Tag>
                   </div>
                 </>
               );
             })() : (
-              <div style={{ color: '#8c8c8c', fontSize: '12px', display: 'flex', alignItems: 'center', gap: 8 }}>
-                <InfoCircleOutlined />
+              <div style={{ color: '#8c8c8c', fontSize: '14px', display: 'flex', alignItems: 'center', gap: 10, fontWeight: 500 }}>
+                <InfoCircleOutlined style={{ color: '#1890ff' }} />
                 {fineScanStatus === 'idle' ? 'System ready for multi-dimensional strategy confirmation' : 'Awaiting input from Continue Scan'}
               </div>
             )}
           </div>
 
           {/* Progress Panel */}
-          {fineScanStatus === 'running' && (
-            <div className="fine-scan-progress-panel">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          {(fineScanStatus === 'running' || (fineScanStatus === 'stopped' && fineScanProgress > 0)) && (
+            <div className="fine-scan-progress-panel" style={{ 
+              marginBottom: '24px', 
+              padding: '20px 24px', 
+              background: '#fafafa', 
+              borderRadius: '12px', 
+              border: '1px solid #f0f0f0',
+              boxShadow: '0 2px 4px rgba(0,0,0,0.01)'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
                 <div>
-                  <div style={{ fontSize: '14px', fontWeight: 700, color: '#003a8c' }}>
-                    Scanning Regime & Strategies
+                  <div style={{ fontSize: '16px', fontWeight: 800, color: fineScanStatus === 'stopped' ? '#d48806' : '#003a8c', letterSpacing: '-0.2px' }}>
+                    {fineScanStatus === 'stopped' ? 'Scan Interrupted' : 'Scanning Regime & Strategies'}
                   </div>
-                  <div style={{ fontSize: '12px', color: '#1890ff' }}>
+                  <div style={{ fontSize: '14px', color: fineScanStatus === 'stopped' ? '#d48806' : '#1890ff', marginTop: 4, fontWeight: 500 }}>
                     {fineScanMessage || 'Processing market data for selected candidates...'}
                   </div>
                 </div>
                 <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: '20px', fontWeight: 800, color: '#1890ff', lineHeight: 1 }}>
+                  <div style={{ fontSize: '26px', fontWeight: 900, color: fineScanStatus === 'stopped' ? '#d48806' : '#1890ff', lineHeight: 1, fontFamily: "'Inter', sans-serif" }}>
                     {fineScanProgress}%
                   </div>
-                  <div style={{ fontSize: '10px', color: '#8c8c8c', textTransform: 'uppercase', letterSpacing: 0.5 }}>Complete</div>
+                  <div style={{ fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', letterSpacing: 0.8, fontWeight: 700, marginTop: 4 }}>
+                    {fineScanStatus === 'stopped' ? 'Retained' : 'Process Progress'}
+                  </div>
                 </div>
               </div>
-              <Progress 
-                percent={fineScanProgress} 
-                status="active" 
-                strokeColor={{ '0%': '#1890ff', '100%': '#52c41a' }} 
-                strokeWidth={8} 
-                showInfo={false} 
+              <Progress
+                percent={fineScanProgress}
+                status={fineScanStatus === 'stopped' ? 'exception' : 'active'}
+                strokeColor={fineScanStatus === 'stopped' ? '#d48806' : { '0%': '#1890ff', '100%': '#52c41a' }}
+                strokeWidth={12}
+                showInfo={false}
+                style={{ borderRadius: '10px' }}
               />
             </div>
           )}
@@ -7398,30 +7710,37 @@ function renderDVDetailPanel(record: any) {
             <>
             <style>{`
               .fine-scan-table .ant-table-thead > tr > th {
-                font-size: 11px;
-                font-weight: 600;
-                color: #595959;
-                background: #fafafa;
-                padding: 6px 8px !important;
-                border-bottom: 2px solid #e8e8e8;
+                font-size: 13px;
+                font-weight: 700;
+                color: #262626;
+                background: #f5f7f9 !important;
+                padding: 14px 16px !important;
+                border-bottom: 2px solid #e1e4e8;
+                text-transform: uppercase;
+                letter-spacing: 0.4px;
               }
               .fine-scan-table .ant-table-tbody > tr > td {
-                padding: 5px 8px !important;
-                font-size: 11px;
+                padding: 12px 16px !important;
+                font-size: 13px;
+                color: #434343;
               }
               .fine-scan-table .ant-table-tbody > tr:hover > td {
-                background: #fafafa;
+                background: #f8faff !important;
               }
               .fine-scan-table .ant-table-row {
-                height: 36px;
+                height: 52px;
+              }
+              .fine-scan-table .ant-table-expanded-row > td {
+                background: #ffffff !important;
+                padding: 0 !important;
               }
             `}</style>
             <Table
               className="fine-scan-table"
               dataSource={fineScanResults}
               rowKey="symbol"
-              pagination={{ pageSize: 10, showSizeChanger: false, showTotal: (total, range) => `${range[0]}-${range[1]} / ${total}` }}
-              size="small"
+              pagination={{ pageSize: 10, showSizeChanger: false, showTotal: (total, range) => `${range[0]}-${range[1]} / ${total}`, style: { marginTop: '16px', paddingRight: '16px' } }}
+              size="middle"
               scroll={{ x: 'max-content' }}
               expandable={{
                 expandedRowRender: (record: any) => renderFineScanDetailPanel(record),
@@ -7439,12 +7758,12 @@ function renderDVDetailPanel(record: any) {
                 {
                   title: 'Symbol',
                   key: 'symbol',
-                  width: 80,
+                  width: 90,
                   fixed: 'left',
                   render: (record) => (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                      <Text strong style={{ fontSize: '12px' }}>{record.symbol}</Text>
-                      {record.isDevTest && <Tag color="red" style={{ fontSize: 8, padding: '0 2px', lineHeight: '12px', margin: 0 }}>TEST</Tag>}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <Text strong style={{ fontSize: '15px', color: '#1890ff', letterSpacing: '-0.2px' }}>{record.symbol}</Text>
+                      {record.isDevTest && <Tag color="error" style={{ fontSize: 9, padding: '0 4px', lineHeight: '14px', margin: 0, fontWeight: 700 }}>TEST</Tag>}
                     </div>
                   ),
                 },
@@ -7452,12 +7771,12 @@ function renderDVDetailPanel(record: any) {
                 {
                   title: 'Decision',
                   key: 'decision',
-                  width: 95,
+                  width: 110,
                   render: (record) => {
                     const d = record.decision || '--';
                     let c = '#999', l = d;
                     const source = record.decisionSource || 'local-rule';
-                    const sourceLabel = source === 'ai' ? 'AI' : '⚙️';
+                    const sourceLabel = source === 'ai' ? 'AI' : 'Rules';
                     if (d === 'Continue') { c = '#52c41a'; l = 'Continue'; }
                     else if (d === 'Watch') { c = '#faad14'; l = 'Watch'; }
                     else if (d === 'Reject') { c = '#ff4d4f'; l = 'Reject'; }
@@ -7465,10 +7784,10 @@ function renderDVDetailPanel(record: any) {
                     else if (d === 'Skip') { c = '#ff4d4f'; l = 'Skip'; }
                     return (
                       <Tooltip title={`Source: ${source}${record.decisionReason ? ' | ' + record.decisionReason : ''}`}>
-                        <span style={{ color: c, fontSize: '11px', fontWeight: 600 }}>
-                          {l}
-                          <span style={{ fontSize: '9px', color: '#bbb', marginLeft: '3px' }}>{sourceLabel}</span>
-                        </span>
+                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                          <span style={{ color: c, fontSize: '13px', fontWeight: 700 }}>{l}</span>
+                          <span style={{ fontSize: '10px', color: '#bfbfbf', fontWeight: 600, textTransform: 'uppercase' }}>{sourceLabel}</span>
+                        </div>
                       </Tooltip>
                     );
                   },
@@ -7477,7 +7796,7 @@ function renderDVDetailPanel(record: any) {
                 {
                   title: 'Why',
                   key: 'blockingReason',
-                  width: 220,
+                  width: 240,
                   render: (record: any) => {
                     const d = record.decision || '--';
                     const reason = record.decisionReason || '';
@@ -7492,16 +7811,13 @@ function renderDVDetailPanel(record: any) {
                       parts.push('Warn: ' + warnings.slice(0, 2).join('; '));
                     }
                     if (reason && parts.length === 0) {
-                      parts.push(reason.length > 80 ? reason.slice(0, 80) + '...' : reason);
+                      parts.push(reason.length > 100 ? reason.slice(0, 100) + '...' : reason);
                     }
-                    if (raw && raw !== d.toUpperCase()) {
-                      parts.push(`AI said: ${raw}`);
-                    }
-                    const text = parts.join(' | ') || (d === 'Continue' ? 'Eligible' : '-');
-                    const color = d === 'Continue' ? '#52c41a' : d === 'Reject' ? '#ff4d4f' : '#8c8c8c';
+                    const text = parts.join(' | ') || (d === 'Continue' ? 'Meets all verification criteria' : '-');
+                    const color = d === 'Continue' ? '#52c41a' : d === 'Reject' ? '#ff4d4f' : '#595959';
                     return (
                       <Tooltip title={text}>
-                        <span style={{ fontSize: '10px', color, lineHeight: '1.3', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                        <span style={{ fontSize: '12px', color, lineHeight: '1.5', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', fontWeight: 500 }}>
                           {text}
                         </span>
                       </Tooltip>
@@ -7512,20 +7828,20 @@ function renderDVDetailPanel(record: any) {
                 {
                   title: 'Score',
                   key: 'score',
-                  width: 80,
+                  width: 100,
                   render: (record) => {
                     const s = record.score ?? record.matchConfidence;
-                    if (s == null) return <Text style={{ fontSize: '11px', color: '#bbb' }}>-</Text>;
+                    if (s == null) return <Text style={{ fontSize: '13px', color: '#bbb' }}>-</Text>;
                     let c = '#ff4d4f';
                     if (s >= 80) c = '#52c41a';
                     else if (s >= 60) c = '#faad14';
                     else if (s >= 40) c = '#ff7a45';
                     const w = Math.min(100, Math.max(2, s));
                     return (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <span style={{ fontSize: '11px', fontWeight: 600, color: c, minWidth: 22 }}>{s}</span>
-                        <div style={{ width: 36, height: 4, background: '#f0f0f0', borderRadius: 2, overflow: 'hidden' }}>
-                          <div style={{ width: `${w}%`, height: '100%', background: c, borderRadius: 2 }} />
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ fontSize: '14px', fontWeight: 800, color: c, minWidth: 28, fontFamily: "'Inter', sans-serif" }}>{s}</span>
+                        <div style={{ width: 48, height: 6, background: '#f0f0f0', borderRadius: 3, overflow: 'hidden' }}>
+                          <div style={{ width: `${w}%`, height: '100%', background: c, borderRadius: 3 }} />
                         </div>
                       </div>
                     );
@@ -7535,15 +7851,15 @@ function renderDVDetailPanel(record: any) {
                 {
                   title: 'Strategies',
                   key: 'strategies',
-                  width: 200,
+                  width: 220,
                   render: (record) => {
                     const strats = record.matchedStrategies || [];
-                    if (strats.length === 0) return <Text style={{ fontSize: '11px', color: '#bbb' }}>-</Text>;
+                    if (strats.length === 0) return <Text style={{ fontSize: '13px', color: '#bbb' }}>-</Text>;
                     const display = strats.slice(0, 3).join(' · ');
                     const extra = strats.length > 3 ? ` +${strats.length - 3}` : '';
                     return (
                       <Tooltip title={strats.join(', ')}>
-                        <span style={{ fontSize: '10px', color: '#595959', lineHeight: '1.4' }}>
+                        <span style={{ fontSize: '12px', color: '#595959', lineHeight: '1.5', fontWeight: 600 }}>
                           {display}{extra}
                         </span>
                       </Tooltip>
@@ -7554,7 +7870,7 @@ function renderDVDetailPanel(record: any) {
                 {
                   title: 'Liquidity',
                   key: 'liquidity',
-                  width: 90,
+                  width: 100,
                   render: (record) => {
                     const lg = record.liquidityGrade || '-';
                     let c = '#bbb', l = '-';
@@ -7563,14 +7879,14 @@ function renderDVDetailPanel(record: any) {
                     else if (lg === 'Poor') { c = '#ff4d4f'; l = 'Poor'; }
                     else if (lg === 'Error' || lg === 'Data Unavailable' || lg === 'Unknown') { c = '#bbb'; l = 'N/A'; }
                     else if (lg === 'Partial') { c = '#faad14'; l = 'Partial'; }
-                    return <span style={{ color: c, fontSize: '11px', fontWeight: 500 }}>{l}</span>;
+                    return <span style={{ color: c, fontSize: '13px', fontWeight: 700 }}>{l}</span>;
                   },
                 },
                 // ===== Entry =====
                 {
                   title: 'Entry',
                   key: 'entry',
-                  width: 100,
+                  width: 120,
                   render: (record) => {
                     const eq = record.entryQuality || '-';
                     let c = '#999', l = '-';
@@ -7582,14 +7898,14 @@ function renderDVDetailPanel(record: any) {
                     else if (eq === 'Poor Reward-Risk') { c = '#ff4d4f'; l = 'Poor R/R'; }
                     else if (eq === 'Partial') { c = '#b37feb'; l = 'Partial'; }
                     else if (eq === 'Data Unavailable' || eq === 'Error / No Data') { c = '#bbb'; l = 'No Data'; }
-                    return <span style={{ color: c, fontSize: '11px', fontWeight: 500 }}>{l}</span>;
+                    return <span style={{ color: c, fontSize: '13px', fontWeight: 700 }}>{l}</span>;
                   },
                 },
                 // ===== Validation =====
                 {
                   title: 'Validation',
                   key: 'validation',
-                  width: 145,
+                  width: 160,
                   render: (record) => {
                     const ps = record.backtestPerformance || null;
                     let pc = '#999', pl = 'Pending';
@@ -7610,14 +7926,14 @@ function renderDVDetailPanel(record: any) {
                       }
                     }
                     return (
-                      <div style={{ fontSize: '10px', lineHeight: '1.8' }}>
+                      <div style={{ fontSize: '12px', lineHeight: '1.6' }}>
                         <div>
-                          <span style={{ color: '#8c8c8c' }}>Backtest: </span>
-                          <span style={{ color: pc, fontWeight: 500 }}>{pl}</span>
+                          <span style={{ color: '#8c8c8c', fontWeight: 500 }}>Backtest: </span>
+                          <span style={{ color: pc, fontWeight: 700 }}>{pl}</span>
                         </div>
                         <div>
-                          <span style={{ color: '#8c8c8c' }}>Optimization: </span>
-                          <span style={{ color: stColor, fontWeight: 500 }}>{stLabel}</span>
+                          <span style={{ color: '#8c8c8c', fontWeight: 500 }}>Opt: </span>
+                          <span style={{ color: stColor, fontWeight: 700 }}>{stLabel}</span>
                         </div>
                       </div>
                     );
@@ -7626,7 +7942,7 @@ function renderDVDetailPanel(record: any) {
                 {
                   title: 'Risk',
                   key: 'risk',
-                  width: 75,
+                  width: 90,
                   render: (record) => {
                     const rg = record.riskGrade || '-';
                     let c = '#bbb', l = '-', dot = '';
@@ -7636,22 +7952,22 @@ function renderDVDetailPanel(record: any) {
                     else if (rg === 'SKIP') { c = '#ff4d4f'; l = 'Skip'; dot = '⛔'; }
                     else { c = '#bbb'; l = 'N/A'; }
                     const riskReason = record.riskReason || '';
-                    return <Tooltip title={riskReason}><span style={{ color: c, fontSize: '11px', fontWeight: 500 }}>{dot} {l}</span></Tooltip>;
+                    return <Tooltip title={riskReason}><span style={{ color: c, fontSize: '13px', fontWeight: 700 }}>{dot} {l}</span></Tooltip>;
                   },
                 },
                 // ===== Why Matched =====
                 {
                   title: 'Why Matched',
                   key: 'whyMatched',
-                  width: 150,
+                  width: 180,
                   render: (record) => {
                     const full = record.matchReason || '';
-                    const truncated = full.length > 50 ? full.substring(0, 50) + '...' : full;
+                    const truncated = full.length > 60 ? full.substring(0, 60) + '...' : full;
                     return (
                       <Tooltip title={record.matchAISource === 'ai-explain' ? 'AI-generated explanation' : 'Template-based (market data)'}>
-                        <Text style={{ fontSize: '10px', color: '#666', lineHeight: '1.4' }}>
+                        <Text style={{ fontSize: '12px', color: '#434343', lineHeight: '1.5', fontWeight: 500 }}>
                           {truncated || '-'}
-                          <span style={{ fontSize: '9px', color: '#bbb', marginLeft: '3px' }}>
+                          <span style={{ fontSize: '11px', color: '#bfbfbf', marginLeft: '4px' }}>
                             {record.matchAISource === 'ai-explain' ? '🤖' : '⚙️'}
                           </span>
                         </Text>
@@ -7663,36 +7979,33 @@ function renderDVDetailPanel(record: any) {
                 {
                   title: 'Grade',
                   key: 'grade',
-                  width: 65,
+                  width: 80,
                   render: (record) => {
-                    // Grade = stock quality / whether it's worth pursuing
-                    // High = good quality = green, Medium = orange, Low = poor = red
                     const g = record.fineScanGrade || null;
-                    if (g === 'HIGH') return <span style={{ color: '#52c41a', fontSize: '11px', fontWeight: 600 }}>High</span>;
-                    if (g === 'MEDIUM') return <span style={{ color: '#faad14', fontSize: '11px', fontWeight: 600 }}>Medium</span>;
-                    if (g === 'LOW') return <span style={{ color: '#ff4d4f', fontSize: '11px', fontWeight: 600 }}>Low</span>;
-                    // Fallback grade computation from available data
-                    const btOk = record.backtestStatus === 'pass' && (record.backtestPerformance === 'positive' || record.backtestPerformance === 'caution');
-                    const eqOk = record.entryQuality === 'Excellent' || record.entryQuality === 'Good' || record.entryQuality === 'Wait for Pullback';
-                    const riskOk = record.riskGrade === 'LOW' || record.riskGrade === 'MEDIUM';
-                    const scoreOk = (record.matchConfidence || 0) >= 30;
-                    if (btOk && scoreOk && eqOk && riskOk) {
-                      return <span style={{ color: '#52c41a', fontSize: '11px', fontWeight: 600 }}>High</span>;
-                    }
-                    if (btOk && (record.matchConfidence || 0) >= 20) {
-                      return <span style={{ color: '#faad14', fontSize: '11px', fontWeight: 600 }}>Medium</span>;
-                    }
-                    return <span style={{ color: '#ff4d4f', fontSize: '11px', fontWeight: 600 }}>Low</span>;
+                    const getGrade = () => {
+                      if (g === 'HIGH') return { l: 'High', c: '#52c41a' };
+                      if (g === 'MEDIUM') return { l: 'Medium', c: '#faad14' };
+                      if (g === 'LOW') return { l: 'Low', c: '#ff4d4f' };
+                      const btOk = record.backtestStatus === 'pass' && (record.backtestPerformance === 'positive' || record.backtestPerformance === 'caution');
+                      const eqOk = record.entryQuality === 'Excellent' || record.entryQuality === 'Good' || record.entryQuality === 'Wait for Pullback';
+                      const riskOk = record.riskGrade === 'LOW' || record.riskGrade === 'MEDIUM';
+                      const scoreOk = (record.matchConfidence || 0) >= 30;
+                      if (btOk && scoreOk && eqOk && riskOk) return { l: 'High', c: '#52c41a' };
+                      if (btOk && (record.matchConfidence || 0) >= 20) return { l: 'Medium', c: '#faad14' };
+                      return { l: 'Low', c: '#ff4d4f' };
+                    };
+                    const res = getGrade();
+                    return <span style={{ color: res.c, fontSize: '13px', fontWeight: 800, textTransform: 'uppercase' }}>{res.l}</span>;
                   },
                 },
                 // ===== Rank =====
                 {
                   title: 'Rank',
                   key: 'rank',
-                  width: 55,
+                  width: 65,
                   render: (record) => (
-                    <Text style={{ fontSize: '12px', color: '#595959', fontWeight: 500 }}>
-                      {record.priority || '-'}
+                    <Text style={{ fontSize: '14px', color: '#262626', fontWeight: 800, fontFamily: "'Inter', sans-serif" }}>
+                      {record.priority != null ? (record.priority + 1) : '-'}
                     </Text>
                   ),
                 }
@@ -7733,11 +8046,13 @@ function renderDVDetailPanel(record: any) {
         statusText={
           deeperValidationStatus === 'loading' ? 'VALIDATING' :
           deeperValidationStatus === 'completed' ? 'COMPLETED' :
+          deeperValidationStatus === 'stopped' ? 'INTERRUPTED' :
           deeperValidationStatus === 'error' ? 'ERROR' : 'IDLE'
         }
         statusColor={
           deeperValidationStatus === 'loading' ? 'processing' :
           deeperValidationStatus === 'completed' ? 'success' :
+          deeperValidationStatus === 'stopped' ? 'warning' :
           deeperValidationStatus === 'error' ? 'error' : 'default'
         }
         summaryChips={(() => {
@@ -7831,7 +8146,7 @@ function renderDVDetailPanel(record: any) {
               </div>
             )}
 
-            {deeperValidationStatus === 'completed' && deeperValidationResults && (
+            {(deeperValidationStatus === 'completed' || deeperValidationStatus === 'stopped') && deeperValidationResults && (
               <div className="validation-table-container">
                 <Table
                   dataSource={deeperValidationResults}
@@ -8068,11 +8383,13 @@ function renderDVDetailPanel(record: any) {
         statusText={
           entryPlanStatus === 'loading' ? 'GENERATING' :
           entryPlanStatus === 'completed' ? 'COMPLETED' :
+          entryPlanStatus === 'stopped' ? 'INTERRUPTED' :
           entryPlanStatus === 'error' ? 'ERROR' : 'IDLE'
         }
         statusColor={
           entryPlanStatus === 'loading' ? 'processing' :
           entryPlanStatus === 'completed' ? 'success' :
+          entryPlanStatus === 'stopped' ? 'warning' :
           entryPlanStatus === 'error' ? 'error' : 'default'
         }
         summaryChips={entryPlanResults ? [
@@ -8081,7 +8398,7 @@ function renderDVDetailPanel(record: any) {
           { label: 'Mode', value: entryPlanExecutionMode === 'Paper Trade if Triggered' ? 'Paper' : entryPlanExecutionMode === 'Real Trade if Triggered' ? 'Real' : 'Rec' },
         ] : undefined}
         actionButton={
-          deeperValidationStatus === 'completed' && getEntryPlanCandidates().length > 0 ? (
+          (deeperValidationStatus === 'completed' || deeperValidationStatus === 'stopped') && getEntryPlanCandidates().length > 0 ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <Select
                 size="small"
@@ -8114,21 +8431,21 @@ function renderDVDetailPanel(record: any) {
         onToggle={() => setEntryPlanExpanded(!entryPlanExpanded)}
       >
           {/* No DV candidates yet */}
-          {deeperValidationStatus !== 'completed' && (
+          {deeperValidationStatus !== 'completed' && deeperValidationStatus !== 'stopped' && (
             <div style={{ textAlign: 'center', padding: '16px 0', color: '#bbb', fontSize: '12px', fontStyle: 'italic' }}>
               No validated candidates yet. Run Deeper Validation first.
             </div>
           )}
 
           {/* DV done but no confirmed/watch candidates */}
-          {deeperValidationStatus === 'completed' && getEntryPlanCandidates().length === 0 && (
+          {(deeperValidationStatus === 'completed' || deeperValidationStatus === 'stopped') && getEntryPlanCandidates().length === 0 && (
             <div style={{ textAlign: 'center', padding: '16px 0', color: '#bbb', fontSize: '12px', fontStyle: 'italic' }}>
               No Confirmed or Watch candidates available from Deeper Validation.
             </div>
           )}
 
           {/* DV done, candidates available */}
-          {deeperValidationStatus === 'completed' && getEntryPlanCandidates().length > 0 && entryPlanStatus === 'idle' && (
+          {(deeperValidationStatus === 'completed' || deeperValidationStatus === 'stopped') && getEntryPlanCandidates().length > 0 && entryPlanStatus === 'idle' && (
             <div style={{ textAlign: 'center', padding: '16px 0', color: '#999', fontSize: '12px' }}>
               {getEntryPlanCandidates().length} validated candidates ready. Click <strong>"Run Entry Plan"</strong> to generate entry plans.
             </div>
@@ -8160,7 +8477,7 @@ function renderDVDetailPanel(record: any) {
           )}
 
           {/* Results */}
-          {entryPlanStatus === 'completed' && entryPlanResults && entryPlanResults.length > 0 && (
+          {(entryPlanStatus === 'completed' || entryPlanStatus === 'stopped') && entryPlanResults && entryPlanResults.length > 0 && (
             <>
               {/* Summary stat blocks — compact key metrics */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '20px' }}>
