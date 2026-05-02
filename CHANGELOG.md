@@ -5,6 +5,23 @@ All notable changes to the Professional Quantitative Trading Platform will be do
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-05-02
+
+### Changed
+- User API keys (Alpaca, Finnhub, AI Provider) now come **only** from Settings / Configuration database records
+- Removed local `.env` fallback for all user API keys in `resolve_alpaca_config`, `resolve_finnhub_config`, `resolve_ai_config`
+- `alpaca_config_state` no longer initializes from `ALPACA_API_KEY` / `ALPACA_API_SECRET` env vars
+- Old `/api/config/alpaca` and `/api/config/finnhub` routes now read/write Supabase instead of JSON files
+- `/api/config/alpaca/test` requires authentication and reads keys from database
+- Paper/Real Trading Test buttons now use authenticated API calls (`userApi`)
+- `_load_all_configs` no longer loads API keys from local JSON files
+- Cleaned `.env.example` files: removed user API key placeholders, added note that keys are configured via Settings page
+- Removed `ALPACA_API_KEY`, `ALPACA_API_SECRET`, `FINNHUB_API_KEY` imports from `config.py`
+
+### Security
+- No user API key falls back to local `.env` — all keys stored encrypted in Supabase `user_api_configs` per `user_id`
+- Test Connection reads decrypted keys from database, never from masked frontend inputs or `.env`
+
 ## [2.1.0] - 2026-05-01
 
 ### Added

@@ -455,13 +455,7 @@ try:
 
     from config import (
 
-        FINNHUB_API_KEY,
-
         FINNHUB_BASE_URL,
-
-        ALPACA_API_KEY,
-
-        ALPACA_API_SECRET,
 
         ALPACA_BASE_URL,
 
@@ -477,9 +471,6 @@ try:
 
     from config import TWELVEDATA_BASE_URL, TWELVEDATA_API_KEY
 
-    print(f"[配置加载] Finnhub hasKey={bool(FINNHUB_API_KEY)}")
-    print(f"[配置加载] Alpaca hasKey={bool(ALPACA_API_KEY)} hasSecret={bool(ALPACA_API_SECRET)}")
-
     print(f"[配置加载] 默认股票列表: {DEFAULT_SYMBOLS}")
 
 except ImportError as e:
@@ -487,8 +478,6 @@ except ImportError as e:
     print(f"[警告] 无法导入配置: {e}")
 
     # 设置默认值
-
-    FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
 
     FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
 
@@ -706,13 +695,13 @@ load_ai_config_from_file()
 
 alpaca_config_state = {
 
-    'paper_api_key': '',  # Loaded from alpaca_config.json or env
+    'paper_api_key': '',  # Must be configured via Settings page
 
-    'paper_api_secret': '',  # Loaded from alpaca_config.json or env
+    'paper_api_secret': '',  # Must be configured via Settings page
 
-    'live_api_key': ALPACA_API_KEY,  # 直接使用从config.py导入的真实交易密钥
+    'live_api_key': '',  # Must be configured via Settings page
 
-    'live_api_secret': ALPACA_API_SECRET,  # 直接使用从config.py导入的真实交易密钥
+    'live_api_secret': '',  # Must be configured via Settings page
 
     'environment': 'paper'  # 'paper' 或 'live'
 
@@ -4484,7 +4473,7 @@ def fetch_alpaca_bars_for_backtest(symbol, timeframe, start_date_utc, end_date_u
 
             print(f'[Optimization Alpaca] params = {params}')
 
-            print(f'[Optimization Alpaca] key = {ALPACA_API_KEY[:6]}...{ALPACA_API_KEY[-4:] if len(ALPACA_API_KEY) > 10 else ALPACA_API_KEY}')
+            print(f'[Optimization Alpaca] hasKey={bool(api_key)}')
 
 
 
@@ -5505,26 +5494,24 @@ def _save_json_config(filepath, data):
 
 @app.route('/api/config/alpaca', methods=['GET', 'POST'])
 def config_alpaca():
-    """GET: return masked Alpaca config. POST: save Alpaca config."""
+    """GET: return masked Alpaca config from Supabase. POST: save to Supabase."""
     try:
+        user = get_supabase_user()
+        if not user:
+            return jsonify({'success': False, 'message': 'Authentication required'}), 401
+
         if request.method == 'GET':
-            cfg = dict(alpaca_config_state)
-            # Load from file if exists (overrides in-memory)
-            file_cfg = _load_json_config(ALPACA_CONFIG_FILE)
-            for k in ['paper_api_key', 'paper_api_secret', 'live_api_key', 'live_api_secret',
-                       'paper_base_url', 'live_base_url', 'environment', 'data_base_url', 'feed']:
-                if k in file_cfg and file_cfg[k]:
-                    cfg[k] = file_cfg[k]
+            cfg = get_user_config(user['id'], 'alpaca') or {}
             return jsonify({
                 'success': True,
                 'config': {
-                    'paper_api_key_masked': _mask_key(cfg.get('paper_api_key', '')),
-                    'paper_api_secret_masked': _mask_key(cfg.get('paper_api_secret', '')),
+                    'paper_api_key_masked': mask_key(cfg.get('paper_api_key', '')),
+                    'paper_api_secret_masked': mask_key(cfg.get('paper_api_secret', '')),
                     'paper_api_key': bool(cfg.get('paper_api_key')),
                     'paper_api_secret': bool(cfg.get('paper_api_secret')),
                     'paper_base_url': cfg.get('paper_base_url', 'https://paper-api.alpaca.markets'),
-                    'live_api_key_masked': _mask_key(cfg.get('live_api_key', '')),
-                    'live_api_secret_masked': _mask_key(cfg.get('live_api_secret', '')),
+                    'live_api_key_masked': mask_key(cfg.get('live_api_key', '')),
+                    'live_api_secret_masked': mask_key(cfg.get('live_api_secret', '')),
                     'live_api_key': bool(cfg.get('live_api_key')),
                     'live_api_secret': bool(cfg.get('live_api_secret')),
                     'live_base_url': cfg.get('live_base_url', 'https://api.alpaca.markets'),
@@ -5533,18 +5520,17 @@ def config_alpaca():
             })
         else:
             data = request.get_json() or {}
-            # Load existing
-            cfg = _load_json_config(ALPACA_CONFIG_FILE, dict(alpaca_config_state))
+            existing = get_user_config(user['id'], 'alpaca') or {}
             for k in ['paper_api_key', 'paper_api_secret', 'live_api_key', 'live_api_secret',
                        'paper_base_url', 'live_base_url', 'environment']:
                 if k in data and data[k]:
-                    cfg[k] = data[k]
-            _save_json_config(ALPACA_CONFIG_FILE, cfg)
-            # Update in-memory state
-            for k in ['paper_api_key', 'paper_api_secret', 'live_api_key', 'live_api_secret', 'environment']:
-                if k in cfg and cfg[k]:
-                    alpaca_config_state[k] = cfg[k]
-            return jsonify({'success': True, 'message': 'Alpaca config saved'})
+                    if '****' in str(data[k]):
+                        continue  # Skip masked values
+                    existing[k] = data[k]
+            ok, err = save_user_config(user['id'], 'alpaca', existing)
+            if ok:
+                return jsonify({'success': True, 'message': 'Alpaca config saved'})
+            return jsonify({'success': False, 'message': f'Save failed: {err}'}), 500
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -5552,43 +5538,33 @@ def config_alpaca():
 @app.route('/api/config/alpaca/test', methods=['POST'])
 def config_alpaca_test():
     """Test Alpaca connection for paper or live mode.
-    Resolves keys from per-user Supabase config first, then JSON file / in-memory fallback."""
+    Reads keys from per-user Supabase config only — no .env / JSON file fallback."""
     try:
         data = request.get_json() or {}
         mode = data.get('mode', 'paper')
+
+        user = get_supabase_user()
+        if not user:
+            return jsonify({'success': False, 'message': 'Authentication required. Please sign in.'}), 401
 
         api_key = ''
         api_secret = ''
         base_url = 'https://paper-api.alpaca.markets' if mode == 'paper' else 'https://api.alpaca.markets'
 
-        # 1. Try per-user Supabase config first
-        user = get_supabase_user()
-        if user:
-            alpaca_cfg = get_user_config(user['id'], 'alpaca')
-            if alpaca_cfg:
-                if mode == 'paper':
-                    api_key = alpaca_cfg.get('paper_api_key', '')
-                    api_secret = alpaca_cfg.get('paper_api_secret', '')
-                    base_url = alpaca_cfg.get('paper_base_url', base_url)
-                else:
-                    api_key = alpaca_cfg.get('live_api_key', '')
-                    api_secret = alpaca_cfg.get('live_api_secret', '')
-                    base_url = alpaca_cfg.get('live_base_url', base_url)
-
-        # 2. Fallback to JSON file / in-memory state
-        if not api_key or not api_secret:
-            cfg = _load_json_config(ALPACA_CONFIG_FILE, dict(alpaca_config_state))
+        alpaca_cfg = get_user_config(user['id'], 'alpaca')
+        if alpaca_cfg:
             if mode == 'paper':
-                api_key = api_key or cfg.get('paper_api_key', alpaca_config_state.get('paper_api_key', ''))
-                api_secret = api_secret or cfg.get('paper_api_secret', alpaca_config_state.get('paper_api_secret', ''))
-                base_url = cfg.get('paper_base_url', base_url)
+                api_key = alpaca_cfg.get('paper_api_key', '')
+                api_secret = alpaca_cfg.get('paper_api_secret', '')
+                base_url = alpaca_cfg.get('paper_base_url', base_url)
             else:
-                api_key = api_key or cfg.get('live_api_key', alpaca_config_state.get('live_api_key', ''))
-                api_secret = api_secret or cfg.get('live_api_secret', alpaca_config_state.get('live_api_secret', ''))
-                base_url = cfg.get('live_base_url', base_url)
+                api_key = alpaca_cfg.get('live_api_key', '')
+                api_secret = alpaca_cfg.get('live_api_secret', '')
+                base_url = alpaca_cfg.get('live_base_url', base_url)
 
-        if not api_key or not api_secret:
-            return jsonify({'success': False, 'message': f'No {mode} API key/secret configured. Please save your keys first.'})
+        key_invalid, key_reason = _is_invalid_key(api_key)
+        if not api_key or not api_secret or key_invalid:
+            return jsonify({'success': False, 'message': f'No {mode} API key configured in database. Please save settings first.'})
 
         headers = {
             'APCA-API-KEY-ID': api_key,
@@ -5752,54 +5728,56 @@ def config_market_data_test():
 
 @app.route('/api/config/finnhub', methods=['GET', 'POST'])
 def config_finnhub():
-    """GET: return masked Finnhub config. POST: save Finnhub config."""
-    global FINNHUB_API_KEY
+    """GET: return masked Finnhub config from Supabase. POST: save to Supabase."""
     try:
+        user = get_supabase_user()
+        if not user:
+            return jsonify({'success': False, 'message': 'Authentication required'}), 401
+
         if request.method == 'GET':
-            cfg = _load_json_config(FINNHUB_CONFIG_FILE, {
-                'api_key': FINNHUB_API_KEY if 'FINNHUB_API_KEY' in dir() else '',
-                'base_url': 'https://finnhub.io/api/v1',
-            })
+            cfg = get_user_config(user['id'], 'finnhub') or {}
             return jsonify({
                 'success': True,
                 'config': {
-                    'api_key_masked': _mask_key(cfg.get('api_key', '')),
+                    'api_key_masked': mask_key(cfg.get('api_key', '')),
                     'api_key': bool(cfg.get('api_key')),
                     'base_url': cfg.get('base_url', 'https://finnhub.io/api/v1'),
                 }
             })
         else:
             data = request.get_json() or {}
-            cfg = _load_json_config(FINNHUB_CONFIG_FILE, {
-                'api_key': FINNHUB_API_KEY if 'FINNHUB_API_KEY' in dir() else '',
-                'base_url': 'https://finnhub.io/api/v1',
-            })
-            if 'api_key' in data and data['api_key']:
-                cfg['api_key'] = data['api_key']
-            if 'base_url' in data and data['base_url']:
-                cfg['base_url'] = data['base_url']
-            _save_json_config(FINNHUB_CONFIG_FILE, cfg)
-            if cfg.get('api_key'):
-                FINNHUB_API_KEY = cfg['api_key']
-            return jsonify({'success': True, 'message': 'Finnhub config saved'})
+            existing = get_user_config(user['id'], 'finnhub') or {}
+            for k in ['api_key', 'base_url']:
+                if k in data and data[k]:
+                    if '****' in str(data[k]):
+                        continue  # Skip masked values
+                    existing[k] = data[k]
+            ok, err = save_user_config(user['id'], 'finnhub', existing)
+            if ok:
+                return jsonify({'success': True, 'message': 'Finnhub config saved'})
+            return jsonify({'success': False, 'message': f'Save failed: {err}'}), 500
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @app.route('/api/config/finnhub/test', methods=['POST'])
 def config_finnhub_test():
-    """Test Finnhub connection by fetching AAPL quote."""
+    """Test Finnhub connection using per-user Supabase config."""
     try:
-        cfg = _load_json_config(FINNHUB_CONFIG_FILE, {
-            'api_key': FINNHUB_API_KEY if 'FINNHUB_API_KEY' in dir() else '',
-            'base_url': 'https://finnhub.io/api/v1',
-        })
+        user = get_supabase_user()
+        if not user:
+            return jsonify({'success': False, 'message': 'Authentication required'}), 401
+
+        cfg = get_user_config(user['id'], 'finnhub')
+        if not cfg:
+            return jsonify({'success': False, 'message': 'No Finnhub config saved. Please save your API key first.'})
+
         api_key = cfg.get('api_key', '')
+        key_invalid, key_reason = _is_invalid_key(api_key)
+        if not api_key or key_invalid:
+            return jsonify({'success': False, 'message': 'No valid Finnhub API key in database. Please save settings first.'})
+
         base_url = cfg.get('base_url', 'https://finnhub.io/api/v1')
-
-        if not api_key:
-            return jsonify({'success': False, 'message': 'No Finnhub API key configured'})
-
         resp = requests.get(f'{base_url}/quote', params={'symbol': 'AAPL', 'token': api_key}, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
@@ -5815,24 +5793,16 @@ def config_finnhub_test():
 
 # --- Load all config files on startup ---
 def _load_all_configs():
-    """Load Alpaca, Finnhub, and Market Data configs from files on startup."""
-    # Alpaca
+    """Load non-sensitive config from files on startup. API keys come from Supabase only."""
+    # Alpaca — only load non-sensitive fields (base URLs, environment)
     alpaca_file_cfg = _load_json_config(ALPACA_CONFIG_FILE)
     if alpaca_file_cfg:
-        for k in ['paper_api_key', 'paper_api_secret', 'live_api_key', 'live_api_secret',
-                   'paper_base_url', 'live_base_url', 'environment']:
+        for k in ['paper_base_url', 'live_base_url', 'environment']:
             if k in alpaca_file_cfg and alpaca_file_cfg[k]:
                 alpaca_config_state[k] = alpaca_file_cfg[k]
-        print(f'[Config] Loaded Alpaca config from {ALPACA_CONFIG_FILE}')
+        print(f'[Config] Loaded Alpaca non-sensitive config from {ALPACA_CONFIG_FILE}')
 
-    # Finnhub
-    finnhub_file_cfg = _load_json_config(FINNHUB_CONFIG_FILE)
-    if finnhub_file_cfg and finnhub_file_cfg.get('api_key'):
-        global FINNHUB_API_KEY
-        FINNHUB_API_KEY = finnhub_file_cfg['api_key']
-        print(f'[Config] Loaded Finnhub config from {FINNHUB_CONFIG_FILE}')
-
-    # Market Data
+    # Market Data — only load non-sensitive fields (feed, base_url)
     global _MARKET_DATA_BASE_URL, _MARKET_DATA_FEED
     md_file_cfg = _load_json_config(MARKET_DATA_CONFIG_FILE)
     if md_file_cfg:
@@ -7355,32 +7325,18 @@ def resolve_ai_config(require_user_config=False):
     else:
         safe_print(f'[resolve_ai_config] no authenticated user (no token or invalid token)')
 
-    if require_user_config:
-        safe_print(f'[resolve_ai_config] require_user_config=True but no user config found')
-        return ({
-            'apiKey': '',
-            'baseURL': '',
-            'model': '',
-            'provider': '',
-            'testStatus': 'not_configured',
-            'lastTestedAt': None,
-            'lastTestError': None,
-            'keyIsMasked': False,
-        }, 'missing')
-
-    # Fallback to global config (only when require_user_config=False)
-    has_global = bool(ai_provider_config_state.get('apiKey'))
-    safe_print(f'[resolve_ai_config] source=global hasKey={has_global}')
-    return {
-        'apiKey': ai_provider_config_state.get('apiKey', ''),
-        'baseURL': ai_provider_config_state.get('baseURL', ai_provider_config_state.get('baseUrl', '')),
-        'model': ai_provider_config_state.get('model', 'deepseek-chat'),
-        'provider': ai_provider_config_state.get('provider', 'DeepSeek'),
-        'testStatus': ai_provider_config_state.get('aiTestStatus', 'not_tested'),
-        'lastTestedAt': ai_provider_config_state.get('lastTestedAt'),
-        'lastTestError': ai_provider_config_state.get('lastTestError'),
+    # No .env / global fallback — user must configure via Settings page
+    safe_print(f'[resolve_ai_config] no valid user config found')
+    return ({
+        'apiKey': '',
+        'baseURL': '',
+        'model': '',
+        'provider': '',
+        'testStatus': 'not_configured',
+        'lastTestedAt': None,
+        'lastTestError': None,
         'keyIsMasked': False,
-    }
+    }, 'missing')
 
 
 def resolve_alpaca_config(mode='paper', require_user_config=False):
@@ -7417,15 +7373,9 @@ def resolve_alpaca_config(mode='paper', require_user_config=False):
         else:
             safe_print(f'[resolve_alpaca_config] no authenticated user (market_data)')
 
-        if require_user_config:
-            safe_print(f'[resolve_alpaca_config] require_user_config=True but no market_data config found')
-            return ({'api_key': '', 'api_secret': '', 'base_url': 'https://data.alpaca.markets'}, 'missing')
-
-        # Global fallback for market_data (only when require_user_config=False)
-        fallback_key = alpaca_config_state.get('paper_api_key', ALPACA_API_KEY)
-        fallback_secret = alpaca_config_state.get('paper_api_secret', ALPACA_API_SECRET)
-        safe_print(f'[resolve_alpaca_config] source=global mode=market_data hasKey={bool(fallback_key)}')
-        return {'api_key': fallback_key, 'api_secret': fallback_secret, 'base_url': 'https://data.alpaca.markets'}
+        # No .env / global fallback — user must configure via Settings page
+        safe_print(f'[resolve_alpaca_config] no valid market_data config found for user')
+        return ({'api_key': '', 'api_secret': '', 'base_url': 'https://data.alpaca.markets'}, 'missing')
 
     # --- paper / live mode ---
     if user:
@@ -7453,24 +7403,9 @@ def resolve_alpaca_config(mode='paper', require_user_config=False):
     else:
         print(f'[resolve_alpaca_config] no authenticated user')
 
-    if require_user_config:
-        print(f'[resolve_alpaca_config] require_user_config=True but no user config found')
-        return ({}, 'missing')
-
-    # Fallback to global config (only when require_user_config=False)
-    has_global = bool(alpaca_config_state.get(f'{mode}_api_key') or ALPACA_API_KEY)
-    print(f'[resolve_alpaca_config] source=global mode={mode} hasKey={has_global}')
-    if mode == 'paper':
-        return {
-            'api_key': alpaca_config_state.get('paper_api_key', ALPACA_API_KEY),
-            'api_secret': alpaca_config_state.get('paper_api_secret', ALPACA_API_SECRET),
-            'base_url': alpaca_config_state.get('paper_base_url', 'https://paper-api.alpaca.markets'),
-        }
-    return {
-        'api_key': alpaca_config_state.get('live_api_key', ALPACA_API_KEY),
-        'api_secret': alpaca_config_state.get('live_api_secret', ALPACA_API_SECRET),
-        'base_url': alpaca_config_state.get('live_base_url', 'https://api.alpaca.markets'),
-    }
+    # No .env / global fallback — user must configure via Settings page
+    print(f'[resolve_alpaca_config] no valid user config found for mode={mode}')
+    return ({}, 'missing')
 
 
 def resolve_finnhub_config(require_user_config=False):
@@ -7500,17 +7435,9 @@ def resolve_finnhub_config(require_user_config=False):
     else:
         safe_print(f'[resolve_finnhub_config] no authenticated user')
 
-    if require_user_config:
-        safe_print(f'[resolve_finnhub_config] require_user_config=True but no user config found')
-        return ({}, 'missing')
-
-    # Fallback to global config (only when require_user_config=False)
-    has_global = bool(FINNHUB_API_KEY)
-    safe_print(f'[resolve_finnhub_config] source=global hasKey={has_global}')
-    return {
-        'api_key': FINNHUB_API_KEY,
-        'base_url': FINNHUB_BASE_URL if 'FINNHUB_BASE_URL' in dir() else 'https://finnhub.io/api/v1',
-    }
+    # No .env / global fallback — user must configure via Settings page
+    safe_print(f'[resolve_finnhub_config] no valid user config found')
+    return ({}, 'missing')
 
 
 # ── Strict user-only resolvers for Dashboard (no global .env fallback) ──

@@ -16,7 +16,6 @@ const { Title, Text } = Typography;
 const { Option } = Select;
 
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '/api';
-const api = axios.create({ baseURL: API_BASE_URL, timeout: 15000 });
 
 // Per-user API instance with Supabase auth token
 const userApi = axios.create({ baseURL: API_BASE_URL, timeout: 15000 });
@@ -110,7 +109,9 @@ const AlpacaPaperSection: React.FC = () => {
   const handleTest = async () => {
     setTesting(true);
     try {
-      const res = await api.post('/config/alpaca/test', { mode: 'paper' });
+      const token = await requireSession();
+      if (!token) { setTesting(false); return; }
+      const res = await userApi.post('/config/alpaca/test', { mode: 'paper' });
       if (res.data?.success) {
         setStatus('connected');
         message.success(`Paper connection OK — Account: ${res.data.account_id || 'N/A'}`);
@@ -233,7 +234,9 @@ const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string
   const handleTest = async () => {
     setTesting(true);
     try {
-      const res = await api.post('/config/alpaca/test', { mode: 'live' });
+      const token = await requireSession();
+      if (!token) { setTesting(false); return; }
+      const res = await userApi.post('/config/alpaca/test', { mode: 'live' });
       if (res.data?.success) {
         setStatus('connected');
         message.success(`Live connection OK — Account: ${res.data.account_id || 'N/A'}`);
