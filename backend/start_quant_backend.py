@@ -475,6 +475,8 @@ try:
 
     )
 
+    from config import TWELVEDATA_BASE_URL, TWELVEDATA_API_KEY
+
     print(f"[配置加载] Finnhub hasKey={bool(FINNHUB_API_KEY)}")
     print(f"[配置加载] Alpaca hasKey={bool(ALPACA_API_KEY)} hasSecret={bool(ALPACA_API_SECRET)}")
 
@@ -545,7 +547,8 @@ except ImportError as e:
     DATA_SOURCE = {"market_data": "Finnhub", "trading": "Alpaca Markets"}
 
     REQUEST_TIMEOUT = 10
-
+    TWELVEDATA_BASE_URL = "https://api.twelvedata.com"
+    TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
 
 
 # ==================== NVIDIA NIM Rate Limiter ====================
@@ -2076,9 +2079,9 @@ def fetch_alpaca_bars(symbol, timeframe, range_param):
 
         if not api_key or not api_secret:
 
-            print(f'[Alpaca bars] {environment} 环境API密钥未配置')
+            print(f'[Alpaca bars] {_alpaca_src} 环境API密钥未配置')
 
-            return [], False, f'{environment} 环境API密钥未配置'
+            return [], False, f'{_alpaca_src} 环境API密钥未配置'
 
 
 
@@ -2416,7 +2419,7 @@ def fetch_alpaca_bars(symbol, timeframe, range_param):
 
         print(f'[Alpaca bars] 当前UTC时间: {datetime.datetime.now(pytz.UTC).strftime("%Y-%m-%d %H:%M:%S")} UTC')
 
-        safe_print(f'[Alpaca bars] 环境: {environment}, hasKey={bool(api_key)}')
+        safe_print(f'[Alpaca bars] 环境: {_alpaca_src}, hasKey={bool(api_key)}')
 
 
 
@@ -4423,9 +4426,9 @@ def fetch_alpaca_bars_for_backtest(symbol, timeframe, start_date_utc, end_date_u
 
         if not api_key or not api_secret:
 
-            print(f'[Alpaca Backtest Bars] {environment} 环境API密钥未配置')
+            print(f'[Alpaca Backtest Bars] {_alpaca_src} 环境API密钥未配置')
 
-            return [], False, f'{environment} 环境API密钥未配置'
+            return [], False, f'{_alpaca_src} 环境API密钥未配置'
 
 
 
@@ -6365,7 +6368,7 @@ def ai_alpaca_orders():
 
         print(f'查询参数: {params}')
 
-        print(f'环境: {environment}')
+        print(f'环境: {alpaca_src}')
 
         safe_print(f'[Alpaca] hasKey={bool(api_key)} hasSecret={bool(api_secret)}')
 
@@ -6971,7 +6974,7 @@ def ai_alpaca_orders_history():
 
         print(f'查询参数: {params}')
 
-        print(f'环境: {environment}')
+        print(f'环境: {alpaca_src}')
 
         safe_print(f'[Alpaca] hasKey={bool(api_key)} hasSecret={bool(api_secret)}')
 
@@ -7654,7 +7657,7 @@ def ai_chat():
 
         # 如果有有效的 API 密钥，调用真实的 DeepSeek API
 
-        safe_print(f'[DeepSeek] hasKey={bool(api_key)} provider={provider}')
+        safe_print(f'[DeepSeek] hasKey={bool(api_key)} provider={_ai_cfg.get("provider", "unknown")}')
 
 
 
@@ -18233,7 +18236,7 @@ def ai_alpaca_portfolio_history():
 
         safe_print(f'[API] hasKey={bool(api_key)}')
 
-        print(f'Environment: {environment}')
+        print(f'Environment: {alpaca_src}')
 
 
 
