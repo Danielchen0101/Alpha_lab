@@ -86,14 +86,7 @@ const get1WeekTicks = (chartData: ChartDataPoint[], getNewYorkTimeComponents: (d
   const firstDate = new Date(sortedData[0].date);
   console.log(`[1 Week] 第一个数据点: ${firstDate.toISOString()} -> ${firstDate.getUTCMonth() + 1}/${firstDate.getUTCDate()} ${firstDate.getUTCHours()}:${firstDate.getUTCMinutes().toString().padStart(2, '0')}`);
   
-  // 3. 定义关键时间点：9:30, 12:30, 15:30
-  const keyTimes = [
-    { hour: 9, minute: 30 },  // 9:30
-    { hour: 12, minute: 30 }, // 12:30
-    { hour: 15, minute: 30 }  // 15:30
-  ];
-  
-  // 4. 收集所有交易日
+  // 3. 收集所有交易日
   const tradingDays = new Set<string>();
   sortedData.forEach(point => {
     const date = new Date(point.date);
@@ -1655,27 +1648,16 @@ const SymbolAnalysis: React.FC = () => {
       return { monthPoints, monthLabels };
     };
     
-    const { monthPoints, monthLabels } = analyzeYearlyMonths();
+    const { monthPoints } = analyzeYearlyMonths();
     
     // === 1 Year 专用：X轴格式化 ===
     // === 3 Months 专用：生成每14天一个的ticks数组 ===
     // === 3 Months 专用：X轴格式化（显示月/日格式） ===
     // === 1 Month 专用：生成ticks数组（首点 + 每7天 + 尾点） ===
     // === 1 Month 专用：X轴格式化（显示月/日格式） ===
-    // 计算期间变化百分比（Period Change） - 相对于前收盘价
-    let periodChange = null;
-    let periodChangePercent = null;
     let prevCloseLine = null;
-    
+
     if (chartData.length >= 1 && stockData && stockData.previousClose) {
-      const lastClose = chartData[chartData.length - 1].close;
-      
-      if (stockData.previousClose > 0 && lastClose > 0) {
-        // 使用前收盘价作为基准
-        periodChange = lastClose - stockData.previousClose;
-        periodChangePercent = (periodChange / stockData.previousClose) * 100;
-      }
-      
       // Prev Close参考线值
       prevCloseLine = stockData.previousClose;
     }
@@ -1723,8 +1705,6 @@ const SymbolAnalysis: React.FC = () => {
             
           case '1W':
             // 1 Week: 显示清晰的跨天日期格式 (如: 3/16)
-            // 使用纽约时间（EDT）
-            const utcHourW = date.getUTCHours();
             const monthW = date.getUTCMonth() + 1; // 月份 (1-12)
             const dayW = date.getUTCDate(); // 日期 (1-31)
             
@@ -2443,7 +2423,6 @@ const SymbolAnalysis: React.FC = () => {
                     
                   case '1W':
                     // 1 Week: 显示清晰的跨天日期格式 (如: 3/16)，与主图保持一致
-                    const utcHourW = date.getUTCHours();
                     const monthW = date.getUTCMonth() + 1; // 月份 (1-12)
                     const dayW = date.getUTCDate(); // 日期 (1-31)
                     
@@ -3903,11 +3882,7 @@ const SymbolAnalysis: React.FC = () => {
                         return 'Unable to calculate RSI from current Alpaca data';
                       }
                       
-                      // 4. 获取最后一个有效RSI点（与RSI图数据源一致）
-                      const latestValidRSIPoint = validRSIPoints[validRSIPoints.length - 1];
-                      const latestRSI = latestValidRSIPoint?.rsi;
-                      
-                      // 5. 成功状态：显示说明
+                      // 4. 成功状态：显示说明
                       return `RSI(14) based on current timeframe close data`;
                     })()}
                   </div>
@@ -4228,8 +4203,7 @@ const SymbolAnalysis: React.FC = () => {
                       
                       // 基于Alpaca数据的比较
                       const diff = sma20 - sma50;
-                      const diffPercent = (diff / sma50) * 100;
-                      
+
                       if (diff > 0) {
                         return (
                           <span style={{ color: '#52c41a' }}>
@@ -4343,14 +4317,13 @@ const SymbolAnalysis: React.FC = () => {
                           return <div style={{ color: '#8c8c8c' }}>Need Data</div>;
                         }
                         
-                        const currentPrice = stockData.price; // Alpaca当前价
                         // 使用Alpaca数据：根据timeframe选择数据范围
                         const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                        
+
                         if (dataToUse.length < 10) {
                           return <div style={{ color: '#8c8c8c' }}>Insufficient Alpaca Data</div>;
                         }
-                        
+
                         // 基于Alpaca历史数据的支撑位计算
                         // 使用最近20个数据点的低点
                         const recentLows = dataToUse.slice(-20).map(d => d.low);
@@ -4395,14 +4368,13 @@ const SymbolAnalysis: React.FC = () => {
                           return <div style={{ color: '#8c8c8c' }}>Need Data</div>;
                         }
                         
-                        const currentPrice = stockData.price; // Alpaca当前价
                         // 使用Alpaca数据：根据timeframe选择数据范围
                         const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                        
+
                         if (dataToUse.length < 10) {
                           return <div style={{ color: '#8c8c8c' }}>Insufficient Alpaca Data</div>;
                         }
-                        
+
                         // 基于Alpaca历史数据的阻力位计算
                         // 使用最近20个数据点的高点
                         const recentHighs = dataToUse.slice(-20).map(d => d.high);
@@ -4507,16 +4479,15 @@ const SymbolAnalysis: React.FC = () => {
                     }}>
                       {(() => {
                         if (!stockData.price || chartData.length === 0) return 'N/A';
-                        
-                        const currentPrice = stockData.price;
+
                         const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                        
+
                         if (dataToUse.length === 0) return 'No data';
-                        
+
                         // 基于近期低点计算止损位
                         const recentLows = dataToUse.slice(-10).map(d => d.low);
                         const stopLoss = Math.min(...recentLows) * 0.98; // 近期低点下方2%
-                        
+
                         return `$${safeToFixed(stopLoss, 2)}`;
                       })()}
                     </div>
@@ -4537,16 +4508,15 @@ const SymbolAnalysis: React.FC = () => {
                     }}>
                       {(() => {
                         if (!stockData.price || chartData.length === 0) return 'N/A';
-                        
-                        const currentPrice = stockData.price;
+
                         const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                        
+
                         if (dataToUse.length === 0) return 'No data';
-                        
+
                         // 基于近期高点计算目标位
                         const recentHighs = dataToUse.slice(-20).map(d => d.high);
                         const targetPrice = Math.max(...recentHighs) * 1.03; // 近期高点上方3%
-                        
+
                         return `$${safeToFixed(targetPrice, 2)}`;
                       })()}
                     </div>

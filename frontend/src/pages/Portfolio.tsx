@@ -1198,10 +1198,7 @@ const Portfolio: React.FC = (): React.ReactElement => {
     const aiExplained = record.aiExplained === true;
     const decisionSource = record.decisionSource === 'ai' ? 'DeepSeek AI' : 'Local Rules';
     const dq = (record.provenance && record.provenance.dataQuality) || (record.entryQuality && record.entryQuality !== 'Error / No Data' ? 'GOOD' : 'PARTIAL');
-    const dqColor = dq === 'GOOD' ? '#52c41a' : dq === 'PARTIAL' ? '#fa8c16' : '#ff4d4f';
     const decision = record.decision || 'Watch';
-    const grade = record.fineScanGrade || 'MEDIUM';
-    const risk = record.riskGrade || 'MEDIUM';
     const bestStrat = (record.matchedStrategies || [])[0] || 'N/A';
     const perStrategy = record.backtestPerStrategy || [];
     const optResults = record.quickOptResults || [];
@@ -3100,8 +3097,6 @@ const Portfolio: React.FC = (): React.ReactElement => {
 
   const addToWatchlist = async (plan: any) => {
     try {
-      const ed = plan.executionDetails || {};
-      const orderPreview = ed.orderPreview || plan.orderPreview || {};
       const item = {
         symbol: plan.symbol,
         setupType: plan.setup,

@@ -1243,59 +1243,6 @@ const Backtest: React.FC = () => {
 
   const equityCurveData = sortByDateAsc(generateEquityCurveData());
 
-  const calculateUnifiedStats = () => {
-    if (!backtestResult?.results) {
-      return {
-        totalTrades: 0,
-        winningTrades: 0,
-        losingTrades: 0,
-        totalPnl: 0,
-        avgPnl: 0,
-        winRate: 0,
-        totalReturn: 0,
-        profitFactor: 0,
-        grossProfit: 0,
-        grossLoss: 0,
-        avgWin: 0,
-        avgLoss: 0,
-        expectancy: 0,
-        annualizedReturn: 0,
-        sharpeRatio: 0,
-        sortinoRatio: 0,
-        initialCapital: 100000,
-        isRealData: false
-      };
-    }
-
-    const initialCapital = safeNumber(backtestResult.parameters?.initialCapital) || 100000;
-    const results = backtestResult.results;
-    
-    return {
-      totalTrades: results.trades || 0,
-      winningTrades: 0,
-      losingTrades: 0,
-      totalPnl: results.profitLoss || 0,
-      avgPnl: results.avgReturnPerTrade || 0,
-      winRate: results.winRate || 0,
-      totalReturn: results.totalReturn || 0,
-      profitFactor: results.profitFactor,
-      grossProfit: 0,
-      grossLoss: 0,
-      avgWin: results.avgWin || 0,
-      avgLoss: results.avgLoss || 0,
-      expectancy: results.expectancy || 0,
-      annualizedReturn: results.annualizedReturn || 0,
-      sharpeRatio: results.sharpeRatio || 0,
-      sortinoRatio: results.sortinoRatio || 0,
-      maxDrawdown: results.maxDrawdown || 0,
-      calmarRatio: results.calmarRatio || 0,
-      volatility: results.volatility || 0,
-      exposure: results.exposure || 0,
-      initialCapital,
-      isRealData: true
-    };
-  };
-
   const resultData = backtestResult ? [
     { key: 'strategy', metric: 'Strategy', value: strategyNames[backtestResult.parameters?.strategy] || backtestResult.parameters?.strategy || 'Unknown', description: 'Strategy used for backtest' },
     { key: 'dataMode', metric: 'Data Mode', value: backtestResult.parameters?.dataModeDisplay || 'Real Data', description: 'Data mode used for backtest' },
