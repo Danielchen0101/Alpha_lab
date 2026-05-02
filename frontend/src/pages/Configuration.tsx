@@ -28,13 +28,6 @@ userApi.interceptors.request.use(async (config) => {
   return config;
 });
 
-// --- Masking helper ---
-const _maskKey = (key: string): string => {
-  if (!key) return '';
-  if (key.length <= 8) return '****';
-  return key.slice(0, 4) + '****' + key.slice(-4);
-};
-
 // --- Auth check helper ---
 const requireSession = async (): Promise<string | null> => {
   const { data: { session } } = await supabase.auth.getSession();

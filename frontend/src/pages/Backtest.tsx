@@ -20,14 +20,6 @@ const { Title, Text } = Typography;
 const { Option } = Select;
 const { RangePicker } = DatePicker;
 
-interface BacktestConfig {
-  symbol: string;
-  strategy: string;
-  startDate: string;
-  endDate: string;
-  initialCapital: number;
-}
-
 interface BacktestFormValues {
   symbol: string;
   strategy: string;
@@ -297,13 +289,6 @@ const Backtest: React.FC = () => {
     return `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   };
 
-  // 清理所有状态 - 切换股票时调用
-  const _clearAllStates = () => {
-    setBacktestResult(null);
-    setError('');
-    setLoading(false);
-  };
-
   const safeToFixed = (value: unknown, decimals: number = 2): string => {
     // 先尝试转换为数字
     const numValue = safeNumber(value);
@@ -448,7 +433,6 @@ const Backtest: React.FC = () => {
       const strategy = backtestResult.parameters?.strategy || 'Unknown';
       const startDate = backtestResult.parameters?.startDate || '';
       const endDate = backtestResult.parameters?.endDate || '';
-      const _period = startDate && endDate ? `${startDate} to ${endDate}` : '';
 
       const historyItem: BacktestHistoryItem = {
         backtestId: backtestResult.backtestId || `local_${Date.now()}`,
@@ -1229,22 +1213,6 @@ const Backtest: React.FC = () => {
     'momentum': 'Momentum Strategy'
   };
 
-  // 计算持仓天数函数
-  const _calculateHoldingDays = (entryDate: string, exitDate: string): number => {
-    if (!entryDate || !exitDate) return 1;
-
-    try {
-      const entry = parseDateSafe(entryDate);
-      const exit = parseDateSafe(exitDate);
-
-      if (!entry || !exit) return 1;
-
-      const timeDiff = exit.getTime() - entry.getTime();
-      return Math.max(1, Math.floor(timeDiff / (1000 * 60 * 60 * 24)));
-    } catch (error) {
-      return 1;
-    }
-  };
 
   // 生成权益曲线数据
   const generateEquityCurveData = () => {
@@ -1327,8 +1295,6 @@ const Backtest: React.FC = () => {
       isRealData: true
     };
   };
-
-  const _unifiedStats = calculateUnifiedStats();
 
   const resultData = backtestResult ? [
     { key: 'strategy', metric: 'Strategy', value: strategyNames[backtestResult.parameters?.strategy] || backtestResult.parameters?.strategy || 'Unknown', description: 'Strategy used for backtest' },

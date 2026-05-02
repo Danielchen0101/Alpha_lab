@@ -71,41 +71,6 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
     );
   }
 
-  // Prepare data for Recharts with volume color calculation
-  const _chartData = data.map((item, index) => {
-    // Calculate volume color based on price movement - Softer colors
-    let volumeColor = '#cccccc'; // Softer default gray
-    if (item.volume !== undefined && item.volume > 0) {
-      if (index === 0) {
-        // First day, no previous close to compare
-        volumeColor = '#cccccc';
-      } else {
-        const currentClose = item.close;
-        const prevClose = data[index - 1].close;
-        // Softer green and red for volume
-        volumeColor = currentClose >= prevClose ? '#95de64' : '#ff7875';
-      }
-    }
-
-    // Enhanced signal data with tooltip text
-    const signalType = item.signal === 1 ? 'BUY' : item.signal === -1 ? 'SELL' : item.signal === -2 ? 'FORCED LIQUIDATION' : null;
-    const signalColor = item.signal === 1 ? '#52c41a' : item.signal === -1 ? '#f5222d' : item.signal === -2 ? '#fa8c16' : null;
-
-    return {
-      ...item,
-      // Enhanced signal data
-      buySignal: item.signal === 1 ? item.close : null,
-      sellSignal: item.signal === -1 ? item.close : null,
-      forcedLiquidationSignal: item.signal === -2 ? item.close : null,
-      signalType,
-      signalColor,
-      // Add volume color for styling
-      volumeColor,
-      // For volume chart, we need a separate value for display
-      volumeDisplay: item.volume || 0,
-    };
-  });
-
   // Find min and max for better Y-axis scaling (price chart)
   // 修复：不过滤Boolean，而是过滤有效的数值，并处理空数组和相等的情况
 

@@ -53,7 +53,7 @@ const Dashboard: React.FC = () => {
   const [needsConfig, setNeedsConfig] = useState(false);
   const [needsAuth, setNeedsAuth] = useState(false);
   const [lastFetched, setLastFetched] = useState<number | null>(null);
-  const [watchlist, setWatchlist] = useState<any[]>([]);
+  const [, setWatchlist] = useState<any[]>([]);
   // marketStats现在由useMemo计算，见下方
   const [sectorData, setSectorData] = useState<SectorData[]>([]);
   const [systemStatus, setSystemStatus] = useState<{
@@ -254,22 +254,6 @@ const Dashboard: React.FC = () => {
 
   // getChangePercent函数已移动到组件顶部，见下方
 
-  const _formatChangePercent = (value: number | null): string => {
-    if (value === null) return '--';
-    const sign = value > 0 ? '+' : '';
-    return `${sign}${value.toFixed(2)}%`;
-  };
-
-  const _formatVolume = (volume: number | null): string => {
-    // Alpaca API可能不提供成交量数据，所以volume可能是null或0
-    // 明确告诉用户数据不可用，而不是显示'--'
-    if (volume === null || volume === undefined || volume === 0) return 'N/A';
-    const num = Number(volume);
-    if (isNaN(num) || num === 0) return 'N/A';
-    if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
-    if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
-    return num.toFixed(0);
-  };
 
   // calculateMarketStats函数已由useMemo替代，见上方marketStats计算
 
@@ -555,103 +539,6 @@ const Dashboard: React.FC = () => {
 
     return stableColors[hash % stableColors.length];
   };
-
-  const _StatCard = ({ title, value, icon, color = '#1890ff', suffix = '', formatValue = (v: any) => v, valueColor }: { title: string; value: any; icon: React.ReactNode; color?: string; suffix?: string; formatValue?: (v: any) => string; valueColor?: string }) => (
-    <Card
-      hoverable
-      style={{
-        height: '116px',
-        borderRadius: '10px',
-        border: '1px solid #e8e8e8',
-        borderTop: '1px solid #f5f5f5',
-        boxShadow: '0 2px 10px rgba(0,0,0,0.05), 0 1px 4px rgba(0,0,0,0.04)',
-        background: '#ffffff',
-        transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
-        cursor: 'pointer',
-        position: 'relative',
-        overflow: 'hidden',
-        '&:hover': {
-          transform: 'translateY(-3px)',
-          boxShadow: '0 8px 24px rgba(0,0,0,0.10), 0 4px 12px rgba(0,0,0,0.06)',
-          borderColor: '#d4d4d4',
-        },
-        '&:active': {
-          transform: 'translateY(-1px)',
-          boxShadow: '0 4px 16px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.05)',
-        }
-      } as any}
-      bodyStyle={{
-        padding: '22px 18px',
-        height: '100%',
-        display: 'flex',
-        flexDirection: 'column',
-        justifyContent: 'center',
-        position: 'relative',
-        zIndex: 1
-      }}
-    >
-      {/* 底部强调线 - 非常克制 */}
-      <div style={{
-        position: 'absolute',
-        bottom: 0,
-        left: 0,
-        right: 0,
-        height: '2px',
-        background: `linear-gradient(90deg, ${color}20 0%, ${color}10 50%, transparent 100%)`,
-        opacity: 0.6,
-        transition: 'all 0.25s ease',
-        '&:hover': {
-          opacity: 0.9,
-          height: '3px',
-        }
-      } as any} />
-
-      {/* 标题行 - 恢复正常易读样式 */}
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        marginBottom: '8px'
-      }}>
-        <Text type="secondary" style={{
-          fontSize: '12px',  // 恢复正常大小
-          color: '#595959',  // 恢复正常颜色
-          fontWeight: 500,   // 恢复正常字重
-          letterSpacing: 'normal',  // 恢复正常字距
-          textTransform: 'none',    // 取消全大写
-          fontFamily: 'inherit'     // 使用继承字体
-        }}>
-          {title}
-        </Text>
-        <span style={{
-          color: '#bfbfbf',  // 恢复原颜色
-          fontSize: '12px',  // 恢复原大小
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          opacity: 0.7       // 恢复原透明度
-        }}>
-          {icon}
-        </span>
-      </div>
-
-      {/* 数值 - 专业金融仪表板风格 */}
-      <div style={{
-        fontSize: '24px',    // 减小字号，更克制
-        fontWeight: 600,     // 减轻字重，不要太重
-        color: valueColor || '#1a1a1a',    // 使用valueColor或默认颜色
-        lineHeight: 1.1,     // 略微增加行高
-        textAlign: 'left',
-        fontFeatureSettings: '"tnum", "ss01", "zero"',  // 添加zero特征
-        letterSpacing: '-0.3px',  // 减少负间距
-        marginTop: '6px',    // 增加间距，更协调
-        fontFamily: "'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",  // 专业字体
-        textShadow: '0 1px 1px rgba(0,0,0,0.02)'  // 微妙阴影增加层次感
-      }}>
-        {formatValue(value)}{suffix}
-      </div>
-    </Card>
-  );
 
   return (
     <div className="dashboard-container" style={{ padding: '24px 32px', maxWidth: '1600px', margin: '0 auto' }}>

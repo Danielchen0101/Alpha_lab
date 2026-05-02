@@ -770,26 +770,6 @@ const Analytics: React.FC = () => {
     return calculateCorrelationMatrix(alignedSeries);
   };
 
-  // 根据相关性值获取颜色
-  const _getCorrelationColor = (value: number): string => {
-    if (isNaN(value)) return '#f5f5f5'; // N/A
-
-    if (value > 0.7) return '#fff2e8'; // 高正相关 - 淡橙
-    if (value > 0.3) return '#fffbe6'; // 中等相关 - 淡黄
-    if (value > -0.3) return '#f6ffed'; // 低相关 - 淡绿
-    return '#e6f7ff'; // 负相关 - 淡蓝
-  };
-
-  // 根据相关性值获取文字颜色
-  const _getCorrelationTextColor = (value: number): string => {
-    if (isNaN(value)) return '#8c8c8c'; // N/A
-
-    if (value > 0.7) return '#d46b08'; // 高正相关
-    if (value > 0.3) return '#d4b106'; // 中等相关
-    if (value > -0.3) return '#389e0d'; // 低相关
-    return '#096dd9'; // 负相关
-  };
-
   // ==================== Risk Exposure 辅助函数 ====================
 
   // 计算风险暴露

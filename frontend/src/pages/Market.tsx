@@ -33,34 +33,6 @@ const Market: React.FC = () => {
   // 默认股票列表（与后端保持一致，优先主流科技股）
   const DEFAULT_SYMBOLS = ['AAPL', 'TSLA', 'AMD', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NFLX', 'INTC'];
 
-  // 格式化成交量函数
-  const _formatVolume = (volume: number | null): string => {
-    if (volume === null || volume === undefined || volume === 0) return '--';
-    
-    const num = Number(volume);
-    if (isNaN(num)) return '--';
-    
-    // 十亿 (Billion) - 10亿 = 1e9
-    if (num >= 1e9) {
-      const billions = num / 1e9;
-      return `${billions.toFixed(billions >= 100 ? 0 : billions >= 10 ? 1 : 2)}B`;
-    }
-    
-    // 百万 (Million) - 1百万 = 1e6
-    if (num >= 1e6) {
-      const millions = num / 1e6;
-      return `${millions.toFixed(millions >= 10 ? 0 : 1)}M`;
-    }
-    
-    // 千 (Thousand) - 1千 = 1e3
-    if (num >= 1e3) {
-      const thousands = num / 1e3;
-      return `${thousands.toFixed(thousands >= 100 ? 0 : thousands >= 10 ? 1 : 2)}K`;
-    }
-    
-    return num.toFixed(0);
-  };
-
   // 初始化加载数据
   useEffect(() => {
     // 延迟加载数据，让用户先看到页面框架
