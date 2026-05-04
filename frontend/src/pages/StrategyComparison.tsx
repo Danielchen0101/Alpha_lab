@@ -1,12 +1,18 @@
-import React, { useState, useEffect } from "react";
-import { Card, Table, Empty, Spin, Alert } from "antd";
+import React, { useState, useEffect, useMemo } from "react";
+import { Card, Table, Empty, Spin, Alert, Button, Typography, Space, Tag, message, Divider } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
+import { 
+  HistoryOutlined, 
+  LeftOutlined, SwapOutlined, ReloadOutlined
+} from "@ant-design/icons";
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   ScatterChart, Scatter, ZAxis, Cell,
   LineChart, Line
 } from 'recharts';
+
+const { Title, Text } = Typography;
 
 // 定义数据类型
 interface ParameterData {
@@ -318,132 +324,347 @@ const SummaryCard: React.FC<{
 
 const StrategyComparison: React.FC = () => {
   const location = useLocation();
+  const navigate = useNavigate();
   const [backtestResults, setBacktestResults] = useState<RealBacktestResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>('');
   
+  // History Selector state
+  const [history, setHistory] = useState<any[]>([]);
+  const [selectedHistoryKeys, setSelectedHistoryKeys] = useState<string[]>([]);
+  const [showSelector, setShowSelector] = useState(false);
+  const [hasPreviousComparison, setHasPreviousComparison] = useState(false);
+
   // 统一的列宽 - 调整以适应更宽页面
   const LABEL_COL_WIDTH = 180;
-  const BACKTEST_COL_WIDTH = 180;
-  const WINNER_COL_WIDTH = 120;
-  
+  const BACKTEST_COL_WIDTH = 220;
+  const WINNER_COL_WIDTH = 140;
+
+  // 加载回测历史用于选择器
+  const loadHistoryFromStorage = () => {
+    try {
+      const saved = localStorage.getItem('quant_backtest_history');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        // 只显示已完成的回测
+        const completed = parsed.filter((h: any) => h.status === 'completed' || h.status === 'unknown' || (h.results && h.results.totalReturn !== undefined));
+        setHistory(completed);
+      }
+    } catch (err) {
+      console.error('Failed to load local backtest history:', err);
+    }
+  };
+
   // 从路由state或sessionStorage获取选中的backtests
   useEffect(() => {
     const loadComparisonData = async () => {
       setLoading(true);
       setError('');
-      
+
       try {
         let selectedBacktests: RealBacktestResult[] = [];
-        
+
         // 1. 优先从路由state获取
         if (location.state?.selectedBacktests) {
           selectedBacktests = location.state.selectedBacktests;
-          console.log('从路由state获取到backtests:', selectedBacktests);
         }
         // 2. 其次从sessionStorage获取
         else {
           const saved = sessionStorage.getItem('compareBacktests');
           if (saved) {
             selectedBacktests = JSON.parse(saved);
-            console.log('从sessionStorage获取到backtests:', selectedBacktests);
           }
         }
-        
-        // 3. 如果没有传递数据，显示空状态
-        if (selectedBacktests.length === 0) {
-          console.log('没有传递backtest数据，显示空状态');
+
+        // 3. 如果没有传递数据或只有1个，显示历史选择器
+        if (selectedBacktests.length < 2) {
           setBacktestResults([]);
+          setShowSelector(true);
+          setHasPreviousComparison(false);
+          loadHistoryFromStorage();
           setLoading(false);
           return;
         }
-        
-        // 4. 确保至少有2个backtest用于对比（如果只有1个，复制一份作为对比）
-        let comparisonBacktests = [...selectedBacktests];
-        if (comparisonBacktests.length === 1) {
-          console.log('只有一个backtest，复制一份用于对比');
-          comparisonBacktests = [comparisonBacktests[0], { ...comparisonBacktests[0], backtestId: comparisonBacktests[0].backtestId + '_copy' }];
-        }
-        
-        // 支持任意数量的backtest对比
-        console.log(`有${comparisonBacktests.length}个backtest用于对比`);
-        
-        setBacktestResults(comparisonBacktests);
-        console.log('最终用于对比的backtests:', comparisonBacktests);
-        
-      } catch (err) {
-        console.error('加载对比数据失败:', err);
-        setError('加载对比数据失败，请返回重新选择backtest');
+
+        setBacktestResults(selectedBacktests);
+        setShowSelector(false);
+        setHasPreviousComparison(true);
+        // 同步选中键值
+        setSelectedHistoryKeys(selectedBacktests.map(b => b.backtestId));
+      } catch (err: any) {
+        console.error('加载对比数据出错:', err);
+        setError(`Failed to load comparison data: ${err.message}`);
       } finally {
         setLoading(false);
       }
     };
-    
+
     loadComparisonData();
-  }, [location.state]);
+  }, [location]);
+
+  const handleCompareSelected = () => {
+    if (selectedHistoryKeys.length < 2) {
+      message.warning('Please select at least 2 sessions to compare.');
+      return;
+    }
+
+    const selectedResults = history
+      .filter(item => selectedHistoryKeys.includes(item.backtestId))
+      .map(item => ({
+        ...item,
+        parameters: {
+          ...item.parameters,
+          symbol: item.symbol || (item.parameters && item.parameters.symbols ? item.parameters.symbols[0] : (item.parameters && item.parameters.symbol ? item.parameters.symbol : 'N/A')),
+          strategy: item.strategy || (item.parameters ? item.parameters.strategy : 'Unknown'),
+          startDate: item.startDate || (item.parameters ? item.parameters.startDate : ''),
+          endDate: item.endDate || (item.parameters ? item.parameters.endDate : ''),
+          initialCapital: item.initialCapital || (item.parameters ? item.parameters.initialCapital : 100000),
+        }
+      }));
+
+    sessionStorage.setItem('compareBacktests', JSON.stringify(selectedResults));
+    setBacktestResults(selectedResults);
+    setShowSelector(false);
+    setHasPreviousComparison(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
   
-  // 如果没有数据或正在加载，显示相应状态
+  // 计算汇总指标
+  const summaryMetrics = useMemo(() => {
+    if (backtestResults.length === 0) return null;
+
+    return {
+      bestReturn: [...backtestResults].sort((a, b) => (b.results?.totalReturn || 0) - (a.results?.totalReturn || 0))[0],
+      bestSharpe: [...backtestResults].sort((a, b) => (b.results?.sharpeRatio || 0) - (a.results?.sharpeRatio || 0))[0],
+      lowestDD: [...backtestResults].sort((a, b) => (a.results?.maxDrawdown || 0) - (b.results?.maxDrawdown || 0))[0],
+      mostTrades: [...backtestResults].sort((a, b) => (b.results?.trades || 0) - (a.results?.trades || 0))[0],
+      bestWinRate: [...backtestResults].sort((a, b) => (b.results?.winRate || 0) - (a.results?.winRate || 0))[0],
+      bestProfitFactor: [...backtestResults].sort((a, b) => (b.results?.profitFactor || 0) - (a.results?.profitFactor || 0))[0],
+    };
+  }, [backtestResults]);
+
+  // 如果正在加载，显示加载状态
   if (loading) {
     return (
       <div style={{ 
         padding: '20px 32px', 
         maxWidth: '1600px', 
-        margin: '0 auto',
-        backgroundColor: '#fafafa',
+        margin: '0 auto', 
+        backgroundColor: '#fafafa', 
         minHeight: '100vh',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center'
       }}>
-        <Spin size="large" tip="加载对比数据中..." />
-      </div>
-    );
-  }
-  
-  if (error) {
-    return (
-      <div style={{ 
-        padding: '20px 32px', 
-        maxWidth: '1600px', 
-        margin: '0 auto',
-        backgroundColor: '#fafafa',
-        minHeight: '100vh'
-      }}>
-        <Alert
-          message="对比数据加载失败"
-          description={error}
-          type="error"
-          showIcon
-          style={{ marginBottom: '20px' }}
-        />
-      </div>
-    );
-  }
-  
-  if (backtestResults.length === 0) {
-    return (
-      <div style={{ 
-        padding: '20px 32px', 
-        maxWidth: '1600px', 
-        margin: '0 auto',
-        backgroundColor: '#fafafa',
-        minHeight: '100vh'
-      }}>
-        <Card title="策略对比" style={{ marginBottom: '16px' }}>
-          <Empty
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={
-              <div>
-                <p>没有找到要对比的backtest数据</p>
-                <p>请返回Backtest页面，选择要对比的backtest后点击"Compare"按钮</p>
-              </div>
-            }
-          />
-        </Card>
+        <div style={{ textAlign: 'center' }}>
+          <Spin size="large" />
+          <div style={{ marginTop: 16, color: '#8c8c8c', fontSize: 16, fontWeight: 500 }}>Initializing analysis engine...</div>
+        </div>
       </div>
     );
   }
 
+  // 如果没有数据或显示选择器
+  if (showSelector) {
+    return (
+      <div style={{ padding: '24px 32px', maxWidth: '1600px', margin: '0 auto', backgroundColor: '#fafafa', minHeight: '100vh' }}>
+        <div style={{ marginBottom: 32, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+               <Button 
+                icon={<LeftOutlined />} 
+                onClick={() => navigate('/backtest')}
+                style={{ borderRadius: 6 }}
+              >
+                Back to Backtest
+              </Button>
+              {hasPreviousComparison && (
+                <Button 
+                  type="primary" 
+                  ghost 
+                  icon={<HistoryOutlined />} 
+                  onClick={() => setShowSelector(false)}
+                  style={{ borderRadius: 6 }}
+                >
+                  Back to Comparison
+                </Button>
+              )}
+            </div>
+            <Title level={2} style={{ margin: 0, fontWeight: 800 }}><SwapOutlined style={{ marginRight: 10, color: '#1890ff' }} /> Select Backtests to Compare</Title>
+            <Text type="secondary" style={{ fontSize: 16 }}>Choose at least two completed sessions from your history to generate an analytical comparison.</Text>
+          </div>
+          <Button icon={<ReloadOutlined />} onClick={loadHistoryFromStorage} size="large" style={{ borderRadius: 8 }}>Refresh History</Button>
+        </div>
+
+        <Card 
+          className="premium-card" 
+          style={{ 
+            borderRadius: 16, 
+            boxShadow: '0 8px 24px rgba(0,0,0,0.06)',
+            border: '1px solid #f0f0f0'
+          }}
+          bodyStyle={{ padding: 24 }}
+        >
+          {history.length > 0 ? (
+            <>
+              <div style={{ marginBottom: 20, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Space>
+                  <Tag color="blue" style={{ fontSize: 13, padding: '4px 12px', borderRadius: 6, fontWeight: 700 }}>
+                    {selectedHistoryKeys.length} SESSIONS SELECTED
+                  </Tag>
+                  {selectedHistoryKeys.length < 2 && (
+                    <Text type="warning" style={{ fontSize: 13, fontWeight: 600 }}>
+                      <Alert message="Select at least 2 sessions to compare" type="warning" showIcon style={{ padding: '4px 12px', borderRadius: 6 }} />
+                    </Text>
+                  )}
+                </Space>
+              </div>
+              <Table 
+                dataSource={history}
+                rowKey="backtestId"
+                pagination={{ pageSize: 10, showSizeChanger: true }}
+                rowSelection={{
+                  selectedRowKeys: selectedHistoryKeys,
+                  onChange: (keys) => setSelectedHistoryKeys(keys as string[])
+                }}
+                rowClassName={(record) => selectedHistoryKeys.includes(record.backtestId) ? 'ant-table-row-selected' : ''}
+                columns={[
+                  { 
+                    title: 'Symbol', 
+                    dataIndex: 'symbol', 
+                    key: 'symbol', 
+                    render: (s, r) => (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <div style={{ width: 32, height: 32, borderRadius: 6, background: '#f0f2f5', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, color: '#595959', fontSize: 11 }}>
+                          {s?.substring(0, 2) || 'N/A'}
+                        </div>
+                        <Text strong style={{ fontSize: 14 }}>{s || (r.parameters && r.parameters.symbols ? r.parameters.symbols[0] : 'N/A')}</Text>
+                      </div>
+                    )
+                  },
+                  { 
+                    title: 'Strategy', 
+                    dataIndex: 'strategy', 
+                    key: 'strategy',
+                    render: (s) => {
+                      const names: any = { moving_average: 'MA Crossover', rsi: 'RSI', macd: 'MACD', bollinger: 'Bollinger Bands', momentum: 'Momentum' };
+                      return <Tag color="geekblue" style={{ fontWeight: 600 }}>{names[s] || s}</Tag>;
+                    }
+                  },
+                  { 
+                    title: 'Return', 
+                    dataIndex: 'totalReturn', 
+                    key: 'totalReturn',
+                    sorter: (a, b) => (a.results?.totalReturn || 0) - (b.results?.totalReturn || 0),
+                    render: (r, record) => {
+                      const val = r ?? record.results?.totalReturn;
+                      if (val === undefined) return '—';
+                      return <Text strong style={{ color: val >= 0 ? '#52c41a' : '#f5222d', fontSize: 14 }}>{val >= 0 ? '+' : ''}{val.toFixed(2)}%</Text>;
+                    }
+                  },
+                  { 
+                    title: 'Sharpe', 
+                    dataIndex: 'sharpeRatio', 
+                    key: 'sharpeRatio',
+                    sorter: (a, b) => (a.results?.sharpeRatio || 0) - (b.results?.sharpeRatio || 0),
+                    render: (s, record) => (s ?? record.results?.sharpeRatio)?.toFixed(2) || '—' 
+                  },
+                  { 
+                    title: 'Max DD', 
+                    dataIndex: 'maxDrawdown', 
+                    key: 'maxDrawdown',
+                    sorter: (a, b) => (a.results?.maxDrawdown || 0) - (b.results?.maxDrawdown || 0),
+                    render: (d, record) => {
+                      const val = d ?? record.results?.maxDrawdown;
+                      if (val === undefined) return '—';
+                      return <Text type="danger" style={{ fontWeight: 600 }}>-{Math.abs(val).toFixed(2)}%</Text>;
+                    }
+                  },
+                  { 
+                    title: 'Date', 
+                    dataIndex: 'createdAt', 
+                    key: 'createdAt',
+                    render: (d, record) => {
+                      const date = d || record.timestamp;
+                      return date ? new Date(date).toLocaleDateString() : '—';
+                    }
+                  }
+                ]}
+              />
+              <div style={{ marginTop: 40, textAlign: 'center' }}>
+                <Button 
+                  type="primary" 
+                  size="large" 
+                  icon={<SwapOutlined />} 
+                  disabled={selectedHistoryKeys.length < 2}
+                  onClick={handleCompareSelected}
+                  style={{ 
+                    height: 56, 
+                    padding: '0 60px', 
+                    fontSize: 18, 
+                    fontWeight: 700, 
+                    borderRadius: 12, 
+                    boxShadow: '0 8px 20px rgba(24,144,255,0.3)',
+                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
+                  }}
+                >
+                  Generate Comparison ({selectedHistoryKeys.length})
+                </Button>
+              </div>
+            </>
+          ) : (
+            <Empty 
+              image={Empty.PRESENTED_IMAGE_SIMPLE} 
+              description={
+                <div style={{ padding: '60px 0' }}>
+                  <p style={{ fontSize: 18, color: '#8c8c8c', fontWeight: 500 }}>No backtest history available yet.</p>
+                  <p style={{ color: '#bfbfbf', marginBottom: 24 }}>Run a backtest first, then return here to compare sessions.</p>
+                  <Button type="primary" size="large" onClick={() => navigate('/backtest')} style={{ borderRadius: 8, height: 48, padding: '0 32px' }}>
+                    Go to Backtest
+                  </Button>
+                </div>
+              } 
+            />
+          )}
+        </Card>
+        <style>{`
+          .ant-table-row-selected td { background-color: #e6f7ff !important; }
+          .premium-card { transition: transform 0.2s ease; }
+          .premium-card:hover { transform: translateY(-2px); }
+        `}</style>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div style={{ 
+        padding: '40px 32px', 
+        maxWidth: '1600px', 
+        margin: '0 auto', 
+        backgroundColor: '#fafafa', 
+        minHeight: '100vh'
+      }}>
+        <Alert
+          message={<span style={{ fontWeight: 700 }}>Data Analysis Error</span>}
+          description={error}
+          type="error"
+          showIcon
+          style={{ borderRadius: 12 }}
+          action={
+            <Space direction="vertical">
+              <Button type="primary" onClick={() => setShowSelector(true)} style={{ borderRadius: 6 }}>
+                Return to Selection
+              </Button>
+              <Button onClick={() => navigate('/backtest')} style={{ borderRadius: 6 }}>
+                Back to Sessions
+              </Button>
+            </Space>
+          }
+        />
+      </div>
+    );
+  }
   // 获取策略特定参数
   const getStrategyParameters = (backtest: RealBacktestResult | null) => {
     if (!backtest?.parameters) return 'N/A';
@@ -786,25 +1007,7 @@ const StrategyComparison: React.FC = () => {
     ),
   });
 
-  // 参数对比表格列定义 - 动态列（无Winner列）
-  const parameterColumns: ColumnsType<ParameterData> = [
-    {
-      title: (
-        <CellContainer align="left" header>
-          <span style={{ fontWeight: 600, fontSize: '12px' }}>
-            Parameter
-          </span>
-        </CellContainer>
-      ),
-      dataIndex: 'parameter',
-      key: 'parameter',
-      width: LABEL_COL_WIDTH,
-      align: 'left' as const,
-      render: (text: string) => renderLabelCell(text, 'left'),
-    },
-    // 使用展开运算符 - 动态生成backtest列
-    ...backtestResults.map((_, index) => buildBacktestColumn(index, 'parameter')),
-  ];
+
 
   // 性能指标对比表格列定义 - 动态列（有Winner列）
   const metricColumns: ColumnsType<MetricData> = [
@@ -837,33 +1040,8 @@ const StrategyComparison: React.FC = () => {
 
   const tableWidth = calculateTableWidth();
 
-  // 计算summary数据
-  const getUniqueValues = (arr: (string | undefined)[]): string[] => {
-    const unique = new Set<string>();
-    arr.forEach(item => {
-      if (item) unique.add(item);
-    });
-    return Array.from(unique);
-  };
-
-  const summaryData = {
-    comparedBacktests: backtestResults.length,
-    symbolsCompared: getUniqueValues(backtestResults.map(b => b?.parameters?.symbol)).join(', ') || 'N/A',
-    strategiesCompared: getUniqueValues(backtestResults.map(b => b?.parameters?.strategy)).join(', ') || 'N/A',
-    bestReturn: backtestResults.length > 0 
-      ? Math.max(...backtestResults.map(b => b?.results?.totalReturn || -Infinity))
-      : 0,
-    lowestDrawdown: backtestResults.length > 0 
-      ? Math.min(...backtestResults.map(b => b?.results?.maxDrawdown || Infinity))
-      : 0,
-    bestSharpe: backtestResults.length > 0 
-      ? Math.max(...backtestResults.map(b => b?.results?.sharpeRatio || -Infinity))
-      : 0,
-  };
-
   // 准备关键指标条形图数据
-  const prepareBarChartData = () => {
-    if (backtestResults.length === 0) return [];
+  const prepareBarChartData = () => {    if (backtestResults.length === 0) return [];
 
     const metrics = [
       { key: 'totalReturn', name: 'Total Return', unit: '%', format: (v: number) => `${v.toFixed(2)}%`, higherIsBetter: true },
@@ -1194,131 +1372,283 @@ const StrategyComparison: React.FC = () => {
       backgroundColor: '#fafafa',
       minHeight: '100vh'
     }}>
-      <div style={{ marginBottom: '24px' }}>
-        <h1 style={{ 
-          fontSize: '28px', 
-          fontWeight: 700, 
-          color: '#1f1f1f',
-          marginBottom: '8px',
-          letterSpacing: '-0.5px'
-        }}>
-          Strategy Comparison
-        </h1>
-        <p style={{ 
-          fontSize: '16px', 
-          color: '#595959',
-          margin: 0,
-          marginBottom: '24px',
-          fontWeight: 400,
-          lineHeight: 1.5
-        }}>
-          Compare performance metrics and parameters across multiple backtests
-        </p>
-        
-        {/* Summary Cards */}
-        <div style={{
-          display: 'flex',
-          gap: '20px',
-          marginBottom: '32px',
-          flexWrap: 'wrap'
-        }}>
-          <SummaryCard 
-            title="Compared Backtests" 
-            value={summaryData.comparedBacktests}
-            color="#1f1f1f"
-          />
-          <SummaryCard 
-            title="Symbols Compared" 
-            value={summaryData.symbolsCompared}
-            color="#1f1f1f"
-          />
-          <SummaryCard 
-            title="Strategies Compared" 
-            value={summaryData.strategiesCompared}
-            color="#1f1f1f"
-          />
-          <SummaryCard 
-            title="Best Return" 
-            value={summaryData.bestReturn !== -Infinity ? `${summaryData.bestReturn.toFixed(2)}%` : 'N/A'}
-            color={summaryData.bestReturn > 0 ? '#389e0d' : summaryData.bestReturn < 0 ? '#cf1322' : '#595959'}
-            unit=""
-          />
-          <SummaryCard 
-            title="Lowest Drawdown" 
-            value={summaryData.lowestDrawdown !== Infinity ? `${summaryData.lowestDrawdown.toFixed(2)}%` : 'N/A'}
-            color="#cf1322"
-            unit=""
-          />
-          <SummaryCard 
-            title="Best Sharpe" 
-            value={summaryData.bestSharpe !== -Infinity ? summaryData.bestSharpe.toFixed(2) : 'N/A'}
-            color={summaryData.bestSharpe > 1 ? '#389e0d' : summaryData.bestSharpe > 0 ? '#d46b08' : '#cf1322'}
-            unit=""
-          />
+      <div style={{ marginBottom: '24px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div>
+          <h1 style={{ 
+            fontSize: '28px', 
+            fontWeight: 700, 
+            color: '#1f1f1f',
+            marginBottom: '8px',
+            letterSpacing: '-0.5px'
+          }}>
+            Strategy Comparison Dashboard
+          </h1>
+          <p style={{ 
+            fontSize: '16px', 
+            color: '#595959',
+            margin: 0,
+            fontWeight: 400,
+            lineHeight: 1.5
+          }}>
+            Compare selected backtest sessions across return, risk, and consistency.
+          </p>
         </div>
+        <Space>
+          <Button size="large" icon={<SwapOutlined />} onClick={() => { setShowSelector(true); loadHistoryFromStorage(); }} style={{ borderRadius: 8 }}>Change Selection</Button>
+          <Button size="large" icon={<LeftOutlined />} onClick={() => navigate('/backtest')} style={{ borderRadius: 8 }}>Back to Backtest</Button>
+        </Space>
+      </div>
+        
+      {/* Summary Insights */}
+      <div style={{
+        display: 'flex',
+        gap: '16px',
+        marginBottom: '32px',
+        flexWrap: 'wrap'
+      }}>
+        <SummaryCard 
+          title="Best Return" 
+          value={`${summaryMetrics?.bestReturn?.results?.totalReturn?.toFixed(2) || '0.00'}%`}
+          unit={summaryMetrics?.bestReturn?.parameters?.symbol || ''}
+          color="#52c41a"
+        />
+        <SummaryCard 
+          title="Best Sharpe" 
+          value={summaryMetrics?.bestSharpe?.results?.sharpeRatio?.toFixed(2) || '0.00'}
+          unit={summaryMetrics?.bestSharpe?.parameters?.symbol || ''}
+          color="#1890ff"
+        />
+        <SummaryCard 
+          title="Lowest Drawdown" 
+          value={`-${Math.abs(summaryMetrics?.lowestDD?.results?.maxDrawdown || 0)?.toFixed(2) || '0.00'}%`}
+          unit={summaryMetrics?.lowestDD?.parameters?.symbol || ''}
+          color="#f5222d"
+        />
+        <SummaryCard 
+          title="Highest Win Rate" 
+          value={`${summaryMetrics?.bestWinRate?.results?.winRate?.toFixed(1) || '0.0'}%`}
+          unit={summaryMetrics?.bestWinRate?.parameters?.symbol || ''}
+          color="#faad14"
+        />
+        <SummaryCard 
+          title="Best Profit Factor" 
+          value={summaryMetrics?.bestProfitFactor?.results?.profitFactor?.toFixed(2) || '0.00'}
+          unit={summaryMetrics?.bestProfitFactor?.parameters?.symbol || ''}
+          color="#722ed1"
+        />
+        <SummaryCard 
+          title="Sessions" 
+          value={backtestResults.length}
+          color="#8c8c8c"
+        />
+      </div>
 
+      {/* Comparison Grid (Session Cards) */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 20, marginBottom: 32 }}>
+        {backtestResults.map((b, idx) => {
+          const colors = BACKTEST_COLORS[idx % BACKTEST_COLORS.length];
+          return (
+            <Card 
+              key={b.backtestId}
+              size="small"
+              className="premium-card"
+              style={{ borderTop: `4px solid ${colors.primary}`, borderRadius: 12 }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+                <div>
+                  <div style={{ fontSize: 18, fontWeight: 800, color: '#111827' }}>{b.parameters.symbol}</div>
+                  <div style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600 }}>{b.parameters.strategy.toUpperCase()}</div>
+                </div>
+                <Tag color={colors.light} style={{ color: colors.text, border: 'none', fontWeight: 700, margin: 0 }}>SESSION {idx + 1}</Tag>
+              </div>
+              
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 16px' }}>
+                <div>
+                  <div style={{ fontSize: 10, color: '#8c8c8c', textTransform: 'uppercase' }}>Return</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: (b.results?.totalReturn || 0) >= 0 ? '#52c41a' : '#f5222d' }}>
+                    {(b.results?.totalReturn || 0) >= 0 ? '+' : ''}{b.results?.totalReturn?.toFixed(2)}%
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, color: '#8c8c8c', textTransform: 'uppercase' }}>Sharpe</div>
+                  <div style={{ fontSize: 15, fontWeight: 700 }}>{b.results?.sharpeRatio?.toFixed(2) || '—'}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, color: '#8c8c8c', textTransform: 'uppercase' }}>Max DD</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: '#f5222d' }}>-{Math.abs(b.results?.maxDrawdown || 0).toFixed(2)}%</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, color: '#8c8c8c', textTransform: 'uppercase' }}>Win Rate</div>
+                  <div style={{ fontSize: 15, fontWeight: 700 }}>{b.results?.winRate?.toFixed(1)}%</div>
+                </div>
+              </div>
+              
+              <Divider style={{ margin: '12px 0' }} />
+              
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#bfbfbf' }}>
+                <span>{b.parameters.startDate} – {b.parameters.endDate}</span>
+                <StatusTag status={b.status as any || 'completed'} />
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+
+      {/* Session Ranking Table */}
+      <Card 
+        title={
+          <div style={{ fontSize: '18px', fontWeight: 700, color: '#1f1f1f' }}>
+            Session Ranking & Overview
+          </div>
+        }
+        style={{ 
+          marginBottom: '24px',
+          borderRadius: '16px',
+          border: '1px solid #e8e8e8',
+          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.05)'
+        }}
+        bodyStyle={{ padding: 0 }}
+      >
+        <Table
+          dataSource={[...backtestResults].sort((a, b) => (b.results?.totalReturn || 0) - (a.results?.totalReturn || 0))}
+          rowKey="backtestId"
+          pagination={false}
+          size="middle"
+          rowClassName="ranking-row"
+          columns={[
+            {
+              title: 'Rank',
+              key: 'rank',
+              width: 70,
+              align: 'center',
+              render: (_, __, index) => (
+                <div style={{ 
+                  width: 28, height: 28, borderRadius: '50%', 
+                  background: index === 0 ? '#ffd700' : index === 1 ? '#c0c0c0' : index === 2 ? '#cd7f32' : '#f0f2f5',
+                  color: index < 3 ? '#fff' : '#8c8c8c',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontWeight: 800, fontSize: 13, margin: '0 auto'
+                }}>
+                  {index + 1}
+                </div>
+              )
+            },
+            {
+              title: 'Symbol',
+              dataIndex: ['parameters', 'symbol'],
+              key: 'symbol',
+              render: (s) => <Tag color="blue" style={{ fontWeight: 700 }}>{s}</Tag>
+            },
+            {
+              title: 'Strategy',
+              dataIndex: ['parameters', 'strategy'],
+              key: 'strategy',
+              render: (s) => {
+                const names: any = { moving_average: 'MA Cross', rsi: 'RSI', macd: 'MACD', bollinger: 'BB', momentum: 'MOM' };
+                return names[s] || s;
+              }
+            },
+            {
+              title: 'Return',
+              dataIndex: ['results', 'totalReturn'],
+              key: 'totalReturn',
+              sorter: (a, b) => (a.results?.totalReturn || 0) - (b.results?.totalReturn || 0),
+              render: (v) => <Text strong style={{ color: v >= 0 ? '#52c41a' : '#f5222d' }}>{v >= 0 ? '+' : ''}{v?.toFixed(2)}%</Text>
+            },
+            {
+              title: 'Sharpe',
+              dataIndex: ['results', 'sharpeRatio'],
+              key: 'sharpeRatio',
+              sorter: (a, b) => (a.results?.sharpeRatio || 0) - (b.results?.sharpeRatio || 0),
+              render: (v) => v?.toFixed(2) || '—'
+            },
+            {
+              title: 'Max DD',
+              dataIndex: ['results', 'maxDrawdown'],
+              key: 'maxDrawdown',
+              sorter: (a, b) => (a.results?.maxDrawdown || 0) - (b.results?.maxDrawdown || 0),
+              render: (v) => <Text type="danger">-{Math.abs(v || 0).toFixed(2)}%</Text>
+            },
+            {
+              title: 'Win Rate',
+              dataIndex: ['results', 'winRate'],
+              key: 'winRate',
+              render: (v) => v ? `${v.toFixed(1)}%` : '—'
+            },
+            {
+              title: 'Profit Factor',
+              dataIndex: ['results', 'profitFactor'],
+              key: 'profitFactor',
+              render: (v) => v?.toFixed(2) || '—'
+            },
+            {
+              title: 'Trades',
+              dataIndex: ['results', 'trades'],
+              key: 'trades',
+              render: (v) => <Tag color="default">{v || 0}</Tag>
+            },
+            {
+              title: 'Date',
+              dataIndex: 'timestamp',
+              key: 'date',
+              render: (t) => t ? new Date(t).toLocaleDateString() : '—'
+            },
+            {
+              title: 'Status',
+              dataIndex: 'status',
+              key: 'status',
+              render: (s) => <StatusTag status={s as any || 'completed'} />
+            }
+          ]}
+        />
+      </Card>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(450px, 1fr))', gap: 24, marginBottom: 24 }}>
         {/* 关键指标对比条形图 */}
         {backtestResults.length > 0 && barChartData.length > 0 && (
           <Card 
             title={
               <div style={{ fontSize: '18px', fontWeight: 700, color: '#1f1f1f' }}>
-                Key Metrics Comparison
+                Performance Metrics Visualization
               </div>
             }
             style={{ 
-              marginBottom: '24px',
-              borderRadius: '12px',
+              borderRadius: '16px',
               border: '1px solid #e8e8e8',
-              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)'
+              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.05)'
             }}
             bodyStyle={{ padding: '20px' }}
           >
-            <div style={{ fontSize: '14px', color: '#595959', marginBottom: '16px', lineHeight: 1.5 }}>
-              Compare core performance metrics across all backtests. Higher bars indicate better performance for Return, Sharpe, and Win Rate; lower bars indicate better performance for Drawdown.
-            </div>
-            <div style={{ height: '400px' }}>
+            <div style={{ height: '350px' }}>
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
                   data={barChartData}
-                  margin={{ top: 20, right: 30, left: 20, bottom: 20 }}
+                  margin={{ top: 10, right: 30, left: 10, bottom: 10 }}
                 >
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                   <XAxis 
                     dataKey="metric" 
-                    tick={{ fontSize: 12, fill: '#595959' }}
-                    axisLine={{ stroke: '#d9d9d9' }}
-                    tickLine={{ stroke: '#d9d9d9' }}
+                    tick={{ fontSize: 12, fill: '#8c8c8c' }}
+                    axisLine={{ stroke: '#f0f0f0' }}
                   />
                   <YAxis 
-                    tick={{ fontSize: 12, fill: '#595959' }}
-                    axisLine={{ stroke: '#d9d9d9' }}
-                    tickLine={{ stroke: '#d9d9d9' }}
+                    tick={{ fontSize: 11, fill: '#8c8c8c' }}
+                    axisLine={{ stroke: '#f0f0f0' }}
                   />
                   <Tooltip 
+                    cursor={{ fill: '#fafafa' }}
                     formatter={(value: number, name: string) => {
-                      const backtestIndex = name.replace('backtest', '');
-                      const formattedValue = barChartData.find(d => d.metric === name) ? 
-                        barChartData.find(d => d.metric === name)?.[`backtest${backtestIndex}Formatted`] : 
-                        `${value}`;
-                      return [formattedValue, `Backtest ${backtestIndex}`];
+                      const backtestIndex = parseInt(name.replace('backtest', ''));
+                      const metricName = barChartData.find(d => d[`backtest${backtestIndex}`] === value)?.metric;
+                      let formatted = `${value}`;
+                      if (metricName === 'Total Return' || metricName === 'Max Drawdown' || metricName === 'Win Rate') {
+                        formatted = `${value.toFixed(2)}%`;
+                      } else if (metricName === 'Sharpe Ratio') {
+                        formatted = value.toFixed(2);
+                      }
+                      return [formatted, `Session ${backtestIndex}`];
                     }}
-                    labelFormatter={(label) => `${label}`}
-                    contentStyle={{ 
-                      backgroundColor: 'white', 
-                      border: '1px solid #d9d9d9',
-                      borderRadius: '6px',
-                      fontSize: '12px'
-                    }}
-                  />
-                  <Legend 
-                    wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }}
-                    formatter={(value) => {
-                      const index = parseInt(value.replace('backtest', '')) - 1;
-                      const backtest = backtestResults[index];
-                      return backtest ? 
-                        `Backtest ${index + 1}: ${backtest.parameters.symbol} • ${backtest.parameters.strategy}` : 
-                        value;
-                    }}
+                    contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
                   />
                   {backtestResults.map((_, index) => (
                     <Bar 
@@ -1326,7 +1656,8 @@ const StrategyComparison: React.FC = () => {
                       dataKey={`backtest${index + 1}`}
                       name={`backtest${index + 1}`}
                       fill={BACKTEST_COLORS[index % BACKTEST_COLORS.length].primary}
-                      radius={[2, 2, 0, 0]}
+                      radius={[4, 4, 0, 0]}
+                      barSize={20}
                     />
                   ))}
                 </BarChart>
@@ -1340,84 +1671,43 @@ const StrategyComparison: React.FC = () => {
           <Card 
             title={
               <div style={{ fontSize: '18px', fontWeight: 700, color: '#1f1f1f' }}>
-                Risk vs Return Analysis
+                Risk / Reward Quadrant
               </div>
             }
             style={{ 
-              marginBottom: '24px',
-              borderRadius: '12px',
+              borderRadius: '16px',
               border: '1px solid #e8e8e8',
-              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)'
+              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.05)'
             }}
             bodyStyle={{ padding: '20px' }}
           >
-            <div style={{ fontSize: '14px', color: '#595959', marginBottom: '16px', lineHeight: 1.5 }}>
-              Each point represents a backtest. Points in the top-left quadrant indicate high return with low risk (ideal). Bubble size represents number of trades.
-            </div>
-            <div style={{ height: '400px' }}>
+            <div style={{ height: '350px' }}>
               <ResponsiveContainer width="100%" height="100%">
-                <ScatterChart
-                  margin={{ top: 20, right: 30, left: 20, bottom: 20 }}
-                >
+                <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                   <XAxis 
-                    type="number" 
-                    dataKey="maxDrawdown" 
-                    name="Max Drawdown" 
-                    unit="%" 
-                    tick={{ fontSize: 12, fill: '#595959' }}
-                    axisLine={{ stroke: '#d9d9d9' }}
-                    tickLine={{ stroke: '#d9d9d9' }}
-                    label={{ value: 'Max Drawdown (%)', position: 'insideBottom', offset: -5, fontSize: 12, fill: '#595959' }}
+                    type="number" dataKey="maxDrawdown" name="Max DD" unit="%" 
+                    label={{ value: 'Risk (Max DD %)', position: 'insideBottom', offset: -10, fontSize: 12, fill: '#8c8c8c' }}
+                    tick={{ fontSize: 11, fill: '#8c8c8c' }}
                   />
                   <YAxis 
-                    type="number" 
-                    dataKey="totalReturn" 
-                    name="Total Return" 
-                    unit="%" 
-                    tick={{ fontSize: 12, fill: '#595959' }}
-                    axisLine={{ stroke: '#d9d9d9' }}
-                    tickLine={{ stroke: '#d9d9d9' }}
-                    label={{ value: 'Total Return (%)', angle: -90, position: 'insideLeft', fontSize: 12, fill: '#595959' }}
+                    type="number" dataKey="totalReturn" name="Return" unit="%" 
+                    label={{ value: 'Reward (Return %)', angle: -90, position: 'insideLeft', fontSize: 12, fill: '#8c8c8c' }}
+                    tick={{ fontSize: 11, fill: '#8c8c8c' }}
                   />
-                  <ZAxis type="number" dataKey="trades" range={[50, 400]} />
+                  <ZAxis type="number" dataKey="trades" range={[100, 500]} />
                   <Tooltip 
-                    formatter={(value: number, name: string) => {
-                      if (name === 'totalReturn') return [`${value.toFixed(2)}%`, 'Total Return'];
-                      if (name === 'maxDrawdown') return [`${value.toFixed(2)}%`, 'Max Drawdown'];
-                      if (name === 'sharpeRatio') return [value.toFixed(2), 'Sharpe Ratio'];
-                      if (name === 'trades') return [value, 'Trades'];
+                    cursor={{ strokeDasharray: '3 3' }}
+                    contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+                    formatter={(value: any, name: string) => {
+                      if (name === 'Return') return [`${value.toFixed(2)}%`, name];
+                      if (name === 'Max DD') return [`-${Math.abs(value).toFixed(2)}%`, name];
                       return [value, name];
                     }}
-                    labelFormatter={(label, payload) => {
-                      if (payload && payload.length > 0) {
-                        return payload[0].payload.label;
-                      }
-                      return label;
-                    }}
-                    contentStyle={{ 
-                      backgroundColor: 'white', 
-                      border: '1px solid #d9d9d9',
-                      borderRadius: '6px',
-                      fontSize: '12px'
-                    }}
                   />
-                  <Legend 
-                    wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }}
-                  />
-                  <Scatter 
-                    name="Backtests" 
-                    data={scatterChartData} 
-                    fill="#8884d8"
-                    shape="circle"
-                  >
+                  <Scatter name="Strategies" data={scatterChartData}>
                     {scatterChartData.map((entry, index) => (
-                      <Cell 
-                        key={`cell-${index}`} 
-                        fill={entry.color}
-                        stroke={entry.color}
-                        strokeWidth={1}
-                      />
+                      <Cell key={`cell-${index}`} fill={entry.color} />
                     ))}
                   </Scatter>
                 </ScatterChart>
@@ -1425,180 +1715,83 @@ const StrategyComparison: React.FC = () => {
             </div>
           </Card>
         )}
+      </div>
 
-        {/* 资金曲线对比图 */}
-        {backtestResults.length > 0 && equityCurveData.length > 0 && (
-          <Card 
-            title={
-              <div style={{ fontSize: '18px', fontWeight: 700, color: '#1f1f1f' }}>
-                Equity Curve Comparison
-              </div>
-            }
-            style={{ 
-              marginBottom: '24px',
-              borderRadius: '12px',
-              border: '1px solid #e8e8e8',
-              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)'
-            }}
-            bodyStyle={{ padding: '20px' }}
-          >
-            <div style={{ fontSize: '14px', color: '#595959', marginBottom: '16px', lineHeight: 1.5 }}>
-              Compare equity growth over time across all backtests. All curves are normalized to start at 100 for fair comparison.
+      {/* 资金曲线对比图 */}
+      {backtestResults.length > 0 && (
+        <Card 
+          title={
+            <div style={{ fontSize: '18px', fontWeight: 700, color: '#1f1f1f' }}>
+              Relative Equity Growth Comparison
             </div>
+          }
+          style={{ 
+            marginBottom: '24px',
+            borderRadius: '16px',
+            border: '1px solid #e8e8e8',
+            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.05)'
+          }}
+          bodyStyle={{ padding: '20px' }}
+        >
+          {equityCurveData.length > 0 ? (
             <div style={{ height: '400px' }}>
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart
-                  data={equityCurveData}
-                  margin={{ top: 20, right: 30, left: 20, bottom: 20 }}
-                >
+                <LineChart data={equityCurveData} margin={{ top: 10, right: 30, left: 10, bottom: 10 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                   <XAxis 
                     dataKey="date" 
-                    tick={{ fontSize: 12, fill: '#595959' }}
-                    axisLine={{ stroke: '#d9d9d9' }}
-                    tickLine={{ stroke: '#d9d9d9' }}
-                    label={{ value: 'Date', position: 'insideBottom', offset: -5, fontSize: 12, fill: '#595959' }}
-                    // 修复：X轴已经显示格式化后的日期，不需要再次格式化
+                    tick={{ fontSize: 11, fill: '#8c8c8c' }}
+                    axisLine={{ stroke: '#f0f0f0' }}
                   />
                   <YAxis 
-                    tick={{ fontSize: 12, fill: '#595959' }}
-                    axisLine={{ stroke: '#d9d9d9' }}
-                    tickLine={{ stroke: '#d9d9d9' }}
-                    label={{ value: 'Equity (Normalized)', angle: -90, position: 'insideLeft', fontSize: 12, fill: '#595959' }}
+                    tick={{ fontSize: 11, fill: '#8c8c8c' }}
+                    axisLine={{ stroke: '#f0f0f0' }}
+                    domain={['auto', 'auto']}
                   />
                   <Tooltip 
-                    formatter={(value: number, name: string) => {
-                      if (name === 'benchmark') {
-                        return [`$${value.toFixed(2)}`, 'Benchmark (Buy & Hold)'];
-                      }
-                      const backtestIndex = name.replace('backtest', '');
-                      return [`$${value.toFixed(2)}`, `Backtest ${backtestIndex}`];
-                    }}
-                    labelFormatter={(label) => {
-                      return `Date: ${label}`;
-                    }}
-                    contentStyle={{ 
-                      backgroundColor: 'white', 
-                      border: '1px solid #d9d9d9',
-                      borderRadius: '6px',
-                      fontSize: '12px'
-                    }}
+                    contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+                    formatter={(value: number, name: string) => [`$${value.toLocaleString()}`, name]}
                   />
-                  <Legend 
-                    wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }}
-                    formatter={(value) => {
-                      if (value === 'benchmark') {
-                        return 'Benchmark (Buy & Hold)';
-                      }
-                      const index = parseInt(value.replace('backtest', '')) - 1;
-                      const backtest = backtestResults[index];
-                      return backtest ? 
-                        `Backtest ${index + 1}: ${backtest.parameters.symbol} • ${backtest.parameters.strategy}` : 
-                        value;
-                    }}
-                  />
-                  {backtestResults.map((_, index) => (
+                  <Legend iconType="circle" wrapperStyle={{ fontSize: 12, paddingTop: 20 }} />
+                  {backtestResults.map((b, index) => (
                     <Line 
-                      key={`backtest${index + 1}`}
+                      key={b.backtestId}
                       type="monotone"
                       dataKey={`backtest${index + 1}`}
-                      name={`backtest${index + 1}`}
+                      name={`${b.parameters.symbol} (${b.parameters.strategy})`}
                       stroke={BACKTEST_COLORS[index % BACKTEST_COLORS.length].primary}
-                      strokeWidth={2}
+                      strokeWidth={3}
                       dot={false}
-                      activeDot={{ r: 6 }}
-                      connectNulls
+                      activeDot={{ r: 6, strokeWidth: 0 }}
                     />
                   ))}
-                  {/* Benchmark (Buy & Hold) 曲线 */}
                   <Line 
-                    type="monotone"
-                    dataKey="benchmark"
-                    stroke="#999999"
-                    strokeWidth={2}
-                    strokeDasharray="5 5"
-                    dot={false}
-                    name="Benchmark (Buy & Hold)"
-                    activeDot={{ r: 6 }}
-                    connectNulls
+                    type="monotone" dataKey="benchmark" name="Buy & Hold Benchmark" 
+                    stroke="#d9d9d9" strokeWidth={2} strokeDasharray="5 5" dot={false} 
                   />
                 </LineChart>
               </ResponsiveContainer>
             </div>
-          </Card>
-        )}
-      </div>
+          ) : (
+            <Empty description="No equity curve data available for detailed comparison" />
+          )}
+        </Card>
+      )}
       
-      {/* 参数对比表格 - 4列 */}
+      {/* 详细指标对比 - 侧重于找Winner */}
       <Card 
         title={
           <div style={{ fontSize: '18px', fontWeight: 700, color: '#1f1f1f' }}>
-            Parameter Comparison
-          </div>
-        }
-        extra={
-          <div style={{ 
-            fontSize: '13px', 
-            color: '#595959',
-            fontWeight: 500
-          }}>
-            {backtestResults.length} backtest{backtestResults.length !== 1 ? 's' : ''} compared
+            Detailed Metric Matrix & Performance Winners
           </div>
         }
         style={{ 
           marginBottom: '24px',
-          borderRadius: '12px',
+          borderRadius: '16px',
           border: '1px solid #e8e8e8',
-          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)'
+          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.05)'
         }}
-        bodyStyle={{ padding: '20px' }}
-      >
-        <Table<ParameterData>
-          columns={parameterColumns}
-          dataSource={parameterData}
-          pagination={false}
-          size="middle"
-          bordered={false}
-          tableLayout="fixed"
-          scroll={{ x: LABEL_COL_WIDTH + (BACKTEST_COL_WIDTH * backtestResults.length) }}
-          rowClassName={(record, index) => index % 2 === 0 ? "parameter-row-even" : "parameter-row-odd"}
-          style={{ fontSize: "14px" }}
-        />
-      </Card>
-
-      {/* 性能指标对比表格 - 4列 */}
-      <Card 
-        title={
-          <div style={{ fontSize: '18px', fontWeight: 700, color: '#1f1f1f' }}>
-            Performance Metrics Comparison
-          </div>
-        }
-        extra={
-          <div style={{ 
-            display: 'flex',
-            alignItems: 'center',
-            gap: '20px',
-            fontSize: '13px',
-            color: '#404040',
-            fontWeight: 600
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <div style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#389e0d' }}></div>
-              <span>Positive</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <div style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#cf1322' }}></div>
-              <span>Negative</span>
-            </div>
-          </div>
-        }
-        style={{ 
-          marginBottom: '24px',
-          borderRadius: '12px',
-          border: '1px solid #e8e8e8',
-          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)'
-        }}
-        bodyStyle={{ padding: '20px' }}
+        bodyStyle={{ padding: 24 }}
       >
         <Table<MetricData>
           columns={metricColumns}
@@ -1606,37 +1799,18 @@ const StrategyComparison: React.FC = () => {
           pagination={false}
           size="middle"
           bordered={false}
-          tableLayout="fixed"
           scroll={{ x: tableWidth }}
           rowClassName={(record, index) => index % 2 === 0 ? "metric-row-even" : "metric-row-odd"}
           style={{ fontSize: "14px" }}
         />
-        <div style={{ 
-          marginTop: '16px', 
-          fontSize: '13px', 
-          color: '#595959',
-          padding: '12px 16px',
-          backgroundColor: '#fafafa',
-          borderRadius: '8px',
-          border: '1px solid #e8e8e8'
-        }}>
-          <div style={{ fontWeight: 700, marginBottom: '10px', color: '#1f1f1f', fontSize: '14px' }}>Interpretation Guide:</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', lineHeight: 1.6 }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
-              <div style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#389e0d', marginTop: '3px', flexShrink: 0 }}></div>
-              <span><strong>Higher is better:</strong> Return, Sharpe, Sortino, Calmar, Win Rate, Profit Factor, Expectancy</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
-              <div style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#cf1322', marginTop: '3px', flexShrink: 0 }}></div>
-              <span><strong>Lower is better:</strong> Drawdown, Volatility</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
-              <div style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#8c8c8c', marginTop: '3px', flexShrink: 0 }}></div>
-              <span><strong>Neutral:</strong> Trades, Exposure (depends on strategy)</span>
-            </div>
-          </div>
-        </div>
       </Card>
+
+      <style>{`
+        .ranking-row:hover { background-color: #f0f7ff !important; cursor: default; }
+        .metric-row-even { background-color: #fafafa; }
+        .ranking-row .ant-table-cell { border-bottom: 1px solid #f0f0f0 !important; }
+        .ant-card-title { border-bottom: none !important; }
+      `}</style>
     </div>
   );
 };

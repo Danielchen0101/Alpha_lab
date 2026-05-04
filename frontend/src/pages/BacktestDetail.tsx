@@ -116,15 +116,28 @@ const BacktestDetail: React.FC = () => {
         const found = history.find((item: any) => item.backtestId === id);
         
         if (found) {
-          console.log('Found backtest:', found.backtestId);
+          console.log('Found backtest in API history:', found.backtestId);
           setBacktestResult(found);
           setLoading(false);
           return;
         } else {
-          console.log('Backtest not found in history');
+          console.log('Backtest not found in API history');
         }
       } else {
         console.log('History data is not an array:', historyResponse.data);
+      }
+
+      // Check local storage if not found in API
+      const localSaved = localStorage.getItem('quant_backtest_history');
+      if (localSaved) {
+        const localHistory = JSON.parse(localSaved);
+        const localFound = localHistory.find((item: any) => item.backtestId === id);
+        if (localFound) {
+          console.log('Found backtest in local storage:', localFound.backtestId);
+          setBacktestResult(localFound);
+          setLoading(false);
+          return;
+        }
       }
       
       // If not found in history, try to re-run with the ID

@@ -12152,6 +12152,51 @@ def get_trading_account():
 
         return jsonify({'success': False, 'error': str(e), 'mode': mode, 'available': False})
 
+
+@app.route('/api/trading/positions', methods=['GET'])
+def get_trading_positions():
+    """Get Alpaca positions for a specific mode (paper|real)."""
+    mode = request.args.get('mode', 'paper').strip().lower()
+    if mode not in ('paper', 'real'):
+        return jsonify({'success': False, 'error': f'Invalid mode: {mode}', 'positions': []})
+
+    resolved, resolve_status = resolve_alpaca_config_strict_user(mode)
+    if resolve_status == 'auth_required':
+        return jsonify({'success': False, 'error': 'Authentication required.', 'positions': []})
+    if resolve_status == 'config_required' or not resolved:
+        return jsonify({'success': False, 'error': 'Alpaca not configured for this mode.', 'positions': []})
+
+    api_key = resolved.get('api_key', '')
+    api_secret = resolved.get('api_secret', '')
+    base_url = resolved.get('base_url', 'https://paper-api.alpaca.markets' if mode == 'paper' else 'https://api.alpaca.markets')
+
+    try:
+        headers = {'APCA-API-KEY-ID': api_key, 'APCA-API-SECRET-KEY': api_secret}
+        resp = requests.get(f'{base_url}/v2/positions', headers=headers, timeout=10)
+        if resp.status_code == 200:
+            raw = resp.json()
+            positions = []
+            for p in raw:
+                positions.append({
+                    'symbol': p.get('symbol', ''),
+                    'qty': float(p.get('qty', 0)),
+                    'side': p.get('side', 'long'),
+                    'avgEntryPrice': float(p.get('avg_entry_price', 0)),
+                    'currentPrice': float(p.get('current_price', 0)),
+                    'marketValue': float(p.get('market_value', 0)),
+                    'unrealizedPL': float(p.get('unrealized_pl', 0)),
+                    'unrealizedPLPercent': float(p.get('unrealized_plpc', 0)),
+                    'costBasis': float(p.get('cost_basis', 0)),
+                    'assetClass': p.get('asset_class', ''),
+                    'exchange': p.get('exchange', ''),
+                    'lastUpdated': p.get('lastday_price', None),
+                })
+            return jsonify({'success': True, 'mode': mode, 'positions': positions})
+        else:
+            return jsonify({'success': False, 'error': f'Alpaca API error ({resp.status_code})', 'positions': []})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e), 'positions': []})
+
 # ==================== 基础接口 ====================
 
 
@@ -23286,183 +23331,207 @@ def deeper_validation():
 
         all_data_cache = {}
 
+        print(f'[DV] Request: {len(raw_candidates)} candidates, period={period}, capital={initial_capital}')
+
         for idx, cand in enumerate(raw_candidates):
             symbol = cand.get('symbol', '').upper().strip()
-            strategy = cand.get('strategy', '')
-            if not strategy or strategy == 'unknown':
-                strategy = cand.get('bestStrategy', '')
+            if not symbol:
+                errors.append({'symbol': '(empty)', 'step': 'input', 'message': 'Empty symbol'})
+                continue
 
-            # Map fine-scan labels to supported strategy keys
-            fallback_reason = ''
-            strategy_lower = strategy.strip().lower()
-            if strategy_lower in STRATEGY_LABEL_MAP:
-                mapped = STRATEGY_LABEL_MAP[strategy_lower]
-                if strategy_lower != mapped:
-                    fallback_reason = f'Strategy mapped: {strategy} → {mapped}'
-                    strategy = mapped
+            try:
+                strategy = cand.get('strategy', '')
+                if not strategy or strategy == 'unknown':
+                    strategy = cand.get('bestStrategy', '')
 
-            if strategy not in STRATEGY_FN_MAP:
-                fallback_reason = f'Strategy fallback: moving_average (unrecognized: {strategy})'
-                strategy = 'moving_average'
+                # Map fine-scan labels to supported strategy keys
+                fallback_reason = ''
+                strategy_lower = strategy.strip().lower()
+                if strategy_lower in STRATEGY_LABEL_MAP:
+                    mapped = STRATEGY_LABEL_MAP[strategy_lower]
+                    if strategy_lower != mapped:
+                        fallback_reason = f'Strategy mapped: {strategy} → {mapped}'
+                        strategy = mapped
 
-            if not fallback_reason and cand.get('strategy', '') != strategy:
-                fallback_reason = f'Strategy fallback: {strategy}'
+                if strategy not in STRATEGY_FN_MAP:
+                    fallback_reason = f'Strategy fallback: moving_average (unrecognized: {strategy})'
+                    strategy = 'moving_average'
 
-            print(f'[DV] Processing {symbol} with {strategy} ({idx+1}/{len(raw_candidates)})')
+                if not fallback_reason and cand.get('strategy', '') != strategy:
+                    fallback_reason = f'Strategy fallback: {strategy}'
 
-            # Step 1: Fetch Data (cache per symbol)
-            if symbol not in all_data_cache:
-                all_data_cache[symbol] = _fetch_1y_data(symbol)
-            data_result = all_data_cache[symbol]
+                print(f'[DV] Processing {symbol} with {strategy} ({idx+1}/{len(raw_candidates)})')
 
-            if data_result is None or data_result[0] is None:
-                errors.append({'symbol': symbol, 'step': 'data_fetch', 'message': 'No data available'})
-                results.append({
+                # Step 1: Fetch Data (cache per symbol)
+                if symbol not in all_data_cache:
+                    all_data_cache[symbol] = _fetch_1y_data(symbol)
+                data_result = all_data_cache[symbol]
+
+                if data_result is None or data_result[0] is None:
+                    errors.append({'symbol': symbol, 'step': 'data_fetch', 'message': 'No data available'})
+                    results.append({
+                        'symbol': symbol,
+                        'strategy': strategy,
+                        'verdict': 'Rejected',
+                        'reason': 'No 1-year historical data available',
+                        'error': True
+                    })
+                    continue
+
+                data_daily, data_source = data_result
+
+                # Step 2: Split data for recent vs long-term
+                split_idx = max(len(data_daily) - 60, len(data_daily) // 2)
+                long_data = data_daily
+                short_data = data_daily[split_idx:]
+
+                # Step 3: 1-Year Backtest with best/selected params
+                params = {}
+                p = cand.get('parameters', {})
+                if p and isinstance(p, dict) and len(p) > 0:
+                    params = p
+                else:
+                    params = DEFAULT_FALLBACK_PARAMS.get(strategy, {})
+
+                bt_result, bt_err = _run_backtest_core(symbol, strategy, params, data_daily)
+                if bt_err or not bt_result:
+                    errors.append({'symbol': symbol, 'step': 'backtest', 'message': bt_err or 'No results'})
+                    continue
+
+                metrics = bt_result['metrics']
+                print(f'[DeeperValidation][1Y] {symbol} {strategy} totalReturn={metrics.get("totalReturn", "N/A")} sharpeRatio={metrics.get("sharpeRatio", "N/A")} maxDrawdown={metrics.get("maxDrawdown", "N/A")} winRate={metrics.get("winRate", "N/A")} profitFactor={metrics.get("profitFactor", "N/A")} tradeCount={metrics.get("tradeCount", "N/A")} tradesLen={len(bt_result.get("trades", [])) if bt_result else 0}')
+
+                # Step 4: Light Optimization (parameter grid)
+                param_grid = STRATEGY_PARAM_GRIDS.get(strategy, {})
+                param_sets = param_grid.get('param_sets', [])
+                opt_results = []
+                seen_params = set()
+
+                for ps in param_sets:
+                    # Skip if same params as already done
+                    key = str(sorted(ps.items()))
+                    if key in seen_params:
+                        continue
+                    seen_params.add(key)
+
+                    r, e = _run_backtest_core(symbol, strategy, ps, data_daily)
+                    if r:
+                        opt_results.append({
+                            'params': ps,
+                            'totalReturn': r['metrics']['totalReturn'],
+                            'sharpeRatio': r['metrics']['sharpeRatio'],
+                            'maxDrawdown': r['metrics']['maxDrawdown'],
+                            'winRate': r['metrics']['winRate'],
+                            'profitFactor': r['metrics']['profitFactor'],
+                            'tradeCount': r['metrics']['tradeCount'],
+                        })
+
+                valid_count = len(opt_results)
+                best_opt = max(opt_results, key=lambda x: x['totalReturn']) if opt_results else None
+
+                # Log optimization details
+                top3 = sorted(opt_results, key=lambda x: x['totalReturn'], reverse=True)[:3] if opt_results else []
+                top3_fmt = [{'params': str(r['params']), 'ret': round(r['totalReturn'], 2), 'sharp': round(r['sharpeRatio'], 2)} for r in top3] if top3 else []
+                print(f'[DeeperValidation][LightOpt] {symbol} validCombinations={valid_count} bestReturn={best_opt["totalReturn"] if best_opt else "None"} bestParams={best_opt["params"] if best_opt else "None"} top3={top3_fmt}')
+
+                # Step 5: Parameter Stability
+                stability_score, stability_reason_str = _compute_stability_score(opt_results, valid_count)
+                stability = {
+                    'score': stability_score,
+                    'profitableRatio': round(sum(1 for r in opt_results if r.get('totalReturn', -999) > 0) / valid_count, 2) if valid_count > 0 else 0,
+                    'medianReturn': round(sorted([r.get('totalReturn', 0) for r in opt_results])[valid_count//2], 2) if valid_count > 0 else 0,
+                    'bestReturn': best_opt['totalReturn'] if best_opt else 0,
+                    'returnSpread': round(best_opt['totalReturn'] - sorted([r.get('totalReturn', 0) for r in opt_results])[valid_count//2], 2) if best_opt and valid_count > 0 else 0,
+                    'stableParameterCount': valid_count,
+                    'stabilityReason': stability_reason_str,
+                }
+
+                # Step 6: Recent vs Long-Term
+                long_bt, _ = _run_backtest_core(symbol, strategy, params, long_data)
+                short_bt, _ = _run_backtest_core(symbol, strategy, params, short_data)
+                long_metrics = long_bt['metrics'] if long_bt else None
+                short_metrics = short_bt['metrics'] if short_bt else None
+
+                if long_metrics and short_metrics:
+                    recent_vs_long = _compute_recent_vs_long_term(metrics, long_metrics, short_metrics)
+                else:
+                    recent_vs_long = 'Consistent'
+
+                # Step 7: Verdict
+                verdict, reason_str = _compute_verdict(metrics, stability, recent_vs_long, opt_results, valid_count)
+
+                # Build reason
+                reason_parts = []
+                if fallback_reason:
+                    reason_parts.append(fallback_reason)
+                reason_parts.append(reason_str)
+
+                result_entry = {
                     'symbol': symbol,
                     'strategy': strategy,
+                    'parameters': params,
+                    'verdict': verdict,
+                    'reason': ' | '.join(reason_parts),
+                    # 1Y backtest
+                    'totalReturn': metrics['totalReturn'],
+                    'sharpeRatio': metrics['sharpeRatio'],
+                    'maxDrawdown': metrics['maxDrawdown'],
+                    'winRate': metrics['winRate'],
+                    'profitFactor': metrics['profitFactor'],
+                    'tradeCount': metrics['tradeCount'],
+                    # Optimization
+                    'bestParams': best_opt['params'] if best_opt else params,
+                    'optimizedReturn': best_opt['totalReturn'] if best_opt else 0,
+                    'optimizedSharpe': best_opt['sharpeRatio'] if best_opt else 0,
+                    'optimizationResults': opt_results,
+                    'bestReturn': stability['bestReturn'],
+                    'validCombinationCount': valid_count,
+                    # Stability
+                    'stabilityScore': stability['score'],
+                    'profitableRatio': stability['profitableRatio'],
+                    'medianReturn': stability['medianReturn'],
+                    'returnSpread': stability['returnSpread'],
+                    'stableParameterCount': stability['stableParameterCount'],
+                    'stabilityReason': stability['stabilityReason'],
+                    # Optimization details
+                    'avgReturn': round(sum(r.get('totalReturn', 0) for r in opt_results) / valid_count, 2) if valid_count > 0 else None,
+                    'testedCombinationCount': len(param_sets) or len(opt_results) or valid_count or 0,
+                    'validCombinationCount': valid_count,
+                    'top3Results': top3_fmt if top3_fmt else [],
+                    # Recent vs Long
+                    'longTermReturn': long_metrics['totalReturn'] if long_metrics else 0,
+                    'recentReturn': short_metrics['totalReturn'] if short_metrics else 0,
+                    'longTermSharpe': long_metrics['sharpeRatio'] if long_metrics else 0,
+                    'recentSharpe': short_metrics['sharpeRatio'] if short_metrics else 0,
+                    'recentVsLongTerm': recent_vs_long,
+                    'longTermMaxDrawdown': long_metrics['maxDrawdown'] if long_metrics else 0,
+                    'recentMaxDrawdown': short_metrics['maxDrawdown'] if short_metrics else 0,
+                    # Entry Plan summary
+                    'setupType': _map_strategy_to_setup(strategy),
+                    'entryPlan': _generate_entry_plan_summary(symbol, strategy, metrics, data_source),
+                    'finalDecision': _generate_final_decision(verdict, metrics, stability, opt_results, strategy),
+                    'riskGate': _generate_risk_gate(verdict, metrics, stability, strategy, recent_vs_long),
+                    'dataSource': data_source,
+                }
+                results.append(result_entry)
+
+            except Exception as sym_err:
+                import traceback as _tb
+                _tb.print_exc()
+                print(f'[DV] Symbol {symbol} failed at stage: {sym_err}')
+                errors.append({'symbol': symbol, 'step': 'processing', 'message': str(sym_err)})
+                results.append({
+                    'symbol': symbol,
+                    'strategy': strategy if 'strategy' in dir() else 'unknown',
                     'verdict': 'Rejected',
-                    'reason': 'No 1-year historical data available',
-                    'error': True
+                    'reason': f'Processing error: {str(sym_err)}',
+                    'error': True,
+                    'riskGate': {'status': 'BLOCK', 'reason': str(sym_err)},
+                    'totalReturn': 0, 'sharpeRatio': 0, 'maxDrawdown': 0,
+                    'winRate': None, 'profitFactor': None, 'tradeCount': 0,
+                    'stabilityScore': 0, 'stabilityReason': 'Error during validation',
+                    'recentVsLongTerm': 'N/A',
                 })
-                continue
-
-            data_daily, data_source = data_result
-
-            # Step 2: Split data for recent vs long-term
-            split_idx = max(len(data_daily) - 60, len(data_daily) // 2)
-            long_data = data_daily
-            short_data = data_daily[split_idx:]
-
-            # Step 3: 1-Year Backtest with best/selected params
-            params = {}
-            p = cand.get('parameters', {})
-            if p and isinstance(p, dict) and len(p) > 0:
-                params = p
-            else:
-                params = DEFAULT_FALLBACK_PARAMS.get(strategy, {})
-
-            bt_result, bt_err = _run_backtest_core(symbol, strategy, params, data_daily)
-            if bt_err or not bt_result:
-                errors.append({'symbol': symbol, 'step': 'backtest', 'message': bt_err or 'No results'})
-                continue
-
-            metrics = bt_result['metrics']
-            print(f'[DeeperValidation][1Y] {symbol} {strategy} totalReturn={metrics.get("totalReturn", "N/A")} sharpeRatio={metrics.get("sharpeRatio", "N/A")} maxDrawdown={metrics.get("maxDrawdown", "N/A")} winRate={metrics.get("winRate", "N/A")} profitFactor={metrics.get("profitFactor", "N/A")} tradeCount={metrics.get("tradeCount", "N/A")} tradesLen={len(bt_result.get("trades", [])) if bt_result else 0}')
-
-            # Step 4: Light Optimization (parameter grid)
-            param_grid = STRATEGY_PARAM_GRIDS.get(strategy, {})
-            param_sets = param_grid.get('param_sets', [])
-            opt_results = []
-            seen_params = set()
-
-            for ps in param_sets:
-                # Skip if same params as already done
-                key = str(sorted(ps.items()))
-                if key in seen_params:
-                    continue
-                seen_params.add(key)
-
-                r, e = _run_backtest_core(symbol, strategy, ps, data_daily)
-                if r:
-                    opt_results.append({
-                        'params': ps,
-                        'totalReturn': r['metrics']['totalReturn'],
-                        'sharpeRatio': r['metrics']['sharpeRatio'],
-                        'maxDrawdown': r['metrics']['maxDrawdown'],
-                        'winRate': r['metrics']['winRate'],
-                        'profitFactor': r['metrics']['profitFactor'],
-                        'tradeCount': r['metrics']['tradeCount'],
-                    })
-
-            valid_count = len(opt_results)
-            best_opt = max(opt_results, key=lambda x: x['totalReturn']) if opt_results else None
-
-            # Log optimization details
-            top3 = sorted(opt_results, key=lambda x: x['totalReturn'], reverse=True)[:3] if opt_results else []
-            top3_fmt = [{'params': str(r['params']), 'ret': round(r['totalReturn'], 2), 'sharp': round(r['sharpeRatio'], 2)} for r in top3] if top3 else []
-            print(f'[DeeperValidation][LightOpt] {symbol} validCombinations={valid_count} bestReturn={best_opt["totalReturn"] if best_opt else "None"} bestParams={best_opt["params"] if best_opt else "None"} top3={top3_fmt}')
-
-            # Step 5: Parameter Stability
-            stability_score, stability_reason_str = _compute_stability_score(opt_results, valid_count)
-            stability = {
-                'score': stability_score,
-                'profitableRatio': round(sum(1 for r in opt_results if r.get('totalReturn', -999) > 0) / valid_count, 2) if valid_count > 0 else 0,
-                'medianReturn': round(sorted([r.get('totalReturn', 0) for r in opt_results])[valid_count//2], 2) if valid_count > 0 else 0,
-                'bestReturn': best_opt['totalReturn'] if best_opt else 0,
-                'returnSpread': round(best_opt['totalReturn'] - sorted([r.get('totalReturn', 0) for r in opt_results])[valid_count//2], 2) if best_opt and valid_count > 0 else 0,
-                'stableParameterCount': valid_count,
-                'stabilityReason': stability_reason_str,
-            }
-
-            # Step 6: Recent vs Long-Term
-            long_bt, _ = _run_backtest_core(symbol, strategy, params, long_data)
-            short_bt, _ = _run_backtest_core(symbol, strategy, params, short_data)
-            long_metrics = long_bt['metrics'] if long_bt else None
-            short_metrics = short_bt['metrics'] if short_bt else None
-
-            if long_metrics and short_metrics:
-                recent_vs_long = _compute_recent_vs_long_term(metrics, long_metrics, short_metrics)
-            else:
-                recent_vs_long = 'Consistent'
-
-            # Step 7: Verdict
-            verdict, reason_str = _compute_verdict(metrics, stability, recent_vs_long, opt_results, valid_count)
-
-            # Build reason
-            reason_parts = []
-            if fallback_reason:
-                reason_parts.append(fallback_reason)
-            reason_parts.append(reason_str)
-
-            result_entry = {
-                'symbol': symbol,
-                'strategy': strategy,
-                'parameters': params,
-                'verdict': verdict,
-                'reason': ' | '.join(reason_parts),
-                # 1Y backtest
-                'totalReturn': metrics['totalReturn'],
-                'sharpeRatio': metrics['sharpeRatio'],
-                'maxDrawdown': metrics['maxDrawdown'],
-                'winRate': metrics['winRate'],
-                'profitFactor': metrics['profitFactor'],
-                'tradeCount': metrics['tradeCount'],
-                # Optimization
-                'bestParams': best_opt['params'] if best_opt else params,
-                'optimizedReturn': best_opt['totalReturn'] if best_opt else 0,
-                'optimizedSharpe': best_opt['sharpeRatio'] if best_opt else 0,
-                'optimizationResults': opt_results,
-                'bestReturn': stability['bestReturn'],
-                'validCombinationCount': valid_count,
-                # Stability
-                'stabilityScore': stability['score'],
-                'profitableRatio': stability['profitableRatio'],
-                'medianReturn': stability['medianReturn'],
-                'returnSpread': stability['returnSpread'],
-                'stableParameterCount': stability['stableParameterCount'],
-                'stabilityReason': stability['stabilityReason'],
-                # Optimization details
-                'avgReturn': round(sum(r.get('totalReturn', 0) for r in opt_results) / valid_count, 2) if valid_count > 0 else None,
-                'testedCombinationCount': len(param_sets) or len(opt_results) or valid_count or 0,
-                'validCombinationCount': valid_count,
-                'top3Results': top3_fmt if top3_fmt else [],
-                # Recent vs Long
-                'longTermReturn': long_metrics['totalReturn'] if long_metrics else 0,
-                'recentReturn': short_metrics['totalReturn'] if short_metrics else 0,
-                'longTermSharpe': long_metrics['sharpeRatio'] if long_metrics else 0,
-                'recentSharpe': short_metrics['sharpeRatio'] if short_metrics else 0,
-                'recentVsLongTerm': recent_vs_long,
-                'longTermMaxDrawdown': long_metrics['maxDrawdown'] if long_metrics else 0,
-                'recentMaxDrawdown': short_metrics['maxDrawdown'] if short_metrics else 0,
-                # Data source
-                                # Entry Plan summary (generated from validation data + price)
-                'setupType': _map_strategy_to_setup(strategy),
-                'entryPlan': _generate_entry_plan_summary(symbol, strategy, metrics, data_source),
-                'finalDecision': _generate_final_decision(verdict, metrics, stability, opt_results, strategy),
-                'riskGate': _generate_risk_gate(verdict, metrics, stability, strategy, recent_vs_long),
-'dataSource': data_source,
-            }
-            results.append(result_entry)
 
         # Sort: Confirmed first, then Watch, Reject, Needs Manual Review
         verdict_order = {'Confirmed': 0, 'Watch': 1, 'Reject': 2, 'Needs Manual Review': 3}
@@ -23472,9 +23541,19 @@ def deeper_validation():
         watch_count = sum(1 for r in results if r.get('verdict') == 'Watch')
         reject_count = sum(1 for r in results if r.get('verdict') == 'Reject')
         manual_count = sum(1 for r in results if r.get('verdict') == 'Needs Manual Review')
+        failed_count = sum(1 for r in results if r.get('error'))
+
+        dv_status = 'completed'
+        if failed_count == len(results):
+            dv_status = 'failed'
+        elif failed_count > 0:
+            dv_status = 'partial'
+
+        print(f'[DV] Complete: {len(results)} total, {confirmed_count} confirmed, {watch_count} watch, {reject_count} reject, {failed_count} failed')
 
         return jsonify({
             'success': True,
+            'status': dv_status,
             'results': results,
             'errors': errors,
             'summary': {
@@ -23483,15 +23562,22 @@ def deeper_validation():
                 'watch': watch_count,
                 'reject': reject_count,
                 'needsManualReview': manual_count,
+                'failed': failed_count,
                 'averageStabilityScore': round(sum(r.get('stabilityScore', 0) for r in results) / len(results), 1) if results else 0,
             }
         })
 
     except Exception as e:
-        print(f'[DV] Error: {e}')
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'message': str(e)}), 500
+        print(f'[DV] Fatal error: {e}')
+        return jsonify({
+            'success': False,
+            'status': 'failed',
+            'message': str(e),
+            'results': results if 'results' in dir() else [],
+            'errors': errors if 'errors' in dir() else [{'symbol': '*', 'step': 'endpoint', 'message': str(e)}],
+        }), 500
 
 # ============ Entry Plan - Deterministic Entry/Stop/Target Calculator with AI Decision + Hard Risk Gate ============
 
@@ -23573,9 +23659,10 @@ PLANS ({len(plans)} symbols):
 {plans_text}
 
 RULES (you MUST follow):
-1. BUY only if: R/R >= 1.5, Risk Gate PASS, Data Quality GOOD, Trade Readiness READY, setup valid, no blockers.
-2. WATCH if: setup is valid but entry trigger not met, or Gate REVIEW (caution), or data PARTIAL, or there are warnings that need monitoring.
-3. SKIP if: Gate BLOCK, Data POOR, R/R < 1.0, setup is Watch Only or No Trade, verdict Rejected, or multiple hard problems.
+1. BUY if: R/R >= 1.5, no hard blockers, setup valid, data not POOR. Price in entry zone is a strong BUY signal even if Gate is REVIEW (warnings only, not blockers).
+2. BUY (aggressive) if: Price is IN entry zone, R/R >= 2.0, stop and target defined, data not POOR, no hard blockers — even if Risk Gate shows REVIEW due to advisory warnings.
+3. WATCH only if: price is NOT in entry zone, or entry trigger truly not met, or data is very poor, or R/R < 1.0. Gate REVIEW alone should NOT prevent BUY if price is in zone.
+4. SKIP if: Gate BLOCK, Data POOR, R/R < 1.0, setup is Watch Only or No Trade, verdict Rejected, or multiple hard problems.
 4. confidence 0-100: how confident you are in this decision.
 5. decisionReason: 1-2 sentences explaining WHY this decision, what's the key factor.
 6. nextStep: very specific — what exact price level or condition to wait for. For BUY, where to place order. For WATCH, what trigger to monitor. For SKIP, what would need to change.
@@ -23837,6 +23924,8 @@ def ai_entry_plan():
             candidate_sectors[hsector] = candidate_sectors.get(hsector, 0) + 1
 
         holding_sectors = {get_sector(h) for h in holding_symbols}
+
+        errors = []
 
         for candidate in candidates:
             symbol = candidate.get('symbol', '').upper().strip()
@@ -24150,10 +24239,17 @@ def ai_entry_plan():
             risk_reward_review = rr1 < 1.5 or rr2 < 1.5
 
             # ── 6. Entry Readiness Gate ──
+            # Check if current price is inside the entry zone
+            is_in_entry_zone = (entry_zone_low > 0 and entry_zone_high > 0
+                                and current_price >= entry_zone_low and current_price <= entry_zone_high)
+
             entry_readiness = 'Wait'
             if setup == 'Breakout Entry':
                 entry_readiness = 'Breakout Watch'
-            elif dist_from_ema20_pct < 5 and is_above_ema20 and is_above_ema50 and setup not in ('Pullback Entry', 'Range Support Entry'):
+            elif is_in_entry_zone:
+                # Price is in entry zone — ready regardless of setup type
+                entry_readiness = 'Ready'
+            elif dist_from_ema20_pct < 5 and is_above_ema20 and is_above_ema50:
                 entry_readiness = 'Ready'
 
             # ── 7. AI Decision (rule-based, deterministic from hard data) ──
@@ -24326,31 +24422,64 @@ def ai_entry_plan():
             # Merge all reasons for backward compat
             hard_risk_reasons = risk_gate_blockers + risk_gate_warnings
 
-            # ── Determine final_action with strict gating ──
-            # BUY_READY: AI=BUY, RiskGate=PASS, trigger met, data good
-            # WAIT_FOR_ENTRY: AI=BUY/WATCH, RiskGate=PASS/REVIEW, setup valid but trigger not met
+            # ── Data Quality assessment (needed by finalAction logic) ──
+            data_source = 'alpaca' if current_price > 0 and closes else ('candidate_fallback' if current_price > 0 else 'unknown')
+            market_data_ok = current_price > 0 and closes
+            technical_data_ok = atr > 0 and ema20 is not None and ema50 is not None
+            account_data_ok = account_data_fetched
+            data_fallback_used = data_source != 'alpaca'
+
+            if market_data_ok and technical_data_ok and account_data_ok and not data_fallback_used:
+                data_quality = 'GOOD'
+            elif market_data_ok and (not technical_data_ok or data_fallback_used):
+                data_quality = 'PARTIAL'
+            else:
+                data_quality = 'POOR'
+
+            # ── Determine final_action with smart gating ──
+            # BUY_READY: in-zone, no hard blockers, R/R ok, levels ok, data ok, AI BUY
+            # READY_REVIEW: in-zone, no hard blockers, R/R ok, levels ok, data ok, but AI WATCH
+            # WAIT_FOR_ENTRY: not in zone, or trigger not confirmed
             # SKIP: AI=SKIP, or setup quality poor
             # BLOCKED_BY_RISK: RiskGate=BLOCK, invalid data, or hard blocker exists
 
-            if risk_gate_status == 'BLOCK':
+            # Derived checks for smart gating
+            has_hard_block = risk_gate_status == 'BLOCK' or len(risk_gate_blockers) > 0
+            rr_ok = max(rr1 or 0, rr2 or 0) >= 2.0
+            levels_ok = stop_loss > 0 and (tp1 > 0 or tp2 > 0)
+            data_ok = data_quality != 'POOR'
+            ai_skip = ai_decision == 'SKIP'
+            ai_buy_or_watch = ai_decision in ('BUY', 'WATCH')
+
+            ready_review_reason = ''
+            entry_trigger_met = entry_readiness == 'Ready'
+
+            if has_hard_block:
                 final_action = 'BLOCKED_BY_RISK'
-            elif ai_decision == 'SKIP':
+            elif ai_skip:
                 final_action = 'SKIP'
-            elif risk_gate_status == 'PASS' and ai_decision == 'BUY':
-                # Check if entry trigger is actually met
-                if entry_readiness == 'Ready':
+            elif is_in_entry_zone and rr_ok and levels_ok and data_ok and ai_buy_or_watch:
+                if ai_decision == 'BUY':
                     final_action = 'BUY_READY'
                 else:
-                    final_action = 'WAIT_FOR_ENTRY'
-            elif risk_gate_status == 'REVIEW' and ai_decision in ('BUY', 'WATCH'):
-                final_action = 'WAIT_FOR_ENTRY'
-            elif ai_decision == 'WATCH':
+                    # AI=WATCH but all deterministic checks pass → READY_REVIEW
+                    final_action = 'READY_REVIEW'
+                    # Build specific reason why it's review instead of buy
+                    review_factors = []
+                    if risk_gate_status == 'REVIEW':
+                        review_factors.extend(risk_gate_warnings[:2])
+                    if not entry_trigger_met:
+                        review_factors.append('Entry trigger not confirmed')
+                    if data_quality == 'PARTIAL':
+                        review_factors.append('Data quality PARTIAL')
+                    ready_review_reason = '; '.join(review_factors) if review_factors else 'AI decision is WATCH — needs manual review'
+            elif not is_in_entry_zone or not entry_trigger_met:
                 final_action = 'WAIT_FOR_ENTRY'
             else:
-                final_action = 'SKIP'
+                final_action = 'WAIT_FOR_ENTRY'
 
             # ── Trade Readiness ──
-            if final_action == 'BUY_READY':
+            if final_action in ('BUY_READY', 'READY_REVIEW'):
                 trade_readiness = 'READY'
             elif final_action == 'WAIT_FOR_ENTRY':
                 trade_readiness = 'WAIT'
@@ -24364,24 +24493,9 @@ def ai_entry_plan():
                 trailing_stop = None
 
             # ── 11. Compute derived fields ──
-            data_source = 'alpaca' if current_price > 0 and closes else ('candidate_fallback' if current_price > 0 else 'unknown')
-
             # Risk Used % = actual risk / risk budget * 100
             risk_budget_dollars = round(account_size * (risk_per_trade_pct / 100.0), 2)
             risk_used_pct = round(risk_dollars_actual / risk_budget_dollars * 100, 2) if risk_budget_dollars > 0 else 0
-
-            # Data Quality assessment
-            market_data_ok = current_price > 0 and closes
-            technical_data_ok = atr > 0 and ema20 is not None and ema50 is not None
-            account_data_ok = account_data_fetched
-            data_fallback_used = data_source != 'alpaca'
-
-            if market_data_ok and technical_data_ok and account_data_ok and not data_fallback_used:
-                data_quality = 'GOOD'
-            elif market_data_ok and (not technical_data_ok or data_fallback_used):
-                data_quality = 'PARTIAL'
-            else:
-                data_quality = 'POOR'
 
             # Data sources breakdown
             data_sources_detail = {
@@ -24541,6 +24655,8 @@ def ai_entry_plan():
                 'blockers': blockers_list,
                 'dataSource': data_source,
                 'entryReadiness': entry_readiness,
+                'isInEntryZone': is_in_entry_zone,
+                'readyReviewReason': ready_review_reason,
                 'riskGateReasons': {
                     'blockers': risk_gate_blockers,
                     'warnings': risk_gate_warnings,
@@ -24593,31 +24709,55 @@ def ai_entry_plan():
             plan['invalidationComment'] = invalidation_comment
             plan['riskComment'] = risk_comment
 
-            # ── Re-evaluate finalAction with AI decision (Risk Gate still controls) ──
+            # ── Re-evaluate finalAction with AI decision (smart gating) ──
             rg = plan.get('hardRiskGate', {})
             rg_status = rg.get('status', 'PASS')
+            rg_blockers = rg.get('blockers', [])
+            rg_warnings = rg.get('warnings', [])
             entry_readiness = plan.get('entryReadiness', 'Wait')
             dq = plan.get('dataQuality', 'PARTIAL')
+            plan_in_zone = plan.get('isInEntryZone', False)
+            plan_rr = max(plan.get('riskReward1', 0) or 0, plan.get('riskReward2', 0) or 0)
+            plan_sl = plan.get('stopLoss', 0) or 0
+            plan_tp1 = plan.get('takeProfit1', 0) or 0
+            plan_tp2 = plan.get('takeProfit2', 0) or 0
 
-            if rg_status == 'BLOCK':
+            has_hard_block = rg_status == 'BLOCK' or len(rg_blockers) > 0
+            rr_ok = plan_rr >= 2.0
+            levels_ok = plan_sl > 0 and (plan_tp1 > 0 or plan_tp2 > 0)
+            data_ok = dq != 'POOR'
+            ai_skip = ai_decision == 'SKIP'
+            ai_buy_or_watch = ai_decision in ('BUY', 'WATCH')
+
+            ready_review_reason = ''
+
+            if has_hard_block:
                 plan['finalAction'] = 'BLOCKED_BY_RISK'
-            elif ai_decision == 'SKIP':
+            elif ai_skip:
                 plan['finalAction'] = 'SKIP'
-            elif rg_status == 'PASS' and ai_decision == 'BUY':
-                if entry_readiness == 'Ready':
+            elif plan_in_zone and rr_ok and levels_ok and data_ok and ai_buy_or_watch:
+                if ai_decision == 'BUY':
                     plan['finalAction'] = 'BUY_READY'
                 else:
-                    plan['finalAction'] = 'WAIT_FOR_ENTRY'
-            elif rg_status == 'REVIEW' and ai_decision in ('BUY', 'WATCH'):
-                plan['finalAction'] = 'WAIT_FOR_ENTRY'
-            elif ai_decision == 'WATCH':
+                    plan['finalAction'] = 'READY_REVIEW'
+                    review_factors = []
+                    if rg_status == 'REVIEW':
+                        review_factors.extend(rg_warnings[:2])
+                    if entry_readiness != 'Ready':
+                        review_factors.append('Entry trigger not confirmed')
+                    if dq == 'PARTIAL':
+                        review_factors.append('Data quality PARTIAL')
+                    ready_review_reason = '; '.join(review_factors) if review_factors else 'AI decision is WATCH — needs manual review'
+            elif not plan_in_zone or entry_readiness != 'Ready':
                 plan['finalAction'] = 'WAIT_FOR_ENTRY'
             else:
-                plan['finalAction'] = 'SKIP'
+                plan['finalAction'] = 'WAIT_FOR_ENTRY'
+
+            plan['readyReviewReason'] = ready_review_reason
 
             # Update tradeReadiness based on finalAction
             fa = plan['finalAction']
-            if fa == 'BUY_READY':
+            if fa in ('BUY_READY', 'READY_REVIEW'):
                 plan['tradeReadiness'] = 'READY'
             elif fa == 'WAIT_FOR_ENTRY':
                 plan['tradeReadiness'] = 'WAIT'
@@ -24639,14 +24779,19 @@ def ai_entry_plan():
                     plan['dataSources']['aiData'] = 'AI unavailable' + (f' — {ai_error}' if ai_error else '')
 
         ai_success_count = sum(1 for p in plans if p.get('aiCalled'))
-        print(f'=== ENTRY PLAN COMPLETE: {len(plans)} plans ({ai_success_count} with AI decisions) ===')
-        return jsonify({'success': True, 'plans': plans})
+        error_count = sum(1 for p in plans if p.get('finalAction') == 'BLOCKED_BY_RISK' and p.get('setup') == 'Error')
+        ep_status = 'completed' if error_count == 0 else ('failed' if error_count == len(plans) else 'partial')
+        print(f'=== ENTRY PLAN COMPLETE: {len(plans)} plans ({ai_success_count} with AI decisions, {error_count} errors) ===')
+        return jsonify({'success': True, 'status': ep_status, 'plans': plans, 'errors': errors})
 
     except Exception as e:
         print(f'[ENTRY PLAN] Error: {e}')
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'message': str(e)}), 500
+        # Return partial results if any plans were generated before the error
+        if plans:
+            return jsonify({'success': True, 'status': 'partial', 'plans': plans, 'errors': errors + [{'symbol': '(global)', 'message': str(e)}], 'message': str(e)})
+        return jsonify({'success': False, 'message': str(e), 'errors': errors}), 500
 
 # ============ MTF Multi-Timeframe Confirmation Analysis (v2) ============
 

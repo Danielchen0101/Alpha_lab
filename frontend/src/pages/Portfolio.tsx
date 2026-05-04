@@ -2,18 +2,19 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Card, Typography, Space, Statistic, Row, Col,
-  Button, Divider, Table, Tag, Select, Form, Input,
-  message, Progress, Badge, Alert, Tooltip, Spin, Modal, Pagination
+  Button, Divider, Table, Tag, Form, Input, Empty,
+  message, Progress, Badge, Alert, Tooltip, Spin, Modal, Pagination, Steps
 } from 'antd';
 import {
   LineChartOutlined, BarChartOutlined,
-  SettingOutlined, PauseCircleOutlined,
+  SettingOutlined, PauseCircleOutlined, SearchOutlined,
   ThunderboltOutlined, CheckCircleOutlined, ClockCircleOutlined,
   RobotOutlined, CloseCircleOutlined, ExclamationCircleOutlined, SyncOutlined, LoadingOutlined,
   ArrowUpOutlined, ArrowDownOutlined, ArrowRightOutlined, MinusOutlined,
   InfoCircleOutlined,
   CaretDownOutlined, CaretRightOutlined,
-  DeleteOutlined, ReloadOutlined, PlusOutlined, CheckOutlined, EyeOutlined
+  DeleteOutlined, ReloadOutlined, PlusOutlined, CheckOutlined, EyeOutlined,
+  WalletOutlined, FundOutlined
 } from '@ant-design/icons';
 import aiTradingService from '../services/aiTradingService';
 import { backtraderAPI, entryQualityAPI, fineScanAdvancedAPI, deeperValidationAPI, entryPlanAPI, fineScanExplainAPI, fineScanDecisionAPI, tradingAccountAPI, aiAgentWatchlistAPI } from '../services/api';
@@ -28,7 +29,63 @@ import {
 } from '../services/scannerRunnerService';
 
 const { Title, Text } = Typography;
-const { Option } = Select;
+
+const AI_AGENT_PRIMARY_BTN_STYLE: React.CSSProperties = { 
+  borderRadius: '4px', 
+  fontWeight: 600, 
+  height: '32px', 
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+};
+
+const AI_AGENT_COMPACT_BTN_STYLE: React.CSSProperties = {
+  borderRadius: '4px',
+  fontWeight: 600,
+  height: '24px',
+  fontSize: '11px',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: '0 8px'
+};
+
+// Test-only sample item for AI Execution layout preview. Remove when real BUY_READY results exist.
+const AI_EXECUTION_TEST_ITEM: any[] = [{
+  _isTest: true,
+  symbol: 'SAMPLE',
+  setup: 'Pullback',
+  setupType: 'Pullback',
+  aiDecision: 'BUY',
+  confidence: 78,
+  entryZoneLow: 148.50,
+  entryZoneHigh: 152.00,
+  stopLoss: 145.00,
+  takeProfit1: 160.00,
+  takeProfit2: 168.00,
+  riskReward1: 2.4,
+  riskReward2: 3.8,
+  finalAction: 'BUY_READY',
+  tradeReadiness: 'Ready',
+  triggerCondition: 'Price holds above 148.50 with volume confirmation',
+  invalidationCondition: 'Close below 145.00',
+  positionSizeShares: 45,
+  positionSizeDollars: 6840,
+  positionPct: 6.8,
+  decisionReason: 'Strong pullback to support with bullish momentum divergence',
+  riskNotes: 'Elevated VIX — reduce position size by 20%',
+  blockers: [],
+  dataSources: ['Alpaca', 'Finnhub', 'AI Provider'],
+  dataQuality: 'GOOD',
+  aiSource: 'Claude',
+  aiCalled: true,
+  aiModel: 'claude-sonnet-4-6',
+  aiError: null,
+  hardRiskGate: { status: 'PASS', blockers: [] },
+  riskGate: { status: 'PASS', blockers: [] },
+  nextStep: 'Monitor entry trigger',
+  addedAt: new Date().toISOString(),
+}];
 
 // Small inline tag used in Entry Quality detail panel
 // Collapsible Stage Section Component
@@ -381,7 +438,69 @@ const Portfolio: React.FC = (): React.ReactElement => {
   const [aiWatchlistLoading, setAiWatchlistLoading] = useState(false);
   const [aiWatchlistAutoRefresh, setAiWatchlistAutoRefresh] = useState(false);
   const [aiWatchlistCountdown, setAiWatchlistCountdown] = useState(60);
+  const [aiWatchlistSearch, setAiWatchlistSearch] = useState('');
   const aiWatchlistTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // AI Auto Pipeline state
+  const [pipelineRunning, setPipelineRunning] = useState(false);
+  const [pipelineStage, setPipelineStage] = useState<string>('idle');
+  const [pipelineError, setPipelineError] = useState<string | null>(null);
+  const pipelineStopRequestedRef = useRef(false);
+  const [aiExecutionList, setAiExecutionList] = useState<any[]>([]);
+  const [pipelineMode, setPipelineMode] = useState<'ai' | 'hybrid' | 'manual'>(() => {
+    const saved = localStorage.getItem('pipelineMode');
+    return saved === 'ai' || saved === 'hybrid' || saved === 'manual' ? saved : 'hybrid';
+  });
+  const [pipelineSchedule, setPipelineSchedule] = useState<'off' | '15m' | '30m' | '1h' | '2h'>(() => {
+    const saved = localStorage.getItem('pipelineSchedule');
+    return saved === '15m' || saved === '30m' || saved === '1h' || saved === '2h' ? saved : 'off';
+  });
+  const [lastPipelineRun, setLastPipelineRun] = useState<string | null>(null);
+  const [nextPipelineRun, setNextPipelineRun] = useState<string | null>(null);
+  const pipelineTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const SCHEDULE_INTERVALS: Record<string, number> = { '15m': 15 * 60 * 1000, '30m': 30 * 60 * 1000, '1h': 60 * 60 * 1000, '2h': 120 * 60 * 1000 };
+
+  // Current Holding state
+  const [holdings, setHoldings] = useState<any[]>([]);
+  const [holdingsLoading, setHoldingsLoading] = useState(false);
+  const [holdingsError, setHoldingsError] = useState<string | null>(null);
+
+  const fetchHoldings = useCallback(async () => {
+    setHoldingsLoading(true);
+    setHoldingsError(null);
+    try {
+      const res = await tradingAccountAPI.getPositions(tradingAccountMode);
+      if (res.data.success) {
+        setHoldings(res.data.positions || []);
+      } else {
+        setHoldingsError(res.data.error || 'Failed to fetch positions');
+        setHoldings([]);
+      }
+    } catch (e: any) {
+      setHoldingsError(e?.response?.data?.error || e?.message || 'Failed to fetch positions');
+      setHoldings([]);
+    } finally {
+      setHoldingsLoading(false);
+    }
+  }, [tradingAccountMode]);
+
+  // Fetch holdings when trading account mode changes
+  useEffect(() => { fetchHoldings(); }, [fetchHoldings]);
+
+  // Entry Plan results by symbol map (for Watchlist/Execution detail lookup)
+  const entryPlanResultsBySymbol = React.useMemo(() => {
+    const map: Record<string, any> = {};
+    if (entryPlanResults && Array.isArray(entryPlanResults)) {
+      for (const r of entryPlanResults) {
+        if (r.symbol) map[r.symbol] = r;
+      }
+    }
+    return map;
+  }, [entryPlanResults]);
+
+  // Unified busy guard: true when any scan/pipeline is running
+  const isAnyScanRunning = pipelineRunning || isScanRunning() || isFineScanRunning() || isDeeperValidationRunning() || isEntryPlanRunning() || continueScanStatus === 'processing';
 
   // AI调用互斥控制
   const [aiCallInProgress, setAiCallInProgress] = useState(false);
@@ -458,28 +577,23 @@ const Portfolio: React.FC = (): React.ReactElement => {
   }
 
   // 手动启动Continue Scan的函数
-  const handleStartContinueScan = (forceRerun: boolean = false) => {
-    // 检查是否有market scan结果
+  const handleStartContinueScan = () => {
+    if (pipelineRunning) {
+      message.warning('Disabled while AI Pipeline is running.');
+      return;
+    }
+
     if (marketScannerResults.length === 0) {
       message.warning('No market scan results available. Run Market Scanner first.');
       return;
     }
 
-    // 如果正在running，不能重复启动
     if (continueScanStatus === 'processing') {
       message.warning('Continue scan is already running');
       return;
     }
 
-    // 如果completed且有force标志，允许re-run；如果idle，正常启动
-    if (continueScanStatus === 'completed' && !forceRerun) {
-      // 不应该到达这里（按钮会传force=true），但以防万一
-      console.log('Continue scan already completed, use Re-run button');
-      return;
-    }
-
-    const isRerun = continueScanStatus === 'completed' || continueScanStatus === 'error';
-    console.log(isRerun ? 'Re-running continue scan...' : 'Starting continue scan...');
+    console.log('Starting continue scan...');
 
     // 重置状态
     setContinueScanStatus('processing');
@@ -633,13 +747,19 @@ const Portfolio: React.FC = (): React.ReactElement => {
         const risk = candidate.risk;
 
         // 条件1: trend必须是Bullish或Strong Bullish
-        if (trend !== 'Bullish' && trend !== 'Strong Bullish') {
-          continue; // 跳过不符合条件的候选
+        // 条件1: trend — allow Bullish, Strong Bullish, and Constructive/Neutral with good score
+        const isBullish = trend === 'Bullish' || trend === 'Strong Bullish';
+        const isConstructive = trend === 'Constructive' || trend === 'Neutral';
+        if (!isBullish && !isConstructive) {
+          continue; // skip downtrend / bearish
         }
 
-        // 条件2: score >= 70
-        if (score < 70) {
-          continue; // 跳过不符合条件的候选
+        // 条件2: score >= 70 for Bullish, >= 80 for Constructive/Neutral
+        if (isBullish && score < 70) {
+          continue;
+        }
+        if (isConstructive && score < 80) {
+          continue; // higher bar for non-bullish
         }
 
         // 条件3: risk不能是High
@@ -655,6 +775,8 @@ const Portfolio: React.FC = (): React.ReactElement => {
           priorityScore += 35;
         } else if (trend === 'Bullish') {
           priorityScore += 25;
+        } else if (trend === 'Constructive' || trend === 'Neutral') {
+          priorityScore += 15; // lower than Bullish but still eligible
         }
 
         // Score加分: score * 0.5
@@ -1128,6 +1250,10 @@ const Portfolio: React.FC = (): React.ReactElement => {
       stopMarketScannerByUser();
       message.info('Stopping scanner...');
     } else {
+      if (pipelineRunning) {
+        message.warning('Disabled while AI Pipeline is running.');
+        return;
+      }
       // Start a new scan via module-level service
       startMarketScanner();
     }
@@ -1830,6 +1956,10 @@ const Portfolio: React.FC = (): React.ReactElement => {
   // Part 1: strategy matching | Part 2: MTF (1D/4H/1H/15min) alignment
   // Process one symbol fully (both steps) before moving to the next
   const handleRunFineScan = async () => {
+    if (pipelineRunning) {
+      message.warning('Disabled while AI Pipeline is running.');
+      return;
+    }
     if (preferredContinueScanList.length === 0) {
       message.warning('No continue list candidates available. Run Continue Scan first.');
       return;
@@ -1893,8 +2023,16 @@ const Portfolio: React.FC = (): React.ReactElement => {
         if (s.symbol) scannerMap.set(s.symbol.toUpperCase(), s);
       }
 
-      for (let i = 0; i < candidateCount; i++) {
-        const c = candidates[i];
+
+      // --- Fine Scan helper: process one symbol ---
+      const _processOneFineScanSymbol = async (
+        i: number,
+        c: any,
+        candidateCount: number,
+        results: any[],
+        scannerMap: Map<string, any>
+      ) => {
+        // i, c, candidateCount, results, scannerMap come from function params
         const progress = Math.min(100, Math.round(((i + 1) / candidateCount) * 100));
         setFineScanProgress(progress);
         setFineScanStepProgress(14);
@@ -2928,14 +3066,15 @@ const Portfolio: React.FC = (): React.ReactElement => {
           }
         }
 
-        // Update UI with this symbol's COMPLETE result (including AI reasoning)
+        // Update message for this symbol (UI results updated after batch completes)
         setFineScanMessage(`[${i+1}/${candidateCount}] ${symbol}: Completed`);
+      };
+      // --- Fine Scan sequential execution: one symbol at a time ---
+      for (let i = 0; i < candidateCount; i++) {
+        if (scannerStateStore.getState().fineScan.stopRequested) break;
+        await _processOneFineScanSymbol(i, candidates[i], candidateCount, results, scannerMap);
+        // Update UI after each symbol completes
         setFineScanResults([...results]);
-
-        // Rate-limit delay between symbols (500ms)
-        if (i < candidateCount - 1) {
-          await new Promise(resolve => setTimeout(resolve, 500));
-        }
       }
       setFineScanProgress(100);
       setFineScanStatus('completed');
@@ -2972,86 +3111,9 @@ const Portfolio: React.FC = (): React.ReactElement => {
   const [continueScanExpanded, setContinueScanExpanded] = useState(false);
   const [fineScanExpanded, setFineScanExpanded] = useState(false);
   const [dvExpanded, setDvExpanded] = useState(false);
+  const [dvErrorMessage, setDvErrorMessage] = useState<string | null>(null);
+  const [dvErrors, setDvErrors] = useState<any[]>([]);
   const [entryPlanExpanded, setEntryPlanExpanded] = useState(false);
-
-  // ===== Dev Test Mode =====
-  const [devTestMode, setDevTestMode] = useState(false);
-
-  const DEV_TEST_CANDIDATE = {
-    symbol: 'AAPL',
-    companyName: 'Apple Inc. [DEV TEST]',
-    trendLabel: 'Strong Bullish',
-    trendScore: 88,
-    overallScore: 88,
-    price: 198.50,
-    changePct: 2.3,
-    volume: 52000000,
-    marketCap: 3100000000000,
-    sector: 'Technology',
-    newsSentiment: 'Positive',
-    eventRisk: 'Low',
-    volumeStatus: 'High',
-    topNews: '[DEV TEST] Strong quarterly earnings beat expectations',
-    scannerReason: '[DEV TEST] Strong bullish trend with high volume and positive sentiment',
-    aiReasoning: '[DEV TEST MOCK] AAPL shows strong momentum with volume confirmation. EMA aligned bullish, MACD strengthening.',
-    conciseReasoning: '[DEV TEST MOCK] Strong uptrend with volume expansion',
-    detailedReasoning: '[DEV TEST MOCK] Multi-timeframe alignment bullish. Volume above average. News catalyst positive.',
-    selectionReason: '[DEV TEST] Selected: Apple has strong bullish trend (score 88), positive news sentiment, low risk, and above-average volume at +2.3% momentum.',
-    reasonSource: 'Dev Test',
-    aiCalled: false,
-    aiSource: null,
-    aiModel: null,
-    aiError: null,
-    selectedBy: 'Dev Test',
-    includeInContinueScan: true,
-    priorityScore: 92,
-    priorityBreakdown: { trend: 35, score: 44, risk: 12, news: 10, price: 5, volume: 8 },
-    continueScanStatus: 'completed',
-    aiReasonStatus: 'completed',
-    aiEvaluated: false,
-    scanBatchId: 'dev-test',
-    scanTimestamp: new Date().toISOString(),
-    generatedAt: new Date().toISOString(),
-    dataQuality: 'MOCK',
-    priceChangePct: 2.3,
-    isDevTest: true,
-    provenance: {
-      marketData: 'MOCK DATA',
-      companyInfo: 'MOCK DATA',
-      news: 'MOCK DATA',
-      aiAnalysis: 'MOCK DATA',
-    },
-    analysisSource: 'dev-test',
-    analysisStatus: 'success',
-    structureLabel: 'uptrend',
-    momentumLabel: 'strengthening',
-    volatilityLabel: 'low',
-    newsLabel: 'positive',
-    riskLevel: 'low',
-    trendConfidence: 0.85,
-    confidence: 0.85,
-    trend: 'Strong Bullish',
-    risk: 'Low',
-    priceChange: 2.3,
-    scanTime: new Date().toISOString(),
-    timestamp: new Date().toISOString(),
-    dataSource: 'MOCK DATA',
-  };
-
-  const injectDevTestCandidate = () => {
-    setPreferredContinueScanList((prev: any) => {
-      const exists = prev.some((c: any) => c.isDevTest);
-      if (exists) return prev;
-      return [DEV_TEST_CANDIDATE, ...prev];
-    });
-    setContinueScanStatus('completed');
-    message.success('DEV TEST candidate (AAPL) injected into Continue Scan List');
-  };
-
-  const removeDevTestCandidate = () => {
-    setPreferredContinueScanList((prev: any) => prev.filter((c: any) => !c.isDevTest));
-    message.info('DEV TEST candidate removed');
-  };
 
   const handleEntryPlanAction = (plan: any) => {
     const fa = plan.finalAction;
@@ -3074,13 +3136,32 @@ const Portfolio: React.FC = (): React.ReactElement => {
       return;
     }
 
-    if (fa === 'WAIT_FOR_ENTRY' || aiDecision === 'WATCH' || tr === 'WAIT') {
+    if (fa === 'WAIT_FOR_ENTRY' || tr === 'WAIT') {
       // Add to watchlist
       addToWatchlist(plan);
       return;
     }
 
-    if (fa === 'BUY_READY') {
+    if (fa === 'BUY_READY' || fa === 'READY_REVIEW') {
+      if (fa === 'READY_REVIEW') {
+        const reviewReason = plan.readyReviewReason || 'AI decision is WATCH — needs manual review';
+        const inZone = plan.isInEntryZone ? 'Price is IN entry zone. ' : '';
+        Modal.confirm({
+          title: `${plan.symbol} — Ready for Review`,
+          content: `${inZone}${reviewReason}\n\nR/R: ${plan.riskReward1?.toFixed(1)}x | Stop: $${plan.stopLoss?.toFixed(2)} | Target: $${plan.takeProfit1?.toFixed(2)}\n\nProceed to execute?`,
+          okText: 'Execute',
+          cancelText: 'Add to Watchlist',
+          onOk: () => {
+            setExecuteTarget(plan);
+            setLiveConfirmText('');
+            setExecuteModalVisible(true);
+          },
+          onCancel: () => {
+            addToWatchlist(plan);
+          },
+        });
+        return;
+      }
       if (entryPlanExecutionMode === 'Recommend Only') {
         Modal.info({
           title: 'Recommend Only Mode',
@@ -3229,8 +3310,18 @@ const Portfolio: React.FC = (): React.ReactElement => {
       if (rg !== 'PASS') return 'Watch-only';
     }
 
-    if (ai === 'WATCH' || ai === 'WAIT') return 'Waiting Entry';
     if (ai === 'SKIP') return 'Blocked';
+
+    // READY_REVIEW or BUY_READY with in-zone = Ready
+    if (fa === 'READY_REVIEW' || fa === 'BUY_READY') {
+      const price = item.currentPrice;
+      const lo = item.entryZoneLow;
+      const hi = item.entryZoneHigh;
+      if (price && lo && hi && price >= lo && price <= hi) return 'Ready';
+      return 'Waiting Entry';
+    }
+
+    if (ai === 'WATCH' || ai === 'WAIT') return 'Waiting Entry';
 
     if (ai === 'BUY' && rg === 'PASS') {
       const price = item.currentPrice;
@@ -3349,6 +3440,10 @@ const Portfolio: React.FC = (): React.ReactElement => {
   }, [deeperValidationResults]);
 
   const handleRunEntryPlan = useCallback(async () => {
+    if (pipelineRunning) {
+      message.warning('Disabled while AI Pipeline is running.');
+      return;
+    }
     const candidates = getEntryPlanCandidates();
     if (!candidates.length) return;
     // Register with runner service so isEntryPlanRunning() returns true during route changes
@@ -3438,6 +3533,12 @@ const Portfolio: React.FC = (): React.ReactElement => {
           isDevTest: devTestSymbols.has(p.symbol) || p.isDevTest || false,
         }));
         setEntryPlanResults(enrichedPlans);
+        const epStatus = res.data.status || 'completed';
+        const epErrors = res.data.errors || [];
+        if (epStatus === 'partial' && epErrors.length > 0) {
+          const failSymbols = epErrors.map((e: any) => e.symbol).join(', ');
+          message.warning(`Entry Plan partial: some symbols had errors (${failSymbols})`);
+        }
         setEntryPlanStatus('completed');
         unregisterEntryPlanRun();
       } else {
@@ -3504,6 +3605,226 @@ const Portfolio: React.FC = (): React.ReactElement => {
     }
   };
 
+  // ===== AI Auto Pipeline =====
+  // Shared: render Entry Plan detail (used by Watchlist, Execution, etc.)
+  const renderEntryPlanDetail = (ep: any) => {
+    const rg = ep.riskGate || ep.hardRiskGate || {};
+    const dq = ep.dataQuality || 'N/A';
+    const dqColor = dq === 'GOOD' ? '#52c41a' : dq === 'FAIR' ? '#faad14' : '#ff4d4f';
+    const rgColor = rg.status === 'PASS' ? '#52c41a' : rg.status === 'REVIEW' ? '#faad14' : '#ff4d4f';
+    const Section = ({ title, children }: { title: string; children: React.ReactNode }) => (
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#8c8c8c', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6, paddingBottom: 4, borderBottom: '1px solid #f0f2f5' }}>{title}</div>
+        {children}
+      </div>
+    );
+    const Row2 = ({ label, value, color }: { label: string; value: any; color?: string }) => (
+      <div style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0', fontSize: 12 }}>
+        <span style={{ color: '#8c8c8c' }}>{label}</span>
+        <span style={{ fontWeight: 600, color: color || '#262626' }}>{value ?? 'N/A'}</span>
+      </div>
+    );
+    return (
+      <div style={{ padding: '12px 8px', background: '#fafbfc', borderRadius: 8, lineHeight: 1.8, fontSize: 12 }}>
+        <Row gutter={[16, 0]}>
+          <Col span={8}>
+            <Section title="Decision">
+              <Row2 label="Final Action" value={ep.finalAction} color={ep.finalAction === 'BUY_READY' ? '#52c41a' : ep.finalAction === 'WAIT_FOR_ENTRY' ? '#1890ff' : '#ff4d4f'} />
+              <Row2 label="AI Decision" value={ep.aiDecision} />
+              <Row2 label="Confidence" value={ep.confidence ? `${ep.confidence}%` : 'N/A'} />
+              <Row2 label="Trade Readiness" value={ep.tradeReadiness} />
+              <Row2 label="Setup" value={ep.setup || ep.setupType} />
+              <Row2 label="Next Step" value={ep.nextStep} />
+            </Section>
+          </Col>
+          <Col span={8}>
+            <Section title="Entry / Exit Levels">
+              <Row2 label="Entry Zone" value={ep.entryZoneLow && ep.entryZoneHigh ? `$${ep.entryZoneLow.toFixed(2)} – $${ep.entryZoneHigh.toFixed(2)}` : 'N/A'} />
+              <Row2 label="Trigger" value={ep.triggerCondition} />
+              <Row2 label="Invalidation" value={ep.invalidationCondition} />
+              <Row2 label="Stop Loss" value={ep.stopLoss ? `$${ep.stopLoss.toFixed(2)}` : 'N/A'} color="#ff4d4f" />
+              <Row2 label="Take Profit 1" value={ep.takeProfit1 ? `$${ep.takeProfit1.toFixed(2)}` : 'N/A'} color="#52c41a" />
+              <Row2 label="Take Profit 2" value={ep.takeProfit2 ? `$${ep.takeProfit2.toFixed(2)}` : 'N/A'} color="#52c41a" />
+              <Row2 label="R/R 1" value={ep.riskReward1 ? `${ep.riskReward1.toFixed(1)}:1` : 'N/A'} />
+              <Row2 label="R/R 2" value={ep.riskReward2 ? `${ep.riskReward2.toFixed(1)}:1` : 'N/A'} />
+            </Section>
+          </Col>
+          <Col span={8}>
+            <Section title="Risk / Position Sizing">
+              <Row2 label="Position Size" value={ep.positionSizeShares ? `${ep.positionSizeShares} shares` : ep.positionSizeDollars ? `$${ep.positionSizeDollars.toLocaleString()}` : 'N/A'} />
+              <Row2 label="Position %" value={ep.positionPct ? `${ep.positionPct.toFixed(1)}%` : 'N/A'} />
+              <Row2 label="Risk Gate" value={rg.status || 'N/A'} color={rgColor} />
+              <Row2 label="Data Quality" value={dq} color={dqColor} />
+            </Section>
+            <Section title="AI / Data Quality">
+              <Row2 label="AI Source" value={ep.aiSource || (ep.aiCalled ? 'AI' : 'Local Rules')} />
+              <Row2 label="AI Model" value={ep.aiModel || 'N/A'} />
+              {ep.aiError && <Row2 label="AI Error" value={ep.aiError} color="#ff4d4f" />}
+              <Row2 label="Data Sources" value={Array.isArray(ep.dataSources) ? ep.dataSources.join(', ') : (ep.dataSources || 'N/A')} />
+            </Section>
+          </Col>
+        </Row>
+        {(ep.decisionReason || ep.riskNotes || (ep.blockers && ep.blockers.length > 0)) && (
+          <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #f0f2f5' }}>
+            <Section title="Reasons / Warnings">
+              {ep.decisionReason && <div style={{ fontSize: 12, marginBottom: 4 }}><strong>Reason:</strong> {ep.decisionReason}</div>}
+              {ep.riskNotes && <div style={{ fontSize: 12, marginBottom: 4, color: '#faad14' }}><strong>Risk Notes:</strong> {ep.riskNotes}</div>}
+              {ep.blockers && ep.blockers.length > 0 && <div style={{ fontSize: 12, color: '#ff4d4f' }}><strong>Blockers:</strong> {ep.blockers.join('; ')}</div>}
+            </Section>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const PIPELINE_STAGES = ['Market Scanner', 'Continue Scan', 'Fine Scan', 'Deeper Validation', 'Entry Plan'] as const;
+
+  const pollStore = (getter: () => any, done: (v: any) => boolean, intervalMs = 2000): Promise<void> =>
+    new Promise((resolve, reject) => {
+      const check = () => {
+        if (pipelineStopRequestedRef.current) { reject(new Error('Pipeline stopped by user')); return; }
+        const v = getter();
+        if (done(v)) { resolve(); } else { setTimeout(check, intervalMs); }
+      };
+      check();
+    });
+
+  const runAIPipeline = async () => {
+    // Pre-checks
+    if (isAnyScanRunning) {
+      message.warning('A scan is already running. Stop it before starting AI Pipeline.');
+      return;
+    }
+
+    setPipelineRunning(true);
+    setPipelineError(null);
+    setPipelineStage('Market Scanner');
+    pipelineStopRequestedRef.current = false;
+
+    try {
+      // ── Stage 1: Market Scanner ──
+      setPipelineStage('Market Scanner');
+      await startMarketScanner();
+      await pollStore(
+        () => scannerStateStore.getState().marketScanner.status,
+        (s) => s === 'completed' || s === 'failed' || s === 'stopped',
+      );
+      const msStatus = scannerStateStore.getState().marketScanner.status;
+      if (msStatus !== 'completed') throw new Error(`Market Scanner ${msStatus}`);
+
+      // ── Stage 2: Continue Scan ──
+      setPipelineStage('Continue Scan');
+      setContinueScanStatus('processing');
+      setContinueScanProgress(0);
+      setPreferredContinueScanList([]);
+      setContinueScanDetails({
+        currentStage: 'Initializing...',
+        startTime: Date.now(),
+        estimatedTimeRemaining: null,
+        processedCount: 0,
+        totalCount: scannerStateStore.getState().marketScanner.results.length,
+      });
+      await processContinueScan();
+      const csStatus = scannerStateStore.getState().continueScan.status;
+      if (csStatus !== 'completed') throw new Error('Continue Scan failed');
+
+      // ── Stage 3: Fine Scan ──
+      setPipelineStage('Fine Scan');
+      const fsResults = scannerStateStore.getState().continueScan.results;
+      if (!fsResults || fsResults.length === 0) throw new Error('No Continue Scan candidates');
+      const fineScanPromise = _runFineScanLoop();
+      registerFineScanRun(fineScanPromise);
+      await fineScanPromise;
+      const fsStatus = scannerStateStore.getState().fineScan.status;
+      if (fsStatus !== 'completed') throw new Error(`Fine Scan ${fsStatus}`);
+
+      // ── Stage 4: Deeper Validation ──
+      setPipelineStage('Deeper Validation');
+      const dvCandidates = selectValidationCandidates();
+      if (dvCandidates.length === 0) throw new Error('No Fine Scan candidates for validation');
+      const dvPromise = _runDeeperValidationLoop(dvCandidates);
+      registerDeeperValidationRun(dvPromise);
+      await dvPromise;
+      const dvStatus = scannerStateStore.getState().deeperValidation.status;
+      if (dvStatus !== 'completed') throw new Error(`Deeper Validation ${dvStatus}`);
+
+      // ── Stage 5: Entry Plan ──
+      setPipelineStage('Entry Plan');
+      const epCandidates = getEntryPlanCandidates();
+      if (epCandidates.length === 0) throw new Error('No validation candidates for Entry Plan');
+      const epPromise = _runEntryPlanLoop(epCandidates);
+      registerEntryPlanRun(epPromise);
+      await epPromise;
+      const epStatus = scannerStateStore.getState().entryPlan.status;
+      if (epStatus !== 'completed') throw new Error(`Entry Plan ${epStatus}`);
+
+      // ── Auto-classify results ──
+      setPipelineStage('Classifying');
+      const plans = scannerStateStore.getState().entryPlan.results || [];
+      const newExecution: any[] = [];
+      for (const plan of plans) {
+        const fa = plan.finalAction || '';
+        const rr = plan.riskReward1 || 0;
+        const sl = plan.stopLoss || 0;
+        const tp = plan.takeProfit1 || 0;
+        if ((fa === 'BUY_READY' || fa === 'READY_REVIEW') && rr >= 2.0 && sl > 0 && tp > 0) {
+          newExecution.push({ ...plan, addedAt: new Date().toISOString() });
+        } else if (fa === 'WAIT_FOR_ENTRY') {
+          await addToWatchlist(plan);
+        }
+      }
+      if (newExecution.length > 0) setAiExecutionList(prev => [...prev, ...newExecution]);
+
+      setPipelineStage('idle');
+      message.success(`Pipeline complete! ${newExecution.length} execution candidates, ${plans.length - newExecution.length} added to watchlist/summary.`);
+    } catch (e: any) {
+      const msg = e.message || 'Pipeline failed';
+      setPipelineError(msg);
+      setPipelineStage('failed');
+      message.error(msg);
+    } finally {
+      setPipelineRunning(false);
+      const now = new Date().toISOString();
+      setLastPipelineRun(now);
+      scheduleNextRun();
+    }
+  };
+
+  const stopPipeline = () => {
+    pipelineStopRequestedRef.current = true;
+    if (pipelineStage === 'Market Scanner') stopMarketScannerByUser();
+  };
+
+  // Schedule next pipeline run
+  const scheduleNextRun = useCallback(() => {
+    if (pipelineTimerRef.current) { clearTimeout(pipelineTimerRef.current); pipelineTimerRef.current = null; }
+    const savedSchedule = localStorage.getItem('pipelineSchedule') || 'off';
+    if (savedSchedule === 'off' || savedSchedule === 'manual') { setNextPipelineRun(null); return; }
+    const intervalMs = SCHEDULE_INTERVALS[savedSchedule];
+    if (!intervalMs) { setNextPipelineRun(null); return; }
+    const next = new Date(Date.now() + intervalMs);
+    setNextPipelineRun(next.toISOString());
+    pipelineTimerRef.current = setTimeout(() => {
+      const mode = localStorage.getItem('pipelineMode') || 'hybrid';
+      if (mode === 'manual') return;
+      if (pipelineRunning || isScanRunning() || isFineScanRunning() || isDeeperValidationRunning() || isEntryPlanRunning()) return;
+      runAIPipeline();
+    }, intervalMs);
+  }, [pipelineRunning]);
+
+  // On mount: start schedule timer if needed. On unmount: cleanup.
+  useEffect(() => {
+    scheduleNextRun();
+    return () => { if (pipelineTimerRef.current) clearTimeout(pipelineTimerRef.current); };
+  }, []);
+
+  // Persist pipeline mode and schedule to localStorage
+  useEffect(() => { localStorage.setItem('pipelineMode', pipelineMode); }, [pipelineMode]);
+  useEffect(() => {
+    localStorage.setItem('pipelineSchedule', pipelineSchedule);
+    scheduleNextRun();
+  }, [pipelineSchedule]);
+
   const selectValidationCandidates = useCallback(() => {
     if (!fineScanResults || fineScanResults.length === 0) return [];
     // Continue → always qualify; Watch → qualify if no critical blockers and score >= 50
@@ -3538,6 +3859,10 @@ const Portfolio: React.FC = (): React.ReactElement => {
   }, [selectValidationCandidates]);
 
   const handleDeeperValidation = async () => {
+    if (pipelineRunning) {
+      message.warning('Disabled while AI Pipeline is running.');
+      return;
+    }
     const selected = selectValidationCandidates();
     if (selected.length === 0) {
       message.warning('No qualified Fine Scan candidates. Run Fine Scan first or adjust criteria.');
@@ -3552,6 +3877,7 @@ const Portfolio: React.FC = (): React.ReactElement => {
   const _runDeeperValidationLoop = async (selected: any[]) => {
     setDeeperValidationStatus('loading');
     setDeeperValidationResults(null);
+    setDvErrorMessage(null);
 
     // Preflight: check session and AI config
     const preflight = await preflightConfigCheck();
@@ -3612,13 +3938,32 @@ const Portfolio: React.FC = (): React.ReactElement => {
           selectedBy: selectedByMap.get(r.symbol) || 'Continue',
         }));
         setDeeperValidationResults(enrichedResults);
-        setDeeperValidationStatus('completed');
+        setDvErrors(resp.errors || []);
+
+        const dvStatus = resp.status || 'completed';
+        const failedCount = resp.summary?.failed || resp.errors?.length || 0;
+
+        if (dvStatus === 'failed') {
+          setDeeperValidationStatus('error');
+          const failReasons = (resp.errors || []).map((e: any) => `${e.symbol}: ${e.message}`).join('; ');
+          setDvErrorMessage(`All ${resp.results.length} symbols failed. ${failReasons || 'Check Alpaca Market Data configuration.'}`);
+          message.error('All validation symbols failed');
+        } else if (dvStatus === 'partial') {
+          setDeeperValidationStatus('completed');
+          setDvErrorMessage(null);
+          message.warning(`Validation partial: ${resp.results.length - failedCount} succeeded, ${failedCount} failed`);
+        } else {
+          setDeeperValidationStatus('completed');
+          setDvErrorMessage(null);
+          message.success(`Deeper validation completed for ${resp.results.length} results`);
+        }
         unregisterDeeperValidationRun();
-        message.success(`Deeper validation completed for ${resp.results.length} results`);
       } else {
         setDeeperValidationStatus('error');
+        setDvErrorMessage(resp.message || 'Validation returned no results');
+        setDvErrors([]);
         unregisterDeeperValidationRun();
-        message.error('Validation returned no results');
+        message.error(resp.message || 'Validation returned no results');
       }
     } catch (err: any) {
       const httpStatus = err.response?.status;
@@ -3649,9 +3994,26 @@ const Portfolio: React.FC = (): React.ReactElement => {
               selectedBy: selectedByMap.get(r.symbol) || 'Continue',
             }));
             setDeeperValidationResults(enrichedResults);
-            setDeeperValidationStatus('completed');
+            setDvErrors(resp.errors || []);
+
+            const dvStatus = resp.status || 'completed';
+            const failedCount = resp.summary?.failed || resp.errors?.length || 0;
+
+            if (dvStatus === 'failed') {
+              setDeeperValidationStatus('error');
+              const failReasons = (resp.errors || []).map((e: any) => `${e.symbol}: ${e.message}`).join('; ');
+              setDvErrorMessage(`All ${resp.results.length} symbols failed. ${failReasons || 'Check Alpaca Market Data configuration.'}`);
+              message.error('All validation symbols failed');
+            } else if (dvStatus === 'partial') {
+              setDeeperValidationStatus('completed');
+              setDvErrorMessage(null);
+              message.warning(`Validation partial: ${resp.results.length - failedCount} succeeded, ${failedCount} failed`);
+            } else {
+              setDeeperValidationStatus('completed');
+              setDvErrorMessage(null);
+              message.success(`Deeper validation completed for ${resp.results.length} results`);
+            }
             unregisterDeeperValidationRun();
-            message.success(`Deeper validation completed for ${resp.results.length} results`);
             return;
           }
         } catch (retryErr: any) {
@@ -3659,12 +4021,19 @@ const Portfolio: React.FC = (): React.ReactElement => {
         }
       }
 
+      const backendMsg = err.response?.data?.message || err.response?.data?.error;
+      const backendErrors = err.response?.data?.errors || [];
+      const isTimeout = err.code === 'ECONNABORTED' || (err.message || '').includes('timeout');
       const errMsg = isConfigError
-        ? (err.response?.data?.error || 'Configuration error. Check AI Provider settings.')
+        ? (backendMsg || 'Configuration error. Check AI Provider settings.')
         : isRateLimit
           ? 'Rate limited by AI service. Please wait and try again.'
-          : ('Validation failed: ' + (err.message || 'Unknown error'));
+          : isTimeout
+            ? 'Validation is still running longer than expected. Try fewer symbols or retry.'
+            : (backendMsg || ('Validation failed: ' + (err.message || 'Unknown error')));
       setDeeperValidationStatus('error');
+      setDvErrorMessage(errMsg);
+      setDvErrors(backendErrors);
       unregisterDeeperValidationRun();
       message.error(errMsg);
     }
@@ -3993,44 +4362,43 @@ function renderDVDetailPanel(record: any) {
       {/* 1.5 Trading Account Mode */}
       <div style={{ marginBottom: 24 }}>
         <Card
+          className="premium-card"
           title={
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span>
-                <SettingOutlined style={{ marginRight: 8 }} />
+              <span style={{ fontSize: 16, fontWeight: 700 }}>
+                <SettingOutlined style={{ marginRight: 8, color: '#1890ff' }} />
                 Trading Account Mode
               </span>
-              <div style={{ display: 'flex', background: '#f0f2f5', padding: 4, borderRadius: 8, gap: 4 }}>
+              <div style={{ display: 'flex', background: '#f5f5f5', padding: 3, borderRadius: 8, gap: 4, border: '1px solid #eee' }}>
                 <Button
+                  size="small"
                   type={tradingAccountMode === 'paper' ? 'primary' : 'text'}
                   onClick={() => handleTradingAccountModeChange('paper')}
                   style={{
                     borderRadius: 6,
                     height: 28,
-                    padding: '0 16px',
-                    fontSize: 13,
-                    fontWeight: tradingAccountMode === 'paper' ? 600 : 400,
-                    boxShadow: tradingAccountMode === 'paper' ? '0 1px 2px rgba(0,0,0,0.05)' : 'none',
-                    color: tradingAccountMode === 'paper' ? '#fff' : '#595959',
-                    background: tradingAccountMode === 'paper' ? undefined : 'transparent',
-                    border: 'none',
+                    padding: '0 12px',
+                    fontSize: 12,
+                    fontWeight: tradingAccountMode === 'paper' ? 700 : 500,
+                    boxShadow: tradingAccountMode === 'paper' ? '0 2px 4px rgba(24,144,255,0.2)' : 'none',
+                    color: tradingAccountMode === 'paper' ? '#fff' : '#8c8c8c',
                   }}
                 >
                   Paper Trading
                 </Button>
                 <Button
+                  size="small"
                   type={tradingAccountMode === 'real' ? 'primary' : 'text'}
                   danger={tradingAccountMode === 'real'}
                   onClick={() => handleTradingAccountModeChange('real')}
                   style={{
                     borderRadius: 6,
                     height: 28,
-                    padding: '0 16px',
-                    fontSize: 13,
-                    fontWeight: tradingAccountMode === 'real' ? 600 : 400,
-                    boxShadow: tradingAccountMode === 'real' ? '0 1px 2px rgba(255,0,0,0.1)' : 'none',
-                    color: tradingAccountMode === 'real' ? '#fff' : '#595959',
-                    background: tradingAccountMode === 'real' ? undefined : 'transparent',
-                    border: 'none',
+                    padding: '0 12px',
+                    fontSize: 12,
+                    fontWeight: tradingAccountMode === 'real' ? 700 : 500,
+                    boxShadow: tradingAccountMode === 'real' ? '0 2px 4px rgba(255,77,79,0.2)' : 'none',
+                    color: tradingAccountMode === 'real' ? '#fff' : '#8c8c8c',
                   }}
                 >
                   Real Trading
@@ -4039,273 +4407,698 @@ function renderDVDetailPanel(record: any) {
             </div>
           }
         >
-          <div style={{ fontSize: 13, color: '#8c8c8c', marginBottom: 16 }}>
-            Select which Alpaca account is used for Entry Plan position sizing and risk checks. Switching mode does not place any orders.
+          <div style={{ fontSize: 13, color: '#8c8c8c', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <InfoCircleOutlined style={{ color: '#1890ff' }} />
+            Used for Entry Plan position sizing and risk checks. <Text type="secondary" style={{ fontSize: 12 }}>(Mode switch is for planning only; no real orders are triggered here)</Text>
           </div>
           
-          <div style={{ background: '#fafafa', borderRadius: 8, padding: '12px 16px', border: '1px solid #f0f0f0' }}>
+          <div style={{ background: '#fafafa', borderRadius: 12, padding: '20px', border: '1px solid #f0f0f0', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.02)' }}>
             {tradingAccountLoading ? (
-              <div style={{ color: '#8c8c8c', fontSize: 13 }}>Loading account data...</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#8c8c8c' }}>
+                <Spin indicator={<LoadingOutlined style={{ fontSize: 16 }} spin />} />
+                <span>Synchronizing account data...</span>
+              </div>
             ) : tradingAccountData?.success ? (
-              <Row gutter={[24, 12]} align="middle">
+              <Row gutter={40} align="middle">
                 <Col>
-                  <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 2 }}>Account Type</div>
-                  <div style={{ fontWeight: 600, fontSize: 14 }}>
-                    {tradingAccountData?.mode === 'paper' ? '📄 Paper' : tradingAccountData?.mode === 'real' ? '🔴 Real' : '⚪ Unknown'}
+                  <div className="stat-box">
+                    <span className="stat-label" style={{ fontSize: 10 }}>Account Type</span>
+                    <span className="stat-value" style={{ fontSize: 15, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {tradingAccountData?.mode === 'paper' ? <><Tag color="blue" bordered={false} style={{ margin: 0, fontWeight: 700 }}>PAPER</Tag></> : <><Tag color="error" bordered={false} style={{ margin: 0, fontWeight: 700 }}>LIVE</Tag></>}
+                    </span>
                   </div>
                 </Col>
                 <Col>
-                  <Divider type="vertical" style={{ height: 32, margin: 0 }} />
+                  <div className="stat-box">
+                    <span className="stat-label" style={{ fontSize: 10 }}>Status</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, height: 22 }}>
+                      <Badge status={tradingAccountData.status === 'ACTIVE' ? 'success' : 'warning'} />
+                      <span style={{ fontWeight: 800, fontSize: 14, color: tradingAccountData.status === 'ACTIVE' ? '#52c41a' : '#faad14' }}>
+                        {tradingAccountData.status || 'N/A'}
+                      </span>
+                    </div>
+                  </div>
+                </Col>
+                <Col style={{ flex: 1 }}>
+                  <Divider type="vertical" style={{ height: 40, margin: 0, opacity: 0.5 }} />
                 </Col>
                 <Col>
-                  <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 2 }}>Status</div>
-                  <div style={{ fontWeight: 600, fontSize: 14, color: tradingAccountData.status === 'ACTIVE' ? '#52c41a' : '#faad14' }}>
-                    {tradingAccountData.status || 'N/A'}
+                  <div className="stat-box">
+                    <span className="stat-label" style={{ fontSize: 10 }}>Cash</span>
+                    <span style={{ fontWeight: 800, fontSize: 18, color: '#1f1f1f', fontFamily: "'Inter', sans-serif" }}>
+                      ${(tradingAccountData.cash ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
                   </div>
                 </Col>
                 <Col>
-                  <Divider type="vertical" style={{ height: 32, margin: 0 }} />
-                </Col>
-                <Col>
-                  <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 2 }}>Cash</div>
-                  <div style={{ fontWeight: 600, fontSize: 14 }}>
-                    ${(tradingAccountData.cash ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  <div className="stat-box">
+                    <span className="stat-label" style={{ fontSize: 10 }}>Buying Power</span>
+                    <span style={{ fontWeight: 800, fontSize: 18, color: '#1f1f1f', fontFamily: "'Inter', sans-serif" }}>
+                      ${(tradingAccountData.buyingPower ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
                   </div>
                 </Col>
                 <Col>
-                  <Divider type="vertical" style={{ height: 32, margin: 0 }} />
-                </Col>
-                <Col>
-                  <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 2 }}>Buying Power</div>
-                  <div style={{ fontWeight: 600, fontSize: 14 }}>
-                    ${(tradingAccountData.buyingPower ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </div>
-                </Col>
-                <Col>
-                  <Divider type="vertical" style={{ height: 32, margin: 0 }} />
-                </Col>
-                <Col>
-                  <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 2 }}>Portfolio Value</div>
-                  <div style={{ fontWeight: 600, fontSize: 14 }}>
-                    ${(tradingAccountData.portfolioValue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  <div className="stat-box">
+                    <span className="stat-label" style={{ fontSize: 10 }}>Portfolio Value</span>
+                    <span style={{ fontWeight: 800, fontSize: 18, color: '#1890ff', fontFamily: "'Inter', sans-serif" }}>
+                      ${(tradingAccountData.portfolioValue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
                   </div>
                 </Col>
               </Row>
             ) : (
-              <div style={{ color: '#8c8c8c', fontSize: 13 }}>
+              <div style={{ color: '#8c8c8c', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
                 {tradingAccountData?.error ? (
-                  <><ExclamationCircleOutlined style={{ marginRight: 4, color: '#faad14' }} />{tradingAccountData.error}</>
+                  <><ExclamationCircleOutlined style={{ color: '#faad14' }} />{tradingAccountData.error}</>
                 ) : (
-                  'Account data unavailable'
+                  <><InfoCircleOutlined /> Account data unavailable</>
                 )}
-                <span style={{ marginLeft: 8, fontSize: 12 }}>— Entry Plan will use estimated defaults</span>
+                <Tag style={{ marginLeft: 8 }}>USING ESTIMATED DEFAULTS</Tag>
               </div>
             )}
           </div>
 
           {tradingAccountMode === 'real' && (
             <Alert
-              style={{ marginTop: 16 }}
+              style={{ marginTop: 16, borderRadius: 8, border: '1px solid #ffe58f' }}
               type="warning"
               showIcon
-              message="Real trading account selected"
-              description="Used only for position sizing and risk calculations. No orders will be placed from this switch."
+              message={<span style={{ fontWeight: 700 }}>Live Account Active</span>}
+              description="Planning engine is now synced with your live portfolio. No trades will be executed until you manually confirm an Entry Plan."
             />
           )}
         </Card>
       </div>
 
-      {/* 1.6 AI Watchlist */}
-      <div style={{ marginBottom: 16 }}>
+      {/* 1.55 AI Auto Pipeline */}
+      <div style={{ marginBottom: 24 }}>
         <Card
+          className="premium-card"
           title={
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <EyeOutlined style={{ color: '#1890ff' }} />
-                <span style={{ fontWeight: 600 }}>AI Watchlist</span>
-                <Tag color="blue" style={{ fontSize: 11, margin: 0 }}>{aiWatchlistItems.length}</Tag>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ width: 32, height: 32, borderRadius: 8, background: 'rgba(114, 46, 209, 0.1)', color: '#722ed1', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>
+                  <RobotOutlined />
+                </div>
+                <span style={{ fontWeight: 700, fontSize: 16 }}>AI Auto Pipeline</span>
+                <Tag color={pipelineMode === 'ai' ? 'purple' : pipelineMode === 'hybrid' ? 'blue' : 'default'} bordered={false} style={{ fontSize: 10, fontWeight: 800, borderRadius: 4 }}>
+                  {pipelineMode === 'ai' ? 'FULL AI' : pipelineMode === 'hybrid' ? 'HYBRID' : 'MANUAL'}
+                </Tag>
               </span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 12, color: '#888' }}>
-                <span>Source: <Tag color="blue" style={{ fontSize: 10, margin: 0 }}>Alpaca</Tag></span>
-                <span>
-                  Auto:
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {pipelineRunning ? (
                   <Button
-                    size="small"
-                    type={aiWatchlistAutoRefresh ? 'primary' : 'default'}
-                    onClick={() => setAiWatchlistAutoRefresh(!aiWatchlistAutoRefresh)}
-                    style={{ marginLeft: 4, fontSize: 10, height: 22, padding: '0 8px' }}
-                  >
-                    {aiWatchlistAutoRefresh ? `ON (${aiWatchlistCountdown}s)` : 'OFF'}
-                  </Button>
-                </span>
-                <Button
-                  size="small"
-                  icon={<ReloadOutlined spin={aiWatchlistLoading} />}
-                  onClick={() => { setAiWatchlistLoading(true); refreshWatchlistPrices().finally(() => setAiWatchlistLoading(false)); }}
-                  style={{ fontSize: 10, height: 22 }}
-                >
-                  Refresh
-                </Button>
-                {aiWatchlistItems.length > 0 && (
-                  <Button
-                    size="small"
                     danger
-                    icon={<DeleteOutlined />}
-                    onClick={clearAllWatchlist}
-                    style={{ fontSize: 10, height: 22 }}
+                    icon={<PauseCircleOutlined />}
+                    onClick={stopPipeline}
+                    style={{ ...AI_AGENT_PRIMARY_BTN_STYLE, height: 34 }}
                   >
-                    Clear
+                    Stop Pipeline
+                  </Button>
+                ) : (
+                  <Button
+                    type="primary"
+                    icon={<ThunderboltOutlined />}
+                    onClick={runAIPipeline}
+                    disabled={pipelineMode === 'manual' ? false : isAnyScanRunning}
+                    style={{ 
+                      ...AI_AGENT_PRIMARY_BTN_STYLE, 
+                      background: '#722ed1', 
+                      borderColor: '#722ed1', 
+                      color: '#ffffff', // FIX: ensure high contrast white text
+                      height: 34,
+                      boxShadow: '0 4px 10px rgba(114, 46, 209, 0.3)'
+                    }}
+                  >
+                    {pipelineMode === 'manual' ? 'Run Manual Cycle' : 'Run Auto Pipeline'}
                   </Button>
                 )}
               </div>
             </div>
           }
-          bodyStyle={{ padding: aiWatchlistItems.length === 0 ? '16px' : '12px 16px' }}
-          size="small"
         >
-          <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: aiWatchlistItems.length > 0 ? 8 : 0 }}>
-            Entry Plan candidates being monitored for entry conditions.
+          {/* Mode-specific notice */}
+          <div style={{ marginBottom: 16 }}>
+            {pipelineMode === 'ai' ? (
+              <Alert 
+                type={tradingAccountMode === 'real' ? 'warning' : 'info'} 
+                showIcon 
+                style={{ borderRadius: 8 }}
+                message={<span style={{ fontWeight: 700 }}>AI Automation Mode</span>}
+                description={tradingAccountMode === 'real' 
+                  ? "End-to-end scanning and plan generation. Live orders are prepared for confirmation." 
+                  : "End-to-end automation. Candidates are prepared for paper execution."} 
+              />
+            ) : pipelineMode === 'hybrid' ? (
+              <Alert type="info" showIcon style={{ borderRadius: 8 }}
+                message={<span style={{ fontWeight: 700 }}>Hybrid Decision Support</span>}
+                description="AI scans and filters candidates, preparing tactical entry plans for your review and manual execution." />
+            ) : (
+              <Alert type="info" showIcon style={{ borderRadius: 8, background: '#f5f5f5', border: '1px solid #eee' }}
+                message={<span style={{ fontWeight: 700 }}>Manual Control</span>}
+                description="Automation disabled. Use individual module buttons to progress candidates through the pipeline." />
+            )}
           </div>
 
-          {aiWatchlistItems.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '12px 0', color: '#bbb', fontSize: 12, fontStyle: 'italic' }}>
-              No items in AI Watchlist. Add candidates from Entry Plan.
+          <div style={{ background: '#fafafa', padding: '16px 20px', borderRadius: 12, border: '1px solid #f0f0f0' }}>
+            <Row gutter={[32, 16]}>
+              <Col span={8}>
+                <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Pipeline Mode</div>
+                <div style={{ display: 'flex', background: '#f0f2f5', padding: 3, borderRadius: 8, gap: 4, border: '1px solid #e8e8e8' }}>
+                  {(['ai', 'hybrid', 'manual'] as const).map(m => (
+                    <Button key={m} size="small"
+                      type={pipelineMode === m ? 'primary' : 'text'}
+                      onClick={() => setPipelineMode(m)}
+                      style={{ 
+                        flex: 1, 
+                        borderRadius: 6, 
+                        height: 28, 
+                        fontSize: 11, 
+                        fontWeight: pipelineMode === m ? 700 : 500, 
+                        border: 'none',
+                        color: pipelineMode === m ? '#fff' : '#8c8c8c',
+                        background: pipelineMode === m ? (m === 'ai' ? '#722ed1' : undefined) : 'transparent',
+                        boxShadow: pipelineMode === m ? '0 2px 4px rgba(0,0,0,0.1)' : 'none'
+                      }}
+                    >
+                      {m === 'ai' ? 'AI' : m === 'hybrid' ? 'Hybrid' : 'Manual'}
+                    </Button>
+                  ))}
+                </div>
+              </Col>
+              <Col span={9}>
+                <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Auto-Run Schedule</div>
+                <div style={{ display: 'flex', background: '#f0f2f5', padding: 3, borderRadius: 8, gap: 2, border: '1px solid #e8e8e8' }}>
+                  {(['off', '15m', '30m', '1h', '2h'] as const).map(s => (
+                    <Button key={s} size="small"
+                      type={pipelineSchedule === s ? 'primary' : 'text'}
+                      onClick={() => setPipelineSchedule(s)}
+                      disabled={pipelineMode === 'manual' && s !== 'off'}
+                      style={{ 
+                        flex: 1, 
+                        borderRadius: 6, 
+                        height: 28, 
+                        fontSize: 10, 
+                        fontWeight: pipelineSchedule === s ? 700 : 500, 
+                        border: 'none',
+                        color: pipelineSchedule === s ? '#fff' : '#8c8c8c',
+                        boxShadow: pipelineSchedule === s ? '0 2px 4px rgba(0,0,0,0.1)' : 'none'
+                      }}
+                    >
+                      {s === 'off' ? 'Off' : s}
+                    </Button>
+                  ))}
+                </div>
+                {pipelineSchedule !== 'off' && (
+                  <div style={{ fontSize: 10, color: '#52c41a', marginTop: 6, fontWeight: 600 }}>
+                    <SyncOutlined spin style={{ marginRight: 4 }} /> Scheduled: Every {pipelineSchedule}
+                  </div>
+                )}
+              </Col>
+              <Col span={7}>
+                <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Run Status</div>
+                <div style={{ fontSize: 12, lineHeight: '20px' }}>
+                  {lastPipelineRun ? (
+                    <div style={{ color: '#595959' }}>
+                      <ClockCircleOutlined style={{ marginRight: 6, opacity: 0.6 }} /> 
+                      Last: <Text strong>{new Date(lastPipelineRun).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                    </div>
+                  ) : <div style={{ color: '#bfbfbf', fontStyle: 'italic' }}>No recent runs</div>}
+                  
+                  {nextPipelineRun && pipelineSchedule !== 'off' && (
+                    <div style={{ color: '#1890ff', marginTop: 2 }}>
+                      <ThunderboltOutlined style={{ marginRight: 6 }} /> 
+                      Next: <Text strong style={{ color: '#1890ff' }}>{new Date(nextPipelineRun).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                    </div>
+                  )}
+                </div>
+              </Col>
+            </Row>
+
+            {pipelineStage !== 'idle' && (
+              <div style={{ marginTop: 24, paddingTop: 20, borderTop: '1px dashed #e8e8e8' }}>
+                <Steps
+                  size="small"
+                  current={PIPELINE_STAGES.indexOf(pipelineStage as any)}
+                  status={pipelineStage === 'failed' ? 'error' : pipelineRunning ? 'process' : 'finish'}
+                  items={PIPELINE_STAGES.map((name) => {
+                    const idx = PIPELINE_STAGES.indexOf(name);
+                    const currentIdx = PIPELINE_STAGES.indexOf(pipelineStage as any);
+                    let status: 'wait' | 'process' | 'finish' | 'error' = 'wait';
+                    if (pipelineStage === 'failed' && idx === currentIdx) status = 'error';
+                    else if (idx < currentIdx) status = 'finish';
+                    else if (idx === currentIdx) status = 'process';
+                    return { title: <span style={{ fontSize: 11, fontWeight: status === 'process' ? 700 : 500 }}>{name}</span>, status };
+                  })}
+                />
+              </div>
+            )}
+          </div>
+
+          {pipelineError && (
+            <Alert
+              type="error"
+              showIcon
+              message="Pipeline Error"
+              description={pipelineError}
+              style={{ marginTop: 12, borderRadius: 8 }}
+              closable
+              onClose={() => setPipelineError(null)}
+            />
+          )}
+        </Card>
+      </div>
+
+      {/* 1.58 Current Holdings */}
+      <div style={{ marginBottom: 24 }}>
+        <Card
+          title={
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ width: 32, height: 32, borderRadius: 8, background: 'rgba(82, 196, 26, 0.1)', color: '#52c41a', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>
+                  <WalletOutlined />
+                </div>
+                <span style={{ fontWeight: 700, fontSize: 16 }}>Current Holdings</span>
+                <Tag color="green" bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 4 }}>{holdings.length}</Tag>
+                <Tag color="blue" bordered={false} style={{ fontSize: 10, borderRadius: 4 }}>{tradingAccountMode === 'paper' ? 'Paper' : 'Real'}</Tag>
+              </span>
+              <Button size="small" icon={<ReloadOutlined spin={holdingsLoading} />} onClick={fetchHoldings} style={AI_AGENT_COMPACT_BTN_STYLE}>
+                Refresh
+              </Button>
             </div>
+          }
+          size="small"
+        >
+          {holdingsError && (
+            <Alert type="error" showIcon message={holdingsError} style={{ marginBottom: 12 }} closable onClose={() => setHoldingsError(null)} />
+          )}
+          {holdingsLoading && holdings.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 24, color: '#8c8c8c' }}><Spin size="small" /> Loading positions...</div>
+          ) : holdings.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 24, color: '#bbb', fontSize: 13, fontStyle: 'italic' }}>No current holdings.</div>
           ) : (
             <Table
-              dataSource={aiWatchlistItems}
-              rowKey="id"
+              dataSource={holdings}
+              rowKey="symbol"
               size="small"
+              pagination={holdings.length > 10 ? { pageSize: 10, size: 'small' } : false}
+              scroll={{ x: 900 }}
+              expandable={{
+                expandedRowRender: (h: any) => (
+                  <div style={{ padding: '8px 0', fontSize: 12, lineHeight: 2 }}>
+                    <Row gutter={[24, 8]}>
+                      <Col span={6}><span style={{ color: '#8c8c8c' }}>Symbol:</span> <strong>{h.symbol}</strong></Col>
+                      <Col span={6}><span style={{ color: '#8c8c8c' }}>Side:</span> {h.side || 'long'}</Col>
+                      <Col span={6}><span style={{ color: '#8c8c8c' }}>Qty:</span> {h.qty}</Col>
+                      <Col span={6}><span style={{ color: '#8c8c8c' }}>Asset Class:</span> {h.assetClass || 'us_equity'}</Col>
+                      <Col span={6}><span style={{ color: '#8c8c8c' }}>Avg Entry:</span> ${(h.avgEntryPrice || 0).toFixed(2)}</Col>
+                      <Col span={6}><span style={{ color: '#8c8c8c' }}>Current:</span> ${(h.currentPrice || 0).toFixed(2)}</Col>
+                      <Col span={6}><span style={{ color: '#8c8c8c' }}>Market Value:</span> ${(h.marketValue || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</Col>
+                      <Col span={6}><span style={{ color: '#8c8c8c' }}>Cost Basis:</span> ${(h.costBasis || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</Col>
+                      <Col span={6}><span style={{ color: '#8c8c8c' }}>Unrealized P/L:</span> <span style={{ color: (h.unrealizedPL || 0) >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 600 }}>${(h.unrealizedPL || 0).toFixed(2)}</span></Col>
+                      <Col span={6}><span style={{ color: '#8c8c8c' }}>P/L %:</span> <span style={{ color: (h.unrealizedPLPercent || 0) >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 600 }}>{((h.unrealizedPLPercent || 0) * 100).toFixed(2)}%</span></Col>
+                      <Col span={6}><span style={{ color: '#8c8c8c' }}>Exchange:</span> {h.exchange || 'N/A'}</Col>
+                    </Row>
+                  </div>
+                ),
+              }}
+              columns={[
+                { title: 'Symbol', dataIndex: 'symbol', key: 'symbol', width: 80, fixed: 'left' as const, render: (t: string) => <span style={{ fontWeight: 700 }}>{t}</span> },
+                { title: 'Qty', dataIndex: 'qty', key: 'qty', width: 60, render: (v: number) => <span style={{ fontFamily: 'Inter, sans-serif' }}>{v}</span> },
+                { title: 'Avg Entry', dataIndex: 'avgEntryPrice', key: 'avgEntry', width: 90, render: (v: number) => <span style={{ fontFamily: 'Inter, sans-serif' }}>${(v || 0).toFixed(2)}</span> },
+                { title: 'Current', dataIndex: 'currentPrice', key: 'current', width: 90, render: (v: number) => <span style={{ fontFamily: 'Inter, sans-serif' }}>${(v || 0).toFixed(2)}</span> },
+                { title: 'Mkt Value', dataIndex: 'marketValue', key: 'mktVal', width: 100, render: (v: number) => <span style={{ fontFamily: 'Inter, sans-serif' }}>${(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span> },
+                { title: 'P/L', dataIndex: 'unrealizedPL', key: 'pl', width: 90, render: (v: number) => <span style={{ color: (v || 0) >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 600, fontFamily: 'Inter, sans-serif' }}>${(v || 0).toFixed(2)}</span> },
+                { title: 'P/L %', dataIndex: 'unrealizedPLPercent', key: 'plpct', width: 80, render: (v: number) => <span style={{ color: (v || 0) >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 600, fontFamily: 'Inter, sans-serif' }}>{((v || 0) * 100).toFixed(2)}%</span> },
+              ]}
+            />
+          )}
+        </Card>
+      </div>
+
+      {/* 1.7 AI Execution Candidates */}
+      <div style={{ marginBottom: 24 }}>
+        <Card
+          title={
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ width: 32, height: 32, borderRadius: 8, background: 'rgba(250, 173, 20, 0.1)', color: '#faad14', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>
+                  <FundOutlined />
+                </div>
+                <span style={{ fontWeight: 700, fontSize: 16 }}>AI Execution Candidates</span>
+                <Tag color="gold" bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 4 }}>
+                  {aiExecutionList.length > 0 ? aiExecutionList.length : (aiExecutionList as any)._isTest ? '1 (Test)' : '0'}
+                </Tag>
+              </span>
+              {aiExecutionList.length > 0 && !(aiExecutionList as any)._isTest && (
+                <Button size="small" danger icon={<DeleteOutlined />} onClick={() => setAiExecutionList([])} style={AI_AGENT_COMPACT_BTN_STYLE}>Clear</Button>
+              )}
+            </div>
+          }
+          size="small"
+        >
+          <Alert
+            type={pipelineMode === 'ai' && tradingAccountMode === 'paper' ? 'info' : 'warning'}
+            showIcon
+            message={
+              pipelineMode === 'ai' && tradingAccountMode === 'paper'
+                ? 'AI Mode + Paper Trading: Candidates prepared as paper execution preview. No real orders placed.'
+                : pipelineMode === 'ai' && tradingAccountMode === 'real'
+                  ? 'AI Mode + Live Trading: Needs manual live confirmation. No auto-order submission.'
+                  : pipelineMode === 'hybrid'
+                    ? 'Hybrid Mode: Manual execution required. AI prepares plans, you execute.'
+                    : 'Execution candidates are decision-support only. Review manually before placing any trade.'
+            }
+            style={{ marginBottom: 12 }}
+          />
+          <Table
+            dataSource={aiExecutionList.length > 0 ? aiExecutionList : AI_EXECUTION_TEST_ITEM}
+            rowKey={(r: any) => r.symbol + (r.addedAt || '') + (r._isTest ? '_test' : '')}
+            size="small"
+            pagination={false}
+            scroll={{ x: 1100 }}
+            style={{ fontSize: 11 }}
+            expandable={{
+              expandedRowRender: (record: any) => {
+                const ep = entryPlanResultsBySymbol[record.symbol] || record;
+                return renderEntryPlanDetail(ep);
+              },
+            }}
+            columns={[
+              {
+                title: 'Symbol',
+                dataIndex: 'symbol',
+                key: 'symbol',
+                width: 80,
+                fixed: 'left' as const,
+                render: (text: string, r: any) => (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <span style={{ fontWeight: 600, fontSize: 12 }}>{text}</span>
+                    {r._isTest && <Tag color="orange" style={{ fontSize: 8, padding: '0 3px', lineHeight: '14px', margin: 0 }}>TEST</Tag>}
+                  </div>
+                ),
+              },
+              {
+                title: 'Setup',
+                key: 'setup',
+                width: 100,
+                render: (r: any) => {
+                  const s = r.setup || r.setupType || 'N/A';
+                  const color = s.includes('Pullback') ? 'gold' : s.includes('Breakout') ? 'purple' : s.includes('Range') ? 'green' : 'blue';
+                  return <Tag color={color} style={{ fontSize: 9, margin: 0, padding: '0 4px' }}>{s}</Tag>;
+                },
+              },
+              {
+                title: 'Entry Zone',
+                key: 'entryZone',
+                width: 110,
+                render: (r: any) => {
+                  const lo = r.entryZoneLow;
+                  const hi = r.entryZoneHigh;
+                  if (!lo && !hi) return <span style={{ color: '#ccc', fontSize: 11 }}>N/A</span>;
+                  return <span style={{ fontSize: 11, fontFamily: 'Inter, sans-serif' }}>${(lo || 0).toFixed(2)}–${(hi || 0).toFixed(2)}</span>;
+                },
+              },
+              {
+                title: 'Stop',
+                dataIndex: 'stopLoss',
+                key: 'stopLoss',
+                width: 70,
+                render: (v: number | null) => v ? <span style={{ color: '#ff4d4f', fontSize: 11, fontFamily: 'Inter, sans-serif' }}>${v.toFixed(2)}</span> : <span style={{ color: '#ccc' }}>N/A</span>,
+              },
+              {
+                title: 'Target',
+                key: 'takeProfit',
+                width: 75,
+                render: (r: any) => {
+                  const t = r.takeProfit1;
+                  if (!t) return <span style={{ color: '#ccc', fontSize: 11 }}>N/A</span>;
+                  return <span style={{ color: '#52c41a', fontSize: 11, fontFamily: 'Inter, sans-serif' }}>${t.toFixed(2)}</span>;
+                },
+              },
+              {
+                title: 'R/R',
+                dataIndex: 'riskReward1',
+                key: 'riskReward1',
+                width: 55,
+                render: (v: number | null) => v ? <span style={{ fontSize: 11, fontFamily: 'Inter, sans-serif' }}>{v.toFixed(1)}:1</span> : <span style={{ color: '#ccc' }}>N/A</span>,
+              },
+              {
+                title: 'Confidence',
+                dataIndex: 'confidence',
+                key: 'confidence',
+                width: 80,
+                render: (v: number | null) => v ? <span style={{ fontSize: 11 }}>{v}%</span> : <span style={{ color: '#ccc' }}>N/A</span>,
+              },
+              {
+                title: 'AI',
+                key: 'aiDecision',
+                width: 60,
+                render: (r: any) => {
+                  const d = r.aiDecision;
+                  if (!d) return <span style={{ color: '#ccc', fontSize: 11 }}>N/A</span>;
+                  const color = d === 'BUY' ? 'green' : d === 'WATCH' ? 'gold' : d === 'SKIP' ? 'red' : 'default';
+                  return <Tag color={color} style={{ fontSize: 9, margin: 0, padding: '0 4px', fontWeight: 600 }}>{d}</Tag>;
+                },
+              },
+              {
+                title: 'Gate',
+                key: 'riskGate',
+                width: 60,
+                render: (r: any) => {
+                  const s = (r.riskGate || r.hardRiskGate || {}).status || r.riskGateStatus || '';
+                  if (!s) return <span style={{ color: '#ccc', fontSize: 11 }}>N/A</span>;
+                  const color = s === 'PASS' ? 'green' : s === 'REVIEW' ? 'gold' : 'red';
+                  return <Tag color={color} style={{ fontSize: 9, margin: 0, padding: '0 4px', fontWeight: 600 }}>{s}</Tag>;
+                },
+              },
+              {
+                title: 'Data',
+                key: 'dataQuality',
+                width: 60,
+                render: (r: any) => {
+                  const dq = r.dataQuality || '';
+                  if (!dq) return <span style={{ color: '#ccc', fontSize: 11 }}>N/A</span>;
+                  const color = dq === 'GOOD' ? 'green' : dq === 'FAIR' ? 'gold' : 'red';
+                  return <Tag color={color} style={{ fontSize: 9, margin: 0, padding: '0 4px', fontWeight: 600 }}>{dq}</Tag>;
+                },
+              },
+              {
+                title: 'Added',
+                key: 'addedAt',
+                width: 80,
+                render: (r: any) => {
+                  if (r._isTest) return <Tag color="orange" style={{ fontSize: 9, margin: 0, padding: '0 3px' }}>Sample</Tag>;
+                  const t = r.addedAt;
+                  if (!t) return <span style={{ color: '#ccc', fontSize: 10 }}>N/A</span>;
+                  const d = new Date(t);
+                  return <span style={{ fontSize: 10, color: '#888' }}>{d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>;
+                },
+              },
+            ]}
+          />
+        </Card>
+      </div>
+
+      {/* 1.6 AI Watchlist */}
+      <div style={{ marginBottom: 24 }}>
+        <Card
+          className="premium-card"
+          title={
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ width: 32, height: 32, borderRadius: 8, background: 'rgba(24, 144, 255, 0.1)', color: '#1890ff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>
+                  <EyeOutlined />
+                </div>
+                <span style={{ fontWeight: 700, fontSize: 16 }}>AI Watchlist</span>
+                <Tag color="blue" bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 4 }}>{aiWatchlistItems.length}</Tag>
+              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <Input
+                  placeholder="Search symbol..."
+                  size="small"
+                  prefix={<SearchOutlined style={{ color: '#bfbfbf' }} />}
+                  value={aiWatchlistSearch}
+                  onChange={e => setAiWatchlistSearch(e.target.value.toUpperCase())}
+                  style={{ width: 140, borderRadius: 6, fontSize: 12, height: 28 }}
+                  allowClear
+                />
+                <Divider type="vertical" style={{ height: 20 }} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Button
+                    size="small"
+                    type={aiWatchlistAutoRefresh ? 'primary' : 'default'}
+                    onClick={() => setAiWatchlistAutoRefresh(!aiWatchlistAutoRefresh)}
+                    style={{ ...AI_AGENT_COMPACT_BTN_STYLE, height: 28, background: aiWatchlistAutoRefresh ? '#1890ff' : '#f5f5f5', border: aiWatchlistAutoRefresh ? 'none' : '1px solid #d9d9d9', color: aiWatchlistAutoRefresh ? '#fff' : '#8c8c8c' }}
+                  >
+                    {aiWatchlistAutoRefresh ? <><SyncOutlined spin style={{ marginRight: 4 }} /> {aiWatchlistCountdown}s</> : 'AUTO OFF'}
+                  </Button>
+                  <Button
+                    size="small"
+                    icon={<ReloadOutlined spin={aiWatchlistLoading} />}
+                    onClick={() => { setAiWatchlistLoading(true); refreshWatchlistPrices().finally(() => setAiWatchlistLoading(false)); }}
+                    style={{ ...AI_AGENT_COMPACT_BTN_STYLE, height: 28 }}
+                  >
+                    Refresh
+                  </Button>
+                  {aiWatchlistItems.length > 0 && (
+                    <Button
+                      size="small"
+                      danger
+                      icon={<DeleteOutlined />}
+                      onClick={clearAllWatchlist}
+                      style={{ ...AI_AGENT_COMPACT_BTN_STYLE, height: 28 }}
+                    >
+                      Clear
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </div>
+          }
+        >
+          {aiWatchlistItems.length > 0 && (
+            <div style={{ display: 'flex', gap: 24, marginBottom: 20, padding: '12px 16px', background: '#fafafa', borderRadius: 10, border: '1px solid #f0f0f0' }}>
+              <div className="mini-stat">
+                <div style={{ fontSize: 10, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', marginBottom: 2 }}>Total</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: '#1f1f1f' }}>{aiWatchlistItems.length}</div>
+              </div>
+              <Divider type="vertical" style={{ height: 32, margin: 0 }} />
+              <div className="mini-stat">
+                <div style={{ fontSize: 10, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', marginBottom: 2 }}>Waiting Entry</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: '#faad14' }}>{aiWatchlistItems.filter(i => getWatchlistReadiness(i) === 'Waiting Entry').length}</div>
+              </div>
+              <Divider type="vertical" style={{ height: 32, margin: 0 }} />
+              <div className="mini-stat">
+                <div style={{ fontSize: 10, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', marginBottom: 2 }}>Review Required</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: '#1890ff' }}>{aiWatchlistItems.filter(i => i.riskGateStatus === 'REVIEW').length}</div>
+              </div>
+              <Divider type="vertical" style={{ height: 32, margin: 0 }} />
+              <div className="mini-stat">
+                <div style={{ fontSize: 10, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', marginBottom: 2 }}>Ready / Hot</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: '#52c41a' }}>{aiWatchlistItems.filter(i => getWatchlistReadiness(i) === 'Ready').length}</div>
+              </div>
+              <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Tag color="blue" bordered={false} style={{ fontSize: 9, margin: 0 }}>ALPACA DATA SOURCE</Tag>
+              </div>
+            </div>
+          )}
+
+          {aiWatchlistItems.length === 0 ? (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={
+                <div style={{ padding: '20px 0' }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: '#8c8c8c' }}>No AI watchlist candidates yet</div>
+                  <div style={{ fontSize: 12, color: '#bfbfbf' }}>Add candidates from Entry Plan to monitor entry conditions.</div>
+                </div>
+              }
+            />
+          ) : (
+            <Table
+              dataSource={aiWatchlistItems.filter(item => item.symbol.toLowerCase().includes(aiWatchlistSearch.toLowerCase()))}
+              rowKey="id"
+              size="middle"
               pagination={aiWatchlistItems.length > 10 ? { pageSize: 10, size: 'small' } : false}
               scroll={{ x: 1200 }}
-              style={{ fontSize: 11 }}
+              rowClassName="watchlist-row"
+              style={{ fontSize: 12 }}
+              expandable={{
+                expandedRowRender: (record: any) => {
+                  const ep = entryPlanResultsBySymbol[record.symbol];
+                  if (!ep) return <div style={{ padding: '12px 0', color: '#bbb', fontSize: 12, fontStyle: 'italic' }}>Entry Plan detail unavailable.</div>;
+                  return renderEntryPlanDetail(ep);
+                },
+              }}
               columns={[
                 {
-                  title: 'Symbol',
+                  title: <span style={{ fontWeight: 700, color: '#8c8c8c', fontSize: 10, textTransform: 'uppercase' }}>Symbol</span>,
                   dataIndex: 'symbol',
                   key: 'symbol',
-                  width: 75,
+                  width: 90,
                   fixed: 'left' as const,
                   render: (text: string, record: any) => (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                      <span style={{ fontWeight: 600, fontSize: 12 }}>{text}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontWeight: 800, fontSize: 14, color: '#111827' }}>{text}</span>
                       {record.isDevTest && <Tag style={{ fontSize: 8, padding: '0 2px', lineHeight: '12px', margin: 0 }} color="red">DEV</Tag>}
                     </div>
                   ),
                 },
                 {
-                  title: 'Source',
-                  key: 'source',
+                  title: <span style={{ fontWeight: 700, color: '#8c8c8c', fontSize: 10, textTransform: 'uppercase' }}>Price</span>,
+                  key: 'currentPrice',
                   width: 90,
+                  render: (record: any) => {
+                    const p = record.currentPrice;
+                    if (!p) return <span style={{ color: '#ccc', fontSize: 12 }}>—</span>;
+                    return <span style={{ fontWeight: 700, color: '#1f1f1f', fontSize: 13 }}>${p.toFixed(2)}</span>;
+                  },
+                },
+                {
+                  title: <span style={{ fontWeight: 700, color: '#8c8c8c', fontSize: 10, textTransform: 'uppercase' }}>Chg%</span>,
+                  key: 'changePercent',
+                  width: 80,
+                  render: (record: any) => {
+                    const c = record.changePercent;
+                    if (c == null) return <span style={{ color: '#ccc', fontSize: 12 }}>—</span>;
+                    const color = c >= 0 ? '#52c41a' : '#ff4d4f';
+                    return <span style={{ color, fontSize: 12, fontWeight: 700 }}>{c >= 0 ? '+' : ''}{c.toFixed(2)}%</span>;
+                  },
+                },
+                {
+                  title: <span style={{ fontWeight: 700, color: '#8c8c8c', fontSize: 10, textTransform: 'uppercase' }}>Entry Zone</span>,
+                  key: 'entryZone',
+                  width: 140,
+                  render: (record: any) => {
+                    const lo = record.entryZoneLow;
+                    const hi = record.entryZoneHigh;
+                    if (!lo && !hi) return <span style={{ color: '#ccc', fontSize: 12 }}>—</span>;
+                    return <span style={{ fontSize: 12, color: '#434343', fontWeight: 600 }}>${(lo || 0).toFixed(2)} – ${(hi || 0).toFixed(2)}</span>;
+                  },
+                },
+                {
+                  title: <span style={{ fontWeight: 700, color: '#8c8c8c', fontSize: 10, textTransform: 'uppercase' }}>Stop / Target</span>,
+                  key: 'levels',
+                  width: 130,
+                  render: (record: any) => (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <span style={{ color: '#ff4d4f', fontSize: 11 }}>S: ${(record.stopLoss || 0).toFixed(2)}</span>
+                      <span style={{ color: '#52c41a', fontSize: 11 }}>T: ${(record.takeProfit1 || 0).toFixed(2)}</span>
+                    </div>
+                  )
+                },
+                {
+                  title: <span style={{ fontWeight: 700, color: '#8c8c8c', fontSize: 10, textTransform: 'uppercase' }}>R/R</span>,
+                  dataIndex: 'riskReward',
+                  key: 'riskReward',
+                  width: 60,
+                  render: (v: number | null) => v ? <span style={{ fontWeight: 600 }}>{v.toFixed(1)}x</span> : <span style={{ color: '#ccc' }}>—</span>,
+                },
+                {
+                  title: <span style={{ fontWeight: 700, color: '#8c8c8c', fontSize: 10, textTransform: 'uppercase' }}>Status</span>,
+                  key: 'status',
+                  width: 120,
+                  render: (record: any) => {
+                    const r = getWatchlistReadiness(record);
+                    return <Tag color={getReadinessColor(r)} bordered={false} style={{ fontSize: 10, fontWeight: 700, padding: '0 8px', borderRadius: 4 }}>{r.toUpperCase()}</Tag>;
+                  },
+                },
+                {
+                  title: <span style={{ fontWeight: 700, color: '#8c8c8c', fontSize: 10, textTransform: 'uppercase' }}>Source</span>,
+                  key: 'source',
+                  width: 100,
                   render: (record: any) => {
                     const src = record.selectedBy || record.source || 'Entry Plan';
                     const color = src === 'Continue' ? 'success' : src === 'Watch-to-Validate' ? 'warning' : 'blue';
                     const label = src === 'Watch-to-Validate' ? 'Watch→Val' : src;
-                    return <Tag color={color} style={{ fontSize: 9, margin: 0, padding: '0 4px' }}>{label}</Tag>;
-                  },
-                },
-                {
-                  title: 'Price',
-                  key: 'currentPrice',
-                  width: 75,
-                  render: (record: any) => {
-                    const p = record.currentPrice;
-                    if (!p) return <span style={{ color: '#ccc', fontSize: 11 }}>N/A</span>;
-                    return <span style={{ fontFamily: 'Inter, sans-serif', fontSize: 12 }}>${p.toFixed(2)}</span>;
-                  },
-                },
-                {
-                  title: 'Chg%',
-                  key: 'changePercent',
-                  width: 65,
-                  render: (record: any) => {
-                    const c = record.changePercent;
-                    if (c == null) return <span style={{ color: '#ccc', fontSize: 11 }}>N/A</span>;
-                    const color = c >= 0 ? '#52c41a' : '#ff4d4f';
-                    return <span style={{ color, fontSize: 11, fontFamily: 'Inter, sans-serif' }}>{c >= 0 ? '+' : ''}{c.toFixed(2)}%</span>;
-                  },
-                },
-                {
-                  title: 'Entry Zone',
-                  key: 'entryZone',
-                  width: 110,
-                  render: (record: any) => {
-                    const lo = record.entryZoneLow;
-                    const hi = record.entryZoneHigh;
-                    if (!lo && !hi) return <span style={{ color: '#ccc', fontSize: 11 }}>N/A</span>;
-                    return <span style={{ fontSize: 11, fontFamily: 'Inter, sans-serif' }}>${(lo || 0).toFixed(2)}–${(hi || 0).toFixed(2)}</span>;
-                  },
-                },
-                {
-                  title: 'Stop',
-                  dataIndex: 'stopLoss',
-                  key: 'stopLoss',
-                  width: 70,
-                  render: (v: number | null) => v ? <span style={{ color: '#ff4d4f', fontSize: 11, fontFamily: 'Inter, sans-serif' }}>${v.toFixed(2)}</span> : <span style={{ color: '#ccc' }}>N/A</span>,
-                },
-                {
-                  title: 'Target',
-                  key: 'takeProfit',
-                  width: 75,
-                  render: (record: any) => {
-                    const t = record.takeProfit1;
-                    if (!t) return <span style={{ color: '#ccc', fontSize: 11 }}>N/A</span>;
-                    return <span style={{ color: '#52c41a', fontSize: 11, fontFamily: 'Inter, sans-serif' }}>${t.toFixed(2)}</span>;
-                  },
-                },
-                {
-                  title: 'R/R',
-                  dataIndex: 'riskReward',
-                  key: 'riskReward',
-                  width: 55,
-                  render: (v: number | null) => v ? <span style={{ fontSize: 11, fontFamily: 'Inter, sans-serif' }}>{v.toFixed(1)}:1</span> : <span style={{ color: '#ccc' }}>N/A</span>,
-                },
-                {
-                  title: 'AI',
-                  key: 'aiDecision',
-                  width: 60,
-                  render: (record: any) => {
-                    const d = record.aiDecision;
-                    if (!d) return <span style={{ color: '#ccc', fontSize: 11 }}>N/A</span>;
-                    const color = d === 'BUY' ? 'green' : d === 'WATCH' ? 'gold' : d === 'SKIP' ? 'red' : 'default';
-                    return <Tag color={color} style={{ fontSize: 9, margin: 0, padding: '0 4px', fontWeight: 600 }}>{d}</Tag>;
-                  },
-                },
-                {
-                  title: 'Gate',
-                  key: 'riskGateStatus',
-                  width: 60,
-                  render: (record: any) => {
-                    const s = record.riskGateStatus;
-                    if (!s) return <span style={{ color: '#ccc', fontSize: 11 }}>N/A</span>;
-                    const color = s === 'PASS' ? 'green' : s === 'REVIEW' ? 'gold' : 'red';
-                    return <Tag color={color} style={{ fontSize: 9, margin: 0, padding: '0 4px', fontWeight: 600 }}>{s}</Tag>;
-                  },
-                },
-                {
-                  title: 'Readiness',
-                  key: 'readiness',
-                  width: 90,
-                  render: (record: any) => {
-                    const r = getWatchlistReadiness(record);
-                    return <Tag color={getReadinessColor(r)} style={{ fontSize: 9, margin: 0, padding: '0 4px', fontWeight: 600 }}>{r}</Tag>;
-                  },
-                },
-                {
-                  title: 'Added',
-                  key: 'createdAt',
-                  width: 80,
-                  render: (record: any) => {
-                    const t = record.createdAt;
-                    if (!t) return <span style={{ color: '#ccc', fontSize: 10 }}>N/A</span>;
-                    const d = new Date(t);
-                    return <span style={{ fontSize: 10, color: '#888' }}>{d.toLocaleDateString()} {d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>;
+                    return <Tag color={color} style={{ fontSize: 9, margin: 0, padding: '0 4px', borderRadius: 2 }}>{label.toUpperCase()}</Tag>;
                   },
                 },
                 {
                   title: '',
                   key: 'actions',
-                  width: 36,
+                  width: 44,
                   fixed: 'right' as const,
                   render: (record: any) => (
                     <Tooltip title="Remove from watchlist">
@@ -4313,9 +5106,10 @@ function renderDVDetailPanel(record: any) {
                         type="text"
                         size="small"
                         danger
-                        icon={<DeleteOutlined style={{ fontSize: 12 }} />}
+                        icon={<DeleteOutlined style={{ fontSize: 14 }} />}
                         onClick={() => removeFromWatchlist(record.id, record.symbol)}
-                        style={{ padding: 0, width: 24, height: 24, minWidth: 24 }}
+                        className="delete-action-btn"
+                        style={{ padding: 0, width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                       />
                     </Tooltip>
                   ),
@@ -4350,16 +5144,21 @@ function renderDVDetailPanel(record: any) {
           { label: 'Rules', value: marketScannerResults.filter((r: any) => !r.aiCalled).length },
         ] : undefined}
         actionButton={
-          <Button
-            type={detailedScanStatus.currentStatus === 'scanning' ? 'default' : 'primary'}
-            danger={detailedScanStatus.currentStatus === 'scanning'}
-            icon={detailedScanStatus.currentStatus === 'scanning' ? <PauseCircleOutlined /> : <ThunderboltOutlined />}
-            onClick={handleToggleMarketScanner}
-            loading={detailedScanStatus.currentStatus === 'stopping'}
-            size="small"
-          >
-            {detailedScanStatus.currentStatus === 'scanning' ? 'Stop Scanner' : 'Run Scanner'}
-          </Button>
+          <Tooltip title={pipelineRunning && detailedScanStatus.currentStatus !== 'scanning' ? 'Disabled while AI Pipeline is running.' : ''}>
+            <span>
+              <Button
+                type={detailedScanStatus.currentStatus === 'scanning' ? 'default' : 'primary'}
+                danger={detailedScanStatus.currentStatus === 'scanning'}
+                icon={detailedScanStatus.currentStatus === 'scanning' ? <PauseCircleOutlined /> : <ThunderboltOutlined />}
+                onClick={handleToggleMarketScanner}
+                loading={detailedScanStatus.currentStatus === 'stopping'}
+                disabled={pipelineRunning && detailedScanStatus.currentStatus !== 'scanning'}
+                style={AI_AGENT_PRIMARY_BTN_STYLE}
+              >
+                {detailedScanStatus.currentStatus === 'scanning' ? 'Stop Scanner' : 'Run Scanner'}
+              </Button>
+            </span>
+          </Tooltip>
         }
         isRunning={detailedScanStatus.currentStatus === 'scanning'}
         expanded={scannerExpanded}
@@ -4369,15 +5168,21 @@ function renderDVDetailPanel(record: any) {
           <Row gutter={16} align="middle" style={{ marginBottom: 16 }}>
             <Col span={24}>
               <Space size="middle">
-                <Button
-                  type={detailedScanStatus.currentStatus === 'scanning' ? 'default' : 'primary'}
-                  danger={detailedScanStatus.currentStatus === 'scanning'}
-                  icon={detailedScanStatus.currentStatus === 'scanning' ? <PauseCircleOutlined /> : <ThunderboltOutlined />}
-                  onClick={handleToggleMarketScanner}
-                  loading={detailedScanStatus.currentStatus === 'stopping'}
-                >
-                  {detailedScanStatus.currentStatus === 'scanning' ? 'Stop Scanner' : 'Run Scanner'}
-                </Button>
+                <Tooltip title={pipelineRunning && detailedScanStatus.currentStatus !== 'scanning' ? 'Disabled while AI Pipeline is running.' : ''}>
+                  <span>
+                    <Button
+                      type={detailedScanStatus.currentStatus === 'scanning' ? 'default' : 'primary'}
+                      danger={detailedScanStatus.currentStatus === 'scanning'}
+                      icon={detailedScanStatus.currentStatus === 'scanning' ? <PauseCircleOutlined /> : <ThunderboltOutlined />}
+                      onClick={handleToggleMarketScanner}
+                      loading={detailedScanStatus.currentStatus === 'stopping'}
+                      disabled={pipelineRunning && detailedScanStatus.currentStatus !== 'scanning'}
+                      style={AI_AGENT_PRIMARY_BTN_STYLE}
+                    >
+                      {detailedScanStatus.currentStatus === 'scanning' ? 'Stop Scanner' : 'Run Scanner'}
+                    </Button>
+                  </span>
+                </Tooltip>
                 {detailedScanStatus.currentStatus === 'scanning' && (
                   <Text type="secondary" style={{ fontSize: '12px' }}>Scanning in progress...</Text>
                 )}
@@ -4909,35 +5714,20 @@ function renderDVDetailPanel(record: any) {
           { label: 'Rule-based', value: preferredContinueScanList.filter((c: any) => c.reasonSource !== 'AI').length },
         ] : undefined}
         actionButton={
-          <div style={{ display: 'flex', gap: 6 }}>
-            <Button
-              type={devTestMode ? 'primary' : 'default'}
-              size="small"
-              danger={devTestMode}
-              onClick={() => {
-                if (devTestMode) {
-                  setDevTestMode(false);
-                  removeDevTestCandidate();
-                } else {
-                  setDevTestMode(true);
-                  injectDevTestCandidate();
-                }
-              }}
-              style={devTestMode ? { background: '#ff4d4f', borderColor: '#ff4d4f' } : {}}
-            >
-              {devTestMode ? 'Disable Test' : 'Enable Test'}
-            </Button>
-            <Button
-              type={continueScanStatus === 'completed' || continueScanStatus === 'error' ? 'default' : 'primary'}
-              size="small"
-              onClick={() => handleStartContinueScan(continueScanStatus === 'completed' || continueScanStatus === 'error')}
-              disabled={marketScannerResults.length === 0 || continueScanStatus === 'processing'}
-              loading={continueScanStatus === 'processing'}
-              icon={<SyncOutlined />}
-            >
-              {continueScanStatus === 'completed' || continueScanStatus === 'error' ? 'Re-run Scan' : 'Start Continue Scan'}
-            </Button>
-          </div>
+          <Tooltip title={pipelineRunning ? 'Disabled while AI Pipeline is running.' : ''}>
+            <span>
+              <Button
+                type="primary"
+                onClick={() => handleStartContinueScan()}
+                disabled={marketScannerResults.length === 0 || continueScanStatus === 'processing' || pipelineRunning}
+                loading={continueScanStatus === 'processing'}
+                icon={<ThunderboltOutlined />}
+                style={AI_AGENT_PRIMARY_BTN_STYLE}
+              >
+                {continueScanStatus === 'processing' ? 'Processing...' : 'Start Selection'}
+              </Button>
+            </span>
+          </Tooltip>
         }
         isRunning={continueScanStatus === 'processing'}
         expanded={continueScanExpanded}
@@ -5416,17 +6206,20 @@ function renderDVDetailPanel(record: any) {
           { label: 'Need Data', value: fineScanResults.filter((r: any) => r.decision === 'NeedMoreData').length, color: '#fa8c16' },
         ] : undefined}
         actionButton={
-          <Button
-            type="primary"
-            icon={<ThunderboltOutlined />}
-            onClick={handleRunFineScan}
-            disabled={fineScanStatus === 'running' || preferredContinueScanList.length === 0}
-            loading={fineScanStatus === 'running'}
-            size="middle"
-            style={{ borderRadius: '6px', fontWeight: 600, height: '36px' }}
-          >
-            {fineScanStatus === 'running' ? 'Running...' : 'Run Fine Scan'}
-          </Button>
+          <Tooltip title={pipelineRunning ? 'Disabled while AI Pipeline is running.' : ''}>
+            <span>
+              <Button
+                type="primary"
+                icon={<ThunderboltOutlined />}
+                onClick={handleRunFineScan}
+                disabled={fineScanStatus === 'running' || preferredContinueScanList.length === 0 || pipelineRunning}
+                loading={fineScanStatus === 'running'}
+                style={AI_AGENT_PRIMARY_BTN_STYLE}
+              >
+                {fineScanStatus === 'running' ? 'Running...' : 'Run Fine Scan'}
+              </Button>
+            </span>
+          </Tooltip>
         }
         isRunning={fineScanStatus === 'running'}
         expanded={fineScanExpanded}
@@ -5899,15 +6692,16 @@ function renderDVDetailPanel(record: any) {
           return undefined;
         })()}
         actionButton={
-          <Button
-            type="primary"
-            icon={<CheckCircleOutlined />}
-            onClick={handleDeeperValidation}
-            loading={deeperValidationStatus === 'loading'}
-            disabled={fineScanStatus !== 'completed' || fineScanResults.length === 0 || selectValidationCandidates().length === 0}
-            size="small"
-            style={{ borderRadius: '4px', fontWeight: 600 }}
-          >
+          <Tooltip title={pipelineRunning ? 'Disabled while AI Pipeline is running.' : ''}>
+            <span>
+              <Button
+                type="primary"
+                icon={<CheckCircleOutlined />}
+                onClick={handleDeeperValidation}
+                loading={deeperValidationStatus === 'loading'}
+                disabled={fineScanStatus !== 'completed' || fineScanResults.length === 0 || selectValidationCandidates().length === 0 || pipelineRunning}
+                style={AI_AGENT_PRIMARY_BTN_STYLE}
+              >
             {deeperValidationStatus === 'loading' ? 'Validating...' : (() => {
               const bd = validationCandidateBreakdown();
               if (bd.watchCount > 0) {
@@ -5915,7 +6709,9 @@ function renderDVDetailPanel(record: any) {
               }
               return `Run Validation (${bd.total})`;
             })()}
-          </Button>
+              </Button>
+            </span>
+          </Tooltip>
         }
         isRunning={deeperValidationStatus === 'loading'}
         expanded={dvExpanded}
@@ -5964,8 +6760,8 @@ function renderDVDetailPanel(record: any) {
             {deeperValidationStatus === 'loading' && (
               <div style={{ textAlign: 'center', padding: '40px 0' }}>
                 <SyncOutlined spin style={{ fontSize: 32, color: '#1890ff', marginBottom: 16 }} />
-                <div style={{ fontSize: '14px', fontWeight: 600, color: '#003a8c' }}>Validating Historical Stability</div>
-                <div style={{ fontSize: '12px', color: '#8c8c8c', marginTop: 4 }}>Processing Monte Carlo simulations & risk gates...</div>
+                <div style={{ fontSize: '14px', fontWeight: 600, color: '#003a8c' }}>Running Deeper Validation</div>
+                <div style={{ fontSize: '12px', color: '#8c8c8c', marginTop: 4 }}>Backtest, optimization & stability analysis — can take 1–3 minutes for multiple symbols</div>
               </div>
             )}
 
@@ -6166,7 +6962,22 @@ function renderDVDetailPanel(record: any) {
             {deeperValidationStatus === 'error' && (
               <div style={{ textAlign: 'center', padding: '40px 0', color: '#ff4d4f' }}>
                 <CloseCircleOutlined style={{ fontSize: '32px', marginBottom: 16 }} />
-                <div style={{ fontSize: '14px' }}>Validation failed. Please check backend logs or retry.</div>
+                <div style={{ fontSize: '14px', fontWeight: 600, marginBottom: 8 }}>Validation failed</div>
+                <div style={{ fontSize: '12px', color: '#888', maxWidth: 500, margin: '0 auto', lineHeight: 1.6 }}>
+                  {dvErrorMessage || 'Please check backend logs or retry.'}
+                </div>
+                {dvErrors.length > 0 && (
+                  <div style={{ marginTop: 16, textAlign: 'left', maxWidth: 500, margin: '16px auto 0' }}>
+                    <div style={{ fontSize: '11px', color: '#666', fontWeight: 600, marginBottom: 4 }}>Failed symbols:</div>
+                    {dvErrors.slice(0, 8).map((e: any, i: number) => (
+                      <div key={i} style={{ fontSize: '11px', color: '#999', padding: '2px 0' }}>
+                        <span style={{ fontWeight: 600, color: '#ff4d4f' }}>{e.symbol}</span>
+                        {e.step && <span style={{ color: '#bbb' }}> [{e.step}]</span>}
+                        {`: ${e.message}`}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
@@ -6218,35 +7029,23 @@ function renderDVDetailPanel(record: any) {
         summaryChips={entryPlanResults ? [
           { label: 'Plans', value: entryPlanResults.length },
           { label: 'BUY', value: entryPlanResults.filter((p: any) => p.aiDecision === 'BUY').length, color: '#52c41a' },
-          { label: 'Mode', value: entryPlanExecutionMode === 'Paper Trade if Triggered' ? 'Paper' : entryPlanExecutionMode === 'Real Trade if Triggered' ? 'Real' : 'Rec' },
         ] : undefined}
         actionButton={
           (deeperValidationStatus === 'completed' || deeperValidationStatus === 'stopped') && getEntryPlanCandidates().length > 0 ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <Select
-                size="small"
-                value={entryPlanExecutionMode}
-                onChange={(v) => setEntryPlanExecutionMode(v)}
-                style={{ width: 150, fontSize: '11px' }}
-                dropdownStyle={{ fontSize: '12px' }}
-              >
-                <Option value="Recommend Only">Recommend Only</Option>
-                <Option value="Add to Watchlist">Add to Watchlist</Option>
-                <Option value="Paper Trade if Triggered">Paper Trade</Option>
-                <Option value="Real Trade if Triggered">Real Trade</Option>
-              </Select>
-              <Button
-                type="primary"
-                size="small"
-                icon={<ThunderboltOutlined />}
-                loading={entryPlanStatus === 'loading'}
-                disabled={entryPlanStatus === 'loading' || !getEntryPlanCandidates().length}
-                onClick={handleRunEntryPlan}
-                style={{ borderRadius: '4px', fontWeight: 600 }}
-              >
-                Run Entry Plan
-              </Button>
-            </div>
+            <Tooltip title={pipelineRunning ? 'Disabled while AI Pipeline is running.' : ''}>
+              <span>
+                <Button
+                  type="primary"
+                  icon={<ThunderboltOutlined />}
+                  loading={entryPlanStatus === 'loading'}
+                  disabled={entryPlanStatus === 'loading' || !getEntryPlanCandidates().length || pipelineRunning}
+                  onClick={handleRunEntryPlan}
+                  style={AI_AGENT_PRIMARY_BTN_STYLE}
+                >
+                  Run Entry Plan
+                </Button>
+              </span>
+            </Tooltip>
           ) : undefined
         }
         isRunning={entryPlanStatus === 'loading'}
@@ -6378,13 +7177,19 @@ function renderDVDetailPanel(record: any) {
                 {/* Block 4: Execution Mode */}
                 <div style={{ background: '#f8f9fa', borderRadius: '8px', border: '1px solid #e8eaed', padding: '12px 14px' }}>
                   <div style={{ fontSize: '10px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.6px', fontWeight: 500, marginBottom: '6px' }}>Execution</div>
-                  <div style={{ fontSize: '12px', fontWeight: 500, color: '#555', fontFamily: "'Inter', sans-serif", marginBottom: '4px' }}>{entryPlanExecutionMode}</div>
+                  <div style={{ fontSize: '12px', fontWeight: 500, color: '#555', fontFamily: "'Inter', sans-serif", marginBottom: '4px' }}>
+                    {pipelineMode === 'ai'
+                      ? (tradingAccountMode === 'paper' ? 'AI Mode · Paper Execution Ready' : 'AI Mode · Live Requires Manual Confirm')
+                      : pipelineMode === 'hybrid'
+                        ? 'Hybrid Mode · Manual Execution'
+                        : 'Manual Mode · Recommendations Only'}
+                  </div>
                   <div style={{ fontSize: '10px', color: '#999' }}>
-                    {(() => {
-                      const ed = entryPlanResults[0]?.executionDetails;
-                      if (ed) return `${ed.brokerSource || 'Not Connected'} | Can execute: ${ed.canExecute ? 'Yes' : 'No'}`;
-                      return `Risk/trade: ${entryPlanRiskPerTrade}%`;
-                    })()}
+                    {pipelineMode === 'ai'
+                      ? (tradingAccountMode === 'paper' ? 'Paper preview only' : 'Manual confirm required')
+                      : pipelineMode === 'hybrid'
+                        ? 'No automatic orders'
+                        : 'Manual only'}
                   </div>
                 </div>
               </div>
@@ -6436,6 +7241,28 @@ function renderDVDetailPanel(record: any) {
                     const trColor = tradeReadiness === 'READY' ? '#52c41a' : tradeReadiness === 'WAIT' ? '#fa8c16' : '#ff4d4f';
                     const rgColor = rg.status === 'PASS' ? '#52c41a' : rg.status === 'REVIEW' ? '#fa8c16' : '#ff4d4f';
                     const faColor = finalAction === 'BUY_READY' ? '#52c41a' : finalAction === 'WAIT_FOR_ENTRY' ? '#fa8c16' : '#ff4d4f';
+
+                    const curPrice = ep.currentPrice || ep.price;
+                    const loPrice = ep.entryLow || ep.entryZoneLow;
+                    const hiPrice = ep.entryHigh || ep.entryZoneHigh;
+                    let distText = '—';
+                    let distColor = '#8c8c8c';
+                    if (curPrice && loPrice && hiPrice) {
+                      if (curPrice < loPrice) {
+                        const diff = loPrice - curPrice;
+                        const pct = (diff / curPrice) * 100;
+                        distText = `Below entry by $${diff.toFixed(2)} (${pct.toFixed(1)}%)`;
+                        distColor = '#fa8c16';
+                      } else if (curPrice > hiPrice) {
+                        const diff = curPrice - hiPrice;
+                        const pct = (diff / hiPrice) * 100;
+                        distText = `Above entry by $${diff.toFixed(2)} (${pct.toFixed(1)}%)`;
+                        distColor = '#fa8c16';
+                      } else {
+                        distText = 'In entry zone';
+                        distColor = '#52c41a';
+                      }
+                    }
 
                     const SectionHeader = ({ title, color }: { title: string; color?: string }) => (
                       <div style={{ 
@@ -6523,18 +7350,19 @@ function renderDVDetailPanel(record: any) {
                             <Space size={8}>
                               <Button
                                 size="middle"
-                                type={finalAction === 'BUY_READY' ? 'primary' : 'default'}
+                                type={finalAction === 'BUY_READY' ? 'primary' : finalAction === 'READY_REVIEW' ? 'primary' : 'default'}
+                                ghost={finalAction === 'READY_REVIEW'}
                                 danger={finalAction === 'BLOCKED_BY_RISK'}
                                 disabled={finalAction === 'SKIP' || finalAction === 'BLOCKED_BY_RISK' || dq === 'POOR'}
                                 onClick={() => handleEntryPlanAction(ep)}
-                                style={{ 
-                                  fontSize: '12px', 
-                                  fontWeight: 600, 
+                                style={{
+                                  fontSize: '12px',
+                                  fontWeight: 600,
                                   borderRadius: '6px',
                                   height: '32px'
                                 }}
                               >
-                                {finalAction === 'BUY_READY' ? 'Execute Trade' : finalAction === 'WAIT_FOR_ENTRY' ? 'Monitor Entry' : finalAction === 'SKIP' ? 'Plan Skipped' : 'Risk Blocked'}
+                                {finalAction === 'BUY_READY' ? 'Execute Trade' : finalAction === 'READY_REVIEW' ? 'Review & Execute' : finalAction === 'WAIT_FOR_ENTRY' ? 'Monitor Entry' : finalAction === 'SKIP' ? 'Plan Skipped' : 'Risk Blocked'}
                               </Button>
                               <Button
                                 size="middle"
@@ -6563,7 +7391,9 @@ function renderDVDetailPanel(record: any) {
                           <div style={{ background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
                             <SectionHeader title="A. Execution Plan" />
                             <div style={{ display: 'grid', gridTemplateColumns: '95px 1fr', gap: '8px 12px', alignItems: 'baseline' }}>
-                              <Label text="Entry Zone" /><Value v={ep.entryZoneLow != null ? `$${ep.entryZoneLow.toFixed(2)} – $${(ep.entryZoneHigh ?? 0).toFixed(2)}` : '—'} bold color="#111827" />
+                              <Label text="Current Price" /><Value v={curPrice != null ? `$${curPrice.toFixed(2)}` : '—'} bold color="#111827" />
+                              <Label text="Distance" /><Value v={distText} color={distColor} bold />
+                              <Label text="Entry Zone" /><Value v={loPrice != null ? `$${loPrice.toFixed(2)} – $${(hiPrice ?? 0).toFixed(2)}` : '—'} bold color="#111827" />
                               <Label text="Trigger" /><Value v={ep.triggerCondition || '—'} color="#4b5563" />
                               <Label text="Stop Loss" /><Value v={fmtPrice(ep.stopLoss)} bold color="#dc2626" subText={`${ep.stopLossPct != null ? fmtPct(ep.stopLossPct) : 'N/A'} from ${ep.stopSource || 'entry'}`} />
                               <Label text="Targets" />
@@ -6730,6 +7560,41 @@ function renderDVDetailPanel(record: any) {
                     },
                   },
                   {
+                    title: 'Current',
+                    key: 'currentPrice',
+                    width: 90,
+                    render: (record) => {
+                      const p = record.currentPrice || record.price;
+                      const lo = record.entryLow || record.entryZoneLow;
+                      const hi = record.entryHigh || record.entryZoneHigh;
+                      if (!p) return <span style={{ fontSize: '11px', color: '#bbb' }}>N/A</span>;
+                      
+                      let distShort = '';
+                      let distColor = '#aaa';
+                      if (lo && hi) {
+                        if (p < lo) {
+                          const pct = ((lo - p) / p) * 100;
+                          distShort = `-${pct.toFixed(1)}%`;
+                          distColor = '#fa8c16';
+                        } else if (p > hi) {
+                          const pct = ((p - hi) / hi) * 100;
+                          distShort = `+${pct.toFixed(1)}%`;
+                          distColor = '#fa8c16';
+                        } else {
+                          distShort = 'IN ZONE';
+                          distColor = '#52c41a';
+                        }
+                      }
+                      
+                      return (
+                        <div style={{ lineHeight: '1.4' }}>
+                          <div style={{ fontSize: '12px', fontWeight: 600, color: '#111827' }}>${p.toFixed(2)}</div>
+                          {distShort && <div style={{ fontSize: '9px', color: distColor, fontWeight: 700 }}>{distShort}</div>}
+                        </div>
+                      );
+                    },
+                  },
+                  {
                     title: 'Entry Zone',
                     key: 'entryZone',
                     width: 120,
@@ -6865,13 +7730,14 @@ function renderDVDetailPanel(record: any) {
                       const displayText: Record<string, string> = {
                         'BUY_READY': 'BUY READY',
                         'BUY_ALLOWED': 'BUY',
+                        'READY_REVIEW': 'READY REVIEW',
                         'WAIT_FOR_ENTRY': 'WAIT ENTRY',
                         'WATCH_ONLY': 'WATCH',
                         'SKIP': 'SKIP',
                         'BLOCKED_BY_RISK': 'BLOCKED',
                         'NEEDS_REVIEW': 'REVIEW',
                       };
-                      const tagColor = a === 'BUY_READY' || a === 'BUY_ALLOWED' ? 'green' : a === 'WAIT_FOR_ENTRY' || a === 'WATCH_ONLY' ? 'gold' : 'red';
+                      const tagColor = a === 'BUY_READY' || a === 'BUY_ALLOWED' ? 'green' : a === 'READY_REVIEW' ? 'blue' : a === 'WAIT_FOR_ENTRY' || a === 'WATCH_ONLY' ? 'gold' : 'red';
                       return <Tag color={tagColor} style={{ fontSize: '10px', fontWeight: 600, padding: '0 6px', lineHeight: '18px', margin: 0 }}>{displayText[a] || a}</Tag>;
                     },
                   },
@@ -6926,12 +7792,42 @@ function renderDVDetailPanel(record: any) {
                       if (fa === 'BLOCKED_BY_RISK' || rg.status === 'BLOCK' || dq === 'POOR') {
                         return (
                           <Tooltip title={(record.blockers || rg.blockers || ['Blocked']).slice(0, 2).join('; ')}>
-                            <Button size="small" danger disabled style={{ fontSize: '10px' }}>Blocked</Button>
+                            <Button size="small" danger disabled style={AI_AGENT_COMPACT_BTN_STYLE}>Blocked</Button>
                           </Tooltip>
                         );
                       }
                       if (fa === 'SKIP' || aiDec === 'SKIP') {
-                        return <Button size="small" disabled style={{ fontSize: '10px' }}>Skipped</Button>;
+                        return <Button size="small" disabled style={AI_AGENT_COMPACT_BTN_STYLE}>Skipped</Button>;
+                      }
+                      if (fa === 'BLOCKED_BY_RISK' || rg.status === 'BLOCK' || dq === 'POOR') {
+                        return (
+                          <Tooltip title={(record.blockers || rg.blockers || ['Blocked']).slice(0, 2).join('; ')}>
+                            <Button size="small" danger disabled style={AI_AGENT_COMPACT_BTN_STYLE}>Blocked</Button>
+                          </Tooltip>
+                        );
+                      }
+                      if (fa === 'BUY_READY') {
+                        return (
+                          <Button size="small" type="primary" onClick={() => handleEntryPlanAction(record)} style={AI_AGENT_COMPACT_BTN_STYLE}>
+                            Execute
+                          </Button>
+                        );
+                      }
+                      if (fa === 'READY_REVIEW') {
+                        const inWl = isInWatchlist(record.symbol);
+                        return (
+                          <Space size={4}>
+                            <Button size="small" type="primary" ghost onClick={() => handleEntryPlanAction(record)} style={AI_AGENT_COMPACT_BTN_STYLE}>
+                              Review
+                            </Button>
+                            <Button
+                              size="small"
+                              icon={inWl ? <CheckOutlined /> : <PlusOutlined />}
+                              onClick={() => addToWatchlist(record)}
+                              style={{ ...AI_AGENT_COMPACT_BTN_STYLE, color: inWl ? '#52c41a' : '#d48806', borderColor: inWl ? '#52c41a' : '#d48806' }}
+                            />
+                          </Space>
+                        );
                       }
                       if (fa === 'WAIT_FOR_ENTRY' || aiDec === 'WATCH') {
                         const inWl = isInWatchlist(record.symbol);
@@ -6940,16 +7836,9 @@ function renderDVDetailPanel(record: any) {
                             size="small"
                             icon={inWl ? <CheckOutlined /> : <PlusOutlined />}
                             onClick={() => addToWatchlist(record)}
-                            style={{ fontSize: '10px', color: inWl ? '#52c41a' : '#d48806', borderColor: inWl ? '#52c41a' : '#d48806' }}
+                            style={{ ...AI_AGENT_COMPACT_BTN_STYLE, color: inWl ? '#52c41a' : '#d48806', borderColor: inWl ? '#52c41a' : '#d48806' }}
                           >
                             {inWl ? 'Update' : '+ Watchlist'}
-                          </Button>
-                        );
-                      }
-                      if (fa === 'BUY_READY') {
-                        return (
-                          <Button size="small" type="primary" onClick={() => handleEntryPlanAction(record)} style={{ fontSize: '10px' }}>
-                            Execute
                           </Button>
                         );
                       }
