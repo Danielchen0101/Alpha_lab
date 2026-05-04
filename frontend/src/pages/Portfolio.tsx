@@ -3478,8 +3478,9 @@ const Portfolio: React.FC = (): React.ReactElement => {
     if (!preflight.ok || !preflight.sessionValid) {
       setEntryPlanStatus('error');
       unregisterEntryPlanRun();
-      message.error(preflight.error || 'Session expired');
-      return;
+      const errMsg = preflight.error || 'Session expired. Please sign in again.';
+      message.error(errMsg);
+      throw new Error(errMsg);
     }
     if (!preflight.aiAvailable) {
       const reason = preflight.aiKeyIsMasked ? 'AI key is invalid (masked). Re-enter in Settings.' :
@@ -3489,14 +3490,11 @@ const Portfolio: React.FC = (): React.ReactElement => {
       setEntryPlanStatus('error');
       unregisterEntryPlanRun();
       message.error(reason);
-      return;
+      throw new Error(reason);
     }
-    // Check trading account config (paper vs real mode)
+    // Check trading account config — warn but don't block if unavailable (backend uses fallback)
     if (!tradingAccountData?.success) {
-      setEntryPlanStatus('error');
-      unregisterEntryPlanRun();
-      message.error(`Trading account (${tradingAccountMode} mode) is not available. Configure Alpaca keys in Settings.`);
-      return;
+      console.warn(`[EntryPlan] Trading account (${tradingAccountMode}) not available, using estimated account size`);
     }
 
     try {
@@ -3559,8 +3557,10 @@ const Portfolio: React.FC = (): React.ReactElement => {
         setEntryPlanStatus('completed');
         unregisterEntryPlanRun();
       } else {
+        const errMsg = res.data?.message || 'Entry Plan returned no results';
         setEntryPlanStatus('error');
         unregisterEntryPlanRun();
+        throw new Error(errMsg);
       }
     } catch (err: any) {
       const httpStatus = err.response?.status;
@@ -3614,11 +3614,12 @@ const Portfolio: React.FC = (): React.ReactElement => {
         ? (err.response?.data?.error || 'Configuration error. Check AI Provider settings.')
         : isRateLimit
           ? 'Rate limited by AI service. Please wait and try again.'
-          : (err.message || 'Entry plan failed');
+          : (err.response?.data?.message || err.message || 'Entry plan failed');
       console.error('Entry plan error:', err);
       setEntryPlanStatus('error');
       unregisterEntryPlanRun();
       message.error(errMsg);
+      throw new Error(errMsg);
     }
   };
 
