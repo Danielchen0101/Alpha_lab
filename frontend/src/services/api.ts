@@ -111,7 +111,7 @@ export const fineScanSelectAPI = {
 
 export const deeperValidationAPI = {
   validate: (candidates: any[], period = '1y', initialCapital = 100000) => {
-    return api.post('/ai/deeper-validation', { candidates, period, initialCapital });
+    return scannerApi.post('/ai/deeper-validation', { candidates, period, initialCapital });
   },
 };
 
@@ -243,6 +243,9 @@ export interface FineScanExplainResponse {
 export const tradingAccountAPI = {
   getAccount: (mode: 'paper' | 'real') => {
     return api.get<TradingAccountResponse>(`/trading/account?mode=${mode}`);
+  },
+  getPositions: (mode: 'paper' | 'real') => {
+    return api.get<{ success: boolean; mode: string; positions: any[]; error?: string }>(`/trading/positions?mode=${mode}`);
   },
 };
 

@@ -284,6 +284,96 @@ const Backtest: React.FC = () => {
     fetchBacktestHistory();
   }, [location, form]);
 
+  // 处理从 Strategy Ranking 或其他页面传递过来的 backtestId 或 selectedBacktest
+  useEffect(() => {
+    let targetBacktest: any = null;
+    let targetBacktestId: string | null = null;
+
+    if (location.state) {
+      targetBacktest = location.state.selectedBacktest;
+      targetBacktestId = location.state.selectedBacktestId;
+    }
+
+    // Fallback to sessionStorage
+    if (!targetBacktest) {
+      const saved = sessionStorage.getItem('selectedBacktestForView');
+      if (saved) {
+        try {
+          targetBacktest = JSON.parse(saved);
+          console.log('Using sessionStorage fallback for backtest:', targetBacktest);
+          // Clear it after use to avoid persistent showing on every visit to Backtest page
+          sessionStorage.removeItem('selectedBacktestForView');
+        } catch (e) {
+          console.error('Failed to parse selectedBacktestForView from sessionStorage', e);
+        }
+      }
+    }
+    
+    if (targetBacktest) {
+      console.log('Received backtest record for view:', targetBacktest);
+      
+      // 如果有完整的 selectedBacktest，直接构造 BacktestResult 并显示
+      const historyResults = targetBacktest.results || {};
+      const backtestResult: BacktestResult = {
+        backtestId: targetBacktest.backtestId,
+        status: (targetBacktest.status || 'completed') as any,
+        success: targetBacktest.status === 'completed' || targetBacktest.success === true,
+        results: {
+          totalReturn: safeNumber(historyResults.totalReturn || targetBacktest.totalReturn),
+          sharpeRatio: safeNumber(historyResults.sharpeRatio || targetBacktest.sharpeRatio),
+          maxDrawdown: safeNumber(historyResults.maxDrawdown || targetBacktest.maxDrawdown),
+          winRate: safeNumber(historyResults.winRate || targetBacktest.winRate),
+          trades: safeNumber(historyResults.trades || targetBacktest.trades),
+          annualizedReturn: safeNumber(historyResults.annualizedReturn || targetBacktest.annualizedReturn),
+          profitLoss: safeNumber(historyResults.profitLoss || targetBacktest.profitLoss),
+          chartData: historyResults.chartData || [],
+          equityCurve: historyResults.equityCurve || [],
+          tradesList: historyResults.tradesList || [],
+          volatility: historyResults.volatility || 0,
+          sortinoRatio: historyResults.sortinoRatio || 0,
+          profitFactor: historyResults.profitFactor || 0,
+          calmarRatio: historyResults.calmarRatio || 0,
+        },
+        parameters: targetBacktest.parameters || {
+          strategy: targetBacktest.strategy || 'Unknown',
+          symbols: targetBacktest.symbol ? [targetBacktest.symbol] : ['Unknown'],
+          period: targetBacktest.period || '',
+          initialCapital: targetBacktest.initialCapital || 100000,
+          startDate: targetBacktest.startDate || '',
+          endDate: targetBacktest.endDate || '',
+        },
+        createdAt: targetBacktest.createdAt
+      };
+
+      setBacktestResult(backtestResult);
+      
+      // 填充表单参数
+      const strategy = backtestResult.parameters.strategy || 'moving_average';
+      form.setFieldsValue({
+        ...(backtestResult.parameters || {}),
+        symbol: (backtestResult.parameters.symbols?.[0] || backtestResult.parameters.symbol || '').toUpperCase(),
+        strategy: strategy,
+        initialCapital: backtestResult.parameters.initialCapital || 100000,
+      });
+      setSelectedStrategy(strategy);
+
+      // 滚动到结果区域
+      setTimeout(() => {
+        resultsRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 300);
+    } else if (targetBacktestId) {
+      console.log('Received selectedBacktestId from navigation state:', targetBacktestId);
+      // 如果只有 ID，尝试加载
+      const localHistory = loadLocalBacktestHistory();
+      const found = localHistory.find(item => item.backtestId === targetBacktestId);
+      if (found) {
+        handleViewBacktest(found);
+      } else {
+        loadBacktestResult(targetBacktestId);
+      }
+    }
+  }, [location.state]);
+
   // 生成唯一的请求ID
   const generateRequestId = () => {
     return `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -873,6 +963,32 @@ const Backtest: React.FC = () => {
   };
 
   // 查看历史回测结果
+  const handleCompareSelected = () => {
+    if (selectedBacktests.length < 2) {
+      message.warning('Please select at least 2 backtest sessions to compare.');
+      return;
+    }
+    
+    const backtestsToCompare = backtestHistory
+      .filter(item => selectedBacktests.includes(item.backtestId))
+      .map(item => ({
+        ...item,
+        parameters: {
+          ...item.parameters,
+          symbol: item.symbol || (item.parameters && item.parameters.symbols ? item.parameters.symbols[0] : 'N/A'),
+          strategy: item.strategy || (item.parameters ? item.parameters.strategy : 'Unknown'),
+          startDate: item.startDate || (item.parameters ? item.parameters.startDate : ''),
+          endDate: item.endDate || (item.parameters ? item.parameters.endDate : ''),
+          initialCapital: item.initialCapital || (item.parameters ? item.parameters.initialCapital : 100000),
+        }
+      }));
+    
+    // Save to sessionStorage as fallback
+    sessionStorage.setItem('compareBacktests', JSON.stringify(backtestsToCompare));
+    
+    navigate('/compare', { state: { selectedBacktests: backtestsToCompare } });
+  };
+
   const handleViewBacktest = (record: BacktestHistoryItem) => {
     try {
       console.log('Viewing backtest:', record.backtestId);
@@ -1327,6 +1443,8 @@ const Backtest: React.FC = () => {
         .blueprint-value { font-size: 14px; font-weight: 700; color: #262626; }
         .chart-container-premium { background: #fff; border-radius: 12px; border: 1px solid #f0f0f0; padding: 20px; margin-bottom: 24px; }
         .recent-backtest-row:hover { background-color: #f0f7ff !important; cursor: pointer; }
+        .recent-backtest-row.selected-row { background-color: #e6f7ff !important; }
+        .recent-backtest-row.selected-row:hover { background-color: #bae7ff !important; }
         .primary-cta-button { height: 44px; font-weight: 700; letter-spacing: 0.5px; border-radius: 8px; box-shadow: 0 4px 10px rgba(24, 144, 255, 0.2); }
       `}</style>
 
@@ -1489,9 +1607,35 @@ const Backtest: React.FC = () => {
         </Col>
 
         <Col span={8}>
-          <Card className="premium-card" title={<span style={{ fontWeight: 700 }}><HistoryOutlined style={{ marginRight: 8 }} />Recent Sessions</span>} extra={<Button type="text" icon={<ReloadOutlined />} onClick={fetchBacktestHistory} loading={historyLoading} size="small" />}>
+          <Card 
+            className="premium-card" 
+            title={<span style={{ fontWeight: 700 }}><HistoryOutlined style={{ marginRight: 8 }} />Recent Sessions</span>} 
+            extra={
+              <Space>
+                {selectedBacktests.length >= 2 && (
+                  <Button 
+                    type="primary" 
+                    size="small" 
+                    icon={<LineChartOutlined />} 
+                    onClick={handleCompareSelected}
+                    style={{ borderRadius: 4, height: 24, fontSize: '11px', display: 'flex', alignItems: 'center' }}
+                  >
+                    Compare ({selectedBacktests.length})
+                  </Button>
+                )}
+                <Button type="text" icon={<ReloadOutlined />} onClick={fetchBacktestHistory} loading={historyLoading} size="small" />
+              </Space>
+            }
+          >
             {historyLoading ? <div style={{ textAlign: 'center', padding: '40px' }}><Spin /></div> : backtestHistory.length > 0 ? (
-              <Table columns={historyColumns} dataSource={backtestHistory} rowKey="backtestId" pagination={{ pageSize: 6, simple: true }} size="small" rowClassName={() => 'recent-backtest-row'} />
+              <Table 
+                columns={historyColumns} 
+                dataSource={backtestHistory} 
+                rowKey="backtestId" 
+                pagination={{ pageSize: 6, simple: true }} 
+                size="small" 
+                rowClassName={(record) => selectedBacktests.includes(record.backtestId) ? 'recent-backtest-row selected-row' : 'recent-backtest-row'}
+              />
             ) : (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No previous sessions found." />
             )}

@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Typography, Card, Form, Input, Select, Button, Space, Collapse, Tag, message, Row, Col,
+  Typography, Card, Form, Input, Select, Button, Space, Tag, message, Row, Col, Divider, Alert,
 } from 'antd';
 import {
-  SettingOutlined, CheckCircleOutlined, CloseCircleOutlined, QuestionCircleOutlined,
+  CheckCircleOutlined, CloseCircleOutlined, QuestionCircleOutlined,
   SaveOutlined, ApiOutlined, ExperimentOutlined, BankOutlined, CloudOutlined,
-  LogoutOutlined, UserOutlined,
+  LogoutOutlined, UserOutlined, ArrowLeftOutlined, SafetyCertificateOutlined,
+  InfoCircleOutlined, RobotOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
 import axios from 'axios';
 import { supabase } from '../lib/supabaseClient';
@@ -39,27 +40,57 @@ const requireSession = async (): Promise<string | null> => {
 
 // --- Status badge ---
 const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
-  if (status === 'connected') return <Tag icon={<CheckCircleOutlined />} color="success">Connected</Tag>;
-  if (status === 'saved') return <Tag icon={<CheckCircleOutlined />} color="blue">Saved</Tag>;
-  if (status === 'error') return <Tag icon={<CloseCircleOutlined />} color="error">Error</Tag>;
-  return <Tag icon={<QuestionCircleOutlined />} color="default">Not tested</Tag>;
+  if (status === 'connected') return <Tag icon={<CheckCircleOutlined />} color="success" style={{ borderRadius: 12, padding: '0 10px' }}>Connected</Tag>;
+  if (status === 'saved') return <Tag icon={<CheckCircleOutlined />} color="blue" style={{ borderRadius: 12, padding: '0 10px' }}>Saved</Tag>;
+  if (status === 'error') return <Tag icon={<CloseCircleOutlined />} color="error" style={{ borderRadius: 12, padding: '0 10px' }}>Error</Tag>;
+  return <Tag icon={<QuestionCircleOutlined />} color="default" style={{ borderRadius: 12, padding: '0 10px' }}>Not tested</Tag>;
 };
+
+// --- Section Header ---
+const SectionHeader: React.FC<{ icon: React.ReactNode; title: string; subtitle: string; status?: string }> = ({ icon, title, subtitle, status }) => (
+  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
+    <Space size={16} align="start">
+      <div style={{ 
+        width: 40, 
+        height: 40, 
+        borderRadius: 10, 
+        background: '#f5f5f5', 
+        display: 'flex', 
+        alignItems: 'center', 
+        justifyContent: 'center',
+        fontSize: 20,
+        color: '#1890ff'
+      }}>
+        {icon}
+      </div>
+      <div>
+        <Title level={4} style={{ margin: 0 }}>{title}</Title>
+        <Text type="secondary" style={{ fontSize: 13 }}>{subtitle}</Text>
+      </div>
+    </Space>
+    {status && <StatusBadge status={status} />}
+  </div>
+);
+
+// --- Security Note ---
+const SecurityNote: React.FC<{ text: string }> = ({ text }) => (
+  <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: '#fafafa', borderRadius: 6, border: '1px solid #f0f0f0' }}>
+    <SafetyCertificateOutlined style={{ color: '#52c41a' }} />
+    <Text type="secondary" style={{ fontSize: 12 }}>{text}</Text>
+  </div>
+);
 
 // =====================================================================
 // Section A: Alpaca Paper Trading
 // =====================================================================
 const AlpacaPaperSection: React.FC = () => {
   const [form] = Form.useForm();
-  const [, setLoading] = useState(false);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState('not_tested');
-  const [showKey, setShowKey] = useState(false);
-  const [showSecret, setShowSecret] = useState(false);
   const [hasSaved, setHasSaved] = useState(false);
 
   useEffect(() => {
-    setLoading(true);
     userApi.get('/settings/broker-config').then(res => {
       if (res.data?.success) {
         const cfg = res.data.config || {};
@@ -70,7 +101,7 @@ const AlpacaPaperSection: React.FC = () => {
         });
         setHasSaved(!!cfg.paper_api_key);
       }
-    }).catch(() => {}).finally(() => setLoading(false));
+    }).catch(() => {});
   }, [form]);
 
   const handleSave = async () => {
@@ -86,7 +117,7 @@ const AlpacaPaperSection: React.FC = () => {
       if (res.data?.success) {
         message.success('Paper trading settings saved');
         setHasSaved(true);
-        setStatus('not_tested');
+        setStatus('saved');
         const reload = await userApi.get('/settings/broker-config');
         if (reload.data?.success) {
           const cfg = reload.data.config || {};
@@ -128,37 +159,37 @@ const AlpacaPaperSection: React.FC = () => {
   };
 
   return (
-    <Card title={<Space><BankOutlined />Alpaca Paper Trading</Space>} extra={<StatusBadge status={status} />} style={{ marginBottom: 16 }}>
-      <Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>Paper trading credentials for simulated orders and positions.</Text>
+    <Card bordered={false} style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', marginBottom: 24 }}>
+      <SectionHeader 
+        icon={<ThunderboltOutlined />} 
+        title="Alpaca Paper Trading" 
+        subtitle="Credentials for simulated trading environment."
+        status={status}
+      />
       <Form form={form} layout="vertical">
         <Row gutter={16}>
-          <Col span={8}>
-            <Form.Item name="paper_api_key" label="Paper API Key">
-              <Input.Password
-                placeholder={hasSaved ? 'Key saved (masked)' : 'Enter paper API key'}
-                visibilityToggle={{ visible: showKey, onVisibleChange: setShowKey }}
-              />
+          <Col xs={24} md={8}>
+            <Form.Item name="paper_api_key" label={<Text strong style={{ fontSize: 13 }}>API Key</Text>}>
+              <Input.Password placeholder={hasSaved ? 'Saved (masked)' : 'Enter API key'} />
             </Form.Item>
           </Col>
-          <Col span={8}>
-            <Form.Item name="paper_api_secret" label="Paper Secret Key">
-              <Input.Password
-                placeholder={hasSaved ? 'Secret saved (masked)' : 'Enter paper secret key'}
-                visibilityToggle={{ visible: showSecret, onVisibleChange: setShowSecret }}
-              />
+          <Col xs={24} md={8}>
+            <Form.Item name="paper_api_secret" label={<Text strong style={{ fontSize: 13 }}>Secret Key</Text>}>
+              <Input.Password placeholder={hasSaved ? 'Saved (masked)' : 'Enter secret key'} />
             </Form.Item>
           </Col>
-          <Col span={8}>
-            <Form.Item name="paper_base_url" label="Paper Trading Base URL">
+          <Col xs={24} md={8}>
+            <Form.Item name="paper_base_url" label={<Text strong style={{ fontSize: 13 }}>Endpoint URL</Text>}>
               <Input placeholder="https://paper-api.alpaca.markets" />
             </Form.Item>
           </Col>
         </Row>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <Button onClick={handleTest} loading={testing} disabled={testing || saving} icon={<ExperimentOutlined />}>Test Connection</Button>
-          <Button type="primary" onClick={handleSave} loading={saving} disabled={saving || testing} icon={<SaveOutlined />}>Save Paper Settings</Button>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
+          <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>Test Connection</Button>
+          <Button type="primary" onClick={handleSave} loading={saving} icon={<SaveOutlined />}>Save Changes</Button>
         </div>
       </Form>
+      <SecurityNote text="Paper keys are used for testing only. Real funds are never at risk here." />
     </Card>
   );
 };
@@ -168,16 +199,12 @@ const AlpacaPaperSection: React.FC = () => {
 // =====================================================================
 const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string; secretKey: string }) => void }> = ({ onMarketDataSynced }) => {
   const [form] = Form.useForm();
-  const [, setLoading] = useState(false);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState('not_tested');
-  const [showKey, setShowKey] = useState(false);
-  const [showSecret, setShowSecret] = useState(false);
   const [hasSaved, setHasSaved] = useState(false);
 
   useEffect(() => {
-    setLoading(true);
     userApi.get('/settings/broker-config').then(res => {
       if (res.data?.success) {
         const cfg = res.data.config || {};
@@ -188,7 +215,7 @@ const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string
         });
         setHasSaved(!!cfg.live_api_key);
       }
-    }).catch(() => {}).finally(() => setLoading(false));
+    }).catch(() => {});
   }, [form]);
 
   const handleSave = async () => {
@@ -204,7 +231,7 @@ const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string
       if (res.data?.success) {
         message.success('Real trading settings saved');
         setHasSaved(true);
-        setStatus('not_tested');
+        setStatus('saved');
         const reload = await userApi.get('/settings/broker-config');
         if (reload.data?.success) {
           const cfg = reload.data.config || {};
@@ -213,7 +240,6 @@ const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string
             live_api_secret: cfg.live_api_secret_masked || '',
           });
         }
-        // Trigger Market Data reload if keys were synced
         if (res.data.marketDataSynced && onMarketDataSynced) {
           onMarketDataSynced({
             apiKey: res.data.maskedMarketDataApiKey || '',
@@ -253,35 +279,41 @@ const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string
   };
 
   return (
-    <Card title={<Space><BankOutlined />Alpaca Real Trading</Space>} extra={<StatusBadge status={status} />} style={{ marginBottom: 16 }}>
-      <Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>Live trading credentials. Handle with care — real money at risk.</Text>
+    <Card bordered={false} style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', marginBottom: 24, borderLeft: '4px solid #ff4d4f' }}>
+      <SectionHeader 
+        icon={<BankOutlined style={{ color: '#ff4d4f' }} />} 
+        title="Alpaca Live Trading" 
+        subtitle="Credentials for real money execution. Handle with extreme caution."
+        status={status}
+      />
+      <Alert 
+        message="Security Warning" 
+        description="Live trading involves real financial risk. Ensure your keys are kept secure and never shared." 
+        type="warning" 
+        showIcon 
+        style={{ marginBottom: 20, borderRadius: 8 }}
+      />
       <Form form={form} layout="vertical">
         <Row gutter={16}>
-          <Col span={8}>
-            <Form.Item name="live_api_key" label="Real API Key">
-              <Input.Password
-                placeholder={hasSaved ? 'Key saved (masked)' : 'Enter real API key'}
-                visibilityToggle={{ visible: showKey, onVisibleChange: setShowKey }}
-              />
+          <Col xs={24} md={8}>
+            <Form.Item name="live_api_key" label={<Text strong style={{ fontSize: 13 }}>API Key</Text>}>
+              <Input.Password placeholder={hasSaved ? 'Saved (masked)' : 'Enter API key'} />
             </Form.Item>
           </Col>
-          <Col span={8}>
-            <Form.Item name="live_api_secret" label="Real Secret Key">
-              <Input.Password
-                placeholder={hasSaved ? 'Secret saved (masked)' : 'Enter real secret key'}
-                visibilityToggle={{ visible: showSecret, onVisibleChange: setShowSecret }}
-              />
+          <Col xs={24} md={8}>
+            <Form.Item name="live_api_secret" label={<Text strong style={{ fontSize: 13 }}>Secret Key</Text>}>
+              <Input.Password placeholder={hasSaved ? 'Saved (masked)' : 'Enter secret key'} />
             </Form.Item>
           </Col>
-          <Col span={8}>
-            <Form.Item name="live_base_url" label="Real Trading Base URL">
+          <Col xs={24} md={8}>
+            <Form.Item name="live_base_url" label={<Text strong style={{ fontSize: 13 }}>Endpoint URL</Text>}>
               <Input placeholder="https://api.alpaca.markets" />
             </Form.Item>
           </Col>
         </Row>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <Button onClick={handleTest} loading={testing} disabled={testing || saving} icon={<ExperimentOutlined />}>Test Connection</Button>
-          <Button type="primary" onClick={handleSave} loading={saving} disabled={saving || testing} icon={<SaveOutlined />}>Save Real Settings</Button>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
+          <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>Test Live Connection</Button>
+          <Button type="primary" danger onClick={handleSave} loading={saving} icon={<SaveOutlined />}>Save Live Settings</Button>
         </div>
       </Form>
     </Card>
@@ -321,23 +353,19 @@ const MarketDataSection: React.FC<{ reloadKey?: number }> = ({ reloadKey }) => {
         data_base_url: values.data_base_url,
         feed: values.feed,
       };
-      if (values.api_key && !values.api_key.includes('****')) {
-        payload.api_key = values.api_key;
-      }
-      if (values.api_secret && !values.api_secret.includes('****')) {
-        payload.api_secret = values.api_secret;
-      }
+      if (values.api_key && !values.api_key.includes('****')) payload.api_key = values.api_key;
+      if (values.api_secret && !values.api_secret.includes('****')) payload.api_secret = values.api_secret;
       const res = await userApi.post('/config/market-data', payload);
       if (res.data?.success) {
         message.success('Market data settings saved');
         loadConfig();
+        setStatus('saved');
       } else {
         message.error(res.data?.message || 'Save failed');
       }
     } catch (e: any) {
       if (e.errorFields) return;
-      const msg = e.response?.data?.message || e.message || 'Save failed';
-      message.error(msg);
+      message.error(e.response?.data?.message || e.message || 'Save failed');
     }
   };
 
@@ -345,14 +373,12 @@ const MarketDataSection: React.FC<{ reloadKey?: number }> = ({ reloadKey }) => {
     setTesting(true);
     try {
       const res = await userApi.post('/config/market-data/test');
-      const d = res.data?.debug;
-      const debugHint = d ? ` (source=${d.keySource}, baseUrl=${d.baseUrl})` : '';
       if (res.data?.success) {
         setStatus('connected');
-        message.success(`Market data connected${debugHint}`);
+        message.success(`Market data connected (Source: ${res.data.debug?.keySource || 'N/A'})`);
       } else {
         setStatus('error');
-        message.error((res.data?.message || 'Connection failed') + debugHint);
+        message.error(res.data?.message || 'Connection failed');
       }
     } catch (e: any) {
       setStatus('error');
@@ -365,41 +391,51 @@ const MarketDataSection: React.FC<{ reloadKey?: number }> = ({ reloadKey }) => {
   const hasKeys = credentialSource === 'real_trading';
 
   return (
-    <Card title={<Space><CloudOutlined />Alpaca Market Data</Space>} extra={<StatusBadge status={status} />} style={{ marginBottom: 16 }}>
-      <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>Market data endpoint for bars, snapshots, and quotes. Uses Alpaca Real Trading credentials with data.alpaca.markets endpoint.</Text>
-      {hasKeys && <Text type="success" style={{ display: 'block', marginBottom: 16 }}>Credential Source: Alpaca Real Trading (auto-synced)</Text>}
-      {!hasKeys && <Text type="warning" style={{ display: 'block', marginBottom: 16 }}>Configure Alpaca Real Trading first, then Market Data keys will be auto-synced.</Text>}
+    <Card bordered={false} style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', marginBottom: 24 }}>
+      <SectionHeader 
+        icon={<CloudOutlined />} 
+        title="Alpaca Market Data" 
+        subtitle="Endpoint for bars, snapshots, and streaming quotes."
+        status={status}
+      />
+      <div style={{ marginBottom: 20 }}>
+        {hasKeys ? (
+          <Tag color="success" icon={<CheckCircleOutlined />}>Keys auto-synced from Real Trading</Tag>
+        ) : (
+          <Tag color="warning" icon={<InfoCircleOutlined />}>Configure Real Trading first for automatic sync</Tag>
+        )}
+      </div>
       <Form form={form} layout="vertical">
         <Row gutter={16}>
-          <Col span={12}>
-            <Form.Item name="data_base_url" label="Market Data Base URL">
+          <Col xs={24} md={12}>
+            <Form.Item name="data_base_url" label={<Text strong style={{ fontSize: 13 }}>Data Endpoint URL</Text>}>
               <Input disabled placeholder="https://data.alpaca.markets" />
             </Form.Item>
           </Col>
-          <Col span={12}>
-            <Form.Item name="feed" label="Market Data Feed">
+          <Col xs={24} md={12}>
+            <Form.Item name="feed" label={<Text strong style={{ fontSize: 13 }}>Data Feed Tier</Text>}>
               <Select>
-                <Option value="iex">IEX (free tier)</Option>
-                <Option value="sip">SIP (paid tier)</Option>
+                <Option value="iex">IEX (Free Tier)</Option>
+                <Option value="sip">SIP (Paid Tier)</Option>
               </Select>
             </Form.Item>
           </Col>
         </Row>
         <Row gutter={16}>
-          <Col span={12}>
-            <Form.Item name="api_key" label="Market Data API Key (auto-synced from Real Trading)">
-              <Input.Password placeholder={hasKeys ? undefined : 'Configure Real Trading first'} disabled={hasKeys} />
+          <Col xs={24} md={12}>
+            <Form.Item name="api_key" label={<Text strong style={{ fontSize: 13 }}>Data API Key</Text>}>
+              <Input.Password disabled={hasKeys} placeholder={hasKeys ? 'Using Real Trading Key' : 'Configure Real Trading'} />
             </Form.Item>
           </Col>
-          <Col span={12}>
-            <Form.Item name="api_secret" label="Market Data API Secret (auto-synced from Real Trading)">
-              <Input.Password placeholder={hasKeys ? undefined : 'Configure Real Trading first'} disabled={hasKeys} />
+          <Col xs={24} md={12}>
+            <Form.Item name="api_secret" label={<Text strong style={{ fontSize: 13 }}>Data API Secret</Text>}>
+              <Input.Password disabled={hasKeys} placeholder={hasKeys ? 'Using Real Trading Secret' : 'Configure Real Trading'} />
             </Form.Item>
           </Col>
         </Row>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>Test Market Data</Button>
-          <Button type="primary" onClick={handleSave} icon={<SaveOutlined />}>Save Market Data Settings</Button>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
+          <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>Test Data Access</Button>
+          <Button type="primary" onClick={handleSave} icon={<SaveOutlined />}>Save Configuration</Button>
         </div>
       </Form>
     </Card>
@@ -416,19 +452,19 @@ const PROVIDER_MODELS: Record<string, { baseUrl: string; models: string[] }> = {
   },
   OpenAI: {
     baseUrl: 'https://api.openai.com/v1',
-    models: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-4', 'gpt-3.5-turbo'],
+    models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
   },
   Claude: {
     baseUrl: 'https://api.anthropic.com/v1',
-    models: ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+    models: ['claude-3-5-sonnet-latest', 'claude-3-opus-latest', 'claude-3-haiku-latest'],
   },
   Gemini: {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    models: ['gemini-3.1-pro-preview', 'gemini-3-flash-preview', 'gemini-3.1-flash-lite-preview', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+    models: ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-1.0-pro'],
   },
   'NVIDIA NIM': {
     baseUrl: 'https://integrate.api.nvidia.com/v1',
-    models: ['meta/llama-3.1-8b-instruct', 'meta/llama-3.1-70b-instruct', 'meta/llama-3.1-405b-instruct', 'mistralai/mistral-7b-instruct-v0.3', 'google/gemma-2-9b-it'],
+    models: ['meta/llama-3.1-405b-instruct', 'meta/llama-3.1-70b-instruct', 'meta/llama-3.1-8b-instruct'],
   },
   Mimo: {
     baseUrl: 'https://api.mimo.ai/v1',
@@ -446,7 +482,6 @@ const AIProviderSection: React.FC = () => {
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState('not_tested');
-  const [showKey, setShowKey] = useState(false);
   const [hasSaved, setHasSaved] = useState(false);
   const [customModel, setCustomModel] = useState(false);
   const [keyIsMasked, setKeyIsMasked] = useState(false);
@@ -463,11 +498,9 @@ const AIProviderSection: React.FC = () => {
         const providerModels = PROVIDER_MODELS[provider]?.models || [];
         const isKnown = providerModels.includes(model);
         setCustomModel(!isKnown);
-        // Use backend indicators — don't detect **** in returned value
         const hasValidKey = !!res.data.hasUserKey;
         const keyInvalid = !!res.data.apiKeyIsInvalid;
         setKeyIsMasked(keyInvalid);
-        // Don't set masked key as form value — use placeholder "Key saved (masked)" instead
         form.setFieldsValue({
           provider,
           model: isKnown ? model : '__custom__',
@@ -476,20 +509,9 @@ const AIProviderSection: React.FC = () => {
           baseUrl: cfg.baseUrl || cfg.baseURL || PROVIDER_MODELS[provider]?.baseUrl || '',
         });
         setHasSaved(hasValidKey);
-        if (keyInvalid) {
-          setStatus('error');
-        } else {
-          const testStatus = res.data.testStatus || 'not_tested';
-          if (testStatus === 'connected') {
-            setStatus('connected');
-          } else if (testStatus === 'error') {
-            setStatus('error');
-          } else if (testStatus === 'saved' || hasValidKey) {
-            setStatus('saved');
-          } else {
-            setStatus('not_tested');
-          }
-        }
+        if (keyInvalid) setStatus('error');
+        else if (res.data.testStatus === 'connected') setStatus('connected');
+        else if (hasValidKey) setStatus('saved');
       }
     }).catch(() => {});
   }, [form]);
@@ -502,10 +524,6 @@ const AIProviderSection: React.FC = () => {
     }
   };
 
-  const handleModelChange = (value: string) => {
-    setCustomModel(value === '__custom__');
-  };
-
   const handleSave = async () => {
     try {
       const token = await requireSession();
@@ -513,43 +531,13 @@ const AIProviderSection: React.FC = () => {
       setSaving(true);
       const values = await form.validateFields();
       const modelValue = customModel ? values.customModel : values.model;
-      const payload: any = {
-        provider: values.provider,
-        model: modelValue,
-        baseUrl: values.baseUrl,
-      };
-      if (values.apiKey && !values.apiKey.includes('****')) {
-        payload.apiKey = values.apiKey;
-      }
+      const payload: any = { provider: values.provider, model: modelValue, baseUrl: values.baseUrl };
+      if (values.apiKey && !values.apiKey.includes('****')) payload.apiKey = values.apiKey;
       const res = await userApi.post('/settings/ai-config', payload);
       if (res.data?.success) {
-        message.success('AI provider settings saved');
+        message.success('AI settings saved');
         setHasSaved(true);
-        // Use backend testStatus if available, otherwise 'saved'
-        const testStatus = res.data.testStatus || 'saved';
-        setStatus(testStatus === 'connected' ? 'connected' : 'saved');
-        const reload = await userApi.get('/settings/ai-config');
-        if (reload.data?.success) {
-          const cfg = reload.data.config || {};
-          const model = cfg.model || modelValue;
-          const providerModels = PROVIDER_MODELS[values.provider]?.models || [];
-          const isKnown = providerModels.includes(model);
-          setCustomModel(!isKnown);
-          const hasValidKey = !!reload.data.hasUserKey;
-          const keyInvalid = !!reload.data.apiKeyIsInvalid;
-          setKeyIsMasked(keyInvalid);
-          setHasSaved(hasValidKey);
-          // Don't set masked key as form value — use placeholder instead
-          form.setFieldsValue({
-            apiKey: '',
-            model: isKnown ? model : '__custom__',
-            customModel: isKnown ? '' : model,
-          });
-          const reloadStatus = reload.data.testStatus || 'saved';
-          if (reloadStatus === 'connected') setStatus('connected');
-          else if (reloadStatus === 'error') setStatus('error');
-          else setStatus('saved');
-        }
+        setStatus('saved');
       } else {
         message.error(res.data?.message || 'Save failed');
       }
@@ -568,82 +556,77 @@ const AIProviderSection: React.FC = () => {
       if (!token) { setTesting(false); return; }
       const values = form.getFieldsValue();
       const modelValue = customModel ? values.customModel : values.model;
-      if (!modelValue) {
-        message.error('Please select or enter a model name');
-        setTesting(false); return;
-      }
-      const payload: any = {
-        baseUrl: values.baseUrl,
-        model: modelValue,
-        provider: values.provider,
-      };
-      if (values.apiKey && !values.apiKey.includes('****')) {
-        payload.apiKey = values.apiKey;
-      }
+      const payload: any = { baseUrl: values.baseUrl, model: modelValue, provider: values.provider };
+      if (values.apiKey && !values.apiKey.includes('****')) payload.apiKey = values.apiKey;
       const res = await userApi.post('/ai/provider/test', payload);
       if (res.data?.success) {
-        setStatus(res.data.testStatus || 'connected');
-        message.success('AI provider connection OK');
+        setStatus('connected');
+        message.success('AI connection successful');
       } else {
-        setStatus(res.data.testStatus || 'error');
+        setStatus('error');
         message.error(res.data?.message || 'Connection failed');
       }
     } catch (e: any) {
       setStatus('error');
-      const detail = e.response?.data?.message || e.response?.data?.error || e.message;
-      message.error(detail || 'Connection failed');
+      message.error(e.response?.data?.message || e.message || 'Connection failed');
     } finally {
       setTesting(false);
     }
   };
 
   return (
-    <Card title={<Space><ApiOutlined />AI Provider Configuration</Space>} extra={<StatusBadge status={status} />} style={{ marginBottom: 16 }}>
-      <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>Configure the AI provider used by Scanner, Fine Scan, Deeper Validation, and Entry Plan.</Text>
+    <Card bordered={false} style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', marginBottom: 24 }}>
+      <SectionHeader 
+        icon={<RobotOutlined />} 
+        title="AI Provider Intelligence" 
+        subtitle="Core AI brain for strategy generation and analysis."
+        status={status}
+      />
       {keyIsMasked && (
-        <Text type="danger" style={{ display: 'block', marginBottom: 16, fontWeight: 600 }}>
-          Stored AI key is invalid because a masked value was saved. Please re-enter the real API key below and click Save, then Test AI Connection.
-        </Text>
+        <Alert 
+          message="Key Mismatch" 
+          description="The saved key appears to be a masked value. Please re-enter your actual API key to restore service." 
+          type="error" 
+          showIcon 
+          style={{ marginBottom: 20, borderRadius: 8 }}
+        />
       )}
-      <Form form={form} layout="vertical" initialValues={{ provider: 'DeepSeek', model: 'deepseek-v4-pro', baseUrl: 'https://api.deepseek.com' }}>
+      <Form form={form} layout="vertical">
         <Row gutter={16}>
-          <Col span={6}>
-            <Form.Item name="provider" label="Provider">
+          <Col xs={24} md={6}>
+            <Form.Item name="provider" label={<Text strong style={{ fontSize: 13 }}>Provider</Text>}>
               <Select onChange={handleProviderChange}>
                 {PROVIDER_NAMES.map(p => <Option key={p} value={p}>{p}</Option>)}
               </Select>
             </Form.Item>
           </Col>
-          <Col span={6}>
-            <Form.Item name="model" label="Model">
-              <Select showSearch onChange={handleModelChange}>
+          <Col xs={24} md={6}>
+            <Form.Item name="model" label={<Text strong style={{ fontSize: 13 }}>Primary Model</Text>}>
+              <Select showSearch onChange={v => setCustomModel(v === '__custom__')}>
                 {modelOptions.map(m => <Option key={m} value={m}>{m}</Option>)}
                 <Option value="__custom__">Custom model...</Option>
               </Select>
             </Form.Item>
             {customModel && (
-              <Form.Item name="customModel" label="Custom Model Name" rules={[{ required: true, message: 'Enter model name' }]}>
-                <Input placeholder="e.g. deepseek-ai/deepseek-r1" />
+              <Form.Item name="customModel" label={<Text strong style={{ fontSize: 13 }}>Model Identifier</Text>} rules={[{ required: true }]}>
+                <Input placeholder="e.g. deepseek-reasoner" />
               </Form.Item>
             )}
           </Col>
-          <Col span={6}>
-            <Form.Item name="apiKey" label="API Key">
-              <Input.Password
-                placeholder={hasSaved ? 'Key saved (masked)' : 'Enter API key'}
-                visibilityToggle={{ visible: showKey, onVisibleChange: setShowKey }}
-              />
+          <Col xs={24} md={6}>
+            <Form.Item name="apiKey" label={<Text strong style={{ fontSize: 13 }}>API Key</Text>}>
+              <Input.Password placeholder={hasSaved ? 'Saved (masked)' : 'Enter API key'} />
             </Form.Item>
           </Col>
-          <Col span={6}>
-            <Form.Item name="baseUrl" label="Base URL">
+          <Col xs={24} md={6}>
+            <Form.Item name="baseUrl" label={<Text strong style={{ fontSize: 13 }}>API Base URL</Text>}>
               <Input placeholder="https://api.deepseek.com" />
             </Form.Item>
           </Col>
         </Row>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <Button onClick={handleTest} loading={testing} disabled={testing || saving} icon={<ExperimentOutlined />}>Test AI Connection</Button>
-          <Button type="primary" onClick={handleSave} loading={saving} disabled={saving || testing} icon={<SaveOutlined />}>Save AI Settings</Button>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
+          <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>Test Connection</Button>
+          <Button type="primary" onClick={handleSave} loading={saving} icon={<SaveOutlined />}>Save Intelligence Settings</Button>
         </div>
       </Form>
     </Card>
@@ -658,7 +641,6 @@ const FinnhubSection: React.FC = () => {
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState('not_tested');
-  const [showKey, setShowKey] = useState(false);
   const [hasSaved, setHasSaved] = useState(false);
 
   useEffect(() => {
@@ -686,12 +668,7 @@ const FinnhubSection: React.FC = () => {
       if (res.data?.success) {
         message.success('Finnhub settings saved');
         setHasSaved(true);
-        setStatus('not_tested');
-        const reload = await userApi.get('/settings/finnhub-config');
-        if (reload.data?.success) {
-          const cfg = reload.data.config || {};
-          form.setFieldsValue({ api_key: cfg.api_key_masked || '' });
-        }
+        setStatus('saved');
       } else {
         message.error(res.data?.message || 'Save failed');
       }
@@ -711,7 +688,7 @@ const FinnhubSection: React.FC = () => {
       const res = await userApi.post('/settings/finnhub-config/test');
       if (res.data?.success) {
         setStatus('connected');
-        message.success(res.data?.message || 'Finnhub connection OK');
+        message.success('Finnhub connection verified');
       } else {
         setStatus('error');
         message.error(res.data?.message || 'Connection failed');
@@ -725,27 +702,29 @@ const FinnhubSection: React.FC = () => {
   };
 
   return (
-    <Card title={<Space><CloudOutlined />Finnhub Configuration</Space>} extra={<StatusBadge status={status} />} style={{ marginBottom: 16 }}>
-      <Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>Finnhub API for company profiles, sector data, news, and earnings calendar.</Text>
+    <Card bordered={false} style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', marginBottom: 24 }}>
+      <SectionHeader 
+        icon={<CloudOutlined />} 
+        title="Finnhub Financial Data" 
+        subtitle="Provider for company fundamentals, sector data, and earnings."
+        status={status}
+      />
       <Form form={form} layout="vertical">
         <Row gutter={16}>
-          <Col span={12}>
-            <Form.Item name="api_key" label="Finnhub API Key">
-              <Input.Password
-                placeholder={hasSaved ? 'Key saved (masked)' : 'Enter Finnhub API key'}
-                visibilityToggle={{ visible: showKey, onVisibleChange: setShowKey }}
-              />
+          <Col xs={24} md={12}>
+            <Form.Item name="api_key" label={<Text strong style={{ fontSize: 13 }}>API Key</Text>}>
+              <Input.Password placeholder={hasSaved ? 'Saved (masked)' : 'Enter Finnhub Key'} />
             </Form.Item>
           </Col>
-          <Col span={12}>
-            <Form.Item name="base_url" label="Base URL">
+          <Col xs={24} md={12}>
+            <Form.Item name="base_url" label={<Text strong style={{ fontSize: 13 }}>Base API URL</Text>}>
               <Input placeholder="https://finnhub.io/api/v1" />
             </Form.Item>
           </Col>
         </Row>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <Button onClick={handleTest} loading={testing} disabled={testing || saving} icon={<ExperimentOutlined />}>Test Finnhub Connection</Button>
-          <Button type="primary" onClick={handleSave} loading={saving} disabled={saving || testing} icon={<SaveOutlined />}>Save Finnhub Settings</Button>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
+          <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>Test Finnhub</Button>
+          <Button type="primary" onClick={handleSave} loading={saving} icon={<SaveOutlined />}>Save Changes</Button>
         </div>
       </Form>
     </Card>
@@ -766,57 +745,54 @@ const Configuration: React.FC = () => {
   };
 
   return (
-    <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
-        <div>
-          <Title level={2} style={{ marginBottom: 4 }}>
-            <SettingOutlined style={{ marginRight: 12 }} />
-            Configuration
-          </Title>
-          <Text type="secondary">
-            Configure API connections for Alpaca, Finnhub, and AI providers.
-          </Text>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
-          <Space>
-            <UserOutlined />
-            <Text type="secondary">{user?.email || 'Unknown'}</Text>
-          </Space>
-          <Button icon={<LogoutOutlined />} onClick={handleSignOut}>Sign Out</Button>
+    <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 16px 60px' }}>
+      <div style={{ marginBottom: 32 }}>
+        <Button 
+          type="text" 
+          icon={<ArrowLeftOutlined />} 
+          onClick={() => navigate('/settings')}
+          style={{ marginLeft: -16, marginBottom: 8 }}
+        >
+          Back to Settings
+        </Button>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+          <div>
+            <Title level={2} style={{ margin: 0 }}>
+              <ApiOutlined style={{ marginRight: 12, color: '#1890ff' }} />
+              Connection Configuration
+            </Title>
+            <Text type="secondary" style={{ fontSize: 15 }}>
+              Manage and verify all service integrations for your quantitative environment.
+            </Text>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+            <Space direction="vertical" align="end" size={0}>
+              <Space size={8}>
+                <UserOutlined style={{ color: '#8c8c8c' }} />
+                <Text strong>{user?.email}</Text>
+              </Space>
+              <Button type="link" danger icon={<LogoutOutlined />} onClick={handleSignOut} style={{ padding: 0, height: 'auto' }}>
+                Sign Out
+              </Button>
+            </Space>
+          </div>
         </div>
       </div>
 
-      <Collapse
-        defaultActiveKey={['paper', 'ai']}
-        expandIconPosition="start"
-        items={[
-          {
-            key: 'paper',
-            label: <Text strong>A. Alpaca Paper Trading</Text>,
-            children: <AlpacaPaperSection />,
-          },
-          {
-            key: 'real',
-            label: <Text strong>B. Alpaca Real Trading</Text>,
-            children: <AlpacaRealSection onMarketDataSynced={() => setMarketDataReloadKey(k => k + 1)} />,
-          },
-          {
-            key: 'data',
-            label: <Text strong>C. Alpaca Market Data</Text>,
-            children: <MarketDataSection reloadKey={marketDataReloadKey} />,
-          },
-          {
-            key: 'ai',
-            label: <Text strong>D. AI Provider</Text>,
-            children: <AIProviderSection />,
-          },
-          {
-            key: 'finnhub',
-            label: <Text strong>E. Finnhub</Text>,
-            children: <FinnhubSection />,
-          },
-        ]}
-      />
+      <Divider style={{ margin: '32px 0' }} />
+
+      <AlpacaPaperSection />
+      <AlpacaRealSection onMarketDataSynced={() => setMarketDataReloadKey(k => k + 1)} />
+      <MarketDataSection reloadKey={marketDataReloadKey} />
+      <AIProviderSection />
+      <FinnhubSection />
+
+      <div style={{ marginTop: 40, textAlign: 'center' }}>
+        <Text type="secondary" style={{ fontSize: 13 }}>
+          <SafetyCertificateOutlined style={{ marginRight: 8 }} />
+          All sensitive keys are transmitted over SSL and stored using industry-standard encryption.
+        </Text>
+      </div>
     </div>
   );
 };

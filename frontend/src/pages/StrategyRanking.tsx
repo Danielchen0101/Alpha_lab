@@ -1,7 +1,26 @@
-import React, { useState, useEffect } from 'react';
-import { Table, Card, Spin, Alert, Empty, Tag, Tooltip } from 'antd';
-import { TrophyOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  Table, Card, Spin, Alert, Empty, Tag, Tooltip, Row, Col, 
+  Statistic, Input, Select, Space, Button, Badge, Typography
+} from 'antd';
+import { 
+  TrophyOutlined, 
+  InfoCircleOutlined, 
+  SearchOutlined, 
+  ReloadOutlined,
+  ArrowUpOutlined,
+  ArrowDownOutlined,
+  ThunderboltOutlined,
+  LineChartOutlined,
+  SafetyCertificateOutlined,
+  PieChartOutlined,
+  HistoryOutlined
+} from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import { backtraderAPI } from '../services/api';
+
+const { Title, Text } = Typography;
+const { Option } = Select;
 
 // Helper functions
 const safeNumber = (value: any): number => {
@@ -17,9 +36,8 @@ const safeToFixed = (value: any, decimals: number = 2): string => {
 
 const formatPercent = (value: number): string => {
   const safeValue = safeNumber(value);
-  if (safeValue === 0) return '0.00%';
-  const sign = safeValue > 0 ? '+' : '-';
-  return `${sign}${safeToFixed(Math.abs(safeValue), 2)}%`;
+  const sign = safeValue >= 0 ? '+' : '';
+  return `${sign}${safeToFixed(safeValue, 2)}%`;
 };
 
 interface RankingItem {
@@ -35,68 +53,104 @@ interface RankingItem {
   volatility: number;
   winRate: number;
   profitFactor: number;
+  trades: number;
+  status: string;
+  period: string;
   createdAt: string;
+  originalRecord: any;
 }
 
 const StrategyRanking: React.FC = () => {
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [rankingData, setRankingData] = useState<RankingItem[]>([]);
   const [error, setError] = useState<string | null>(null);
+  
+  // Filters and search
+  const [searchText, setSearchText] = useState('');
+  const [strategyFilter, setStrategyFilter] = useState('All');
+  const [sortBy, setSortBy] = useState('totalReturn');
+  const [showCompletedOnly, setShowCompletedOnly] = useState(true);
 
   useEffect(() => {
     fetchRankingData();
   }, []);
+
+  const loadLocalBacktestHistory = (): RankingItem[] => {
+    try {
+      const saved = localStorage.getItem('quant_backtest_history');
+      if (saved) {
+        const history = JSON.parse(saved);
+        return history.map((item: any, index: number) => ({
+          key: item.backtestId || `local-${index}`,
+          backtestId: item.backtestId,
+          symbol: item.symbol || item.parameters?.symbols?.[0] || 'N/A',
+          strategy: item.strategy || item.parameters?.strategy || 'N/A',
+          totalReturn: safeNumber(item.totalReturn ?? item.results?.totalReturn),
+          annualizedReturn: safeNumber(item.annualizedReturn ?? item.results?.annualizedReturn),
+          sharpeRatio: safeNumber(item.sharpeRatio ?? item.results?.sharpeRatio),
+          sortinoRatio: safeNumber(item.sortinoRatio ?? item.results?.sortinoRatio),
+          maxDrawdown: safeNumber(item.maxDrawdown ?? item.results?.maxDrawdown),
+          volatility: safeNumber(item.volatility ?? item.results?.volatility),
+          winRate: safeNumber(item.winRate ?? item.results?.winRate),
+          profitFactor: safeNumber(item.profitFactor ?? item.results?.profitFactor),
+          trades: safeNumber(item.trades ?? item.results?.trades),
+          status: item.status || 'completed',
+          period: item.period || `${item.startDate || ''} - ${item.endDate || ''}`,
+          createdAt: item.createdAt,
+          originalRecord: item,
+        }));
+      }
+    } catch (err) {
+      console.error('Failed to load local history:', err);
+    }
+    return [];
+  };
 
   const fetchRankingData = async () => {
     setLoading(true);
     setError(null);
     
     try {
-      const historyResponse = await backtraderAPI.getBacktestHistory();
-      if (historyResponse.data && historyResponse.data.history && Array.isArray(historyResponse.data.history)) {
-        const history = historyResponse.data.history;
-        
-        // Transform history data to ranking items
-        const rankingItems: RankingItem[] = history
-          .filter((item: any) => 
-            item.results && 
-            item.parameters?.symbols?.length > 0 &&
-            item.status === 'completed'
-          )
-          .map((item: any, index: number) => {
-            const symbol = item.parameters?.symbols?.[0] || 'Unknown';
-            const strategy = item.parameters?.strategy || 'Unknown';
-            
-            return {
-              key: item.backtestId || `item-${index}`,
-              backtestId: item.backtestId,
-              symbol,
-              strategy,
-              totalReturn: safeNumber(item.results?.totalReturn),
-              annualizedReturn: safeNumber(item.results?.annualizedReturn),
-              sharpeRatio: safeNumber(item.results?.sharpeRatio),
-              sortinoRatio: safeNumber(item.results?.sortinoRatio),
-              maxDrawdown: safeNumber(item.results?.maxDrawdown),
-              volatility: safeNumber(item.results?.volatility),
-              winRate: safeNumber(item.results?.winRate),
-              profitFactor: safeNumber(item.results?.profitFactor),
-              createdAt: item.createdAt,
-            };
-          })
-          .sort((a: RankingItem, b: RankingItem) => b.totalReturn - a.totalReturn); // 默认按totalReturn降序排序
-        
-        setRankingData(rankingItems);
-        
-        // Debug log
-        console.log(`Loaded ${rankingItems.length} ranking items`);
-        
-        // 如果没有数据，设置空数组（页面会显示empty state）
-        if (rankingItems.length === 0) {
-          console.log('No backtest data available for ranking');
+      // 1. Get local history first
+      const localHistory = loadLocalBacktestHistory();
+      let combinedData = [...localHistory];
+      
+      // 2. Try to get API history
+      try {
+        const response = await backtraderAPI.getBacktestHistory();
+        if (response.data && response.data.history && Array.isArray(response.data.history)) {
+          const apiData = response.data.history.map((item: any, index: number) => ({
+            key: item.backtestId || `api-${index}`,
+            backtestId: item.backtestId,
+            symbol: item.parameters?.symbols?.[0] || 'N/A',
+            strategy: item.parameters?.strategy || 'N/A',
+            totalReturn: safeNumber(item.results?.totalReturn),
+            annualizedReturn: safeNumber(item.results?.annualizedReturn),
+            sharpeRatio: safeNumber(item.results?.sharpeRatio),
+            sortinoRatio: safeNumber(item.results?.sortinoRatio),
+            maxDrawdown: safeNumber(item.results?.maxDrawdown),
+            volatility: safeNumber(item.results?.volatility),
+            winRate: safeNumber(item.results?.winRate),
+            profitFactor: safeNumber(item.results?.profitFactor),
+            trades: safeNumber(item.results?.trades),
+            status: item.status || 'completed',
+            period: item.parameters?.period || '',
+            createdAt: item.createdAt,
+            originalRecord: item,
+          }));
+          
+          // Merge and de-duplicate
+          const dataMap = new Map<string, RankingItem>();
+          combinedData.forEach((item: RankingItem) => dataMap.set(item.backtestId, item));
+          apiData.forEach((item: RankingItem) => dataMap.set(item.backtestId, item));
+          combinedData = Array.from(dataMap.values());
         }
-      } else {
-        setError('Failed to load backtest history data: Invalid response format');
+      } catch (apiErr) {
+        console.warn('API history fetch failed, using local only', apiErr);
       }
+      
+      setRankingData(combinedData);
     } catch (err: any) {
       setError(err.message || 'Failed to load ranking data');
     } finally {
@@ -104,361 +158,446 @@ const StrategyRanking: React.FC = () => {
     }
   };
 
+  // Filter and sort logic
+  const filteredAndSortedData = useMemo(() => {
+    let data = [...rankingData];
+    
+    // Status filter
+    if (showCompletedOnly) {
+      data = data.filter(item => item.status === 'completed');
+    }
+    
+    // Search filter
+    if (searchText) {
+      const lowerSearch = searchText.toLowerCase();
+      data = data.filter((item: RankingItem) => 
+        item.symbol.toLowerCase().includes(lowerSearch) || 
+        item.strategy.toLowerCase().includes(lowerSearch)
+      );
+    }
+    
+    // Strategy filter
+    if (strategyFilter !== 'All') {
+      data = data.filter((item: RankingItem) => item.strategy === strategyFilter);
+    }
+    
+    // Sort logic: Primary (sortBy), Secondary (Sharpe), Tertiary (MaxDD)
+    data.sort((a, b) => {
+      let valA = (a as any)[sortBy];
+      let valB = (b as any)[sortBy];
+      
+      // For MaxDrawdown, lower is better (if stored as positive) or higher is better (if stored as negative)
+      // Assuming negative as per existing code logic (e.g. -10 > -30)
+      if (sortBy === 'maxDrawdown') {
+        if (valA !== valB) return valB - valA; // Descending (closer to 0 is better)
+      } else {
+        if (valA !== valB) return valB - valA; // Descending
+      }
+      
+      // Secondary: Sharpe Ratio
+      if (a.sharpeRatio !== b.sharpeRatio) return b.sharpeRatio - a.sharpeRatio;
+      
+      // Tertiary: Max Drawdown (Desc)
+      return b.maxDrawdown - a.maxDrawdown;
+    });
+    
+    return data;
+  }, [rankingData, searchText, strategyFilter, sortBy, showCompletedOnly]);
+
+  // Unique strategies for filter
+  const strategies = useMemo(() => {
+    const s = new Set<string>();
+    rankingData.forEach((item: RankingItem) => {
+      if (item.strategy && item.strategy !== 'N/A') s.add(item.strategy);
+    });
+    return Array.from(s).sort();
+  }, [rankingData]);
+
+  // Summary statistics
+  const summaryStats = useMemo(() => {
+    if (filteredAndSortedData.length === 0) return null;
+    
+    const bestReturn = Math.max(...filteredAndSortedData.map((d: RankingItem) => d.totalReturn));
+    const bestSharpe = Math.max(...filteredAndSortedData.map((d: RankingItem) => d.sharpeRatio));
+    const lowestDD = Math.max(...filteredAndSortedData.map((d: RankingItem) => d.maxDrawdown)); // Best MaxDD (closest to 0)
+    const bestWinRate = Math.max(...filteredAndSortedData.map((d: RankingItem) => d.winRate));
+    
+    return {
+      count: filteredAndSortedData.length,
+      bestReturn,
+      bestSharpe,
+      lowestDD,
+      bestWinRate,
+      coveredStrategies: strategies.length
+    };
+  }, [filteredAndSortedData, strategies]);
+
+  const getQualityLabel = (item: RankingItem) => {
+    if (item.trades < 3) return { label: 'Low Sample', color: 'default' };
+    if (item.totalReturn <= 0 || item.sharpeRatio < 0) return { label: 'Weak', color: 'error' };
+    if (item.maxDrawdown < -25) return { label: 'High Risk', color: 'warning' };
+    if (item.totalReturn > 15 && item.sharpeRatio > 1.5) return { label: 'Elite', color: 'purple' };
+    if (item.totalReturn > 8 && item.sharpeRatio > 1.0) return { label: 'Strong', color: 'success' };
+    if (item.sharpeRatio > 0.8 && item.totalReturn > 0) return { label: 'Stable', color: 'processing' };
+    if (item.totalReturn > 10) return { label: 'High Return', color: 'success' };
+    return { label: 'Neutral', color: 'default' };
+  };
+
   const columns = [
     {
       title: 'Rank',
       key: 'rank',
-      width: 80,
-      render: (_: any, __: any, index: number) => (
-        <div style={{ 
-          display: 'flex', 
-          alignItems: 'center', 
-          justifyContent: 'center',
-          fontWeight: 'bold',
-          fontSize: index < 3 ? '16px' : '14px',
-          color: index === 0 ? '#ffd700' : index === 1 ? '#c0c0c0' : index === 2 ? '#cd7f32' : '#666'
-        }}>
-          {index === 0 && <TrophyOutlined style={{ marginRight: '4px' }} />}
-          {index + 1}
+      width: 70,
+      fixed: 'left' as const,
+      render: (_: any, __: any, index: number) => {
+        let medal = null;
+        let color = '#666';
+        let fontSize = '14px';
+        
+        if (index === 0) {
+          medal = '🥇';
+          color = '#d4b106';
+          fontSize = '20px';
+        } else if (index === 1) {
+          medal = '🥈';
+          color = '#8e8e8e';
+          fontSize = '18px';
+        } else if (index === 2) {
+          medal = '🥉';
+          color = '#ad6800';
+          fontSize = '18px';
+        }
+        
+        return (
+          <div style={{ textAlign: 'center', fontWeight: 'bold', color, fontSize }}>
+            {medal || index + 1}
+          </div>
+        );
+      },
+    },
+    {
+      title: 'Symbol & Strategy',
+      key: 'info',
+      width: 180,
+      fixed: 'left' as const,
+      render: (_: any, record: RankingItem) => (
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+            <Tag color="blue" style={{ margin: 0, fontWeight: 'bold' }}>{record.symbol}</Tag>
+            {getQualityLabel(record).label !== 'Neutral' && (
+              <Badge status={getQualityLabel(record).color as any} text={
+                <span style={{ fontSize: '11px', color: '#888' }}>{getQualityLabel(record).label}</span>
+              } />
+            )}
+          </div>
+          <div style={{ fontSize: '12px', color: '#666', fontWeight: 500 }}>
+            {record.strategy.replace(/_/g, ' ')}
+          </div>
         </div>
       ),
     },
     {
-      title: 'Symbol',
-      dataIndex: 'symbol',
-      key: 'symbol',
-      width: 100,
-      sorter: (a: RankingItem, b: RankingItem) => a.symbol.localeCompare(b.symbol),
-      render: (symbol: string) => (
-        <Tag color="blue" style={{ fontWeight: 'bold', fontSize: '14px' }}>
-          {symbol}
-        </Tag>
-      ),
-    },
-    {
-      title: 'Strategy',
-      dataIndex: 'strategy',
-      key: 'strategy',
-      width: 150,
-      sorter: (a: RankingItem, b: RankingItem) => a.strategy.localeCompare(b.strategy),
-      render: (strategy: string) => (
-        <span style={{ fontWeight: '500' }}>
-          {strategy.replace('_', ' ').toUpperCase()}
-        </span>
-      ),
-    },
-    {
-      title: (
-        <span>
-          Total Return
-          <Tooltip title="Total return over the backtest period">
-            <InfoCircleOutlined style={{ marginLeft: '4px', color: '#666', fontSize: '12px' }} />
-          </Tooltip>
-        </span>
-      ),
+      title: 'Total Return',
       dataIndex: 'totalReturn',
       key: 'totalReturn',
-      width: 130,
-      defaultSortOrder: 'descend' as const,
+      width: 120,
       sorter: (a: RankingItem, b: RankingItem) => a.totalReturn - b.totalReturn,
-      render: (value: number) => {
-        const color = value >= 0 ? '#3f8600' : '#cf1322';
-        return (
-          <span style={{ color, fontWeight: 'bold', fontSize: '14px' }}>
-            {formatPercent(value)}
-          </span>
-        );
-      },
-    },
-    {
-      title: (
-        <span>
-          Annualized
-          <Tooltip title="Annualized return (CAGR)">
-            <InfoCircleOutlined style={{ marginLeft: '4px', color: '#666', fontSize: '12px' }} />
-          </Tooltip>
+      render: (value: number) => (
+        <span style={{ color: value >= 0 ? '#3f8600' : '#cf1322', fontWeight: 'bold' }}>
+          {formatPercent(value)}
         </span>
       ),
-      dataIndex: 'annualizedReturn',
-      key: 'annualizedReturn',
-      width: 130,
-      sorter: (a: RankingItem, b: RankingItem) => a.annualizedReturn - b.annualizedReturn,
-      render: (value: number) => {
-        const color = value >= 0 ? '#3f8600' : '#cf1322';
-        return (
-          <span style={{ color, fontWeight: 'bold' }}>
-            {formatPercent(value)}
-          </span>
-        );
-      },
     },
     {
-      title: (
-        <span>
-          Sharpe
-          <Tooltip title="Sharpe Ratio (risk-adjusted return)">
-            <InfoCircleOutlined style={{ marginLeft: '4px', color: '#666', fontSize: '12px' }} />
-          </Tooltip>
-        </span>
-      ),
+      title: 'Sharpe',
       dataIndex: 'sharpeRatio',
       key: 'sharpeRatio',
       width: 100,
-      sorter: (a: RankingItem, b: RankingItem) => a.sharpeRatio - b.sharpeRatio,
       render: (value: number) => {
-        const safeValue = safeNumber(value);
-        const color = safeValue >= 1 ? '#3f8600' : safeValue >= 0 ? '#fa8c16' : '#cf1322';
-        return (
-          <span style={{ color, fontWeight: 'bold' }}>
-            {safeToFixed(safeValue, 2)}
-          </span>
-        );
+        const color = value >= 1.5 ? '#722ed1' : value >= 1 ? '#3f8600' : value >= 0 ? '#fa8c16' : '#cf1322';
+        return <span style={{ color, fontWeight: 'bold' }}>{safeToFixed(value, 2)}</span>;
       },
     },
     {
-      title: (
-        <span>
-          Sortino
-          <Tooltip title="Sortino Ratio (downside risk-adjusted return)">
-            <InfoCircleOutlined style={{ marginLeft: '4px', color: '#666', fontSize: '12px' }} />
-          </Tooltip>
-        </span>
-      ),
-      dataIndex: 'sortinoRatio',
-      key: 'sortinoRatio',
-      width: 100,
-      sorter: (a: RankingItem, b: RankingItem) => a.sortinoRatio - b.sortinoRatio,
-      render: (value: number) => {
-        const safeValue = safeNumber(value);
-        const color = safeValue >= 1 ? '#3f8600' : safeValue >= 0 ? '#fa8c16' : '#cf1322';
-        return (
-          <span style={{ color, fontWeight: 'bold' }}>
-            {safeToFixed(safeValue, 2)}
-          </span>
-        );
-      },
-    },
-    {
-      title: (
-        <span>
-          Max DD
-          <Tooltip title="Maximum Drawdown (peak to trough decline)">
-            <InfoCircleOutlined style={{ marginLeft: '4px', color: '#666', fontSize: '12px' }} />
-          </Tooltip>
-        </span>
-      ),
+      title: 'Max DD',
       dataIndex: 'maxDrawdown',
       key: 'maxDrawdown',
       width: 100,
-      sorter: (a: RankingItem, b: RankingItem) => a.maxDrawdown - b.maxDrawdown,
       render: (value: number) => {
-        const safeValue = safeNumber(value);
-        // Max Drawdown 越小越好
-        let color = '#cf1322'; // 默认红色
-        if (safeValue > -20) {
-          color = '#3f8600'; // 绿色
-        } else if (safeValue >= -40) {
-          color = '#fa8c16'; // 橙色
-        }
-        return (
-          <span style={{ color, fontWeight: 'bold' }}>
-            {safeToFixed(safeValue, 1)}%
-          </span>
-        );
+        const color = value > -15 ? '#3f8600' : value > -25 ? '#fa8c16' : '#cf1322';
+        return <span style={{ color, fontWeight: 'bold' }}>{safeToFixed(value, 1)}%</span>;
       },
     },
     {
-      title: (
-        <span>
-          Volatility
-          <Tooltip title="Annualized volatility">
-            <InfoCircleOutlined style={{ marginLeft: '4px', color: '#666', fontSize: '12px' }} />
-          </Tooltip>
-        </span>
-      ),
-      dataIndex: 'volatility',
-      key: 'volatility',
-      width: 100,
-      sorter: (a: RankingItem, b: RankingItem) => a.volatility - b.volatility,
-      render: (value: number) => {
-        const safeValue = safeNumber(value);
-        const color = safeValue < 20 ? '#3f8600' : safeValue < 40 ? '#fa8c16' : '#cf1322';
-        return (
-          <span style={{ color, fontWeight: 'bold' }}>
-            {safeToFixed(safeValue, 1)}%
-          </span>
-        );
-      },
-    },
-    {
-      title: (
-        <span>
-          Win Rate
-          <Tooltip title="Percentage of winning trades">
-            <InfoCircleOutlined style={{ marginLeft: '4px', color: '#666', fontSize: '12px' }} />
-          </Tooltip>
-        </span>
-      ),
+      title: 'Win Rate',
       dataIndex: 'winRate',
       key: 'winRate',
       width: 100,
-      sorter: (a: RankingItem, b: RankingItem) => a.winRate - b.winRate,
-      render: (value: number) => {
-        const safeValue = safeNumber(value);
-        const color = safeValue >= 60 ? '#3f8600' : safeValue >= 40 ? '#fa8c16' : '#cf1322';
-        return (
-          <span style={{ color, fontWeight: 'bold' }}>
-            {safeToFixed(safeValue, 1)}%
-          </span>
-        );
-      },
+      render: (value: number) => (
+        <span style={{ fontWeight: '500' }}>{safeToFixed(value, 1)}%</span>
+      ),
     },
     {
-      title: (
-        <span>
-          Profit Factor
-          <Tooltip title="Gross profit / gross loss">
-            <InfoCircleOutlined style={{ marginLeft: '4px', color: '#666', fontSize: '12px' }} />
-          </Tooltip>
-        </span>
-      ),
+      title: 'Prof. Factor',
       dataIndex: 'profitFactor',
       key: 'profitFactor',
       width: 110,
-      sorter: (a: RankingItem, b: RankingItem) => a.profitFactor - b.profitFactor,
-      render: (value: number) => {
-        const safeValue = safeNumber(value);
-        const color = safeValue >= 2 ? '#3f8600' : safeValue >= 1 ? '#fa8c16' : '#cf1322';
-        return (
-          <span style={{ color, fontWeight: 'bold' }}>
-            {safeToFixed(safeValue, 2)}
-          </span>
-        );
+      render: (value: number) => (
+        <span style={{ fontWeight: '500', color: value >= 1.5 ? '#3f8600' : '#666' }}>
+          {safeToFixed(value, 2)}
+        </span>
+      ),
+    },
+    {
+      title: 'Trades',
+      dataIndex: 'trades',
+      key: 'trades',
+      width: 80,
+    },
+    {
+      title: 'Date',
+      dataIndex: 'createdAt',
+      key: 'createdAt',
+      width: 120,
+      render: (date: string) => (
+        <span style={{ fontSize: '12px', color: '#999' }}>
+          {date ? new Date(date).toLocaleDateString() : 'N/A'}
+        </span>
+      ),
+    },
+    {
+      title: 'Status',
+      dataIndex: 'status',
+      key: 'status',
+      width: 100,
+      render: (status: string) => {
+        let color = 'default';
+        if (status === 'completed') color = 'success';
+        if (status === 'failed') color = 'error';
+        if (status === 'running') color = 'processing';
+        return <Tag color={color}>{status.toUpperCase()}</Tag>;
       },
     },
   ];
 
-  if (loading) {
+  if (loading && rankingData.length === 0) {
     return (
-      <div style={{ padding: '40px', textAlign: 'center' }}>
-        <Spin size="large" />
-        <div style={{ marginTop: '16px', color: '#666' }}>Loading strategy ranking data...</div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div style={{ padding: '24px' }}>
-        <Alert
-          message="Error"
-          description={error}
-          type="error"
-          showIcon
-        />
+      <div style={{ padding: '80px 0', textAlign: 'center' }}>
+        <Spin size="large" tip="Calculating Strategy Rankings..." />
       </div>
     );
   }
 
   return (
-    <div style={{ padding: '24px' }}>
-      {/* Header */}
-      <div style={{ marginBottom: '24px' }}>
-        <h1 style={{ marginBottom: '8px' }}>
-          <TrophyOutlined style={{ marginRight: '12px', color: '#ffd700' }} />
-          Strategy Ranking
-        </h1>
-        <div style={{ color: '#666', fontSize: '14px' }}>
-          Performance ranking based on historical backtest results. Sorted by Total Return (highest first).
-          {rankingData.length > 0 && (
-            <span style={{ marginLeft: '12px', fontWeight: '500' }}>
-              Showing {rankingData.length} backtest{rankingData.length !== 1 ? 's' : ''}
-            </span>
-          )}
+    <div className="ranking-page" style={{ padding: '4px' }}>
+      {/* Page Header */}
+      <div style={{ marginBottom: '24px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+        <div>
+          <Title level={2} style={{ margin: 0 }}>
+            <TrophyOutlined style={{ color: '#faad14', marginRight: '12px' }} />
+            Strategy Leaderboard
+          </Title>
+          <Text type="secondary">
+            Performance ranking of all historical backtests. Find the most stable and profitable strategies.
+          </Text>
         </div>
+        <Button 
+          type="primary" 
+          icon={<ReloadOutlined />} 
+          onClick={fetchRankingData}
+          loading={loading}
+        >
+          Refresh Data
+        </Button>
       </div>
 
-      {/* Ranking Table */}
-      <Card>
-        {rankingData.length > 0 ? (
+      {error && <Alert message={error} type="error" showIcon style={{ marginBottom: '24px' }} />}
+
+      {/* Summary Cards */}
+      {summaryStats && (
+        <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
+          <Col xs={12} sm={8} lg={4}>
+            <Card className="metric-card" bordered={false} style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+              <Statistic 
+                title={<span style={{ fontSize: '12px' }}>Ranked Sessions</span>}
+                value={summaryStats.count} 
+                prefix={<HistoryOutlined style={{ color: '#1890ff' }} />}
+              />
+            </Card>
+          </Col>
+          <Col xs={12} sm={8} lg={4}>
+            <Card className="metric-card" bordered={false} style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+              <Statistic 
+                title={<span style={{ fontSize: '12px' }}>Best Return</span>}
+                value={summaryStats.bestReturn} 
+                precision={2}
+                suffix="%"
+                valueStyle={{ color: '#3f8600' }}
+                prefix={<ArrowUpOutlined />}
+              />
+            </Card>
+          </Col>
+          <Col xs={12} sm={8} lg={4}>
+            <Card className="metric-card" bordered={false} style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+              <Statistic 
+                title={<span style={{ fontSize: '12px' }}>Top Sharpe</span>}
+                value={summaryStats.bestSharpe} 
+                precision={2}
+                valueStyle={{ color: '#722ed1' }}
+                prefix={<ThunderboltOutlined />}
+              />
+            </Card>
+          </Col>
+          <Col xs={12} sm={8} lg={4}>
+            <Card className="metric-card" bordered={false} style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+              <Statistic 
+                title={<span style={{ fontSize: '12px' }}>Best MaxDD</span>}
+                value={summaryStats.lowestDD} 
+                precision={1}
+                suffix="%"
+                valueStyle={{ color: '#3f8600' }}
+                prefix={<SafetyCertificateOutlined />}
+              />
+            </Card>
+          </Col>
+          <Col xs={12} sm={8} lg={4}>
+            <Card className="metric-card" bordered={false} style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+              <Statistic 
+                title={<span style={{ fontSize: '12px' }}>Top Win Rate</span>}
+                value={summaryStats.bestWinRate} 
+                precision={1}
+                suffix="%"
+                prefix={<PieChartOutlined style={{ color: '#fa8c16' }} />}
+              />
+            </Card>
+          </Col>
+          <Col xs={12} sm={8} lg={4}>
+            <Card className="metric-card" bordered={false} style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+              <Statistic 
+                title={<span style={{ fontSize: '12px' }}>Strategies</span>}
+                value={summaryStats.coveredStrategies} 
+                prefix={<LineChartOutlined style={{ color: '#13c2c2' }} />}
+              />
+            </Card>
+          </Col>
+        </Row>
+      )}
+
+      {/* Toolbar */}
+      <Card style={{ marginBottom: '16px', borderRadius: '8px' }} bodyStyle={{ padding: '12px 24px' }}>
+        <Row gutter={[16, 16]} align="middle">
+          <Col xs={24} md={8}>
+            <Input
+              placeholder="Search symbol or strategy..."
+              prefix={<SearchOutlined style={{ color: '#bfbfbf' }} />}
+              value={searchText}
+              onChange={e => setSearchText(e.target.value)}
+              allowClear
+            />
+          </Col>
+          <Col xs={24} md={16}>
+            <Space wrap style={{ width: '100%', justifyContent: 'flex-end' }}>
+              <Select 
+                value={strategyFilter} 
+                onChange={setStrategyFilter}
+                style={{ width: 160 }}
+              >
+                <Option value="All">All Strategies</Option>
+                {strategies.map((s: string) => <Option key={s} value={s}>{s.replace(/_/g, ' ')}</Option>)}
+              </Select>
+              
+              <Select 
+                value={sortBy} 
+                onChange={setSortBy}
+                style={{ width: 150 }}
+              >
+                <Option value="totalReturn">Total Return</Option>
+                <Option value="sharpeRatio">Sharpe Ratio</Option>
+                <Option value="maxDrawdown">Max Drawdown</Option>
+                <Option value="winRate">Win Rate</Option>
+                <Option value="profitFactor">Profit Factor</Option>
+                <Option value="trades">Number of Trades</Option>
+              </Select>
+              
+              <Button 
+                type={showCompletedOnly ? "primary" : "default"}
+                onClick={() => setShowCompletedOnly(!showCompletedOnly)}
+                size="middle"
+              >
+                {showCompletedOnly ? "Completed Only" : "All Status"}
+              </Button>
+            </Space>
+          </Col>
+        </Row>
+      </Card>
+
+      {/* Leaderboard Table */}
+      <Card bodyStyle={{ padding: 0 }} style={{ borderRadius: '12px', overflow: 'hidden', boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }}>
+        {filteredAndSortedData.length > 0 ? (
           <Table
             columns={columns}
-            dataSource={rankingData}
+            dataSource={filteredAndSortedData}
             pagination={{
-              pageSize: 20,
+              pageSize: 15,
               showSizeChanger: true,
-              showQuickJumper: true,
-              showTotal: (total, range) => `${range[0]}-${range[1]} of ${total} items`,
+              showTotal: (total: number) => `Total ${total} strategies`,
             }}
+            rowKey="key"
             size="middle"
-            scroll={{ x: 1300 }}
-            bordered
-            rowClassName={(record, index) => 
-              index === 0 ? 'top-rank-row' : index === 1 ? 'second-rank-row' : index === 2 ? 'third-rank-row' : ''
-            }
+            scroll={{ x: 1100 }}
+            onRow={(record: RankingItem) => ({
+              onClick: () => {
+                // Save to sessionStorage as fallback
+                sessionStorage.setItem('selectedBacktestForView', JSON.stringify(record.originalRecord));
+                navigate('/backtest', { state: { selectedBacktestId: record.backtestId, selectedBacktest: record.originalRecord } });
+              },
+              style: { cursor: 'pointer' }
+            })}
+            rowClassName={(record, index) => {
+              let className = 'ranking-row';
+              if (index === 0) className += ' gold-row';
+              if (index === 1) className += ' silver-row';
+              if (index === 2) className += ' bronze-row';
+              return className;
+            }}
           />
         ) : (
           <Empty
-            description="No backtest data available for ranking"
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            style={{ padding: '40px 0' }}
+            description={
+              <div style={{ textAlign: 'center' }}>
+                <Title level={4}>No ranked strategies yet</Title>
+                <Text type="secondary">Run backtests first to populate strategy rankings.</Text>
+                <div style={{ marginTop: '24px' }}>
+                  <Button type="primary" size="large" onClick={() => navigate('/backtest')}>
+                    Go to Backtest
+                  </Button>
+                </div>
+              </div>
+            }
+            style={{ padding: '60px 0' }}
           />
         )}
       </Card>
 
-      {/* Legend */}
-      {rankingData.length > 0 && (
-        <Card style={{ marginTop: '24px' }}>
-          <div style={{ fontSize: '14px', fontWeight: '500', marginBottom: '12px' }}>
-            📊 Color Legend
-          </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', fontSize: '13px', color: '#666' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <div style={{ width: '12px', height: '12px', backgroundColor: '#3f8600', borderRadius: '2px' }} />
-              <span>Good performance</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <div style={{ width: '12px', height: '12px', backgroundColor: '#fa8c16', borderRadius: '2px' }} />
-              <span>Average performance</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <div style={{ width: '12px', height: '12px', backgroundColor: '#cf1322', borderRadius: '2px' }} />
-              <span>Poor performance</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <div style={{ width: '12px', height: '12px', backgroundColor: '#ffd700', borderRadius: '50%' }} />
-              <span>🥇 1st place</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <div style={{ width: '12px', height: '12px', backgroundColor: '#c0c0c0', borderRadius: '50%' }} />
-              <span>🥈 2nd place</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <div style={{ width: '12px', height: '12px', backgroundColor: '#cd7f32', borderRadius: '50%' }} />
-              <span>🥉 3rd place</span>
-            </div>
-          </div>
-        </Card>
-      )}
-
-      {/* Refresh Button */}
-      <div style={{ textAlign: 'center', marginTop: '24px' }}>
-        <button
-          onClick={fetchRankingData}
-          style={{
-            padding: '8px 16px',
-            background: '#1890ff',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-            cursor: 'pointer',
-            fontSize: '14px',
-            fontWeight: '500',
-          }}
-        >
-          Refresh Ranking
-        </button>
-      </div>
+      <style>{`
+        .ranking-row:hover td {
+          background-color: #f0f7ff !important;
+        }
+        .gold-row td {
+          background-color: #fffdf0 !important;
+        }
+        .silver-row td {
+          background-color: #f9f9f9 !important;
+        }
+        .bronze-row td {
+          background-color: #fffbf5 !important;
+        }
+        .metric-card:hover {
+          transform: translateY(-2px);
+          transition: transform 0.3s;
+        }
+      `}</style>
     </div>
   );
 };

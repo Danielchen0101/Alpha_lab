@@ -14,6 +14,26 @@ import { aiAgentWatchlistAPI } from '../services/api';
 const { Title, Text } = Typography;
 const { Option } = Select;
 
+const AI_AGENT_PRIMARY_BTN_STYLE: React.CSSProperties = { 
+  borderRadius: '4px', 
+  fontWeight: 600, 
+  height: '32px', 
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+};
+
+const AI_AGENT_COMPACT_BTN_STYLE: React.CSSProperties = { 
+  borderRadius: '4px', 
+  fontWeight: 600, 
+  height: '24px', 
+  fontSize: '11px',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: '0 8px'
+};
+
 const AITrading: React.FC = () => {
   // Account Snapshot 状态
   const [accountSnapshot, setAccountSnapshot] = useState({
@@ -526,6 +546,7 @@ const AITrading: React.FC = () => {
           icon={<ReloadOutlined />}
           onClick={refreshAllAlpacaData}
           loading={loadingData.account || loadingData.positions || loadingData.orders || loadingData.history}
+          style={AI_AGENT_PRIMARY_BTN_STYLE}
         >
           Refresh All Alpaca Data
         </Button>
@@ -540,7 +561,7 @@ const AITrading: React.FC = () => {
             <Title level={4} style={{ margin: 0 }}>AI Entry Watchlist</Title>
             <Text type="secondary">Symbols added from Entry Plan for monitoring</Text>
           </div>
-          <Button size="small" icon={<ReloadOutlined />} onClick={loadWatchlist} loading={watchlistLoading}>Refresh</Button>
+          <Button size="small" icon={<ReloadOutlined />} onClick={loadWatchlist} loading={watchlistLoading} style={AI_AGENT_COMPACT_BTN_STYLE}>Refresh</Button>
         </div>
 
         {watchlistItems.length === 0 ? (

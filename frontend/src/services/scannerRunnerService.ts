@@ -304,6 +304,7 @@ async function runMarketScannerLoop(run: ActiveRun): Promise<void> {
     // Get trading universe
     const symbols = await getTradingUniverse();
 
+    let summary;
     if (!symbols || symbols.length === 0) {
       const defaultSymbols = [
         'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META',
@@ -311,9 +312,9 @@ async function runMarketScannerLoop(run: ActiveRun): Promise<void> {
         'JPM', 'XOM', 'WMT', 'HD', 'JNJ',
         'PG', 'KO', 'PEP', 'V', 'MA'
       ];
-      await scanSymbolsLoop(run, defaultSymbols, aiAvailable);
+      summary = await scanSymbolsLoop(run, defaultSymbols, aiAvailable);
     } else {
-      await scanSymbolsLoop(run, symbols, aiAvailable);
+      summary = await scanSymbolsLoop(run, symbols, aiAvailable);
     }
 
     // Check if stopped by user
@@ -332,8 +333,11 @@ async function runMarketScannerLoop(run: ActiveRun): Promise<void> {
       return;
     }
 
-    // Scan completed
+    // Scan completed — build summary status message
     const now = new Date().toISOString();
+    const summaryMsg = summary
+      ? `Scan completed: ${summary.successCount} validated, ${summary.failedCount} failed, ${summary.retryCount} retries out of ${summary.totalSymbols} symbols`
+      : 'Scan completed';
     store.updateMarketScanner({
       status: 'completed',
       lastScanTime: now,
@@ -342,7 +346,7 @@ async function runMarketScannerLoop(run: ActiveRun): Promise<void> {
         ...store.getState().marketScanner.detailedScanStatus,
         currentStatus: 'completed',
         lastScanAt: now,
-        statusMessage: 'Scan completed',
+        statusMessage: summaryMsg,
       },
     });
     console.log('[ScannerRunner] Market scan completed');
@@ -363,16 +367,25 @@ async function runMarketScannerLoop(run: ActiveRun): Promise<void> {
 }
 
 /**
- * Scan symbols in batches with sliding window.
+ * Scan symbols in sequential batches of SCAN_BATCH_SIZE.
+ * Each batch runs its symbols concurrently via Promise.allSettled,
+ * then the next batch starts only after the current one completes.
+ * A display buffer accumulates validated results and flushes to UI
+ * every DISPLAY_CHUNK_SIZE symbols (or at scan end).
  */
-async function scanSymbolsLoop(run: ActiveRun, symbols: string[], aiAvailable: boolean = true): Promise<void> {
+async function scanSymbolsLoop(run: ActiveRun, symbols: string[], aiAvailable: boolean = true): Promise<{
+  totalSymbols: number;
+  attemptedSymbols: number;
+  successCount: number;
+  failedCount: number;
+  retryCount: number;
+  failedSymbols: Array<{ symbol: string; error: string }>;
+}> {
   const store = scannerStateStore;
   const totalSymbols = symbols.length;
-  const RENDER_BATCH_SIZE = 1;
-  const CONCURRENT_CONFIG = {
-    windowSize: 1,
-    maxRetries: 3,
-  };
+  const SCAN_BATCH_SIZE = 5;       // symbols per concurrent batch
+  const DISPLAY_CHUNK_SIZE = 10;   // flush results to UI every N validated
+  const MAX_RETRIES = 3;
 
   store.updateMarketScanner({
     totalSymbols,
@@ -382,7 +395,7 @@ async function scanSymbolsLoop(run: ActiveRun, symbols: string[], aiAvailable: b
     currentBatch: 0,
     batchProgress: '',
     retryAttempt: 0,
-    maxRetryAttempts: CONCURRENT_CONFIG.maxRetries,
+    maxRetryAttempts: MAX_RETRIES,
   });
 
   store.updateMarketScanner({
@@ -394,7 +407,7 @@ async function scanSymbolsLoop(run: ActiveRun, symbols: string[], aiAvailable: b
       activeSymbols: [],
       retryCount: 0,
       validatedCount: 0,
-      statusMessage: `Starting scan of ${totalSymbols} symbols`,
+      statusMessage: `Starting scan of ${totalSymbols} symbols (batch size ${SCAN_BATCH_SIZE})`,
     },
   });
 
@@ -409,24 +422,24 @@ async function scanSymbolsLoop(run: ActiveRun, symbols: string[], aiAvailable: b
     });
   }
 
-  const pendingSymbols = [...symbols];
-  const validatedBuffer: any[] = [];
-  const retryQueue: Array<{ symbol: string; retryCount: number; lastError?: string }> = [];
-  const processingSlots = new Set<string>();
   const failedSymbols: Array<{ symbol: string; error: string }> = [];
+  const retryQueue: Array<{ symbol: string; retryCount: number; lastError?: string }> = [];
+  const displayBuffer: any[] = [];
 
   let totalProcessed = 0;
   let totalValidated = 0;
   let totalRetries = 0;
 
-  const startProcessing = async (symbol: string, retryCount: number, lastError?: string) => {
-    if (run.stopRequested) return;
+  /** Flush display buffer to the store (appends to existing results). */
+  const flushDisplayBuffer = () => {
+    if (displayBuffer.length === 0) return;
+    const currentResults = store.getState().marketScanner.results;
+    store.setMarketScannerResults([...currentResults, ...displayBuffer.splice(0)]);
+  };
 
-    processingSlots.add(symbol);
-    // Only count new symbols, not retries
-    if (retryCount === 0) {
-      totalProcessed++;
-    }
+  /** Process a single symbol wrapper that updates progress tracking. */
+  const processAndTrack = async (symbol: string, retryCount: number): Promise<{ symbol: string; result?: any; error?: string; retry?: boolean; retryCount?: number }> => {
+    if (run.stopRequested) return { symbol, error: 'stopped' };
 
     store.updateMarketScanner({
       currentSymbol: symbol,
@@ -435,110 +448,134 @@ async function scanSymbolsLoop(run: ActiveRun, symbols: string[], aiAvailable: b
     });
 
     try {
-      // Process single symbol with full data pipeline
       const result = await processSingleSymbol(symbol, retryCount);
-
-      // Validate data
       const validation = validateSymbolData(result);
 
       if (validation.valid && result.analysisStatus !== 'partial') {
-        validatedBuffer.push(result);
+        displayBuffer.push(result);
         totalValidated++;
-
-        // Update results in batches
-        if (validatedBuffer.length >= RENDER_BATCH_SIZE) {
-          const currentResults = store.getState().marketScanner.results;
-          store.setMarketScannerResults([...currentResults, ...validatedBuffer.splice(0)]);
-        }
+        return { symbol, result };
       } else if (result.skipRetry) {
-        // AI analysis failed definitively — don't retry
-        failedSymbols.push({
-          symbol,
-          error: result.analysisError || 'AI analysis failed'
-        });
-      } else if (retryCount < CONCURRENT_CONFIG.maxRetries) {
-        retryQueue.push({ symbol, retryCount: retryCount + 1, lastError: validation.error });
-        totalRetries++;
+        failedSymbols.push({ symbol, error: result.analysisError || 'AI analysis failed' });
+        return { symbol, error: result.analysisError };
+      } else if (retryCount < MAX_RETRIES) {
+        return { symbol, retry: true, retryCount: retryCount + 1, error: validation.error };
       } else {
         failedSymbols.push({ symbol, error: validation.error || 'Unknown error' });
+        return { symbol, error: validation.error };
       }
     } catch (error: any) {
-      if (error.name === 'AbortError' || run.stopRequested) return;
+      if (error.name === 'AbortError' || run.stopRequested) return { symbol, error: 'stopped' };
 
-      // Don't retry config/auth errors — they won't resolve by retrying
       const isNonRetryable = error.message?.includes('not configured') ||
                              error.message?.includes('not passed Test') ||
                              error.message?.includes('API key');
-      if (isNonRetryable || (error.skipRetry)) {
+      if (isNonRetryable || error.skipRetry) {
         failedSymbols.push({ symbol, error: error.message });
-      } else if (retryCount < CONCURRENT_CONFIG.maxRetries) {
-        retryQueue.push({ symbol, retryCount: retryCount + 1, lastError: error.message });
-        totalRetries++;
+        return { symbol, error: error.message };
+      } else if (retryCount < MAX_RETRIES) {
+        return { symbol, retry: true, retryCount: retryCount + 1, error: error.message };
       } else {
         failedSymbols.push({ symbol, error: error.message });
+        return { symbol, error: error.message };
       }
-    } finally {
-      processingSlots.delete(symbol);
-
-      // Update progress (cap at 100%)
-      const progressPct = Math.min(100, Math.round((totalProcessed / totalSymbols) * 100));
-      store.updateMarketScanner({
-        scannedSymbols: totalProcessed,
-        progress: progressPct,
-      });
-
-      store.updateMarketScanner({
-        detailedScanStatus: {
-          ...store.getState().marketScanner.detailedScanStatus,
-          processedCount: totalProcessed,
-          percent: progressPct,
-          validatedCount: totalValidated,
-          failedCount: failedSymbols.length,
-          retryCount: totalRetries,
-          lastFailureReason: failedSymbols.length > 0 ? failedSymbols[failedSymbols.length - 1].error : '',
-          activeSymbols: Array.from(processingSlots),
-          statusMessage: `Processing: ${totalProcessed}/${totalSymbols} (${totalValidated} validated)`,
-        },
-      });
     }
   };
 
-  // Sliding window execution
-  while ((pendingSymbols.length > 0 || retryQueue.length > 0 || processingSlots.size > 0) && !run.stopRequested) {
-    // Fill processing slots
-    while (processingSlots.size < CONCURRENT_CONFIG.windowSize && (pendingSymbols.length > 0 || retryQueue.length > 0) && !run.stopRequested) {
-      let symbol: string;
-      let retryCount = 0;
-      let lastError: string | undefined;
+  // ── Sequential batch loop ──
+  const pendingSymbols = [...symbols];
+  let batchIndex = 0;
 
-      if (retryQueue.length > 0) {
-        const retryItem = retryQueue.shift()!;
-        symbol = retryItem.symbol;
-        retryCount = retryItem.retryCount;
-        lastError = retryItem.lastError;
-      } else if (pendingSymbols.length > 0) {
-        symbol = pendingSymbols.shift()!;
+  while ((pendingSymbols.length > 0 || retryQueue.length > 0) && !run.stopRequested) {
+    // Build current batch: prefer retries first, then pending
+    const batch: Array<{ symbol: string; retryCount: number }> = [];
+    while (batch.length < SCAN_BATCH_SIZE && retryQueue.length > 0) {
+      batch.push(retryQueue.shift()!);
+    }
+    while (batch.length < SCAN_BATCH_SIZE && pendingSymbols.length > 0) {
+      batch.push({ symbol: pendingSymbols.shift()!, retryCount: 0 });
+    }
+    if (batch.length === 0) break;
+
+    batchIndex++;
+    const batchStart = (batchIndex - 1) * SCAN_BATCH_SIZE;
+    store.updateMarketScanner({
+      currentBatch: batchIndex,
+      batchProgress: `Batch ${batchIndex}: ${batch.map(b => b.symbol).join(', ')}`,
+      detailedScanStatus: {
+        ...store.getState().marketScanner.detailedScanStatus,
+        activeSymbols: batch.map(b => b.symbol),
+        statusMessage: `Batch ${batchIndex}: scanning ${batch.map(b => b.symbol).join(', ')}`,
+      },
+    });
+
+    // Run this batch concurrently (all 5 at once)
+    const batchResults = await Promise.allSettled(
+      batch.map(b => processAndTrack(b.symbol, b.retryCount))
+    );
+
+    // Process results: count new symbols, collect retries
+    for (const settled of batchResults) {
+      if (settled.status === 'fulfilled') {
+        const r = settled.value;
+        // Only count non-retry completions toward totalProcessed
+        if (!r.retry) {
+          totalProcessed++;
+        } else if (r.retryCount !== undefined) {
+          retryQueue.push({ symbol: r.symbol, retryCount: r.retryCount, lastError: r.error });
+          totalRetries++;
+        }
       } else {
-        break;
+        // Promise rejected (shouldn't happen with processAndTrack wrapper)
+        totalProcessed++;
       }
-
-      startProcessing(symbol, retryCount, lastError);
     }
 
-    // Wait a bit before checking again
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // Update progress after each batch completes
+    const progressPct = Math.min(100, Math.round((totalProcessed / totalSymbols) * 100));
+    store.updateMarketScanner({
+      scannedSymbols: totalProcessed,
+      progress: progressPct,
+      detailedScanStatus: {
+        ...store.getState().marketScanner.detailedScanStatus,
+        processedCount: totalProcessed,
+        percent: progressPct,
+        validatedCount: totalValidated,
+        failedCount: failedSymbols.length,
+        retryCount: totalRetries,
+        lastFailureReason: failedSymbols.length > 0 ? failedSymbols[failedSymbols.length - 1].error : '',
+        activeSymbols: [],
+        statusMessage: `Processed: ${totalProcessed}/${totalSymbols} (${totalValidated} validated)`,
+      },
+    });
+
+    // Flush display buffer when it reaches DISPLAY_CHUNK_SIZE
+    if (displayBuffer.length >= DISPLAY_CHUNK_SIZE) {
+      flushDisplayBuffer();
+    }
   }
 
-  // Wait for all processing to complete
-  while (processingSlots.size > 0 && !run.stopRequested) {
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
+  // Final flush: push any remaining buffered results to UI
+  flushDisplayBuffer();
 
-  // Flush remaining results
-  if (validatedBuffer.length > 0) {
-    const currentResults = store.getState().marketScanner.results;
-    store.setMarketScannerResults([...currentResults, ...validatedBuffer.splice(0)]);
-  }
+  // Log scan summary
+  console.log('[ScannerRunner] Scan summary:', {
+    totalSymbols,
+    attemptedSymbols: totalProcessed,
+    successCount: totalValidated,
+    failedCount: failedSymbols.length,
+    retryCount: totalRetries,
+    failedSymbols: failedSymbols.slice(0, 10),
+  });
+
+  return {
+    totalSymbols,
+    attemptedSymbols: totalProcessed,
+    successCount: totalValidated,
+    failedCount: failedSymbols.length,
+    retryCount: totalRetries,
+    failedSymbols,
+  };
 }
 
 /**
