@@ -18,10 +18,19 @@ const { Option } = Select;
 
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '/api';
 
-// Per-user API instance with Supabase auth token
+// Per-user API instance with Supabase auth token (with refresh)
 const userApi = axios.create({ baseURL: API_BASE_URL, timeout: 15000 });
 userApi.interceptors.request.use(async (config) => {
-  const { data: { session } } = await supabase.auth.getSession();
+  let { data: { session } } = await supabase.auth.getSession();
+  if (session?.access_token) {
+    try {
+      const payload = JSON.parse(atob(session.access_token.split('.')[1]));
+      if (!payload.exp || Date.now() >= (payload.exp * 1000 - 60000)) {
+        const { data: refreshed } = await supabase.auth.refreshSession();
+        if (refreshed.session) session = refreshed.session;
+      }
+    } catch { /* use existing token */ }
+  }
   if (session?.access_token) {
     config.headers.Authorization = `Bearer ${session.access_token}`;
   }

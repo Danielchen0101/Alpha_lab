@@ -292,6 +292,8 @@ def get_supabase_user():
             return user
     except Exception as e:
         safe_print(f'[Auth] Supabase token verification failed: {type(e).__name__}: {e}')
+        # Invalidate any cached entry for this token
+        _cache_invalidate(_auth_cache, token_hash)
     return None
 
 

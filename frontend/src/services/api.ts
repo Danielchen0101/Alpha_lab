@@ -19,9 +19,30 @@ const scannerApi = axios.create({
   },
 });
 
-// Attach Supabase access token to all requests
+// Check if JWT is expired (decode exp claim, with 60s buffer)
+function isTokenExpired(token: string): boolean {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    return !payload.exp || Date.now() >= (payload.exp * 1000 - 60000);
+  } catch {
+    return true;
+  }
+}
+
+// Attach Supabase access token to all requests, refreshing if needed
 const attachSupabaseToken = async (config: any) => {
-  const { data: { session } } = await supabase.auth.getSession();
+  let { data: { session } } = await supabase.auth.getSession();
+  // If token is expired, attempt refresh
+  if (session?.access_token && isTokenExpired(session.access_token)) {
+    try {
+      const { data: refreshed } = await supabase.auth.refreshSession();
+      if (refreshed.session) {
+        session = refreshed.session;
+      }
+    } catch (e) {
+      console.warn('[Auth] Session refresh failed, will use existing token:', e);
+    }
+  }
   if (session?.access_token) {
     config.headers.Authorization = `Bearer ${session.access_token}`;
   }
