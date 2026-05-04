@@ -3439,6 +3439,23 @@ const Portfolio: React.FC = (): React.ReactElement => {
     return all.slice(0, 8);
   }, [deeperValidationResults]);
 
+  // Store-based version for auto pipeline (avoids stale React snapshot)
+  const _getEntryPlanCandidatesFromStore = (): any[] => {
+    const results = scannerStateStore.getState().deeperValidation.results;
+    if (!results || results.length === 0) return [];
+    const confirmed: any[] = [];
+    const watch: any[] = [];
+    const manualReview: any[] = [];
+    for (const r of results) {
+      const rgStatus = (r.riskGate || {}).status;
+      if (rgStatus === 'BLOCK') continue;
+      if (r.verdict === 'Confirmed') confirmed.push(r);
+      else if (r.verdict === 'Watch') watch.push({ ...r, planNote: 'Conservative / Watch Only' });
+      else if (r.verdict === 'Needs Manual Review' || r.verdict === 'Manual Review') manualReview.push({ ...r, planNote: 'Review Required' });
+    }
+    return [...confirmed, ...watch, ...manualReview].slice(0, 8);
+  };
+
   const handleRunEntryPlan = useCallback(async () => {
     if (pipelineRunning) {
       message.warning('Disabled while AI Pipeline is running.');
@@ -3740,8 +3757,9 @@ const Portfolio: React.FC = (): React.ReactElement => {
 
       // ── Stage 4: Deeper Validation ──
       setPipelineStage('Deeper Validation');
-      const dvCandidates = selectValidationCandidates();
-      if (dvCandidates.length === 0) throw new Error('No Fine Scan candidates for validation');
+      // Read from store directly to avoid stale React snapshot after fine scan
+      const dvCandidates = _getValidationCandidatesFromStore();
+      if (dvCandidates.length === 0) throw new Error('Fine Scan completed but no Continue or Watch-to-Validate candidates found.');
       const dvPromise = _runDeeperValidationLoop(dvCandidates);
       registerDeeperValidationRun(dvPromise);
       await dvPromise;
@@ -3750,8 +3768,9 @@ const Portfolio: React.FC = (): React.ReactElement => {
 
       // ── Stage 5: Entry Plan ──
       setPipelineStage('Entry Plan');
-      const epCandidates = getEntryPlanCandidates();
-      if (epCandidates.length === 0) throw new Error('No validation candidates for Entry Plan');
+      // Read from store directly to avoid stale React snapshot after DV
+      const epCandidates = _getEntryPlanCandidatesFromStore();
+      if (epCandidates.length === 0) throw new Error('Deeper Validation completed but no Confirmed/Watch/Review candidates found for Entry Plan.');
       const epPromise = _runEntryPlanLoop(epCandidates);
       registerEntryPlanRun(epPromise);
       await epPromise;
@@ -3849,6 +3868,31 @@ const Portfolio: React.FC = (): React.ReactElement => {
     });
     return qualified.slice(0, 8);
   }, [fineScanResults]);
+
+  // Store-based version for auto pipeline (avoids stale React snapshot)
+  const _getValidationCandidatesFromStore = (): any[] => {
+    const results = scannerStateStore.getState().fineScan.results;
+    if (!results || results.length === 0) return [];
+    const qualified: any[] = [];
+    for (const r of results) {
+      if (r.scanStatus !== 'completed') continue;
+      if (r.decision === 'Continue') {
+        qualified.push({ ...r, selectedBy: 'Continue' });
+      } else if (r.decision === 'Watch') {
+        const hasCriticalBlocker = (r.decisionBlockers || []).some((b: string) =>
+          /bankruptcy|delisted|halted|fraud/i.test(b)
+        );
+        if (!hasCriticalBlocker && (r.matchConfidence || 0) >= 50) {
+          qualified.push({ ...r, selectedBy: 'Watch-to-Validate' });
+        }
+      }
+    }
+    qualified.sort((a: any, b: any) => {
+      if (a.selectedBy !== b.selectedBy) return a.selectedBy === 'Continue' ? -1 : 1;
+      return (b.matchConfidence || 0) - (a.matchConfidence || 0);
+    });
+    return qualified.slice(0, 8);
+  };
 
   // Breakdown counts for display
   const validationCandidateBreakdown = useCallback(() => {
