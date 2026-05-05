@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Card, Row, Col, Button, Tabs, Space, Spin, Empty, Alert, message, Radio } from 'antd';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Card, Row, Col, Button, Tabs, Space, Spin, Empty, Alert, message, Radio, Typography } from 'antd';
 import { LineChartOutlined, BarChartOutlined, PlayCircleOutlined, ReloadOutlined, ArrowUpOutlined, ArrowDownOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ReferenceDot, ReferenceArea } from 'recharts';
@@ -10,13 +10,13 @@ import marketDataService, {
   safeNumber,
   safeToFixed,
   calculateSMA,
-  calculateEMA,
   calculateRSI
 } from '../services/marketDataService';
 import DataSourceBadge from '../components/DataSourceBadge';
 import { formatMarketCap } from '../utils/format';
 
 const { TabPane } = Tabs;
+const { Title, Text } = Typography;
 
 interface BacktestHistoryItem {
   backtestId: string;
@@ -788,7 +788,7 @@ const SymbolAnalysis: React.FC = () => {
   const [, setBacktestHistory] = useState<BacktestHistoryItem[]>([]);
   const [, setBacktestLoading] = useState(false);
   const [stockDataError, setStockDataError] = useState<string | null>(null);
-  const [, setHistoricalDataError] = useState<string | null>(null);
+  const [historicalDataError, setHistoricalDataError] = useState<string | null>(null);
 
   // 图表相关状态 - 默认显示1 Day图表
   const [selectedTimeframe, setSelectedTimeframe] = useState<string>('1D');
@@ -797,8 +797,11 @@ const SymbolAnalysis: React.FC = () => {
   const [chartLoading, setChartLoading] = useState(false);
   const [dataSource, setDataSource] = useState<string>('Finnhub');
 
+  // Message deduplication key
+  const HISTORY_ERROR_KEY = 'historical_data_error';
+
   // 加载股票数据
-  const loadStockData = async () => {
+  const loadStockData = useCallback(async () => {
     if (!symbol) return;
 
     try {
@@ -808,201 +811,85 @@ const SymbolAnalysis: React.FC = () => {
 
       setStockData(data);
       setDataSource(data.dataSource || 'Finnhub');
-      message.success(`Loaded ${symbol} data from ${data.dataSource || 'Finnhub'}`);
+      // No success message needed for every load, keep it clean
     } catch (error: any) {
       console.error('Failed to fetch stock data:', error);
       const errorMsg = error.message || 'Unknown error';
       setStockDataError(`Failed to load stock data: ${errorMsg}`);
-      message.error(`Failed to load ${symbol} data: ${errorMsg}`);
+      message.error({ content: `Failed to load ${symbol} data: ${errorMsg}`, key: 'stock_data_error' });
     } finally {
       setLoading(false);
     }
-  };
+  }, [symbol]);
 
   // 加载历史价格数据
-  const loadHistoricalPrices = async () => {
+  const loadHistoricalPrices = useCallback(async () => {
     if (!symbol) return;
-    
+
     try {
       setChartLoading(true);
       setHistoricalDataError(null);
-      
-      // 重要：切换timeframe时清空旧数据，防止显示旧图
-      // 所有timeframe切换时都清空数据，避免旧图残留
-      console.log(`[${selectedTimeframe}图] 切换时间范围，清空旧数据`);
+
+      // Clear old data when switching timeframe to prevent flickering
       setHistoricalData([]);
       setChartData([]);
-      
-      // 调试日志：前端请求参数
-      const config = marketDataService.TIMEFRAMES[selectedTimeframe] || marketDataService.TIMEFRAMES['1M'];
-      console.log('=== 前端请求调试 ===');
-      console.log('1. 当前timeframe:', selectedTimeframe);
-      console.log('2. 请求配置:', {
-        interval: config.interval,
-        range: config.range,
-        label: config.label,
-        dataPoints: config.dataPoints
-      });
-      console.log('3. 请求URL:', `/market/history/${symbol}?interval=${config.interval}&range=${config.range}`);
-      
-      const response = await marketDataService.getStockHistory(symbol, selectedTimeframe);
-      
-      // 调试日志：后端返回数据
-      console.log('=== 后端返回数据 ===');
-      console.log('1. timeframe:', selectedTimeframe);
-      console.log('2. 返回bars数量:', response.count);
-      console.log('3. 数据源:', response.dataSource);
-      console.log('4. 原始数据条数:', response.data?.length || 0);
-      
-      if (response.data && response.data.length > 0) {
-        const firstBar = response.data[0];
-        const lastBar = response.data[response.data.length - 1];
-        console.log('5. 最早日期:', firstBar.time || new Date(firstBar.timestamp * 1000).toISOString());
-        console.log('6. 最晚日期:', lastBar.time || new Date(lastBar.timestamp * 1000).toISOString());
-        console.log('7. 第一根bar时间:', new Date(firstBar.timestamp * 1000).toISOString(), {
-          open: firstBar.open,
-          high: firstBar.high,
-          low: firstBar.low,
-          close: firstBar.close,
-          volume: firstBar.volume
-        });
-        console.log('5. 最后一根bar时间:', new Date(lastBar.timestamp * 1000).toISOString(), {
-          open: lastBar.open,
-          high: lastBar.high,
-          low: lastBar.low,
-          close: lastBar.close,
-          volume: lastBar.volume
-        });
-        console.log('6. 时间跨度:', {
-          days: (lastBar.timestamp - firstBar.timestamp) / (24 * 60 * 60),
-          bars: response.data.length
-        });
-      } else {
-        console.log('4. 无数据返回');
-      }
 
-      // === 前端接收到的原始响应 ===
-      console.log('=== 前端接收到的原始响应 ===');
-      console.log('1. 完整响应结构:', response);
-      console.log('2. 数据源:', response.dataSource);
-      console.log('3. 数据条数:', response.count);
-      console.log('4. 警告信息:', (response as any).warning || '无');
-      console.log('5. 是否模拟数据:', (response as any).isSimulated || false);
-      console.log('6. 是否真实数据:', (response as any).isRealData || false);
-      console.log('7. 错误信息:', (response as any).error || '无');
-      
-      // 检查是否没有数据
+      console.log(`[${selectedTimeframe}] Requesting historical bars for ${symbol}...`);
+
+      const response = await marketDataService.getStockHistory(symbol, selectedTimeframe);
+
       if (!response.data || response.data.length === 0) {
-        console.log('8. 后端返回空数据，显示"No historical data available"');
+        console.log('Backend returned empty history data');
         setHistoricalData([]);
         setChartData([]);
-        setDataSource(response.dataSource || '数据不可用');
+        setDataSource(response.dataSource || 'Alpaca');
+        setHistoricalDataError('No historical bars returned for this symbol/timeframe.');
         setChartLoading(false);
-        return; // 直接返回，不继续处理
+        return;
       }
-      
-      const closes = response.data.map((item: HistoricalDataPoint) => item.close);
-      console.log('8. 价格统计:');
-      console.log('   - 最低价:', Math.min(...closes));
-      console.log('   - 最高价:', Math.max(...closes));
-      console.log('   - 最后收盘价:', closes[closes.length - 1]);
-      console.log('   - 前5个close:', closes.slice(0, 5));
-      console.log('   - 后5个close:', closes.slice(-5));
-      
-      // 设置历史数据 - 不再进行请求版本检查
-      // 因为我们已经通过清空数据来防止旧图残留
-      console.log(`[${selectedTimeframe}图] 设置历史数据: ${response.data?.length || 0}条`);
-      setHistoricalData(response.data);
-      setDataSource(response.dataSource || 'Finnhub');
 
-      // 保存原始历史数据
       setHistoricalData(response.data);
-      
-      // 调试：记录原始数据信息
-      console.log(`[Analyze] ====== 原始数据信息 ======`);
-      console.log(`[Analyze] 后端返回条数: ${response.data?.length || 0}`);
-      console.log(`[Analyze] 数据源: ${response.dataSource || '未知'}`);
-      console.log(`[Analyze] 当前timeframe: ${selectedTimeframe}`);
-      
-      if (response.data && response.data.length > 0) {
-        // 显示前3个和后3个数据点
-        console.log(`[Analyze] 前3个数据点:`);
-        response.data.slice(0, 3).forEach((item, index) => {
-          console.log(`  ${index+1}. time: "${item.time}", timestamp: ${item.timestamp}`);
-        });
-        
-        console.log(`[Analyze] 后3个数据点:`);
-        response.data.slice(-3).forEach((item, index) => {
-          const pos = response.data.length - 3 + index;
-          console.log(`  ${pos+1}. time: "${item.time}", timestamp: ${item.timestamp}`);
-        });
-        
-        // 计算日期范围
-        const dates = response.data.map(item => item.time || new Date(item.timestamp * 1000).toISOString().split('T')[0]);
-        dates.sort();
-        console.log(`[Analyze] 最早日期: ${dates[0]}`);
-        console.log(`[Analyze] 最晚日期: ${dates[dates.length - 1]}`);
-      } else {
-        console.log(`[Analyze] ⚠️ 警告: 后端返回空数据`);
-      }
-      
-      // 转换为图表数据格式 - 修复：优先使用time字段，避免错误的时间戳
-      console.log(`[Analyze] ====== 开始数据转换 ======`);
-      const formattedData = response.data.map((item: HistoricalDataPoint, index) => {
+      setDataSource(response.dataSource || 'Alpaca');
+
+      // 转换为图表数据格式
+      const formattedData = response.data.map((item: HistoricalDataPoint) => {
         let date: Date;
-        
-        // 优先使用time字段（包含正确的日期字符串）
+
         if (item.time) {
           try {
-            // Alpaca返回的时间格式是ISO字符串（如 "2026-03-20T14:30:00Z"）
-            // 如果是模拟数据，可能是 "2026-03-20 06:10:36" 格式
             let timeStr = item.time;
-            
-            // 检查是否是Alpaca的ISO格式（以Z结尾）
             if (timeStr.endsWith('Z')) {
-              // Alpaca ISO格式，直接使用
               date = new Date(timeStr);
             } else if (timeStr.includes(' ')) {
-              // 模拟数据格式: "2026-03-20 06:10:36"
-              // 转换为ISO格式，假设是UTC时间
               timeStr = timeStr.replace(' ', 'T') + 'Z';
               date = new Date(timeStr);
             } else {
-              // 日线格式: "2026-03-20"
               timeStr = timeStr + 'T00:00:00Z';
               date = new Date(timeStr);
             }
-            
+
             if (!isNaN(date.getTime())) {
-              // 成功解析time字段
-              console.log(`[Analyze] 转换 ${index+1}: 使用time字段 "${item.time}" -> ${date.toISOString()} (数据源: ${response.dataSource})`);
               return {
-                date: date.toISOString(), // 使用ISO字符串（UTC时间）
+                date: date.toISOString(),
                 open: Number(item.open) || 0,
                 high: Number(item.high) || 0,
                 low: Number(item.low) || 0,
                 close: Number(item.close) || 0,
                 volume: Number(item.volume) || 0
               };
-            } else {
-              console.error(`[Analyze] 警告: 无效日期 "${item.time}" -> "${timeStr}"`);
             }
           } catch (e) {
             console.error('Failed to parse time field:', item.time, e);
           }
         }
-        
-        // 回退到使用timestamp（但可能有问题）
+
         const timestampMs = item.timestamp * 1000;
         date = new Date(timestampMs);
-        
-        if (isNaN(date.getTime())) {
-          console.error('Invalid date from timestamp:', item.timestamp, item.time);
-          return null;
-        }
+
+        if (isNaN(date.getTime())) return null;
 
         return {
-          date: date.toISOString(), // 使用ISO字符串
+          date: date.toISOString(),
           open: Number(item.open) || 0,
           high: Number(item.high) || 0,
           low: Number(item.low) || 0,
@@ -1011,418 +898,84 @@ const SymbolAnalysis: React.FC = () => {
         };
       }).filter((item): item is ChartDataPoint => item !== null);
 
-      // 调试：记录转换后的数据
-      console.log(`[Analyze] ====== 数据转换结果 ======`);
-      console.log(`[Analyze] 原始数据条数: ${response.data?.length || 0}`);
-      console.log(`[Analyze] 转换后图表数据条数: ${formattedData.length}`);
-      console.log(`[Analyze] historicalData条数: ${response.data?.length || 0}`);
-      
-      // 3 Months特殊处理：如果转换后为空，尝试简单转换
-      if (selectedTimeframe === '3M' && formattedData.length === 0 && response.data && response.data.length > 0) {
-        console.log(`[Analyze] ⚠️ 3 Months数据转换失败，尝试简单转换`);
-        
-        // 简单转换：只使用close价格，日期使用索引
-        const simpleFormattedData = response.data.map((item: HistoricalDataPoint, index) => {
-          const date = new Date();
-          date.setDate(date.getDate() - (response.data.length - index - 1));
-          
-          return {
-            date: date.toISOString(),
-            open: Number(item.open) || 0,
-            high: Number(item.high) || 0,
-            low: Number(item.low) || 0,
-            close: Number(item.close) || 0,
-            volume: Number(item.volume) || 0
-          } as ChartDataPoint;
-        });
-        
-        console.log(`[Analyze] 简单转换后条数: ${simpleFormattedData.length}`);
-        formattedData.push(...simpleFormattedData);
-      }
-      
-      // 1 Week特殊处理：如果转换后为空，尝试简单转换
-      if (selectedTimeframe === '1W' && formattedData.length === 0 && response.data && response.data.length > 0) {
-        console.log(`[Analyze] ⚠️ 1 Week数据转换失败，尝试简单转换`);
-        
-        // 简单转换：使用timestamp字段
-        const simpleFormattedData = response.data.map((item: HistoricalDataPoint, index) => {
-          let date: Date;
-          
-          // 优先使用timestamp
-          if (item.timestamp) {
-            date = new Date(item.timestamp * 1000);
-          } else {
-            // 回退：按索引偏移
-            date = new Date();
-            date.setDate(date.getDate() - (response.data.length - index - 1));
-          }
-          
-          return {
-            date: date.toISOString(),
-            open: Number(item.open) || 0,
-            high: Number(item.high) || 0,
-            low: Number(item.low) || 0,
-            close: Number(item.close) || 0,
-            volume: Number(item.volume) || 0
-          } as ChartDataPoint;
-        });
-        
-        console.log(`[Analyze] 1 Week简单转换后条数: ${simpleFormattedData.length}`);
-        formattedData.push(...simpleFormattedData);
-      }
-      
-      if (formattedData.length > 0) {
-        console.log(`[Analyze] 转换后前3个数据点:`);
-        formattedData.slice(0, 3).forEach((item, index) => {
-          console.log(`  ${index+1}. date: ${item.date}, close: ${item.close}`);
-        });
-        
-        console.log(`[Analyze] 转换后后3个数据点:`);
-        formattedData.slice(-3).forEach((item, index) => {
-          const pos = formattedData.length - 3 + index;
-          console.log(`  ${pos+1}. date: ${item.date}, close: ${item.close}`);
-        });
-      } else {
-        console.log(`[Analyze] ⚠️ 警告: 数据转换后为空`);
-        
-        // 调试转换失败的原因
-        if (response.data && response.data.length > 0) {
-          console.log(`[Analyze] 调试转换失败:`);
-          response.data.slice(0, 3).forEach((item, index) => {
-            console.log(`  原始数据 ${index+1}:`, {
-              time: item.time,
-              timestamp: item.timestamp,
-              open: item.open,
-              close: item.close
-            });
-          });
-        }
-      }
-
-      // 根据timeframe处理数据
       let chartDataToSet = formattedData;
-      
-      // 为1 Day、1 Month、3 Months、1 Year数据添加排序，确保时间顺序：旧 -> 新
-      if (selectedTimeframe === '1D' || selectedTimeframe === '1M' || selectedTimeframe === '3M' || selectedTimeframe === '1Y') {
-        console.log(`[${selectedTimeframe}] ====== 开始排序数据（确保时间顺序：旧 -> 新） ======`);
-        console.log(`[${selectedTimeframe}] 排序前数据条数: ${chartDataToSet.length}`);
-        
-        if (chartDataToSet.length > 0) {
-          // 按时间升序排序（旧 -> 新）
-          chartDataToSet = [...chartDataToSet].sort((a, b) => {
-            return new Date(a.date).getTime() - new Date(b.date).getTime();
-          });
-          
-          console.log(`[${selectedTimeframe}] 已按时间正序排序（最早在前，最新在后）`);
-          
-          // 验证排序结果
-          if (chartDataToSet.length > 1) {
-            const firstDate = new Date(chartDataToSet[0].date);
-            const lastDate = new Date(chartDataToSet[chartDataToSet.length - 1].date);
-            console.log(`[${selectedTimeframe}] 排序验证:`);
-            console.log(`  - 第一个数据点: ${firstDate.toISOString()}`);
-            console.log(`  - 最后一个数据点: ${lastDate.toISOString()}`);
-            console.log(`  - 顺序: ${firstDate < lastDate ? '✅ 旧 -> 新' : '❌ 新 -> 旧'}`);
-            
-            // 特别为1 Day显示时间
-            if (selectedTimeframe === '1D') {
-              const firstHour = firstDate.getUTCHours();
-              const firstMinute = firstDate.getUTCMinutes();
-              const lastHour = lastDate.getUTCHours();
-              const lastMinute = lastDate.getUTCMinutes();
-              console.log(`[1 Day] 时间范围: ${firstHour}:${String(firstMinute).padStart(2, '0')} -> ${lastHour}:${String(lastMinute).padStart(2, '0')} (UTC)`);
-            }
-          }
-        }
-        console.log(`[${selectedTimeframe}] ====== 数据排序完成 ======`);
-      }
-      
+
+      // Ensure chronological order
+      chartDataToSet = [...chartDataToSet].sort((a, b) => 
+        new Date(a.date).getTime() - new Date(b.date).getTime()
+      );
+
+      // Timeframe specific filtering
       if (selectedTimeframe === '3M') {
-        // === 3 Months 专用：调整日期范围，收紧到最近3个月 ===
-        console.log(`[3 Months] ====== 开始调整日期范围 ======`);
-        console.log(`[3 Months] 1. 原始formattedData条数: ${formattedData.length}`);
-        
-        if (chartDataToSet.length > 0) {
-          // 计算最近3个月的日期（90天前）
-          const today = new Date();
-          const threeMonthsAgo = new Date(today);
-          threeMonthsAgo.setDate(today.getDate() - 90);
-          
-          console.log(`[3 Months] 2. 今天: ${today.toISOString().split('T')[0]}`);
-          console.log(`[3 Months] 3. 3个月前: ${threeMonthsAgo.toISOString().split('T')[0]}`);
-          
-          // 过滤出最近3个月的数据（使用已排序的chartDataToSet）
-          const recentData = chartDataToSet.filter(item => {
-            const itemDate = new Date(item.date);
-            return itemDate >= threeMonthsAgo;
-          });
-          
-          console.log(`[3 Months] 4. 过滤后数据条数: ${recentData.length}`);
-          
-          if (recentData.length > 0) {
-            // 使用过滤后的数据
-            chartDataToSet = recentData;
-            
-            const firstDate = new Date(chartDataToSet[0].date);
-            const lastDate = new Date(chartDataToSet[chartDataToSet.length - 1].date);
-            
-            console.log(`[3 Months] 5. 调整后数据范围: ${firstDate.toISOString().split('T')[0]} 到 ${lastDate.toISOString().split('T')[0]}`);
-            console.log(`[3 Months] 6. 总天数: ${chartDataToSet.length}个交易日`);
-            console.log(`[3 Months] 7. 收紧天数: ${formattedData.length - recentData.length}天`);
-          } else {
-            // 如果没有最近3个月的数据，使用原始数据但显示警告
-            console.log(`[3 Months] ⚠️ 警告: 没有最近3个月的数据，使用原始数据`);
-            chartDataToSet = formattedData;
-          }
-        } else {
-          console.log(`[3 Months] ⚠️ 警告: formattedData为空，图表将显示"No historical data available"`);
-        }
-        console.log(`[3 Months] ====== 日期范围调整完成 ======`);
+        const threeMonthsAgo = new Date();
+        threeMonthsAgo.setDate(threeMonthsAgo.getDate() - 90);
+        chartDataToSet = chartDataToSet.filter(item => new Date(item.date) >= threeMonthsAgo);
       } else if (selectedTimeframe === '1M') {
-        // === 1 Month 专用：调整日期范围，收紧到最近1个月 ===
-        console.log(`[1 Month] ====== 开始调整日期范围 ======`);
-        console.log(`[1 Month] 1. 原始formattedData条数: ${formattedData.length}`);
-        
-        if (chartDataToSet.length > 0) {
-          // 计算最近1个月的日期（30天前）
-          const today = new Date();
-          const oneMonthAgo = new Date(today);
-          oneMonthAgo.setDate(today.getDate() - 30);
-          
-          console.log(`[1 Month] 2. 今天: ${today.toISOString().split('T')[0]}`);
-          console.log(`[1 Month] 3. 1个月前: ${oneMonthAgo.toISOString().split('T')[0]}`);
-          
-          // 过滤出最近1个月的数据（使用已排序的chartDataToSet）
-          const recentData = chartDataToSet.filter(item => {
-            const itemDate = new Date(item.date);
-            return itemDate >= oneMonthAgo;
-          });
-          
-          console.log(`[1 Month] 4. 过滤后数据条数: ${recentData.length}`);
-          
-          if (recentData.length > 0) {
-            // 使用过滤后的数据
-            chartDataToSet = recentData;
-            
-            const firstDate = new Date(chartDataToSet[0].date);
-            const lastDate = new Date(chartDataToSet[chartDataToSet.length - 1].date);
-            
-            console.log(`[1 Month] 5. 调整后数据范围: ${firstDate.toISOString().split('T')[0]} 到 ${lastDate.toISOString().split('T')[0]}`);
-            console.log(`[1 Month] 6. 总天数: ${chartDataToSet.length}个交易日`);
-            console.log(`[1 Month] 7. 收紧天数: ${formattedData.length - recentData.length}天`);
-          } else {
-            // 如果没有最近1个月的数据，使用原始数据但显示警告
-            console.log(`[1 Month] ⚠️ 警告: 没有最近1个月的数据，使用原始数据`);
-            chartDataToSet = formattedData;
-          }
-        } else {
-          console.log(`[1 Month] ⚠️ 警告: formattedData为空，图表将显示"No historical data available"`);
-        }
-        console.log(`[1 Month] ====== 日期范围调整完成 ======`);
+        const oneMonthAgo = new Date();
+        oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
+        chartDataToSet = chartDataToSet.filter(item => new Date(item.date) >= oneMonthAgo);
       } else if (selectedTimeframe === '1W') {
-        // === 1 Week 专用：确保数据顺序正确（从左到右：旧 -> 新） ===
-        console.log('[1 Week] ====== 处理1 Week数据，确保时间顺序正确 ======');
-        console.log('[1 Week] 后端返回原始数据点数:', formattedData.length);
-        
-        // 1. 首先确保formattedData按时间排序（旧 -> 新）
-        const sortedFormattedData = [...formattedData].sort((a, b) => 
-          new Date(a.date).getTime() - new Date(b.date).getTime()
-        );
-        
-        console.log('[1 Week] 2. 排序后数据点数:', sortedFormattedData.length);
-        
-        if (sortedFormattedData.length > 0) {
-          // 2. 计算最近1周的日期（7天前）
-          const today = new Date();
-          const oneWeekAgo = new Date(today);
-          oneWeekAgo.setDate(today.getDate() - 7);
-          
-          console.log('[1 Week] 3. 今天:', today.toISOString().split('T')[0]);
-          console.log('[1 Week] 4. 1周前:', oneWeekAgo.toISOString().split('T')[0]);
-          
-          // 3. 过滤出最近1周的数据
-          const recentData = sortedFormattedData.filter(item => {
-            const itemDate = new Date(item.date);
-            return itemDate >= oneWeekAgo;
-          });
-          
-          console.log('[1 Week] 5. 过滤后数据条数:', recentData.length);
-          
-          if (recentData.length > 0) {
-            // 使用过滤后的数据（已经是正确顺序）
-            chartDataToSet = recentData;
-            
-            const firstDate = new Date(chartDataToSet[0].date);
-            const lastDate = new Date(chartDataToSet[chartDataToSet.length - 1].date);
-            
-            console.log('[1 Week] 6. 调整后数据范围:', firstDate.toISOString().split('T')[0], '到', lastDate.toISOString().split('T')[0]);
-            console.log('[1 Week] 7. 总天数:', chartDataToSet.length, '个交易日');
-            console.log('[1 Week] 8. 收紧天数:', sortedFormattedData.length - recentData.length, '天');
-            
-            // 调试：打印数据顺序
-            console.log('[1 Week] 9. 数据顺序验证:');
-            console.log('[1 Week]   第一个点:', firstDate.toISOString(), '->', 
-              `${(firstDate.getUTCHours() - 4 + 24) % 24}:${String(firstDate.getUTCMinutes()).padStart(2, '0')}`);
-            console.log('[1 Week]   最后一个点:', lastDate.toISOString(), '->', 
-              `${(lastDate.getUTCHours() - 4 + 24) % 24}:${String(lastDate.getUTCMinutes()).padStart(2, '0')}`);
-          } else {
-            // 如果没有最近1周的数据，使用原始数据但显示警告
-            console.log('[1 Week] ⚠️ 警告: 没有最近1周的数据，使用原始数据');
-            chartDataToSet = sortedFormattedData;
-          }
-        } else {
-          console.log('[1 Week] ⚠️ 警告: formattedData为空，图表将显示"No historical data available"');
-        }
-        
-
+        const oneWeekAgo = new Date();
+        oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+        chartDataToSet = chartDataToSet.filter(item => new Date(item.date) >= oneWeekAgo);
       }
 
-      // 设置图表数据
-      console.log(`Formatted chart data:`, chartDataToSet.length, 'points');
-      
-      // 调试日志：图表最终数据
-      console.log('=== 图表最终数据 ===');
-      console.log('1. chartData.length:', chartDataToSet.length);
-      if (chartDataToSet.length > 0) {
-        console.log('2. 第一条数据:', {
-          date: chartDataToSet[0].date,
-          open: chartDataToSet[0].open,
-          close: chartDataToSet[0].close,
-          volume: chartDataToSet[0].volume
-        });
-        console.log('3. 最后一条数据:', {
-          date: chartDataToSet[chartDataToSet.length - 1].date,
-          open: chartDataToSet[chartDataToSet.length - 1].open,
-          close: chartDataToSet[chartDataToSet.length - 1].close,
-          volume: chartDataToSet[chartDataToSet.length - 1].volume
-        });
-        console.log('4. 数据时间范围:', {
-          firstDate: chartDataToSet[0].date,
-          lastDate: chartDataToSet[chartDataToSet.length - 1].date,
-          totalBars: chartDataToSet.length
-        });
-      }
-
-      // 计算技术指标 - 使用所有有效的close值
-      // 首先验证数据顺序
-      console.log(`[技术指标计算] 开始计算技术指标，数据点数: ${chartDataToSet.length}`);
-      
-      if (chartDataToSet.length > 1) {
-        const firstDate = new Date(chartDataToSet[0].date);
-        const lastDate = new Date(chartDataToSet[chartDataToSet.length - 1].date);
-        const timeDiff = lastDate.getTime() - firstDate.getTime();
-        
-        console.log(`[技术指标计算] 数据顺序验证:`);
-        console.log(`[技术指标计算]   第一个点: ${firstDate.toISOString()} (索引0)`);
-        console.log(`[技术指标计算]   最后一个点: ${lastDate.toISOString()} (索引${chartDataToSet.length - 1})`);
-        console.log(`[技术指标计算]   时间差: ${timeDiff}ms (${timeDiff > 0 ? '正确顺序: 旧 -> 新' : '错误顺序: 新 -> 旧'})`);
-        
-        if (timeDiff < 0) {
-          console.warn(`[技术指标计算] ⚠️ 警告: 数据顺序可能错误！最后一个点比第一个点更早`);
-        }
-      }
-      
       const closePrices = chartDataToSet.map(d => d.close);
-      
-      // 计算移动平均线（基于close价格）
       const sma20 = calculateSMA(closePrices, 20);
       const sma50 = calculateSMA(closePrices, 50);
-      const ema12 = calculateEMA(closePrices, 12);
-      const ema26 = calculateEMA(closePrices, 26);
-      
-      // === 特殊处理：1 Month的RSI计算需要更多预热数据 ===
+
       let rsi: number[];
       if (selectedTimeframe === '1M' && formattedData.length > chartDataToSet.length) {
-        console.log(`[1 Month RSI优化] 使用扩展数据计算RSI`);
-        console.log(`[1 Month RSI优化] 图表数据: ${chartDataToSet.length}条，完整数据: ${formattedData.length}条`);
-        
-        // 使用完整的formattedData计算RSI（包含2个月数据）
         const fullClosePrices = formattedData.map(d => d.close);
         const fullRSI = calculateRSI(fullClosePrices, 14);
-        
-        // 只取最后chartDataToSet.length个RSI值（对应最近1个月）
-        const startIndex = fullRSI.length - chartDataToSet.length;
-        rsi = fullRSI.slice(startIndex);
-        
-        console.log(`[1 Month RSI优化] 完整RSI: ${fullRSI.length}个值`);
-        console.log(`[1 Month RSI优化] 截取RSI: ${rsi.length}个值（从索引${startIndex}开始）`);
-        
-        // 验证RSI数据
-        const validRSICount = rsi.filter(v => !isNaN(v)).length;
-        console.log(`[1 Month RSI优化] 有效RSI值: ${validRSICount}/${rsi.length}`);
+        rsi = fullRSI.slice(fullRSI.length - chartDataToSet.length);
       } else {
-        // 其他时间范围使用正常计算
         rsi = calculateRSI(closePrices, 14);
       }
 
-      // 添加技术指标到图表数据
-      const chartDataWithIndicators = chartDataToSet.map((item, index) => ({
+      const finalChartData = chartDataToSet.map((item, index) => ({
         ...item,
         sma20: !isNaN(sma20[index]) ? sma20[index] : undefined,
         sma50: !isNaN(sma50[index]) ? sma50[index] : undefined,
-        ema12: !isNaN(ema12[index]) ? ema12[index] : undefined,
-        ema26: !isNaN(ema26[index]) ? ema26[index] : undefined,
         rsi: !isNaN(rsi[index]) ? rsi[index] : undefined
       }));
 
-      // === 最终传给图表的数据 ===
-      console.log('=== 最终传给图表的数据 ===');
-      console.log('1. chartData长度:', chartDataWithIndicators.length);
-      if (chartDataWithIndicators.length > 0) {
-        const chartCloses = chartDataWithIndicators.map(d => d.close);
-        console.log('2. 图表价格统计:');
-        console.log('   - 最低价:', Math.min(...chartCloses));
-        console.log('   - 最高价:', Math.max(...chartCloses));
-        console.log('   - 最后收盘价:', chartCloses[chartCloses.length - 1]);
-        console.log('3. 前5个数据点:');
-        console.log(chartDataWithIndicators.slice(0, 5).map(d => ({
-          date: d.date,
-          close: d.close,
-          sma20: d.sma20,
-          sma50: d.sma50
-        })));
-        console.log('4. 后5个数据点:');
-        console.log(chartDataWithIndicators.slice(-5).map(d => ({
-          date: d.date,
-          close: d.close,
-          sma20: d.sma20,
-          sma50: d.sma50
-        })));
-      }
-      
-      console.log(`[Analyze] 设置chartData: ${chartDataWithIndicators.length}条数据`);
-      if (chartDataWithIndicators.length === 0) {
-        console.log(`[Analyze] ⚠️ 警告: chartDataWithIndicators为空，图表将显示"No historical data available"`);
-      }
-      
-      // 不再添加16:00占位点
-      const finalChartData = chartDataWithIndicators;
-      
       setChartData(finalChartData);
-      console.log('=== 数据加载完成 ===');
 
     } catch (error: any) {
       console.error('Failed to fetch historical data:', error);
       const errorMsg = error.message || 'Unknown error';
-      setHistoricalDataError(`Failed to load historical data: ${errorMsg}`);
-      message.error(`Failed to load historical data: ${errorMsg}`);
+
+      // Deduplicate error toasts using a key
+      if (errorMsg.includes('404')) {
+        setHistoricalDataError('Historical chart data is unavailable from Alpaca for this symbol/timeframe.');
+        message.warning({ 
+          content: 'Historical chart data is unavailable for this timeframe. Snapshot data is still displayed.',
+          key: HISTORY_ERROR_KEY,
+          duration: 4
+        });
+      } else {
+        setHistoricalDataError(`Error loading chart: ${errorMsg}`);
+        message.error({ 
+          content: `Failed to load historical data: ${errorMsg}`, 
+          key: HISTORY_ERROR_KEY 
+        });
+      }
+
       setHistoricalData([]);
       setChartData([]);
     } finally {
       setChartLoading(false);
     }
-  };
+  }, [symbol, selectedTimeframe, HISTORY_ERROR_KEY]);
+
 
   // 加载回测历史
-  const loadBacktestHistory = async () => {
+  const loadBacktestHistory = useCallback(async () => {
     if (!symbol) return;
 
     setBacktestLoading(true);
     try {
-      // 这里应该调用真实的 API
-      // const response = await backtraderAPI.getBacktestHistory({ symbol });
-      // setBacktestHistory(response.data);
-
       // 模拟数据
       const mockBacktests: BacktestHistoryItem[] = [
         {
@@ -1441,40 +994,6 @@ const SymbolAnalysis: React.FC = () => {
             trades: 24,
             annualizedReturn: 19.8
           }
-        },
-        {
-          backtestId: 'bt_002',
-          status: 'completed',
-          symbol: symbol,
-          strategy: 'RSI Strategy',
-          startDate: '2025-03-01',
-          endDate: '2025-11-30',
-          initialCapital: 100000,
-          results: {
-            totalReturn: 12.1,
-            sharpeRatio: 1.45,
-            maxDrawdown: -15.2,
-            winRate: 58.7,
-            trades: 18,
-            annualizedReturn: 14.3
-          }
-        },
-        {
-          backtestId: 'bt_003',
-          status: 'completed',
-          symbol: symbol,
-          strategy: 'Bollinger Bands',
-          startDate: '2025-06-01',
-          endDate: '2025-12-31',
-          initialCapital: 100000,
-          results: {
-            totalReturn: 8.7,
-            sharpeRatio: 1.12,
-            maxDrawdown: -18.5,
-            winRate: 52.4,
-            trades: 15,
-            annualizedReturn: 10.1
-          }
         }
       ];
 
@@ -1485,7 +1004,7 @@ const SymbolAnalysis: React.FC = () => {
     } finally {
       setBacktestLoading(false);
     }
-  };
+  }, [symbol]);
 
   // 运行回测
   const handleRunBacktest = () => {
@@ -1501,19 +1020,35 @@ const SymbolAnalysis: React.FC = () => {
   const renderPriceChart = () => {
     if (chartLoading) {
       return (
-        <div style={{ textAlign: 'center', padding: '40px' }}>
-          <Spin size="large" />
-          <div style={{ marginTop: '16px' }}>Loading chart data...</div>
+        <div style={{ textAlign: 'center', padding: '100px 0' }}>
+          <Spin size="large" tip="Loading historical bars from Alpaca..." />
         </div>
       );
     }
 
     if (chartData.length === 0) {
       return (
-        <Empty
-          description="No historical data available"
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
-        />
+        <div style={{ padding: '60px 0', background: '#fafafa', borderRadius: '8px' }}>
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={
+              <div style={{ textAlign: 'center' }}>
+                <Title level={5} style={{ color: '#595959' }}>Historical chart unavailable</Title>
+                <Text type="secondary" style={{ display: 'block', marginBottom: '16px' }}>
+                  Alpaca returned no historical bars for {symbol} on the {selectedTimeframe} timeframe.<br />
+                  Snapshot metrics are still available.
+                </Text>
+                <Button 
+                  icon={<ReloadOutlined />} 
+                  onClick={loadHistoricalPrices}
+                  size="small"
+                >
+                  Retry Load
+                </Button>
+              </div>
+            }
+          />
+        </div>
       );
     }
 
@@ -2295,19 +1830,23 @@ const SymbolAnalysis: React.FC = () => {
     
     if (chartData.length === 0) {
       return (
-        <Empty
-          description="No historical data available"
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
-        />
+        <div style={{ padding: '40px 0' }}>
+          <Empty
+            description="Historical chart data unavailable"
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+          />
+        </div>
       );
     }
     
     if (!hasValidRSIData) {
       return (
-        <Empty
-          description="Not enough data to calculate RSI"
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
-        />
+        <div style={{ padding: '40px 0' }}>
+          <Empty
+            description="Insufficient data to calculate RSI"
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+          />
+        </div>
       );
     }
 
@@ -2719,15 +2258,7 @@ const SymbolAnalysis: React.FC = () => {
       loadBacktestHistory();
       loadHistoricalPrices();
     }
-  }, [symbol, selectedTimeframe]); // 添加selectedTimeframe依赖，确保切换timeframe时重新加载所有数据
-
-  // 当 timeframe 改变时重新加载历史数据
-  useEffect(() => {
-    if (symbol) {
-      console.log(`[SymbolAnalysis] timeframe切换: ${selectedTimeframe}, 重新加载数据`);
-      loadHistoricalPrices();
-    }
-  }, [selectedTimeframe]);
+  }, [symbol, loadStockData, loadBacktestHistory, loadHistoricalPrices]);
 
   if (loading) {
     return (
@@ -2777,6 +2308,29 @@ const SymbolAnalysis: React.FC = () => {
 
   return (
     <div style={{ padding: '16px' }}>
+      {/* Historical Data Warning Alert */}
+      {historicalDataError && stockData && (
+        <Alert
+          message="Historical Chart Data Unavailable"
+          description={
+            <span>
+              Alpaca returned no historical bars for this timeframe. 
+              <strong> Real-time snapshot metrics</strong> are still displayed below.
+            </span>
+          }
+          type="warning"
+          showIcon
+          closable
+          onClose={() => setHistoricalDataError(null)}
+          style={{ marginBottom: '16px', borderRadius: '8px' }}
+          action={
+            <Button size="small" type="default" ghost onClick={loadHistoricalPrices}>
+              Retry
+            </Button>
+          }
+        />
+      )}
+
       {/* 头部信息 - 更专业 */}
       <Card
         style={{

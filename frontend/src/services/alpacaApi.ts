@@ -15,10 +15,19 @@ const api = axios.create({
   },
 });
 
-// Attach Supabase access token to all requests
+// Attach Supabase access token to all requests, refreshing if needed
 api.interceptors.request.use(
   async (config) => {
-    const { data: { session } } = await supabase.auth.getSession();
+    let { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      try {
+        const payload = JSON.parse(atob(session.access_token.split('.')[1]));
+        if (!payload.exp || Date.now() >= (payload.exp * 1000 - 60000)) {
+          const { data: refreshed } = await supabase.auth.refreshSession();
+          if (refreshed.session) session = refreshed.session;
+        }
+      } catch { /* use existing token */ }
+    }
     if (session?.access_token) {
       config.headers.Authorization = `Bearer ${session.access_token}`;
     }

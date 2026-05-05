@@ -19,9 +19,30 @@ const scannerApi = axios.create({
   },
 });
 
-// Attach Supabase access token to all requests
+// Check if JWT is expired (decode exp claim, with 60s buffer)
+function isTokenExpired(token: string): boolean {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    return !payload.exp || Date.now() >= (payload.exp * 1000 - 60000);
+  } catch {
+    return true;
+  }
+}
+
+// Attach Supabase access token to all requests, refreshing if needed
 const attachSupabaseToken = async (config: any) => {
-  const { data: { session } } = await supabase.auth.getSession();
+  let { data: { session } } = await supabase.auth.getSession();
+  // If token is expired, attempt refresh
+  if (session?.access_token && isTokenExpired(session.access_token)) {
+    try {
+      const { data: refreshed } = await supabase.auth.refreshSession();
+      if (refreshed.session) {
+        session = refreshed.session;
+      }
+    } catch (e) {
+      console.warn('[Auth] Session refresh failed, will use existing token:', e);
+    }
+  }
   if (session?.access_token) {
     config.headers.Authorization = `Bearer ${session.access_token}`;
   }
@@ -145,6 +166,19 @@ export const aiAgentWatchlistAPI = {
     api.patch(`/ai-agent/watchlist/${id}`, data),
 };
 
+// AI Execution Order API
+export const aiExecutionAPI = {
+  placeOrder: (data: {
+    symbol: string; side: string; qty?: number; notional?: number;
+    type: 'market' | 'limit' | 'stop' | 'stop_limit' | 'trailing_stop';
+    limit_price?: number; stop_price?: number;
+    trail_price?: number; trail_percent?: number;
+    time_in_force?: string;
+    tradingMode: string; automationMode: string;
+    executionSource?: string; confirmed?: boolean;
+  }) => api.post('/ai/execution/order', data),
+};
+
 // Fine Scan AI Decision (per-symbol Continue/Watch/Skip + Grade with source tracking)
 export const fineScanDecisionAPI = {
   decide: (data: FineScanDecisionRequest) => {
@@ -245,7 +279,59 @@ export const tradingAccountAPI = {
     return api.get<TradingAccountResponse>(`/trading/account?mode=${mode}`);
   },
   getPositions: (mode: 'paper' | 'real') => {
-    return api.get<{ success: boolean; mode: string; positions: any[]; error?: string }>(`/trading/positions?mode=${mode}`);
+    return api.get<{ success: boolean; mode: string; modeUsed?: string; positions: any[]; error?: string }>(`/trading/positions?mode=${mode}`);
+  },
+  getOrders: (mode: 'paper' | 'real', status: string = 'open') => {
+    return api.get<{ success: boolean; mode: string; modeUsed?: string; orders: any[]; error?: string }>(`/trading/orders?mode=${mode}&status=${status}`);
+  },
+  placeOrder: (orderData: {
+    mode: 'paper' | 'real';
+    symbol: string;
+    side: 'buy' | 'sell';
+    qty?: number;
+    notional?: number;
+    type?: string;
+    time_in_force?: string;
+    limit_price?: number;
+    stop_price?: number;
+    trail_price?: number;
+    trail_percent?: number;
+    extended_hours?: boolean;
+    order_class?: string;
+    take_profit?: { limit_price: number };
+    stop_loss?: { stop_price: number; limit_price?: number };
+    client_order_id?: string;
+    confirmed?: boolean;
+  }) => {
+    return api.post<{
+      success: boolean;
+      status?: string;
+      message?: string;
+      order?: any;
+      modeUsed?: string;
+      endpointUsed?: string;
+      error?: string;
+    }>('/trading/order', orderData);
+  },
+  getPortfolioHistory: (mode: 'paper' | 'real', range: string = '1M') => {
+    return api.get<{
+      success: boolean;
+      data: any[];
+      count: number;
+      range: string;
+      modeUsed?: string;
+      total_change?: number;
+      total_change_pct?: number;
+      first_value?: number;
+      last_value?: number;
+      error?: string;
+    }>(`/ai/alpaca/portfolio/history?mode=${mode}&range=${range}`);
+  },
+  getOrderStatus: (orderId: string, mode: 'paper' | 'real') => {
+    return api.get<{ success: boolean; order?: any; error?: string; errorType?: string }>(`/trading/orders/${orderId}?mode=${mode}`);
+  },
+  cancelOrder: (orderId: string, mode: 'paper' | 'real') => {
+    return api.post<{ success: boolean; orderId?: string; status?: string; error?: string; errorType?: string }>(`/trading/orders/${orderId}/cancel`, { mode });
   },
 };
 

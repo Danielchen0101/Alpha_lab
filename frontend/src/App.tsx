@@ -20,9 +20,8 @@ import StrategyComparison from './pages/StrategyComparison';
 import Watchlist from './pages/Watchlist';
 import StrategyRanking from './pages/StrategyRanking';
 import ParameterOptimization from './pages/ParameterOptimization.jsx';
-import Analytics from './pages/Analytics';
-import LocalPaperTrading from './pages/LocalPaperTrading';
-import AITrading from './pages/AITrading';
+import Agent from './pages/Agent';
+import Trade from './pages/Trade';
 import Portfolio from './pages/Portfolio';
 import Settings from './pages/Settings';
 import Configuration from './pages/Configuration';
@@ -148,9 +147,8 @@ const App: React.FC = () => {
                 <Route path="/optimize" element={<ParameterOptimization />} />
                 <Route path="/watchlist" element={<Watchlist />} />
                 <Route path="/ranking" element={<StrategyRanking />} />
-                <Route path="/local-paper-trading" element={<LocalPaperTrading />} />
-                <Route path="/analytics" element={<Analytics />} />
-                <Route path="/ai-trading" element={<AITrading />} />
+                <Route path="/agent" element={<Agent />} />
+                <Route path="/trade" element={<Trade />} />
                 <Route path="/portfolio" element={<Portfolio />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/settings/configuration" element={<Configuration />} />

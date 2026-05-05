@@ -1,41 +1,22 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Card, Typography, Button, Divider, Table, Tag, Row, Col, Statistic,
-  Select, Form, Input, Modal, Descriptions,
-  InputNumber, message, Tooltip, Empty
+  Select, message, Tooltip, Empty, Modal, Alert, Spin
 } from 'antd';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer } from 'recharts';
 import {
-  RobotOutlined, ReloadOutlined, PlusOutlined, DeleteOutlined, CheckOutlined,
-  EyeOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined
+  RobotOutlined, ReloadOutlined, PlusOutlined, DeleteOutlined,
+  EyeOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined,
+  ShoppingCartOutlined, SwapOutlined, StopOutlined, SafetyOutlined,
+  ArrowUpOutlined, ArrowDownOutlined
 } from '@ant-design/icons';
-import aiTradingService from '../services/aiTradingService';
-import { aiAgentWatchlistAPI } from '../services/api';
+import { aiAgentWatchlistAPI, tradingAccountAPI } from '../services/api';
+import OrderModal from '../components/OrderModal';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
 
-const AI_AGENT_PRIMARY_BTN_STYLE: React.CSSProperties = { 
-  borderRadius: '4px', 
-  fontWeight: 600, 
-  height: '32px', 
-  display: 'inline-flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-};
-
-const AI_AGENT_COMPACT_BTN_STYLE: React.CSSProperties = { 
-  borderRadius: '4px', 
-  fontWeight: 600, 
-  height: '24px', 
-  fontSize: '11px',
-  display: 'inline-flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  padding: '0 8px'
-};
-
-const AITrading: React.FC = () => {
+const Trade: React.FC = () => {
   // Account Snapshot 状态
   const [accountSnapshot, setAccountSnapshot] = useState({
     cash: 0, equity: 0, buyingPower: 0, portfolioValue: 0, 
@@ -43,13 +24,13 @@ const AITrading: React.FC = () => {
   });
   
   // Alpaca 数据状态
-  const [alpacaAccount, setAlpacaAccount] = useState<any>(null);
   const [alpacaPositions, setAlpacaPositions] = useState<any[]>([]);
   const [alpacaOrders, setAlpacaOrders] = useState<any[]>([]);
   const [alpacaOrdersHistory, setAlpacaOrdersHistory] = useState<any[]>([]);
   const [portfolioHistory, setPortfolioHistory] = useState<any[]>([]);
   const [portfolioRange, setPortfolioRange] = useState<string>('1D');
   const [portfolioChange, setPortfolioChange] = useState({ value: 0, percent: 0 });
+  const [portfolioError, setPortfolioError] = useState<string | null>(null);
 
   // 时间戳规范化函数
   const normalizeTimestamp = (timestamp: number | string): number | null => {
@@ -60,59 +41,46 @@ const AITrading: React.FC = () => {
 
   // 处理投资组合时间范围变化
   const handlePortfolioRangeChange = async (range: string) => {
-    console.log('🔄 handlePortfolioRangeChange called with range:', range);
     setPortfolioRange(range);
-    
+    setPortfolioError(null);
     try {
-      console.log('📡 调用aiTradingService.getPortfolioHistory...');
-      const response = await aiTradingService.getPortfolioHistory(range);
-      console.log('📡 aiTradingService.getPortfolioHistory 返回:', {
-        success: response.success,
-        dataLength: response.data?.length,
-        responseKeys: Object.keys(response),
-        responseDataSample: response.data?.slice(0, 2)
-      });
-      
-      if (response.success && response.data) {
-        console.log('✅ 准备设置portfolioHistory，数据长度:', response.data.length);
-        console.log('📊 前3个数据点:', response.data.slice(0, 3));
-        setPortfolioHistory(response.data);
-        
-        // 计算变化
-        if (response.data.length >= 2) {
-          const firstValue = response.data[0]?.equity || 0;
-          const lastValue = response.data[response.data.length - 1]?.equity || 0;
-          const changeValue = lastValue - firstValue;
-          const changePercent = firstValue !== 0 ? (changeValue / firstValue) * 100 : 0;
-          
-          setPortfolioChange({
-            value: changeValue,
-            percent: changePercent
-          });
+      const response = await tradingAccountAPI.getPortfolioHistory(tradeMode, range);
+      const resBody = response.data;
+      if (resBody && typeof resBody === 'object' && resBody.success) {
+        const raw = resBody.data || [];
+        const normalizedData = raw
+          .map((item: any) => {
+            let timestamp = item.timestamp;
+            if (typeof timestamp === 'number' && timestamp < 1e12) timestamp = timestamp * 1000;
+            return { timestamp, equity: Number(item.equity || 0) };
+          })
+          .filter((item: any) => item.timestamp && Number.isFinite(item.equity));
+        setPortfolioHistory(normalizedData);
+        if (normalizedData.length >= 2) {
+          const first = normalizedData[0]?.equity || 0;
+          const last = normalizedData[normalizedData.length - 1]?.equity || 0;
+          setPortfolioChange({ value: last - first, percent: first !== 0 ? ((last - first) / first) * 100 : 0 });
         } else {
-          setPortfolioChange({
-            value: 0,
-            percent: 0
-          });
+          setPortfolioChange({ value: 0, percent: 0 });
         }
       } else {
-        console.log('❌ aiTradingService.getPortfolioHistory 返回失败或无数据:', response);
+        setPortfolioHistory([]);
+        setPortfolioChange({ value: 0, percent: 0 });
+        const errMsg = (resBody as any)?.message || resBody?.error || 'Unknown error';
+        if ((resBody as any)?.reason === 'config_required' || errMsg?.includes('not configured')) {
+          setPortfolioError(`${tradeMode === 'paper' ? 'Paper' : 'Live'} trading credentials not configured. Please save API keys in Settings.`);
+        } else {
+          setPortfolioError(errMsg);
+        }
       }
-    } catch (error) {
-      console.error('获取portfolio历史数据失败:', error);
+    } catch (error: any) {
+      console.error('Portfolio history fetch failed:', error);
+      setPortfolioHistory([]);
+      setPortfolioChange({ value: 0, percent: 0 });
+      setPortfolioError(error?.message || 'Network error');
     }
   };
 
-  // 监控portfolioHistory state变化
-  useEffect(() => {
-    console.log('📊 portfolioHistory state 更新:', {
-      length: portfolioHistory.length,
-      firstPoint: portfolioHistory[0],
-      lastPoint: portfolioHistory[portfolioHistory.length - 1],
-      allPoints: portfolioHistory.slice(0, 3)
-    });
-  }, [portfolioHistory]);
-  
   // 加载状态
   const [loadingData, setLoadingData] = useState({
     account: false,
@@ -122,10 +90,17 @@ const AITrading: React.FC = () => {
     portfolio: false
   });
 
-  // New Order 状态
-  const [newOrderModalVisible, setNewOrderModalVisible] = useState(false);
-  const [placingOrder, setPlacingOrder] = useState(false);
-  const [orderForm] = Form.useForm();
+  // Order Modal 状态
+  const [orderModalVisible, setOrderModalVisible] = useState(false);
+  const [orderModalPreset, setOrderModalPreset] = useState<{
+    symbol?: string;
+    side?: 'buy' | 'sell';
+    qty?: number;
+    limitPrice?: number;
+    takeProfitPrice?: number;
+    stopLossPrice?: number;
+  }>({});
+  const [tradeMode, setTradeMode] = useState<'paper' | 'real'>('paper');
 
   // AI Entry Watchlist 状态
   const [watchlistItems, setWatchlistItems] = useState<any[]>([]);
@@ -157,241 +132,168 @@ const AITrading: React.FC = () => {
     }
   };
 
-  const markWatchlistDone = async (id: string) => {
-    try {
-      await aiAgentWatchlistAPI.updateStatus(id, { status: 'DONE' });
-      message.success('Marked as done');
-      loadWatchlist();
-    } catch (e: any) {
-      message.error('Failed to update: ' + (e?.message || 'Error'));
-    }
+  // 切换 Trade Mode
+  const handleTradeModeChange = async (mode: 'paper' | 'real') => {
+    setTradeMode(mode);
+    await refreshAllAlpacaData(mode);
   };
 
-  // 加载初始数据
-  useEffect(() => {
-    loadInitialData();
-    loadWatchlist();
-  }, []);
-
-  const loadInitialData = async () => {
-    try {
-      console.log('开始加载初始数据...');
-      
-      // 加载账户快照
-      const snapshot = await aiTradingService.getAccountSnapshot();
-      
-      if (snapshot) {
-        setAccountSnapshot({
-          ...snapshot,
-          accountNumber: snapshot.accountNumber || 'PA3YPSJY0D4E',
-          status: snapshot.status || 'ACTIVE'
-        });
-        console.log('账户快照加载成功');
-      } else {
-        console.error('账户快照加载失败');
-      }
-      
-      // 使用统一刷新函数加载详细数据
-      await refreshAllAlpacaData();
-      
-      console.log('初始数据加载完成');
-    } catch (error) {
-      console.error('加载初始数据失败:', error);
-    }
+  // Cancel open order
+  const handleCancelOrder = async (orderId: string, symbol: string) => {
+    const modeLabel = tradeMode === 'real' ? 'LIVE' : 'Paper';
+    Modal.confirm({
+      title: `Cancel order for ${symbol}?`,
+      content: tradeMode === 'real'
+        ? 'This will cancel an order on your LIVE Alpaca account. This action cannot be undone.'
+        : `This will cancel the order on your ${modeLabel} account.`,
+      okText: tradeMode === 'real' ? 'Cancel LIVE Order' : 'Cancel Order',
+      okButtonProps: { danger: true },
+      cancelText: 'Keep Order',
+      onOk: async () => {
+        try {
+          const res = await tradingAccountAPI.cancelOrder(orderId, tradeMode);
+          if (res.data.success) {
+            message.success('Order cancelled successfully');
+            await refreshAllAlpacaData();
+          } else {
+            message.error(res.data.error || 'Failed to cancel order');
+          }
+        } catch (e: any) {
+          message.error(e?.response?.data?.error || e?.message || 'Cancel failed');
+        }
+      },
+    });
   };
 
-  // 统一刷新所有 Alpaca 数据
-  const refreshAllAlpacaData = async () => {
+  // 统一刷新所有 Alpaca 数据（按当前 tradeMode）
+  const refreshAllAlpacaData = useCallback(async (mode?: string) => {
+    const m = mode || tradeMode;
     try {
-      setLoadingData({
-        account: true,
-        positions: true,
-        orders: true,
-        history: true,
-        portfolio: true
-      });
+      setLoadingData({ account: true, positions: true, orders: true, history: true, portfolio: true });
+      setPortfolioError(null);
 
-      // 并行加载所有数据
-      const [
-        accountResponse,
-        positionsResponse,
-        ordersResponse,
-        historyResponse,
-        portfolioResponse
-      ] = await Promise.allSettled([
-        aiTradingService.getAlpacaAccount(),
-        aiTradingService.getAlpacaPositions(),
-        aiTradingService.getAlpacaOrders('open'),
-        aiTradingService.getAlpacaOrdersHistory(50),
-        aiTradingService.getPortfolioHistory(portfolioRange)
+      const [accountRes, positionsRes, ordersRes, historyRes, portfolioRes] = await Promise.allSettled([
+        tradingAccountAPI.getAccount(m as 'paper' | 'real'),
+        tradingAccountAPI.getPositions(m as 'paper' | 'real'),
+        tradingAccountAPI.getOrders(m as 'paper' | 'real', 'open'),
+        tradingAccountAPI.getOrders(m as 'paper' | 'real', 'all'),
+        tradingAccountAPI.getPortfolioHistory(m as 'paper' | 'real', portfolioRange),
       ]);
 
-      // 处理账户详情
-      if (accountResponse.status === 'fulfilled' && accountResponse.value.success) {
-        console.log('📋 Alpaca账户数据:', {
-          raw: accountResponse.value,
-          data: accountResponse.value.data,
-          accountNumber: accountResponse.value.data?.accountNumber,
-          id: accountResponse.value.data?.id,
-          cash: accountResponse.value.data?.cash,
-          equity: accountResponse.value.data?.equity,
-          buyingPower: accountResponse.value.data?.buyingPower,
-          portfolioValue: accountResponse.value.data?.portfolioValue
+      // Account — flat response, no .data wrapper
+      if (accountRes.status === 'fulfilled' && accountRes.value.data.success) {
+        const d = accountRes.value.data;
+        setAccountSnapshot({
+          cash: d.cash || 0, equity: d.equity || 0, buyingPower: d.buyingPower || 0,
+          portfolioValue: d.portfolioValue || 0, positionsCount: 0, openOrdersCount: 0,
+          accountNumber: d.id || '', status: d.status || '',
         });
-        setAlpacaAccount(accountResponse.value.data);
       } else {
-        console.log('❌ Alpaca账户数据获取失败:', accountResponse);
+        const err = accountRes.status === 'rejected' ? accountRes.reason : accountRes.value.data.error;
+        console.error(`[${m}] Account fetch failed:`, err);
       }
 
-      // 处理持仓
-      if (positionsResponse.status === 'fulfilled' && positionsResponse.value.success) {
-        setAlpacaPositions(positionsResponse.value.data || []);
+      // Positions — response.data.positions (camelCase normalized by backend)
+      if (positionsRes.status === 'fulfilled' && positionsRes.value.data.success) {
+        const positions = (positionsRes.value.data.positions || []).map((p: any) => ({
+          ...p,
+          todayPlPercent: p.todayPlPercent ?? p.unrealizedPLPercent ?? 0,
+          todayPlValue: p.todayPlValue ?? 0,
+          totalPlPercent: p.unrealizedPLPercent ?? 0,
+          totalPlValue: p.unrealizedPL ?? 0,
+        }));
+        setAlpacaPositions(positions);
+        setAccountSnapshot(prev => ({ ...prev, positionsCount: positions.length }));
+      } else {
+        setAlpacaPositions([]);
       }
 
-      // 处理未平仓订单
-      if (ordersResponse.status === 'fulfilled' && ordersResponse.value.success) {
-        setAlpacaOrders(ordersResponse.value.data || []);
+      // Open Orders — response.data.orders
+      if (ordersRes.status === 'fulfilled' && ordersRes.value.data.success) {
+        const orders = (ordersRes.value.data.orders || []).map((o: any) => ({
+          id: o.id, symbol: o.symbol, qty: o.qty, side: o.side, type: o.type,
+          limitPrice: o.limit_price, stopPrice: o.stop_price,
+          status: o.status, createdAt: o.created_at, timeInForce: o.time_in_force,
+        }));
+        setAlpacaOrders(orders);
+        setAccountSnapshot(prev => ({ ...prev, openOrdersCount: orders.length }));
+      } else {
+        setAlpacaOrders([]);
       }
 
-      // 处理订单历史
-      if (historyResponse.status === 'fulfilled' && historyResponse.value.success) {
-        setAlpacaOrdersHistory(historyResponse.value.data || []);
+      // Order History — same endpoint, status=all
+      if (historyRes.status === 'fulfilled' && historyRes.value.data.success) {
+        const history = (historyRes.value.data.orders || []).map((o: any) => ({
+          id: o.id, symbol: o.symbol, qty: o.qty, side: o.side, type: o.type,
+          status: o.status, filledAvgPrice: o.filled_avg_price, filledQty: o.filled_qty,
+          submittedAt: o.created_at, timeInForce: o.time_in_force,
+        }));
+        setAlpacaOrdersHistory(history);
+      } else {
+        setAlpacaOrdersHistory([]);
       }
 
-      // 处理投资组合历史
-      if (portfolioResponse.status === 'fulfilled' && portfolioResponse.value.success) {
-        const portfolioData = portfolioResponse.value.data || [];
-        console.log('🔍 Portfolio历史数据 - 详细检查:', {
-          range: portfolioRange,
-          响应状态: portfolioResponse.status,
-          服务响应: portfolioResponse.value,
-          数据长度: portfolioData.length,
-          第一个点: portfolioData[0],
-          最后一个点: portfolioData[portfolioData.length - 1],
-          所有字段: portfolioData[0] ? Object.keys(portfolioData[0]) : '无数据'
-        });
-        
-        // 检查数据点结构
-        if (portfolioData.length > 0) {
-          const firstPoint = portfolioData[0];
-          console.log('🔍 第一个数据点详细结构:', {
-            timestamp: firstPoint.timestamp,
-            timestamp类型: typeof firstPoint.timestamp,
-            equity: firstPoint.equity,
-            equity类型: typeof firstPoint.equity,
-            value: firstPoint.value,
-            pnl: firstPoint.pnl,
-            pnlPct: firstPoint.pnlPct,
-            isMockData: firstPoint.isMockData
-          });
-        }
-        
-        setPortfolioHistory(portfolioData);
-        
-        // 计算投资组合变化
-        if (portfolioData.length >= 2) {
-          const firstValue = portfolioData[0]?.equity || 0;
-          const lastValue = portfolioData[portfolioData.length - 1]?.equity || 0;
-          const changeValue = lastValue - firstValue;
-          const changePercent = firstValue !== 0 ? (changeValue / firstValue) * 100 : 0;
-          
-          console.log('📈 投资组合变化计算:', {
-            firstValue,
-            lastValue,
-            changeValue,
-            changePercent,
-            数据点数量: portfolioData.length
-          });
-          
-          setPortfolioChange({
-            value: changeValue,
-            percent: changePercent
-          });
-        } else if (portfolioData.length === 1) {
-          // 只有一个数据点，变化为0
-          console.log('⚠️ 只有一个数据点，变化为0');
-          setPortfolioChange({
-            value: 0,
-            percent: 0
-          });
+      // Portfolio History
+      if (portfolioRes.status === 'fulfilled') {
+        const resBody = portfolioRes.value?.data;
+        if (resBody && typeof resBody === 'object' && resBody.success) {
+          const raw = resBody.data || [];
+          const normalized = raw
+            .map((item: any) => {
+              let ts = item.timestamp;
+              if (typeof ts === 'number' && ts < 1e12) ts = ts * 1000;
+              return { timestamp: ts, equity: Number(item.equity || 0) };
+            })
+            .filter((item: any) => item.timestamp && Number.isFinite(item.equity));
+          setPortfolioHistory(normalized);
+          setPortfolioError(null);
+          if (normalized.length >= 2) {
+            const first = normalized[0].equity;
+            const last = normalized[normalized.length - 1].equity;
+            setPortfolioChange({ value: last - first, percent: first !== 0 ? ((last - first) / first) * 100 : 0 });
+          } else {
+            setPortfolioChange({ value: 0, percent: 0 });
+          }
         } else {
-          console.log('❌ 没有数据点');
-          setPortfolioChange({
-            value: 0,
-            percent: 0
-          });
+          // Backend returned success=false or malformed response
+          const errMsg = (resBody as any)?.message || resBody?.error || (resBody as any)?.reason || 'Unknown error from portfolio history endpoint';
+          setPortfolioHistory([]);
+          setPortfolioChange({ value: 0, percent: 0 });
+          if ((resBody as any)?.reason === 'config_required' || errMsg?.includes('not configured')) {
+            setPortfolioError(`${m === 'paper' ? 'Paper' : 'Live'} trading credentials not configured. Please save API keys in Settings.`);
+          } else {
+            setPortfolioError(errMsg);
+          }
         }
       } else {
-        // 使用类型断言处理 PromiseSettledResult
-        const rejectedResponse = portfolioResponse as PromiseRejectedResult;
-        console.log('❌ Portfolio历史数据获取失败:', {
-          状态: portfolioResponse.status,
-          原因: rejectedResponse.reason
-        });
+        // HTTP-level failure (network error, timeout, etc.)
+        const reason = portfolioRes.reason;
+        setPortfolioHistory([]);
+        setPortfolioChange({ value: 0, percent: 0 });
+        setPortfolioError(reason?.message || 'Failed to reach portfolio history endpoint');
       }
-
-      console.log('所有 Alpaca 数据刷新完成');
     } catch (error) {
-      console.error('刷新 Alpaca 数据失败:', error);
-      message.error('刷新数据失败');
+      console.error('Failed to refresh Alpaca data:', error);
+      message.error('Failed to refresh data');
     } finally {
-      setLoadingData({
-        account: false,
-        positions: false,
-        orders: false,
-        history: false,
-        portfolio: false
-      });
+      setLoadingData({ account: false, positions: false, orders: false, history: false, portfolio: false });
     }
+  }, [tradeMode, portfolioRange]);
+
+  useEffect(() => {
+    refreshAllAlpacaData();
+    loadWatchlist();
+  }, [refreshAllAlpacaData]);
+
+  // Order Modal helpers
+  const openOrderModal = (preset?: typeof orderModalPreset) => {
+    setOrderModalPreset(preset || {});
+    setOrderModalVisible(true);
   };
 
-  // New Order 处理函数
-  const handlePlaceOrder = async (values: any) => {
-    setPlacingOrder(true);
-    try {
-      console.log('提交订单:', values);
-      
-      // 构建订单请求
-      const orderRequest = {
-        symbol: values.symbol.toUpperCase(),
-        side: values.side,
-        qty: values.qty.toString(),
-        type: values.type,
-        time_in_force: values.time_in_force,
-        ...(values.type === 'limit' && values.limit_price && { limit_price: values.limit_price.toString() })
-      };
-
-      console.log('订单请求:', orderRequest);
-      
-      // 调用后端下单接口
-      const response = await aiTradingService.placeAlpacaOrder(orderRequest);
-      
-      if (response.success) {
-        message.success(`Order placed successfully! Order ID: ${response.order?.id || 'N/A'}`);
-        
-        // 关闭模态框
-        setNewOrderModalVisible(false);
-        orderForm.resetFields();
-        
-        // 刷新所有数据
-        await refreshAllAlpacaData();
-        
-        // 刷新账户快照
-        const snapshot = await aiTradingService.getAccountSnapshot();
-        setAccountSnapshot({
-          ...snapshot,
-          accountNumber: snapshot.accountNumber || 'PA3YPSJY0D4E',
-          status: snapshot.status || 'ACTIVE'
-        });
-      } else {
-        message.error(`Failed to place order: ${response.error || 'Unknown error'}`);
-      }
-    } catch (error: any) {
-      console.error('下单失败:', error);
-      message.error(`Order failed: ${error.message || 'Unknown error'}`);
-    } finally {
-      setPlacingOrder(false);
-    }
+  const handleOrderSuccess = async () => {
+    message.success('Order placed successfully');
+    await refreshAllAlpacaData();
   };
 
   // 持仓表格列定义 - 与Alpaca页面一致
@@ -451,12 +353,26 @@ const AITrading: React.FC = () => {
           {num >= 0 ? '+' : ''}${num.toFixed(2)}
         </span>
       ) : '-';
-    }}
+    }},
+    { title: '', key: 'action', width: 80, render: (_: any, record: any) => (
+      <Button
+        size="small"
+        danger
+        icon={<SwapOutlined />}
+        onClick={() => openOrderModal({
+          symbol: record.symbol,
+          side: 'sell',
+          qty: Number(record.qty) || undefined,
+        })}
+      >
+        Sell
+      </Button>
+    )}
   ];
 
   // 未平仓订单表格列定义
   const openOrdersColumns = [
-    { title: 'Symbol', dataIndex: 'symbol', key: 'symbol' },
+    { title: 'Symbol', dataIndex: 'symbol', key: 'symbol', render: (t: string) => <span style={{ fontWeight: 700 }}>{t}</span> },
     { title: 'Side', dataIndex: 'side', key: 'side', render: (side: string) => (
       <Tag color={side === 'buy' ? 'green' : 'red'}>{side.toUpperCase()}</Tag>
     )},
@@ -464,8 +380,13 @@ const AITrading: React.FC = () => {
     { title: 'Type', dataIndex: 'type', key: 'type' },
     { title: 'Limit Price', dataIndex: 'limitPrice', key: 'limitPrice', render: (price: any) => {
       const num = Number(price);
-      return Number.isFinite(num) ? `$${num.toFixed(2)}` : 'Market';
+      return Number.isFinite(num) ? `$${num.toFixed(2)}` : '-';
     }},
+    { title: 'Stop Price', dataIndex: 'stopPrice', key: 'stopPrice', render: (price: any) => {
+      const num = Number(price);
+      return Number.isFinite(num) ? `$${num.toFixed(2)}` : '-';
+    }},
+    { title: 'TIF', dataIndex: 'timeInForce', key: 'tif', render: (v: string) => (v || '').toUpperCase() },
     { title: 'Status', dataIndex: 'status', key: 'status', render: (status: string) => (
       <Tag color={status === 'filled' ? 'green' : status === 'canceled' ? 'red' : 'blue'}>
         {status.toUpperCase()}
@@ -475,7 +396,12 @@ const AITrading: React.FC = () => {
       if (!time) return 'N/A';
       const date = new Date(time);
       return date.toLocaleString('en-US', { timeZone: 'America/New_York' });
-    }}
+    }},
+    { title: '', key: 'action', width: 80, render: (_: any, record: any) => (
+      <Button size="small" danger icon={<StopOutlined />} onClick={() => handleCancelOrder(record.id, record.symbol)}>
+        Cancel
+      </Button>
+    )},
   ];
 
   // 订单历史表格列定义 - 与Alpaca页面一致
@@ -536,24 +462,73 @@ const AITrading: React.FC = () => {
 
   return (
     <div>
-      {/* 页面标题 */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-        <div>
-          <Title level={2}><RobotOutlined style={{ marginRight: '12px' }} />Alpaca Trade</Title>
-          <Text type="secondary">Monitor account, positions, orders, and place trades</Text>
+      {/* 页面标题 + Trade Mode */}
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
+              <div style={{ 
+                width: 40, height: 40, borderRadius: 10, 
+                background: 'linear-gradient(135deg, #1890ff 0%, #096dd9 100%)', 
+                color: '#fff', display: 'flex', alignItems: 'center', 
+                justifyContent: 'center', fontSize: 20,
+                boxShadow: '0 4px 10px rgba(24, 144, 255, 0.2)'
+              }}>
+                <RobotOutlined />
+              </div>
+              <Title level={2} style={{ margin: 0, fontWeight: 800, color: '#111827', letterSpacing: '-0.5px' }}>Trading Workstation</Title>
+            </div>
+            <Text type="secondary" style={{ fontSize: 14, fontWeight: 500, color: '#6b7280' }}>Monitor account equity, manage positions, and place orders directly to Alpaca.</Text>
+          </div>
+          
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', background: '#f3f4f6', padding: '4px', borderRadius: 8, border: '1px solid #e5e7eb' }}>
+              <div 
+                onClick={() => handleTradeModeChange('paper')}
+                style={{ 
+                  padding: '6px 16px', fontSize: 13, fontWeight: 700, cursor: 'pointer', borderRadius: 6,
+                  transition: 'all 0.2s', color: tradeMode === 'paper' ? '#096dd9' : '#6b7280',
+                  background: tradeMode === 'paper' ? '#fff' : 'transparent',
+                  boxShadow: tradeMode === 'paper' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'
+                }}
+              >
+                PAPER TRADING
+              </div>
+              <div 
+                onClick={() => handleTradeModeChange('real')}
+                style={{ 
+                  padding: '6px 16px', fontSize: 13, fontWeight: 700, cursor: 'pointer', borderRadius: 6,
+                  transition: 'all 0.2s', color: tradeMode === 'real' ? '#dc2626' : '#6b7280',
+                  background: tradeMode === 'real' ? '#fff' : 'transparent',
+                  boxShadow: tradeMode === 'real' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'
+                }}
+              >
+                LIVE TRADING
+              </div>
+            </div>
+            <Button
+              size="middle"
+              icon={<ReloadOutlined />}
+              onClick={() => refreshAllAlpacaData()}
+              loading={loadingData.account || loadingData.positions || loadingData.orders || loadingData.portfolio}
+              style={{ borderRadius: 8, height: 34, fontWeight: 600, color: '#4b5563', border: '1px solid #e5e7eb' }}
+            >
+              Refresh Data
+            </Button>
+          </div>
         </div>
-        <Button 
-          type="primary" 
-          icon={<ReloadOutlined />}
-          onClick={refreshAllAlpacaData}
-          loading={loadingData.account || loadingData.positions || loadingData.orders || loadingData.history}
-          style={AI_AGENT_PRIMARY_BTN_STYLE}
-        >
-          Refresh All Alpaca Data
-        </Button>
       </div>
-      
-      <Divider />
+
+      {tradeMode === 'real' && (
+        <Alert
+          message="Real Trading Mode"
+          description="Live Alpaca account data active. Orders will execute with real funds."
+          type="error"
+          showIcon
+          icon={<SafetyOutlined />}
+          style={{ marginBottom: 24, borderRadius: 10, border: '1px solid #ffa39e' }}
+        />
+      )}
 
       {/* AI Entry Watchlist */}
       <div style={{ marginBottom: 24 }}>
@@ -632,7 +607,10 @@ const AITrading: React.FC = () => {
               {/* Table */}
               <div className="watchlist-table-container">
                 <style>{`
-                  .watchlist-table .ant-table-thead > tr > th { background: #f9fafb !important; padding: 12px 8px !important; }
+                  .watchlist-table .ant-table-thead > tr > th { background: #f9fafb !important; padding: 12px 8px !important; border-bottom: 1px solid #f0f0f0 !important; }
+                  .watchlist-table .ant-table-thead > tr > th:first-child,
+                  .watchlist-table .ant-table-tbody > tr > td:first-child { padding-left: 24px !important; }
+                  .watchlist-row > td { border-bottom: 1px solid #f0f0f0 !important; }
                   .watchlist-row:hover > td { background-color: #f0f7ff !important; }
                 `}</style>
                 <Table
@@ -696,11 +674,17 @@ const AITrading: React.FC = () => {
                         </Tooltip>
                       )},
                     {
-                      title: '', key: 'actions', width: 90, fixed: 'right' as const,
+                      title: '', key: 'actions', width: 110, fixed: 'right' as const,
                       render: (_: any, r: any) => (
                         <div style={{ display: 'flex', gap: 6 }}>
-                          <Tooltip title="Mark as Done">
-                            <Button size="small" type="text" icon={<CheckOutlined style={{ fontSize: 15, color: '#10b981' }} />} onClick={() => markWatchlistDone(r.id)} style={{ padding: 0, width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, background: '#f0fdf4' }} />
+                          <Tooltip title="Buy">
+                            <Button size="small" type="primary" icon={<ShoppingCartOutlined style={{ fontSize: 13 }} />} onClick={() => openOrderModal({
+                              symbol: r.symbol,
+                              side: 'buy' as const,
+                              limitPrice: r.entryZoneLow || undefined,
+                              takeProfitPrice: r.takeProfit1 || undefined,
+                              stopLossPrice: r.stopLoss || undefined,
+                            })} style={{ padding: 0, width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8 }} />
                           </Tooltip>
                           <Tooltip title="Remove">
                             <Button size="small" type="text" danger icon={<DeleteOutlined style={{ fontSize: 15 }} />} onClick={() => removeWatchlistItem(r.id)} style={{ padding: 0, width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, background: '#fef2f2' }} />
@@ -726,11 +710,11 @@ const AITrading: React.FC = () => {
           title="Account Snapshot" 
           style={{ marginTop: '16px' }}
           extra={
-            <Button 
-              type="primary" 
+            <Button
+              type="primary"
               size="small"
               icon={<PlusOutlined />}
-              onClick={() => setNewOrderModalVisible(true)}
+              onClick={() => openOrderModal()}
             >
               New Order
             </Button>
@@ -761,61 +745,96 @@ const AITrading: React.FC = () => {
       
       {/* Portfolio Performance */}
       <div style={{ marginBottom: 24 }}>
-        <Title level={4}>Portfolio Performance</Title>
-        <Card>
-          {portfolioHistory.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '40px 0' }}>
-              <Text type="secondary">No portfolio history available</Text>
+        <Card className="premium-card" bodyStyle={{ padding: '24px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+            <div>
+              <Title level={4} style={{ margin: 0 }}>Portfolio Performance</Title>
+            </div>
+            <div>
+              <Select 
+                value={portfolioRange} 
+                onChange={handlePortfolioRangeChange} 
+                style={{ width: 120 }}
+                size="middle"
+              >
+                <Option value="1D">1 Day</Option>
+                <Option value="1W">1 Week</Option>
+                <Option value="1M">1 Month</Option>
+                <Option value="3M">3 Months</Option>
+                <Option value="1Y">1 Year</Option>
+                <Option value="All">All</Option>
+              </Select>
+            </div>
+          </div>
+
+          {portfolioError ? (
+            <Empty 
+              image={Empty.PRESENTED_IMAGE_SIMPLE} 
+              description={
+                <div style={{ padding: '20px 0' }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: '#ef4444' }}>Portfolio history is unavailable.</div>
+                  <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>Check Alpaca credentials and connection.</div>
+                  <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 8 }}>{portfolioError}</div>
+                </div>
+              }
+            />
+          ) : portfolioHistory.length === 0 && !loadingData.portfolio ? (
+            <Empty 
+              image={Empty.PRESENTED_IMAGE_SIMPLE} 
+              description={
+                <div style={{ padding: '20px 0' }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: '#4b5563' }}>No portfolio history available</div>
+                  <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>Alpaca returned no data for the selected period.</div>
+                </div>
+              }
+            />
+          ) : portfolioHistory.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '60px 0' }}>
+              <Spin size="large" />
+              <div style={{ marginTop: 16, color: '#8c8c8c' }}>Loading portfolio data...</div>
             </div>
           ) : (
             <>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <div>
-                  <Select value={portfolioRange} onChange={handlePortfolioRangeChange} style={{ width: 120 }}>
-                    <Option value="1D">1 Day</Option>
-                    <Option value="1W">1 Week</Option>
-                    <Option value="1M">1 Month</Option>
-                    <Option value="1Y">1 Year</Option>
-                    <Option value="All">All</Option>
-                  </Select>
-                </div>
-                <div>
-                  <Text strong style={{ fontSize: '16px', marginRight: '16px' }}>
-                    Change: 
-                    <span style={{ color: portfolioChange.value >= 0 ? '#3f8600' : '#cf1322', marginLeft: '8px' }}>
-                      {portfolioChange.value >= 0 ? '+' : ''}${Number(portfolioChange.value || 0).toFixed(2)} ({Number(portfolioChange.percent || 0).toFixed(2)}%)
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <span style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600, textTransform: 'uppercase' }}>Period Change</span>
+                  <span style={{ 
+                    fontSize: 24, 
+                    fontWeight: 800, 
+                    color: portfolioChange.value >= 0 ? '#10b981' : '#ef4444',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    lineHeight: 1
+                  }}>
+                    {portfolioChange.value >= 0 ? <ArrowUpOutlined style={{ fontSize: 20 }} /> : <ArrowDownOutlined style={{ fontSize: 20 }} />}
+                    ${Math.abs(Number(portfolioChange.value || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} 
+                    <span style={{ fontSize: 16, fontWeight: 600, opacity: 0.9 }}>
+                      ({portfolioChange.value >= 0 ? '+' : ''}{Number(portfolioChange.percent || 0).toFixed(2)}%)
                     </span>
-                  </Text>
+                  </span>
                 </div>
               </div>
-              
-              {/* 临时数据验证显示 */}
-              <div style={{ marginBottom: '16px', padding: '12px', backgroundColor: '#f6f6f6', borderRadius: '4px' }}>
-                <Text type="secondary" style={{ fontSize: '12px' }}>
-                  Data Validation: Points: {portfolioHistory.length} | 
-                  First: {portfolioHistory.length > 0 ? new Date(normalizeTimestamp(portfolioHistory[0]?.timestamp) || 0).toLocaleString('en-US', { timeZone: 'America/New_York' }) : 'N/A'} | 
-                  Last: {portfolioHistory.length > 0 ? new Date(normalizeTimestamp(portfolioHistory[portfolioHistory.length - 1]?.timestamp) || 0).toLocaleString('en-US', { timeZone: 'America/New_York' }) : 'N/A'} | 
-                  First Equity: {portfolioHistory.length > 0 && portfolioHistory[0]?.equity !== undefined ? `$${Number(portfolioHistory[0].equity).toFixed(2)}` : 'N/A'} | 
-                  Last Equity: {portfolioHistory.length > 0 && portfolioHistory[portfolioHistory.length - 1]?.equity !== undefined ? `$${Number(portfolioHistory[portfolioHistory.length - 1].equity).toFixed(2)}` : 'N/A'}
-                </Text>
-              </div>
-              
-              <div style={{ height: 260 }}>
+
+              <div style={{ height: 300, width: '100%' }}>
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={portfolioHistory}>
-                    <CartesianGrid strokeDasharray="3 3" />
+                  <LineChart data={portfolioHistory} margin={{ top: 5, right: 0, left: 0, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
                     <XAxis 
                       dataKey="timestamp" 
                       type="number"
                       scale="time"
                       domain={['dataMin', 'dataMax']}
+                      tick={{ fill: '#8c8c8c', fontSize: 11 }}
+                      tickLine={false}
+                      axisLine={{ stroke: '#e8e8e8' }}
+                      dy={10}
                       tickFormatter={(timestamp) => {
                         const ts = normalizeTimestamp(timestamp);
                         if (!ts) return '';
                         
                         const date = new Date(ts);
                         if (portfolioRange === '1D') {
-                          // 1D显示小时:分钟
                           return date.toLocaleTimeString('en-US', { 
                             timeZone: 'America/New_York',
                             hour: '2-digit',
@@ -823,7 +842,6 @@ const AITrading: React.FC = () => {
                             hour12: false
                           });
                         } else if (portfolioRange === '1W') {
-                          // 1W显示月/日 小时
                           return date.toLocaleString('en-US', { 
                             timeZone: 'America/New_York',
                             month: 'numeric',
@@ -832,7 +850,6 @@ const AITrading: React.FC = () => {
                             hour12: false
                           });
                         } else {
-                          // 1M/1Y/All显示月/日/年
                           return date.toLocaleString('en-US', { 
                             timeZone: 'America/New_York',
                             month: 'numeric',
@@ -860,9 +877,20 @@ const AITrading: React.FC = () => {
                           return [min - pad, max + pad] as [number, number];
                         }
                       })()}
-                      tickFormatter={(value) => `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                      tick={{ fill: '#8c8c8c', fontSize: 11, fontWeight: 500 }}
+                      tickLine={false}
+                      axisLine={false}
+                      dx={-10}
+                      tickFormatter={(value) => {
+                         if (value >= 1000000) return `$${(value / 1000000).toFixed(1)}M`;
+                         if (value >= 1000) return `$${(value / 1000).toFixed(1)}K`;
+                         return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                      }}
                     />
                     <RechartsTooltip
+                      contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', padding: '12px' }}
+                      itemStyle={{ color: '#111827', fontWeight: 700 }}
+                      labelStyle={{ color: '#6b7280', fontSize: 12, marginBottom: 4 }}
                       labelFormatter={(timestamp) => {
                         const ts = normalizeTimestamp(timestamp);
                         if (!ts) return 'Invalid Date';
@@ -879,231 +907,117 @@ const AITrading: React.FC = () => {
                           hour12: false
                         });
                       }}
-                      formatter={(value) => [`$${Number(value || 0).toFixed(2)}`, 'Portfolio Value']}
+                      formatter={(value) => [`$${Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 'Portfolio Value']}
                     />
                     <Line 
                       type="monotone" 
                       dataKey="equity" 
                       stroke="#1890ff" 
-                      strokeWidth={2}
+                      strokeWidth={3}
                       dot={false}
+                      activeDot={{ r: 6, strokeWidth: 0, fill: '#1890ff' }}
                       name="Portfolio Value"
                     />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
-              
-              {/* 临时数据表格验证 */}
-              {portfolioHistory.length > 0 && (
-                <div style={{ marginTop: '16px' }}>
-                  <Text type="secondary" style={{ fontSize: '12px', marginBottom: '8px' }}>Data Sample (first 5 points):</Text>
-                  <table style={{ width: '100%', fontSize: '11px', borderCollapse: 'collapse' }}>
-                    <thead>
-                      <tr style={{ backgroundColor: '#f0f0f0' }}>
-                        <th style={{ padding: '4px', textAlign: 'left' }}>Index</th>
-                        <th style={{ padding: '4px', textAlign: 'left' }}>Timestamp</th>
-                        <th style={{ padding: '4px', textAlign: 'left' }}>ET Time</th>
-                        <th style={{ padding: '4px', textAlign: 'left' }}>Equity</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {portfolioHistory.slice(0, 5).map((point, index) => {
-                        const ts = normalizeTimestamp(point?.timestamp);
-                        return (
-                          <tr key={index} style={{ borderBottom: '1px solid #eee' }}>
-                            <td style={{ padding: '4px' }}>{index}</td>
-                            <td style={{ padding: '4px' }}>{point?.timestamp || 'N/A'}</td>
-                            <td style={{ padding: '4px' }}>
-                              {ts ? new Date(ts).toLocaleString('en-US', { 
-                                timeZone: 'America/New_York',
-                                hour12: false 
-                              }) : 'Invalid'}
-                            </td>
-                            <td style={{ padding: '4px' }}>${point?.equity !== undefined ? Number(point.equity).toFixed(2) : 'N/A'}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
             </>
           )}
         </Card>
       </div>
-      
-      {/* Alpaca Account Details */}
-      <div style={{ marginBottom: 24 }}>
-        <Title level={4}>Alpaca Account Details</Title>
-        {alpacaAccount && (
-          <Card>
-            <Descriptions column={{ xs: 1, sm: 2, lg: 3 }} size="small">
-              <Descriptions.Item label="Account ID">{alpacaAccount.accountNumber || alpacaAccount.account_number || alpacaAccount.id || 'N/A'}</Descriptions.Item>
-              <Descriptions.Item label="Status">
-                <Tag color={alpacaAccount.status === 'ACTIVE' ? 'green' : 'red'}>{alpacaAccount.status || 'N/A'}</Tag>
-              </Descriptions.Item>
-              <Descriptions.Item label="Currency">{alpacaAccount.currency || 'USD'}</Descriptions.Item>
-              <Descriptions.Item label="Cash">${Number(alpacaAccount?.cash || 0).toFixed(2)}</Descriptions.Item>
-              <Descriptions.Item label="Portfolio Value">${Number(alpacaAccount?.portfolioValue || alpacaAccount?.portfolio_value || alpacaAccount?.equity || 0).toFixed(2)}</Descriptions.Item>
-              <Descriptions.Item label="Buying Power">${Number(alpacaAccount?.buyingPower || alpacaAccount?.buying_power || 0).toFixed(2)}</Descriptions.Item>
-            </Descriptions>
-          </Card>
-        )}
-      </div>
-      
+
       {/* Positions */}
       <div style={{ marginBottom: 24 }}>
-        <Title level={4}>Positions</Title>
-        <Card loading={loadingData.positions}>
-          <Table 
-            columns={positionsColumns} 
-            dataSource={alpacaPositions} 
-            rowKey="symbol"
-            size="small"
-            pagination={{ pageSize: 10 }}
-          />
+        <Card 
+          title={<span style={{ fontSize: 16, fontWeight: 800 }}>Positions</span>}
+          loading={loadingData.positions}
+          className="premium-card"
+          bodyStyle={{ padding: 0 }}
+        >
+          <style>{`
+            .trade-table .ant-table-thead > tr > th { background: #f9fafb !important; padding: 12px 16px !important; border-bottom: 1px solid #f0f0f0 !important; }
+            .trade-table .ant-table-thead > tr > th:first-child,
+            .trade-table .ant-table-tbody > tr > td:first-child { padding-left: 24px !important; }
+            .trade-row > td { border-bottom: 1px solid #f0f0f0 !important; }
+            .trade-row:hover > td { background-color: #f8fafc !important; }
+          `}</style>
+          {alpacaPositions.length === 0 ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span style={{ color: '#8c8c8c' }}>No open positions in this account.</span>} style={{ padding: '30px 0' }} />
+          ) : (
+            <Table 
+              className="trade-table"
+              columns={positionsColumns} 
+              dataSource={alpacaPositions} 
+              rowKey="symbol"
+              size="middle"
+              pagination={alpacaPositions.length > 10 ? { pageSize: 10, size: 'small' } : false}
+              scroll={{ x: 900 }}
+              rowClassName="trade-row"
+            />
+          )}
         </Card>
       </div>
       
       {/* Open Orders */}
       <div style={{ marginBottom: 24 }}>
-        <Title level={4}>Open Orders</Title>
-        <Card loading={loadingData.orders}>
-          <Table 
-            columns={openOrdersColumns} 
-            dataSource={alpacaOrders} 
-            rowKey="id"
-            size="small"
-            pagination={{ pageSize: 5 }}
-          />
+        <Card 
+          title={<span style={{ fontSize: 16, fontWeight: 800 }}>Open Orders</span>}
+          loading={loadingData.orders}
+          className="premium-card"
+          bodyStyle={{ padding: 0 }}
+        >
+          {alpacaOrders.length === 0 ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span style={{ color: '#8c8c8c' }}>No active orders in this account.</span>} style={{ padding: '30px 0' }} />
+          ) : (
+            <Table 
+              className="trade-table"
+              columns={openOrdersColumns} 
+              dataSource={alpacaOrders} 
+              rowKey="id"
+              size="middle"
+              pagination={alpacaOrders.length > 5 ? { pageSize: 5, size: 'small' } : false}
+              scroll={{ x: 900 }}
+              rowClassName="trade-row"
+            />
+          )}
         </Card>
       </div>
       
       {/* Order History */}
       <div style={{ marginBottom: 24 }}>
-        <Title level={4}>Order History</Title>
-        <Card loading={loadingData.history}>
-          <Table 
-            columns={orderHistoryColumns} 
-            dataSource={alpacaOrdersHistory} 
-            rowKey="id"
-            size="small"
-            pagination={{ pageSize: 10 }}
-          />
+        <Card 
+          title={<span style={{ fontSize: 16, fontWeight: 800 }}>Order History</span>}
+          loading={loadingData.history}
+          className="premium-card"
+          bodyStyle={{ padding: 0 }}
+        >
+          {alpacaOrdersHistory.length === 0 ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span style={{ color: '#8c8c8c' }}>No order history available.</span>} style={{ padding: '30px 0' }} />
+          ) : (
+            <Table 
+              className="trade-table"
+              columns={orderHistoryColumns} 
+              dataSource={alpacaOrdersHistory} 
+              rowKey="id"
+              size="middle"
+              pagination={alpacaOrdersHistory.length > 10 ? { pageSize: 10, size: 'small' } : false}
+              scroll={{ x: 900 }}
+              rowClassName="trade-row"
+            />
+          )}
         </Card>
       </div>
       
-      {/* New Order Modal */}
-      <Modal
-        title="New Order"
-        open={newOrderModalVisible}
-        onCancel={() => {
-          setNewOrderModalVisible(false);
-          orderForm.resetFields();
-        }}
-        onOk={() => orderForm.submit()}
-        confirmLoading={placingOrder}
-        width={600}
-      >
-        <Form
-          form={orderForm}
-          layout="vertical"
-          onFinish={handlePlaceOrder}
-          initialValues={{
-            side: 'buy',
-            type: 'market',
-            time_in_force: 'day',
-            qty: 1
-          }}
-        >
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item
-                name="symbol"
-                label="Symbol"
-                rules={[{ required: true, message: 'Please enter symbol' }]}
-              >
-                <Input placeholder="e.g., AAPL" style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item
-                name="side"
-                label="Side"
-                rules={[{ required: true, message: 'Please select side' }]}
-              >
-                <Select style={{ width: '100%' }}>
-                  <Option value="buy">Buy</Option>
-                  <Option value="sell">Sell</Option>
-                </Select>
-              </Form.Item>
-            </Col>
-          </Row>
-
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item
-                name="qty"
-                label="Quantity"
-                rules={[{ required: true, message: 'Please enter quantity' }]}
-              >
-                <InputNumber 
-                  min={1} 
-                  style={{ width: '100%' }} 
-                  placeholder="e.g., 10" 
-                />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item
-                name="type"
-                label="Order Type"
-                rules={[{ required: true, message: 'Please select order type' }]}
-              >
-                <Select style={{ width: '100%' }}>
-                  <Option value="market">Market</Option>
-                  <Option value="limit">Limit</Option>
-                </Select>
-              </Form.Item>
-            </Col>
-          </Row>
-
-          <Form.Item
-            noStyle
-            shouldUpdate={(prevValues, currentValues) => prevValues.type !== currentValues.type}
-          >
-            {({ getFieldValue }) => 
-              getFieldValue('type') === 'limit' ? (
-                <Form.Item
-                  name="limit_price"
-                  label="Limit Price"
-                  rules={[{ required: true, message: 'Please enter limit price' }]}
-                >
-                  <InputNumber 
-                    min={0.01} 
-                    step={0.01} 
-                    style={{ width: '100%' }} 
-                    placeholder="e.g., 150.50" 
-                  />
-                </Form.Item>
-              ) : null
-            }
-          </Form.Item>
-
-          <Form.Item
-            name="time_in_force"
-            label="Time in Force"
-            rules={[{ required: true, message: 'Please select time in force' }]}
-          >
-            <Select style={{ width: '100%' }}>
-              <Option value="day">Day</Option>
-              <Option value="gtc">Good Till Canceled (GTC)</Option>
-            </Select>
-          </Form.Item>
-        </Form>
-      </Modal>
+      {/* Order Modal */}
+      <OrderModal
+        visible={orderModalVisible}
+        onClose={() => setOrderModalVisible(false)}
+        onSuccess={handleOrderSuccess}
+        tradeMode={tradeMode}
+        preset={orderModalPreset}
+      />
     </div>
   );
 };
 
-export default AITrading;
+export default Trade;
