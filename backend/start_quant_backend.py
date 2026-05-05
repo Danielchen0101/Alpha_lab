@@ -12102,6 +12102,8 @@ def get_trading_account():
 
                 'mode': mode,
 
+                'modeUsed': mode,
+
                 'available': True,
 
                 'status': data.get('status', ''),
@@ -12193,11 +12195,332 @@ def get_trading_positions():
                     'exchange': p.get('exchange', ''),
                     'lastUpdated': p.get('lastday_price', None),
                 })
-            return jsonify({'success': True, 'mode': mode, 'positions': positions})
+            return jsonify({'success': True, 'mode': mode, 'modeUsed': mode, 'positions': positions})
         else:
             return jsonify({'success': False, 'error': f'Alpaca API error ({resp.status_code})', 'positions': []})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e), 'positions': []})
+
+
+@app.route('/api/trading/orders/<order_id>', methods=['GET'])
+def get_trading_order_status(order_id):
+    """Get Alpaca order status by order_id."""
+    mode = request.args.get('mode', 'paper').strip().lower()
+    if mode not in ('paper', 'real'):
+        return jsonify({'success': False, 'error': f'Invalid mode: {mode}'})
+
+    resolved, resolve_status = resolve_alpaca_config_strict_user(mode)
+    if resolve_status == 'auth_required':
+        return jsonify({'success': False, 'error': 'Authentication required.'})
+    if resolve_status == 'config_required' or not resolved:
+        return jsonify({'success': False, 'error': 'Alpaca not configured for this mode.'})
+
+    api_key = resolved.get('api_key', '')
+    api_secret = resolved.get('api_secret', '')
+    base_url = resolved.get('base_url', 'https://paper-api.alpaca.markets' if mode == 'paper' else 'https://api.alpaca.markets')
+
+    key_bad, key_reason = _is_invalid_key(api_key)
+    if key_bad:
+        return jsonify({'success': False, 'error': f'API key invalid ({key_reason}).'})
+    secret_bad, secret_reason = _is_invalid_key(api_secret)
+    if secret_bad:
+        return jsonify({'success': False, 'error': f'API secret invalid ({secret_reason}).'})
+
+    try:
+        headers = {'APCA-API-KEY-ID': api_key, 'APCA-API-SECRET-KEY': api_secret}
+        resp = requests.get(f'{base_url}/v2/orders/{order_id}', headers=headers, timeout=10)
+        if resp.status_code == 200:
+            o = resp.json()
+            return jsonify({
+                'success': True,
+                'order': {
+                    'id': o.get('id', ''),
+                    'symbol': o.get('symbol', ''),
+                    'side': o.get('side', ''),
+                    'qty': o.get('qty', ''),
+                    'filled_qty': o.get('filled_qty', '0'),
+                    'filled_avg_price': o.get('filled_avg_price'),
+                    'type': o.get('type', ''),
+                    'status': o.get('status', ''),
+                    'time_in_force': o.get('time_in_force', ''),
+                    'limit_price': o.get('limit_price'),
+                    'stop_price': o.get('stop_price'),
+                    'submitted_at': o.get('submitted_at'),
+                    'filled_at': o.get('filled_at'),
+                    'canceled_at': o.get('canceled_at'),
+                },
+            })
+        elif resp.status_code == 404:
+            return jsonify({'success': False, 'error': 'Order not found.', 'errorType': 'order_not_found'})
+        elif resp.status_code in (401, 403):
+            return jsonify({'success': False, 'error': 'Invalid API credentials.', 'errorType': 'invalid_api_key'})
+        else:
+            return jsonify({'success': False, 'error': f'Alpaca API error ({resp.status_code}): {resp.text[:200]}', 'errorType': 'api_error'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)[:200], 'errorType': 'api_error'})
+
+
+@app.route('/api/trading/orders/<order_id>/cancel', methods=['POST'])
+def cancel_trading_order(order_id):
+    """Cancel an Alpaca order by order_id."""
+    body = request.get_json(silent=True) or {}
+    mode = (body.get('mode') or request.args.get('mode') or 'paper').strip().lower()
+    if mode not in ('paper', 'real'):
+        return jsonify({'success': False, 'error': f'Invalid mode: {mode}', 'errorType': 'invalid_mode'})
+
+    resolved, resolve_status = resolve_alpaca_config_strict_user(mode)
+    if resolve_status == 'auth_required':
+        return jsonify({'success': False, 'error': 'Authentication required.', 'errorType': 'auth_required'})
+    if resolve_status == 'config_required' or not resolved:
+        return jsonify({'success': False, 'error': 'Alpaca not configured for this mode.', 'errorType': 'config_required'})
+
+    api_key = resolved.get('api_key', '')
+    api_secret = resolved.get('api_secret', '')
+    base_url = resolved.get('base_url', 'https://paper-api.alpaca.markets' if mode == 'paper' else 'https://api.alpaca.markets')
+
+    key_bad, key_reason = _is_invalid_key(api_key)
+    if key_bad:
+        return jsonify({'success': False, 'error': f'API key invalid ({key_reason}).', 'errorType': 'invalid_api_key'})
+    secret_bad, secret_reason = _is_invalid_key(api_secret)
+    if secret_bad:
+        return jsonify({'success': False, 'error': f'API secret invalid ({secret_reason}).', 'errorType': 'invalid_api_key'})
+
+    print(f'[CANCEL ORDER] {order_id} mode={mode}')
+
+    try:
+        headers = {'APCA-API-KEY-ID': api_key, 'APCA-API-SECRET-KEY': api_secret}
+        resp = requests.delete(f'{base_url}/v2/orders/{order_id}', headers=headers, timeout=10)
+        if resp.status_code in (200, 204):
+            print(f'[CANCEL ORDER] {order_id}: CANCELED')
+            return jsonify({'success': True, 'orderId': order_id, 'status': 'canceled'})
+        elif resp.status_code == 404:
+            return jsonify({'success': False, 'error': 'Order not found.', 'errorType': 'order_not_found', 'orderId': order_id})
+        elif resp.status_code == 422:
+            # Already filled or not cancelable
+            err_text = resp.text[:200]
+            if 'filled' in err_text.lower():
+                return jsonify({'success': False, 'error': 'Order already filled — cannot cancel.', 'errorType': 'order_filled', 'orderId': order_id})
+            return jsonify({'success': False, 'error': f'Order not cancelable: {err_text}', 'errorType': 'order_not_cancelable', 'orderId': order_id})
+        elif resp.status_code in (401, 403):
+            return jsonify({'success': False, 'error': 'Invalid API credentials.', 'errorType': 'invalid_api_key', 'orderId': order_id})
+        else:
+            return jsonify({'success': False, 'error': f'Alpaca API error ({resp.status_code}): {resp.text[:200]}', 'errorType': 'api_error', 'orderId': order_id})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)[:200], 'errorType': 'api_error', 'orderId': order_id})
+
+
+@app.route('/api/trading/orders', methods=['GET'])
+def get_trading_orders():
+    """Get Alpaca orders for a specific mode (paper|real)."""
+    mode = request.args.get('mode', 'paper').strip().lower()
+    status = request.args.get('status', 'open')
+    limit_val = request.args.get('limit', '50')
+
+    if mode not in ('paper', 'real'):
+        return jsonify({'success': False, 'error': f'Invalid mode: {mode}', 'orders': [], 'modeUsed': mode})
+
+    resolved, resolve_status = resolve_alpaca_config_strict_user(mode)
+    if resolve_status == 'auth_required':
+        return jsonify({'success': False, 'error': 'Authentication required.', 'reason': 'auth_required', 'orders': [], 'modeUsed': mode})
+    if resolve_status == 'config_required' or not resolved:
+        return jsonify({'success': False, 'error': f'Alpaca {mode} Trading not configured.', 'reason': 'config_required', 'orders': [], 'modeUsed': mode})
+
+    api_key = resolved.get('api_key', '')
+    api_secret = resolved.get('api_secret', '')
+    base_url = resolved.get('base_url', 'https://paper-api.alpaca.markets' if mode == 'paper' else 'https://api.alpaca.markets')
+
+    try:
+        headers = {'APCA-API-KEY-ID': api_key, 'APCA-API-SECRET-KEY': api_secret}
+        params = {'status': status, 'limit': limit_val, 'direction': 'desc', 'nested': 'true'}
+        resp = requests.get(f'{base_url}/v2/orders', headers=headers, params=params, timeout=10)
+        if resp.status_code == 200:
+            raw = resp.json()
+            orders = []
+            for o in raw:
+                orders.append({
+                    'id': o.get('id', ''),
+                    'symbol': o.get('symbol', ''),
+                    'qty': float(o.get('qty', 0)) if o.get('qty') else 0,
+                    'filled_qty': float(o.get('filled_qty', 0)) if o.get('filled_qty') else 0,
+                    'side': o.get('side', ''),
+                    'type': o.get('type', ''),
+                    'time_in_force': o.get('time_in_force', ''),
+                    'limit_price': float(o.get('limit_price', 0)) if o.get('limit_price') else None,
+                    'stop_price': float(o.get('stop_price', 0)) if o.get('stop_price') else None,
+                    'trail_price': float(o.get('trail_price', 0)) if o.get('trail_price') else None,
+                    'trail_percent': float(o.get('trail_percent', 0)) if o.get('trail_percent') else None,
+                    'filled_avg_price': float(o.get('filled_avg_price', 0)) if o.get('filled_avg_price') else None,
+                    'status': o.get('status', ''),
+                    'created_at': o.get('submitted_at', o.get('created_at', '')),
+                    'filled_at': o.get('filled_at', None),
+                    'order_class': o.get('order_class', ''),
+                    'extended_hours': o.get('extended_hours', False),
+                })
+            return jsonify({'success': True, 'mode': mode, 'modeUsed': mode, 'orders': orders})
+        else:
+            return jsonify({'success': False, 'error': f'Alpaca API error ({resp.status_code})', 'orders': [], 'modeUsed': mode})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e), 'orders': [], 'modeUsed': mode})
+
+
+@app.route('/api/trading/order', methods=['POST'])
+def place_trading_order():
+    """Place an Alpaca order for a specific mode (paper|real).
+    Full Alpaca order payload support including bracket/oco/oto orders.
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({'success': False, 'error': 'Request body required', 'status': 'validation_error'})
+
+    mode = (data.get('mode') or 'paper').strip().lower()
+    if mode not in ('paper', 'real'):
+        return jsonify({'success': False, 'error': f'Invalid mode: {mode}', 'status': 'validation_error', 'modeUsed': mode})
+
+    # Validate required fields
+    symbol = (data.get('symbol') or '').strip().upper()
+    side = (data.get('side') or '').strip().lower()
+    if not symbol:
+        return jsonify({'success': False, 'error': 'Symbol is required', 'status': 'validation_error', 'modeUsed': mode})
+    if side not in ('buy', 'sell'):
+        return jsonify({'success': False, 'error': 'Side must be "buy" or "sell"', 'status': 'validation_error', 'modeUsed': mode})
+
+    qty = data.get('qty')
+    notional = data.get('notional')
+    if qty is not None:
+        try:
+            qty = float(qty)
+        except (ValueError, TypeError):
+            return jsonify({'success': False, 'error': 'qty must be a number', 'status': 'validation_error', 'modeUsed': mode})
+        if qty <= 0:
+            return jsonify({'success': False, 'error': 'qty must be > 0', 'status': 'validation_error', 'modeUsed': mode})
+    if notional is not None:
+        try:
+            notional = float(notional)
+        except (ValueError, TypeError):
+            return jsonify({'success': False, 'error': 'notional must be a number', 'status': 'validation_error', 'modeUsed': mode})
+        if notional <= 0:
+            return jsonify({'success': False, 'error': 'notional must be > 0', 'status': 'validation_error', 'modeUsed': mode})
+    if qty is None and notional is None:
+        return jsonify({'success': False, 'error': 'Either qty or notional is required', 'status': 'validation_error', 'modeUsed': mode})
+
+    order_type = (data.get('type') or 'market').strip().lower()
+    time_in_force = (data.get('time_in_force') or 'day').strip().lower()
+
+    # Type-specific validation
+    limit_price = data.get('limit_price')
+    stop_price = data.get('stop_price')
+    trail_price = data.get('trail_price')
+    trail_percent = data.get('trail_percent')
+
+    if order_type in ('limit', 'stop_limit') and not limit_price:
+        return jsonify({'success': False, 'error': 'limit_price is required for limit/stop_limit orders', 'status': 'validation_error', 'modeUsed': mode})
+    if order_type in ('stop', 'stop_limit') and not stop_price:
+        return jsonify({'success': False, 'error': 'stop_price is required for stop/stop_limit orders', 'status': 'validation_error', 'modeUsed': mode})
+    if order_type == 'trailing_stop' and not trail_price and not trail_percent:
+        return jsonify({'success': False, 'error': 'trail_price or trail_percent is required for trailing_stop orders', 'status': 'validation_error', 'modeUsed': mode})
+
+    extended_hours = data.get('extended_hours', False)
+    if extended_hours:
+        if order_type != 'limit':
+            return jsonify({'success': False, 'error': 'Extended hours only allows limit orders', 'status': 'validation_error', 'modeUsed': mode})
+        if time_in_force != 'day':
+            return jsonify({'success': False, 'error': 'Extended hours requires time_in_force=day', 'status': 'validation_error', 'modeUsed': mode})
+
+    order_class = (data.get('order_class') or 'simple').strip().lower()
+    if order_class in ('bracket', 'oco', 'oto'):
+        tp = data.get('take_profit') or {}
+        sl = data.get('stop_loss') or {}
+        if not tp.get('limit_price'):
+            return jsonify({'success': False, 'error': f'{order_class} order requires take_profit.limit_price', 'status': 'validation_error', 'modeUsed': mode})
+        if not sl.get('stop_price'):
+            return jsonify({'success': False, 'error': f'{order_class} order requires stop_loss.stop_price', 'status': 'validation_error', 'modeUsed': mode})
+
+    # Confirmation check for real mode
+    confirmed = data.get('confirmed', False)
+    if mode == 'real' and not confirmed:
+        return jsonify({'success': False, 'error': 'Real trading orders require explicit confirmation. Set confirmed=true.', 'status': 'confirmation_required', 'modeUsed': mode})
+
+    # Resolve config
+    resolved, resolve_status = resolve_alpaca_config_strict_user(mode)
+    if resolve_status == 'auth_required':
+        return jsonify({'success': False, 'error': 'Authentication required.', 'status': 'auth_required', 'modeUsed': mode})
+    if resolve_status == 'config_required' or not resolved:
+        return jsonify({'success': False, 'error': f'Alpaca {mode} Trading not configured.', 'status': 'config_required', 'modeUsed': mode})
+
+    api_key = resolved.get('api_key', '')
+    api_secret = resolved.get('api_secret', '')
+    base_url = resolved.get('base_url', 'https://paper-api.alpaca.markets' if mode == 'paper' else 'https://api.alpaca.markets')
+
+    # Build Alpaca order payload
+    order_payload = {
+        'symbol': symbol,
+        'side': side,
+        'type': order_type,
+        'time_in_force': time_in_force,
+    }
+    if qty is not None:
+        order_payload['qty'] = str(qty)
+    if notional is not None:
+        order_payload['notional'] = str(notional)
+    if limit_price is not None:
+        order_payload['limit_price'] = str(limit_price)
+    if stop_price is not None:
+        order_payload['stop_price'] = str(stop_price)
+    if trail_price is not None:
+        order_payload['trail_price'] = str(trail_price)
+    if trail_percent is not None:
+        order_payload['trail_percent'] = str(trail_percent)
+    if extended_hours:
+        order_payload['extended_hours'] = True
+    if order_class != 'simple':
+        order_payload['order_class'] = order_class
+    if order_class in ('bracket', 'oco', 'oto'):
+        tp = data.get('take_profit') or {}
+        sl = data.get('stop_loss') or {}
+        if tp.get('limit_price'):
+            order_payload['take_profit'] = {'limit_price': str(tp['limit_price'])}
+        if sl.get('stop_price') or sl.get('limit_price'):
+            sl_payload = {}
+            if sl.get('stop_price'):
+                sl_payload['stop_price'] = str(sl['stop_price'])
+            if sl.get('limit_price'):
+                sl_payload['limit_price'] = str(sl['limit_price'])
+            order_payload['stop_loss'] = sl_payload
+    client_order_id = data.get('client_order_id')
+    if client_order_id:
+        order_payload['client_order_id'] = str(client_order_id)
+
+    try:
+        headers = {'APCA-API-KEY-ID': api_key, 'APCA-API-SECRET-KEY': api_secret, 'Content-Type': 'application/json'}
+        endpoint = f'{base_url}/v2/orders'
+        print(f'[Trading Order] mode={mode} endpoint={endpoint} payload={order_payload}')
+        resp = requests.post(endpoint, headers=headers, json=order_payload, timeout=30)
+
+        if resp.status_code == 200:
+            order_data = resp.json()
+            return jsonify({
+                'success': True,
+                'status': 'submitted',
+                'message': 'Order placed successfully',
+                'order': order_data,
+                'modeUsed': mode,
+                'endpointUsed': endpoint,
+            })
+        else:
+            error_text = resp.text[:500]
+            print(f'[Trading Order] Alpaca error: {resp.status_code} - {error_text}')
+            return jsonify({
+                'success': False,
+                'status': 'api_error',
+                'error': f'Alpaca API error: {resp.status_code}',
+                'message': error_text,
+                'modeUsed': mode,
+                'endpointUsed': endpoint,
+            })
+    except Exception as e:
+        print(f'[Trading Order] Exception: {e}')
+        return jsonify({'success': False, 'status': 'api_error', 'error': str(e), 'modeUsed': mode})
+
 
 # ==================== 基础接口 ====================
 
@@ -18031,16 +18354,21 @@ def ai_alpaca_portfolio_history():
     print('=== AI Alpaca Portfolio History 请求 ===')
 
     range_param = request.args.get('range', '1D')
-
-
+    mode = request.args.get('mode', 'paper').strip().lower()
+    if mode not in ('paper', 'real'):
+        mode = 'paper'
 
     try:
 
-        # Resolve Alpaca config from per-user Supabase (paper mode for AI Agent)
-        alpaca_cfg, alpaca_src = resolve_alpaca_config('paper', require_user_config=True)
+        # Resolve Alpaca config from per-user Supabase using strict resolver
+        alpaca_cfg, alpaca_status = resolve_alpaca_config_strict_user(mode)
+        if alpaca_status == 'auth_required':
+            return jsonify({'success': False, 'data': [], 'count': 0, 'range': range_param, 'modeUsed': mode, 'reason': 'auth_required', 'message': 'Authentication required.'})
+        if alpaca_status == 'config_required' or not alpaca_cfg:
+            return jsonify({'success': False, 'data': [], 'count': 0, 'range': range_param, 'modeUsed': mode, 'reason': 'config_required', 'message': f'Alpaca {mode} Trading not configured.'})
         api_key = alpaca_cfg.get('api_key', '')
         api_secret = alpaca_cfg.get('api_secret', '')
-        base_url = alpaca_cfg.get('base_url', 'https://paper-api.alpaca.markets')
+        base_url = alpaca_cfg.get('base_url', 'https://paper-api.alpaca.markets' if mode == 'paper' else 'https://api.alpaca.markets')
 
 
 
@@ -18100,6 +18428,10 @@ def ai_alpaca_portfolio_history():
 
             start_date = end_date - datetime.timedelta(days=30)
 
+        elif range_param == '3M':
+
+            start_date = end_date - datetime.timedelta(days=90)
+
         elif range_param == '1Y':
 
             start_date = end_date - datetime.timedelta(days=365)
@@ -18134,6 +18466,8 @@ def ai_alpaca_portfolio_history():
 
             '1M': '1M',
 
+            '3M': '3M',
+
             '1Y': '1A',  # Alpaca使用1A表示1年
 
             'All': None  # All不使用period，使用start/end
@@ -18149,6 +18483,8 @@ def ai_alpaca_portfolio_history():
             '1W': '1H',    # 1W使用小时粒度
 
             '1M': '1D',    # 1M使用日粒度
+
+            '3M': '1D',    # 3M使用日粒度
 
             '1Y': '1D',    # 1Y使用日粒度
 
@@ -18210,7 +18546,7 @@ def ai_alpaca_portfolio_history():
 
         safe_print(f'[API] hasKey={bool(api_key)}')
 
-        print(f'Environment: {alpaca_src}')
+        print(f'Environment: {alpaca_status} mode={mode}')
 
 
 
@@ -18226,167 +18562,11 @@ def ai_alpaca_portfolio_history():
 
             history_data = response.json()
 
-            print(f'✅ 获取到portfolio历史数据')
+            safe_print(f'[Portfolio History] mode={mode} range={range_param} raw_keys={list(history_data.keys())}')
 
 
 
-            # 详细打印原始返回数据
-
-            print(f'原始返回数据keys: {list(history_data.keys())}')
-
-
-
-            # 检查timestamp
-
-            if 'timestamp' in history_data:
-
-                timestamps = history_data.get('timestamp', [])
-
-                print(f'timestamp数组长度: {len(timestamps)}')
-
-                if len(timestamps) > 0:
-
-                    print(f'前5个timestamp: {timestamps[:5]}')
-
-                    print(f'后5个timestamp: {timestamps[-5:]}')
-
-                    # 转换为可读时间
-
-                    import datetime
-
-                    try:
-
-                        print('转换为可读时间 (America/New_York):')
-
-                        for i, ts in enumerate(timestamps[:3]):
-
-                            dt = datetime.datetime.fromtimestamp(ts)
-
-                            print(f'  [{i}] {ts} -> {dt.strftime("%Y-%m-%d %H:%M:%S")}')
-
-                        if len(timestamps) > 3:
-
-                            print(f'  ...')
-
-                            for i in range(-3, 0):
-
-                                ts = timestamps[i]
-
-                                dt = datetime.datetime.fromtimestamp(ts)
-
-                                print(f'  [{len(timestamps)+i}] {ts} -> {dt.strftime("%Y-%m-%d %H:%M:%S")}')
-
-                    except Exception as e:
-
-                        print(f'时间转换错误: {e}')
-
-            else:
-
-                print('❌ 没有timestamp字段')
-
-
-
-            # 检查equity
-
-            if 'equity' in history_data:
-
-                equities = history_data.get('equity', [])
-
-                print(f'equity数组长度: {len(equities)}')
-
-                if len(equities) > 0:
-
-                    print(f'前5个equity: {equities[:5]}')
-
-                    print(f'后5个equity: {equities[-5:]}')
-
-                    # 检查equity值变化
-
-                    if len(equities) > 1:
-
-                        print('equity值变化检查:')
-
-                        for i in range(min(5, len(equities)-1)):
-
-                            change = equities[i+1] - equities[i]
-
-                            print(f'  [{i}] ${equities[i]:.2f} -> [{i+1}] ${equities[i+1]:.2f} (变化: ${change:.2f})')
-
-            else:
-
-                print('❌ 没有equity字段')
-
-
-
-            # 检查profit_loss
-
-            if 'profit_loss' in history_data:
-
-                profit_loss = history_data.get('profit_loss', [])
-
-                print(f'profit_loss数组长度: {len(profit_loss)}')
-
-                if len(profit_loss) > 0:
-
-                    print(f'前5个profit_loss: {profit_loss[:5]}')
-
-
-
-            # 检查profit_loss_pct
-
-            if 'profit_loss_pct' in history_data:
-
-                profit_loss_pct = history_data.get('profit_loss_pct', [])
-
-                print(f'profit_loss_pct数组长度: {len(profit_loss_pct)}')
-
-                if len(profit_loss_pct) > 0:
-
-                    print(f'前5个profit_loss_pct: {profit_loss_pct[:5]}')
-
-
-
-            # 检查base_value
-
-            if 'base_value' in history_data:
-
-                print(f'base_value: {history_data.get("base_value")}')
-
-
-
-            # 检查base_timestamp
-
-            if 'base_timestamp' in history_data:
-
-                print(f'base_timestamp: {history_data.get("base_timestamp")}')
-
-
-
-            # 检查数组长度是否匹配
-
-            if 'timestamp' in history_data and 'equity' in history_data:
-
-                ts_len = len(history_data.get('timestamp', []))
-
-                eq_len = len(history_data.get('equity', []))
-
-                if ts_len != eq_len:
-
-                    print(f'⚠️ 警告: timestamp长度({ts_len}) != equity长度({eq_len})')
-
-                else:
-
-                    print(f'✅ timestamp和equity长度匹配: {ts_len}')
-
-        else:
-
-            print(f'❌ Alpaca API 调用失败')
-
-            print(f'响应内容: {response.text[:1000]}')
-
-
-
-            # 处理portfolio历史数据
+            # Process portfolio history data
 
             data = []
 
@@ -18402,37 +18582,15 @@ def ai_alpaca_portfolio_history():
 
 
 
-                print('处理数据...')
-
-                print('timestamps长度:', len(timestamps))
-
-                print('equities长度:', len(equities))
-
-                print('profit_loss长度:', len(profit_loss))
-
-                print('profit_loss_pct长度:', len(profit_loss_pct))
+                safe_print(f'[Portfolio History] mode={mode} range={range_param} points={len(timestamps)} first_ts={timestamps[0] if timestamps else "N/A"} last_ts={timestamps[-1] if timestamps else "N/A"}')
 
 
-
-                # 检查是否有基准值信息
-
-                if 'base_value' in history_data:
-
-                    print('base_value:', history_data['base_value'])
-
-                if 'base_timestamp' in history_data:
-
-                    print('base_timestamp:', history_data['base_timestamp'])
-
-
-
-                print(f'开始处理数据点...')
 
                 valid_points = 0
 
                 for i in range(len(timestamps)):
 
-                    timestamp = timestamps[i]
+                    ts = timestamps[i]
 
                     equity = equities[i] if i < len(equities) else 0
 
@@ -18442,19 +18600,15 @@ def ai_alpaca_portfolio_history():
 
 
 
-                    # 只添加有效的数据点
+                    if ts and equity is not None:
 
-                    if timestamp and equity is not None:
-
-                        # Alpaca返回的时间戳是Unix秒，转换为毫秒
-
-                        timestamp_ms = int(timestamp) * 1000
+                        timestamp_ms = int(ts) * 1000
 
                         data.append({
 
-                            'timestamp': timestamp_ms,  # 转换为毫秒
+                            'timestamp': timestamp_ms,
 
-                            'equity': float(equity),    # 主曲线数据字段
+                            'equity': float(equity),
 
                             'pnl': float(pl) if pl is not None else 0,
 
@@ -18468,49 +18622,25 @@ def ai_alpaca_portfolio_history():
 
 
 
-                        # 打印前几个点的详细信息
-
-                        if valid_points <= 3:
-
-                            import datetime
-
-                            dt = datetime.datetime.fromtimestamp(timestamp)
-
-                            print(f'  点[{i}]: timestamp={timestamp} -> {dt.strftime("%Y-%m-%d %H:%M:%S")}, equity=${equity:.2f}')
-
-
-
-                print(f'处理完成，有效数据点: {valid_points}/{len(timestamps)}')
-
-
-
-                print(f'处理后的数据点数量: {len(data)}')
+                safe_print(f'[Portfolio History] mode={mode} range={range_param} valid_points={valid_points}')
 
 
 
                 if len(data) > 0:
 
-                    # 计算总变化 - 使用Alpaca提供的profit_loss_pct或自己计算
+                    first_value = data[0]['equity']
 
-                    first_value = data[0]['equity'] if data else 0
-
-                    last_value = data[-1]['equity'] if data else 0
+                    last_value = data[-1]['equity']
 
                     total_change = last_value - first_value
 
                     total_change_pct = (total_change / first_value * 100) if first_value > 0 else 0
 
-
-
-                    # 如果有profit_loss_pct，使用最后一个点的值
-
                     last_pl_pct = data[-1].get('pnlPct')
 
                     if last_pl_pct is not None:
 
-                        total_change_pct = last_pl_pct * 100  # 转换为百分比
-
-                        print(f'使用Alpaca profit_loss_pct: {last_pl_pct} -> {total_change_pct:.4f}%')
+                        total_change_pct = last_pl_pct * 100
 
 
 
@@ -18524,6 +18654,8 @@ def ai_alpaca_portfolio_history():
 
                         'range': range_param,
 
+                        'modeUsed': mode,
+
                         'isMockData': False,
 
                         'total_change': round(total_change, 2),
@@ -18534,15 +18666,13 @@ def ai_alpaca_portfolio_history():
 
                         'last_value': round(last_value, 2),
 
-                        'message': '获取portfolio历史数据成功'
+                        'message': 'Portfolio history retrieved successfully'
 
                     })
 
 
 
-            # 如果没有有效数据，返回空数据
-
-            print('Alpaca portfolio history接口返回了数据，但格式不正确或为空')
+            # Data returned but format invalid or empty
 
             return jsonify({
 
@@ -18554,56 +18684,40 @@ def ai_alpaca_portfolio_history():
 
                 'range': range_param,
 
+                'modeUsed': mode,
+
                 'isMockData': False,
 
-                'message': 'Alpaca portfolio历史数据为空'
+                'message': 'Alpaca returned portfolio history data in an unexpected format'
 
             })
 
 
 
-        # API调用失败时返回空数据，不再返回模拟数据
-
-        print(f'Alpaca portfolio history API 调用失败: {response.status_code} - {response.text}')
-
+        # API call failed
+        safe_print(f'[Portfolio History] API error: status={response.status_code} mode={mode} range={range_param}')
         return jsonify({
-
             'success': False,
-
             'data': [],
-
             'count': 0,
-
             'range': range_param,
-
+            'modeUsed': mode,
             'isMockData': False,
-
-            'message': f'Alpaca portfolio history API 调用失败 ({response.status_code})，请检查API密钥和网络连接'
-
+            'message': f'Alpaca API error ({response.status_code}): {response.text[:200]}'
         })
 
 
 
     except Exception as e:
-
-        print(f'Alpaca portfolio history 接口错误: {e}')
-
-        # 异常时返回空数据，不再返回模拟数据
-
+        safe_print(f'[Portfolio History] Exception: {e} mode={mode} range={range_param}')
         return jsonify({
-
             'success': False,
-
             'data': [],
-
             'count': 0,
-
             'range': range_param,
-
+            'modeUsed': mode,
             'isMockData': False,
-
-            'message': f'接口异常: {str(e)}'
-
+            'message': f'Error: {str(e)[:200]}'
         })
 
 
@@ -20662,6 +20776,162 @@ def entry_plan_execute():
         return jsonify({
             'success': False, 'action': 'ERROR', 'symbol': data.get('symbol', '?') if data else '?',
             'reason': str(e), 'blockers': [str(e)[:200]]
+        }), 500
+
+
+# ============ AI Execution Order Endpoint ============
+
+@app.route('/api/ai/execution/order', methods=['POST'])
+def ai_execution_order():
+    """Place an order via Alpaca for AI Execution candidates.
+    Respects trading mode (paper/real) and automation mode (manual/semi-ai/full-ai).
+    All config comes from per-user Supabase — never from .env or global fallback."""
+    import requests as _req
+
+    data = request.get_json() or {}
+
+    # ── 1. Auth check ──
+    user = get_supabase_user()
+    if not user:
+        return jsonify({'success': False, 'status': 'auth_required', 'message': 'Authentication required. Please sign in.'})
+
+    # ── 2. Validate required fields ──
+    symbol = (data.get('symbol') or '').upper().strip()
+    side = (data.get('side') or '').lower().strip()
+    order_type = (data.get('type') or 'market').lower().strip()
+    trading_mode = (data.get('tradingMode') or 'paper').lower().strip()
+    automation_mode = (data.get('automationMode') or 'manual').lower().strip()
+    confirmed = data.get('confirmed', False)
+    qty = data.get('qty')
+    notional = data.get('notional')
+    limit_price = data.get('limit_price')
+    stop_price = data.get('stop_price')
+    trail_price = data.get('trail_price')
+    trail_percent = data.get('trail_percent')
+    time_in_force = data.get('time_in_force', 'day')
+
+    if not symbol:
+        return jsonify({'success': False, 'status': 'risk_blocked', 'message': 'Symbol is required.'})
+    if side not in ('buy', 'sell'):
+        return jsonify({'success': False, 'status': 'risk_blocked', 'message': 'Side must be "buy" or "sell".'})
+    valid_types = ('market', 'limit', 'stop', 'stop_limit', 'trailing_stop')
+    if order_type not in valid_types:
+        return jsonify({'success': False, 'status': 'risk_blocked', 'message': f'Type must be one of: {", ".join(valid_types)}.'})
+    if (not qty or qty <= 0) and (not notional or notional <= 0):
+        return jsonify({'success': False, 'status': 'risk_blocked', 'message': 'qty or notional must be > 0.'})
+    if order_type == 'limit' and (not limit_price or limit_price <= 0):
+        return jsonify({'success': False, 'status': 'risk_blocked', 'message': 'Limit orders require limit_price > 0.'})
+    if order_type == 'stop' and (not stop_price or stop_price <= 0):
+        return jsonify({'success': False, 'status': 'risk_blocked', 'message': 'Stop orders require stop_price > 0.'})
+    if order_type == 'stop_limit':
+        if not limit_price or limit_price <= 0:
+            return jsonify({'success': False, 'status': 'risk_blocked', 'message': 'Stop-limit orders require limit_price > 0.'})
+        if not stop_price or stop_price <= 0:
+            return jsonify({'success': False, 'status': 'risk_blocked', 'message': 'Stop-limit orders require stop_price > 0.'})
+    if order_type == 'trailing_stop':
+        if (not trail_price or trail_price <= 0) and (not trail_percent or trail_percent <= 0):
+            return jsonify({'success': False, 'status': 'risk_blocked', 'message': 'Trailing stop orders require trail_price or trail_percent > 0.'})
+
+    # ── 3. Automation mode gates ──
+    if automation_mode == 'manual':
+        return jsonify({'success': False, 'status': 'risk_blocked',
+                        'message': 'Manual mode — review only. No orders will be placed.'})
+    order_preview = {
+        'symbol': symbol, 'side': side, 'qty': qty, 'notional': notional,
+        'type': order_type, 'limit_price': limit_price, 'stop_price': stop_price,
+        'trail_price': trail_price, 'trail_percent': trail_percent,
+        'time_in_force': time_in_force
+    }
+    if automation_mode == 'semi-ai' and not confirmed:
+        return jsonify({'success': False, 'status': 'confirmation_required',
+                        'message': 'Semi-AI mode requires confirmation before placing order.',
+                        'orderPreview': order_preview})
+    if automation_mode == 'full-ai' and trading_mode == 'real' and not confirmed:
+        return jsonify({'success': False, 'status': 'confirmation_required',
+                        'message': 'Real trading in Full-AI mode requires explicit confirmation.',
+                        'orderPreview': order_preview})
+
+    # ── 4. Resolve Alpaca config (strict user-only) ──
+    alpaca_mode = 'paper' if trading_mode == 'paper' else 'live'
+    alpaca_cfg, cfg_status = resolve_alpaca_config_strict_user(alpaca_mode)
+
+    if cfg_status == 'auth_required':
+        return jsonify({'success': False, 'status': 'auth_required', 'message': 'Session expired. Please sign in again.'})
+    if cfg_status == 'config_required':
+        mode_label = 'Paper Trading' if alpaca_mode == 'paper' else 'Live Trading'
+        return jsonify({'success': False, 'status': 'config_required',
+                        'message': f'{mode_label} API keys not configured. Please go to Settings > Configuration to set up your Alpaca keys.'})
+
+    api_key = alpaca_cfg.get('api_key', '')
+    api_secret = alpaca_cfg.get('api_secret', '')
+    base_url = alpaca_cfg.get('base_url', 'https://paper-api.alpaca.markets' if alpaca_mode == 'paper' else 'https://api.alpaca.markets')
+
+    # Double-check key validity
+    key_bad, key_reason = _is_invalid_key(api_key)
+    if key_bad:
+        return jsonify({'success': False, 'status': 'config_required',
+                        'message': f'API key is invalid ({key_reason}). Please re-configure in Settings.'})
+    secret_bad, secret_reason = _is_invalid_key(api_secret)
+    if secret_bad:
+        return jsonify({'success': False, 'status': 'config_required',
+                        'message': f'API secret is invalid ({secret_reason}). Please re-configure in Settings.'})
+
+    # ── 5. Build and submit order to Alpaca ──
+    headers = {
+        'APCA-API-KEY-ID': api_key,
+        'APCA-API-SECRET-KEY': api_secret,
+        'Content-Type': 'application/json'
+    }
+
+    order_payload = {
+        'symbol': symbol,
+        'side': side,
+        'type': order_type,
+        'time_in_force': time_in_force,
+    }
+    if qty and qty > 0:
+        order_payload['qty'] = str(int(qty))
+    elif notional and notional > 0:
+        order_payload['notional'] = str(round(notional, 2))
+    if order_type in ('limit', 'stop_limit') and limit_price:
+        order_payload['limit_price'] = str(limit_price)
+    if order_type in ('stop', 'stop_limit') and stop_price:
+        order_payload['stop_price'] = str(stop_price)
+    if order_type == 'trailing_stop':
+        if trail_price and trail_price > 0:
+            order_payload['trail_price'] = str(trail_price)
+        elif trail_percent and trail_percent > 0:
+            order_payload['trail_percent'] = str(trail_percent)
+
+    mode_label = 'paper' if alpaca_mode == 'paper' else 'real'
+    print(f'[AI EXECUTION] {symbol} {side} {order_type} mode={mode_label} auto={automation_mode} user={user["id"][:8]}...')
+
+    try:
+        resp = _req.post(f'{base_url}/v2/orders', headers=headers, json=order_payload, timeout=30)
+        if resp.status_code == 200:
+            order_data = resp.json()
+            print(f'[AI EXECUTION] {symbol}: ORDER SUBMITTED id={order_data.get("id")} status={order_data.get("status")}')
+            return jsonify({
+                'success': True, 'status': 'submitted',
+                'message': f'{mode_label.capitalize()} {order_type} order submitted for {symbol}',
+                'order': order_data,
+                'modeUsed': mode_label,
+                'endpointUsed': f'{base_url}/v2/orders'
+            })
+        else:
+            error_text = resp.text[:300]
+            print(f'[AI EXECUTION] {symbol}: Alpaca error {resp.status_code}: {error_text}')
+            return jsonify({
+                'success': False, 'status': 'api_error',
+                'message': f'Alpaca API error ({resp.status_code}): {error_text}',
+                'modeUsed': mode_label
+            })
+    except Exception as e:
+        print(f'[AI EXECUTION] {symbol}: Exception {e}')
+        return jsonify({
+            'success': False, 'status': 'api_error',
+            'message': f'Order submission failed: {str(e)[:200]}',
+            'modeUsed': mode_label
         }), 500
 
 

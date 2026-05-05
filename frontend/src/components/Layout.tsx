@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { Layout, Menu, Button, Avatar, Dropdown, Space } from 'antd';
 import {
   DashboardOutlined,
-  LineChartOutlined,
   StockOutlined,
   UserOutlined,
   SettingOutlined,
@@ -10,6 +9,7 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   PieChartOutlined,
+  RobotOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation } from 'react-router-dom';
 
@@ -36,9 +36,14 @@ const AppLayout: React.FC<LayoutProps> = ({ children }) => {
       label: 'Market',
     },
     {
-      key: '/analytics',
-      icon: <LineChartOutlined />,
-      label: 'Analytics',
+      key: '/agent',
+      icon: <RobotOutlined />,
+      label: 'Agent',
+    },
+    {
+      key: '/trade',
+      icon: <StockOutlined />,
+      label: 'Trade',
     },
     {
       key: '/portfolio',

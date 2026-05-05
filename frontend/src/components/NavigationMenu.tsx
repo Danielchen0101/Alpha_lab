@@ -9,9 +9,7 @@ import {
   UnorderedListOutlined,
   SwapOutlined,
   RocketOutlined,
-  AreaChartOutlined,
   PieChartOutlined,
-  ExperimentOutlined,
   RobotOutlined,
   SettingOutlined
 } from '@ant-design/icons';
@@ -36,10 +34,9 @@ const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
     '/optimize': '5',
     '/compare': '6',
     '/ranking': '7',
-    '/local-paper-trading': '8',
-    '/analytics': '9',
-    '/portfolio': '10',
-    '/ai-trading': '11',
+    '/agent': '10',
+    '/trade': '11',
+    '/portfolio': '13',
     '/settings': '12',
   };
 
@@ -85,17 +82,14 @@ const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
 
           {/* TRADING GROUP */}
           {!collapsed && <div className={styles.menuDivider}>TRADING</div>}
-          <Menu.Item key="10" icon={<RobotOutlined />} title={collapsed ? 'AI Agent' : undefined}>
-            <Link to="/portfolio">AI Agent</Link>
+          <Menu.Item key="10" icon={<RobotOutlined />} title={collapsed ? 'Agent' : undefined}>
+            <Link to="/agent">Agent</Link>
           </Menu.Item>
-          <Menu.Item key="11" icon={<PieChartOutlined />} title={collapsed ? 'Alpaca Trade' : undefined}>
-            <Link to="/ai-trading">Alpaca Trade</Link>
+          <Menu.Item key="11" icon={<SwapOutlined />} title={collapsed ? 'Trade' : undefined}>
+            <Link to="/trade">Trade</Link>
           </Menu.Item>
-          <Menu.Item key="8" icon={<ExperimentOutlined />} title={collapsed ? 'Local Paper' : undefined}>
-            <Link to="/local-paper-trading">Local Paper</Link>
-          </Menu.Item>
-          <Menu.Item key="9" icon={<AreaChartOutlined />} title={collapsed ? t.navigation.analytics : undefined}>
-            <Link to="/analytics">{t.navigation.analytics}</Link>
+          <Menu.Item key="13" icon={<PieChartOutlined />} title={collapsed ? 'Portfolio' : undefined}>
+            <Link to="/portfolio">Portfolio</Link>
           </Menu.Item>
 
           {/* SYSTEM GROUP */}

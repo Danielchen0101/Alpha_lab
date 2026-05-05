@@ -11,6 +11,35 @@ export type ContinueScanStatus = 'idle' | 'processing' | 'completed' | 'error';
 export type FineScanStatus = 'idle' | 'running' | 'completed' | 'failed' | 'stopped' | 'error';
 export type DeeperValidationStatus = 'idle' | 'loading' | 'completed' | 'error' | 'stopped';
 export type EntryPlanStatus = 'idle' | 'loading' | 'completed' | 'error' | 'stopped';
+export type ExitScanStatus = 'idle' | 'scanning' | 'completed' | 'failed' | 'stopped';
+
+export interface ExitScanResult {
+  symbol: string;
+  qty: number;
+  avgEntry: number;
+  currentPrice: number;
+  pl: number;
+  plPct: number;
+  positionSource: 'ai_managed' | 'user_marked' | 'manual' | 'unknown';
+  entryPlanTarget?: number;
+  entryPlanStop?: number;
+  exitDecision: 'sell_now' | 'place_target_limit' | 'hold' | 'manual_review' | 'blocked';
+  exitOrderType?: 'market' | 'limit';
+  exitPrice?: number;
+  reason: string;
+  exitPlanSource?: 'entry_plan' | 'generated';
+  status: 'pending' | 'submitted' | 'filled' | 'failed' | 'hold' | 'manual_review' | 'blocked';
+  alpacaOrderId?: string;
+  error?: string;
+}
+
+export interface ExitScanState {
+  status: ExitScanStatus;
+  results: ExitScanResult[];
+  submittedExitOrders: { symbol: string; orderId: string; orderType: string; exitPrice?: number; submittedAt: string; }[];
+  runId: string | null;
+  lastUpdated: string | null;
+}
 
 export interface MarketScannerState {
   status: ScannerStatus;
@@ -85,12 +114,58 @@ export interface EntryPlanState {
   lastUpdated: string | null;
 }
 
+export interface AiExecutionCandidate {
+  symbol: string;
+  // Entry plan data
+  setup?: string;
+  entryZoneLow?: number;
+  entryZoneHigh?: number;
+  stopLoss?: number;
+  takeProfit1?: number;
+  riskReward1?: number;
+  confidence?: number;
+  aiDecision?: string;
+  riskGateStatus?: string;
+  dataQuality?: string;
+  // Position sizing
+  positionSizeShares?: number;
+  positionSizeDollars?: number;
+  // User-editable order params
+  qtyMode: 'shares' | 'dollars';
+  userQty: number;
+  dollarAmount?: number;
+  orderType: 'market' | 'limit' | 'stop' | 'stop_limit' | 'trailing_stop';
+  limitPrice?: number;
+  stopPrice?: number;
+  trailPrice?: number;
+  trailPercent?: number;
+  timeInForce: 'day' | 'gtc' | 'ioc' | 'fok';
+  // Execution tracking
+  executionStatus: 'draft' | 'pending' | 'submitted' | 'filled' | 'failed' | 'canceled';
+  executionError?: string;
+  alpacaOrderId?: string;
+  alpacaOrderStatus?: string;
+  // Metadata
+  source: string;
+  addedAt: string;
+  // Full entry plan snapshot (for detail view)
+  entryPlan?: any;
+}
+
 export interface ScannerStoreState {
   marketScanner: MarketScannerState;
   continueScan: ContinueScanState;
   fineScan: FineScanState;
   deeperValidation: DeeperValidationState;
   entryPlan: EntryPlanState;
+  exitScan: ExitScanState;
+  aiExecutionCandidates: AiExecutionCandidate[];
+  pipelineSchedule: {
+    intervalKey: string; // 'off' | '15m' | '30m' | '1h' | '2h'
+    nextRunAt: string | null;
+    lastRunAt: string | null;
+    lastRunResult: string | null; // 'success' | 'failed' | 'stopped'
+  };
   lastUpdated: string | null;
   version: number;
 }
@@ -166,6 +241,20 @@ const DEFAULT_STATE: ScannerStoreState = {
     runId: null,
     lastUpdated: null,
   },
+  exitScan: {
+    status: 'idle',
+    results: [],
+    submittedExitOrders: [],
+    runId: null,
+    lastUpdated: null,
+  },
+  aiExecutionCandidates: [],
+  pipelineSchedule: {
+    intervalKey: 'off',
+    nextRunAt: null,
+    lastRunAt: null,
+    lastRunResult: null,
+  },
   lastUpdated: null,
   version: 1,
 };
@@ -194,6 +283,9 @@ class ScannerStateStore {
             fineScan: { ...DEFAULT_STATE.fineScan, ...parsed.fineScan },
             deeperValidation: { ...DEFAULT_STATE.deeperValidation, ...parsed.deeperValidation },
             entryPlan: { ...DEFAULT_STATE.entryPlan, ...parsed.entryPlan },
+            exitScan: { ...DEFAULT_STATE.exitScan, ...parsed.exitScan },
+            aiExecutionCandidates: Array.isArray(parsed.aiExecutionCandidates) ? parsed.aiExecutionCandidates : [],
+            pipelineSchedule: { ...DEFAULT_STATE.pipelineSchedule, ...parsed.pipelineSchedule },
           };
         }
       }
@@ -360,10 +452,95 @@ class ScannerStateStore {
     this.notify();
   }
 
+  // ── Exit Scan ──
+
+  updateExitScan(partial: Partial<ExitScanState>): void {
+    this.state.exitScan = { ...this.state.exitScan, ...partial };
+    this.scheduleSave();
+    this.notify();
+  }
+
+  setExitScanResults(results: ExitScanResult[]): void {
+    this.state.exitScan.results = results;
+    this.scheduleSave();
+    this.notify();
+  }
+
+  addSubmittedExitOrder(order: { symbol: string; orderId: string; orderType: string; exitPrice?: number; submittedAt: string }): void {
+    this.state.exitScan.submittedExitOrders.push(order);
+    this.scheduleSave();
+    this.notify();
+  }
+
+  resetExitScan(): void {
+    this.state.exitScan = { ...DEFAULT_STATE.exitScan };
+    this.scheduleSave();
+    this.notify();
+  }
+
+  // ── AI Execution Candidates ──
+
+  getAiExecutionCandidates(): AiExecutionCandidate[] {
+    return JSON.parse(JSON.stringify(this.state.aiExecutionCandidates));
+  }
+
+  setAiExecutionCandidates(candidates: AiExecutionCandidate[]): void {
+    this.state.aiExecutionCandidates = candidates;
+    this.scheduleSave();
+    this.notify();
+  }
+
+  updateAiExecutionCandidate(symbol: string, partial: Partial<AiExecutionCandidate>): void {
+    const idx = this.state.aiExecutionCandidates.findIndex(c => c.symbol === symbol);
+    if (idx >= 0) {
+      this.state.aiExecutionCandidates[idx] = { ...this.state.aiExecutionCandidates[idx], ...partial };
+    }
+    this.scheduleSave();
+    this.notify();
+  }
+
+  addAiExecutionCandidate(candidate: AiExecutionCandidate): void {
+    // Prevent duplicates (ignore failed/canceled)
+    const exists = this.state.aiExecutionCandidates.some(
+      c => c.symbol === candidate.symbol && c.executionStatus !== 'failed' && c.executionStatus !== 'canceled'
+    );
+    if (!exists) {
+      this.state.aiExecutionCandidates.push(candidate);
+      this.scheduleSave();
+      this.notify();
+    }
+  }
+
+  removeAiExecutionCandidate(symbol: string): void {
+    this.state.aiExecutionCandidates = this.state.aiExecutionCandidates.filter(c => c.symbol !== symbol);
+    this.scheduleSave();
+    this.notify();
+  }
+
+  clearAiExecutionCandidates(): void {
+    this.state.aiExecutionCandidates = [];
+    this.scheduleSave();
+    this.notify();
+  }
+
+  // ── Pipeline Schedule ──
+
+  updatePipelineSchedule(partial: Partial<ScannerStoreState['pipelineSchedule']>): void {
+    this.state.pipelineSchedule = { ...this.state.pipelineSchedule, ...partial };
+    this.scheduleSave();
+    this.notify();
+  }
+
+  getPipelineSchedule(): ScannerStoreState['pipelineSchedule'] {
+    return { ...this.state.pipelineSchedule };
+  }
+
   // ── Global ──
 
   resetAll(): void {
     this.state = { ...DEFAULT_STATE };
+    this.state.aiExecutionCandidates = [];
+    this.state.pipelineSchedule = { ...DEFAULT_STATE.pipelineSchedule };
     this.saveToStorage();
     this.notify();
   }
