@@ -1,53 +1,21 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Card, Row, Col, Button, Tabs, Space, Spin, Empty, Alert, message, Radio, Typography } from 'antd';
-import { LineChartOutlined, BarChartOutlined, PlayCircleOutlined, ReloadOutlined, ArrowUpOutlined, ArrowDownOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import { Card, Row, Col, Button, Tabs, Space, Spin, Empty, Alert, message, Radio, Typography, Tag } from 'antd';
+import { LineChartOutlined, BarChartOutlined, PlayCircleOutlined, ReloadOutlined, ArrowUpOutlined, ArrowDownOutlined, InfoCircleOutlined, RadarChartOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ReferenceDot, ReferenceArea } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ReferenceArea } from 'recharts';
 import marketDataService, {
   StockData,
   HistoricalDataPoint,
   TIMEFRAMES,
-  safeNumber,
   safeToFixed,
   calculateSMA,
   calculateRSI
 } from '../services/marketDataService';
 import DataSourceBadge from '../components/DataSourceBadge';
-import { formatMarketCap } from '../utils/format';
+import { useLanguage } from '../contexts/LanguageContext';
 
 const { TabPane } = Tabs;
 const { Title, Text } = Typography;
-
-interface BacktestHistoryItem {
-  backtestId: string;
-  status: 'running' | 'completed' | 'failed';
-  results?: {
-    totalReturn: number;
-    sharpeRatio: number;
-    maxDrawdown: number;
-    winRate: number;
-    trades: number;
-    annualizedReturn?: number;
-    profitLoss?: number;
-  };
-  parameters?: {
-    strategy: string;
-    symbols: string[];
-    period: string;
-    initialCapital: number;
-  };
-  createdAt?: string;
-  symbol?: string;
-  strategy?: string;
-  startDate?: string;
-  endDate?: string;
-  initialCapital?: number;
-  totalReturn?: number;
-  sharpeRatio?: number;
-  maxDrawdown?: number;
-  winRate?: number;
-  trades?: number;
-}
 
 // 图表数据点类型（用于Recharts）
 interface ChartDataPoint {
@@ -63,136 +31,6 @@ interface ChartDataPoint {
   ema26?: number;
   rsi?: number;
 }
-
-// 1 Week专用：简化版 - 显示更多标签，只显示日期
-// 1 Week专用：生成关键时间点标签（9:30和12:30优先）
-// 1 Week专用：生成每天3个标签的ticks数组 (09:30, 12:00, 16:00)
-const get1WeekTicks = (chartData: ChartDataPoint[], getNewYorkTimeComponents: (date: Date) => { hour: number, minute: number }): string[] => {
-  const ticks: string[] = [];
-  
-  if (chartData.length === 0) return ticks;
-  
-  console.log('[1 Week] ====== get1WeekTicks 开始（关键时间点版） ======');
-  console.log('[1 Week] 输入chartData点数:', chartData.length);
-  
-  // 1. 按时间排序数据
-  const sortedData = [...chartData].sort((a, b) => 
-    new Date(a.date).getTime() - new Date(b.date).getTime()
-  );
-  
-  if (sortedData.length === 0) return ticks;
-  
-  // 2. 获取第一个数据点的时间
-  const firstDate = new Date(sortedData[0].date);
-  console.log(`[1 Week] 第一个数据点: ${firstDate.toISOString()} -> ${firstDate.getUTCMonth() + 1}/${firstDate.getUTCDate()} ${firstDate.getUTCHours()}:${firstDate.getUTCMinutes().toString().padStart(2, '0')}`);
-  
-  // 3. 收集所有交易日
-  const tradingDays = new Set<string>();
-  sortedData.forEach(point => {
-    const date = new Date(point.date);
-    const dayKey = `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
-    tradingDays.add(dayKey);
-  });
-  
-  console.log(`[1 Week] 交易日数量: ${tradingDays.size}`);
-  
-  // 5. 直接筛选数据点：找出纽约时间为09:30, 12:30, 15:30的点
-  console.log(`[1 Week] 直接筛选数据点，查找纽约时间09:30, 12:30, 15:30`);
-  
-  // 定义关键时间点（只显示这三个）
-  const targetTimes = [
-    { hour: 9, minute: 30 },  // 09:30
-    { hour: 12, minute: 30 }, // 12:30
-    { hour: 15, minute: 30 }  // 15:30
-  ];
-  
-  // 特别排除16:00，即使它存在也不作为X轴标签
-  // 按交易日分组，确保每个交易日最多3个标签
-  const dayGroups: Record<string, Array<{date: string, nyTime: {hour: number, minute: number}}>> = {};
-  
-  // 先按交易日分组
-  sortedData.forEach(point => {
-    const pointDate = new Date(point.date);
-    const nyTime = getNewYorkTimeComponents(pointDate);
-    
-    // 创建交易日键（纽约时间）
-    const nyFormatter = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'America/New_York',
-      year: 'numeric',
-      month: 'numeric',
-      day: 'numeric'
-    });
-    const dayKey = nyFormatter.format(pointDate);
-    
-    if (!dayGroups[dayKey]) {
-      dayGroups[dayKey] = [];
-    }
-    dayGroups[dayKey].push({date: point.date, nyTime});
-  });
-  
-  // 为每个交易日选择最多3个关键时间点
-  Object.keys(dayGroups).forEach(dayKey => {
-    const points = dayGroups[dayKey];
-    console.log(`[1 Week] 交易日 ${dayKey}: ${points.length}个数据点`);
-    
-    // 找出09:30, 12:30, 15:30的点
-    targetTimes.forEach(targetTime => {
-      const matchingPoint = points.find(p => 
-        p.nyTime.hour === targetTime.hour && p.nyTime.minute === targetTime.minute
-      );
-      
-      if (matchingPoint) {
-        // 检查是否已添加（避免重复）
-        if (!ticks.includes(matchingPoint.date)) {
-          ticks.push(matchingPoint.date);
-          console.log(`[1 Week] 找到关键时间点: ${matchingPoint.date} -> 纽约${targetTime.hour.toString().padStart(2, '0')}:${targetTime.minute.toString().padStart(2, '0')}`);
-        }
-      } else {
-        console.log(`[1 Week] 交易日 ${dayKey} 缺少 ${targetTime.hour.toString().padStart(2, '0')}:${targetTime.minute.toString().padStart(2, '0')}`);
-      }
-    });
-    
-    // 检查是否有16:00点（但不作为标签）
-    const has1600 = points.some(p => p.nyTime.hour === 16 && p.nyTime.minute === 0);
-    if (has1600) {
-      console.log(`[1 Week] 交易日 ${dayKey} 有16:00数据点（不作为X轴标签）`);
-    }
-  });
-  
-  // 如果找到的标签太少，添加第一个和最后一个数据点作为fallback
-  if (ticks.length < 3 && sortedData.length > 0) {
-    if (!ticks.includes(sortedData[0].date)) {
-      ticks.push(sortedData[0].date);
-      const firstNyTime = getNewYorkTimeComponents(new Date(sortedData[0].date));
-      console.log(`[1 Week] 添加第一个数据点作为fallback: 纽约${firstNyTime.hour.toString().padStart(2, '0')}:${firstNyTime.minute.toString().padStart(2, '0')}`);
-    }
-    
-    if (!ticks.includes(sortedData[sortedData.length - 1].date)) {
-      ticks.push(sortedData[sortedData.length - 1].date);
-      const lastNyTime = getNewYorkTimeComponents(new Date(sortedData[sortedData.length - 1].date));
-      console.log(`[1 Week] 添加最后一个数据点作为fallback: 纽约${lastNyTime.hour.toString().padStart(2, '0')}:${lastNyTime.minute.toString().padStart(2, '0')}`);
-    }
-  }
-  
-  // 6. 确保按时间排序
-  ticks.sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
-  
-  console.log('[1 Week] 生成的ticks数量:', ticks.length);
-  console.log('[1 Week] === get1WeekTicks 完整输出 ===');
-  for (let i = 0; i < ticks.length; i++) {
-    const date = new Date(ticks[i]);
-    console.log(`  ${i+1}: ${date.toISOString()} -> ${date.getUTCMonth() + 1}/${date.getUTCDate()} ${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}`);
-  }
-  
-  // 7. 确保至少有一个tick（使用第一个数据点）
-  if (ticks.length === 0 && sortedData.length > 0) {
-    ticks.push(sortedData[0].date);
-    console.log(`[1 Week] 无ticks，添加第一个数据点作为默认`);
-  }
-  
-  console.log('[1 Week] ====== get1WeekTicks 结束（关键时间点版） ======');
-  return ticks;
-};
 
 // ========== 专业X轴标签生成函数（新方案） ==========
 
@@ -629,6 +467,16 @@ const getProfessional1YearTicks = (chartData: ChartDataPoint[]): string[] => {
 const SymbolAnalysis: React.FC = () => {
   const { symbol } = useParams<{ symbol: string }>();
   const navigate = useNavigate();
+  const { t, language, translateSector } = useLanguage();
+
+  // Timeframe label translation mapping
+  const timeframeLabels: Record<string, string> = {
+    '1D': t.analysis.tf1Day,
+    '1W': t.analysis.tf1Week,
+    '1M': t.analysis.tf1Month,
+    '3M': t.analysis.tf3Months,
+    '1Y': t.analysis.tf1Year,
+  };
   
   // 获取Finnhub收盘价的函数
   // 统一的Range Position计算函数
@@ -663,20 +511,20 @@ const SymbolAnalysis: React.FC = () => {
     let description = '';
     
     if (percentage >= 80) {
-      label = 'Near 52W High';
-      description = 'Trading near 52-week high';
+      label = language === 'zh-CN' ? t.analysis.near52WHigh : 'Near 52W High';
+      description = language === 'zh-CN' ? '接近52周高点交易' : 'Trading near 52-week high';
     } else if (percentage >= 60) {
-      label = 'Upper range';
-      description = 'Trading in upper range';
+      label = language === 'zh-CN' ? t.analysis.upperRange : 'Upper range';
+      description = language === 'zh-CN' ? '在上区间交易' : 'Trading in upper range';
     } else if (percentage >= 40) {
-      label = 'Mid-range';
-      description = 'Trading in mid-range';
+      label = language === 'zh-CN' ? t.analysis.midRange : 'Mid-range';
+      description = language === 'zh-CN' ? '在中间区间交易' : 'Trading in mid-range';
     } else if (percentage >= 20) {
-      label = 'Lower range';
-      description = 'Trading in lower range';
+      label = language === 'zh-CN' ? t.analysis.lowerRange : 'Lower range';
+      description = language === 'zh-CN' ? '在下区间交易' : 'Trading in lower range';
     } else {
-      label = 'Near 52W Low';
-      description = 'Trading near 52-week low';
+      label = language === 'zh-CN' ? t.analysis.near52WLow : 'Near 52W Low';
+      description = language === 'zh-CN' ? '接近52周低点交易' : 'Trading near 52-week low';
     }
 
     return {
@@ -730,72 +578,19 @@ const SymbolAnalysis: React.FC = () => {
     return `${month}/${day} ${hour}:${minute}`;
   };
 
-  // 获取纽约时间的各个组件（用于比较和筛选）
-  const getNewYorkTimeComponents = (date: Date) => {
-    const formatter = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'America/New_York',
-      hour: 'numeric',
-      minute: 'numeric',
-      hour12: false
-    });
-    
-    const parts = formatter.formatToParts(date);
-    const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0');
-    const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0');
-    
-    return { hour, minute };
-  };
-
-  // 调试函数：检查1 Week数据时间点
-  const debug1WeekData = (chartData: ChartDataPoint[]) => {
-    console.log('[1 Week 调试] === 开始分析数据时间点 ===');
-    
-    // 按日期分组
-    const dateGroups: Record<string, Array<{time: string, date: Date}>> = {};
-    
-    chartData.forEach((point, index) => {
-      const date = new Date(point.date);
-      const nyTime = getNewYorkTimeComponents(date);
-      const nyDateStr = formatAsNewYorkTime(date, true);
-      const dateKey = nyDateStr.split(',')[0]; // 提取日期部分
-      const timeStr = `${nyTime.hour.toString().padStart(2, '0')}:${nyTime.minute.toString().padStart(2, '0')}`;
-      
-      if (!dateGroups[dateKey]) {
-        dateGroups[dateKey] = [];
-      }
-      dateGroups[dateKey].push({time: timeStr, date: date});
-    });
-    
-    // 输出每个日期的数据点
-    Object.keys(dateGroups).forEach(dateKey => {
-      const points = dateGroups[dateKey];
-      console.log(`  ${dateKey}: ${points.length}个点`);
-      
-      // 检查关键时间点
-      const keyTimes = ['09:30', '12:30', '15:30'];
-      keyTimes.forEach(keyTime => {
-        const hasKeyTime = points.some(p => p.time === keyTime);
-        console.log(`    ${hasKeyTime ? '✅' : '❌'} ${keyTime}`);
-      });
-      
-      // 显示所有时间点
-      console.log(`    时间点: ${points.map(p => p.time).join(', ')}`);
-    });
-    
-    console.log('[1 Week 调试] === 分析完成 ===');
-  };
   const [stockData, setStockData] = useState<StockData | null>(null);
-  const [, setBacktestHistory] = useState<BacktestHistoryItem[]>([]);
-  const [, setBacktestLoading] = useState(false);
   const [stockDataError, setStockDataError] = useState<string | null>(null);
   const [historicalDataError, setHistoricalDataError] = useState<string | null>(null);
+  const [fallbackTimeframeNotice, setFallbackTimeframeNotice] = useState<string | null>(null);
+  const [historicalErrorType, setHistoricalErrorType] = useState<string | null>(null);
 
   // 图表相关状态 - 默认显示1 Day图表
   const [selectedTimeframe, setSelectedTimeframe] = useState<string>('1D');
   const [, setHistoricalData] = useState<HistoricalDataPoint[]>([]);
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
-  const [dataSource, setDataSource] = useState<string>('Finnhub');
+  const [dataSource, setDataSource] = useState<string>('Loading');
+  const [performanceData, setPerformanceData] = useState<{ oneMonth: number | null; threeMonth: number | null; ytd: number | null }>({ oneMonth: null, threeMonth: null, ytd: null });
 
   // Message deduplication key
   const HISTORY_ERROR_KEY = 'historical_data_error';
@@ -822,15 +617,105 @@ const SymbolAnalysis: React.FC = () => {
     }
   }, [symbol]);
 
-  // 加载历史价格数据
+  // Helper: process historical data response into chart data
+  const processHistoricalResponse = useCallback((response: any, timeframe: string) => {
+    const formattedData = response.data.map((item: any) => {
+      let date: Date;
+      if (item.time) {
+        try {
+          let timeStr = item.time;
+          if (timeStr.endsWith('Z')) {
+            date = new Date(timeStr);
+          } else if (timeStr.includes(' ')) {
+            timeStr = timeStr.replace(' ', 'T') + 'Z';
+            date = new Date(timeStr);
+          } else {
+            timeStr = timeStr + 'T00:00:00Z';
+            date = new Date(timeStr);
+          }
+          if (!isNaN(date.getTime())) {
+            return {
+              date: date.toISOString(),
+              open: Number(item.open) || 0,
+              high: Number(item.high) || 0,
+              low: Number(item.low) || 0,
+              close: Number(item.close) || 0,
+              volume: Number(item.volume) || 0
+            };
+          }
+        } catch (e) {
+          console.error('Failed to parse time field:', item.time, e);
+        }
+      }
+      const timestampMs = item.timestamp * 1000;
+      date = new Date(timestampMs);
+      if (isNaN(date.getTime())) return null;
+      return {
+        date: date.toISOString(),
+        open: Number(item.open) || 0,
+        high: Number(item.high) || 0,
+        low: Number(item.low) || 0,
+        close: Number(item.close) || 0,
+        volume: Number(item.volume) || 0
+      };
+    }).filter((item: any) => item !== null);
+
+    let chartDataToSet = formattedData;
+    chartDataToSet = [...chartDataToSet].sort((a: any, b: any) =>
+      new Date(a.date).getTime() - new Date(b.date).getTime()
+    );
+
+    if (timeframe === '3M') {
+      const threeMonthsAgo = new Date();
+      threeMonthsAgo.setDate(threeMonthsAgo.getDate() - 90);
+      chartDataToSet = chartDataToSet.filter((item: any) => new Date(item.date) >= threeMonthsAgo);
+    } else if (timeframe === '1M') {
+      const oneMonthAgo = new Date();
+      oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
+      chartDataToSet = chartDataToSet.filter((item: any) => new Date(item.date) >= oneMonthAgo);
+    } else if (timeframe === '1W') {
+      const oneWeekAgo = new Date();
+      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+      chartDataToSet = chartDataToSet.filter((item: any) => new Date(item.date) >= oneWeekAgo);
+    }
+
+    const closePrices = chartDataToSet.map((d: any) => d.close);
+    const sma20 = calculateSMA(closePrices, 20);
+    const sma50 = calculateSMA(closePrices, 50);
+    let rsi = calculateRSI(closePrices, 14);
+
+    if (timeframe === '1M' && formattedData.length > chartDataToSet.length) {
+      const fullClosePrices = formattedData.map((d: any) => d.close);
+      const fullRSI = calculateRSI(fullClosePrices, 14);
+      rsi = fullRSI.slice(fullRSI.length - chartDataToSet.length);
+    }
+
+    return chartDataToSet.map((item: any, index: number) => ({
+      ...item,
+      sma20: !isNaN(sma20[index]) ? sma20[index] : undefined,
+      sma50: !isNaN(sma50[index]) ? sma50[index] : undefined,
+      rsi: !isNaN(rsi[index]) ? rsi[index] : undefined
+    }));
+  }, []);
+
+  // 加载历史价格数据 (with timeframe fallback)
   const loadHistoricalPrices = useCallback(async () => {
     if (!symbol) return;
+
+    // Fallback timeframes to try when the selected one has no bars
+    const FALLBACK_TIMEFRAMES: Record<string, string[]> = {
+      '1D': ['1W', '1M'],
+      '1W': ['1M', '3M'],
+      '1M': ['3M', '1Y'],
+      '3M': ['1Y', '1M'],
+      '1Y': ['3M', '1M'],
+    };
 
     try {
       setChartLoading(true);
       setHistoricalDataError(null);
-
-      // Clear old data when switching timeframe to prevent flickering
+      setHistoricalErrorType(null);
+      setFallbackTimeframeNotice(null);
       setHistoricalData([]);
       setChartData([]);
 
@@ -838,127 +723,75 @@ const SymbolAnalysis: React.FC = () => {
 
       const response = await marketDataService.getStockHistory(symbol, selectedTimeframe);
 
-      if (!response.data || response.data.length === 0) {
-        console.log('Backend returned empty history data');
-        setHistoricalData([]);
-        setChartData([]);
+      // Success: data returned
+      if (response.data && response.data.length > 0) {
+        setHistoricalData(response.data);
         setDataSource(response.dataSource || 'Alpaca');
-        setHistoricalDataError('No historical bars returned for this symbol/timeframe.');
+        // Use backend fallback info if available
+        if (response.fallbackUsed && response.displayedTimeframe) {
+          const reqTf = response.requestedTimeframe || selectedTimeframe;
+          const dispTf = response.displayedTimeframe;
+          const requestedLabel = TIMEFRAMES[reqTf]?.label || reqTf;
+          const displayedLabel = TIMEFRAMES[dispTf]?.label || dispTf;
+          setFallbackTimeframeNotice(`${requestedLabel} bars unavailable. Showing ${displayedLabel} data instead.`);
+          const finalChartData = processHistoricalResponse(response, dispTf);
+          setChartData(finalChartData);
+        } else {
+          setFallbackTimeframeNotice(null);
+          const finalChartData = processHistoricalResponse(response, selectedTimeframe);
+          setChartData(finalChartData);
+        }
         setChartLoading(false);
         return;
       }
 
-      setHistoricalData(response.data);
-      setDataSource(response.dataSource || 'Alpaca');
+      // No bars returned — try fallback timeframes
+      console.log(`[${selectedTimeframe}] No bars for ${symbol}, trying fallback timeframes...`);
+      const fallbacks = FALLBACK_TIMEFRAMES[selectedTimeframe] || ['1M', '3M'];
 
-      // 转换为图表数据格式
-      const formattedData = response.data.map((item: HistoricalDataPoint) => {
-        let date: Date;
-
-        if (item.time) {
-          try {
-            let timeStr = item.time;
-            if (timeStr.endsWith('Z')) {
-              date = new Date(timeStr);
-            } else if (timeStr.includes(' ')) {
-              timeStr = timeStr.replace(' ', 'T') + 'Z';
-              date = new Date(timeStr);
-            } else {
-              timeStr = timeStr + 'T00:00:00Z';
-              date = new Date(timeStr);
-            }
-
-            if (!isNaN(date.getTime())) {
-              return {
-                date: date.toISOString(),
-                open: Number(item.open) || 0,
-                high: Number(item.high) || 0,
-                low: Number(item.low) || 0,
-                close: Number(item.close) || 0,
-                volume: Number(item.volume) || 0
-              };
-            }
-          } catch (e) {
-            console.error('Failed to parse time field:', item.time, e);
+      for (const fbTimeframe of fallbacks) {
+        console.log(`[Fallback] Trying ${fbTimeframe} for ${symbol}...`);
+        try {
+          const fbResponse = await marketDataService.getStockHistory(symbol, fbTimeframe);
+          if (fbResponse.data && fbResponse.data.length > 0) {
+            // Fallback succeeded
+            const fbLabel = TIMEFRAMES[fbTimeframe]?.label || fbTimeframe;
+            setFallbackTimeframeNotice(`${selectedTimeframe} bars unavailable. Showing ${fbLabel} data instead.`);
+            setHistoricalData(fbResponse.data);
+            setDataSource(fbResponse.dataSource || 'Alpaca');
+            const finalChartData = processHistoricalResponse(fbResponse, fbTimeframe);
+            setChartData(finalChartData);
+            setChartLoading(false);
+            return;
           }
+        } catch (fbErr) {
+          console.log(`[Fallback] ${fbTimeframe} also failed:`, fbErr);
         }
-
-        const timestampMs = item.timestamp * 1000;
-        date = new Date(timestampMs);
-
-        if (isNaN(date.getTime())) return null;
-
-        return {
-          date: date.toISOString(),
-          open: Number(item.open) || 0,
-          high: Number(item.high) || 0,
-          low: Number(item.low) || 0,
-          close: Number(item.close) || 0,
-          volume: Number(item.volume) || 0
-        };
-      }).filter((item): item is ChartDataPoint => item !== null);
-
-      let chartDataToSet = formattedData;
-
-      // Ensure chronological order
-      chartDataToSet = [...chartDataToSet].sort((a, b) => 
-        new Date(a.date).getTime() - new Date(b.date).getTime()
-      );
-
-      // Timeframe specific filtering
-      if (selectedTimeframe === '3M') {
-        const threeMonthsAgo = new Date();
-        threeMonthsAgo.setDate(threeMonthsAgo.getDate() - 90);
-        chartDataToSet = chartDataToSet.filter(item => new Date(item.date) >= threeMonthsAgo);
-      } else if (selectedTimeframe === '1M') {
-        const oneMonthAgo = new Date();
-        oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
-        chartDataToSet = chartDataToSet.filter(item => new Date(item.date) >= oneMonthAgo);
-      } else if (selectedTimeframe === '1W') {
-        const oneWeekAgo = new Date();
-        oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-        chartDataToSet = chartDataToSet.filter(item => new Date(item.date) >= oneWeekAgo);
       }
 
-      const closePrices = chartDataToSet.map(d => d.close);
-      const sma20 = calculateSMA(closePrices, 20);
-      const sma50 = calculateSMA(closePrices, 50);
-
-      let rsi: number[];
-      if (selectedTimeframe === '1M' && formattedData.length > chartDataToSet.length) {
-        const fullClosePrices = formattedData.map(d => d.close);
-        const fullRSI = calculateRSI(fullClosePrices, 14);
-        rsi = fullRSI.slice(fullRSI.length - chartDataToSet.length);
-      } else {
-        rsi = calculateRSI(closePrices, 14);
-      }
-
-      const finalChartData = chartDataToSet.map((item, index) => ({
-        ...item,
-        sma20: !isNaN(sma20[index]) ? sma20[index] : undefined,
-        sma50: !isNaN(sma50[index]) ? sma50[index] : undefined,
-        rsi: !isNaN(rsi[index]) ? rsi[index] : undefined
-      }));
-
-      setChartData(finalChartData);
+      // All fallbacks failed — show compact fallback
+      setHistoricalData([]);
+      setChartData([]);
+      setDataSource(response.dataSource || 'Alpaca');
+      setHistoricalErrorType(response.errorType || 'no_bars');
+      setHistoricalDataError('No historical bars available for any timeframe.');
 
     } catch (error: any) {
       console.error('Failed to fetch historical data:', error);
       const errorMsg = error.message || 'Unknown error';
 
-      // Deduplicate error toasts using a key
-      if (errorMsg.includes('404')) {
-        setHistoricalDataError('Historical chart data is unavailable from Alpaca for this symbol/timeframe.');
-        message.warning({ 
-          content: 'Historical chart data is unavailable for this timeframe. Snapshot data is still displayed.',
-          key: HISTORY_ERROR_KEY,
-          duration: 4
-        });
+      if (errorMsg.includes('auth_required')) {
+        setHistoricalErrorType('auth_required');
+        setHistoricalDataError('Authentication required. Please sign in again.');
+      } else if (errorMsg.includes('rate_limited')) {
+        setHistoricalErrorType('rate_limited');
+        setHistoricalDataError('Rate limited. Please try again later.');
       } else {
+        setHistoricalErrorType('api_error');
         setHistoricalDataError(`Error loading chart: ${errorMsg}`);
-        message.error({ 
-          content: `Failed to load historical data: ${errorMsg}`, 
-          key: HISTORY_ERROR_KEY 
+        message.error({
+          content: `Failed to load historical data: ${errorMsg}`,
+          key: HISTORY_ERROR_KEY
         });
       }
 
@@ -967,856 +800,319 @@ const SymbolAnalysis: React.FC = () => {
     } finally {
       setChartLoading(false);
     }
-  }, [symbol, selectedTimeframe, HISTORY_ERROR_KEY]);
+  }, [symbol, selectedTimeframe, HISTORY_ERROR_KEY, processHistoricalResponse]);
 
-
-  // 加载回测历史
-  const loadBacktestHistory = useCallback(async () => {
+  // Load 1Y data for computing Recent Performance returns
+  const loadPerformanceData = useCallback(async () => {
     if (!symbol) return;
-
-    setBacktestLoading(true);
     try {
-      // 模拟数据
-      const mockBacktests: BacktestHistoryItem[] = [
-        {
-          backtestId: 'bt_001',
-          status: 'completed',
-          symbol: symbol,
-          strategy: 'Moving Average Crossover',
-          startDate: '2025-01-01',
-          endDate: '2025-12-31',
-          initialCapital: 100000,
-          results: {
-            totalReturn: 18.4,
-            sharpeRatio: 1.92,
-            maxDrawdown: -12.7,
-            winRate: 61.3,
-            trades: 24,
-            annualizedReturn: 19.8
-          }
-        }
-      ];
+      const response = await marketDataService.getStockHistory(symbol, '1Y');
+      if (response.data && response.data.length > 0) {
+        const sorted = [...response.data].sort((a: any, b: any) =>
+          new Date(a.time || a.timestamp * 1000).getTime() - new Date(b.time || b.timestamp * 1000).getTime()
+        );
+        const getClose = (pt: any) => Number(pt.close) || 0;
+        const now = new Date();
+        const latestClose = getClose(sorted[sorted.length - 1]);
 
-      setBacktestHistory(mockBacktests);
-    } catch (error) {
-      console.error('Failed to load backtest history:', error);
-      message.error('Failed to load backtest history');
-    } finally {
-      setBacktestLoading(false);
+        // 1 Month Return
+        const oneMonthAgo = new Date(now);
+        oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+        const oneMonthBar = sorted.filter((d: any) => new Date(d.time || d.timestamp * 1000) <= oneMonthAgo).pop();
+        const oneMonthReturn = oneMonthBar && latestClose > 0 ? ((latestClose - getClose(oneMonthBar)) / getClose(oneMonthBar)) * 100 : null;
+
+        // 3 Month Return
+        const threeMonthAgo = new Date(now);
+        threeMonthAgo.setMonth(threeMonthAgo.getMonth() - 3);
+        const threeMonthBar = sorted.filter((d: any) => new Date(d.time || d.timestamp * 1000) <= threeMonthAgo).pop();
+        const threeMonthReturn = threeMonthBar && latestClose > 0 ? ((latestClose - getClose(threeMonthBar)) / getClose(threeMonthBar)) * 100 : null;
+
+        // Year to Date Return
+        const ytdStart = new Date(now.getFullYear(), 0, 1);
+        const ytdBar = sorted.filter((d: any) => new Date(d.time || d.timestamp * 1000) < ytdStart).pop()
+          || sorted.find((d: any) => new Date(d.time || d.timestamp * 1000) >= ytdStart);
+        const ytdReturn = ytdBar && latestClose > 0 ? ((latestClose - getClose(ytdBar)) / getClose(ytdBar)) * 100 : null;
+
+        setPerformanceData({ oneMonth: oneMonthReturn, threeMonth: threeMonthReturn, ytd: ytdReturn });
+      }
+    } catch (err) {
+      console.error('Failed to load performance data:', err);
     }
   }, [symbol]);
 
-  // 运行回测
-  const handleRunBacktest = () => {
-    if (!symbol) return;
-
-    message.info(`Starting backtest for ${symbol}`);
-    navigate('/backtest', { state: { presetSymbol: symbol } });
+  // Helper to format return percentage
+  const formatReturn = (value: number | null): { text: string; color: string } => {
+    if (value === null) return { text: 'N/A', color: '#94a3b8' };
+    const sign = value >= 0 ? '+' : '';
+    return { text: `${sign}${value.toFixed(1)}%`, color: value >= 0 ? '#10b981' : '#ef4444' };
   };
 
-  // 查看回测详情
-  // === 1 Day 专用：生成清晰的时间轴标签 ===
-  // 渲染价格图表 - 改为蜡烛图
-  const renderPriceChart = () => {
-    if (chartLoading) {
-      return (
-        <div style={{ textAlign: 'center', padding: '100px 0' }}>
-          <Spin size="large" tip="Loading historical bars from Alpaca..." />
-        </div>
-      );
-    }
 
-    if (chartData.length === 0) {
-      return (
-        <div style={{ padding: '60px 0', background: '#fafafa', borderRadius: '8px' }}>
-          <Empty
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={
-              <div style={{ textAlign: 'center' }}>
-                <Title level={5} style={{ color: '#595959' }}>Historical chart unavailable</Title>
-                <Text type="secondary" style={{ display: 'block', marginBottom: '16px' }}>
-                  Alpaca returned no historical bars for {symbol} on the {selectedTimeframe} timeframe.<br />
-                  Snapshot metrics are still available.
-                </Text>
-                <Button 
-                  icon={<ReloadOutlined />} 
-                  onClick={loadHistoricalPrices}
-                  size="small"
-                >
-                  Retry Load
-                </Button>
-              </div>
-            }
-          />
-        </div>
-      );
-    }
-
-    // 计算Y轴缩放函数 - 修复价格显示
-    const getYAxisDomain = () => {
-      if (chartData.length === 0) return [0, 100];
-
-      // 过滤无效价格
-      const validPrices = chartData.flatMap(d => [d.open, d.high, d.low, d.close])
-        .filter(price => price !== null && price !== undefined && !isNaN(price) && price > 0);
-
-      if (validPrices.length === 0) return [0, 100];
-
-      const minPrice = Math.min(...validPrices);
-      const maxPrice = Math.max(...validPrices);
-
-      // 如果价格范围太小，使用固定缓冲
-      const priceRange = maxPrice - minPrice;
-      if (priceRange < 0.01) {
-        return [minPrice - 0.01, maxPrice + 0.01];
-      }
-
-      // 根据时间范围调整缓冲空间
-      let bufferRatio = 0.02; // 默认2%
+  // 格式化X轴标签 - 按照专业方案重新设计
+  const formatXAxisTick = (value: string) => {
+    if (!value) return '';
+    try {
+      const date = new Date(value);
+      if (isNaN(date.getTime())) return '';
       
-      // 不同时间范围使用不同缓冲
       switch (selectedTimeframe) {
         case '1D':
-          bufferRatio = 0.01; // Day图：1%缓冲，更紧凑
-          break;
+          const utcHour = date.getUTCHours();
+          const minute = date.getUTCMinutes();
+          const nyHour = (utcHour - 4 + 24) % 24;
+          return `${String(nyHour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
         case '1W':
-          bufferRatio = 0.015; // Week图：1.5%缓冲
-          break;
+          return `${date.getUTCMonth() + 1}/${date.getUTCDate()}`;
         case '1M':
-          bufferRatio = 0.02; // Month图：2%缓冲
-          break;
         case '3M':
-          bufferRatio = 0.025; // 3 Months：2.5%缓冲
-          break;
         case '1Y':
-          bufferRatio = 0.03; // Year图：3%缓冲，留更多空间
-          break;
+          return `${date.getUTCMonth() + 1}/${date.getUTCDate()}`;
         default:
-          bufferRatio = 0.02;
-      }
-      
-      const buffer = priceRange * bufferRatio;
-      return [minPrice - buffer, maxPrice + buffer];
-    };
-
-    const yDomain = getYAxisDomain();
-    // 根据时间范围调整图表高度
-    const chartHeight = selectedTimeframe === '1Y' ? 550 : 500; // Year图更高，显示更多细节
-    
-    // === 1 Year 专用：分析月份节点 ===
-    // === 1 Year 专用：分析月份节点 ===
-    const analyzeYearlyMonths = (): {
-      monthPoints: Array<{ date: string; month: number; monthNumber: number; day: number }>;
-      monthLabels: Record<string, string>;
-    } => {
-      if (selectedTimeframe !== '1Y' || chartData.length === 0) {
-        return { monthPoints: [], monthLabels: {} };
-      }
-      
-      const monthPoints: Array<{
-        date: string;
-        month: number;
-        monthNumber: number;
-        day: number;
-      }> = [];
-      const monthLabels: Record<string, string> = {};
-      let currentMonth = -1;
-      
-      // 找出每个月的第一个数据点
-      for (let i = 0; i < chartData.length; i++) {
-        const dataPoint = chartData[i];
-        try {
-          const date = new Date(dataPoint.date);
-          const month = date.getUTCMonth(); // 0-11 (UTC)
-          const day = date.getUTCDate(); // 1-31 (UTC)
-          
-          // 如果是新的月份，记录这个点
-          if (month !== currentMonth) {
-            monthPoints.push({
-              date: dataPoint.date,
-              month: month,
-              monthNumber: month + 1, // 1-12
-              day: day
-            });
-            
-            // 记录月份标签（基于日期字符串）
-            // 第一个月份点不显示标签（去掉最左边的3/20），其他月份点显示M/1
-            if (monthPoints.length === 1) {
-              // 第一个点：不显示标签（空字符串）
-              monthLabels[dataPoint.date] = '';
-            } else {
-              // 其他月份点：显示M/1格式
-              monthLabels[dataPoint.date] = `${month + 1}/1`;
-            }
-            currentMonth = month;
-          }
-        } catch (e) {
-          console.error('Error analyzing month point:', e);
-        }
-      }
-      
-      // 确保至少有首尾两个点
-      if (monthPoints.length === 0 && chartData.length > 0) {
-        const firstDate = new Date(chartData[0].date);
-        const lastDate = new Date(chartData[chartData.length - 1].date);
-        
-        monthPoints.push({
-          date: chartData[0].date,
-          month: firstDate.getUTCMonth(),  // 改为UTC
-          monthNumber: firstDate.getUTCMonth() + 1,  // 改为UTC
-          day: firstDate.getUTCDate()  // 改为UTC
-        });
-        
-        monthPoints.push({
-          date: chartData[chartData.length - 1].date,
-          month: lastDate.getUTCMonth(),  // 改为UTC
-          monthNumber: lastDate.getUTCMonth() + 1,  // 改为UTC
-          day: lastDate.getUTCDate()  // 改为UTC
-        });
-        
-        // 第一个点不显示标签（空字符串）
-        monthLabels[chartData[0].date] = '';
-        // 最后一个点显示真实日期（M/D格式）
-        monthLabels[chartData[chartData.length - 1].date] = `${lastDate.getUTCMonth() + 1}/${lastDate.getUTCDate()}`;
-      }
-      
-      return { monthPoints, monthLabels };
-    };
-    
-    const { monthPoints } = analyzeYearlyMonths();
-    
-    // === 1 Year 专用：X轴格式化 ===
-    // === 3 Months 专用：生成每14天一个的ticks数组 ===
-    // === 3 Months 专用：X轴格式化（显示月/日格式） ===
-    // === 1 Month 专用：生成ticks数组（首点 + 每7天 + 尾点） ===
-    // === 1 Month 专用：X轴格式化（显示月/日格式） ===
-    let prevCloseLine = null;
-
-    if (chartData.length >= 1 && stockData && stockData.previousClose) {
-      // Prev Close参考线值
-      prevCloseLine = stockData.previousClose;
-    }
-    
-    // 计算52周高低点（从chartData中计算）
-    let fiftyTwoWeekHigh = null;
-    let fiftyTwoWeekLow = null;
-    
-    if (chartData.length > 0) {
-      // 如果是1 Year视图，使用所有数据
-      // 如果是其他视图，使用最近一年的数据（如果足够）
-      const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-      
-      if (dataToUse.length > 0) {
-        fiftyTwoWeekHigh = Math.max(...dataToUse.map(d => d.high));
-        fiftyTwoWeekLow = Math.min(...dataToUse.map(d => d.low));
-      }
-    }
-
-    // 格式化X轴标签 - 修复：正确处理时间显示
-    // 按照专业方案重新设计X轴标签
-    const formatXAxisTick = (value: string, index: number) => {
-      if (!value) return '';
-      
-      try {
-        const date = new Date(value);
-        
-        if (isNaN(date.getTime())) {
           return '';
-        }
-        
-        // 根据时间范围显示不同的专业格式
-        switch (selectedTimeframe) {
-          case '1D':
-            // 1 Day: 显示整点小时标签 (HH:00)
-            // 使用纽约时间（EDT）
-            const utcHour = date.getUTCHours();
-            const minute = date.getUTCMinutes();
-            
-            // UTC时间转换为纽约时间（EDT，-4小时）
-            const nyHour = (utcHour - 4 + 24) % 24;
-            
-            // 显示整点小时标签 (如04:00, 05:00, 06:00等)
-            return `${String(nyHour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-            
-          case '1W':
-            // 1 Week: 显示清晰的跨天日期格式 (如: 3/16)
-            const monthW = date.getUTCMonth() + 1; // 月份 (1-12)
-            const dayW = date.getUTCDate(); // 日期 (1-31)
-            
-            // 显示月/日格式，让用户一眼看出是跨多天数据
-            return `${monthW}/${dayW}`;
-            
-          case '1M':
-            // 1 Month: 显示日期节点，使用智能选择的日期标签
-            const monthM = date.getUTCMonth() + 1;
-            const dayM = date.getUTCDate();
-            
-            // 显示所有传入的ticks（由getProfessional1MonthTicks智能选择）
-            return `${monthM}/${dayM}`;
-            
-          case '3M':
-            // 3 Months: 显示半月节奏日期标签
-            const month3M = date.getUTCMonth() + 1;
-            const day3M = date.getUTCDate();
-            
-            // 显示所有传入的ticks（由getProfessional3MonthsTicks智能选择）
-            return `${month3M}/${day3M}`;
-            
-          case '1Y':
-            // 1 Year: 显示每月1号数字日期标签
-            const monthY = date.getUTCMonth() + 1;
-            const dayY = date.getUTCDate();
-            
-            // 显示所有传入的ticks（由getProfessional1YearTicks智能选择）
-            return `${monthY}/${dayY}`;
-            
-          default:
-            return '';
-        }
-      } catch (e) {
-        console.error('Error formatting date:', e, value);
-        return '';
       }
-    };
+    } catch (e) {
+      return '';
+    }
+  };
 
-    // 自定义Tooltip组件 - 修复：正确处理日期显示
-    const CustomTooltip = ({ active, payload, label }: any) => {
-      if (!active || !payload || payload.length === 0) {
-        return null;
-      }
+  // 自定义Tooltip组件 - 支持价格图和RSI图
+  const CustomTooltip = ({ active, payload, label, isRSI }: any) => {
+    if (!active || !payload || payload.length === 0) return null;
 
-      const data = payload[0].payload;
-      // 获取数据点索引
-      // 从数据中获取日期，而不是从label参数
-      let date: Date;
-      try {
-        // 尝试从数据中的date字段获取
-        if (data.date) {
-          date = new Date(data.date);
-        } else if (label) {
-          date = new Date(label);
-        } else {
-          date = new Date();
-        }
-        
-        if (isNaN(date.getTime())) {
-          date = new Date();
-        }
-      } catch (e) {
-        console.error('Error parsing date in tooltip:', e);
-        date = new Date();
-      }
-      
-      // 根据timeframe决定显示内容
-      const isDaily = selectedTimeframe === '1D';
-      const isWeekly = selectedTimeframe === '1W';
-      
-      return (
+    const data = payload[0].payload;
+    let date: Date;
+    try {
+      date = data.date ? new Date(data.date) : (label ? new Date(label) : new Date());
+      if (isNaN(date.getTime())) date = new Date();
+    } catch (e) {
+      date = new Date();
+    }
+    
+    const isDaily = selectedTimeframe === '1D';
+    const isWeekly = selectedTimeframe === '1W';
+    
+    return (
+      <div style={{
+        backgroundColor: 'rgba(255, 255, 255, 0.98)',
+        border: '1px solid #e2e8f0',
+        borderRadius: '8px',
+        padding: '12px',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
+        minWidth: '200px',
+        fontSize: '12px',
+        backdropFilter: 'blur(4px)'
+      }}>
         <div style={{
-          backgroundColor: 'rgba(255, 255, 255, 0.98)',
-          border: '1px solid #bfbfbf',
-          borderRadius: '6px',
-          padding: '14px',
-          boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-          minWidth: '220px',
-          maxWidth: '280px',
-          fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-          fontSize: '12px',
-          backdropFilter: 'blur(4px)'
+          fontWeight: '700',
+          marginBottom: '8px',
+          color: '#1e293b',
+          borderBottom: '1px solid #f1f5f9',
+          paddingBottom: '6px',
         }}>
-          {/* 标题行 - 时间/日期 */}
-          <div style={{
-            fontWeight: '600',
-            marginBottom: '12px',
-            color: '#1f1f1f',
-            borderBottom: '1px solid #e8e8e8',
-            paddingBottom: '8px',
-            fontSize: '12px',
-            letterSpacing: '0.3px'
-          }}>
-            {isDaily || isWeekly
-              ? formatAsNewYorkTime(date, true) // 移除(NY)标记
-              : selectedTimeframe === '1Y' || selectedTimeframe === '3M' || selectedTimeframe === '1M'
-                ? `${date.getUTCFullYear()}/${String(date.getUTCMonth() + 1).padStart(2, '0')}/${String(date.getUTCDate()).padStart(2, '0')}`
-                : `${String(date.getUTCMonth() + 1).padStart(2, '0')}/${String(date.getUTCDate()).padStart(2, '0')}`
-            }
+          {isDaily || isWeekly ? formatAsNewYorkTime(date, true) : date.toLocaleDateString()}
+        </div>
+        
+        {isRSI ? (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ color: '#64748b' }}>RSI (14):</span>
+            <span style={{ 
+              fontWeight: '700', 
+              fontSize: '14px',
+              color: data.rsi >= 70 ? '#ef4444' : data.rsi <= 30 ? '#10b981' : '#722ed1'
+            }}>
+              {data.rsi?.toFixed(2)}
+              {data.rsi >= 70 ? ' (OB)' : data.rsi <= 30 ? ' (OS)' : ''}
+            </span>
           </div>
-          
-          {/* 数据行 - 优化排版 */}
-          <div style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '8px'
-          }}>
-            {/* 1 Day: 显示Close和Percent Change */}
-            {isDaily ? (
-              <>
-                <div style={{ 
-                  display: 'flex', 
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  paddingBottom: '6px',
-                  borderBottom: '1px solid #f5f5f5'
-                }}>
-                  <span style={{ color: '#595959', fontSize: '11px' }}>Price:</span>
-                  <span style={{ 
-                    fontWeight: '600', 
-                    color: '#1677ff',
-                    fontSize: '14px'
-                  }}>
-                    ${data.close.toFixed(2)}
-                  </span>
-                </div>
-                {/* 计算相对于前收盘价的percent change */}
-                {stockData && stockData.previousClose && stockData.previousClose > 0 && (
-                  <div style={{ 
-                    display: 'flex', 
-                    justifyContent: 'space-between',
-                    alignItems: 'center'
-                  }}>
-                    <span style={{ color: '#595959', fontSize: '11px' }}>Change:</span>
-                    <span style={{ 
-                      fontWeight: '600', 
-                      fontSize: '12px',
-                      color: data.close >= stockData.previousClose ? '#389e0d' : '#cf1322',
-                      backgroundColor: data.close >= stockData.previousClose ? 'rgba(56, 158, 13, 0.1)' : 'rgba(207, 19, 34, 0.1)',
-                      padding: '2px 6px',
-                      borderRadius: '3px'
-                    }}>
-                      {data.close >= stockData.previousClose ? '▲ ' : '▼ '}
-                      {((data.close - stockData.previousClose) / stockData.previousClose * 100).toFixed(2)}%
-                    </span>
-                  </div>
-                )}
-              </>
-            ) : (
-              // 其他timeframe: 显示OHLC和Percent Change
-              <>
-                <div style={{ 
-                  display: 'flex', 
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  paddingBottom: '6px',
-                  borderBottom: '1px solid #f5f5f5'
-                }}>
-                  <span style={{ color: '#595959', fontSize: '11px' }}>Close:</span>
-                  <span style={{ 
-                    fontWeight: '600', 
-                    color: '#1677ff',
-                    fontSize: '14px'
-                  }}>
-                    ${data.close.toFixed(2)}
-                  </span>
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: '#8c8c8c', fontSize: '11px' }}>Open:</span>
-                    <span style={{ fontWeight: '500', fontSize: '11px' }}>
-                      ${data.open.toFixed(2)}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: '#8c8c8c', fontSize: '11px' }}>High:</span>
-                    <span style={{ fontWeight: '500', color: '#389e0d', fontSize: '11px' }}>
-                      ${data.high.toFixed(2)}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: '#8c8c8c', fontSize: '11px' }}>Low:</span>
-                    <span style={{ fontWeight: '500', color: '#cf1322', fontSize: '11px' }}>
-                      ${data.low.toFixed(2)}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: '#8c8c8c', fontSize: '11px' }}>Volume:</span>
-                    <span style={{ fontWeight: '500', color: '#595959', fontSize: '11px' }}>
-                      {data.volume ? (data.volume >= 1000000 ? `${(data.volume / 1000000).toFixed(1)}M` : 
-                        data.volume >= 1000 ? `${(data.volume / 1000).toFixed(0)}K` : data.volume.toFixed(0)) : 'N/A'}
-                    </span>
-                  </div>
-                </div>
-                {/* 计算相对于前收盘价的percent change */}
-                {stockData && stockData.previousClose && stockData.previousClose > 0 && (
-                  <div style={{ 
-                    display: 'flex', 
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    marginTop: '8px',
-                    paddingTop: '8px',
-                    borderTop: '1px solid #f5f5f5'
-                  }}>
-                    <span style={{ color: '#595959', fontSize: '11px' }}>Change:</span>
-                    <span style={{ 
-                      fontWeight: '600', 
-                      fontSize: '12px',
-                      color: data.close >= stockData.previousClose ? '#389e0d' : '#cf1322',
-                      backgroundColor: data.close >= stockData.previousClose ? 'rgba(56, 158, 13, 0.1)' : 'rgba(207, 19, 34, 0.1)',
-                      padding: '2px 6px',
-                      borderRadius: '3px'
-                    }}>
-                      {data.close >= stockData.previousClose ? '▲ ' : '▼ '}
-                      {((data.close - stockData.previousClose) / stockData.previousClose * 100).toFixed(2)}%
-                    </span>
-                  </div>
-                )}
-              </>
-            )}
-            
-            {/* 技术指标：SMA20和SMA50（如果存在） - 优化排版 */}
-            {((data.sma20 !== undefined && !isNaN(data.sma20)) || (data.sma50 !== undefined && !isNaN(data.sma50))) && (
-              <div style={{ 
-                marginTop: '8px', 
-                paddingTop: '8px', 
-                borderTop: '1px solid #f0f0f0',
-                fontSize: '11px'
-              }}>
-                <div style={{ fontWeight: '600', color: '#595959', marginBottom: '4px' }}>
-                  Technical Indicators
-                </div>
-                {(data.sma20 !== undefined && !isNaN(data.sma20)) && (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
-                    <span style={{ color: '#595959' }}>SMA 20:</span>
-                    <span style={{ fontWeight: '500', color: '#389e0d' }}>
-                      ${data.sma20.toFixed(2)}
-                    </span>
-                  </div>
-                )}
-                {(data.sma50 !== undefined && !isNaN(data.sma50)) && (
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: '#595959' }}>SMA 50:</span>
-                    <span style={{ fontWeight: '500', color: '#d46b08' }}>
-                      ${data.sma50.toFixed(2)}
-                    </span>
-                  </div>
-                )}
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ color: '#64748b' }}>Price:</span>
+              <span style={{ fontWeight: '700', color: '#1677ff', fontSize: '14px' }}>
+                ${data.close.toFixed(2)}
+              </span>
+            </div>
+            {!isDaily && (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', opacity: 0.8 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#94a3b8' }}>O:</span><span>{data.open.toFixed(2)}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#94a3b8' }}>H:</span><span style={{ color: '#10b981' }}>{data.high.toFixed(2)}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#94a3b8' }}>L:</span><span style={{ color: '#ef4444' }}>{data.low.toFixed(2)}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#94a3b8' }}>V:</span><span>{data.volume > 1e6 ? (data.volume/1e6).toFixed(1)+'M' : (data.volume/1e3).toFixed(0)+'K'}</span></div>
               </div>
             )}
+            {stockData?.previousClose && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px', paddingTop: '4px', borderTop: '1px solid #f1f5f9' }}>
+                <span style={{ color: '#64748b' }}>Change:</span>
+                <span style={{ fontWeight: '600', color: data.close >= stockData.previousClose ? '#10b981' : '#ef4444' }}>
+                  {((data.close - stockData.previousClose) / stockData.previousClose * 100).toFixed(2)}%
+                </span>
+              </div>
+            )}
+            {data.sma20 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#64748b' }}>SMA20:</span><span style={{ color: '#10b981', fontWeight: '500' }}>${data.sma20.toFixed(2)}</span></div>}
+            {data.sma50 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#64748b' }}>SMA50:</span><span style={{ color: '#f59e0b', fontWeight: '500' }}>${data.sma50.toFixed(2)}</span></div>}
           </div>
-        </div>
-      );
-    };
+        )}
+      </div>
+    );
+  };
 
-    // 调试：验证1 Week的数据和ticks
-    if (selectedTimeframe === '1W' && chartData.length > 0) {
-      console.log('[1 Week 页面调试] ======');
-      console.log('[1 Week 页面调试] chartData点数:', chartData.length);
-      console.log('[1 Week 页面调试] 第一个点:', {
-        date: chartData[0].date,
-        time: new Date(chartData[0].date).toISOString(),
-        close: chartData[0].close
-      });
-      console.log('[1 Week 页面调试] 最后一个点:', {
-        date: chartData[chartData.length - 1].date,
-        time: new Date(chartData[chartData.length - 1].date).toISOString(),
-        close: chartData[chartData.length - 1].close
-      });
-      
-      // 生成并验证ticks
-      const weekTicks = get1WeekTicks(chartData, getNewYorkTimeComponents);
-      console.log('[1 Week 页面调试] get1WeekTicks返回ticks数量:', weekTicks.length);
-      console.log('[1 Week 页面调试] ticks列表:');
-      for (let i = 0; i < weekTicks.length; i++) {
-        const date = new Date(weekTicks[i]);
-        console.log(`  ${i+1}. ${date.getUTCMonth() + 1}/${date.getUTCDate()} ${date.getUTCHours()}:${date.getUTCMinutes().toString().padStart(2, '0')}`);
-      }
-      
-      // 调试：检查chartData中的时间点（使用纽约时间）
-      debug1WeekData(chartData);
+  // 计算Y轴缩放函数
+  const getYAxisDomain = () => {
+    if (chartData.length === 0) return [0, 100];
+    const validPrices = chartData.flatMap(d => [d.open, d.high, d.low, d.close])
+      .filter(price => price !== null && price !== undefined && !isNaN(price) && price > 0);
+    if (validPrices.length === 0) return [0, 100];
+    const minPrice = Math.min(...validPrices);
+    const maxPrice = Math.max(...validPrices);
+    const priceRange = maxPrice - minPrice;
+    if (priceRange < 0.01) return [minPrice - 0.01, maxPrice + 0.01];
+    let bufferRatio = 0.02;
+    switch (selectedTimeframe) {
+      case '1D': bufferRatio = 0.01; break;
+      case '1W': bufferRatio = 0.015; break;
+      case '1M': bufferRatio = 0.02; break;
+      case '3M': bufferRatio = 0.025; break;
+      case '1Y': bufferRatio = 0.03; break;
     }
+    const buffer = priceRange * bufferRatio;
+    return [minPrice - buffer, maxPrice + buffer];
+  };
 
+  // 渲染价格图表
+  const renderPriceChart = () => {
+    if (chartLoading) return (
+      <div style={{ textAlign: 'center', padding: '120px 0', background: '#f8fafc', borderRadius: '16px' }}>
+        <Spin size="large" tip={<span style={{marginTop: '12px', color: '#64748b', fontWeight: 500}}>{t.analysis.chartDataUnavailable}...</span>} />
+      </div>
+    );
+
+    if (chartData.length === 0) return (
+      <div style={{ padding: '40px 32px', background: '#f8fafc', borderRadius: '16px', border: '1px solid #e2e8f0', textAlign: 'center' }}>
+        <div style={{ marginBottom: 20 }}>
+          <InfoCircleOutlined style={{ color: '#94a3b8', fontSize: '32px' }} />
+        </div>
+        <Title level={4} style={{ color: '#1e293b', marginBottom: 8 }}>Chart data unavailable</Title>
+        <Text style={{ color: '#64748b', display: 'block', marginBottom: 24 }}>
+          No historical bars were returned for {symbol} in the {selectedTimeframe} timeframe.
+        </Text>
+        <Button 
+          type="primary" 
+          icon={<ReloadOutlined />} 
+          onClick={loadHistoricalPrices} 
+          style={{ borderRadius: '8px', fontWeight: 600 }}
+        >
+          Retry Loading Data
+        </Button>
+      </div>
+    );
+
+    const yDomain = getYAxisDomain();
+    
     return (
-      <ResponsiveContainer width="100%" height={chartHeight}>
-        <LineChart data={chartData}>
-          {/* 网格线 - 专业金融图表风格 */}
+      <ResponsiveContainer width="100%" height={selectedTimeframe === '1Y' ? 550 : 500}>
+        <LineChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
           <CartesianGrid 
             strokeDasharray="3 3" 
-            stroke="#e8e8e8" 
-            vertical={selectedTimeframe !== '1D'} // Day图不显示垂直网格线（太密集）
-            strokeOpacity={0.3} // 适中透明度
-            strokeWidth={0.5}
+            stroke="#f1f5f9" 
+            vertical={false} 
+            strokeOpacity={1} 
           />
-
-          {/* X轴 - 根据timeframe格式化，改进显示 */}
-          <XAxis
-            dataKey="date"
-            tick={{
-              fontSize: selectedTimeframe === '1W' ? 12 : 11, // 1 Week字体调整为12
-              fill: '#262626', // 更深的颜色，更清晰
-              fontWeight: selectedTimeframe === '1D' ? '400' : 'normal' // Day图正常字体
-            }}
-            axisLine={{ stroke: '#bfbfbf', strokeWidth: 1 }}
-            tickLine={selectedTimeframe === '1Y' ? 
-              { 
-                stroke: '#d9d9d9', // 很轻的灰色
-                strokeWidth: 0.5    // 更细的线
-              } : 
-              { stroke: '#bfbfbf', strokeWidth: 1 }
-            } // 1 Year显示很轻的竖线
-            height={selectedTimeframe === '1W' ? 60 : selectedTimeframe === '1D' ? 50 : 40} // Day图增加高度，确保最后一个标签能显示
-            tickFormatter={formatXAxisTick}
-            // 根据timeframe设置interval
-            interval={
-              selectedTimeframe === '1D' ? 0 : // 1 Day: 显示所有ticks
-              selectedTimeframe === '1W' ? 0 : // 1 Week: 显示所有ticks
-              selectedTimeframe === '1M' ? 'preserveStartEnd' : // 1 Month: 自动间隔，保留首尾
-              selectedTimeframe === '3M' ? 0 : // 3 Months: 显示所有ticks
-              selectedTimeframe === '1Y' ? 0 : // 1 Year: 显示所有ticks
-              0
-            }
-            // 传入明确的ticks数组（使用专业X轴方案）
+          <XAxis 
+            dataKey="date" 
+            tick={{ fontSize: 11, fill: '#94a3b8', fontWeight: 500 }} 
+            axisLine={{ stroke: '#e2e8f0' }} 
+            tickLine={false} 
+            height={40} 
+            tickFormatter={formatXAxisTick} 
             ticks={
-              selectedTimeframe === '1D' ? getAdaptive1DayTicks(chartData) :
-              selectedTimeframe === '1W' ? (() => {
-                console.log('[Price Chart X轴] 调用getProfessional1WeekTicks');
-                console.log('[Price Chart X轴] 当前chartData长度:', chartData.length);
-                const ticks = getProfessional1WeekTicks(chartData);
-                console.log('[Price Chart X轴] 生成的ticks数量:', ticks.length);
-                return ticks;
-              })() :
-              // 1 Month图：不使用自定义ticks，让Recharts自动处理
-              // selectedTimeframe === '1M' ? getProfessional1MonthTicks(chartData) :
-              selectedTimeframe === '3M' ? getProfessional3MonthsTicks(chartData) :
-              selectedTimeframe === '1Y' ? getProfessional1YearTicks(chartData) :
+              selectedTimeframe === '1D' ? getAdaptive1DayTicks(chartData) : 
+              selectedTimeframe === '1W' ? getProfessional1WeekTicks(chartData) : 
+              selectedTimeframe === '3M' ? getProfessional3MonthsTicks(chartData) : 
+              selectedTimeframe === '1Y' ? getProfessional1YearTicks(chartData) : 
               undefined
-            }
-            // 为Day图设置domain，确保显示16:00
-            domain={
-              selectedTimeframe === '1D' ? (() => {
-                if (chartData.length === 0) return undefined;
-                
-                // 获取第一个数据点的时间
-                const firstDate = new Date(chartData[0].date);
-                const lastDate = new Date(chartData[chartData.length - 1].date);
-                
-                // 计算16:00的时间（纽约时间EDT）
-                const year = firstDate.getUTCFullYear();
-                const month = firstDate.getUTCMonth();
-                const day = firstDate.getUTCDate();
-                
-                // 16:00 EDT = 20:00 UTC
-                const endTimeUTC = new Date(Date.UTC(year, month, day, 20, 0, 0));
-                
-                // 确保domain包含16:00
-                return [firstDate.getTime(), Math.max(lastDate.getTime(), endTimeUTC.getTime())];
-              })() : undefined
-            }
-            minTickGap={selectedTimeframe === '1W' ? 20 : selectedTimeframe === '1M' ? 10 : 0} // 1 Week增加最小间隙，避免标签重叠；1 Month稍微增加间隙
-            tickMargin={selectedTimeframe === '1W' ? 10 : selectedTimeframe === '1M' ? 8 : 5} // 1 Week增加标签边距；1 Month稍微增加边距
-            // 为不同timeframe增加padding，避免标签被裁切
-            padding={
-              selectedTimeframe === '1D' ? { left: 15, right: 45 } : // Day图：右边增加到45px，确保价格标签完整显示
-              selectedTimeframe === '1W' ? { left: 20, right: 50 } : // 1 Week：右边增加到50px，确保最右边点和标签完整显示
-              selectedTimeframe === '1M' ? { left: 0, right: 40 } : // 1 Month：右边增加到40px
-              selectedTimeframe === '3M' ? { left: 0, right: 40 } : // 3 Months：右边增加到40px
-              selectedTimeframe === '1Y' ? { left: 0, right: 45 } : // 1 Year：右边增加到45px
-              undefined
-            }
+            } 
+            minTickGap={30}
           />
-
-          {/* Y轴 - 价格坐标（优化刻度） */}
-          <YAxis
-            domain={yDomain}
-            tick={{ 
-              fontSize: 11, 
-              fill: '#262626', // 更深的颜色
-              fontWeight: '400'
-            }}
-            axisLine={{ stroke: '#bfbfbf', strokeWidth: 1 }}
-            tickLine={{ stroke: '#bfbfbf', strokeWidth: 1 }}
-            width={70} // 稍宽一点，容纳更长的标签
-            tickFormatter={(value) => {
-              // 专业金融图表格式
-              if (value >= 1000000) {
-                return `$${(value / 1000000).toFixed(2)}M`; // 百万格式
-              } else if (value >= 1000) {
-                return `$${(value / 1000).toFixed(1)}K`; // 千位格式
-              } else if (value >= 100) {
-                return `$${value.toFixed(0)}`; // 整数
-              } else if (value >= 10) {
-                return `$${value.toFixed(1)}`; // 1位小数
-              } else if (value >= 1) {
-                return `$${value.toFixed(2)}`; // 2位小数
-              } else {
-                return `$${value.toFixed(3)}`; // 3位小数（低价股）
-              }
-            }}
-            tickCount={6} // 6个刻度，更清晰
-            allowDecimals={true}
+          <YAxis 
+            domain={yDomain} 
+            orientation="right" 
+            tick={{ fontSize: 11, fill: '#94a3b8', fontWeight: 500 }} 
+            axisLine={false} 
+            tickLine={false} 
+            width={65} 
+            tickFormatter={(v) => `$${v.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`} 
           />
-
-          {/* 金融终端风格Tooltip */}
-          <Tooltip
-            content={<CustomTooltip />}
-            cursor={{ 
-              stroke: 'rgba(22, 119, 255, 0.4)', 
-              strokeWidth: 1.2, 
-              strokeDasharray: '4 4' 
-            }} // 更清晰的hover线，与价格线颜色匹配
-          />
-
-          {/* 主价格线 - 专业金融图表风格 */}
-          <Line
-            type="linear"
-            dataKey="close"
-            stroke="#1677ff" // 更深的蓝色，更专业
-            strokeWidth={selectedTimeframe === '1D' ? 2.5 : 2.2} // Day图稍粗
-            dot={false}
-            activeDot={{ 
-              r: 6, 
-              strokeWidth: 2,
-              stroke: '#fff',
-              fill: '#1677ff',
-              strokeOpacity: 0.8
-            }}
-            name="Price"
-            connectNulls={true}
-            strokeOpacity={0.9}
+          <Tooltip 
+            content={<CustomTooltip />} 
+            cursor={{ stroke: '#3b82f6', strokeWidth: 1.5, strokeDasharray: '4 4', strokeOpacity: 0.6 }} 
           />
           
-          {/* === 1 Year 专用：月度分隔竖线 === */}
-          {selectedTimeframe === '1Y' && monthPoints.length > 0 && monthPoints.map((point, i) => {
-            // 跳过第一个点（已经在最左边）
-            if (i === 0) return null;
-            
-            return (
-              <ReferenceLine
-                key={`month-line-${i}`}
-                x={point.date}
-                stroke="#d9d9d9"
-                strokeWidth={1}
-                strokeDasharray="4 4"
-                strokeOpacity={0.4}
-              />
-            );
-          })}
+          <Line 
+            type="monotone" 
+            dataKey="close" 
+            stroke="#2563eb" 
+            strokeWidth={2.5} 
+            dot={false} 
+            activeDot={{ r: 6, strokeWidth: 0, fill: '#2563eb' }} 
+            name="Price" 
+            connectNulls={true} 
+            animationDuration={1000}
+          />
           
-          {/* 当前价格标记（最后一个点） - 所有时间范围都显示 */}
-          {chartData.length > 0 && (
-            <ReferenceDot
-              x={chartData[chartData.length - 1].date}
-              y={chartData[chartData.length - 1].close}
-              r={selectedTimeframe === '1W' ? 8 : 7} // 1 Week图点更大
-              fill="#1677ff"
-              stroke="#fff"
-              strokeWidth={selectedTimeframe === '1W' ? 3 : 2.5} // 1 Week图边框更粗
-              strokeOpacity={0.9}
-              label={{
-                value: `$${chartData[chartData.length - 1].close.toFixed(2)}`,
-                position: selectedTimeframe === '1W' ? 'insideRight' : 'right',
-                fill: '#1677ff',
-                fontSize: selectedTimeframe === '1W' ? 11 : 10,
-                fontWeight: '600',
-                offset: selectedTimeframe === '1W' ? 15 : 8 // 1 Week图偏移更大
-              }}
-            />
-          )}
-
-          {/* Prev Close参考虚线（如果数据存在） */}
-          {prevCloseLine && (
-            <ReferenceLine
-              y={prevCloseLine}
-              stroke="#595959"
-              strokeWidth={1.2}
-              strokeDasharray="4 4"
-              strokeOpacity={0.6}
-              label={{
-                value: `Prev Close: $${prevCloseLine.toFixed(2)}`,
-                position: 'right',
-                fill: '#595959',
-                fontSize: 9,
-                fontWeight: '500',
-                opacity: 0.8,
-                offset: 5
-              }}
-            />
-          )}
-
-          {/* 52周高低点参考线（如果数据存在） */}
-          {fiftyTwoWeekHigh && (
-            <ReferenceLine
-              y={fiftyTwoWeekHigh}
-              stroke="#389e0d"
-              strokeWidth={1.2}
-              strokeDasharray="4 4"
-              strokeOpacity={0.6}
-              label={{
-                value: `High: $${fiftyTwoWeekHigh.toFixed(2)}`,
-                position: 'right',
-                fill: '#389e0d',
-                fontSize: 9,
-                fontWeight: '500',
-                opacity: 0.8,
-                offset: 5
-              }}
+          {chartData.some(d => d.sma20) && (
+            <Line 
+              type="monotone" 
+              dataKey="sma20" 
+              stroke="#10b981" 
+              strokeWidth={1.5} 
+              strokeDasharray="5 3" 
+              strokeOpacity={0.7} 
+              dot={false} 
+              name="SMA 20" 
+              connectNulls={true} 
             />
           )}
           
-          {fiftyTwoWeekLow && (
-            <ReferenceLine
-              y={fiftyTwoWeekLow}
-              stroke="#cf1322"
-              strokeWidth={1.2}
-              strokeDasharray="4 4"
-              strokeOpacity={0.6}
-              label={{
-                value: `Low: $${fiftyTwoWeekLow.toFixed(2)}`,
-                position: 'right',
-                fill: '#cf1322',
-                fontSize: 9,
-                fontWeight: '500',
-                opacity: 0.8,
-                offset: 5
-              }}
-            />
-          )}
-
-          {/* SMA20/SMA50技术指标线 - 优化显示 */}
-          {chartData.some(d => d.sma20 !== undefined && !isNaN(d.sma20)) && chartData.length > 20 && (
-            <Line
-              type="linear"
-              dataKey="sma20"
-              stroke="#389e0d" // 更深的绿色
-              strokeWidth={1.2} // 加粗，更清晰
-              strokeDasharray="4 4" // 更清晰的虚线
-              strokeOpacity={0.7} // 提高可见度
-              dot={false}
-              activeDot={{ r: 4, strokeWidth: 1, stroke: '#fff', fill: '#389e0d' }}
-              name="SMA 20"
-              connectNulls={true}
+          {chartData.some(d => d.sma50) && (
+            <Line 
+              type="monotone" 
+              dataKey="sma50" 
+              stroke="#f59e0b" 
+              strokeWidth={1.5} 
+              strokeDasharray="5 3" 
+              strokeOpacity={0.7} 
+              dot={false} 
+              name="SMA 50" 
+              connectNulls={true} 
             />
           )}
           
-          {chartData.some(d => d.sma50 !== undefined && !isNaN(d.sma50)) && chartData.length > 50 && (
-            <Line
-              type="linear"
-              dataKey="sma50"
-              stroke="#d46b08" // 更深的橙色
-              strokeWidth={1.2} // 加粗，更清晰
-              strokeDasharray="4 4" // 更清晰的虚线
-              strokeOpacity={0.7} // 提高可见度
-              dot={false}
-              activeDot={{ r: 4, strokeWidth: 1, stroke: '#fff', fill: '#d46b08' }}
-              name="SMA 50"
-              connectNulls={true}
+          {stockData?.previousClose && (
+            <ReferenceLine 
+              y={stockData.previousClose} 
+              stroke="#94a3b8" 
+              strokeWidth={1} 
+              strokeDasharray="3 3" 
+              label={{ 
+                value: 'PREV CLOSE', 
+                position: 'left', 
+                fill: '#94a3b8', 
+                fontSize: 10, 
+                fontWeight: 700, 
+                offset: 10,
+                fontFamily: "'Inter', sans-serif"
+              }} 
             />
           )}
-
-          {/* 智能图例 - 只有多条线时显示 */}
-          {chartData.some(d => d.sma20 !== undefined) || chartData.some(d => d.sma50 !== undefined) ? (
-            <Legend 
-              wrapperStyle={{
-                fontSize: '9px', // 更小
-                color: '#888', // 更淡
-                paddingTop: '6px',
-                paddingBottom: '2px',
-                display: 'flex',
-                justifyContent: 'center',
-                gap: '12px'
-              }}
-              iconSize={5} // 更小
-              iconType="plainline"
-            />
-          ) : null}
+          
+          <Legend 
+            verticalAlign="top" 
+            align="right" 
+            height={40} 
+            iconType="circle" 
+            iconSize={8} 
+            wrapperStyle={{ paddingBottom: '20px', fontSize: '12px', fontWeight: 500, color: '#64748b' }}
+          />
         </LineChart>
       </ResponsiveContainer>
     );
@@ -1824,426 +1120,111 @@ const SymbolAnalysis: React.FC = () => {
 
   // 渲染RSI图表 - 专业金融软件风格
   const renderRSIChart = () => {
-    // 检查是否有有效的RSI数据
-    // 放宽条件：只要chartData有数据且部分RSI值有效就显示
     const hasValidRSIData = chartData.some(d => d.rsi !== undefined && !isNaN(d.rsi));
     
     if (chartData.length === 0) {
       return (
-        <div style={{ padding: '40px 0' }}>
-          <Empty
-            description="Historical chart data unavailable"
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-          />
+        <div style={{ padding: '60px 0', textAlign: 'center', background: '#f8fafc', borderRadius: '12px' }}>
+          <Empty description={<span style={{color: '#94a3b8'}}>Market data unavailable for RSI</span>} image={Empty.PRESENTED_IMAGE_SIMPLE} />
         </div>
       );
     }
     
     if (!hasValidRSIData) {
       return (
-        <div style={{ padding: '40px 0' }}>
-          <Empty
-            description="Insufficient data to calculate RSI"
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-          />
+        <div style={{ padding: '60px 0', textAlign: 'center', background: '#f8fafc', borderRadius: '12px' }}>
+          <Empty description={<span style={{color: '#94a3b8'}}>Insufficient data to calculate RSI (14)</span>} image={Empty.PRESENTED_IMAGE_SIMPLE} />
         </div>
       );
     }
 
-    // 过滤出有RSI数据的数据点
     const rsiData = chartData.filter(d => d.rsi !== undefined && !isNaN(d.rsi));
     
-    console.log(`[RSI同步] 时间范围: ${selectedTimeframe}, 图表数据点: ${chartData.length}, 有效RSI数据点: ${rsiData.length}`);
-    
-    // 如果有效RSI数据点太少，显示提示
-    if (rsiData.length < 5) {
-      console.log(`[RSI同步] 警告: RSI数据点不足 (${rsiData.length} < 5)，可能无法显示完整曲线`);
-    }
-    
-    if (rsiData.length > 0) {
-      const rsiValues = rsiData.map(d => d.rsi!).filter(v => !isNaN(v));
-      if (rsiValues.length > 0) {
-        console.log(`[RSI同步] RSI范围: ${Math.min(...rsiValues).toFixed(1)} - ${Math.max(...rsiValues).toFixed(1)}`);
-      }
-    }
-
-    // 根据时间范围调整图表高度和边距
-    const getChartConfig = () => {
-      switch (selectedTimeframe) {
-        case '1D':
-          return { height: 280, margin: { top: 12, right: 16, left: 8, bottom: 24 } };
-        case '1W':
-          return { height: 280, margin: { top: 12, right: 16, left: 8, bottom: 24 } };
-        case '1M':
-          return { height: 300, margin: { top: 12, right: 16, left: 8, bottom: 24 } };
-        case '3M':
-          return { height: 300, margin: { top: 12, right: 16, left: 8, bottom: 24 } };
-        case '1Y':
-          return { height: 320, margin: { top: 12, right: 16, left: 8, bottom: 24 } };
-        default:
-          return { height: 300, margin: { top: 12, right: 16, left: 8, bottom: 24 } };
-      }
-    };
-
-    const chartConfig = getChartConfig();
-
     return (
-      <ResponsiveContainer width="100%" height={chartConfig.height}>
-        <LineChart 
-          data={rsiData}
-          margin={chartConfig.margin}
-        >
-          {/* 专业网格线 - 水平网格为主 */}
+      <ResponsiveContainer width="100%" height={280}>
+        <LineChart data={rsiData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
           <CartesianGrid 
             strokeDasharray="3 3" 
-            stroke="#e8e8e8" 
-            strokeOpacity={0.4}
-            vertical={false}
-            horizontalFill={['#fafafa', '#f5f5f5']}
+            stroke="#f1f5f9" 
+            vertical={false} 
+            strokeOpacity={1} 
           />
           
-          {/* X轴 - 使用与主价格图相同的专业X轴方案 */}
           <XAxis 
             dataKey="date" 
-            axisLine={{ stroke: '#bfbfbf', strokeWidth: 1 }}
-            tickLine={{ stroke: '#bfbfbf' }}
-            height={32}
-            // 使用与主图相同的ticks数组
+            tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 500 }} 
+            axisLine={{ stroke: '#e2e8f0' }} 
+            tickLine={false} 
+            height={40} 
+            tickFormatter={formatXAxisTick}
             ticks={
               selectedTimeframe === '1D' ? getAdaptive1DayTicks(chartData) :
-              selectedTimeframe === '1W' ? (() => {
-                console.log('[RSI Chart X轴] 调用getProfessional1WeekTicks');
-                console.log('[RSI Chart X轴] 当前chartData长度:', chartData.length);
-                const ticks = getProfessional1WeekTicks(chartData);
-                console.log('[RSI Chart X轴] 生成的ticks数量:', ticks.length);
-                return ticks;
-              })() :
-              // 1 Month图：不使用自定义ticks，让Recharts自动处理
-              // selectedTimeframe === '1M' ? (() => {
-              //   console.log('[RSI Chart X轴] 调用getProfessional1MonthTicks');
-              //   console.log('[RSI Chart X轴] 当前chartData长度:', chartData.length);
-              //   const ticks = getProfessional1MonthTicks(chartData);
-              //   console.log('[RSI Chart X轴] 生成的ticks数量:', ticks.length);
-              //   return ticks;
-              // })() :
+              selectedTimeframe === '1W' ? getProfessional1WeekTicks(chartData) :
               selectedTimeframe === '3M' ? getProfessional3MonthsTicks(chartData) :
               selectedTimeframe === '1Y' ? getProfessional1YearTicks(chartData) :
               undefined
             }
-            interval={
-              selectedTimeframe === '1D' ? 0 : // 1 Day: 显示所有ticks
-              selectedTimeframe === '1W' ? 0 : // 1 Week: 显示所有ticks
-              selectedTimeframe === '1M' ? 'preserveStartEnd' : // 1 Month: 自动间隔，保留首尾
-              selectedTimeframe === '3M' ? 0 : // 3 Months: 显示所有ticks
-              selectedTimeframe === '1Y' ? 0 : // 1 Year: 显示所有ticks
-              0
-            }
-            tickFormatter={(value) => {
-              // 使用与主图相同的专业X轴格式化逻辑
-              if (!value) return '';
-              
-              try {
-                const date = new Date(value);
-                
-                if (isNaN(date.getTime())) {
-                  return '';
-                }
-                
-                // 根据时间范围显示不同的专业格式
-                switch (selectedTimeframe) {
-                  case '1D':
-                    // 1 Day: 显示每小时时间标签 (HH:30)，与主图保持一致
-                    const utcHour = date.getUTCHours();
-                    const minute = date.getUTCMinutes();
-                    const nyHour = (utcHour - 4 + 24) % 24;
-                    
-                    // 显示所有我们生成的时间标签（都是30分钟，如09:30, 10:30等）
-                    return `${String(nyHour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-                    
-                  case '1W':
-                    // 1 Week: 显示清晰的跨天日期格式 (如: 3/16)，与主图保持一致
-                    const monthW = date.getUTCMonth() + 1; // 月份 (1-12)
-                    const dayW = date.getUTCDate(); // 日期 (1-31)
-                    
-                    // 显示月/日格式，让用户一眼看出是跨多天数据
-                    return `${monthW}/${dayW}`;
-                    
-                  case '1M':
-                    // 1 Month: 显示日期节点，使用与主图相同的格式化逻辑
-                    const monthM = date.getUTCMonth() + 1;
-                    const dayM = date.getUTCDate();
-                    
-                    // 显示所有传入的ticks（由getProfessional1MonthTicks智能选择）
-                    return `${monthM}/${dayM}`;
-                    
-                  case '3M':
-                    // 3 Months: 显示半月节奏日期标签
-                    const month3M = date.getUTCMonth() + 1;
-                    const day3M = date.getUTCDate();
-                    
-                    // 显示所有传入的ticks（由getProfessional3MonthsTicks智能选择）
-                    return `${month3M}/${day3M}`;
-                    
-                  case '1Y':
-                    // 1 Year: 显示每月1号数字日期标签
-                    const monthY = date.getUTCMonth() + 1;
-                    const dayY = date.getUTCDate();
-                    
-                    // 显示所有传入的ticks（由getProfessional1YearTicks智能选择）
-                    return `${monthY}/${dayY}`;
-                    
-                  default:
-                    return '';
-                }
-              } catch (e) {
-                console.error('Error formatting date in RSI chart:', e, value);
-                return '';
-              }
-            }}
-            tick={{ fontSize: 9, fill: '#595959', fontFamily: "'Inter', 'Segoe UI', sans-serif" }}
-            minTickGap={25}
+            minTickGap={30}
           />
           
-          {/* Y轴 - 专业RSI刻度，突出关键水平 */}
           <YAxis 
             domain={[0, 100]} 
-            axisLine={{ stroke: '#bfbfbf', strokeWidth: 1 }}
-            tickLine={{ stroke: '#bfbfbf' }}
-            ticks={[0, 30, 50, 70, 100]}
-            tick={({ x, y, payload }) => {
-              const value = payload.value;
-              let fill = '#595959';
-              let fontWeight = '400';
-              let fontSize = 9;
-              
-              // 关键水平突出显示
-              if (value === 30) {
-                fill = '#389e0d'; // 超卖：绿色
-                fontWeight = '600';
-                fontSize = 10;
-              } else if (value === 70) {
-                fill = '#cf1322'; // 超买：红色
-                fontWeight = '600';
-                fontSize = 10;
-              } else if (value === 50) {
-                fill = '#8c8c8c'; // 中性：灰色
-                fontWeight = '500';
-                fontSize = 9;
-              }
-              
-              return (
-                <text 
-                  x={x} 
-                  y={y} 
-                  dy={4} 
-                  textAnchor="end" 
-                  fill={fill} 
-                  fontSize={fontSize} 
-                  fontWeight={fontWeight}
-                  fontFamily="'Inter', 'Segoe UI', sans-serif"
-                >
-                  {value}
-                </text>
-              );
-            }}
-            width={36}
+            orientation="right" 
+            tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 600 }} 
+            axisLine={false} 
+            tickLine={false} 
+            width={40} 
+            ticks={[0, 30, 50, 70, 100]} 
           />
           
-          {/* Tooltip - 专业简洁 */}
           <Tooltip 
-            contentStyle={{
-              backgroundColor: 'rgba(255, 255, 255, 0.98)',
-              border: '1px solid #d9d9d9',
-              borderRadius: '4px',
-              padding: '6px 10px',
-              fontSize: '10px',
-              fontFamily: "'Inter', 'Segoe UI', sans-serif",
-              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-              backdropFilter: 'blur(4px)'
-            }}
-            formatter={(value) => {
-              const rsiValue = parseFloat(value as string);
-              let color = '#595959';
-              let status = '';
-              
-              if (rsiValue >= 70) {
-                color = '#cf1322'; // 超买：红色
-                status = ' (Overbought)';
-              } else if (rsiValue <= 30) {
-                color = '#389e0d'; // 超卖：绿色
-                status = ' (Oversold)';
-              } else if (rsiValue > 50) {
-                color = '#722ed1'; // 偏强：紫色
-                status = ' (Bullish)';
-              } else {
-                color = '#722ed1'; // 偏弱：紫色
-                status = ' (Bearish)';
-              }
-              
-              return [
-                <span style={{ color, fontWeight: '600' }}>
-                  {rsiValue.toFixed(1)}{status}
-                </span>, 
-                'RSI'
-              ];
-            }}
-            labelFormatter={(label) => {
-              try {
-                const date = new Date(label);
-                
-                // 使用与主图一致的专业时间格式
-                switch (selectedTimeframe) {
-                  case '1D':
-                    // 1 Day: 显示纽约时间 HH:MM
-                    const utcHour = date.getUTCHours();
-                    const minute = date.getUTCMinutes();
-                    const nyHour = (utcHour - 4 + 24) % 24; // UTC转EDT
-                    return `${String(nyHour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-                    
-                  case '1W':
-                    // 1 Week: 显示纽约时间的日期和时间格式 (如: 3/16 09:30)
-                    // 使用统一的纽约时间格式化函数
-                    return formatAsNewYorkTime(date, true);
-                    
-                  case '1M':
-                    // 1 Month: 显示日期 MM/DD
-                    const monthM = date.getUTCMonth() + 1;
-                    const dayM = date.getUTCDate();
-                    return `${monthM}/${dayM}`;
-                    
-                  case '3M':
-                    // 3 Months: 显示日期 MM/DD
-                    const month3M = date.getUTCMonth() + 1;
-                    const day3M = date.getUTCDate();
-                    return `${month3M}/${day3M}`;
-                    
-                  case '1Y':
-                    // 1 Year: 显示数字日期 MM/DD
-                    const monthY = date.getUTCMonth() + 1;
-                    const dayY = date.getUTCDate();
-                    return `${monthY}/${dayY}`;
-                    
-                  default:
-                    return label;
-                }
-              } catch {
-                return label;
-              }
-            }}
-            cursor={{ 
-              stroke: '#722ed1', 
-              strokeWidth: 1, 
-              strokeOpacity: 0.2,
-              strokeDasharray: "3 3"
-            }}
+            content={<CustomTooltip isRSI />} 
+            cursor={{ stroke: '#8b5cf6', strokeWidth: 1.5, strokeDasharray: '4 4', strokeOpacity: 0.6 }} 
           />
           
-          {/* 图例 - 专业简洁 */}
-          <Legend 
-            wrapperStyle={{
-              paddingTop: '6px',
-              paddingBottom: '2px',
-              fontSize: '9px',
-              color: '#595959',
-              fontFamily: "'Inter', 'Segoe UI', sans-serif"
-            }}
-            iconSize={7}
-            iconType="plainline"
-            align="center"
-            verticalAlign="bottom"
-            height={28}
+          <ReferenceLine 
+            y={70} 
+            stroke="#ef4444" 
+            strokeDasharray="4 2" 
+            strokeOpacity={0.6} 
+            label={{ value: 'OB', position: 'insideTopRight', fill: '#ef4444', fontSize: 10, fontWeight: 700 }} 
+          />
+          <ReferenceLine 
+            y={30} 
+            stroke="#10b981" 
+            strokeDasharray="4 2" 
+            strokeOpacity={0.6} 
+            label={{ value: 'OS', position: 'insideBottomRight', fill: '#10b981', fontSize: 10, fontWeight: 700 }} 
+          />
+          <ReferenceLine 
+            y={50} 
+            stroke="#94a3b8" 
+            strokeDasharray="5 5" 
+            strokeOpacity={0.4} 
           />
           
-          {/* RSI主线 - 专业金融图表风格 */}
+          <ReferenceArea y1={70} y2={100} fill="#fee2e2" fillOpacity={0.2} />
+          <ReferenceArea y1={0} y2={30} fill="#dcfce7" fillOpacity={0.2} />
+          
           <Line 
             type="monotone" 
             dataKey="rsi" 
-            stroke="#722ed1" 
-            strokeWidth={1.6}
-            strokeOpacity={0.95}
-            dot={false}
-            activeDot={{ 
-              r: 5, 
-              strokeWidth: 1.5, 
-              stroke: '#fff', 
-              fill: '#722ed1',
-              strokeOpacity: 0.9
-            }}
-            name="RSI (14)"
-            connectNulls={true}
+            stroke="#8b5cf6" 
+            strokeWidth={2} 
+            dot={false} 
+            activeDot={{ r: 5, strokeWidth: 0, fill: '#8b5cf6' }} 
+            name="RSI (14)" 
+            connectNulls={true} 
+            animationDuration={1000}
           />
           
-          {/* 超买参考线 (70) - 专业虚线 */}
-          <Line 
-            type="monotone" 
-            dataKey={70} 
-            stroke="#cf1322" 
-            strokeWidth={1}
-            strokeDasharray="4 4" 
-            strokeOpacity={0.7}
-            dot={false}
-            name="Overbought (70)"
-          />
-          
-          {/* 中性参考线 (50) - 专业虚线 */}
-          <Line 
-            type="monotone" 
-            dataKey={50} 
-            stroke="#8c8c8c" 
-            strokeWidth={0.8}
-            strokeDasharray="3 3" 
-            strokeOpacity={0.5}
-            dot={false}
-            name="Neutral (50)"
-          />
-          
-          {/* 超卖参考线 (30) - 专业虚线 */}
-          <Line 
-            type="monotone" 
-            dataKey={30} 
-            stroke="#389e0d" 
-            strokeWidth={1}
-            strokeDasharray="4 4" 
-            strokeOpacity={0.7}
-            dot={false}
-            name="Oversold (30)"
-          />
-          
-          {/* 区域着色 - 专业RSI区间背景 */}
-          <ReferenceArea 
-            y1={70} 
-            y2={100} 
-            fill="#cf1322" 
-            fillOpacity={0.05} 
-            stroke="none"
-            label={{ 
-              value: "Overbought", 
-              position: "insideTopRight",
-              fill: "#cf1322",
-              fontSize: 8,
-              fontWeight: 500
-            }}
-          />
-          <ReferenceArea 
-            y1={30} 
-            y2={70} 
-            fill="#722ed1" 
-            fillOpacity={0.03} 
-            stroke="none"
-          />
-          <ReferenceArea 
-            y1={0} 
-            y2={30} 
-            fill="#389e0d" 
-            fillOpacity={0.05} 
-            stroke="none"
-            label={{ 
-              value: "Oversold", 
-              position: "insideBottomRight",
-              fill: "#389e0d",
-              fontSize: 8,
-              fontWeight: 500
-            }}
+          <Legend 
+            verticalAlign="bottom" 
+            align="center" 
+            height={36} 
+            iconType="circle" 
+            iconSize={6} 
+            wrapperStyle={{ paddingTop: '10px', fontSize: '11px', fontWeight: 500, color: '#64748b' }}
           />
         </LineChart>
       </ResponsiveContainer>
@@ -2251,16 +1232,26 @@ const SymbolAnalysis: React.FC = () => {
   };
 
 
-  // 初始化加载数据
+  // 初始加载：只在 symbol 变化时加载全部数据
   useEffect(() => {
     if (symbol) {
       loadStockData();
-      loadBacktestHistory();
+      loadHistoricalPrices();
+      loadPerformanceData();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symbol]);
+
+  // Timeframe 切换：只刷新 chart，不重载 snapshot/backtest
+  useEffect(() => {
+    if (symbol) {
       loadHistoricalPrices();
     }
-  }, [symbol, loadStockData, loadBacktestHistory, loadHistoricalPrices]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTimeframe]);
 
-  if (loading) {
+  // 只在初次加载（stockData还没拿到）时显示全页 spinner
+  if (loading && !stockData) {
     return (
       <div style={{ padding: '40px', textAlign: 'center' }}>
         <Spin size="large" />
@@ -2303,22 +1294,49 @@ const SymbolAnalysis: React.FC = () => {
     );
   }
 
-  const isPositive = safeNumber(stockData.change) > 0;
-  const isNegative = safeNumber(stockData.change) < 0;
-
   return (
-    <div style={{ padding: '16px' }}>
+    <div style={{ padding: '16px', maxWidth: '1600px', margin: '0 auto' }}>
+      <style>{`
+        .metric-card-hover:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 4px 12px rgba(0,0,0,0.05) !important;
+          border-color: #1677ff !important;
+        }
+        .signal-card-hover:hover {
+          transform: translateY(-4px);
+          box-shadow: 0 6px 16px rgba(0,0,0,0.08) !important;
+          border-color: #d9d9d9 !important;
+        }
+        .ant-card {
+          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .ant-radio-button-wrapper-checked {
+          background-color: #1677ff !important;
+          color: #fff !important;
+          border-color: #1677ff !important;
+        }
+      `}</style>
+      
       {/* Historical Data Warning Alert */}
       {historicalDataError && stockData && (
         <Alert
-          message="Historical Chart Data Unavailable"
+          message={
+            historicalErrorType === 'config_required' ? 'Alpaca API Key Required' :
+            historicalErrorType === 'auth_required' ? 'Authentication Required' :
+            historicalErrorType === 'rate_limited' ? 'API Rate Limited' :
+            'No Historical Bars Available'
+          }
           description={
             <span>
-              Alpaca returned no historical bars for this timeframe. 
-              <strong> Real-time snapshot metrics</strong> are still displayed below.
+              {fallbackTimeframeNotice
+                ? <>Showing <strong>{fallbackTimeframeNotice}</strong> data — shorter timeframes unavailable.</>
+                : historicalErrorType === 'config_required' ? 'Configure Alpaca API keys in Settings to load chart data.' :
+                  historicalErrorType === 'rate_limited' ? 'Alpaca rate limit hit. Retry in a moment.' :
+                  <>No bars returned for <strong>{selectedTimeframe}</strong>. Snapshot metrics still available below.</>
+              }
             </span>
           }
-          type="warning"
+          type={historicalErrorType === 'config_required' || historicalErrorType === 'auth_required' ? 'error' : 'warning'}
           showIcon
           closable
           onClose={() => setHistoricalDataError(null)}
@@ -2331,576 +1349,180 @@ const SymbolAnalysis: React.FC = () => {
         />
       )}
 
-      {/* 头部信息 - 更专业 */}
-      <Card
-        style={{
-          marginBottom: '24px',
-          border: '1px solid #e8e8e8',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.04)'
-        }}
-      >
-        <Row gutter={[16, 16]} align="middle">
-          <Col xs={24} sm={12} md={6}>
-            <div>
-              <div style={{ fontSize: '28px', fontWeight: '700', color: '#1f1f1f', lineHeight: '1.2' }}>
-                {stockData.symbol}
-              </div>
-              <div style={{
-                fontSize: '14px',
-                color: '#595959',
-                fontWeight: '500',
-                marginTop: '4px'
-              }}>
-                {stockData.name || 'N/A'}
-              </div>
+      {/* ── 头部信息 (Professional Premium Header) ── */}
+      <div style={{ 
+        marginBottom: 32, 
+        display: 'flex', 
+        justifyContent: 'space-between', 
+        alignItems: 'flex-start', 
+        borderBottom: '1px solid #f1f5f9', 
+        paddingBottom: 24,
+        paddingTop: 8
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+          <div style={{ 
+            width: 64, height: 64, borderRadius: 16, 
+            background: 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)', 
+            color: '#fff', display: 'flex', alignItems: 'center', 
+            justifyContent: 'center', fontSize: 28, fontWeight: 800,
+            boxShadow: '0 10px 15px -3px rgba(59, 130, 246, 0.2), 0 4px 6px -2px rgba(59, 130, 246, 0.1)'
+          }}>
+            {symbol?.substring(0, 1)}
+          </div>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+              <span style={{ fontSize: 32, fontWeight: 800, color: '#0f172a', lineHeight: 1.1, letterSpacing: '-0.025em' }}>{symbol}</span>
+              <span style={{ fontSize: 18, fontWeight: 500, color: '#64748b' }}>{stockData.name || 'Company Name'}</span>
             </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginTop: 10 }}>
+              <span style={{ fontSize: 28, fontWeight: 700, color: '#1e293b', lineHeight: 1, letterSpacing: '-0.01em' }}>${safeToFixed(stockData.price, 2)}</span>
+              {stockData.change !== null && stockData.change !== undefined && stockData.changePercent !== null && stockData.changePercent !== undefined && (
+                <div style={{ 
+                  fontSize: 16, 
+                  fontWeight: 600, 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  gap: 4,
+                  color: stockData.change >= 0 ? '#10b981' : '#ef4444',
+                  backgroundColor: stockData.change >= 0 ? '#f0fdf4' : '#fef2f2',
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  border: `1px solid ${stockData.change >= 0 ? '#dcfce7' : '#fee2e2'}`
+                }}>
+                  {stockData.change >= 0 ? <ArrowUpOutlined style={{ fontSize: 14 }} /> : <ArrowDownOutlined style={{ fontSize: 14 }} />}
+                  <span>${Math.abs(stockData.change).toFixed(2)}</span>
+                  <span style={{ opacity: 0.9 }}>({stockData.change >= 0 ? '+' : ''}{safeToFixed(stockData.changePercent, 2)}%)</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+        
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Button
+            size="large"
+            icon={<ReloadOutlined />}
+            onClick={() => {
+              loadStockData();
+              loadHistoricalPrices();
+            }}
+            style={{ 
+              borderRadius: 10, 
+              fontWeight: 600, 
+              color: '#475569', 
+              border: '1px solid #e2e8f0',
+              height: '44px',
+              boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.05)'
+            }}
+          >
+            Refresh
+          </Button>
+          <Button
+            type="primary"
+            size="large"
+            icon={<PlayCircleOutlined />}
+            onClick={() => navigate('/backtest')}
+            style={{ 
+              borderRadius: 10, 
+              fontWeight: 700, 
+              height: '44px',
+              background: '#2563eb',
+              border: 'none',
+              boxShadow: '0 4px 6px -1px rgba(37, 99, 235, 0.2), 0 2px 4px -1px rgba(37, 99, 235, 0.1)'
+            }}
+          >
+            {t.analysis.runBacktest}
+          </Button>
+        </div>
+      </div>
+
+      {/* ── Metric Cards (Compact Dashboard Style) ── */}
+      <Row gutter={[16, 16]} style={{ marginBottom: 32 }}>
+        {[
+          { label: t.analysis.dayHigh, value: stockData.dayHigh ? `$${safeToFixed(stockData.dayHigh, 2)}` : '—' },
+          { label: t.analysis.dayLow, value: stockData.dayLow ? `$${safeToFixed(stockData.dayLow, 2)}` : '—' },
+          { label: t.analysis.prevClose, value: stockData.previousClose ? `$${safeToFixed(stockData.previousClose, 2)}` : '—' },
+          { label: t.analysis.marketCap, value: stockData.marketCap ? (stockData.marketCap >= 1e12 ? `$${(stockData.marketCap / 1e12).toFixed(2)}T` : stockData.marketCap >= 1e9 ? `$${(stockData.marketCap / 1e9).toFixed(2)}B` : stockData.marketCap >= 1e6 ? `$${(stockData.marketCap / 1e6).toFixed(2)}M` : `$${stockData.marketCap.toLocaleString()}`) : '—' },
+          { label: t.analysis.yearHigh, value: stockData.yearHigh ? `$${safeToFixed(stockData.yearHigh, 2)}` : '—' },
+          { label: t.analysis.yearLow, value: stockData.yearLow ? `$${safeToFixed(stockData.yearLow, 2)}` : '—' },
+          { label: t.analysis.volume, value: stockData.volume ? `${(stockData.volume / 1000000).toFixed(2)}M` : '—' },
+          {
+            label: t.analysis.rangePosition,
+            value: (() => {
+              const pos = calculateRangePosition(stockData.price, stockData.yearHigh, stockData.yearLow);
+              return pos.label;
+            })(),
+            color: (() => {
+              const pct = calculateRangePosition(stockData.price, stockData.yearHigh, stockData.yearLow).percentage;
+              if (pct === null) return '#1e293b';
+              if (pct >= 80) return '#10b981';
+              if (pct <= 20) return '#ef4444';
+              return '#1e293b';
+            })()
+          },
+        ].map((m, idx) => (
+          <Col xs={12} sm={8} lg={3} key={idx} style={{ display: 'flex' }}>
+            <Card 
+              bordered={false} 
+              bodyStyle={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }} 
+              style={{ 
+                borderRadius: 16, 
+                background: '#ffffff', 
+                border: '1px solid #f1f5f9', 
+                boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px 0 rgba(0, 0, 0, 0.03)',
+                width: '100%',
+                transition: 'transform 0.2s ease, box-shadow 0.2s ease'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.transform = 'translateY(-2px)';
+                e.currentTarget.style.boxShadow = '0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -2px rgba(0, 0, 0, 0.02)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = 'translateY(0)';
+                e.currentTarget.style.boxShadow = '0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px 0 rgba(0, 0, 0, 0.03)';
+              }}
+            >
+              <div style={{ fontSize: 11, color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
+                {m.label}
+              </div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: m.color || '#1e293b', lineHeight: 1.2 }}>
+                {m.value}
+              </div>
+            </Card>
           </Col>
-
-          <Col xs={24} sm={12} md={6}>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{
-                fontSize: '28px',
-                fontWeight: '700',
-                color: '#1f1f1f',
-                fontFeatureSettings: '"tnum"',
-                lineHeight: '1.2'
-              }}>
-                {stockData.price !== null ? `$${safeToFixed(stockData.price, 2)}` : '--'}
-              </div>
-              <div style={{
-                fontSize: '18px',
-                fontWeight: '600',
-                color: isPositive ? '#52c41a' : isNegative ? '#ff4d4f' : '#595959',
-                marginTop: '4px',
-                fontFeatureSettings: '"tnum"'
-              }}>
-                {isPositive ? '+' : ''}{safeToFixed(stockData.change, 2)}
-                {' '}
-                ({isPositive ? '+' : ''}{safeToFixed(stockData.changePercent, 2)}%)
-              </div>
-            </div>
-          </Col>
-
-          <Col xs={24} sm={24} md={12}>
-            <div style={{ textAlign: 'right' }}>
-              <Space size="middle">
-                <Button
-                  type="primary"
-                  icon={<PlayCircleOutlined />}
-                  onClick={handleRunBacktest}
-                  size="large"
-                  style={{
-                    height: '40px',
-                    padding: '0 20px',
-                    fontSize: '15px',
-                    fontWeight: '600'
-                  }}
-                >
-                  Run Backtest
-                </Button>
-                <Button
-                  icon={<ReloadOutlined />}
-                  onClick={loadStockData}
-                  loading={loading}
-                  size="large"
-                  style={{
-                    height: '40px',
-                    padding: '0 20px',
-                    fontSize: '15px',
-                    fontWeight: '500'
-                  }}
-                >
-                  Refresh
-                </Button>
-              </Space>
-            </div>
-          </Col>
-        </Row>
-      </Card>
-
-      {/* 核心指标卡片 - 第一行 */}
-      <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
-        {/* Day High */}
-        <Col xs={24} sm={12} md={4}>
-          <Card
-            size="small"
-            style={{
-              border: '1px solid #f0f0f0',
-              boxShadow: '0 1px 4px rgba(0,0,0,0.02)'
-            }}
-          >
-            <div style={{ padding: '10px' }}>
-              <div style={{
-                fontSize: '11px',
-                color: '#8c8c8c',
-                fontWeight: '500',
-                marginBottom: '6px',
-                display: 'flex',
-                alignItems: 'center'
-              }}>
-                <ArrowUpOutlined style={{ marginRight: '6px', fontSize: '11px', color: '#52c41a' }} />
-                Day High
-              </div>
-              <div style={{
-                fontSize: '22px',
-                fontWeight: '700',
-                color: '#1f1f1f',
-                fontFeatureSettings: '"tnum"',
-                lineHeight: '1.2'
-              }}>
-                {stockData.dayHigh !== null && stockData.dayHigh > 0 ? `$${safeToFixed(stockData.dayHigh, 2)}` : '--'}
-              </div>
-            </div>
-          </Card>
-        </Col>
-
-        {/* Day Low */}
-        <Col xs={24} sm={12} md={4}>
-          <Card
-            size="small"
-            style={{
-              border: '1px solid #f0f0f0',
-              boxShadow: '0 1px 4px rgba(0,0,0,0.02)'
-            }}
-          >
-            <div style={{ padding: '10px' }}>
-              <div style={{
-                fontSize: '11px',
-                color: '#8c8c8c',
-                fontWeight: '500',
-                marginBottom: '6px',
-                display: 'flex',
-                alignItems: 'center'
-              }}>
-                <ArrowDownOutlined style={{ marginRight: '6px', fontSize: '11px', color: '#ff4d4f' }} />
-                Day Low
-              </div>
-              <div style={{
-                fontSize: '22px',
-                fontWeight: '700',
-                color: '#1f1f1f',
-                fontFeatureSettings: '"tnum"',
-                lineHeight: '1.2'
-              }}>
-                {stockData.dayLow !== null && stockData.dayLow > 0 ? `$${safeToFixed(stockData.dayLow, 2)}` : '--'}
-              </div>
-            </div>
-          </Card>
-        </Col>
-
-        {/* Prev Close */}
-        <Col xs={24} sm={12} md={4}>
-          <Card
-            size="small"
-            style={{
-              border: '1px solid #f0f0f0',
-              boxShadow: '0 1px 4px rgba(0,0,0,0.02)'
-            }}
-          >
-            <div style={{ padding: '10px' }}>
-              <div style={{
-                fontSize: '11px',
-                color: '#8c8c8c',
-                fontWeight: '500',
-                marginBottom: '6px',
-                display: 'flex',
-                alignItems: 'center'
-              }}>
-                <LineChartOutlined style={{ marginRight: '6px', fontSize: '11px', color: '#1890ff' }} />
-                Prev Close
-              </div>
-              <div style={{
-                fontSize: '22px',
-                fontWeight: '700',
-                color: '#1f1f1f',
-                fontFeatureSettings: '"tnum"',
-                lineHeight: '1.2'
-              }}>
-                {stockData.previousClose !== null ? `$${safeToFixed(stockData.previousClose, 2)}` : '--'}
-              </div>
-            </div>
-          </Card>
-        </Col>
-
-        {/* Market Cap */}
-        <Col xs={24} sm={12} md={4}>
-          <Card
-            size="small"
-            style={{
-              border: '1px solid #f0f0f0',
-              boxShadow: '0 1px 4px rgba(0,0,0,0.02)'
-            }}
-          >
-            <div style={{ padding: '10px' }}>
-              <div style={{
-                fontSize: '11px',
-                color: '#8c8c8c',
-                fontWeight: '500',
-                marginBottom: '6px'
-              }}>
-                Market Cap
-              </div>
-              <div style={{
-                fontSize: '22px',
-                fontWeight: '700',
-                color: '#1f1f1f',
-                fontFeatureSettings: '"tnum"',
-                lineHeight: '1.2'
-              }}>
-                {formatMarketCap(stockData.marketCap)}
-              </div>
-            </div>
-          </Card>
-        </Col>
-
-        {/* 52W High */}
-        <Col xs={24} sm={12} md={4}>
-          <Card
-            size="small"
-            style={{
-              border: '1px solid #f0f0f0',
-              boxShadow: '0 1px 4px rgba(0,0,0,0.02)'
-            }}
-          >
-            <div style={{ padding: '10px' }}>
-              <div style={{
-                fontSize: '11px',
-                color: '#8c8c8c',
-                fontWeight: '500',
-                marginBottom: '6px',
-                display: 'flex',
-                alignItems: 'center'
-              }}>
-                <ArrowUpOutlined style={{ marginRight: '6px', fontSize: '11px', color: '#389e0d' }} />
-                52W High
-              </div>
-              <div style={{
-                fontSize: '22px',
-                fontWeight: '700',
-                color: '#1f1f1f',
-                fontFeatureSettings: '"tnum"',
-                lineHeight: '1.2'
-              }}>
-                {(() => {
-                  // 优先使用后端返回的yearHigh
-                  if (stockData?.yearHigh !== undefined && stockData.yearHigh !== null) {
-                    return `$${safeToFixed(stockData.yearHigh, 2)}`;
-                  }
-                  // 备选：从chartData计算
-                  if (chartData.length === 0) return '--';
-                  const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                  if (dataToUse.length === 0) return '--';
-                  const fiftyTwoWeekHigh = Math.max(...dataToUse.map(d => d.high));
-                  return `$${safeToFixed(fiftyTwoWeekHigh, 2)}`;
-                })()}
-              </div>
-            </div>
-          </Card>
-        </Col>
+        ))}
       </Row>
-
-      {/* 核心指标卡片 - 第二行 */}
-      <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
-        {/* 52W Low */}
-        <Col xs={24} sm={12} md={4}>
-          <Card
-            size="small"
-            style={{
-              border: '1px solid #f0f0f0',
-              boxShadow: '0 1px 4px rgba(0,0,0,0.02)'
-            }}
-          >
-            <div style={{ padding: '10px' }}>
-              <div style={{
-                fontSize: '11px',
-                color: '#8c8c8c',
-                fontWeight: '500',
-                marginBottom: '6px',
-                display: 'flex',
-                alignItems: 'center'
-              }}>
-                <ArrowDownOutlined style={{ marginRight: '6px', fontSize: '11px', color: '#cf1322' }} />
-                52W Low
-              </div>
-              <div style={{
-                fontSize: '22px',
-                fontWeight: '700',
-                color: '#1f1f1f',
-                fontFeatureSettings: '"tnum"',
-                lineHeight: '1.2'
-              }}>
-                {(() => {
-                  // 优先使用后端返回的yearLow
-                  if (stockData?.yearLow !== undefined && stockData.yearLow !== null) {
-                    return `$${safeToFixed(stockData.yearLow, 2)}`;
-                  }
-                  // 备选：从chartData计算
-                  if (chartData.length === 0) return '--';
-                  const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                  if (dataToUse.length === 0) return '--';
-                  const fiftyTwoWeekLow = Math.min(...dataToUse.map(d => d.low));
-                  return `$${safeToFixed(fiftyTwoWeekLow, 2)}`;
-                })()}
-              </div>
-            </div>
-          </Card>
-        </Col>
-
-        {/* Volume */}
-        <Col xs={24} sm={12} md={4}>
-          <Card
-            size="small"
-            style={{
-              border: '1px solid #f0f0f0',
-              boxShadow: '0 1px 4px rgba(0,0,0,0.02)'
-            }}
-          >
-            <div style={{ padding: '10px' }}>
-              <div style={{
-                fontSize: '11px',
-                color: '#8c8c8c',
-                fontWeight: '500',
-                marginBottom: '6px',
-                display: 'flex',
-                alignItems: 'center'
-              }}>
-                <BarChartOutlined style={{ marginRight: '6px', fontSize: '11px', color: '#1890ff' }} />
-                Volume
-              </div>
-              <div style={{
-                fontSize: '22px',
-                fontWeight: '700',
-                color: '#1f1f1f',
-                fontFeatureSettings: '"tnum"',
-                lineHeight: '1.2'
-              }}>
-                {(() => {
-                  // 优先使用stockData.volume（当日总成交量）
-                  if (stockData.volume !== null && stockData.volume !== undefined && stockData.volume > 0) {
-                    const volume = stockData.volume;
-                    if (volume >= 1000000) {
-                      return `${(volume / 1000000).toFixed(1)}M`;
-                    } else if (volume >= 1000) {
-                      return `${(volume / 1000).toFixed(0)}K`;
-                    } else {
-                      return volume.toFixed(0);
-                    }
-                  }
-                  
-                  // 备选：使用chartData中最后一个数据点的volume
-                  if (chartData.length === 0) return '--';
-                  const lastData = chartData[chartData.length - 1];
-                  if (!lastData || lastData.volume === undefined || lastData.volume === 0) return '--';
-                  
-                  const volume = lastData.volume;
-                  if (volume >= 1000000) {
-                    return `${(volume / 1000000).toFixed(1)}M`;
-                  } else if (volume >= 1000) {
-                    return `${(volume / 1000).toFixed(0)}K`;
-                  } else {
-                    return volume.toFixed(0);
-                  }
-                })()}
-              </div>
-            </div>
-          </Card>
-        </Col>
-
-        {/* Avg Volume */}
-        <Col xs={24} sm={12} md={4}>
-          <Card
-            size="small"
-            style={{
-              border: '1px solid #f0f0f0',
-              boxShadow: '0 1px 4px rgba(0,0,0,0.02)'
-            }}
-          >
-            <div style={{ padding: '10px' }}>
-              <div style={{
-                fontSize: '11px',
-                color: '#8c8c8c',
-                fontWeight: '500',
-                marginBottom: '6px',
-                display: 'flex',
-                alignItems: 'center'
-              }}>
-                <BarChartOutlined style={{ marginRight: '6px', fontSize: '11px', color: '#8c8c8c' }} />
-                Avg Volume
-              </div>
-              <div style={{
-                fontSize: '22px',
-                fontWeight: '700',
-                color: '#8c8c8c',
-                fontFeatureSettings: '"tnum"',
-                lineHeight: '1.2'
-              }}>
-                N/A
-              </div>
-              <div style={{
-                fontSize: '9px',
-                color: '#bfbfbf',
-                fontStyle: 'italic',
-                marginTop: '4px'
-              }}>
-                Not available from current data source
-              </div>
-            </div>
-          </Card>
-        </Col>
-
-        {/* 新增：Range Position */}
-        <Col xs={24} sm={12} md={4}>
-          <Card
-            size="small"
-            style={{
-              border: '1px solid #f0f0f0',
-              boxShadow: '0 1px 4px rgba(0,0,0,0.02)'
-            }}
-          >
-            <div style={{ padding: '10px' }}>
-              <div style={{
-                fontSize: '11px',
-                color: '#8c8c8c',
-                fontWeight: '500',
-                marginBottom: '6px',
-                display: 'flex',
-                alignItems: 'center'
-              }}>
-                <LineChartOutlined style={{ marginRight: '6px', fontSize: '11px', color: '#fa8c16' }} />
-                Range Position
-              </div>
-              <div style={{
-                fontSize: '22px',
-                fontWeight: '700',
-                fontFeatureSettings: '"tnum"',
-                lineHeight: '1.2'
-              }}>
-                {(() => {
-                  // 优先使用后端返回的yearHigh/yearLow
-                  const yearHigh = stockData?.yearHigh;
-                  const yearLow = stockData?.yearLow;
-                  const currentPrice = stockData?.price;
-                  
-                  // 使用统一的函数计算
-                  const rangePosition = calculateRangePosition(currentPrice, yearHigh, yearLow);
-                  
-                  if (rangePosition.percentage === null) {
-                    return '--';
-                  }
-                  
-                  // 根据标签设置颜色
-                  let color = '#fa8c16'; // 默认橙色
-                  if (rangePosition.label === 'Near 52W High') {
-                    color = '#52c41a'; // 绿色
-                  } else if (rangePosition.label === 'Near 52W Low') {
-                    color = '#ff4d4f'; // 红色
-                  } else if (rangePosition.label === 'Upper range') {
-                    color = '#73d13d'; // 浅绿色
-                  } else if (rangePosition.label === 'Lower range') {
-                    color = '#ff7875'; // 浅红色
-                  }
-                  
-                  return (
-                    <span style={{ color }}>
-                      {rangePosition.label}
-                    </span>
-                  );
-                })()}
-              </div>
-              <div style={{
-                fontSize: '9px',
-                color: '#bfbfbf',
-                fontStyle: 'italic',
-                marginTop: '4px'
-              }}>
-                {(() => {
-                  // 优先使用后端返回的yearHigh/yearLow
-                  const yearHigh = stockData?.yearHigh;
-                  const yearLow = stockData?.yearLow;
-                  const currentPrice = stockData?.price;
-                  
-                  // 使用统一的函数计算
-                  const rangePosition = calculateRangePosition(currentPrice, yearHigh, yearLow);
-                  
-                  if (rangePosition.percentage === null) {
-                    return 'No data';
-                  }
-                  
-                  return `${safeToFixed(rangePosition.percentage, 1)}% of range`;
-                })()}
-              </div>
-            </div>
-          </Card>
-        </Col>
-
-        {/* Rel Volume */}
-        <Col xs={24} sm={12} md={4}>
-          <Card
-            size="small"
-            style={{
-              border: '1px solid #f0f0f0',
-              boxShadow: '0 1px 4px rgba(0,0,0,0.02)'
-            }}
-          >
-            <div style={{ padding: '10px' }}>
-              <div style={{
-                fontSize: '11px',
-                color: '#8c8c8c',
-                fontWeight: '500',
-                marginBottom: '6px',
-                display: 'flex',
-                alignItems: 'center'
-              }}>
-                <BarChartOutlined style={{ marginRight: '6px', fontSize: '11px', color: '#8c8c8c' }} />
-                Rel Volume
-              </div>
-              <div style={{
-                fontSize: '22px',
-                fontWeight: '700',
-                color: '#8c8c8c',
-                fontFeatureSettings: '"tnum"',
-                lineHeight: '1.2'
-              }}>
-                N/A
-              </div>
-              <div style={{
-                fontSize: '9px',
-                color: '#bfbfbf',
-                fontStyle: 'italic',
-                marginTop: '4px'
-              }}>
-                Not available from current data source
-              </div>
-            </div>
-          </Card>
-        </Col>
-      </Row>
-
 
       {/* 图表区域 - 强化 */}
-      <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
+
+      <Row gutter={[16, 16]} style={{ marginBottom: '32px' }}>
         <Col span={24}>
-          {/* 图表数据延迟提示 */}
-          <div style={{ 
-            marginBottom: '8px', 
-            fontSize: '12px', 
-            color: '#666',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '4px'
-          }}>
-            <InfoCircleOutlined style={{ fontSize: '11px' }} />
-            <span>Latest chart data point is delayed by 15 minutes</span>
-          </div>
-          
           <Card
             title={
-              <span style={{ fontSize: '16px', fontWeight: '600', color: '#1f1f1f' }}>
-                Price Chart
-              </span>
+              <Space size="middle">
+                <span style={{ fontSize: '20px', fontWeight: '700', color: '#0f172a' }}>
+                  {t.analysis.priceAnalysis}
+                </span>
+                <div style={{ 
+                  fontSize: '12px', 
+                  color: '#94a3b8',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontWeight: '500',
+                  marginLeft: '12px',
+                  background: '#f8fafc',
+                  padding: '4px 10px',
+                  borderRadius: '20px',
+                  border: '1px solid #f1f5f9'
+                }}>
+                  <InfoCircleOutlined style={{ fontSize: '12px', color: '#3b82f6' }} />
+                  <span>{t.analysis.marketDataDelayed}</span>
+                </div>
+              </Space>
             }
             extra={
-              <Space size="small">
+              <Space size="large">
                 {/* 图表数据统计：基于图表可见数据计算 */}
                 {(() => {
                   // 渲染图表统计信息
@@ -2920,48 +1542,29 @@ const SymbolAnalysis: React.FC = () => {
                       let periodChangeIsPositive = false;
                       
                       if (selectedTimeframe === '1D') {
-                        // 1 Day图：直接使用顶部summary的值
-                        // Change = 顶部summary的change
-                        // Period Change = 顶部summary的changePercent
+                        // 1 Day图：Change = snapshot daily change (currentPrice - previousClose)
                         if (stockData) {
                           change = stockData.change !== undefined ? stockData.change : null;
                           changePercent = stockData.changePercent !== undefined ? stockData.changePercent : null;
                           changeIsPositive = change !== null ? change >= 0 : false;
-                          
-                          // Period Change也使用相同的值（与顶部summary一致）
-                          periodChange = change;
-                          periodChangePercent = changePercent;
-                          periodChangeIsPositive = changeIsPositive;
+
+                          // Period Change = first bar → last bar intraday change
+                          if (firstClose > 0) {
+                            periodChange = lastClose - firstClose;
+                            periodChangePercent = (periodChange / firstClose) * 100;
+                            periodChangeIsPositive = periodChange >= 0;
+                          }
                         }
-                      } else if (selectedTimeframe === '1M' || selectedTimeframe === '3M' || selectedTimeframe === '1Y') {
-                        // 1M/3M/1Y图：使用图表自身数据计算，但Change和Period Change使用相同逻辑
-                        // 对于月线/季线/年线图，Change应该显示整个时间段的变化
-                        // 而不是日变化
-                        
-                        // 计算 Change (基于 firstClose)
-                        if (firstClose > 0) {
-                          change = lastClose - firstClose;
-                          changePercent = (change / firstClose) * 100;
-                          changeIsPositive = change >= 0;
-                        }
-                        
-                        // Period Change 与 Change 相同（都是整个时间段的变化）
-                        periodChange = change;
-                        periodChangePercent = changePercent;
-                        periodChangeIsPositive = changeIsPositive;
                       } else {
-                        // 其他timeframe（1W）：使用图表自身数据计算
-                        // 获取 prevClose：倒数第二个数据点的收盘价
+                        // 1W/1M/3M/1Y：Change = prev bar close → last bar close
                         const prevClose = chartData.length >= 2 ? chartData[chartData.length - 2].close : null;
-                        
-                        // 计算 Change (基于 prevClose)
                         if (prevClose && prevClose > 0) {
                           change = lastClose - prevClose;
                           changePercent = (change / prevClose) * 100;
                           changeIsPositive = change >= 0;
                         }
-                        
-                        // 计算 Period Change (基于 firstClose)
+
+                        // Period Change = first bar → last bar (all timeframes)
                         if (firstClose > 0) {
                           periodChange = lastClose - firstClose;
                           periodChangePercent = (periodChange / firstClose) * 100;
@@ -2973,83 +1576,81 @@ const SymbolAnalysis: React.FC = () => {
                         <div style={{
                           display: 'flex',
                           alignItems: 'center',
-                          gap: '20px', // 增加间距以容纳标签
-                          marginRight: '20px',
-                          padding: '4px 0',
-                          fontFamily: "'SF Mono', Monaco, 'Courier New', monospace"
+                          gap: '32px', 
+                          fontFamily: "'Inter', system-ui, -apple-system, sans-serif"
                         }}>
                           {/* Last Bar Close 组 */}
                           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
                             <div style={{
-                              fontSize: '10px',
-                              color: '#8c8c8c',
-                              fontWeight: '500',
+                              fontSize: '11px',
+                              color: '#64748b',
+                              fontWeight: '700',
                               marginBottom: '2px',
-                              letterSpacing: '0.3px'
+                              textTransform: 'uppercase',
+                              letterSpacing: '0.05em'
                             }}>
-                              Last Bar Close
+                              {t.analysis.lastClose}
                             </div>
                             <div style={{
-                              fontSize: '15px',
+                              fontSize: '18px',
                               fontWeight: '700',
-                              color: '#1f1f1f',
-                              letterSpacing: '-0.2px'
+                              color: '#0f172a'
                             }}>
                               ${currentPrice.toFixed(2)}
                             </div>
                           </div>
                           
-                          <div style={{ width: '1px', height: '24px', backgroundColor: '#f0f0f0' }}></div>
+                          <div style={{ width: '1px', height: '32px', backgroundColor: '#f1f5f9' }}></div>
                           
                           {/* Change 组 */}
                           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
                             <div style={{
-                              fontSize: '10px',
-                              color: '#8c8c8c',
-                              fontWeight: '500',
+                              fontSize: '11px',
+                              color: '#64748b',
+                              fontWeight: '700',
                               marginBottom: '2px',
-                              letterSpacing: '0.3px'
+                              textTransform: 'uppercase',
+                              letterSpacing: '0.05em'
                             }}>
-                              Change
+                              {selectedTimeframe === '1D' ? t.analysis.dailyChange : t.analysis.change}
                             </div>
                             <div style={{
-                              fontSize: '13px',
-                              fontWeight: '600',
-                              color: change !== null ? (changeIsPositive ? '#52c41a' : '#ff4d4f') : '#8c8c8c',
-                              backgroundColor: change !== null ? (changeIsPositive ? 'rgba(82, 196, 26, 0.05)' : 'rgba(255, 77, 79, 0.05)') : 'transparent',
-                              padding: '2px 8px',
-                              borderRadius: '3px',
-                              minWidth: '55px',
-                              textAlign: 'center',
-                              border: change !== null ? `1px solid ${changeIsPositive ? 'rgba(82, 196, 26, 0.15)' : 'rgba(255, 77, 79, 0.15)'}` : '1px solid #f0f0f0'
+                              fontSize: '15px',
+                              fontWeight: '700',
+                              color: change !== null ? (changeIsPositive ? '#10b981' : '#ef4444') : '#94a3b8',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px'
                             }}>
-                              {change !== null ? `${changeIsPositive ? '+' : ''}${change.toFixed(2)}` : 'N/A'}
+                              {change !== null ? (changeIsPositive ? <ArrowUpOutlined style={{fontSize: 12}} /> : <ArrowDownOutlined style={{fontSize: 12}} />) : null}
+                              {change !== null ? `${Math.abs(change).toFixed(2)} (${Math.abs(changePercent!).toFixed(2)}%)` : 'N/A'}
                             </div>
                           </div>
                           
+                          <div style={{ width: '1px', height: '32px', backgroundColor: '#f1f5f9' }}></div>
+
                           {/* Period Change 组 */}
                           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
                             <div style={{
-                              fontSize: '10px',
-                              color: '#8c8c8c',
-                              fontWeight: '500',
+                              fontSize: '11px',
+                              color: '#64748b',
+                              fontWeight: '700',
                               marginBottom: '2px',
-                              letterSpacing: '0.3px'
+                              textTransform: 'uppercase',
+                              letterSpacing: '0.05em'
                             }}>
-                              Period Change
+                              {t.analysis.periodChange}
                             </div>
                             <div style={{
-                              fontSize: '13px',
-                              fontWeight: '600',
-                              color: periodChange !== null ? (periodChangeIsPositive ? '#52c41a' : '#ff4d4f') : '#8c8c8c',
-                              backgroundColor: periodChange !== null ? (periodChangeIsPositive ? 'rgba(82, 196, 26, 0.05)' : 'rgba(255, 77, 79, 0.05)') : 'transparent',
-                              padding: '2px 8px',
-                              borderRadius: '3px',
-                              minWidth: '65px',
-                              textAlign: 'center',
-                              border: periodChange !== null ? `1px solid ${periodChangeIsPositive ? 'rgba(82, 196, 26, 0.15)' : 'rgba(255, 77, 79, 0.15)'}` : '1px solid #f0f0f0'
+                              fontSize: '15px',
+                              fontWeight: '700',
+                              color: periodChange !== null ? (periodChangeIsPositive ? '#10b981' : '#ef4444') : '#94a3b8',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px'
                             }}>
-                              {periodChangePercent !== null ? `${periodChangeIsPositive ? '+' : ''}${periodChangePercent.toFixed(2)}%` : 'N/A'}
+                              {periodChange !== null ? (periodChangeIsPositive ? <ArrowUpOutlined style={{fontSize: 12}} /> : <ArrowDownOutlined style={{fontSize: 12}} />) : null}
+                              {periodChangePercent !== null ? `${Math.abs(periodChangePercent).toFixed(2)}%` : 'N/A'}
                             </div>
                           </div>
                         </div>
@@ -3064,1328 +1665,491 @@ const SymbolAnalysis: React.FC = () => {
                 <Radio.Group
                   value={selectedTimeframe}
                   onChange={(e) => setSelectedTimeframe(e.target.value)}
-                  size="small"
+                  size="middle"
                   style={{ marginRight: '8px' }}
+                  buttonStyle="solid"
                 >
                   {Object.entries(TIMEFRAMES).map(([key, config]) => (
                     <Radio.Button
                       key={key}
                       value={key}
                       style={{
-                        fontSize: '12px',
-                        padding: '4px 8px',
-                        height: '28px',
-                        lineHeight: '20px'
+                        fontSize: '13px',
+                        fontWeight: '700',
+                        padding: '0 18px',
+                        height: '40px',
+                        lineHeight: '38px',
+                        borderRadius: key === '1D' ? '8px 0 0 8px' : key === '1Y' ? '0 8px 8px 0' : '0'
                       }}
                     >
-                      {config.label}
+                      {timeframeLabels[key] || config.label}
                     </Radio.Button>
                   ))}
                 </Radio.Group>
-                <DataSourceBadge source={dataSource} />
                 
-                {/* 1 Week数据源提示 */}
-                {selectedTimeframe === '1W' && (
-                  <div style={{
-                    fontSize: '10px',
-                    color: '#8c8c8c',
-                    backgroundColor: 'rgba(24, 144, 255, 0.08)',
-                    padding: '2px 6px',
-                    borderRadius: '3px',
-                    border: '1px solid rgba(24, 144, 255, 0.2)',
-                    marginLeft: '8px',
-                    fontFamily: "'SF Mono', Monaco, 'Courier New', monospace"
-                  }}>
-                    <span style={{ color: '#1890ff' }}>ⓘ</span> 含今日实验数据
-                  </div>
-                )}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <DataSourceBadge source={dataSource} />
+                </div>
               </Space>
             }
             style={{
-              border: '1px solid #e8e8e8',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.04)'
+              border: '1px solid #f1f5f9',
+              boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03)',
+              borderRadius: '20px'
             }}
-            bodyStyle={{ padding: '12px' }}
+            bodyStyle={{ padding: '24px 32px' }}
           >
             {renderPriceChart()}
           </Card>
         </Col>
       </Row>
 
-      {/* Signal Summary - 信号摘要 */}
-      <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
+      {/* Signal Summary - 信号摘要 (Refined Premium Version) */}
+      <Row gutter={[16, 16]} style={{ marginBottom: '32px' }}>
         <Col span={24}>
           <Card
+            bordered={false}
             title={
-              <span style={{ fontSize: '16px', fontWeight: '600', color: '#1f1f1f' }}>
-                Signal Summary
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <BarChartOutlined style={{ color: '#3b82f6', fontSize: '20px' }} />
+                <span style={{ fontSize: '20px', fontWeight: '700', color: '#0f172a' }}>
+                  {t.analysis.technicalSignalSummary}
+                </span>
+              </div>
             }
             style={{
-              border: '1px solid #e8e8e8',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.04)'
+              borderRadius: '24px',
+              border: '1px solid #f1f5f9',
+              boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03)',
+              overflow: 'hidden'
             }}
-            bodyStyle={{ padding: '20px' }}
+            bodyStyle={{ padding: '32px' }}
           >
-            <Row gutter={[24, 16]}>
+            <Row gutter={[24, 24]}>
               {/* Trend Bias */}
               <Col xs={24} sm={12} md={8}>
-                <div style={{
-                  padding: '16px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '8px',
-                  background: '#fafafa'
-                }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#595959',
-                    fontWeight: '600',
-                    marginBottom: '8px',
+                <div 
+                  className="signal-card-hover"
+                  style={{
+                    padding: '24px',
+                    border: '1px solid #f1f5f9',
+                    borderRadius: '20px',
+                    background: '#f8fafc',
+                    height: '100%',
                     display: 'flex',
-                    alignItems: 'center'
-                  }}>
-                    <LineChartOutlined style={{ marginRight: '8px', fontSize: '12px' }} />
-                    Trend Bias
-                  </div>
-                  <div style={{
-                    fontSize: '18px',
-                    fontWeight: '700',
-                    marginBottom: '4px'
-                  }}>
-                    {(() => {
-                      // 基于Alpaca真实数据的趋势偏差计算
-                      // 需要足够的数据进行可靠分析
-                      const hasEnoughData = chartData.length >= 20; // 至少20个数据点
-                      
-                      if (!stockData.price || !hasEnoughData) {
-                        return <span style={{ color: '#8c8c8c' }}>Insufficient Data</span>;
-                      }
-                      
-                      // 使用Alpaca数据：当前价格和图表数据
-                      const currentPrice = stockData.price; // Alpaca当前最新价
-                      const lastChartData = chartData[chartData.length - 1];
-                      
-                      // 获取技术指标（基于Alpaca历史数据计算）
-                      const sma20 = lastChartData?.sma20;
-                      const sma50 = lastChartData?.sma50;
-                      const rsi = lastChartData?.rsi;
-                      
-                      // 检查技术指标是否有效（基于Alpaca数据计算）
-                      // 放宽条件：允许部分指标缺失，使用降级逻辑
-                      const hasBasicData = chartData.length >= 20 && stockData.price;
-                      const hasSMA20 = sma20 !== undefined && !isNaN(sma20);
-                      const hasSMA50 = sma50 !== undefined && !isNaN(sma50);
-                      const hasRSI = rsi !== undefined && !isNaN(rsi);
-                      
-                      if (!hasBasicData) {
-                        return <span style={{ color: '#8c8c8c' }}>Insufficient Data</span>;
-                      }
-                      
-                      // 如果没有RSI，使用SMA-only的趋势判断
-                      if (!hasRSI) {
-                        // 降级逻辑：只基于SMA判断趋势
-                        if (hasSMA20 && hasSMA50) {
-                          // 继续下面的趋势分析，但跳过RSI相关部分
-                        } else {
-                          return <span style={{ color: '#8c8c8c' }}>Need More Data</span>;
-                        }
-                      }
-                      
-                      // 基于Alpaca数据的完整趋势分析
-                      let bullishScore = 0;
-                      let bearishScore = 0;
-                      
-                      // 1. 价格与移动平均线比较（基于Alpaca数据）
-                      if (hasSMA20) {
-                        if (currentPrice > sma20!) bullishScore += 1;
-                        else if (currentPrice < sma20!) bearishScore += 1;
-                      }
-                      
-                      if (hasSMA50) {
-                        if (currentPrice > sma50!) bullishScore += 1;
-                        else if (currentPrice < sma50!) bearishScore += 1;
-                      }
-                      
-                      // 2. 移动平均线交叉（基于Alpaca数据）
-                      if (hasSMA20 && hasSMA50) {
-                        if (sma20! > sma50!) bullishScore += 1;
-                        else if (sma20! < sma50!) bearishScore += 1;
-                      }
-                      
-                      // 3. RSI状态（基于Alpaca数据计算）
-                      if (hasRSI) {
-                        if (rsi > 70) bearishScore += 1; // 超买 - 看跌信号
-                        else if (rsi < 30) bullishScore += 1; // 超卖 - 看涨信号
-                        else if (rsi > 50) bullishScore += 0.5; // 偏强
-                        else bearishScore += 0.5; // 偏弱
-                      } else {
-                        // 没有RSI时，给予中性评分
-                        bullishScore += 0.5;
-                        bearishScore += 0.5;
-                      }
-                      
-                      // 4. 52周位置（基于Alpaca的yearHigh/yearLow数据）
-                      if (stockData.yearHigh && stockData.yearLow) {
-                        const rangePosition = calculateRangePosition(currentPrice, stockData.yearHigh, stockData.yearLow);
-                        if (rangePosition.percentage !== null) {
-                          if (rangePosition.percentage > 80) bearishScore += 0.5; // 接近52周高点
-                          else if (rangePosition.percentage < 20) bullishScore += 0.5; // 接近52周低点
-                        }
-                      }
-                      
-                      // 综合判断（基于Alpaca数据）
-                      const scoreDifference = bullishScore - bearishScore;
-                      
-                      if (scoreDifference > 1.5) {
-                        return (
-                          <span style={{ color: '#52c41a' }}>
-                            <ArrowUpOutlined style={{ marginRight: '6px' }} />
-                            Strong Bullish
-                          </span>
-                        );
-                      } else if (scoreDifference > 0.5) {
-                        return (
-                          <span style={{ color: '#52c41a', opacity: 0.8 }}>
-                            <ArrowUpOutlined style={{ marginRight: '6px' }} />
-                            Bullish
-                          </span>
-                        );
-                      } else if (scoreDifference < -1.5) {
-                        return (
-                          <span style={{ color: '#ff4d4f' }}>
-                            <ArrowDownOutlined style={{ marginRight: '6px' }} />
-                            Strong Bearish
-                          </span>
-                        );
-                      } else if (scoreDifference < -0.5) {
-                        return (
-                          <span style={{ color: '#ff4d4f', opacity: 0.8 }}>
-                            <ArrowDownOutlined style={{ marginRight: '6px' }} />
-                            Bearish
-                          </span>
-                        );
-                      } else {
-                        return (
-                          <span style={{ color: '#8c8c8c' }}>
-                            Neutral
-                          </span>
-                        );
-                      }
-                    })()}
-                  </div>
-                  <div style={{
-                    fontSize: '11px',
-                    color: '#8c8c8c',
-                    lineHeight: '1.4'
-                  }}>
-                    {(() => {
-                      // 基于Alpaca数据的趋势分析描述 - 统一状态机
-                      
-                      // 1. 检查基本数据
-                      const hasEnoughData = chartData.length >= 20;
-                      
-                      if (!stockData.price || !hasEnoughData) {
-                        return 'Need more Alpaca data for trend analysis';
-                      }
-                      
-                      // 2. 检查技术指标
-                      const lastChartData = chartData[chartData.length - 1];
-                      const sma20 = lastChartData?.sma20;
-                      const sma50 = lastChartData?.sma50;
-                      const rsi = lastChartData?.rsi;
-                      
-                      const hasSMA20 = sma20 !== undefined && !isNaN(sma20);
-                      const hasSMA50 = sma50 !== undefined && !isNaN(sma50);
-                      const hasRSI = rsi !== undefined && !isNaN(rsi);
-                      
-                      // 3. 判断状态并返回对应文案
-                      if (!hasSMA20 && !hasSMA50 && !hasRSI) {
-                        return 'Unable to derive trend from current Alpaca data';
-                      }
-                      
-                      if (hasSMA20 || hasSMA50 || hasRSI) {
-                        // 成功状态：根据实际使用的指标返回说明
-                        const usedIndicators = [];
-                        if (hasSMA20) usedIndicators.push('SMA20');
-                        if (hasSMA50) usedIndicators.push('SMA50');
-                        if (hasRSI) usedIndicators.push('RSI');
+                    flexDirection: 'column',
+                    justifyContent: 'space-between'
+                  }}
+                >
+                  <div>
+                    <div style={{
+                      fontSize: '13px',
+                      color: '#64748b',
+                      fontWeight: '700',
+                      marginBottom: '16px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.05em'
+                    }}>
+                      <LineChartOutlined style={{ marginRight: '10px', fontSize: '14px', color: '#3b82f6' }} />
+                      {t.analysis.trendBias}
+                    </div>
+                    <div style={{ fontSize: '24px', fontWeight: '800', marginBottom: '8px' }}>
+                      {(() => {
+                        const hasEnoughData = chartData.length >= 20;
+                        if (!stockData.price || !hasEnoughData) return <span style={{ color: '#94a3b8' }}>{t.analysis.analyzing}</span>;
                         
-                        return `Macro trend direction based on ${usedIndicators.join(', ')} alignment`;
-                      }
-                      
-                      // 理论上不会走到这里，但保持安全
-                      return 'Calculating Alpaca-based indicators...';
-                    })()}
+                        const currentPrice = stockData.price;
+                        const lastChartData = chartData[chartData.length - 1];
+                        const sma20 = lastChartData?.sma20;
+                        const sma50 = lastChartData?.sma50;
+                        const rsi = lastChartData?.rsi;
+                        
+                        let bullishScore = 0;
+                        let bearishScore = 0;
+                        
+                        if (sma20) {
+                          if (currentPrice > sma20) bullishScore += 1;
+                          else bearishScore += 1;
+                        }
+                        if (sma50) {
+                          if (currentPrice > sma50) bullishScore += 1;
+                          else bearishScore += 1;
+                        }
+                        if (sma20 && sma50) {
+                          if (sma20 > sma50) bullishScore += 1;
+                          else bearishScore += 1;
+                        }
+                        if (rsi) {
+                          if (rsi > 70) bearishScore += 1;
+                          else if (rsi < 30) bullishScore += 1;
+                          else if (rsi > 50) bullishScore += 0.5;
+                          else bearishScore += 0.5;
+                        }
+                        
+                        const scoreDiff = bullishScore - bearishScore;
+                        if (scoreDiff > 1.5) return <span style={{ color: '#10b981' }}><ArrowUpOutlined /> {t.analysis.strongBullish}</span>;
+                        if (scoreDiff > 0.5) return <span style={{ color: '#10b981', opacity: 0.8 }}><ArrowUpOutlined /> {t.analysis.bullish}</span>;
+                        if (scoreDiff < -1.5) return <span style={{ color: '#ef4444' }}><ArrowDownOutlined /> {t.analysis.strongBearish}</span>;
+                        if (scoreDiff < -0.5) return <span style={{ color: '#ef4444', opacity: 0.8 }}><ArrowDownOutlined /> {t.analysis.bearish}</span>;
+                        return <span style={{ color: '#64748b' }}>{t.analysis.neutral}</span>;
+                      })()}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#94a3b8', lineHeight: '1.6', fontWeight: 500 }}>
+                    {t.analysis.trendDescription.replace('{count}', String(chartData.length))}
                   </div>
                 </div>
               </Col>
 
               {/* RSI State */}
               <Col xs={24} sm={12} md={8}>
-                <div style={{
-                  padding: '16px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '8px',
-                  background: '#fafafa'
-                }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#595959',
-                    fontWeight: '600',
-                    marginBottom: '8px',
+                <div 
+                  className="signal-card-hover"
+                  style={{
+                    padding: '24px',
+                    border: '1px solid #f1f5f9',
+                    borderRadius: '20px',
+                    background: '#f8fafc',
+                    height: '100%',
                     display: 'flex',
-                    alignItems: 'center'
-                  }}>
-                    <LineChartOutlined style={{ marginRight: '8px', fontSize: '12px' }} />
-                    RSI State
+                    flexDirection: 'column',
+                    justifyContent: 'space-between'
+                  }}
+                >
+                  <div>
+                    <div style={{
+                      fontSize: '13px',
+                      color: '#64748b',
+                      fontWeight: '700',
+                      marginBottom: '16px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.05em'
+                    }}>
+                      <BarChartOutlined style={{ marginRight: '10px', fontSize: '14px', color: '#8b5cf6' }} />
+                      {t.analysis.momentumRSI}
+                    </div>
+                    <div style={{ fontSize: '24px', fontWeight: '800', marginBottom: '8px' }}>
+                      {(() => {
+                        const validRSI = chartData.filter(d => d.rsi !== undefined && !isNaN(d.rsi));
+                        if (validRSI.length === 0) return <span style={{ color: '#94a3b8' }}>{t.analysis.noRSIData}</span>;
+                        const latestRSI = validRSI[validRSI.length - 1].rsi!;
+                        if (latestRSI >= 70) return <span style={{ color: '#ef4444' }}>{t.analysis.overbought}</span>;
+                        if (latestRSI <= 30) return <span style={{ color: '#10b981' }}>{t.analysis.oversold}</span>;
+                        if (latestRSI > 55) return <span style={{ color: '#10b981', opacity: 0.8 }}>{t.analysis.bullish}</span>;
+                        if (latestRSI < 45) return <span style={{ color: '#ef4444', opacity: 0.8 }}>{t.analysis.bearish}</span>;
+                        return <span style={{ color: '#64748b' }}>{t.analysis.neutral}</span>;
+                      })()}
+                    </div>
                   </div>
-                  <div style={{
-                    fontSize: '18px',
-                    fontWeight: '700',
-                    marginBottom: '4px'
-                  }}>
-                    {(() => {
-                      // 基于Alpaca数据的RSI状态分析 - 统一数据源
-                      // 与RSI图使用相同的数据过滤逻辑
-                      
-                      // 1. 获取所有有效RSI数据点（与RSI图相同）
-                      const validRSIPoints = chartData.filter(
-                        d => d.rsi !== undefined && d.rsi !== null && !isNaN(d.rsi)
-                      );
-                      
-                      // 2. 检查数据是否足够计算RSI(14)
-                      const hasEnoughDataForRSI = chartData.length >= 15;
-                      
-                      if (!hasEnoughDataForRSI) {
-                        return <span style={{ color: '#8c8c8c' }}>Insufficient Data</span>;
-                      }
-                      
-                      // 3. 检查是否有有效RSI数据
-                      if (validRSIPoints.length === 0) {
-                        // 数据足够但没有有效RSI值
-                        return <span style={{ color: '#8c8c8c' }}>RSI Calculation Failed</span>;
-                      }
-                      
-                      // 4. 获取最后一个有效RSI点（与RSI图数据源一致）
-                      const latestValidRSIPoint = validRSIPoints[validRSIPoints.length - 1];
-                      const latestRSI = latestValidRSIPoint?.rsi;
-                      
-                      // 5. 基于最后一个有效RSI值的状态判断
-                      if (latestRSI === undefined || isNaN(latestRSI)) {
-                        // 理论上不会走到这里，因为validRSIPoints.length > 0
-                        return <span style={{ color: '#8c8c8c' }}>RSI Calculation Failed</span>;
-                      }
-                      
-                      if (latestRSI >= 70) {
-                        return (
-                          <span style={{ color: '#cf1322' }}>
-                            Overbought
-                          </span>
-                        );
-                      } else if (latestRSI <= 30) {
-                        return (
-                          <span style={{ color: '#389e0d' }}>
-                            Oversold
-                          </span>
-                        );
-                      } else if (latestRSI > 55) {
-                        return (
-                          <span style={{ color: '#52c41a', opacity: 0.8 }}>
-                            Bullish
-                          </span>
-                        );
-                      } else if (latestRSI < 45) {
-                        return (
-                          <span style={{ color: '#ff4d4f', opacity: 0.8 }}>
-                            Bearish
-                          </span>
-                        );
-                      } else {
-                        return (
-                          <span style={{ color: '#8c8c8c' }}>
-                            Neutral
-                          </span>
-                        );
-                      }
-                    })()}
-                  </div>
-                  <div style={{
-                    fontSize: '11px',
-                    color: '#8c8c8c',
-                    lineHeight: '1.4'
-                  }}>
-                    {(() => {
-                      // RSI值显示，基于Alpaca数据 - 统一数据源
-                      // 与RSI图使用相同的数据过滤逻辑
-                      
-                      // 1. 获取所有有效RSI数据点（与RSI图相同）
-                      const validRSIPoints = chartData.filter(
-                        d => d.rsi !== undefined && d.rsi !== null && !isNaN(d.rsi)
-                      );
-                      
-                      // 2. 检查数据是否足够计算RSI(14)
-                      const hasEnoughDataForRSI = chartData.length >= 15;
-                      
-                      if (!hasEnoughDataForRSI) {
-                        return 'Need at least 15 Alpaca data points for RSI';
-                      }
-                      
-                      // 3. 检查是否有有效RSI数据
-                      if (validRSIPoints.length === 0) {
-                        // 数据足够但没有有效RSI值
-                        return 'Unable to calculate RSI from current Alpaca data';
-                      }
-                      
-                      // 4. 成功状态：显示说明
-                      return `RSI(14) based on current timeframe close data`;
-                    })()}
+                  <div style={{ fontSize: '12px', color: '#94a3b8', lineHeight: '1.6', fontWeight: 500 }}>
+                    {t.analysis.rsiDescription.replace('{value}', chartData[chartData.length - 1]?.rsi?.toFixed(2) || '—')}
                   </div>
                 </div>
               </Col>
 
               {/* 52W Position */}
               <Col xs={24} sm={12} md={8}>
-                <div style={{
-                  padding: '16px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '8px',
-                  background: '#fafafa'
-                }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#595959',
-                    fontWeight: '600',
-                    marginBottom: '8px',
+                <div 
+                  className="signal-card-hover"
+                  style={{
+                    padding: '24px',
+                    border: '1px solid #f1f5f9',
+                    borderRadius: '20px',
+                    background: '#f8fafc',
+                    height: '100%',
                     display: 'flex',
-                    alignItems: 'center'
-                  }}>
-                    <LineChartOutlined style={{ marginRight: '8px', fontSize: '12px' }} />
-                    52W Position
+                    flexDirection: 'column',
+                    justifyContent: 'space-between'
+                  }}
+                >
+                  <div>
+                    <div style={{
+                      fontSize: '13px',
+                      color: '#64748b',
+                      fontWeight: '700',
+                      marginBottom: '16px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.05em'
+                    }}>
+                      <InfoCircleOutlined style={{ marginRight: '10px', fontSize: '14px', color: '#f59e0b' }} />
+                      {t.analysis.rangePosition}
+                    </div>
+                    <div style={{ fontSize: '24px', fontWeight: '800', marginBottom: '8px' }}>
+                      {(() => {
+                        const pos = calculateRangePosition(stockData.price, stockData.yearHigh, stockData.yearLow);
+                        let color = '#64748b';
+                        if (pos.percentage !== null) {
+                          if (pos.percentage >= 80) color = '#10b981';
+                          else if (pos.percentage >= 60) color = '#34d399';
+                          else if (pos.percentage <= 20) color = '#ef4444';
+                          else if (pos.percentage <= 40) color = '#f87171';
+                        }
+                        return <span style={{ color }}>{pos.label}</span>;
+                      })()}
+                    </div>
                   </div>
-                  <div style={{
-                    fontSize: '18px',
-                    fontWeight: '700',
-                    marginBottom: '4px'
-                  }}>
-                    {(() => {
-                      // 基于Alpaca数据的52周位置分析
-                      // 需要Alpaca提供的52周高点和低点数据
-                      const yearHigh = stockData?.yearHigh; // 应该来自Alpaca
-                      const yearLow = stockData?.yearLow;   // 应该来自Alpaca
-                      const currentPrice = stockData?.price; // Alpaca当前价
-                      
-                      // 检查Alpaca数据是否完整
-                      if (!currentPrice || !yearHigh || !yearLow) {
-                        return <span style={{ color: '#8c8c8c' }}>Alpaca Data Needed</span>;
-                      }
-                      
-                      // 使用统一的函数计算（基于Alpaca数据）
-                      const rangePosition = calculateRangePosition(currentPrice, yearHigh, yearLow);
-                      
-                      if (rangePosition.percentage === null) {
-                        return <span style={{ color: '#8c8c8c' }}>Invalid Data</span>;
-                      }
-                      
-                      // 根据标签设置颜色
-                      let color = '#fa8c16'; // 默认橙色 - Mid-range
-                      if (rangePosition.label === 'Near 52W High') {
-                        color = '#52c41a'; // 绿色
-                      } else if (rangePosition.label === 'Near 52W Low') {
-                        color = '#ff4d4f'; // 红色
-                      } else if (rangePosition.label === 'Upper range') {
-                        color = '#73d13d'; // 浅绿色
-                      } else if (rangePosition.label === 'Lower range') {
-                        color = '#ff7875'; // 浅红色
-                      }
-                      
-                      return (
-                        <span style={{ color }}>
-                          {rangePosition.label}
-                        </span>
-                      );
-                    })()}
-                  </div>
-                  <div style={{
-                    fontSize: '11px',
-                    color: '#8c8c8c',
-                    lineHeight: '1.4'
-                  }}>
-                    {(() => {
-                      // 基于Alpaca数据的52周位置描述
-                      const yearHigh = stockData?.yearHigh;
-                      const yearLow = stockData?.yearLow;
-                      const currentPrice = stockData?.price;
-                      
-                      // 检查Alpaca数据
-                      if (!currentPrice || !yearHigh || !yearLow) {
-                        return 'Requires Alpaca 52W high/low data';
-                      }
-                      
-                      // 使用统一的函数计算
-                      const rangePosition = calculateRangePosition(currentPrice, yearHigh, yearLow);
-                      
-                      if (rangePosition.percentage === null) {
-                        return 'Invalid Alpaca data for calculation';
-                      }
-                      
-                      return `Position: ${safeToFixed(rangePosition.percentage, 1)}% (Alpaca 52W: $${safeToFixed(yearLow, 2)}-$${safeToFixed(yearHigh, 2)})`;
-                    })()}
+                  <div style={{ fontSize: '12px', color: '#94a3b8', lineHeight: '1.6', fontWeight: 500 }}>
+                    {t.analysis.rangeDescription.replace('{high}', `$${(stockData.yearHigh || 0).toFixed(2)}`).replace('{low}', `$${(stockData.yearLow || 0).toFixed(2)}`)}
                   </div>
                 </div>
               </Col>
+            </Row>
 
-              {/* Price vs SMA20 */}
-              <Col xs={24} sm={12} md={6}>
-                <div style={{
-                  padding: '16px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '8px',
-                  background: '#fafafa'
-                }}>
+            <Row gutter={[24, 24]} style={{ marginTop: '24px' }}>
+              {[
+                {
+                  label: t.analysis.priceVsSMA20,
+                  value: (() => {
+                    const last = chartData[chartData.length-1];
+                    if (!last?.sma20 || !stockData.price) return '—';
+                    const diff = ((stockData.price - last.sma20) / last.sma20) * 100;
+                    return `${diff > 0 ? '+' : ''}${diff.toFixed(2)}%`;
+                  })(),
+                  status: (() => {
+                    const last = chartData[chartData.length-1];
+                    if (!last?.sma20 || !stockData.price) return 'neutral';
+                    return stockData.price > last.sma20 ? 'bullish' : 'bearish';
+                  })()
+                },
+                {
+                  label: t.analysis.priceVsSMA50,
+                  value: (() => {
+                    const last = chartData[chartData.length-1];
+                    if (!last?.sma50 || !stockData.price) return '—';
+                    const diff = ((stockData.price - last.sma50) / last.sma50) * 100;
+                    return `${diff > 0 ? '+' : ''}${diff.toFixed(2)}%`;
+                  })(),
+                  status: (() => {
+                    const last = chartData[chartData.length-1];
+                    if (!last?.sma50 || !stockData.price) return 'neutral';
+                    return stockData.price > last.sma50 ? 'bullish' : 'bearish';
+                  })()
+                },
+                {
+                  label: t.analysis.sma20VsSMA50,
+                  value: (() => {
+                    const last = chartData[chartData.length-1];
+                    if (!last?.sma20 || !last?.sma50) return '—';
+                    const diff = ((last.sma20 - last.sma50) / last.sma50) * 100;
+                    return `${diff > 0 ? '+' : ''}${diff.toFixed(2)}%`;
+                  })(),
+                  status: (() => {
+                    const last = chartData[chartData.length-1];
+                    if (!last?.sma20 || !last?.sma50) return 'neutral';
+                    return last.sma20 > last.sma50 ? 'bullish' : 'bearish';
+                  })()
+                },
+                {
+                  label: t.analysis.volumeTrend,
+                  value: (() => {
+                    if (chartData.length < 10) return '—';
+                    const recent = chartData.slice(-5).reduce((a, b) => a + b.volume, 0) / 5;
+                    const prev = chartData.slice(-10, -5).reduce((a, b) => a + b.volume, 0) / 5;
+                    if (prev === 0) return 'N/A';
+                    const diff = ((recent - prev) / prev) * 100;
+                    return `${diff > 0 ? '+' : ''}${diff.toFixed(0)}%`;
+                  })(),
+                  status: 'neutral'
+                }
+              ].map((item, idx) => (
+                <Col xs={12} md={6} key={idx}>
                   <div style={{
-                    fontSize: '12px',
-                    color: '#595959',
-                    fontWeight: '600',
-                    marginBottom: '8px'
+                    padding: '16px 20px',
+                    borderRadius: '16px',
+                    background: '#ffffff',
+                    border: '1px solid #f1f5f9',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px'
                   }}>
-                    Price vs SMA20
+                    <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{item.label}</span>
+                    <span style={{ 
+                      fontSize: '18px', 
+                      fontWeight: '800', 
+                      color: item.status === 'bullish' ? '#10b981' : item.status === 'bearish' ? '#ef4444' : '#1e293b'
+                    }}>
+                      {item.value}
+                    </span>
                   </div>
-                  <div style={{
-                    fontSize: '18px',
-                    fontWeight: '700',
-                    marginBottom: '4px'
-                  }}>
-                    {(() => {
-                      // 基于Alpaca数据的Price vs SMA20比较
-                      // 需要足够的数据计算SMA20
-                      const hasEnoughDataForSMA20 = chartData.length >= 20;
-                      
-                      if (!stockData.price || !hasEnoughDataForSMA20) {
-                        return <span style={{ color: '#8c8c8c' }}>Need Data</span>;
-                      }
-                      
-                      const lastChartData = chartData[chartData.length - 1];
-                      const currentPrice = stockData.price; // Alpaca当前价
-                      const sma20 = lastChartData?.sma20; // 基于Alpaca数据计算的SMA20
-                      
-                      // 检查SMA20是否基于Alpaca数据有效计算
-                      if (sma20 === undefined || isNaN(sma20)) {
-                        return <span style={{ color: '#8c8c8c' }}>Calculating...</span>;
-                      }
-                      
-                      // 基于Alpaca数据的比较
-                      const diff = currentPrice - sma20;
-                      const diffPercent = (diff / sma20) * 100;
-                      
-                      if (diff > 0) {
-                        return (
-                          <span style={{ color: '#52c41a' }}>
-                            Above (+{safeToFixed(diffPercent, 2)}%)
-                          </span>
-                        );
-                      } else if (diff < 0) {
-                        return (
-                          <span style={{ color: '#ff4d4f' }}>
-                            Below ({safeToFixed(diffPercent, 2)}%)
-                          </span>
-                        );
-                      } else {
-                        return (
-                          <span style={{ color: '#8c8c8c' }}>
-                            Equal
-                          </span>
-                        );
-                      }
-                    })()}
-                  </div>
-                  <div style={{
-                    fontSize: '11px',
-                    color: '#8c8c8c',
-                    lineHeight: '1.4'
-                  }}>
-                    {(() => {
-                      // 基于Alpaca数据的Price vs SMA20信息
-                      const hasEnoughDataForSMA20 = chartData.length >= 20;
-                      
-                      if (!stockData.price || !hasEnoughDataForSMA20) {
-                        return 'Need ≥20 Alpaca points for SMA20';
-                      }
-                      
-                      const lastChartData = chartData[chartData.length - 1];
-                      const currentPrice = stockData.price;
-                      const sma20 = lastChartData?.sma20;
-                      
-                      if (sma20 === undefined || isNaN(sma20)) {
-                        return 'Calculating SMA20 from Alpaca data...';
-                      }
-                      
-                      return `Alpaca: $${safeToFixed(currentPrice, 2)} vs SMA20: $${safeToFixed(sma20, 2)}`;
-                    })()}
-                  </div>
-                </div>
-              </Col>
-
-              {/* Price vs SMA50 */}
-              <Col xs={24} sm={12} md={6}>
-                <div style={{
-                  padding: '16px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '8px',
-                  background: '#fafafa'
-                }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#595959',
-                    fontWeight: '600',
-                    marginBottom: '8px'
-                  }}>
-                    Price vs SMA50
-                  </div>
-                  <div style={{
-                    fontSize: '18px',
-                    fontWeight: '700',
-                    marginBottom: '4px'
-                  }}>
-                    {(() => {
-                      // 基于Alpaca数据的Price vs SMA50比较
-                      // 需要足够的数据计算SMA50
-                      const hasEnoughDataForSMA50 = chartData.length >= 50;
-                      
-                      if (!stockData.price || !hasEnoughDataForSMA50) {
-                        return <span style={{ color: '#8c8c8c' }}>Need Data</span>;
-                      }
-                      
-                      const lastChartData = chartData[chartData.length - 1];
-                      const currentPrice = stockData.price; // Alpaca当前价
-                      const sma50 = lastChartData?.sma50; // 基于Alpaca数据计算的SMA50
-                      
-                      // 检查SMA50是否基于Alpaca数据有效计算
-                      if (sma50 === undefined || isNaN(sma50)) {
-                        return <span style={{ color: '#8c8c8c' }}>Calculating...</span>;
-                      }
-                      
-                      // 基于Alpaca数据的比较
-                      const diff = currentPrice - sma50;
-                      const diffPercent = (diff / sma50) * 100;
-                      
-                      if (diff > 0) {
-                        return (
-                          <span style={{ color: '#52c41a' }}>
-                            Above (+{safeToFixed(diffPercent, 2)}%)
-                          </span>
-                        );
-                      } else if (diff < 0) {
-                        return (
-                          <span style={{ color: '#ff4d4f' }}>
-                            Below ({safeToFixed(diffPercent, 2)}%)
-                          </span>
-                        );
-                      } else {
-                        return (
-                          <span style={{ color: '#8c8c8c' }}>
-                            Equal
-                          </span>
-                        );
-                      }
-                    })()}
-                  </div>
-                  <div style={{
-                    fontSize: '11px',
-                    color: '#8c8c8c',
-                    lineHeight: '1.4'
-                  }}>
-                    {(() => {
-                      // 基于Alpaca数据的Price vs SMA50信息
-                      const hasEnoughDataForSMA50 = chartData.length >= 50;
-                      
-                      if (!stockData.price || !hasEnoughDataForSMA50) {
-                        return 'Need ≥50 Alpaca points for SMA50';
-                      }
-                      
-                      const lastChartData = chartData[chartData.length - 1];
-                      const currentPrice = stockData.price;
-                      const sma50 = lastChartData?.sma50;
-                      
-                      if (sma50 === undefined || isNaN(sma50)) {
-                        return 'Calculating SMA50 from Alpaca data...';
-                      }
-                      
-                      return `Alpaca: $${safeToFixed(currentPrice, 2)} vs SMA50: $${safeToFixed(sma50, 2)}`;
-                    })()}
-                  </div>
-                </div>
-              </Col>
-
-              {/* SMA20 vs SMA50 */}
-              <Col xs={24} sm={12} md={6}>
-                <div style={{
-                  padding: '16px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '8px',
-                  background: '#fafafa'
-                }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#595959',
-                    fontWeight: '600',
-                    marginBottom: '8px'
-                  }}>
-                    SMA20 vs SMA50
-                  </div>
-                  <div style={{
-                    fontSize: '18px',
-                    fontWeight: '700',
-                    marginBottom: '4px'
-                  }}>
-                    {(() => {
-                      // 基于Alpaca数据的SMA20 vs SMA50比较
-                      // 需要足够的数据计算两个移动平均线
-                      const hasEnoughDataForBoth = chartData.length >= 50; // 需要至少50个点计算SMA50
-                      
-                      if (!hasEnoughDataForBoth) {
-                        return <span style={{ color: '#8c8c8c' }}>Need Data</span>;
-                      }
-                      
-                      const lastChartData = chartData[chartData.length - 1];
-                      const sma20 = lastChartData?.sma20; // 基于Alpaca数据计算的SMA20
-                      const sma50 = lastChartData?.sma50; // 基于Alpaca数据计算的SMA50
-                      
-                      // 检查两个移动平均线是否基于Alpaca数据有效计算
-                      if (sma20 === undefined || isNaN(sma20) || sma50 === undefined || isNaN(sma50)) {
-                        return <span style={{ color: '#8c8c8c' }}>Calculating...</span>;
-                      }
-                      
-                      // 基于Alpaca数据的比较
-                      const diff = sma20 - sma50;
-
-                      if (diff > 0) {
-                        return (
-                          <span style={{ color: '#52c41a' }}>
-                            SMA20 &gt; SMA50
-                          </span>
-                        );
-                      } else if (diff < 0) {
-                        return (
-                          <span style={{ color: '#ff4d4f' }}>
-                            SMA20 &lt; SMA50
-                          </span>
-                        );
-                      } else {
-                        return (
-                          <span style={{ color: '#8c8c8c' }}>
-                            Equal
-                          </span>
-                        );
-                      }
-                    })()}
-                  </div>
-                  <div style={{
-                    fontSize: '11px',
-                    color: '#8c8c8c',
-                    lineHeight: '1.4'
-                  }}>
-                    {(() => {
-                      // 基于Alpaca数据的SMA20 vs SMA50信息
-                      const hasEnoughDataForBoth = chartData.length >= 50;
-                      
-                      if (!hasEnoughDataForBoth) {
-                        return 'Need ≥50 Alpaca points for SMA comparison';
-                      }
-                      
-                      const lastChartData = chartData[chartData.length - 1];
-                      const sma20 = lastChartData?.sma20;
-                      const sma50 = lastChartData?.sma50;
-                      
-                      if (sma20 === undefined || isNaN(sma20) || sma50 === undefined || isNaN(sma50)) {
-                        return 'Calculating MAs from Alpaca data...';
-                      }
-                      
-                      const diff = sma20 - sma50;
-                      const diffPercent = (diff / sma50) * 100;
-                      
-                      return `SMA20: $${safeToFixed(sma20, 2)} | SMA50: $${safeToFixed(sma50, 2)} | Diff: ${safeToFixed(diffPercent, 2)}%`;
-                    })()}
-                  </div>
-                </div>
-              </Col>
+                </Col>
+              ))}
             </Row>
           </Card>
         </Col>
       </Row>
 
-      {/* Trade Setup - 交易设置 (研究+决策) */}
-      <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
+              {/* Trade Setup Analysis - 交易设置分析 (Premium Refinement) */}
+      <Row gutter={[16, 16]} style={{ marginBottom: '32px' }}>
         <Col span={24}>
           <Card
+            bordered={false}
             title={
-              <span style={{ fontSize: '16px', fontWeight: '600', color: '#1f1f1f' }}>
-                Trade Setup Analysis
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <LineChartOutlined style={{ color: '#10b981', fontSize: '20px' }} />
+                <span style={{ fontSize: '20px', fontWeight: '700', color: '#0f172a' }}>
+                  {t.analysis.tradeSetupReference}
+                </span>
+              </div>
             }
             style={{
-              border: '1px solid #e8e8e8',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.04)'
+              borderRadius: '24px',
+              border: '1px solid #f1f5f9',
+              boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03)'
             }}
-            bodyStyle={{ padding: '20px' }}
+            bodyStyle={{ padding: '32px' }}
           >
             <Row gutter={[24, 24]}>
-              {/* Support / Resistance - 支撑位/压力位 */}
-              <Col xs={24} sm={12} md={6}>
+              {/* Support / Resistance */}
+              <Col xs={24} md={8}>
                 <div style={{
-                  padding: '16px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '8px',
-                  background: '#fafafa'
+                  padding: '24px',
+                  borderRadius: '20px',
+                  background: '#f8fafc',
+                  border: '1px solid #f1f5f9',
+                  height: '100%'
                 }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#595959',
-                    fontWeight: '600',
-                    marginBottom: '12px',
-                    display: 'flex',
-                    alignItems: 'center'
-                  }}>
-                    <LineChartOutlined style={{ marginRight: '8px', fontSize: '12px' }} />
-                    Support / Resistance
+                  <div style={{ fontSize: '13px', color: '#64748b', fontWeight: '700', marginBottom: '20px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    {t.analysis.supportResistance}
                   </div>
-                  
-                  <div style={{ marginBottom: '16px' }}>
-                    <div style={{
-                      fontSize: '11px',
-                      color: '#8c8c8c',
-                      marginBottom: '4px'
-                    }}>
-                      Key Support Levels
-                    </div>
-                    <div style={{
-                      fontSize: '14px',
-                      fontWeight: '600',
-                      color: '#389e0d'
-                    }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                    <div>
+                      <div style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 600, marginBottom: '6px' }}>{t.analysis.supportLevels}</div>
                       {(() => {
-                        // 基于Alpaca数据的支撑位计算
-                        // 需要足够的Alpaca数据进行分析
                         const hasEnoughData = chartData.length >= 20;
-                        
-                        if (!stockData.price || !hasEnoughData) {
-                          return <div style={{ color: '#8c8c8c' }}>Need Data</div>;
-                        }
-                        
-                        // 使用Alpaca数据：根据timeframe选择数据范围
-                        const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-
-                        if (dataToUse.length < 10) {
-                          return <div style={{ color: '#8c8c8c' }}>Insufficient Alpaca Data</div>;
-                        }
-
-                        // 基于Alpaca历史数据的支撑位计算
-                        // 使用最近20个数据点的低点
-                        const recentLows = dataToUse.slice(-20).map(d => d.low);
-                        if (recentLows.length === 0) {
-                          return <div style={{ color: '#8c8c8c' }}>Calculating...</div>;
-                        }
-                        
+                        if (!stockData.price || !hasEnoughData) return <div style={{ color: '#94a3b8' }}>{t.analysis.analyzing}</div>;
+                        const dataToUse = chartData.slice(-40);
+                        const recentLows = dataToUse.map(d => d.low);
                         const minLow = Math.min(...recentLows);
-                        // 基于Alpaca数据的支撑位：近期低点下方1-3%
-                        const support1 = minLow * 0.99; // 近期低点下方1%
-                        const support2 = minLow * 0.97; // 近期低点下方3%
-                        
                         return (
-                          <div>
-                            <div>S1: ${safeToFixed(support1, 2)}</div>
-                            <div>S2: ${safeToFixed(support2, 2)}</div>
+                          <div style={{ display: 'flex', gap: '12px' }}>
+                            <Tag color="success" style={{ borderRadius: '6px', fontWeight: 700, margin: 0 }}>S1: ${(minLow * 0.99).toFixed(2)}</Tag>
+                            <Tag color="success" style={{ borderRadius: '6px', fontWeight: 700, margin: 0, opacity: 0.7 }}>S2: ${(minLow * 0.97).toFixed(2)}</Tag>
                           </div>
                         );
                       })()}
                     </div>
-                  </div>
-                  
-                  <div>
-                    <div style={{
-                      fontSize: '11px',
-                      color: '#8c8c8c',
-                      marginBottom: '4px'
-                    }}>
-                      Key Resistance Levels
-                    </div>
-                    <div style={{
-                      fontSize: '14px',
-                      fontWeight: '600',
-                      color: '#cf1322'
-                    }}>
+                    <div>
+                      <div style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 600, marginBottom: '6px' }}>{t.analysis.resistanceLevels}</div>
                       {(() => {
-                        // 基于Alpaca数据的阻力位计算
-                        // 需要足够的Alpaca数据进行分析
                         const hasEnoughData = chartData.length >= 20;
-                        
-                        if (!stockData.price || !hasEnoughData) {
-                          return <div style={{ color: '#8c8c8c' }}>Need Data</div>;
-                        }
-                        
-                        // 使用Alpaca数据：根据timeframe选择数据范围
-                        const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-
-                        if (dataToUse.length < 10) {
-                          return <div style={{ color: '#8c8c8c' }}>Insufficient Alpaca Data</div>;
-                        }
-
-                        // 基于Alpaca历史数据的阻力位计算
-                        // 使用最近20个数据点的高点
-                        const recentHighs = dataToUse.slice(-20).map(d => d.high);
-                        if (recentHighs.length === 0) {
-                          return <div style={{ color: '#8c8c8c' }}>Calculating...</div>;
-                        }
-                        
+                        if (!stockData.price || !hasEnoughData) return <div style={{ color: '#94a3b8' }}>{t.analysis.analyzing}</div>;
+                        const dataToUse = chartData.slice(-40);
+                        const recentHighs = dataToUse.map(d => d.high);
                         const maxHigh = Math.max(...recentHighs);
-                        // 基于Alpaca数据的阻力位：近期高点上方1-3%
-                        const resistance1 = maxHigh * 1.01; // 近期高点上方1%
-                        const resistance2 = maxHigh * 1.03; // 近期高点上方3%
-                        
                         return (
-                          <div>
-                            <div>R1: ${safeToFixed(resistance1, 2)}</div>
-                            <div>R2: ${safeToFixed(resistance2, 2)}</div>
+                          <div style={{ display: 'flex', gap: '12px' }}>
+                            <Tag color="error" style={{ borderRadius: '6px', fontWeight: 700, margin: 0 }}>R1: ${(maxHigh * 1.01).toFixed(2)}</Tag>
+                            <Tag color="error" style={{ borderRadius: '6px', fontWeight: 700, margin: 0, opacity: 0.7 }}>R2: ${(maxHigh * 1.03).toFixed(2)}</Tag>
                           </div>
                         );
                       })()}
                     </div>
                   </div>
-                  
-                  <div style={{
-                    fontSize: '10px',
-                    color: '#8c8c8c',
-                    marginTop: '12px',
-                    fontStyle: 'italic',
-                    borderTop: '1px solid #f0f0f0',
-                    paddingTop: '8px'
-                  }}>
-                    {(() => {
-                      // 基于Alpaca数据的支撑阻力描述
-                      const hasEnoughData = chartData.length >= 20;
-                      
-                      if (!hasEnoughData) {
-                        return 'Based on Alpaca data (need ≥20 points)';
-                      }
-                      
-                      return `Based on Alpaca ${selectedTimeframe} data: recent highs/lows ±1-3%`;
-                    })()}
+                </div>
+              </Col>
+
+              {/* Reference Levels */}
+              <Col xs={24} md={8}>
+                <div style={{
+                  padding: '24px',
+                  borderRadius: '20px',
+                  background: '#f8fafc',
+                  border: '1px solid #f1f5f9',
+                  height: '100%'
+                }}>
+                  <div style={{ fontSize: '13px', color: '#64748b', fontWeight: '700', marginBottom: '20px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    {t.analysis.riskManagement}
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '13px', color: '#64748b', fontWeight: 500 }}>{t.analysis.entryTarget}</span>
+                      <span style={{ fontSize: '16px', fontWeight: '700', color: '#3b82f6' }}>${((stockData.price || 0) * 0.995).toFixed(2)}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '13px', color: '#64748b', fontWeight: 500 }}>{t.analysis.stopLoss}</span>
+                      <span style={{ fontSize: '16px', fontWeight: '700', color: '#ef4444' }}>
+                        {(() => {
+                          const dataToUse = chartData.slice(-20);
+                          if (dataToUse.length === 0) return '—';
+                          return `$${(Math.min(...dataToUse.map(d => d.low)) * 0.98).toFixed(2)}`;
+                        })()}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '13px', color: '#64748b', fontWeight: 500 }}>{t.analysis.takeProfit}</span>
+                      <span style={{ fontSize: '16px', fontWeight: '700', color: '#10b981' }}>
+                        {(() => {
+                          const dataToUse = chartData.slice(-20);
+                          if (dataToUse.length === 0) return '—';
+                          return `$${(Math.max(...dataToUse.map(d => d.high)) * 1.05).toFixed(2)}`;
+                        })()}
+                      </span>
+                    </div>
                   </div>
                 </div>
               </Col>
 
-              {/* Entry / Stop / Target - 入场/止损/目标 */}
-              <Col xs={24} sm={12} md={6}>
+              {/* R/R Ratio */}
+              <Col xs={24} md={8}>
                 <div style={{
-                  padding: '16px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '8px',
-                  background: '#fafafa'
+                  padding: '24px',
+                  borderRadius: '20px',
+                  background: '#f0f9ff',
+                  border: '1px solid #e0f2fe',
+                  height: '100%',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  textAlign: 'center'
                 }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#595959',
-                    fontWeight: '600',
-                    marginBottom: '12px',
-                    display: 'flex',
-                    alignItems: 'center'
-                  }}>
-                    <LineChartOutlined style={{ marginRight: '8px', fontSize: '12px' }} />
-                    Reference Entry / Stop / Target
+                  <div style={{ fontSize: '12px', color: '#0369a1', fontWeight: '700', marginBottom: '8px', textTransform: 'uppercase' }}>
+                    {t.analysis.riskRewardRatio}
                   </div>
-                  
-                  <div style={{ marginBottom: '12px' }}>
-                    <div style={{
-                      fontSize: '11px',
-                      color: '#8c8c8c',
-                      marginBottom: '4px'
-                    }}>
-                      Entry Price
-                    </div>
-                    <div style={{
-                      fontSize: '16px',
-                      fontWeight: '700',
-                      color: '#1890ff'
-                    }}>
-                      {(() => {
-                        if (!stockData.price) return 'N/A';
-                        
-                        const currentPrice = stockData.price;
-                        // 基于当前价格给出参考入场点
-                        const entryPrice = currentPrice * 0.995; // 当前价格下方0.5%
-                        
-                        return `$${safeToFixed(entryPrice, 2)}`;
-                      })()}
-                    </div>
-                  </div>
-                  
-                  <div style={{ marginBottom: '12px' }}>
-                    <div style={{
-                      fontSize: '11px',
-                      color: '#8c8c8c',
-                      marginBottom: '4px'
-                    }}>
-                      Stop Loss
-                    </div>
-                    <div style={{
-                      fontSize: '14px',
-                      fontWeight: '600',
-                      color: '#cf1322'
-                    }}>
-                      {(() => {
-                        if (!stockData.price || chartData.length === 0) return 'N/A';
-
-                        const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-
-                        if (dataToUse.length === 0) return 'No data';
-
-                        // 基于近期低点计算止损位
-                        const recentLows = dataToUse.slice(-10).map(d => d.low);
-                        const stopLoss = Math.min(...recentLows) * 0.98; // 近期低点下方2%
-
-                        return `$${safeToFixed(stopLoss, 2)}`;
-                      })()}
-                    </div>
-                  </div>
-                  
-                  <div>
-                    <div style={{
-                      fontSize: '11px',
-                      color: '#8c8c8c',
-                      marginBottom: '4px'
-                    }}>
-                      Target Price
-                    </div>
-                    <div style={{
-                      fontSize: '14px',
-                      fontWeight: '600',
-                      color: '#389e0d'
-                    }}>
-                      {(() => {
-                        if (!stockData.price || chartData.length === 0) return 'N/A';
-
-                        const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-
-                        if (dataToUse.length === 0) return 'No data';
-
-                        // 基于近期高点计算目标位
-                        const recentHighs = dataToUse.slice(-20).map(d => d.high);
-                        const targetPrice = Math.max(...recentHighs) * 1.03; // 近期高点上方3%
-
-                        return `$${safeToFixed(targetPrice, 2)}`;
-                      })()}
-                    </div>
-                  </div>
-                  
-                  <div style={{
-                    fontSize: '10px',
-                    color: '#8c8c8c',
-                    marginTop: '12px',
-                    fontStyle: 'italic',
-                    borderTop: '1px solid #f0f0f0',
-                    paddingTop: '8px'
-                  }}>
-                    Reference values derived from recent price action - For planning only
-                  </div>
-                </div>
-              </Col>
-
-              {/* Trade Bias / Setup - 交易偏倚/设置 */}
-              <Col xs={24} sm={12} md={6}>
-                <div style={{
-                  padding: '16px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '8px',
-                  background: '#fafafa'
-                }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#595959',
-                    fontWeight: '600',
-                    marginBottom: '12px',
-                    display: 'flex',
-                    alignItems: 'center'
-                  }}>
-                    <LineChartOutlined style={{ marginRight: '8px', fontSize: '12px' }} />
-                    Trade Setup Bias
-                  </div>
-                  
-                  <div style={{
-                    fontSize: '18px',
-                    fontWeight: '700',
-                    marginBottom: '12px',
-                    textAlign: 'center'
-                  }}>
+                  <div style={{ fontSize: '42px', fontWeight: '900', color: '#0c4a6e', lineHeight: 1 }}>
                     {(() => {
-                      if (!stockData.price || chartData.length === 0) return 'N/A';
-                      
-                      const lastData = chartData[chartData.length - 1];
-                      const currentPrice = stockData.price;
-                      const sma20 = lastData?.sma20;
-                      const sma50 = lastData?.sma50;
-                      const rsi = lastData?.rsi;
-                      
-                      // 收集信号
-                      let longSignals = 0;
-                      let shortSignals = 0;
-                      
-                      // 1. Price vs SMA20
-                      if (sma20 !== undefined) {
-                        if (currentPrice > sma20) longSignals++;
-                        else if (currentPrice < sma20) shortSignals++;
-                      }
-                      
-                      // 2. Price vs SMA50
-                      if (sma50 !== undefined) {
-                        if (currentPrice > sma50) longSignals++;
-                        else if (currentPrice < sma50) shortSignals++;
-                      }
-                      
-                      // 3. RSI状态
-                      if (rsi !== undefined && !isNaN(rsi)) {
-                        if (rsi <= 30) longSignals++; // 超卖 -> 看涨
-                        else if (rsi >= 70) shortSignals++; // 超买 -> 看跌
-                      }
-                      
-                      // 4. 52周位置
-                      if (chartData.length > 0) {
-                        const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                        if (dataToUse.length > 0) {
-                          const fiftyTwoWeekHigh = Math.max(...dataToUse.map(d => d.high));
-                          const fiftyTwoWeekLow = Math.min(...dataToUse.map(d => d.low));
-                          if (fiftyTwoWeekHigh !== fiftyTwoWeekLow) {
-                            const rangePosition = ((currentPrice - fiftyTwoWeekLow) / (fiftyTwoWeekHigh - fiftyTwoWeekLow)) * 100;
-                            if (rangePosition <= 20) longSignals++; // 接近52周低点 -> 看涨
-                            else if (rangePosition >= 80) shortSignals++; // 接近52周高点 -> 看跌
-                          }
-                        }
-                      }
-                      
-                      // 判断交易设置偏倚
-                      if (longSignals > shortSignals + 1) {
-                        return (
-                          <span style={{ color: '#52c41a' }}>
-                            <ArrowUpOutlined style={{ marginRight: '8px' }} />
-                            Bullish Setup
-                          </span>
-                        );
-                      } else if (shortSignals > longSignals + 1) {
-                        return (
-                          <span style={{ color: '#cf1322' }}>
-                            <ArrowDownOutlined style={{ marginRight: '8px' }} />
-                            Bearish Setup
-                          </span>
-                        );
-                      } else {
-                        return (
-                          <span style={{ color: '#8c8c8c' }}>
-                            Neutral / No Clear Setup
-                          </span>
-                        );
-                      }
+                      if (!stockData.price || chartData.length < 10) return '—';
+                      const dataToUse = chartData.slice(-10);
+                      const stop = Math.min(...dataToUse.map(d => d.low)) * 0.98;
+                      const target = Math.max(...chartData.slice(-20).map(d => d.high)) * 1.05;
+                      const entry = stockData.price * 0.995;
+                      const risk = entry - stop;
+                      const reward = target - entry;
+                      if (risk <= 0) return 'Invalid';
+                      const ratio = reward / risk;
+                      return `${ratio.toFixed(1)}:1`;
                     })()}
                   </div>
-                  
-                  <div style={{
-                    fontSize: '11px',
-                    color: '#8c8c8c',
-                    marginBottom: '8px'
+                  <div style={{ 
+                    marginTop: '12px', 
+                    fontSize: '13px', 
+                    fontWeight: '600',
+                    color: (() => {
+                      const dataToUse = chartData.slice(-10);
+                      const stop = Math.min(...dataToUse.map(d => d.low)) * 0.98;
+                      const target = Math.max(...chartData.slice(-20).map(d => d.high)) * 1.05;
+                      const entry = (stockData.price || 0) * 0.995;
+                      const ratio = (target - entry) / (entry - stop);
+                      return ratio >= 2 ? '#059669' : ratio >= 1 ? '#d97706' : '#dc2626';
+                    })()
                   }}>
                     {(() => {
-                      if (!stockData.price || chartData.length === 0) return 'No data';
-                      
-                      const lastData = chartData[chartData.length - 1];
-                      const currentPrice = stockData.price;
-                      const sma20 = lastData?.sma20;
-                      const sma50 = lastData?.sma50;
-                      const rsi = lastData?.rsi;
-                      
-                      let signals = [];
-                      
-                      if (sma20 !== undefined) {
-                        signals.push(`Price ${currentPrice > sma20 ? '>' : '<'} SMA20`);
-                      }
-                      
-                      if (sma50 !== undefined) {
-                        signals.push(`Price ${currentPrice > sma50 ? '>' : '<'} SMA50`);
-                      }
-                      
-                      if (rsi !== undefined && !isNaN(rsi)) {
-                        if (rsi <= 30) signals.push('RSI Oversold');
-                        else if (rsi >= 70) signals.push('RSI Overbought');
-                        else signals.push(`RSI ${safeToFixed(rsi, 1)}`);
-                      }
-                      
-                      return signals.join(' • ');
+                      const dataToUse = chartData.slice(-10);
+                      const stop = Math.min(...dataToUse.map(d => d.low)) * 0.98;
+                      const target = Math.max(...chartData.slice(-20).map(d => d.high)) * 1.05;
+                      const entry = (stockData.price || 0) * 0.995;
+                      const ratio = (target - entry) / (entry - stop);
+                      if (ratio >= 2) return t.analysis.excellentSetup;
+                      if (ratio >= 1.5) return t.analysis.goodSetup;
+                      if (ratio >= 1) return t.analysis.fairSetup;
+                      return t.analysis.poorSetup;
                     })()}
-                  </div>
-                  
-                  <div style={{
-                    fontSize: '10px',
-                    color: '#8c8c8c',
-                    fontStyle: 'italic'
-                  }}>
-                    Current trade setup assessment based on technical confluence
-                  </div>
-                </div>
-              </Col>
-
-              {/* Risk / Reward - 风险/回报 */}
-              <Col xs={24} sm={12} md={6}>
-                <div style={{
-                  padding: '16px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: '8px',
-                  background: '#fafafa'
-                }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#595959',
-                    fontWeight: '600',
-                    marginBottom: '12px',
-                    display: 'flex',
-                    alignItems: 'center'
-                  }}>
-                    <LineChartOutlined style={{ marginRight: '8px', fontSize: '12px' }} />
-                    Risk / Reward
-                  </div>
-                  
-                  <div style={{ marginBottom: '16px' }}>
-                    <div style={{
-                      fontSize: '11px',
-                      color: '#8c8c8c',
-                      marginBottom: '4px'
-                    }}>
-                      Risk per Share
-                    </div>
-                    <div style={{
-                      fontSize: '14px',
-                      fontWeight: '600',
-                      color: '#cf1322'
-                    }}>
-                      {(() => {
-                        if (!stockData.price || chartData.length === 0) return 'N/A';
-                        
-                        const currentPrice = stockData.price;
-                        const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                        
-                        if (dataToUse.length === 0) return 'No data';
-                        
-                        // 计算风险（入场价-止损价）
-                        const recentLows = dataToUse.slice(-10).map(d => d.low);
-                        const stopLoss = Math.min(...recentLows) * 0.98;
-                        const entryPrice = currentPrice * 0.995;
-                        const riskPerShare = entryPrice - stopLoss;
-                        
-                        return `$${safeToFixed(riskPerShare, 2)}`;
-                      })()}
-                    </div>
-                  </div>
-                  
-                  <div style={{ marginBottom: '16px' }}>
-                    <div style={{
-                      fontSize: '11px',
-                      color: '#8c8c8c',
-                      marginBottom: '4px'
-                    }}>
-                      Reward per Share
-                    </div>
-                    <div style={{
-                      fontSize: '14px',
-                      fontWeight: '600',
-                      color: '#389e0d'
-                    }}>
-                      {(() => {
-                        if (!stockData.price || chartData.length === 0) return 'N/A';
-                        
-                        const currentPrice = stockData.price;
-                        const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                        
-                        if (dataToUse.length === 0) return 'No data';
-                        
-                        // 计算回报（目标价-入场价）
-                        const recentHighs = dataToUse.slice(-20).map(d => d.high);
-                        const targetPrice = Math.max(...recentHighs) * 1.03;
-                        const entryPrice = currentPrice * 0.995;
-                        const rewardPerShare = targetPrice - entryPrice;
-                        
-                        return `$${safeToFixed(rewardPerShare, 2)}`;
-                      })()}
-                    </div>
-                  </div>
-                  
-                  <div>
-                    <div style={{
-                      fontSize: '11px',
-                      color: '#8c8c8c',
-                      marginBottom: '4px'
-                    }}>
-                      Risk/Reward Ratio
-                    </div>
-                    <div style={{
-                      fontSize: '16px',
-                      fontWeight: '700',
-                      color: (() => {
-                        if (!stockData.price || chartData.length === 0) return '#8c8c8c';
-                        
-                        const currentPrice = stockData.price;
-                        const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                        
-                        if (dataToUse.length === 0) return '#8c8c8c';
-                        
-                        // 计算风险回报比
-                        const recentLows = dataToUse.slice(-10).map(d => d.low);
-                        const recentHighs = dataToUse.slice(-20).map(d => d.high);
-                        const stopLoss = Math.min(...recentLows) * 0.98;
-                        const targetPrice = Math.max(...recentHighs) * 1.03;
-                        const entryPrice = currentPrice * 0.995;
-                        
-                        const risk = entryPrice - stopLoss;
-                        const reward = targetPrice - entryPrice;
-                        
-                        if (risk <= 0) return '#8c8c8c';
-                        
-                        const ratio = reward / risk;
-                        
-                        if (ratio >= 2) return '#52c41a'; // 良好
-                        if (ratio >= 1) return '#fa8c16'; // 一般
-                        return '#cf1322'; // 较差
-                      })()
-                    }}>
-                      {(() => {
-                        if (!stockData.price || chartData.length === 0) return 'N/A';
-                        
-                        const currentPrice = stockData.price;
-                        const dataToUse = selectedTimeframe === '1Y' ? chartData : chartData.slice(-252);
-                        
-                        if (dataToUse.length === 0) return 'No data';
-                        
-                        // 计算风险回报比
-                        const recentLows = dataToUse.slice(-10).map(d => d.low);
-                        const recentHighs = dataToUse.slice(-20).map(d => d.high);
-                        const stopLoss = Math.min(...recentLows) * 0.98;
-                        const targetPrice = Math.max(...recentHighs) * 1.03;
-                        const entryPrice = currentPrice * 0.995;
-                        
-                        const risk = entryPrice - stopLoss;
-                        const reward = targetPrice - entryPrice;
-                        
-                        if (risk <= 0) return 'Invalid';
-                        
-                        const ratio = reward / risk;
-                        return `${safeToFixed(ratio, 2)}:1`;
-                      })()}
-                    </div>
-                  </div>
-                  
-                  <div style={{
-                    fontSize: '10px',
-                    color: '#8c8c8c',
-                    marginTop: '12px',
-                    fontStyle: 'italic',
-                    borderTop: '1px solid #f0f0f0',
-                    paddingTop: '8px'
-                  }}>
-                    Calculated from reference entry/stop/target levels based on support/resistance
                   </div>
                 </div>
               </Col>
@@ -4394,322 +2158,104 @@ const SymbolAnalysis: React.FC = () => {
         </Col>
       </Row>
 
-      {/* 技术指标 - 更充实 */}
-      <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
+      {/* 技术指标 - 更充实 (Premium Tabs) */}
+      <Row gutter={[16, 16]} style={{ marginBottom: '32px' }}>
         <Col span={24}>
           <Card
+            bordered={false}
             title={
-              <span style={{ fontSize: '16px', fontWeight: '600', color: '#1f1f1f' }}>
-                Technical Indicators
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <RadarChartOutlined style={{ color: '#8b5cf6', fontSize: '20px' }} />
+                <span style={{ fontSize: '20px', fontWeight: '700', color: '#0f172a' }}>
+                  {t.analysis.technicalIndicators}
+                </span>
+              </div>
             }
             style={{
-              border: '1px solid #e8e8e8',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.04)'
+              borderRadius: '24px',
+              border: '1px solid #f1f5f9',
+              boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03)',
+              overflow: 'hidden'
             }}
             bodyStyle={{ padding: '0' }}
           >
             <Tabs
               defaultActiveKey="rsi"
-              size="middle"
-              style={{ padding: '0 16px' }}
+              size="large"
+              style={{ padding: '0 32px' }}
               tabBarStyle={{
                 marginBottom: 0,
-                borderBottom: '1px solid #f0f0f0'
+                borderBottom: '1px solid #f1f5f9'
               }}
             >
               <TabPane
                 tab={
-                  <span style={{ fontSize: '14px', fontWeight: '500' }}>
-                    RSI
+                  <span style={{ fontSize: '15px', fontWeight: '600' }}>
+                    {t.analysis.relativeStrength}
                   </span>
                 }
                 key="rsi"
               >
-                <div style={{ padding: '16px 0' }}>
+                <div style={{ padding: '32px 0' }}>
                   {renderRSIChart()}
                 </div>
               </TabPane>
               <TabPane
                 tab={
-                  <span style={{ fontSize: '14px', fontWeight: '500' }}>
-                    Moving Averages
+                  <span style={{ fontSize: '15px', fontWeight: '600' }}>
+                    {t.analysis.movingAverages}
                   </span>
                 }
                 key="ma"
               >
-                <div style={{ padding: '24px' }}>
-                  {/* 第一行：3张卡片 - Current Price, SMA20, SMA50 */}
+                <div style={{ padding: '32px 0' }}>
                   <Row gutter={[24, 24]}>
-                    <Col span={8}>
-                      <Card
-                        size="small"
-                        style={{
-                          border: '1px solid #e8e8e8',
-                          borderRadius: '8px',
-                          boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
-                          textAlign: 'center',
-                          background: 'linear-gradient(135deg, #f6ffed 0%, #f0f9ff 100%)'
-                        }}
-                      >
-                        <div style={{ padding: '20px 16px' }}>
-                          <div style={{
-                            fontSize: '12px',
-                            color: '#595959',
-                            fontWeight: '600',
-                            marginBottom: '8px',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.5px'
-                          }}>
-                            Current Price
-                          </div>
-                          <div style={{
-                            fontSize: '28px',
-                            fontWeight: '700',
-                            color: '#1890ff',
-                            fontFeatureSettings: '"tnum"',
-                            lineHeight: '1.2',
-                            marginBottom: '12px'
-                          }}>
-                            {stockData.price !== null ? `$${safeToFixed(stockData.price, 2)}` : 'N/A'}
-                          </div>
-                          <div style={{
-                            fontSize: '11px',
-                            color: '#8c8c8c',
-                            lineHeight: '1.4',
-                            fontStyle: 'italic'
-                          }}>
-                            {(() => {
-                              // 显示当前价格的数据源
-                              if (!stockData.price) return 'No price data';
-                              return `Latest price from ${dataSource}`;
-                            })()}
-                          </div>
-                        </div>
-                      </Card>
-                    </Col>
-                    <Col span={8}>
-                      <Card
-                        size="small"
-                        style={{
-                          border: '1px solid #e8e8e8',
-                          borderRadius: '8px',
-                          boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
-                          textAlign: 'center',
-                          background: 'linear-gradient(135deg, #f6ffed 0%, #f6ffed 100%)'
-                        }}
-                      >
-                        <div style={{ padding: '20px 16px' }}>
-                          <div style={{
-                            fontSize: '12px',
-                            color: '#595959',
-                            fontWeight: '600',
-                            marginBottom: '8px',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.5px'
-                          }}>
-                            SMA 20
-                          </div>
-                          <div style={{
-                            fontSize: '28px',
-                            fontWeight: '700',
-                            color: '#52c41a',
-                            fontFeatureSettings: '"tnum"',
-                            lineHeight: '1.2',
-                            marginBottom: '12px'
-                          }}>
-                            {(() => {
-                              if (chartData.length === 0) return 'N/A';
-                              const lastData = chartData[chartData.length - 1];
-                              return lastData?.sma20 !== undefined
-                                ? `$${safeToFixed(lastData.sma20, 2)}`
-                                : 'N/A';
-                            })()}
-                          </div>
-                          <div style={{
-                            fontSize: '11px',
-                            color: '#8c8c8c',
-                            lineHeight: '1.4',
-                            fontStyle: 'italic'
-                          }}>
-                            {(() => {
-                              // 显示SMA20的数据源和计算信息
-                              if (chartData.length === 0) return 'No chart data';
-                              const lastData = chartData[chartData.length - 1];
-                              const hasSMA20 = lastData?.sma20 !== undefined;
-                              
-                              if (!hasSMA20) {
-                                return 'Need ≥20 periods for SMA20';
-                              }
-                              
-                              return `SMA20 (${selectedTimeframe} bars) from ${dataSource}`;
-                            })()}
-                          </div>
-                        </div>
-                      </Card>
-                    </Col>
-                    <Col span={8}>
-                      <Card
-                        size="small"
-                        style={{
-                          border: '1px solid #e8e8e8',
-                          borderRadius: '8px',
-                          boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
-                          textAlign: 'center',
-                          background: 'linear-gradient(135deg, #fff2e8 0%, #fff2e8 100%)'
-                        }}
-                      >
-                        <div style={{ padding: '20px 16px' }}>
-                          <div style={{
-                            fontSize: '12px',
-                            color: '#595959',
-                            fontWeight: '600',
-                            marginBottom: '8px',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.5px'
-                          }}>
-                            SMA 50
-                          </div>
-                          <div style={{
-                            fontSize: '28px',
-                            fontWeight: '700',
-                            color: '#fa8c16',
-                            fontFeatureSettings: '"tnum"',
-                            lineHeight: '1.2',
-                            marginBottom: '12px'
-                          }}>
-                            {(() => {
-                              if (chartData.length === 0) return 'N/A';
-                              const lastData = chartData[chartData.length - 1];
-                              return lastData?.sma50 !== undefined
-                                ? `$${safeToFixed(lastData.sma50, 2)}`
-                                : 'N/A';
-                            })()}
-                          </div>
-                          <div style={{
-                            fontSize: '11px',
-                            color: '#8c8c8c',
-                            lineHeight: '1.4',
-                            fontStyle: 'italic'
-                          }}>
-                            {(() => {
-                              // 显示SMA50的数据源和计算信息
-                              if (chartData.length === 0) return 'No chart data';
-                              const lastData = chartData[chartData.length - 1];
-                              const hasSMA50 = lastData?.sma50 !== undefined;
-                              
-                              if (!hasSMA50) {
-                                return 'Need ≥50 periods for SMA50';
-                              }
-                              
-                              return `SMA50 (${selectedTimeframe} bars) from ${dataSource}`;
-                            })()}
-                          </div>
-                        </div>
-                      </Card>
-                    </Col>
-                  </Row>
-
-                  {/* 第三行：Notes / Data Availability 区块 */}
-                  <div style={{ marginTop: '32px' }}>
-                    <div style={{
-                      fontSize: '16px',
-                      fontWeight: '600',
-                      color: '#1f1f1f',
-                      marginBottom: '16px',
-                      paddingBottom: '8px',
-                      borderBottom: '1px solid #f0f0f0'
-                    }}>
-                      Data Status
-                    </div>
-                    
-                    <Card
-                      size="small"
-                      style={{
-                        border: '1px solid #f0f0f0',
-                        borderRadius: '6px',
-                        background: '#fafafa'
-                      }}
-                    >
-                      <div style={{ padding: '16px' }}>
+                    {[
+                      { label: t.analysis.currentPrice, value: `$${safeToFixed(stockData.price, 2)}`, color: '#3b82f6', bg: '#eff6ff' },
+                      { 
+                        label: 'SMA 20', 
+                        value: chartData[chartData.length - 1]?.sma20 ? `$${safeToFixed(chartData[chartData.length - 1].sma20, 2)}` : 'N/A',
+                        color: '#10b981', bg: '#f0fdf4'
+                      },
+                      { 
+                        label: 'SMA 50', 
+                        value: chartData[chartData.length - 1]?.sma50 ? `$${safeToFixed(chartData[chartData.length - 1].sma50, 2)}` : 'N/A',
+                        color: '#f59e0b', bg: '#fffbeb'
+                      },
+                    ].map((item, idx) => (
+                      <Col xs={24} md={8} key={idx}>
                         <div style={{
-                          fontSize: '13px',
-                          color: '#595959',
-                          lineHeight: '1.6'
+                          padding: '24px',
+                          borderRadius: '20px',
+                          background: item.bg,
+                          textAlign: 'center',
+                          border: '1px solid transparent',
+                          transition: 'all 0.2s ease'
                         }}>
-                          {(() => {
-                            if (chartData.length === 0) {
-                              return (
-                                <div>
-                                  <div style={{ color: '#ff4d4f', fontWeight: '500', marginBottom: '8px' }}>
-                                    ⚠️ No data available
-                                  </div>
-                                  <div>Load chart data to see moving average analysis.</div>
-                                </div>
-                              );
-                            }
-                            
-                            const lastData = chartData[chartData.length - 1];
-                            const hasSMA20 = lastData?.sma20 !== undefined;
-                            const hasSMA50 = lastData?.sma50 !== undefined;
-                            
-                            if (!hasSMA20 && !hasSMA50) {
-                              return (
-                                <div>
-                                  <div style={{ color: '#ff4d4f', fontWeight: '500', marginBottom: '8px' }}>
-                                    ⚠️ Insufficient data for moving averages
-                                  </div>
-                                  <div>
-                                    • SMA20: Need at least 20 periods of data<br />
-                                    • SMA50: Need at least 50 periods of data
-                                  </div>
-                                </div>
-                              );
-                            } else if (!hasSMA50) {
-                              return (
-                                <div>
-                                  <div style={{ color: '#fa8c16', fontWeight: '500', marginBottom: '8px' }}>
-                                    ⚠️ Partial data available
-                                  </div>
-                                  <div>
-                                    • SMA20: ✓ Available ({chartData.length} periods)<br />
-                                    • SMA50: Need at least 50 periods (currently {chartData.length})
-                                  </div>
-                                </div>
-                              );
-                            } else if (!hasSMA20) {
-                              return (
-                                <div>
-                                  <div style={{ color: '#fa8c16', fontWeight: '500', marginBottom: '8px' }}>
-                                    ⚠️ Partial data available
-                                  </div>
-                                  <div>
-                                    • SMA20: Need at least 20 periods (currently {chartData.length})<br />
-                                    • SMA50: ✓ Available ({chartData.length} periods)
-                                  </div>
-                                </div>
-                              );
-                            } else {
-                              return (
-                                <div>
-                                  <div style={{ color: '#52c41a', fontWeight: '500', marginBottom: '8px' }}>
-                                    ✓ All moving averages available
-                                  </div>
-                                  <div>
-                                    • Data Source: {dataSource}<br />
-                                    • Timeframe: {selectedTimeframe}<br />
-                                    • Total Periods: {chartData.length}<br />
-                                    • SMA20: ✓ {chartData.length} periods available<br />
-                                    • SMA50: ✓ {chartData.length} periods available<br />
-                                    • Calculation: Based on {selectedTimeframe} close prices
-                                  </div>
-                                </div>
-                              );
-                            }
-                          })()}
+                          <div style={{ fontSize: '12px', color: '#64748b', fontWeight: '700', marginBottom: '8px', textTransform: 'uppercase' }}>{item.label}</div>
+                          <div style={{ fontSize: '32px', fontWeight: '900', color: item.color, lineHeight: 1 }}>{item.value}</div>
                         </div>
-                      </div>
-                    </Card>
+                      </Col>
+                    ))}
+                  </Row>
+                  
+                  <div style={{ marginTop: '24px', padding: '20px', background: '#f8fafc', borderRadius: '16px', border: '1px solid #f1f5f9' }}>
+                    <div style={{ fontSize: '14px', fontWeight: '700', color: '#1e293b', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <InfoCircleOutlined style={{ color: '#3b82f6' }} />
+                      {t.analysis.analysisInsights}
+                    </div>
+                    <div style={{ fontSize: '13px', color: '#64748b', lineHeight: '1.6' }}>
+                      {(() => {
+                        const last = chartData[chartData.length - 1];
+                        if (!last?.sma20 || !last?.sma50) return t.analysis.maInsufficient;
+                        const price = stockData.price || 0;
+                        let insights = [];
+                        if (price > last.sma20) insights.push(t.analysis.maAbove20);
+                        else insights.push(t.analysis.maBelow20);
+                        if (last.sma20 > last.sma50) insights.push(t.analysis.ma20Above50);
+                        return insights.join(' ');
+                      })()}
+                    </div>
                   </div>
                 </div>
               </TabPane>
@@ -4718,295 +2264,59 @@ const SymbolAnalysis: React.FC = () => {
         </Col>
       </Row>
 
-      {/* 公司信息和回测历史 - 统一样式 */}
+      {/* 底部信息 (Company Info & History) */}
       <Row gutter={[16, 16]}>
-        <Col xs={24} md={12}>
+        <Col xs={24} lg={12}>
           <Card
-            title={
-              <span style={{ fontSize: '16px', fontWeight: '600', color: '#1f1f1f' }}>
-                Company Information
-              </span>
-            }
-            style={{
-              border: '1px solid #e8e8e8',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
-              height: '100%'
-            }}
-            bodyStyle={{ padding: '16px' }}
+            bordered={false}
+            title={<span style={{ fontSize: '18px', fontWeight: '700' }}>{t.analysis.companyInsights}</span>}
+            style={{ borderRadius: '24px', border: '1px solid #f1f5f9', height: '100%' }}
+            bodyStyle={{ padding: '24px' }}
           >
-            <Row gutter={[16, 16]}>
-              <Col span={12}>
-                <div style={{ marginBottom: '16px' }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#8c8c8c',
-                    fontWeight: '500',
-                    marginBottom: '4px'
-                  }}>
-                    Sector
-                  </div>
-                  <div style={{
-                    fontSize: '14px',
-                    fontWeight: '600',
-                    color: '#1f1f1f'
-                  }}>
-                    {stockData.sector || 'Unknown'}
-                  </div>
-                  <div style={{
-                    fontSize: '10px',
-                    color: '#8c8c8c',
-                    fontStyle: 'italic'
-                  }}>
-                    {(() => {
-                      // 显示字段数据源
-                      if (dataSource.includes('Alpaca')) {
-                        return 'From Finnhub (Alpaca fallback)';
-                      }
-                      return `From ${dataSource}`;
-                    })()}
-                  </div>
-                </div>
-              </Col>
-
-              <Col span={12}>
-                <div style={{ marginBottom: '16px' }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#8c8c8c',
-                    fontWeight: '500',
-                    marginBottom: '4px'
-                  }}>
-                    Industry
-                  </div>
-                  <div style={{
-                    fontSize: '14px',
-                    fontWeight: '600',
-                    color: '#1f1f1f'
-                  }}>
-                    {stockData.industry || 'Unknown'}
-                  </div>
-                </div>
-              </Col>
-
-              <Col span={12}>
-                <div style={{ marginBottom: '16px' }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#8c8c8c',
-                    fontWeight: '500',
-                    marginBottom: '4px'
-                  }}>
-                    P/E Ratio
-                  </div>
-                  <div style={{
-                    fontSize: '14px',
-                    fontWeight: '600',
-                    color: '#1f1f1f',
-                    fontFeatureSettings: '"tnum"'
-                  }}>
-                    {(() => {
-                      // 优先使用Alpaca数据，如果Alpaca没有则使用Finnhub fallback
-                      if (stockData.peRatio !== undefined && stockData.peRatio !== null) {
-                        return safeToFixed(stockData.peRatio, 2);
-                      }
-                      return 'N/A';
-                    })()}
-                  </div>
-                </div>
-              </Col>
-
-              <Col span={12}>
-                <div style={{ marginBottom: '16px' }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#8c8c8c',
-                    fontWeight: '500',
-                    marginBottom: '4px'
-                  }}>
-                    Dividend Yield
-                  </div>
-                  <div style={{
-                    fontSize: '14px',
-                    fontWeight: '600',
-                    color: stockData.dividendYield && stockData.dividendYield >= 2 ? '#52c41a' : '#1f1f1f',
-                    fontFeatureSettings: '"tnum"'
-                  }}>
-                    {(() => {
-                      // 优先使用Alpaca数据，如果Alpaca没有则使用Finnhub fallback
-                      if (stockData.dividendYield !== undefined && stockData.dividendYield !== null) {
-                        return `${safeToFixed(stockData.dividendYield, 2)}%`;
-                      }
-                      return 'N/A';
-                    })()}
-                  </div>
-                </div>
-              </Col>
-
-              <Col span={12}>
-                <div style={{ marginBottom: '16px' }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#8c8c8c',
-                    fontWeight: '500',
-                    marginBottom: '4px'
-                  }}>
-                    Currency
-                  </div>
-                  <div style={{
-                    fontSize: '14px',
-                    fontWeight: '600',
-                    color: '#1f1f1f'
-                  }}>
-                    {stockData.currency || 'USD'}
-                  </div>
-                </div>
-              </Col>
-
-              <Col span={12}>
-                <div style={{ marginBottom: '16px' }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#8c8c8c',
-                    fontWeight: '500',
-                    marginBottom: '4px'
-                  }}>
-                    Beta
-                  </div>
-                  <div style={{
-                    fontSize: '14px',
-                    fontWeight: '600',
-                    color: '#1f1f1f',
-                    fontFeatureSettings: '"tnum"'
-                  }}>
-                    {(() => {
-                      // 优先使用Alpaca数据，如果Alpaca没有则使用Finnhub fallback
-                      if (stockData.beta !== undefined && stockData.beta !== null) {
-                        return safeToFixed(stockData.beta, 2);
-                      }
-                      return 'N/A';
-                    })()}
-                  </div>
-                </div>
-              </Col>
-
-              <Col span={12}>
-                <div style={{ marginBottom: '16px' }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#8c8c8c',
-                    fontWeight: '500',
-                    marginBottom: '4px'
-                  }}>
-                    Earnings Date
-                  </div>
-                  <div style={{
-                    fontSize: '14px',
-                    fontWeight: '600',
-                    color: '#1f1f1f'
-                  }}>
-                    {(() => {
-                      // 优先使用Alpaca数据，如果Alpaca没有则使用Finnhub fallback
-                      if (stockData.earningsDate !== undefined && stockData.earningsDate !== null) {
-                        return stockData.earningsDate;
-                      }
-                      return 'N/A';
-                    })()}
-                  </div>
-                </div>
-              </Col>
-
-              <Col span={12}>
-                <div style={{ marginBottom: '16px' }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#8c8c8c',
-                    fontWeight: '500',
-                    marginBottom: '4px'
-                  }}>
-                    Data Source
-                  </div>
-                  <div style={{
-                    fontSize: '14px',
-                    fontWeight: '600',
-                    color: '#1f1f1f'
-                  }}>
-                    {dataSource}
-                  </div>
-                </div>
-              </Col>
-
-              <Col span={12}>
-                <div style={{ marginBottom: '16px' }}>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#8c8c8c',
-                    fontWeight: '500',
-                    marginBottom: '4px'
-                  }}>
-                    52W High
-                  </div>
-                  <div style={{
-                    fontSize: '14px',
-                    fontWeight: '600',
-                    color: '#389e0d',
-                    fontFeatureSettings: '"tnum"'
-                  }}>
-                    {stockData.yearHigh !== undefined && stockData.yearHigh !== null ? `$${safeToFixed(stockData.yearHigh, 2)}` : 'N/A'}
-                  </div>
-                </div>
-              </Col>
+            <Row gutter={[24, 24]}>
+              {[
+                { label: t.analysis.sector, value: stockData.sector ? translateSector(stockData.sector) : 'N/A' },
+                { label: t.analysis.industry, value: stockData.industry ? translateSector(stockData.industry) : 'N/A' },
+                { label: t.analysis.peRatio, value: stockData.peRatio ? safeToFixed(stockData.peRatio, 2) : 'N/A' },
+                { label: t.analysis.divYield, value: stockData.dividendYield ? `${safeToFixed(stockData.dividendYield, 2)}%` : 'N/A' },
+              ].map((item, idx) => (
+                <Col span={12} key={idx}>
+                  <div style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 600, textTransform: 'uppercase', marginBottom: '4px' }}>{item.label}</div>
+                  <div style={{ fontSize: '16px', fontWeight: '700', color: '#1e293b' }}>{item.value}</div>
+                </Col>
+              ))}
             </Row>
           </Card>
         </Col>
-
-        <Col xs={24} md={12}>
+        <Col xs={24} lg={12}>
           <Card
-            title={
-              <span style={{ fontSize: '16px', fontWeight: '600', color: '#1f1f1f' }}>
-                Backtest History
-              </span>
-            }
-            extra={
-              <Button
-                size="middle"
-                icon={<PlayCircleOutlined />}
-                onClick={handleRunBacktest}
-                type="primary"
-                style={{
-                  fontSize: '13px',
-                  height: '32px',
-                  padding: '0 12px'
-                }}
-              >
-                New Backtest
-            </Button>
-          }>
-            <Empty
-              description={
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '14px', color: '#595959', marginBottom: '8px' }}>
-                    No backtest history yet
-                  </div>
-                  <div style={{ fontSize: '12px', color: '#8c8c8c' }}>
-                    Run your first backtest to see results here
-                  </div>
+            bordered={false}
+            title={<span style={{ fontSize: '18px', fontWeight: '700' }}>{t.analysis.recentPerformance}</span>}
+            style={{ borderRadius: '24px', border: '1px solid #f1f5f9', height: '100%' }}
+            bodyStyle={{ padding: '24px' }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              {[
+                { label: t.analysis.monthReturn, data: formatReturn(performanceData.oneMonth) },
+                { label: t.analysis.threeMonthReturn, data: formatReturn(performanceData.threeMonth) },
+                { label: t.analysis.yearToDate, data: formatReturn(performanceData.ytd) },
+              ].map((item, idx) => (
+                <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', background: '#f8fafc', borderRadius: '12px' }}>
+                  <span style={{ fontSize: '14px', fontWeight: 500, color: '#64748b' }}>{item.label}</span>
+                  <span style={{ fontSize: '16px', fontWeight: '700', color: item.data.color }}>{item.data.text}</span>
                 </div>
-              }
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              style={{ padding: '40px 0' }}
-            />
+              ))}
+            </div>
           </Card>
         </Col>
       </Row>
-
       {/* 数据源信息 */}
-      <Row style={{ marginTop: '16px' }}>
+      <Row style={{ marginTop: '32px', paddingTop: '16px', borderTop: '1px solid #f1f5f9' }}>
         <Col span={24}>
-          <div style={{ fontSize: '12px', color: '#666', textAlign: 'left' }}>
+          <div style={{ fontSize: '12px', color: '#94a3b8', textAlign: 'left', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <DataSourceBadge source={dataSource} />
-            <span style={{ marginLeft: '8px' }}>
-              Data updated: {stockData.timestamp ? new Date(stockData.timestamp).toLocaleString() : 'N/A'}
-            </span>
+            <span>•</span>
+            <span>{t.analysis.dataUpdated} {stockData.timestamp ? new Date(stockData.timestamp).toLocaleString() : 'N/A'}</span>
           </div>
         </Col>
       </Row>

@@ -1,15 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import {
   Modal, Form, Input, Select, InputNumber, Switch, Button, Space,
-  Typography, Divider, Alert, Descriptions, Radio, Tooltip, Row, Col, Tag
+  Typography, Divider, Alert, Descriptions, Radio, Tooltip, Row, Col
 } from 'antd';
 
 import {
-  ExclamationCircleOutlined, SafetyOutlined, InfoCircleOutlined,
+  ExclamationCircleOutlined, SafetyOutlined,
 } from '@ant-design/icons';
 import { tradingAccountAPI } from '../services/api';
 
-const { Text, Title } = Typography;
+const { Text } = Typography;
 const { Option } = Select;
 
 export interface OrderModalProps {

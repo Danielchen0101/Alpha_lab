@@ -82,20 +82,20 @@ const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
 
           {/* TRADING GROUP */}
           {!collapsed && <div className={styles.menuDivider}>TRADING</div>}
-          <Menu.Item key="10" icon={<RobotOutlined />} title={collapsed ? 'Agent' : undefined}>
-            <Link to="/agent">Agent</Link>
+          <Menu.Item key="10" icon={<RobotOutlined />} title={collapsed ? t.navigation.agent : undefined}>
+            <Link to="/agent">{t.navigation.agent}</Link>
           </Menu.Item>
-          <Menu.Item key="11" icon={<SwapOutlined />} title={collapsed ? 'Trade' : undefined}>
-            <Link to="/trade">Trade</Link>
+          <Menu.Item key="11" icon={<SwapOutlined />} title={collapsed ? t.navigation.trade : undefined}>
+            <Link to="/trade">{t.navigation.trade}</Link>
           </Menu.Item>
-          <Menu.Item key="13" icon={<PieChartOutlined />} title={collapsed ? 'Portfolio' : undefined}>
-            <Link to="/portfolio">Portfolio</Link>
+          <Menu.Item key="13" icon={<PieChartOutlined />} title={collapsed ? t.navigation.portfolio : undefined}>
+            <Link to="/portfolio">{t.navigation.portfolio}</Link>
           </Menu.Item>
 
           {/* SYSTEM GROUP */}
           {!collapsed && <div className={styles.menuDivider}>SYSTEM</div>}
-          <Menu.Item key="12" icon={<SettingOutlined />} title={collapsed ? 'Settings' : undefined}>
-            <Link to="/settings">Settings</Link>
+          <Menu.Item key="12" icon={<SettingOutlined />} title={collapsed ? t.navigation.settings : undefined}>
+            <Link to="/settings">{t.navigation.settings}</Link>
           </Menu.Item>
         </Menu>
       </div>

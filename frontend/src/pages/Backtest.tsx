@@ -15,6 +15,7 @@ import {
   filterValidDates,
   sortByDateAsc
 } from '../utils/dateUtils';
+import { useLanguage } from '../contexts/LanguageContext';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -182,6 +183,7 @@ interface BacktestHistoryItem {
 }
 
 const Backtest: React.FC = () => {
+  const { t, language } = useLanguage();
   const [form] = Form.useForm();
   const location = useLocation();
   const navigate = useNavigate();
@@ -219,6 +221,17 @@ const Backtest: React.FC = () => {
     },
     momentum: {
       momentumPeriod: 20,
+    },
+    mean_reversion: {
+      lookbackPeriod: 20,
+      entryZScore: -2.0,
+      exitZScore: 0.0,
+      stopLossPct: 6,
+      takeProfitPct: 8,
+      rsiPeriod: 14,
+      oversoldLevel: 30,
+      enableTrendFilter: true,
+      trendMaPeriod: 100,
     },
   };
 
@@ -664,11 +677,11 @@ const Backtest: React.FC = () => {
     try {
       const formValues = form.getFieldsValue();
       if (!formValues.strategy || !formValues.symbol) {
-        message.error('Please fill in strategy and symbol before saving');
+        message.error(language === 'zh-CN' ? '请先填写策略和代码再保存' : 'Please fill in strategy and symbol before saving');
         return;
       }
 
-      const strategyName = prompt('Enter a name for this strategy:');
+      const strategyName = prompt(language === 'zh-CN' ? '请输入策略名称：' : 'Enter a name for this strategy:');
       if (!strategyName) return;
 
       const newStrategy = {
@@ -702,10 +715,10 @@ const Backtest: React.FC = () => {
       const updatedStrategies = [...savedStrategies, newStrategy];
       setSavedStrategies(updatedStrategies);
       localStorage.setItem('quant_saved_strategies', JSON.stringify(updatedStrategies));
-      message.success(`Strategy "${strategyName}" saved successfully!`);
+      message.success(language === 'zh-CN' ? `策略 "${strategyName}" 保存成功！` : `Strategy "${strategyName}" saved successfully!`);
     } catch (err) {
       console.error('Failed to save strategy:', err);
-      message.error('Failed to save strategy');
+      message.error(language === 'zh-CN' ? '保存策略失败' : 'Failed to save strategy');
     }
   };
 
@@ -733,10 +746,10 @@ const Backtest: React.FC = () => {
           macdSignal: config.macdSignal
         })
       });
-      message.success(`Strategy "${strategy.name}" loaded successfully!`);
+      message.success(language === 'zh-CN' ? `策略 "${strategy.name}" 加载成功！` : `Strategy "${strategy.name}" loaded successfully!`);
     } catch (err) {
       console.error('Failed to load strategy:', err);
-      message.error('Failed to load strategy');
+      message.error(language === 'zh-CN' ? '加载策略失败' : 'Failed to load strategy');
     }
   };
 
@@ -746,10 +759,10 @@ const Backtest: React.FC = () => {
       const updatedStrategies = savedStrategies.filter(s => s.id !== id);
       setSavedStrategies(updatedStrategies);
       localStorage.setItem('quant_saved_strategies', JSON.stringify(updatedStrategies));
-      message.success('Strategy deleted successfully!');
+      message.success(language === 'zh-CN' ? '策略已删除！' : 'Strategy deleted successfully!');
     } catch (err) {
       console.error('Failed to delete strategy:', err);
-      message.error('Failed to delete strategy');
+      message.error(language === 'zh-CN' ? '删除策略失败' : 'Failed to delete strategy');
     }
   };
 
@@ -855,6 +868,18 @@ const Backtest: React.FC = () => {
         config.parameters = {
           momentumPeriod: (values as any).momentumPeriod || 10,
         };
+      } else if (strategy === 'mean_reversion') {
+        config.parameters = {
+          lookbackPeriod: (values as any).lookbackPeriod || 20,
+          entryZScore: (values as any).entryZScore ?? -2.0,
+          exitZScore: (values as any).exitZScore ?? 0.0,
+          stopLossPct: ((values as any).stopLossPct || 6) / 100,
+          takeProfitPct: ((values as any).takeProfitPct || 8) / 100,
+          rsiPeriod: (values as any).rsiPeriod || 14,
+          oversoldLevel: (values as any).oversoldLevel || 30,
+          enableTrendFilter: (values as any).enableTrendFilter !== false,
+          trendMaPeriod: (values as any).trendMaPeriod || 100,
+        };
       } else {
         // 其他策略暂时不传参数
         config.parameters = {};
@@ -886,13 +911,13 @@ const Backtest: React.FC = () => {
 
           // 如果有status字段，根据状态显示相应消息
           if (result.status === 'completed') {
-            message.success('Backtest completed successfully!');
+            message.success(t.backtest.backtestCompleted);
           } else if (result.status === 'failed') {
-            message.error('Backtest failed. Please check parameters and try again.');
+            message.error(language === 'zh-CN' ? '回测失败，请检查参数后重试。' : 'Backtest failed. Please check parameters and try again.');
           } else if (result.status) {
-            message.info(`Backtest status: ${result.status}`);
+            message.info(language === 'zh-CN' ? `回测状态：${result.status}` : `Backtest status: ${result.status}`);
           } else {
-            message.success('Backtest completed!');
+            message.success(t.backtest.backtestCompleted);
           }
 
           // 滚动到结果区域
@@ -910,19 +935,19 @@ const Backtest: React.FC = () => {
         } else if (result.backtestId) {
           // 兼容旧版本
           setBacktestResult(null);
-          setError('Backtest started but results not available immediately. Please try again.');
-          message.error('Backtest response incomplete');
+          setError(language === 'zh-CN' ? '回测已启动但结果暂不可用，请稍后重试。' : 'Backtest started but results not available immediately. Please try again.');
+          message.error(language === 'zh-CN' ? '回测响应不完整' : 'Backtest response incomplete');
           setLoading(false);
         } else {
           setBacktestResult(null);
-          setError('Failed to start backtest: Invalid response format');
-          message.error('Failed to start backtest');
+          setError(language === 'zh-CN' ? '启动回测失败：响应格式无效' : 'Failed to start backtest: Invalid response format');
+          message.error(t.backtest.backtestFailed);
           setLoading(false);
         }
       } else {
         setBacktestResult(null);
-        setError('Failed to start backtest: No response data');
-        message.error('Failed to start backtest');
+        setError(language === 'zh-CN' ? '启动回测失败：无响应数据' : 'Failed to start backtest: No response data');
+        message.error(t.backtest.backtestFailed);
         setLoading(false);
       }
     } catch (err: any) {
@@ -933,8 +958,8 @@ const Backtest: React.FC = () => {
       }
 
       setBacktestResult(null);
-      setError(`Error running backtest: ${err.message || 'Unknown error'}`);
-      message.error('Failed to run backtest');
+      setError(language === 'zh-CN' ? `回测运行错误：${err.message || '未知错误'}` : `Error running backtest: ${err.message || 'Unknown error'}`);
+      message.error(language === 'zh-CN' ? '回测运行失败' : 'Failed to run backtest');
       console.error('Backtest error:', err);
       setLoading(false);
     }
@@ -954,18 +979,18 @@ const Backtest: React.FC = () => {
         setTimeout(() => {
           resultsRef.current?.scrollIntoView({ behavior: 'smooth' });
         }, 100);
-        message.success('Backtest results loaded');
+        message.success(language === 'zh-CN' ? '回测结果已加载' : 'Backtest results loaded');
       }
     } catch (err) {
       console.error('Error loading backtest:', err);
-      message.error('Failed to load backtest results');
+      message.error(language === 'zh-CN' ? '加载回测结果失败' : 'Failed to load backtest results');
     }
   };
 
   // 查看历史回测结果
   const handleCompareSelected = () => {
     if (selectedBacktests.length < 2) {
-      message.warning('Please select at least 2 backtest sessions to compare.');
+      message.warning(language === 'zh-CN' ? '请至少选择 2 个回测会话进行对比。' : 'Please select at least 2 backtest sessions to compare.');
       return;
     }
     
@@ -1033,13 +1058,13 @@ const Backtest: React.FC = () => {
           parameters: foundRecord.parameters || {
             strategy: foundRecord.strategy || 'Unknown',
             symbols: foundRecord.symbol ? [foundRecord.symbol] : ['Unknown'],
-            period: foundRecord.startDate && foundRecord.endDate ? `${foundRecord.startDate} to ${foundRecord.endDate}` : 'Unknown',
+            period: foundRecord.startDate && foundRecord.endDate ? `${foundRecord.startDate} ${language === 'zh-CN' ? '至' : 'to'} ${foundRecord.endDate}` : (language === 'zh-CN' ? '未知' : 'Unknown'),
             initialCapital: foundRecord.initialCapital || 100000,
             startDate: foundRecord.startDate || '',
             endDate: foundRecord.endDate || '',
             // 保留其他参数
             dataMode: (foundRecord.parameters as any)?.dataMode || 'real',
-            dataModeDisplay: (foundRecord.parameters as any)?.dataModeDisplay || 'Real Data',
+            dataModeDisplay: (foundRecord.parameters as any)?.dataModeDisplay || t.backtest.realData,
             dataSource: (foundRecord.parameters as any)?.dataSource || 'Alpaca'
           },
           createdAt: foundRecord.createdAt
@@ -1053,98 +1078,104 @@ const Backtest: React.FC = () => {
           resultsRef.current?.scrollIntoView({ behavior: 'smooth' });
         }, 100);
 
-        message.success(`Loaded backtest: ${foundRecord.symbol} - ${foundRecord.strategy}`);
+        message.success(language === 'zh-CN' ? `已加载回测：${foundRecord.symbol} - ${foundRecord.strategy}` : `Loaded backtest: ${foundRecord.symbol} - ${foundRecord.strategy}`);
       } else {
         // 如果没有找到，尝试从后端API加载
         if (record.backtestId && !record.backtestId.startsWith('local_')) {
           loadBacktestResult(record.backtestId);
         } else {
-          message.warning('Backtest data not found in local storage');
+          message.warning(language === 'zh-CN' ? '本地存储中未找到回测数据' : 'Backtest data not found in local storage');
         }
       }
     } catch (err) {
       console.error('Error viewing backtest:', err);
-      message.error('Failed to load backtest results');
+      message.error(language === 'zh-CN' ? '加载回测结果失败' : 'Failed to load backtest results');
     }
   };
 
   const strategyOptions = [
-    { value: 'moving_average', label: 'Moving Average Crossover' },
-    { value: 'rsi', label: 'RSI Strategy' },
-    { value: 'macd', label: 'MACD Strategy' },
-    { value: 'bollinger', label: 'Bollinger Bands' },
-    { value: 'momentum', label: 'Momentum Strategy' },
+    { value: 'moving_average', label: t.backtest.strategyMovingAverage },
+    { value: 'rsi', label: t.backtest.strategyRsi },
+    { value: 'macd', label: t.backtest.strategyMacd },
+    { value: 'bollinger', label: t.backtest.strategyBollinger },
+    { value: 'momentum', label: t.backtest.strategyMomentum },
+    { value: 'mean_reversion', label: t.backtest.strategyMeanReversion },
   ];
 
   const resultColumns = [
     {
-      title: 'Metric',
+      title: language === 'zh-CN' ? '指标' : 'Metric',
       dataIndex: 'metric',
       key: 'metric',
       width: 150,
     },
     {
-      title: 'Value',
+      title: language === 'zh-CN' ? '数值' : 'Value',
       dataIndex: 'value',
       key: 'value',
       render: (value: any, record: any) => {
         // Handle non-numeric values for specific metrics
-        if (record.metric === 'Strategy' || record.metric === 'Data Mode' || record.metric === 'Data Source' || record.metric === 'Status') {
-          if (record.metric === 'Status') {
+        if (record.key === 'strategy' || record.key === 'dataMode' || record.key === 'dataSource' || record.key === 'status') {
+          if (record.key === 'status') {
             const statusColors: Record<string, string> = {
               'running': 'blue',
               'completed': 'green',
               'failed': 'red'
             };
+            const statusLabels: Record<string, string> = {
+              'running': t.backtest.running,
+              'completed': t.backtest.completed,
+              'failed': t.backtest.failed,
+              'unknown': t.backtest.unknown
+            };
             const statusValue = value || 'unknown';
-            return <Tag color={statusColors[statusValue] || 'default'}>{statusValue}</Tag>;
+            return <Tag color={statusColors[statusValue] || 'default'}>{statusLabels[statusValue] || statusValue}</Tag>;
           } else {
             // Strategy, Data Mode, Data Source
-            return <span style={{ fontWeight: 'bold' }}>{value || 'Unknown'}</span>;
+            return <span style={{ fontWeight: 'bold' }}>{value || (language === 'zh-CN' ? '未知' : 'Unknown')}</span>;
           }
         }
 
         // For numeric metrics, use safeNumber
         const safeValue = safeNumber(value);
 
-        if (record.metric === 'Profit / Loss') {
+        if (record.key === 'profitLoss') {
           // Profit/Loss 是金额，使用货币格式
           const color = safeValue >= 0 ? '#3f8600' : '#cf1322';
           const formatted = formatCurrency(safeValue);
           return <span style={{ color, fontWeight: 'bold' }}>{formatted}</span>;
-        } else if (record.metric.includes('Return')) {
+        } else if (record.key === 'totalReturn' || record.key === 'annualizedReturn') {
           // Return 类指标使用百分比格式
           const color = safeValue >= 0 ? '#3f8600' : '#cf1322';
-          const prefix = record.metric.includes('$') ? '' : (safeValue >= 0 ? '+' : '');
-          const suffix = record.metric.includes('$') ? '' : '%';
-          return <span style={{ color, fontWeight: 'bold' }}>{prefix}{safeToFixed(safeValue, 2)}{suffix}</span>;
-        } else if (record.metric === 'Expectancy') {
+          const prefix = safeValue >= 0 ? '+' : '';
+          return <span style={{ color, fontWeight: 'bold' }}>{prefix}{safeToFixed(safeValue, 2)}%</span>;
+        } else if (record.key === 'expectancy') {
           const color = safeValue >= 0 ? '#3f8600' : '#cf1322';
           const prefix = safeValue >= 0 ? '+$' : '-$';
           const absValue = Math.abs(safeValue);
           return <span style={{ color, fontWeight: 'bold' }}>{prefix}{safeToFixed(absValue, 2)}</span>;
-        } else if (record.metric === 'Volatility') {
+        } else if (record.key === 'volatility') {
           const color = safeValue < 20 ? '#3f8600' : safeValue < 40 ? '#faad14' : '#cf1322';
           return <span style={{ color, fontWeight: 'bold' }}>{safeToFixed(safeValue, 2)}%</span>;
-        } else if (record.metric === 'Exposure') {
+        } else if (record.key === 'exposure') {
           const color = safeValue > 80 ? '#3f8600' : safeValue > 50 ? '#faad14' : '#cf1322';
           return <span style={{ color, fontWeight: 'bold' }}>{safeToFixed(safeValue, 1)}%</span>;
-        } else if (record.metric === 'Sharpe Ratio' || record.metric === 'Calmar Ratio' || record.metric === 'Sortino Ratio' || record.metric === 'Profit Factor') {
+        } else if (record.key === 'sharpeRatio' || record.key === 'calmarRatio' || record.key === 'sortinoRatio' || record.key === 'profitFactor') {
           const color = safeValue >= 1 ? '#3f8600' : safeValue >= 0 ? '#faad14' : '#cf1322';
           return <span style={{ color, fontWeight: 'bold' }}>{safeToFixed(safeValue, 2)}</span>;
-        } else if (record.metric === 'Max Drawdown') {
+        } else if (record.key === 'maxDrawdown') {
           return <span style={{ color: '#cf1322', fontWeight: 'bold' }}>{safeToFixed(safeValue, 2)}%</span>;
-        } else if (record.metric === 'Win Rate') {
+        } else if (record.key === 'winRate') {
           const color = safeValue >= 60 ? '#3f8600' : safeValue >= 40 ? '#faad14' : '#cf1322';
           return <span style={{ color, fontWeight: 'bold' }}>{safeToFixed(safeValue, 1)}%</span>;
-        } else if (record.metric === 'Trades') {
+        } else if (record.key === 'trades') {
           return <span style={{ fontWeight: 'bold' }}>{Math.round(safeValue)}</span>;
         }
         return safeToFixed(safeValue, 2);
       },
     },
     {
-      title: 'Description',
+      title: language === 'zh-CN' ? '说明' : 'Description',
       dataIndex: 'description',
       key: 'description',
     },
@@ -1152,7 +1183,7 @@ const Backtest: React.FC = () => {
 
   const historyColumns = [
     {
-      title: 'Select',
+      title: t.backtest.select,
       key: 'selection',
       width: 60,
       render: (_: any, record: BacktestHistoryItem) => (
@@ -1169,36 +1200,37 @@ const Backtest: React.FC = () => {
       ),
     },
     {
-      title: 'Symbol',
+      title: t.backtest.symbolCol,
       dataIndex: 'symbol',
       key: 'symbol',
       width: 90,
       render: (symbol: string) => <strong style={{ fontSize: '13px' }}>{symbol || 'N/A'}</strong>,
     },
     {
-      title: 'Strategy',
+      title: t.backtest.strategyCol,
       dataIndex: 'strategy',
       key: 'strategy',
       width: 120,
       render: (strategy: string) => {
         const strategyNames: Record<string, string> = {
-          'moving_average': 'MA Crossover',
-          'rsi': 'RSI',
-          'macd': 'MACD',
-          'bollinger': 'Bollinger Bands',
-          'momentum': 'Momentum'
+          'moving_average': t.backtest.strategyMovingAverage,
+          'rsi': t.backtest.strategyRsi,
+          'macd': t.backtest.strategyMacd,
+          'bollinger': t.backtest.strategyBollinger,
+          'momentum': t.backtest.strategyMomentum,
+          'mean_reversion': t.backtest.strategyMeanReversion
         };
         const displayName = strategyNames[strategy] || strategy || 'N/A';
         return <span style={{ fontSize: '12px' }}>{displayName}</span>;
       },
     },
     {
-      title: 'Period',
+      title: t.backtest.periodCol,
       dataIndex: 'startDate',
       key: 'period',
       width: 130,
       render: (startDate: string, record: BacktestHistoryItem) => {
-        if (!startDate || !record.endDate) return <span style={{ color: '#999', fontSize: '11px' }}>N/A</span>;
+        if (!startDate || !record.endDate) return <span style={{ color: '#999', fontSize: '11px' }}>{t.common.na}</span>;
         try {
           const start = new Date(startDate);
           const end = new Date(record.endDate);
@@ -1206,12 +1238,12 @@ const Backtest: React.FC = () => {
           const endStr = `${end.getMonth() + 1}/${end.getDate()}`;
           return <span style={{ fontSize: '11px' }}>{startStr} - {endStr}</span>;
         } catch {
-          return <span style={{ color: '#999', fontSize: '11px' }}>Invalid</span>;
+          return <span style={{ color: '#999', fontSize: '11px' }}>{language === 'zh-CN' ? '无效' : 'Invalid'}</span>;
         }
       },
     },
     {
-      title: 'Return',
+      title: t.backtest.returnCol,
       dataIndex: 'totalReturn',
       key: 'totalReturn',
       width: 90,
@@ -1225,7 +1257,7 @@ const Backtest: React.FC = () => {
       },
     },
     {
-      title: 'Sharpe',
+      title: t.backtest.sharpeCol,
       dataIndex: 'sharpeRatio',
       key: 'sharpeRatio',
       width: 80,
@@ -1237,7 +1269,7 @@ const Backtest: React.FC = () => {
       },
     },
     {
-      title: 'Status',
+      title: t.backtest.statusCol,
       dataIndex: 'status',
       key: 'status',
       width: 100,
@@ -1247,34 +1279,40 @@ const Backtest: React.FC = () => {
           'completed': 'green',
           'failed': 'red'
         };
+        const statusLabels: Record<string, string> = {
+          'running': t.backtest.running,
+          'completed': t.backtest.completed,
+          'failed': t.backtest.failed,
+          'unknown': t.backtest.unknown
+        };
         const displayStatus = status || 'unknown';
-        return <Tag 
-          color={statusColors[displayStatus] || 'default'} 
+        return <Tag
+          color={statusColors[displayStatus] || 'default'}
           style={{ fontSize: '11px', padding: '1px 6px' }}
         >
-          {displayStatus}
+          {statusLabels[displayStatus] || displayStatus}
         </Tag>;
       },
     },
     {
-      title: 'Date',
+      title: language === 'zh-CN' ? '日期' : 'Date',
       dataIndex: 'createdAt',
       key: 'createdAt',
       width: 100,
       render: (date: string) => {
-        if (!date) return <span style={{ color: '#999', fontSize: '11px' }}>N/A</span>;
+        if (!date) return <span style={{ color: '#999', fontSize: '11px' }}>{t.common.na}</span>;
         try {
           const d = new Date(date);
           return <span style={{ fontSize: '11px' }}>
-            {d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+            {d.toLocaleDateString(language === 'zh-CN' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' })}
           </span>;
         } catch {
-          return <span style={{ color: '#999', fontSize: '11px' }}>Invalid</span>;
+          return <span style={{ color: '#999', fontSize: '11px' }}>{language === 'zh-CN' ? '无效' : 'Invalid'}</span>;
         }
       },
     },
     {
-      title: 'Actions',
+      title: t.backtest.actionsCol,
       key: 'actions',
       width: 120,
       render: (_: any, record: BacktestHistoryItem) => (
@@ -1287,7 +1325,7 @@ const Backtest: React.FC = () => {
             disabled={!record.backtestId}
             style={{ fontSize: '11px', padding: '0 4px' }}
           >
-            View
+            {language === 'zh-CN' ? '查看' : 'View'}
           </Button>
           <Button
             type="link"
@@ -1296,24 +1334,24 @@ const Backtest: React.FC = () => {
             icon={<DeleteOutlined />}
             onClick={() => {
               Modal.confirm({
-                title: 'Delete Backtest',
-                content: 'Are you sure you want to delete this backtest?',
-                okText: 'Delete',
+                title: t.backtest.deleteBacktest,
+                content: language === 'zh-CN' ? '确定要删除此回测吗？' : 'Are you sure you want to delete this backtest?',
+                okText: t.backtest.delete,
                 okType: 'danger',
-                cancelText: 'Cancel',
+                cancelText: t.common.cancel,
                 onOk: async () => {
                   const success = deleteLocalBacktestHistory(record.backtestId);
                   if (success) {
-                    message.success('Backtest deleted successfully');
+                    message.success(t.backtest.backtestDeleted);
                   } else {
-                    message.error('Failed to delete backtest');
+                    message.error(t.backtest.backtestDeleteFailed);
                   }
                 },
               });
             }}
             style={{ fontSize: '11px', padding: '0 4px' }}
           >
-            Delete
+            {t.backtest.delete}
           </Button>
         </Space>
       ),
@@ -1322,11 +1360,45 @@ const Backtest: React.FC = () => {
 
   // Strategy name mapping
   const strategyNames: Record<string, string> = {
-    'moving_average': 'Moving Average Crossover',
-    'rsi': 'RSI Strategy',
-    'macd': 'MACD Strategy',
-    'bollinger': 'Bollinger Bands',
-    'momentum': 'Momentum Strategy'
+    'moving_average': t.backtest.strategyMovingAverage,
+    'rsi': t.backtest.strategyRsi,
+    'macd': t.backtest.strategyMacd,
+    'bollinger': t.backtest.strategyBollinger,
+    'momentum': t.backtest.strategyMomentum,
+    'mean_reversion': t.backtest.strategyMeanReversion
+  };
+
+  // Strategy name mapping for blueprint display (shorter names)
+  const strategyNameBlueprint: Record<string, string> = {
+    'moving_average': t.backtest.strategyNameMovingAverage,
+    'rsi': t.backtest.strategyNameRsi,
+    'macd': t.backtest.strategyNameMacd,
+    'bollinger': t.backtest.strategyNameBollinger,
+    'momentum': t.backtest.strategyNameMomentum,
+    'mean_reversion': t.backtest.strategyNameMeanReversion
+  };
+
+  // Parameter key mapping for blueprint display
+  const paramKeyNames: Record<string, string> = {
+    'shortMaPeriod': t.backtest.paramShortMaPeriod,
+    'longMaPeriod': t.backtest.paramLongMaPeriod,
+    'rsiPeriod': t.backtest.paramRsiPeriod,
+    'rsiOversold': t.backtest.paramRsiOversold,
+    'rsiOverbought': t.backtest.paramRsiOverbought,
+    'macdFast': t.backtest.paramMacdFast,
+    'macdSlow': t.backtest.paramMacdSlow,
+    'macdSignal': t.backtest.paramMacdSignal,
+    'bollingerPeriod': t.backtest.paramBollingerPeriod,
+    'bollingerStdDev': t.backtest.paramBollingerStdDev,
+    'momentumPeriod': t.backtest.paramMomentumPeriod,
+    'lookbackPeriod': t.backtest.paramLookbackPeriod,
+    'entryZScore': t.backtest.paramEntryZScore,
+    'exitZScore': t.backtest.paramExitZScore,
+    'stopLossPct': t.backtest.paramStopLossPct,
+    'takeProfitPct': t.backtest.paramTakeProfitPct,
+    'oversoldLevel': t.backtest.paramOversoldLevel,
+    'trendMaPeriod': t.backtest.paramTrendMaPeriod,
+    'enableTrendFilter': t.backtest.paramTrendFilter,
   };
 
 
@@ -1360,24 +1432,24 @@ const Backtest: React.FC = () => {
   const equityCurveData = sortByDateAsc(generateEquityCurveData());
 
   const resultData = backtestResult ? [
-    { key: 'strategy', metric: 'Strategy', value: strategyNames[backtestResult.parameters?.strategy] || backtestResult.parameters?.strategy || 'Unknown', description: 'Strategy used for backtest' },
-    { key: 'dataMode', metric: 'Data Mode', value: backtestResult.parameters?.dataModeDisplay || 'Real Data', description: 'Data mode used for backtest' },
-    { key: 'dataSource', metric: 'Data Source', value: backtestResult.parameters?.dataSource || 'Financial APIs', description: 'Source of data used for backtest' },
-    { key: 'status', metric: 'Status', value: backtestResult.success ? 'Completed' : 'Failed', description: 'Current backtest status' },
-    { key: 'totalReturn', metric: 'Total Return', value: safeToFixed(backtestResult.results?.totalReturn || 0, 2), description: 'Total return over the period' },
-    { key: 'annualizedReturn', metric: 'Annualized Return', value: safeToFixed(backtestResult.results?.annualizedReturn || 0, 2), description: 'Annualized return (CAGR)' },
-    { key: 'profitLoss', metric: 'Profit / Loss', value: formatMoney(backtestResult.results?.profitLoss || 0), description: `Profit/Loss amount` },
-    { key: 'sharpeRatio', metric: 'Sharpe Ratio', value: safeToFixed(backtestResult.results?.sharpeRatio || 0, 2), description: 'Annualized Sharpe ratio' },
-    { key: 'calmarRatio', metric: 'Calmar Ratio', value: safeNumber(backtestResult.results?.calmarRatio || 0), description: 'Return vs max drawdown' },
-    { key: 'maxDrawdown', metric: 'Max Drawdown', value: safeNumber(backtestResult.results?.maxDrawdown || 0), description: 'Maximum loss from a peak' },
-    { key: 'winRate', metric: 'Win Rate', value: safeToFixed(backtestResult.results?.winRate || 0, 1), description: 'Percentage of winning trades' },
-    { key: 'trades', metric: 'Trades', value: backtestResult.results?.trades || 0, description: 'Total number of trades executed' },
-    { key: 'avgReturnPerTrade', metric: 'Avg P&L per Trade', value: formatMoney(backtestResult.results?.avgReturnPerTrade || 0), description: 'Average profit/loss per trade' },
-    { key: 'volatility', metric: 'Volatility', value: safeNumber(backtestResult.results?.volatility || 0), description: 'Daily volatility' },
-    { key: 'sortinoRatio', metric: 'Sortino Ratio', value: safeToFixed(backtestResult.results?.sortinoRatio || 0, 2), description: 'Annualized Sortino ratio' },
-    { key: 'profitFactor', metric: 'Profit Factor', value: backtestResult.results?.profitFactor === null || backtestResult.results?.profitFactor === undefined ? 'N/A' : safeToFixed(backtestResult.results.profitFactor, 2), description: 'Gross profit divided by gross loss' },
-    { key: 'expectancy', metric: 'Expectancy', value: formatMoney(backtestResult.results?.expectancy || 0), description: 'Expected return per trade' },
-    { key: 'exposure', metric: 'Avg Equity Ratio', value: safeNumber(backtestResult.results?.exposure || 0), description: 'Average equity as percentage of initial capital' },
+    { key: 'strategy', metric: t.backtest.strategyLabel, value: strategyNames[backtestResult.parameters?.strategy] || backtestResult.parameters?.strategy || t.backtest.unknown, description: t.backtest.descStrategy },
+    { key: 'dataMode', metric: t.backtest.dataMode, value: backtestResult.parameters?.dataModeDisplay || t.backtest.realData, description: t.backtest.descDataMode },
+    { key: 'dataSource', metric: t.backtest.dataSource, value: backtestResult.parameters?.dataSource || t.backtest.financialApis, description: t.backtest.descDataSource },
+    { key: 'status', metric: t.backtest.statusLabel, value: backtestResult.success ? t.backtest.completed : t.backtest.failed, description: t.backtest.descStatus },
+    { key: 'totalReturn', metric: t.backtest.totalReturnLabel, value: safeToFixed(backtestResult.results?.totalReturn || 0, 2), description: t.backtest.descTotalReturn },
+    { key: 'annualizedReturn', metric: t.backtest.annualizedReturn, value: safeToFixed(backtestResult.results?.annualizedReturn || 0, 2), description: t.backtest.descAnnualizedReturn },
+    { key: 'profitLoss', metric: t.backtest.profitLoss, value: formatMoney(backtestResult.results?.profitLoss || 0), description: t.backtest.descProfitLoss },
+    { key: 'sharpeRatio', metric: t.backtest.sharpeRatioLabel, value: safeToFixed(backtestResult.results?.sharpeRatio || 0, 2), description: t.backtest.descSharpeRatio },
+    { key: 'calmarRatio', metric: t.backtest.calmarRatio, value: safeNumber(backtestResult.results?.calmarRatio || 0), description: t.backtest.descCalmarRatio },
+    { key: 'maxDrawdown', metric: t.backtest.maxDrawdownLabel, value: safeNumber(backtestResult.results?.maxDrawdown || 0), description: t.backtest.descMaxDrawdown },
+    { key: 'winRate', metric: t.backtest.winRateLabel, value: safeToFixed(backtestResult.results?.winRate || 0, 1), description: t.backtest.descWinRate },
+    { key: 'trades', metric: t.backtest.totalTrades, value: backtestResult.results?.trades || 0, description: t.backtest.descTrades },
+    { key: 'avgReturnPerTrade', metric: t.backtest.avgPnlPerTrade, value: formatMoney(backtestResult.results?.avgReturnPerTrade || 0), description: t.backtest.descAvgPnl },
+    { key: 'volatility', metric: t.backtest.volatility, value: safeNumber(backtestResult.results?.volatility || 0), description: t.backtest.descVolatility },
+    { key: 'sortinoRatio', metric: t.backtest.sortinoRatio, value: safeToFixed(backtestResult.results?.sortinoRatio || 0, 2), description: t.backtest.descSortinoRatio },
+    { key: 'profitFactor', metric: t.backtest.profitFactor, value: backtestResult.results?.profitFactor === null || backtestResult.results?.profitFactor === undefined ? t.common.na : safeToFixed(backtestResult.results.profitFactor, 2), description: t.backtest.descProfitFactor },
+    { key: 'expectancy', metric: t.backtest.expectancy, value: formatMoney(backtestResult.results?.expectancy || 0), description: t.backtest.descExpectancy },
+    { key: 'exposure', metric: t.backtest.avgEquityRatio, value: safeNumber(backtestResult.results?.exposure || 0), description: t.backtest.descExposure },
   ] : [];
   
   const calculateDrawdownFromEquity = (equityData: Array<{date: string, equity: number}>) => {
@@ -1455,35 +1527,35 @@ const Backtest: React.FC = () => {
             <div style={{ width: 40, height: 40, borderRadius: '10px', background: 'linear-gradient(135deg, #1890ff 0%, #003a8c 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 22, boxShadow: '0 4px 12px rgba(24, 144, 255, 0.3)' }}>
               <LineChartOutlined />
             </div>
-            <Title level={1} style={{ margin: 0, fontSize: 28, fontWeight: 800, letterSpacing: '-0.5px', color: '#1a1a1a' }}>Strategy Backtest</Title>
+            <Title level={1} style={{ margin: 0, fontSize: 28, fontWeight: 800, letterSpacing: '-0.5px', color: '#1a1a1a' }}>{t.backtest.title}</Title>
           </div>
-          <Text type="secondary" style={{ fontSize: 15, marginLeft: 52 }}>Validate your trading ideas against historical market data with professional-grade analysis.</Text>
+          <Text type="secondary" style={{ fontSize: 15, marginLeft: 52 }}>{t.backtest.subtitleForm}</Text>
         </div>
         <div style={{ display: 'flex', gap: 12 }}>
-           <Badge status="processing" text={<Text strong style={{ color: '#1890ff', fontSize: 12 }}>ENGINE READY</Text>} />
+           <Badge status="processing" text={<Text strong style={{ color: '#1890ff', fontSize: 12 }}>{t.backtest.engineReady}</Text>} />
         </div>
       </div>
 
       {error && (
-        <Alert message="System Notification" description={error} type="error" showIcon style={{ marginBottom: 24, borderRadius: 10 }} closable onClose={() => setError('')} />
+        <Alert message={t.backtest.systemNotification} description={error} type="error" showIcon style={{ marginBottom: 24, borderRadius: 10 }} closable onClose={() => setError('')} />
       )}
 
       <Row gutter={[24, 24]}>
         <Col span={16}>
-          <Card className="premium-card" title={<span style={{ fontWeight: 700 }}>Backtest Configuration</span>}>
+          <Card className="premium-card" title={<span style={{ fontWeight: 700 }}>{t.backtest.configuration}</span>}>
             <Form form={form} layout="vertical" onFinish={handleRunBacktest}>
               <Row gutter={20}>
                 <Col span={10}>
-                  <Form.Item label={<Text strong>Stock Symbol / Portfolio</Text>} name="symbol" rules={[{ required: true, message: 'Please enter stock symbol' }]} help="Input ticker(s) or company name">
-                    <Input placeholder="e.g. AAPL, MSFT, TSLA" size="large" style={{ borderRadius: '8px' }} prefix={<LineChartOutlined style={{ color: '#bfbfbf' }} />} onChange={(e) => parseSymbols(e.target.value)} />
+                  <Form.Item label={<Text strong>{t.backtest.stockSymbol}</Text>} name="symbol" rules={[{ required: true, message: t.backtest.stockSymbolRequired }]} help={t.backtest.stockSymbolHelp}>
+                    <Input placeholder={t.backtest.stockSymbolPlaceholder} size="large" style={{ borderRadius: '8px' }} prefix={<LineChartOutlined style={{ color: '#bfbfbf' }} />} onChange={(e) => parseSymbols(e.target.value)} />
                   </Form.Item>
                 </Col>
                 <Col span={14}>
-                  <Form.Item label={<Text strong>Strategy Model</Text>} name="strategy" rules={[{ required: true, message: 'Please select a strategy' }]}>
-                    <Select 
-                      size="large" 
-                      style={{ borderRadius: '8px' }} 
-                      placeholder="Choose execution strategy" 
+                  <Form.Item label={<Text strong>{t.backtest.strategyModel}</Text>} name="strategy" rules={[{ required: true, message: t.backtest.strategyModelRequired }]}>
+                    <Select
+                      size="large"
+                      style={{ borderRadius: '8px' }}
+                      placeholder={t.backtest.chooseStrategy} 
                       onChange={(value) => {
                         setSelectedStrategy(value);
                         // 当切换策略时，自动填入默认推荐参数
@@ -1500,58 +1572,71 @@ const Backtest: React.FC = () => {
 
               {portfolioSymbols.length > 1 && (
                 <div style={{ marginBottom: '20px', padding: '12px 16px', background: 'rgba(24, 144, 255, 0.05)', border: '1px solid #91d5ff', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <Tag color="blue" style={{ borderRadius: 4, fontWeight: 700 }}>PORTFOLIO ACTIVE</Tag>
-                  <Text style={{ fontSize: 13, color: '#0050b3' }}>Multi-stock mode: <strong>{portfolioSymbols.length}</strong> symbols loaded for simulation.</Text>
+                  <Tag color="blue" style={{ borderRadius: 4, fontWeight: 700 }}>{t.backtest.portfolioActive}</Tag>
+                  <Text style={{ fontSize: 13, color: '#0050b3' }}>{t.backtest.portfolioMode.replace('{count}', String(portfolioSymbols.length))}</Text>
                 </div>
               )}
 
               <div style={{ marginBottom: '24px', padding: '20px', background: '#fafafa', borderRadius: '12px', border: '1px solid #f0f0f0' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                  <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, textTransform: 'uppercase', color: '#595959', letterSpacing: '0.5px' }}>Execution Parameters</h4>
-                  <Badge status="success" text={<Text type="secondary" style={{ fontSize: 12 }}>Real Market Data</Text>} />
+                  <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, textTransform: 'uppercase', color: '#595959', letterSpacing: '0.5px' }}>{t.backtest.executionParams}</h4>
+                  <Badge status="success" text={<Text type="secondary" style={{ fontSize: 12 }}>{t.backtest.realMarketData}</Text>} />
                 </div>
 
                 {selectedStrategy === 'moving_average' && (
                   <Row gutter={16}>
-                    <Col span={12}><Form.Item label="Short MA Period" name="shortMaPeriod" extra="Default: 20"><InputNumber min={1} max={200} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
-                    <Col span={12}><Form.Item label="Long MA Period" name="longMaPeriod" extra="Default: 50"><InputNumber min={1} max={200} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={12}><Form.Item label={t.backtest.shortMaPeriod} name="shortMaPeriod" extra={t.backtest.defaultLabel.replace('{value}', '20')}><InputNumber min={1} max={200} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={12}><Form.Item label={t.backtest.longMaPeriod} name="longMaPeriod" extra={t.backtest.defaultLabel.replace('{value}', '50')}><InputNumber min={1} max={200} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
                   </Row>
                 )}
                 {selectedStrategy === 'rsi' && (
                   <Row gutter={16}>
-                    <Col span={8}><Form.Item label="RSI Period" name="rsiPeriod" extra="Default: 14"><InputNumber min={1} max={50} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
-                    <Col span={8}><Form.Item label="Oversold" name="rsiOversold" extra="Default: 30"><InputNumber min={1} max={100} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
-                    <Col span={8}><Form.Item label="Overbought" name="rsiOverbought" extra="Default: 70"><InputNumber min={1} max={100} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={t.backtest.rsiPeriod} name="rsiPeriod" extra={t.backtest.defaultLabel.replace('{value}', '14')}><InputNumber min={1} max={50} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={t.backtest.oversold} name="rsiOversold" extra={t.backtest.defaultLabel.replace('{value}', '30')}><InputNumber min={1} max={100} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={t.backtest.overbought} name="rsiOverbought" extra={t.backtest.defaultLabel.replace('{value}', '70')}><InputNumber min={1} max={100} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
                   </Row>
                 )}
                 {selectedStrategy === 'macd' && (
                   <Row gutter={16}>
-                    <Col span={8}><Form.Item label="Fast EMA" name="macdFast" extra="Default: 12"><InputNumber min={1} max={50} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
-                    <Col span={8}><Form.Item label="Slow EMA" name="macdSlow" extra="Default: 26"><InputNumber min={1} max={50} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
-                    <Col span={8}><Form.Item label="Signal" name="macdSignal" extra="Default: 9"><InputNumber min={1} max={50} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={t.backtest.fastEma} name="macdFast" extra={t.backtest.defaultLabel.replace('{value}', '12')}><InputNumber min={1} max={50} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={t.backtest.slowEma} name="macdSlow" extra={t.backtest.defaultLabel.replace('{value}', '26')}><InputNumber min={1} max={50} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={t.backtest.signal} name="macdSignal" extra={t.backtest.defaultLabel.replace('{value}', '9')}><InputNumber min={1} max={50} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
                   </Row>
                 )}
                 {selectedStrategy === 'bollinger' && (
                   <Row gutter={16}>
-                    <Col span={12}><Form.Item label="Period" name="bollingerPeriod" extra="Default: 20"><InputNumber min={5} max={100} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
-                    <Col span={12}><Form.Item label="Std Dev" name="bollingerStdDev" extra="Default: 2"><InputNumber min={1} max={5} step={0.1} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={12}><Form.Item label={t.backtest.periodLabel} name="bollingerPeriod" extra={t.backtest.defaultLabel.replace('{value}', '20')}><InputNumber min={5} max={100} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={12}><Form.Item label={t.backtest.stdDev} name="bollingerStdDev" extra={t.backtest.defaultLabel.replace('{value}', '2')}><InputNumber min={1} max={5} step={0.1} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
                   </Row>
                 )}
                 {selectedStrategy === 'momentum' && (
                   <Col span={12}>
-                    <Form.Item label="Momentum Period" name="momentumPeriod" extra="Default: 20"><InputNumber min={1} max={50} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item>
+                    <Form.Item label={t.backtest.momentumPeriod} name="momentumPeriod" extra={t.backtest.defaultLabel.replace('{value}', '20')}><InputNumber min={1} max={50} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item>
                   </Col>
+                )}
+                {selectedStrategy === 'mean_reversion' && (
+                  <Row gutter={16}>
+                    <Col span={8}><Form.Item label={t.backtest.lookbackPeriod} name="lookbackPeriod" extra={t.backtest.defaultLabel.replace('{value}', '20')}><InputNumber min={5} max={100} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={t.backtest.entryZScore} name="entryZScore" extra={t.backtest.defaultLabel.replace('{value}', '-2.0')}><InputNumber step={0.1} min={-5} max={0} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={t.backtest.exitZScore} name="exitZScore" extra={t.backtest.defaultLabel.replace('{value}', '0.0')}><InputNumber step={0.1} min={-2} max={2} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={t.backtest.stopLossPct} name="stopLossPct" extra={t.backtest.defaultLabel.replace('{value}', '6')}><InputNumber min={1} max={20} step={0.5} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={t.backtest.takeProfitPct} name="takeProfitPct" extra={t.backtest.defaultLabel.replace('{value}', '8')}><InputNumber min={1} max={50} step={0.5} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={t.backtest.rsiPeriod} name="rsiPeriod" extra={t.backtest.defaultLabel.replace('{value}', '14')}><InputNumber min={2} max={50} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={t.backtest.oversoldLevel} name="oversoldLevel" extra={t.backtest.defaultLabel.replace('{value}', '30')}><InputNumber min={5} max={50} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={t.backtest.trendMaPeriod} name="trendMaPeriod" extra={t.backtest.defaultLabel.replace('{value}', '100')}><InputNumber min={10} max={300} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={t.backtest.trendFilter} name="enableTrendFilter" valuePropName="checked" initialValue={true}><Checkbox>{t.backtest.enable}</Checkbox></Form.Item></Col>
+                  </Row>
                 )}
               </div>
 
               <Row gutter={20}>
                 <Col span={12}>
-                  <Form.Item label={<Text strong>Simulation Window</Text>} name="dateRange" rules={[{ required: true }]}>
+                  <Form.Item label={<Text strong>{t.backtest.simulationWindow}</Text>} name="dateRange" rules={[{ required: true }]}>
                     <RangePicker size="large" style={{ width: '100%', borderRadius: 8 }} />
                   </Form.Item>
                 </Col>
                 <Col span={12}>
-                  <Form.Item label={<Text strong>Initial Liquidity ($)</Text>} name="initialCapital" rules={[{ required: true }]}>
+                  <Form.Item label={<Text strong>{t.backtest.initialLiquidity}</Text>} name="initialCapital" rules={[{ required: true }]}>
                     <InputNumber min={1000} size="large" style={{ width: '100%', borderRadius: 8 }} formatter={v => `$ ${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')} />
                   </Form.Item>
                 </Col>
@@ -1559,28 +1644,28 @@ const Backtest: React.FC = () => {
 
               <div style={{ marginTop: 12 }}>
                 <Button type="primary" htmlType="submit" size="large" loading={loading} icon={<PlayCircleOutlined />} className="primary-cta-button" style={{ width: '100%', marginBottom: 16 }} disabled={loading}>
-                  {loading ? 'Executing Simulation...' : 'Execute Backtest'}
+                  {loading ? t.backtest.executingSimulation : t.backtest.executeBacktest}
                 </Button>
                 <Row gutter={12}>
-                  <Col span={8}><Button block size="large" icon={<SaveOutlined />} onClick={saveCurrentStrategy} style={{ borderRadius: 8 }}>Save Plan</Button></Col>
-                  <Col span={8}><Button block size="large" icon={<FolderOpenOutlined />} onClick={() => setShowSavedStrategies(!showSavedStrategies)} style={{ borderRadius: 8 }}>{showSavedStrategies ? 'Hide Plans' : 'Saved Plans'}</Button></Col>
+                  <Col span={8}><Button block size="large" icon={<SaveOutlined />} onClick={saveCurrentStrategy} style={{ borderRadius: 8 }}>{t.backtest.savePlan}</Button></Col>
+                  <Col span={8}><Button block size="large" icon={<FolderOpenOutlined />} onClick={() => setShowSavedStrategies(!showSavedStrategies)} style={{ borderRadius: 8 }}>{showSavedStrategies ? t.backtest.hidePlans : t.backtest.savedPlans}</Button></Col>
                   <Col span={8}><Button block size="large" type="dashed" icon={<PlayCircleOutlined />} onClick={() => {
                     const formValues = form.getFieldsValue();
                     if (formValues.strategy === 'moving_average') {
                       const backtestParams = { strategy: 'MA_CROSSOVER', symbol: formValues.symbol, shortMaPeriod: formValues.shortMaPeriod || 20, longMaPeriod: formValues.longMaPeriod || 50, timestamp: new Date().toISOString() };
                       localStorage.setItem('quant_last_backtest_params', JSON.stringify(backtestParams));
-                      message.success('Strategy staged for Paper Trading');
-                    } else { message.info('Stage support currently limited to MA Crossover'); }
-                  }} style={{ borderRadius: 8 }}>Stage for Paper</Button></Col>
+                      message.success(t.backtest.strategyStaged);
+                    } else { message.info(t.backtest.stageLimited); }
+                  }} style={{ borderRadius: 8 }}>{t.backtest.stageForPaper}</Button></Col>
                 </Row>
               </div>
             </Form>
           </Card>
 
           {showSavedStrategies && (
-            <Card className="premium-card" title={<span style={{ fontWeight: 700 }}>Strategy Library</span>} style={{ marginTop: 24 }}>
+            <Card className="premium-card" title={<span style={{ fontWeight: 700 }}>{t.backtest.strategyLibrary}</span>} style={{ marginTop: 24 }}>
               {savedStrategies.length === 0 ? (
-                <Empty description="No saved strategy plans found." image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                <Empty description={t.backtest.noSavedPlans} image={Empty.PRESENTED_IMAGE_SIMPLE} />
               ) : (
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                   {savedStrategies.map((strategy) => (
@@ -1588,15 +1673,15 @@ const Backtest: React.FC = () => {
                       title={<Text strong>{strategy.name}</Text>}
                       extra={
                         <Space>
-                          <Button type="link" size="small" onClick={() => loadStrategy(strategy)}>Load</Button>
-                          <Button type="link" size="small" danger onClick={() => deleteStrategy(strategy.id)}>Delete</Button>
+                          <Button type="link" size="small" onClick={() => loadStrategy(strategy)}>{t.backtest.load}</Button>
+                          <Button type="link" size="small" danger onClick={() => deleteStrategy(strategy.id)}>{t.backtest.delete}</Button>
                         </Space>
                       }
                     >
                       <div style={{ fontSize: '11px', color: '#8c8c8c' }}>
-                        <div><strong>Symbol:</strong> {strategy.config.symbol}</div>
-                        <div><strong>Strategy:</strong> {strategy.config.strategy}</div>
-                        <div><strong>Created:</strong> {new Date(strategy.createdTime).toLocaleDateString()}</div>
+                        <div><strong>{t.backtest.symbolLabel}:</strong> {strategy.config.symbol}</div>
+                        <div><strong>{t.backtest.strategyLabelShort}:</strong> {strategyNames[strategy.config.strategy] || strategy.config.strategy}</div>
+                        <div><strong>{t.backtest.createdLabel}:</strong> {new Date(strategy.createdTime).toLocaleDateString()}</div>
                       </div>
                     </Card>
                   ))}
@@ -1609,7 +1694,7 @@ const Backtest: React.FC = () => {
         <Col span={8}>
           <Card 
             className="premium-card" 
-            title={<span style={{ fontWeight: 700 }}><HistoryOutlined style={{ marginRight: 8 }} />Recent Sessions</span>} 
+            title={<span style={{ fontWeight: 700 }}><HistoryOutlined style={{ marginRight: 8 }} />{t.backtest.recentSessions}</span>} 
             extra={
               <Space>
                 {selectedBacktests.length >= 2 && (
@@ -1620,7 +1705,7 @@ const Backtest: React.FC = () => {
                     onClick={handleCompareSelected}
                     style={{ borderRadius: 4, height: 24, fontSize: '11px', display: 'flex', alignItems: 'center' }}
                   >
-                    Compare ({selectedBacktests.length})
+                    {t.backtest.compareCount.replace('{count}', String(selectedBacktests.length))}
                   </Button>
                 )}
                 <Button type="text" icon={<ReloadOutlined />} onClick={fetchBacktestHistory} loading={historyLoading} size="small" />
@@ -1637,14 +1722,14 @@ const Backtest: React.FC = () => {
                 rowClassName={(record) => selectedBacktests.includes(record.backtestId) ? 'recent-backtest-row selected-row' : 'recent-backtest-row'}
               />
             ) : (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No previous sessions found." />
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t.backtest.noPreviousSessions} />
             )}
           </Card>
-          <Card className="premium-card" title={<span style={{ fontWeight: 700 }}>Quick Insights</span>} style={{ marginTop: 24 }}>
+          <Card className="premium-card" title={<span style={{ fontWeight: 700 }}>{t.backtest.quickInsights}</span>} style={{ marginTop: 24 }}>
             <Space direction="vertical" style={{ width: '100%' }} size={10}>
-              <Button block onClick={() => navigate('/market')} icon={<LineChartOutlined />}>Explore Top Symbols</Button>
-              <Button block onClick={() => { form.setFieldsValue({ symbol: 'MSFT', strategy: 'rsi', initialCapital: 100000, dateRange: defaultDateRange() }); message.info('Microsoft RSI session loaded'); }}>Load MSFT Blueprint</Button>
-              <Button block onClick={() => { form.setFieldsValue({ symbol: 'TSLA', strategy: 'momentum', initialCapital: 100000, dateRange: defaultDateRange() }); message.info('Tesla Momentum session loaded'); }}>Load TSLA Blueprint</Button>
+              <Button block onClick={() => navigate('/market')} icon={<LineChartOutlined />}>{t.backtest.exploreTopSymbols}</Button>
+              <Button block onClick={() => { form.setFieldsValue({ symbol: 'MSFT', strategy: 'rsi', initialCapital: 100000, dateRange: defaultDateRange() }); message.info(t.backtest.msftLoaded); }}>{t.backtest.loadMsftBlueprint}</Button>
+              <Button block onClick={() => { form.setFieldsValue({ symbol: 'TSLA', strategy: 'momentum', initialCapital: 100000, dateRange: defaultDateRange() }); message.info(t.backtest.tslaLoaded); }}>{t.backtest.loadTslaBlueprint}</Button>
             </Space>
           </Card>
         </Col>
@@ -1654,18 +1739,18 @@ const Backtest: React.FC = () => {
         <div ref={resultsRef} style={{ marginTop: 40 }}>
           <div className="section-header">
             <CheckCircleOutlined style={{ fontSize: 24, color: '#52c41a' }} />
-            <h2 className="section-title">Backtest Report</h2>
-            <Tag color="success" style={{ borderRadius: 10, fontWeight: 700, fontSize: 10 }}>VERIFIED</Tag>
+            <h2 className="section-title">{t.backtest.backtestReport}</h2>
+            <Tag color="success" style={{ borderRadius: 10, fontWeight: 700, fontSize: 10 }}>{t.backtest.verified}</Tag>
           </div>
 
           <div className="performance-strip">
             {[
-              { label: 'Total Return', value: `${(backtestResult.results?.totalReturn || 0) >= 0 ? '+' : ''}${safeToFixed(backtestResult.results?.totalReturn, 2)}%`, color: (backtestResult.results?.totalReturn || 0) >= 0 ? '#52c41a' : '#ff4d4f' },
-              { label: 'Sharpe Ratio', value: safeToFixed(backtestResult.results?.sharpeRatio, 2), color: (backtestResult.results?.sharpeRatio || 0) >= 1 ? '#52c41a' : '#faad14' },
-              { label: 'Max Drawdown', value: `${safeToFixed(backtestResult.results?.maxDrawdown, 2)}%`, color: '#ff4d4f' },
-              { label: 'Win Rate', value: `${safeToFixed(backtestResult.results?.winRate, 1)}%`, color: (backtestResult.results?.winRate || 0) >= 50 ? '#52c41a' : '#faad14' },
-              { label: 'Total Trades', value: backtestResult.results?.trades || 0, color: '#262626' },
-              { label: 'Net Profit', value: formatCurrency(backtestResult.results?.profitLoss || 0), color: (backtestResult.results?.profitLoss || 0) >= 0 ? '#52c41a' : '#ff4d4f' }
+              { label: t.backtest.totalReturnLabel, value: `${(backtestResult.results?.totalReturn || 0) >= 0 ? '+' : ''}${safeToFixed(backtestResult.results?.totalReturn, 2)}%`, color: (backtestResult.results?.totalReturn || 0) >= 0 ? '#52c41a' : '#ff4d4f' },
+              { label: t.backtest.sharpeRatioLabel, value: safeToFixed(backtestResult.results?.sharpeRatio, 2), color: (backtestResult.results?.sharpeRatio || 0) >= 1 ? '#52c41a' : '#faad14' },
+              { label: t.backtest.maxDrawdownLabel, value: `${safeToFixed(backtestResult.results?.maxDrawdown, 2)}%`, color: '#ff4d4f' },
+              { label: t.backtest.winRateLabel, value: `${safeToFixed(backtestResult.results?.winRate, 1)}%`, color: (backtestResult.results?.winRate || 0) >= 50 ? '#52c41a' : '#faad14' },
+              { label: t.backtest.totalTrades, value: backtestResult.results?.trades || 0, color: '#262626' },
+              { label: t.backtest.netProfit, value: formatCurrency(backtestResult.results?.profitLoss || 0), color: (backtestResult.results?.profitLoss || 0) >= 0 ? '#52c41a' : '#ff4d4f' }
             ].map(m => (
               <div key={m.label} className="stat-metric-card">
                 <span className="stat-metric-label">{m.label}</span>
@@ -1677,26 +1762,26 @@ const Backtest: React.FC = () => {
           <Card className="premium-card" bodyStyle={{ padding: '0 24px 24px 24px' }}>
             <Tabs defaultActiveKey="results" style={{ marginTop: 8 }} items={[
               {
-                key: 'results', label: 'Overview', children: (
+                key: 'results', label: t.backtest.overview, children: (
                   <div style={{ paddingTop: 16 }}>
                     <div className="info-strip">
                       <Row gutter={[24, 16]}>
-                        <Col span={6}><div className="blueprint-label">Strategy Module</div><div className="blueprint-value">{backtestResult.parameters.strategy}</div></Col>
-                        <Col span={6}><div className="blueprint-label">Instrument</div><div className="blueprint-value">{backtestResult.parameters.symbol || backtestResult.parameters.symbols?.[0] || 'N/A'}</div></Col>
-                        <Col span={6}><div className="blueprint-label">Initial Equity</div><div className="blueprint-value" style={{ color: '#1890ff' }}>${backtestResult.parameters.initialCapital?.toLocaleString()}</div></Col>
-                        <Col span={6}><div className="blueprint-label">Simulation Period</div><div className="blueprint-value">{backtestResult.parameters.period}</div></Col>
+                        <Col span={6}><div className="blueprint-label">{t.backtest.strategyModule}</div><div className="blueprint-value">{backtestResult.parameters.strategy}</div></Col>
+                        <Col span={6}><div className="blueprint-label">{t.backtest.instrument}</div><div className="blueprint-value">{backtestResult.parameters.symbol || backtestResult.parameters.symbols?.[0] || 'N/A'}</div></Col>
+                        <Col span={6}><div className="blueprint-label">{t.backtest.initialEquity}</div><div className="blueprint-value" style={{ color: '#1890ff' }}>${backtestResult.parameters.initialCapital?.toLocaleString()}</div></Col>
+                        <Col span={6}><div className="blueprint-label">{t.backtest.simulationPeriod}</div><div className="blueprint-value">{backtestResult.parameters.period}</div></Col>
                       </Row>
                     </div>
-                    <h4 style={{ fontSize: 15, fontWeight: 700, marginBottom: 16, color: '#595959' }}>Performance Breakdown</h4>
+                    <h4 style={{ fontSize: 15, fontWeight: 700, marginBottom: 16, color: '#595959' }}>{t.backtest.performanceBreakdown}</h4>
                     <Table columns={resultColumns} dataSource={resultData} pagination={false} size="middle" style={{ border: '1px solid #f0f0f0', borderRadius: 8, overflow: 'hidden' }} />
                   </div>
                 )
               },
               {
-                key: 'charts', label: 'Analytics Charts', children: (
+                key: 'charts', label: t.backtest.analyticsCharts, children: (
                   <div style={{ paddingTop: 20 }}>
                     <div className="chart-container-premium">
-                      <h4 style={{ fontWeight: 700, marginBottom: 20 }}>Equity Growth Curve</h4>
+                      <h4 style={{ fontWeight: 700, marginBottom: 20 }}>{t.backtest.equityGrowthCurve}</h4>
                       <div style={{ height: '380px' }}>
                         <ResponsiveContainer width="100%" height="100%">
                           <AreaChart data={equityCurveData}>
@@ -1715,8 +1800,8 @@ const Backtest: React.FC = () => {
                               domain={['auto', 'auto']} 
                             />
                             <Tooltip 
-                              formatter={(value: any) => [`$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 'Portfolio Value']}
-                              labelFormatter={(label) => `Date: ${formatDateToYYYYMMDD(label)}`}
+                              formatter={(value: any) => [`$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, t.backtest.portfolioValue]}
+                              labelFormatter={(label) => `${t.backtest.dateLabel}: ${formatDateToYYYYMMDD(label)}`}
                               contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} 
                             />
                             <Area type="monotone" dataKey="equity" stroke="#52c41a" strokeWidth={2.5} fillOpacity={1} fill="url(#colorEquity)" activeDot={{ r: 5, strokeWidth: 0 }} />
@@ -1725,7 +1810,7 @@ const Backtest: React.FC = () => {
                       </div>
                     </div>
                     <div className="chart-container-premium">
-                      <h4 style={{ fontWeight: 700, marginBottom: 20 }}>Drawdown Analysis</h4>
+                      <h4 style={{ fontWeight: 700, marginBottom: 20 }}>{t.backtest.drawdownAnalysis}</h4>
                       <div style={{ height: '280px' }}>
                         <ResponsiveContainer width="100%" height="100%">
                           <AreaChart data={drawdownData.map(d => ({...d, drawdown: -Math.abs(d.drawdown)}))}>
@@ -1739,8 +1824,8 @@ const Backtest: React.FC = () => {
                               tickFormatter={(val) => `${val.toFixed(1)}%`} 
                             />
                             <Tooltip 
-                              formatter={(value: any) => [`${Number(value).toFixed(2)}%`, 'Drawdown']}
-                              labelFormatter={(label) => `Date: ${formatDateToYYYYMMDD(label)}`}
+                              formatter={(value: any) => [`${Number(value).toFixed(2)}%`, t.backtest.drawdownLabel]}
+                              labelFormatter={(label) => `${t.backtest.dateLabel}: ${formatDateToYYYYMMDD(label)}`}
                               contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} 
                             />
                             <Area type="monotone" dataKey="drawdown" stroke="#ff4d4f" strokeWidth={2} fillOpacity={1} fill="url(#colorDrawdown)" activeDot={{ r: 4 }} />
@@ -1749,32 +1834,32 @@ const Backtest: React.FC = () => {
                       </div>
                     </div>
                     {(!backtestResult?.parameters?.symbols || backtestResult.parameters.symbols.length <= 1) ? (
-                      <div className="chart-container-premium"><h4 style={{ fontWeight: 700, marginBottom: 20 }}>Detailed Trading Signals</h4><TradingChart data={backtestResult.results.chartData || []} height={420} /></div>
-                    ) : <Empty description="Detailed Price Charts not available for Portfolio Mode." style={{ padding: '60px 0' }} />}
+                      <div className="chart-container-premium"><h4 style={{ fontWeight: 700, marginBottom: 20 }}>{t.backtest.detailedTradingSignals}</h4><TradingChart data={backtestResult.results.chartData || []} height={420} /></div>
+                    ) : <Empty description={t.backtest.portfolioNotAvailable} style={{ padding: '60px 0' }} />}
 
                   </div>
                 )
               },
               {
-                key: 'trades', label: 'Trade Log', children: (
+                key: 'trades', label: t.backtest.tradeLog, children: (
                   <div style={{ paddingTop: 16 }}>
                     <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, padding: 24, marginBottom: 24 }}>
                       <Row gutter={32}>
-                        <Col span={6}><Statistic title={<Text type="secondary" style={{ fontSize: 12, fontWeight: 600 }}>WINNING TRADES</Text>} value={backtestResult.results.tradesList?.filter(t => t.pnl > 0).length || 0} valueStyle={{ color: '#52c41a', fontWeight: 800 }} suffix={<span style={{ fontSize: 14, color: '#8c8c8c' }}>/ {backtestResult.results.tradesList?.length || 0}</span>} /></Col>
-                        <Col span={6}><Statistic title={<Text type="secondary" style={{ fontSize: 12, fontWeight: 600 }}>PROFIT FACTOR</Text>} value={backtestResult.results.profitFactor || '—'} precision={2} valueStyle={{ fontWeight: 800 }} /></Col>
-                        <Col span={6}><Statistic title={<Text type="secondary" style={{ fontSize: 12, fontWeight: 600 }}>AVG PROFIT</Text>} value={backtestResult.results.avgWin || 0} precision={0} prefix="$" valueStyle={{ color: '#52c41a', fontWeight: 800 }} /></Col>
-                        <Col span={6}><Statistic title={<Text type="secondary" style={{ fontSize: 12, fontWeight: 600 }}>AVG LOSS</Text>} value={backtestResult.results.avgLoss || 0} precision={0} prefix="$" valueStyle={{ color: '#ff4d4f', fontWeight: 800 }} /></Col>
+                        <Col span={6}><Statistic title={<Text type="secondary" style={{ fontSize: 12, fontWeight: 600 }}>{t.backtest.winningTrades}</Text>} value={backtestResult.results.tradesList?.filter(t => t.pnl > 0).length || 0} valueStyle={{ color: '#52c41a', fontWeight: 800 }} suffix={<span style={{ fontSize: 14, color: '#8c8c8c' }}>/ {backtestResult.results.tradesList?.length || 0}</span>} /></Col>
+                        <Col span={6}><Statistic title={<Text type="secondary" style={{ fontSize: 12, fontWeight: 600 }}>{t.backtest.profitFactorLabel}</Text>} value={backtestResult.results.profitFactor || '—'} precision={2} valueStyle={{ fontWeight: 800 }} /></Col>
+                        <Col span={6}><Statistic title={<Text type="secondary" style={{ fontSize: 12, fontWeight: 600 }}>{t.backtest.avgProfit}</Text>} value={backtestResult.results.avgWin || 0} precision={0} prefix="$" valueStyle={{ color: '#52c41a', fontWeight: 800 }} /></Col>
+                        <Col span={6}><Statistic title={<Text type="secondary" style={{ fontSize: 12, fontWeight: 600 }}>{t.backtest.avgLoss}</Text>} value={backtestResult.results.avgLoss || 0} precision={0} prefix="$" valueStyle={{ color: '#ff4d4f', fontWeight: 800 }} /></Col>
                       </Row>
                     </div>
                     <Table
                       columns={[
-                        { title: 'Entry Date', dataIndex: 'entryDate', key: 'entryDate', render: d => <Text strong style={{ fontSize: 13 }}>{formatDateToYYYYMMDD(d)}</Text> },
-                        { title: 'Symbol', dataIndex: 'symbol', key: 'symbol', render: s => <Tag color="blue" style={{ fontWeight: 700 }}>{s}</Tag> },
-                        { title: 'Action', dataIndex: 'action', key: 'action', render: a => <Tag color={a === 'BUY' ? 'green' : 'red'}>{a}</Tag> },
-                        { title: 'Entry Price', dataIndex: 'entryPrice', key: 'entryPrice', render: p => <Text strong>${p.toFixed(2)}</Text>, align: 'right' },
-                        { title: 'Exit Price', dataIndex: 'exitPrice', key: 'exitPrice', render: p => <Text>${p?.toFixed(2) || '—'}</Text>, align: 'right' },
-                        { title: 'P&L ($)', dataIndex: 'pnl', key: 'pnl', render: p => <Text strong style={{ color: p >= 0 ? '#52c41a' : '#ff4d4f' }}>{p >= 0 ? '+' : ''}{p.toFixed(2)}</Text>, align: 'right' },
-                        { title: 'Return', dataIndex: 'returnPct', key: 'returnPct', render: r => <Tag color={r >= 0 ? 'green' : 'red'}>{r >= 0 ? '+' : ''}{r.toFixed(2)}%</Tag>, align: 'right' },
+                        { title: t.backtest.entryDate, dataIndex: 'entryDate', key: 'entryDate', render: d => <Text strong style={{ fontSize: 13 }}>{formatDateToYYYYMMDD(d)}</Text> },
+                        { title: t.backtest.symbolCol, dataIndex: 'symbol', key: 'symbol', render: s => <Tag color="blue" style={{ fontWeight: 700 }}>{s}</Tag> },
+                        { title: t.backtest.action, dataIndex: 'action', key: 'action', render: a => <Tag color={a === 'BUY' ? 'green' : 'red'}>{a}</Tag> },
+                        { title: t.backtest.entryPrice, dataIndex: 'entryPrice', key: 'entryPrice', render: p => <Text strong>${p.toFixed(2)}</Text>, align: 'right' },
+                        { title: t.backtest.exitPrice, dataIndex: 'exitPrice', key: 'exitPrice', render: p => <Text>${p?.toFixed(2) || '—'}</Text>, align: 'right' },
+                        { title: t.backtest.pnlDollar, dataIndex: 'pnl', key: 'pnl', render: p => <Text strong style={{ color: p >= 0 ? '#52c41a' : '#ff4d4f' }}>{p >= 0 ? '+' : ''}{p.toFixed(2)}</Text>, align: 'right' },
+                        { title: t.backtest.returnLabel, dataIndex: 'returnPct', key: 'returnPct', render: r => <Tag color={r >= 0 ? 'green' : 'red'}>{r >= 0 ? '+' : ''}{r.toFixed(2)}%</Tag>, align: 'right' },
                       ]}
                       dataSource={backtestResult.results.tradesList || []}
                       rowKey={(record, index) => `${record.entryDate}-${index}`}
@@ -1785,26 +1870,26 @@ const Backtest: React.FC = () => {
                 )
               },
               {
-                key: 'parameters', label: 'Strategy Blueprint', children: (
+                key: 'parameters', label: t.backtest.strategyBlueprint, children: (
                   <div style={{ paddingTop: 20 }}>
                     <Row gutter={[24, 24]}>
                       <Col span={12}>
                         <div className="blueprint-module">
-                          <div className="blueprint-label">Core Strategy Information</div>
+                          <div className="blueprint-label">{t.backtest.coreStrategyInfo}</div>
                           <Space direction="vertical" size={12} style={{ width: '100%', marginTop: 8 }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><Text type="secondary">Model Name</Text><Text strong>{backtestResult.parameters.strategy}</Text></div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><Text type="secondary">Data Provider</Text><Text strong>{backtestResult.parameters.dataSource || 'Alpaca'}</Text></div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><Text type="secondary">Engine Version</Text><Tag color="blue" style={{ margin: 0 }}>V2.4 PRO</Tag></div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><Text type="secondary">{t.backtest.modelName}</Text><Text strong>{strategyNameBlueprint[backtestResult.parameters.strategy] || backtestResult.parameters.strategy}</Text></div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><Text type="secondary">{t.backtest.dataProvider}</Text><Text strong>{backtestResult.parameters.dataSource || 'Alpaca'}{backtestResult.parameters.dataSource?.includes('1Day') ? '' : ` (${t.backtest.dataBars1Day})`}</Text></div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><Text type="secondary">{t.backtest.engineVersion}</Text><Tag color="blue" style={{ margin: 0 }}>V2.4 PRO</Tag></div>
                           </Space>
                         </div>
                       </Col>
                       <Col span={12}>
                         <div className="blueprint-module">
-                          <div className="blueprint-label">Applied Parameters</div>
+                          <div className="blueprint-label">{t.backtest.appliedParameters}</div>
                           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 8 }}>
                             {Object.entries(backtestResult.parameters.parameters || {}).map(([k, v]) => (
                               <div key={k} style={{ background: '#fff', padding: '10px 12px', borderRadius: 6, border: '1px solid #eef2f6' }}>
-                                <div style={{ fontSize: 10, color: '#8c8c8c', textTransform: 'uppercase' }}>{k.replace(/([A-Z])/g, ' $1')}</div>
+                                <div style={{ fontSize: 10, color: '#8c8c8c', textTransform: 'uppercase' }}>{paramKeyNames[k] || k.replace(/([A-Z])/g, ' $1')}</div>
                                 <div style={{ fontSize: 14, fontWeight: 700 }}>{String(v)}</div>
                               </div>
                             ))}

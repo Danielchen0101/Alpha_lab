@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Card, Typography, Button, Divider, Table, Tag, Row, Col, Statistic,
-  Select, Descriptions, message, Empty
+  Select, Descriptions, Empty
 } from 'antd';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer } from 'recharts';
 import { PieChartOutlined, ReloadOutlined } from '@ant-design/icons';

@@ -2086,9 +2086,9 @@ def fetch_alpaca_bars(symbol, timeframe, range_param):
 
 
 
-        # 构建请求URL
+        # 构建请求URL — 使用 data.alpaca.markets (base_url), 不是 api.alpaca.markets
 
-        url = f'{ALPACA_BASE_URL}/stocks/{symbol}/bars'
+        url = f'{base_url}/stocks/{symbol}/bars'
 
 
 
@@ -14093,15 +14093,86 @@ def get_stock_history(symbol):
 
 
 
-        # 如果Alpaca失败，根据要求不使用其他数据源
+        # Fallback: 如果主 timeframe 没有 bars，尝试 fallback timeframes
+        fallback_used = None
+        FALLBACK_MAP = {
+            '1day': [('1week', '1h'), ('1month', '1day')],
+            '1week': [('1month', '1day'), ('3month', '1day')],
+            '1month': [('3month', '1day'), ('1year', '1day')],
+            '3month': [('1year', '1day'), ('1month', '1day')],
+            '1year': [('3month', '1day'), ('1month', '1day')],
+        }
+
+        if not success or not historical_data:
+            fallbacks = FALLBACK_MAP.get(mapped_range, [])
+            for fb_range, fb_interval in fallbacks:
+                print(f"[历史数据接口] 主 timeframe ({mapped_range}) 无数据，尝试 fallback: range={fb_range}, interval={fb_interval}")
+                fb_data, fb_success, fb_note = get_alpaca_history(symbol, fb_interval, fb_range)
+                if fb_success and fb_data:
+                    historical_data = fb_data
+                    success = True
+                    data_source_note = fb_note
+                    fallback_used = {'requestedRange': mapped_range, 'requestedInterval': mapped_interval, 'displayedRange': fb_range, 'displayedInterval': fb_interval}
+                    print(f"[历史数据接口] Fallback 成功: {fb_range} 返回 {len(fb_data)} 条数据")
+                    break
+
+        # 如果Alpaca失败（含fallback），尝试Finnhub作为真实provider fallback
 
         if not success or not historical_data:
 
-            print(f"[历史数据接口] Alpaca获取失败: {data_source_note}")
+            print(f"[历史数据接口] Alpaca获取失败（含fallback）: {data_source_note}")
 
-            print(f"[历史数据接口] 根据要求不使用其他数据源，返回空数据")
+            print(f"[历史数据接口] 尝试Finnhub作为真实数据源fallback...")
 
-            # 根据要求：必须优先用Alpaca真实historical bars，不使用其他数据源
+            try:
+
+                finnhub_data, finnhub_success, finnhub_note = get_finnhub_history(symbol, mapped_interval, mapped_range)
+
+                if finnhub_success and finnhub_data:
+
+                    print(f"[历史数据接口] Finnhub fallback成功: {len(finnhub_data)} 条数据")
+
+                    resp = {
+
+                        "symbol": symbol.upper(),
+
+                        "data": finnhub_data,
+
+                        "count": len(finnhub_data),
+
+                        "timeframe": timeframe,
+
+                        "interval": interval,
+
+                        "range": range_param,
+
+                        "dataSource": "Finnhub (Alpaca fallback)",
+
+                        "success": True,
+
+                        "timestamp": int(time.time())
+
+                    }
+
+                    if fallback_used:
+
+                        resp["fallbackUsed"] = True
+
+                        resp["requestedTimeframe"] = fallback_used.get('requestedRange', mapped_range)
+
+                        resp["displayedTimeframe"] = fallback_used.get('displayedRange', mapped_range)
+
+                    return jsonify(resp), 200
+
+                else:
+
+                    print(f"[历史数据接口] Finnhub fallback也失败: {finnhub_note}")
+
+            except Exception as finnhub_err:
+
+                print(f"[历史数据接口] Finnhub fallback异常: {finnhub_err}")
+
+            # 两个数据源都失败，返回空数据
 
             return jsonify({
 
@@ -14117,11 +14188,15 @@ def get_stock_history(symbol):
 
                 "range": range_param,
 
-                "dataSource": f"Alpaca获取失败: {data_source_note}",
+                "dataSource": f"Alpaca: {data_source_note}",
 
                 "success": False,
 
                 "error": data_source_note,
+
+                "errorType": "no_bars",
+
+                "snapshotAvailable": True,
 
                 "timestamp": int(time.time())
 
@@ -14133,7 +14208,7 @@ def get_stock_history(symbol):
 
             print(f"[历史数据接口] 成功获取 {len(historical_data)} 条数据，数据源: {data_source_note}")
 
-            return jsonify({
+            resp = {
 
                 "symbol": symbol.upper(),
 
@@ -14153,7 +14228,15 @@ def get_stock_history(symbol):
 
                 "timestamp": int(time.time())
 
-            }), 200
+            }
+
+            if fallback_used:
+                resp["fallbackUsed"] = True
+                resp["requestedTimeframe"] = fallback_used['requestedRange']
+                resp["displayedTimeframe"] = fallback_used['displayedRange']
+                resp["message"] = f"{fallback_used['requestedRange']} bars unavailable. Showing {fallback_used['displayedRange']} data instead."
+
+            return jsonify(resp), 200
 
         else:
 
@@ -14178,6 +14261,10 @@ def get_stock_history(symbol):
                 "success": False,
 
                 "error": data_source_note,
+
+                "errorType": "no_bars",
+
+                "snapshotAvailable": True,
 
                 "timestamp": int(time.time())
 
@@ -15763,6 +15850,113 @@ def run_backtest():
 
             # 支持的策略映射
 
+            def run_mean_reversion_strategy(data, params, initial_capital, symbol):
+                """Mean Reversion 策略 - 基于 z-score / Bollinger 偏离度的均值回归"""
+                lookback = params.get('lookbackPeriod', 20)
+                entry_z = params.get('entryZScore', -2.0)
+                exit_z = params.get('exitZScore', 0.0)
+                stop_loss_pct = params.get('stopLossPct', 0.06)
+                take_profit_pct = params.get('takeProfitPct', 0.08)
+                rsi_period = params.get('rsiPeriod', 14)
+                oversold_level = params.get('oversoldLevel', 30)
+                enable_trend = params.get('enableTrendFilter', True)
+                trend_ma = params.get('trendMaPeriod', 100)
+
+                trades = []
+                equity_curve = []
+                position = 0
+                cash = initial_capital
+                entry_price = 0
+
+                prices = [point['close'] for point in data]
+
+                # Pre-compute RSI
+                rsi_values = [None] * len(prices)
+                if len(prices) > rsi_period:
+                    gains = []
+                    losses = []
+                    for i in range(1, len(prices)):
+                        ch = prices[i] - prices[i-1]
+                        gains.append(ch if ch > 0 else 0)
+                        losses.append(abs(ch) if ch < 0 else 0)
+                    for i in range(rsi_period, len(gains)):
+                        avg_gain = sum(gains[i-rsi_period:i]) / rsi_period
+                        avg_loss = sum(losses[i-rsi_period:i]) / rsi_period
+                        if avg_loss == 0:
+                            rsi_values[i+1] = 100
+                        else:
+                            rs = avg_gain / avg_loss
+                            rsi_values[i+1] = 100 - (100 / (1 + rs))
+
+                for i, data_point in enumerate(data):
+                    date = data_point['timestamp']
+                    price = data_point['close']
+
+                    if i >= lookback:
+                        window = prices[i-lookback:i]
+                        mean = sum(window) / lookback
+                        variance = sum((p - mean) ** 2 for p in window) / lookback
+                        std = variance ** 0.5
+                        z_score = (price - mean) / std if std > 0 else 0
+
+                        # Trend filter
+                        trend_ok = True
+                        if enable_trend and i >= trend_ma:
+                            trend_mean = sum(prices[i-trend_ma:i]) / trend_ma
+                            trend_ok = price > trend_mean * 0.92  # allow 8% below trend MA
+
+                        # RSI filter
+                        rsi_val = rsi_values[i]
+                        rsi_ok = rsi_val is not None and rsi_val < oversold_level
+
+                        # Buy: z-score <= entry threshold, with optional filters
+                        if position == 0 and z_score <= entry_z and (not enable_trend or trend_ok) and rsi_ok:
+                            if cash > 0:
+                                shares = cash // price
+                                if shares > 0:
+                                    cost = shares * price
+                                    cash -= cost
+                                    position = shares
+                                    entry_price = price
+                                    trades.append({
+                                        'entryDate': date, 'exitDate': None,
+                                        'entryPrice': price, 'exitPrice': None,
+                                        'pnl': 0, 'returnPct': 0, 'holdingPeriod': 0,
+                                        'position': 1, 'action': 'BUY',
+                                        'quantity': shares, 'symbol': symbol
+                                    })
+
+                        # Sell conditions
+                        elif position > 0:
+                            sell = False
+                            if z_score >= exit_z:
+                                sell = True
+                            elif entry_price > 0 and price <= entry_price * (1 - stop_loss_pct):
+                                sell = True
+                            elif entry_price > 0 and price >= entry_price * (1 + take_profit_pct):
+                                sell = True
+
+                            if sell:
+                                value = position * price
+                                cash += value
+                                for trade in reversed(trades):
+                                    if trade.get('exitDate') is None and trade.get('action') == 'BUY':
+                                        pnl = (price - trade['entryPrice']) * trade['quantity']
+                                        ret = ((price - trade['entryPrice']) / trade['entryPrice']) * 100 if trade['entryPrice'] > 0 else 0
+                                        trade['exitDate'] = date
+                                        trade['exitPrice'] = price
+                                        trade['pnl'] = round(pnl, 2)
+                                        trade['returnPct'] = round(ret, 2)
+                                        trade['holdingPeriod'] = i - next((idx for idx, p in enumerate(data) if p['timestamp'] == trade['entryDate']), i)
+                                        break
+                                position = 0
+                                entry_price = 0
+
+                    equity = cash + (position * price)
+                    equity_curve.append({'date': date, 'equity': equity, 'price': price})
+
+                return trades, equity_curve
+
             supported_strategies = {
 
                 'moving_average': run_moving_average_strategy,
@@ -15773,7 +15967,9 @@ def run_backtest():
 
                 'bollinger': run_bollinger_strategy,
 
-                'momentum': run_momentum_strategy
+                'momentum': run_momentum_strategy,
+
+                'mean_reversion': run_mean_reversion_strategy
 
             }
 
@@ -17272,6 +17468,108 @@ def run_momentum_strategy_for_optimization(data, params, initial_capital, symbol
     return trades, equity_curve
 
 
+def run_mean_reversion_strategy_for_optimization(data, params, initial_capital, symbol):
+    """Mean Reversion 策略参数优化专用回测函数"""
+    lookback = params.get('lookbackPeriod', params.get('lookback', 20))
+    entry_z = params.get('entryZScore', params.get('entry_z', -2.0))
+    exit_z = params.get('exitZScore', params.get('exit_z', 0.0))
+    stop_loss_pct = params.get('stopLossPct', 0.06)
+    take_profit_pct = params.get('takeProfitPct', 0.08)
+    rsi_period = params.get('rsiPeriod', 14)
+    oversold_level = params.get('oversoldLevel', 30)
+    enable_trend = params.get('enableTrendFilter', True)
+    trend_ma = params.get('trendMaPeriod', 100)
+
+    trades = []
+    equity_curve = []
+    position = 0
+    cash = initial_capital
+    entry_price = 0
+
+    prices = [point['close'] for point in data]
+
+    # Pre-compute RSI
+    rsi_values = [None] * len(prices)
+    if len(prices) > rsi_period:
+        gains = []
+        losses = []
+        for i in range(1, len(prices)):
+            ch = prices[i] - prices[i-1]
+            gains.append(ch if ch > 0 else 0)
+            losses.append(abs(ch) if ch < 0 else 0)
+        for i in range(rsi_period, len(gains)):
+            avg_gain = sum(gains[i-rsi_period:i]) / rsi_period
+            avg_loss = sum(losses[i-rsi_period:i]) / rsi_period
+            if avg_loss == 0:
+                rsi_values[i+1] = 100
+            else:
+                rs = avg_gain / avg_loss
+                rsi_values[i+1] = 100 - (100 / (1 + rs))
+
+    for i, data_point in enumerate(data):
+        date = data_point['timestamp']
+        price = data_point['close']
+
+        if i >= lookback:
+            window = prices[i-lookback:i]
+            mean = sum(window) / lookback
+            variance = sum((p - mean) ** 2 for p in window) / lookback
+            std = variance ** 0.5
+            z_score = (price - mean) / std if std > 0 else 0
+
+            trend_ok = True
+            if enable_trend and i >= trend_ma:
+                trend_mean = sum(prices[i-trend_ma:i]) / trend_ma
+                trend_ok = price > trend_mean * 0.92
+
+            rsi_val = rsi_values[i]
+            rsi_ok = rsi_val is not None and rsi_val < oversold_level
+
+            if position == 0 and z_score <= entry_z and (not enable_trend or trend_ok) and rsi_ok:
+                if cash > 0:
+                    shares = cash // price
+                    if shares > 0:
+                        cost = shares * price
+                        cash -= cost
+                        position = shares
+                        entry_price = price
+                        trades.append({
+                            'entryDate': date, 'exitDate': None,
+                            'entryPrice': price, 'exitPrice': None,
+                            'pnl': 0, 'returnPct': 0, 'holdingPeriod': 0,
+                            'position': 1, 'action': 'BUY',
+                            'quantity': shares, 'symbol': symbol
+                        })
+            elif position > 0:
+                sell = False
+                if z_score >= exit_z:
+                    sell = True
+                elif entry_price > 0 and price <= entry_price * (1 - stop_loss_pct):
+                    sell = True
+                elif entry_price > 0 and price >= entry_price * (1 + take_profit_pct):
+                    sell = True
+                if sell:
+                    value = position * price
+                    cash += value
+                    for trade in reversed(trades):
+                        if trade.get('exitDate') is None and trade.get('action') == 'BUY':
+                            pnl = (price - trade['entryPrice']) * trade['quantity']
+                            ret = ((price - trade['entryPrice']) / trade['entryPrice']) * 100 if trade['entryPrice'] > 0 else 0
+                            trade['exitDate'] = date
+                            trade['exitPrice'] = price
+                            trade['pnl'] = round(pnl, 2)
+                            trade['returnPct'] = round(ret, 2)
+                            trade['holdingPeriod'] = i - next((idx for idx, p in enumerate(data) if p['timestamp'] == trade['entryDate']), i)
+                            break
+                    position = 0
+                    entry_price = 0
+
+        equity = cash + (position * price)
+        equity_curve.append({'date': date, 'equity': equity, 'price': price})
+
+    return trades, equity_curve
+
+
 @app.route('/backtest/optimize', methods=['POST'])
 
 @app.route('/api/backtest/optimize', methods=['POST'])
@@ -17356,6 +17654,22 @@ def run_parameter_optimization():
 
             param_ranges = {'momentum_period': momentum_period_range, 'momentum_threshold': momentum_threshold_range}
 
+        elif strategy == 'mean_reversion':
+            lookback_range = data.get('lookbackRange', {'start': 10, 'end': 30, 'step': 10})
+            entry_z_range = data.get('entryZScoreRange', {'start': -2.5, 'end': -1.5, 'step': 0.5})
+            exit_z_range = data.get('exitZScoreRange', {'start': -0.5, 'end': 0.5, 'step': 0.5})
+            stop_loss_range = data.get('stopLossRange', {'start': 0.04, 'end': 0.08, 'step': 0.02})
+            take_profit_range = data.get('takeProfitRange', {'start': 0.06, 'end': 0.12, 'step': 0.03})
+            oversold_range = data.get('oversoldRange', {'start': 25, 'end': 35, 'step': 5})
+            param_ranges = {
+                'lookback': lookback_range,
+                'entry_z': entry_z_range,
+                'exit_z': exit_z_range,
+                'stop_loss': stop_loss_range,
+                'take_profit': take_profit_range,
+                'oversold': oversold_range
+            }
+
         # 生成优化ID
         import uuid
         optimization_id = str(uuid.uuid4())[:8]
@@ -17409,6 +17723,10 @@ def run_parameter_optimization():
         elif strategy == 'momentum':
             period_max = param_ranges.get('momentum_period', {}).get('end', 30)
             min_required_bars = period_max + 10
+        elif strategy == 'mean_reversion':
+            lookback_max = param_ranges.get('lookback', {}).get('end', 30)
+            trend_ma_max = 100  # default trendMaPeriod
+            min_required_bars = max(lookback_max, trend_ma_max) + 20
         print(f"[Optimization] 策略 {strategy} 需要至少 {min_required_bars} 个数据点")
 
 
@@ -18185,11 +18503,112 @@ def run_parameter_optimization():
                             'error': str(e)
                         })
 
+        elif strategy == 'mean_reversion':
+            lookback_values = list(range(param_ranges['lookback']['start'], param_ranges['lookback']['end'] + 1, param_ranges['lookback']['step']))
+            entry_z_values = []
+            current = param_ranges['entry_z']['start']
+            while current <= param_ranges['entry_z']['end'] + 0.0001:
+                entry_z_values.append(round(current, 2))
+                current += param_ranges['entry_z']['step']
+            exit_z_values = []
+            current = param_ranges['exit_z']['start']
+            while current <= param_ranges['exit_z']['end'] + 0.0001:
+                exit_z_values.append(round(current, 2))
+                current += param_ranges['exit_z']['step']
+            stop_loss_values = []
+            current = param_ranges['stop_loss']['start']
+            while current <= param_ranges['stop_loss']['end'] + 0.0001:
+                stop_loss_values.append(round(current, 4))
+                current += param_ranges['stop_loss']['step']
+            take_profit_values = []
+            current = param_ranges['take_profit']['start']
+            while current <= param_ranges['take_profit']['end'] + 0.0001:
+                take_profit_values.append(round(current, 4))
+                current += param_ranges['take_profit']['step']
+            oversold_values = list(range(param_ranges['oversold']['start'], param_ranges['oversold']['end'] + 1, param_ranges['oversold']['step']))
 
+            total_combos = len(lookback_values) * len(entry_z_values) * len(exit_z_values) * len(stop_loss_values) * len(take_profit_values) * len(oversold_values)
+            print(f"[Optimization] Mean Reversion: {total_combos} combos")
+            count = 0
+            max_combos = 500
 
-        # 按夏普比率排序
-
-
+            for lb in lookback_values:
+                for ez in entry_z_values:
+                    for xz in exit_z_values:
+                        for sl in stop_loss_values:
+                            for tp in take_profit_values:
+                                for os_lvl in oversold_values:
+                                    if count >= max_combos:
+                                        break
+                                    count += 1
+                                    try:
+                                        mr_params = {
+                                            'lookbackPeriod': lb, 'entryZScore': ez, 'exitZScore': xz,
+                                            'stopLossPct': sl, 'takeProfitPct': tp,
+                                            'rsiPeriod': 14, 'oversoldLevel': os_lvl,
+                                            'enableTrendFilter': True, 'trendMaPeriod': 100
+                                        }
+                                        trades, equity_curve = run_mean_reversion_strategy_for_optimization(
+                                            historical_data, mr_params, initial_capital, symbol
+                                        )
+                                        if trades and len(trades) > 0:
+                                            total_return = ((equity_curve[-1]['equity'] - initial_capital) / initial_capital) * 100
+                                            winning = [t for t in trades if t.get('pnl', 0) > 0]
+                                            losing = [t for t in trades if t.get('pnl', 0) <= 0]
+                                            wr = (len(winning) / len(trades)) * 100 if trades else 0
+                                            tp_sum = sum(t.get('pnl', 0) for t in winning)
+                                            tl_sum = abs(sum(t.get('pnl', 0) for t in losing))
+                                            pf = (tp_sum / tl_sum) if tl_sum > 0 else (tp_sum if tp_sum > 0 else 1)
+                                            rets = [equity_curve[j+1]['equity'] / equity_curve[j]['equity'] - 1 for j in range(len(equity_curve)-1)]
+                                            avg_r = sum(rets) / len(rets) if rets else 0
+                                            std_r = (sum((r - avg_r)**2 for r in rets) / len(rets))**0.5 if rets else 1
+                                            sr = (avg_r / std_r) * (252**0.5) if std_r > 0 else 0
+                                            mx_eq = equity_curve[0]['equity']
+                                            mdd = 0
+                                            for pt in equity_curve:
+                                                if pt['equity'] > mx_eq:
+                                                    mx_eq = pt['equity']
+                                                dd = (pt['equity'] - mx_eq) / mx_eq * 100
+                                                if dd < mdd:
+                                                    mdd = dd
+                                            results.append({
+                                                'lookback': lb, 'entry_z': ez, 'exit_z': xz,
+                                                'stop_loss': sl, 'take_profit': tp, 'oversold': os_lvl,
+                                                'status': 'completed',
+                                                'totalReturn': round(total_return, 2),
+                                                'sharpeRatio': round(sr, 2),
+                                                'maxDrawdown': round(mdd, 2),
+                                                'winRate': round(wr, 2),
+                                                'profitFactor': round(pf, 2),
+                                                'trades': len(trades),
+                                                'error': None
+                                            })
+                                        else:
+                                            results.append({
+                                                'lookback': lb, 'entry_z': ez, 'exit_z': xz,
+                                                'stop_loss': sl, 'take_profit': tp, 'oversold': os_lvl,
+                                                'status': 'failed',
+                                                'totalReturn': 0, 'sharpeRatio': 0,
+                                                'maxDrawdown': 0, 'winRate': 0,
+                                                'profitFactor': 0, 'trades': 0,
+                                                'error': 'No trades generated'
+                                            })
+                                    except Exception as e:
+                                        print(f"[Optimization] Mean Reversion exception: {str(e)}")
+                                        results.append({
+                                            'lookback': lb, 'entry_z': ez, 'exit_z': xz,
+                                            'stop_loss': sl, 'take_profit': tp, 'oversold': os_lvl,
+                                            'status': 'failed',
+                                            'totalReturn': 0, 'sharpeRatio': 0,
+                                            'maxDrawdown': 0, 'winRate': 0,
+                                            'profitFactor': 0, 'trades': 0,
+                                            'error': str(e)
+                                        })
+                                if count >= max_combos: break
+                            if count >= max_combos: break
+                        if count >= max_combos: break
+                    if count >= max_combos: break
+                if count >= max_combos: break
 
         # 按夏普比率排序
 
@@ -22397,6 +22816,7 @@ DEFAULT_FALLBACK_PARAMS = {
     'macd': {'fast': 12, 'slow': 26, 'signal': 9},
     'bollinger': {'period': 20, 'std_dev': 2.0},
     'momentum': {'momentum_period': 15, 'momentum_threshold': 0.02},
+    'mean_reversion': {'lookbackPeriod': 20, 'entryZScore': -2.0, 'exitZScore': 0.0, 'stopLossPct': 0.06, 'takeProfitPct': 0.08, 'rsiPeriod': 14, 'oversoldLevel': 30, 'enableTrendFilter': True, 'trendMaPeriod': 100},
 }
 
 STRATEGY_FN_MAP = {
@@ -22405,6 +22825,7 @@ STRATEGY_FN_MAP = {
     'macd': run_macd_strategy_for_optimization,
     'bollinger': run_bollinger_strategy_for_optimization,
     'momentum': run_momentum_strategy_for_optimization,
+    'mean_reversion': run_mean_reversion_strategy_for_optimization,
 }
 
 STRATEGY_LABEL_MAP = {
@@ -22412,7 +22833,7 @@ STRATEGY_LABEL_MAP = {
     'volume confirmation': 'momentum',
     'momentum continuation': 'momentum',
     'momentum': 'momentum',
-    'mean reversion': 'rsi',
+    'mean reversion': 'mean_reversion',
     'rsi': 'rsi',
     'moving average': 'moving_average',
     'moving_average': 'moving_average',

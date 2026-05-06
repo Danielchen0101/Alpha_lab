@@ -1,15 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  Table, Card, Spin, Alert, Empty, Tag, Tooltip, Row, Col, 
+  Table, Card, Spin, Alert, Empty, Tag, Row, Col,
   Statistic, Input, Select, Space, Button, Badge, Typography
 } from 'antd';
 import { 
-  TrophyOutlined, 
-  InfoCircleOutlined, 
-  SearchOutlined, 
+  TrophyOutlined,
+  SearchOutlined,
   ReloadOutlined,
   ArrowUpOutlined,
-  ArrowDownOutlined,
   ThunderboltOutlined,
   LineChartOutlined,
   SafetyCertificateOutlined,
@@ -18,6 +16,7 @@ import {
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { backtraderAPI } from '../services/api';
+import { useLanguage } from '../contexts/LanguageContext';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -65,7 +64,8 @@ const StrategyRanking: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [rankingData, setRankingData] = useState<RankingItem[]>([]);
   const [error, setError] = useState<string | null>(null);
-  
+  const { t } = useLanguage();
+
   // Filters and search
   const [searchText, setSearchText] = useState('');
   const [strategyFilter, setStrategyFilter] = useState('All');
@@ -233,19 +233,19 @@ const StrategyRanking: React.FC = () => {
   }, [filteredAndSortedData, strategies]);
 
   const getQualityLabel = (item: RankingItem) => {
-    if (item.trades < 3) return { label: 'Low Sample', color: 'default' };
-    if (item.totalReturn <= 0 || item.sharpeRatio < 0) return { label: 'Weak', color: 'error' };
-    if (item.maxDrawdown < -25) return { label: 'High Risk', color: 'warning' };
-    if (item.totalReturn > 15 && item.sharpeRatio > 1.5) return { label: 'Elite', color: 'purple' };
-    if (item.totalReturn > 8 && item.sharpeRatio > 1.0) return { label: 'Strong', color: 'success' };
-    if (item.sharpeRatio > 0.8 && item.totalReturn > 0) return { label: 'Stable', color: 'processing' };
-    if (item.totalReturn > 10) return { label: 'High Return', color: 'success' };
-    return { label: 'Neutral', color: 'default' };
+    if (item.trades < 3) return { label: t.ranking.qualityLowSample, color: 'default' };
+    if (item.totalReturn <= 0 || item.sharpeRatio < 0) return { label: t.ranking.qualityWeak, color: 'error' };
+    if (item.maxDrawdown < -25) return { label: t.ranking.qualityHighRisk, color: 'warning' };
+    if (item.totalReturn > 15 && item.sharpeRatio > 1.5) return { label: t.ranking.qualityElite, color: 'purple' };
+    if (item.totalReturn > 8 && item.sharpeRatio > 1.0) return { label: t.ranking.qualityStrong, color: 'success' };
+    if (item.sharpeRatio > 0.8 && item.totalReturn > 0) return { label: t.ranking.qualityStable, color: 'processing' };
+    if (item.totalReturn > 10) return { label: t.ranking.qualityHighReturn, color: 'success' };
+    return { label: t.ranking.qualityNeutral, color: 'default' };
   };
 
   const columns = [
     {
-      title: 'Rank',
+      title: t.ranking.colRank,
       key: 'rank',
       width: 70,
       fixed: 'left' as const,
@@ -276,7 +276,7 @@ const StrategyRanking: React.FC = () => {
       },
     },
     {
-      title: 'Symbol & Strategy',
+      title: t.ranking.colSymbolStrategy,
       key: 'info',
       width: 180,
       fixed: 'left' as const,
@@ -284,20 +284,20 @@ const StrategyRanking: React.FC = () => {
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
             <Tag color="blue" style={{ margin: 0, fontWeight: 'bold' }}>{record.symbol}</Tag>
-            {getQualityLabel(record).label !== 'Neutral' && (
+            {getQualityLabel(record).label !== t.ranking.qualityNeutral && (
               <Badge status={getQualityLabel(record).color as any} text={
                 <span style={{ fontSize: '11px', color: '#888' }}>{getQualityLabel(record).label}</span>
               } />
             )}
           </div>
           <div style={{ fontSize: '12px', color: '#666', fontWeight: 500 }}>
-            {record.strategy.replace(/_/g, ' ')}
+            {(t.strategies as Record<string, string>)[record.strategy] || record.strategy.replace(/_/g, ' ')}
           </div>
         </div>
       ),
     },
     {
-      title: 'Total Return',
+      title: t.ranking.colTotalReturn,
       dataIndex: 'totalReturn',
       key: 'totalReturn',
       width: 120,
@@ -309,7 +309,7 @@ const StrategyRanking: React.FC = () => {
       ),
     },
     {
-      title: 'Sharpe',
+      title: t.ranking.colSharpe,
       dataIndex: 'sharpeRatio',
       key: 'sharpeRatio',
       width: 100,
@@ -319,7 +319,7 @@ const StrategyRanking: React.FC = () => {
       },
     },
     {
-      title: 'Max DD',
+      title: t.ranking.colMaxDD,
       dataIndex: 'maxDrawdown',
       key: 'maxDrawdown',
       width: 100,
@@ -329,7 +329,7 @@ const StrategyRanking: React.FC = () => {
       },
     },
     {
-      title: 'Win Rate',
+      title: t.ranking.colWinRate,
       dataIndex: 'winRate',
       key: 'winRate',
       width: 100,
@@ -338,7 +338,7 @@ const StrategyRanking: React.FC = () => {
       ),
     },
     {
-      title: 'Prof. Factor',
+      title: t.ranking.colProfFactor,
       dataIndex: 'profitFactor',
       key: 'profitFactor',
       width: 110,
@@ -349,13 +349,13 @@ const StrategyRanking: React.FC = () => {
       ),
     },
     {
-      title: 'Trades',
+      title: t.ranking.colTrades,
       dataIndex: 'trades',
       key: 'trades',
       width: 80,
     },
     {
-      title: 'Date',
+      title: t.ranking.colDate,
       dataIndex: 'createdAt',
       key: 'createdAt',
       width: 120,
@@ -366,16 +366,21 @@ const StrategyRanking: React.FC = () => {
       ),
     },
     {
-      title: 'Status',
+      title: t.ranking.colStatus,
       dataIndex: 'status',
       key: 'status',
       width: 100,
       render: (status: string) => {
+        const statusMap: Record<string, string> = {
+          completed: t.comparison.statusCompleted,
+          failed: t.comparison.statusFailed,
+          running: t.comparison.statusRunning,
+        };
         let color = 'default';
         if (status === 'completed') color = 'success';
         if (status === 'failed') color = 'error';
         if (status === 'running') color = 'processing';
-        return <Tag color={color}>{status.toUpperCase()}</Tag>;
+        return <Tag color={color}>{statusMap[status] || status}</Tag>;
       },
     },
   ];
@@ -383,7 +388,7 @@ const StrategyRanking: React.FC = () => {
   if (loading && rankingData.length === 0) {
     return (
       <div style={{ padding: '80px 0', textAlign: 'center' }}>
-        <Spin size="large" tip="Calculating Strategy Rankings..." />
+        <Spin size="large" tip={t.ranking.loadingTip} />
       </div>
     );
   }
@@ -395,10 +400,10 @@ const StrategyRanking: React.FC = () => {
         <div>
           <Title level={2} style={{ margin: 0 }}>
             <TrophyOutlined style={{ color: '#faad14', marginRight: '12px' }} />
-            Strategy Leaderboard
+            {t.ranking.leaderboardTitle}
           </Title>
           <Text type="secondary">
-            Performance ranking of all historical backtests. Find the most stable and profitable strategies.
+            {t.ranking.leaderboardSubtitle}
           </Text>
         </div>
         <Button 
@@ -407,7 +412,7 @@ const StrategyRanking: React.FC = () => {
           onClick={fetchRankingData}
           loading={loading}
         >
-          Refresh Data
+          {t.ranking.refreshData}
         </Button>
       </div>
 
@@ -419,7 +424,7 @@ const StrategyRanking: React.FC = () => {
           <Col xs={12} sm={8} lg={4}>
             <Card className="metric-card" bordered={false} style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
               <Statistic 
-                title={<span style={{ fontSize: '12px' }}>Ranked Sessions</span>}
+                title={<span style={{ fontSize: '12px' }}>{t.ranking.rankedSessions}</span>}
                 value={summaryStats.count} 
                 prefix={<HistoryOutlined style={{ color: '#1890ff' }} />}
               />
@@ -428,7 +433,7 @@ const StrategyRanking: React.FC = () => {
           <Col xs={12} sm={8} lg={4}>
             <Card className="metric-card" bordered={false} style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
               <Statistic 
-                title={<span style={{ fontSize: '12px' }}>Best Return</span>}
+                title={<span style={{ fontSize: '12px' }}>{t.ranking.bestReturnStat}</span>}
                 value={summaryStats.bestReturn} 
                 precision={2}
                 suffix="%"
@@ -440,7 +445,7 @@ const StrategyRanking: React.FC = () => {
           <Col xs={12} sm={8} lg={4}>
             <Card className="metric-card" bordered={false} style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
               <Statistic 
-                title={<span style={{ fontSize: '12px' }}>Top Sharpe</span>}
+                title={<span style={{ fontSize: '12px' }}>{t.ranking.topSharpe}</span>}
                 value={summaryStats.bestSharpe} 
                 precision={2}
                 valueStyle={{ color: '#722ed1' }}
@@ -451,7 +456,7 @@ const StrategyRanking: React.FC = () => {
           <Col xs={12} sm={8} lg={4}>
             <Card className="metric-card" bordered={false} style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
               <Statistic 
-                title={<span style={{ fontSize: '12px' }}>Best MaxDD</span>}
+                title={<span style={{ fontSize: '12px' }}>{t.ranking.bestMaxDD}</span>}
                 value={summaryStats.lowestDD} 
                 precision={1}
                 suffix="%"
@@ -463,7 +468,7 @@ const StrategyRanking: React.FC = () => {
           <Col xs={12} sm={8} lg={4}>
             <Card className="metric-card" bordered={false} style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
               <Statistic 
-                title={<span style={{ fontSize: '12px' }}>Top Win Rate</span>}
+                title={<span style={{ fontSize: '12px' }}>{t.ranking.topWinRate}</span>}
                 value={summaryStats.bestWinRate} 
                 precision={1}
                 suffix="%"
@@ -474,7 +479,7 @@ const StrategyRanking: React.FC = () => {
           <Col xs={12} sm={8} lg={4}>
             <Card className="metric-card" bordered={false} style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
               <Statistic 
-                title={<span style={{ fontSize: '12px' }}>Strategies</span>}
+                title={<span style={{ fontSize: '12px' }}>{t.ranking.strategiesCount}</span>}
                 value={summaryStats.coveredStrategies} 
                 prefix={<LineChartOutlined style={{ color: '#13c2c2' }} />}
               />
@@ -488,7 +493,7 @@ const StrategyRanking: React.FC = () => {
         <Row gutter={[16, 16]} align="middle">
           <Col xs={24} md={8}>
             <Input
-              placeholder="Search symbol or strategy..."
+              placeholder={t.ranking.searchPlaceholder}
               prefix={<SearchOutlined style={{ color: '#bfbfbf' }} />}
               value={searchText}
               onChange={e => setSearchText(e.target.value)}
@@ -502,8 +507,8 @@ const StrategyRanking: React.FC = () => {
                 onChange={setStrategyFilter}
                 style={{ width: 160 }}
               >
-                <Option value="All">All Strategies</Option>
-                {strategies.map((s: string) => <Option key={s} value={s}>{s.replace(/_/g, ' ')}</Option>)}
+                <Option value="All">{t.ranking.allStrategies}</Option>
+                {strategies.map((s: string) => <Option key={s} value={s}>{(t.strategies as Record<string, string>)[s] || s.replace(/_/g, ' ')}</Option>)}
               </Select>
               
               <Select 
@@ -511,12 +516,12 @@ const StrategyRanking: React.FC = () => {
                 onChange={setSortBy}
                 style={{ width: 150 }}
               >
-                <Option value="totalReturn">Total Return</Option>
-                <Option value="sharpeRatio">Sharpe Ratio</Option>
-                <Option value="maxDrawdown">Max Drawdown</Option>
-                <Option value="winRate">Win Rate</Option>
-                <Option value="profitFactor">Profit Factor</Option>
-                <Option value="trades">Number of Trades</Option>
+                <Option value="totalReturn">{t.ranking.sortByTotalReturn}</Option>
+                <Option value="sharpeRatio">{t.ranking.sortBySharpeRatio}</Option>
+                <Option value="maxDrawdown">{t.ranking.sortByMaxDrawdown}</Option>
+                <Option value="winRate">{t.ranking.sortByWinRate}</Option>
+                <Option value="profitFactor">{t.ranking.sortByProfitFactor}</Option>
+                <Option value="trades">{t.ranking.sortByTrades}</Option>
               </Select>
               
               <Button 
@@ -524,7 +529,7 @@ const StrategyRanking: React.FC = () => {
                 onClick={() => setShowCompletedOnly(!showCompletedOnly)}
                 size="middle"
               >
-                {showCompletedOnly ? "Completed Only" : "All Status"}
+                {showCompletedOnly ? t.ranking.completedOnly : t.ranking.allStatus}
               </Button>
             </Space>
           </Col>
@@ -540,7 +545,7 @@ const StrategyRanking: React.FC = () => {
             pagination={{
               pageSize: 15,
               showSizeChanger: true,
-              showTotal: (total: number) => `Total ${total} strategies`,
+              showTotal: (total: number) => t.ranking.totalStrategies.replace('{count}', String(total)),
             }}
             rowKey="key"
             size="middle"
@@ -566,11 +571,11 @@ const StrategyRanking: React.FC = () => {
             image={Empty.PRESENTED_IMAGE_SIMPLE}
             description={
               <div style={{ textAlign: 'center' }}>
-                <Title level={4}>No ranked strategies yet</Title>
-                <Text type="secondary">Run backtests first to populate strategy rankings.</Text>
+                <Title level={4}>{t.ranking.noRankedStrategies}</Title>
+                <Text type="secondary">{t.ranking.runBacktestsFirst}</Text>
                 <div style={{ marginTop: '24px' }}>
                   <Button type="primary" size="large" onClick={() => navigate('/backtest')}>
-                    Go to Backtest
+                    {t.ranking.goToBacktest}
                   </Button>
                 </div>
               </div>

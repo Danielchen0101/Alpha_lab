@@ -5,6 +5,25 @@ All notable changes to the Professional Quantitative Trading Platform will be do
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-05-06
+
+### Added
+- AI Agent page full Chinese localization
+- Alpaca Trade mode: Paper Trading / Real Trading toggle
+- Alpaca-sourced Portfolio Performance chart
+- Rich New Order modal with Alpaca order options (limit, stop, stop-limit, trailing stop)
+- Position Sell button for quick exit
+- AI Entry Watchlist Buy button for direct order placement
+- AI Execution order submission integration with Alpaca API
+- CI fixes: Node 20 upgrade, npm ci, backend lint
+
+### Changed
+- AI Execution section moved above AI Watchlist for improved workflow
+- ESLint cleanup: 235 warnings reduced to 20 hook warnings (react-hooks/exhaustive-deps only)
+
+### Fixed
+- Alpaca stale encrypted credential validation
+
 ## [2.2.0] - 2026-05-02
 
 ### Changed

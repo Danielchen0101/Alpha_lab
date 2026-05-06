@@ -11,6 +11,7 @@ import {
   ScatterChart, Scatter, ZAxis, Cell,
   LineChart, Line
 } from 'recharts';
+import { useLanguage } from '../contexts/LanguageContext';
 
 const { Title, Text } = Typography;
 
@@ -230,12 +231,19 @@ const renderBacktestCell = (
 
 // 优化的Tag组件
 const StatusTag: React.FC<{ status: 'completed' | 'running' | 'failed' }> = ({ status }) => {
+  const { t } = useLanguage();
   const config = {
     completed: { color: '#389e0d', bg: '#f6ffed', border: '#b7eb8f' },
     running: { color: '#0050b3', bg: '#e6f7ff', border: '#91d5ff' },
     failed: { color: '#cf1322', bg: '#fff2e8', border: '#ffbb96' },
   }[status];
-  
+
+  const statusText = {
+    completed: t.comparison.statusCompleted,
+    running: t.comparison.statusRunning,
+    failed: t.comparison.statusFailed,
+  }[status] || status;
+
   return (
     <div style={{
       display: 'inline-flex',
@@ -250,17 +258,17 @@ const StatusTag: React.FC<{ status: 'completed' | 'running' | 'failed' }> = ({ s
       border: `1px solid ${config.border}`,
       height: '26px',
       minWidth: '90px',
-      textTransform: 'capitalize',
     }}>
-      {status}
+      {statusText}
     </div>
   );
 };
 
 // 优化的WinnerTag组件
 const WinnerTag: React.FC<{ position: number }> = ({ position }) => {
+  const { t } = useLanguage();
   const colors = BACKTEST_COLORS[(position - 1) % BACKTEST_COLORS.length];
-  
+
   return (
     <div style={{
       display: 'inline-flex',
@@ -276,7 +284,7 @@ const WinnerTag: React.FC<{ position: number }> = ({ position }) => {
       height: '26px',
       minWidth: '40px',
     }}>
-      Best #{position}
+      {t.comparison.bestPosition.replace('{position}', String(position))}
     </div>
   );
 };
@@ -328,7 +336,8 @@ const StrategyComparison: React.FC = () => {
   const [backtestResults, setBacktestResults] = useState<RealBacktestResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>('');
-  
+  const { t } = useLanguage();
+
   // History Selector state
   const [history, setHistory] = useState<any[]>([]);
   const [selectedHistoryKeys, setSelectedHistoryKeys] = useState<string[]>([]);
@@ -404,7 +413,7 @@ const StrategyComparison: React.FC = () => {
 
   const handleCompareSelected = () => {
     if (selectedHistoryKeys.length < 2) {
-      message.warning('Please select at least 2 sessions to compare.');
+      message.warning(t.comparison.pleaseSelectAtLeast2);
       return;
     }
 
@@ -458,7 +467,7 @@ const StrategyComparison: React.FC = () => {
       }}>
         <div style={{ textAlign: 'center' }}>
           <Spin size="large" />
-          <div style={{ marginTop: 16, color: '#8c8c8c', fontSize: 16, fontWeight: 500 }}>Initializing analysis engine...</div>
+          <div style={{ marginTop: 16, color: '#8c8c8c', fontSize: 16, fontWeight: 500 }}>{t.comparison.initializingEngine}</div>
         </div>
       </div>
     );
@@ -476,24 +485,24 @@ const StrategyComparison: React.FC = () => {
                 onClick={() => navigate('/backtest')}
                 style={{ borderRadius: 6 }}
               >
-                Back to Backtest
+                {t.comparison.backToBacktest}
               </Button>
               {hasPreviousComparison && (
-                <Button 
-                  type="primary" 
-                  ghost 
-                  icon={<HistoryOutlined />} 
+                <Button
+                  type="primary"
+                  ghost
+                  icon={<HistoryOutlined />}
                   onClick={() => setShowSelector(false)}
                   style={{ borderRadius: 6 }}
                 >
-                  Back to Comparison
+                  {t.comparison.backToComparison}
                 </Button>
               )}
             </div>
-            <Title level={2} style={{ margin: 0, fontWeight: 800 }}><SwapOutlined style={{ marginRight: 10, color: '#1890ff' }} /> Select Backtests to Compare</Title>
-            <Text type="secondary" style={{ fontSize: 16 }}>Choose at least two completed sessions from your history to generate an analytical comparison.</Text>
+            <Title level={2} style={{ margin: 0, fontWeight: 800 }}><SwapOutlined style={{ marginRight: 10, color: '#1890ff' }} /> {t.comparison.selectSessionsTitle}</Title>
+            <Text type="secondary" style={{ fontSize: 16 }}>{t.comparison.selectSessionsSubtitle}</Text>
           </div>
-          <Button icon={<ReloadOutlined />} onClick={loadHistoryFromStorage} size="large" style={{ borderRadius: 8 }}>Refresh History</Button>
+          <Button icon={<ReloadOutlined />} onClick={loadHistoryFromStorage} size="large" style={{ borderRadius: 8 }}>{t.comparison.refreshHistory}</Button>
         </div>
 
         <Card 
@@ -510,11 +519,11 @@ const StrategyComparison: React.FC = () => {
               <div style={{ marginBottom: 20, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Space>
                   <Tag color="blue" style={{ fontSize: 13, padding: '4px 12px', borderRadius: 6, fontWeight: 700 }}>
-                    {selectedHistoryKeys.length} SESSIONS SELECTED
+                    {t.comparison.sessionsSelected.replace('{count}', String(selectedHistoryKeys.length))}
                   </Tag>
                   {selectedHistoryKeys.length < 2 && (
                     <Text type="warning" style={{ fontSize: 13, fontWeight: 600 }}>
-                      <Alert message="Select at least 2 sessions to compare" type="warning" showIcon style={{ padding: '4px 12px', borderRadius: 6 }} />
+                      <Alert message={t.comparison.selectAtLeast2} type="warning" showIcon style={{ padding: '4px 12px', borderRadius: 6 }} />
                     </Text>
                   )}
                 </Space>
@@ -529,10 +538,10 @@ const StrategyComparison: React.FC = () => {
                 }}
                 rowClassName={(record) => selectedHistoryKeys.includes(record.backtestId) ? 'ant-table-row-selected' : ''}
                 columns={[
-                  { 
-                    title: 'Symbol', 
-                    dataIndex: 'symbol', 
-                    key: 'symbol', 
+                  {
+                    title: t.comparison.colSymbol,
+                    dataIndex: 'symbol',
+                    key: 'symbol',
                     render: (s, r) => (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                         <div style={{ width: 32, height: 32, borderRadius: 6, background: '#f0f2f5', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, color: '#595959', fontSize: 11 }}>
@@ -542,18 +551,18 @@ const StrategyComparison: React.FC = () => {
                       </div>
                     )
                   },
-                  { 
-                    title: 'Strategy', 
-                    dataIndex: 'strategy', 
+                  {
+                    title: t.comparison.colStrategy,
+                    dataIndex: 'strategy',
                     key: 'strategy',
                     render: (s) => {
-                      const names: any = { moving_average: 'MA Crossover', rsi: 'RSI', macd: 'MACD', bollinger: 'Bollinger Bands', momentum: 'Momentum' };
+                      const names: any = { moving_average: t.comparison.strategyNameMaCross, rsi: t.comparison.strategyNameRsiShort, macd: t.comparison.strategyNameMacdShort, bollinger: t.comparison.strategyNameBollingerBands, momentum: t.comparison.strategyNameMomentumShort };
                       return <Tag color="geekblue" style={{ fontWeight: 600 }}>{names[s] || s}</Tag>;
                     }
                   },
-                  { 
-                    title: 'Return', 
-                    dataIndex: 'totalReturn', 
+                  {
+                    title: t.comparison.colReturn,
+                    dataIndex: 'totalReturn',
                     key: 'totalReturn',
                     sorter: (a, b) => (a.results?.totalReturn || 0) - (b.results?.totalReturn || 0),
                     render: (r, record) => {
@@ -562,16 +571,16 @@ const StrategyComparison: React.FC = () => {
                       return <Text strong style={{ color: val >= 0 ? '#52c41a' : '#f5222d', fontSize: 14 }}>{val >= 0 ? '+' : ''}{val.toFixed(2)}%</Text>;
                     }
                   },
-                  { 
-                    title: 'Sharpe', 
-                    dataIndex: 'sharpeRatio', 
+                  {
+                    title: t.comparison.colSharpe,
+                    dataIndex: 'sharpeRatio',
                     key: 'sharpeRatio',
                     sorter: (a, b) => (a.results?.sharpeRatio || 0) - (b.results?.sharpeRatio || 0),
                     render: (s, record) => (s ?? record.results?.sharpeRatio)?.toFixed(2) || '—' 
                   },
-                  { 
-                    title: 'Max DD', 
-                    dataIndex: 'maxDrawdown', 
+                  {
+                    title: t.comparison.colMaxDD,
+                    dataIndex: 'maxDrawdown',
                     key: 'maxDrawdown',
                     sorter: (a, b) => (a.results?.maxDrawdown || 0) - (b.results?.maxDrawdown || 0),
                     render: (d, record) => {
@@ -580,9 +589,9 @@ const StrategyComparison: React.FC = () => {
                       return <Text type="danger" style={{ fontWeight: 600 }}>-{Math.abs(val).toFixed(2)}%</Text>;
                     }
                   },
-                  { 
-                    title: 'Date', 
-                    dataIndex: 'createdAt', 
+                  {
+                    title: t.comparison.colDate,
+                    dataIndex: 'createdAt',
                     key: 'createdAt',
                     render: (d, record) => {
                       const date = d || record.timestamp;
@@ -608,7 +617,7 @@ const StrategyComparison: React.FC = () => {
                     transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
                   }}
                 >
-                  Generate Comparison ({selectedHistoryKeys.length})
+                  {t.comparison.generateComparison.replace('{count}', String(selectedHistoryKeys.length))}
                 </Button>
               </div>
             </>
@@ -617,10 +626,10 @@ const StrategyComparison: React.FC = () => {
               image={Empty.PRESENTED_IMAGE_SIMPLE} 
               description={
                 <div style={{ padding: '60px 0' }}>
-                  <p style={{ fontSize: 18, color: '#8c8c8c', fontWeight: 500 }}>No backtest history available yet.</p>
-                  <p style={{ color: '#bfbfbf', marginBottom: 24 }}>Run a backtest first, then return here to compare sessions.</p>
+                  <p style={{ fontSize: 18, color: '#8c8c8c', fontWeight: 500 }}>{t.comparison.noHistoryAvailable}</p>
+                  <p style={{ color: '#bfbfbf', marginBottom: 24 }}>{t.comparison.noHistoryDesc}</p>
                   <Button type="primary" size="large" onClick={() => navigate('/backtest')} style={{ borderRadius: 8, height: 48, padding: '0 32px' }}>
-                    Go to Backtest
+                    {t.comparison.goToBacktest}
                   </Button>
                 </div>
               } 
@@ -646,7 +655,7 @@ const StrategyComparison: React.FC = () => {
         minHeight: '100vh'
       }}>
         <Alert
-          message={<span style={{ fontWeight: 700 }}>Data Analysis Error</span>}
+          message={<span style={{ fontWeight: 700 }}>{t.comparison.dataAnalysisError}</span>}
           description={error}
           type="error"
           showIcon
@@ -654,10 +663,10 @@ const StrategyComparison: React.FC = () => {
           action={
             <Space direction="vertical">
               <Button type="primary" onClick={() => setShowSelector(true)} style={{ borderRadius: 6 }}>
-                Return to Selection
+                {t.comparison.returnToSelection}
               </Button>
               <Button onClick={() => navigate('/backtest')} style={{ borderRadius: 6 }}>
-                Back to Sessions
+                {t.comparison.backToSessions}
               </Button>
             </Space>
           }
@@ -691,17 +700,16 @@ const StrategyComparison: React.FC = () => {
   // 动态生成参数对比表格数据
   const generateParameterData = (): ParameterData[] => {
     const parameters = [
-      { key: '1', parameter: 'Symbol' },
-      { key: '2', parameter: 'Strategy' },
-      { key: '3', parameter: 'Period' },
-      { key: '4', parameter: 'Initial Capital' },
-      { key: '5', parameter: 'Data Source' },
-      { key: '6', parameter: 'Data Mode' },
-      { key: '7', parameter: 'Created At' },
-      { key: '8', parameter: 'Backtest ID' },
-      { key: '9', parameter: 'Status' },
-      // 策略特定参数
-      { key: '10', parameter: 'Strategy Parameters' },
+      { key: '1', parameter: t.comparison.paramSymbol },
+      { key: '2', parameter: t.comparison.paramStrategy },
+      { key: '3', parameter: t.comparison.paramPeriod },
+      { key: '4', parameter: t.comparison.paramInitialCapital },
+      { key: '5', parameter: t.comparison.paramDataSource },
+      { key: '6', parameter: t.comparison.paramDataMode },
+      { key: '7', parameter: t.comparison.paramCreatedAt },
+      { key: '8', parameter: t.comparison.paramBacktestId },
+      { key: '9', parameter: t.comparison.paramStatus },
+      { key: '10', parameter: t.comparison.paramStrategyParameters },
     ];
 
     return parameters.map(param => {
@@ -714,35 +722,35 @@ const StrategyComparison: React.FC = () => {
       backtestResults.forEach((backtest, index) => {
         const fieldName = `backtest${index + 1}`;
         
-        switch(param.parameter) {
-          case 'Symbol':
+        switch(param.key) {
+          case '1': // Symbol
             row[fieldName] = backtest?.parameters?.symbol || 'N/A';
             break;
-          case 'Strategy':
+          case '2': // Strategy
             row[fieldName] = backtest?.parameters?.strategy || 'N/A';
             break;
-          case 'Period':
+          case '3': // Period
             row[fieldName] = backtest ? `${backtest.parameters.startDate} to ${backtest.parameters.endDate}` : 'N/A';
             break;
-          case 'Initial Capital':
+          case '4': // Initial Capital
             row[fieldName] = backtest ? `$${backtest.parameters.initialCapital.toLocaleString()}` : 'N/A';
             break;
-          case 'Data Source':
+          case '5': // Data Source
             row[fieldName] = backtest?.parameters?.dataSource || 'Twelve Data';
             break;
-          case 'Data Mode':
+          case '6': // Data Mode
             row[fieldName] = backtest?.parameters?.dataMode || 'Live';
             break;
-          case 'Created At':
+          case '7': // Created At
             row[fieldName] = backtest?.timestamp ? new Date(backtest.timestamp).toLocaleDateString() : 'N/A';
             break;
-          case 'Backtest ID':
+          case '8': // Backtest ID
             row[fieldName] = backtest?.backtestId?.substring(0, 8) || 'N/A';
             break;
-          case 'Status':
+          case '9': // Status
             row[fieldName] = <StatusTag status={backtest?.status as any || 'completed'} />;
             break;
-          case 'Strategy Parameters':
+          case '10': // Strategy Parameters
             row[fieldName] = getStrategyParameters(backtest);
             break;
           default:
@@ -754,117 +762,117 @@ const StrategyComparison: React.FC = () => {
     });
   };
 
-  const parameterData = generateParameterData();
+  const _parameterData = generateParameterData(); // eslint-disable-line @typescript-eslint/no-unused-vars
 
   // 动态生成性能指标对比表格数据，支持多backtest的winner判定
   const generateMetricData = (): MetricData[] => {
     const metrics = [
-      { 
-        key: '1', 
-        metric: 'Profit / Loss',
+      {
+        key: '1',
+        metric: t.comparison.metricProfitLoss,
         getValue: (backtest: RealBacktestResult | null) => 
           backtest?.results?.profitLoss ? 
             `${backtest.results.profitLoss >= 0 ? '+' : ''}$${Math.abs(backtest.results.profitLoss).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'N/A',
         higherIsBetter: true
       },
       { 
-        key: '2', 
-        metric: 'Total Return',
+        key: '2',
+        metric: t.comparison.metricTotalReturn,
         getValue: (backtest: RealBacktestResult | null) => 
           backtest?.results?.totalReturn ? 
             `${backtest.results.totalReturn >= 0 ? '+' : ''}${backtest.results.totalReturn.toFixed(2)}%` : 'N/A',
         higherIsBetter: true
       },
       { 
-        key: '3', 
-        metric: 'Sharpe Ratio',
+        key: '3',
+        metric: t.comparison.metricSharpeRatio,
         getValue: (backtest: RealBacktestResult | null) => 
           backtest?.results?.sharpeRatio ? backtest.results.sharpeRatio.toFixed(2) : 'N/A',
         higherIsBetter: true
       },
       { 
-        key: '4', 
-        metric: 'Max Drawdown',
+        key: '4',
+        metric: t.comparison.metricMaxDrawdown,
         getValue: (backtest: RealBacktestResult | null) => 
           backtest?.results?.maxDrawdown ? `${backtest.results.maxDrawdown.toFixed(2)}%` : 'N/A',
         higherIsBetter: false
       },
       { 
-        key: '5', 
-        metric: 'Win Rate',
+        key: '5',
+        metric: t.comparison.metricWinRate,
         getValue: (backtest: RealBacktestResult | null) => 
           backtest?.results?.winRate ? `${backtest.results.winRate.toFixed(1)}%` : 'N/A',
         higherIsBetter: true
       },
       { 
-        key: '6', 
-        metric: 'Trades',
+        key: '6',
+        metric: t.comparison.metricTrades,
         getValue: (backtest: RealBacktestResult | null) => 
           backtest?.results?.trades ? backtest.results.trades.toString() : 'N/A',
         higherIsBetter: true
       },
       { 
-        key: '7', 
-        metric: 'Annualized Return',
+        key: '7',
+        metric: t.comparison.metricAnnualizedReturn,
         getValue: (backtest: RealBacktestResult | null) => 
           backtest?.results?.annualizedReturn !== undefined ? 
             `${backtest.results.annualizedReturn >= 0 ? '+' : ''}${backtest.results.annualizedReturn.toFixed(2)}%` : 'N/A',
         higherIsBetter: true
       },
       { 
-        key: '8', 
-        metric: 'Sortino Ratio',
+        key: '8',
+        metric: t.comparison.metricSortinoRatio,
         getValue: (backtest: RealBacktestResult | null) => 
           backtest?.results?.sortinoRatio !== undefined ? backtest.results.sortinoRatio.toFixed(2) : 'N/A',
         higherIsBetter: true
       },
       { 
-        key: '9', 
-        metric: 'Volatility',
+        key: '9',
+        metric: t.comparison.metricVolatility,
         getValue: (backtest: RealBacktestResult | null) => 
           backtest?.results?.volatility !== undefined ? `${backtest.results.volatility.toFixed(2)}%` : 'N/A',
         higherIsBetter: false
       },
       { 
-        key: '10', 
-        metric: 'Profit Factor',
+        key: '10',
+        metric: t.comparison.metricProfitFactor,
         getValue: (backtest: RealBacktestResult | null) => 
           backtest?.results?.profitFactor !== undefined ? backtest.results.profitFactor.toFixed(2) : 'N/A',
         higherIsBetter: true
       },
       { 
-        key: '11', 
-        metric: 'Exposure',
+        key: '11',
+        metric: t.comparison.metricExposure,
         getValue: (backtest: RealBacktestResult | null) => 
           backtest?.results?.exposure !== undefined ? `${backtest.results.exposure.toFixed(1)}%` : 'N/A',
         higherIsBetter: true
       },
       { 
-        key: '12', 
-        metric: 'Expectancy',
+        key: '12',
+        metric: t.comparison.metricExpectancy,
         getValue: (backtest: RealBacktestResult | null) => 
           backtest?.results?.expectancy !== undefined ? 
             `${backtest.results.expectancy >= 0 ? '+' : ''}$${Math.abs(backtest.results.expectancy).toFixed(2)}` : 'N/A',
         higherIsBetter: true
       },
       { 
-        key: '13', 
-        metric: 'Calmar Ratio',
+        key: '13',
+        metric: t.comparison.metricCalmarRatio,
         getValue: (backtest: RealBacktestResult | null) => 
           backtest?.results?.calmarRatio !== undefined ? backtest.results.calmarRatio.toFixed(2) : 'N/A',
         higherIsBetter: true
       },
       { 
-        key: '14', 
-        metric: 'Avg Return per Trade',
+        key: '14',
+        metric: t.comparison.metricAvgReturnPerTrade,
         getValue: (backtest: RealBacktestResult | null) => 
           backtest?.results?.avgReturnPerTrade !== undefined ? 
             `${backtest.results.avgReturnPerTrade >= 0 ? '+' : ''}$${Math.abs(backtest.results.avgReturnPerTrade).toFixed(2)}` : 'N/A',
         higherIsBetter: true
       },
       { 
-        key: '15', 
-        metric: 'Buy & Hold Return',
+        key: '15',
+        metric: t.comparison.metricBuyHoldReturn,
         getValue: (backtest: RealBacktestResult | null) => 
           backtest?.results?.buyHoldReturn !== undefined ? 
             `${backtest.results.buyHoldReturn >= 0 ? '+' : ''}${backtest.results.buyHoldReturn.toFixed(2)}%` : 'N/A',
@@ -893,50 +901,50 @@ const StrategyComparison: React.FC = () => {
           let value: number | null = null;
           
           // 根据指标类型提取数值
-          switch(metricConfig.metric) {
-            case 'Profit / Loss':
+          switch(metricConfig.key) {
+            case '1': // Profit / Loss
               value = backtest?.results?.profitLoss || 0;
               break;
-            case 'Total Return':
+            case '2': // Total Return
               value = backtest?.results?.totalReturn || 0;
               break;
-            case 'Sharpe Ratio':
+            case '3': // Sharpe Ratio
               value = backtest?.results?.sharpeRatio || 0;
               break;
-            case 'Max Drawdown':
+            case '4': // Max Drawdown
               value = backtest?.results?.maxDrawdown || 0;
               break;
-            case 'Win Rate':
+            case '5': // Win Rate
               value = backtest?.results?.winRate || 0;
               break;
-            case 'Trades':
+            case '6': // Trades
               value = backtest?.results?.trades || 0;
               break;
-            case 'Annualized Return':
+            case '7': // Annualized Return
               value = backtest?.results?.annualizedReturn || 0;
               break;
-            case 'Sortino Ratio':
+            case '8': // Sortino Ratio
               value = backtest?.results?.sortinoRatio || 0;
               break;
-            case 'Volatility':
+            case '9': // Volatility
               value = backtest?.results?.volatility || 0;
               break;
-            case 'Profit Factor':
+            case '10': // Profit Factor
               value = backtest?.results?.profitFactor || 0;
               break;
-            case 'Exposure':
+            case '11': // Exposure
               value = backtest?.results?.exposure || 0;
               break;
-            case 'Expectancy':
+            case '12': // Expectancy
               value = backtest?.results?.expectancy || 0;
               break;
-            case 'Calmar Ratio':
+            case '13': // Calmar Ratio
               value = backtest?.results?.calmarRatio || 0;
               break;
-            case 'Avg Return per Trade':
+            case '14': // Avg Return per Trade
               value = backtest?.results?.avgReturnPerTrade || 0;
               break;
-            case 'Buy & Hold Return':
+            case '15': // Buy & Hold Return
               value = backtest?.results?.buyHoldReturn || 0;
               break;
           }
@@ -970,12 +978,12 @@ const StrategyComparison: React.FC = () => {
 
   // 构建Backtest列的函数 - 使用统一的renderer
   const buildBacktestColumn = (index: number, mode: 'parameter' | 'metric') => {
-    const title = `Backtest ${index + 1}`;
+    const title = t.comparison.backtestN.replace('{index}', String(index + 1));
     const dataIndex = `backtest${index + 1}`;
     const align = 'left' as const; // 统一左对齐，无论parameter还是metric模式
-    const subtitle = backtestResults[index] 
+    const subtitle = backtestResults[index]
       ? `${backtestResults[index].parameters.symbol} • ${backtestResults[index].parameters.strategy}`
-      : 'No data';
+      : t.comparison.noData;
     
     return {
       title: renderBacktestHeader(title, subtitle, align, index + 1),
@@ -992,7 +1000,7 @@ const StrategyComparison: React.FC = () => {
     title: (
       <CellContainer align="center" header>
         <span style={{ fontWeight: 700, fontSize: '14px', color: '#1f1f1f' }}>
-          Winner
+          {t.comparison.winner}
         </span>
       </CellContainer>
     ),
@@ -1015,7 +1023,7 @@ const StrategyComparison: React.FC = () => {
       title: (
         <CellContainer align="left" header>
           <span style={{ fontWeight: 600, fontSize: '12px' }}>
-            Performance Metric
+            {t.comparison.performanceMetric}
           </span>
         </CellContainer>
       ),
@@ -1044,14 +1052,14 @@ const StrategyComparison: React.FC = () => {
   const prepareBarChartData = () => {    if (backtestResults.length === 0) return [];
 
     const metrics = [
-      { key: 'totalReturn', name: 'Total Return', unit: '%', format: (v: number) => `${v.toFixed(2)}%`, higherIsBetter: true },
-      { key: 'sharpeRatio', name: 'Sharpe Ratio', unit: '', format: (v: number) => v.toFixed(2), higherIsBetter: true },
-      { key: 'maxDrawdown', name: 'Max Drawdown', unit: '%', format: (v: number) => `${v.toFixed(2)}%`, higherIsBetter: false },
-      { key: 'winRate', name: 'Win Rate', unit: '%', format: (v: number) => `${v.toFixed(1)}%`, higherIsBetter: true },
+      { key: 'totalReturn', name: t.comparison.chartTotalReturn, unit: '%', format: (v: number) => `${v.toFixed(2)}%`, higherIsBetter: true },
+      { key: 'sharpeRatio', name: t.comparison.chartSharpeRatio, unit: '', format: (v: number) => v.toFixed(2), higherIsBetter: true },
+      { key: 'maxDrawdown', name: t.comparison.chartMaxDrawdown, unit: '%', format: (v: number) => `${v.toFixed(2)}%`, higherIsBetter: false },
+      { key: 'winRate', name: t.comparison.chartWinRate, unit: '%', format: (v: number) => `${v.toFixed(1)}%`, higherIsBetter: true },
     ];
 
     return metrics.map(metric => {
-      const dataPoint: any = { metric: metric.name };
+      const dataPoint: any = { metric: metric.name, metricKey: metric.key };
       
       backtestResults.forEach((backtest, index) => {
         const value = backtest?.results?.[metric.key as keyof typeof backtest.results] as number | undefined;
@@ -1075,7 +1083,7 @@ const StrategyComparison: React.FC = () => {
       
       return {
         id: `backtest${index + 1}`,
-        name: `Backtest ${index + 1}`,
+        name: t.comparison.backtestN.replace('{index}', String(index + 1)),
         label: `${backtest?.parameters?.symbol || 'N/A'} • ${backtest?.parameters?.strategy || 'N/A'}`,
         totalReturn,
         maxDrawdown: Math.abs(maxDrawdown), // 取绝对值，因为回撤是负数
@@ -1381,21 +1389,21 @@ const StrategyComparison: React.FC = () => {
             marginBottom: '8px',
             letterSpacing: '-0.5px'
           }}>
-            Strategy Comparison Dashboard
+            {t.comparison.dashboardTitle}
           </h1>
-          <p style={{ 
-            fontSize: '16px', 
+          <p style={{
+            fontSize: '16px',
             color: '#595959',
             margin: 0,
             fontWeight: 400,
             lineHeight: 1.5
           }}>
-            Compare selected backtest sessions across return, risk, and consistency.
+            {t.comparison.dashboardSubtitle}
           </p>
         </div>
         <Space>
-          <Button size="large" icon={<SwapOutlined />} onClick={() => { setShowSelector(true); loadHistoryFromStorage(); }} style={{ borderRadius: 8 }}>Change Selection</Button>
-          <Button size="large" icon={<LeftOutlined />} onClick={() => navigate('/backtest')} style={{ borderRadius: 8 }}>Back to Backtest</Button>
+          <Button size="large" icon={<SwapOutlined />} onClick={() => { setShowSelector(true); loadHistoryFromStorage(); }} style={{ borderRadius: 8 }}>{t.comparison.changeSelection}</Button>
+          <Button size="large" icon={<LeftOutlined />} onClick={() => navigate('/backtest')} style={{ borderRadius: 8 }}>{t.comparison.backToBacktest}</Button>
         </Space>
       </div>
         
@@ -1406,38 +1414,38 @@ const StrategyComparison: React.FC = () => {
         marginBottom: '32px',
         flexWrap: 'wrap'
       }}>
-        <SummaryCard 
-          title="Best Return" 
+        <SummaryCard
+          title={t.comparison.bestReturn}
           value={`${summaryMetrics?.bestReturn?.results?.totalReturn?.toFixed(2) || '0.00'}%`}
           unit={summaryMetrics?.bestReturn?.parameters?.symbol || ''}
           color="#52c41a"
         />
-        <SummaryCard 
-          title="Best Sharpe" 
+        <SummaryCard
+          title={t.comparison.bestSharpe}
           value={summaryMetrics?.bestSharpe?.results?.sharpeRatio?.toFixed(2) || '0.00'}
           unit={summaryMetrics?.bestSharpe?.parameters?.symbol || ''}
           color="#1890ff"
         />
-        <SummaryCard 
-          title="Lowest Drawdown" 
+        <SummaryCard
+          title={t.comparison.lowestDrawdown}
           value={`-${Math.abs(summaryMetrics?.lowestDD?.results?.maxDrawdown || 0)?.toFixed(2) || '0.00'}%`}
           unit={summaryMetrics?.lowestDD?.parameters?.symbol || ''}
           color="#f5222d"
         />
-        <SummaryCard 
-          title="Highest Win Rate" 
+        <SummaryCard
+          title={t.comparison.highestWinRate}
           value={`${summaryMetrics?.bestWinRate?.results?.winRate?.toFixed(1) || '0.0'}%`}
           unit={summaryMetrics?.bestWinRate?.parameters?.symbol || ''}
           color="#faad14"
         />
-        <SummaryCard 
-          title="Best Profit Factor" 
+        <SummaryCard
+          title={t.comparison.bestProfitFactor}
           value={summaryMetrics?.bestProfitFactor?.results?.profitFactor?.toFixed(2) || '0.00'}
           unit={summaryMetrics?.bestProfitFactor?.parameters?.symbol || ''}
           color="#722ed1"
         />
-        <SummaryCard 
-          title="Sessions" 
+        <SummaryCard
+          title={t.comparison.sessionsCount}
           value={backtestResults.length}
           color="#8c8c8c"
         />
@@ -1457,28 +1465,28 @@ const StrategyComparison: React.FC = () => {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
                 <div>
                   <div style={{ fontSize: 18, fontWeight: 800, color: '#111827' }}>{b.parameters.symbol}</div>
-                  <div style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600 }}>{b.parameters.strategy.toUpperCase()}</div>
+                  <div style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600 }}>{(t.strategies as Record<string, string>)[b.parameters.strategy] || b.parameters.strategy}</div>
                 </div>
-                <Tag color={colors.light} style={{ color: colors.text, border: 'none', fontWeight: 700, margin: 0 }}>SESSION {idx + 1}</Tag>
+                <Tag color={colors.light} style={{ color: colors.text, border: 'none', fontWeight: 700, margin: 0 }}>{t.comparison.sessionPrefix.replace('{index}', String(idx + 1))}</Tag>
               </div>
               
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 16px' }}>
                 <div>
-                  <div style={{ fontSize: 10, color: '#8c8c8c', textTransform: 'uppercase' }}>Return</div>
+                  <div style={{ fontSize: 10, color: '#8c8c8c', textTransform: 'uppercase' }}>{t.comparison.returnLabel}</div>
                   <div style={{ fontSize: 15, fontWeight: 700, color: (b.results?.totalReturn || 0) >= 0 ? '#52c41a' : '#f5222d' }}>
                     {(b.results?.totalReturn || 0) >= 0 ? '+' : ''}{b.results?.totalReturn?.toFixed(2)}%
                   </div>
                 </div>
                 <div>
-                  <div style={{ fontSize: 10, color: '#8c8c8c', textTransform: 'uppercase' }}>Sharpe</div>
+                  <div style={{ fontSize: 10, color: '#8c8c8c', textTransform: 'uppercase' }}>{t.comparison.sharpeLabel}</div>
                   <div style={{ fontSize: 15, fontWeight: 700 }}>{b.results?.sharpeRatio?.toFixed(2) || '—'}</div>
                 </div>
                 <div>
-                  <div style={{ fontSize: 10, color: '#8c8c8c', textTransform: 'uppercase' }}>Max DD</div>
+                  <div style={{ fontSize: 10, color: '#8c8c8c', textTransform: 'uppercase' }}>{t.comparison.maxDDLabel}</div>
                   <div style={{ fontSize: 15, fontWeight: 700, color: '#f5222d' }}>-{Math.abs(b.results?.maxDrawdown || 0).toFixed(2)}%</div>
                 </div>
                 <div>
-                  <div style={{ fontSize: 10, color: '#8c8c8c', textTransform: 'uppercase' }}>Win Rate</div>
+                  <div style={{ fontSize: 10, color: '#8c8c8c', textTransform: 'uppercase' }}>{t.comparison.winRateLabel}</div>
                   <div style={{ fontSize: 15, fontWeight: 700 }}>{b.results?.winRate?.toFixed(1)}%</div>
                 </div>
               </div>
@@ -1498,7 +1506,7 @@ const StrategyComparison: React.FC = () => {
       <Card 
         title={
           <div style={{ fontSize: '18px', fontWeight: 700, color: '#1f1f1f' }}>
-            Session Ranking & Overview
+            {t.comparison.sessionRankingTitle}
           </div>
         }
         style={{ 
@@ -1517,7 +1525,7 @@ const StrategyComparison: React.FC = () => {
           rowClassName="ranking-row"
           columns={[
             {
-              title: 'Rank',
+              title: t.ranking.colRank,
               key: 'rank',
               width: 70,
               align: 'center',
@@ -1534,67 +1542,67 @@ const StrategyComparison: React.FC = () => {
               )
             },
             {
-              title: 'Symbol',
+              title: t.comparison.colSymbol,
               dataIndex: ['parameters', 'symbol'],
               key: 'symbol',
               render: (s) => <Tag color="blue" style={{ fontWeight: 700 }}>{s}</Tag>
             },
             {
-              title: 'Strategy',
+              title: t.comparison.colStrategy,
               dataIndex: ['parameters', 'strategy'],
               key: 'strategy',
               render: (s) => {
-                const names: any = { moving_average: 'MA Cross', rsi: 'RSI', macd: 'MACD', bollinger: 'BB', momentum: 'MOM' };
+                const names: any = { moving_average: t.comparison.strategyShortMaCross, rsi: t.comparison.strategyNameRsiShort, macd: t.comparison.strategyNameMacdShort, bollinger: t.comparison.strategyShortBb, momentum: t.comparison.strategyShortMom };
                 return names[s] || s;
               }
             },
             {
-              title: 'Return',
+              title: t.comparison.colReturn,
               dataIndex: ['results', 'totalReturn'],
               key: 'totalReturn',
               sorter: (a, b) => (a.results?.totalReturn || 0) - (b.results?.totalReturn || 0),
               render: (v) => <Text strong style={{ color: v >= 0 ? '#52c41a' : '#f5222d' }}>{v >= 0 ? '+' : ''}{v?.toFixed(2)}%</Text>
             },
             {
-              title: 'Sharpe',
+              title: t.comparison.colSharpe,
               dataIndex: ['results', 'sharpeRatio'],
               key: 'sharpeRatio',
               sorter: (a, b) => (a.results?.sharpeRatio || 0) - (b.results?.sharpeRatio || 0),
               render: (v) => v?.toFixed(2) || '—'
             },
             {
-              title: 'Max DD',
+              title: t.comparison.colMaxDD,
               dataIndex: ['results', 'maxDrawdown'],
               key: 'maxDrawdown',
               sorter: (a, b) => (a.results?.maxDrawdown || 0) - (b.results?.maxDrawdown || 0),
               render: (v) => <Text type="danger">-{Math.abs(v || 0).toFixed(2)}%</Text>
             },
             {
-              title: 'Win Rate',
+              title: t.comparison.colWinRate,
               dataIndex: ['results', 'winRate'],
               key: 'winRate',
               render: (v) => v ? `${v.toFixed(1)}%` : '—'
             },
             {
-              title: 'Profit Factor',
+              title: t.comparison.metricProfitFactor,
               dataIndex: ['results', 'profitFactor'],
               key: 'profitFactor',
               render: (v) => v?.toFixed(2) || '—'
             },
             {
-              title: 'Trades',
+              title: t.comparison.metricTrades,
               dataIndex: ['results', 'trades'],
               key: 'trades',
               render: (v) => <Tag color="default">{v || 0}</Tag>
             },
             {
-              title: 'Date',
+              title: t.comparison.colDate,
               dataIndex: 'timestamp',
               key: 'date',
               render: (t) => t ? new Date(t).toLocaleDateString() : '—'
             },
             {
-              title: 'Status',
+              title: t.comparison.paramStatus,
               dataIndex: 'status',
               key: 'status',
               render: (s) => <StatusTag status={s as any || 'completed'} />
@@ -1609,7 +1617,7 @@ const StrategyComparison: React.FC = () => {
           <Card 
             title={
               <div style={{ fontSize: '18px', fontWeight: 700, color: '#1f1f1f' }}>
-                Performance Metrics Visualization
+                {t.comparison.performanceMetricsViz}
               </div>
             }
             style={{ 
@@ -1639,14 +1647,14 @@ const StrategyComparison: React.FC = () => {
                     cursor={{ fill: '#fafafa' }}
                     formatter={(value: number, name: string) => {
                       const backtestIndex = parseInt(name.replace('backtest', ''));
-                      const metricName = barChartData.find(d => d[`backtest${backtestIndex}`] === value)?.metric;
+                      const metricKey = barChartData.find(d => d[`backtest${backtestIndex}`] === value)?.metricKey;
                       let formatted = `${value}`;
-                      if (metricName === 'Total Return' || metricName === 'Max Drawdown' || metricName === 'Win Rate') {
+                      if (metricKey === 'totalReturn' || metricKey === 'maxDrawdown' || metricKey === 'winRate') {
                         formatted = `${value.toFixed(2)}%`;
-                      } else if (metricName === 'Sharpe Ratio') {
+                      } else if (metricKey === 'sharpeRatio') {
                         formatted = value.toFixed(2);
                       }
-                      return [formatted, `Session ${backtestIndex}`];
+                      return [formatted, t.comparison.sessionN.replace('{index}', String(backtestIndex))];
                     }}
                     contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
                   />
@@ -1671,7 +1679,7 @@ const StrategyComparison: React.FC = () => {
           <Card 
             title={
               <div style={{ fontSize: '18px', fontWeight: 700, color: '#1f1f1f' }}>
-                Risk / Reward Quadrant
+                {t.comparison.riskRewardQuadrant}
               </div>
             }
             style={{ 
@@ -1687,12 +1695,12 @@ const StrategyComparison: React.FC = () => {
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                   <XAxis 
                     type="number" dataKey="maxDrawdown" name="Max DD" unit="%" 
-                    label={{ value: 'Risk (Max DD %)', position: 'insideBottom', offset: -10, fontSize: 12, fill: '#8c8c8c' }}
+                    label={{ value: t.comparison.riskLabel, position: 'insideBottom', offset: -10, fontSize: 12, fill: '#8c8c8c' }}
                     tick={{ fontSize: 11, fill: '#8c8c8c' }}
                   />
                   <YAxis 
                     type="number" dataKey="totalReturn" name="Return" unit="%" 
-                    label={{ value: 'Reward (Return %)', angle: -90, position: 'insideLeft', fontSize: 12, fill: '#8c8c8c' }}
+                    label={{ value: t.comparison.rewardLabel, angle: -90, position: 'insideLeft', fontSize: 12, fill: '#8c8c8c' }}
                     tick={{ fontSize: 11, fill: '#8c8c8c' }}
                   />
                   <ZAxis type="number" dataKey="trades" range={[100, 500]} />
@@ -1705,7 +1713,7 @@ const StrategyComparison: React.FC = () => {
                       return [value, name];
                     }}
                   />
-                  <Scatter name="Strategies" data={scatterChartData}>
+                  <Scatter name={t.comparison.strategiesLabel} data={scatterChartData}>
                     {scatterChartData.map((entry, index) => (
                       <Cell key={`cell-${index}`} fill={entry.color} />
                     ))}
@@ -1722,7 +1730,7 @@ const StrategyComparison: React.FC = () => {
         <Card 
           title={
             <div style={{ fontSize: '18px', fontWeight: 700, color: '#1f1f1f' }}>
-              Relative Equity Growth Comparison
+              {t.comparison.relativeEquityGrowth}
             </div>
           }
           style={{ 
@@ -1766,14 +1774,14 @@ const StrategyComparison: React.FC = () => {
                     />
                   ))}
                   <Line 
-                    type="monotone" dataKey="benchmark" name="Buy & Hold Benchmark" 
+                    type="monotone" dataKey="benchmark" name={t.comparison.buyHoldBenchmark}
                     stroke="#d9d9d9" strokeWidth={2} strokeDasharray="5 5" dot={false} 
                   />
                 </LineChart>
               </ResponsiveContainer>
             </div>
           ) : (
-            <Empty description="No equity curve data available for detailed comparison" />
+            <Empty description={t.comparison.noEquityCurveDetailed} />
           )}
         </Card>
       )}
@@ -1782,7 +1790,7 @@ const StrategyComparison: React.FC = () => {
       <Card 
         title={
           <div style={{ fontSize: '18px', fontWeight: 700, color: '#1f1f1f' }}>
-            Detailed Metric Matrix & Performance Winners
+            {t.comparison.detailedMetricMatrix}
           </div>
         }
         style={{ 

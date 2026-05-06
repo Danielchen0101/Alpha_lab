@@ -24,17 +24,6 @@ const AI_AGENT_PRIMARY_BTN_STYLE: React.CSSProperties = {
   justifyContent: 'center',
 };
 
-const AI_AGENT_COMPACT_BTN_STYLE: React.CSSProperties = { 
-  borderRadius: '4px', 
-  fontWeight: 600, 
-  height: '24px', 
-  fontSize: '11px',
-  display: 'inline-flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  padding: '0 8px'
-};
-
 const AITrading: React.FC = () => {
   // Account Snapshot 状态
   const [accountSnapshot, setAccountSnapshot] = useState({

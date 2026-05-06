@@ -1,5 +1,6 @@
 import React from 'react';
 import { Tooltip, Typography, Space } from 'antd';
+import { useLanguage } from '../../contexts/LanguageContext';
 
 const { Text } = Typography;
 
@@ -37,14 +38,15 @@ interface OptimizationHeatmapProps {
 }
 
 const OptimizationHeatmap: React.FC<OptimizationHeatmapProps> = ({ results, strategy = 'moving_average' }) => {
+  const { t } = useLanguage();
   const shouldShowHeatmap = () => strategy === 'moving_average' || strategy === 'bollinger';
 
   if (!shouldShowHeatmap()) {
     return (
       <div style={{ padding: '60px', textAlign: 'center', background: '#f8f9fa', borderRadius: '12px', border: '1px dashed #d9d9d9' }}>
-        <div style={{ fontSize: '16px', fontWeight: '700', color: '#595959', marginBottom: '12px' }}>Visualization Unavailable</div>
+        <div style={{ fontSize: '16px', fontWeight: '700', color: '#595959', marginBottom: '12px' }}>{t.optimization.heatmapUnavailable}</div>
         <div style={{ fontSize: '14px', color: '#8c8c8c', maxWidth: '400px', margin: '0 auto' }}>
-          Heatmap visualization currently supports 2D parameter spaces (e.g., MA Crossover, Bollinger Bands). Multi-dimensional spaces can be analyzed via the Result Matrix.
+          {t.optimization.heatmapUnavailableDesc}
         </div>
       </div>
     );
@@ -52,9 +54,9 @@ const OptimizationHeatmap: React.FC<OptimizationHeatmapProps> = ({ results, stra
 
   const getAxisConfig = () => {
     if (strategy === 'bollinger') {
-      return { xField: 'period', yField: 'std_dev', xLabel: 'Period', yLabel: 'Std Dev', xFormatter: (v: number) => v.toString(), yFormatter: (v: number) => safeToFixed(v, 1) };
+      return { xField: 'period', yField: 'std_dev', xLabel: t.optimization.labelPeriod, yLabel: t.optimization.labelStdDev, xFormatter: (v: number) => v.toString(), yFormatter: (v: number) => safeToFixed(v, 1) };
     }
-    return { xField: 'short_ma', yField: 'long_ma', xLabel: 'Short MA', yLabel: 'Long MA', xFormatter: (v: number) => v.toString(), yFormatter: (v: number) => v.toString() };
+    return { xField: 'short_ma', yField: 'long_ma', xLabel: t.optimization.labelShortMa, yLabel: t.optimization.labelLongMa, xFormatter: (v: number) => v.toString(), yFormatter: (v: number) => v.toString() };
   };
 
   const axisConfig = getAxisConfig();
@@ -112,22 +114,22 @@ const OptimizationHeatmap: React.FC<OptimizationHeatmapProps> = ({ results, stra
               return (
                 <Tooltip key={`${x}_${y}`} title={res ? (
                   <div style={{ padding: '4px' }}>
-                    <Text strong style={{ display: 'block', marginBottom: '8px', color: '#40a9ff' }}>Configuration Details</Text>
+                    <Text strong style={{ display: 'block', marginBottom: '8px', color: '#40a9ff' }}>{t.optimization.configDetails}</Text>
                     <Space direction="vertical" size={2} style={{ width: '100%' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '24px' }}>
-                        <Text style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.75)' }}>Sharpe Ratio</Text>
+                        <Text style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.75)' }}>{t.optimization.labelSharpeRatio}</Text>
                         <Text strong style={{ color: '#fff' }}>{safeToFixed(res.sharpeRatio)}</Text>
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <Text style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.75)' }}>Total Return</Text>
+                        <Text style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.75)' }}>{t.optimization.labelTotalReturn}</Text>
                         <Text strong style={{ color: res.totalReturn >= 0 ? '#73d13d' : '#ff4d4f' }}>{(res.totalReturn).toFixed(2)}%</Text>
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <Text style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.75)' }}>Max Drawdown</Text>
+                        <Text style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.75)' }}>{t.optimization.labelMaxDrawdown}</Text>
                         <Text strong style={{ color: '#ff4d4f' }}>{safeToFixed(res.maxDrawdown)}%</Text>
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <Text style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.75)' }}>Win Rate</Text>
+                        <Text style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.75)' }}>{t.optimization.labelWinRate}</Text>
                         <Text strong style={{ color: '#fff' }}>{safeToFixed(res.winRate, 1)}%</Text>
                       </div>
                     </Space>
@@ -154,18 +156,18 @@ const OptimizationHeatmap: React.FC<OptimizationHeatmapProps> = ({ results, stra
       </div>
       
       <div style={{ marginTop: '24px', padding: '16px', background: '#fafafa', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '24px' }}>
-        <Text type="secondary" style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' }}>Sharpe Sensitivity:</Text>
+        <Text type="secondary" style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' }}>{t.optimization.heatmapTitle}:</Text>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <div style={{ width: '12px', height: '12px', background: '#ffb4b4', borderRadius: '2px' }} />
-          <Text style={{ fontSize: '11px' }}>Low Performance</Text>
+          <Text style={{ fontSize: '11px' }}>{t.optimization.heatmapLowPerf}</Text>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <div style={{ width: '12px', height: '12px', background: '#f0f0f0', borderRadius: '2px' }} />
-          <Text style={{ fontSize: '11px' }}>Neutral</Text>
+          <Text style={{ fontSize: '11px' }}>{t.optimization.heatmapNeutral}</Text>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <div style={{ width: '12px', height: '12px', background: '#b4ffb4', borderRadius: '2px' }} />
-          <Text style={{ fontSize: '11px' }}>Optimal</Text>
+          <Text style={{ fontSize: '11px' }}>{t.optimization.heatmapOptimal}</Text>
         </div>
       </div>
     </div>
