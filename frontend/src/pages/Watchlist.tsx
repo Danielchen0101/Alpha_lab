@@ -12,6 +12,7 @@ import {
 } from '@ant-design/icons';
 
 import marketDataService from '../services/marketDataService';
+import { useLanguage } from '../contexts/LanguageContext';
 
 const { Title, Text } = Typography;
 const STORAGE_KEY = "quant_watchlist_symbols";
@@ -34,6 +35,7 @@ type WatchlistDisplayItem = {
 
 const Watchlist: React.FC = () => {
   const navigate = useNavigate();
+  const { t, translateSector, translateSignal } = useLanguage();
   const [watchlistSymbols, setWatchlistSymbols] = useState<string[]>([]); // 只存储symbol
   const [watchlistData, setWatchlistData] = useState<WatchlistDisplayItem[]>([]); // 显示用的真实数据
   const [newSymbol, setNewSymbol] = useState('');
@@ -208,7 +210,7 @@ const Watchlist: React.FC = () => {
   const handleAddSymbol = async () => {
     const rawInput = newSymbol.trim();
     if (!rawInput) {
-      message.warning('Please enter a stock symbol or company name');
+      message.warning(t.watchlist.pleaseEnterSymbol);
       return;
     }
 
@@ -216,12 +218,12 @@ const Watchlist: React.FC = () => {
       setLoading(true);
       const resolvedSymbol = await resolveWatchlistSymbol(rawInput);
       if (!resolvedSymbol) {
-        message.error(`No matching stock found for "${rawInput}"`);
+        message.error(t.watchlist.noMatchFound.replace('{input}', rawInput));
         return;
       }
 
       if (watchlistSymbols.includes(resolvedSymbol)) {
-        message.warning(`${resolvedSymbol} is already in your watchlist`);
+        message.warning(t.watchlist.alreadyInWatchlist.replace('{symbol}', resolvedSymbol));
         setNewSymbol('');
         return;
       }
@@ -229,10 +231,10 @@ const Watchlist: React.FC = () => {
       const nextSymbols = [...watchlistSymbols, resolvedSymbol];
       setWatchlistSymbols(nextSymbols);
       await updateWatchlistData(nextSymbols);
-      message.success(`Added ${resolvedSymbol} to watchlist`);
+      message.success(t.watchlist.addedToWatchlist.replace('{symbol}', resolvedSymbol));
     } catch (error) {
       console.error(`Failed to add "${rawInput}" to watchlist:`, error);
-      message.error(`Failed to add "${rawInput}". Please try again.`);
+      message.error(t.watchlist.failedToAdd.replace('{input}', rawInput));
     } finally {
       setLoading(false);
       setNewSymbol('');
@@ -242,7 +244,7 @@ const Watchlist: React.FC = () => {
   const handleRemoveSymbol = (symbolToRemove: string) => {
     setWatchlistSymbols(prev => prev.filter(symbol => symbol !== symbolToRemove));
     setWatchlistData(prev => prev.filter(item => item.symbol !== symbolToRemove));
-    message.success(`${symbolToRemove} removed from watchlist`);
+    message.success(t.watchlist.removedFromWatchlist.replace('{symbol}', symbolToRemove));
   };
 
   const handleRunBacktest = (symbol: string) => {
@@ -271,7 +273,7 @@ const Watchlist: React.FC = () => {
 
   const columns = [
     {
-      title: 'Symbol',
+      title: t.market.symbol,
       dataIndex: 'symbol',
       key: 'symbol',
       width: 120,
@@ -306,7 +308,7 @@ const Watchlist: React.FC = () => {
       ),
     },
     {
-      title: 'Price',
+      title: t.market.price,
       dataIndex: 'price',
       key: 'price',
       width: 100,
@@ -319,7 +321,7 @@ const Watchlist: React.FC = () => {
       ),
     },
     {
-      title: 'Change',
+      title: t.market.changePercent,
       dataIndex: 'changePercent',
       key: 'changePercent',
       width: 110,
@@ -345,7 +347,7 @@ const Watchlist: React.FC = () => {
       },
     },
     {
-      title: 'Day Range',
+      title: t.watchlist.dayRange,
       key: 'dayRange',
       width: 130,
       align: 'center' as const,
@@ -377,52 +379,53 @@ const Watchlist: React.FC = () => {
       },
     },
     {
-      title: 'Sector',
+      title: t.market.sector,
       dataIndex: 'sector',
       key: 'sector',
       width: 110,
       render: (sector: string | null) => (
-        <Tag color="blue" style={{ 
-          fontSize: '10px', borderRadius: '4px', border: 'none', 
-          backgroundColor: '#eff6ff', color: '#1d4ed8', fontWeight: 600 
+        <Tag color="blue" style={{
+          fontSize: '10px', borderRadius: '4px', border: 'none',
+          backgroundColor: '#eff6ff', color: '#1d4ed8', fontWeight: 600
         }}>
-          {sector || 'Other'}
+          {sector ? translateSector(sector) : translateSector('Other')}
         </Tag>
       ),
     },
     {
-      title: 'Signal',
+      title: t.watchlist.signal,
       key: 'signal',
       width: 110,
       align: 'center' as const,
       render: (_: any, record: WatchlistDisplayItem) => {
         const signal = getSignal(record);
+        const displaySignal = translateSignal(signal);
         let color = '#6b7280';
         let bgColor = '#f3f4f6';
         if (signal.includes('Bullish')) { color = '#059669'; bgColor = '#ecfdf5'; }
         else if (signal.includes('Bearish')) { color = '#dc2626'; bgColor = '#fef2f2'; }
         else if (signal.includes('support')) { color = '#2563eb'; bgColor = '#eff6ff'; }
         else if (signal.includes('resistance')) { color = '#d97706'; bgColor = '#fffbeb'; }
-        
+
         return (
-          <span style={{ 
+          <span style={{
             fontSize: '11px', fontWeight: '700', color, backgroundColor: bgColor,
             padding: '2px 8px', borderRadius: '12px', whiteSpace: 'nowrap'
           }}>
-            {signal}
+            {displaySignal}
           </span>
         );
       },
     },
     {
-      title: 'Actions',
+      title: t.watchlist.actions,
       key: 'actions',
       width: 180,
       fixed: 'right' as const,
       align: 'right' as const,
       render: (_: any, record: WatchlistDisplayItem) => (
         <Space size={4}>
-          <Tooltip title="Analyze">
+          <Tooltip title={t.watchlist.analyze}>
             <Button
               type="primary"
               size="small"
@@ -430,17 +433,17 @@ const Watchlist: React.FC = () => {
               onClick={() => handleAnalyze(record.symbol)}
               style={{ borderRadius: '4px', height: '28px', fontSize: '12px' }}
             >
-              Analyze
+              {t.watchlist.analyze}
             </Button>
           </Tooltip>
-          <Tooltip title="Backtest">
+          <Tooltip title={t.watchlist.backtest}>
             <Button
               size="small"
               icon={<PlayCircleOutlined />}
               onClick={() => handleRunBacktest(record.symbol)}
               style={{ borderRadius: '4px', height: '28px', fontSize: '12px' }}
             >
-              Backtest
+              {t.watchlist.backtest}
             </Button>
           </Tooltip>
           <Button
@@ -498,21 +501,21 @@ const Watchlist: React.FC = () => {
       {/* Header Section */}
       <div style={{ marginBottom: '24px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
         <div>
-          <Title level={2} style={{ margin: 0, fontWeight: 800, letterSpacing: '-0.5px' }}>Watchlist</Title>
-          <Text type="secondary" style={{ fontSize: '14px' }}>Monitor and analyze your selected stocks in real-time</Text>
+          <Title level={2} style={{ margin: 0, fontWeight: 800, letterSpacing: '-0.5px' }}>{t.watchlist.title}</Title>
+          <Text type="secondary" style={{ fontSize: '14px' }}>{t.watchlist.subtitle}</Text>
           <div style={{ marginTop: '8px', display: 'flex', gap: '16px', fontSize: '12px', color: '#6b7280' }}>
-            <span><ThunderboltOutlined style={{ color: '#3b82f6', marginRight: '4px' }} />Total: <strong>{totalSymbols}</strong> symbols</span>
-            <span><ClockCircleOutlined style={{ marginRight: '4px' }} />Updated: <strong>{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</strong></span>
-            <span><RiseOutlined style={{ color: avgChange >= 0 ? '#10b981' : '#ef4444', marginRight: '4px' }} />Avg Change: <strong style={{ color: avgChange >= 0 ? '#10b981' : '#ef4444' }}>{avgChange.toFixed(2)}%</strong></span>
+            <span><ThunderboltOutlined style={{ color: '#3b82f6', marginRight: '4px' }} />{t.watchlist.total}: <strong>{totalSymbols}</strong> {t.watchlist.symbols}</span>
+            <span><ClockCircleOutlined style={{ marginRight: '4px' }} />{t.watchlist.updated}: <strong>{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</strong></span>
+            <span><RiseOutlined style={{ color: avgChange >= 0 ? '#10b981' : '#ef4444', marginRight: '4px' }} />{t.watchlist.avgChange}: <strong style={{ color: avgChange >= 0 ? '#10b981' : '#ef4444' }}>{avgChange.toFixed(2)}%</strong></span>
           </div>
         </div>
         
         {/* Add Symbol Panel */}
         <div style={{ background: '#fff', padding: '12px 16px', borderRadius: '12px', border: '1px solid #e5e7eb', boxShadow: '0 1px 3px rgba(0,0,0,0.05)', width: '380px' }}>
-          <div style={{ fontSize: '12px', fontWeight: 700, marginBottom: '8px', color: '#374151', textTransform: 'uppercase', letterSpacing: '0.025em' }}>Add Symbol to Watchlist</div>
+          <div style={{ fontSize: '12px', fontWeight: 700, marginBottom: '8px', color: '#374151', textTransform: 'uppercase', letterSpacing: '0.025em' }}>{t.watchlist.addSymbolToWatchlist}</div>
           <Space.Compact style={{ width: '100%' }}>
             <Input
-              placeholder="e.g. AAPL, TSLA, NVDA"
+              placeholder={t.watchlist.symbolPlaceholder}
               prefix={<SearchOutlined style={{ color: '#9ca3af' }} />}
               value={newSymbol}
               onChange={(e) => setNewSymbol(e.target.value.toUpperCase())}
@@ -526,12 +529,12 @@ const Watchlist: React.FC = () => {
               loading={loading}
               style={{ height: '36px', borderRadius: '0 6px 6px 0', fontWeight: 600 }}
             >
-              Add
+              {t.watchlist.add}
             </Button>
           </Space.Compact>
           <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '6px', display: 'flex', justifyContent: 'space-between' }}>
-            <span>Press Enter to add</span>
-            <span>Input company name or ticker</span>
+            <span>{t.watchlist.pressEnter}</span>
+            <span>{t.watchlist.inputHint}</span>
           </div>
         </div>
       </div>
@@ -542,7 +545,7 @@ const Watchlist: React.FC = () => {
           <Col span={6}>
             <Card bodyStyle={{ padding: '16px' }} style={{ borderRadius: '12px', border: '1px solid #e5e7eb' }}>
               <Statistic 
-                title={<Text type="secondary" style={{ fontSize: '12px', fontWeight: 600 }}>WATCHLIST SIZE</Text>}
+                title={<Text type="secondary" style={{ fontSize: '12px', fontWeight: 600 }}>{t.watchlist.watchlistSize}</Text>}
                 value={totalSymbols}
                 prefix={<DashOutlined style={{ color: '#3b82f6', opacity: 0.8 }} />}
                 valueStyle={{ fontWeight: 800, fontSize: '24px' }}
@@ -552,7 +555,7 @@ const Watchlist: React.FC = () => {
           <Col span={6}>
             <Card bodyStyle={{ padding: '16px' }} style={{ borderRadius: '12px', border: '1px solid #e5e7eb' }}>
               <Statistic 
-                title={<Text type="secondary" style={{ fontSize: '12px', fontWeight: 600 }}>GAINERS</Text>}
+                title={<Text type="secondary" style={{ fontSize: '12px', fontWeight: 600 }}>{t.watchlist.gainers}</Text>}
                 value={gainers}
                 valueStyle={{ color: '#10b981', fontWeight: 800, fontSize: '24px' }}
                 prefix={<RiseOutlined />}
@@ -562,7 +565,7 @@ const Watchlist: React.FC = () => {
           <Col span={6}>
             <Card bodyStyle={{ padding: '16px' }} style={{ borderRadius: '12px', border: '1px solid #e5e7eb' }}>
               <Statistic 
-                title={<Text type="secondary" style={{ fontSize: '12px', fontWeight: 600 }}>LOSERS</Text>}
+                title={<Text type="secondary" style={{ fontSize: '12px', fontWeight: 600 }}>{t.watchlist.losers}</Text>}
                 value={losers}
                 valueStyle={{ color: '#ef4444', fontWeight: 800, fontSize: '24px' }}
                 prefix={<FallOutlined />}
@@ -572,7 +575,7 @@ const Watchlist: React.FC = () => {
           <Col span={6}>
             <Card bodyStyle={{ padding: '16px' }} style={{ borderRadius: '12px', border: '1px solid #e5e7eb' }}>
               <Statistic 
-                title={<Text type="secondary" style={{ fontSize: '12px', fontWeight: 600 }}>AVG PERFORMANCE</Text>}
+                title={<Text type="secondary" style={{ fontSize: '12px', fontWeight: 600 }}>{t.watchlist.avgPerformance}</Text>}
                 value={avgChange}
                 precision={2}
                 suffix="%"
@@ -590,12 +593,12 @@ const Watchlist: React.FC = () => {
       >
         <div style={{ padding: '16px 20px', borderBottom: '1px solid #f3f4f6', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#fff' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <Text strong style={{ fontSize: '16px' }}>Watchlist Items</Text>
+            <Text strong style={{ fontSize: '16px' }}>{t.watchlist.watchlistItems}</Text>
             <Tag color="blue" style={{ borderRadius: '10px', fontSize: '11px', fontWeight: 700 }}>{watchlistSymbols.length}</Tag>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
             <Input 
-              placeholder="Search watchlist..."
+              placeholder={t.watchlist.searchWatchlist}
               prefix={<SearchOutlined style={{ color: '#9ca3af' }} />}
               size="small"
               value={searchTerm}
@@ -604,7 +607,7 @@ const Watchlist: React.FC = () => {
               allowClear
             />
             {watchlistSymbols.length > 0 && (
-              <Tooltip title="Click column headers to sort">
+              <Tooltip title={t.watchlist.clickColumnSort}>
                 <InfoCircleOutlined style={{ color: '#9ca3af', cursor: 'help' }} />
               </Tooltip>
             )}
@@ -627,11 +630,11 @@ const Watchlist: React.FC = () => {
             image={Empty.PRESENTED_IMAGE_SIMPLE}
             description={
               <div style={{ padding: '40px 0' }}>
-                <Title level={4} style={{ marginBottom: '8px' }}>Your watchlist is empty</Title>
-                <Text type="secondary">Add a stock symbol above to start monitoring real-time performance and AI signals.</Text>
+                <Title level={4} style={{ marginBottom: '8px' }}>{t.watchlist.noSymbols}</Title>
+                <Text type="secondary">{t.watchlist.addSymbolPrompt}</Text>
                 <div style={{ marginTop: '24px' }}>
                   <Button type="primary" onClick={() => setNewSymbol('AAPL')} icon={<PlusOutlined />}>
-                    Try adding AAPL
+                    {t.watchlist.tryAAPL}
                   </Button>
                 </div>
               </div>
@@ -656,25 +659,25 @@ const Watchlist: React.FC = () => {
             <div style={{ background: '#eff6ff', color: '#3b82f6', width: '24px', height: '24px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px' }}>
               <LineChartOutlined />
             </div>
-            <Text type="secondary" style={{ fontSize: '13px' }}>Analyze for technical context</Text>
+            <Text type="secondary" style={{ fontSize: '13px' }}>{t.watchlist.analyzeTip}</Text>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <div style={{ background: '#f5f3ff', color: '#8b5cf6', width: '24px', height: '24px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px' }}>
               <PlayCircleOutlined />
             </div>
-            <Text type="secondary" style={{ fontSize: '13px' }}>Backtest strategy fit</Text>
+            <Text type="secondary" style={{ fontSize: '13px' }}>{t.watchlist.backtestTip}</Text>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <div style={{ background: '#ecfdf5', color: '#10b981', width: '24px', height: '24px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px' }}>
               <InfoCircleOutlined />
             </div>
-            <Text type="secondary" style={{ fontSize: '13px' }}>Click headers to sort</Text>
+            <Text type="secondary" style={{ fontSize: '13px' }}>{t.watchlist.sortTip}</Text>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <div style={{ background: '#fffbeb', color: '#f59e0b', width: '24px', height: '24px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px' }}>
               <ClockCircleOutlined />
             </div>
-            <Text type="secondary" style={{ fontSize: '13px' }}>Data auto-saves in browser</Text>
+            <Text type="secondary" style={{ fontSize: '13px' }}>{t.watchlist.autoSaveTip}</Text>
           </div>
         </div>
       )}

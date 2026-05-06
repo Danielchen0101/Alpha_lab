@@ -6,6 +6,7 @@ import { StockData, safeNumber, safeToFixed, getDashboardStatus } from '../servi
 import { sharedDataService } from '../services/sharedDataService';
 import DataSourceBadge from '../components/DataSourceBadge';
 import { formatMarketCap } from '../utils/format';
+import { useLanguage } from '../contexts/LanguageContext';
 
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 
@@ -47,6 +48,7 @@ const STORAGE_KEY = "quant_watchlist_symbols";
 
 const Dashboard: React.FC = () => {
   const navigate = useNavigate();
+  const { t, translateSector } = useLanguage();
   const [marketData, setMarketData] = useState<StockData[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -217,7 +219,7 @@ const Dashboard: React.FC = () => {
 
       // 检查是否获取到有效数据
       if (!stocks || stocks.length === 0) {
-        setError('No market data available');
+        setError(t.dashboard.noMarketData);
         setMarketData([]);
         setSectorData([]);
       } else {
@@ -232,7 +234,7 @@ const Dashboard: React.FC = () => {
       }
     } catch (err: any) {
       console.error('[Dashboard优化] 获取市场数据失败:', err);
-      const errorMessage = err.message || 'Failed to load market data';
+      const errorMessage = err.message || t.dashboard.errorLoading;
       const errorCode = err.code || '';
       setError(errorMessage);
       setNeedsAuth(false);
@@ -631,13 +633,13 @@ const Dashboard: React.FC = () => {
             }}>
               <DashboardOutlined />
             </div>
-            <Title level={1} style={{ margin: 0, fontSize: 26, fontWeight: 800, letterSpacing: '-0.5px', color: '#1a1a1a' }}>Market Dashboard</Title>
+            <Title level={1} style={{ margin: 0, fontSize: 26, fontWeight: 800, letterSpacing: '-0.5px', color: '#1a1a1a' }}>{t.dashboard.title}</Title>
           </div>
-          <Text type="secondary" style={{ fontSize: 14, marginLeft: 48 }}>Real-time overview of quantitative market dynamics and system health.</Text>
+          <Text type="secondary" style={{ fontSize: 14, marginLeft: 48 }}>{t.dashboard.subtitle}</Text>
         </div>
         <Space size={16}>
           <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 600, textTransform: 'uppercase', marginBottom: 2 }}>Last Updated</div>
+            <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 600, textTransform: 'uppercase', marginBottom: 2 }}>{t.dashboard.lastUpdated}</div>
             <div style={{ fontSize: 13, fontWeight: 700, color: '#595959', display: 'flex', alignItems: 'center', gap: 6 }}>
               <ClockCircleOutlined style={{ fontSize: 12, color: '#1890ff' }} />
               {lastFetched ? new Date(lastFetched).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'N/A'}
@@ -650,7 +652,7 @@ const Dashboard: React.FC = () => {
             loading={loading}
             style={{ borderRadius: '8px', fontWeight: 600, height: 40, padding: '0 20px' }}
           >
-            Refresh Data
+            {t.dashboard.refreshData}
           </Button>
           {marketData.length > 0 && marketData[0]?.dataSource && (
             <DataSourceBadge source={marketData[0].dataSource} />
@@ -663,8 +665,8 @@ const Dashboard: React.FC = () => {
         <div style={{ marginBottom: 24 }}>
           {needsAuth && (
             <Alert
-              message={<Text strong>Authentication Required</Text>}
-              description="Your session has expired. Please sign in again to view market data."
+              message={<Text strong>{t.dashboard.authRequired}</Text>}
+              description={t.dashboard.authRequiredDesc}
               type="warning"
               showIcon
               style={{ borderRadius: 10, border: '1px solid #ffe58f', background: '#fffbe6' }}
@@ -672,18 +674,18 @@ const Dashboard: React.FC = () => {
           )}
           {needsConfig && !needsAuth && (
             <Alert
-              message={<Text strong>API Configuration Required</Text>}
-              description="Market data API keys are missing. Please configure Alpaca or Finnhub keys in Settings."
+              message={<Text strong>{t.dashboard.apiConfigRequired}</Text>}
+              description={t.dashboard.apiConfigRequiredDesc}
               type="warning"
               showIcon
-              action={<Button size="small" type="primary" onClick={() => navigate('/configuration')}>Configure</Button>}
+              action={<Button size="small" type="primary" onClick={() => navigate('/configuration')}>{t.dashboard.configure}</Button>}
               style={{ borderRadius: 10, border: '1px solid #ffe58f', background: '#fffbe6' }}
             />
           )}
           {error && !needsAuth && !needsConfig && (
             <Alert
-              message={<Text strong>{error.includes('Network Error') || error.includes('ECONNREFUSED') ? 'Backend Connection Error' : 'API Error'}</Text>}
-              description={error.includes('Network Error') || error.includes('ECONNREFUSED') ? 'Cannot reach the backend server. Please ensure it is running.' : error}
+              message={<Text strong>{error.includes('Network Error') || error.includes('ECONNREFUSED') ? t.dashboard.backendConnectionError : t.dashboard.apiError}</Text>}
+              description={error.includes('Network Error') || error.includes('ECONNREFUSED') ? t.dashboard.backendConnectionErrorDesc : error}
               type="error"
               showIcon
               style={{ borderRadius: 10, marginTop: 12 }}
@@ -691,11 +693,11 @@ const Dashboard: React.FC = () => {
           )}
           {!loading && !error && !needsAuth && !needsConfig && marketData.length > 0 && marketData.every(stock => stock.price === null) && (
             <Alert
-              message={<Text strong>API Error</Text>}
-              description="Market data API returned no prices. Verify your API keys in Configuration or check API rate limits."
+              message={<Text strong>{t.dashboard.apiError}</Text>}
+              description={t.dashboard.apiNoPricesDesc}
               type="warning"
               showIcon
-              action={<Button size="small" onClick={() => navigate('/configuration')}>Check Config</Button>}
+              action={<Button size="small" onClick={() => navigate('/configuration')}>{t.dashboard.checkConfig}</Button>}
               style={{ borderRadius: 10, border: '1px solid #ffe58f', background: '#fffbe6', marginTop: 12 }}
             />
           )}
@@ -707,7 +709,7 @@ const Dashboard: React.FC = () => {
         <Col xs={12} sm={8} lg={4}>
           <Card className="premium-card" bodyStyle={{ padding: 0 }}>
             <div className="metric-card">
-              <span className="metric-label">Total Symbols</span>
+              <span className="metric-label">{t.dashboard.totalSymbols}</span>
               <span className="metric-value">{marketStats.totalSymbols || '—'}</span>
               <DatabaseOutlined className="metric-icon" />
             </div>
@@ -716,7 +718,7 @@ const Dashboard: React.FC = () => {
         <Col xs={12} sm={8} lg={4}>
           <Card className="premium-card" bodyStyle={{ padding: 0 }}>
             <div className="metric-card">
-              <span className="metric-label">Gainers</span>
+              <span className="metric-label">{t.dashboard.gainers}</span>
               <span className="metric-value" style={{ color: '#52c41a' }}>{marketStats.gainers || '0'}</span>
               <RiseOutlined className="metric-icon" style={{ color: '#52c41a' }} />
             </div>
@@ -725,7 +727,7 @@ const Dashboard: React.FC = () => {
         <Col xs={12} sm={8} lg={4}>
           <Card className="premium-card" bodyStyle={{ padding: 0 }}>
             <div className="metric-card">
-              <span className="metric-label">Losers</span>
+              <span className="metric-label">{t.dashboard.losers}</span>
               <span className="metric-value" style={{ color: '#ff4d4f' }}>{marketStats.losers || '0'}</span>
               <FallOutlined className="metric-icon" style={{ color: '#ff4d4f' }} />
             </div>
@@ -734,7 +736,7 @@ const Dashboard: React.FC = () => {
         <Col xs={12} sm={8} lg={4}>
           <Card className="premium-card" bodyStyle={{ padding: 0 }}>
             <div className="metric-card">
-              <span className="metric-label">Avg Change</span>
+              <span className="metric-label">{t.dashboard.avgChange}</span>
               <span className="metric-value" style={{ color: marketStats.avgChange > 0 ? '#52c41a' : marketStats.avgChange < 0 ? '#ff4d4f' : '#1a1a1a' }}>
                 {marketStats.avgChange !== 0 ? (marketStats.avgChange > 0 ? '+' : '') + marketStats.avgChange.toFixed(2) + '%' : '0.00%'}
               </span>
@@ -745,7 +747,7 @@ const Dashboard: React.FC = () => {
         <Col xs={12} sm={8} lg={4}>
           <Card className="premium-card" bodyStyle={{ padding: 0 }}>
             <div className="metric-card">
-              <span className="metric-label">Mkt Cap</span>
+              <span className="metric-label">{t.dashboard.mktCap}</span>
               <span className="metric-value">{formatMarketCap(marketStats.totalMarketCap)}</span>
               <BarChartOutlined className="metric-icon" style={{ color: '#2f54eb' }} />
             </div>
@@ -754,7 +756,7 @@ const Dashboard: React.FC = () => {
         <Col xs={12} sm={8} lg={4}>
           <Card className="premium-card" bodyStyle={{ padding: 0 }}>
             <div className="metric-card">
-              <span className="metric-label">Largest Move</span>
+              <span className="metric-label">{t.dashboard.largestMove}</span>
               <span className="metric-value" style={{ fontSize: 18 }}>
                 {marketStats.largestMoveStock ? marketStats.largestMoveStock.symbol : '—'}
                 {marketStats.largestMoveStock && (
@@ -774,14 +776,14 @@ const Dashboard: React.FC = () => {
         <Col xs={24} lg={12}>
           <Card 
             className="premium-card" 
-            title={<span style={{ fontWeight: 700, fontSize: 15 }}><RiseOutlined style={{ color: '#52c41a', marginRight: 8 }} />Top Gainers</span>}
+            title={<span style={{ fontWeight: 700, fontSize: 15 }}><RiseOutlined style={{ color: '#52c41a', marginRight: 8 }} />{t.dashboard.topGainers}</span>}
             bodyStyle={{ padding: '8px 0', minHeight: 340 }}
           >
             {getTopGainers().length === 0 ? (
               <div className="empty-state-container">
                 <RiseOutlined style={{ fontSize: 32, color: '#f0f0f0', marginBottom: 12 }} />
-                <Text strong style={{ color: '#bfbfbf' }}>No gainers found</Text>
-                <Text type="secondary" style={{ fontSize: 12 }}>Configure market data API to populate this panel.</Text>
+                <Text strong style={{ color: '#bfbfbf' }}>{t.dashboard.noGainersFound}</Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>{t.dashboard.configureMarketData}</Text>
               </div>
             ) : (
               <div style={{ padding: '0 16px' }}>
@@ -809,14 +811,14 @@ const Dashboard: React.FC = () => {
         <Col xs={24} lg={12}>
           <Card 
             className="premium-card" 
-            title={<span style={{ fontWeight: 700, fontSize: 15 }}><FallOutlined style={{ color: '#ff4d4f', marginRight: 8 }} />Top Losers</span>}
+            title={<span style={{ fontWeight: 700, fontSize: 15 }}><FallOutlined style={{ color: '#ff4d4f', marginRight: 8 }} />{t.dashboard.topLosers}</span>}
             bodyStyle={{ padding: '8px 0', minHeight: 340 }}
           >
             {getTopLosers().length === 0 ? (
               <div className="empty-state-container">
                 <FallOutlined style={{ fontSize: 32, color: '#f0f0f0', marginBottom: 12 }} />
-                <Text strong style={{ color: '#bfbfbf' }}>No losers found</Text>
-                <Text type="secondary" style={{ fontSize: 12 }}>Configure market data API to populate this panel.</Text>
+                <Text strong style={{ color: '#bfbfbf' }}>{t.dashboard.noLosersFound}</Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>{t.dashboard.configureMarketData}</Text>
               </div>
             ) : (
               <div style={{ padding: '0 16px' }}>
@@ -848,13 +850,13 @@ const Dashboard: React.FC = () => {
         <Col xs={24} lg={10}>
           <Card 
             className="premium-card" 
-            title={<span style={{ fontWeight: 700, fontSize: 15 }}><PieChartOutlined style={{ marginRight: 8 }} />Sector Distribution</span>}
+            title={<span style={{ fontWeight: 700, fontSize: 15 }}><PieChartOutlined style={{ marginRight: 8 }} />{t.dashboard.sectorDistribution}</span>}
             bodyStyle={{ height: 320, padding: 24 }}
           >
             {sectorData.length === 0 ? (
               <div className="empty-state-container">
                 <PieChartOutlined style={{ fontSize: 32, color: '#f0f0f0', marginBottom: 12 }} />
-                <Text type="secondary">Sector data unavailable</Text>
+                <Text type="secondary">{t.dashboard.sectorDataUnavailable}</Text>
               </div>
             ) : (
               <div style={{ display: 'flex', height: '100%', alignItems: 'center' }}>
@@ -874,7 +876,7 @@ const Dashboard: React.FC = () => {
                           <Cell key={`cell-${index}`} fill={getSectorColor(entry.name)} />
                         ))}
                       </Pie>
-                      <Tooltip />
+                      <Tooltip formatter={(value: number, name: string) => [`${value.toFixed(1)}%`, translateSector(name)]} />
                     </PieChart>
                   </ResponsiveContainer>
                 </div>
@@ -883,7 +885,7 @@ const Dashboard: React.FC = () => {
                     <div key={sector.name} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
                       <Space size={8}>
                         <div style={{ width: 8, height: 8, borderRadius: '50%', background: getSectorColor(sector.name) }} />
-                        <Text style={{ fontSize: 12, fontWeight: 500 }}>{sector.name}</Text>
+                        <Text style={{ fontSize: 12, fontWeight: 500 }}>{translateSector(sector.name)}</Text>
                       </Space>
                       <Text strong style={{ fontSize: 12 }}>{sector.percentage.toFixed(1)}%</Text>
                     </div>
@@ -896,30 +898,30 @@ const Dashboard: React.FC = () => {
         <Col xs={24} sm={12} lg={7}>
           <Card 
             className="premium-card" 
-            title={<span style={{ fontWeight: 700, fontSize: 15 }}><BarChartOutlined style={{ marginRight: 8 }} />Market Breadth</span>}
+            title={<span style={{ fontWeight: 700, fontSize: 15 }}><BarChartOutlined style={{ marginRight: 8 }} />{t.dashboard.marketBreadth}</span>}
             bodyStyle={{ height: 320, padding: 24, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}
           >
             <div style={{ textAlign: 'center', marginBottom: 30 }}>
-              <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', marginBottom: 8 }}>Advancing vs Declining</div>
+              <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', marginBottom: 8 }}>{t.dashboard.advancingVsDeclining}</div>
               <Row gutter={16} align="middle" justify="center">
                 <Col>
                   <div style={{ fontSize: 32, fontWeight: 800, color: '#52c41a' }}>{marketStats.gainers}</div>
-                  <Text type="secondary" style={{ fontSize: 10, fontWeight: 700 }}>UP</Text>
+                  <Text type="secondary" style={{ fontSize: 10, fontWeight: 700 }}>{t.dashboard.up}</Text>
                 </Col>
                 <Col>
                   <Divider type="vertical" style={{ height: 40, borderLeft: '2px solid #f0f0f0' }} />
                 </Col>
                 <Col>
                   <div style={{ fontSize: 32, fontWeight: 800, color: '#ff4d4f' }}>{marketStats.losers}</div>
-                  <Text type="secondary" style={{ fontSize: 10, fontWeight: 700 }}>DOWN</Text>
+                  <Text type="secondary" style={{ fontSize: 10, fontWeight: 700 }}>{t.dashboard.down}</Text>
                 </Col>
               </Row>
             </div>
             <div style={{ background: '#fafafa', borderRadius: 12, padding: 16, border: '1px solid #f0f0f0' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                <Text style={{ fontSize: 12, color: '#595959' }}>Overall Status</Text>
+                <Text style={{ fontSize: 12, color: '#595959' }}>{t.dashboard.overallStatus}</Text>
                 <Tag color={marketStats.avgChange > 0 ? 'green' : marketStats.avgChange < 0 ? 'red' : 'default'} style={{ margin: 0, fontWeight: 700, borderRadius: 4 }}>
-                  {marketStats.avgChange > 0.5 ? 'BULLISH' : marketStats.avgChange < -0.5 ? 'BEARISH' : 'NEUTRAL'}
+                  {marketStats.avgChange > 0.5 ? t.dashboard.bullish : marketStats.avgChange < -0.5 ? t.dashboard.bearish : t.dashboard.neutral}
                 </Tag>
               </div>
               <div style={{ height: 8, background: '#eee', borderRadius: 4, overflow: 'hidden', display: 'flex' }}>
@@ -932,15 +934,15 @@ const Dashboard: React.FC = () => {
         <Col xs={24} sm={12} lg={7}>
           <Card 
             className="premium-card" 
-            title={<span style={{ fontWeight: 700, fontSize: 15 }}><DatabaseOutlined style={{ marginRight: 8 }} />System Status</span>}
+            title={<span style={{ fontWeight: 700, fontSize: 15 }}><DatabaseOutlined style={{ marginRight: 8 }} />{t.dashboard.systemStatus}</span>}
             bodyStyle={{ height: 320, padding: '16px 20px' }}
           >
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 10 }}>
               {[
-                { label: 'Market Data', status: systemStatus.marketData },
-                { label: 'Quote Feed', status: systemStatus.quoteFeed },
-                { label: 'Broker Connection', status: systemStatus.brokerConnection },
-                { label: 'Symbols', status: marketStats.totalSymbols.toString(), isTag: false }
+                { label: t.dashboard.marketData, status: systemStatus.marketData },
+                { label: t.dashboard.quoteFeed, status: systemStatus.quoteFeed },
+                { label: t.dashboard.brokerConnection, status: systemStatus.brokerConnection },
+                { label: t.dashboard.symbols, status: marketStats.totalSymbols.toString(), isTag: false }
               ].map(item => (
                 <div key={item.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <Text style={{ fontSize: 13, color: '#595959', fontWeight: 500 }}>{item.label}</Text>
@@ -949,14 +951,14 @@ const Dashboard: React.FC = () => {
                   ) : (
                     <Tag color={item.status === 'ONLINE' || item.status === 'HEALTHY' ? 'success' : item.status === 'PAPER' || item.status === 'LIVE' ? 'blue' : item.status === 'CONFIG_REQUIRED' || item.status === 'AUTH_REQUIRED' ? 'warning' : 'error'}
                          style={{ margin: 0, fontWeight: 700, borderRadius: 4, fontSize: 10 }}>
-                      {item.status === 'CONFIG_REQUIRED' ? 'CONFIG REQUIRED' : item.status === 'AUTH_REQUIRED' ? 'SIGN IN' : item.status}
+                      {item.status === 'CONFIG_REQUIRED' ? t.dashboard.configRequired : item.status === 'AUTH_REQUIRED' ? t.dashboard.signIn : item.status}
                     </Tag>
                   )}
                 </div>
               ))}
               <Divider style={{ margin: '8px 0' }} />
               <div style={{ background: '#f9f9f9', padding: '10px 12px', borderRadius: 8, border: '1px solid #f0f0f0' }}>
-                <div style={{ fontSize: 10, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', marginBottom: 4 }}>Environment</div>
+                <div style={{ fontSize: 10, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', marginBottom: 4 }}>{t.dashboard.environment}</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <div style={{ width: 6, height: 6, borderRadius: '50%', background: systemStatus.marketData === 'CONFIG_REQUIRED' || systemStatus.marketData === 'AUTH_REQUIRED' ? '#faad14' : '#1890ff' }} />
                   <Text strong style={{ fontSize: 12 }}>{systemStatus.environment || 'Unknown'}</Text>
@@ -970,19 +972,19 @@ const Dashboard: React.FC = () => {
       {/* ── Watchlist Snapshot ── */}
       <Card 
         className="premium-card" 
-        title={<span style={{ fontWeight: 700, fontSize: 16 }}><EyeOutlined style={{ color: '#1890ff', marginRight: 8 }} />Watchlist Snapshot</span>}
-        extra={<Button type="link" onClick={handleManageWatchlist} style={{ fontWeight: 600 }}>Manage All</Button>}
+        title={<span style={{ fontWeight: 700, fontSize: 16 }}><EyeOutlined style={{ color: '#1890ff', marginRight: 8 }} />{t.dashboard.watchlistSnapshot}</span>}
+        extra={<Button type="link" onClick={handleManageWatchlist} style={{ fontWeight: 600 }}>{t.dashboard.manageAll}</Button>}
       >
         {getWatchlistSymbols().length === 0 ? (
           <div className="empty-state-container">
             <EyeOutlined style={{ fontSize: 32, color: '#f0f0f0', marginBottom: 12 }} />
-            <Text type="secondary">Your watchlist is empty.</Text>
-            <Button type="link" onClick={() => navigate('/market')} style={{ marginTop: 8 }}>Explore Market</Button>
+            <Text type="secondary">{t.dashboard.watchlistEmpty}</Text>
+            <Button type="link" onClick={() => navigate('/market')} style={{ marginTop: 8 }}>{t.dashboard.exploreMarket}</Button>
           </div>
         ) : getWatchlistData().length === 0 ? (
           <div className="empty-state-container">
             <ReloadOutlined style={{ fontSize: 32, color: '#f0f0f0', marginBottom: 12 }} />
-            <Text type="secondary">Waiting for market data synchronization...</Text>
+            <Text type="secondary">{t.dashboard.waitingForData}</Text>
           </div>
         ) : (
           <Row gutter={[16, 16]}>

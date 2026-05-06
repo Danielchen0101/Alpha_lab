@@ -5,11 +5,13 @@ import { backtraderAPI } from '../services/api';
 import OptimizationHeatmap from '../components/optimization/OptimizationHeatmap';
 import OptimizationSummary from '../components/optimization/OptimizationSummary';
 import OptimizationResultsTable from '../components/optimization/OptimizationResultsTable';
+import { useLanguage } from '../contexts/LanguageContext';
 
 const { Title, Text } = Typography;
 
 const ParameterOptimization = () => {
   const [form] = Form.useForm();
+  const { t } = useLanguage();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
@@ -24,11 +26,12 @@ const ParameterOptimization = () => {
   });
 
   const strategyOptions = [
-    { value: 'moving_average', label: 'Moving Average Crossover' },
-    { value: 'rsi', label: 'RSI Strategy' },
-    { value: 'macd', label: 'MACD Strategy' },
-    { value: 'bollinger', label: 'Bollinger Bands' },
-    { value: 'momentum', label: 'Momentum Strategy' },
+    { value: 'moving_average', label: t.optimization.strategyMovingAverageCrossover },
+    { value: 'rsi', label: t.optimization.strategyRsiStrategy },
+    { value: 'macd', label: t.optimization.strategyMacdStrategy },
+    { value: 'bollinger', label: t.optimization.strategyBollingerBands },
+    { value: 'momentum', label: t.optimization.strategyMomentumStrategy },
+    { value: 'mean_reversion', label: t.optimization.strategyMeanReversionLabel },
   ];
 
   const selectedStrategy = Form.useWatch('strategy', form) || 'moving_average';
@@ -57,7 +60,10 @@ const ParameterOptimization = () => {
         'slowStart', 'slowEnd', 'slowStep',
         'signalStart', 'signalEnd', 'signalStep',
         'periodStart', 'periodEnd', 'periodStep',
-        'stdDevStart', 'stdDevEnd', 'stdDevStep'
+        'stdDevStart', 'stdDevEnd', 'stdDevStep',
+        'lookbackStart', 'lookbackEnd', 'lookbackStep',
+        'entryZStart', 'entryZEnd', 'entryZStep',
+        'exitZStart', 'exitZEnd', 'exitZStep'
       ];
       
       // Remove all strategy fields
@@ -104,6 +110,16 @@ const ParameterOptimization = () => {
         newValues.stdDevStart = 1.5;
         newValues.stdDevEnd = 2.5;
         newValues.stdDevStep = 0.5;
+      } else if (selectedStrategy === 'mean_reversion') {
+        newValues.lookbackStart = 15;
+        newValues.lookbackEnd = 30;
+        newValues.lookbackStep = 5;
+        newValues.entryZStart = -2.5;
+        newValues.entryZEnd = -1.5;
+        newValues.entryZStep = 0.5;
+        newValues.exitZStart = -0.5;
+        newValues.exitZEnd = 0.5;
+        newValues.exitZStep = 0.5;
       }
       
       // Update form values
@@ -127,17 +143,17 @@ const ParameterOptimization = () => {
       </div>
       <Row gutter={12}>
         <Col span={8}>
-          <Form.Item label={<Text type="secondary" style={{ fontSize: '12px' }}>Start</Text>} name={`${namePrefix}Start`}>
+          <Form.Item label={<Text type="secondary" style={{ fontSize: '12px' }}>{t.optimization.start}</Text>} name={`${namePrefix}Start`}>
             <InputNumber min={0.1} max={500} style={{ width: '100%', borderRadius: '6px' }} />
           </Form.Item>
         </Col>
         <Col span={8}>
-          <Form.Item label={<Text type="secondary" style={{ fontSize: '12px' }}>End</Text>} name={`${namePrefix}End`}>
+          <Form.Item label={<Text type="secondary" style={{ fontSize: '12px' }}>{t.optimization.end}</Text>} name={`${namePrefix}End`}>
             <InputNumber min={0.1} max={500} style={{ width: '100%', borderRadius: '6px' }} />
           </Form.Item>
         </Col>
         <Col span={8}>
-          <Form.Item label={<Text type="secondary" style={{ fontSize: '12px' }}>Step</Text>} name={`${namePrefix}Step`}>
+          <Form.Item label={<Text type="secondary" style={{ fontSize: '12px' }}>{t.optimization.step}</Text>} name={`${namePrefix}Step`}>
             <InputNumber min={0.1} max={100} style={{ width: '100%', borderRadius: '6px' }} />
           </Form.Item>
         </Col>
@@ -149,44 +165,52 @@ const ParameterOptimization = () => {
     if (selectedStrategy === 'moving_average') {
       return (
         <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
-          <Col span={12}>{renderParameterRange('Short MA Parameters', 'shortMa')}</Col>
-          <Col span={12}>{renderParameterRange('Long MA Parameters', 'longMa')}</Col>
+          <Col span={12}>{renderParameterRange(t.optimization.shortMaParameters, 'shortMa')}</Col>
+          <Col span={12}>{renderParameterRange(t.optimization.longMaParameters, 'longMa')}</Col>
         </Row>
       );
     } else if (selectedStrategy === 'momentum') {
       return (
         <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
-          <Col span={12}>{renderParameterRange('Momentum Period', 'momentumPeriod')}</Col>
+          <Col span={12}>{renderParameterRange(t.optimization.momentumPeriodBlock, 'momentumPeriod')}</Col>
         </Row>
       );
     } else if (selectedStrategy === 'rsi') {
       return (
         <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
-          <Col span={8}>{renderParameterRange('RSI Period', 'rsiPeriod')}</Col>
-          <Col span={8}>{renderParameterRange('Oversold Level', 'oversold')}</Col>
-          <Col span={8}>{renderParameterRange('Overbought Level', 'overbought')}</Col>
+          <Col span={8}>{renderParameterRange(t.optimization.rsiPeriodBlock, 'rsiPeriod')}</Col>
+          <Col span={8}>{renderParameterRange(t.optimization.oversoldLevelBlock, 'oversold')}</Col>
+          <Col span={8}>{renderParameterRange(t.optimization.overboughtLevelBlock, 'overbought')}</Col>
         </Row>
       );
     } else if (selectedStrategy === 'macd') {
       return (
         <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
-          <Col span={8}>{renderParameterRange('Fast EMA', 'fast')}</Col>
-          <Col span={8}>{renderParameterRange('Slow EMA', 'slow')}</Col>
-          <Col span={8}>{renderParameterRange('Signal EMA', 'signal')}</Col>
+          <Col span={8}>{renderParameterRange(t.optimization.fastEmaBlock, 'fast')}</Col>
+          <Col span={8}>{renderParameterRange(t.optimization.slowEmaBlock, 'slow')}</Col>
+          <Col span={8}>{renderParameterRange(t.optimization.signalEmaBlock, 'signal')}</Col>
         </Row>
       );
     } else if (selectedStrategy === 'bollinger') {
       return (
         <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
-          <Col span={12}>{renderParameterRange('Period Parameters', 'period')}</Col>
-          <Col span={12}>{renderParameterRange('Std Dev Parameters', 'stdDev')}</Col>
+          <Col span={12}>{renderParameterRange(t.optimization.periodBlock, 'period')}</Col>
+          <Col span={12}>{renderParameterRange(t.optimization.stdDevBlock, 'stdDev')}</Col>
+        </Row>
+      );
+    } else if (selectedStrategy === 'mean_reversion') {
+      return (
+        <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
+          <Col span={8}>{renderParameterRange(t.optimization.lookbackBlock, 'lookback')}</Col>
+          <Col span={8}>{renderParameterRange(t.optimization.entryZScoreBlock, 'entryZ')}</Col>
+          <Col span={8}>{renderParameterRange(t.optimization.exitZScoreBlock, 'exitZ')}</Col>
         </Row>
       );
     }
     
     return (
       <div style={{ padding: '30px', background: '#f8f9fa', borderRadius: '12px', marginBottom: '24px', textAlign: 'center', border: '1px dashed #d9d9d9' }}>
-        <Text type="secondary">Strategy parameters for {selectedStrategy} configuration will be displayed here.</Text>
+        <Text type="secondary">{t.optimization.strategyParamFallback.replace('{strategy}', selectedStrategy)}</Text>
       </div>
     );
   };
@@ -198,47 +222,47 @@ const ParameterOptimization = () => {
     // Common validation
     const validateRange = (start, end, step, fieldName) => {
       if (start > end) {
-        return `${fieldName}: Start (${start}) must be less than or equal to End (${end})`;
+        return t.optimization.validationStartEnd.replace('{field}', fieldName).replace('{start}', start).replace('{end}', end);
       }
       if (step <= 0) {
-        return `${fieldName}: Step (${step}) must be greater than 0`;
+        return t.optimization.validationStep.replace('{field}', fieldName).replace('{step}', step);
       }
       return null;
     };
     
     // Strategy-specific validation
     if (values.strategy === 'moving_average') {
-      const shortError = validateRange(values.shortMaStart, values.shortMaEnd, values.shortMaStep, 'Short MA');
-      const longError = validateRange(values.longMaStart, values.longMaEnd, values.longMaStep, 'Long MA');
+      const shortError = validateRange(values.shortMaStart, values.shortMaEnd, values.shortMaStep, t.optimization.labelShortMa);
+      const longError = validateRange(values.longMaStart, values.longMaEnd, values.longMaStep, t.optimization.labelLongMa);
       validationError = shortError || longError;
       if (!validationError && values.shortMaEnd >= values.longMaStart) {
-        validationError = 'Short MA range should be less than Long MA range for meaningful crossover';
+        validationError = t.optimization.validationShortMaLongMa;
       }
     } else if (values.strategy === 'rsi') {
-      const rsiError = validateRange(values.rsiPeriodStart, values.rsiPeriodEnd, values.rsiPeriodStep, 'RSI Period');
-      const oversoldError = validateRange(values.oversoldStart, values.oversoldEnd, values.oversoldStep, 'Oversold');
-      const overboughtError = validateRange(values.overboughtStart, values.overboughtEnd, values.overboughtStep, 'Overbought');
+      const rsiError = validateRange(values.rsiPeriodStart, values.rsiPeriodEnd, values.rsiPeriodStep, t.optimization.labelRsiPeriod);
+      const oversoldError = validateRange(values.oversoldStart, values.oversoldEnd, values.oversoldStep, t.optimization.labelOversold);
+      const overboughtError = validateRange(values.overboughtStart, values.overboughtEnd, values.overboughtStep, t.optimization.labelOverbought);
       validationError = rsiError || oversoldError || overboughtError;
       if (!validationError && values.oversoldEnd >= values.overboughtStart) {
-        validationError = 'Oversold levels must be less than Overbought levels';
+        validationError = t.optimization.validationOversoldOverbought;
       }
     } else if (values.strategy === 'macd') {
-      const fastError = validateRange(values.fastStart, values.fastEnd, values.fastStep, 'Fast EMA');
-      const slowError = validateRange(values.slowStart, values.slowEnd, values.slowStep, 'Slow EMA');
-      const signalError = validateRange(values.signalStart, values.signalEnd, values.signalStep, 'Signal EMA');
+      const fastError = validateRange(values.fastStart, values.fastEnd, values.fastStep, t.optimization.labelFastMa);
+      const slowError = validateRange(values.slowStart, values.slowEnd, values.slowStep, t.optimization.labelSlowMa);
+      const signalError = validateRange(values.signalStart, values.signalEnd, values.signalStep, t.optimization.labelSignalMa);
       validationError = fastError || slowError || signalError;
       if (!validationError && values.fastEnd >= values.slowStart) {
-        validationError = 'Fast EMA must be less than Slow EMA';
+        validationError = t.optimization.validationFastSlow;
       }
     } else if (values.strategy === 'bollinger') {
-      const periodError = validateRange(values.periodStart, values.periodEnd, values.periodStep, 'Period');
-      const stdDevError = validateRange(values.stdDevStart, values.stdDevEnd, values.stdDevStep, 'Std Dev');
+      const periodError = validateRange(values.periodStart, values.periodEnd, values.periodStep, t.optimization.labelPeriod);
+      const stdDevError = validateRange(values.stdDevStart, values.stdDevEnd, values.stdDevStep, t.optimization.labelStdDev);
       validationError = periodError || stdDevError;
       if (!validationError && values.stdDevStart <= 0) {
-        validationError = 'Std Dev must be greater than 0';
+        validationError = t.optimization.validationStdDev;
       }
     } else if (values.strategy === 'momentum') {
-      validationError = validateRange(values.momentumPeriodStart, values.momentumPeriodEnd, values.momentumPeriodStep, 'Momentum Period');
+      validationError = validateRange(values.momentumPeriodStart, values.momentumPeriodEnd, values.momentumPeriodStep, t.optimization.labelMomentumPeriod);
     }
     
     if (validationError) {
@@ -296,6 +320,10 @@ const ParameterOptimization = () => {
       payload.stdDevRange = { start: values.stdDevStart, end: values.stdDevEnd, step: values.stdDevStep };
     } else if (values.strategy === 'momentum') {
       payload.momentumPeriodRange = { start: values.momentumPeriodStart, end: values.momentumPeriodEnd, step: values.momentumPeriodStep };
+    } else if (values.strategy === 'mean_reversion') {
+      payload.lookbackRange = { start: values.lookbackStart, end: values.lookbackEnd, step: values.lookbackStep };
+      payload.entryZScoreRange = { start: values.entryZStart, end: values.entryZEnd, step: values.entryZStep };
+      payload.exitZScoreRange = { start: values.exitZStart, end: values.exitZEnd, step: values.exitZStep };
     }
 
     try {
@@ -313,13 +341,13 @@ const ParameterOptimization = () => {
             bestSharpeRatio: result.summary.bestSharpeRatio || 0
           });
         }
-        setSuccess(`Optimization completed! Found ${result.results?.length || 0} valid combinations.`);
+        setSuccess(t.optimization.optimizationCompletedMsg.replace('{count}', result.results?.length || 0));
       } else {
-        setError(response.data?.result?.error || response.data?.error || 'Optimization failed');
+        setError(response.data?.result?.error || response.data?.error || t.optimization.optimizationFailed);
       }
     } catch (err) {
       const errorData = err.response?.data;
-      setError(errorData?.result?.error || errorData?.error || err.message || 'Failed to run optimization');
+      setError(errorData?.result?.error || errorData?.error || err.message || t.optimization.failedToRun);
     } finally {
       setLoading(false);
     }
@@ -344,18 +372,18 @@ const ParameterOptimization = () => {
             <div style={{ width: 42, height: 42, borderRadius: '12px', background: 'linear-gradient(135deg, #722ed1 0%, #391085 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 24, boxShadow: '0 4px 12px rgba(114, 46, 209, 0.3)' }}>
               <ExperimentOutlined />
             </div>
-            <Title level={1} style={{ margin: 0, fontSize: 28, fontWeight: 800, letterSpacing: '-0.5px', color: '#1a1a1a' }}>Parameter Optimization</Title>
+            <Title level={1} style={{ margin: 0, fontSize: 28, fontWeight: 800, letterSpacing: '-0.5px', color: '#1a1a1a' }}>{t.optimization.title}</Title>
           </div>
-          <Text type="secondary" style={{ fontSize: 15, marginLeft: 54 }}>Search parameter ranges and identify robust strategy configurations for maximum performance.</Text>
+          <Text type="secondary" style={{ fontSize: 15, marginLeft: 54 }}>{t.optimization.subtitle}</Text>
         </div>
         <div style={{ display: 'flex', gap: 12 }}>
-          <Badge status="processing" color="#722ed1" text={<Text strong style={{ color: '#722ed1', fontSize: 12, letterSpacing: '0.5px' }}>OPTIMIZATION READY</Text>} />
+          <Badge status="processing" color="#722ed1" text={<Text strong style={{ color: '#722ed1', fontSize: 12, letterSpacing: '0.5px' }}>{t.optimization.optimizationReady}</Text>} />
         </div>
       </div>
 
       <Row gutter={[24, 24]}>
         <Col span={24}>
-          <Card className="premium-card" title={<Space><SearchOutlined style={{ color: '#722ed1' }} /><span style={{ fontWeight: 700 }}>Engine Configuration</span></Space>}>
+          <Card className="premium-card" title={<Space><SearchOutlined style={{ color: '#722ed1' }} /><span style={{ fontWeight: 700 }}>{t.optimization.engineConfiguration}</span></Space>}>
             <Form
               form={form}
               layout="vertical"
@@ -371,26 +399,26 @@ const ParameterOptimization = () => {
             >
               <Row gutter={24}>
                 <Col span={6}>
-                  <Form.Item label={<Text strong>Stock Symbol</Text>} name="symbol" rules={[{ required: true }]}>
-                    <Input prefix={<LineChartOutlined style={{ color: '#bfbfbf' }} />} placeholder="e.g. AAPL" size="large" style={{ borderRadius: '8px' }} />
+                  <Form.Item label={<Text strong>{t.optimization.stockSymbol}</Text>} name="symbol" rules={[{ required: true }]}>
+                    <Input prefix={<LineChartOutlined style={{ color: '#bfbfbf' }} />} placeholder={t.backtest.stockSymbolPlaceholder} size="large" style={{ borderRadius: '8px' }} />
                   </Form.Item>
                 </Col>
                 <Col span={6}>
-                  <Form.Item label={<Text strong>Strategy Model</Text>} name="strategy" rules={[{ required: true }]}>
+                  <Form.Item label={<Text strong>{t.optimization.strategyModel}</Text>} name="strategy" rules={[{ required: true }]}>
                     <Select options={strategyOptions} size="large" style={{ borderRadius: '8px' }} />
                   </Form.Item>
                 </Col>
                 <Col span={6}>
-                  <Form.Item label={<Text strong>Lookback Period</Text>} name="period" rules={[{ required: true }]}>
+                  <Form.Item label={<Text strong>{t.optimization.lookbackPeriod}</Text>} name="period" rules={[{ required: true }]}>
                     <Select size="large" style={{ borderRadius: '8px' }}>
-                      <Select.Option value="3m">3 Months Data</Select.Option>
-                      <Select.Option value="6m">6 Months Data</Select.Option>
-                      <Select.Option value="1y">1 Year Data</Select.Option>
+                      <Select.Option value="3m">{t.optimization.threeMonthsData}</Select.Option>
+                      <Select.Option value="6m">{t.optimization.sixMonthsData}</Select.Option>
+                      <Select.Option value="1y">{t.optimization.oneYearData}</Select.Option>
                     </Select>
                   </Form.Item>
                 </Col>
                 <Col span={6}>
-                  <Form.Item label={<Text strong>Initial Liquidity ($)</Text>} name="initial_capital" rules={[{ required: true }]}>
+                  <Form.Item label={<Text strong>{t.optimization.initialLiquidity}</Text>} name="initial_capital" rules={[{ required: true }]}>
                     <InputNumber min={1000} size="large" style={{ width: '100%', borderRadius: '8px' }} formatter={v => `$ ${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')} />
                   </Form.Item>
                 </Col>
@@ -399,7 +427,7 @@ const ParameterOptimization = () => {
               <Divider style={{ margin: '12px 0 24px 0' }} />
               
               <div style={{ marginBottom: 16 }}>
-                <Text strong style={{ fontSize: '15px', color: '#1f1f1f', display: 'block', marginBottom: 20 }}>Parameter Search Space</Text>
+                <Text strong style={{ fontSize: '15px', color: '#1f1f1f', display: 'block', marginBottom: 20 }}>{t.optimization.parameterSearchSpace}</Text>
                 {renderStrategyParameters()}
               </div>
 
@@ -412,7 +440,7 @@ const ParameterOptimization = () => {
                   className={`primary-cta-button ${loading ? 'running-pulse' : ''}`}
                   style={{ width: '100%', maxWidth: '400px', background: 'linear-gradient(90deg, #722ed1 0%, #1890ff 100%)', border: 'none' }}
                 >
-                  {loading ? 'RUNNING GENETIC SEARCH...' : 'RUN OPTIMIZATION'}
+                  {loading ? t.optimization.runningGeneticSearch : t.optimization.runOptimization}
                 </Button>
               </div>
             </Form>
@@ -422,7 +450,7 @@ const ParameterOptimization = () => {
         {success && (
           <Col span={24}>
             <Alert 
-              message={<Text strong style={{ color: '#389e0d' }}>Optimization Success</Text>} 
+              message={<Text strong style={{ color: '#389e0d' }}>{t.optimization.optimizationSuccess}</Text>} 
               description={success} 
               type="success" 
               showIcon 
@@ -435,7 +463,7 @@ const ParameterOptimization = () => {
         {error && (
           <Col span={24}>
             <Alert 
-              message={<Text strong style={{ color: '#cf1322' }}>Configuration Error</Text>} 
+              message={<Text strong style={{ color: '#cf1322' }}>{t.optimization.configurationError}</Text>} 
               description={error} 
               type="error" 
               showIcon 
@@ -457,7 +485,7 @@ const ParameterOptimization = () => {
             </Col>
 
             <Col span={24}>
-              <Card className="premium-card" title={<Space><ExperimentOutlined style={{ color: '#722ed1' }} /><span style={{ fontWeight: 700 }}>Performance Heatmap</span></Space>}>
+              <Card className="premium-card" title={<Space><ExperimentOutlined style={{ color: '#722ed1' }} /><span style={{ fontWeight: 700 }}>{t.optimization.performanceHeatmap}</span></Space>}>
                 <div style={{ padding: '20px 0' }}>
                   <OptimizationHeatmap results={optimizationResults} strategy={selectedStrategy} />
                 </div>
@@ -465,7 +493,7 @@ const ParameterOptimization = () => {
             </Col>
 
             <Col span={24}>
-              <Card className="premium-card" title={<Space><LineChartOutlined style={{ color: '#1890ff' }} /><span style={{ fontWeight: 700 }}>Detailed Result Matrix</span></Space>}>
+              <Card className="premium-card" title={<Space><LineChartOutlined style={{ color: '#1890ff' }} /><span style={{ fontWeight: 700 }}>{t.optimization.detailedResultMatrix}</span></Space>}>
                 <OptimizationResultsTable results={optimizationResults} strategy={selectedStrategy} />
               </Card>
             </Col>

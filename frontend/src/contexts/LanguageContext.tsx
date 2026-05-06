@@ -15,6 +15,8 @@ interface LanguageContextType {
   language: Language;
   setLanguage: (lang: Language) => void;
   t: Translation;
+  translateSector: (name: string) => string;
+  translateSignal: (name: string) => string;
 }
 
 // 创建上下文
@@ -58,11 +60,34 @@ export const LanguageProvider: React.FC<LanguageProviderProps> = ({ children }) 
 
   // 当语言改变时更新翻译
   useEffect(() => {
+    localStorage.setItem('quant-platform-language', language);
     setT(translations[language]);
+    
+    // Set document html lang attribute
+    document.documentElement.lang = language === 'zh-CN' ? 'zh' : 'en';
   }, [language]);
 
+  // Translate sector/industry name using the sectors mapping
+  const translateSector = (name: string): string => {
+    if (!name) return name;
+    const mapped = t.sectors[name];
+    if (mapped) return mapped;
+    // Try case-insensitive match
+    const lower = name.toLowerCase();
+    for (const [key, val] of Object.entries(t.sectors)) {
+      if (key.toLowerCase() === lower) return val;
+    }
+    return name;
+  };
+
+  // Translate signal label using the signals mapping
+  const translateSignal = (name: string): string => {
+    if (!name) return name;
+    return t.signals[name] || name;
+  };
+
   return (
-    <LanguageContext.Provider value={{ language, setLanguage, t }}>
+    <LanguageContext.Provider value={{ language, setLanguage, t, translateSector, translateSignal }}>
       {children}
     </LanguageContext.Provider>
   );
@@ -74,7 +99,7 @@ export const useLanguage = (): LanguageContextType => {
   if (context === undefined) {
     throw new Error('useLanguage must be used within a LanguageProvider');
   }
-  return context;
+  return context as LanguageContextType;
 };
 
 // 工具函数：格式化带参数的文本

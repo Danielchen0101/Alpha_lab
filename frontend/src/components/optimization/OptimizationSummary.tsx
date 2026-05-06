@@ -2,6 +2,7 @@ import React from 'react';
 import { Row, Col, Typography, Badge, Divider } from 'antd';
 import { TrophyOutlined, ThunderboltOutlined, PercentageOutlined, RiseOutlined, FallOutlined, AimOutlined, BarChartOutlined } from '@ant-design/icons';
 import { OptimizationResult } from './OptimizationHeatmap';
+import { useLanguage } from '../../contexts/LanguageContext';
 
 const { Text, Title } = Typography;
 
@@ -18,6 +19,7 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
   validCombinations,
   strategy = 'moving_average'
 }) => {
+  const { t } = useLanguage();
   // Calculate statistics
   const stats = {
     totalCombinations: totalCombinations || results.length,
@@ -54,39 +56,39 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
       case 'rsi':
         return {
           params: [
-            { key: 'rsi_period', label: 'RSI Period' },
-            { key: 'oversold', label: 'Oversold' },
-            { key: 'overbought', label: 'Overbought' }
+            { key: 'rsi_period', label: t.optimization.labelRsiPeriod },
+            { key: 'oversold', label: t.optimization.labelOversold },
+            { key: 'overbought', label: t.optimization.labelOverbought }
           ],
           isSingleParam: false
         };
       case 'macd':
         return {
           params: [
-            { key: 'fast', label: 'Fast MA' },
-            { key: 'slow', label: 'Slow MA' },
-            { key: 'signal', label: 'Signal MA' }
+            { key: 'fast', label: t.optimization.labelFastMa },
+            { key: 'slow', label: t.optimization.labelSlowMa },
+            { key: 'signal', label: t.optimization.labelSignalMa }
           ],
           isSingleParam: false
         };
       case 'bollinger':
         return {
           params: [
-            { key: 'period', label: 'Period' },
-            { key: 'std_dev', label: 'Std Dev', format: (v: any) => safeToFixed(v, 1) }
+            { key: 'period', label: t.optimization.labelPeriod },
+            { key: 'std_dev', label: t.optimization.labelStdDev, format: (v: any) => safeToFixed(v, 1) }
           ],
           isSingleParam: false
         };
       case 'momentum':
         return {
-          params: [{ key: 'momentum_period', label: 'Momentum Period' }],
+          params: [{ key: 'momentum_period', label: t.optimization.labelMomentumPeriod }],
           isSingleParam: true
         };
       default:
         return {
           params: [
-            { key: 'short_ma', label: 'Short MA' },
-            { key: 'long_ma', label: 'Long MA' }
+            { key: 'short_ma', label: t.optimization.labelShortMa },
+            { key: 'long_ma', label: t.optimization.labelLongMa }
           ],
           isSingleParam: false
         };
@@ -127,16 +129,16 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
 
         <div style={{ marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '10px' }}>
         <BarChartOutlined style={{ fontSize: '20px', color: '#722ed1' }} />
-        <Title level={4} style={{ margin: 0 }}>Optimization Summary</Title>
+        <Title level={4} style={{ margin: 0 }}>{t.optimization.summaryTitle}</Title>
         </div>
 
         <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
-        <Col span={4}><MetricCard title="Combinations" value={stats.totalCombinations} icon={<ThunderboltOutlined />} color="#1890ff" /></Col>
-        <Col span={4}><MetricCard title="Valid Results" value={stats.validCombinations} icon={<AimOutlined />} color="#52c41a" /></Col>
-        <Col span={4}><MetricCard title="Best Return" value={safePercent(stats.bestReturn).replace('%', '')} suffix="%" icon={<RiseOutlined />} color="#3f8600" /></Col>
-        <Col span={4}><MetricCard title="Worst Return" value={safePercent(stats.worstReturn).replace('%', '')} suffix="%" icon={<FallOutlined />} color="#cf1322" /></Col>
-        <Col span={4}><MetricCard title="Avg Return" value={safePercent(stats.avgReturn).replace('%', '')} suffix="%" icon={<PercentageOutlined />} color="#fa8c16" /></Col>
-        <Col span={4}><MetricCard title="Best Sharpe" value={safeToFixed(stats.bestSharpeRatio, 2)} icon={<TrophyOutlined />} color="#722ed1" /></Col>
+        <Col span={4}><MetricCard title={t.optimization.combinations} value={stats.totalCombinations} icon={<ThunderboltOutlined />} color="#1890ff" /></Col>
+        <Col span={4}><MetricCard title={t.optimization.validResults} value={stats.validCombinations} icon={<AimOutlined />} color="#52c41a" /></Col>
+        <Col span={4}><MetricCard title={t.optimization.bestReturnCard} value={safePercent(stats.bestReturn).replace('%', '')} suffix="%" icon={<RiseOutlined />} color="#3f8600" /></Col>
+        <Col span={4}><MetricCard title={t.optimization.worstReturnCard} value={safePercent(stats.worstReturn).replace('%', '')} suffix="%" icon={<FallOutlined />} color="#cf1322" /></Col>
+        <Col span={4}><MetricCard title={t.optimization.avgReturn} value={safePercent(stats.avgReturn).replace('%', '')} suffix="%" icon={<PercentageOutlined />} color="#fa8c16" /></Col>
+        <Col span={4}><MetricCard title={t.optimization.bestSharpeCard} value={safeToFixed(stats.bestSharpeRatio, 2)} icon={<TrophyOutlined />} color="#722ed1" /></Col>
         </Row>
 
         {stats.bestCombinationBySharpe && (
@@ -147,16 +149,16 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
                 <TrophyOutlined />
               </div>
               <div>
-                <Text strong style={{ fontSize: '16px', color: '#1b4d0e' }}>Best Combination Identified</Text>
-                <div style={{ fontSize: '12px', color: '#52c41a', fontWeight: 600 }}>Optimized by Sharpe Ratio</div>
+                <Text strong style={{ fontSize: '16px', color: '#1b4d0e' }}>{t.optimization.bestCombinationTitle}</Text>
+                <div style={{ fontSize: '12px', color: '#52c41a', fontWeight: 600 }}>{t.optimization.optimizedBySharpe}</div>
               </div>
             </div>
-            <Badge count="RECOMMENDED" style={{ backgroundColor: '#52c41a', fontWeight: 700, padding: '0 10px', height: '24px', lineHeight: '24px', borderRadius: '6px', marginLeft: '16px' }} />
+            <Badge count={t.optimization.recommended} style={{ backgroundColor: '#52c41a', fontWeight: 700, padding: '0 10px', height: '24px', lineHeight: '24px', borderRadius: '6px', marginLeft: '16px' }} />
           </div>          
           <div style={{ padding: '24px' }}>
             <Row gutter={48}>
               <Col span={10}>
-                <Text type="secondary" style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px', display: 'block', marginBottom: '16px' }}>Parameters Configuration</Text>
+                <Text type="secondary" style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px', display: 'block', marginBottom: '16px' }}>{t.optimization.paramConfiguration}</Text>
                 <Row gutter={12}>
                   {strategyConfig.params.map((p, idx) => (
                     <Col key={p.key} span={24 / Math.min(strategyConfig.params.length, 3)}>
@@ -176,30 +178,30 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
               </Col>
               
               <Col span={13}>
-                <Text type="secondary" style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px', display: 'block', marginBottom: '16px' }}>Performance Metrics</Text>
+                <Text type="secondary" style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px', display: 'block', marginBottom: '16px' }}>{t.optimization.perfMetrics}</Text>
                 <Row gutter={16}>
                   <Col span={6}>
                     <div className="metric-tile">
                       <div style={{ fontSize: '20px', fontWeight: 800, color: '#722ed1' }}>{safeToFixed(stats.bestCombinationBySharpe?.sharpeRatio, 2)}</div>
-                      <Text type="secondary" style={{ fontSize: '11px' }}>Sharpe Ratio</Text>
+                      <Text type="secondary" style={{ fontSize: '11px' }}>{t.optimization.labelSharpeRatio}</Text>
                     </div>
                   </Col>
                   <Col span={6}>
                     <div className="metric-tile">
                       <div style={{ fontSize: '20px', fontWeight: 800, color: '#3f8600' }}>{safePercent(stats.bestCombinationBySharpe?.totalReturn)}</div>
-                      <Text type="secondary" style={{ fontSize: '11px' }}>Total Return</Text>
+                      <Text type="secondary" style={{ fontSize: '11px' }}>{t.optimization.labelTotalReturn}</Text>
                     </div>
                   </Col>
                   <Col span={6}>
                     <div className="metric-tile">
                       <div style={{ fontSize: '20px', fontWeight: 800, color: '#cf1322' }}>{safeToFixed(stats.bestCombinationBySharpe?.maxDrawdown, 2)}%</div>
-                      <Text type="secondary" style={{ fontSize: '11px' }}>Max Drawdown</Text>
+                      <Text type="secondary" style={{ fontSize: '11px' }}>{t.optimization.labelMaxDrawdown}</Text>
                     </div>
                   </Col>
                   <Col span={6}>
                     <div className="metric-tile">
                       <div style={{ fontSize: '20px', fontWeight: 800, color: '#fa8c16' }}>{safeToFixed(stats.bestCombinationBySharpe?.winRate, 1)}%</div>
-                      <Text type="secondary" style={{ fontSize: '11px' }}>Win Rate</Text>
+                      <Text type="secondary" style={{ fontSize: '11px' }}>{t.optimization.labelWinRate}</Text>
                     </div>
                   </Col>
                 </Row>

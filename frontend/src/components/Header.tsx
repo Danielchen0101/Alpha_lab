@@ -6,6 +6,7 @@ import {
   DownOutlined,
 } from '@ant-design/icons';
 import { useAppSelector } from '../store/hooks';
+import LanguageSwitcher from './LanguageSwitcher';
 
 const { Header } = Layout;
 const { Text } = Typography;
@@ -58,6 +59,7 @@ const AppHeader: React.FC = () => {
       </div>
 
       <Space size="large">
+        <LanguageSwitcher />
         <Badge count={5}>
           <BellOutlined style={{ fontSize: '18px', cursor: 'pointer' }} />
         </Badge>

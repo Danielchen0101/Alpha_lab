@@ -498,7 +498,7 @@ async function scanSymbolsLoop(run: ActiveRun, symbols: string[], aiAvailable: b
     if (batch.length === 0) break;
 
     batchIndex++;
-    const batchStart = (batchIndex - 1) * SCAN_BATCH_SIZE;
+    const _batchStart = (batchIndex - 1) * SCAN_BATCH_SIZE; // eslint-disable-line @typescript-eslint/no-unused-vars
     store.updateMarketScanner({
       currentBatch: batchIndex,
       batchProgress: `Batch ${batchIndex}: ${batch.map(b => b.symbol).join(', ')}`,

@@ -157,10 +157,16 @@ export interface HistoricalDataResponse {
   dataSource: string;
   timestamp: number;
   error?: string;
+  errorType?: 'no_bars' | 'config_required' | 'auth_required' | 'api_error' | 'rate_limited';
+  snapshotAvailable?: boolean;
   warning?: string;
   isSimulated?: boolean;
   basePrice?: number;
   priceRange?: string;
+  fallbackUsed?: boolean;
+  requestedTimeframe?: string;
+  displayedTimeframe?: string;
+  message?: string;
 }
 
 export interface SearchResult {
@@ -485,35 +491,50 @@ export const getStockData = async (symbol: string): Promise<StockData> => {
  * Get stock historical price data
  */
 export const getStockHistory = async (
-  symbol: string, 
+  symbol: string,
   timeframe: string = '1M'
 ): Promise<HistoricalDataResponse> => {
   try {
     const config = TIMEFRAMES[timeframe] || TIMEFRAMES['1M'];
-    
+
     const response = await api.get(`/market/history/${symbol}`, {
       params: {
         interval: config.interval,
         range: config.range,
       },
     });
-    
+
     if (response.data) {
       const data = response.data;
-      
-      // Check for errors
+
+      // For no_bars errors, return the response with error info (don't throw)
+      if (data.errorType === 'no_bars' || (data.success === false && (!data.data || data.data.length === 0))) {
+        return {
+          symbol,
+          interval: config.interval,
+          range: config.range,
+          data: [],
+          count: 0,
+          dataSource: data.dataSource || 'Alpaca',
+          timestamp: data.timestamp || Date.now(),
+          error: data.error || 'No historical bars available',
+          errorType: data.errorType || 'no_bars',
+          snapshotAvailable: data.snapshotAvailable !== false,
+        } as HistoricalDataResponse;
+      }
+
+      // Check for other errors
       if (data.error) {
-        // 根据数据源显示正确的错误信息
         const source = data.dataSource || 'Alpaca';
         throw new Error(`${source} API error: ${data.error}`);
       }
-      
+
       return {
         ...data,
         symbol,
         interval: config.interval,
         range: config.range,
-        dataSource: data.dataSource || data.source || 'Finnhub',
+        dataSource: data.dataSource || data.source || 'Unknown',
         count: data.count || (data.data ? data.data.length : 0),
         warning: data.warning,
         isSimulated: data.isSimulated,
@@ -521,10 +542,18 @@ export const getStockHistory = async (
         priceRange: data.priceRange,
       } as HistoricalDataResponse;
     } else {
-      throw new Error('Finnhub returned empty data');
+      throw new Error('Empty response from server');
     }
-    
-  } catch (error) {
+
+  } catch (error: any) {
+    // Distinguish error types for the caller
+    const msg = error.message || '';
+    if (error.response?.status === 401 || msg.includes('401')) {
+      throw new Error('auth_required: ' + msg);
+    }
+    if (error.response?.status === 429 || msg.includes('429') || msg.includes('rate')) {
+      throw new Error('rate_limited: ' + msg);
+    }
     console.error(`Failed to fetch ${symbol} historical data:`, error);
     throw error;
   }

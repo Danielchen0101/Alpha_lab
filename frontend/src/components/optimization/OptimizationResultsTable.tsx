@@ -2,6 +2,7 @@ import React from 'react';
 import { Table, Tag, Typography } from 'antd';
 import { TrophyOutlined, CrownOutlined } from '@ant-design/icons';
 import { OptimizationResult } from './OptimizationHeatmap';
+import { useLanguage } from '../../contexts/LanguageContext';
 
 const { Text } = Typography;
 
@@ -11,6 +12,7 @@ interface OptimizationResultsTableProps {
 }
 
 const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ results, strategy = 'moving_average' }) => {
+  const { t } = useLanguage();
   // Safe formatting functions
   const safeToFixed = (value: any, digits: number = 2): string => {
     if (value === null || value === undefined || Number.isNaN(Number(value))) return 'N/A';
@@ -29,36 +31,36 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
     switch (strategy) {
       case 'rsi':
         return [
-          { title: 'RSI Period', dataIndex: 'rsi_period', key: 'rsi_period', width: 110, align: 'center', render: (v: number) => <Tag color="blue" style={commonStyle}>{v}</Tag> },
-          { title: 'Oversold', dataIndex: 'oversold', key: 'oversold', width: 100, align: 'center', render: (v: number) => <Tag color="orange" style={commonStyle}>{v}</Tag> },
-          { title: 'Overbought', dataIndex: 'overbought', key: 'overbought', width: 110, align: 'center', render: (v: number) => <Tag color="red" style={commonStyle}>{v}</Tag> }
+          { title: t.optimization.labelRsiPeriod, dataIndex: 'rsi_period', key: 'rsi_period', width: 110, align: 'center', render: (v: number) => <Tag color="blue" style={commonStyle}>{v}</Tag> },
+          { title: t.optimization.labelOversold, dataIndex: 'oversold', key: 'oversold', width: 100, align: 'center', render: (v: number) => <Tag color="orange" style={commonStyle}>{v}</Tag> },
+          { title: t.optimization.labelOverbought, dataIndex: 'overbought', key: 'overbought', width: 110, align: 'center', render: (v: number) => <Tag color="red" style={commonStyle}>{v}</Tag> }
         ];
       case 'macd':
         return [
-          { title: 'Fast EMA', dataIndex: 'fast', key: 'fast', width: 100, align: 'center', render: (v: number) => <Tag color="blue" style={commonStyle}>{v}</Tag> },
-          { title: 'Slow EMA', dataIndex: 'slow', key: 'slow', width: 100, align: 'center', render: (v: number) => <Tag color="green" style={commonStyle}>{v}</Tag> },
-          { title: 'Signal', dataIndex: 'signal', key: 'signal', width: 90, align: 'center', render: (v: number) => <Tag color="purple" style={commonStyle}>{v}</Tag> }
+          { title: t.optimization.labelFastMa, dataIndex: 'fast', key: 'fast', width: 100, align: 'center', render: (v: number) => <Tag color="blue" style={commonStyle}>{v}</Tag> },
+          { title: t.optimization.labelSlowMa, dataIndex: 'slow', key: 'slow', width: 100, align: 'center', render: (v: number) => <Tag color="green" style={commonStyle}>{v}</Tag> },
+          { title: t.optimization.labelSignalMa, dataIndex: 'signal', key: 'signal', width: 90, align: 'center', render: (v: number) => <Tag color="purple" style={commonStyle}>{v}</Tag> }
         ];
       case 'bollinger':
         return [
-          { title: 'Period', dataIndex: 'period', key: 'period', width: 90, align: 'center', render: (v: number) => <Tag color="blue" style={commonStyle}>{v}</Tag> },
-          { title: 'Std Dev', dataIndex: 'std_dev', key: 'std_dev', width: 90, align: 'center', render: (v: number) => <Tag color="cyan" style={commonStyle}>{safeToFixed(v, 1)}</Tag> }
+          { title: t.optimization.labelPeriod, dataIndex: 'period', key: 'period', width: 90, align: 'center', render: (v: number) => <Tag color="blue" style={commonStyle}>{v}</Tag> },
+          { title: t.optimization.labelStdDev, dataIndex: 'std_dev', key: 'std_dev', width: 90, align: 'center', render: (v: number) => <Tag color="cyan" style={commonStyle}>{safeToFixed(v, 1)}</Tag> }
         ];
       case 'momentum':
         return [
-          { title: 'Period', dataIndex: 'momentum_period', key: 'momentum_period', width: 130, align: 'center', render: (v: number) => <Tag color="blue" style={commonStyle}>{v}</Tag> }
+          { title: t.optimization.labelMomentumPeriod, dataIndex: 'momentum_period', key: 'momentum_period', width: 130, align: 'center', render: (v: number) => <Tag color="blue" style={commonStyle}>{v}</Tag> }
         ];
       default:
         return [
-          { title: 'Short MA', dataIndex: 'short_ma', key: 'short_ma', width: 100, align: 'center', render: (v: number) => <Tag color="blue" style={commonStyle}>{v}</Tag> },
-          { title: 'Long MA', dataIndex: 'long_ma', key: 'long_ma', width: 100, align: 'center', render: (v: number) => <Tag color="green" style={commonStyle}>{v}</Tag> }
+          { title: t.optimization.labelShortMa, dataIndex: 'short_ma', key: 'short_ma', width: 100, align: 'center', render: (v: number) => <Tag color="blue" style={commonStyle}>{v}</Tag> },
+          { title: t.optimization.labelLongMa, dataIndex: 'long_ma', key: 'long_ma', width: 100, align: 'center', render: (v: number) => <Tag color="green" style={commonStyle}>{v}</Tag> }
         ];
     }
   };
 
   const columns: any[] = [
     {
-      title: 'Rank',
+      title: t.optimization.colRank,
       dataIndex: 'rank',
       key: 'rank',
       width: 90,
@@ -73,7 +75,7 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
     },
     ...getParameterColumns(),
     {
-      title: 'Total Return',
+      title: t.optimization.colTotalReturn,
       dataIndex: 'totalReturn',
       key: 'totalReturn',
       width: 140,
@@ -82,7 +84,7 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
       render: (v: number) => <Text strong style={{ color: v >= 0 ? '#3f8600' : '#cf1322', fontSize: '14px' }}>{safePercent(v)}</Text>,
     },
     {
-      title: 'Sharpe',
+      title: t.optimization.colSharpe,
       dataIndex: 'sharpeRatio',
       key: 'sharpeRatio',
       width: 100,
@@ -91,7 +93,7 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
       render: (v: number) => <Text strong style={{ color: v >= 1 ? '#3f8600' : v >= 0 ? '#fa8c16' : '#cf1322' }}>{safeToFixed(v, 2)}</Text>,
     },
     {
-      title: 'Max DD',
+      title: t.optimization.colMaxDD,
       dataIndex: 'maxDrawdown',
       key: 'maxDrawdown',
       width: 110,
@@ -100,7 +102,7 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
       render: (v: number) => <Text strong style={{ color: v > -15 ? '#3f8600' : v > -30 ? '#fa8c16' : '#cf1322' }}>{safeToFixed(v, 1)}%</Text>,
     },
     {
-      title: 'Win Rate',
+      title: t.optimization.colWinRate,
       dataIndex: 'winRate',
       key: 'winRate',
       width: 110,
@@ -109,7 +111,7 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
       render: (v: number) => <Text strong>{v ? `${v.toFixed(1)}%` : '—'}</Text>,
     },
     {
-      title: 'Trades',
+      title: t.optimization.colTrades,
       dataIndex: 'trades',
       key: 'trades',
       width: 100,
@@ -134,7 +136,7 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
         pagination={{
           pageSize: 10,
           showSizeChanger: true,
-          showTotal: (total: number, range: [number, number]) => <Text type="secondary" style={{ fontSize: '12px' }}>{range[0]}-{range[1]} of {total} results</Text>,
+          showTotal: (total: number, range: [number, number]) => <Text type="secondary" style={{ fontSize: '12px' }}>{t.optimization.resultsRange.replace('{from}', String(range[0])).replace('{to}', String(range[1])).replace('{total}', String(total))}</Text>,
           style: { marginTop: '20px' }
         }}
         size="middle"

@@ -9,6 +9,7 @@ import {
   getTooltipDate,
   debugDates
 } from '../utils/dateUtils';
+import { useLanguage } from '../contexts/LanguageContext';
 
 interface ChartDataItem {
   date: string;
@@ -31,6 +32,7 @@ interface TradingChartProps {
 }
 
 const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, parameters }) => {
+  const { t } = useLanguage();
   // 调试：记录组件接收到的数据
   console.log('🔍 [TradingChart] 组件入口 - 接收数据:', {
     dataExists: !!data,
@@ -541,7 +543,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               paddingBottom: '4px',
               borderBottom: '1px solid #f0f0f0'
             }}>
-              <span style={{ fontWeight: '600' }}>PRICE</span>
+              <span style={{ fontWeight: '600' }}>{t.backtest.price}</span>
               <span style={{ 
                 fontWeight: '700', 
                 color: '#1890ff',
@@ -610,7 +612,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                 borderRadius: '4px',
                 border: '1px solid #f0f0f0'
               }}>
-                <span style={{ fontWeight: '500' }}>VOLUME</span>
+                <span style={{ fontWeight: '500' }}>{t.backtest.volume}</span>
                 <span style={{ fontWeight: '700', color: '#333' }}>
                   {formatVolume(dataPoint.volume)}
                 </span>
@@ -643,7 +645,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                     marginRight: '8px',
                     boxShadow: `0 0 8px ${dataPoint.signal === 1 ? 'rgba(82, 196, 26, 0.6)' : 'rgba(245, 34, 45, 0.6)'}`
                   }}></span>
-                  {dataPoint.signal === 1 ? 'BUY SIGNAL' : 'SELL SIGNAL'}
+                  {dataPoint.signal === 1 ? t.backtest.buySignal : t.backtest.sellSignal}
                 </div>
               </div>
             )}
@@ -719,7 +721,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                 borderRadius: '50%',
                 marginRight: '6px'
               }}></span>
-              VOLUME DATA
+              {t.backtest.volumeData}
             </div>
           </div>
           
@@ -770,7 +772,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                 marginRight: '8px',
                 boxShadow: `0 0 8px ${isUp ? 'rgba(82, 196, 26, 0.6)' : 'rgba(245, 34, 45, 0.6)'}`
               }}></span>
-              {isUp ? 'PRICE UP' : 'PRICE DOWN'}
+              {isUp ? t.backtest.priceUp : t.backtest.priceDown}
             </div>
           </div>
         </div>
@@ -893,7 +895,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
         marginBottom: '24px', // 增加间距：24px
         padding: '0 4px' // 减少内边距，让标题更靠近边缘
       }}>
-        <h4 style={{ margin: 0, color: '#333', fontSize: '18px', fontWeight: '600' }}>Price Chart with Trading Signals</h4>
+        <h4 style={{ margin: 0, color: '#333', fontSize: '18px', fontWeight: '600' }}>{t.backtest.priceChartWithSignals}</h4>
         
         {/* Chart Controls - 更紧凑利落的专业交易平台风格 */}
         <div style={{ 
@@ -912,7 +914,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               onChange={(e) => setShowClosePrice(e.target.checked)}
               style={{ fontSize: '11px', marginRight: '0', padding: '0' }}
             >
-              <span style={{ color: '#1890ff', fontWeight: '700', letterSpacing: '0.5px' }}>PRICE</span>
+              <span style={{ color: '#1890ff', fontWeight: '700', letterSpacing: '0.5px' }}>{t.backtest.price}</span>
             </Checkbox>
             
             <div style={{ width: '1px', height: '12px', backgroundColor: '#dee2e6', margin: '0 2px' }}></div>
@@ -945,7 +947,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                 onChange={(e) => setShowSignals(e.target.checked)}
                 style={{ fontSize: '9px', marginRight: '0', padding: '0' }}
               >
-                <span style={{ color: '#666', opacity: 0.9, fontWeight: '500' }}>SIGNALS</span>
+                <span style={{ color: '#666', opacity: 0.9, fontWeight: '500' }}>{t.backtest.signals}</span>
               </Checkbox>
             )}
             
@@ -957,7 +959,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                   onChange={(e) => setShowVolume(e.target.checked)}
                   style={{ fontSize: '9px', padding: '0' }}
                 >
-                  <span style={{ color: '#666', opacity: 0.9, fontWeight: '500' }}>VOLUME</span>
+                  <span style={{ color: '#666', opacity: 0.9, fontWeight: '500' }}>{t.backtest.volume}</span>
                 </Checkbox>
               </>
             )}
@@ -1077,7 +1079,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                 dataKey="buySignal"
                 fill="#52c41a"
                 shape={BuySignalShape}
-                name="Buy Signal"
+                name={t.backtest.buySignal}
               />
             )}
             
@@ -1087,7 +1089,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                 dataKey="sellSignal"
                 fill="#f5222d"
                 shape={SellSignalShape}
-                name="Sell Signal"
+                name={t.backtest.sellSignal}
               />
             )}
           </LineChart>
@@ -1131,13 +1133,13 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                   letterSpacing: '0.6px',
                   textTransform: 'uppercase',
                   marginBottom: '3px'
-                }}>VOLUME CHART</h5>
+                }}>{t.backtest.volumeChart}</h5>
                 <div style={{ 
                   fontSize: '11px', // 增大字号
                   color: '#6c757d',
                   fontWeight: '500',
                   letterSpacing: '0.3px'
-                }}>Trading Volume • Green=Up, Red=Down</div>
+                }}>{t.backtest.tradingVolumeGreenRed}</div>
               </div>
             </div>
             <div style={{ 
@@ -1150,7 +1152,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               border: '1px solid #dee2e6',
               boxShadow: '0 2px 4px rgba(0,0,0,0.08)'
             }}>
-              VOLUME
+              {t.backtest.volume}
             </div>
           </div>
           <ResponsiveContainer width="100%" height="100%">

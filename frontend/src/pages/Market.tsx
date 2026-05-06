@@ -5,12 +5,14 @@ import { useNavigate } from 'react-router-dom';
 import marketDataService, { StockData, searchStockData, safeNumber, safeToFixed, getUserMarketSymbols, addUserMarketSymbols, deleteUserMarketSymbol } from '../services/marketDataService';
 import { sharedDataService } from '../services/sharedDataService';
 import { formatMarketCap } from '../utils/format';
+import { useLanguage } from '../contexts/LanguageContext';
 
 const MAX_MARKET_SYMBOLS = 100;
 
 const { Option } = Select;
 
 const Market: React.FC = () => {
+  const { t, translateSector } = useLanguage();
   const [stocks, setStocks] = useState<StockData[]>([]);
   const [filteredStocks, setFilteredStocks] = useState<StockData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -191,23 +193,23 @@ const Market: React.FC = () => {
         const validStocks = stockData.filter(stock => !stock.error);
 
         if (validStocks.length === 0) {
-          setError('没有获取到有效的股票数据');
-          message.warning('没有获取到有效的股票数据');
+          setError(t.market.noValidStockData);
+          message.warning(t.market.noValidStockData);
         } else {
           setStocks(validStocks);
           setLastUpdated(new Date());
           setLastFetched(Date.now());
-          message.success(`已加载 ${validStocks.length} 只股票数据 (来源: ${stockData[0]?.dataSource || 'Alpaca'})`);
+          message.success(`${t.market.dataSource}: ${stockData[0]?.dataSource || 'Alpaca'} (${validStocks.length})`);
         }
       } else {
-        setError('服务器返回的数据格式不正确');
-        message.error('数据格式错误');
+        setError(t.market.invalidDataFormat);
+        message.error(t.market.invalidDataFormat);
       }
     } catch (err: any) {
       console.error('[Market优化] 获取市场数据失败:', err);
-      const errorMessage = err.message || '未知错误';
-      setError(`获取市场数据失败: ${errorMessage}`);
-      message.error('获取市场数据失败');
+      const errorMessage = err.message || t.common.unknown;
+      setError(`${t.market.failedToLoadMarketData}: ${errorMessage}`);
+      message.error(t.market.failedToLoadMarketData);
     } finally {
       setIsFetching(false);
       setLoading(false);
@@ -222,7 +224,7 @@ const Market: React.FC = () => {
     const qUpper = q.toUpperCase();
     const existingStock = stocks.find(s => s.symbol.toUpperCase() === qUpper);
     if (existingStock) {
-      message.info(`${qUpper} is already in the list`);
+      message.info(`${qUpper} ${t.market.alreadyInListShort}`);
       return true;
     }
 
@@ -234,7 +236,7 @@ const Market: React.FC = () => {
       const { stocks: results, status, message: msg } = await searchStockData(q);
 
       if (status === 'not_found' || results.length === 0) {
-        message.warning(msg || 'No matching company or symbol found. Please check your input.');
+        message.warning(msg || t.market.noMatchFound);
         return false;
       }
 
@@ -243,24 +245,24 @@ const Market: React.FC = () => {
       const newStocks = results.filter(s => !existingSymbols.has(s.symbol.toUpperCase()));
 
       if (newStocks.length === 0) {
-        message.info(`${results.map(s => s.symbol).join(', ')} already in the list`);
+        message.info(`${results.map(s => s.symbol).join(', ')} ${t.market.alreadyInListShort}`);
         return true;
       }
 
       // Add new stocks to the list
       setStocks(prev => [...prev, ...newStocks]);
       const addedNames = newStocks.map(s => s.symbol).join(', ');
-      message.success(`Added ${addedNames} (source: ${newStocks[0]?.dataSource || 'Alpaca'})`);
+      message.success(`${t.market.addedSymbol.replace('{symbol}', addedNames)} (${newStocks[0]?.dataSource || 'Alpaca'})`);
       return true;
     } catch (error: any) {
       console.error(`[Market] Search failed for "${q}":`, error);
       const errorCode = error.code || '';
       if (errorCode === 'AUTH_REQUIRED') {
-        message.error('Authentication required. Please sign in again.');
+        message.error(t.market.authRequired);
       } else if (errorCode === 'CONFIG_REQUIRED') {
-        message.error('API keys not configured. Please configure in Settings.');
+        message.error(t.market.apiKeysNotConfigured);
       } else {
-        message.error(`Search failed: ${error.message || 'Unknown error'}`);
+        message.error(`${t.market.searchFailed}: ${error.message || t.common.unknown}`);
       }
       return false;
     } finally {
@@ -281,13 +283,13 @@ const Market: React.FC = () => {
 
     // Check limit
     if (userSymbols.length >= MAX_MARKET_SYMBOLS) {
-      message.warning(`Maximum of ${MAX_MARKET_SYMBOLS} symbols reached. Please remove some before adding more.`);
+      message.warning(t.market.maxSymbolsWarning.replace('{max}', String(MAX_MARKET_SYMBOLS)));
       return;
     }
 
     // Check if already in user list
     if (userSymbols.includes(symbol.toUpperCase())) {
-      message.info(`${symbol} is already in your list`);
+      message.info(t.market.alreadyInList.replace('{symbol}', symbol));
       return;
     }
 
@@ -296,13 +298,13 @@ const Market: React.FC = () => {
       const result = await addUserMarketSymbols([symbol]);
 
       if (result.status === 'limit_reached') {
-        message.warning(result.error || `Maximum of ${MAX_MARKET_SYMBOLS} symbols reached.`);
+        message.warning(result.error || t.market.maxSymbolsWarning.replace('{max}', String(MAX_MARKET_SYMBOLS)));
         return;
       }
 
       if (result.status === 'ok') {
         setUserSymbols(result.symbols);
-        message.success(`Added ${symbol} to your list`);
+        message.success(t.market.addedToList.replace('{symbol}', symbol));
 
         // If the stock data is not in the current list, fetch it
         if (!stocks.find(s => s.symbol.toUpperCase() === symbol.toUpperCase())) {
@@ -312,10 +314,10 @@ const Market: React.FC = () => {
           }
         }
       } else {
-        message.error(`Failed to add ${symbol}: ${result.error || 'Unknown error'}`);
+        message.error(`${t.market.failedToAdd.replace('{symbol}', symbol)}: ${result.error || t.common.unknown}`);
       }
     } catch (err: any) {
-      message.error(`Failed to add ${symbol}: ${err.message}`);
+      message.error(`${t.market.failedToAdd.replace('{symbol}', symbol)}: ${err.message}`);
     } finally {
       setAddingSymbol(false);
     }
@@ -329,12 +331,12 @@ const Market: React.FC = () => {
         setUserSymbols(result.symbols);
         // Remove from displayed stocks
         setStocks(prev => prev.filter(s => s.symbol.toUpperCase() !== symbol.toUpperCase()));
-        message.success(`Removed ${symbol} from your list`);
+        message.success(t.market.removedFromList.replace('{symbol}', symbol));
       } else {
-        message.error(`Failed to remove ${symbol}`);
+        message.error(t.market.failedToRemove.replace('{symbol}', symbol));
       }
     } catch (err: any) {
-      message.error(`Failed to remove ${symbol}: ${err.message}`);
+      message.error(`${t.market.failedToRemove.replace('{symbol}', symbol)}: ${err.message}`);
     }
   };
 
@@ -352,7 +354,7 @@ const Market: React.FC = () => {
       let newWatchlist;
       
       if (exists) {
-        message.success(`Removed ${symbol} from watchlist`);
+        message.success(`${t.market.removedSymbol.replace('{symbol}', symbol)}`);
         newWatchlist = prev.filter(item => item.symbol !== symbol);
       } else {
         // 从当前stocks数据中查找完整股票信息
@@ -370,11 +372,11 @@ const Market: React.FC = () => {
             sector: stock.sector || 'Unknown',
             addedAt: new Date().toISOString()
           };
-          message.success(`Added ${symbol} to watchlist`);
+          message.success(`${t.market.addedSymbol.replace('{symbol}', symbol)}`);
           newWatchlist = [...prev, watchlistItem];
         } else {
           // 如果没有找到完整信息，至少保存symbol
-          message.warning(`Added ${symbol} to watchlist (limited info available)`);
+          message.warning(`${t.market.addedSymbol.replace('{symbol}', symbol)}`);
           newWatchlist = [...prev, { 
             symbol, 
             name: `${symbol} Inc.`,
@@ -431,7 +433,7 @@ const Market: React.FC = () => {
   // 表格列定义
   const columns = [
     {
-      title: 'Symbol',
+      title: t.market.symbol,
       dataIndex: 'symbol',
       key: 'symbol',
       width: 120,
@@ -446,7 +448,7 @@ const Market: React.FC = () => {
       ),
     },
     {
-      title: 'Price',
+      title: t.market.price,
       dataIndex: 'price',
       key: 'price',
       width: 105,
@@ -468,7 +470,7 @@ const Market: React.FC = () => {
       },
     },
     {
-      title: 'Price High',
+      title: t.market.priceHigh,
       dataIndex: 'dayHigh',
       key: 'dayHigh',
       width: 95,
@@ -480,7 +482,7 @@ const Market: React.FC = () => {
       },
     },
     {
-      title: 'Price Low',
+      title: t.market.priceLow,
       dataIndex: 'dayLow',
       key: 'dayLow',
       width: 95,
@@ -494,7 +496,7 @@ const Market: React.FC = () => {
 
 
     {
-      title: 'Change',
+      title: t.market.change,
       dataIndex: 'change',
       key: 'change',
       width: 90,
@@ -533,7 +535,7 @@ const Market: React.FC = () => {
       },
     },
     {
-      title: 'Change %',
+      title: t.market.changePercent,
       dataIndex: 'changePercent',
       key: 'changePercent',
       width: 90,
@@ -600,7 +602,7 @@ const Market: React.FC = () => {
       },
     },
     {
-      title: 'Market Cap',
+      title: t.market.marketCap,
       dataIndex: 'marketCap',
       key: 'marketCap',
       width: 105,
@@ -613,7 +615,7 @@ const Market: React.FC = () => {
       },
     },
     {
-      title: 'Volume',
+      title: t.market.volume,
       dataIndex: 'volume',
       key: 'volume',
       width: 100,
@@ -629,14 +631,14 @@ const Market: React.FC = () => {
     },
 
     {
-      title: 'Sector',
+      title: t.market.sector,
       dataIndex: 'sector',
       key: 'sector',
       width: 95,
       sorter: true,
       render: (sector: string | null) => {
         // Alpaca可能不提供sector数据，安全处理
-        const displaySector = sector || '--';
+        const displaySector = sector ? translateSector(sector) : '--';
         return (
           <Tag 
             color="default" 
@@ -663,7 +665,7 @@ const Market: React.FC = () => {
 
 
     {
-      title: 'Actions',
+      title: t.market.actions,
       key: 'actions',
       width: 180,
       render: (_: any, record: StockData) => {
@@ -677,7 +679,7 @@ const Market: React.FC = () => {
               onClick={() => handleAnalyze(record.symbol)}
               style={{ fontSize: '14px', fontWeight: 500, padding: '0 12px', height: '32px', minWidth: '78px' }}
             >
-              Analyze
+              {t.market.analyze}
             </Button>
             <Button
               size="small"
@@ -685,7 +687,7 @@ const Market: React.FC = () => {
               onClick={() => handleBacktest(record.symbol)}
               style={{ fontSize: '14px', fontWeight: 500, padding: '0 12px', height: '32px', minWidth: '78px' }}
             >
-              Backtest
+              {t.market.backtest}
             </Button>
             {isInList ? (
               <Button
@@ -694,7 +696,7 @@ const Market: React.FC = () => {
                 icon={<DeleteOutlined />}
                 onClick={() => removeSymbolFromUserList(record.symbol)}
                 style={{ minWidth: '32px', width: '32px', height: '32px', padding: '0' }}
-                title="Remove from list"
+                title={t.market.removeFromList}
               />
             ) : (
               <Button
@@ -704,7 +706,7 @@ const Market: React.FC = () => {
                 onClick={() => addSymbolToUserList(record.symbol)}
                 disabled={userSymbols.length >= MAX_MARKET_SYMBOLS}
                 style={{ minWidth: '32px', width: '32px', height: '32px', padding: '0' }}
-                title={userSymbols.length >= MAX_MARKET_SYMBOLS ? `Max ${MAX_MARKET_SYMBOLS} symbols reached` : 'Add to list'}
+                title={userSymbols.length >= MAX_MARKET_SYMBOLS ? t.market.maxSymbolsReached.replace('{max}', String(MAX_MARKET_SYMBOLS)) : t.market.addToList}
               />
             )}
             <Button
@@ -867,11 +869,11 @@ const Market: React.FC = () => {
       <div className="market-header">
         <Row justify="space-between" align="bottom">
           <Col>
-            <div className="market-title">Market Overview</div>
+            <div className="market-title">{t.market.title}</div>
             <div className="market-subtitle">
-              Real-time equity universe and intelligent action center
+              {t.market.subtitle}
               <span style={{ marginLeft: '16px', fontSize: '12px', color: '#a0aec0' }}>
-                ({userSymbols.length}/{MAX_MARKET_SYMBOLS} symbols)
+                ({userSymbols.length}/{MAX_MARKET_SYMBOLS} {t.market.symbols})
               </span>
             </div>
           </Col>
@@ -883,7 +885,7 @@ const Market: React.FC = () => {
                 onClick={() => initializeMarket()}
                 loading={loading}
               >
-                Refresh Data
+                {t.market.refreshData}
               </Button>
             </Space>
           </Col>
@@ -895,7 +897,7 @@ const Market: React.FC = () => {
         <Col xs={24} sm={12} md={6}>
           <Card size="small" className="metric-card" bodyStyle={{ padding: '20px' }}>
             <Statistic 
-              title={<span style={{ color: '#718096', fontWeight: 600, fontSize: '12px', textTransform: 'uppercase' }}>Total Stocks</span>}
+              title={<span style={{ color: '#718096', fontWeight: 600, fontSize: '12px', textTransform: 'uppercase' }}>{t.market.totalStocks}</span>}
               value={marketStats.totalStocks}
               valueStyle={{ fontWeight: 800, fontSize: '28px', color: '#1a202c' }}
               prefix={<EyeOutlined style={{ color: '#3182ce', marginRight: '8px', fontSize: '20px' }} />}
@@ -905,7 +907,7 @@ const Market: React.FC = () => {
         <Col xs={24} sm={12} md={6}>
           <Card size="small" className="metric-card" bodyStyle={{ padding: '20px' }}>
             <Statistic 
-              title={<span style={{ color: '#718096', fontWeight: 600, fontSize: '12px', textTransform: 'uppercase' }}>Market Gainers</span>}
+              title={<span style={{ color: '#718096', fontWeight: 600, fontSize: '12px', textTransform: 'uppercase' }}>{t.market.marketGainers}</span>}
               value={marketStats.gainers}
               valueStyle={{ fontWeight: 800, fontSize: '28px', color: '#38a169' }}
               prefix={<BarChartOutlined style={{ color: '#38a169', marginRight: '8px', fontSize: '20px' }} />}
@@ -915,7 +917,7 @@ const Market: React.FC = () => {
         <Col xs={24} sm={12} md={6}>
           <Card size="small" className="metric-card" bodyStyle={{ padding: '20px' }}>
             <Statistic 
-              title={<span style={{ color: '#718096', fontWeight: 600, fontSize: '12px', textTransform: 'uppercase' }}>Market Losers</span>}
+              title={<span style={{ color: '#718096', fontWeight: 600, fontSize: '12px', textTransform: 'uppercase' }}>{t.market.marketLosers}</span>}
               value={marketStats.losers}
               valueStyle={{ fontWeight: 800, fontSize: '28px', color: '#e53e3e' }}
               prefix={<BarChartOutlined style={{ color: '#e53e3e', marginRight: '8px', fontSize: '20px' }} rotate={180} />}
@@ -925,7 +927,7 @@ const Market: React.FC = () => {
         <Col xs={24} sm={12} md={6}>
           <Card size="small" className="metric-card" bodyStyle={{ padding: '20px' }}>
             <Statistic 
-              title={<span style={{ color: '#718096', fontWeight: 600, fontSize: '12px', textTransform: 'uppercase' }}>Avg Change</span>}
+              title={<span style={{ color: '#718096', fontWeight: 600, fontSize: '12px', textTransform: 'uppercase' }}>{t.market.avgChange}</span>}
               value={marketStats.avgChange}
               precision={2}
               suffix="%"
@@ -950,7 +952,7 @@ const Market: React.FC = () => {
           <Row gutter={16}>
             <Col flex="auto">
               <Input
-                placeholder="Search by symbol or company name..."
+                placeholder={t.market.searchPlaceholder}
                 prefix={<SearchOutlined style={{ color: '#a0aec0' }} />}
                 value={searchText}
                 onChange={(e) => setSearchText(e.target.value)}
@@ -962,15 +964,15 @@ const Market: React.FC = () => {
             <Col xs={24} sm={8} md={6}>
               <Select
                 style={{ width: '100%' }}
-                placeholder="Filter by sector"
+                placeholder={t.market.allSectors}
                 value={selectedSector}
                 onChange={setSelectedSector}
                 size="large"
                 dropdownStyle={{ borderRadius: '8px' }}
               >
-                <Option value="all">All Sectors</Option>
+                <Option value="all">{t.market.allSectors}</Option>
                 {getAllSectors().map(sector => (
-                  <Option key={sector} value={sector}>{sector}</Option>
+                  <Option key={sector} value={sector}>{translateSector(sector)}</Option>
                 ))}
               </Select>
             </Col>
@@ -983,7 +985,7 @@ const Market: React.FC = () => {
                 className="action-btn"
                 style={{ height: '40px', padding: '0 24px' }}
               >
-                Search
+                {t.market.search}
               </Button>
             </Col>
           </Row>
@@ -992,11 +994,11 @@ const Market: React.FC = () => {
         {error && (
           <div style={{ padding: '16px' }}>
             <Alert
-              message="Data Sync Error"
+              message={t.market.dataSyncError}
               description={error}
               type="error"
               showIcon
-              action={<Button size="small" type="default" onClick={() => initializeMarket()}>Retry</Button>}
+              action={<Button size="small" type="default" onClick={() => initializeMarket()}>{t.market.retry}</Button>}
             />
           </div>
         )}
@@ -1009,7 +1011,7 @@ const Market: React.FC = () => {
           <div style={{ padding: '80px 0' }}>
             <Empty
               image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={<span style={{ color: '#a0aec0' }}>No instruments found matching your filters</span>}
+              description={<span style={{ color: '#a0aec0' }}>{t.market.noResults}</span>}
             />
           </div>
         ) : (
@@ -1071,7 +1073,7 @@ const Market: React.FC = () => {
                         onClick={() => handleAnalyze(record.symbol)}
                         style={{ background: '#3182ce', borderColor: '#3182ce' }}
                       >
-                        Analyze
+                        {t.market.analyze}
                       </Button>
                       <Button
                         size="small"
@@ -1079,7 +1081,7 @@ const Market: React.FC = () => {
                         icon={<PlayCircleOutlined />}
                         onClick={() => handleBacktest(record.symbol)}
                       >
-                        Backtest
+                        {t.market.backtest}
                       </Button>
                       <Button
                         size="small"
@@ -1104,7 +1106,7 @@ const Market: React.FC = () => {
               showSizeChanger: true,
               showTotal: (total, range) => (
                 <span style={{ color: '#718096', fontSize: '13px' }}>
-                  Showing {range[0]}-{range[1]} of {total} assets
+                  {t.market.showing} {range[0]}-{range[1]} {t.market.of} {total} {t.market.assets}
                 </span>
               ),
               position: ['bottomRight']
@@ -1124,12 +1126,12 @@ const Market: React.FC = () => {
         }}>
           <div className="status-pill">
             <div className="status-dot"></div>
-            Data Source: <span style={{ marginLeft: '4px', color: '#2d3748' }}>{stocks[0]?.dataSource || 'Alpaca Markets'}</span>
+            {t.market.dataSource}: <span style={{ marginLeft: '4px', color: '#2d3748' }}>{stocks[0]?.dataSource || 'Alpaca Markets'}</span>
           </div>
           
           {lastUpdated && (
             <div style={{ fontSize: '12px', color: '#718096', fontWeight: 500 }}>
-              Last synchronized: {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              {t.market.lastSynchronized}: {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
             </div>
           )}
         </div>
