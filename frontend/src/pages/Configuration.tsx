@@ -12,6 +12,7 @@ import {
 import axios from 'axios';
 import { supabase } from '../lib/supabaseClient';
 import { useAuth } from '../contexts/AuthContext';
+import { useLanguage } from '../contexts/LanguageContext';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -38,34 +39,38 @@ userApi.interceptors.request.use(async (config) => {
 });
 
 // --- Auth check helper ---
-const requireSession = async (): Promise<string | null> => {
+const requireSession = async (signInMsg?: string): Promise<string | null> => {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.access_token) {
-    message.error('Please sign in before saving settings.');
+    message.error(signInMsg || 'Please sign in before saving settings.');
     return null;
   }
   return session.access_token;
 };
 
 // --- Status badge ---
-const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
-  if (status === 'connected') return <Tag icon={<CheckCircleOutlined />} color="success" style={{ borderRadius: 12, padding: '0 10px' }}>Connected</Tag>;
-  if (status === 'saved') return <Tag icon={<CheckCircleOutlined />} color="blue" style={{ borderRadius: 12, padding: '0 10px' }}>Saved</Tag>;
-  if (status === 'error') return <Tag icon={<CloseCircleOutlined />} color="error" style={{ borderRadius: 12, padding: '0 10px' }}>Error</Tag>;
-  return <Tag icon={<QuestionCircleOutlined />} color="default" style={{ borderRadius: 12, padding: '0 10px' }}>Not tested</Tag>;
+const StatusBadge: React.FC<{ status: string; texts?: { connected?: string; saved?: string; error?: string; notTested?: string } }> = ({ status, texts }) => {
+  const connected = texts?.connected ?? 'Connected';
+  const saved = texts?.saved ?? 'Saved';
+  const errorText = texts?.error ?? 'Error';
+  const notTested = texts?.notTested ?? 'Not tested';
+  if (status === 'connected') return <Tag icon={<CheckCircleOutlined />} color="success" style={{ borderRadius: 12, padding: '0 10px' }}>{connected}</Tag>;
+  if (status === 'saved') return <Tag icon={<CheckCircleOutlined />} color="blue" style={{ borderRadius: 12, padding: '0 10px' }}>{saved}</Tag>;
+  if (status === 'error') return <Tag icon={<CloseCircleOutlined />} color="error" style={{ borderRadius: 12, padding: '0 10px' }}>{errorText}</Tag>;
+  return <Tag icon={<QuestionCircleOutlined />} color="default" style={{ borderRadius: 12, padding: '0 10px' }}>{notTested}</Tag>;
 };
 
 // --- Section Header ---
-const SectionHeader: React.FC<{ icon: React.ReactNode; title: string; subtitle: string; status?: string }> = ({ icon, title, subtitle, status }) => (
+const SectionHeader: React.FC<{ icon: React.ReactNode; title: string; subtitle: string; status?: string; statusTexts?: { connected?: string; saved?: string; error?: string; notTested?: string } }> = ({ icon, title, subtitle, status, statusTexts }) => (
   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
     <Space size={16} align="start">
-      <div style={{ 
-        width: 40, 
-        height: 40, 
-        borderRadius: 10, 
-        background: '#f5f5f5', 
-        display: 'flex', 
-        alignItems: 'center', 
+      <div style={{
+        width: 40,
+        height: 40,
+        borderRadius: 10,
+        background: '#f5f5f5',
+        display: 'flex',
+        alignItems: 'center',
         justifyContent: 'center',
         fontSize: 20,
         color: '#1890ff'
@@ -77,7 +82,7 @@ const SectionHeader: React.FC<{ icon: React.ReactNode; title: string; subtitle: 
         <Text type="secondary" style={{ fontSize: 13 }}>{subtitle}</Text>
       </div>
     </Space>
-    {status && <StatusBadge status={status} />}
+    {status && <StatusBadge status={status} texts={statusTexts} />}
   </div>
 );
 
@@ -92,7 +97,7 @@ const SecurityNote: React.FC<{ text: string }> = ({ text }) => (
 // =====================================================================
 // Section A: Alpaca Paper Trading
 // =====================================================================
-const AlpacaPaperSection: React.FC = () => {
+const AlpacaPaperSection: React.FC<{ t: any }> = ({ t }) => {
   const [form] = Form.useForm();
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -115,7 +120,7 @@ const AlpacaPaperSection: React.FC = () => {
 
   const handleSave = async () => {
     try {
-      const token = await requireSession();
+      const token = await requireSession(t.config.pleaseSignIn);
       if (!token) return;
       setSaving(true);
       const values = await form.validateFields();
@@ -124,7 +129,7 @@ const AlpacaPaperSection: React.FC = () => {
       if (values.paper_api_secret && !values.paper_api_secret.includes('****')) payload.paper_api_secret = values.paper_api_secret;
       const res = await userApi.post('/settings/broker-config', payload);
       if (res.data?.success) {
-        message.success('Paper trading settings saved');
+        message.success(t.config.paperSaved);
         setHasSaved(true);
         setStatus('saved');
         const reload = await userApi.get('/settings/broker-config');
@@ -136,11 +141,11 @@ const AlpacaPaperSection: React.FC = () => {
           });
         }
       } else {
-        message.error(res.data?.message || 'Save failed');
+        message.error(res.data?.message || t.config.saveFailed);
       }
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error(e.response?.data?.message || e.message || 'Save failed');
+      message.error(e.response?.data?.message || e.message || t.config.saveFailed);
     } finally {
       setSaving(false);
     }
@@ -149,56 +154,59 @@ const AlpacaPaperSection: React.FC = () => {
   const handleTest = async () => {
     setTesting(true);
     try {
-      const token = await requireSession();
+      const token = await requireSession(t.config.pleaseSignIn);
       if (!token) { setTesting(false); return; }
       const res = await userApi.post('/config/alpaca/test', { mode: 'paper' });
       if (res.data?.success) {
         setStatus('connected');
-        message.success(`Paper connection OK — Account: ${res.data.account_id || 'N/A'}`);
+        message.success(t.config.paperTestOK.replace('{id}', res.data.account_id || 'N/A'));
       } else {
         setStatus('error');
-        message.error(res.data?.message || 'Connection failed');
+        message.error(res.data?.message || t.config.connectionFailed);
       }
     } catch (e: any) {
       setStatus('error');
-      message.error(e.response?.data?.message || 'Connection failed');
+      message.error(e.response?.data?.message || t.config.connectionFailed);
     } finally {
       setTesting(false);
     }
   };
 
+  const statusTexts = { connected: t.config.statusConnected, saved: t.config.statusSaved, error: t.config.statusError, notTested: t.config.statusNotTested };
+
   return (
     <Card bordered={false} style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', marginBottom: 24 }}>
-      <SectionHeader 
-        icon={<ThunderboltOutlined />} 
-        title="Alpaca Paper Trading" 
-        subtitle="Credentials for simulated trading environment."
+      <SectionHeader
+        icon={<ThunderboltOutlined />}
+        title={t.config.paperTitle}
+        subtitle={t.config.paperSubtitle}
         status={status}
+        statusTexts={statusTexts}
       />
       <Form form={form} layout="vertical">
         <Row gutter={16}>
           <Col xs={24} md={8}>
-            <Form.Item name="paper_api_key" label={<Text strong style={{ fontSize: 13 }}>API Key</Text>}>
-              <Input.Password placeholder={hasSaved ? 'Saved (masked)' : 'Enter API key'} />
+            <Form.Item name="paper_api_key" label={<Text strong style={{ fontSize: 13 }}>{t.config.apiKey}</Text>}>
+              <Input.Password placeholder={hasSaved ? t.config.savedMasked : t.config.enterApiKey} />
             </Form.Item>
           </Col>
           <Col xs={24} md={8}>
-            <Form.Item name="paper_api_secret" label={<Text strong style={{ fontSize: 13 }}>Secret Key</Text>}>
-              <Input.Password placeholder={hasSaved ? 'Saved (masked)' : 'Enter secret key'} />
+            <Form.Item name="paper_api_secret" label={<Text strong style={{ fontSize: 13 }}>{t.config.secretKey}</Text>}>
+              <Input.Password placeholder={hasSaved ? t.config.savedMasked : t.config.enterSecretKey} />
             </Form.Item>
           </Col>
           <Col xs={24} md={8}>
-            <Form.Item name="paper_base_url" label={<Text strong style={{ fontSize: 13 }}>Endpoint URL</Text>}>
+            <Form.Item name="paper_base_url" label={<Text strong style={{ fontSize: 13 }}>{t.config.endpointUrl}</Text>}>
               <Input placeholder="https://paper-api.alpaca.markets" />
             </Form.Item>
           </Col>
         </Row>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
-          <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>Test Connection</Button>
-          <Button type="primary" onClick={handleSave} loading={saving} icon={<SaveOutlined />}>Save Changes</Button>
+          <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>{t.config.testConnection}</Button>
+          <Button type="primary" onClick={handleSave} loading={saving} icon={<SaveOutlined />}>{t.config.saveChanges}</Button>
         </div>
       </Form>
-      <SecurityNote text="Paper keys are used for testing only. Real funds are never at risk here." />
+      <SecurityNote text={t.config.paperSecurityNote} />
     </Card>
   );
 };
@@ -206,7 +214,7 @@ const AlpacaPaperSection: React.FC = () => {
 // =====================================================================
 // Section B: Alpaca Real Trading
 // =====================================================================
-const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string; secretKey: string }) => void }> = ({ onMarketDataSynced }) => {
+const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string; secretKey: string }) => void; t: any }> = ({ onMarketDataSynced, t }) => {
   const [form] = Form.useForm();
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -229,7 +237,7 @@ const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string
 
   const handleSave = async () => {
     try {
-      const token = await requireSession();
+      const token = await requireSession(t.config.pleaseSignIn);
       if (!token) return;
       setSaving(true);
       const values = await form.validateFields();
@@ -238,7 +246,7 @@ const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string
       if (values.live_api_secret && !values.live_api_secret.includes('****')) payload.live_api_secret = values.live_api_secret;
       const res = await userApi.post('/settings/broker-config', payload);
       if (res.data?.success) {
-        message.success('Real trading settings saved');
+        message.success(t.config.liveSaved);
         setHasSaved(true);
         setStatus('saved');
         const reload = await userApi.get('/settings/broker-config');
@@ -256,11 +264,11 @@ const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string
           });
         }
       } else {
-        message.error(res.data?.message || 'Save failed');
+        message.error(res.data?.message || t.config.saveFailed);
       }
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error(e.response?.data?.message || e.message || 'Save failed');
+      message.error(e.response?.data?.message || e.message || t.config.saveFailed);
     } finally {
       setSaving(false);
     }
@@ -269,60 +277,63 @@ const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string
   const handleTest = async () => {
     setTesting(true);
     try {
-      const token = await requireSession();
+      const token = await requireSession(t.config.pleaseSignIn);
       if (!token) { setTesting(false); return; }
       const res = await userApi.post('/config/alpaca/test', { mode: 'live' });
       if (res.data?.success) {
         setStatus('connected');
-        message.success(`Live connection OK — Account: ${res.data.account_id || 'N/A'}`);
+        message.success(t.config.liveTestOK.replace('{id}', res.data.account_id || 'N/A'));
       } else {
         setStatus('error');
-        message.error(res.data?.message || 'Connection failed');
+        message.error(res.data?.message || t.config.connectionFailed);
       }
     } catch (e: any) {
       setStatus('error');
-      message.error(e.response?.data?.message || 'Connection failed');
+      message.error(e.response?.data?.message || t.config.connectionFailed);
     } finally {
       setTesting(false);
     }
   };
 
+  const statusTexts = { connected: t.config.statusConnected, saved: t.config.statusSaved, error: t.config.statusError, notTested: t.config.statusNotTested };
+
   return (
     <Card bordered={false} style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', marginBottom: 24, borderLeft: '4px solid #ff4d4f' }}>
-      <SectionHeader 
-        icon={<BankOutlined style={{ color: '#ff4d4f' }} />} 
-        title="Alpaca Live Trading" 
-        subtitle="Credentials for real money execution. Handle with extreme caution."
+      <SectionHeader
+        icon={<BankOutlined style={{ color: '#ff4d4f' }} />}
+        title={t.config.liveTitle}
+        subtitle={t.config.liveSubtitle}
         status={status}
+        statusTexts={statusTexts}
       />
-      <Alert 
-        message="Security Warning" 
-        description="Live trading involves real financial risk. Ensure your keys are kept secure and never shared." 
-        type="warning" 
-        showIcon 
+      <Alert
+        message={t.config.securityWarning}
+        description={t.config.securityWarningDesc}
+        type="warning"
+        showIcon
         style={{ marginBottom: 20, borderRadius: 8 }}
       />
       <Form form={form} layout="vertical">
         <Row gutter={16}>
           <Col xs={24} md={8}>
-            <Form.Item name="live_api_key" label={<Text strong style={{ fontSize: 13 }}>API Key</Text>}>
-              <Input.Password placeholder={hasSaved ? 'Saved (masked)' : 'Enter API key'} />
+            <Form.Item name="live_api_key" label={<Text strong style={{ fontSize: 13 }}>{t.config.apiKey}</Text>}>
+              <Input.Password placeholder={hasSaved ? t.config.savedMasked : t.config.enterApiKey} />
             </Form.Item>
           </Col>
           <Col xs={24} md={8}>
-            <Form.Item name="live_api_secret" label={<Text strong style={{ fontSize: 13 }}>Secret Key</Text>}>
-              <Input.Password placeholder={hasSaved ? 'Saved (masked)' : 'Enter secret key'} />
+            <Form.Item name="live_api_secret" label={<Text strong style={{ fontSize: 13 }}>{t.config.secretKey}</Text>}>
+              <Input.Password placeholder={hasSaved ? t.config.savedMasked : t.config.enterSecretKey} />
             </Form.Item>
           </Col>
           <Col xs={24} md={8}>
-            <Form.Item name="live_base_url" label={<Text strong style={{ fontSize: 13 }}>Endpoint URL</Text>}>
+            <Form.Item name="live_base_url" label={<Text strong style={{ fontSize: 13 }}>{t.config.endpointUrl}</Text>}>
               <Input placeholder="https://api.alpaca.markets" />
             </Form.Item>
           </Col>
         </Row>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
-          <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>Test Live Connection</Button>
-          <Button type="primary" danger onClick={handleSave} loading={saving} icon={<SaveOutlined />}>Save Live Settings</Button>
+          <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>{t.config.testLiveConnection}</Button>
+          <Button type="primary" danger onClick={handleSave} loading={saving} icon={<SaveOutlined />}>{t.config.saveLiveSettings}</Button>
         </div>
       </Form>
     </Card>
@@ -332,7 +343,7 @@ const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string
 // =====================================================================
 // Section C: Alpaca Market Data
 // =====================================================================
-const MarketDataSection: React.FC<{ reloadKey?: number }> = ({ reloadKey }) => {
+const MarketDataSection: React.FC<{ reloadKey?: number; t: any }> = ({ reloadKey, t }) => {
   const [form] = Form.useForm();
   const [testing, setTesting] = useState(false);
   const [status, setStatus] = useState('not_tested');
@@ -366,15 +377,15 @@ const MarketDataSection: React.FC<{ reloadKey?: number }> = ({ reloadKey }) => {
       if (values.api_secret && !values.api_secret.includes('****')) payload.api_secret = values.api_secret;
       const res = await userApi.post('/config/market-data', payload);
       if (res.data?.success) {
-        message.success('Market data settings saved');
+        message.success(t.config.marketDataSaved);
         loadConfig();
         setStatus('saved');
       } else {
-        message.error(res.data?.message || 'Save failed');
+        message.error(res.data?.message || t.config.saveFailed);
       }
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error(e.response?.data?.message || e.message || 'Save failed');
+      message.error(e.response?.data?.message || e.message || t.config.saveFailed);
     }
   };
 
@@ -384,67 +395,69 @@ const MarketDataSection: React.FC<{ reloadKey?: number }> = ({ reloadKey }) => {
       const res = await userApi.post('/config/market-data/test');
       if (res.data?.success) {
         setStatus('connected');
-        message.success(`Market data connected (Source: ${res.data.debug?.keySource || 'N/A'})`);
+        message.success(t.config.marketDataConnected.replace('{source}', res.data.debug?.keySource || 'N/A'));
       } else {
         setStatus('error');
-        message.error(res.data?.message || 'Connection failed');
+        message.error(res.data?.message || t.config.connectionFailed);
       }
     } catch (e: any) {
       setStatus('error');
-      message.error(e.response?.data?.message || 'Connection failed');
+      message.error(e.response?.data?.message || t.config.connectionFailed);
     } finally {
       setTesting(false);
     }
   };
 
   const hasKeys = credentialSource === 'real_trading';
+  const statusTexts = { connected: t.config.statusConnected, saved: t.config.statusSaved, error: t.config.statusError, notTested: t.config.statusNotTested };
 
   return (
     <Card bordered={false} style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', marginBottom: 24 }}>
-      <SectionHeader 
-        icon={<CloudOutlined />} 
-        title="Alpaca Market Data" 
-        subtitle="Endpoint for bars, snapshots, and streaming quotes."
+      <SectionHeader
+        icon={<CloudOutlined />}
+        title={t.config.marketDataTitle}
+        subtitle={t.config.marketDataSubtitle}
         status={status}
+        statusTexts={statusTexts}
       />
       <div style={{ marginBottom: 20 }}>
         {hasKeys ? (
-          <Tag color="success" icon={<CheckCircleOutlined />}>Keys auto-synced from Real Trading</Tag>
+          <Tag color="success" icon={<CheckCircleOutlined />}>{t.config.keysAutoSynced}</Tag>
         ) : (
-          <Tag color="warning" icon={<InfoCircleOutlined />}>Configure Real Trading first for automatic sync</Tag>
+          <Tag color="warning" icon={<InfoCircleOutlined />}>{t.config.configureRealFirst}</Tag>
         )}
       </div>
       <Form form={form} layout="vertical">
         <Row gutter={16}>
           <Col xs={24} md={12}>
-            <Form.Item name="data_base_url" label={<Text strong style={{ fontSize: 13 }}>Data Endpoint URL</Text>}>
+            <Form.Item name="data_base_url" label={<Text strong style={{ fontSize: 13 }}>{t.config.dataEndpointUrl}</Text>}>
               <Input disabled placeholder="https://data.alpaca.markets" />
             </Form.Item>
           </Col>
           <Col xs={24} md={12}>
-            <Form.Item name="feed" label={<Text strong style={{ fontSize: 13 }}>Data Feed Tier</Text>}>
+            <Form.Item name="feed" label={<Text strong style={{ fontSize: 13 }}>{t.config.dataFeedTier}</Text>}>
               <Select>
-                <Option value="iex">IEX (Free Tier)</Option>
-                <Option value="sip">SIP (Paid Tier)</Option>
+                <Option value="iex">{t.config.iexFree}</Option>
+                <Option value="sip">{t.config.sipPaid}</Option>
               </Select>
             </Form.Item>
           </Col>
         </Row>
         <Row gutter={16}>
           <Col xs={24} md={12}>
-            <Form.Item name="api_key" label={<Text strong style={{ fontSize: 13 }}>Data API Key</Text>}>
-              <Input.Password disabled={hasKeys} placeholder={hasKeys ? 'Using Real Trading Key' : 'Configure Real Trading'} />
+            <Form.Item name="api_key" label={<Text strong style={{ fontSize: 13 }}>{t.config.dataApiKey}</Text>}>
+              <Input.Password disabled={hasKeys} placeholder={hasKeys ? t.config.usingRealKey : t.config.configureRealTrading} />
             </Form.Item>
           </Col>
           <Col xs={24} md={12}>
-            <Form.Item name="api_secret" label={<Text strong style={{ fontSize: 13 }}>Data API Secret</Text>}>
-              <Input.Password disabled={hasKeys} placeholder={hasKeys ? 'Using Real Trading Secret' : 'Configure Real Trading'} />
+            <Form.Item name="api_secret" label={<Text strong style={{ fontSize: 13 }}>{t.config.dataApiSecret}</Text>}>
+              <Input.Password disabled={hasKeys} placeholder={hasKeys ? t.config.usingRealSecret : t.config.configureRealTrading} />
             </Form.Item>
           </Col>
         </Row>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
-          <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>Test Data Access</Button>
-          <Button type="primary" onClick={handleSave} icon={<SaveOutlined />}>Save Configuration</Button>
+          <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>{t.config.testDataAccess}</Button>
+          <Button type="primary" onClick={handleSave} icon={<SaveOutlined />}>{t.config.saveConfiguration}</Button>
         </div>
       </Form>
     </Card>
@@ -486,7 +499,7 @@ const PROVIDER_MODELS: Record<string, { baseUrl: string; models: string[] }> = {
 };
 const PROVIDER_NAMES = Object.keys(PROVIDER_MODELS);
 
-const AIProviderSection: React.FC = () => {
+const AIProviderSection: React.FC<{ t: any }> = ({ t }) => {
   const [form] = Form.useForm();
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -535,7 +548,7 @@ const AIProviderSection: React.FC = () => {
 
   const handleSave = async () => {
     try {
-      const token = await requireSession();
+      const token = await requireSession(t.config.pleaseSignIn);
       if (!token) return;
       setSaving(true);
       const values = await form.validateFields();
@@ -544,15 +557,15 @@ const AIProviderSection: React.FC = () => {
       if (values.apiKey && !values.apiKey.includes('****')) payload.apiKey = values.apiKey;
       const res = await userApi.post('/settings/ai-config', payload);
       if (res.data?.success) {
-        message.success('AI settings saved');
+        message.success(t.config.aiSaved);
         setHasSaved(true);
         setStatus('saved');
       } else {
-        message.error(res.data?.message || 'Save failed');
+        message.error(res.data?.message || t.config.saveFailed);
       }
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error(e.response?.data?.message || e.message || 'Save failed');
+      message.error(e.response?.data?.message || e.message || t.config.saveFailed);
     } finally {
       setSaving(false);
     }
@@ -561,7 +574,7 @@ const AIProviderSection: React.FC = () => {
   const handleTest = async () => {
     setTesting(true);
     try {
-      const token = await requireSession();
+      const token = await requireSession(t.config.pleaseSignIn);
       if (!token) { setTesting(false); return; }
       const values = form.getFieldsValue();
       const modelValue = customModel ? values.customModel : values.model;
@@ -570,72 +583,75 @@ const AIProviderSection: React.FC = () => {
       const res = await userApi.post('/ai/provider/test', payload);
       if (res.data?.success) {
         setStatus('connected');
-        message.success('AI connection successful');
+        message.success(t.config.aiConnected);
       } else {
         setStatus('error');
-        message.error(res.data?.message || 'Connection failed');
+        message.error(res.data?.message || t.config.connectionFailed);
       }
     } catch (e: any) {
       setStatus('error');
-      message.error(e.response?.data?.message || e.message || 'Connection failed');
+      message.error(e.response?.data?.message || e.message || t.config.connectionFailed);
     } finally {
       setTesting(false);
     }
   };
 
+  const statusTexts = { connected: t.config.statusConnected, saved: t.config.statusSaved, error: t.config.statusError, notTested: t.config.statusNotTested };
+
   return (
     <Card bordered={false} style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', marginBottom: 24 }}>
-      <SectionHeader 
-        icon={<RobotOutlined />} 
-        title="AI Provider Intelligence" 
-        subtitle="Core AI brain for strategy generation and analysis."
+      <SectionHeader
+        icon={<RobotOutlined />}
+        title={t.config.aiTitle}
+        subtitle={t.config.aiSubtitle}
         status={status}
+        statusTexts={statusTexts}
       />
       {keyIsMasked && (
-        <Alert 
-          message="Key Mismatch" 
-          description="The saved key appears to be a masked value. Please re-enter your actual API key to restore service." 
-          type="error" 
-          showIcon 
+        <Alert
+          message={t.config.keyMismatch}
+          description={t.config.keyMismatchDesc}
+          type="error"
+          showIcon
           style={{ marginBottom: 20, borderRadius: 8 }}
         />
       )}
       <Form form={form} layout="vertical">
         <Row gutter={16}>
           <Col xs={24} md={6}>
-            <Form.Item name="provider" label={<Text strong style={{ fontSize: 13 }}>Provider</Text>}>
+            <Form.Item name="provider" label={<Text strong style={{ fontSize: 13 }}>{t.config.provider}</Text>}>
               <Select onChange={handleProviderChange}>
                 {PROVIDER_NAMES.map(p => <Option key={p} value={p}>{p}</Option>)}
               </Select>
             </Form.Item>
           </Col>
           <Col xs={24} md={6}>
-            <Form.Item name="model" label={<Text strong style={{ fontSize: 13 }}>Primary Model</Text>}>
+            <Form.Item name="model" label={<Text strong style={{ fontSize: 13 }}>{t.config.primaryModel}</Text>}>
               <Select showSearch onChange={v => setCustomModel(v === '__custom__')}>
                 {modelOptions.map(m => <Option key={m} value={m}>{m}</Option>)}
-                <Option value="__custom__">Custom model...</Option>
+                <Option value="__custom__">{t.config.customModel}</Option>
               </Select>
             </Form.Item>
             {customModel && (
-              <Form.Item name="customModel" label={<Text strong style={{ fontSize: 13 }}>Model Identifier</Text>} rules={[{ required: true }]}>
-                <Input placeholder="e.g. deepseek-reasoner" />
+              <Form.Item name="customModel" label={<Text strong style={{ fontSize: 13 }}>{t.config.modelIdentifier}</Text>} rules={[{ required: true }]}>
+                <Input placeholder={t.config.modelPlaceholder} />
               </Form.Item>
             )}
           </Col>
           <Col xs={24} md={6}>
-            <Form.Item name="apiKey" label={<Text strong style={{ fontSize: 13 }}>API Key</Text>}>
-              <Input.Password placeholder={hasSaved ? 'Saved (masked)' : 'Enter API key'} />
+            <Form.Item name="apiKey" label={<Text strong style={{ fontSize: 13 }}>{t.config.apiKeyLabel}</Text>}>
+              <Input.Password placeholder={hasSaved ? t.config.savedMasked : t.config.enterApiKey} />
             </Form.Item>
           </Col>
           <Col xs={24} md={6}>
-            <Form.Item name="baseUrl" label={<Text strong style={{ fontSize: 13 }}>API Base URL</Text>}>
+            <Form.Item name="baseUrl" label={<Text strong style={{ fontSize: 13 }}>{t.config.apiBaseUrl}</Text>}>
               <Input placeholder="https://api.deepseek.com" />
             </Form.Item>
           </Col>
         </Row>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
-          <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>Test Connection</Button>
-          <Button type="primary" onClick={handleSave} loading={saving} icon={<SaveOutlined />}>Save Intelligence Settings</Button>
+          <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>{t.config.testAiConnection}</Button>
+          <Button type="primary" onClick={handleSave} loading={saving} icon={<SaveOutlined />}>{t.config.saveIntelligence}</Button>
         </div>
       </Form>
     </Card>
@@ -645,7 +661,7 @@ const AIProviderSection: React.FC = () => {
 // =====================================================================
 // Section E: Finnhub
 // =====================================================================
-const FinnhubSection: React.FC = () => {
+const FinnhubSection: React.FC<{ t: any }> = ({ t }) => {
   const [form] = Form.useForm();
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -667,7 +683,7 @@ const FinnhubSection: React.FC = () => {
 
   const handleSave = async () => {
     try {
-      const token = await requireSession();
+      const token = await requireSession(t.config.pleaseSignIn);
       if (!token) return;
       setSaving(true);
       const values = await form.validateFields();
@@ -675,15 +691,15 @@ const FinnhubSection: React.FC = () => {
       if (values.api_key && !values.api_key.includes('****')) payload.api_key = values.api_key;
       const res = await userApi.post('/settings/finnhub-config', payload);
       if (res.data?.success) {
-        message.success('Finnhub settings saved');
+        message.success(t.config.finnhubSaved);
         setHasSaved(true);
         setStatus('saved');
       } else {
-        message.error(res.data?.message || 'Save failed');
+        message.error(res.data?.message || t.config.saveFailed);
       }
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error(e.response?.data?.message || e.message || 'Save failed');
+      message.error(e.response?.data?.message || e.message || t.config.saveFailed);
     } finally {
       setSaving(false);
     }
@@ -692,48 +708,51 @@ const FinnhubSection: React.FC = () => {
   const handleTest = async () => {
     setTesting(true);
     try {
-      const token = await requireSession();
+      const token = await requireSession(t.config.pleaseSignIn);
       if (!token) { setTesting(false); return; }
       const res = await userApi.post('/settings/finnhub-config/test');
       if (res.data?.success) {
         setStatus('connected');
-        message.success('Finnhub connection verified');
+        message.success(t.config.finnhubConnected);
       } else {
         setStatus('error');
-        message.error(res.data?.message || 'Connection failed');
+        message.error(res.data?.message || t.config.connectionFailed);
       }
     } catch (e: any) {
       setStatus('error');
-      message.error(e.response?.data?.message || 'Connection failed');
+      message.error(e.response?.data?.message || t.config.connectionFailed);
     } finally {
       setTesting(false);
     }
   };
 
+  const statusTexts = { connected: t.config.statusConnected, saved: t.config.statusSaved, error: t.config.statusError, notTested: t.config.statusNotTested };
+
   return (
     <Card bordered={false} style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', marginBottom: 24 }}>
-      <SectionHeader 
-        icon={<CloudOutlined />} 
-        title="Finnhub Financial Data" 
-        subtitle="Provider for company fundamentals, sector data, and earnings."
+      <SectionHeader
+        icon={<CloudOutlined />}
+        title={t.config.finnhubTitle}
+        subtitle={t.config.finnhubSubtitle}
         status={status}
+        statusTexts={statusTexts}
       />
       <Form form={form} layout="vertical">
         <Row gutter={16}>
           <Col xs={24} md={12}>
-            <Form.Item name="api_key" label={<Text strong style={{ fontSize: 13 }}>API Key</Text>}>
-              <Input.Password placeholder={hasSaved ? 'Saved (masked)' : 'Enter Finnhub Key'} />
+            <Form.Item name="api_key" label={<Text strong style={{ fontSize: 13 }}>{t.config.finnhubApiKey}</Text>}>
+              <Input.Password placeholder={hasSaved ? t.config.savedMasked : t.config.enterApiKey} />
             </Form.Item>
           </Col>
           <Col xs={24} md={12}>
-            <Form.Item name="base_url" label={<Text strong style={{ fontSize: 13 }}>Base API URL</Text>}>
+            <Form.Item name="base_url" label={<Text strong style={{ fontSize: 13 }}>{t.config.finnhubBaseUrl}</Text>}>
               <Input placeholder="https://finnhub.io/api/v1" />
             </Form.Item>
           </Col>
         </Row>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
-          <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>Test Finnhub</Button>
-          <Button type="primary" onClick={handleSave} loading={saving} icon={<SaveOutlined />}>Save Changes</Button>
+          <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>{t.config.testFinnhub}</Button>
+          <Button type="primary" onClick={handleSave} loading={saving} icon={<SaveOutlined />}>{t.config.saveChanges}</Button>
         </div>
       </Form>
     </Card>
@@ -746,6 +765,7 @@ const FinnhubSection: React.FC = () => {
 const Configuration: React.FC = () => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const { t } = useLanguage();
   const [marketDataReloadKey, setMarketDataReloadKey] = useState(0);
 
   const handleSignOut = async () => {
@@ -762,16 +782,16 @@ const Configuration: React.FC = () => {
           onClick={() => navigate('/settings')}
           style={{ marginLeft: -16, marginBottom: 8 }}
         >
-          Back to Settings
+          {t.config.backToSettings}
         </Button>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
           <div>
             <Title level={2} style={{ margin: 0 }}>
               <ApiOutlined style={{ marginRight: 12, color: '#1890ff' }} />
-              Connection Configuration
+              {t.config.title}
             </Title>
             <Text type="secondary" style={{ fontSize: 15 }}>
-              Manage and verify all service integrations for your quantitative environment.
+              {t.config.subtitle}
             </Text>
           </div>
           <div style={{ textAlign: 'right' }}>
@@ -781,7 +801,7 @@ const Configuration: React.FC = () => {
                 <Text strong>{user?.email}</Text>
               </Space>
               <Button type="link" danger icon={<LogoutOutlined />} onClick={handleSignOut} style={{ padding: 0, height: 'auto' }}>
-                Sign Out
+                {t.config.signOut}
               </Button>
             </Space>
           </div>
@@ -790,16 +810,16 @@ const Configuration: React.FC = () => {
 
       <Divider style={{ margin: '32px 0' }} />
 
-      <AlpacaPaperSection />
-      <AlpacaRealSection onMarketDataSynced={() => setMarketDataReloadKey(k => k + 1)} />
-      <MarketDataSection reloadKey={marketDataReloadKey} />
-      <AIProviderSection />
-      <FinnhubSection />
+      <AlpacaPaperSection t={t} />
+      <AlpacaRealSection onMarketDataSynced={() => setMarketDataReloadKey(k => k + 1)} t={t} />
+      <MarketDataSection reloadKey={marketDataReloadKey} t={t} />
+      <AIProviderSection t={t} />
+      <FinnhubSection t={t} />
 
       <div style={{ marginTop: 40, textAlign: 'center' }}>
         <Text type="secondary" style={{ fontSize: 13 }}>
           <SafetyCertificateOutlined style={{ marginRight: 8 }} />
-          All sensitive keys are transmitted over SSL and stored using industry-standard encryption.
+          {t.config.footerSecurity}
         </Text>
       </div>
     </div>

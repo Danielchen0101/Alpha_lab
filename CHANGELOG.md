@@ -5,6 +5,32 @@ All notable changes to the Professional Quantitative Trading Platform will be do
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-05-09
+
+### Added
+- Fractional shares support across all order paths (buy, sell, auto-execute)
+- Full Chinese localization for AI Agent, Trading Workspace, Portfolio, and Configuration pages
+- GTC (Good-Till-Canceled) time_in_force for Exit Scan sell orders
+- Price-aware order type selection: automatic market vs. limit based on current price vs. entry zone
+- AI Mode end-to-end auto-pipeline: Market Scanner → Entry Plan → Auto-Execute → Exit Scan
+- Detailed Alpaca API error response display on order rejection
+- Duplicate sell order prevention in Exit Scan
+- Sellable quantity validation before order submission
+- i18n translation system with 160+ new Chinese locale keys
+
+### Changed
+- Exit Scan sell orders use simple limit/market instead of bracket orders (bracket is buy-side only on Alpaca)
+- Execution candidates shares input now accepts decimal values (step=0.01, min=0.0001)
+- Order modal quantity input supports fractional shares
+- Backend position sizing calculations now preserve decimal precision
+- Backend `ai_execution_order` no longer truncates qty to integer
+
+### Fixed
+- Entry Plan button remaining disabled for valid candidates with verdict "Pass"
+- Risk gate BLOCK incorrectly blocking Entry Plan generation (now only blocks execution)
+- Exit Scan 422 Alpaca API error caused by invalid bracket order on sell orders
+- Integer truncation on fractional position sizes in backend calculations
+
 ## [2.5.0] - 2026-05-06
 
 ### Added

@@ -9467,7 +9467,7 @@ def generate_context_based_analysis(symbol, context):
 
             action = 'SELL'
 
-            position_size = max(1, int(current_qty * 0.3))  # Sell 30%
+            position_size = round(max(0.01, current_qty * 0.3), 4)  # Sell 30% (fractional)
 
             reason = f"{symbol} has existing position of {current_qty} shares (profit {current_pnl_pct:.1f}%, portfolio ratio {position_ratio*100:.1f}%). Backtest return {backtest_total_return:.1f}%, max drawdown {backtest_max_dd:.1f}%. Recommend partial profit taking."
 
@@ -9529,7 +9529,7 @@ def generate_context_based_analysis(symbol, context):
 
             max_position_value = min(buying_power * 0.1, 5000)  # No more than 10% of buying power or $5000
 
-            position_size = max(1, int(max_position_value / current_price))
+            position_size = round(max(0.01, max_position_value / current_price), 4)
 
             reason = f"{symbol} shows strong buy signal: backtest return {backtest_total_return:.1f}%, Sharpe ratio {backtest_sharpe:.2f}. Optimization best score {optimization_best_score:.4f}. Account buying power ${buying_power:,.0f}, recommend establishing position."
 
@@ -9541,7 +9541,7 @@ def generate_context_based_analysis(symbol, context):
 
             max_position_value = min(buying_power * 0.05, 2500)  # No more than 5% of buying power or $2500
 
-            position_size = max(1, int(max_position_value / current_price))
+            position_size = round(max(0.01, max_position_value / current_price), 4)
 
             reason = f"{symbol} shows buy signal: backtest return {backtest_total_return:.1f}%, Sharpe ratio {backtest_sharpe:.2f}. Account buying power ${buying_power:,.0f}, recommend small position."
 
@@ -21309,7 +21309,7 @@ def ai_execution_order():
         'time_in_force': time_in_force,
     }
     if qty and qty > 0:
-        order_payload['qty'] = str(int(qty))
+        order_payload['qty'] = str(qty)
     elif notional and notional > 0:
         order_payload['notional'] = str(round(notional, 2))
     if order_type in ('limit', 'stop_limit') and limit_price:

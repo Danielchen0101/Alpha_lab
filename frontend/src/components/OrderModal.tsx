@@ -454,7 +454,7 @@ const OrderModal: React.FC<OrderModalProps> = ({
           </Form.Item>
           {amountMode === 'shares' ? (
             <Form.Item name="qty" label="Quantity" rules={[{ required: true }]}>
-              <InputNumber min={0.0001} step={1} style={{ width: '100%' }} placeholder="Number of shares" />
+              <InputNumber min={0.0001} step={0.01} style={{ width: '100%' }} placeholder="Shares, e.g. 0.5" />
             </Form.Item>
           ) : (
             <Form.Item name="notional" label="Dollar Amount ($)" rules={[{ required: true }]}>

@@ -12,11 +12,14 @@ import {
 } from '@ant-design/icons';
 import { aiAgentWatchlistAPI, tradingAccountAPI } from '../services/api';
 import OrderModal from '../components/OrderModal';
+import { useLanguage } from '../contexts/LanguageContext';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
 
 const Trade: React.FC = () => {
+  const { t } = useLanguage();
+
   // Account Snapshot 状态
   const [accountSnapshot, setAccountSnapshot] = useState({
     cash: 0, equity: 0, buyingPower: 0, portfolioValue: 0, 
@@ -68,7 +71,7 @@ const Trade: React.FC = () => {
         setPortfolioChange({ value: 0, percent: 0 });
         const errMsg = (resBody as any)?.message || resBody?.error || 'Unknown error';
         if ((resBody as any)?.reason === 'config_required' || errMsg?.includes('not configured')) {
-          setPortfolioError(`${tradeMode === 'paper' ? 'Paper' : 'Live'} trading credentials not configured. Please save API keys in Settings.`);
+          setPortfolioError(t.trade.credentialsNotConfigured.replace('{mode}', tradeMode === 'paper' ? t.trade.paperLabel : t.trade.liveLabel));
         } else {
           setPortfolioError(errMsg);
         }
@@ -128,7 +131,7 @@ const Trade: React.FC = () => {
         loadWatchlist();
       }
     } catch (e: any) {
-      message.error('Failed to remove: ' + (e?.message || 'Error'));
+      message.error(t.trade.removeFailed + ': ' + (e?.message || 'Error'));
     }
   };
 
@@ -142,24 +145,24 @@ const Trade: React.FC = () => {
   const handleCancelOrder = async (orderId: string, symbol: string) => {
     const modeLabel = tradeMode === 'real' ? 'LIVE' : 'Paper';
     Modal.confirm({
-      title: `Cancel order for ${symbol}?`,
+      title: t.trade.cancelOrderTitle.replace('{symbol}', symbol),
       content: tradeMode === 'real'
-        ? 'This will cancel an order on your LIVE Alpaca account. This action cannot be undone.'
-        : `This will cancel the order on your ${modeLabel} account.`,
-      okText: tradeMode === 'real' ? 'Cancel LIVE Order' : 'Cancel Order',
+        ? t.trade.cancelOrderLiveDesc
+        : t.trade.cancelOrderPaperDesc.replace('{mode}', modeLabel),
+      okText: tradeMode === 'real' ? t.trade.cancelLiveOrder : t.trade.cancelOrder,
       okButtonProps: { danger: true },
-      cancelText: 'Keep Order',
+      cancelText: t.trade.keepOrder,
       onOk: async () => {
         try {
           const res = await tradingAccountAPI.cancelOrder(orderId, tradeMode);
           if (res.data.success) {
-            message.success('Order cancelled successfully');
+            message.success(t.trade.orderCancelled);
             await refreshAllAlpacaData();
           } else {
-            message.error(res.data.error || 'Failed to cancel order');
+            message.error(res.data.error || t.trade.cancelFailed);
           }
         } catch (e: any) {
-          message.error(e?.response?.data?.error || e?.message || 'Cancel failed');
+          message.error(e?.response?.data?.error || e?.message || t.trade.cancelFailed);
         }
       },
     });
@@ -260,7 +263,7 @@ const Trade: React.FC = () => {
           setPortfolioHistory([]);
           setPortfolioChange({ value: 0, percent: 0 });
           if ((resBody as any)?.reason === 'config_required' || errMsg?.includes('not configured')) {
-            setPortfolioError(`${m === 'paper' ? 'Paper' : 'Live'} trading credentials not configured. Please save API keys in Settings.`);
+            setPortfolioError(t.trade.credentialsNotConfigured.replace('{mode}', m === 'paper' ? t.trade.paperLabel : t.trade.liveLabel));
           } else {
             setPortfolioError(errMsg);
           }
@@ -274,7 +277,7 @@ const Trade: React.FC = () => {
       }
     } catch (error) {
       console.error('Failed to refresh Alpaca data:', error);
-      message.error('Failed to refresh data');
+      message.error(t.trade.refreshFailed);
     } finally {
       setLoadingData({ account: false, positions: false, orders: false, history: false, portfolio: false });
     }
@@ -292,37 +295,37 @@ const Trade: React.FC = () => {
   };
 
   const handleOrderSuccess = async () => {
-    message.success('Order placed successfully');
+    message.success(t.trade.orderPlaced);
     await refreshAllAlpacaData();
   };
 
   // 持仓表格列定义 - 与Alpaca页面一致
   const positionsColumns = [
-    { title: 'Asset', dataIndex: 'symbol', key: 'symbol' },
-    { title: 'Price', dataIndex: 'currentPrice', key: 'currentPrice', render: (price: any) => {
+    { title: t.trade.colAsset, dataIndex: 'symbol', key: 'symbol' },
+    { title: t.trade.colPrice, dataIndex: 'currentPrice', key: 'currentPrice', render: (price: any) => {
       const num = Number(price);
       return Number.isFinite(num) ? `$${num.toFixed(2)}` : '-';
     }},
-    { title: 'Qty', dataIndex: 'qty', key: 'qty', render: (qty: any) => {
+    { title: t.trade.colQty, dataIndex: 'qty', key: 'qty', render: (qty: any) => {
       const num = Number(qty);
       return Number.isFinite(num) ? num.toFixed(2) : '-';
     }},
-    { title: 'Side', dataIndex: 'side', key: 'side', render: (side: string) => (
+    { title: t.trade.colSide, dataIndex: 'side', key: 'side', render: (side: string) => (
       <Tag color={side === 'long' ? 'green' : 'red'}>{side.toUpperCase()}</Tag>
     )},
-    { title: 'Market Value', dataIndex: 'marketValue', key: 'marketValue', render: (value: any) => {
+    { title: t.trade.colMarketValue, dataIndex: 'marketValue', key: 'marketValue', render: (value: any) => {
       const num = Number(value);
       return Number.isFinite(num) ? `$${num.toFixed(2)}` : '-';
     }},
-    { title: 'Avg Entry', dataIndex: 'avgEntryPrice', key: 'avgEntryPrice', render: (price: any) => {
+    { title: t.trade.colAvgEntry, dataIndex: 'avgEntryPrice', key: 'avgEntryPrice', render: (price: any) => {
       const num = Number(price);
       return Number.isFinite(num) ? `$${num.toFixed(2)}` : '-';
     }},
-    { title: 'Cost Basis', dataIndex: 'costBasis', key: 'costBasis', render: (value: any) => {
+    { title: t.trade.colCostBasis, dataIndex: 'costBasis', key: 'costBasis', render: (value: any) => {
       const num = Number(value);
       return Number.isFinite(num) ? `$${num.toFixed(2)}` : '-';
     }},
-    { title: 'Today\'s P/L (%)', dataIndex: 'todayPlPercent', key: 'todayPlPercent', render: (percent: any) => {
+    { title: t.trade.colTodayPLPct, dataIndex: 'todayPlPercent', key: 'todayPlPercent', render: (percent: any) => {
       const num = Number(percent);
       return Number.isFinite(num) ? (
         <span style={{ color: num >= 0 ? '#3f8600' : '#cf1322' }}>
@@ -330,7 +333,7 @@ const Trade: React.FC = () => {
         </span>
       ) : '-';
     }},
-    { title: 'Today\'s P/L ($)', dataIndex: 'todayPlValue', key: 'todayPlValue', render: (value: any) => {
+    { title: t.trade.colTodayPL, dataIndex: 'todayPlValue', key: 'todayPlValue', render: (value: any) => {
       const num = Number(value);
       return Number.isFinite(num) ? (
         <span style={{ color: num >= 0 ? '#3f8600' : '#cf1322' }}>
@@ -338,7 +341,7 @@ const Trade: React.FC = () => {
         </span>
       ) : '-';
     }},
-    { title: 'Total P/L (%)', dataIndex: 'totalPlPercent', key: 'totalPlPercent', render: (percent: any) => {
+    { title: t.trade.colTotalPLPct, dataIndex: 'totalPlPercent', key: 'totalPlPercent', render: (percent: any) => {
       const num = Number(percent);
       return Number.isFinite(num) ? (
         <span style={{ color: num >= 0 ? '#3f8600' : '#cf1322' }}>
@@ -346,7 +349,7 @@ const Trade: React.FC = () => {
         </span>
       ) : '-';
     }},
-    { title: 'Total P/L ($)', dataIndex: 'totalPlValue', key: 'totalPlValue', render: (value: any) => {
+    { title: t.trade.colTotalPL, dataIndex: 'totalPlValue', key: 'totalPlValue', render: (value: any) => {
       const num = Number(value);
       return Number.isFinite(num) ? (
         <span style={{ color: num >= 0 ? '#3f8600' : '#cf1322' }}>
@@ -365,48 +368,48 @@ const Trade: React.FC = () => {
           qty: Number(record.qty) || undefined,
         })}
       >
-        Sell
+        {t.trade.sell}
       </Button>
     )}
   ];
 
   // 未平仓订单表格列定义
   const openOrdersColumns = [
-    { title: 'Symbol', dataIndex: 'symbol', key: 'symbol', render: (t: string) => <span style={{ fontWeight: 700 }}>{t}</span> },
-    { title: 'Side', dataIndex: 'side', key: 'side', render: (side: string) => (
+    { title: t.trade.colSymbol, dataIndex: 'symbol', key: 'symbol', render: (v: string) => <span style={{ fontWeight: 700 }}>{v}</span> },
+    { title: t.trade.colSide, dataIndex: 'side', key: 'side', render: (side: string) => (
       <Tag color={side === 'buy' ? 'green' : 'red'}>{side.toUpperCase()}</Tag>
     )},
-    { title: 'Qty', dataIndex: 'qty', key: 'qty' },
-    { title: 'Type', dataIndex: 'type', key: 'type' },
-    { title: 'Limit Price', dataIndex: 'limitPrice', key: 'limitPrice', render: (price: any) => {
+    { title: t.trade.colQty, dataIndex: 'qty', key: 'qty' },
+    { title: t.trade.colType, dataIndex: 'type', key: 'type' },
+    { title: t.trade.colLimitPrice, dataIndex: 'limitPrice', key: 'limitPrice', render: (price: any) => {
       const num = Number(price);
       return Number.isFinite(num) ? `$${num.toFixed(2)}` : '-';
     }},
-    { title: 'Stop Price', dataIndex: 'stopPrice', key: 'stopPrice', render: (price: any) => {
+    { title: t.trade.colStopPrice, dataIndex: 'stopPrice', key: 'stopPrice', render: (price: any) => {
       const num = Number(price);
       return Number.isFinite(num) ? `$${num.toFixed(2)}` : '-';
     }},
-    { title: 'TIF', dataIndex: 'timeInForce', key: 'tif', render: (v: string) => (v || '').toUpperCase() },
-    { title: 'Status', dataIndex: 'status', key: 'status', render: (status: string) => (
+    { title: t.trade.colTIF, dataIndex: 'timeInForce', key: 'tif', render: (v: string) => (v || '').toUpperCase() },
+    { title: t.trade.statusLabel, dataIndex: 'status', key: 'status', render: (status: string) => (
       <Tag color={status === 'filled' ? 'green' : status === 'canceled' ? 'red' : 'blue'}>
         {status.toUpperCase()}
       </Tag>
     )},
-    { title: 'Created', dataIndex: 'createdAt', key: 'createdAt', render: (time: string) => {
+    { title: t.trade.colCreated, dataIndex: 'createdAt', key: 'createdAt', render: (time: string) => {
       if (!time) return 'N/A';
       const date = new Date(time);
       return date.toLocaleString('en-US', { timeZone: 'America/New_York' });
     }},
     { title: '', key: 'action', width: 80, render: (_: any, record: any) => (
       <Button size="small" danger icon={<StopOutlined />} onClick={() => handleCancelOrder(record.id, record.symbol)}>
-        Cancel
+        {t.trade.cancel}
       </Button>
     )},
   ];
 
   // 订单历史表格列定义 - 与Alpaca页面一致
   const orderHistoryColumns = [
-    { title: 'Time', dataIndex: 'submittedAt', key: 'submittedAt', render: (time: string) => {
+    { title: t.trade.colTime, dataIndex: 'submittedAt', key: 'submittedAt', render: (time: string) => {
       if (!time) return 'N/A';
       try {
         const date = new Date(time);
@@ -421,19 +424,19 @@ const Trade: React.FC = () => {
           hour12: false
         });
       } catch (e) {
-        return 'Invalid Date';
+        return t.trade.invalidDate;
       }
     }},
-    { title: 'Symbol', dataIndex: 'symbol', key: 'symbol' },
-    { title: 'Side', dataIndex: 'side', key: 'side', render: (side: string) => (
+    { title: t.trade.colSymbol, dataIndex: 'symbol', key: 'symbol' },
+    { title: t.trade.colSide, dataIndex: 'side', key: 'side', render: (side: string) => (
       <Tag color={side === 'buy' ? 'green' : 'red'}>{side.toUpperCase()}</Tag>
     )},
-    { title: 'Qty', dataIndex: 'qty', key: 'qty', render: (qty: any) => {
+    { title: t.trade.colQty, dataIndex: 'qty', key: 'qty', render: (qty: any) => {
       const num = Number(qty);
       return Number.isFinite(num) ? num.toString() : '-';
     }},
-    { title: 'Type', dataIndex: 'type', key: 'type' },
-    { title: 'Status', dataIndex: 'status', key: 'status', render: (status: string) => {
+    { title: t.trade.colType, dataIndex: 'type', key: 'type' },
+    { title: t.trade.statusLabel, dataIndex: 'status', key: 'status', render: (status: string) => {
       const statusColors: Record<string, string> = {
         'filled': 'green',
         'canceled': 'red',
@@ -450,11 +453,11 @@ const Trade: React.FC = () => {
         </Tag>
       );
     }},
-    { title: 'Avg Fill Price', dataIndex: 'filledAvgPrice', key: 'filledAvgPrice', render: (price: any) => {
+    { title: t.trade.colAvgFillPrice, dataIndex: 'filledAvgPrice', key: 'filledAvgPrice', render: (price: any) => {
       const num = Number(price);
       return Number.isFinite(num) ? `$${num.toFixed(2)}` : '-';
     }},
-    { title: 'Filled Qty', dataIndex: 'filledQty', key: 'filledQty', render: (qty: any) => {
+    { title: t.trade.colFilledQty, dataIndex: 'filledQty', key: 'filledQty', render: (qty: any) => {
       const num = Number(qty);
       return Number.isFinite(num) ? num.toString() : '-';
     }}
@@ -476,9 +479,9 @@ const Trade: React.FC = () => {
               }}>
                 <RobotOutlined />
               </div>
-              <Title level={2} style={{ margin: 0, fontWeight: 800, color: '#111827', letterSpacing: '-0.5px' }}>Trading Workstation</Title>
+              <Title level={2} style={{ margin: 0, fontWeight: 800, color: '#111827', letterSpacing: '-0.5px' }}>{t.trade.title}</Title>
             </div>
-            <Text type="secondary" style={{ fontSize: 14, fontWeight: 500, color: '#6b7280' }}>Monitor account equity, manage positions, and place orders directly to Alpaca.</Text>
+            <Text type="secondary" style={{ fontSize: 14, fontWeight: 500, color: '#6b7280' }}>{t.trade.subtitle}</Text>
           </div>
           
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -492,7 +495,7 @@ const Trade: React.FC = () => {
                   boxShadow: tradeMode === 'paper' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'
                 }}
               >
-                PAPER TRADING
+                {t.trade.paperTrading}
               </div>
               <div 
                 onClick={() => handleTradeModeChange('real')}
@@ -503,7 +506,7 @@ const Trade: React.FC = () => {
                   boxShadow: tradeMode === 'real' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'
                 }}
               >
-                LIVE TRADING
+                {t.trade.liveTrading}
               </div>
             </div>
             <Button
@@ -513,7 +516,7 @@ const Trade: React.FC = () => {
               loading={loadingData.account || loadingData.positions || loadingData.orders || loadingData.portfolio}
               style={{ borderRadius: 8, height: 34, fontWeight: 600, color: '#4b5563', border: '1px solid #e5e7eb' }}
             >
-              Refresh Data
+              {t.trade.refreshData}
             </Button>
           </div>
         </div>
@@ -521,8 +524,8 @@ const Trade: React.FC = () => {
 
       {tradeMode === 'real' && (
         <Alert
-          message="Real Trading Mode"
-          description="Live Alpaca account data active. Orders will execute with real funds."
+          message={t.trade.realModeTitle}
+          description={t.trade.realModeDesc}
           type="error"
           showIcon
           icon={<SafetyOutlined />}
@@ -547,8 +550,8 @@ const Trade: React.FC = () => {
                   <EyeOutlined />
                 </div>
                 <div>
-                  <div style={{ fontSize: 15, fontWeight: 800, color: '#111827', lineHeight: 1.2 }}>AI Entry Watchlist</div>
-                  <div style={{ fontSize: 10, color: '#8c8c8c', fontWeight: 500 }}>Autonomous symbol monitoring</div>
+                  <div style={{ fontSize: 15, fontWeight: 800, color: '#111827', lineHeight: 1.2 }}>{t.trade.watchlistTitle}</div>
+                  <div style={{ fontSize: 10, color: '#8c8c8c', fontWeight: 500 }}>{t.trade.watchlistSubtitle}</div>
                 </div>
                 <Tag color="blue" bordered={false} style={{ fontSize: 10, fontWeight: 800, borderRadius: 6, marginLeft: 4 }}>{watchlistItems.length}</Tag>
               </div>
@@ -562,7 +565,7 @@ const Trade: React.FC = () => {
                   loading={watchlistLoading} 
                   style={{ borderRadius: 8, height: 32, fontSize: 12, fontWeight: 600, color: '#6b7280', border: '1px solid #e5e7eb' }}
                 >
-                  Refresh
+                  {t.trade.refresh}
                 </Button>
               </div>
             </div>
@@ -573,8 +576,8 @@ const Trade: React.FC = () => {
               image={Empty.PRESENTED_IMAGE_SIMPLE}
               description={
                 <div style={{ padding: '20px 0' }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: '#4b5563' }}>No AI watchlist candidates</div>
-                  <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>Candidates from Entry Plan will appear here for monitoring.</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: '#4b5563' }}>{t.trade.noWatchlist}</div>
+                  <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>{t.trade.noWatchlistDesc}</div>
                 </div>
               }
             />
@@ -586,10 +589,10 @@ const Trade: React.FC = () => {
                 background: '#f8fafc', borderRadius: 10, border: '1px solid #f1f5f9' 
               }}>
                 {[
-                  { label: 'Active', value: watchlistItems.filter(w => w.status === 'ACTIVE').length, color: '#1890ff', icon: <EyeOutlined /> },
-                  { label: 'Ready Soon', value: watchlistItems.filter(w => w.finalAction === 'BUY_READY' || (w.riskGateStatus === 'PASS' && w.dataQuality === 'GOOD')).length, color: '#10b981', icon: <ThunderboltOutlined /> },
-                  { label: 'Review', value: watchlistItems.filter(w => w.riskGateStatus === 'REVIEW' || w.finalAction === 'WAIT_FOR_ENTRY').length, color: '#d97706', icon: <ClockCircleOutlined /> },
-                  { label: 'Archived', value: watchlistItems.filter(w => w.status !== 'ACTIVE').length, color: '#6b7280', icon: <CheckCircleOutlined /> }
+                  { label: t.trade.statActive, value: watchlistItems.filter(w => w.status === 'ACTIVE').length, color: '#1890ff', icon: <EyeOutlined /> },
+                  { label: t.trade.statReadySoon, value: watchlistItems.filter(w => w.finalAction === 'BUY_READY' || (w.riskGateStatus === 'PASS' && w.dataQuality === 'GOOD')).length, color: '#10b981', icon: <ThunderboltOutlined /> },
+                  { label: t.trade.statReview, value: watchlistItems.filter(w => w.riskGateStatus === 'REVIEW' || w.finalAction === 'WAIT_FOR_ENTRY').length, color: '#d97706', icon: <ClockCircleOutlined /> },
+                  { label: t.trade.statArchived, value: watchlistItems.filter(w => w.status !== 'ACTIVE').length, color: '#6b7280', icon: <CheckCircleOutlined /> }
                 ].map((stat, idx) => (
                   <React.Fragment key={stat.label}>
                     <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -623,50 +626,50 @@ const Trade: React.FC = () => {
                   scroll={{ x: 1200 }}
                   rowClassName="watchlist-row"
                   columns={[
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>Symbol</span>, 
+                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colSymbol}</span>,
                       dataIndex: 'symbol', key: 'symbol', width: 90, fixed: 'left' as const,
                       render: (text: string) => <span style={{ fontWeight: 800, fontSize: 14, color: '#111827' }}>{text}</span> },
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>Setup</span>, 
+                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colSetup}</span>,
                       dataIndex: 'setupType', key: 'setup', width: 120,
-                      render: (t: string) => {
+                      render: (v: string) => {
                         const c: Record<string, string> = { 'Pullback Entry': 'gold', 'Breakout Entry': 'purple', 'Range Support Entry': 'green', 'Watch Only': 'blue' };
-                        return <Tag color={c[t] || 'default'} style={{ fontSize: 9, fontWeight: 700, borderRadius: 4 }}>{t?.toUpperCase() || '—'}</Tag>;
+                        return <Tag color={c[v] || 'default'} style={{ fontSize: 9, fontWeight: 700, borderRadius: 4 }}>{v?.toUpperCase() || '—'}</Tag>;
                       }},
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>AI</span>, 
+                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colAI}</span>,
                       dataIndex: 'aiDecision', key: 'aiDecision', width: 75,
                       render: (d: string) => {
                         const c = d === 'BUY' ? 'green' : d === 'WATCH' ? 'gold' : 'red';
                         return <Tag color={c} bordered={false} style={{ fontSize: 9, fontWeight: 800, borderRadius: 4, width: '100%', textAlign: 'center' }}>{d || '—'}</Tag>;
                       }},
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>Cnf</span>, 
+                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colCnf}</span>,
                       dataIndex: 'confidence', key: 'confidence', width: 60,
                       render: (v: number) => <span style={{ fontSize: 12, fontWeight: 700, color: v >= 80 ? '#10b981' : '#1890ff' }}>{v != null ? `${v}%` : '—'}</span> },
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>Entry Zone</span>, 
+                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colEntryZone}</span>,
                       key: 'entryZone', width: 140,
                       render: (_: any, r: any) => r.entryZoneLow != null ? <span style={{ fontSize: 12, color: '#374151', fontWeight: 600 }}>${r.entryZoneLow?.toFixed(2)} – ${r.entryZoneHigh?.toFixed(2)}</span> : <span style={{ color: '#d1d5db' }}>—</span> },
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>Stop</span>, 
+                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colStop}</span>,
                       dataIndex: 'stopLoss', key: 'stop', width: 85,
                       render: (v: number) => v != null ? <span style={{ fontSize: 12, color: '#ef4444', fontWeight: 700 }}>${v.toFixed(2)}</span> : '—' },
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>Target</span>, 
+                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colTarget}</span>,
                       dataIndex: 'takeProfit1', key: 'tp1', width: 85,
                       render: (v: number) => v != null ? <span style={{ fontSize: 12, color: '#10b981', fontWeight: 700 }}>${v.toFixed(2)}</span> : '—' },
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>R/R</span>, 
+                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colRR}</span>,
                       dataIndex: 'riskReward', key: 'rr', width: 65,
                       render: (v: number) => v != null ? <span style={{ fontSize: 12, fontWeight: 700, color: v >= 2 ? '#10b981' : '#6b7280' }}>{v.toFixed(1)}:1</span> : '—' },
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>Gate</span>, 
+                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colGate}</span>,
                       dataIndex: 'riskGateStatus', key: 'gate', width: 80,
                       render: (s: string) => {
                         const c = s === 'PASS' ? 'green' : s === 'REVIEW' ? 'gold' : 'red';
                         return s ? <Tag color={c} bordered={false} style={{ fontSize: 9, fontWeight: 800, borderRadius: 4 }}>{s}</Tag> : '—';
                       }},
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>Final</span>, 
+                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colFinal}</span>,
                       dataIndex: 'finalAction', key: 'final', width: 110,
                       render: (a: string) => {
-                        const labels: Record<string, string> = { 'BUY_READY': 'BUY READY', 'WAIT_FOR_ENTRY': 'WAIT ENTRY', 'SKIP': 'SKIP', 'BLOCKED_BY_RISK': 'BLOCKED' };
+                        const labels: Record<string, string> = { 'BUY_READY': t.trade.finalBuyReady, 'WAIT_FOR_ENTRY': t.trade.finalWaitEntry, 'SKIP': t.trade.finalSkip, 'BLOCKED_BY_RISK': t.trade.finalBlocked };
                         const c = a === 'BUY_READY' ? 'green' : a === 'WAIT_FOR_ENTRY' ? 'gold' : 'red';
                         return <Tag color={c} style={{ fontSize: 9, fontWeight: 700, borderRadius: 4 }}>{labels[a]?.toUpperCase() || a || '—'}</Tag>;
                       }},
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>Next Tactical Step</span>, 
+                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colNextStep}</span>, 
                       dataIndex: 'nextStep', key: 'nextStep', width: 200, ellipsis: true,
                       render: (t: string) => (
                         <Tooltip title={t}>
@@ -677,7 +680,7 @@ const Trade: React.FC = () => {
                       title: '', key: 'actions', width: 110, fixed: 'right' as const,
                       render: (_: any, r: any) => (
                         <div style={{ display: 'flex', gap: 6 }}>
-                          <Tooltip title="Buy">
+                          <Tooltip title={t.trade.buy}>
                             <Button size="small" type="primary" icon={<ShoppingCartOutlined style={{ fontSize: 13 }} />} onClick={() => openOrderModal({
                               symbol: r.symbol,
                               side: 'buy' as const,
@@ -686,7 +689,7 @@ const Trade: React.FC = () => {
                               stopLossPrice: r.stopLoss || undefined,
                             })} style={{ padding: 0, width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8 }} />
                           </Tooltip>
-                          <Tooltip title="Remove">
+                          <Tooltip title={t.trade.remove}>
                             <Button size="small" type="text" danger icon={<DeleteOutlined style={{ fontSize: 15 }} />} onClick={() => removeWatchlistItem(r.id)} style={{ padding: 0, width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, background: '#fef2f2' }} />
                           </Tooltip>
                         </div>
@@ -704,10 +707,10 @@ const Trade: React.FC = () => {
 
       {/* Account Snapshot */}
       <div style={{ marginBottom: 24 }}>
-        <Title level={4}>Account Snapshot</Title>
-        <Card 
-          size="small" 
-          title="Account Snapshot" 
+        <Title level={4}>{t.trade.accountSnapshot}</Title>
+        <Card
+          size="small"
+          title={t.trade.accountSnapshot}
           style={{ marginTop: '16px' }}
           extra={
             <Button
@@ -716,28 +719,28 @@ const Trade: React.FC = () => {
               icon={<PlusOutlined />}
               onClick={() => openOrderModal()}
             >
-              New Order
+              {t.trade.newOrder}
             </Button>
           }
         >
           <Row gutter={[16, 16]}>
             <Col xs={24} sm={12} lg={6}>
-              <Statistic title="Cash" value={accountSnapshot.cash} prefix="$" />
+              <Statistic title={t.trade.cash} value={accountSnapshot.cash} prefix="$" />
             </Col>
             <Col xs={24} sm={12} lg={6}>
-              <Statistic title="Equity" value={accountSnapshot.equity} prefix="$" />
+              <Statistic title={t.trade.equity} value={accountSnapshot.equity} prefix="$" />
             </Col>
             <Col xs={24} sm={12} lg={6}>
-              <Statistic title="Buying Power" value={accountSnapshot.buyingPower} prefix="$" />
+              <Statistic title={t.trade.buyingPower} value={accountSnapshot.buyingPower} prefix="$" />
             </Col>
             <Col xs={24} sm={12} lg={6}>
-              <Statistic title="Portfolio Value" value={accountSnapshot.portfolioValue} prefix="$" />
+              <Statistic title={t.trade.portfolioValue} value={accountSnapshot.portfolioValue} prefix="$" />
             </Col>
           </Row>
           <div style={{ marginTop: '16px' }}>
             <Text type="secondary">
-              Account: {accountSnapshot.accountNumber} | Status: {accountSnapshot.status} | 
-              Positions: {accountSnapshot.positionsCount} | Open Orders: {accountSnapshot.openOrdersCount}
+              {t.trade.accountLabel}: {accountSnapshot.accountNumber} | {t.trade.statusLabel}: {accountSnapshot.status} |
+              {t.trade.positionsLabel}: {accountSnapshot.positionsCount} | {t.trade.openOrdersLabel}: {accountSnapshot.openOrdersCount}
             </Text>
           </div>
         </Card>
@@ -748,7 +751,7 @@ const Trade: React.FC = () => {
         <Card className="premium-card" bodyStyle={{ padding: '24px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
             <div>
-              <Title level={4} style={{ margin: 0 }}>Portfolio Performance</Title>
+              <Title level={4} style={{ margin: 0 }}>{t.trade.portfolioPerformance}</Title>
             </div>
             <div>
               <Select 
@@ -757,12 +760,12 @@ const Trade: React.FC = () => {
                 style={{ width: 120 }}
                 size="middle"
               >
-                <Option value="1D">1 Day</Option>
-                <Option value="1W">1 Week</Option>
-                <Option value="1M">1 Month</Option>
-                <Option value="3M">3 Months</Option>
-                <Option value="1Y">1 Year</Option>
-                <Option value="All">All</Option>
+                <Option value="1D">{t.trade.range1Day}</Option>
+                <Option value="1W">{t.trade.range1Week}</Option>
+                <Option value="1M">{t.trade.range1Month}</Option>
+                <Option value="3M">{t.trade.range3Months}</Option>
+                <Option value="1Y">{t.trade.range1Year}</Option>
+                <Option value="All">{t.trade.rangeAll}</Option>
               </Select>
             </div>
           </div>
@@ -772,8 +775,8 @@ const Trade: React.FC = () => {
               image={Empty.PRESENTED_IMAGE_SIMPLE} 
               description={
                 <div style={{ padding: '20px 0' }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: '#ef4444' }}>Portfolio history is unavailable.</div>
-                  <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>Check Alpaca credentials and connection.</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: '#ef4444' }}>{t.trade.portfolioUnavailable}</div>
+                  <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>{t.trade.portfolioUnavailableDesc}</div>
                   <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 8 }}>{portfolioError}</div>
                 </div>
               }
@@ -783,21 +786,21 @@ const Trade: React.FC = () => {
               image={Empty.PRESENTED_IMAGE_SIMPLE} 
               description={
                 <div style={{ padding: '20px 0' }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: '#4b5563' }}>No portfolio history available</div>
-                  <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>Alpaca returned no data for the selected period.</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: '#4b5563' }}>{t.trade.noPortfolioHistory}</div>
+                  <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>{t.trade.noPortfolioHistoryDesc}</div>
                 </div>
               }
             />
           ) : portfolioHistory.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '60px 0' }}>
               <Spin size="large" />
-              <div style={{ marginTop: 16, color: '#8c8c8c' }}>Loading portfolio data...</div>
+              <div style={{ marginTop: 16, color: '#8c8c8c' }}>{t.trade.loadingPortfolio}</div>
             </div>
           ) : (
             <>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px' }}>
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
-                  <span style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600, textTransform: 'uppercase' }}>Period Change</span>
+                  <span style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600, textTransform: 'uppercase' }}>{t.trade.periodChange}</span>
                   <span style={{ 
                     fontSize: 24, 
                     fontWeight: 800, 
@@ -907,7 +910,7 @@ const Trade: React.FC = () => {
                           hour12: false
                         });
                       }}
-                      formatter={(value) => [`$${Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 'Portfolio Value']}
+                      formatter={(value) => [`$${Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, t.trade.portfolioValueLabel]}
                     />
                     <Line 
                       type="monotone" 
@@ -929,7 +932,7 @@ const Trade: React.FC = () => {
       {/* Positions */}
       <div style={{ marginBottom: 24 }}>
         <Card 
-          title={<span style={{ fontSize: 16, fontWeight: 800 }}>Positions</span>}
+          title={<span style={{ fontSize: 16, fontWeight: 800 }}>{t.trade.positions}</span>}
           loading={loadingData.positions}
           className="premium-card"
           bodyStyle={{ padding: 0 }}
@@ -942,7 +945,7 @@ const Trade: React.FC = () => {
             .trade-row:hover > td { background-color: #f8fafc !important; }
           `}</style>
           {alpacaPositions.length === 0 ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span style={{ color: '#8c8c8c' }}>No open positions in this account.</span>} style={{ padding: '30px 0' }} />
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span style={{ color: '#8c8c8c' }}>{t.trade.noPositions}</span>} style={{ padding: '30px 0' }} />
           ) : (
             <Table 
               className="trade-table"
@@ -961,13 +964,13 @@ const Trade: React.FC = () => {
       {/* Open Orders */}
       <div style={{ marginBottom: 24 }}>
         <Card 
-          title={<span style={{ fontSize: 16, fontWeight: 800 }}>Open Orders</span>}
+          title={<span style={{ fontSize: 16, fontWeight: 800 }}>{t.trade.openOrders}</span>}
           loading={loadingData.orders}
           className="premium-card"
           bodyStyle={{ padding: 0 }}
         >
           {alpacaOrders.length === 0 ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span style={{ color: '#8c8c8c' }}>No active orders in this account.</span>} style={{ padding: '30px 0' }} />
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span style={{ color: '#8c8c8c' }}>{t.trade.noOpenOrders}</span>} style={{ padding: '30px 0' }} />
           ) : (
             <Table 
               className="trade-table"
@@ -986,13 +989,13 @@ const Trade: React.FC = () => {
       {/* Order History */}
       <div style={{ marginBottom: 24 }}>
         <Card 
-          title={<span style={{ fontSize: 16, fontWeight: 800 }}>Order History</span>}
+          title={<span style={{ fontSize: 16, fontWeight: 800 }}>{t.trade.orderHistory}</span>}
           loading={loadingData.history}
           className="premium-card"
           bodyStyle={{ padding: 0 }}
         >
           {alpacaOrdersHistory.length === 0 ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span style={{ color: '#8c8c8c' }}>No order history available.</span>} style={{ padding: '30px 0' }} />
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span style={{ color: '#8c8c8c' }}>{t.trade.noOrderHistory}</span>} style={{ padding: '30px 0' }} />
           ) : (
             <Table 
               className="trade-table"
