@@ -12,6 +12,7 @@ import {
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { useLanguage } from '../contexts/LanguageContext';
 import axios from 'axios';
 import { supabase } from '../lib/supabaseClient';
 
@@ -39,6 +40,7 @@ userApi.interceptors.request.use(async (config) => {
 const Settings: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { t } = useLanguage();
   const [statuses, setStatuses] = useState({
     alpaca: 'loading',
     ai: 'loading',
@@ -67,9 +69,9 @@ const Settings: React.FC = () => {
   }, []);
 
   const StatusTag = ({ status }: { status: string }) => {
-    if (status === 'loading') return <Badge status="processing" text="Checking..." />;
-    if (status === 'connected') return <Tag color="success">Configured</Tag>;
-    return <Tag color="default">Not Configured</Tag>;
+    if (status === 'loading') return <Badge status="processing" text={t.settings.checking} />;
+    if (status === 'connected') return <Tag color="success">{t.settings.configured}</Tag>;
+    return <Tag color="default">{t.settings.notConfigured}</Tag>;
   };
 
   return (
@@ -77,10 +79,10 @@ const Settings: React.FC = () => {
       <div style={{ marginBottom: 40 }}>
         <Title level={2} style={{ margin: 0, display: 'flex', alignItems: 'center' }}>
           <SettingOutlined style={{ marginRight: 16, color: '#1890ff' }} />
-          Settings Center
+          {t.settings.title}
         </Title>
         <Text type="secondary" style={{ fontSize: 16 }}>
-          Manage your platform environment, secure credentials, and service integrations.
+          {t.settings.subtitle}
         </Text>
       </div>
 
@@ -89,7 +91,7 @@ const Settings: React.FC = () => {
           <Card bordered={false} className="summary-card" style={{ boxShadow: '0 4px 12px rgba(0,0,0,0.05)', borderRadius: 12 }}>
             <Space direction="vertical" size={12} style={{ width: '100%' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text strong type="secondary" style={{ fontSize: 12, textTransform: 'uppercase' }}>Trading Provider</Text>
+                <Text strong type="secondary" style={{ fontSize: 12, textTransform: 'uppercase' }}>{t.settings.tradingProvider}</Text>
                 <ThunderboltOutlined style={{ color: '#faad14' }} />
               </div>
               <Title level={4} style={{ margin: 0 }}>Alpaca Markets</Title>
@@ -101,10 +103,10 @@ const Settings: React.FC = () => {
           <Card bordered={false} className="summary-card" style={{ boxShadow: '0 4px 12px rgba(0,0,0,0.05)', borderRadius: 12 }}>
             <Space direction="vertical" size={12} style={{ width: '100%' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text strong type="secondary" style={{ fontSize: 12, textTransform: 'uppercase' }}>Intelligence</Text>
+                <Text strong type="secondary" style={{ fontSize: 12, textTransform: 'uppercase' }}>{t.settings.intelligence}</Text>
                 <RobotOutlined style={{ color: '#13c2c2' }} />
               </div>
-              <Title level={4} style={{ margin: 0 }}>AI Provider</Title>
+              <Title level={4} style={{ margin: 0 }}>{t.settings.aiProvider}</Title>
               <StatusTag status={statuses.ai} />
             </Space>
           </Card>
@@ -113,7 +115,7 @@ const Settings: React.FC = () => {
           <Card bordered={false} className="summary-card" style={{ boxShadow: '0 4px 12px rgba(0,0,0,0.05)', borderRadius: 12 }}>
             <Space direction="vertical" size={12} style={{ width: '100%' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text strong type="secondary" style={{ fontSize: 12, textTransform: 'uppercase' }}>Market Data</Text>
+                <Text strong type="secondary" style={{ fontSize: 12, textTransform: 'uppercase' }}>{t.settings.marketData}</Text>
                 <CloudServerOutlined style={{ color: '#52c41a' }} />
               </div>
               <Title level={4} style={{ margin: 0 }}>Finnhub API</Title>
@@ -123,7 +125,7 @@ const Settings: React.FC = () => {
         </Col>
       </Row>
 
-      <Title level={4} style={{ marginBottom: 16 }}>Platform Management</Title>
+      <Title level={4} style={{ marginBottom: 16 }}>{t.settings.platformManagement}</Title>
       
       <Card
         hoverable
@@ -145,9 +147,9 @@ const Settings: React.FC = () => {
               <ApiOutlined style={{ fontSize: 24, color: '#1890ff' }} />
             </div>
             <Space direction="vertical" size={0}>
-              <Title level={4} style={{ margin: 0 }}>Connection Configuration</Title>
+              <Title level={4} style={{ margin: 0 }}>{t.settings.connectionConfig}</Title>
               <Text type="secondary" style={{ fontSize: 14 }}>
-                Set up and test your API keys for all external quantitative services.
+                {t.settings.connectionConfigDesc}
               </Text>
             </Space>
           </div>
@@ -157,7 +159,7 @@ const Settings: React.FC = () => {
 
       <Divider style={{ margin: '40px 0' }} />
 
-      <Title level={4} style={{ marginBottom: 16 }}>Security & Account</Title>
+      <Title level={4} style={{ marginBottom: 16 }}>{t.settings.securityAccount}</Title>
       <Card bordered={false} style={{ background: '#fafafa', borderRadius: 12 }}>
         <Row gutter={24} align="middle">
           <Col span={16}>
@@ -175,22 +177,22 @@ const Settings: React.FC = () => {
                 <UserOutlined style={{ color: '#8c8c8c' }} />
               </div>
               <div>
-                <Text strong style={{ fontSize: 16 }}>Account Information</Text>
+                <Text strong style={{ fontSize: 16 }}>{t.settings.accountInfo}</Text>
                 <Paragraph type="secondary" style={{ margin: 0 }}>
-                  Logged in as <Text strong>{user?.email}</Text>
+                  {t.settings.loggedInAs} <Text strong>{user?.email}</Text>
                 </Paragraph>
               </div>
             </Space>
           </Col>
           <Col span={8} style={{ textAlign: 'right' }}>
-            <Button icon={<SafetyCertificateOutlined />}>Security Settings</Button>
+            <Button icon={<SafetyCertificateOutlined />}>{t.settings.securitySettings}</Button>
           </Col>
         </Row>
       </Card>
 
       <div style={{ marginTop: 40, textAlign: 'center' }}>
         <Text type="secondary" style={{ fontSize: 12 }}>
-          AlphaLab Quantitative Trading Platform &copy; 2026. All credentials are encrypted and stored securely.
+          AlphaLab Quantitative Trading Platform &copy; 2026. {t.settings.footerNote}
         </Text>
       </div>
 

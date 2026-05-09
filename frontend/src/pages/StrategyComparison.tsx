@@ -556,8 +556,7 @@ const StrategyComparison: React.FC = () => {
                     dataIndex: 'strategy',
                     key: 'strategy',
                     render: (s) => {
-                      const names: any = { moving_average: t.comparison.strategyNameMaCross, rsi: t.comparison.strategyNameRsiShort, macd: t.comparison.strategyNameMacdShort, bollinger: t.comparison.strategyNameBollingerBands, momentum: t.comparison.strategyNameMomentumShort };
-                      return <Tag color="geekblue" style={{ fontWeight: 600 }}>{names[s] || s}</Tag>;
+                      return <Tag color="geekblue" style={{ fontWeight: 600 }}>{(t.strategies as Record<string, string>)[s] || s}</Tag>;
                     }
                   },
                   {
@@ -727,7 +726,7 @@ const StrategyComparison: React.FC = () => {
             row[fieldName] = backtest?.parameters?.symbol || 'N/A';
             break;
           case '2': // Strategy
-            row[fieldName] = backtest?.parameters?.strategy || 'N/A';
+            row[fieldName] = (t.strategies as Record<string, string>)[backtest?.parameters?.strategy] || backtest?.parameters?.strategy || 'N/A';
             break;
           case '3': // Period
             row[fieldName] = backtest ? `${backtest.parameters.startDate} to ${backtest.parameters.endDate}` : 'N/A';
@@ -982,7 +981,7 @@ const StrategyComparison: React.FC = () => {
     const dataIndex = `backtest${index + 1}`;
     const align = 'left' as const; // 统一左对齐，无论parameter还是metric模式
     const subtitle = backtestResults[index]
-      ? `${backtestResults[index].parameters.symbol} • ${backtestResults[index].parameters.strategy}`
+      ? `${backtestResults[index].parameters.symbol} • ${(t.strategies as Record<string, string>)[backtestResults[index].parameters.strategy] || backtestResults[index].parameters.strategy}`
       : t.comparison.noData;
     
     return {
@@ -1084,7 +1083,7 @@ const StrategyComparison: React.FC = () => {
       return {
         id: `backtest${index + 1}`,
         name: t.comparison.backtestN.replace('{index}', String(index + 1)),
-        label: `${backtest?.parameters?.symbol || 'N/A'} • ${backtest?.parameters?.strategy || 'N/A'}`,
+        label: `${backtest?.parameters?.symbol || 'N/A'} • ${(t.strategies as Record<string, string>)[backtest?.parameters?.strategy] || backtest?.parameters?.strategy || 'N/A'}`,
         totalReturn,
         maxDrawdown: Math.abs(maxDrawdown), // 取绝对值，因为回撤是负数
         sharpeRatio,
@@ -1552,8 +1551,7 @@ const StrategyComparison: React.FC = () => {
               dataIndex: ['parameters', 'strategy'],
               key: 'strategy',
               render: (s) => {
-                const names: any = { moving_average: t.comparison.strategyShortMaCross, rsi: t.comparison.strategyNameRsiShort, macd: t.comparison.strategyNameMacdShort, bollinger: t.comparison.strategyShortBb, momentum: t.comparison.strategyShortMom };
-                return names[s] || s;
+                return (t.strategies as Record<string, string>)[s] || s;
               }
             },
             {
@@ -1766,7 +1764,7 @@ const StrategyComparison: React.FC = () => {
                       key={b.backtestId}
                       type="monotone"
                       dataKey={`backtest${index + 1}`}
-                      name={`${b.parameters.symbol} (${b.parameters.strategy})`}
+                      name={`${b.parameters.symbol} (${(t.strategies as Record<string, string>)[b.parameters.strategy] || b.parameters.strategy})`}
                       stroke={BACKTEST_COLORS[index % BACKTEST_COLORS.length].primary}
                       strokeWidth={3}
                       dot={false}

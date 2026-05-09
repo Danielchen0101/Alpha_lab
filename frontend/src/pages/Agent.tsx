@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLanguage } from '../contexts/LanguageContext';
+
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend as RechartsLegend, ResponsiveContainer } from 'recharts'; // eslint-disable-line @typescript-eslint/no-unused-vars
 import {
   Card, Typography, Space, Statistic, Row, Col,
@@ -243,7 +244,7 @@ const CollapsibleStageSection: React.FC<CollapsibleStageSectionProps> = ({
 const Agent: React.FC = (): React.ReactElement => {
   console.log('Portfolio component rendering');
   const navigate = useNavigate();
-  const { t } = useLanguage();
+  const { t, language, translateSector } = useLanguage();
   // AI Agent 状态 - Step 2: 只做 UI，不接真实逻辑
   const [aiConfig, setAiConfig] = useState({
     apiKey: '',
@@ -1273,17 +1274,26 @@ const Agent: React.FC = (): React.ReactElement => {
       );
     }
 
+    const trendMap: Record<string, string> = {
+      'Strong Bullish': t.agent.trendStrongBullish,
+      'Bullish': t.agent.trendBullish,
+      'Neutral': t.agent.trendNeutral,
+      'Bearish': t.agent.trendBearish,
+      'Strong Bearish': t.agent.trendStrongBearish,
+    };
+    const displayLabel = trendMap[label] || label;
+
     const color = getTrendColor(label);
     const isStrong = label && typeof label === 'string' && label.includes('Strong');
 
     return (
-      <div className="scanner-badge-base" style={{ 
-        backgroundColor: `${color}15`, 
-        color: color, 
+      <div className="scanner-badge-base" style={{
+        backgroundColor: `${color}15`,
+        color: color,
         border: `1px solid ${color}`,
         fontWeight: isStrong ? '700' : '600'
       }}>
-        {label}
+        {displayLabel}
       </div>
     );
   };
@@ -1449,7 +1459,7 @@ const Agent: React.FC = (): React.ReactElement => {
     const signals = record.keySignals || [];
     const aiUsed = record.aiUsed === true;
     const aiExplained = record.aiExplained === true;
-    const decisionSource = record.decisionSource === 'ai' ? 'DeepSeek AI' : 'Local Rules';
+    const decisionSource = record.decisionSource === 'ai' ? 'DeepSeek AI' : t.agent.localRulesLabel;
     const dq = (record.provenance && record.provenance.dataQuality) || (record.entryQuality && record.entryQuality !== 'Error / No Data' ? 'GOOD' : 'PARTIAL');
     const decision = record.decision || 'Watch';
     const bestStrat = (record.matchedStrategies || [])[0] || 'N/A';
@@ -1469,21 +1479,21 @@ const Agent: React.FC = (): React.ReactElement => {
       // Professional Header Row
       React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', paddingBottom: '12px', borderBottom: '1px solid #e8eaed', marginBottom: '16px' } },
         React.createElement('span', { style: { fontWeight: 800, fontSize: '18px', color: '#1a1a1a', letterSpacing: '-0.5px' } }, record.symbol),
-        React.createElement(Tag, { color: decision === 'Continue' ? 'success' : decision === 'Watch' ? 'warning' : decision === 'NeedMoreData' ? 'orange' : 'error', style: { fontSize: '12px', fontWeight: 700, margin: 0, padding: '0 10px', height: '24px', lineHeight: '24px', borderRadius: '4px' } }, decision.toUpperCase()),
-        React.createElement('span', { style: { color: '#8c8c8c', fontSize: '12px', fontWeight: 500 } }, 'SCORE ', React.createElement('span', { style: { fontWeight: 700, color: '#1890ff' } }, record.matchConfidence || 0)),
+        React.createElement(Tag, { color: decision === 'Continue' ? 'success' : decision === 'Watch' ? 'warning' : decision === 'NeedMoreData' ? 'orange' : 'error', style: { fontSize: '12px', fontWeight: 700, margin: 0, padding: '0 10px', height: '24px', lineHeight: '24px', borderRadius: '4px' } }, (language === 'zh-CN' ? ({'Continue': '继续', 'Watch': '观察', 'NeedMoreData': '需数据', 'Reject': '拒绝', 'Skip': '跳过'} as any)[decision] || decision : decision.toUpperCase())),
+        React.createElement('span', { style: { color: '#8c8c8c', fontSize: '12px', fontWeight: 500 } }, t.agent.scorePrefix, React.createElement('span', { style: { fontWeight: 700, color: '#1890ff' } }, record.matchConfidence || 0)),
         React.createElement('span', { style: { color: '#d9d9d9', fontSize: '14px' } }, '|'),
         React.createElement('span', { style: { color: '#595959', fontSize: '13px', fontWeight: 500 } }, (record.matchedStrategies || []).slice(0, 2).join(' · ') || bestStrat),
 
         // Warnings inline - emphasized
-        (record.decisionWarnings || []).concat((record.decisionBlockers || []).map(function(b: string) { return 'BLOCK: ' + b; })).slice(0, 2).map(function(w: string, i: number) {
-          var isBlocker = w.indexOf('BLOCK: ') === 0;
-          return React.createElement('span', { key: 'hw' + i, style: { padding: '2px 8px', borderRadius: 4, background: isBlocker ? '#fff1f0' : '#fffbe6', color: isBlocker ? '#ff4d4f' : '#d48806', fontSize: '11px', fontWeight: 600, border: '1px solid ' + (isBlocker ? '#ffa39e' : '#ffe58f'), whiteSpace: 'nowrap' } }, (isBlocker ? '✕ ' : '⚠ ') + (isBlocker ? w.slice(7) : w));
+        (record.decisionWarnings || []).concat((record.decisionBlockers || []).map(function(b: string) { return t.agent.blockPrefix + b; })).slice(0, 2).map(function(w: string, i: number) {
+          var isBlocker = w.indexOf(t.agent.blockPrefix) === 0;
+          return React.createElement('span', { key: 'hw' + i, style: { padding: '2px 8px', borderRadius: 4, background: isBlocker ? '#fff1f0' : '#fffbe6', color: isBlocker ? '#ff4d4f' : '#d48806', fontSize: '11px', fontWeight: 600, border: '1px solid ' + (isBlocker ? '#ffa39e' : '#ffe58f'), whiteSpace: 'nowrap' } }, (isBlocker ? '✕ ' : '⚠ ') + (isBlocker ? w.slice(t.agent.blockPrefix.length) : w));
         }),
 
         React.createElement('span', { style: { marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' } },
-          React.createElement(Tag, { color: dq === 'GOOD' ? 'success' : dq === 'PARTIAL' ? 'warning' : 'error', style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '0 6px', lineHeight: '18px' } }, 'DATA: ' + dq),
-          perStrategy.some(function(ps: any) { return (ps.tradeCount || 0) < 3; }) ? React.createElement(Tag, { color: 'warning', style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '0 6px', lineHeight: '18px' } }, 'LIMITED SAMPLE') : null,
-          React.createElement(Tag, { color: aiUsed ? 'cyan' : 'default', style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '0 6px', lineHeight: '18px' } }, aiUsed ? 'DEEPSEEK V3' : 'LOCAL RULES')
+          React.createElement(Tag, { color: dq === 'GOOD' ? 'success' : dq === 'PARTIAL' ? 'warning' : 'error', style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '0 6px', lineHeight: '18px' } }, t.agent.dataPrefix + dq),
+          perStrategy.some(function(ps: any) { return (ps.tradeCount || 0) < 3; }) ? React.createElement(Tag, { color: 'warning', style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '0 6px', lineHeight: '18px' } }, t.agent.limitedSampleTag) : null,
+          React.createElement(Tag, { color: aiUsed ? 'cyan' : 'default', style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '0 6px', lineHeight: '18px' } }, aiUsed ? t.agent.deepseekTag : t.agent.localRulesTag)
         )
       ),
 
@@ -1492,12 +1502,12 @@ const Agent: React.FC = (): React.ReactElement => {
         (function() {
           var p = record.provenance || {};
           var chips: Array<{key: string; label: string; isAI: boolean; title: string}> = [
-            {key: 'Mkt', label: 'MARKET SCANNER', isAI: false, title: p.marketSource || 'Scanner'},
-            {key: 'BT', label: 'BACKTEST ENGINE', isAI: false, title: p.backtestSource || 'Backtest'},
-            {key: 'Opt', label: 'OPTIMIZER', isAI: false, title: p.optimizationSource || 'Optimization'},
-            {key: 'Entry', label: 'ENTRY ANALYSIS', isAI: false, title: p.entrySource || 'Entry Quality'},
-            {key: 'News', label: 'NEWS AGGREGATOR', isAI: false, title: p.newsSource || 'News'},
-            {key: 'Dec', label: 'DECISION: ' + (record.decisionSource === 'ai' ? 'AI' : 'RULES'), isAI: record.decisionSource === 'ai', title: decisionSource},
+            {key: 'Mkt', label: t.agent.provenanceMkt, isAI: false, title: p.marketSource || 'Scanner'},
+            {key: 'BT', label: t.agent.provenanceBt, isAI: false, title: p.backtestSource || 'Backtest'},
+            {key: 'Opt', label: t.agent.provenanceOpt, isAI: false, title: p.optimizationSource || 'Optimization'},
+            {key: 'Entry', label: t.agent.provenanceEntry, isAI: false, title: p.entrySource || 'Entry Quality'},
+            {key: 'News', label: t.agent.provenanceNews, isAI: false, title: p.newsSource || 'News'},
+            {key: 'Dec', label: t.agent.provenanceDecision + (record.decisionSource === 'ai' ? t.agent.provenanceAI : t.agent.provenanceRules), isAI: record.decisionSource === 'ai', title: decisionSource},
           ];
           return chips.map(function(c) {
             return React.createElement('span', { key: c.key, title: c.title, style: { padding: '2px 8px', borderRadius: '4px', background: c.isAI ? '#e6fffb' : '#f0f0f0', color: c.isAI ? '#13c2c2' : '#8c8c8c', fontSize: '10px', fontWeight: 700, border: '1px solid ' + (c.isAI ? '#b5f5ec' : '#d9d9d9'), whiteSpace: 'nowrap', cursor: 'default' } }, c.label);
@@ -1513,28 +1523,28 @@ const Agent: React.FC = (): React.ReactElement => {
 
           // Match Summary
           React.createElement('div', { style: { background: '#fff', borderRadius: 8, border: '1px solid #edf0f2', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
-            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, 'Match Summary'),
+            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, t.agent.matchSummary),
             fullReason ? React.createElement('div', { style: { fontSize: '13px', color: '#262626', lineHeight: 1.6, marginBottom: '10px' }, title: fullReason }, fullReason) : null,
             React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
-              React.createElement(Tag, { color: record.regime === 'Trending' ? 'blue' : record.regime === 'Breakout-ready' ? 'purple' : record.regime === 'Range-bound' ? 'green' : 'default', style: { fontSize: '11px', fontWeight: 600, margin: 0, padding: '0 8px', lineHeight: '20px' } }, record.regime || 'Unclear'),
-              React.createElement('span', { style: { fontSize: '12px', color: '#8c8c8c', fontWeight: 500 } }, 'Confidence: ' + (record.matchConfidence || 0) + '% | Scan Score: ' + (record.scanScore || 'N/A'))
+              React.createElement(Tag, { color: record.regime === 'Trending' ? 'blue' : record.regime === 'Breakout-ready' ? 'purple' : record.regime === 'Range-bound' ? 'green' : 'default', style: { fontSize: '11px', fontWeight: 600, margin: 0, padding: '0 8px', lineHeight: '20px' } }, language === 'zh-CN' ? ({'Trending': t.agent.regimeTrending, 'Breakout-ready': t.agent.regimeBreakout, 'Range-bound': t.agent.regimeRange} as any)[record.regime] || t.agent.regimeUnclear : (record.regime || 'Unclear')),
+              React.createElement('span', { style: { fontSize: '12px', color: '#8c8c8c', fontWeight: 500 } }, t.agent.confidenceLevel + ': ' + (record.matchConfidence || 0) + '% | ' + t.agent.colScore + ': ' + (record.scanScore || 'N/A'))
             )
           ),
 
           // Backtest
           React.createElement('div', { style: { background: '#fff', borderRadius: 8, border: '1px solid #edf0f2', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
-            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, 'Strategy Backtest Validation'),
+            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, t.agent.strategyBacktest),
             perStrategy.length > 0 ? (
               React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '12px' } },
                 React.createElement('thead', null,
                   React.createElement('tr', { style: { color: '#8c8c8c', borderBottom: '1px solid #f0f0f0' } },
-                    React.createElement('th', { style: { textAlign: 'left', padding: '6px 4px', fontWeight: 600 } }, 'Strategy'),
-                    React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, 'Return'),
-                    React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, 'Sharpe'),
-                    React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, 'MaxDD'),
-                    React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, 'Win%'),
-                    React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, 'Trades'),
-                    React.createElement('th', { style: { textAlign: 'center', padding: '6px 4px', fontWeight: 600 } }, 'Status')
+                    React.createElement('th', { style: { textAlign: 'left', padding: '6px 4px', fontWeight: 600 } }, t.agent.btColStrategy),
+                    React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, t.agent.btColReturn),
+                    React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, t.agent.btColSharpe),
+                    React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, t.agent.btColMaxDD),
+                    React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, t.agent.btColWinPct),
+                    React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, t.agent.btColTrades),
+                    React.createElement('th', { style: { textAlign: 'center', padding: '6px 4px', fontWeight: 600 } }, t.agent.btColStatus)
                   )
                 ),
                 React.createElement('tbody', null,
@@ -1545,32 +1555,32 @@ const Agent: React.FC = (): React.ReactElement => {
                       React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', fontWeight: 500, color: (ps.sharpe || 0) >= 1.0 ? '#1890ff' : (ps.sharpe || 0) >= 0.5 ? '#262626' : '#ff4d4f' } }, ps.sharpe != null ? Number(ps.sharpe).toFixed(2) : '--'),
                       React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', color: Math.abs(ps.maxDrawdown || 0) < 15 ? '#262626' : Math.abs(ps.maxDrawdown || 0) < 25 ? '#faad14' : '#ff4d4f' } }, ps.maxDrawdown != null ? Number(ps.maxDrawdown).toFixed(1) + '%' : '--'),
                       React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', fontWeight: 500 } }, ps.winRate != null ? Number(ps.winRate).toFixed(1) + '%' : '--'),
-                      React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', fontStyle: (ps.tradeCount || 0) < 3 ? 'italic' : 'normal', color: (ps.tradeCount || 0) < 3 ? '#fa8c16' : '#595959' }, title: (ps.tradeCount || 0) < 3 ? 'Limited sample' : undefined }, ps.tradeCount != null ? String(ps.tradeCount) : '--'),
+                      React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', fontStyle: (ps.tradeCount || 0) < 3 ? 'italic' : 'normal', color: (ps.tradeCount || 0) < 3 ? '#fa8c16' : '#595959' }, title: (ps.tradeCount || 0) < 3 ? t.agent.limitedSample : undefined }, ps.tradeCount != null ? String(ps.tradeCount) : '--'),
                       React.createElement('td', { style: { padding: '8px 4px', textAlign: 'center' } },
                         React.createElement(Tag, { color: ps.status === 'passed' ? 'success' : ps.status === 'caution' ? 'warning' : 'error', style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '0 6px', lineHeight: '18px' } },
-                          ps.status === 'passed' ? 'PASS' : ps.status === 'caution' ? 'CAUT' : ps.status === 'completed_losing' ? 'FAIL' : '--')
+                          ps.status === 'passed' ? t.agent.statusPass : ps.status === 'caution' ? t.agent.statusCaution : ps.status === 'completed_losing' ? t.agent.statusFail : '--')
                       )
                     );
                   })
                 )
               )
-            ) : React.createElement('div', { style: { fontSize: '13px', color: '#bfbfbf', fontStyle: 'italic', padding: '10px 0' } }, 'Backtest data not yet available for this candidate.'),
-            record.backtestPeriod ? React.createElement('div', { style: { fontSize: '11px', color: '#8c8c8c', marginTop: '8px', borderTop: '1px solid #f5f5f5', paddingTop: '6px' } }, 'Evaluation Period: ' + record.backtestPeriod) : null
+            ) : React.createElement('div', { style: { fontSize: '13px', color: '#bfbfbf', fontStyle: 'italic', padding: '10px 0' } }, t.agent.backtestNotAvailable),
+            record.backtestPeriod ? React.createElement('div', { style: { fontSize: '11px', color: '#8c8c8c', marginTop: '8px', borderTop: '1px solid #f5f5f5', paddingTop: '6px' } }, t.agent.evaluationPeriod + ': ' + record.backtestPeriod) : null
           ),
 
           // Optimization
           React.createElement('div', { style: { background: '#fff', borderRadius: 8, border: '1px solid #edf0f2', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
-            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, 'Quick Parameter Optimization'),
+            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, t.agent.quickOptimization),
             optResults.length > 0 ? (
               React.createElement('div', null,
                 React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '12px' } },
                   React.createElement('thead', null,
                     React.createElement('tr', { style: { color: '#8c8c8c', borderBottom: '1px solid #f0f0f0' } },
-                      React.createElement('th', { style: { textAlign: 'left', padding: '6px 4px', fontWeight: 600 } }, 'Strategy'),
-                      React.createElement('th', { style: { textAlign: 'center', padding: '6px 4px', fontWeight: 600 } }, 'Stability'),
-                      React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, 'Avg Return'),
-                      React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, 'Pos Ratio'),
-                      React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, 'Spread')
+                      React.createElement('th', { style: { textAlign: 'left', padding: '6px 4px', fontWeight: 600 } }, t.agent.optColStrategy),
+                      React.createElement('th', { style: { textAlign: 'center', padding: '6px 4px', fontWeight: 600 } }, t.agent.optColStability),
+                      React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, t.agent.optColAvgReturn),
+                      React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, t.agent.optColPosRatio),
+                      React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, t.agent.optColSpread)
                     )
                   ),
                   React.createElement('tbody', null,
@@ -1579,7 +1589,7 @@ const Agent: React.FC = (): React.ReactElement => {
                         React.createElement('td', { style: { padding: '8px 4px', fontWeight: 600, color: '#1f1f1f' } }, opt.strategy),
                         React.createElement('td', { style: { padding: '8px 4px', textAlign: 'center' } },
                           React.createElement(Tag, { color: opt.stability === 'Stable' ? 'success' : opt.stability === 'Weak' ? 'warning' : 'error', style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '0 6px', lineHeight: '18px' } },
-                            opt.stability === 'Stable' ? 'STABLE' : opt.stability === 'Weak' ? 'WEAK' : 'OVERFIT')
+                            opt.stability === 'Stable' ? t.agent.statusStable : opt.stability === 'Weak' ? t.agent.statusWeak : t.agent.statusOverfit)
                         ),
                         React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', fontWeight: 700, color: opt.avgReturn >= 0 ? '#52c41a' : '#ff4d4f' } }, (opt.avgReturn >= 0 ? '+' : '') + opt.avgReturn + '%'),
                         React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', fontWeight: 500 } }, opt.positiveRatio + '%'),
@@ -1590,32 +1600,32 @@ const Agent: React.FC = (): React.ReactElement => {
                 ),
                 record.quickOptSummary ? React.createElement('div', { style: { fontSize: '11px', color: '#8c8c8c', marginTop: '8px', borderTop: '1px solid #f5f5f5', paddingTop: '6px' } }, record.quickOptSummary) : null
               )
-            ) : React.createElement('div', { style: { fontSize: '13px', color: '#bfbfbf', fontStyle: 'italic', padding: '10px 0' } }, 'Optimization not executed for this candidate.'),
-            record.quickOptStatus === 'running' ? React.createElement('div', { style: { fontSize: '12px', color: '#fa8c16', fontWeight: 600, marginTop: '8px' } }, '⚡ Optimization in progress...') : null
+            ) : React.createElement('div', { style: { fontSize: '13px', color: '#bfbfbf', fontStyle: 'italic', padding: '10px 0' } }, t.agent.optimizationNotAvailable),
+            record.quickOptStatus === 'running' ? React.createElement('div', { style: { fontSize: '12px', color: '#fa8c16', fontWeight: 600, marginTop: '8px' } }, '⚡ ' + t.agent.optimizationInProgress) : null
           ),
 
           // Entry Quality
           React.createElement('div', { style: { background: '#fff', borderRadius: 8, border: '1px solid #edf0f2', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
-            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, 'Surgical Entry Analysis'),
+            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, t.agent.surgicalEntry),
             eq && eq !== 'Error / No Data' ? (
               React.createElement('div', null,
                 React.createElement('div', { style: { marginBottom: '10px', display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center' } },
                   React.createElement('span', { style: { fontSize: '15px', fontWeight: 800, color: eq === 'Good' || eq === 'Excellent' ? '#52c41a' : eq === 'Wait for Pullback' ? '#faad14' : '#ff4d4f' } }, eq),
-                  React.createElement('span', { style: { fontSize: '13px', color: '#595959', fontWeight: 500 } }, 'Setup Score: ' + (record.entryScore || '--') + '/100'),
-                  eqD && eqD.reward_risk_ratio != null && eqD.reward_risk_ratio < 1.5 && (eq === 'Good' || eq === 'Excellent') ? React.createElement('span', { style: { padding: '2px 8px', borderRadius: 4, background: '#fffbe6', color: '#d48806', fontSize: '11px', fontWeight: 600, border: '1px solid #ffe58f' } }, '⚠ R/R Capped: ' + eqD.reward_risk_ratio + ':1') : null
+                  React.createElement('span', { style: { fontSize: '13px', color: '#595959', fontWeight: 500 } }, t.agent.setupScore + ': ' + (record.entryScore || '--') + '/100'),
+                  eqD && eqD.reward_risk_ratio != null && eqD.reward_risk_ratio < 1.5 && (eq === 'Good' || eq === 'Excellent') ? React.createElement('span', { style: { padding: '2px 8px', borderRadius: 4, background: '#fffbe6', color: '#d48806', fontSize: '11px', fontWeight: 600, border: '1px solid #ffe58f' } }, '⚠ ' + t.agent.rrCapped + eqD.reward_risk_ratio + ':1') : null
                 ),
                 eqD ? React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px 20px', fontSize: '12px', backgroundColor: '#fafafa', padding: '10px', borderRadius: '6px' } },
-                  eqD.current_price != null ? React.createElement(FineScanDetailTag, { label: 'Price', value: '$' + eqD.current_price }) : null,
-                  eqD.atr != null ? React.createElement(FineScanDetailTag, { label: 'ATR', value: '$' + eqD.atr + ' (' + eqD.atr_pct + '%)' }) : null,
-                  eqD.support != null ? React.createElement(FineScanDetailTag, { label: 'Support', value: '$' + eqD.support }) : null,
-                  eqD.resistance != null ? React.createElement(FineScanDetailTag, { label: 'Resistance', value: '$' + eqD.resistance }) : null,
-                  eqD.entry_zone_low != null ? React.createElement(FineScanDetailTag, { label: 'Zone', value: '$' + eqD.entry_zone_low + '–$' + eqD.entry_zone_high }) : null,
-                  eqD.stop_distance_pct != null ? React.createElement(FineScanDetailTag, { label: 'Stop', value: eqD.stop_distance_pct + '%', color: eqD.stop_distance_pct > 5 ? '#fa8c16' : undefined }) : null,
-                  eqD.reward_risk_ratio != null ? React.createElement(FineScanDetailTag, { label: 'R/R', value: eqD.reward_risk_ratio + ':1', color: eqD.reward_risk_ratio < 1.5 ? '#ff4d4f' : eqD.reward_risk_ratio < 2 ? '#faad14' : '#52c41a' }) : null
+                  eqD.current_price != null ? React.createElement(FineScanDetailTag, { label: t.agent.tagPrice, value: '$' + eqD.current_price }) : null,
+                  eqD.atr != null ? React.createElement(FineScanDetailTag, { label: t.agent.tagAtr, value: '$' + eqD.atr + ' (' + eqD.atr_pct + '%)' }) : null,
+                  eqD.support != null ? React.createElement(FineScanDetailTag, { label: t.agent.tagSupport, value: '$' + eqD.support }) : null,
+                  eqD.resistance != null ? React.createElement(FineScanDetailTag, { label: t.agent.tagResistance, value: '$' + eqD.resistance }) : null,
+                  eqD.entry_zone_low != null ? React.createElement(FineScanDetailTag, { label: t.agent.tagZone, value: '$' + eqD.entry_zone_low + '–$' + eqD.entry_zone_high }) : null,
+                  eqD.stop_distance_pct != null ? React.createElement(FineScanDetailTag, { label: t.agent.tagStop, value: eqD.stop_distance_pct + '%', color: eqD.stop_distance_pct > 5 ? '#fa8c16' : undefined }) : null,
+                  eqD.reward_risk_ratio != null ? React.createElement(FineScanDetailTag, { label: t.agent.tagRR, value: eqD.reward_risk_ratio + ':1', color: eqD.reward_risk_ratio < 1.5 ? '#ff4d4f' : eqD.reward_risk_ratio < 2 ? '#faad14' : '#52c41a' }) : null
                 ) : null,
-                record.entryReason ? React.createElement('div', { style: { fontSize: '12px', color: '#8c8c8c', marginTop: '10px', lineHeight: '1.5', fontStyle: 'italic' } }, '“' + record.entryReason + '”') : null
+                record.entryReason ? React.createElement('div', { style: { fontSize: '12px', color: '#8c8c8c', marginTop: '10px', lineHeight: '1.5', fontStyle: 'italic' } }, '”' + record.entryReason + '”') : null
               )
-            ) : React.createElement('div', { style: { padding: '10px 0', color: '#bfbfbf', fontStyle: 'italic', fontSize: '13px' } }, 'Entry quality metrics currently unavailable.')
+            ) : React.createElement('div', { style: { padding: '10px 0', color: '#bfbfbf', fontStyle: 'italic', fontSize: '13px' } }, t.agent.entryQualityUnavailable)
           )
         ),
 
@@ -1624,77 +1634,77 @@ const Agent: React.FC = (): React.ReactElement => {
 
           // Key Signals
           React.createElement('div', { style: { background: '#fff', borderRadius: 8, border: '1px solid #edf0f2', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
-            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, 'High-Conviction Signals'),
+            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, t.agent.highConvictionSignals),
             signals.length > 0 ? (
               React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px' } },
                 signals.slice(0, 8).map(function(sig: string, i: number) {
                   return React.createElement('span', { key: i, style: { padding: '3px 10px', borderRadius: 4, backgroundColor: '#f0f5ff', color: '#1890ff', fontSize: '12px', fontWeight: 600, border: '1px solid #d6e4ff' } }, sig);
                 }),
-                signals.length > 8 ? React.createElement('span', { style: { fontSize: '12px', color: '#8c8c8c', fontWeight: 500, alignSelf: 'center' } }, '+' + (signals.length - 8) + ' more') : null
+                signals.length > 8 ? React.createElement('span', { style: { fontSize: '12px', color: '#8c8c8c', fontWeight: 500, alignSelf: 'center' } }, '+' + (signals.length - 8) + ' ' + (language === 'zh-CN' ? '更多' : 'more')) : null
               )
             ) : React.createElement('div', { style: { padding: '5px 0', color: '#bfbfbf', fontSize: '13px' } }, '--')
           ),
 
           // Liquidity & Risk
           React.createElement('div', { style: { background: '#fff', borderRadius: 8, border: '1px solid #edf0f2', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
-            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, 'Liquidity & Risk Profile'),
+            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, t.agent.liquidityRiskProfile),
             React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', fontSize: '12px' } },
               React.createElement('div', { style: { backgroundColor: '#fafafa', padding: '10px', borderRadius: '6px' } },
-                React.createElement('div', { style: { fontWeight: 700, color: '#595959', marginBottom: '6px', fontSize: '11px', textTransform: 'uppercase' } }, 'Liquidity'),
+                React.createElement('div', { style: { fontWeight: 700, color: '#595959', marginBottom: '6px', fontSize: '11px', textTransform: 'uppercase' } }, t.agent.liquiditySubLabel),
                 lg && lg !== 'Error' ? React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
-                  React.createElement(FineScanDetailTag, { label: 'Grade', value: lg, color: lg === 'Good' ? '#52c41a' : lg === 'Caution' ? '#faad14' : '#ff4d4f' }),
+                  React.createElement(FineScanDetailTag, { label: t.agent.tagGrade, value: lg, color: lg === 'Good' ? '#52c41a' : lg === 'Caution' ? '#faad14' : '#ff4d4f' }),
                   ld ? React.createElement(React.Fragment, null,
-                    ld.rvol != null ? React.createElement(FineScanDetailTag, { label: 'RVOL', value: ld.rvol + 'x', color: ld.rvol >= 1.5 ? '#52c41a' : ld.rvol < 0.7 ? '#ff4d4f' : undefined }) : null,
-                    ld.spread_pct != null ? React.createElement(FineScanDetailTag, { label: 'Spread', value: ld.spread_pct + '%', color: ld.spread_pct > 1 ? '#ff4d4f' : ld.spread_pct > 0.2 ? '#faad14' : undefined }) : null
+                    ld.rvol != null ? React.createElement(FineScanDetailTag, { label: t.agent.tagRvol, value: ld.rvol + 'x', color: ld.rvol >= 1.5 ? '#52c41a' : ld.rvol < 0.7 ? '#ff4d4f' : undefined }) : null,
+                    ld.spread_pct != null ? React.createElement(FineScanDetailTag, { label: t.agent.tagSpread, value: ld.spread_pct + '%', color: ld.spread_pct > 1 ? '#ff4d4f' : ld.spread_pct > 0.2 ? '#faad14' : undefined }) : null
                   ) : null
-                ) : React.createElement('span', { style: { color: '#bfbfbf', fontStyle: 'italic' } }, 'No data')
+                ) : React.createElement('span', { style: { color: '#bfbfbf', fontStyle: 'italic' } }, t.agent.noDataLabel)
               ),
               React.createElement('div', { style: { backgroundColor: '#fafafa', padding: '10px', borderRadius: '6px' } },
-                React.createElement('div', { style: { fontWeight: 700, color: '#595959', marginBottom: '6px', fontSize: '11px', textTransform: 'uppercase' } }, 'Risk'),
+                React.createElement('div', { style: { fontWeight: 700, color: '#595959', marginBottom: '6px', fontSize: '11px', textTransform: 'uppercase' } }, t.agent.riskPrefix),
                 rg && rg !== 'SKIP' ? React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
-                  React.createElement(FineScanDetailTag, { label: 'Grade', value: rg === 'LOW' ? 'Low' : rg === 'MEDIUM' ? 'Medium' : rg === 'HIGH' ? 'High' : rg, color: rg === 'LOW' ? '#52c41a' : rg === 'MEDIUM' ? '#faad14' : '#ff4d4f' }),
+                  React.createElement(FineScanDetailTag, { label: t.agent.tagGrade, value: language === 'zh-CN' ? ({'LOW': t.agent.low, 'MEDIUM': t.agent.medium, 'HIGH': t.agent.high} as any)[rg] || rg : (rg === 'LOW' ? 'Low' : rg === 'MEDIUM' ? 'Medium' : rg === 'HIGH' ? 'High' : rg), color: rg === 'LOW' ? '#52c41a' : rg === 'MEDIUM' ? '#faad14' : '#ff4d4f' }),
                   rd ? React.createElement(React.Fragment, null,
-                    React.createElement(FineScanDetailTag, { label: 'Score', value: (rd.risk_score || '--') + '/100', color: rd.risk_score >= 65 ? '#ff4d4f' : rd.risk_score >= 35 ? '#faad14' : '#52c41a' }),
-                    rd.atr_pct != null ? React.createElement(FineScanDetailTag, { label: 'ATR', value: rd.atr_pct + '%', color: rd.atr_pct > 5 ? '#ff4d4f' : undefined }) : null
+                    React.createElement(FineScanDetailTag, { label: t.agent.tagScore, value: (rd.risk_score || '--') + '/100', color: rd.risk_score >= 65 ? '#ff4d4f' : rd.risk_score >= 35 ? '#faad14' : '#52c41a' }),
+                    rd.atr_pct != null ? React.createElement(FineScanDetailTag, { label: t.agent.tagAtr, value: rd.atr_pct + '%', color: rd.atr_pct > 5 ? '#ff4d4f' : undefined }) : null
                   ) : null
-                ) : React.createElement('span', { style: { color: '#bfbfbf', fontStyle: 'italic' } }, 'No data')
+                ) : React.createElement('span', { style: { color: '#bfbfbf', fontStyle: 'italic' } }, t.agent.noDataLabel)
               )
             )
           ),
 
           // News & Catalyst
           React.createElement('div', { style: { background: '#fff', borderRadius: 8, border: '1px solid #edf0f2', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
-            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, 'News & Market Catalyst'),
+            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#8c8c8c', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, t.agent.newsAndCatalyst),
             ng && ng !== 'Error' ? React.createElement('div', null,
               React.createElement('div', { style: { marginBottom: '8px', display: 'flex', gap: '12px' } },
-                React.createElement(FineScanDetailTag, { label: 'Sentiment', value: ng, color: ng === 'Catalyst' ? '#1890ff' : ng === 'Caution' ? '#faad14' : ng === 'High Event Risk' ? '#ff4d4f' : undefined }),
+                React.createElement(FineScanDetailTag, { label: t.agent.tagSentiment, value: language === 'zh-CN' ? ({'Catalyst': '催化剂', 'Caution': '谨慎', 'High Event Risk': '高事件风险'} as any)[ng] || ng : ng, color: ng === 'Catalyst' ? '#1890ff' : ng === 'Caution' ? '#faad14' : ng === 'High Event Risk' ? '#ff4d4f' : undefined }),
                 nd ? React.createElement(React.Fragment, null,
-                  React.createElement(FineScanDetailTag, { label: 'Headlines', value: String(nd.headline_count || 0) }),
-                  React.createElement(FineScanDetailTag, { label: 'Earnings', value: nd.earnings_soon ? 'Upcoming' : 'Clear', color: nd.earnings_soon ? '#faad14' : undefined })
+                  React.createElement(FineScanDetailTag, { label: t.agent.tagHeadlines, value: String(nd.headline_count || 0) }),
+                  React.createElement(FineScanDetailTag, { label: t.agent.tagEarnings, value: nd.earnings_soon ? t.agent.earningsUpcoming : t.agent.earningsClear, color: nd.earnings_soon ? '#faad14' : undefined })
                 ) : null
               ),
               nd && nd.top_headlines && nd.top_headlines.length > 0 ? React.createElement('div', { style: { fontSize: '12px', color: '#595959', lineHeight: '1.6', backgroundColor: '#fcfcfc', padding: '8px', borderRadius: '4px', borderLeft: '3px solid #eee' } },
                 nd.top_headlines.slice(0, 2).map(function(h: string, i: number) {
                   return React.createElement('div', { key: i, style: { display: '-webkit-box', WebkitLineClamp: '1', WebkitBoxOrient: 'vertical', overflow: 'hidden', marginBottom: '4px' }, title: h }, '• ' + h);
                 }),
-                nd.top_headlines.length > 2 ? React.createElement('div', { style: { color: '#8c8c8c', fontSize: '11px', marginTop: '4px' } }, 'View ' + (nd.top_headlines.length - 2) + ' more headlines in terminal...') : null
-              ) : React.createElement('div', { style: { color: '#bfbfbf', fontSize: '12px', fontStyle: 'italic' } }, 'No significant recent news catalysts detected.')
-            ) : React.createElement('div', { style: { color: '#bfbfbf', fontSize: '13px' } }, 'News sentiment analysis unavailable.')
+                nd.top_headlines.length > 2 ? React.createElement('div', { style: { color: '#8c8c8c', fontSize: '11px', marginTop: '4px' } }, t.agent.viewMoreHeadlines.replace('{count}', String(nd.top_headlines.length - 2))) : null
+              ) : React.createElement('div', { style: { color: '#bfbfbf', fontSize: '12px', fontStyle: 'italic' } }, t.agent.noSignificantNews)
+            ) : React.createElement('div', { style: { color: '#bfbfbf', fontSize: '13px' } }, t.agent.newsSentimentUnavailable)
           ),
 
           // AI Explanation / Strategic Reasoning
           React.createElement('div', { style: { background: '#fff', borderRadius: 8, border: '1px solid #edf0f2', padding: '12px 16px', boxShadow: '0 2px 4px rgba(24, 144, 255, 0.05)' } },
-            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#1890ff', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, 'AI Agent Strategic Reasoning'),
+            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#1890ff', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, t.agent.strategicReasoning),
             React.createElement('div', { style: { marginBottom: '10px', display: 'flex', gap: '12px' } },
-              React.createElement(FineScanDetailTag, { label: 'Source', value: aiExplained ? 'DEEPSEEK-V3' : 'LOCAL RULES', color: aiExplained ? '#13c2c2' : '#fa8c16' }),
-              aiExplained ? React.createElement(FineScanDetailTag, { label: 'Tokens', value: 'Optimized' }) : null
+              React.createElement(FineScanDetailTag, { label: t.agent.tagSource, value: aiExplained ? 'DEEPSEEK-V3' : t.agent.localRulesLabel, color: aiExplained ? '#13c2c2' : '#fa8c16' }),
+              aiExplained ? React.createElement(FineScanDetailTag, { label: t.agent.tagTokens, value: t.agent.tokensOptimized }) : null
             ),
             record.finalReason ? React.createElement('div', { style: { fontSize: '13px', color: '#262626', lineHeight: '1.6', marginBottom: '12px', padding: '10px', backgroundColor: '#f0f9ff', borderRadius: '6px', border: '1px solid #e6f4ff' }, title: record.finalReason }, record.finalReason) : null,
             record.nextStep ? React.createElement('div', { style: { borderTop: '1px solid #f0f0f0', paddingTop: '10px' } },
-              React.createElement('div', { style: { fontSize: '11px', fontWeight: 700, color: '#1890ff', textTransform: 'uppercase', marginBottom: '4px' } }, 'Recommended Next Step:'),
+              React.createElement('div', { style: { fontSize: '11px', fontWeight: 700, color: '#1890ff', textTransform: 'uppercase', marginBottom: '4px' } }, t.agent.recommendedNextStep + ':'),
               React.createElement('div', { style: { fontSize: '13px', color: '#1890ff', fontWeight: 600, lineHeight: '1.5' }, title: record.nextStep }, record.nextStep)
             ) : null,
-            !aiExplained && !record.finalReason ? React.createElement('div', { style: { color: '#bfbfbf', fontSize: '13px', fontStyle: 'italic' } }, 'AI agent is compiling strategic reasoning for this candidate...') : null
+            !aiExplained && !record.finalReason ? React.createElement('div', { style: { color: '#bfbfbf', fontSize: '13px', fontStyle: 'italic' } }, t.agent.compilingReasoning) : null
           )
         )
       ),
@@ -1713,19 +1723,19 @@ const Agent: React.FC = (): React.ReactElement => {
           <div>
             <div className="scanner-detail-title-group">
               <span className="scanner-detail-symbol">{record.symbol}</span>
-              <span className="scanner-detail-company">{record.companyName || record.name || 'Unknown Company'}</span>
+              <span className="scanner-detail-company">{record.companyName || record.name || t.agent.unknownCompany}</span>
             </div>
             <div className="scanner-detail-meta">
-              Last Analysis: {record.timestamp ? new Date(record.timestamp).toLocaleString() : 'N/A'} • 
+              {t.agent.lastAnalysis}: {record.timestamp ? new Date(record.timestamp).toLocaleString() : 'N/A'} •
               ID: {record.symbol}-{record.timestamp || 'NEW'}
             </div>
           </div>
           <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
             <div style={{ textAlign: 'right' }}>
-              <div className="scanner-detail-label" style={{ marginBottom: 2 }}>Analysis Source</div>
+              <div className="scanner-detail-label" style={{ marginBottom: 2 }}>{t.agent.analysisSource}</div>
               <div style={{ display: 'flex', gap: 6 }}>
                 <Tag color={record.aiCalled ? 'green' : 'orange'} style={{ margin: 0, fontWeight: 700 }}>
-                  {record.aiCalled ? (record.aiSource || 'AI Agent') : 'Local Rules'}
+                  {record.aiCalled ? (record.aiSource || 'AI Agent') : t.agent.localRulesLabel}
                 </Tag>
                 {record.dataSource && (
                   <Tag color="blue" style={{ margin: 0, fontWeight: 700 }}>{record.dataSource}</Tag>
@@ -1734,7 +1744,7 @@ const Agent: React.FC = (): React.ReactElement => {
             </div>
             <Divider type="vertical" style={{ height: 40, margin: '0 8px' }} />
             <div style={{ textAlign: 'center', minWidth: 80 }}>
-              <div className="scanner-detail-label" style={{ marginBottom: 2 }}>Trend</div>
+              <div className="scanner-detail-label" style={{ marginBottom: 2 }}>{t.agent.trendLabel}</div>
               {renderTrendBadge(record.trendLabel)}
             </div>
           </div>
@@ -1743,7 +1753,7 @@ const Agent: React.FC = (): React.ReactElement => {
         <Row gutter={[20, 20]}>
           {/* Column 1: Market Data & Basic Info */}
           <Col span={8}>
-            <Card title="📊 Market & Basic Info" className="scanner-detail-card" bodyStyle={{ padding: '20px' }}>
+            <Card title={`📊 ${t.agent.marketBasicInfo}`} className="scanner-detail-card" bodyStyle={{ padding: '20px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
                 {/* Primary Price Info */}
                 <div style={{ 
@@ -1756,13 +1766,13 @@ const Agent: React.FC = (): React.ReactElement => {
                   border: '1px solid #f0f0f0'
                 }}>
                   <div>
-                    <div className="scanner-detail-label" style={{ marginBottom: 4 }}>Current Price</div>
+                    <div className="scanner-detail-label" style={{ marginBottom: 4 }}>{t.agent.currentPrice}</div>
                     <div className="scanner-detail-value" style={{ fontSize: '22px', color: '#1f1f1f' }}>
                       ${(record.price || 0).toFixed(2)}
                     </div>
                   </div>
                   <div style={{ textAlign: 'right' }}>
-                    <div className="scanner-detail-label" style={{ marginBottom: 4 }}>24h Change</div>
+                    <div className="scanner-detail-label" style={{ marginBottom: 4 }}>{t.agent.change24h}</div>
                     <div style={{ 
                       fontSize: '16px', 
                       fontWeight: 800, 
@@ -1781,11 +1791,11 @@ const Agent: React.FC = (): React.ReactElement => {
                 {/* Day Range Info - SWAPPED: Low on Left, High on Right */}
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', padding: '0 4px' }}>
                   <div>
-                    <div className="scanner-detail-label">Day Low</div>
+                    <div className="scanner-detail-label">{t.agent.dayLow}</div>
                     <div className="scanner-detail-value" style={{ color: '#595959' }}>${(record.dayLow || 0).toFixed(2)}</div>
                   </div>
                   <div style={{ textAlign: 'right' }}>
-                    <div className="scanner-detail-label">Day High</div>
+                    <div className="scanner-detail-label">{t.agent.dayHigh}</div>
                     <div className="scanner-detail-value" style={{ color: '#595959' }}>${(record.dayHigh || 0).toFixed(2)}</div>
                   </div>
                 </div>
@@ -1794,12 +1804,12 @@ const Agent: React.FC = (): React.ReactElement => {
 
                 {/* Volume & Liquidity */}
                 <div style={{ padding: '0 4px' }}>
-                  <div className="scanner-detail-label">Volume & Liquidity</div>
+                  <div className="scanner-detail-label">{t.agent.volumeLiquidity}</div>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
                     <span className="scanner-detail-value" style={{ fontSize: '16px' }}>{marketDataService.formatVolume(record.volume || 0)}</span>
                     <Tag color={record.volumeStatus === 'High' ? 'red' : record.volumeStatus === 'Low' ? 'green' : 'gold'} 
                          style={{ fontSize: '10px', fontWeight: 800, borderRadius: '4px', margin: 0 }}>
-                      {record.volumeStatus || 'NORMAL'}
+                      {(() => { const vs = record.volumeStatus || 'Normal'; const vsMap: Record<string, string> = { 'High': t.agent.volumeHigh, 'Normal': t.agent.volumeNormal, 'Low': t.agent.volumeLow }; return vsMap[vs] || vs; })()}
                     </Tag>
                   </div>
                 </div>
@@ -1807,12 +1817,12 @@ const Agent: React.FC = (): React.ReactElement => {
                 {/* Sector & Industry */}
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', padding: '0 4px' }}>
                   <div>
-                    <div className="scanner-detail-label">Sector</div>
-                    <div className="scanner-detail-value" style={{ fontSize: '13px', color: '#434343' }}>{record.sector || 'N/A'}</div>
+                    <div className="scanner-detail-label">{t.agent.sectorLabel}</div>
+                    <div className="scanner-detail-value" style={{ fontSize: '13px', color: '#434343' }}>{translateSector(record.sector) || 'N/A'}</div>
                   </div>
                   <div style={{ textAlign: 'right' }}>
-                    <div className="scanner-detail-label">Industry</div>
-                    <div className="scanner-detail-value" style={{ fontSize: '13px', color: '#434343' }}>{record.industry || record.sector || 'N/A'}</div>
+                    <div className="scanner-detail-label">{t.agent.industryLabel}</div>
+                    <div className="scanner-detail-value" style={{ fontSize: '13px', color: '#434343' }}>{translateSector(record.industry || record.sector) || 'N/A'}</div>
                   </div>
                 </div>
 
@@ -1824,25 +1834,25 @@ const Agent: React.FC = (): React.ReactElement => {
                   borderRadius: '6px',
                   border: '1px dashed #d9d9d9'
                 }}>
-                  <div className="scanner-detail-label" style={{ marginBottom: 8 }}>Data Provenances</div>
+                  <div className="scanner-detail-label" style={{ marginBottom: 8 }}>{t.agent.dataProvenances}</div>
                   <div style={{ fontSize: '11px', color: '#8c8c8c', lineHeight: '1.8' }}>
                     {record.provenance ? (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                          <span>Market Data:</span>
+                          <span>{t.agent.marketDataLabel}:</span>
                           <span style={{ fontWeight: 600, color: '#595959' }}>{record.provenance.marketData || 'Real-time'}</span>
                         </div>
                         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                          <span>Fundamentals:</span>
+                          <span>{t.agent.fundamentalsLabel}:</span>
                           <span style={{ fontWeight: 600, color: '#595959' }}>{record.provenance.companyInfo || 'Finnhub'}</span>
                         </div>
                         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                          <span>Sentiment:</span>
+                          <span>{t.agent.sentimentLabel}:</span>
                           <span style={{ fontWeight: 600, color: '#595959' }}>{record.provenance.news || 'Market News'}</span>
                         </div>
                       </div>
                     ) : (
-                      <span style={{ fontStyle: 'italic', color: '#bfbfbf' }}>Detailed source mapping unavailable</span>
+                      <span style={{ fontStyle: 'italic', color: '#bfbfbf' }}>{t.agent.detailedSourceUnavailable}</span>
                     )}
                   </div>
                 </div>
@@ -1852,11 +1862,11 @@ const Agent: React.FC = (): React.ReactElement => {
 
           {/* Column 2: Trend & Scores */}
           <Col span={8}>
-            <Card title="📈 Analysis & Scores" className="scanner-detail-card" bodyStyle={{ padding: '20px' }}>
+            <Card title={`📈 ${t.agent.analysisScores}`} className="scanner-detail-card" bodyStyle={{ padding: '20px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 10 }}>
-                    <div className="scanner-detail-label" style={{ margin: 0 }}>Overall Trend Score</div>
+                    <div className="scanner-detail-label" style={{ margin: 0 }}>{t.agent.overallTrendScore}</div>
                     <div style={{ textAlign: 'right' }}>
                       <span style={{ fontSize: '26px', fontWeight: 800, color: scoreColor }}>{score.toFixed(0)}</span>
                       <span style={{ fontSize: '14px', color: '#bfbfbf', marginLeft: 4 }}>/100</span>
@@ -1870,22 +1880,22 @@ const Agent: React.FC = (): React.ReactElement => {
                     style={{ marginBottom: 6 }}
                   />
                   <div style={{ fontSize: '12px', color: '#8c8c8c', textAlign: 'right', fontWeight: 600 }}>
-                    Confidence Level: <span style={{ color: scoreColor }}>{conf}%</span>
+                    {t.agent.confidenceLevel}: <span style={{ color: scoreColor }}>{conf}%</span>
                   </div>
                 </div>
 
                 <Divider style={{ margin: '8px 0' }} />
 
                 <div>
-                  <div className="scanner-detail-label" style={{ marginBottom: 12 }}>Dimensional Breakdown</div>
+                  <div className="scanner-detail-label" style={{ marginBottom: 12 }}>{t.agent.dimensionalBreakdown}</div>
                   <div className="scanner-detail-dimension-grid">
                     {[
-                      { label: 'Trend', value: record.trendScoreDetail || record.trendScore },
-                      { label: 'Momentum', value: record.momentumScore },
-                      { label: 'Volume', value: record.volumeScore },
-                      { label: 'Volatility', value: record.volatilityScore },
-                      { label: 'Structure', value: record.structureScore },
-                      { label: 'Sentiment', value: record.newsScore || record.sentimentScore }
+                      { label: t.agent.dimTrend, value: record.trendScoreDetail || record.trendScore },
+                      { label: t.agent.dimMomentum, value: record.momentumScore },
+                      { label: t.agent.dimVolume, value: record.volumeScore },
+                      { label: t.agent.dimVolatility, value: record.volatilityScore },
+                      { label: t.agent.dimStructure, value: record.structureScore },
+                      { label: t.agent.dimSentiment, value: record.newsScore || record.sentimentScore }
                     ].map((item, idx) => (
                       <div key={idx} className="scanner-detail-dimension-item" style={{ padding: '12px' }}>
                         <span className="scanner-detail-label" style={{ margin: 0, fontSize: '10px', color: '#bfbfbf' }}>{item.label}</span>
@@ -1913,15 +1923,15 @@ const Agent: React.FC = (): React.ReactElement => {
                 </div>
 
                 <div style={{ marginTop: 'auto' }}>
-                  <div className="scanner-detail-label" style={{ marginBottom: 8 }}>Risk Profile</div>
+                  <div className="scanner-detail-label" style={{ marginBottom: 8 }}>{t.agent.riskProfile}</div>
                   <div style={{ display: 'flex', gap: 10 }}>
                     <Tag color={record.eventRisk === 'High' ? 'red' : record.eventRisk === 'Medium' ? 'gold' : 'green'} 
                          style={{ fontWeight: 700, padding: '4px 10px', borderRadius: '6px', margin: 0 }}>
-                      RISK: {record.eventRisk || 'LOW'}
+                      {t.agent.riskPrefix}: {(() => { const rl = (record.eventRisk || 'LOW').toUpperCase(); const rlMap: Record<string, string> = { 'HIGH': t.agent.riskHigh, 'MEDIUM': t.agent.riskMedium, 'LOW': t.agent.riskLow }; return rlMap[rl] || record.eventRisk || t.agent.riskLow; })()}
                     </Tag>
                     <Tag color={record.volatilityScore > 70 ? 'orange' : 'blue'} 
                          style={{ fontWeight: 700, padding: '4px 10px', borderRadius: '6px', margin: 0 }}>
-                      VOL: {record.volatilityScore > 70 ? 'HIGH' : 'STABLE'}
+                      {t.agent.volPrefix}: {record.volatilityScore > 70 ? t.agent.volHigh : t.agent.volStable}
                     </Tag>
                   </div>
                 </div>
@@ -1931,10 +1941,10 @@ const Agent: React.FC = (): React.ReactElement => {
 
           {/* Column 3: AI Reasoning & News */}
           <Col span={8}>
-            <Card title="🧠 AI Agent Reasoning" className="scanner-detail-card" bodyStyle={{ padding: '20px' }}>
+            <Card title={`🧠 ${t.agent.aiAgentReasoning}`} className="scanner-detail-card" bodyStyle={{ padding: '20px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%' }}>
                 <div>
-                  <div className="scanner-detail-label" style={{ marginBottom: 10 }}>Detailed Analysis</div>
+                  <div className="scanner-detail-label" style={{ marginBottom: 10 }}>{t.agent.detailedAnalysis}</div>
                   <div className="scanner-detail-reasoning-box" style={{ 
                     backgroundColor: '#f6ffed',
                     border: '1px solid #b7eb8f',
@@ -1946,12 +1956,12 @@ const Agent: React.FC = (): React.ReactElement => {
                     maxHeight: '180px',
                     overflowY: 'auto'
                   }}>
-                    {record.detailedReasoning || record.aiReasoning || record.scannerReason || 'No detailed analysis available for this symbol.'}
+                    {record.detailedReasoning || record.aiReasoning || record.scannerReason || t.agent.noDetailedAnalysis}
                   </div>
                 </div>
 
                 <div style={{ flex: 1 }}>
-                  <div className="scanner-detail-label" style={{ marginBottom: 10 }}>Latest Market News</div>
+                  <div className="scanner-detail-label" style={{ marginBottom: 10 }}>{t.agent.latestMarketNews}</div>
                   <div className="scanner-detail-news-box" style={{ 
                     padding: '14px',
                     backgroundColor: '#fff',
@@ -1972,11 +1982,11 @@ const Agent: React.FC = (): React.ReactElement => {
                         }}>
                           {record.topNews.title}
                         </span>
-                        <div style={{ 
-                          fontSize: '11px', 
-                          color: '#bfbfbf', 
-                          marginBottom: 10, 
-                          display: 'flex', 
+                        <div style={{
+                          fontSize: '11px',
+                          color: '#bfbfbf',
+                          marginBottom: 10,
+                          display: 'flex',
                           justifyContent: 'space-between',
                           borderTop: '1px solid #f5f5f5',
                           paddingTop: '6px'
@@ -1985,15 +1995,15 @@ const Agent: React.FC = (): React.ReactElement => {
                           <span>{record.topNews.published ? formatNewsDate(record.topNews.published) : ''}</span>
                         </div>
                         <div className="scanner-detail-news-summary" style={{ fontSize: '12px', color: '#595959', lineHeight: '1.5' }}>
-                          {record.topNews.summary ? 
-                            (record.topNews.summary.length > 140 ? record.topNews.summary.substring(0, 140) + '...' : record.topNews.summary) : 
-                            'Recent news headline identified. Sentiment remains consistent with the current trend score.'}
+                          {record.topNews.summary ?
+                            (record.topNews.summary.length > 140 ? record.topNews.summary.substring(0, 140) + '...' : record.topNews.summary) :
+                            t.agent.newsConsistent}
                         </div>
                       </div>
                     ) : (
                       <div style={{ textAlign: 'center', padding: '20px 0', color: '#bfbfbf' }}>
                         <InfoCircleOutlined style={{ fontSize: '24px', marginBottom: 8, display: 'block', opacity: 0.5 }} />
-                        <span style={{ fontSize: '12px' }}>No symbol-specific news found in the last 24h.</span>
+                        <span style={{ fontSize: '12px' }}>{t.agent.noSymbolNews}</span>
                       </div>
                     )}
                   </div>
@@ -2010,7 +2020,7 @@ const Agent: React.FC = (): React.ReactElement => {
                     flexDirection: 'column',
                     gap: '4px'
                   }}>
-                    <div className="scanner-detail-label" style={{ color: '#0050b3', margin: 0 }}>Agent Recommendation</div>
+                    <div className="scanner-detail-label" style={{ color: '#0050b3', margin: 0 }}>{t.agent.agentRecommendation}</div>
                     <div style={{ fontSize: '13px', color: '#003a8c', fontWeight: 700 }}>
                       {record.nextStep}
                     </div>
@@ -3684,17 +3694,29 @@ const Agent: React.FC = (): React.ReactElement => {
         // Auto-submit for non-user-marked positions (ai_managed, unknown, manual)
         if (shouldAutoSubmit && (evalResult.decision === 'sell_now' || evalResult.decision === 'place_target_limit')) {
           try {
+            // Validate sellable quantity (fractional shares supported)
+            const sellQty = Number(position.qty) || 0;
+            if (sellQty <= 0) {
+              result.status = 'failed';
+              result.error = `Invalid sell quantity: ${position.qty}`;
+              message.error(`Exit order skipped for ${symbol}: ${result.error}`);
+              results.push(result);
+              continue;
+            }
+
             const orderPayload: any = {
               mode: tradingAccountMode,
               symbol,
               side: 'sell',
-              qty: position.qty,
+              qty: sellQty,
               type: evalResult.orderType || 'market',
-              time_in_force: 'day',
+              time_in_force: 'gtc',
               confirmed: true,
             };
+
+            // Simple limit/market sell — bracket orders are for buy-side only on Alpaca
             if (evalResult.orderType === 'limit' && evalResult.exitPrice) {
-              orderPayload.limit_price = evalResult.exitPrice;
+              orderPayload.limit_price = Math.round(Number(evalResult.exitPrice) * 100) / 100;
             }
 
             const res = await tradingAccountAPI.placeOrder(orderPayload);
@@ -3708,16 +3730,21 @@ const Agent: React.FC = (): React.ReactElement => {
                 exitPrice: evalResult.exitPrice,
                 submittedAt: new Date().toISOString(),
               });
-              message.success(`Exit order submitted: ${symbol} ${evalResult.orderType} sell`);
+              message.success(`Exit order submitted: ${symbol} ${evalResult.orderType} sell ${sellQty} shares`);
             } else {
+              const errDetail = res.data.message || res.data.error || 'Order failed';
               result.status = 'failed';
-              result.error = res.data.error || res.data.message || 'Order failed';
-              message.error(`Exit order failed for ${symbol}: ${result.error}`);
+              result.error = errDetail;
+              console.error(`[ExitScan] ${symbol} order rejected:`, JSON.stringify(res.data, null, 2));
+              message.error(`Exit order failed for ${symbol}: ${errDetail}`, 8);
             }
           } catch (e: any) {
+            const errBody = e?.response?.data;
+            const errDetail = errBody?.message || errBody?.error || e?.message || 'Order request failed';
             result.status = 'failed';
-            result.error = e?.response?.data?.error || e?.message || 'Order request failed';
-            message.error(`Exit order error for ${symbol}: ${result.error}`);
+            result.error = errDetail;
+            console.error(`[ExitScan] ${symbol} order error:`, errBody || e);
+            message.error(`Exit order error for ${symbol}: ${errDetail}`, 8);
           }
         } else if (!shouldAutoSubmit && (evalResult.decision === 'sell_now' || evalResult.decision === 'place_target_limit')) {
           // Hybrid/pipeline mode — generate plan but don't submit
@@ -3937,6 +3964,30 @@ const Agent: React.FC = (): React.ReactElement => {
       case 'Stale': return '#bbb';
       default: return '#888';
     }
+  };
+
+  const translateReadiness = (readiness: string) => {
+    switch (readiness) {
+      case 'Ready': return t.agent.statusReady;
+      case 'Waiting Entry': return t.agent.statusWaitingEntry;
+      case 'Watch-only': return t.agent.statusWatchOnly;
+      case 'Blocked': return t.agent.statusBlocked;
+      case 'Stale': return t.agent.statusStale;
+      default: return readiness;
+    }
+  };
+
+  const translateStatus = (status: string) => {
+    if (!status) return t.agent.statusNA;
+    const s = status.toUpperCase();
+    if (s === 'REVIEW' || s === 'NEEDS_REVIEW') return t.agent.statusReview;
+    if (s === 'GOOD' || s === 'PASS' || s === 'BUY_ALLOWED') return t.agent.statusGood;
+    if (s === 'N/A') return t.agent.statusNA;
+    if (s === 'BLOCK' || s === 'FAIL' || s === 'BLOCKED' || s === 'BLOCKED_BY_RISK') return t.agent.statusBlocked;
+    if (s === 'BUY' || s === 'BUY_READY') return t.agent.buyLabel;
+    if (s === 'WAIT' || s === 'WAIT_FOR_ENTRY') return t.agent.statusWaitingEntry;
+    if (s === 'WATCH' || s === 'WATCH_ONLY') return t.agent.statusWatchOnly;
+    return status;
   };
 
   // Check if symbol already in watchlist
@@ -4292,14 +4343,13 @@ const Agent: React.FC = (): React.ReactElement => {
 
   const getEntryPlanCandidates = useCallback(() => {
     if (!deeperValidationResults || deeperValidationResults.length === 0) return [];
-    // Include Confirmed, Watch, and Needs Manual Review. Exclude Rejected and Risk Gate BLOCKED.
+    // Include Confirmed, Watch, and Needs Manual Review. Do NOT exclude risk-gate BLOCK here —
+    // BLOCK only blocks order execution, not plan generation.
     const confirmed: any[] = [];
     const watch: any[] = [];
     const manualReview: any[] = [];
     for (const r of deeperValidationResults) {
-      const rgStatus = (r.riskGate || {}).status;
-      if (rgStatus === 'BLOCK') continue; // Exclude risk-gate blocked candidates
-      if (r.verdict === 'Confirmed') confirmed.push(r);
+      if (r.verdict === 'Confirmed' || r.verdict === 'Pass') confirmed.push(r);
       else if (r.verdict === 'Watch') watch.push({ ...r, planNote: 'Conservative / Watch Only' });
       else if (r.verdict === 'Needs Manual Review' || r.verdict === 'Manual Review') manualReview.push({ ...r, planNote: 'Review Required' });
     }
@@ -4316,9 +4366,8 @@ const Agent: React.FC = (): React.ReactElement => {
     const watch: any[] = [];
     const manualReview: any[] = [];
     for (const r of results) {
-      const rgStatus = (r.riskGate || {}).status;
-      if (rgStatus === 'BLOCK') continue;
-      if (r.verdict === 'Confirmed') confirmed.push(r);
+      // BLOCK does not block plan generation — only execution
+      if (r.verdict === 'Confirmed' || r.verdict === 'Pass') confirmed.push(r);
       else if (r.verdict === 'Watch') watch.push({ ...r, planNote: 'Conservative / Watch Only' });
       else if (r.verdict === 'Needs Manual Review' || r.verdict === 'Manual Review') manualReview.push({ ...r, planNote: 'Review Required' });
     }
@@ -4575,12 +4624,12 @@ const Agent: React.FC = (): React.ReactElement => {
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <div style={{ display: 'flex', flexDirection: 'column' }}>
               <span style={{ fontSize: 20, fontWeight: 800, color: '#111827', lineHeight: 1 }}>{ep.symbol}</span>
-              <span style={{ fontSize: 10, color: '#8c8c8c', fontWeight: 600, marginTop: 4, textTransform: 'uppercase' }}>Symbol Analysis</span>
+              <span style={{ fontSize: 10, color: '#8c8c8c', fontWeight: 600, marginTop: 4, textTransform: 'uppercase' }}>{t.agent.symbolAnalysis}</span>
             </div>
             <Divider type="vertical" style={{ height: 32, borderColor: '#d9d9d9' }} />
             <Space size={8}>
               <Tag color="blue" bordered={false} style={{ fontWeight: 700, borderRadius: 4 }}>{ep.aiDecision || 'WATCH'}</Tag>
-              <Tag color={rgColor} bordered={false} style={{ fontWeight: 700, borderRadius: 4 }}>GATE: {rg.status || 'N/A'}</Tag>
+              <Tag color={rgColor} bordered={false} style={{ fontWeight: 700, borderRadius: 4 }}>{t.agent.riskGate}: {rg.status || 'N/A'}</Tag>
               <Tag color={readinessColor} bordered={false} style={{ fontWeight: 700, borderRadius: 4 }}>{readiness.toUpperCase()}</Tag>
             </Space>
           </div>
@@ -4592,33 +4641,33 @@ const Agent: React.FC = (): React.ReactElement => {
 
         {/* Content Sections */}
         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-          <Section title="Decision & Setup" icon={<CheckCircleOutlined style={{ fontSize: 14 }} />}>
-            <DetailItem label="Final Action" value={ep.finalAction} color={ep.finalAction === 'BUY_READY' ? '#52c41a' : ep.finalAction === 'WAIT_FOR_ENTRY' ? '#1890ff' : '#ff4d4f'} boldValue />
-            <DetailItem label="AI Decision" value={ep.aiDecision} color={ep.aiDecision === 'BUY' ? '#52c41a' : '#faad14'} />
-            <DetailItem label="Confidence" value={ep.confidence ? `${ep.confidence}%` : 'N/A'} color={ep.confidence >= 80 ? '#52c41a' : '#1890ff'} />
-            <DetailItem label="Readiness" value={ep.tradeReadiness} color={readinessColor} />
-            <DetailItem label="Setup Type" value={ep.setup || ep.setupType} />
-            <DetailItem label="Next Tactical Step" value={ep.nextStep} color="#1890ff" />
+          <Section title={t.agent.epDecisionSetup} icon={<CheckCircleOutlined style={{ fontSize: 14 }} />}>
+            <DetailItem label={t.agent.finalAction} value={ep.finalAction} color={ep.finalAction === 'BUY_READY' ? '#52c41a' : ep.finalAction === 'WAIT_FOR_ENTRY' ? '#1890ff' : '#ff4d4f'} boldValue />
+            <DetailItem label={t.agent.aiDecision} value={ep.aiDecision} color={ep.aiDecision === 'BUY' ? '#52c41a' : '#faad14'} />
+            <DetailItem label={t.agent.confidence} value={ep.confidence ? `${ep.confidence}%` : 'N/A'} color={ep.confidence >= 80 ? '#52c41a' : '#1890ff'} />
+            <DetailItem label={t.agent.readiness} value={ep.tradeReadiness} color={readinessColor} />
+            <DetailItem label={t.agent.setupType} value={ep.setup || ep.setupType} />
+            <DetailItem label={t.agent.nextTacticalStep} value={ep.nextStep} color="#1890ff" />
           </Section>
 
-          <Section title="Entry / Exit Levels" icon={<LineChartOutlined style={{ fontSize: 14 }} />}>
-            <DetailItem label="Entry Zone" value={ep.entryZoneLow && ep.entryZoneHigh ? `$${ep.entryZoneLow.toFixed(2)} – $${ep.entryZoneHigh.toFixed(2)}` : 'N/A'} boldValue />
-            <DetailItem label="Trigger" value={ep.triggerCondition} info="Conditions to trigger execution" />
-            <DetailItem label="Stop Loss" value={ep.stopLoss ? `$${ep.stopLoss.toFixed(2)}` : 'N/A'} color="#ff4d4f" boldValue />
-            <DetailItem label="Take Profit 1" value={ep.takeProfit1 ? `$${ep.takeProfit1.toFixed(2)}` : 'N/A'} color="#52c41a" />
-            <DetailItem label="Take Profit 2" value={ep.takeProfit2 ? `$${ep.takeProfit2.toFixed(2)}` : 'N/A'} color="#52c41a" />
-            <DetailItem label="Risk/Reward 1" value={ep.riskReward1 ? `${ep.riskReward1.toFixed(1)}:1` : 'N/A'} color={ep.riskReward1 >= 2 ? '#52c41a' : '#faad14'} />
-            <DetailItem label="Risk/Reward 2" value={ep.riskReward2 ? `${ep.riskReward2.toFixed(1)}:1` : 'N/A'} color={ep.riskReward2 >= 3 ? '#52c41a' : '#faad14'} />
+          <Section title={t.agent.epEntryExitLevels} icon={<LineChartOutlined style={{ fontSize: 14 }} />}>
+            <DetailItem label={t.agent.entryZone} value={ep.entryZoneLow && ep.entryZoneHigh ? `$${ep.entryZoneLow.toFixed(2)} – $${ep.entryZoneHigh.toFixed(2)}` : 'N/A'} boldValue />
+            <DetailItem label={t.agent.trigger} value={ep.triggerCondition} info="Conditions to trigger execution" />
+            <DetailItem label={t.agent.stopLoss} value={ep.stopLoss ? `$${ep.stopLoss.toFixed(2)}` : 'N/A'} color="#ff4d4f" boldValue />
+            <DetailItem label={t.agent.takeProfit1} value={ep.takeProfit1 ? `$${ep.takeProfit1.toFixed(2)}` : 'N/A'} color="#52c41a" />
+            <DetailItem label={t.agent.takeProfit2} value={ep.takeProfit2 ? `$${ep.takeProfit2.toFixed(2)}` : 'N/A'} color="#52c41a" />
+            <DetailItem label={t.agent.riskReward1} value={ep.riskReward1 ? `${ep.riskReward1.toFixed(1)}:1` : 'N/A'} color={ep.riskReward1 >= 2 ? '#52c41a' : '#faad14'} />
+            <DetailItem label={t.agent.riskReward2} value={ep.riskReward2 ? `${ep.riskReward2.toFixed(1)}:1` : 'N/A'} color={ep.riskReward2 >= 3 ? '#52c41a' : '#faad14'} />
           </Section>
 
-          <Section title="Risk & Data" icon={<SafetyCertificateOutlined style={{ fontSize: 14 }} />}>
-            <DetailItem label="Position Size" value={ep.positionSizeShares ? `${ep.positionSizeShares} shares` : ep.positionSizeDollars ? `$${ep.positionSizeDollars.toLocaleString()}` : 'N/A'} boldValue />
-            <DetailItem label="Portfolio Risk" value={ep.positionPct ? `${ep.positionPct.toFixed(1)}%` : 'N/A'} info="Percent of account equity at risk" />
+          <Section title={t.agent.epRiskData} icon={<SafetyCertificateOutlined style={{ fontSize: 14 }} />}>
+            <DetailItem label={t.agent.positionSize} value={ep.positionSizeShares ? `${ep.positionSizeShares} shares` : ep.positionSizeDollars ? `$${ep.positionSizeDollars.toLocaleString()}` : 'N/A'} boldValue />
+            <DetailItem label={t.agent.portfolioRisk} value={ep.positionPct ? `${ep.positionPct.toFixed(1)}%` : 'N/A'} info="Percent of account equity at risk" />
             <Divider style={{ margin: '12px 0' }} />
-            <DetailItem label="Risk Gate" value={rg.status || 'N/A'} color={rgColor} boldValue />
-            <DetailItem label="Data Quality" value={dq} color={dqColor} />
-            <DetailItem label="Technical Score" value={ep.technicalScore != null ? ep.technicalScore : 'N/A'} />
-            <DetailItem label="Regime Filter" value={ep.marketRegime || 'N/A'} />
+            <DetailItem label={t.agent.riskGate} value={rg.status || 'N/A'} color={rgColor} boldValue />
+            <DetailItem label={t.agent.dataQuality} value={dq} color={dqColor} />
+            <DetailItem label={t.agent.technicalScore} value={ep.technicalScore != null ? ep.technicalScore : 'N/A'} />
+            <DetailItem label={t.agent.regimeFilter} value={ep.marketRegime || 'N/A'} />
           </Section>
         </div>
 
@@ -4632,12 +4681,12 @@ const Agent: React.FC = (): React.ReactElement => {
             border: '1px solid #f0f0f0',
             boxShadow: '0 2px 8px rgba(0,0,0,0.02)'
           }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: '#8c8c8c', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 12 }}>Analysis & Warnings</div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#8c8c8c', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 12 }}>{t.agent.epAnalysisWarnings}</div>
             <Row gutter={24}>
               {ep.decisionReason && (
                 <Col span={ep.riskNotes || (ep.blockers && ep.blockers.length > 0) ? 14 : 24}>
                   <div style={{ fontSize: 13, color: '#434343', lineHeight: 1.6 }}>
-                    <Text strong style={{ fontSize: 11, color: '#8c8c8c', display: 'block', marginBottom: 4 }}>REASONING</Text>
+                    <Text strong style={{ fontSize: 11, color: '#8c8c8c', display: 'block', marginBottom: 4 }}>{t.agent.reasoning}</Text>
                     {safeRender(ep.decisionReason)}
                   </div>
                 </Col>
@@ -4646,7 +4695,7 @@ const Agent: React.FC = (): React.ReactElement => {
                 <Col span={ep.decisionReason ? 10 : 24}>
                   {ep.riskNotes && (
                     <div style={{ marginBottom: 12 }}>
-                      <Text strong style={{ fontSize: 11, color: '#faad14', display: 'block', marginBottom: 4 }}>RISK NOTES</Text>
+                      <Text strong style={{ fontSize: 11, color: '#faad14', display: 'block', marginBottom: 4 }}>{t.agent.riskNotes}</Text>
                       <div style={{ fontSize: 12, color: '#d48806', background: '#fffbe6', padding: '8px 12px', borderRadius: 6, border: '1px solid #ffe58f' }}>
                         {safeRender(ep.riskNotes)}
                       </div>
@@ -4654,7 +4703,7 @@ const Agent: React.FC = (): React.ReactElement => {
                   )}
                   {ep.blockers && ep.blockers.length > 0 && (
                     <div>
-                      <Text strong style={{ fontSize: 11, color: '#ff4d4f', display: 'block', marginBottom: 4 }}>BLOCKERS</Text>
+                      <Text strong style={{ fontSize: 11, color: '#ff4d4f', display: 'block', marginBottom: 4 }}>{t.agent.blockers}</Text>
                       <div style={{ fontSize: 12, color: '#cf1322', background: '#fff1f0', padding: '8px 12px', borderRadius: 6, border: '1px solid #ffa39e' }}>
                         {ep.blockers.map((b: any) => safeRender(b)).join('; ')}
                       </div>
@@ -4829,12 +4878,13 @@ const Agent: React.FC = (): React.ReactElement => {
             qtyMode: 'shares',
             userQty: shares > 0 ? shares : 1,
             dollarAmount: shares > 0 && entryPrice > 0 ? Math.round(shares * entryPrice) : 0,
+            currentPrice: plan.currentPrice || 0,
             orderType: entryPrice > 0 ? 'limit' : 'market',
             limitPrice: entryPrice > 0 ? entryPrice : undefined,
             stopPrice: plan.stopLoss || undefined,
             trailPrice: undefined,
             trailPercent: undefined,
-            timeInForce: 'day',
+            timeInForce: 'gtc',
             executionStatus: 'draft',
             source: 'ai_mode',
             addedAt: new Date().toISOString(),
@@ -4856,12 +4906,28 @@ const Agent: React.FC = (): React.ReactElement => {
         let failed = 0;
         for (const item of newExecution) {
           try {
-            const orderType = item.orderType || 'market';
+            // Determine order type based on current price vs entry zone
+            const cp = item.currentPrice || 0;
+            const eLow = item.entryZoneLow || 0;
+            const eHigh = item.entryZoneHigh || 0;
+            let orderType = item.orderType || 'market';
+            let limitPrice = item.limitPrice;
+            if (eLow > 0 && eHigh > 0 && cp > 0) {
+              if (cp >= eLow && cp <= eHigh) {
+                orderType = 'market'; // Price in zone — execute immediately
+              } else if (cp < eLow) {
+                orderType = 'limit';
+                limitPrice = eLow; // Below zone — limit at zone low
+              } else {
+                orderType = 'limit';
+                limitPrice = eHigh; // Above zone — limit at zone high
+              }
+            }
             const orderData: any = {
               symbol: item.symbol,
               side: 'buy',
               type: orderType,
-              time_in_force: item.timeInForce || 'day',
+              time_in_force: item.timeInForce || 'gtc',
               tradingMode: tradingAccountModeRef.current,
               automationMode: 'full-ai',
               executionSource: 'ai_mode',
@@ -4872,7 +4938,7 @@ const Agent: React.FC = (): React.ReactElement => {
             } else {
               orderData.qty = item.userQty || item.positionSizeShares || 1;
             }
-            if (orderType === 'limit' && item.limitPrice > 0) orderData.limit_price = item.limitPrice;
+            if (orderType === 'limit' && limitPrice > 0) orderData.limit_price = limitPrice;
             if (orderType === 'stop' && item.stopPrice > 0) orderData.stop_price = item.stopPrice;
             if (orderType === 'stop_limit') {
               if (item.stopPrice > 0) orderData.stop_price = item.stopPrice;
@@ -5268,7 +5334,7 @@ const Agent: React.FC = (): React.ReactElement => {
 
 
 // ===== Deeper Validation Detail Panel =====
-function renderDVDetailPanel(record: any) {
+function renderDVDetailPanel(record: any, t: any, language: string) {
   var tc = record.tradeCount != null ? record.tradeCount : record.trades;
   
   // Verdict colors
@@ -5277,19 +5343,47 @@ function renderDVDetailPanel(record: any) {
   if (v === 'Watch' || v === 'Caution') vColor = '#faad14';
   else if (v === 'Avoid' || v === 'Reject' || v === 'Rejected') vColor = '#ff4d4f';
   else if (v === 'Needs Manual Review') vColor = '#722ed1';
-  var vName = v === 'Needs Manual Review' ? 'Review' : v === 'Reject' || v === 'Rejected' || v === 'Avoid' ? 'Rejected' : v === 'Caution' ? 'Watch' : v;
-  if (vName === 'Review') v = vName;
+  var vNameRaw = v === 'Needs Manual Review' ? 'Review' : v === 'Reject' || v === 'Rejected' || v === 'Avoid' ? 'Rejected' : v === 'Caution' ? 'Watch' : v;
+  var verdictMap: Record<string, string> = { 'Confirmed': t.agent.dvVerdictConfirmed, 'Pass': t.agent.dvVerdictPass, 'Rejected': t.agent.dvVerdictRejected, 'Review': t.agent.dvVerdictReview, 'Watch': t.agent.dvVerdictWatch };
+  var vName = verdictMap[vNameRaw] || vNameRaw;
+  if (vNameRaw === 'Review') v = vNameRaw;
   else if (v === 'Reject' || v === 'Rejected' || v === 'Avoid') v = 'Rejected';
   else if (v === 'Caution') v = 'Watch';
   
   // Reason parts
   var reasonParts = (record.reason || '').split(' | ');
   
+  // Helper: translate DV reason text (dictionary replacement for zh-CN)
+  function translateDVReason(text: string): string {
+    if (!text || language !== 'zh-CN') return text || '';
+    var r = text;
+    r = r.replace(/\bConfirmed\b/g, t.agent.dvReasonConfirmed);
+    r = r.replace(/\bWatch\b/g, t.agent.dvReasonWatch);
+    r = r.replace(/\bReject\b/g, t.agent.dvReasonReject);
+    r = r.replace(/\bWeakening\b/g, t.agent.dvTrendWeakening);
+    r = r.replace(/\brecent Weakening\b/g, t.agent.dvReasonRecentWeakening);
+    r = r.replace(/\bparameter sets profitable\b/g, t.agent.dvReasonParamProfitable);
+    r = r.replace(/\bmedian return\b/g, t.agent.dvReasonMedianReturn);
+    r = r.replace(/\bmedian sharpe\b/g, t.agent.dvReasonMedianSharpe);
+    r = r.replace(/\bprofit factor\b/gi, t.agent.dvReasonProfitFactor);
+    r = r.replace(/\bsharpe\b/gi, t.agent.dvReasonSharpe);
+    r = r.replace(/\breturn\b/gi, t.agent.dvReasonReturn);
+    r = r.replace(/\bdrawdown\b/gi, t.agent.dvReasonDrawdown);
+    r = r.replace(/\bwin rate\b/gi, t.agent.dvReasonWinRate);
+    r = r.replace(/\btrades\b/gi, t.agent.dvReasonTrades);
+    r = r.replace(/\bSample Limited\b/gi, t.agent.dvReasonSampleLimited);
+    r = r.replace(/\bStable\b/g, t.agent.stableLabel);
+    r = r.replace(/\bWeak\b/g, t.agent.weakLabel);
+    r = r.replace(/\bModerate\b/g, t.agent.moderateLabel);
+    r = r.replace(/\bcombinations tested\b/g, t.agent.testedCombos);
+    return r;
+  }
+
   // Helper: render a metric row
   function metricRow(label: any, value: any, color?: any) {
     return React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '3px 0', borderBottom: '1px solid #f0f0f0', fontSize: '11px' } },
       React.createElement('span', { style: { color: '#888' } }, label),
-      React.createElement('span', { style: { fontWeight: 600, color: color || '#333' } }, value != null ? String(value) : 'N/A')
+      React.createElement('span', { style: { fontWeight: 600, color: color || '#333' } }, value != null ? String(value) : t.agent.naLabel)
     );
   }
   
@@ -5316,8 +5410,8 @@ function renderDVDetailPanel(record: any) {
   function pfText(): string {
     var pf = record.profitFactor;
     if (pf == null) {
-      if (tc != null && tc > 0 && record.totalReturn != null && record.totalReturn > 0) return String.fromCharCode(8734) + ' (no losses)';
-      return 'N/A';
+      if (tc != null && tc > 0 && record.totalReturn != null && record.totalReturn > 0) return String.fromCharCode(8734) + ` (${t.agent.noLosses})`;
+      return t.agent.naLabel;
     }
     return pf.toFixed(2);
   }
@@ -5355,7 +5449,7 @@ function renderDVDetailPanel(record: any) {
   // Stability
   var isLimitedSample = (tc != null && tc < 3) || (record.validCombinationCount != null && record.validCombinationCount < 3);
   var stScore = record.stabilityScore;
-  var stLabel = stScore != null ? (stScore >= 70 ? 'Stable' : stScore >= 50 ? 'Moderate' : 'Weak') : 'N/A';
+  var stLabel = stScore != null ? (stScore >= 70 ? t.agent.stableLabel : stScore >= 50 ? t.agent.moderateLabel : t.agent.weakLabel) : t.agent.naLabel;
   var stColor = stScore != null ? (stScore >= 70 ? '#52c41a' : stScore >= 50 ? '#faad14' : '#ff4d4f') : '#bbb';
   
   // Trend color
@@ -5370,45 +5464,45 @@ function renderDVDetailPanel(record: any) {
   return React.createElement('div', { style: { background: '#f8f9fa', padding: '16px', borderRadius: '10px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '14px', maxWidth: '100%' } },
     
     // Card 1: 1Y Backtest
-    cardBlock('1Y Backtest',
+    cardBlock(t.agent.oneYearBacktest,
       React.createElement(React.Fragment, null,
-        metricRow('Strategy', record.strategy),
-        metricRow('Total Return', record.totalReturn != null ? (record.totalReturn > 0 ? '+' : '') + record.totalReturn.toFixed(1) + '%' : 'N/A', retColor(record.totalReturn)),
-        metricRow('Sharpe', record.sharpeRatio != null ? record.sharpeRatio.toFixed(2) : 'N/A', shColor(record.sharpeRatio)),
-        metricRow('Max DD', record.maxDrawdown != null ? '-' + Math.abs(record.maxDrawdown).toFixed(1) + '%' : 'N/A', ddColor(record.maxDrawdown)),
-        metricRow('Win Rate', record.winRate != null ? record.winRate + '%' : 'N/A'),
-        metricRow('Profit Factor', pfText(), pfColor()),
-        record.parameters && Object.keys(record.parameters).length > 0 ? 
+        metricRow(t.agent.strategy, record.strategy),
+        metricRow(t.agent.totalReturn, record.totalReturn != null ? (record.totalReturn > 0 ? '+' : '') + record.totalReturn.toFixed(1) + '%' : 'N/A', retColor(record.totalReturn)),
+        metricRow(t.agent.sharpeRatio, record.sharpeRatio != null ? record.sharpeRatio.toFixed(2) : 'N/A', shColor(record.sharpeRatio)),
+        metricRow(t.agent.maxDrawdown, record.maxDrawdown != null ? '-' + Math.abs(record.maxDrawdown).toFixed(1) + '%' : 'N/A', ddColor(record.maxDrawdown)),
+        metricRow(t.agent.winRate, record.winRate != null ? record.winRate + '%' : 'N/A'),
+        metricRow(t.agent.profitFactor, pfText(), pfColor()),
+        record.parameters && Object.keys(record.parameters).length > 0 ?
           React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '3px 0', borderBottom: '1px solid #f0f0f0', fontSize: '11px' } },
-            React.createElement('span', { style: { color: '#888' } }, 'Parameters'),
+            React.createElement('span', { style: { color: '#888' } }, t.agent.colParams),
             paramChips(record.parameters)
           ) : null,
-        metricRow('Trades', tc != null ? (tc < 3 ? 'Limited (' + tc + ')' : String(tc)) : 'N/A', tc != null ? (tc >= 10 ? undefined : tc >= 3 ? '#faad14' : '#ff4d4f') : undefined),
+        metricRow(t.agent.colTrades, tc != null ? (tc < 3 ? t.agent.limitedSample + ' (' + tc + ')' : String(tc)) : 'N/A', tc != null ? (tc >= 10 ? undefined : tc >= 3 ? '#faad14' : '#ff4d4f') : undefined),
       ),
       '#1890ff',
-      'Source: Internal Backtest'
+      t.agent.sourceInternalBacktest
     ),
     
     // Card 2: Light Optimization
-    cardBlock('Light Optimization',
+    cardBlock(t.agent.lightOptimization,
       React.createElement(React.Fragment, null,
-        metricRow('Tested Combos', (record.testedCombinationCount ?? record.optimizationResults?.length ?? record.validCombinationCount ?? 0) > 0 ? String(record.testedCombinationCount ?? record.optimizationResults?.length ?? record.validCombinationCount ?? 0) : 'N/A'),
-        metricRow('Valid Combos', record.validCombinationCount != null ? String(record.validCombinationCount) : 'N/A'),
-        metricRow('Best Return', record.optimizedReturn != null ? (record.optimizedReturn > 0 ? '+' : '') + record.optimizedReturn.toFixed(1) + '%' : 'N/A', retColor(record.optimizedReturn)),
-        metricRow('Best Sharpe', record.optimizedSharpe != null ? record.optimizedSharpe.toFixed(2) : 'N/A', shColor(record.optimizedSharpe)),
-        metricRow('Avg Return', record.avgReturn != null ? record.avgReturn + '%' : 'N/A', retColor(record.avgReturn)),
-        metricRow('Median Return', record.medianReturn != null ? record.medianReturn + '%' : 'N/A'),
-        metricRow('Positive Ratio', record.profitableRatio != null ? Math.round(record.profitableRatio * 100) + '%' : 'N/A'),
-        metricRow('Return Spread', record.returnSpread != null ? record.returnSpread + '%' : 'N/A'),
+        metricRow(t.agent.testedCombos, (record.testedCombinationCount ?? record.optimizationResults?.length ?? record.validCombinationCount ?? 0) > 0 ? String(record.testedCombinationCount ?? record.optimizationResults?.length ?? record.validCombinationCount ?? 0) : 'N/A'),
+        metricRow(t.agent.validCombos, record.validCombinationCount != null ? String(record.validCombinationCount) : 'N/A'),
+        metricRow(t.agent.bestReturn, record.optimizedReturn != null ? (record.optimizedReturn > 0 ? '+' : '') + record.optimizedReturn.toFixed(1) + '%' : 'N/A', retColor(record.optimizedReturn)),
+        metricRow(t.agent.bestSharpe, record.optimizedSharpe != null ? record.optimizedSharpe.toFixed(2) : 'N/A', shColor(record.optimizedSharpe)),
+        metricRow(t.agent.avgReturn, record.avgReturn != null ? record.avgReturn + '%' : 'N/A', retColor(record.avgReturn)),
+        metricRow(t.agent.medianReturn, record.medianReturn != null ? record.medianReturn + '%' : 'N/A'),
+        metricRow(t.agent.positiveRatio, record.profitableRatio != null ? Math.round(record.profitableRatio * 100) + '%' : 'N/A'),
+        metricRow(t.agent.returnSpread, record.returnSpread != null ? record.returnSpread + '%' : 'N/A'),
         // Top 3 results
-        record.top3Results && record.top3Results.length > 0 ? 
+        record.top3Results && record.top3Results.length > 0 ?
           React.createElement('div', { style: { marginTop: 8 } },
-            React.createElement('div', { style: { fontSize: '10px', color: '#888', marginBottom: 4 } }, 'Top Results:'),
+            React.createElement('div', { style: { fontSize: '10px', color: '#888', marginBottom: 4 } }, t.agent.topResults + ':'),
             record.top3Results.map(function(r: any, i: number) {
               return React.createElement('div', { key: i, style: { fontSize: '10px', padding: '2px 0', borderBottom: i < record.top3Results.length - 1 ? '1px solid #f0f0f0' : 'none' } },
                 React.createElement('span', { style: { color: '#666' } }, '#' + (i+1) + ': '),
-                React.createElement('span', { style: { color: r.ret > 0 ? '#52c41a' : '#ff4d4f', fontWeight: 600 } }, 'ret=' + r.ret + '%'),
-                React.createElement('span', { style: { color: '#999' } }, ' sharpe=' + r.sharp + ' '),
+                React.createElement('span', { style: { color: r.ret > 0 ? '#52c41a' : '#ff4d4f', fontWeight: 600 } }, t.agent.paramRet + '=' + r.ret + '%'),
+                React.createElement('span', { style: { color: '#999' } }, ' ' + t.agent.paramSharpe + '=' + r.sharp + ' '),
                 r.params && typeof r.params === 'object' ? 
                   React.createElement('span', { style: { color: '#999' } }, Object.entries(r.params).map(function(kv: any) { return kv[0] + '=' + String(kv[1]); }).join(', ')) : null
               );
@@ -5416,41 +5510,41 @@ function renderDVDetailPanel(record: any) {
           ) : null
       ),
       '#722ed1',
-      'Source: Internal Optimization'
+      t.agent.sourceInternalOptimization
     ),
     
     // Card 3: Parameter Stability
-    cardBlock('Parameter Stability',
+    cardBlock(t.agent.parameterStability,
       React.createElement(React.Fragment, null,
         isLimitedSample ?
           React.createElement('div', { style: { padding: '6px 8px', background: '#fff3cd', borderRadius: 6, marginBottom: 8, fontSize: '10px', color: '#856404' } },
-            String.fromCharCode(9888) + ' Limited sample: only ' + tc + ' trade(s), ' + (record.validCombinationCount || 0) + ' combo(s) tested. Validation confidence is reduced.'
+            String.fromCharCode(9888) + ' ' + t.agent.limitedSampleWarn.replace('{trades}', String(tc)).replace('{combos}', String(record.validCombinationCount || 0))
           ) : null,
-        metricRow('Score', stScore != null ? stScore + '/100' : 'N/A', stColor),
-        metricRow('Label', stLabel, stColor),
-        metricRow('Profitable Ratio', record.profitableRatio != null ? Math.round(record.profitableRatio * 100) + '%' : 'N/A'),
-        metricRow('Median Return', record.medianReturn != null ? record.medianReturn + '%' : 'N/A'),
-        metricRow('Best Return', record.bestReturn != null ? record.bestReturn + '%' : 'N/A', retColor(record.bestReturn)),
-        metricRow('Return Spread', record.returnSpread != null ? record.returnSpread + '%' : 'N/A'),
-        metricRow('Stable Params', record.stableParameterCount != null ? String(record.stableParameterCount) : 'N/A'),
+        metricRow(t.agent.colScore, stScore != null ? stScore + '/100' : 'N/A', stColor),
+        metricRow(t.agent.colLabel, stLabel, stColor),
+        metricRow(t.agent.profitableRatio, record.profitableRatio != null ? Math.round(record.profitableRatio * 100) + '%' : 'N/A'),
+        metricRow(t.agent.medianReturn, record.medianReturn != null ? record.medianReturn + '%' : 'N/A'),
+        metricRow(t.agent.bestReturn, record.bestReturn != null ? record.bestReturn + '%' : 'N/A', retColor(record.bestReturn)),
+        metricRow(t.agent.returnSpread, record.returnSpread != null ? record.returnSpread + '%' : 'N/A'),
+        metricRow(t.agent.stableParams, record.stableParameterCount != null ? String(record.stableParameterCount) : 'N/A'),
         record.stabilityReason ?
-          React.createElement('div', { style: { marginTop: 6, fontSize: '10px', color: '#666', fontStyle: 'italic' } }, record.stabilityReason) : null
+          React.createElement('div', { style: { marginTop: 6, fontSize: '10px', color: '#666', fontStyle: 'italic' } }, translateDVReason(record.stabilityReason)) : null
       ),
       '#fa8c16'
     ),
     
     // Card 4: Recent vs Long-Term
-    cardBlock('Recent vs Long-Term',
+    cardBlock(t.agent.recentVsLongTermLabel,
       React.createElement(React.Fragment, null,
-        metricRow('Long Return', record.longTermReturn != null ? (record.longTermReturn > 0 ? '+' : '') + record.longTermReturn.toFixed(1) + '%' : 'N/A', retColor(record.longTermReturn)),
-        metricRow('Recent Return', record.recentReturn != null ? (record.recentReturn > 0 ? '+' : '') + record.recentReturn.toFixed(1) + '%' : 'N/A', retColor(record.recentReturn)),
-        metricRow('Long Sharpe', record.longTermSharpe != null ? record.longTermSharpe.toFixed(2) : 'N/A', shColor(record.longTermSharpe)),
-        metricRow('Recent Sharpe', record.recentSharpe != null ? record.recentSharpe.toFixed(2) : 'N/A', shColor(record.recentSharpe)),
-        metricRow('Long DD', record.longTermMaxDrawdown != null ? '-' + Math.abs(record.longTermMaxDrawdown).toFixed(1) + '%' : 'N/A', ddColor(record.longTermMaxDrawdown)),
-        metricRow('Recent DD', record.recentMaxDrawdown != null ? '-' + Math.abs(record.recentMaxDrawdown).toFixed(1) + '%' : 'N/A', ddColor(record.recentMaxDrawdown)),
+        metricRow(t.agent.longReturn, record.longTermReturn != null ? (record.longTermReturn > 0 ? '+' : '') + record.longTermReturn.toFixed(1) + '%' : 'N/A', retColor(record.longTermReturn)),
+        metricRow(t.agent.recentReturn, record.recentReturn != null ? (record.recentReturn > 0 ? '+' : '') + record.recentReturn.toFixed(1) + '%' : 'N/A', retColor(record.recentReturn)),
+        metricRow(t.agent.longSharpe, record.longTermSharpe != null ? record.longTermSharpe.toFixed(2) : 'N/A', shColor(record.longTermSharpe)),
+        metricRow(t.agent.recentSharpe, record.recentSharpe != null ? record.recentSharpe.toFixed(2) : 'N/A', shColor(record.recentSharpe)),
+        metricRow(t.agent.longDD, record.longTermMaxDrawdown != null ? '-' + Math.abs(record.longTermMaxDrawdown).toFixed(1) + '%' : 'N/A', ddColor(record.longTermMaxDrawdown)),
+        metricRow(t.agent.recentDD, record.recentMaxDrawdown != null ? '-' + Math.abs(record.recentMaxDrawdown).toFixed(1) + '%' : 'N/A', ddColor(record.recentMaxDrawdown)),
         record.recentVsLongTerm ?
           React.createElement('div', { style: { marginTop: 8, textAlign: 'center' } },
-            React.createElement(Tag, { color: trendColor(record.recentVsLongTerm), style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '2px 10px', borderRadius: '8px' } }, record.recentVsLongTerm)
+            React.createElement(Tag, { color: trendColor(record.recentVsLongTerm), style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '2px 10px', borderRadius: '8px' } }, ({'Improving': t.agent.dvTrendImproving, 'Consistent': t.agent.dvTrendConsistent, 'Weakening': t.agent.dvTrendWeakening, 'Divergent': t.agent.dvTrendDivergent} as any)[record.recentVsLongTerm] || record.recentVsLongTerm)
           ) : null
       ),
       '#13c2c2'
@@ -5459,24 +5553,25 @@ function renderDVDetailPanel(record: any) {
     // Data Provenance strip — compact chips
     (function() {
       var aiExplained = record.aiExplained === true;
-      var explanationSource = aiExplained ? 'DeepSeek' : 'Rule-based';
-      var rgStatus = (record.riskGate || {}).status || 'N/A';
-      var fdSource = (record.finalDecision || {}).source || 'Rule-based';
+      var explanationSource = aiExplained ? 'DeepSeek' : t.agent.ruleBasedLabel;
+      var rgStatus = (record.riskGate || {}).status || t.agent.naLabel;
+      var fdSourceRaw = (record.finalDecision || {}).source || 'Rule-based';
+      var fdSource = fdSourceRaw === 'Rule-based' ? t.agent.ruleBasedLabel : fdSourceRaw;
       var chips = [
-        {label: 'Market: ' + (record.dataSource === 'alpaca' ? 'Alpaca' : record.dataSource || 'N/A'), isAI: false, title: 'Alpaca Market Data API'},
-        {label: 'Backtest: Internal', isAI: false, title: 'Internal Backtest Engine'},
-        {label: 'Opt: Internal', isAI: false, title: 'Internal Optimization Engine'},
-        {label: 'Verdict: Rule-based', isAI: false, title: 'Deterministic Rules'},
-        {label: 'Risk Gate: ' + rgStatus, isAI: false, title: 'Rule-based risk gate: ' + ((record.riskGate || {}).reason || 'N/A')},
-        {label: 'Decision: ' + fdSource, isAI: fdSource !== 'Rule-based', title: fdSource !== 'Rule-based' ? 'AI Final Decision' : 'Rule-based decision (no AI call)'},
-        {label: 'Explain: ' + explanationSource, isAI: aiExplained, title: aiExplained ? 'DeepSeek AI' : 'Rule-based explanation'},
+        {label: t.agent.marketDataLabel + ': ' + (record.dataSource === 'alpaca' ? 'Alpaca' : record.dataSource || t.agent.naLabel), isAI: false, title: 'Alpaca Market Data API'},
+        {label: t.agent.backtestLabel, isAI: false, title: 'Internal Backtest Engine'},
+        {label: t.agent.optLabel, isAI: false, title: 'Internal Optimization Engine'},
+        {label: t.agent.verdictLabel, isAI: false, title: 'Deterministic Rules'},
+        {label: t.agent.riskGateLabel + rgStatus, isAI: false, title: t.agent.riskGateLabel + ((record.riskGate || {}).reason || t.agent.naLabel)},
+        {label: t.agent.decisionLabel + ': ' + fdSource, isAI: fdSourceRaw !== 'Rule-based', title: fdSourceRaw !== 'Rule-based' ? 'AI Final Decision' : 'Rule-based decision (no AI call)'},
+        {label: t.agent.explainLabel + ': ' + explanationSource, isAI: aiExplained, title: aiExplained ? 'DeepSeek AI' : 'Rule-based explanation'},
       ];
       return React.createElement('div', { style: { gridColumn: '1 / -1', display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center', fontSize: '8px', color: '#888' } },
         chips.map(function(c: any) {
           return React.createElement('span', { key: c.label, title: c.title, style: { padding: '1px 6px', borderRadius: '3px', background: c.isAI ? '#e6fffb' : '#f0f0f0', color: c.isAI ? '#13c2c2' : '#888', border: '1px solid ' + (c.isAI ? '#b5f5ec' : '#e0e0e0'), whiteSpace: 'nowrap', cursor: 'default' } }, c.label);
         }),
         isLimitedSample ?
-          React.createElement(Tag, { color: 'warning', style: { fontSize: '8px', margin: 0, marginLeft: 'auto', padding: '0 4px', lineHeight: '16px' } }, 'Limited sample') : null
+          React.createElement(Tag, { color: 'warning', style: { fontSize: '8px', margin: 0, marginLeft: 'auto', padding: '0 4px', lineHeight: '16px' } }, t.agent.limitedSample) : null
       );
     })(),
 
@@ -5485,13 +5580,13 @@ function renderDVDetailPanel(record: any) {
       React.createElement('div', { style: { flex: 1, minWidth: 0 } },
         reasonParts.length > 0 ?
           React.createElement('div', { style: { display: 'flex', gap: '12px', alignItems: 'center' } },
-            React.createElement('span', { style: { fontSize: '10px', color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', flexShrink: 0 } }, 'Verdict Reasons:'),
-            React.createElement('div', { style: { fontSize: '12px', color: '#434343', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, title: reasonParts.join(' | ') }, 
-              reasonParts.join(' · ')
+            React.createElement('span', { style: { fontSize: '10px', color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', flexShrink: 0 } }, t.agent.verdictReasons + ':'),
+            React.createElement('div', { style: { fontSize: '12px', color: '#434343', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, title: reasonParts.map(translateDVReason).join(' | ') },
+              reasonParts.map(translateDVReason).join(' · ')
             )
-          ) : 
-          React.createElement('div', { style: { fontSize: '12px', color: '#8c8c8c', fontStyle: 'italic' } }, 
-            record.verdictReason || record.decisionSummary || 'Final validation complete. No critical alerts identified.'
+          ) :
+          React.createElement('div', { style: { fontSize: '12px', color: '#8c8c8c', fontStyle: 'italic' } },
+            translateDVReason(record.verdictReason || record.decisionSummary) || t.agent.finalValidationComplete
           )
       ),
       React.createElement('div', { style: { display: 'flex', gap: 10, alignItems: 'center', flexShrink: 0 } },
@@ -5500,9 +5595,9 @@ function renderDVDetailPanel(record: any) {
           var rg = record.riskGate || {};
           var rgStatus = rg.status || 'N/A';
           var rgColor = rgStatus === 'PASS' ? 'green' : rgStatus === 'REVIEW' ? 'gold' : rgStatus === 'BLOCK' ? 'red' : 'default';
-          var rgLabel = rgStatus === 'BLOCK' ? 'Blocked' : rgStatus;
-          return React.createElement(Tooltip, { title: rg.reason || 'No risk gate data' },
-            React.createElement(Tag, { color: rgColor, style: { fontSize: '10px', margin: 0, padding: '0 8px', fontWeight: 700, borderRadius: '4px' } }, 'GATE: ' + rgLabel)
+          var rgLabel = rgStatus === 'BLOCK' ? t.agent.gateBlocked : rgStatus === 'N/A' ? t.agent.naLabel : rgStatus;
+          return React.createElement(Tooltip, { title: rg.reason || t.agent.noRiskGateData },
+            React.createElement(Tag, { color: rgColor, style: { fontSize: '10px', margin: 0, padding: '0 8px', fontWeight: 700, borderRadius: '4px' } }, t.agent.gatePrefix + ': ' + rgLabel)
           );
         })(),
         // Final Verdict badge
@@ -5811,7 +5906,7 @@ function renderDVDetailPanel(record: any) {
                         boxShadow: pipelineMode === m ? '0 2px 4px rgba(0,0,0,0.1)' : 'none'
                       }}
                     >
-                      {m === 'ai' ? 'AI' : m === 'hybrid' ? 'Hybrid' : 'Manual'}
+                      {m === 'ai' ? t.agent.modeAI : m === 'hybrid' ? t.agent.modeHybrid : t.agent.modeManual}
                     </Button>
                   ))}
                 </div>
@@ -5835,7 +5930,7 @@ function renderDVDetailPanel(record: any) {
                         boxShadow: pipelineSchedule === s ? '0 2px 4px rgba(0,0,0,0.1)' : 'none'
                       }}
                     >
-                      {s === 'off' ? 'Off' : s}
+                      {s === 'off' ? t.agent.scheduleOff : s === '15m' ? t.agent.schedule15m : s === '30m' ? t.agent.schedule30m : s === '1h' ? t.agent.schedule1h : t.agent.schedule2h}
                     </Button>
                   ))}
                 </div>
@@ -5852,12 +5947,12 @@ function renderDVDetailPanel(record: any) {
                   {lastPipelineRun ? (
                     <div style={{ color: '#595959' }}>
                       <ClockCircleOutlined style={{ marginRight: 6, opacity: 0.6 }} />
-                      Last: <Text strong>{new Date(lastPipelineRun).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                      {t.agent.lastRunLabel}<Text strong>{new Date(lastPipelineRun).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
                       {(() => {
                         const result = scannerStateStore.getPipelineSchedule().lastRunResult;
-                        if (result === 'success') return <Tag color="green" bordered={false} style={{ fontSize: 9, marginLeft: 6 }}>OK</Tag>;
-                        if (result === 'failed') return <Tag color="red" bordered={false} style={{ fontSize: 9, marginLeft: 6 }}>FAILED</Tag>;
-                        if (result === 'stopped') return <Tag color="orange" bordered={false} style={{ fontSize: 9, marginLeft: 6 }}>STOPPED</Tag>;
+                        if (result === 'success') return <Tag color="green" bordered={false} style={{ fontSize: 9, marginLeft: 6 }}>{t.agent.statusOK}</Tag>;
+                        if (result === 'failed') return <Tag color="red" bordered={false} style={{ fontSize: 9, marginLeft: 6 }}>{t.agent.statusFailed}</Tag>;
+                        if (result === 'stopped') return <Tag color="orange" bordered={false} style={{ fontSize: 9, marginLeft: 6 }}>{t.agent.statusStopped}</Tag>;
                         return null;
                       })()}
                     </div>
@@ -5866,7 +5961,7 @@ function renderDVDetailPanel(record: any) {
                   {nextPipelineRun && pipelineSchedule !== 'off' && (
                     <div style={{ color: '#1890ff', marginTop: 2 }}>
                       <ThunderboltOutlined style={{ marginRight: 6 }} /> 
-                      Next: <Text strong style={{ color: '#1890ff' }}>{new Date(nextPipelineRun).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                      {t.agent.nextRunLabel}<Text strong style={{ color: '#1890ff' }}>{new Date(nextPipelineRun).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
                     </div>
                   )}
                 </div>
@@ -6042,7 +6137,7 @@ function renderDVDetailPanel(record: any) {
                     render: (v: number) => <span style={{ color: (v || 0) >= 0 ? '#10b981' : '#ef4444', fontWeight: 800, fontSize: 14, fontFamily: 'Inter, -apple-system, sans-serif' }}>{(v || 0) >= 0 ? '+' : ''}{((v || 0) * 100).toFixed(2)}%</span>
                   },
                   {
-                    title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.buy}</span>,
+                    title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.sell}</span>,
                     key: 'sell',
                     width: 180,
                     fixed: 'right' as const,
@@ -6075,7 +6170,7 @@ function renderDVDetailPanel(record: any) {
                           style={{ borderRadius: 8, height: 32, fontSize: 12, fontWeight: 700, width: '100%' }}
                           onClick={() => openSellModal(record.symbol, record.qty)}
                         >
-                          Sell
+                          {t.agent.sell}
                         </Button>
                       );
                     },
@@ -6143,12 +6238,12 @@ function renderDVDetailPanel(record: any) {
             message={
               <div style={{ fontSize: 13, fontWeight: 500 }}>
                 {pipelineMode === 'ai' && tradingAccountMode === 'paper'
-                  ? 'AI Mode + Paper: Qualified BUY plans are auto-submitted to Paper Trading. Blocked plans remain for review.'
+                  ? t.agent.aiModePaperDesc
                   : pipelineMode === 'ai' && tradingAccountMode === 'real'
-                    ? 'AI Mode + Live: Staged orders require manual confirmation using configured risk gates.'
+                    ? t.agent.aiModeLiveDesc
                     : pipelineMode === 'hybrid'
-                      ? 'Hybrid Mode: Candidates are prepared for your review and manual submission.'
-                      : 'Manual Mode: Stage candidates from Watchlist and submit orders manually.'}
+                      ? t.agent.hybridModeDesc
+                      : t.agent.manualModeDesc}
               </div>
             }
             style={{ marginBottom: 16, borderRadius: 10 }}
@@ -6188,7 +6283,7 @@ function renderDVDetailPanel(record: any) {
               }}
               columns={[
                 {
-                  title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>Symbol</span>,
+                  title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.colSymbol}</span>,
                   dataIndex: 'symbol',
                   key: 'symbol',
                   width: 90,
@@ -6247,8 +6342,8 @@ function renderDVDetailPanel(record: any) {
                     const sCol = s === 'PASS' ? 'green' : s === 'REVIEW' ? 'gold' : 'red';
                     return (
                       <div style={{ display: 'flex', gap: 4 }}>
-                        <Tag color={dCol} bordered={false} style={{ fontSize: 9, margin: 0, fontWeight: 800, borderRadius: 4, width: 45, textAlign: 'center' }}>{d}</Tag>
-                        <Tag color={sCol} bordered={false} style={{ fontSize: 9, margin: 0, fontWeight: 800, borderRadius: 4, width: 60, textAlign: 'center' }}>GATE:{s}</Tag>
+                        <Tag color={dCol} bordered={false} style={{ fontSize: 9, margin: 0, fontWeight: 800, borderRadius: 4, width: 45, textAlign: 'center' }}>{translateStatus(d)}</Tag>
+                        <Tag color={sCol} bordered={false} style={{ fontSize: 9, margin: 0, fontWeight: 800, borderRadius: 4, width: 60, textAlign: 'center' }}>{t.agent.riskGate}:{translateStatus(s)}</Tag>
                       </div>
                     );
                   },
@@ -6307,10 +6402,12 @@ function renderDVDetailPanel(record: any) {
                             <Input
                               size="small"
                               type="number"
-                              value={r.userQty || 1}
-                              onChange={e => updateField('userQty', parseInt(e.target.value) || 0)}
+                              value={r.userQty || ''}
+                              onChange={e => updateField('userQty', parseFloat(e.target.value) || 0)}
                               style={{ width: '100%', fontSize: 11, borderRadius: 4, height: 26 }}
-                              min={1}
+                              min={0.0001}
+                              step={0.01}
+                              placeholder="e.g. 0.5"
                             />
                           )}
                         </div>
@@ -6714,7 +6811,9 @@ function renderDVDetailPanel(record: any) {
                       else setModalUserQty(v);
                     }}
                     style={{ width: 150, fontSize: 12 }}
-                    min={0}
+                    min={modalQtyMode === 'shares' ? 0.0001 : 0}
+                    step={modalQtyMode === 'shares' ? 0.01 : 1}
+                    placeholder={modalQtyMode === 'shares' ? 'e.g. 0.5' : '0.00'}
                   />
                 </div>
 
@@ -7071,7 +7170,7 @@ function renderDVDetailPanel(record: any) {
                     width: 130,
                     render: (record: any) => {
                       const r = getWatchlistReadiness(record);
-                      return <Tag color={getReadinessColor(r)} bordered={false} style={{ fontSize: 10, fontWeight: 800, padding: '0 10px', borderRadius: 6, height: 22, lineHeight: '22px' }}>{r.toUpperCase()}</Tag>;
+                      return <Tag color={getReadinessColor(r)} bordered={false} style={{ fontSize: 10, fontWeight: 800, padding: '0 10px', borderRadius: 6, height: 22, lineHeight: '22px' }}>{translateReadiness(r).toUpperCase()}</Tag>;
                     },
                   },
                   {
@@ -7156,11 +7255,11 @@ function renderDVDetailPanel(record: any) {
         title={t.agent.marketScanner}
         icon={<LineChartOutlined />}
         statusText={
-          detailedScanStatus.currentStatus === 'scanning' ? 'SCANNING' :
-          detailedScanStatus.currentStatus === 'completed' ? 'COMPLETED' :
-          detailedScanStatus.currentStatus === 'error' ? 'ERROR' :
-          detailedScanStatus.currentStatus === 'stopping' ? 'STOPPING' :
-          detailedScanStatus.currentStatus === 'stopped' ? 'STOPPED' : 'IDLE'
+          detailedScanStatus.currentStatus === 'scanning' ? t.agent.statusScanning :
+          detailedScanStatus.currentStatus === 'completed' ? t.agent.statusCompleted :
+          detailedScanStatus.currentStatus === 'error' ? t.agent.statusError :
+          detailedScanStatus.currentStatus === 'stopping' ? t.agent.statusStopping :
+          detailedScanStatus.currentStatus === 'stopped' ? t.agent.statusStopped2 : t.agent.statusIdle
         }
         statusColor={
           detailedScanStatus.currentStatus === 'scanning' ? 'processing' :
@@ -7256,11 +7355,11 @@ function renderDVDetailPanel(record: any) {
                          detailedScanStatus.currentStatus === 'error' ? '#ff4d4f' :
                          detailedScanStatus.currentStatus === 'stopped' || detailedScanStatus.currentStatus === 'stopping' ? '#faad14' : '#8c8c8c'
                 }}>
-                  {detailedScanStatus.currentStatus === 'scanning' ? 'SCANNING' :
-                   detailedScanStatus.currentStatus === 'completed' ? 'COMPLETED' :
-                   detailedScanStatus.currentStatus === 'error' ? 'ERROR' :
-                   detailedScanStatus.currentStatus === 'stopping' ? 'STOPPING' :
-                   detailedScanStatus.currentStatus === 'stopped' ? 'STOPPED' : 'IDLE'}
+                  {detailedScanStatus.currentStatus === 'scanning' ? t.agent.statusScanning :
+                   detailedScanStatus.currentStatus === 'completed' ? t.agent.statusCompleted :
+                   detailedScanStatus.currentStatus === 'error' ? t.agent.statusError :
+                   detailedScanStatus.currentStatus === 'stopping' ? t.agent.statusStopping :
+                   detailedScanStatus.currentStatus === 'stopped' ? t.agent.statusStopped2 : t.agent.statusIdle}
                 </Text>
               </div>
             </Col>
@@ -7271,9 +7370,9 @@ function renderDVDetailPanel(record: any) {
               </div>
               <Text type="secondary" style={{ fontSize: '13px' }}>
                 {detailedScanStatus.currentStatus === 'scanning'
-                  ? `${detailedScanStatus.processedCount}/${detailedScanStatus.totalCount} symbols`
-                  : detailedScanStatus.currentStatus === 'completed' ? `Completed ${detailedScanStatus.totalCount}/${detailedScanStatus.totalCount}` :
-                    detailedScanStatus.currentStatus === 'stopped' ? `Stopped at ${detailedScanStatus.processedCount}/${detailedScanStatus.totalCount}` : 'Idle'}
+                  ? `${detailedScanStatus.processedCount}/${detailedScanStatus.totalCount} ${t.agent.progressSymbols}`
+                  : detailedScanStatus.currentStatus === 'completed' ? `${t.agent.progressCompletedPrefix} ${detailedScanStatus.totalCount}/${detailedScanStatus.totalCount}` :
+                    detailedScanStatus.currentStatus === 'stopped' ? `${t.agent.progressStoppedAtPrefix} ${detailedScanStatus.processedCount}/${detailedScanStatus.totalCount}` : t.agent.progressIdleText}
               </Text>
             </Col>
 
@@ -7580,6 +7679,7 @@ function renderDVDetailPanel(record: any) {
                     render: (volume: number, record: any) => {
                       const status = record.volumeStatus || 'Normal';
                       const statusColor = status === 'High' ? '#ff4d4f' : status === 'Low' ? '#52c41a' : '#faad14';
+                      const volumeStatusMap: Record<string, string> = { 'High': t.agent.volumeHigh, 'Normal': t.agent.volumeNormal, 'Low': t.agent.volumeLow };
                       return (
                         <div>
                           <div style={{ fontSize: '13px', fontWeight: 600, color: '#262626' }}>
@@ -7596,7 +7696,7 @@ function renderDVDetailPanel(record: any) {
                               backgroundColor: `${statusColor}10`,
                               border: `1px solid ${statusColor}30`
                             }}>
-                              {status}
+                              {volumeStatusMap[status] || status}
                             </span>
                           </div>
                         </div>
@@ -7609,12 +7709,14 @@ function renderDVDetailPanel(record: any) {
                     key: 'newsSentiment',
                     width: 140,
                     render: (sentiment: string, record: any) => {
+                      const sentimentMap: Record<string, string> = { 'Positive': t.agent.sentimentPositive, 'Negative': t.agent.sentimentNegative, 'Mixed': t.agent.sentimentMixed };
+                      const riskLevelMap: Record<string, string> = { 'High': t.agent.riskHigh, 'Medium': t.agent.riskMedium, 'Low': t.agent.riskLow };
                       let color = '#8c8c8c';
                       let icon = '⚪';
                       if (sentiment === 'Positive') { color = '#52c41a'; icon = '📈'; }
                       else if (sentiment === 'Negative') { color = '#ff4d4f'; icon = '📉'; }
                       else if (sentiment === 'Mixed') { color = '#faad14'; icon = '📊'; }
-                      
+
                       const risk = record.eventRisk || 'Low';
                       const riskColor = risk === 'High' ? '#ff4d4f' : risk === 'Medium' ? '#faad14' : '#52c41a';
 
@@ -7622,10 +7724,10 @@ function renderDVDetailPanel(record: any) {
                         <div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                             <span style={{ fontSize: '14px' }}>{icon}</span>
-                            <span style={{ fontSize: '12px', fontWeight: 600, color }}>{sentiment || 'N/A'}</span>
+                            <span style={{ fontSize: '12px', fontWeight: 600, color }}>{sentimentMap[sentiment] || sentiment || 'N/A'}</span>
                           </div>
                           <div style={{ fontSize: '10px', color: '#8c8c8c', marginTop: 4 }}>
-                            Risk: <span style={{ color: riskColor, fontWeight: 700 }}>{risk}</span>
+                            {t.agent.riskPrefix}: <span style={{ color: riskColor, fontWeight: 700 }}>{riskLevelMap[risk] || risk}</span>
                           </div>
                         </div>
                       );
@@ -7641,7 +7743,7 @@ function renderDVDetailPanel(record: any) {
                       const hasTrend = record.trendLabel != null;
                       const dqOk = hasPrice && hasVolume && hasTrend;
                       const dq = dqOk ? t.agent.goodData : t.agent.partialData;
-                      const dqColor = dq === 'Good' ? '#52c41a' : '#faad14';
+                      const dqColor = dqOk ? '#52c41a' : '#faad14';
                       return (
                         <div>
                           <div style={{ 
@@ -7656,7 +7758,7 @@ function renderDVDetailPanel(record: any) {
                             {dq}
                           </div>
                           <div style={{ fontSize: '10px', color: '#bfbfbf', marginTop: 2 }}>
-                            {record.aiCalled ? record.aiSource : 'Local'}
+                            {record.aiCalled ? record.aiSource : t.agent.localLabel}
                           </div>
                         </div>
                       );
@@ -7668,7 +7770,8 @@ function renderDVDetailPanel(record: any) {
                     key: 'conciseReasoning',
                     width: 250,
                     render: (reason: string, record: any) => {
-                      const displayReason = reason || record.scannerReason || record.aiReasoning || t.agent.noAnalysisAvailable;
+                      const rawReason = reason || record.scannerReason || record.aiReasoning || t.agent.noAnalysisAvailable;
+                      const displayReason = rawReason;
                       return (
                         <Tooltip title={displayReason}>
                           <div className="scanner-reasoning-text">
@@ -7729,9 +7832,9 @@ function renderDVDetailPanel(record: any) {
         title={t.agent.preferredContinueScanList}
         icon={<BarChartOutlined style={{ color: '#1890ff' }} />}
         statusText={
-          continueScanStatus === 'processing' ? 'RUNNING' :
-          continueScanStatus === 'completed' ? 'COMPLETED' :
-          continueScanStatus === 'error' ? 'ERROR' : 'READY'
+          continueScanStatus === 'processing' ? t.agent.statusRunning :
+          continueScanStatus === 'completed' ? t.agent.statusCompleted :
+          continueScanStatus === 'error' ? t.agent.statusError : t.agent.statusReady
         }
         statusColor={
           continueScanStatus === 'processing' ? 'processing' :
@@ -7770,7 +7873,7 @@ function renderDVDetailPanel(record: any) {
           {/* 状态和信息行 */}
           <div className="continue-scan-header-meta">
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span style={{ fontWeight: 600 }}>Status:</span>
+              <span style={{ fontWeight: 600 }}>{t.agent.statusLabel}:</span>
               <Tag 
                 color={
                   continueScanStatus === 'processing' ? 'blue' :
@@ -7779,16 +7882,16 @@ function renderDVDetailPanel(record: any) {
                 }
                 className="continue-scan-status-badge"
               >
-                {continueScanStatus === 'processing' ? 'RUNNING' :
-                 continueScanStatus === 'completed' ? 'COMPLETED' :
-                 continueScanStatus === 'error' ? 'ERROR' : 'READY'}
+                {continueScanStatus === 'processing' ? t.agent.statusRunning :
+                 continueScanStatus === 'completed' ? t.agent.statusCompleted :
+                 continueScanStatus === 'error' ? t.agent.statusError : t.agent.statusReady}
               </Tag>
             </div>
             <Divider type="vertical" />
-            <span><strong>Source:</strong> Market Scanner</span>
+            <span><strong>{t.agent.sourceLabel}:</strong> {t.agent.marketScanner}</span>
             <Divider type="vertical" />
             <span>
-              <strong>Selection:</strong>{' '}
+              <strong>{t.agent.selectionLabel}:</strong>{' '}
               {preferredContinueScanList.length > 0 ? (
                 preferredContinueScanList.filter(c => c.reasonSource === 'AI').length > 0 ? (
                   <Tag color="cyan" style={{ fontSize: '10px', fontWeight: 700 }}>{t.agent.aiRules}</Tag>
@@ -7798,7 +7901,7 @@ function renderDVDetailPanel(record: any) {
               ) : '—'}
             </span>
             <Divider type="vertical" />
-            <span><strong>Pool:</strong> {marketScannerResults.length} symbols</span>
+            <span><strong>{t.agent.poolLabel}:</strong> {marketScannerResults.length} {t.agent.symbolsLabel}</span>
             {detailedScanStatus.lastScanAt && (
               <>
                 <Divider type="vertical" />
@@ -8127,7 +8230,7 @@ function renderDVDetailPanel(record: any) {
                           const dq = record.dataQuality || 'PARTIAL';
                           const color = dq === 'GOOD' ? '#52c41a' : '#faad14';
                           return (
-                            <Tooltip title={`Quality: ${dq} | Source: ${record.dataSource || 'N/A'}`}>
+                            <Tooltip title={`${t.agent.qualityLabel}: ${dq} | ${t.agent.sourceLabel}: ${record.dataSource || 'N/A'}`}>
                               <div style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'help' }}>
                                 <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: color }} />
                                 <span style={{ fontSize: '10px', fontWeight: 700, color: '#8c8c8c' }}>{dq}</span>
@@ -8217,10 +8320,10 @@ function renderDVDetailPanel(record: any) {
         title={t.agent.fineScan}
         icon={<ThunderboltOutlined />}
         statusText={
-          fineScanStatus === 'running' ? 'RUNNING' :
-          fineScanStatus === 'completed' ? 'COMPLETED' :
-          fineScanStatus === 'stopped' ? 'STOPPED' :
-          fineScanStatus === 'error' ? 'ERROR' : 'IDLE'
+          fineScanStatus === 'running' ? t.agent.statusRunning :
+          fineScanStatus === 'completed' ? t.agent.statusCompleted :
+          fineScanStatus === 'stopped' ? t.agent.statusStopped :
+          fineScanStatus === 'error' ? t.agent.statusError : t.agent.statusIdle
         }
         statusColor={
           fineScanStatus === 'running' ? 'processing' :
@@ -8331,7 +8434,7 @@ function renderDVDetailPanel(record: any) {
                     {fineScanStatus === 'stopped' ? t.agent.fineScanInterrupted : t.agent.scanningRegimeStrategies}
                   </div>
                   <div style={{ fontSize: '14px', color: fineScanStatus === 'stopped' ? '#d48806' : '#1890ff', marginTop: 4, fontWeight: 500 }}>
-                    {fineScanMessage || 'Processing market data for selected candidates...'}
+                    {fineScanMessage || t.agent.processingMarketData}
                   </div>
                 </div>
                 <div style={{ textAlign: 'right' }}>
@@ -8425,13 +8528,15 @@ function renderDVDetailPanel(record: any) {
                     let c = '#999', l = d;
                     const source = record.decisionSource || 'local-rule';
                     const sourceLabel = source === 'ai' ? 'AI' : t.agent.localRules;
-                    if (d === 'Continue') { c = '#52c41a'; l = 'Continue'; }
-                    else if (d === 'Watch') { c = '#faad14'; l = 'Watch'; }
-                    else if (d === 'Reject') { c = '#ff4d4f'; l = 'Reject'; }
-                    else if (d === 'NeedMoreData') { c = '#fa8c16'; l = 'Need Data'; }
-                    else if (d === 'Skip') { c = '#ff4d4f'; l = 'Skip'; }
+                    const decisionMap: Record<string, string> = { 'Continue': t.agent.dvSourceContinue, 'Watch': t.agent.dvVerdictWatch, 'Reject': t.agent.dvVerdictRejected, 'NeedMoreData': t.agent.needDataLabel?.replace(':', '') || 'Need Data', 'Skip': t.agent.skip || 'Skip' };
+                    if (d === 'Continue') { c = '#52c41a'; }
+                    else if (d === 'Watch') { c = '#faad14'; }
+                    else if (d === 'Reject') { c = '#ff4d4f'; }
+                    else if (d === 'NeedMoreData') { c = '#fa8c16'; }
+                    else if (d === 'Skip') { c = '#ff4d4f'; }
+                    l = decisionMap[d] || d;
                     return (
-                      <Tooltip title={`Source: ${source}${record.decisionReason ? ' | ' + record.decisionReason : ''}`}>
+                      <Tooltip title={`${t.agent.sourceLabel}: ${source}${record.decisionReason ? ' | ' + record.decisionReason : ''}`}>
                         <div style={{ display: 'flex', flexDirection: 'column' }}>
                           <span style={{ color: c, fontSize: '13px', fontWeight: 700 }}>{l}</span>
                           <span style={{ fontSize: '10px', color: '#bfbfbf', fontWeight: 600, textTransform: 'uppercase' }}>{sourceLabel}</span>
@@ -8452,10 +8557,10 @@ function renderDVDetailPanel(record: any) {
                     const warnings = record.decisionWarnings || [];
                     const parts: string[] = [];
                     if (d !== 'Continue' && blockers.length > 0) {
-                      parts.push('Block: ' + blockers.slice(0, 2).join('; '));
+                      parts.push((t.agent.blockLabel || 'Block') + ': ' + blockers.slice(0, 2).join('; '));
                     }
                     if (warnings.length > 0) {
-                      parts.push('Warn: ' + warnings.slice(0, 2).join('; '));
+                      parts.push((t.agent.warnLabel || 'Warn') + ': ' + warnings.slice(0, 2).join('; '));
                     }
                     if (reason && parts.length === 0) {
                       parts.push(reason.length > 100 ? reason.slice(0, 100) + '...' : reason);
@@ -8525,7 +8630,7 @@ function renderDVDetailPanel(record: any) {
                     else if (lg === 'Caution') { c = '#faad14'; l = t.agent.caution; }
                     else if (lg === 'Poor') { c = '#ff4d4f'; l = t.agent.poorRR; }
                     else if (lg === 'Error' || lg === 'Data Unavailable' || lg === 'Unknown') { c = '#bbb'; l = 'N/A'; }
-                    else if (lg === 'Partial') { c = '#faad14'; l = 'Partial'; }
+                    else if (lg === 'Partial') { c = '#faad14'; l = t.agent.partialLabel; }
                     return <span style={{ color: c, fontSize: '13px', fontWeight: 700 }}>{l}</span>;
                   },
                 },
@@ -8543,8 +8648,8 @@ function renderDVDetailPanel(record: any) {
                     else if (eq === 'Chasing / Extended') { c = '#ff7a45'; l = t.agent.extended; }
                     else if (eq === 'Near Resistance') { c = '#ff4d4f'; l = t.agent.nearRes; }
                     else if (eq === 'Poor Reward-Risk') { c = '#ff4d4f'; l = t.agent.poorRR; }
-                    else if (eq === 'Partial') { c = '#b37feb'; l = 'Partial'; }
-                    else if (eq === 'Data Unavailable' || eq === 'Error / No Data') { c = '#bbb'; l = 'No Data'; }
+                    else if (eq === 'Partial') { c = '#b37feb'; l = t.agent.partialLabel; }
+                    else if (eq === 'Data Unavailable' || eq === 'Error / No Data') { c = '#bbb'; l = t.agent.fineScanNoData; }
                     return <span style={{ color: c, fontSize: '13px', fontWeight: 700 }}>{l}</span>;
                   },
                 },
@@ -8559,7 +8664,7 @@ function renderDVDetailPanel(record: any) {
                     if (ps === 'positive') { pc = '#52c41a'; pl = t.agent.positive; }
                     else if (ps === 'negative') { pc = '#ff4d4f'; pl = t.agent.negative; }
                     else if (ps === 'caution') { pc = '#faad14'; pl = t.agent.caution; }
-                    const optStatus = record.quickOptStatus || 'Not Run';
+                    const optStatus = record.quickOptStatus || 'not_run';
                     let stLabel = 'N/A', stColor = '#999';
                     if (optStatus === 'completed') {
                       const qr = record.quickOptResults || [];
@@ -8691,10 +8796,10 @@ function renderDVDetailPanel(record: any) {
         title={t.agent.deeperValidation}
         icon={<BarChartOutlined />}
         statusText={
-          deeperValidationStatus === 'loading' ? 'VALIDATING' :
-          deeperValidationStatus === 'completed' ? 'COMPLETED' :
-          deeperValidationStatus === 'stopped' ? 'INTERRUPTED' :
-          deeperValidationStatus === 'error' ? 'ERROR' : 'IDLE'
+          deeperValidationStatus === 'loading' ? t.agent.statusValidating :
+          deeperValidationStatus === 'completed' ? t.agent.statusCompleted :
+          deeperValidationStatus === 'stopped' ? t.agent.statusInterrupted :
+          deeperValidationStatus === 'error' ? t.agent.statusError : t.agent.statusIdle
         }
         statusColor={
           deeperValidationStatus === 'loading' ? 'processing' :
@@ -8736,9 +8841,9 @@ function renderDVDetailPanel(record: any) {
             {deeperValidationStatus === 'loading' ? t.agent.validating : (() => {
               const bd = validationCandidateBreakdown();
               if (bd.watchCount > 0) {
-                return `Run Validation (${bd.continueCount}C + ${bd.watchCount}W = ${bd.total})`;
+                return `${t.agent.runValidation} (${bd.continueCount}C + ${bd.watchCount}W = ${bd.total})`;
               }
-              return `Run Validation (${bd.total})`;
+              return `${t.agent.runValidation} (${bd.total})`;
             })()}
               </Button>
             </span>
@@ -8805,7 +8910,7 @@ function renderDVDetailPanel(record: any) {
                   pagination={false}
                   scroll={{ x: 1600 }}
                   expandable={{
-                    expandedRowRender: (record: any) => renderDVDetailPanel(record),
+                    expandedRowRender: (record: any) => renderDVDetailPanel(record, t, language),
                     rowExpandable: () => true,
                     expandIcon: ({ expanded, onExpand, record }) => (
                       <Button
@@ -8842,7 +8947,7 @@ function renderDVDetailPanel(record: any) {
                         const isContinue = src === 'Continue';
                         return (
                           <Tag color={isContinue ? 'success' : 'warning'} style={{ fontSize: '9px', margin: 0, padding: '0 4px' }}>
-                            {isContinue ? 'Continue' : 'Watch→Val'}
+                            {isContinue ? t.agent.dvSourceContinue : t.agent.dvSourceWatch}
                           </Tag>
                         );
                       },
@@ -8934,9 +9039,10 @@ function renderDVDetailPanel(record: any) {
                       key: 'trend',
                       width: 100,
                       render: (record: any) => {
-                        const t = record.recentVsLongTerm || 'N/A';
-                        const color = t === 'Improving' || t === 'Consistent' ? 'blue' : t === 'Weakening' ? 'warning' : 'error';
-                        return <Tag className="validation-badge" color={color} style={{ margin: 0 }}>{t}</Tag>;
+                        const trendVal = record.recentVsLongTerm || 'N/A';
+                        const trendMap: Record<string, string> = { 'Improving': t.agent.dvTrendImproving, 'Consistent': t.agent.dvTrendConsistent, 'Weakening': t.agent.dvTrendWeakening };
+                        const color = trendVal === 'Improving' || trendVal === 'Consistent' ? 'blue' : trendVal === 'Weakening' ? 'warning' : 'error';
+                        return <Tag className="validation-badge" color={color} style={{ margin: 0 }}>{trendMap[trendVal] || trendVal}</Tag>;
                       },
                     },
                     {
@@ -8945,8 +9051,9 @@ function renderDVDetailPanel(record: any) {
                       width: 100,
                       render: (record: any) => {
                         const v = record.verdict || 'Review';
+                        const verdictMap: Record<string, string> = { 'Confirmed': t.agent.dvVerdictConfirmed, 'Pass': t.agent.dvVerdictPass, 'Rejected': t.agent.dvVerdictRejected, 'Review': t.agent.dvVerdictReview, 'Watch': t.agent.dvVerdictWatch };
                         const color = (v === 'Confirmed' || v === 'Pass') ? 'success' : v === 'Rejected' ? 'error' : 'warning';
-                        return <Tag className="validation-badge" color={color} style={{ margin: 0 }}>{v}</Tag>;
+                        return <Tag className="validation-badge" color={color} style={{ margin: 0 }}>{verdictMap[v] || v}</Tag>;
                       },
                     },
                     {
@@ -8956,9 +9063,10 @@ function renderDVDetailPanel(record: any) {
                       render: (record: any) => {
                         const rg = record.riskGate?.status || 'N/A';
                         const color = rg === 'PASS' ? 'success' : rg === 'BLOCK' ? 'error' : 'warning';
+                        const rgDisplay = rg === 'N/A' ? t.agent.naLabel : rg === 'BLOCK' ? t.agent.gateBlocked : rg;
                         return (
                           <Tooltip title={record.riskGate?.reason}>
-                            <Tag className="validation-badge" color={color} style={{ margin: 0, cursor: 'help' }}>{rg}</Tag>
+                            <Tag className="validation-badge" color={color} style={{ margin: 0, cursor: 'help' }}>{rgDisplay}</Tag>
                           </Tooltip>
                         );
                       },
@@ -8967,13 +9075,37 @@ function renderDVDetailPanel(record: any) {
                       title: t.agent.colAnalysisReason,
                       key: 'reason',
                       width: 250,
-                      render: (record: any) => (
+                      render: (record: any) => {
+                        const reasonText = record.reason || '';
+                        const translatedReason = language === 'zh-CN' && reasonText ? reasonText
+                          .replace(/\bConfirmed\b/g, t.agent.dvReasonConfirmed)
+                          .replace(/\bWatch\b/g, t.agent.dvReasonWatch)
+                          .replace(/\bReject\b/g, t.agent.dvReasonReject)
+                          .replace(/\bWeakening\b/g, t.agent.dvTrendWeakening)
+                          .replace(/\brecent Weakening\b/g, t.agent.dvReasonRecentWeakening)
+                          .replace(/\bparameter sets profitable\b/g, t.agent.dvReasonParamProfitable)
+                          .replace(/\bmedian return\b/g, t.agent.dvReasonMedianReturn)
+                          .replace(/\bmedian sharpe\b/g, t.agent.dvReasonMedianSharpe)
+                          .replace(/\bprofit factor\b/gi, t.agent.dvReasonProfitFactor)
+                          .replace(/\bsharpe\b/gi, t.agent.dvReasonSharpe)
+                          .replace(/\breturn\b/gi, t.agent.dvReasonReturn)
+                          .replace(/\bdrawdown\b/gi, t.agent.dvReasonDrawdown)
+                          .replace(/\bwin rate\b/gi, t.agent.dvReasonWinRate)
+                          .replace(/\btrades\b/gi, t.agent.dvReasonTrades)
+                          .replace(/\bSample Limited\b/gi, t.agent.dvReasonSampleLimited)
+                          .replace(/\bStable\b/g, t.agent.stableLabel)
+                          .replace(/\bWeak\b/g, t.agent.weakLabel)
+                          .replace(/\bModerate\b/g, t.agent.moderateLabel)
+                          .replace(/\bcombinations tested\b/g, t.agent.testedCombos)
+                          : reasonText;
+                        return (
                         <Tooltip title={record.reason}>
                           <div className="validation-reason">
-                            {record.reason || t.agent.epNoDetailedAnalysis}
+                            {translatedReason || t.agent.epNoDetailedAnalysis}
                           </div>
                         </Tooltip>
-                      ),
+                        );
+                      },
                     },
                     {
                       title: t.agent.colSrc,
@@ -9062,22 +9194,20 @@ function renderDVDetailPanel(record: any) {
           { label: t.agent.buyLabel, value: entryPlanResults.filter((p: any) => p.aiDecision === 'BUY').length, color: '#52c41a' },
         ] : undefined}
         actionButton={
-          (deeperValidationStatus === 'completed' || deeperValidationStatus === 'stopped') && getEntryPlanCandidates().length > 0 ? (
-            <Tooltip title={pipelineRunning ? t.agent.pipelineDisabled : ''}>
-              <span>
-                <Button
-                  type="primary"
-                  icon={<ThunderboltOutlined />}
-                  loading={entryPlanStatus === 'loading'}
-                  disabled={entryPlanStatus === 'loading' || !getEntryPlanCandidates().length || pipelineRunning}
-                  onClick={handleRunEntryPlan}
-                  style={AI_AGENT_PRIMARY_BTN_STYLE}
-                >
-                  {t.agent.runEntryPlan}
-                </Button>
-              </span>
-            </Tooltip>
-          ) : undefined
+          <Tooltip title={pipelineRunning ? t.agent.pipelineDisabled : !getEntryPlanCandidates().length ? t.agent.noConfirmedOrWatch : ''}>
+            <span>
+              <Button
+                type="primary"
+                icon={<ThunderboltOutlined />}
+                loading={entryPlanStatus === 'loading'}
+                disabled={entryPlanStatus === 'loading' || !getEntryPlanCandidates().length || pipelineRunning}
+                onClick={handleRunEntryPlan}
+                style={AI_AGENT_PRIMARY_BTN_STYLE}
+              >
+                {t.agent.runEntryPlan}
+              </Button>
+            </span>
+          </Tooltip>
         }
         isRunning={entryPlanStatus === 'loading'}
         expanded={entryPlanExpanded}

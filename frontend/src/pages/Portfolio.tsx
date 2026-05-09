@@ -6,11 +6,14 @@ import {
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer } from 'recharts';
 import { PieChartOutlined, ReloadOutlined } from '@ant-design/icons';
 import aiTradingService from '../services/aiTradingService';
+import { useLanguage } from '../contexts/LanguageContext';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
 
 const Portfolio: React.FC = () => {
+  const { t } = useLanguage();
+
   const [accountSnapshot, setAccountSnapshot] = useState({
     cash: 0, equity: 0, buyingPower: 0, portfolioValue: 0,
     positionsCount: 0, openOrdersCount: 0, accountNumber: '', status: ''
@@ -90,25 +93,25 @@ const Portfolio: React.FC = () => {
   };
 
   const positionsColumns = [
-    { title: 'Asset', dataIndex: 'symbol', key: 'symbol', render: (t: string) => <span style={{ fontWeight: 700 }}>{t}</span> },
-    { title: 'Price', dataIndex: 'currentPrice', key: 'currentPrice', render: (v: any) => { const n = Number(v); return Number.isFinite(n) ? `$${n.toFixed(2)}` : '-'; }},
-    { title: 'Qty', dataIndex: 'qty', key: 'qty', render: (v: any) => { const n = Number(v); return Number.isFinite(n) ? n.toFixed(2) : '-'; }},
-    { title: 'Side', dataIndex: 'side', key: 'side', render: (s: string) => <Tag color={s === 'long' ? 'green' : 'red'}>{(s || '').toUpperCase()}</Tag> },
-    { title: 'Market Value', dataIndex: 'marketValue', key: 'marketValue', render: (v: any) => { const n = Number(v); return Number.isFinite(n) ? `$${n.toFixed(2)}` : '-'; }},
-    { title: 'Avg Entry', dataIndex: 'avgEntryPrice', key: 'avgEntry', render: (v: any) => { const n = Number(v); return Number.isFinite(n) ? `$${n.toFixed(2)}` : '-'; }},
-    { title: 'P/L ($)', dataIndex: 'totalPlValue', key: 'pl', render: (v: any) => { const n = Number(v); return Number.isFinite(n) ? <span style={{ color: n >= 0 ? '#3f8600' : '#cf1322', fontWeight: 600 }}>{n >= 0 ? '+' : ''}${n.toFixed(2)}</span> : '-'; }},
-    { title: 'P/L (%)', dataIndex: 'totalPlPercent', key: 'plpct', render: (v: any) => { const n = Number(v); return Number.isFinite(n) ? <span style={{ color: n >= 0 ? '#3f8600' : '#cf1322', fontWeight: 600 }}>{n >= 0 ? '+' : ''}{n.toFixed(2)}%</span> : '-'; }},
+    { title: t.portfolio.colAsset, dataIndex: 'symbol', key: 'symbol', render: (v: string) => <span style={{ fontWeight: 700 }}>{v}</span> },
+    { title: t.portfolio.colPrice, dataIndex: 'currentPrice', key: 'currentPrice', render: (v: any) => { const n = Number(v); return Number.isFinite(n) ? `$${n.toFixed(2)}` : '-'; }},
+    { title: t.portfolio.colQty, dataIndex: 'qty', key: 'qty', render: (v: any) => { const n = Number(v); return Number.isFinite(n) ? n.toFixed(2) : '-'; }},
+    { title: t.portfolio.colSide, dataIndex: 'side', key: 'side', render: (s: string) => <Tag color={s === 'long' ? 'green' : 'red'}>{(s || '').toUpperCase()}</Tag> },
+    { title: t.portfolio.colMarketValue, dataIndex: 'marketValue', key: 'marketValue', render: (v: any) => { const n = Number(v); return Number.isFinite(n) ? `$${n.toFixed(2)}` : '-'; }},
+    { title: t.portfolio.colAvgEntry, dataIndex: 'avgEntryPrice', key: 'avgEntry', render: (v: any) => { const n = Number(v); return Number.isFinite(n) ? `$${n.toFixed(2)}` : '-'; }},
+    { title: t.portfolio.colPL, dataIndex: 'totalPlValue', key: 'pl', render: (v: any) => { const n = Number(v); return Number.isFinite(n) ? <span style={{ color: n >= 0 ? '#3f8600' : '#cf1322', fontWeight: 600 }}>{n >= 0 ? '+' : ''}${n.toFixed(2)}</span> : '-'; }},
+    { title: t.portfolio.colPLPct, dataIndex: 'totalPlPercent', key: 'plpct', render: (v: any) => { const n = Number(v); return Number.isFinite(n) ? <span style={{ color: n >= 0 ? '#3f8600' : '#cf1322', fontWeight: 600 }}>{n >= 0 ? '+' : ''}{n.toFixed(2)}%</span> : '-'; }},
   ];
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <div>
-          <Title level={2}><PieChartOutlined style={{ marginRight: 12 }} />Portfolio</Title>
-          <Text type="secondary">Account overview, positions, and performance</Text>
+          <Title level={2}><PieChartOutlined style={{ marginRight: 12 }} />{t.portfolio.title}</Title>
+          <Text type="secondary">{t.portfolio.subtitle}</Text>
         </div>
         <Button type="primary" icon={<ReloadOutlined />} onClick={loadData} loading={loading}>
-          Refresh
+          {t.portfolio.refresh}
         </Button>
       </div>
 
@@ -116,26 +119,26 @@ const Portfolio: React.FC = () => {
 
       {/* Account Snapshot */}
       <div style={{ marginBottom: 24 }}>
-        <Title level={4}>Account Snapshot</Title>
+        <Title level={4}>{t.portfolio.accountSnapshot}</Title>
         <Card size="small" style={{ marginTop: 16 }}>
           <Row gutter={[16, 16]}>
             <Col xs={24} sm={12} lg={6}>
-              <Statistic title="Cash" value={accountSnapshot.cash} prefix="$" precision={2} />
+              <Statistic title={t.portfolio.cash} value={accountSnapshot.cash} prefix="$" precision={2} />
             </Col>
             <Col xs={24} sm={12} lg={6}>
-              <Statistic title="Equity" value={accountSnapshot.equity} prefix="$" precision={2} />
+              <Statistic title={t.portfolio.equity} value={accountSnapshot.equity} prefix="$" precision={2} />
             </Col>
             <Col xs={24} sm={12} lg={6}>
-              <Statistic title="Buying Power" value={accountSnapshot.buyingPower} prefix="$" precision={2} />
+              <Statistic title={t.portfolio.buyingPower} value={accountSnapshot.buyingPower} prefix="$" precision={2} />
             </Col>
             <Col xs={24} sm={12} lg={6}>
-              <Statistic title="Portfolio Value" value={accountSnapshot.portfolioValue} prefix="$" precision={2} />
+              <Statistic title={t.portfolio.portfolioValue} value={accountSnapshot.portfolioValue} prefix="$" precision={2} />
             </Col>
           </Row>
           <div style={{ marginTop: 16 }}>
             <Text type="secondary">
-              Account: {accountSnapshot.accountNumber || 'N/A'} | Status: {accountSnapshot.status || 'N/A'} |
-              Positions: {accountSnapshot.positionsCount} | Open Orders: {accountSnapshot.openOrdersCount}
+              {t.portfolio.accountLabel}: {accountSnapshot.accountNumber || 'N/A'} | {t.portfolio.statusLabel}: {accountSnapshot.status || 'N/A'} |
+              {t.portfolio.positionsLabel}: {accountSnapshot.positionsCount} | {t.portfolio.openOrdersLabel}: {accountSnapshot.openOrdersCount}
             </Text>
           </div>
         </Card>
@@ -143,22 +146,22 @@ const Portfolio: React.FC = () => {
 
       {/* Portfolio Performance */}
       <div style={{ marginBottom: 24 }}>
-        <Title level={4}>Portfolio Performance</Title>
+        <Title level={4}>{t.portfolio.portfolioPerformance}</Title>
         <Card>
           {portfolioHistory.length === 0 ? (
-            <Empty description="No portfolio history available" />
+            <Empty description={t.portfolio.noPortfolioHistory} />
           ) : (
             <>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
                 <Select value={portfolioRange} onChange={handlePortfolioRangeChange} style={{ width: 120 }}>
-                  <Option value="1D">1 Day</Option>
-                  <Option value="1W">1 Week</Option>
-                  <Option value="1M">1 Month</Option>
-                  <Option value="1Y">1 Year</Option>
-                  <Option value="All">All</Option>
+                  <Option value="1D">{t.portfolio.range1Day}</Option>
+                  <Option value="1W">{t.portfolio.range1Week}</Option>
+                  <Option value="1M">{t.portfolio.range1Month}</Option>
+                  <Option value="1Y">{t.portfolio.range1Year}</Option>
+                  <Option value="All">{t.portfolio.rangeAll}</Option>
                 </Select>
                 <Text strong style={{ fontSize: 16 }}>
-                  Change:
+                  {t.portfolio.change}:
                   <span style={{ color: portfolioChange.value >= 0 ? '#3f8600' : '#cf1322', marginLeft: 8 }}>
                     {portfolioChange.value >= 0 ? '+' : ''}${Number(portfolioChange.value || 0).toFixed(2)} ({Number(portfolioChange.percent || 0).toFixed(2)}%)
                   </span>
@@ -191,7 +194,7 @@ const Portfolio: React.FC = () => {
                         const ts = normalizeTimestamp(timestamp);
                         return ts ? new Date(ts).toLocaleString('en-US', { timeZone: 'America/New_York', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
                       }}
-                      formatter={(value: any) => [`$${Number(value || 0).toFixed(2)}`, 'Portfolio Value']}
+                      formatter={(value: any) => [`$${Number(value || 0).toFixed(2)}`, t.portfolio.portfolioValue]}
                     />
                     <Line type="monotone" dataKey="equity" stroke="#1890ff" strokeWidth={2} dot={false} name="Portfolio Value" />
                   </LineChart>
@@ -205,17 +208,17 @@ const Portfolio: React.FC = () => {
       {/* Alpaca Account Details */}
       {alpacaAccount && (
         <div style={{ marginBottom: 24 }}>
-          <Title level={4}>Account Details</Title>
+          <Title level={4}>{t.portfolio.accountDetails}</Title>
           <Card>
             <Descriptions column={{ xs: 1, sm: 2, lg: 3 }} size="small">
-              <Descriptions.Item label="Account ID">{alpacaAccount.accountNumber || alpacaAccount.account_number || alpacaAccount.id || 'N/A'}</Descriptions.Item>
-              <Descriptions.Item label="Status">
+              <Descriptions.Item label={t.portfolio.accountID}>{alpacaAccount.accountNumber || alpacaAccount.account_number || alpacaAccount.id || 'N/A'}</Descriptions.Item>
+              <Descriptions.Item label={t.portfolio.status}>
                 <Tag color={alpacaAccount.status === 'ACTIVE' ? 'green' : 'red'}>{alpacaAccount.status || 'N/A'}</Tag>
               </Descriptions.Item>
-              <Descriptions.Item label="Currency">{alpacaAccount.currency || 'USD'}</Descriptions.Item>
-              <Descriptions.Item label="Cash">${Number(alpacaAccount?.cash || 0).toFixed(2)}</Descriptions.Item>
-              <Descriptions.Item label="Portfolio Value">${Number(alpacaAccount?.portfolioValue || alpacaAccount?.portfolio_value || alpacaAccount?.equity || 0).toFixed(2)}</Descriptions.Item>
-              <Descriptions.Item label="Buying Power">${Number(alpacaAccount?.buyingPower || alpacaAccount?.buying_power || 0).toFixed(2)}</Descriptions.Item>
+              <Descriptions.Item label={t.portfolio.currency}>{alpacaAccount.currency || 'USD'}</Descriptions.Item>
+              <Descriptions.Item label={t.portfolio.cash}>${Number(alpacaAccount?.cash || 0).toFixed(2)}</Descriptions.Item>
+              <Descriptions.Item label={t.portfolio.portfolioValue}>${Number(alpacaAccount?.portfolioValue || alpacaAccount?.portfolio_value || alpacaAccount?.equity || 0).toFixed(2)}</Descriptions.Item>
+              <Descriptions.Item label={t.portfolio.buyingPower}>${Number(alpacaAccount?.buyingPower || alpacaAccount?.buying_power || 0).toFixed(2)}</Descriptions.Item>
             </Descriptions>
           </Card>
         </div>
@@ -223,10 +226,10 @@ const Portfolio: React.FC = () => {
 
       {/* Positions */}
       <div style={{ marginBottom: 24 }}>
-        <Title level={4}>Positions</Title>
+        <Title level={4}>{t.portfolio.positions}</Title>
         <Card>
           {alpacaPositions.length === 0 ? (
-            <Empty description="No open positions" />
+            <Empty description={t.portfolio.noPositions} />
           ) : (
             <Table
               columns={positionsColumns}
