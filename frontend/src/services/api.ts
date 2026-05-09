@@ -279,7 +279,7 @@ export const tradingAccountAPI = {
     return api.get<TradingAccountResponse>(`/trading/account?mode=${mode}`);
   },
   getPositions: (mode: 'paper' | 'real') => {
-    return api.get<{ success: boolean; mode: string; modeUsed?: string; positions: any[]; error?: string }>(`/trading/positions?mode=${mode}`);
+    return api.get<{ success: boolean; mode: string; modeUsed?: string; source?: 'alpaca_paper' | 'alpaca_real'; updatedAt?: string; reason?: string; positions: TradingPosition[]; error?: string }>(`/trading/positions?mode=${mode}`);
   },
   getOrders: (mode: 'paper' | 'real', status: string = 'open') => {
     return api.get<{ success: boolean; mode: string; modeUsed?: string; orders: any[]; error?: string }>(`/trading/orders?mode=${mode}&status=${status}`);
@@ -320,11 +320,15 @@ export const tradingAccountAPI = {
       count: number;
       range: string;
       modeUsed?: string;
+      source?: 'alpaca_paper' | 'alpaca_real';
+      updatedAt?: string;
       total_change?: number;
       total_change_pct?: number;
       first_value?: number;
       last_value?: number;
       error?: string;
+      message?: string;
+      reason?: string;
     }>(`/ai/alpaca/portfolio/history?mode=${mode}&range=${range}`);
   },
   getOrderStatus: (orderId: string, mode: 'paper' | 'real') => {
@@ -347,10 +351,36 @@ export interface TradingAccountResponse {
   portfolioValue?: number;
   longMarketValue?: number;
   shortMarketValue?: number;
+  dayTradeBuyingPower?: number;
+  initialMargin?: number;
+  maintenanceMargin?: number;
+  lastEquity?: number;
   patternDayTrader?: boolean;
   tradingBlocked?: boolean;
+  accountBlocked?: boolean;
   currency?: string;
   id?: string;
+  modeUsed?: 'paper' | 'real';
+  source?: 'alpaca_paper' | 'alpaca_real';
+  updatedAt?: string;
+  reason?: string;
+  configured?: boolean;
+}
+
+export interface TradingPosition {
+  symbol: string;
+  qty?: number;
+  side?: string;
+  avgEntryPrice?: number;
+  currentPrice?: number;
+  marketValue?: number;
+  costBasis?: number;
+  unrealizedPL?: number;
+  unrealizedPLPercent?: number;
+  changeToday?: number;
+  assetClass?: string;
+  exchange?: string;
+  lastUpdated?: string;
 }
 
 export { scannerApi };
