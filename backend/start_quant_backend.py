@@ -12027,6 +12027,28 @@ def ai_trading_environment():
 
 # ==================== Trading Account Mode API ====================
 
+def _alpaca_number(value, default=0.0):
+    """Convert Alpaca string/number fields safely without losing fractional qty."""
+    if value is None or value == '':
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _alpaca_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ('true', '1', 'yes')
+    return bool(value)
+
+
+def _alpaca_source(mode):
+    return 'alpaca_real' if mode == 'real' else 'alpaca_paper'
+
+
 @app.route('/api/trading/account', methods=['GET'])
 
 def get_trading_account():
@@ -12069,7 +12091,7 @@ def get_trading_account():
     resolved, resolve_status = resolve_alpaca_config_strict_user(mode)
 
     if resolve_status == 'auth_required':
-        return jsonify({'success': False, 'error': 'Authentication required. Please sign in.', 'mode': mode, 'available': False, 'reason': 'auth_required'})
+        return jsonify({'success': False, 'error': 'Authentication required. Please sign in.', 'mode': mode, 'available': False, 'reason': 'auth_required', 'source': _alpaca_source(mode)})
 
     if resolve_status == 'config_required' or not resolved:
         reason = 'config_required'
@@ -12078,7 +12100,7 @@ def get_trading_account():
         else:
             error_msg = 'Alpaca Real Trading is not configured. Please save your Real API Key and Secret in Settings / Configuration.'
         print(f'=== {error_msg} ===')
-        return jsonify({'success': False, 'error': error_msg, 'mode': mode, 'available': False, 'configured': False, 'reason': reason})
+        return jsonify({'success': False, 'error': error_msg, 'mode': mode, 'available': False, 'configured': False, 'reason': reason, 'source': _alpaca_source(mode)})
 
     api_key = resolved.get('api_key', '')
     api_secret = resolved.get('api_secret', '')
@@ -12091,6 +12113,7 @@ def get_trading_account():
         print(f'Calling Alpaca API ({mode} mode): {base_url}/v2/account')
 
         resp = requests.get(f'{base_url}/v2/account', headers=headers, timeout=10)
+        updated_at = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
 
         if resp.status_code == 200:
 
@@ -12106,23 +12129,37 @@ def get_trading_account():
 
                 'available': True,
 
+                'source': _alpaca_source(mode),
+
+                'updatedAt': updated_at,
+
                 'status': data.get('status', ''),
 
-                'cash': float(data.get('cash', 0)),
+                'cash': _alpaca_number(data.get('cash')),
 
-                'equity': float(data.get('equity', 0)),
+                'equity': _alpaca_number(data.get('equity')),
 
-                'buyingPower': float(data.get('buying_power', 0)),
+                'buyingPower': _alpaca_number(data.get('buying_power')),
 
-                'portfolioValue': float(data.get('portfolio_value', 0)),
+                'portfolioValue': _alpaca_number(data.get('portfolio_value')),
 
-                'longMarketValue': float(data.get('long_market_value', 0)),
+                'dayTradeBuyingPower': _alpaca_number(data.get('daytrade_buying_power')),
 
-                'shortMarketValue': float(data.get('short_market_value', 0)),
+                'initialMargin': _alpaca_number(data.get('initial_margin')),
 
-                'patternDayTrader': bool(data.get('pattern_day_trader', False)),
+                'maintenanceMargin': _alpaca_number(data.get('maintenance_margin')),
 
-                'tradingBlocked': bool(data.get('trading_blocked', False)),
+                'lastEquity': _alpaca_number(data.get('last_equity')),
+
+                'longMarketValue': _alpaca_number(data.get('long_market_value')),
+
+                'shortMarketValue': _alpaca_number(data.get('short_market_value')),
+
+                'patternDayTrader': _alpaca_bool(data.get('pattern_day_trader', False)),
+
+                'tradingBlocked': _alpaca_bool(data.get('trading_blocked', False)),
+
+                'accountBlocked': _alpaca_bool(data.get('account_blocked', False)),
 
                 'currency': data.get('currency', 'USD'),
 
@@ -12146,7 +12183,11 @@ def get_trading_account():
 
                 'available': False,
 
-                'reason': 'api_error'
+                'reason': 'api_error',
+
+                'source': _alpaca_source(mode),
+
+                'updatedAt': updated_at
 
             })
 
@@ -12154,7 +12195,7 @@ def get_trading_account():
 
         print(f'Trading Account API error ({mode}): {e}')
 
-        return jsonify({'success': False, 'error': str(e), 'mode': mode, 'available': False})
+        return jsonify({'success': False, 'error': f'Unable to reach Alpaca {mode} account API. Please try again later.', 'mode': mode, 'available': False, 'reason': 'network_error', 'source': _alpaca_source(mode)})
 
 
 @app.route('/api/trading/positions', methods=['GET'])
@@ -12166,9 +12207,13 @@ def get_trading_positions():
 
     resolved, resolve_status = resolve_alpaca_config_strict_user(mode)
     if resolve_status == 'auth_required':
-        return jsonify({'success': False, 'error': 'Authentication required.', 'positions': []})
+        return jsonify({'success': False, 'error': 'Authentication required.', 'positions': [], 'reason': 'auth_required', 'mode': mode, 'source': _alpaca_source(mode)})
     if resolve_status == 'config_required' or not resolved:
-        return jsonify({'success': False, 'error': 'Alpaca not configured for this mode.', 'positions': []})
+        if mode == 'paper':
+            error_msg = 'Alpaca Paper Trading is not configured. Please save your Paper API Key and Secret in Settings / Configuration.'
+        else:
+            error_msg = 'Alpaca Real Trading is not configured. Please save your Real API Key and Secret in Settings / Configuration.'
+        return jsonify({'success': False, 'error': error_msg, 'positions': [], 'reason': 'config_required', 'mode': mode, 'source': _alpaca_source(mode)})
 
     api_key = resolved.get('api_key', '')
     api_secret = resolved.get('api_secret', '')
@@ -12177,29 +12222,32 @@ def get_trading_positions():
     try:
         headers = {'APCA-API-KEY-ID': api_key, 'APCA-API-SECRET-KEY': api_secret}
         resp = requests.get(f'{base_url}/v2/positions', headers=headers, timeout=10)
+        updated_at = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
         if resp.status_code == 200:
             raw = resp.json()
             positions = []
             for p in raw:
                 positions.append({
                     'symbol': p.get('symbol', ''),
-                    'qty': float(p.get('qty', 0)),
+                    'qty': _alpaca_number(p.get('qty')),
                     'side': p.get('side', 'long'),
-                    'avgEntryPrice': float(p.get('avg_entry_price', 0)),
-                    'currentPrice': float(p.get('current_price', 0)),
-                    'marketValue': float(p.get('market_value', 0)),
-                    'unrealizedPL': float(p.get('unrealized_pl', 0)),
-                    'unrealizedPLPercent': float(p.get('unrealized_plpc', 0)),
-                    'costBasis': float(p.get('cost_basis', 0)),
+                    'avgEntryPrice': _alpaca_number(p.get('avg_entry_price')),
+                    'currentPrice': _alpaca_number(p.get('current_price')),
+                    'marketValue': _alpaca_number(p.get('market_value')),
+                    'costBasis': _alpaca_number(p.get('cost_basis')),
+                    'unrealizedPL': _alpaca_number(p.get('unrealized_pl')),
+                    'unrealizedPLPercent': _alpaca_number(p.get('unrealized_plpc')),
+                    'changeToday': _alpaca_number(p.get('change_today')),
                     'assetClass': p.get('asset_class', ''),
                     'exchange': p.get('exchange', ''),
-                    'lastUpdated': p.get('lastday_price', None),
+                    'lastUpdated': updated_at,
                 })
-            return jsonify({'success': True, 'mode': mode, 'modeUsed': mode, 'positions': positions})
+            return jsonify({'success': True, 'mode': mode, 'modeUsed': mode, 'source': _alpaca_source(mode), 'updatedAt': updated_at, 'positions': positions})
         else:
-            return jsonify({'success': False, 'error': f'Alpaca API error ({resp.status_code})', 'positions': []})
+            return jsonify({'success': False, 'error': f'Alpaca {mode} API error (HTTP {resp.status_code}). Please check the saved API key, secret, and endpoint in Settings / Configuration.', 'reason': 'api_error', 'mode': mode, 'source': _alpaca_source(mode), 'updatedAt': updated_at, 'positions': []})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e), 'positions': []})
+        safe_print(f'[Trading Positions] Exception: {e} mode={mode}')
+        return jsonify({'success': False, 'error': f'Unable to reach Alpaca {mode} positions API. Please try again later.', 'positions': [], 'reason': 'network_error', 'mode': mode, 'source': _alpaca_source(mode)})
 
 
 @app.route('/api/trading/orders/<order_id>', methods=['GET'])
@@ -18782,9 +18830,9 @@ def ai_alpaca_portfolio_history():
         # Resolve Alpaca config from per-user Supabase using strict resolver
         alpaca_cfg, alpaca_status = resolve_alpaca_config_strict_user(mode)
         if alpaca_status == 'auth_required':
-            return jsonify({'success': False, 'data': [], 'count': 0, 'range': range_param, 'modeUsed': mode, 'reason': 'auth_required', 'message': 'Authentication required.'})
+            return jsonify({'success': False, 'data': [], 'count': 0, 'range': range_param, 'modeUsed': mode, 'source': _alpaca_source(mode), 'reason': 'auth_required', 'message': 'Authentication required.'})
         if alpaca_status == 'config_required' or not alpaca_cfg:
-            return jsonify({'success': False, 'data': [], 'count': 0, 'range': range_param, 'modeUsed': mode, 'reason': 'config_required', 'message': f'Alpaca {mode} Trading not configured.'})
+            return jsonify({'success': False, 'data': [], 'count': 0, 'range': range_param, 'modeUsed': mode, 'source': _alpaca_source(mode), 'reason': 'config_required', 'message': f'Alpaca {mode} Trading not configured.'})
         api_key = alpaca_cfg.get('api_key', '')
         api_secret = alpaca_cfg.get('api_secret', '')
         base_url = alpaca_cfg.get('base_url', 'https://paper-api.alpaca.markets' if mode == 'paper' else 'https://api.alpaca.markets')
@@ -18970,6 +19018,7 @@ def ai_alpaca_portfolio_history():
 
 
         response = requests.get(f'{base_url}/v2/account/portfolio/history', headers=headers, params=params, timeout=10)
+        updated_at = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
 
 
 
@@ -19022,16 +19071,23 @@ def ai_alpaca_portfolio_history():
                     if ts and equity is not None:
 
                         timestamp_ms = int(ts) * 1000
+                        equity_num = _alpaca_number(equity)
+                        pl_num = _alpaca_number(pl) if pl is not None else 0
+                        pl_pct_num = _alpaca_number(pl_pct) if pl_pct is not None else 0
 
                         data.append({
 
                             'timestamp': timestamp_ms,
 
-                            'equity': float(equity),
+                            'equity': equity_num,
 
-                            'pnl': float(pl) if pl is not None else 0,
+                            'pnl': pl_num,
 
-                            'pnlPct': float(pl_pct) if pl_pct is not None else 0,
+                            'profitLoss': pl_num,
+
+                            'pnlPct': pl_pct_num,
+
+                            'profitLossPct': pl_pct_num,
 
                             'isMockData': False
 
@@ -19075,6 +19131,10 @@ def ai_alpaca_portfolio_history():
 
                         'modeUsed': mode,
 
+                        'source': _alpaca_source(mode),
+
+                        'updatedAt': updated_at,
+
                         'isMockData': False,
 
                         'total_change': round(total_change, 2),
@@ -19105,6 +19165,10 @@ def ai_alpaca_portfolio_history():
 
                 'modeUsed': mode,
 
+                'source': _alpaca_source(mode),
+
+                'updatedAt': updated_at,
+
                 'isMockData': False,
 
                 'message': 'Alpaca returned portfolio history data in an unexpected format'
@@ -19121,8 +19185,11 @@ def ai_alpaca_portfolio_history():
             'count': 0,
             'range': range_param,
             'modeUsed': mode,
+            'source': _alpaca_source(mode),
+            'updatedAt': updated_at,
             'isMockData': False,
-            'message': f'Alpaca API error ({response.status_code}): {response.text[:200]}'
+            'reason': 'api_error',
+            'message': f'Alpaca {mode} portfolio history API error (HTTP {response.status_code}). Please check the saved API key, secret, and endpoint in Settings / Configuration.'
         })
 
 
@@ -19135,6 +19202,8 @@ def ai_alpaca_portfolio_history():
             'count': 0,
             'range': range_param,
             'modeUsed': mode,
+            'source': _alpaca_source(mode),
+            'updatedAt': datetime.utcnow().replace(microsecond=0).isoformat() + 'Z',
             'isMockData': False,
             'message': f'Error: {str(e)[:200]}'
         })
