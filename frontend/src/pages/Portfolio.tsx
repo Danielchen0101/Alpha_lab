@@ -28,6 +28,7 @@ import { PieChartOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { tradingAccountAPI, TradingAccountResponse, TradingPosition } from '../services/api';
 import { useLanguage } from '../contexts/LanguageContext';
+import { useTradeMode } from '../contexts/TradeModeContext';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -227,7 +228,7 @@ const Portfolio: React.FC = () => {
   useEffect(() => {
     loadData(portfolioMode, portfolioRange);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [portfolioMode]);
+  }, [portfolioMode, tradeMode]);
 
   const handlePortfolioRangeChange = (range: string) => {
     setPortfolioRange(range);

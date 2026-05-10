@@ -44,6 +44,9 @@ const messages = {
     agent: 'AI 代理',
     trade: '交易工作台',
     settings: '配置中心',
+    tradeMode: '交易模式',
+    paperMode: '模拟',
+    realMode: '实盘',
   },
 
   // 仪表板页面

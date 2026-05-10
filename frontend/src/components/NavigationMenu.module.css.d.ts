@@ -13,5 +13,12 @@ declare const styles: {
   readonly statusDot: string;
   readonly statusText: string;
   readonly collapsedStatus: string;
+  readonly tradeModeSection: string;
+  readonly tradeModeHeader: string;
+  readonly tradeModeToggle: string;
+  readonly tradeModeBtn: string;
+  readonly modeDot: string;
+  readonly tradeModeBtnActive: string;
+  readonly tradeModeBtnRealActive: string;
 };
 export default styles;

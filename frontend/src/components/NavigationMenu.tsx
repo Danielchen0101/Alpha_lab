@@ -14,6 +14,7 @@ import {
   SettingOutlined
 } from '@ant-design/icons';
 import { useLanguage } from '../contexts/LanguageContext';
+import { useTradeMode } from '../contexts/TradeModeContext';
 import styles from './NavigationMenu.module.css';
 
 interface NavigationMenuProps {
@@ -22,6 +23,7 @@ interface NavigationMenuProps {
 
 const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
   const { t } = useLanguage();
+  const { tradeMode, setTradeMode } = useTradeMode();
   const location = useLocation();
 
 
@@ -92,6 +94,31 @@ const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
             <Link to="/portfolio">{t.navigation.portfolio}</Link>
           </Menu.Item>
 
+          {/* TRADE MODE TOGGLE */}
+          {!collapsed && (
+            <div className={styles.tradeModeSection}>
+              <div className={styles.tradeModeHeader}>
+                <span className={styles.statusLabel}>{t.navigation.tradeMode}</span>
+              </div>
+              <div className={styles.tradeModeToggle}>
+                <button
+                  className={`${styles.tradeModeBtn} ${tradeMode === 'paper' ? styles.tradeModeBtnActive : ''}`}
+                  onClick={() => setTradeMode('paper')}
+                >
+                  <span className={styles.modeDot} style={{ backgroundColor: '#1890ff', opacity: tradeMode === 'paper' ? 1 : 0.2 }} />
+                  {t.navigation.paperMode}
+                </button>
+                <button
+                  className={`${styles.tradeModeBtn} ${tradeMode === 'real' ? styles.tradeModeBtnRealActive : ''}`}
+                  onClick={() => setTradeMode('real')}
+                >
+                  <span className={styles.modeDot} style={{ backgroundColor: '#ff4d4f', opacity: tradeMode === 'real' ? 1 : 0.2 }} />
+                  {t.navigation.realMode}
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* SYSTEM GROUP */}
           {!collapsed && <div className={styles.menuDivider}>SYSTEM</div>}
           <Menu.Item key="12" icon={<SettingOutlined />} title={collapsed ? t.navigation.settings : undefined}>
@@ -111,10 +138,6 @@ const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
             <div className={styles.statusRow}>
               <span className={styles.statusLabel}>DATA</span>
               <Tag color="blue" className={styles.statusTag}>ALPACA</Tag>
-            </div>
-            <div className={styles.statusRow}>
-              <span className={styles.statusLabel}>MODE</span>
-              <Tag color="orange" className={styles.statusTag}>PAPER</Tag>
             </div>
             <div className={styles.statusInfo}>
               <div className={styles.statusDot} style={{ backgroundColor: '#52c41a' }} />

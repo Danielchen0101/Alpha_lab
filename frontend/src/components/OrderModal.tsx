@@ -8,6 +8,7 @@ import {
   ExclamationCircleOutlined, SafetyOutlined,
 } from '@ant-design/icons';
 import { tradingAccountAPI } from '../services/api';
+import { useTradeMode } from '../contexts/TradeModeContext';
 
 const { Text } = Typography;
 const { Option } = Select;
@@ -16,7 +17,6 @@ export interface OrderModalProps {
   visible: boolean;
   onClose: () => void;
   onSuccess: () => void;
-  tradeMode: 'paper' | 'real';
   /** Pre-fill values when opening from a position or watchlist */
   preset?: {
     symbol?: string;
@@ -74,8 +74,9 @@ const ORDER_CLASSES = [
 ];
 
 const OrderModal: React.FC<OrderModalProps> = ({
-  visible, onClose, onSuccess, tradeMode, preset,
+  visible, onClose, onSuccess, preset,
 }) => {
+  const { tradeMode } = useTradeMode();
   const [form] = Form.useForm<OrderFormValues>();
   const [submitting, setSubmitting] = useState(false);
   const [confirmStep, setConfirmStep] = useState(false);

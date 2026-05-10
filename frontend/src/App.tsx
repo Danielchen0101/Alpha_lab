@@ -32,6 +32,7 @@ import LanguageButtonPreview from './components/LanguageButtonPreview';
 import LanguageSwitcher from './components/LanguageSwitcher';
 import NavigationMenu from './components/NavigationMenu';
 import { LanguageProvider } from './contexts/LanguageContext';
+import { TradeModeProvider } from './contexts/TradeModeContext';
 import './App.css';
 
 const { Header, Content, Sider } = Layout;
@@ -120,6 +121,7 @@ const AppLayout: React.FC = () => {
 const App: React.FC = () => {
   return (
     <LanguageProvider>
+      <TradeModeProvider>
       <ConfigProvider theme={{ token: { colorPrimary: '#1890ff', borderRadius: 6 } }}>
         <Router>
           <AuthProvider>
@@ -159,6 +161,7 @@ const App: React.FC = () => {
           </AuthProvider>
         </Router>
       </ConfigProvider>
+      </TradeModeProvider>
     </LanguageProvider>
   );
 };

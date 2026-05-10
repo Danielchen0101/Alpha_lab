@@ -44,6 +44,9 @@ const messages = {
     agent: 'AI Agent',
     trade: 'Alpaca Trade',
     settings: 'Settings',
+    tradeMode: 'TRADE MODE',
+    paperMode: 'Paper',
+    realMode: 'Real',
   },
 
   // Dashboard page

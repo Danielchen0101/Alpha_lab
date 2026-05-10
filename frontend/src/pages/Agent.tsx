@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLanguage } from '../contexts/LanguageContext';
+import { useTradeMode } from '../contexts/TradeModeContext';
 
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend as RechartsLegend, ResponsiveContainer } from 'recharts'; // eslint-disable-line @typescript-eslint/no-unused-vars
 import {
@@ -411,11 +412,8 @@ const Agent: React.FC = (): React.ReactElement => {
 
   const [preferredContinuePage, setPreferredContinuePage] = useState(1);
 
-  // Trading Account Mode
-  const [tradingAccountMode, setTradingAccountMode] = useState<'paper' | 'real'>(() => {
-    const saved = localStorage.getItem('tradingAccountMode');
-    return saved === 'paper' || saved === 'real' ? saved : 'paper';
-  });
+  // Trading Account Mode (global context)
+  const { tradeMode, setTradeMode } = useTradeMode();
   const [tradingAccountData, setTradingAccountData] = useState<any>(null);
   const [tradingAccountLoading, setTradingAccountLoading] = useState(false);
 
@@ -492,13 +490,14 @@ const Agent: React.FC = (): React.ReactElement => {
   const [openSellOrders, setOpenSellOrders] = useState<any[]>([]);
   const [cancelingOrderId, setCancelingOrderId] = useState<string | null>(null);
 
-  const fetchHoldings = useCallback(async () => {
+  const fetchHoldings = useCallback(async (mode?: 'paper' | 'real') => {
+    const m = mode || tradeMode;
     setHoldingsLoading(true);
     setHoldingsError(null);
     try {
       const [posRes, ordersRes] = await Promise.allSettled([
-        tradingAccountAPI.getPositions(tradingAccountMode),
-        tradingAccountAPI.getOrders(tradingAccountMode, 'open'),
+        tradingAccountAPI.getPositions(m),
+        tradingAccountAPI.getOrders(m, 'open'),
       ]);
 
       let positions: any[] = [];
@@ -537,7 +536,7 @@ const Agent: React.FC = (): React.ReactElement => {
     } finally {
       setHoldingsLoading(false);
     }
-  }, [tradingAccountMode]);
+  }, [tradeMode]);
 
   // Fetch holdings when trading account mode changes
   useEffect(() => { fetchHoldings(); }, [fetchHoldings]);
@@ -546,7 +545,7 @@ const Agent: React.FC = (): React.ReactElement => {
   const handleCancelSellOrder = useCallback(async (orderId: string, symbol: string) => {
     setCancelingOrderId(orderId);
     try {
-      const res = await tradingAccountAPI.cancelOrder(orderId, tradingAccountMode);
+      const res = await tradingAccountAPI.cancelOrder(orderId, tradeMode);
       if (res.data.success) {
         message.success(`Sell order canceled for ${symbol}`);
         setOpenSellOrders(prev => prev.filter(o => o.id !== orderId));
@@ -558,7 +557,7 @@ const Agent: React.FC = (): React.ReactElement => {
     } finally {
       setCancelingOrderId(null);
     }
-  }, [tradingAccountMode]);
+  }, [tradeMode]);
 
   // Entry Plan results by symbol map (for Watchlist/Execution detail lookup)
   const entryPlanResultsBySymbol = React.useMemo(() => {
@@ -582,8 +581,6 @@ const Agent: React.FC = (): React.ReactElement => {
 
   // Trading Account Mode handler
   const handleTradingAccountModeChange = async (mode: 'paper' | 'real') => {
-    setTradingAccountMode(mode);
-    localStorage.setItem('tradingAccountMode', mode);
     setTradingAccountLoading(true);
     try {
       const res = await tradingAccountAPI.getAccount(mode);
@@ -594,10 +591,11 @@ const Agent: React.FC = (): React.ReactElement => {
       setTradingAccountLoading(false);
     }
     fetchPortfolioHistory(mode, portfolioHistoryRange);
+    fetchHoldings(mode);
   };
 
   const fetchPortfolioHistory = async (mode?: 'paper' | 'real', range?: string) => {
-    const m: 'paper' | 'real' = mode || tradingAccountMode;
+    const m: 'paper' | 'real' = mode || tradeMode;
     const r = range || portfolioHistoryRange;
     setPortfolioHistoryLoading(true);
     try {
@@ -624,7 +622,7 @@ const Agent: React.FC = (): React.ReactElement => {
 
   const handleOrderSuccess = () => {
     // Refresh positions, orders, account, and portfolio history after order
-    handleTradingAccountModeChange(tradingAccountMode);
+    handleTradingAccountModeChange(tradeMode);
     fetchAiWatchlist();
   };
 
@@ -1113,11 +1111,11 @@ const Agent: React.FC = (): React.ReactElement => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Load trading account data on mount
+  // Load trading account data on mount and when global trade mode changes
   useEffect(() => {
-    handleTradingAccountModeChange(tradingAccountMode);
+    handleTradingAccountModeChange(tradeMode);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [tradeMode]);
 
   // 组件卸载时清理 — do NOT stop the scan runner
   // The scan loop runs at module level via scannerRunnerService and updates the store.
@@ -3271,9 +3269,7 @@ const Agent: React.FC = (): React.ReactElement => {
   const [cancelTarget, setCancelTarget] = useState<any>(null);
   const [cancelLoading, setCancelLoading] = useState(false);
 
-  // Refs for accessing state in async closures (avoids stale closure problem)
-  const tradingAccountModeRef = useRef(tradingAccountMode);
-  useEffect(() => { tradingAccountModeRef.current = tradingAccountMode; }, [tradingAccountMode]);
+  // tradeMode is from global context — no stale closure issue
 
   // Persist aiExecutionList to scannerStateStore on every change
   useEffect(() => {
@@ -3618,13 +3614,14 @@ const Agent: React.FC = (): React.ReactElement => {
   // Run Exit Scan
   const [exitScanRunning, setExitScanRunning] = useState(false);
 
-  const runExitScan = useCallback(async (options?: { autoSubmit?: boolean }) => {
+  const runExitScan = useCallback(async (options?: { autoSubmit?: boolean; mode?: 'paper' | 'real' }) => {
     if (exitScanRunning) return;
     if (holdings.length === 0) {
       message.warning('No current holdings to scan.');
       return;
     }
     const shouldAutoSubmit = options?.autoSubmit !== false; // default true
+    const exitScanMode = options?.mode || tradeMode;
 
     // Check for already-submitted exit orders to prevent duplicates
     const existingExitOrderSymbols = new Set([
@@ -3705,7 +3702,7 @@ const Agent: React.FC = (): React.ReactElement => {
             }
 
             const orderPayload: any = {
-              mode: tradingAccountMode,
+              mode: exitScanMode,
               symbol,
               side: 'sell',
               qty: sellQty,
@@ -3774,7 +3771,7 @@ const Agent: React.FC = (): React.ReactElement => {
         setTimeout(() => fetchHoldings(), 2000);
       }
     }
-  }, [exitScanRunning, holdings, submittedExitOrders, openSellOrders, tradingAccountMode, entryPlanResultsBySymbol, getPositionSource, evaluateExitPlan, setExitScanStatus, setExitScanResults, fetchHoldings]);
+  }, [exitScanRunning, holdings, submittedExitOrders, openSellOrders, tradeMode, entryPlanResultsBySymbol, getPositionSource, evaluateExitPlan, setExitScanStatus, setExitScanResults, fetchHoldings]);
 
   // ===== AI Watchlist Functions =====
   const fetchAiWatchlist = async () => {
@@ -4073,7 +4070,7 @@ const Agent: React.FC = (): React.ReactElement => {
 
   const handleExecuteOrder = async (record: any, confirmed = false) => {
     const automationMode = getAutomationMode();
-    const tradingMode = tradingAccountMode;
+    const tradingMode = tradeMode;
 
     // Manual mode — should not reach here (button hidden), but guard anyway
     if (automationMode === 'manual') {
@@ -4208,7 +4205,7 @@ const Agent: React.FC = (): React.ReactElement => {
   const handleConfirmOrder = async () => {
     if (!orderConfirmTarget) return;
     const { record } = orderConfirmTarget;
-    const isReal = tradingAccountMode === 'real';
+    const isReal = tradeMode === 'real';
 
     if (isReal) {
       const expected = `CONFIRM REAL ORDER ${record.symbol}`;
@@ -4250,7 +4247,7 @@ const Agent: React.FC = (): React.ReactElement => {
 
     setCancelLoading(true);
     try {
-      const res = await tradingAccountAPI.cancelOrder(orderId, tradingAccountMode as 'paper' | 'real');
+      const res = await tradingAccountAPI.cancelOrder(orderId, tradeMode as 'paper' | 'real');
       const d = res.data;
       if (d.success) {
         // Remove from execution list on successful cancel
@@ -4260,7 +4257,7 @@ const Agent: React.FC = (): React.ReactElement => {
           symbol: record.symbol,
           side: 'buy',
           qty: 0,
-          mode: tradingAccountMode,
+          mode: tradeMode,
           orderId: orderId,
           orderStatus: 'canceled',
           submittedAt: new Date().toISOString(),
@@ -4303,7 +4300,7 @@ const Agent: React.FC = (): React.ReactElement => {
     );
     if (submittedItems.length === 0) return;
 
-    const mode = tradingAccountMode as 'paper' | 'real';
+    const mode = tradeMode as 'paper' | 'real';
     let _removed = 0; // eslint-disable-line @typescript-eslint/no-unused-vars
     let needsHoldingsRefresh = false;
 
@@ -4332,7 +4329,7 @@ const Agent: React.FC = (): React.ReactElement => {
       }
     }
     if (needsHoldingsRefresh) fetchHoldings();
-  }, [aiExecutionList, tradingAccountMode, fetchHoldings]);
+  }, [aiExecutionList, tradeMode, fetchHoldings]);
 
   // Auto-sync submitted orders on mount and periodically
   useEffect(() => {
@@ -4385,7 +4382,7 @@ const Agent: React.FC = (): React.ReactElement => {
     const epPromise = _runEntryPlanLoop(candidates);
     registerEntryPlanRun(epPromise);
     await epPromise;
-  }, [getEntryPlanCandidates, entryPlanAccountSize, entryPlanRiskPerTrade, entryPlanExecutionMode, tradingAccountMode, tradingAccountData]);
+  }, [getEntryPlanCandidates, entryPlanAccountSize, entryPlanRiskPerTrade, entryPlanExecutionMode, tradeMode, tradingAccountData]);
 
   const _runEntryPlanLoop = async (candidates: any[]) => {
     setEntryPlanStatus('loading');
@@ -4412,7 +4409,7 @@ const Agent: React.FC = (): React.ReactElement => {
     }
     // Check trading account config — warn but don't block if unavailable (backend uses fallback)
     if (!tradingAccountData?.success) {
-      console.warn(`[EntryPlan] Trading account (${tradingAccountMode}) not available, using estimated account size`);
+      console.warn(`[EntryPlan] Trading account (${tradeMode}) not available, using estimated account size`);
     }
 
     try {
@@ -4456,7 +4453,7 @@ const Agent: React.FC = (): React.ReactElement => {
         : entryPlanAccountSize;
       const res = await entryPlanAPI.generate(
         candidateData, realAccountSize, entryPlanRiskPerTrade, 10,
-        existingPositions, dailyLoss, existingPositions, entryPlanExecutionMode, tradingAccountMode
+        existingPositions, dailyLoss, existingPositions, entryPlanExecutionMode, tradeMode
       );
       if (res.data?.success && res.data?.plans) {
         // Propagate isDevTest flag from DV candidates to Entry Plan results
@@ -4511,7 +4508,7 @@ const Agent: React.FC = (): React.ReactElement => {
             : entryPlanAccountSize;
           const res = await entryPlanAPI.generate(
             candidateData, realAccountSize, entryPlanRiskPerTrade, 10,
-            [], 0, [], entryPlanExecutionMode, tradingAccountMode
+            [], 0, [], entryPlanExecutionMode, tradeMode
           );
           if (res.data?.success && res.data?.plans) {
             const devTestSymbols = new Set(candidates.filter((c: any) => c.isDevTest).map((c: any) => c.symbol));
@@ -4841,12 +4838,13 @@ const Agent: React.FC = (): React.ReactElement => {
 
       // ── Stage 6: Exit Scan ──
       setPipelineStage('Exit Scan');
-      await fetchHoldings();
+      const currentTradingMode = tradeMode;
+      await fetchHoldings(currentTradingMode);
       // Brief delay to let holdings state settle
       await new Promise(r => setTimeout(r, 500));
       const exitScanMode = localStorage.getItem('pipelineMode') || 'hybrid';
       const exitAutoSubmit = exitScanMode === 'ai';
-      await runExitScan({ autoSubmit: exitAutoSubmit });
+      await runExitScan({ autoSubmit: exitAutoSubmit, mode: currentTradingMode });
       const esStatus = scannerStateStore.getState().exitScan.status;
       if (esStatus !== 'completed') throw new Error(`Exit Scan ${esStatus}`);
 
@@ -4928,7 +4926,7 @@ const Agent: React.FC = (): React.ReactElement => {
               side: 'buy',
               type: orderType,
               time_in_force: item.timeInForce || 'gtc',
-              tradingMode: tradingAccountModeRef.current,
+              tradingMode: tradeMode,
               automationMode: 'full-ai',
               executionSource: 'ai_mode',
               confirmed: true,
@@ -5691,43 +5689,9 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 <SettingOutlined style={{ marginRight: 8, color: '#1890ff' }} />
                 {t.agent.tradingAccountMode}
               </span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <div style={{ display: 'flex', background: '#f5f5f5', padding: 3, borderRadius: 8, gap: 4, border: '1px solid #eee' }}>
-                <Button
-                  size="small"
-                  type={tradingAccountMode === 'paper' ? 'primary' : 'text'}
-                  onClick={() => handleTradingAccountModeChange('paper')}
-                  style={{
-                    borderRadius: 6,
-                    height: 28,
-                    padding: '0 12px',
-                    fontSize: 12,
-                    fontWeight: tradingAccountMode === 'paper' ? 700 : 500,
-                    boxShadow: tradingAccountMode === 'paper' ? '0 2px 4px rgba(24,144,255,0.2)' : 'none',
-                    color: tradingAccountMode === 'paper' ? '#fff' : '#8c8c8c',
-                  }}
-                >
-                  {t.agent.paperTrading}
-                </Button>
-                <Button
-                  size="small"
-                  type={tradingAccountMode === 'real' ? 'primary' : 'text'}
-                  danger={tradingAccountMode === 'real'}
-                  onClick={() => handleTradingAccountModeChange('real')}
-                  style={{
-                    borderRadius: 6,
-                    height: 28,
-                    padding: '0 12px',
-                    fontSize: 12,
-                    fontWeight: tradingAccountMode === 'real' ? 700 : 500,
-                    boxShadow: tradingAccountMode === 'real' ? '0 2px 4px rgba(255,77,79,0.2)' : 'none',
-                    color: tradingAccountMode === 'real' ? '#fff' : '#8c8c8c',
-                  }}
-                >
-                  {t.agent.realTrading}
-                </Button>
-              </div>
-              </div>
+              <Tag color={tradeMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ fontSize: 11, fontWeight: 700, borderRadius: 4, margin: 0 }}>
+                {tradeMode === 'paper' ? t.agent.paperTrading : t.agent.realTrading}
+              </Tag>
             </div>
           }
         >
@@ -5803,7 +5767,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
             )}
           </div>
 
-          {tradingAccountMode === 'real' && (
+          {tradeMode === 'real' && (
             <Alert
               style={{ marginTop: 16, borderRadius: 8, border: '1px solid #ffe58f' }}
               type="warning"
@@ -5866,11 +5830,11 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           <div style={{ marginBottom: 16 }}>
             {pipelineMode === 'ai' ? (
               <Alert 
-                type={tradingAccountMode === 'real' ? 'warning' : 'info'} 
+                type={tradeMode === 'real' ? 'warning' : 'info'} 
                 showIcon 
                 style={{ borderRadius: 8 }}
                 message={<span style={{ fontWeight: 700 }}>{t.agent.aiPipeline}</span>}
-                description={tradingAccountMode === 'real'
+                description={tradeMode === 'real'
                   ? t.agent.tradingAccountDesc
                   : t.agent.tradingAccountDesc}
               />
@@ -6025,14 +5989,14 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 <Tag color="green" bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, marginLeft: 4, height: 20, lineHeight: '20px' }}>{holdings.length}</Tag>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <Tag color={tradingAccountMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ fontSize: 10, fontWeight: 700, borderRadius: 4 }}>
-                  {tradingAccountMode?.toUpperCase()} TRADING
+                <Tag color={tradeMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ fontSize: 10, fontWeight: 700, borderRadius: 4 }}>
+                  {tradeMode?.toUpperCase()} TRADING
                 </Tag>
                 <Divider type="vertical" style={{ height: 24 }} />
                 <Button 
                   size="middle" 
                   icon={<ReloadOutlined spin={holdingsLoading} />} 
-                  onClick={fetchHoldings} 
+                  onClick={() => fetchHoldings()} 
                   style={{ borderRadius: 8, height: 34, fontSize: 12, fontWeight: 600, color: '#6b7280', border: '1px solid #e5e7eb' }}
                 >
                   {t.agent.refresh}
@@ -6207,8 +6171,8 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 </Tag>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <Tag color={tradingAccountMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ fontSize: 10, fontWeight: 700, borderRadius: 4 }}>
-                  {tradingAccountMode?.toUpperCase()} TRADING
+                <Tag color={tradeMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ fontSize: 10, fontWeight: 700, borderRadius: 4 }}>
+                  {tradeMode?.toUpperCase()} TRADING
                 </Tag>
                 <Divider type="vertical" style={{ height: 24 }} />
                 {aiExecutionList.length > 0 && (
@@ -6233,13 +6197,13 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           }
         >
           <Alert
-            type={pipelineMode === 'ai' && tradingAccountMode === 'paper' ? 'info' : 'warning'}
+            type={pipelineMode === 'ai' && tradeMode === 'paper' ? 'info' : 'warning'}
             showIcon
             message={
               <div style={{ fontSize: 13, fontWeight: 500 }}>
-                {pipelineMode === 'ai' && tradingAccountMode === 'paper'
+                {pipelineMode === 'ai' && tradeMode === 'paper'
                   ? t.agent.aiModePaperDesc
-                  : pipelineMode === 'ai' && tradingAccountMode === 'real'
+                  : pipelineMode === 'ai' && tradeMode === 'real'
                     ? t.agent.aiModeLiveDesc
                     : pipelineMode === 'hybrid'
                       ? t.agent.hybridModeDesc
@@ -6668,22 +6632,22 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     }
 
                     // Draft — Submit + Remove
-                    const submitLabel = tradingAccountMode === 'paper' ? t.agent.submitPaper : t.agent.confirmLive;
-                    const btnType = tradingAccountMode === 'paper' ? 'primary' : 'default';
+                    const submitLabel = tradeMode === 'paper' ? t.agent.submitPaper : t.agent.confirmLive;
+                    const btnType = tradeMode === 'paper' ? 'primary' : 'default';
 
                     return (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                         <Button
                           type={btnType}
-                          danger={tradingAccountMode === 'real'}
+                          danger={tradeMode === 'real'}
                           size="small"
                           loading={isExecuting}
                           style={{
                             borderRadius: 6, height: 28, fontSize: 11, fontWeight: 700, width: '100%',
-                            background: tradingAccountMode === 'paper' ? '#1890ff' : '#fff',
-                            boxShadow: tradingAccountMode === 'paper' ? '0 2px 6px rgba(24,144,255,0.3)' : 'none'
+                            background: tradeMode === 'paper' ? '#1890ff' : '#fff',
+                            boxShadow: tradeMode === 'paper' ? '0 2px 6px rgba(24,144,255,0.3)' : 'none'
                           }}
-                          onClick={() => tradingAccountMode === 'real' ? openConfirmModal(r) : handleExecuteOrder(r)}
+                          onClick={() => tradeMode === 'real' ? openConfirmModal(r) : handleExecuteOrder(r)}
                         >
                           {submitLabel}
                         </Button>
@@ -6739,7 +6703,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
 
       {/* Order Confirmation Modal — Editable */}
       <Modal
-        title={tradingAccountMode === 'real' ? t.agent.confirmRealOrder : t.agent.confirmPaperOrder}
+        title={tradeMode === 'real' ? t.agent.confirmRealOrder : t.agent.confirmPaperOrder}
         open={orderConfirmVisible}
         onCancel={() => { setOrderConfirmVisible(false); setOrderConfirmTarget(null); setOrderConfirmText(''); }}
         footer={null}
@@ -6748,7 +6712,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
         {orderConfirmTarget && (() => {
           const r = orderConfirmTarget.record;
           const ep = entryPlanResultsBySymbol[r.symbol] || normalizeWatchlistToEntryPlan(r);
-          const isReal = tradingAccountMode === 'real';
+          const isReal = tradeMode === 'real';
           const recShares = r.positionSizeShares || ep.positionSizeShares || 0;
           const entryPrice = modalLimitPrice || modalStopPrice || ep.entryZoneHigh || ep.entryZoneLow || 0;
 
@@ -6964,7 +6928,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   <div><strong>{t.agent.orderId}:</strong> <span style={{ fontFamily: 'monospace', fontSize: 11 }}>{r.alpacaOrderId || 'N/A'}</span></div>
                   <div><strong>{t.agent.qty}:</strong> {r.userQty || r.positionSizeShares || 'N/A'}</div>
                   <div><strong>{t.agent.orderType}:</strong> {r.orderType || 'market'}</div>
-                  <div><strong>{t.agent.mode}:</strong> {tradingAccountMode === 'paper' ? t.agent.paperTrading : t.agent.live}</div>
+                  <div><strong>{t.agent.mode}:</strong> {tradeMode === 'paper' ? t.agent.paperTrading : t.agent.live}</div>
                 </div>
               </div>
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
@@ -9340,14 +9304,14 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   <div style={{ fontSize: '10px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.6px', fontWeight: 500, marginBottom: '6px' }}>{t.agent.execution}</div>
                   <div style={{ fontSize: '12px', fontWeight: 500, color: '#555', fontFamily: "'Inter', sans-serif", marginBottom: '4px' }}>
                     {pipelineMode === 'ai'
-                      ? (tradingAccountMode === 'paper' ? t.agent.aiModePaperReady : t.agent.aiModeLiveConfirm)
+                      ? (tradeMode === 'paper' ? t.agent.aiModePaperReady : t.agent.aiModeLiveConfirm)
                       : pipelineMode === 'hybrid'
                         ? t.agent.hybridModeManual
                         : t.agent.manualModeRecommendations}
                   </div>
                   <div style={{ fontSize: '10px', color: '#999' }}>
                     {pipelineMode === 'ai'
-                      ? (tradingAccountMode === 'paper' ? t.agent.paperPreviewOnly : t.agent.manualConfirmRequired)
+                      ? (tradeMode === 'paper' ? t.agent.paperPreviewOnly : t.agent.manualConfirmRequired)
                       : pipelineMode === 'hybrid'
                         ? t.agent.noAutomaticOrders
                         : t.agent.manualOnly}
@@ -10331,7 +10295,6 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
         visible={orderModalVisible}
         onClose={() => { setOrderModalVisible(false); setOrderModalPreset(undefined); }}
         onSuccess={handleOrderSuccess}
-        tradeMode={tradingAccountMode}
         preset={orderModalPreset}
       />
 
