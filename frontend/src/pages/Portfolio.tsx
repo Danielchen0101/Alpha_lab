@@ -7,12 +7,14 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsToolti
 import { PieChartOutlined, ReloadOutlined } from '@ant-design/icons';
 import aiTradingService from '../services/aiTradingService';
 import { useLanguage } from '../contexts/LanguageContext';
+import { useTradeMode } from '../contexts/TradeModeContext';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
 
 const Portfolio: React.FC = () => {
   const { t } = useLanguage();
+  const { tradeMode } = useTradeMode();
 
   const [accountSnapshot, setAccountSnapshot] = useState({
     cash: 0, equity: 0, buyingPower: 0, portfolioValue: 0,
@@ -36,9 +38,9 @@ const Portfolio: React.FC = () => {
     try {
       const [snapshot, account, positions, histRes] = await Promise.allSettled([
         aiTradingService.getAccountSnapshot(),
-        aiTradingService.getAlpacaAccount(),
-        aiTradingService.getAlpacaPositions(),
-        aiTradingService.getPortfolioHistory(portfolioRange),
+        aiTradingService.getAlpacaAccount(tradeMode),
+        aiTradingService.getAlpacaPositions(tradeMode),
+        aiTradingService.getPortfolioHistory(portfolioRange, tradeMode),
       ]);
 
       if (snapshot.status === 'fulfilled') {
@@ -70,12 +72,12 @@ const Portfolio: React.FC = () => {
     }
   };
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => { loadData(); }, [tradeMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handlePortfolioRangeChange = async (range: string) => {
     setPortfolioRange(range);
     try {
-      const response = await aiTradingService.getPortfolioHistory(range);
+      const response = await aiTradingService.getPortfolioHistory(range, tradeMode);
       if (response.success && response.data) {
         setPortfolioHistory(response.data);
         if (response.data.length >= 2) {

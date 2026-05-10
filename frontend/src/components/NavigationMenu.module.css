@@ -162,6 +162,75 @@
   height: 32px;
 }
 
+/* Trade Mode Toggle */
+.tradeModeSection {
+  margin: 12px 12px 16px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.tradeModeHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 4px;
+}
+
+.tradeModeToggle {
+  display: flex;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 6px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.tradeModeBtn {
+  flex: 1;
+  padding: 6px 0;
+  font-size: 11px;
+  font-weight: 600;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.45);
+  letter-spacing: 0.3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.tradeModeBtn:hover {
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.modeDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  transition: opacity 0.3s ease;
+}
+
+.tradeModeBtnActive {
+  background: rgba(24, 144, 255, 0.15) !important;
+  color: #1890ff !important;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.tradeModeBtnRealActive {
+  background: rgba(255, 77, 79, 0.15) !important;
+  color: #ff4d4f !important;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
 /* Ant Design Tooltip Styling (Global) */
 :global(.ant-tooltip-inner) {
   background-color: #1f1f1f !important;

@@ -5824,8 +5824,10 @@ def ai_alpaca_account():
 
     try:
 
-        # Resolve Alpaca config from per-user Supabase (paper mode for AI Agent)
-        alpaca_cfg, alpaca_src = resolve_alpaca_config('paper', require_user_config=True)
+        # Resolve Alpaca config — use mode from query param, default to paper
+        acct_mode = request.args.get('mode', 'paper').strip().lower()
+        alpaca_mode = 'paper' if acct_mode == 'paper' else 'live'
+        alpaca_cfg, alpaca_src = resolve_alpaca_config(alpaca_mode, require_user_config=True)
         api_key = alpaca_cfg.get('api_key', '')
         api_secret = alpaca_cfg.get('api_secret', '')
         base_url = alpaca_cfg.get('base_url', 'https://paper-api.alpaca.markets')
@@ -5948,8 +5950,10 @@ def ai_alpaca_positions():
 
     try:
 
-        # Resolve Alpaca config from per-user Supabase (paper mode for AI Agent)
-        alpaca_cfg, alpaca_src = resolve_alpaca_config('paper', require_user_config=True)
+        # Resolve Alpaca config — use mode from query param, default to paper
+        pos_mode = request.args.get('mode', 'paper').strip().lower()
+        alpaca_mode = 'paper' if pos_mode == 'paper' else 'live'
+        alpaca_cfg, alpaca_src = resolve_alpaca_config(alpaca_mode, require_user_config=True)
         api_key = alpaca_cfg.get('api_key', '')
         api_secret = alpaca_cfg.get('api_secret', '')
         base_url = alpaca_cfg.get('base_url', 'https://paper-api.alpaca.markets')
@@ -6282,8 +6286,10 @@ def ai_alpaca_orders():
 
     try:
 
-        # Resolve Alpaca config from per-user Supabase (paper mode for AI Agent)
-        alpaca_cfg, alpaca_src = resolve_alpaca_config('paper', require_user_config=True)
+        # Resolve Alpaca config — use mode from query param, default to paper
+        orders_mode = request.args.get('mode', 'paper').strip().lower()
+        alpaca_mode = 'paper' if orders_mode == 'paper' else 'live'
+        alpaca_cfg, alpaca_src = resolve_alpaca_config(alpaca_mode, require_user_config=True)
         api_key = alpaca_cfg.get('api_key', '')
         api_secret = alpaca_cfg.get('api_secret', '')
         base_url = alpaca_cfg.get('base_url', 'https://paper-api.alpaca.markets')
@@ -6710,8 +6716,10 @@ def ai_alpaca_place_order():
 
 
 
-        # Resolve Alpaca config from per-user Supabase (paper mode for AI Agent)
-        alpaca_cfg, alpaca_src = resolve_alpaca_config('paper', require_user_config=True)
+        # Resolve Alpaca config — use mode from request, default to paper
+        order_mode = (data.get('mode') or 'paper').strip().lower()
+        alpaca_mode = 'paper' if order_mode == 'paper' else 'live'
+        alpaca_cfg, alpaca_src = resolve_alpaca_config(alpaca_mode, require_user_config=True)
         api_key = alpaca_cfg.get('api_key', '')
         api_secret = alpaca_cfg.get('api_secret', '')
         base_url = alpaca_cfg.get('base_url', 'https://paper-api.alpaca.markets')
@@ -6876,8 +6884,10 @@ def ai_alpaca_orders_history():
 
     try:
 
-        # Resolve Alpaca config from per-user Supabase (paper mode for AI Agent)
-        alpaca_cfg, alpaca_src = resolve_alpaca_config('paper', require_user_config=True)
+        # Resolve Alpaca config — use mode from query param, default to paper
+        hist_mode = request.args.get('mode', 'paper').strip().lower()
+        alpaca_mode = 'paper' if hist_mode == 'paper' else 'live'
+        alpaca_cfg, alpaca_src = resolve_alpaca_config(alpaca_mode, require_user_config=True)
         api_key = alpaca_cfg.get('api_key', '')
         api_secret = alpaca_cfg.get('api_secret', '')
         base_url = alpaca_cfg.get('base_url', 'https://paper-api.alpaca.markets')
@@ -25015,12 +25025,12 @@ def ai_entry_plan():
             risk_dollars_actual = 0
 
             if risk_per_share > 0 and current_price > 0:
-                # Step 1: Compute risk-based shares (stop loss distance)
-                risk_shares = int(risk_dollars / risk_per_share)
-                risk_dollars_actual = risk_shares * risk_per_share  # actual risk $ for integer shares
+                # Step 1: Compute risk-based shares (stop loss distance) — fractional allowed
+                risk_shares = round(max(0.01, risk_dollars / risk_per_share), 4)
+                risk_dollars_actual = risk_shares * risk_per_share  # actual risk $ for shares
 
-                # Step 2: Cap by max position % of portfolio
-                max_pos_shares = int(max_pos_dollars / current_price) if current_price > 0 else 0
+                # Step 2: Cap by max position % of portfolio — fractional allowed
+                max_pos_shares = round(max(0.01, max_pos_dollars / current_price), 4) if current_price > 0 else 0
                 pos_shares = min(risk_shares, max_pos_shares)
                 pos_dollars = pos_shares * current_price
                 pos_pct = round(pos_dollars / account_size * 100, 2) if account_size > 0 else 0
@@ -25047,6 +25057,19 @@ def ai_entry_plan():
                     risk_gate_passed = False
             else:
                 risk_gate_blockers.append('Invalid risk/price calculation - cannot determine position size')
+                risk_gate_passed = False
+
+            # 9b-2. Minimum viable position check (fractional min = 0.01 shares, Alpaca min notional = $1)
+            if pos_shares > 0 and pos_shares < 0.01:
+                risk_gate_blockers.append(f'Calculated position {pos_shares:.4f} shares is below minimum 0.01 shares')
+                pos_shares = 0
+                pos_dollars = 0
+                risk_gate_passed = False
+            if pos_shares > 0 and pos_dollars < 1.0:
+                risk_gate_blockers.append(f'Position value ${pos_dollars:.2f} is below Alpaca minimum $1.00 notional')
+                risk_gate_passed = False
+            if pos_shares == 0 and risk_gate_passed:
+                risk_gate_blockers.append(f'Insufficient buying power (${live_buying_power:.2f}) or risk budget for {symbol} at ${current_price:.2f}. Minimum fractional order requires $1.00 notional.')
                 risk_gate_passed = False
 
             # 9c. Daily loss < 3%

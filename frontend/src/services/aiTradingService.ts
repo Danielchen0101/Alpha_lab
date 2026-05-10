@@ -428,10 +428,10 @@ class AITradingService {
   }
 
   // Block 2: 获取详细的账户、持仓、订单数据
-  async getAlpacaAccount(): Promise<any> {
+  async getAlpacaAccount(mode?: string): Promise<any> {
     try {
       console.log('调用 Alpaca 账户接口...');
-      const response = await api.get('/ai/alpaca/account');
+      const response = await api.get('/ai/alpaca/account', { params: mode ? { mode } : {} });
       console.log('Alpaca 账户接口响应:', response.data);
       
       // 确保返回的数据包含 isMockData 字段
@@ -458,9 +458,9 @@ class AITradingService {
     }
   }
 
-  async getAlpacaPositions(): Promise<any> {
+  async getAlpacaPositions(mode?: string): Promise<any> {
     try {
-      const response = await api.get('/ai/alpaca/positions');
+      const response = await api.get('/ai/alpaca/positions', { params: mode ? { mode } : {} });
       
       // 如果请求成功，对数据进行字段映射
       if (response.data.success && response.data.data) {
@@ -800,11 +800,11 @@ class AITradingService {
   }
 
   // Portfolio History 接口
-  async getPortfolioHistory(range: string = '1D'): Promise<any> {
+  async getPortfolioHistory(range: string = '1D', mode?: string): Promise<any> {
     try {
       console.log('📊 [1] 调用portfolio history接口，range:', range);
       const response = await api.get('/ai/alpaca/portfolio/history', {
-        params: { range }
+        params: { range, ...(mode ? { mode } : {}) }
       });
       
       console.log('📊 [2] portfolio history原始响应结构:', {

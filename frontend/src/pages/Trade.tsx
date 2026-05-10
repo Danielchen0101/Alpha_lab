@@ -13,6 +13,7 @@ import {
 import { aiAgentWatchlistAPI, tradingAccountAPI } from '../services/api';
 import OrderModal from '../components/OrderModal';
 import { useLanguage } from '../contexts/LanguageContext';
+import { useTradeMode } from '../contexts/TradeModeContext';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -103,7 +104,12 @@ const Trade: React.FC = () => {
     takeProfitPrice?: number;
     stopLossPrice?: number;
   }>({});
-  const [tradeMode, setTradeMode] = useState<'paper' | 'real'>('paper');
+  const { tradeMode } = useTradeMode();
+
+  // Refresh data when trade mode changes
+  useEffect(() => {
+    refreshAllAlpacaData(tradeMode);
+  }, [tradeMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // AI Entry Watchlist 状态
   const [watchlistItems, setWatchlistItems] = useState<any[]>([]);
@@ -133,12 +139,6 @@ const Trade: React.FC = () => {
     } catch (e: any) {
       message.error(t.trade.removeFailed + ': ' + (e?.message || 'Error'));
     }
-  };
-
-  // 切换 Trade Mode
-  const handleTradeModeChange = async (mode: 'paper' | 'real') => {
-    setTradeMode(mode);
-    await refreshAllAlpacaData(mode);
   };
 
   // Cancel open order
@@ -485,30 +485,9 @@ const Trade: React.FC = () => {
           </div>
           
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'center', background: '#f3f4f6', padding: '4px', borderRadius: 8, border: '1px solid #e5e7eb' }}>
-              <div 
-                onClick={() => handleTradeModeChange('paper')}
-                style={{ 
-                  padding: '6px 16px', fontSize: 13, fontWeight: 700, cursor: 'pointer', borderRadius: 6,
-                  transition: 'all 0.2s', color: tradeMode === 'paper' ? '#096dd9' : '#6b7280',
-                  background: tradeMode === 'paper' ? '#fff' : 'transparent',
-                  boxShadow: tradeMode === 'paper' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'
-                }}
-              >
-                {t.trade.paperTrading}
-              </div>
-              <div 
-                onClick={() => handleTradeModeChange('real')}
-                style={{ 
-                  padding: '6px 16px', fontSize: 13, fontWeight: 700, cursor: 'pointer', borderRadius: 6,
-                  transition: 'all 0.2s', color: tradeMode === 'real' ? '#dc2626' : '#6b7280',
-                  background: tradeMode === 'real' ? '#fff' : 'transparent',
-                  boxShadow: tradeMode === 'real' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'
-                }}
-              >
-                {t.trade.liveTrading}
-              </div>
-            </div>
+            <Tag color={tradeMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ fontSize: 11, fontWeight: 700, borderRadius: 4, margin: 0, padding: '2px 10px' }}>
+              {tradeMode === 'paper' ? t.trade.paperTrading : t.trade.liveTrading}
+            </Tag>
             <Button
               size="middle"
               icon={<ReloadOutlined />}
@@ -1016,7 +995,6 @@ const Trade: React.FC = () => {
         visible={orderModalVisible}
         onClose={() => setOrderModalVisible(false)}
         onSuccess={handleOrderSuccess}
-        tradeMode={tradeMode}
         preset={orderModalPreset}
       />
     </div>
