@@ -115,6 +115,7 @@ const normalizeHistory = (rows: any[]): HistoryPoint[] => {
 
 const Portfolio: React.FC = () => {
   const { t, language } = useLanguage();
+  const { tradeMode } = useTradeMode();
   const navigate = useNavigate();
 
   const [account, setAccount] = useState<TradingAccountResponse | null>(null);
