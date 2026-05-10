@@ -23,11 +23,16 @@ const SignUp: React.FC = () => {
   const [confirmMessage, setConfirmMessage] = useState('');
   const [formValid, setFormValid] = useState(false);
   const [captchaToken, setCaptchaToken] = useState('');
+  const [turnstileError, setTurnstileError] = useState(false);
   const turnstileRef = useRef<BoundTurnstileObject | null>(null);
 
   const turnstileSiteKey = process.env.REACT_APP_TURNSTILE_SITE_KEY;
   const isDev = process.env.NODE_ENV === 'development';
   const captchaConfigured = !!turnstileSiteKey;
+
+  const turnstileDebug = isDev
+    ? `[DEBUG] hasSiteKey=${captchaConfigured} prefix=${turnstileSiteKey?.slice(0, 8) || 'none'} NODE_ENV=${process.env.NODE_ENV} captchaToken=${Boolean(captchaToken)} turnstileError=${turnstileError}`
+    : null;
 
   useEffect(() => {
     const vals = form.getFieldsValue();
@@ -672,17 +677,31 @@ const SignUp: React.FC = () => {
                   </Checkbox>
                 </Form.Item>
 
-                {/* CAPTCHA / Human verification */}
-                <div style={{ marginBottom: 16 }}>
+                {/* CAPTCHA / Human verification — always renders */}
+                <div style={{ marginBottom: 20, minHeight: 70 }}>
                   {captchaConfigured ? (
-                    <Turnstile
-                      sitekey={turnstileSiteKey || ''}
-                      onLoad={(_widgetId, bound) => { turnstileRef.current = bound; }}
-                      onVerify={(token) => setCaptchaToken(token)}
-                      onError={() => setCaptchaToken('')}
-                      onExpire={() => setCaptchaToken('')}
-                      theme="dark"
-                    />
+                    turnstileError ? (
+                      <div style={{
+                        padding: '10px 14px',
+                        background: 'rgba(255, 77, 79, 0.12)',
+                        border: '1px solid rgba(255, 77, 79, 0.3)',
+                        borderRadius: 8,
+                        color: '#ff4d4f',
+                        fontSize: 12,
+                        textAlign: 'center',
+                      }}>
+                        {t.auth.verifyHuman} — {t.auth.captchaNotConfigured}
+                      </div>
+                    ) : (
+                      <Turnstile
+                        sitekey={turnstileSiteKey || ''}
+                        onLoad={(_widgetId, bound) => { turnstileRef.current = bound; }}
+                        onVerify={(token) => setCaptchaToken(token)}
+                        onError={() => { setCaptchaToken(''); setTurnstileError(true); }}
+                        onExpire={() => setCaptchaToken('')}
+                        theme="dark"
+                      />
+                    )
                   ) : isDev ? (
                     <div style={{
                       padding: '10px 14px',
@@ -706,6 +725,19 @@ const SignUp: React.FC = () => {
                       textAlign: 'center',
                     }}>
                       {t.auth.captchaNotConfigured}
+                    </div>
+                  )}
+
+                  {/* Dev-mode debug info */}
+                  {isDev && turnstileDebug && (
+                    <div style={{
+                      marginTop: 6,
+                      fontSize: 10,
+                      color: '#64748b',
+                      textAlign: 'center',
+                      fontFamily: 'monospace',
+                    }}>
+                      {turnstileDebug}
                     </div>
                   )}
                 </div>
