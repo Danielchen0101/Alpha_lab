@@ -4,8 +4,9 @@ import {
   SettingOutlined, 
   ApiOutlined, 
   ArrowRightOutlined, 
-  UserOutlined, 
+  UserOutlined,
   SafetyCertificateOutlined,
+  LogoutOutlined,
   CloudServerOutlined,
   ThunderboltOutlined,
   RobotOutlined
@@ -39,7 +40,7 @@ userApi.interceptors.request.use(async (config) => {
 
 const Settings: React.FC = () => {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const { t } = useLanguage();
   const [statuses, setStatuses] = useState({
     alpaca: 'loading',
@@ -161,16 +162,16 @@ const Settings: React.FC = () => {
 
       <Title level={4} style={{ marginBottom: 16 }}>{t.settings.securityAccount}</Title>
       <Card bordered={false} style={{ background: '#fafafa', borderRadius: 12 }}>
-        <Row gutter={24} align="middle">
-          <Col span={16}>
+        <Row gutter={[24, 16]} align="middle">
+          <Col xs={24} md={14}>
             <Space size={16} align="start">
-              <div style={{ 
-                width: 40, 
-                height: 40, 
-                borderRadius: '50%', 
-                background: '#fff', 
-                display: 'flex', 
-                alignItems: 'center', 
+              <div style={{
+                width: 40,
+                height: 40,
+                borderRadius: '50%',
+                background: '#fff',
+                display: 'flex',
+                alignItems: 'center',
                 justifyContent: 'center',
                 border: '1px solid #f0f0f0'
               }}>
@@ -184,8 +185,17 @@ const Settings: React.FC = () => {
               </div>
             </Space>
           </Col>
-          <Col span={8} style={{ textAlign: 'right' }}>
-            <Button icon={<SafetyCertificateOutlined />}>{t.settings.securitySettings}</Button>
+          <Col xs={24} md={10}>
+            <Space size={12} style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <Button icon={<SafetyCertificateOutlined />}>{t.settings.securitySettings}</Button>
+              <Button
+                icon={<LogoutOutlined />}
+                onClick={async () => { await logout(); navigate('/signin'); }}
+                style={{ borderColor: '#ff4d4f', color: '#ff4d4f' }}
+              >
+                {t.settings.signOut}
+              </Button>
+            </Space>
           </Col>
         </Row>
       </Card>

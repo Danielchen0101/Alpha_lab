@@ -919,6 +919,85 @@ const messages = {
     currentLanguage: 'Current Language',
   },
 
+  // Landing Page
+  landing: {
+    // Navigation
+    navHome: 'Home',
+    navPlatform: 'Platform',
+    navWorkflow: 'Workflow',
+    navFeatures: 'Features',
+    navTechnology: 'Technology',
+    signIn: 'Sign In',
+    getStarted: 'Get Started',
+
+    // Hero
+    heroBadge: 'AI-Powered Quantitative Execution',
+    heroTitle1: 'Systematic Intelligence.',
+    heroTitle2: 'Flawless Execution.',
+    heroSubtitle: 'AlphaLab provides a complete, risk-aware algorithmic pipeline. Scan the market, validate technical structures with specialized LLMs, and execute deterministic entry plans.',
+    startBuilding: 'Start Building',
+    explorePlatform: 'Explore Platform',
+
+    // Mockup Dashboard
+    orchestrator: 'AI AGENT ORCHESTRATOR',
+    globalMarketScan: 'Global Market Scan',
+    complete: 'Complete',
+    processedEquities: 'Processed 8,432 equities across 14 factors.',
+    deeperValidation: 'Deeper Validation',
+    analyzing: 'Analyzing',
+    llmReview: 'LLM reviewing multi-timeframe divergence.',
+    backtestEntryPlan: 'BACKTEST & ENTRY PLAN',
+    synthesizingStrategy: 'Synthesizing Strategy',
+    riskProtocol: 'Risk Protocol',
+    strictPerTrade: 'Strict (1% per trade)',
+    targetRR: 'Target R:R',
+
+    // Project Overview
+    overviewTitle: 'Project Overview',
+    overviewDesc: 'AlphaLab is an AI-powered quantitative trading and market analysis platform. It enables traders to scan markets, validate setups with specialized LLMs, execute backtests, and generate risk-aware entry plans. Our focus is on deterministic decision support, helping you trade with systematic precision rather than blind signals.',
+
+    // Built With
+    builtWith: 'Built With',
+
+    // Core Capabilities
+    capabilitiesTitle: 'Core Capabilities',
+    capabilitiesSubtitle: 'Comprehensive tools for the modern systematic trader.',
+    capMarketScanner: 'Market Scanner',
+    capMarketScannerDesc: 'Scan thousands of assets for anomalies and trends.',
+    capAIAgent: 'AI Agent',
+    capAIAgentDesc: 'Autonomous intelligence for deep setup verification.',
+    capFineScan: 'Fine Scan',
+    capFineScanDesc: 'Surgical filtering for high-precision technical structures.',
+    capDeeperValidation: 'Deeper Validation',
+    capDeeperValidationDesc: 'Multi-LLM audit of market structure and sentiment.',
+    capEntryPlan: 'Entry Plan',
+    capEntryPlanDesc: 'Deterministic risk-aware execution levels and sizing.',
+    capBacktesting: 'Backtesting',
+    capBacktestingDesc: 'Validate hypotheses against historical market data.',
+    capOptimization: 'Optimization',
+    capOptimizationDesc: 'Quantitative fine-tuning of strategy parameters.',
+    capTradingModes: 'Trading Modes',
+    capTradingModesDesc: 'Seamless switch between Paper and Real trading.',
+    capWatchlist: 'Watchlist',
+    capWatchlistDesc: 'Intelligent monitoring with real-time tactical alerts.',
+
+    // GitHub
+    githubTitle: 'Open Source & Transparent',
+    githubDesc: 'Explore the codebase, contribute to the engine, or deploy your own instance of the AlphaLab pipeline.',
+    githubButton: 'GitHub Repository',
+
+    // CTA
+    ctaTitle: 'Ready to trade with an edge?',
+    ctaDesc: 'Join the next generation of quantitative traders leveraging systematic AI pipelines.',
+    ctaGetStarted: 'Get Started',
+    ctaSignIn: 'Sign In',
+
+    // Footer
+    footerDisclaimer: 'Disclaimer: AlphaLab is for research, education, and decision-support purposes only. It does not provide financial advice. Past performance does not guarantee future results. Real trading involves significant risk of capital loss. Always do your own research before making investment decisions.',
+    footerPrivacy: 'Privacy & Security Notice: The platform may process account, market, and AI-provider configuration data. Users should not enter or expose sensitive API keys in public repositories. Personal/account information may be required for authentication, provider configuration, or trading integrations. Users are responsible for their own decisions.',
+    footerCopyright: '© {year} AlphaLab. AI-Powered Quantitative Trading Platform.',
+  },
+
   // Sector / industry name mapping (key = English name from API, value = display text)
   sectors: {
     'Technology': 'Technology',
@@ -2264,6 +2343,7 @@ const messages = {
     accountInfo: 'Account Information',
     loggedInAs: 'Logged in as',
     securitySettings: 'Security Settings',
+    signOut: 'Log Out',
     footerNote: 'All credentials are encrypted and stored securely.',
   },
   config: {
@@ -2339,6 +2419,86 @@ const messages = {
     testFinnhub: 'Test Finnhub',
     finnhubSaved: 'Finnhub settings saved',
     finnhubConnected: 'Finnhub connection verified',
+  },
+  auth: {
+    createAccount: 'Create account',
+    signUpSubtitle: 'Start building your AI-powered quantitative workflow.',
+    fullName: 'Full name',
+    fullNamePlaceholder: 'Enter your full name',
+    emailAddress: 'Email address',
+    emailPlaceholder: 'Use a valid email address',
+    password: 'Password',
+    passwordPlaceholder: 'At least 8 characters',
+    confirmPassword: 'Confirm password',
+    confirmPasswordPlaceholder: 'Re-enter your password',
+    termsPrefix: 'I agree to the',
+    termsOfService: 'Terms of Service',
+    privacyPolicy: 'Privacy Policy',
+    and: 'and',
+    createAccountBtn: 'Create Account',
+    creatingAccount: 'Creating account...',
+    alreadyHaveAccount: 'Already have an account?',
+    signIn: 'Sign in',
+    backToHome: 'Back to home',
+    enterFullName: 'Please enter your full name',
+    enterValidEmail: 'Please enter a valid email address',
+    passwordMinLength: 'Password must be at least 8 characters',
+    passwordsDoNotMatch: 'Passwords do not match',
+    acceptTerms: 'Please agree to the Terms of Service and Privacy Policy',
+    accountCreated: 'Account created',
+    accountCreatedDesc: 'Your account has been created successfully.',
+    goToSignIn: 'Go to Sign In',
+    buildYourEdge: 'Build your trading edge',
+    featureAiTitle: 'AI-Powered Analysis',
+    featureAiDesc: 'Deep market insights driven by multi-provider AI.',
+    featureBacktestTitle: 'Strategy Backtesting',
+    featureBacktestDesc: 'Validate before you trade with historical simulation.',
+    featureRiskTitle: 'Risk-Aware Trading',
+    featureRiskDesc: 'Built-in position sizing and stop-loss calculations.',
+    featurePaperTitle: 'Paper & Live Trading',
+    featurePaperDesc: 'Test with paper, deploy with confidence via Alpaca.',
+    signUpHint: 'After signing up, configure your Alpaca, Finnhub, and AI provider keys in Settings.',
+    registrationFailed: 'Registration failed',
+    passwordsDoNotMatchError: 'Passwords do not match',
+    welcomeBack: 'Welcome back',
+    signInSubtitle: 'Sign in to continue to your quantitative dashboard.',
+    emailPlaceholderSignIn: 'Enter your email address',
+    passwordPlaceholderSignIn: 'Enter your password',
+    rememberEmail: 'Remember my email',
+    forgotPassword: 'Forgot password?',
+    signInBtn: 'Sign In',
+    signingIn: 'Signing in...',
+    noAccount: "Don't have an account?",
+    continueWith: 'Or continue with',
+    continueWithGoogle: 'Continue with Google',
+    continueWithGithub: 'Continue with GitHub',
+    signUpWith: 'Or sign up with',
+    signUpWithGoogle: 'Sign up with Google',
+    signUpWithGithub: 'Sign up with GitHub',
+    verifyHuman: 'Please complete the human verification',
+    captchaNotConfigured: 'Human verification is not configured. Please contact the administrator.',
+    captchaBypassDev: 'Bypassed for local development.',
+  },
+
+  // Legal pages
+  legal: {
+    termsTitle: 'Terms of Service',
+    privacyTitle: 'Privacy Policy',
+    termsLastUpdated: 'Last updated: May 2026',
+    privacyLastUpdated: 'Last updated: May 2026',
+    backToSignUp: 'Back to Create Account',
+    backToHome: 'Back to Home',
+    disclaimer: 'This page is provided for transparency and does not replace professional legal advice.',
+    importantNotice: 'Important: This template is provided for general informational purposes and should be reviewed by a qualified legal professional before production use.',
+  },
+
+  // Auth confirmed page
+  authConfirmed: {
+    title: 'Email confirmed',
+    subtitle: 'Your account has been activated.',
+    description: 'You can now sign in and configure your trading connections.',
+    continueToSignIn: 'Continue to Sign In',
+    backToHome: 'Back to Home',
   },
 };
 

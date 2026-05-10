@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from 'antd';
+import { GlobalOutlined } from '@ant-design/icons';
+import { useLanguage } from '../contexts/LanguageContext';
 
 interface MarketingLayoutProps {
   children: React.ReactNode;
@@ -10,6 +12,7 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const [scrolled, setScrolled] = useState(false);
+  const { language, t, setLanguage } = useLanguage();
   const observerRef = useRef<IntersectionObserver | null>(null);
 
   useEffect(() => {
@@ -259,6 +262,10 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
     }
   }, []);
 
+  const toggleLanguage = () => {
+    setLanguage(language === 'en-US' ? 'zh-CN' : 'en-US');
+  };
+
   // For navigating to the landing page and scrolling to a specific section (optional, if we want cross-page anchors)
   // But here we use dedicated pages.
   const handleNavClick = (path: string) => {
@@ -284,15 +291,16 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
           />
         </div>
         <div className="nav-links">
-          <div className={`nav-item ${location.pathname === '/' ? 'active' : ''}`} onClick={() => handleNavClick('/')}>Home</div>
-          <div className={`nav-item ${location.pathname === '/platform' ? 'active' : ''}`} onClick={() => handleNavClick('/platform')}>Platform</div>
-          <div className={`nav-item ${location.pathname === '/workflow' ? 'active' : ''}`} onClick={() => handleNavClick('/workflow')}>Workflow</div>
-          <div className={`nav-item ${location.pathname === '/features' ? 'active' : ''}`} onClick={() => handleNavClick('/features')}>Features</div>
-          <div className={`nav-item ${location.pathname === '/technology' ? 'active' : ''}`} onClick={() => handleNavClick('/technology')}>Technology</div>
+          <div className={`nav-item ${location.pathname === '/' ? 'active' : ''}`} onClick={() => handleNavClick('/')}>{t.landing.navHome}</div>
+          <div className={`nav-item ${location.pathname === '/platform' ? 'active' : ''}`} onClick={() => handleNavClick('/platform')}>{t.landing.navPlatform}</div>
+          <div className={`nav-item ${location.pathname === '/workflow' ? 'active' : ''}`} onClick={() => handleNavClick('/workflow')}>{t.landing.navWorkflow}</div>
+          <div className={`nav-item ${location.pathname === '/features' ? 'active' : ''}`} onClick={() => handleNavClick('/features')}>{t.landing.navFeatures}</div>
+          <div className={`nav-item ${location.pathname === '/technology' ? 'active' : ''}`} onClick={() => handleNavClick('/technology')}>{t.landing.navTechnology}</div>
         </div>
         <div className="nav-actions">
-          <Button type="text" style={{ color: '#fff', fontWeight: 600 }} onClick={() => navigate('/login')}>Sign In</Button>
-          <Button type="primary" style={{ background: '#1890ff', borderColor: '#1890ff', fontWeight: 600, boxShadow: '0 4px 12px rgba(24,144,255,0.3)' }} onClick={() => navigate('/signup')}>Get Started</Button>
+          <Button type="text" onClick={toggleLanguage} style={{ color: '#94a3b8', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 13 }}><GlobalOutlined style={{ fontSize: 14 }} /> {language === 'zh-CN' ? '中文' : 'EN'}</Button>
+          <Button type="text" style={{ color: '#fff', fontWeight: 600 }} onClick={() => navigate('/signin')}>{t.landing.signIn}</Button>
+          <Button type="primary" style={{ background: '#1890ff', borderColor: '#1890ff', fontWeight: 600, boxShadow: '0 4px 12px rgba(24,144,255,0.3)' }} onClick={() => navigate('/signup')}>{t.landing.getStarted}</Button>
         </div>
       </nav>
 
@@ -305,13 +313,13 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
       <footer className="footer">
         <div style={{ maxWidth: 900, margin: '0 auto' }}>
           <div style={{ color: '#64748b', fontSize: '0.85rem', marginBottom: 12, lineHeight: 1.6 }}>
-            Disclaimer: AlphaLab is for research, education, and decision-support purposes only. It does not provide financial advice. Past performance does not guarantee future results. Real trading involves significant risk of capital loss. Always do your own research before making investment decisions.
+            {t.landing.footerDisclaimer}
           </div>
           <div style={{ color: '#475569', fontSize: '0.75rem', marginBottom: 20, lineHeight: 1.6 }}>
-            Privacy & Security Notice: The platform may process account, market, and AI-provider configuration data. Users should not enter or expose sensitive API keys in public repositories. Personal/account information may be required for authentication, provider configuration, or trading integrations. Users are responsible for their own decisions.
+            {t.landing.footerPrivacy}
           </div>
           <div style={{ color: '#475569', fontSize: '0.85rem', fontWeight: 600 }}>
-            &copy; {new Date().getFullYear()} AlphaLab. AI-Powered Quantitative Trading Platform.
+            {t.landing.footerCopyright.replace('{year}', String(new Date().getFullYear()))}
           </div>
         </div>
       </footer>

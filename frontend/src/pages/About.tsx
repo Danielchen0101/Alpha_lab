@@ -88,7 +88,7 @@ const About: React.FC = () => {
 
         <div style={{ textAlign: 'center', marginTop: 40 }}>
           <Space>
-            <Button type="primary" onClick={() => navigate('/login')}>Get Started</Button>
+            <Button type="primary" onClick={() => navigate('/signup')}>Get Started</Button>
             <Button onClick={() => navigate('/')}>Back to Home</Button>
           </Space>
         </div>

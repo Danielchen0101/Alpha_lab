@@ -919,6 +919,85 @@ const messages = {
     currentLanguage: '当前语言',
   },
 
+  // 首页
+  landing: {
+    // 导航
+    navHome: '首页',
+    navPlatform: '平台',
+    navWorkflow: '工作流',
+    navFeatures: '功能',
+    navTechnology: '技术',
+    signIn: '登录',
+    getStarted: '开始使用',
+
+    // Hero 区域
+    heroBadge: 'AI 驱动的量化执行',
+    heroTitle1: '系统化智能，',
+    heroTitle2: '精准执行。',
+    heroSubtitle: 'AlphaLab 提供完整的风险感知型量化交易流水线：扫描市场、使用专业 AI 验证技术结构，并执行确定性的入场计划。',
+    startBuilding: '开始构建',
+    explorePlatform: '探索平台',
+
+    // 模拟面板
+    orchestrator: 'AI 代理编排器',
+    globalMarketScan: '全球市场扫描',
+    complete: '已完成',
+    processedEquities: '已处理 8,432 只股票，覆盖 14 个因子。',
+    deeperValidation: '深度验证',
+    analyzing: '分析中',
+    llmReview: 'AI 正在审查多周期背离结构。',
+    backtestEntryPlan: '回测与入场计划',
+    synthesizingStrategy: '正在合成策略',
+    riskProtocol: '风险协议',
+    strictPerTrade: '严格控制（每笔交易 1%）',
+    targetRR: '目标风险回报比',
+
+    // 项目概述
+    overviewTitle: '项目概述',
+    overviewDesc: 'AlphaLab 是一个 AI 驱动的量化交易与市场分析平台。它让交易者能够扫描市场、使用专业 AI 验证技术形态、执行回测并生成风险可控的入场计划。我们的核心是确定性决策支持，帮助您以系统化的精确性进行交易，而非依赖模糊信号。',
+
+    // 技术栈
+    builtWith: '技术栈',
+
+    // 核心功能
+    capabilitiesTitle: '核心功能',
+    capabilitiesSubtitle: '现代量化交易者的全面工具集。',
+    capMarketScanner: '市场扫描器',
+    capMarketScannerDesc: '扫描数千只资产，发现异常与趋势。',
+    capAIAgent: 'AI 代理',
+    capAIAgentDesc: '自主智能，深度验证交易形态。',
+    capFineScan: '精细扫描',
+    capFineScanDesc: '精准过滤，识别高精度技术结构。',
+    capDeeperValidation: '深度验证',
+    capDeeperValidationDesc: '多模型 AI 审计市场结构与情绪。',
+    capEntryPlan: '入场计划',
+    capEntryPlanDesc: '确定性的风险感知执行价位与仓位。',
+    capBacktesting: '回测',
+    capBacktestingDesc: '基于历史市场数据验证交易假设。',
+    capOptimization: '优化',
+    capOptimizationDesc: '量化微调策略参数。',
+    capTradingModes: '交易模式',
+    capTradingModesDesc: '在模拟交易与实盘交易之间无缝切换。',
+    capWatchlist: '自选列表',
+    capWatchlistDesc: '智能监控，实时战术预警。',
+
+    // GitHub
+    githubTitle: '开源透明',
+    githubDesc: '探索代码库，贡献引擎代码，或部署您自己的 AlphaLab 流水线实例。',
+    githubButton: 'GitHub 仓库',
+
+    // CTA
+    ctaTitle: '准备好以优势进行交易了吗？',
+    ctaDesc: '加入下一代量化交易者，拥抱系统化的 AI 交易流水线。',
+    ctaGetStarted: '开始使用',
+    ctaSignIn: '登录',
+
+    // 页脚
+    footerDisclaimer: '免责声明：AlphaLab 仅供研究、教育和决策支持使用，不构成财务建议。过往表现不代表未来结果。实盘交易涉及重大资金亏损风险。请在做出投资决策前自行研究。',
+    footerPrivacy: '隐私与安全声明：本平台可能会处理账户、市场和 AI 提供商配置数据。用户不应在公开仓库中输入或暴露敏感 API 密钥。身份验证、提供商配置或交易集成可能需要个人/账户信息。用户需对自己的决策负责。',
+    footerCopyright: '© {year} AlphaLab。AI 驱动量化交易平台。',
+  },
+
   // 板块/行业名称映射 (key = API 返回的英文名, value = 中文显示)
   sectors: {
     'Technology': '科技',
@@ -2264,6 +2343,7 @@ const messages = {
     accountInfo: '账户信息',
     loggedInAs: '当前登录账号',
     securitySettings: '安全设置',
+    signOut: '退出登录',
     footerNote: '所有凭证均已加密并安全存储。',
   },
   config: {
@@ -2339,6 +2419,86 @@ const messages = {
     testFinnhub: '测试 Finnhub',
     finnhubSaved: 'Finnhub 设置已保存',
     finnhubConnected: 'Finnhub 连接已验证',
+  },
+  auth: {
+    createAccount: '创建账户',
+    signUpSubtitle: '开始构建你的 AI 量化工作流。',
+    fullName: '姓名',
+    fullNamePlaceholder: '请输入你的姓名',
+    emailAddress: '邮箱',
+    emailPlaceholder: '请输入有效邮箱地址',
+    password: '密码',
+    passwordPlaceholder: '至少 8 位字符',
+    confirmPassword: '确认密码',
+    confirmPasswordPlaceholder: '请再次输入密码',
+    termsPrefix: '我同意',
+    termsOfService: '服务条款',
+    privacyPolicy: '隐私政策',
+    and: '和',
+    createAccountBtn: '创建账户',
+    creatingAccount: '正在创建账户...',
+    alreadyHaveAccount: '已有账户？',
+    signIn: '登录',
+    backToHome: '返回首页',
+    enterFullName: '请输入你的姓名',
+    enterValidEmail: '请输入有效邮箱地址',
+    passwordMinLength: '密码至少需要 8 位',
+    passwordsDoNotMatch: '两次输入的密码不一致',
+    acceptTerms: '请同意服务条款和隐私政策',
+    accountCreated: '账户已创建',
+    accountCreatedDesc: '你的账户已创建成功。',
+    goToSignIn: '前往登录',
+    buildYourEdge: '打造你的交易优势',
+    featureAiTitle: 'AI 智能分析',
+    featureAiDesc: '多供应商 AI 驱动的深度市场洞察。',
+    featureBacktestTitle: '策略回测',
+    featureBacktestDesc: '通过历史模拟在交易前进行验证。',
+    featureRiskTitle: '风险感知交易',
+    featureRiskDesc: '内置仓位计算与止损逻辑，控制下行风险。',
+    featurePaperTitle: '模拟与实盘',
+    featurePaperDesc: '模拟盘测试，自信部署到 Alpaca 实盘。',
+    signUpHint: '注册后，请在配置中心设置 Alpaca、Finnhub 和 AI 提供商密钥。',
+    registrationFailed: '注册失败',
+    passwordsDoNotMatchError: '两次输入的密码不一致',
+    welcomeBack: '欢迎回来',
+    signInSubtitle: '登录以继续使用你的量化仪表盘。',
+    emailPlaceholderSignIn: '请输入邮箱地址',
+    passwordPlaceholderSignIn: '请输入密码',
+    rememberEmail: '记住邮箱',
+    forgotPassword: '忘记密码？',
+    signInBtn: '登录',
+    signingIn: '正在登录...',
+    noAccount: '还没有账户？',
+    continueWith: '或使用以下方式继续',
+    continueWithGoogle: '使用 Google 登录',
+    continueWithGithub: '使用 GitHub 登录',
+    signUpWith: '或使用以下方式注册',
+    signUpWithGoogle: '使用 Google 注册',
+    signUpWithGithub: '使用 GitHub 注册',
+    verifyHuman: '请完成人机验证',
+    captchaNotConfigured: '人机验证未配置，请联系管理员。',
+    captchaBypassDev: '本地开发已跳过验证。',
+  },
+
+  // Legal pages
+  legal: {
+    termsTitle: '服务条款',
+    privacyTitle: '隐私政策',
+    termsLastUpdated: '最后更新：2026 年 5 月',
+    privacyLastUpdated: '最后更新：2026 年 5 月',
+    backToSignUp: '返回创建账户',
+    backToHome: '返回首页',
+    disclaimer: '本页面用于透明说明，并不构成专业法律意见。',
+    importantNotice: '重要提示：本模板仅供一般信息参考，正式上线前建议由合格法律专业人士审查。',
+  },
+
+  // Auth confirmed page
+  authConfirmed: {
+    title: '邮箱已确认',
+    subtitle: '你的账户已激活。',
+    description: '现在可以登录并配置交易连接。',
+    continueToSignIn: '前往登录',
+    backToHome: '返回首页',
   },
 };
 

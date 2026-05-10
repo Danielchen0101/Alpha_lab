@@ -5,6 +5,43 @@ All notable changes to the Professional Quantitative Trading Platform will be do
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.3] - 2026-05-10
+
+### Added
+- Cloudflare Turnstile human verification (CAPTCHA) on Create Account registration page
+- CAPTCHA appears on Sign In after 3 failed login attempts
+- CAPTCHA site key missing detection: dev shows warning + bypass, production blocks registration
+- Google / GitHub OAuth login buttons on Sign In and Sign Up pages
+- Terms of Service page (`/terms`) with full 16-section bilingual (EN/ZH) legal content
+- Privacy Policy page (`/privacy`) with full 16-section bilingual privacy content
+- Email confirmation success page (`/auth/confirmed`) — dedicated dark-theme landing page after email verification
+- `emailRedirectTo` parameter passed to Supabase signUp — redirects to `/auth/confirmed`
+- Locale keys for legal pages, auth confirmed page, and CAPTCHA messages
+- Chinese/English translation support for all new pages
+
+### Changed
+- Sign In / Sign Up CAPTCHA widget now uses bound turnstile object for reset (replaces ref pattern)
+- Sign In CAPTCHA hidden on initial load; only renders after 3 failed login attempts
+- Sign Up Terms of Service and Privacy Policy links now use React Router `Link` with `e.stopPropagation()`
+- Sign Up checkbox links navigate to `/terms` and `/privacy` instead of `preventDefault`
+- README updated with v2.6.3 highlights and Environment Variables section
+- CHANGELOG updated with v2.6.3 entry
+- Version bumped from 2.6.2 to 2.6.3
+
+### Fixed
+- Create Account button permanently disabled when `REACT_APP_TURNSTILE_SITE_KEY` not configured
+- Sign In CAPTCHA always showing on page load (now shown after 3 failed attempts only)
+- TypeScript error: `Turnstile` used as type instead of `typeof Turnstile` in SignUp/SignIn
+- TypeScript error: `HTMLLinkElement` cast fixed to `HTMLAnchorElement` in Terms/Privacy pages
+- Unused `Typography` imports cleaned from Terms/Privacy pages
+- Turnstile widget ref incompatibility with react-turnstile (uses `BoundTurnstileObject` callbacks instead)
+
+### Security
+- Turnstile Secret Key managed server-side via Supabase Bot and Abuse Protection (never in frontend)
+- Resend / SMTP API key configured in Supabase Dashboard, not in repository
+- `.env` files excluded from version control; only `.env.example` committed
+- Environment Variables section documents which keys are safe for frontend vs. server-only
+
 ## [2.6.2] - 2026-05-10
 
 ### Added

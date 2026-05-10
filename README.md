@@ -4,7 +4,7 @@
 
 ### Quantitative Trading Platform
 
-![Version](https://img.shields.io/badge/version-2.6.2-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-2.6.3-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![React](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?style=flat-square&logo=typescript)
@@ -59,6 +59,35 @@ Market Scanner
 - Automatic GTC sell order placement via Exit Scan
 - Duplicate order prevention and sellable quantity validation
 - Bracket order support for take-profit and stop-loss management
+
+## v2.6.3 Highlights
+
+### Authentication & Security
+- **Cloudflare Turnstile CAPTCHA** — Human verification on Create Account page; Sign In shows CAPTCHA after 3 failed attempts
+- **Auth UX Refinements** — Optimized form validation, button disabled states, dark theme polish across Sign In / Sign Up
+- **Google / GitHub OAuth** — Third-party login via Supabase OAuth providers
+- **Apple OAuth** — Removed from active providers, marked as Coming Soon (avoids Azure tenant configuration issues)
+
+### Legal & Compliance
+- **Terms of Service Page** — `/terms` with 16-section bilingual legal content, deep-linkable from registration
+- **Privacy Policy Page** — `/privacy` with 16-section bilingual privacy content, deep-linkable from registration
+- **Email Confirmed Page** — `/auth/confirmed` — dedicated confirmation success page with clean dark UI
+
+### CAPTCHA & Bot Protection
+- Turnstile Site Key read from `REACT_APP_TURNSTILE_SITE_KEY` environment variable only
+- Development mode: shows warning banner if key is missing, allows testing bypass
+- Production mode: blocks registration if key is not configured
+- Turnstile widget resets on submission error for retry
+
+### Localization
+- Landing Page full Chinese translation with language switch button in navigation
+- Legal pages fully bilingual (English + Chinese)
+- Continued locale refinements across auth, landing, and legal pages
+
+### Email Configuration
+- Email confirmation redirect now points to `/auth/confirmed`
+- Documentation for Resend + Custom SMTP setup in Supabase
+- Environment variable documentation for email and CAPTCHA configuration
 
 ## v2.6.2 Highlights
 
@@ -173,6 +202,39 @@ Configure the following APIs via the Settings page (stored encrypted in Supabase
 
 **Never commit API keys.** All keys are stored encrypted in Supabase per-user. The frontend only displays masked values.
 
+## Environment Variables
+
+### Frontend (`frontend/.env`)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `REACT_APP_API_BASE_URL` | Yes | Backend API base URL (e.g. `http://127.0.0.1:8889/api`) |
+| `REACT_APP_SUPABASE_URL` | Yes | Supabase project URL |
+| `REACT_APP_SUPABASE_ANON_KEY` | Yes | Supabase anonymous key (safe for frontend) |
+| `REACT_APP_TURNSTILE_SITE_KEY` | No* | Cloudflare Turnstile CAPTCHA site key — required for production registration |
+
+*\* If unset, registration is blocked in production; development shows warning + bypass.*
+
+### Supabase Configuration (Dashboard — not in `.env`)
+
+| Setting | Value |
+|---------|-------|
+| **Turnstile Secret Key** | Configured in Supabase Auth → Bot and Abuse Protection (never in frontend) |
+| **Resend / SMTP API Key** | Configured in Supabase Auth → Custom SMTP (never in repository) |
+| **Redirect URLs** | Add `http://localhost:3000/auth/confirmed`, `http://localhost:3000/**` (dev) and `https://quant-platform.pages.dev/auth/confirmed`, `https://quant-platform.pages.dev/**` (production) |
+
+### Backend (`backend/.env`)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `FRONTEND_ORIGIN` | Yes | Allowed CORS origin (e.g. `http://localhost:3000`) |
+| `SUPABASE_URL` | Yes | Supabase project URL |
+| `SUPABASE_ANON_KEY` | Yes | Supabase anonymous key |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Supabase service role key (server-side only — never in frontend) |
+| `FERNET_KEY` | Yes | Key for encrypting user API credentials at rest |
+
+**Never commit sensitive keys:** Turnstile Secret Key, Resend API Key, Supabase service role key, Alpaca API keys, or any other credentials. Use `.env.example` templates and never commit `.env` files.
+
 ## Security
 
 - Supabase-authenticated login required for all protected routes
@@ -180,6 +242,8 @@ Configure the following APIs via the Settings page (stored encrypted in Supabase
 - Global 401 interceptor with automatic sign-out on session expiry
 - Backend logs never expose API keys or secrets
 - No fallback to environment variables for user-specific configuration
+- Cloudflare Turnstile CAPTCHA protects registration and rate-limited sign-in
+- All OAuth flows handled server-side by Supabase; no third-party tokens exposed to frontend
 
 ## Disclaimer
 

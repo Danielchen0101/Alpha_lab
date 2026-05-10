@@ -7,8 +7,8 @@ interface AuthContextType {
   session: Session | null;
   isAuthenticated: boolean;
   loading: boolean;
-  login: (email: string, password: string) => Promise<{ success: boolean; message?: string }>;
-  signUp: (email: string, password: string) => Promise<{ success: boolean; message?: string }>;
+  login: (email: string, password: string, captchaToken?: string) => Promise<{ success: boolean; message?: string }>;
+  signUp: (email: string, password: string, captchaToken?: string, fullName?: string, emailRedirectTo?: string) => Promise<{ success: boolean; message?: string }>;
   logout: () => Promise<void>;
 }
 
@@ -52,9 +52,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => subscription.unsubscribe();
   }, []);
 
-  const login = async (email: string, password: string) => {
+  const login = async (email: string, password: string, captchaToken?: string) => {
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password, options: { captchaToken } });
       if (error) {
         return { success: false, message: error.message };
       }
@@ -69,9 +69,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const signUp = async (email: string, password: string) => {
+  const signUp = async (email: string, password: string, captchaToken?: string, fullName?: string, emailRedirectTo?: string) => {
     try {
-      const { data, error } = await supabase.auth.signUp({ email, password });
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { full_name: fullName || '' },
+          captchaToken,
+          emailRedirectTo,
+        },
+      });
       if (error) {
         return { success: false, message: error.message };
       }

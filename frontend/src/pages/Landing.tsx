@@ -8,9 +8,11 @@ import {
   ExperimentOutlined, DeploymentUnitOutlined, EyeOutlined
 } from '@ant-design/icons';
 import MarketingLayout from '../components/MarketingLayout';
+import { useLanguage } from '../contexts/LanguageContext';
 
 const Landing: React.FC = () => {
   const navigate = useNavigate();
+  const { t } = useLanguage();
 
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -23,15 +25,15 @@ const Landing: React.FC = () => {
   ];
 
   const capabilities = [
-    { icon: <GlobalOutlined />, title: 'Market Scanner', desc: 'Scan thousands of assets for anomalies and trends.' },
-    { icon: <SearchOutlined />, title: 'AI Agent', desc: 'Autonomous intelligence for deep setup verification.' },
-    { icon: <FilterOutlined />, title: 'Fine Scan', desc: 'Surgical filtering for high-precision technical structures.' },
-    { icon: <RobotOutlined />, title: 'Deeper Validation', desc: 'Multi-LLM audit of market structure and sentiment.' },
-    { icon: <AimOutlined />, title: 'Entry Plan', desc: 'Deterministic risk-aware execution levels and sizing.' },
-    { icon: <ExperimentOutlined />, title: 'Backtesting', desc: 'Validate hypotheses against historical market data.' },
-    { icon: <ThunderboltOutlined />, title: 'Optimization', desc: 'Quantitative fine-tuning of strategy parameters.' },
-    { icon: <DeploymentUnitOutlined />, title: 'Trading Modes', desc: 'Seamless switch between Paper and Real trading.' },
-    { icon: <EyeOutlined />, title: 'Watchlist', desc: 'Intelligent monitoring with real-time tactical alerts.' },
+    { icon: <GlobalOutlined />, title: t.landing.capMarketScanner, desc: t.landing.capMarketScannerDesc },
+    { icon: <SearchOutlined />, title: t.landing.capAIAgent, desc: t.landing.capAIAgentDesc },
+    { icon: <FilterOutlined />, title: t.landing.capFineScan, desc: t.landing.capFineScanDesc },
+    { icon: <RobotOutlined />, title: t.landing.capDeeperValidation, desc: t.landing.capDeeperValidationDesc },
+    { icon: <AimOutlined />, title: t.landing.capEntryPlan, desc: t.landing.capEntryPlanDesc },
+    { icon: <ExperimentOutlined />, title: t.landing.capBacktesting, desc: t.landing.capBacktestingDesc },
+    { icon: <ThunderboltOutlined />, title: t.landing.capOptimization, desc: t.landing.capOptimizationDesc },
+    { icon: <DeploymentUnitOutlined />, title: t.landing.capTradingModes, desc: t.landing.capTradingModesDesc },
+    { icon: <EyeOutlined />, title: t.landing.capWatchlist, desc: t.landing.capWatchlistDesc },
   ];
 
   return (
@@ -352,20 +354,20 @@ const Landing: React.FC = () => {
         
         <div className="content-relative">
           <div style={{ display: 'flex', width: 'fit-content', margin: '0 auto 28px auto', alignItems: 'center', justifyContent: 'center', padding: '8px 24px', borderRadius: '30px', background: 'rgba(24,144,255,0.1)', border: '1px solid rgba(24,144,255,0.3)', color: '#1890ff', fontSize: '0.95rem', fontWeight: 600, animation: 'fadeUp 0.8s ease-out forwards', boxShadow: '0 0 20px rgba(24,144,255,0.15)', letterSpacing: '0.5px' }}>
-            AI-Powered Quantitative Execution
+            {t.landing.heroBadge}
           </div>
           <h1 className="premium-title">
-            Systematic Intelligence.<br/> Flawless Execution.
+            {t.landing.heroTitle1}<br/> {t.landing.heroTitle2}
           </h1>
           <p className="premium-subtitle">
-            AlphaLab provides a complete, risk-aware algorithmic pipeline. Scan the market, validate technical structures with specialized LLMs, and execute deterministic entry plans.
+            {t.landing.heroSubtitle}
           </p>
           <Space size="large" className="hero-actions">
             <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')}>
-              Start Building <ArrowRightOutlined />
+              {t.landing.startBuilding} <ArrowRightOutlined />
             </Button>
             <Button className="btn-secondary" onClick={() => navigate('/platform')}>
-              Explore Platform
+              {t.landing.explorePlatform}
             </Button>
           </Space>
 
@@ -376,25 +378,25 @@ const Landing: React.FC = () => {
                 <div className="mockup-inner-panel">
                   <div className="mockup-scan-line"></div>
                   <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 20, letterSpacing: 1.5, fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span>AI AGENT ORCHESTRATOR</span>
+                    <span>{t.landing.orchestrator}</span>
                     <span className="blinking-dot blue"></span>
                   </div>
                   
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                     <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)', padding: '12px 16px', borderRadius: 8 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                        <span style={{ color: '#fff', fontWeight: 600, fontSize: 14 }}>Global Market Scan</span>
-                        <span className="status-chip success"><CheckCircleOutlined /> Complete</span>
+                        <span style={{ color: '#fff', fontWeight: 600, fontSize: 14 }}>{t.landing.globalMarketScan}</span>
+                        <span className="status-chip success"><CheckCircleOutlined /> {t.landing.complete}</span>
                       </div>
-                      <div style={{ fontSize: 12, color: '#64748b' }}>Processed 8,432 equities across 14 factors.</div>
+                      <div style={{ fontSize: 12, color: '#64748b' }}>{t.landing.processedEquities}</div>
                     </div>
                     
                     <div style={{ background: 'rgba(24,144,255,0.05)', border: '1px solid rgba(24,144,255,0.2)', padding: '12px 16px', borderRadius: 8, boxShadow: '0 0 15px rgba(24,144,255,0.1)' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                        <span style={{ color: '#fff', fontWeight: 600, fontSize: 14 }}>Deeper Validation</span>
-                        <span className="status-chip"><LoadingOutlined style={{ marginRight: 4 }}/> Analyzing</span>
+                        <span style={{ color: '#fff', fontWeight: 600, fontSize: 14 }}>{t.landing.deeperValidation}</span>
+                        <span className="status-chip"><LoadingOutlined style={{ marginRight: 4 }}/> {t.landing.analyzing}</span>
                       </div>
-                      <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>LLM reviewing multi-timeframe divergence.</div>
+                      <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>{t.landing.llmReview}</div>
                       <div style={{ height: 4, background: 'rgba(255,255,255,0.1)', borderRadius: 2, overflow: 'hidden' }}>
                         <div style={{ width: '65%', height: '100%', background: '#1890ff', transition: 'width 2s ease' }}></div>
                       </div>
@@ -406,8 +408,8 @@ const Landing: React.FC = () => {
               <Col xs={24} md={14}>
                 <div className="mockup-inner-panel">
                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 24 }}>
-                     <span style={{ fontSize: 11, color: '#94a3b8', letterSpacing: 1.5, fontWeight: 600 }}>BACKTEST & ENTRY PLAN</span>
-                     <span className="status-chip purple"><NodeIndexOutlined /> Synthesizing Strategy</span>
+                     <span style={{ fontSize: 11, color: '#94a3b8', letterSpacing: 1.5, fontWeight: 600 }}>{t.landing.backtestEntryPlan}</span>
+                     <span className="status-chip purple"><NodeIndexOutlined /> {t.landing.synthesizingStrategy}</span>
                    </div>
                    
                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', height: 120, marginBottom: 16 }}>
@@ -427,11 +429,11 @@ const Landing: React.FC = () => {
 
                    <div style={{ display: 'flex', gap: 16 }}>
                      <div style={{ background: 'rgba(255,255,255,0.03)', padding: '12px 16px', borderRadius: 8, flex: 1, border: '1px solid rgba(255,255,255,0.05)' }}>
-                       <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4, textTransform: 'uppercase' }}>Risk Protocol</div>
-                       <div style={{ color: '#fff', fontWeight: 'bold', fontSize: 15 }}>Strict (1% per trade)</div>
+                       <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4, textTransform: 'uppercase' }}>{t.landing.riskProtocol}</div>
+                       <div style={{ color: '#fff', fontWeight: 'bold', fontSize: 15 }}>{t.landing.strictPerTrade}</div>
                      </div>
                      <div style={{ background: 'rgba(255,255,255,0.03)', padding: '12px 16px', borderRadius: 8, flex: 1, border: '1px solid rgba(255,255,255,0.05)' }}>
-                       <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4, textTransform: 'uppercase' }}>Target RR</div>
+                       <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4, textTransform: 'uppercase' }}>{t.landing.targetRR}</div>
                        <div style={{ color: '#fff', fontWeight: 'bold', fontSize: 15 }}>1 : 2.5</div>
                      </div>
                    </div>
@@ -445,17 +447,15 @@ const Landing: React.FC = () => {
       {/* Project Overview */}
       <section className="section-container" style={{ paddingTop: 40, textAlign: 'center' }}>
         <div className="reveal-on-scroll">
-          <h2 style={{ fontSize: '2.5rem', fontWeight: 800, color: '#fff', marginBottom: 24 }}>Project Overview</h2>
+          <h2 style={{ fontSize: '2.5rem', fontWeight: 800, color: '#fff', marginBottom: 24 }}>{t.landing.overviewTitle}</h2>
           <p style={{ color: '#94a3b8', fontSize: '1.2rem', maxWidth: 800, margin: '0 auto 40px', lineHeight: 1.7 }}>
-            AlphaLab is an AI-powered quantitative trading and market analysis platform. 
-            It enables traders to scan markets, validate setups with specialized LLMs, execute backtests, and generate risk-aware entry plans. 
-            Our focus is on deterministic decision support, helping you trade with systematic precision rather than blind signals.
+            {t.landing.overviewDesc}
           </p>
         </div>
 
         {/* Tech Stack */}
         <div className="reveal-on-scroll delay-100" style={{ marginTop: 60 }}>
-          <h3 style={{ color: '#64748b', fontSize: '0.9rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 2, marginBottom: 24 }}>Built With</h3>
+          <h3 style={{ color: '#64748b', fontSize: '0.9rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 2, marginBottom: 24 }}>{t.landing.builtWith}</h3>
           <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', maxWidth: 900, margin: '0 auto' }}>
             {techStack.map((tech, idx) => (
               <span key={idx} className="tech-tag">{tech}</span>
@@ -467,8 +467,8 @@ const Landing: React.FC = () => {
       {/* Core Capabilities Grid */}
       <section className="section-container">
         <div className="reveal-on-scroll" style={{ textAlign: 'center', marginBottom: 60 }}>
-          <h2 style={{ fontSize: '2.5rem', fontWeight: 800, color: '#fff', marginBottom: 16 }}>Core Capabilities</h2>
-          <p style={{ color: '#94a3b8', fontSize: '1.1rem' }}>Comprehensive tools for the modern systematic trader.</p>
+          <h2 style={{ fontSize: '2.5rem', fontWeight: 800, color: '#fff', marginBottom: 16 }}>{t.landing.capabilitiesTitle}</h2>
+          <p style={{ color: '#94a3b8', fontSize: '1.1rem' }}>{t.landing.capabilitiesSubtitle}</p>
         </div>
         
         <Row gutter={[24, 24]}>
@@ -488,9 +488,9 @@ const Landing: React.FC = () => {
       <section className="section-container" style={{ paddingBottom: 100 }}>
         <div className="github-section reveal-on-scroll">
           <GithubOutlined style={{ fontSize: 48, color: '#fff', marginBottom: 24 }} />
-          <h2 style={{ fontSize: '2rem', fontWeight: 800, color: '#fff', marginBottom: 16 }}>Open Source & Transparent</h2>
+          <h2 style={{ fontSize: '2rem', fontWeight: 800, color: '#fff', marginBottom: 16 }}>{t.landing.githubTitle}</h2>
           <p style={{ color: '#94a3b8', fontSize: '1.1rem', maxWidth: 600, margin: '0 auto 32px' }}>
-            Explore the codebase, contribute to the engine, or deploy your own instance of the AlphaLab pipeline.
+            {t.landing.githubDesc}
           </p>
           <Button 
             className="btn-secondary" 
@@ -499,7 +499,7 @@ const Landing: React.FC = () => {
             target="_blank"
             rel="noopener noreferrer"
           >
-            GitHub Repository <ArrowRightOutlined />
+            {t.landing.githubButton} <ArrowRightOutlined />
           </Button>
         </div>
       </section>
@@ -507,13 +507,13 @@ const Landing: React.FC = () => {
       {/* Final CTA */}
       <section className="section-container" style={{ textAlign: 'center', padding: '100px 24px' }}>
         <div className="reveal-on-scroll" style={{ background: 'linear-gradient(145deg, rgba(24,144,255,0.05) 0%, rgba(114,46,209,0.05) 100%)', padding: '60px', borderRadius: '32px', border: '1px solid rgba(255,255,255,0.05)' }}>
-          <h2 style={{ fontSize: '2.8rem', fontWeight: 800, color: '#fff', marginBottom: 24 }}>Ready to trade with an edge?</h2>
+          <h2 style={{ fontSize: '2.8rem', fontWeight: 800, color: '#fff', marginBottom: 24 }}>{t.landing.ctaTitle}</h2>
           <p style={{ color: '#94a3b8', fontSize: '1.2rem', marginBottom: 40, maxWidth: 700, margin: '0 auto 40px' }}>
-            Join the next generation of quantitative traders leveraging systematic AI pipelines.
+            {t.landing.ctaDesc}
           </p>
           <Space size="large">
-            <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} style={{ height: 56, padding: '0 40px' }}>Get Started</Button>
-            <Button className="btn-secondary" onClick={() => navigate('/signin')} style={{ height: 56, padding: '0 40px' }}>Sign In</Button>
+            <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} style={{ height: 56, padding: '0 40px' }}>{t.landing.ctaGetStarted}</Button>
+            <Button className="btn-secondary" onClick={() => navigate('/signin')} style={{ height: 56, padding: '0 40px' }}>{t.landing.ctaSignIn}</Button>
           </Space>
         </div>
       </section>

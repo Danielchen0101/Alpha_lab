@@ -6,12 +6,11 @@ import {
 import {
   CheckCircleOutlined, CloseCircleOutlined, QuestionCircleOutlined,
   SaveOutlined, ApiOutlined, ExperimentOutlined, BankOutlined, CloudOutlined,
-  LogoutOutlined, UserOutlined, ArrowLeftOutlined, SafetyCertificateOutlined,
+  ArrowLeftOutlined, SafetyCertificateOutlined,
   InfoCircleOutlined, RobotOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
 import axios from 'axios';
 import { supabase } from '../lib/supabaseClient';
-import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
 
 const { Title, Text } = Typography;
@@ -763,15 +762,9 @@ const FinnhubSection: React.FC<{ t: any }> = ({ t }) => {
 // Main Configuration Page
 // =====================================================================
 const Configuration: React.FC = () => {
-  const { user, logout } = useAuth();
   const navigate = useNavigate();
   const { t } = useLanguage();
   const [marketDataReloadKey, setMarketDataReloadKey] = useState(0);
-
-  const handleSignOut = async () => {
-    await logout();
-    navigate('/signin');
-  };
 
   return (
     <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 16px 60px' }}>
@@ -784,27 +777,14 @@ const Configuration: React.FC = () => {
         >
           {t.config.backToSettings}
         </Button>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-          <div>
-            <Title level={2} style={{ margin: 0 }}>
-              <ApiOutlined style={{ marginRight: 12, color: '#1890ff' }} />
-              {t.config.title}
-            </Title>
-            <Text type="secondary" style={{ fontSize: 15 }}>
-              {t.config.subtitle}
-            </Text>
-          </div>
-          <div style={{ textAlign: 'right' }}>
-            <Space direction="vertical" align="end" size={0}>
-              <Space size={8}>
-                <UserOutlined style={{ color: '#8c8c8c' }} />
-                <Text strong>{user?.email}</Text>
-              </Space>
-              <Button type="link" danger icon={<LogoutOutlined />} onClick={handleSignOut} style={{ padding: 0, height: 'auto' }}>
-                {t.config.signOut}
-              </Button>
-            </Space>
-          </div>
+        <div>
+          <Title level={2} style={{ margin: 0 }}>
+            <ApiOutlined style={{ marginRight: 12, color: '#1890ff' }} />
+            {t.config.title}
+          </Title>
+          <Text type="secondary" style={{ fontSize: 15 }}>
+            {t.config.subtitle}
+          </Text>
         </div>
       </div>
 

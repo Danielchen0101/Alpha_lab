@@ -9,9 +9,11 @@ import Workflow from './pages/Workflow';
 import Features from './pages/Features';
 import Technology from './pages/Technology';
 import About from './pages/About';
-import Login from './pages/Login';
 import SignIn from './pages/SignIn';
 import SignUp from './pages/SignUp';
+import Terms from './pages/Terms';
+import Privacy from './pages/Privacy';
+import AuthConfirmed from './pages/AuthConfirmed';
 import Dashboard from './pages/Dashboard';
 import Market from './pages/Market';
 import Backtest from './pages/Backtest';
@@ -133,9 +135,12 @@ const App: React.FC = () => {
               <Route path="/features" element={<Features />} />
               <Route path="/technology" element={<Technology />} />
               <Route path="/about" element={<About />} />
-              <Route path="/login" element={<Login />} />
+              <Route path="/login" element={<SignIn />} />
               <Route path="/signin" element={<SignIn />} />
               <Route path="/signup" element={<SignUp />} />
+              <Route path="/terms" element={<Terms />} />
+              <Route path="/privacy" element={<Privacy />} />
+              <Route path="/auth/confirmed" element={<AuthConfirmed />} />
 
               {/* Protected routes - with sidebar layout */}
               <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
