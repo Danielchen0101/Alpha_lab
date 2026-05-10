@@ -16,15 +16,15 @@ import {
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
-  LineChart,
-  Line,
+  AreaChart,
+  Area,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip as RechartsTooltip,
   ResponsiveContainer,
 } from 'recharts';
-import { PieChartOutlined, ReloadOutlined } from '@ant-design/icons';
+import { PieChartOutlined, ReloadOutlined, ArrowUpOutlined, ArrowDownOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { tradingAccountAPI, TradingAccountResponse, TradingPosition } from '../services/api';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -32,8 +32,6 @@ import { useTradeMode } from '../contexts/TradeModeContext';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
-
-type TradingMode = 'paper' | 'real';
 
 interface HistoryPoint {
   timestamp: number;
@@ -54,8 +52,8 @@ const normalizeTimestamp = (timestamp: number | string): number | null => {
 };
 
 const toneColor = (value: number): string => {
-  if (value > 0) return '#0f9f6e';
-  if (value < 0) return '#d14343';
+  if (value > 0) return '#10b981'; // Closer to a professional green
+  if (value < 0) return '#ef4444'; // Closer to a professional red
   return '#6b7280';
 };
 
@@ -66,6 +64,18 @@ const formatMoney = (value: any): string => {
     currency: 'USD',
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
+  }).format(n);
+};
+
+const formatCompactMoney = (value: any): string => {
+  const n = asNumber(value);
+  if (n >= 1000000) return `$${(n / 1000000).toFixed(1)}M`;
+  if (n >= 1000) return `$${(n / 1000).toFixed(1)}K`;
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
   }).format(n);
 };
 
@@ -102,15 +112,99 @@ const normalizeHistory = (rows: any[]): HistoryPoint[] => {
   return (Array.isArray(rows) ? rows : [])
     .map((row) => {
       const ts = normalizeTimestamp(row?.timestamp);
-      if (!ts) return null;
+      const eq = asNumber(row?.equity);
+      if (!ts || !Number.isFinite(eq) || eq <= 0) return null;
       return {
         timestamp: ts,
-        equity: asNumber(row?.equity),
+        equity: eq,
         profitLoss: asNumber(row?.profitLoss ?? row?.pnl),
         profitLossPct: asNumber(row?.profitLossPct ?? row?.pnlPct),
       };
     })
     .filter(Boolean) as HistoryPoint[];
+};
+
+const generateFallbackHistory = (equity: number, range: string): HistoryPoint[] => {
+  const now = Date.now();
+  const rangeStart: Record<string, number> = {
+    '1D': now - 6.5 * 60 * 60 * 1000,
+    '1W': now - 7 * 24 * 60 * 60 * 1000,
+    '1M': now - 30 * 24 * 60 * 60 * 1000,
+    '3M': now - 90 * 24 * 60 * 60 * 1000,
+    '1Y': now - 365 * 24 * 60 * 60 * 1000,
+    'All': now - 365 * 24 * 60 * 60 * 1000,
+  };
+  const start = rangeStart[range] || rangeStart['1M'];
+  return [
+    { timestamp: start, equity, profitLoss: 0, profitLossPct: 0 },
+    { timestamp: now, equity, profitLoss: 0, profitLossPct: 0 },
+  ];
+};
+
+const CustomTooltip: React.FC<any> = ({ active, payload, label, t, localeName, history }) => {
+  if (active && payload && payload.length) {
+    const data = payload[0].payload;
+    const ts = normalizeTimestamp(label);
+    const dateStr = ts ? new Date(ts).toLocaleString(localeName, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }) : '';
+
+    // Calculate change from first point in history if available
+    let changeVal = data.profitLoss || 0;
+    let changePct = data.profitLossPct || 0;
+
+    if (history && history.length > 0) {
+      const firstEquity = history[0].equity;
+      changeVal = data.equity - firstEquity;
+      changePct = firstEquity !== 0 ? (changeVal / firstEquity) * 100 : 0;
+    }
+
+    return (
+      <div style={{
+        backgroundColor: 'rgba(255, 255, 255, 0.96)',
+        border: '1px solid #e2e8f0',
+        padding: '12px 16px',
+        borderRadius: '12px',
+        boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)',
+        minWidth: '200px'
+      }}>
+        <div style={{ marginBottom: '8px', borderBottom: '1px solid #f1f5f9', paddingBottom: '4px' }}>
+          <Text type="secondary" style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' }}>
+            {t.portfolio.tooltipTime}
+          </Text>
+          <div style={{ fontSize: '13px', fontWeight: 700, color: '#1e293b' }}>{dateStr}</div>
+        </div>
+        <div style={{ marginBottom: '8px' }}>
+          <Text type="secondary" style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' }}>
+            {t.portfolio.tooltipEquity}
+          </Text>
+          <div style={{ fontSize: '18px', fontWeight: 800, color: '#1e293b' }}>{formatMoney(data.equity)}</div>
+        </div>
+        <div style={{ display: 'flex', gap: '16px' }}>
+          <div>
+            <Text type="secondary" style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' }}>
+              {t.portfolio.tooltipChange}
+            </Text>
+            <div style={{ fontSize: '13px', fontWeight: 700, color: toneColor(changeVal) }}>
+              {formatSignedMoney(changeVal)}
+            </div>
+          </div>
+          <div>
+            <Text type="secondary" style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' }}>
+              {t.portfolio.tooltipChangePct}
+            </Text>
+            <div style={{ fontSize: '13px', fontWeight: 700, color: toneColor(changeVal) }}>
+              {formatPercent(changePct)}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return null;
 };
 
 const Portfolio: React.FC = () => {
@@ -122,12 +216,12 @@ const Portfolio: React.FC = () => {
   const [positions, setPositions] = useState<TradingPosition[]>([]);
   const [portfolioHistory, setPortfolioHistory] = useState<HistoryPoint[]>([]);
   const [portfolioRange, setPortfolioRange] = useState<string>('1M');
-  const [portfolioMode, setPortfolioMode] = useState<TradingMode>('paper');
   const [portfolioChange, setPortfolioChange] = useState({ value: 0, percent: 0 });
   const [source, setSource] = useState<'alpaca_paper' | 'alpaca_real' | undefined>();
   const [lastUpdated, setLastUpdated] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [usingFallback, setUsingFallback] = useState(false);
 
   const localeName = language === 'zh-CN' ? 'zh-CN' : 'en-US';
 
@@ -143,7 +237,7 @@ const Portfolio: React.FC = () => {
     }).format(date);
   };
 
-  const loadData = async (mode: TradingMode = portfolioMode, range: string = portfolioRange) => {
+  const loadData = async (mode: 'paper' | 'real' = tradeMode, range: string = portfolioRange) => {
     setLoading(true);
     setError(null);
     setAccount(null);
@@ -152,6 +246,7 @@ const Portfolio: React.FC = () => {
     setPortfolioChange({ value: 0, percent: 0 });
     setSource(undefined);
     setLastUpdated('');
+    setUsingFallback(false);
 
     try {
       const [accountRes, positionsRes, historyRes] = await Promise.allSettled([
@@ -163,11 +258,14 @@ const Portfolio: React.FC = () => {
       let nextError: string | null = null;
       let nextUpdatedAt = '';
       let nextSource: 'alpaca_paper' | 'alpaca_real' | undefined;
+      let normalizedHistory: HistoryPoint[] = [];
+      let accountEquity = 0;
 
       if (accountRes.status === 'fulfilled') {
         const data = accountRes.value.data;
         if (data.success && data.available !== false) {
           setAccount(data);
+          accountEquity = asNumber(data.equity || data.portfolioValue);
           nextSource = data.source;
           nextUpdatedAt = data.updatedAt || nextUpdatedAt;
         } else {
@@ -194,6 +292,7 @@ const Portfolio: React.FC = () => {
         const data = historyRes.value.data;
         if (data.success) {
           const normalized = normalizeHistory(data.data || []);
+          normalizedHistory = normalized;
           setPortfolioHistory(normalized);
           nextSource = nextSource || data.source;
           nextUpdatedAt = nextUpdatedAt || data.updatedAt || '';
@@ -218,6 +317,20 @@ const Portfolio: React.FC = () => {
         nextError = extractApiError(historyRes.reason, t.portfolio.dataUnavailable);
       }
 
+      if (!nextError && accountEquity > 0) {
+        const maxHistoryEquity = normalizedHistory.length > 0
+          ? Math.max(...normalizedHistory.map((p) => p.equity))
+          : 0;
+        const historyLooksReasonable = maxHistoryEquity >= accountEquity * 0.1;
+
+        if (!historyLooksReasonable) {
+          const fallback = generateFallbackHistory(accountEquity, range);
+          setPortfolioHistory(fallback);
+          setPortfolioChange({ value: 0, percent: 0 });
+          setUsingFallback(true);
+        }
+      }
+
       setSource(nextSource);
       setLastUpdated(nextUpdatedAt);
       setError(nextError);
@@ -227,13 +340,13 @@ const Portfolio: React.FC = () => {
   };
 
   useEffect(() => {
-    loadData(portfolioMode, portfolioRange);
+    loadData(tradeMode, portfolioRange);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [portfolioMode, tradeMode]);
+  }, [tradeMode]);
 
   const handlePortfolioRangeChange = (range: string) => {
     setPortfolioRange(range);
-    loadData(portfolioMode, range);
+    loadData(tradeMode, range);
   };
 
   const totalUnrealizedPL = useMemo(
@@ -263,7 +376,23 @@ const Portfolio: React.FC = () => {
     return latest ? latest.profitLossPct * 100 : 0;
   }, [account, portfolioHistory, todayPL]);
 
-  const modeLabel = portfolioMode === 'real' ? t.portfolio.realTrading : t.portfolio.paperTrading;
+  const yDomain = useMemo((): [number, number] => {
+    const equityValues = portfolioHistory
+      .map((p) => asNumber(p.equity))
+      .filter((v) => Number.isFinite(v) && v > 0);
+    if (equityValues.length === 0) return [0, 100];
+    const minE = Math.min(...equityValues);
+    const maxE = Math.max(...equityValues);
+    if (minE === maxE) {
+      const pad = Math.max(1, Math.abs(maxE) * 0.05);
+      return [minE - pad, maxE + pad];
+    }
+    const spread = maxE - minE;
+    const pad = Math.max(spread * 0.15, Math.abs(maxE) * 0.005);
+    return [minE - pad, maxE + pad];
+  }, [portfolioHistory]);
+
+  const modeLabel = tradeMode === 'real' ? t.portfolio.currentRealTrading : t.portfolio.currentPaperTrading;
   const sourceLabel = source === 'alpaca_real' ? t.portfolio.sourceReal : source === 'alpaca_paper' ? t.portfolio.sourcePaper : '-';
 
   const kpis = [
@@ -396,15 +525,9 @@ const Portfolio: React.FC = () => {
           <Text type="secondary">{t.portfolio.subtitle}</Text>
         </div>
         <Space wrap>
-          <Select
-            value={portfolioMode}
-            onChange={(value) => setPortfolioMode(value as TradingMode)}
-            style={{ width: 160 }}
-            aria-label={t.portfolio.mode}
-          >
-            <Option value="paper">{t.portfolio.paperTrading}</Option>
-            <Option value="real">{t.portfolio.realTrading}</Option>
-          </Select>
+          <Tag color={tradeMode === 'real' ? 'red' : 'blue'} style={{ fontSize: 13, padding: '4px 12px', borderRadius: 6 }}>
+            {modeLabel}
+          </Tag>
           <Button icon={<ReloadOutlined />} onClick={() => loadData()} loading={loading}>
             {t.portfolio.refresh}
           </Button>
@@ -446,13 +569,26 @@ const Portfolio: React.FC = () => {
             title={t.portfolio.portfolioPerformance}
             extra={
               <Space wrap>
-                <Text strong style={{ color: toneColor(portfolioChange.value) }}>
-                  {t.portfolio.change}: {formatSignedMoney(portfolioChange.value)} ({formatPercent(portfolioChange.percent)})
-                </Text>
+                <Tag
+                  color={portfolioChange.value >= 0 ? 'success' : 'error'}
+                  icon={portfolioChange.value >= 0 ? <ArrowUpOutlined /> : <ArrowDownOutlined />}
+                  style={{
+                    fontSize: 13,
+                    padding: '4px 10px',
+                    borderRadius: 6,
+                    fontWeight: 700,
+                    border: 'none',
+                    backgroundColor: portfolioChange.value >= 0 ? '#ecfdf5' : '#fef2f2',
+                    color: portfolioChange.value >= 0 ? '#059669' : '#dc2626'
+                  }}
+                >
+                  {formatSignedMoney(portfolioChange.value)} ({formatPercent(portfolioChange.percent)})
+                </Tag>
                 <Select value={portfolioRange} onChange={handlePortfolioRangeChange} style={{ width: 112 }}>
                   <Option value="1D">{t.portfolio.range1Day}</Option>
                   <Option value="1W">{t.portfolio.range1Week}</Option>
                   <Option value="1M">{t.portfolio.range1Month}</Option>
+                  <Option value="3M">{t.portfolio.range3Months}</Option>
                   <Option value="1Y">{t.portfolio.range1Year}</Option>
                   <Option value="All">{t.portfolio.rangeAll}</Option>
                 </Select>
@@ -462,44 +598,93 @@ const Portfolio: React.FC = () => {
           >
             {loading ? (
               <Skeleton active paragraph={{ rows: 8 }} />
+            ) : error ? (
+              <Empty description={t.portfolio.portfolioHistoryLoadFailed}>
+                <Text type="secondary" style={{ color: '#ef4444' }}>{error}</Text>
+              </Empty>
             ) : portfolioHistory.length === 0 ? (
               <Empty description={t.portfolio.noPortfolioHistory}>
                 <Text type="secondary">{t.portfolio.noPortfolioHistoryDesc}</Text>
               </Empty>
             ) : (
-              <div style={{ height: 340 }}>
+              <>
+              <div style={{ height: 400, marginTop: 10 }}>
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={portfolioHistory} margin={{ top: 10, right: 12, bottom: 4, left: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" />
+                  <AreaChart data={portfolioHistory} margin={{ top: 10, right: 12, bottom: 4, left: 0 }}>
+                    <defs>
+                      <linearGradient id="colorEquity" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#2563eb" stopOpacity={0.15}/>
+                        <stop offset="95%" stopColor="#2563eb" stopOpacity={0.01}/>
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="#f1f5f9" />
                     <XAxis
                       dataKey="timestamp"
                       type="number"
                       scale="time"
                       domain={['dataMin', 'dataMax']}
+                      tick={{ fill: '#94a3b8', fontSize: 11 }}
+                      tickLine={false}
+                      axisLine={false}
+                      tickMargin={12}
+                      minTickGap={30}
                       tickFormatter={(timestamp) => {
                         const ts = normalizeTimestamp(timestamp);
                         if (!ts) return '';
                         const date = new Date(ts);
+                        const options: Intl.DateTimeFormatOptions = { timeZone: 'America/New_York' };
+
                         if (portfolioRange === '1D') {
-                          return date.toLocaleTimeString(localeName, { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false });
+                          return date.toLocaleTimeString(localeName, { ...options, hour: '2-digit', minute: '2-digit', hour12: false });
                         }
-                        return date.toLocaleDateString(localeName, { timeZone: 'America/New_York', month: 'numeric', day: 'numeric' });
+                        if (portfolioRange === '1W') {
+                          return date.toLocaleDateString(localeName, { ...options, month: 'numeric', day: 'numeric' });
+                        }
+                        if (portfolioRange === '1M' || portfolioRange === '3M') {
+                          return date.toLocaleDateString(localeName, { ...options, month: 'short', day: 'numeric' });
+                        }
+                        if (portfolioRange === '1Y') {
+                          return date.toLocaleDateString(localeName, { ...options, month: 'short' });
+                        }
+                        if (portfolioRange === 'All') {
+                          return date.toLocaleDateString(localeName, { ...options, year: '2-digit', month: 'short' });
+                        }
+                        return date.toLocaleDateString(localeName, { ...options, month: 'short', day: 'numeric' });
                       }}
                     />
-                    <YAxis yAxisId="left" tickFormatter={(v) => formatMoney(v).replace('.00', '')} width={72} />
-                    <YAxis yAxisId="right" orientation="right" tickFormatter={(v) => formatMoney(v).replace('.00', '')} width={72} />
+                    <YAxis
+                      tickFormatter={(v) => formatCompactMoney(v)}
+                      width={64}
+                      tick={{ fill: '#94a3b8', fontSize: 11 }}
+                      tickLine={false}
+                      axisLine={false}
+                      domain={yDomain}
+                      tickCount={6}
+                    />
                     <RechartsTooltip
-                      labelFormatter={(timestamp) => {
-                        const ts = normalizeTimestamp(timestamp as any);
-                        return ts ? new Date(ts).toLocaleString(localeName, { timeZone: 'America/New_York' }) : '';
-                      }}
-                      formatter={(value: any, name: string) => [formatMoney(value), name]}
+                      content={<CustomTooltip t={t} localeName={localeName} history={portfolioHistory} />}
                     />
-                    <Line yAxisId="left" type="monotone" dataKey="equity" stroke="#2563eb" strokeWidth={2.5} dot={false} name={t.portfolio.portfolioValueLine} />
-                    <Line yAxisId="right" type="monotone" dataKey="profitLoss" stroke="#0f9f6e" strokeWidth={2} dot={false} name={t.portfolio.profitLossLine} />
-                  </LineChart>
+                    <Area
+                      type="monotone"
+                      dataKey="equity"
+                      stroke="#2563eb"
+                      strokeWidth={2.5}
+                      fillOpacity={1}
+                      fill="url(#colorEquity)"
+                      name={t.portfolio.portfolioValueLine}
+                      activeDot={{ r: 6, stroke: '#fff', strokeWidth: 2, fill: '#2563eb' }}
+                    />
+                  </AreaChart>
                 </ResponsiveContainer>
               </div>
+              {usingFallback && (
+                <div style={{ textAlign: 'right', marginRight: 12 }}>
+                  <Text type="secondary" style={{ fontSize: 11, opacity: 0.7 }}>
+                    ℹ️ {t.portfolio.fallbackHistoryNote}
+                  </Text>
+                </div>
+              )}
+              </>
             )}
           </Card>
 
@@ -534,7 +719,7 @@ const Portfolio: React.FC = () => {
                     <Tag color={account?.status === 'ACTIVE' ? 'green' : account?.status ? 'orange' : 'default'}>{account?.status || '-'}</Tag>
                   </Descriptions.Item>
                   <Descriptions.Item label={t.portfolio.tradingMode}>
-                    <Tag color={portfolioMode === 'real' ? 'red' : 'blue'}>{modeLabel}</Tag>
+                    <Tag color={tradeMode === 'real' ? 'red' : 'blue'}>{modeLabel}</Tag>
                   </Descriptions.Item>
                   <Descriptions.Item label={t.portfolio.dataSource}>{sourceLabel}</Descriptions.Item>
                   <Descriptions.Item label={t.portfolio.lastUpdated}>{formatDateTime(lastUpdated)}</Descriptions.Item>
@@ -553,9 +738,9 @@ const Portfolio: React.FC = () => {
                   </Space>
                 </div>
 
-                <div style={{ padding: 12, borderRadius: 8, background: portfolioMode === 'real' ? '#fff7ed' : '#eff6ff', border: `1px solid ${portfolioMode === 'real' ? '#fed7aa' : '#bfdbfe'}` }}>
-                  <Text style={{ color: portfolioMode === 'real' ? '#9a3412' : '#1d4ed8', fontWeight: 700 }}>
-                    {portfolioMode === 'real' ? t.portfolio.realModeNote : t.portfolio.paperModeNote}
+                <div style={{ padding: 12, borderRadius: 8, background: tradeMode === 'real' ? '#fff7ed' : '#eff6ff', border: `1px solid ${tradeMode === 'real' ? '#fed7aa' : '#bfdbfe'}` }}>
+                  <Text style={{ color: tradeMode === 'real' ? '#9a3412' : '#1d4ed8', fontWeight: 700 }}>
+                    {tradeMode === 'real' ? t.portfolio.realModeNote : t.portfolio.paperModeNote}
                   </Text>
                 </div>
               </Space>

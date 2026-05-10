@@ -7,7 +7,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsToolti
 import {
   Card, Typography, Space, Statistic, Row, Col,
   Button, Divider, Table, Tag, Form, Input, Empty,
-  message, Progress, Badge, Alert, Tooltip, Spin, Modal, Pagination, Steps, Select
+  message, Progress, Badge, Alert, Tooltip, Spin, Modal, Pagination, Steps, Select, Segmented
 } from 'antd';
 import {
   LineChartOutlined, BarChartOutlined,
@@ -417,6 +417,28 @@ const Agent: React.FC = (): React.ReactElement => {
   const [tradingAccountData, setTradingAccountData] = useState<any>(null);
   const [tradingAccountLoading, setTradingAccountLoading] = useState(false);
 
+  // Trading Preferences (local to AI Agent, persisted in localStorage)
+  type RiskProfile = 'low' | 'medium' | 'high';
+  type TimeHorizon = 'short' | 'mid' | 'long';
+  const [riskProfile, setRiskProfile] = useState<RiskProfile>(() => {
+    const stored = localStorage.getItem('agent_riskProfile');
+    return (stored === 'low' || stored === 'high') ? stored : 'medium';
+  });
+  const [timeHorizon, setTimeHorizon] = useState<TimeHorizon>(() => {
+    const stored = localStorage.getItem('agent_timeHorizon');
+    return (stored === 'short' || stored === 'long') ? stored : 'mid';
+  });
+  const handleRiskProfileChange = (val: string | number) => {
+    const v = val as RiskProfile;
+    setRiskProfile(v);
+    localStorage.setItem('agent_riskProfile', v);
+  };
+  const handleTimeHorizonChange = (val: string | number) => {
+    const v = val as TimeHorizon;
+    setTimeHorizon(v);
+    localStorage.setItem('agent_timeHorizon', v);
+  };
+
   // Order Modal state
   const [orderModalVisible, setOrderModalVisible] = useState(false);
   const [orderModalPreset, setOrderModalPreset] = useState<{
@@ -469,6 +491,9 @@ const Agent: React.FC = (): React.ReactElement => {
     const saved = localStorage.getItem('pipelineMode');
     return saved === 'ai' || saved === 'hybrid' || saved === 'manual' ? saved : 'hybrid';
   });
+
+  // AI mode auto-confirms orders for both paper and real trading
+  const shouldAutoConfirmOrder = pipelineMode === 'ai';
   const [pipelineSchedule, setPipelineSchedule] = useState<'off' | '15m' | '30m' | '1h' | '2h'>(() => {
     const saved = localStorage.getItem('pipelineSchedule');
     return saved === '15m' || saved === '30m' || saved === '1h' || saved === '2h' ? saved : 'off';
@@ -710,7 +735,7 @@ const Agent: React.FC = (): React.ReactElement => {
     }
 
     if (marketScannerResults.length === 0) {
-      message.warning('No market scan results available. Run Market Scanner first.');
+      message.warning(t.agent.noMarketScanResultsAvailable);
       return;
     }
 
@@ -3315,6 +3340,13 @@ const Agent: React.FC = (): React.ReactElement => {
 
     if (fa === 'BUY_READY' || fa === 'READY_REVIEW') {
       if (fa === 'READY_REVIEW') {
+        // AI mode: READY_REVIEW auto-executes via pipeline — skip confirmation modal
+        if (pipelineMode === 'ai') {
+          setExecuteTarget(plan);
+          setLiveConfirmText('');
+          setExecuteModalVisible(true);
+          return;
+        }
         const reviewReason = plan.readyReviewReason || 'AI decision is WATCH — needs manual review';
         const inZone = plan.isInEntryZone ? 'Price is IN entry zone. ' : '';
         Modal.confirm({
@@ -3417,28 +3449,42 @@ const Agent: React.FC = (): React.ReactElement => {
     // Use avg entry as baseline; fall back to current price if avg entry is 0
     const baseline = avgEntry > 0 ? avgEntry : currentPrice;
 
-    // Stop price: 6% below baseline (conservative default)
-    let stopPrice = baseline * 0.94;
+    // Adjust stop/target based on riskProfile and timeHorizon
+    const stopPctMap: Record<string, Record<string, number>> = {
+      low:    { short: 0.96, mid: 0.95, long: 0.93 },
+      medium: { short: 0.95, mid: 0.94, long: 0.92 },
+      high:   { short: 0.93, mid: 0.92, long: 0.90 },
+    };
+    const targetPctMap: Record<string, Record<string, number>> = {
+      low:    { short: 1.06, mid: 1.08, long: 1.10 },
+      medium: { short: 1.08, mid: 1.12, long: 1.15 },
+      high:   { short: 1.10, mid: 1.15, long: 1.20 },
+    };
+    const stopPct = stopPctMap[riskProfile]?.[timeHorizon] ?? 0.94;
+    const targetPct = targetPctMap[riskProfile]?.[timeHorizon] ?? 1.12;
+
+    // Stop price
+    let stopPrice = baseline * stopPct;
 
     // If already in a significant loss, tighten stop
     if (plPct <= -5) {
       stopPrice = currentPrice * 0.97; // 3% below current
     }
 
-    // Target price: 12% above baseline
-    let targetPrice = baseline * 1.12;
+    // Target price
+    let targetPrice = baseline * targetPct;
 
     // If already in profit > 5%, adjust target to lock in gains
     if (plPct > 5) {
-      targetPrice = Math.max(baseline * 1.10, currentPrice * 1.03);
+      targetPrice = Math.max(baseline * (targetPct - 0.02), currentPrice * 1.03);
     }
 
     return {
       stopPrice: Math.round(stopPrice * 100) / 100,
       targetPrice: Math.round(targetPrice * 100) / 100,
-      reason: `Generated from avg entry $${baseline.toFixed(2)}: stop $${(baseline * 0.94).toFixed(2)} (-6%), target $${(baseline * 1.12).toFixed(2)} (+12%)`,
+      reason: `Generated from avg entry $${baseline.toFixed(2)}: stop $${(baseline * stopPct).toFixed(2)} (-${((1 - stopPct) * 100).toFixed(0)}%), target $${(baseline * targetPct).toFixed(2)} (+${((targetPct - 1) * 100).toFixed(0)}%) [${riskProfile}/${timeHorizon}]`,
     };
-  }, []);
+  }, [riskProfile, timeHorizon]);
 
   // Evaluate exit plan for a position
   const evaluateExitPlan = useCallback((position: any, entryPlan: any): {
@@ -3461,8 +3507,9 @@ const Agent: React.FC = (): React.ReactElement => {
       const fallback = generateExitPlanFallback(position);
 
       // Check immediate sell conditions on the fallback
-      // Severe loss (> 10%) — sell now regardless
-      if (plPct <= -10) {
+      // Severe loss threshold varies by risk profile
+      const severeLossThreshold = riskProfile === 'low' ? -7 : riskProfile === 'high' ? -15 : -10;
+      if (plPct <= severeLossThreshold) {
         return {
           decision: 'sell_now',
           orderType: 'market',
@@ -3609,7 +3656,7 @@ const Agent: React.FC = (): React.ReactElement => {
       confidence: 50,
       source: 'entry_plan',
     };
-  }, [generateExitPlanFallback]);
+  }, [generateExitPlanFallback, riskProfile]);
 
   // Run Exit Scan
   const [exitScanRunning, setExitScanRunning] = useState(false);
@@ -3708,7 +3755,7 @@ const Agent: React.FC = (): React.ReactElement => {
               qty: sellQty,
               type: evalResult.orderType || 'market',
               time_in_force: 'gtc',
-              confirmed: true,
+              confirmed: pipelineMode === 'ai',
             };
 
             // Simple limit/market sell — bracket orders are for buy-side only on Alpaca
@@ -3728,6 +3775,11 @@ const Agent: React.FC = (): React.ReactElement => {
                 submittedAt: new Date().toISOString(),
               });
               message.success(`Exit order submitted: ${symbol} ${evalResult.orderType} sell ${sellQty} shares`);
+            } else if (res.data.status === 'confirmation_required') {
+              // Real trading requires confirmation — mark as pending confirmation
+              result.status = 'pending_confirm';
+              result.reason = res.data.message || 'Real trading requires confirmation';
+              message.warning(`Exit order for ${symbol} requires confirmation. Please review in Execution panel.`);
             } else {
               const errDetail = res.data.message || res.data.error || 'Order failed';
               result.status = 'failed';
@@ -4453,7 +4505,8 @@ const Agent: React.FC = (): React.ReactElement => {
         : entryPlanAccountSize;
       const res = await entryPlanAPI.generate(
         candidateData, realAccountSize, entryPlanRiskPerTrade, 10,
-        existingPositions, dailyLoss, existingPositions, entryPlanExecutionMode, tradeMode
+        existingPositions, dailyLoss, existingPositions, entryPlanExecutionMode, tradeMode,
+        riskProfile, timeHorizon
       );
       if (res.data?.success && res.data?.plans) {
         // Propagate isDevTest flag from DV candidates to Entry Plan results
@@ -4508,7 +4561,8 @@ const Agent: React.FC = (): React.ReactElement => {
             : entryPlanAccountSize;
           const res = await entryPlanAPI.generate(
             candidateData, realAccountSize, entryPlanRiskPerTrade, 10,
-            [], 0, [], entryPlanExecutionMode, tradeMode
+            [], 0, [], entryPlanExecutionMode, tradeMode,
+            riskProfile, timeHorizon
           );
           if (res.data?.success && res.data?.plans) {
             const devTestSymbols = new Set(candidates.filter((c: any) => c.isDevTest).map((c: any) => c.symbol));
@@ -4549,6 +4603,70 @@ const Agent: React.FC = (): React.ReactElement => {
       return Object.entries(val).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v ?? 'N/A')}`).join(' | ');
     }
     return String(val);
+  };
+
+  // ===== Leveraged ETF Alternative Lookup =====
+  // Known leveraged ETF mappings (symbol -> {bull, bear} alternatives)
+  const LEVERAGED_ETF_MAP: Record<string, { bull: string[]; bear: string[] }> = {
+    'TSLA': { bull: ['TSLL', 'TSLR'], bear: ['TSLQ', 'TSLZ'] },
+    'NVDA': { bull: ['NVDL', 'NVDU'], bear: ['NVD', 'NVDQ'] },
+    'AAPL': { bull: ['AAPU'], bear: ['AAPD'] },
+    'AMZN': { bull: ['AMZU'], bear: ['AMZD'] },
+    'META': { bull: ['FBL'], bear: ['FBZ'] },
+    'GOOGL': { bull: ['GOOX'], bear: ['GGLS'] },
+    'MSFT': { bull: ['MSFU'], bear: ['MSFD'] },
+    'AMD': { bull: ['AMDL'], bear: ['AMDS'] },
+    'NFLX': { bull: ['NFXL'], bear: ['NFXS'] },
+    'COIN': { bull: ['CONL'], bear: ['COID'] },
+    'MSTR': { bull: ['MSTU', 'MSTX'], bear: ['MSTZ', 'MSTS'] },
+    'QQQ': { bull: ['TQQQ', 'QLD'], bear: ['SQQQ', 'QID'] },
+    'SPY': { bull: ['SPXL', 'UPRO', 'SSO'], bear: ['SPXS', 'SPXU', 'SDS'] },
+    'IWM': { bull: ['TNA', 'UWM'], bear: ['TZA', 'TWM'] },
+  };
+
+  interface LeveragedAlternative {
+    originalSymbol: string;
+    alternativeSymbol: string;
+    direction: 'bull' | 'bear';
+    reason: string;
+    riskWarning: string;
+    tradable?: boolean;
+    fractionable?: boolean;
+  }
+
+  const findLeveragedAlternative = async (
+    symbol: string,
+    direction: 'bull' | 'bear',
+    buyingPower: number,
+    currentPrice: number,
+  ): Promise<LeveragedAlternative | null> => {
+    if (riskProfile !== 'high') return null;
+
+    const mapping = LEVERAGED_ETF_MAP[symbol.toUpperCase()];
+    if (!mapping) return null;
+
+    const candidates = mapping[direction] || [];
+    for (const alt of candidates) {
+      try {
+        const res = await tradingAccountAPI.getAsset(alt, tradeMode);
+        if (res.data?.success && res.data.tradable) {
+          // Check if we have enough buying power for at least 1 share
+          // (leveraged ETFs are usually cheaper than the underlying)
+          return {
+            originalSymbol: symbol,
+            alternativeSymbol: alt,
+            direction,
+            reason: `High-risk mode: ${symbol} exceeds buying power. Leveraged alternative ${alt} found.`,
+            riskWarning: `${alt} is a leveraged product with amplified volatility and loss risk. Suitable only for high-risk tolerance.`,
+            tradable: true,
+            fractionable: res.data.fractionable,
+          };
+        }
+      } catch {
+        // Asset not found or API error — try next candidate
+      }
+    }
+    return null;
   };
 
   const renderEntryPlanDetail = (ep: any) => {
@@ -4670,11 +4788,11 @@ const Agent: React.FC = (): React.ReactElement => {
 
         {/* Reason and Warnings Panel */}
         {(ep.decisionReason || ep.riskNotes || (ep.blockers && ep.blockers.length > 0)) && (
-          <div style={{ 
-            marginTop: 16, 
-            padding: '16px', 
-            background: '#fff', 
-            borderRadius: 12, 
+          <div style={{
+            marginTop: 16,
+            padding: '16px',
+            background: '#fff',
+            borderRadius: 12,
             border: '1px solid #f0f0f0',
             boxShadow: '0 2px 8px rgba(0,0,0,0.02)'
           }}>
@@ -4711,7 +4829,97 @@ const Agent: React.FC = (): React.ReactElement => {
             </Row>
           </div>
         )}
+
+        {/* Leveraged ETF Alternative Suggestion (High Risk + Soft Blockers) */}
+        {riskProfile === 'high' && (ep.finalAction === 'SKIP' || ep.finalAction === 'BLOCKED_BY_RISK') && !ep.isLeveragedAlternative && (
+          <LeveragedETFSuggestion symbol={ep.symbol} currentPrice={ep.currentPrice} plan={ep} />
+        )}
+
+        {/* Leveraged Alternative Plan Header */}
+        {ep.isLeveragedAlternative && (
+          <div style={{
+            marginTop: 8, padding: '8px 12px',
+            background: 'linear-gradient(135deg, #fff7ed, #fff1f0)',
+            borderRadius: 8, border: '1px solid #fed7aa',
+            display: 'flex', alignItems: 'center', gap: 8
+          }}>
+            <ThunderboltOutlined style={{ color: '#fa8c16', fontSize: 14 }} />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: '#9a3412' }}>
+                {language === 'zh-CN' ? '高风险杠杆替代标的' : 'High-Risk Leveraged Alternative'}
+              </div>
+              <div style={{ fontSize: 11, color: '#8c8c8c' }}>
+                {language === 'zh-CN'
+                  ? `原始标的：${ep.originalSymbol} → 替代标的：${ep.symbol}（${ep.alternativeDirection === 'bull' ? '做多' : '做空'}）`
+                  : `Original: ${ep.originalSymbol} → Alternative: ${ep.symbol} (${ep.alternativeDirection?.toUpperCase()})`}
+              </div>
+              {ep.alternativeFailed ? (
+                <div style={{ fontSize: 11, color: '#ff4d4f', fontWeight: 600, marginTop: 4 }}>
+                  {language === 'zh-CN' ? '替代失败：' : 'Alternative failed: '}{ep.alternativeFailReason}
+                </div>
+              ) : (
+                <div style={{ fontSize: 11, color: '#d46b08', marginTop: 4 }}>
+                  <ExclamationCircleOutlined style={{ marginRight: 4 }} />
+                  {ep.alternativeRiskWarning || ep.reason}
+                </div>
+              )}
+            </div>
+            {!ep.alternativeFailed && (
+              <Tag color="orange" bordered={false} style={{ fontWeight: 700, borderRadius: 4, fontSize: 10 }}>
+                {ep.alternativeDirection?.toUpperCase()}
+              </Tag>
+            )}
+          </div>
+        )}
       </div>
+    );
+  };
+
+  // Leveraged ETF suggestion component (async lookup — tries bull then bear)
+  const LeveragedETFSuggestion: React.FC<{ symbol: string; currentPrice: number; plan?: any }> = ({ symbol, currentPrice, plan }) => {
+    const [suggestion, setSuggestion] = React.useState<LeveragedAlternative | null>(null);
+    const [loading, setLoading] = React.useState(true);
+
+    React.useEffect(() => {
+      const lookup = async () => {
+        setLoading(true);
+        const buyingPower = tradingAccountData?.buyingPower || 0;
+        // Try bull first, then bear
+        let result = await findLeveragedAlternative(symbol, 'bull', buyingPower, currentPrice);
+        if (!result) {
+          result = await findLeveragedAlternative(symbol, 'bear', buyingPower, currentPrice);
+        }
+        setSuggestion(result);
+        setLoading(false);
+      };
+      lookup();
+    }, [symbol, currentPrice, tradingAccountData]);
+
+    if (loading) return <Spin size="small" style={{ marginTop: 8 }} />;
+    if (!suggestion) return null;
+
+    return (
+      <Alert
+        style={{ marginTop: 16, borderRadius: 8 }}
+        type="warning"
+        showIcon
+        message={<Text strong>{language === 'zh-CN' ? '杠杆替代标的建议' : 'Leveraged Alternative Suggestion'}</Text>}
+        description={
+          <div style={{ fontSize: 12, lineHeight: 1.6 }}>
+            <div style={{ marginBottom: 8 }}>
+              {language === 'zh-CN'
+                ? `当前为高风险模式，正股 ${symbol} 资金不足。系统检测到可交易的杠杆替代标的 ${suggestion.alternativeSymbol}，但该产品波动和亏损风险更高，仅在风控允许时作为进攻型候选。`
+                : `High-risk mode detected. The underlying stock ${symbol} exceeds available buying power. A tradable leveraged alternative was found (${suggestion.alternativeSymbol}), but it carries amplified volatility and loss risk.`}
+            </div>
+            <Tag color="red" style={{ fontWeight: 700 }}>{suggestion.riskWarning}</Tag>
+            {suggestion.fractionable !== undefined && (
+              <Tag color={suggestion.fractionable ? 'green' : 'default'} style={{ marginLeft: 8 }}>
+                {suggestion.fractionable ? (language === 'zh-CN' ? '支持碎股' : 'Fractionable') : (language === 'zh-CN' ? '仅整股' : 'Whole shares only')}
+              </Tag>
+            )}
+          </div>
+        }
+      />
     );
   };
 
@@ -4755,6 +4963,19 @@ const Agent: React.FC = (): React.ReactElement => {
 
   const PIPELINE_STAGES = ['Market Scanner', 'Continue Scan', 'Fine Scan', 'Deeper Validation', 'Entry Plan', 'Exit Scan'] as const;
 
+  // Translate pipeline stage name for display (internal keys stay English)
+  const getPipelineStageLabel = (name: string): string => {
+    const map: Record<string, string> = {
+      'Market Scanner': t.agent.pipelineStageMarketScanner,
+      'Continue Scan': t.agent.pipelineStageContinueScan,
+      'Fine Scan': t.agent.pipelineStageFineScan,
+      'Deeper Validation': t.agent.pipelineStageDeeperValidation,
+      'Entry Plan': t.agent.pipelineStageEntryPlan,
+      'Exit Scan': t.agent.pipelineStageExitScan,
+    };
+    return map[name] || name;
+  };
+
   const pollStore = (getter: () => any, done: (v: any) => boolean, intervalMs = 2000): Promise<void> =>
     new Promise((resolve, reject) => {
       const check = () => {
@@ -4768,7 +4989,7 @@ const Agent: React.FC = (): React.ReactElement => {
   const runAIPipeline = async () => {
     // Pre-checks
     if (isAnyScanRunning) {
-      message.warning('A scan is already running. Stop it before starting AI Pipeline.');
+      message.warning(t.agent.scanAlreadyRunning);
       return;
     }
 
@@ -4851,16 +5072,28 @@ const Agent: React.FC = (): React.ReactElement => {
       // ── Auto-classify results (keep Exit Scan stage active during classification) ──
       const plans = scannerStateStore.getState().entryPlan.results || [];
       const newExecution: any[] = [];
+      // Risk-adjusted R/R threshold (matches AI prompt thresholds)
+      const rrThreshold = riskProfile === 'high' ? 1.2 : riskProfile === 'low' ? 2.0 : 1.5;
       for (const plan of plans) {
         const fa = plan.finalAction || '';
         const rr = plan.riskReward1 || 0;
         const sl = plan.stopLoss || 0;
         const tp = plan.takeProfit1 || 0;
-        if ((fa === 'BUY_READY' || fa === 'READY_REVIEW') && rr >= 2.0 && sl > 0 && tp > 0) {
+        const isLeveraged = plan.isLeveragedAlternative === true;
+        // AI mode: BUY_READY and READY_REVIEW both qualify for auto-execution
+        // Hybrid/Manual: only BUY_READY qualifies (READY_REVIEW stays in review)
+        const qualifiesForExec = pipelineMode === 'ai'
+          ? (fa === 'BUY_READY' || fa === 'READY_REVIEW')
+          : (fa === 'BUY_READY');
+        if (qualifiesForExec && rr >= rrThreshold && sl > 0 && tp > 0) {
           const shares = plan.positionSizeShares || plan.shares || 0;
           const entryPrice = plan.entryZoneHigh || plan.entryZoneLow || 0;
           newExecution.push({
             symbol: plan.symbol,
+            originalSymbol: plan.originalSymbol,
+            isLeveragedAlternative: isLeveraged,
+            alternativeDirection: plan.alternativeDirection,
+            alternativeRiskWarning: plan.alternativeRiskWarning,
             setup: plan.setup || plan.setupType,
             entryZoneLow: plan.entryZoneLow,
             entryZoneHigh: plan.entryZoneHigh,
@@ -4869,7 +5102,7 @@ const Agent: React.FC = (): React.ReactElement => {
             riskReward1: plan.riskReward1,
             confidence: plan.confidence,
             aiDecision: plan.aiDecision,
-            riskGateStatus: (plan.riskGate || {}).status || plan.riskGateStatus,
+            riskGateStatus: (plan.hardRiskGate || plan.riskGate || {}).status || plan.riskGateStatus,
             dataQuality: plan.dataQuality,
             positionSizeShares: shares,
             positionSizeDollars: plan.positionSizeDollars,
@@ -4882,13 +5115,13 @@ const Agent: React.FC = (): React.ReactElement => {
             stopPrice: plan.stopLoss || undefined,
             trailPrice: undefined,
             trailPercent: undefined,
-            timeInForce: 'gtc',
+            timeInForce: 'day',
             executionStatus: 'draft',
             source: 'ai_mode',
             addedAt: new Date().toISOString(),
             entryPlan: plan,
           });
-        } else if (fa === 'WAIT_FOR_ENTRY') {
+        } else if (fa === 'WAIT_FOR_ENTRY' || plan.aiDecision === 'WATCH') {
           await addToWatchlist(plan);
         }
       }
@@ -4925,11 +5158,11 @@ const Agent: React.FC = (): React.ReactElement => {
               symbol: item.symbol,
               side: 'buy',
               type: orderType,
-              time_in_force: item.timeInForce || 'gtc',
+              time_in_force: item.timeInForce || 'day',
               tradingMode: tradeMode,
               automationMode: 'full-ai',
               executionSource: 'ai_mode',
-              confirmed: true,
+              confirmed: shouldAutoConfirmOrder,
             };
             if (item.qtyMode === 'dollars' && item.dollarAmount > 0) {
               orderData.notional = item.dollarAmount;
@@ -4964,6 +5197,13 @@ const Agent: React.FC = (): React.ReactElement => {
                 message: d.message,
               };
               setExecutionLog(prev => [logEntry, ...prev]);
+            } else if (d.status === 'confirmation_required') {
+              // Show confirmation modal (Hybrid mode, or unexpected backend rejection)
+              setOrderConfirmTarget({ record: item, preview: d.orderPreview || {} });
+              setOrderConfirmVisible(true);
+              setOrderConfirmText('');
+              // Stop auto-execution, let user confirm remaining orders manually
+              break;
             } else {
               failed++;
               setAiExecutionList(prev => prev.map(e =>
@@ -5155,7 +5395,7 @@ const Agent: React.FC = (): React.ReactElement => {
     }
     const selected = selectValidationCandidates();
     if (selected.length === 0) {
-      message.warning('No qualified Fine Scan candidates. Run Fine Scan first or adjust criteria.');
+      message.warning(t.agent.noFineScanCandidates);
       return;
     }
     // Register with runner service so isDeeperValidationRunning() returns true during route changes
@@ -5768,14 +6008,74 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           </div>
 
           {tradeMode === 'real' && (
-            <Alert
-              style={{ marginTop: 16, borderRadius: 8, border: '1px solid #ffe58f' }}
-              type="warning"
-              showIcon
-              message={<span style={{ fontWeight: 700 }}>{t.agent.live} {t.agent.status}</span>}
-              description={t.agent.tradingAccountDesc}
-            />
+            <div style={{
+              marginTop: 12,
+              padding: '6px 12px',
+              background: '#fafafa',
+              borderRadius: 6,
+              border: '1px solid #e8e8e8',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              fontSize: 11,
+              color: '#595959'
+            }}>
+              <ExclamationCircleOutlined style={{ color: '#faad14', fontSize: 12 }} />
+              <span>{t.agent.tradingModeRealHint}</span>
+            </div>
           )}
+        </Card>
+      </div>
+
+      {/* 1.52 Trading Preferences */}
+      <div style={{ marginBottom: 24 }}>
+        <Card
+          className="premium-card"
+          title={
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 16, fontWeight: 700 }}>
+                <FundOutlined style={{ marginRight: 8, color: '#722ed1' }} />
+                {t.agent.tradingPreferences}
+              </span>
+            </div>
+          }
+        >
+          <Row gutter={32}>
+            <Col flex="1">
+              <div style={{ marginBottom: 8 }}>
+                <Text strong style={{ fontSize: 13 }}>{t.agent.riskProfile}</Text>
+                <Text type="secondary" style={{ fontSize: 11, marginLeft: 8 }}>{t.agent.riskProfileDesc}</Text>
+              </div>
+              <Segmented
+                block
+                value={riskProfile}
+                onChange={handleRiskProfileChange}
+                options={[
+                  { label: t.agent.lowRisk, value: 'low' },
+                  { label: t.agent.mediumRisk, value: 'medium' },
+                  { label: t.agent.highRisk, value: 'high' },
+                ]}
+                style={{ background: '#f5f5f5', borderRadius: 8 }}
+              />
+            </Col>
+            <Col flex="1">
+              <div style={{ marginBottom: 8 }}>
+                <Text strong style={{ fontSize: 13 }}>{t.agent.timeHorizon}</Text>
+                <Text type="secondary" style={{ fontSize: 11, marginLeft: 8 }}>{t.agent.timeHorizonDesc}</Text>
+              </div>
+              <Segmented
+                block
+                value={timeHorizon}
+                onChange={handleTimeHorizonChange}
+                options={[
+                  { label: t.agent.shortTerm, value: 'short' },
+                  { label: t.agent.midTerm, value: 'mid' },
+                  { label: t.agent.longTerm, value: 'long' },
+                ]}
+                style={{ background: '#f5f5f5', borderRadius: 8 }}
+              />
+            </Col>
+          </Row>
         </Card>
       </div>
 
@@ -5791,7 +6091,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 </div>
                 <span style={{ fontWeight: 700, fontSize: 16 }}>{t.agent.aiPipeline}</span>
                 <Tag color={pipelineMode === 'ai' ? 'purple' : pipelineMode === 'hybrid' ? 'blue' : 'default'} bordered={false} style={{ fontSize: 10, fontWeight: 800, borderRadius: 4 }}>
-                  {pipelineMode === 'ai' ? t.agent.buyAction : pipelineMode === 'hybrid' ? 'HYBRID' : t.agent.skipAction}
+                  {pipelineMode === 'ai' ? t.agent.buyAction : pipelineMode === 'hybrid' ? t.agent.modeHybrid : t.agent.skipAction}
                 </Tag>
               </span>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -5826,27 +6126,28 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
             </div>
           }
         >
-          {/* Mode-specific notice */}
+          {/* Mode-specific compact hint */}
           <div style={{ marginBottom: 16 }}>
-            {pipelineMode === 'ai' ? (
-              <Alert 
-                type={tradeMode === 'real' ? 'warning' : 'info'} 
-                showIcon 
-                style={{ borderRadius: 8 }}
-                message={<span style={{ fontWeight: 700 }}>{t.agent.aiPipeline}</span>}
-                description={tradeMode === 'real'
-                  ? t.agent.tradingAccountDesc
-                  : t.agent.tradingAccountDesc}
-              />
-            ) : pipelineMode === 'hybrid' ? (
-              <Alert type="info" showIcon style={{ borderRadius: 8 }}
-                message={<span style={{ fontWeight: 700 }}>{t.agent.aiPipeline}</span>}
-                description={t.agent.tradingAccountDesc} />
-            ) : (
-              <Alert type="info" showIcon style={{ borderRadius: 8, background: '#f5f5f5', border: '1px solid #eee' }}
-                message={<span style={{ fontWeight: 700 }}>{t.agent.skipAction}</span>}
-                description={t.agent.pipelineDisabled} />
-            )}
+            <div style={{
+              padding: '6px 12px',
+              background: '#fafafa',
+              borderRadius: 6,
+              border: '1px solid #e8e8e8',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              fontSize: 11,
+              color: '#595959'
+            }}>
+              <InfoCircleOutlined style={{ color: '#8c8c8c', fontSize: 12 }} />
+              <span>
+                {pipelineMode === 'ai'
+                  ? t.agent.pipelineModeAiDesc
+                  : pipelineMode === 'hybrid'
+                    ? t.agent.pipelineModeHybridDesc
+                    : t.agent.pipelineModeManualDesc}
+              </span>
+            </div>
           </div>
 
           <div style={{ background: '#fafafa', padding: '16px 20px', borderRadius: 12, border: '1px solid #f0f0f0' }}>
@@ -5901,7 +6202,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 {pipelineSchedule !== 'off' && (
                   <div style={{ fontSize: 10, color: '#52c41a', marginTop: 6, fontWeight: 600 }}>
                     <SyncOutlined spin={pipelineRunning} style={{ marginRight: 4 }} />
-                    {pipelineRunning ? 'Pipeline running — next run will wait' : `Scheduled: Every ${pipelineSchedule}`}
+                    {pipelineRunning ? t.agent.scheduleRunningWait : `${t.agent.scheduleEvery}${pipelineSchedule === '15m' ? t.agent.schedule15m : pipelineSchedule === '30m' ? t.agent.schedule30m : pipelineSchedule === '1h' ? t.agent.schedule1h : t.agent.schedule2h}`}
                   </div>
                 )}
               </Col>
@@ -5945,7 +6246,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     if (pipelineStage === 'failed' && idx === currentIdx) status = 'error';
                     else if (idx < currentIdx) status = 'finish';
                     else if (idx === currentIdx) status = 'process';
-                    return { title: <span style={{ fontSize: 11, fontWeight: status === 'process' ? 700 : 500 }}>{name}</span>, status };
+                    return { title: <span style={{ fontSize: 11, fontWeight: status === 'process' ? 700 : 500 }}>{getPipelineStageLabel(name)}</span>, status };
                   })}
                 />
               </div>
@@ -6197,17 +6498,15 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           }
         >
           <Alert
-            type={pipelineMode === 'ai' && tradeMode === 'paper' ? 'info' : 'warning'}
+            type={pipelineMode === 'ai' ? 'info' : 'warning'}
             showIcon
             message={
               <div style={{ fontSize: 13, fontWeight: 500 }}>
-                {pipelineMode === 'ai' && tradeMode === 'paper'
-                  ? t.agent.aiModePaperDesc
-                  : pipelineMode === 'ai' && tradeMode === 'real'
-                    ? t.agent.aiModeLiveDesc
-                    : pipelineMode === 'hybrid'
-                      ? t.agent.hybridModeDesc
-                      : t.agent.manualModeDesc}
+                {pipelineMode === 'ai'
+                  ? (tradeMode === 'paper' ? t.agent.aiModePaperDesc : t.agent.aiModeLiveDesc)
+                  : pipelineMode === 'hybrid'
+                    ? t.agent.hybridModeDesc
+                    : t.agent.manualModeDesc}
               </div>
             }
             style={{ marginBottom: 16, borderRadius: 10 }}
@@ -6647,7 +6946,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                             background: tradeMode === 'paper' ? '#1890ff' : '#fff',
                             boxShadow: tradeMode === 'paper' ? '0 2px 6px rgba(24,144,255,0.3)' : 'none'
                           }}
-                          onClick={() => tradeMode === 'real' ? openConfirmModal(r) : handleExecuteOrder(r)}
+                          onClick={() => shouldAutoConfirmOrder ? handleExecuteOrder(r) : openConfirmModal(r)}
                         >
                           {submitLabel}
                         </Button>
@@ -9304,14 +9603,14 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   <div style={{ fontSize: '10px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.6px', fontWeight: 500, marginBottom: '6px' }}>{t.agent.execution}</div>
                   <div style={{ fontSize: '12px', fontWeight: 500, color: '#555', fontFamily: "'Inter', sans-serif", marginBottom: '4px' }}>
                     {pipelineMode === 'ai'
-                      ? (tradeMode === 'paper' ? t.agent.aiModePaperReady : t.agent.aiModeLiveConfirm)
+                      ? t.agent.aiModeLiveConfirm
                       : pipelineMode === 'hybrid'
                         ? t.agent.hybridModeManual
                         : t.agent.manualModeRecommendations}
                   </div>
                   <div style={{ fontSize: '10px', color: '#999' }}>
                     {pipelineMode === 'ai'
-                      ? (tradeMode === 'paper' ? t.agent.paperPreviewOnly : t.agent.manualConfirmRequired)
+                      ? t.agent.paperPreviewOnly
                       : pipelineMode === 'hybrid'
                         ? t.agent.noAutomaticOrders
                         : t.agent.manualOnly}
@@ -9319,8 +9618,8 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 </div>
               </div>
 
-              {/* Execution mode warning for Real Trading */}
-              {entryPlanExecutionMode === 'Real Trade if Triggered' && (
+              {/* Execution mode warning for Real Trading — only in Hybrid/Manual modes */}
+              {pipelineMode !== 'ai' && entryPlanExecutionMode === 'Real Trade if Triggered' && (
                 <Alert
                   message={t.agent.realTradingRequiresConfirm}
                   type="warning"
@@ -9476,7 +9775,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                               <Button
                                 size="middle"
                                 type={finalAction === 'BUY_READY' ? 'primary' : finalAction === 'READY_REVIEW' ? 'primary' : 'default'}
-                                ghost={finalAction === 'READY_REVIEW'}
+                                ghost={finalAction === 'READY_REVIEW' && pipelineMode !== 'ai'}
                                 danger={finalAction === 'BLOCKED_BY_RISK'}
                                 disabled={finalAction === 'SKIP' || finalAction === 'BLOCKED_BY_RISK' || dq === 'POOR'}
                                 onClick={() => handleEntryPlanAction(ep)}

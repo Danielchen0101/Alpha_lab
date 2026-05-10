@@ -140,10 +140,12 @@ export const deeperValidationAPI = {
 export const entryPlanAPI = {
   generate: (candidates: any[], accountSize = 100000, riskPerTradePct = 1, maxPositionPct = 10,
              existingPositions: any[] = [], dailyLoss = 0, holdingSymbols: string[] = [],
-             executionMode = 'Recommend Only', accountMode = 'paper') => {
+             executionMode = 'Recommend Only', accountMode = 'paper',
+             riskProfile = 'medium', timeHorizon = 'mid') => {
     return api.post('/ai/entry-plan', {
       candidates, accountSize, riskPerTradePct, maxPositionPct,
-      existingPositions, dailyLoss, holdingSymbols, executionMode, accountMode
+      existingPositions, dailyLoss, holdingSymbols, executionMode, accountMode,
+      riskProfile, timeHorizon
     });
   },
   execute: (data: {
@@ -336,6 +338,13 @@ export const tradingAccountAPI = {
   },
   cancelOrder: (orderId: string, mode: 'paper' | 'real') => {
     return api.post<{ success: boolean; orderId?: string; status?: string; error?: string; errorType?: string }>(`/trading/orders/${orderId}/cancel`, { mode });
+  },
+  getAsset: (symbol: string, mode: 'paper' | 'real') => {
+    return api.get<{
+      success: boolean; symbol?: string; name?: string; tradable?: boolean;
+      status?: string; assetClass?: string; exchange?: string;
+      fractionable?: boolean; easyToBorrow?: boolean; error?: string;
+    }>(`/trading/asset/${symbol}?mode=${mode}`);
   },
 };
 

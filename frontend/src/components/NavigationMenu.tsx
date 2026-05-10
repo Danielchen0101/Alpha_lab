@@ -84,15 +84,6 @@ const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
 
           {/* TRADING GROUP */}
           {!collapsed && <div className={styles.menuDivider}>TRADING</div>}
-          <Menu.Item key="10" icon={<RobotOutlined />} title={collapsed ? t.navigation.agent : undefined}>
-            <Link to="/agent">{t.navigation.agent}</Link>
-          </Menu.Item>
-          <Menu.Item key="11" icon={<SwapOutlined />} title={collapsed ? t.navigation.trade : undefined}>
-            <Link to="/trade">{t.navigation.trade}</Link>
-          </Menu.Item>
-          <Menu.Item key="13" icon={<PieChartOutlined />} title={collapsed ? t.navigation.portfolio : undefined}>
-            <Link to="/portfolio">{t.navigation.portfolio}</Link>
-          </Menu.Item>
 
           {/* TRADE MODE TOGGLE */}
           {!collapsed && (
@@ -118,6 +109,16 @@ const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
               </div>
             </div>
           )}
+
+          <Menu.Item key="10" icon={<RobotOutlined />} title={collapsed ? t.navigation.agent : undefined}>
+            <Link to="/agent">{t.navigation.agent}</Link>
+          </Menu.Item>
+          <Menu.Item key="11" icon={<SwapOutlined />} title={collapsed ? t.navigation.trade : undefined}>
+            <Link to="/trade">{t.navigation.trade}</Link>
+          </Menu.Item>
+          <Menu.Item key="13" icon={<PieChartOutlined />} title={collapsed ? t.navigation.portfolio : undefined}>
+            <Link to="/portfolio">{t.navigation.portfolio}</Link>
+          </Menu.Item>
 
           {/* SYSTEM GROUP */}
           {!collapsed && <div className={styles.menuDivider}>SYSTEM</div>}

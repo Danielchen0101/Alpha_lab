@@ -12580,6 +12580,51 @@ def place_trading_order():
         return jsonify({'success': False, 'status': 'api_error', 'error': str(e), 'modeUsed': mode})
 
 
+@app.route('/api/trading/asset/<symbol>', methods=['GET'])
+def get_trading_asset(symbol):
+    """Check if a symbol is tradable via Alpaca.
+    Returns asset details including tradable status, fractionable, etc.
+    Used for leveraged ETF alternative lookup.
+    """
+    mode = request.args.get('mode', 'paper').strip().lower()
+    if mode not in ('paper', 'real'):
+        return jsonify({'success': False, 'error': f'Invalid mode: {mode}'})
+
+    resolved, resolve_status = resolve_alpaca_config_strict_user(mode)
+    if resolve_status == 'auth_required':
+        return jsonify({'success': False, 'error': 'Authentication required.', 'reason': 'auth_required'})
+    if resolve_status == 'config_required' or not resolved:
+        return jsonify({'success': False, 'error': f'Alpaca {mode} Trading not configured.', 'reason': 'config_required'})
+
+    api_key = resolved.get('api_key', '')
+    api_secret = resolved.get('api_secret', '')
+    base_url = resolved.get('base_url', 'https://paper-api.alpaca.markets' if mode == 'paper' else 'https://api.alpaca.markets')
+
+    try:
+        headers = {'APCA-API-KEY-ID': api_key, 'APCA-API-SECRET-KEY': api_secret}
+        resp = requests.get(f'{base_url}/v2/assets/{symbol.upper()}', headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            return jsonify({
+                'success': True,
+                'symbol': data.get('symbol', ''),
+                'name': data.get('name', ''),
+                'tradable': data.get('tradable', False),
+                'status': data.get('status', ''),
+                'assetClass': data.get('class', ''),
+                'exchange': data.get('exchange', ''),
+                'fractionable': data.get('fractionable', False),
+                'easyToBorrow': data.get('easy_to_borrow', False),
+                'mode': mode,
+            })
+        elif resp.status_code == 404:
+            return jsonify({'success': False, 'error': f'Asset {symbol} not found.', 'symbol': symbol, 'tradable': False})
+        else:
+            return jsonify({'success': False, 'error': f'Alpaca API error: {resp.status_code}', 'symbol': symbol})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e), 'symbol': symbol})
+
+
 # ==================== 基础接口 ====================
 
 
@@ -18885,37 +18930,21 @@ def ai_alpaca_portfolio_history():
 
 
 
-        # 计算时间范围
-
-        import datetime
-
-        end_date = datetime.datetime.now()
-
-
+        # 计算时间范围（datetime 和 timedelta 已在模块顶部从 datetime 导入）
+        end_date = datetime.now()
 
         if range_param == '1D':
-
-            start_date = end_date - datetime.timedelta(days=1)
-
+            start_date = end_date - timedelta(days=1)
         elif range_param == '1W':
-
-            start_date = end_date - datetime.timedelta(weeks=1)
-
+            start_date = end_date - timedelta(weeks=1)
         elif range_param == '1M':
-
-            start_date = end_date - datetime.timedelta(days=30)
-
+            start_date = end_date - timedelta(days=30)
         elif range_param == '3M':
-
-            start_date = end_date - datetime.timedelta(days=90)
-
+            start_date = end_date - timedelta(days=90)
         elif range_param == '1Y':
-
-            start_date = end_date - datetime.timedelta(days=365)
-
+            start_date = end_date - timedelta(days=365)
         else:  # All
-
-            start_date = end_date - datetime.timedelta(days=365 * 2)  # 2年
+            start_date = end_date - timedelta(days=365 * 2)  # 2年
 
 
 
@@ -19003,11 +19032,8 @@ def ai_alpaca_portfolio_history():
 
             # 设置开始时间为账户创建时间或2年前
 
-            import datetime
-
-            end_date = datetime.datetime.now()
-
-            start_date = end_date - datetime.timedelta(days=365 * 2)  # 2年
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=365 * 2)  # 2年
 
             params['start'] = start_date.strftime('%Y-%m-%d')
 
@@ -24353,7 +24379,7 @@ def deeper_validation():
 
 # ============ Entry Plan - Deterministic Entry/Stop/Target Calculator with AI Decision + Hard Risk Gate ============
 
-def _call_ai_entry_final_decision(plans, execution_mode, account_mode):
+def _call_ai_entry_final_decision(plans, execution_mode, account_mode, risk_profile='medium', time_horizon='mid'):
     """
     Call AI provider for final BUY/WATCH/SKIP decisions on entry plans.
     AI only sees deterministic data. AI output restricted to decision fields.
@@ -24423,23 +24449,42 @@ def _call_ai_entry_final_decision(plans, execution_mode, account_mode):
     plans_text = '\n'.join(plan_lines)
     exec_note = 'paper trading' if account_mode == 'paper' else ('live trading' if account_mode == 'real' else execution_mode)
 
+    # Build risk/time preference guidance
+    risk_guidance = {
+        'low': 'CONSERVATIVE MODE: Prefer stable trends, low volatility, high volume. Stricter criteria — R/R >= 2.0 for BUY. More likely to WATCH or SKIP. Avoid high-volatility, poor-data, or event-risk setups.',
+        'medium': 'BALANCED MODE: Standard criteria apply.',
+        'high': 'AGGRESSIVE MODE: Favor momentum/breakout/high-volatility opportunities. Relaxed criteria — R/R >= 1.2 for BUY. More likely to BUY. Allow concentrated positions but still respect hard risk gates.',
+    }.get(risk_profile, 'BALANCED MODE: Standard criteria apply.')
+
+    time_guidance = {
+        'short': 'SHORT-TERM FOCUS: Prioritize 1D/5D momentum, volume spikes, short-term catalysts. Entry zone should be close to current price. Tighter stops, closer targets.',
+        'mid': 'MID-TERM FOCUS: Swing setups, 1M/3M trends, pullback support. Standard entry zones and risk/reward.',
+        'long': 'LONG-TERM FOCUS: 3M/6M/1Y trends, stable fundamentals, lower drawdown. Wider stops acceptable. Do not SKIP just because of short-term noise.',
+    }.get(time_horizon, 'MID-TERM FOCUS: Swing setups, 1M/3M trends, pullback support.')
+
     ai_prompt = f"""You are a disciplined quantitative trading risk manager. Review these ENTRY PLANS (deterministic — prices, stops, targets, sizes are ALREADY CALCULATED). Your job is ONLY to output a BUY / WATCH / SKIP decision with reasoning.
 
-You are in {exec_note} mode. You are risk-averse and will only approve entries that meet strict criteria.
+You are in {exec_note} mode.
+
+TRADER PREFERENCES:
+- Risk Profile: {risk_profile.upper()} — {risk_guidance}
+- Time Horizon: {time_horizon.upper()} — {time_guidance}
+
+NOTE: These preferences adjust your decision thresholds but you MUST NEVER bypass hard risk gates. Risk Gate BLOCK always means SKIP regardless of preferences.
 
 PLANS ({len(plans)} symbols):
 {plans_text}
 
 RULES (you MUST follow):
-1. BUY if: R/R >= 1.5, no hard blockers, setup valid, data not POOR. Price in entry zone is a strong BUY signal even if Gate is REVIEW (warnings only, not blockers).
+1. BUY if: R/R meets threshold for risk profile (low>=2.0, medium>=1.5, high>=1.2), no hard blockers, setup valid, data not POOR. Price in entry zone is a strong BUY signal even if Gate is REVIEW (warnings only, not blockers).
 2. BUY (aggressive) if: Price is IN entry zone, R/R >= 2.0, stop and target defined, data not POOR, no hard blockers — even if Risk Gate shows REVIEW due to advisory warnings.
-3. WATCH only if: price is NOT in entry zone, or entry trigger truly not met, or data is very poor, or R/R < 1.0. Gate REVIEW alone should NOT prevent BUY if price is in zone.
-4. SKIP if: Gate BLOCK, Data POOR, R/R < 1.0, setup is Watch Only or No Trade, verdict Rejected, or multiple hard problems.
-4. confidence 0-100: how confident you are in this decision.
-5. decisionReason: 1-2 sentences explaining WHY this decision, what's the key factor.
-6. nextStep: very specific — what exact price level or condition to wait for. For BUY, where to place order. For WATCH, what trigger to monitor. For SKIP, what would need to change.
-7. You MUST NOT invent or change ANY prices, stops, targets, shares, or risk numbers. Only reference the deterministic values provided.
-8. If Risk Gate is BLOCK, you MUST output SKIP regardless of other signals.
+3. WATCH only if: price is NOT in entry zone, or entry trigger truly not met, or data is very poor, or R/R below threshold. Gate REVIEW alone should NOT prevent BUY if price is in zone.
+4. SKIP if: Gate BLOCK, Data POOR, R/R below minimum (low<1.5, medium<1.0, high<0.8), setup is Watch Only or No Trade, verdict Rejected, or multiple hard problems.
+5. confidence 0-100: how confident you are in this decision.
+6. decisionReason: 1-2 sentences explaining WHY this decision, what's the key factor. Mention how risk profile / time horizon influenced the decision if applicable.
+7. nextStep: very specific — what exact price level or condition to wait for. For BUY, where to place order. For WATCH, what trigger to monitor. For SKIP, what would need to change.
+8. You MUST NOT invent or change ANY prices, stops, targets, shares, or risk numbers. Only reference the deterministic values provided.
+9. If Risk Gate is BLOCK, you MUST output SKIP regardless of preferences or other signals.
 
 Return ONLY valid JSON (no markdown, no preamble):
 {{
@@ -24586,6 +24631,12 @@ def ai_entry_plan():
         holding_symbols = data.get('holdingSymbols', [])
         execution_mode = data.get('executionMode', 'Recommend Only')
         account_mode = data.get('accountMode', 'paper').strip().lower()
+        risk_profile = data.get('riskProfile', 'medium').strip().lower()
+        time_horizon = data.get('timeHorizon', 'mid').strip().lower()
+        if risk_profile not in ('low', 'medium', 'high'):
+            risk_profile = 'medium'
+        if time_horizon not in ('short', 'mid', 'long'):
+            time_horizon = 'mid'
 
         # ── Fetch real Alpaca account data for the selected mode ──
         account_data_fetched = False
@@ -24646,12 +24697,19 @@ def ai_entry_plan():
         if not candidates:
             return jsonify({'success': False, 'message': 'No candidates provided'}), 400
 
-        risk_dollars = account_size * (risk_per_trade_pct / 100.0)
-        max_pos_dollars = account_size * (max_position_pct / 100.0)
+        # Adjust risk parameters based on risk profile
+        risk_multiplier = {'low': 0.6, 'medium': 1.0, 'high': 1.5}.get(risk_profile, 1.0)
+        max_pos_multiplier = {'low': 0.7, 'medium': 1.0, 'high': 1.3}.get(risk_profile, 1.0)
+        adjusted_risk_pct = risk_per_trade_pct * risk_multiplier
+        adjusted_max_pos_pct = min(max_position_pct * max_pos_multiplier, 25.0)  # hard cap 25%
+
+        risk_dollars = account_size * (adjusted_risk_pct / 100.0)
+        max_pos_dollars = account_size * (adjusted_max_pos_pct / 100.0)
         daily_loss_limit = account_size * 0.03  # 3% max daily loss
 
         print(f'\n=== ENTRY PLAN START: {len(candidates)} candidates ===')
-        print(f'    Account: portfolio_value=${account_size:.0f}, risk/trade=${risk_dollars:.0f}, max_pos=${max_pos_dollars:.0f}')
+        print(f'    Account: portfolio_value=${account_size:.0f}, risk/trade=${risk_dollars:.0f} (adjusted {adjusted_risk_pct:.2f}%), max_pos=${max_pos_dollars:.0f} (adjusted {adjusted_max_pos_pct:.1f}%)')
+        print(f'    Risk profile: {risk_profile}, Time horizon: {time_horizon}')
         print(f'    Existing positions: {existing_positions}, Daily loss: ${daily_loss:.0f}/{daily_loss_limit:.0f}')
         print(f'    Execution mode: {execution_mode}')
 
@@ -25460,7 +25518,7 @@ def ai_entry_plan():
 
         # ── 13. AI Final Decision Step (after deterministic plans are built) ──
         print(f'    Calling AI for final decisions on {len(plans)} plans...')
-        ai_decisions = _call_ai_entry_final_decision(plans, execution_mode, account_mode)
+        ai_decisions = _call_ai_entry_final_decision(plans, execution_mode, account_mode, risk_profile, time_horizon)
 
         # Update each plan with AI decision
         for plan in plans:
@@ -25562,6 +25620,257 @@ def ai_entry_plan():
                     plan['dataSources']['aiData'] = f'{ai_source_label} ({ai_model_name or "AI"}) called'
                 else:
                     plan['dataSources']['aiData'] = 'AI unavailable' + (f' — {ai_error}' if ai_error else '')
+
+        # ── 14. Leveraged ETF Alternative Lookup (High Risk + Soft Blockers) ──
+        if risk_profile == 'high':
+            LEVERAGED_ETF_MAP = {
+                'TSLA': {'bull': ['TSLL', 'TSLR'], 'bear': ['TSLQ', 'TSLZ']},
+                'NVDA': {'bull': ['NVDL', 'NVDU'], 'bear': ['NVD', 'NVDQ']},
+                'AAPL': {'bull': ['AAPU'], 'bear': ['AAPD']},
+                'AMZN': {'bull': ['AMZU'], 'bear': ['AMZD']},
+                'META': {'bull': ['FBL'], 'bear': ['FBZ']},
+                'GOOGL': {'bull': ['GOOX'], 'bear': ['GGLS']},
+                'MSFT': {'bull': ['MSFU'], 'bear': ['MSFD']},
+                'AMD': {'bull': ['AMDL'], 'bear': ['AMDS']},
+                'NFLX': {'bull': ['NFXL'], 'bear': ['NFXS']},
+                'COIN': {'bull': ['CONL'], 'bear': ['COID']},
+                'MSTR': {'bull': ['MSTU', 'MSTX'], 'bear': ['MSTZ', 'MSTS']},
+                'QQQ': {'bull': ['TQQQ', 'QLD'], 'bear': ['SQQQ', 'QID']},
+                'SPY': {'bull': ['SPXL', 'UPRO', 'SSO'], 'bear': ['SPXS', 'SPXU', 'SDS']},
+                'IWM': {'bull': ['TNA', 'UWM'], 'bear': ['TZA', 'TWM']},
+            }
+
+            def _is_soft_blocker(blocker_text):
+                text = str(blocker_text).lower()
+                soft_kw = ['buying power', 'position', 'share', 'below minimum', 'exceeds max',
+                          'insufficient', 'dollars', 'notional', 'minimum', 'capped',
+                          'max allocation', 'risk budget', 'funds', 'portfolio cap',
+                          'position size', 'account', 'price too high', 'fractional',
+                          'portfolio value', 'exceeds']
+                return any(kw in text for kw in soft_kw)
+
+            alt_plans = []
+            for plan in plans:
+                if plan.get('finalAction') != 'BLOCKED_BY_RISK':
+                    continue
+                rg = plan.get('hardRiskGate', {})
+                blockers = rg.get('blockers', [])
+                if not blockers:
+                    continue
+                # Only attempt alternative if ALL blockers are soft
+                soft = [b for b in blockers if _is_soft_blocker(b)]
+                hard = [b for b in blockers if not _is_soft_blocker(b)]
+                if hard:
+                    continue
+
+                sym = plan['symbol'].upper()
+                mapping = LEVERAGED_ETF_MAP.get(sym)
+                if not mapping:
+                    continue
+
+                ai_dec = str(plan.get('aiDecision', '')).upper()
+                setup = str(plan.get('setup', '')).lower()
+                direction = 'bear' if ('bear' in setup or ai_dec == 'SELL') else 'bull'
+
+                for alt_sym in mapping.get(direction, []):
+                    # Check Alpaca asset tradability
+                    alt_tradable = False
+                    alt_fractionable = False
+                    if acc_key and acc_secret:
+                        try:
+                            asset_headers = {'APCA-API-KEY-ID': acc_key, 'APCA-API-SECRET-KEY': acc_secret}
+                            asset_resp = req_lib.get(f'{acc_url}/v2/assets/{alt_sym}', headers=asset_headers, timeout=10)
+                            if asset_resp.status_code == 200:
+                                asset = asset_resp.json()
+                                if asset.get('tradable') and asset.get('status') == 'active':
+                                    alt_tradable = True
+                                    alt_fractionable = asset.get('fractionable', False)
+                        except Exception:
+                            pass
+                    if not alt_tradable:
+                        # Mark attempted but not tradable
+                        plans.append({
+                            'symbol': alt_sym,
+                            'isLeveragedAlternative': True,
+                            'originalSymbol': sym,
+                            'alternativeDirection': direction,
+                            'alternativeFailed': True,
+                            'alternativeFailReason': f'{alt_sym} is not tradable on Alpaca ({account_mode})',
+                            'finalAction': 'BLOCKED_BY_RISK',
+                            'tradeReadiness': 'BLOCKED',
+                            'aiDecision': 'SKIP',
+                            'decisionReason': f'Leveraged alternative {alt_sym} for {sym} is not tradable on Alpaca.',
+                        })
+                        continue
+
+                    # Fetch price via market data
+                    alt_price = 0
+                    try:
+                        md_acfg, _ = resolve_alpaca_config('market_data', require_user_config=True)
+                        snap_url2 = f'https://data.alpaca.markets/v2/stocks/{alt_sym}/snapshot'
+                        snap_headers2 = {'APCA-API-KEY-ID': md_acfg['api_key'], 'APCA-API-SECRET-KEY': md_acfg['api_secret']}
+                        snap_r2 = req_lib.get(snap_url2, headers=snap_headers2, timeout=10)
+                        if snap_r2.status_code == 200:
+                            s2 = snap_r2.json()
+                            alt_price = float(s2.get('latestTrade', {}).get('p', 0))
+                            if alt_price <= 0:
+                                alt_price = float(s2.get('dailyBar', {}).get('c', 0))
+                    except Exception:
+                        pass
+
+                    if alt_price <= 0:
+                        plans.append({
+                            'symbol': alt_sym,
+                            'isLeveragedAlternative': True,
+                            'originalSymbol': sym,
+                            'alternativeDirection': direction,
+                            'alternativeFailed': True,
+                            'alternativeFailReason': f'Could not fetch price for {alt_sym}',
+                            'finalAction': 'BLOCKED_BY_RISK',
+                            'tradeReadiness': 'BLOCKED',
+                            'aiDecision': 'SKIP',
+                            'decisionReason': f'Leveraged alternative {alt_sym} — price unavailable.',
+                        })
+                        continue
+
+                    # Position sizing for alternative
+                    alt_sl_pct = float(plan.get('stopLossPct', 5.0))
+                    alt_stop = round(alt_price * (1 - alt_sl_pct / 100.0), 2)
+                    alt_tp = round(alt_price * (1 + alt_sl_pct * 1.5 / 100.0), 2)
+                    alt_risk_per_share = round(alt_price - alt_stop, 2)
+
+                    if alt_risk_per_share <= 0:
+                        alt_risk_per_share = round(alt_price * 0.03, 2)
+
+                    alt_risk_shares = round(max(0.01, risk_dollars / alt_risk_per_share), 4)
+                    alt_max_shares = round(max(0.01, max_pos_dollars / alt_price), 4) if alt_price > 0 else 0
+                    alt_pos_shares = min(alt_risk_shares, alt_max_shares)
+                    alt_pos_dollars = round(alt_pos_shares * alt_price, 2)
+                    alt_pos_pct = round(alt_pos_dollars / account_size * 100, 2) if account_size > 0 else 0
+                    alt_risk_dollars_actual = round(alt_pos_shares * alt_risk_per_share, 2)
+                    alt_rr = round((alt_tp - alt_price) / alt_risk_per_share, 1) if alt_risk_per_share > 0 else 0
+
+                    # Gate check
+                    alt_blockers = []
+                    alt_warnings = []
+                    alt_passed = True
+
+                    if alt_pos_shares < 0.01:
+                        alt_blockers.append(f'{alt_sym}: position {alt_pos_shares:.4f} shares below 0.01 minimum')
+                        alt_passed = False
+                    if alt_pos_dollars < 1.0:
+                        alt_blockers.append(f'{alt_sym}: value ${alt_pos_dollars:.2f} below $1.00 minimum notional')
+                        alt_passed = False
+                    if alt_pos_pct > adjusted_max_pos_pct:
+                        alt_blockers.append(f'{alt_sym}: {alt_pos_pct:.1f}% exceeds max position {adjusted_max_pos_pct:.1f}%')
+                        alt_passed = False
+                    if alt_pos_shares < alt_risk_shares:
+                        alt_warnings.append(f'Position capped by allocation limit ({alt_pos_pct:.1f}% of portfolio)')
+
+                    alt_gate = 'BLOCK' if (not alt_passed or alt_blockers) else ('REVIEW' if alt_warnings else 'PASS')
+                    if alt_blockers:
+                        alt_final_action = 'BLOCKED_BY_RISK'
+                    elif alt_warnings:
+                        alt_final_action = 'READY_REVIEW'
+                    else:
+                        alt_final_action = 'BUY_READY'
+
+                    alt_plan = {
+                        'symbol': alt_sym,
+                        'isLeveragedAlternative': True,
+                        'originalSymbol': sym,
+                        'alternativeDirection': direction,
+                        'alternativeFailed': False,
+                        'alternativeReason': f'{sym} blocked by position/capital limits. High-risk mode — using leveraged ETF {alt_sym}.',
+                        'alternativeRiskWarning': f'{alt_sym} is a leveraged ETF with amplified volatility and loss risk.',
+                        'alternativeFractionable': alt_fractionable,
+                        'strategy': plan.get('strategy', 'unknown'),
+                        'setup': f'Leveraged {direction.capitalize()} ({plan.get("setup", "N/A")})',
+                        'entryZoneLow': round(alt_price * 0.98, 2),
+                        'entryZoneHigh': round(alt_price * 1.02, 2),
+                        'entryZoneDesc': f'Current zone: ${alt_price * 0.98:.2f} - ${alt_price * 1.02:.2f}',
+                        'triggerCondition': f'High-risk leveraged entry for {alt_sym} (alternative to {sym})',
+                        'stopLoss': alt_stop,
+                        'stopLossPct': round(alt_sl_pct, 2),
+                        'stopSource': f'Scaled from {sym} plan',
+                        'invalidationCondition': f'{alt_sym} drops below stop or {sym} fundamentals change',
+                        'takeProfit1': alt_tp,
+                        'takeProfit2': round(alt_price * (1 + alt_sl_pct * 2.5 / 100.0), 2),
+                        'trailingStop': None,
+                        'riskReward1': alt_rr,
+                        'riskReward2': round(alt_rr * 1.3, 1) if alt_rr > 0 else 0,
+                        'riskRewardReview': alt_rr < 1.2,
+                        'positionSizeShares': alt_pos_shares,
+                        'positionSizeDollars': alt_pos_dollars,
+                        'positionPct': alt_pos_pct,
+                        'positionCapped': alt_pos_shares < alt_risk_shares,
+                        'positionCapStatus': (f'capped ({alt_pos_pct:.1f}%)' if alt_pos_shares < alt_risk_shares else 'within limits'),
+                        'riskDollars': alt_risk_dollars_actual,
+                        'riskBudget': risk_dollars,
+                        'riskUsedPct': round(alt_risk_dollars_actual / risk_dollars * 100, 2) if risk_dollars > 0 else 0,
+                        'riskPct': risk_per_trade_pct,
+                        'maxLossPct': round(alt_sl_pct, 2),
+                        'aiDecision': 'BUY' if alt_gate != 'BLOCK' else 'SKIP',
+                        'confidence': min(plan.get('confidence', 50), 60),
+                        'bestStrategy': plan.get('bestStrategy', plan.get('strategy', 'unknown')),
+                        'finalAction': alt_final_action,
+                        'tradeReadiness': 'READY' if alt_final_action == 'BUY_READY' else ('WAIT' if alt_final_action == 'READY_REVIEW' else 'BLOCKED'),
+                        'entryTriggerMet': True,
+                        'hardRiskGate': {
+                            'status': alt_gate,
+                            'passed': alt_passed,
+                            'blockers': alt_blockers,
+                            'warnings': alt_warnings,
+                            'reasons': alt_blockers + alt_warnings
+                        },
+                        'dataQuality': 'PARTIAL',
+                        'dataSources': {
+                            'marketData': f'Alpaca Snapshot (${alt_price:.2f})',
+                            'technicalData': f'Scaled from {sym} plan',
+                            'accountData': plan.get('dataSources', {}).get('accountData', 'N/A'),
+                            'aiData': 'Inherited from original plan'
+                        },
+                        'aiSource': 'Leveraged Alt Rules',
+                        'aiCalled': False, 'aiModel': None, 'aiError': None,
+                        'executionDetails': {
+                            'mode': execution_mode,
+                            'canExecute': alt_gate == 'PASS',
+                            'reason': f'Leveraged {direction} ETF alternative for {sym}',
+                            'brokerSource': f'Alpaca {account_mode.capitalize()}',
+                            'brokerConnected': account_data_fetched,
+                            'orderTypeSuggestion': 'Limit Order',
+                            'orderTypeReason': 'Leveraged ETF — use limit order for price protection',
+                            'orderPreview': None
+                        },
+                        'sourceVerdict': plan.get('sourceVerdict', ''),
+                        'currentPrice': round(alt_price, 2),
+                        'reason': f'Leveraged alternative to {sym}: {alt_sym} ({direction}) — {"Passed" if alt_passed else "Blocked: " + "; ".join(alt_blockers)}',
+                        'decisionReason': f'High-risk leveraged alt. {sym} blocked by position/capital. {alt_sym} {"passes" if alt_passed else "fails"} risk checks.',
+                        'riskNotes': [f'LEVERAGED ETF ({direction.upper()}): {alt_sym} amplifies {sym} returns. Higher volatility and loss risk.'],
+                        'riskComment': f'Leveraged {direction} ETF — tight stop at ${alt_stop:.2f}.',
+                        'invalidationComment': f'If {alt_sym} drops below ${alt_stop:.2f}, exit immediately.',
+                        'nextStep': f'{alt_pos_shares:.2f} shares of {alt_sym} at ${alt_price:.2f}, stop ${alt_stop:.2f}' if alt_passed else f'Blocked: {"; ".join(alt_blockers)}',
+                        'blockers': alt_blockers,
+                        'dataSource': 'leveraged_alternative',
+                        'entryReadiness': 'Ready' if alt_passed else 'Wait',
+                        'isInEntryZone': True,
+                        'readyReviewReason': 'Leveraged alternative — review before executing' if alt_gate == 'REVIEW' else '',
+                        'riskGateReasons': {'blockers': alt_blockers, 'warnings': alt_warnings, 'all': alt_blockers + alt_warnings},
+                        'atrPct': round(alt_sl_pct * 0.7, 2),
+                        'ema20': None, 'ema50': None,
+                        'atr': round(alt_price * alt_sl_pct / 400.0, 2),
+                        'support': round(alt_stop, 2),
+                        'resistance': round(alt_tp, 2),
+                        'accountMode': account_mode,
+                        'accountBuyingPower': round(live_buying_power, 2),
+                        'positionCapital': round(account_size, 2),
+                    }
+                    alt_plans.append(alt_plan)
+                    break  # First valid candidate
+
+            if alt_plans:
+                plans.extend(alt_plans)
+                print(f'    [LEVERAGED ALT] Added {len(alt_plans)} alternative plans')
 
         ai_success_count = sum(1 for p in plans if p.get('aiCalled'))
         error_count = sum(1 for p in plans if p.get('finalAction') == 'BLOCKED_BY_RISK' and p.get('setup') == 'Error')

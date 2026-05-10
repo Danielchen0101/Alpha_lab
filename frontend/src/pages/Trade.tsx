@@ -20,6 +20,7 @@ const { Option } = Select;
 
 const Trade: React.FC = () => {
   const { t } = useLanguage();
+  const { tradeMode } = useTradeMode();
 
   // Account Snapshot 状态
   const [accountSnapshot, setAccountSnapshot] = useState({
@@ -43,46 +44,10 @@ const Trade: React.FC = () => {
     return n < 1e12 ? n * 1000 : n;
   };
 
-  // 处理投资组合时间范围变化
-  const handlePortfolioRangeChange = async (range: string) => {
+  // 处理投资组合时间范围变化 — 只切换 range，由 refreshAllAlpacaData 统一拉取数据
+  const handlePortfolioRangeChange = (range: string) => {
     setPortfolioRange(range);
     setPortfolioError(null);
-    try {
-      const response = await tradingAccountAPI.getPortfolioHistory(tradeMode, range);
-      const resBody = response.data;
-      if (resBody && typeof resBody === 'object' && resBody.success) {
-        const raw = resBody.data || [];
-        const normalizedData = raw
-          .map((item: any) => {
-            let timestamp = item.timestamp;
-            if (typeof timestamp === 'number' && timestamp < 1e12) timestamp = timestamp * 1000;
-            return { timestamp, equity: Number(item.equity || 0) };
-          })
-          .filter((item: any) => item.timestamp && Number.isFinite(item.equity));
-        setPortfolioHistory(normalizedData);
-        if (normalizedData.length >= 2) {
-          const first = normalizedData[0]?.equity || 0;
-          const last = normalizedData[normalizedData.length - 1]?.equity || 0;
-          setPortfolioChange({ value: last - first, percent: first !== 0 ? ((last - first) / first) * 100 : 0 });
-        } else {
-          setPortfolioChange({ value: 0, percent: 0 });
-        }
-      } else {
-        setPortfolioHistory([]);
-        setPortfolioChange({ value: 0, percent: 0 });
-        const errMsg = (resBody as any)?.message || resBody?.error || 'Unknown error';
-        if ((resBody as any)?.reason === 'config_required' || errMsg?.includes('not configured')) {
-          setPortfolioError(t.trade.credentialsNotConfigured.replace('{mode}', tradeMode === 'paper' ? t.trade.paperLabel : t.trade.liveLabel));
-        } else {
-          setPortfolioError(errMsg);
-        }
-      }
-    } catch (error: any) {
-      console.error('Portfolio history fetch failed:', error);
-      setPortfolioHistory([]);
-      setPortfolioChange({ value: 0, percent: 0 });
-      setPortfolioError(error?.message || 'Network error');
-    }
   };
 
   // 加载状态
@@ -104,8 +69,6 @@ const Trade: React.FC = () => {
     takeProfitPrice?: number;
     stopLossPrice?: number;
   }>({});
-  const { tradeMode } = useTradeMode();
-
   // Refresh data when trade mode changes
   useEffect(() => {
     refreshAllAlpacaData(tradeMode);

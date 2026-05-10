@@ -5,6 +5,33 @@ All notable changes to the Professional Quantitative Trading Platform will be do
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.2] - 2026-05-10
+
+### Added
+- Portfolio page fallback chart generation when Alpaca history is empty but account equity exists
+- Fallback chart indicator showing "Reference curve generated from current account equity"
+- Chinese/English translations for fallback chart note
+
+### Changed
+- Portfolio page uses global Trade Mode from sidebar context instead of standalone page-level switch
+- Trading mode displayed as read-only Tag badge (Paper/Real) on Portfolio page
+- Portfolio chart simplified to single equity line (removed dual Y-axis profit/loss line)
+- Portfolio chart X-axis formatting improved with range-specific date/time formats
+- Portfolio chart tooltip enhanced with localized time display
+- AI Agent pipeline execution logic optimized for AI/Semi-AI/Manual modes
+- AI Mode supports automated Entry Plan → Buy Order → Exit Scan → GTC Sell Order flow
+- Entry Plan supports fractional shares (e.g., 0.01, 0.1, 1.1 shares)
+- Real/Paper Trading API calls unified to follow global trade mode
+- Chinese translations and UI display refinements
+
+### Fixed
+- Portfolio chart Y-axis showing $0-$100 instead of actual account equity range (paper mode)
+- Portfolio chart Y-axis domain NaN crash (DecimalError: Invalid argument: NaN)
+- Portfolio Performance "Network Error" caused by backend `datetime` module shadowing
+- Portfolio chart now shows fallback flat line instead of "No portfolio history" when history API returns empty
+- YAxis domain pre-computed from actual equity data instead of using Recharts inline function
+- Portfolio history data validation: filters out invalid equity values (non-finite, <= 0)
+
 ## [2.6.0] - 2026-05-09
 
 ### Added

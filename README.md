@@ -4,7 +4,7 @@
 
 ### Quantitative Trading Platform
 
-![Version](https://img.shields.io/badge/version-2.6.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-2.6.2-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![React](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?style=flat-square&logo=typescript)
@@ -59,6 +59,30 @@ Market Scanner
 - Automatic GTC sell order placement via Exit Scan
 - Duplicate order prevention and sellable quantity validation
 - Bracket order support for take-profit and stop-loss management
+
+## v2.6.2 Highlights
+
+### Portfolio Page
+- **Portfolio Chart Fixed** — Equity line now renders correctly with Y-axis scaled to actual portfolio value (fixed $0-$100 Y-axis bug in paper mode)
+- **Fallback Chart Data** — When Alpaca history is empty, chart shows reference curve from current account equity instead of empty state
+- **Global Trade Mode** — Portfolio page reads trade mode from sidebar context; standalone page-level switch removed
+- **Chart UX Improvements** — Better X-axis labels, tooltip formatting, and Y-axis domain computation
+
+### AI Agent
+- **Auto-Pipeline Refinements** — AI/Semi-AI/Manual mode execution logic optimized for Entry Plan, Buy Order, Exit Scan, and GTC Sell Order flows
+- **Fractional Shares** — Entry Plan and order execution support fractional quantities (e.g., 0.01, 0.1, 1.1 shares)
+- **Leveraged ETF Awareness** — High Risk mode considers leveraged ETF alternatives (TSLL, TSLQ, NVDL) subject to Alpaca tradability check and risk controls
+
+### Platform
+- **Unified Trade Mode** — All Real/Paper Trading API calls follow global sidebar trade mode
+- **Chinese Localization** — Continued refinement of Chinese translations and UI polish
+- **Portfolio Chart Robustness** — NaN guards, data validation, and fallback generation prevent chart crashes
+
+### Bug Fixes
+- Fixed Portfolio chart Y-axis showing $0-$100 due to Recharts domain function type mismatch
+- Fixed DecimalError: Invalid argument: NaN crash in Y-axis domain calculation
+- Fixed backend datetime module shadowing causing Portfolio Performance "Network Error"
+- Fixed Portfolio history empty-state fallback triggering logic
 
 ## v2.6.0 Highlights
 
