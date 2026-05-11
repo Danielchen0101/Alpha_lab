@@ -297,6 +297,14 @@ def get_supabase_user():
     return None
 
 
+def require_auth():
+    """Verify Supabase JWT from Authorization header. Returns user dict or None."""
+    user = get_supabase_user()
+    if not user:
+        return None
+    return user
+
+
 def encrypt_value(value):
     """Fernet-encrypt a string value. Returns 'enc:<ciphertext>' or None."""
     if not fernet or not value:
@@ -5064,7 +5072,9 @@ def health_check():
 @app.route('/api/ai/provider/config', methods=['GET', 'POST'])
 
 def ai_provider_config():
-
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
     try:
 
         if request.method == 'GET':
@@ -7838,8 +7848,10 @@ def system_config_diag():
 @app.route('/api/config/status', methods=['GET'])
 def config_status():
     """Return true config state for all services. Used by frontend status bar and scanner pre-flight."""
-    user = get_supabase_user()
-    user_id = user['id'] if user else None
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    user_id = user['id']
 
     # AI Provider — read from Supabase user config only
     ai_has_key = False
@@ -11861,7 +11873,9 @@ def analyze_trend_locally(symbol, stock_data, news_data, profile_data):
 @app.route('/api/ai/trade/status', methods=['GET'])
 
 def ai_trade_status():
-
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
     print('=== AI Trade Status 请求 ===')
 
     return jsonify({
@@ -12649,9 +12663,11 @@ def get_status():
 @app.route('/api/dashboard/status', methods=['GET'])
 
 def dashboard_status():
-
     """Return per-user config state for Dashboard System Status panel.
     Uses strict user-only resolvers — never falls back to global .env keys."""
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
 
     try:
 
@@ -16913,7 +16929,9 @@ def generate_simulation_result(strategy, rank, params, initial_capital):
 @app.route('/api/backtest/history', methods=['GET'])
 
 def get_backtest_history():
-
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
     """获取回测历史 - 返回真实的backtest历史数据"""
 
     try:
@@ -21473,6 +21491,9 @@ def _find_watchlist_item(symbol):
 @app.route('/api/ai-agent/watchlist', methods=['GET'])
 def ai_agent_watchlist_list():
     """List all AI Agent watchlist items."""
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
     return jsonify({'success': True, 'items': _watchlist_store, 'count': len(_watchlist_store)})
 
 

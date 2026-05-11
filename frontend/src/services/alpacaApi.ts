@@ -44,7 +44,9 @@ api.interceptors.response.use(
   (response) => {
     // 记录数据源信息
     if (response.data?.dataSource) {
-      console.log(`交易数据来源: ${response.data.dataSource}`);
+      if (process.env.NODE_ENV !== 'production') {
+        console.log(`交易数据来源: ${response.data.dataSource}`);
+      }
     }
     return response;
   },

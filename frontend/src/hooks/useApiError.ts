@@ -65,10 +65,12 @@ export function useApiError(options: UseApiErrorOptions = {}) {
     // Check for duplicate error
     const lastErrorTime = errorCache.current.get(errorKey);
     if (lastErrorTime && now - lastErrorTime < deduplicateTimeout) {
-      console.log(`[useApiError] Skipping duplicate error: ${errorKey}`);
+      if (process.env.NODE_ENV !== 'production') {
+        console.log(`[useApiError] Skipping duplicate error: ${errorKey}`);
+      }
       return false;
     }
-    
+
     // Update cache
     errorCache.current.set(errorKey, now);
     

@@ -215,14 +215,15 @@ class AITradingService {
   // AI 分析（带完整上下文）
   async previewTradeWithContext(symbol: string, context: any): Promise<AIPreviewResponse> {
     try {
-      console.log('Sending AI analysis with context:', { symbol, context });
-      
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('Sending AI analysis with context:', { symbol, context });
+      }
+
       const response = await api.post('/ai/trade/analyze-with-context', {
         symbol,
         context
       });
-      
-      console.log('AI analysis response:', response.data);
+
       return response.data;
     } catch (error: any) {
       console.error('AI analysis with context error:', error);
@@ -329,39 +330,33 @@ class AITradingService {
   // 获取账户快照（从 Alpaca）
   async getAccountSnapshot() {
     try {
-      console.log('开始获取账户快照数据...');
-      
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('开始获取账户快照数据...');
+      }
+
       // 分别处理每个请求，避免 Promise.all 一个失败全部失败
       let accountData = null;
       let positionsData = null;
       let ordersData = null;
-      
+
       try {
-        console.log('调用账户接口: /ai/alpaca/account');
         const accountResponse = await api.get('/ai/alpaca/account');
-        console.log('账户接口响应状态:', accountResponse.status);
-        console.log('账户接口响应数据:', accountResponse.data);
         accountData = accountResponse.data;
-        console.log('accountData.success:', accountData?.success);
-        console.log('accountData.data:', accountData?.data);
-        console.log('accountData.data?.cash:', accountData?.data?.cash);
       } catch (accountError) {
         console.error('获取账户信息失败:', accountError);
         accountData = { success: false, data: null };
       }
-      
+
       try {
         const positionsResponse = await api.get('/ai/alpaca/positions');
-        console.log('持仓接口响应:', positionsResponse.data);
         positionsData = positionsResponse.data;
       } catch (positionsError) {
         console.error('获取持仓信息失败:', positionsError);
         positionsData = { success: false, data: [] };
       }
-      
+
       try {
         const ordersResponse = await api.get('/ai/alpaca/orders?status=open&limit=50');
-        console.log('订单接口响应:', ordersResponse.data);
         ordersData = ordersResponse.data;
       } catch (ordersError) {
         console.error('获取订单信息失败:', ordersError);
@@ -405,7 +400,9 @@ class AITradingService {
         }
       };
       
-      console.log('getAccountSnapshot 返回结果:', result);
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('getAccountSnapshot 返回结果:', result);
+      }
       return result;
     } catch (error) {
       console.error('获取账户快照总体错误:', error);
@@ -430,9 +427,7 @@ class AITradingService {
   // Block 2: 获取详细的账户、持仓、订单数据
   async getAlpacaAccount(mode?: string): Promise<any> {
     try {
-      console.log('调用 Alpaca 账户接口...');
       const response = await api.get('/ai/alpaca/account', { params: mode ? { mode } : {} });
-      console.log('Alpaca 账户接口响应:', response.data);
       
       // 确保返回的数据包含 isMockData 字段
       if (response.data.success && response.data.data) {
@@ -623,12 +618,8 @@ class AITradingService {
   // Place Alpaca Order
   async placeAlpacaOrder(orderData: any): Promise<any> {
     try {
-      console.log('Placing Alpaca order:', orderData);
-      
       // 调用后端下单接口
       const response = await api.post('/ai/alpaca/orders', orderData);
-      
-      console.log('Order response:', response.data);
       return response.data;
     } catch (error: any) {
       console.error('Place Alpaca order error:', error);
@@ -656,11 +647,10 @@ class AITradingService {
 
   async saveProviderConfig(config: AIProviderConfig): Promise<AIProviderConfigResponse> {
     try {
-      console.log('saveProviderConfig 调用，配置:', config);
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('saveProviderConfig 调用，配置:', { ...config, apiKey: config.apiKey ? '***' : '' });
+      }
       const response = await api.post('/ai/provider/config', config);
-      console.log('Save provider config response:', response.data);
-      console.log('response.data.success:', response.data.success);
-      console.log('response.data.message:', response.data.message);
       
       // Backend 返回的 config 可能包含 baseURL（大写），但前端接口期望 baseUrl（小写）
       // 规范化配置对象以确保类型安全
@@ -691,7 +681,6 @@ class AITradingService {
   async getProviderConfig(): Promise<AIProviderConfigResponse> {
     try {
       const response = await api.get('/ai/provider/config');
-      console.log('getProviderConfig response:', response.data);
       
       // Backend 返回的 config 可能包含 baseURL（大写），但前端接口期望 baseUrl（小写）
       // 规范化配置对象以确保类型安全
@@ -802,19 +791,11 @@ class AITradingService {
   // Portfolio History 接口
   async getPortfolioHistory(range: string = '1D', mode?: string): Promise<any> {
     try {
-      console.log('📊 [1] 调用portfolio history接口，range:', range);
       const response = await api.get('/ai/alpaca/portfolio/history', {
         params: { range, ...(mode ? { mode } : {}) }
       });
-      
-      console.log('📊 [2] portfolio history原始响应结构:', {
-        status: response.status,
-        success: response.data?.success,
-        dataLength: response.data?.data?.length,
-        responseKeys: Object.keys(response.data || {}),
-        hasDataArray: Array.isArray(response.data?.data),
-        responseData: response.data
-      });
+
+      // 如果请求成功，对数据进行处理
       
       // 如果请求成功，对数据进行处理
       if (response.data.success && response.data.data) {
@@ -838,8 +819,8 @@ class AITradingService {
             isMockData: item.isMockData || false
           };
           
-          // 打印前3个点的详细信息
-          if (index < 3) {
+          // 打印前3个点的详细信息 — dev only
+          if (index < 3 && process.env.NODE_ENV !== 'production') {
             console.log(`📊 [3] portfolio history点[${index}]:`, {
               rawItem: item,
               normalized: result,
@@ -849,28 +830,32 @@ class AITradingService {
               equityType: typeof result.equity
             });
           }
-          
+
           return result;
         }).filter((item: any) => {
           // 过滤无效数据点
           const ts = this.normalizeTimestamp(item.timestamp);
           return ts !== null && Number.isFinite(item.equity);
         });
-        
-        console.log('📊 [4] portfolio history处理完成:', {
-          原始数据点数量: response.data.data.length,
-          过滤后数据点数量: normalizedData.length,
-          第一个点: normalizedData[0],
-          最后一个点: normalizedData[normalizedData.length - 1]
-        });
-        
+
+        if (process.env.NODE_ENV !== 'production') {
+          console.log('📊 [4] portfolio history处理完成:', {
+            原始数据点数量: response.data.data.length,
+            过滤后数据点数量: normalizedData.length,
+            第一个点: normalizedData[0],
+            最后一个点: normalizedData[normalizedData.length - 1]
+          });
+        }
+
         return {
           ...response.data,
           data: normalizedData
         };
       }
-      
-      console.log('📊 [5] portfolio history响应格式不正确:', response.data);
+
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('📊 [5] portfolio history响应格式不正确:', response.data);
+      }
       return response.data;
     } catch (error: any) {
       console.error('Get portfolio history error:', error);

@@ -126,6 +126,17 @@ const SignIn: React.FC = () => {
         .signin-card .ant-input-affix-wrapper:hover {
           border-color: rgba(255,255,255,0.22) !important;
         }
+        /* --- Primary button always white --- */
+        .signin-card .ant-btn-primary {
+          color: #fff !important;
+        }
+        .signin-card .ant-btn-primary[disabled],
+        .signin-card .ant-btn-primary[disabled]:hover {
+          color: rgba(255,255,255,0.5) !important;
+          background: linear-gradient(135deg, #1890ff 0%, #2f54eb 100%) !important;
+          opacity: 0.5 !important;
+          border: none !important;
+        }
       `;
       document.head.appendChild(style);
     }
@@ -161,6 +172,8 @@ const SignIn: React.FC = () => {
       const errMsg = (result.message || '').toLowerCase();
       if (errMsg.includes('captcha') || errMsg.includes('captcha_token')) {
         setError(t.auth.captchaSignInError || t.auth.verifyHuman);
+      } else if (errMsg.includes('invalid login credentials') || errMsg.includes('invalid email')) {
+        setError(t.auth.invalidCredentials);
       } else {
         setError(result.message || 'Login failed');
       }
@@ -422,7 +435,7 @@ const SignIn: React.FC = () => {
             </div>
 
             {/* CAPTCHA — always shown */}
-              <div style={{ marginBottom: 16, minHeight: 65 }}>
+              <div style={{ marginBottom: 16, minHeight: 65, maxWidth: '100%', overflow: 'hidden' }}>
                 {captchaConfigured ? (
                   <Turnstile
                     sitekey={turnstileSiteKey || ''}

@@ -2460,6 +2460,8 @@ const messages = {
     signUpHint: 'After signing up, configure your Alpaca, Finnhub, and AI provider keys in Settings.',
     registrationFailed: 'Registration failed',
     passwordsDoNotMatchError: 'Passwords do not match',
+    invalidCredentials: 'Invalid email or password',
+    checkEmailConfirmation: 'Check your email to confirm your account.',
     welcomeBack: 'Welcome back',
     signInSubtitle: 'Sign in to continue to your quantitative dashboard.',
     emailPlaceholderSignIn: 'Enter your email address',

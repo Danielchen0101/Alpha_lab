@@ -202,12 +202,14 @@ export function sortByDateAsc<T extends Record<string, any>>(
  */
 export function getTooltipDate(payload: any[], label: any): string {
   // 调试：打印输入参数
-  console.log('🔍 getTooltipDate 调用:', { 
-    payloadLength: payload?.length,
-    payloadFirstItem: payload?.[0],
-    label: label,
-    labelType: typeof label
-  });
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('🔍 getTooltipDate 调用:', {
+      payloadLength: payload?.length,
+      payloadFirstItem: payload?.[0],
+      label: label,
+      labelType: typeof label
+    });
+  }
   
   // 优先使用payload中的date字段
   if (payload && payload.length > 0) {
@@ -266,14 +268,15 @@ export function debugDates<T extends Record<string, any>>(
   dataName: string,
   dateField: string = 'date'
 ): void {
+  if (process.env.NODE_ENV === 'production') return;
   console.log(`=== ${dataName} 日期调试 ===`);
   console.log(`数据长度: ${data?.length || 0}`);
-  
+
   if (!data || data.length === 0) {
     console.log('数据为空');
     return;
   }
-  
+
   // 前5个点
   console.log('前5个点:');
   data.slice(0, 5).forEach((item, index) => {
@@ -281,7 +284,7 @@ export function debugDates<T extends Record<string, any>>(
     const date = parseDateSafe(dateValue);
     console.log(`  [${index}] date字段: ${dateValue}, 类型: ${typeof dateValue}, 解析结果: ${date ? date.toISOString() : '无效'}`);
   });
-  
+
   // 后5个点
   if (data.length > 5) {
     console.log('后5个点:');
@@ -292,15 +295,15 @@ export function debugDates<T extends Record<string, any>>(
       console.log(`  [${actualIndex}] date字段: ${dateValue}, 类型: ${typeof dateValue}, 解析结果: ${date ? date.toISOString() : '无效'}`);
     });
   }
-  
+
   // 统计无效日期
   const invalidDates = data.filter(item => {
     const dateValue = item[dateField];
     return parseDateSafe(dateValue) === null;
   });
-  
+
   console.log(`无效日期数量: ${invalidDates.length}/${data.length}`);
-  
+
   if (invalidDates.length > 0) {
     console.log('无效日期示例:');
     invalidDates.slice(0, 3).forEach(item => {

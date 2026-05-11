@@ -2460,6 +2460,8 @@ const messages = {
     signUpHint: '注册后，请在配置中心设置 Alpaca、Finnhub 和 AI 提供商密钥。',
     registrationFailed: '注册失败',
     passwordsDoNotMatchError: '两次输入的密码不一致',
+    invalidCredentials: '邮箱或密码错误',
+    checkEmailConfirmation: '请检查邮箱并完成账号确认。',
     welcomeBack: '欢迎回来',
     signInSubtitle: '登录以继续使用你的量化仪表盘。',
     emailPlaceholderSignIn: '请输入邮箱地址',

@@ -178,6 +178,7 @@ const ForgotPassword: React.FC = () => {
                 fontWeight: 600,
                 background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
                 border: 'none',
+                color: '#fff',
                 boxShadow: '0 8px 24px rgba(24,144,255,0.3)',
               }}
             >
@@ -247,7 +248,7 @@ const ForgotPassword: React.FC = () => {
               </Form.Item>
 
               {/* CAPTCHA */}
-              <div style={{ marginBottom: 24, minHeight: 65 }}>
+              <div style={{ marginBottom: 24, minHeight: 65, maxWidth: '100%', overflow: 'hidden' }}>
                 {captchaConfigured ? (
                   <Turnstile
                     sitekey={turnstileSiteKey || ''}
@@ -300,6 +301,7 @@ const ForgotPassword: React.FC = () => {
                     fontWeight: 600,
                     background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
                     border: 'none',
+                    color: '#fff',
                     boxShadow: '0 8px 24px rgba(24,144,255,0.3)',
                   }}
                 >

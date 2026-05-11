@@ -1,5 +1,5 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route, Outlet } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Outlet, Navigate } from 'react-router-dom';
 import { Layout, ConfigProvider } from 'antd';
 import { AuthProvider } from './contexts/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
@@ -32,6 +32,7 @@ import Configuration from './pages/Configuration';
 import SymbolAnalysis from './pages/SymbolAnalysis';
 import BacktestAnalysis from './pages/BacktestAnalysis';
 import LanguageTest from './pages/LanguageTest';
+import NotFound from './pages/NotFound';
 import LanguageButtonPreview from './components/LanguageButtonPreview';
 import LanguageSwitcher from './components/LanguageSwitcher';
 import NavigationMenu from './components/NavigationMenu';
@@ -145,6 +146,7 @@ const App: React.FC = () => {
               <Route path="/auth/confirmed" element={<AuthConfirmed />} />
               <Route path="/forgot-password" element={<ForgotPassword />} />
               <Route path="/reset-password" element={<ResetPassword />} />
+              <Route path="/scanner" element={<Navigate to="/market" replace />} />
 
               {/* Protected routes - with sidebar layout */}
               <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
@@ -166,6 +168,9 @@ const App: React.FC = () => {
                 <Route path="/language-test" element={<LanguageTest />} />
                 <Route path="/button-preview" element={<LanguageButtonPreview />} />
               </Route>
+
+              {/* Fallback 404 — must be last */}
+              <Route path="*" element={<NotFound />} />
             </Routes>
           </AuthProvider>
         </Router>
