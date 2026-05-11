@@ -20,8 +20,11 @@ const SignIn: React.FC = () => {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [captchaToken, setCaptchaToken] = useState('');
-  const [loginAttempts, setLoginAttempts] = useState(0);
   const turnstileRef = useRef<BoundTurnstileObject | null>(null);
+  const turnstileSiteKey = process.env.REACT_APP_TURNSTILE_SITE_KEY;
+  const isDev = process.env.NODE_ENV === 'development';
+  const captchaConfigured = !!turnstileSiteKey;
+  const canSubmit = captchaConfigured ? !!captchaToken : isDev;
   const [form] = Form.useForm();
 
   useEffect(() => {
@@ -143,7 +146,7 @@ const SignIn: React.FC = () => {
   }) => {
     setSubmitting(true);
     setError('');
-    const result = await login(values.email, values.password, loginAttempts >= 3 ? captchaToken : undefined);
+    const result = await login(values.email, values.password, captchaToken);
     setSubmitting(false);
     if (result.success) {
       if (values.remember) {
@@ -153,9 +156,14 @@ const SignIn: React.FC = () => {
       }
       navigate('/dashboard');
     } else {
-      setLoginAttempts((prev) => prev + 1);
       setCaptchaToken('');
-      setError(result.message || 'Login failed');
+      turnstileRef.current?.reset();
+      const errMsg = (result.message || '').toLowerCase();
+      if (errMsg.includes('captcha') || errMsg.includes('captcha_token')) {
+        setError(t.auth.captchaSignInError || t.auth.verifyHuman);
+      } else {
+        setError(result.message || 'Login failed');
+      }
     }
   };
 
@@ -330,7 +338,7 @@ const SignIn: React.FC = () => {
             >
               {t.auth.welcomeBack}
             </Title>
-            <Text style={{ color: '#94a3b8', fontSize: '0.95rem' }}>
+            <Text style={{ color: '#cbd5e1', fontSize: '0.95rem' }}>
               {t.auth.signInSubtitle}
             </Text>
           </div>
@@ -400,36 +408,56 @@ const SignIn: React.FC = () => {
               <Form.Item name="remember" valuePropName="checked" noStyle>
                 <Checkbox style={{ fontSize: '0.85rem' }}>{t.auth.rememberEmail}</Checkbox>
               </Form.Item>
-              <button
-                type="button"
+              <Link
+                to="/forgot-password"
                 style={{
-                  color: '#1890ff',
+                  color: '#60a5fa',
                   fontSize: 13,
                   fontWeight: 500,
-                  background: 'none',
-                  border: 'none',
-                  padding: 0,
-                  cursor: 'pointer',
+                  textDecoration: 'none',
                 }}
-                onClick={(e) => e.preventDefault()}
               >
                 {t.auth.forgotPassword}
-              </button>
+              </Link>
             </div>
 
-            {/* CAPTCHA — shown after 3 failed login attempts */}
-            {loginAttempts >= 3 && (
-              <div style={{ marginBottom: 16 }}>
-                <Turnstile
-                  sitekey={process.env.REACT_APP_TURNSTILE_SITE_KEY || ''}
-                  onLoad={(_widgetId, bound) => { turnstileRef.current = bound; }}
-                  onVerify={(token) => setCaptchaToken(token)}
-                  onError={() => setCaptchaToken('')}
-                  onExpire={() => setCaptchaToken('')}
-                  theme="dark"
-                />
+            {/* CAPTCHA — always shown */}
+              <div style={{ marginBottom: 16, minHeight: 65 }}>
+                {captchaConfigured ? (
+                  <Turnstile
+                    sitekey={turnstileSiteKey || ''}
+                    onLoad={(_widgetId, bound) => { turnstileRef.current = bound; }}
+                    onVerify={(token) => setCaptchaToken(token)}
+                    onError={() => setCaptchaToken('')}
+                    onExpire={() => setCaptchaToken('')}
+                    theme="dark"
+                  />
+                ) : isDev ? (
+                  <div style={{
+                    padding: '10px 14px',
+                    background: 'rgba(255, 193, 7, 0.12)',
+                    border: '1px solid rgba(255, 193, 7, 0.3)',
+                    borderRadius: 8,
+                    color: '#fbbf24',
+                    fontSize: 12,
+                    textAlign: 'center',
+                  }}>
+                    {t.auth.captchaNotConfigured} — {t.auth.captchaBypassDev}
+                  </div>
+                ) : (
+                  <div style={{
+                    padding: '10px 14px',
+                    background: 'rgba(255, 77, 79, 0.12)',
+                    border: '1px solid rgba(255, 77, 79, 0.3)',
+                    borderRadius: 8,
+                    color: '#ff4d4f',
+                    fontSize: 12,
+                    textAlign: 'center',
+                  }}>
+                    {t.auth.captchaNotConfigured}
+                  </div>
+                )}
               </div>
-            )}
 
             {/* Submit button */}
             <Form.Item style={{ marginBottom: 16 }}>
@@ -437,6 +465,7 @@ const SignIn: React.FC = () => {
                 type="primary"
                 htmlType="submit"
                 loading={submitting}
+                disabled={!canSubmit || submitting}
                 block
                 size="large"
                 style={{
@@ -533,11 +562,11 @@ const SignIn: React.FC = () => {
 
           {/* Create account link */}
           <div style={{ marginTop: 16 }}>
-            <Text style={{ color: '#94a3b8', fontSize: '0.9rem' }}>
+            <Text style={{ color: '#cbd5e1', fontSize: '0.9rem' }}>
               {t.auth.noAccount}{' '}
               <Link
                 to="/signup"
-                style={{ color: '#1890ff', fontWeight: 600 }}
+                style={{ color: '#60a5fa', fontWeight: 600 }}
               >
                 {t.auth.createAccount}
               </Link>
@@ -549,7 +578,7 @@ const SignIn: React.FC = () => {
             <Link
               to="/"
               style={{
-                color: '#94a3b8',
+                color: '#60a5fa',
                 fontSize: '0.85rem',
                 display: 'flex',
                 alignItems: 'center',
@@ -557,12 +586,10 @@ const SignIn: React.FC = () => {
                 transition: 'color 0.2s ease',
               }}
               onMouseEnter={(e) =>
-                ((e.currentTarget as HTMLAnchorElement).style.color =
-                  '#e2e8f0')
+                ((e.currentTarget as HTMLAnchorElement).style.color = '#93c5fd')
               }
               onMouseLeave={(e) =>
-                ((e.currentTarget as HTMLAnchorElement).style.color =
-                  '#94a3b8')
+                ((e.currentTarget as HTMLAnchorElement).style.color = '#60a5fa')
               }
             >
               <ArrowLeftOutlined /> {t.auth.backToHome}

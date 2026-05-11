@@ -14,6 +14,8 @@ import SignUp from './pages/SignUp';
 import Terms from './pages/Terms';
 import Privacy from './pages/Privacy';
 import AuthConfirmed from './pages/AuthConfirmed';
+import ForgotPassword from './pages/ForgotPassword';
+import ResetPassword from './pages/ResetPassword';
 import Dashboard from './pages/Dashboard';
 import Market from './pages/Market';
 import Backtest from './pages/Backtest';
@@ -141,6 +143,8 @@ const App: React.FC = () => {
               <Route path="/terms" element={<Terms />} />
               <Route path="/privacy" element={<Privacy />} />
               <Route path="/auth/confirmed" element={<AuthConfirmed />} />
+              <Route path="/forgot-password" element={<ForgotPassword />} />
+              <Route path="/reset-password" element={<ResetPassword />} />
 
               {/* Protected routes - with sidebar layout */}
               <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
