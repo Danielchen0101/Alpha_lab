@@ -1,5 +1,30 @@
 # 开发日志 - Development Log
 
+## v2.6.4
+
+### 主要更新
+- Forgot Password 页面新增 Turnstile CAPTCHA，修复 Supabase CAPTCHA protection 下 forgot password 请求缺少 captchaToken 的问题
+- Reset Password 页面深色主题文字颜色优化，解决黑色看不见的问题
+- Sign In 页面 CAPTCHA 改为默认始终显示，不再等待 3 次失败后才显示
+- Sign In / Forgot Password / Reset Password 页面提示文字统一改为白色或浅灰，解决深色背景下看不清的问题
+- 优化 password reset 错误提示，将 Supabase 原始错误（如 captcha protection、otp_expired）转换为友好中文/英文提示
+- 继续清理认证页面 UI 细节
+
+### 安全更新
+- Sign In、Sign Up、Forgot Password 均要求人机验证
+- CAPTCHA token 统一传给 Supabase Auth 请求
+- 不提交 Turnstile Secret Key、Resend API Key、Supabase service role key
+- 不提交 .env 真实文件
+
+### 文件变更
+- `frontend/src/pages/ForgotPassword.tsx` — 新增 Forgot Password 页面
+- `frontend/src/pages/ResetPassword.tsx` — 新增 Reset Password 页面
+- `frontend/src/pages/SignIn.tsx` — CAPTCHA 改为始终显示，文字颜色修复
+- `frontend/src/App.tsx` — 新增 `/forgot-password`、`/reset-password` 路由
+- `frontend/src/locales/en-US.ts` — 新增认证相关翻译
+- `frontend/src/locales/zh-CN.ts` — 新增认证相关翻译
+- `frontend/package.json` — 版本号升级到 2.6.4
+
 ## 2026-03-21 - 后端启动问题修复与统一入口
 
 ### 问题发现
