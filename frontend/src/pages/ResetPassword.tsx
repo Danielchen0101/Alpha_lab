@@ -188,7 +188,8 @@ const ResetPassword: React.FC = () => {
               style={{
                 height: 48, borderRadius: 12, fontSize: '1rem', fontWeight: 600,
                 background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
-                border: 'none', boxShadow: '0 8px 24px rgba(24,144,255,0.3)',
+                border: 'none', color: '#fff',
+                boxShadow: '0 8px 24px rgba(24,144,255,0.3)',
               }}
             >
               {t.auth.backToSignIn}
@@ -276,7 +277,8 @@ const ResetPassword: React.FC = () => {
                   style={{
                     height: 48, borderRadius: 12, fontSize: '1rem', fontWeight: 600,
                     background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
-                    border: 'none', boxShadow: '0 8px 24px rgba(24,144,255,0.3)',
+                    border: 'none', color: '#fff',
+                    boxShadow: '0 8px 24px rgba(24,144,255,0.3)',
                   }}
                 >
                   {submitting ? (isCN ? '更新中...' : 'Updating...') : t.auth.updatePassword}

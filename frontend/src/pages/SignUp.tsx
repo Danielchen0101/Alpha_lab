@@ -37,8 +37,9 @@ const SignUp: React.FC = () => {
   useEffect(() => {
     const vals = form.getFieldsValue();
     const captchaOk = captchaConfigured ? !!captchaToken : isDev;
+    const passwordsMatch = vals.password === vals.confirmPassword;
     setFormValid(
-      !!vals.fullName && !!vals.email && !!vals.password && !!vals.confirmPassword && !!vals.terms && captchaOk
+      !!vals.fullName && !!vals.email && !!vals.password && !!vals.confirmPassword && passwordsMatch && !!vals.terms && captchaOk
     );
   }, [captchaToken, form, captchaConfigured, isDev]);
 
@@ -141,6 +142,17 @@ const SignUp: React.FC = () => {
         .signup-card .ant-input-affix-wrapper:hover {
           border-color: rgba(255,255,255,0.22) !important;
         }
+        /* --- Primary button always white --- */
+        .signup-card .ant-btn-primary {
+          color: #fff !important;
+        }
+        .signup-card .ant-btn-primary[disabled],
+        .signup-card .ant-btn-primary[disabled]:hover {
+          color: rgba(255,255,255,0.5) !important;
+          background: linear-gradient(135deg, #1890ff 0%, #2f54eb 100%) !important;
+          opacity: 0.5 !important;
+          border: none !important;
+        }
       `;
       document.head.appendChild(style);
     }
@@ -165,10 +177,14 @@ const SignUp: React.FC = () => {
     if (result.success) {
       setCaptchaToken('');
       turnstileRef.current?.reset();
-      setConfirmMessage(result.message || '');
       setSubmitted(true);
     } else {
-      setError(result.message || t.auth.registrationFailed);
+      const errMsg = (result.message || '').toLowerCase();
+      if (errMsg.includes('invalid login credentials') || errMsg.includes('invalid email')) {
+        setError(t.auth.invalidCredentials);
+      } else {
+        setError(result.message || t.auth.registrationFailed);
+      }
     }
   };
 
@@ -509,6 +525,7 @@ const SignUp: React.FC = () => {
                   borderRadius: 10,
                   fontSize: '1rem',
                   fontWeight: 600,
+                  color: '#fff',
                   background:
                     'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
                   border: 'none',
@@ -678,7 +695,7 @@ const SignUp: React.FC = () => {
                 </Form.Item>
 
                 {/* CAPTCHA / Human verification — always renders */}
-                <div style={{ marginBottom: 20, minHeight: 70 }}>
+                <div style={{ marginBottom: 20, minHeight: 70, maxWidth: '100%', overflow: 'hidden' }}>
                   {captchaConfigured ? (
                     turnstileError ? (
                       <div style={{

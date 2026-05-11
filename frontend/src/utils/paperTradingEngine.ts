@@ -134,7 +134,9 @@ export const executePaperTrade = (
   // 风控检查
   const riskCheck = checkRiskControls(portfolio, order, source, sessionStartEquity, sessionRealizedPnL);
   if (!riskCheck.passed) {
-    console.log(`[Risk Control] Skipped ${action} ${shares} ${symbol}: ${riskCheck.reason}`);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`[Risk Control] Skipped ${action} ${shares} ${symbol}: ${riskCheck.reason}`);
+    }
     return {
       success: false,
       portfolio,
@@ -401,9 +403,11 @@ export const generateMACrossoverSignal = (
   // 检查金叉（买入信号）
   if (previousShortMA <= previousLongMA * (1 + threshold) && 
       currentShortMA > currentLongMA * (1 + threshold)) {
-    console.log(`[MA Crossover] Golden Cross detected for ${symbol}: ` +
-                `prev(${previousShortMA.toFixed(2)} <= ${previousLongMA.toFixed(2)}), ` +
-                `curr(${currentShortMA.toFixed(2)} > ${currentLongMA.toFixed(2)})`);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`[MA Crossover] Golden Cross detected for ${symbol}: ` +
+                  `prev(${previousShortMA.toFixed(2)} <= ${previousLongMA.toFixed(2)}), ` +
+                  `curr(${currentShortMA.toFixed(2)} > ${currentLongMA.toFixed(2)})`);
+    }
     return {
       symbol,
       action: 'BUY',
@@ -412,11 +416,13 @@ export const generateMACrossoverSignal = (
   }
   
   // 检查死叉（卖出信号）
-  if (previousShortMA >= previousLongMA * (1 - threshold) && 
+  if (previousShortMA >= previousLongMA * (1 - threshold) &&
       currentShortMA < currentLongMA * (1 - threshold)) {
-    console.log(`[MA Crossover] Death Cross detected for ${symbol}: ` +
-                `prev(${previousShortMA.toFixed(2)} >= ${previousLongMA.toFixed(2)}), ` +
-                `curr(${currentShortMA.toFixed(2)} < ${currentLongMA.toFixed(2)})`);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`[MA Crossover] Death Cross detected for ${symbol}: ` +
+                  `prev(${previousShortMA.toFixed(2)} >= ${previousLongMA.toFixed(2)}), ` +
+                  `curr(${currentShortMA.toFixed(2)} < ${currentLongMA.toFixed(2)})`);
+    }
     return {
       symbol,
       action: 'SELL',

@@ -58,8 +58,10 @@ export async function processInBatchesWithConcurrency<T, R>(
   
   for (let i = 0; i < items.length; i += batchSize) {
     const batch = items.slice(i, i + batchSize);
-    console.log(`处理批次 ${Math.floor(i / batchSize) + 1}/${Math.ceil(items.length / batchSize)}: ${batch.length} 个项目`);
-    
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`处理批次 ${Math.floor(i / batchSize) + 1}/${Math.ceil(items.length / batchSize)}: ${batch.length} 个项目`);
+    }
+
     // 为批次创建任务
     const tasks = batch.map(item => () => processFn(item));
     
