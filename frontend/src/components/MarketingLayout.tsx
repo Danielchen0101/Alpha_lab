@@ -299,8 +299,8 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
         </div>
         <div className="nav-actions">
           <Button type="text" onClick={toggleLanguage} style={{ color: '#94a3b8', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 13 }}><GlobalOutlined style={{ fontSize: 14 }} /> {language === 'zh-CN' ? '中文' : 'EN'}</Button>
-          <Button type="text" style={{ color: '#fff', fontWeight: 600 }} onClick={() => navigate('/signin')}>{t.landing.signIn}</Button>
-          <Button type="primary" style={{ background: '#1890ff', borderColor: '#1890ff', fontWeight: 600, boxShadow: '0 4px 12px rgba(24,144,255,0.3)' }} onClick={() => navigate('/signup')}>{t.landing.getStarted}</Button>
+          <Button type="text" style={{ color: '#fff', fontWeight: 600 }} onClick={() => navigate('/signin')} aria-label="nav-sign-in">{t.landing.signIn}</Button>
+          <Button type="primary" style={{ background: '#1890ff', borderColor: '#1890ff', fontWeight: 600, boxShadow: '0 4px 12px rgba(24,144,255,0.3)' }} onClick={() => navigate('/signup')} aria-label="nav-get-started">{t.landing.getStarted}</Button>
         </div>
       </nav>
 

@@ -57,7 +57,7 @@ export function registerFineScanRun(promise: Promise<void>): string {
     startedAt: Date.now(),
   };
   activeRun = run;
-  console.log('[ScannerRunner] Registered Fine Scan run:', runId);
+  if (process.env.NODE_ENV !== 'production') console.log('[ScannerRunner] Registered Fine Scan run:', runId);
   return runId;
 }
 
@@ -66,7 +66,7 @@ export function registerFineScanRun(promise: Promise<void>): string {
  */
 export function unregisterFineScanRun(): void {
   if (activeRun && activeRun.type === 'fine-scan') {
-    console.log('[ScannerRunner] Unregistered Fine Scan run:', activeRun.id);
+    if (process.env.NODE_ENV !== 'production') console.log('[ScannerRunner] Unregistered Fine Scan run:', activeRun.id);
     activeRun = null;
   }
 }
@@ -95,7 +95,7 @@ export function registerDeeperValidationRun(promise: Promise<void>): string {
     startedAt: Date.now(),
   };
   activeRun = run;
-  console.log('[ScannerRunner] Registered Deeper Validation run:', runId);
+  if (process.env.NODE_ENV !== 'production') console.log('[ScannerRunner] Registered Deeper Validation run:', runId);
   return runId;
 }
 
@@ -104,7 +104,7 @@ export function registerDeeperValidationRun(promise: Promise<void>): string {
  */
 export function unregisterDeeperValidationRun(): void {
   if (activeRun && activeRun.type === 'deeper-validation') {
-    console.log('[ScannerRunner] Unregistered Deeper Validation run:', activeRun.id);
+    if (process.env.NODE_ENV !== 'production') console.log('[ScannerRunner] Unregistered Deeper Validation run:', activeRun.id);
     activeRun = null;
   }
 }
@@ -133,7 +133,7 @@ export function registerEntryPlanRun(promise: Promise<void>): string {
     startedAt: Date.now(),
   };
   activeRun = run;
-  console.log('[ScannerRunner] Registered Entry Plan run:', runId);
+  if (process.env.NODE_ENV !== 'production') console.log('[ScannerRunner] Registered Entry Plan run:', runId);
   return runId;
 }
 
@@ -142,7 +142,7 @@ export function registerEntryPlanRun(promise: Promise<void>): string {
  */
 export function unregisterEntryPlanRun(): void {
   if (activeRun && activeRun.type === 'entry-plan') {
-    console.log('[ScannerRunner] Unregistered Entry Plan run:', activeRun.id);
+    if (process.env.NODE_ENV !== 'production') console.log('[ScannerRunner] Unregistered Entry Plan run:', activeRun.id);
     activeRun = null;
   }
 }
@@ -159,10 +159,10 @@ export function isEntryPlanRunning(): boolean {
  */
 export function stopMarketScannerByUser(): void {
   if (!activeRun) {
-    console.log('[ScannerRunner] No active run to stop');
+    if (process.env.NODE_ENV !== 'production') console.log('[ScannerRunner] No active run to stop');
     return;
   }
-  console.log('[ScannerRunner] User requested stop for run:', activeRun.id);
+  if (process.env.NODE_ENV !== 'production') console.log('[ScannerRunner] User requested stop for run:', activeRun.id);
   activeRun.stopRequested = true;
   activeRun.abortController.abort();
 
@@ -185,7 +185,7 @@ export function stopMarketScannerByUser(): void {
 export async function startMarketScanner(): Promise<void> {
   // If already running, don't start another
   if (activeRun && !activeRun.stopRequested) {
-    console.log('[ScannerRunner] Scan already running, skipping');
+    if (process.env.NODE_ENV !== 'production') console.log('[ScannerRunner] Scan already running, skipping');
     return;
   }
 
@@ -234,7 +234,7 @@ export async function startMarketScanner(): Promise<void> {
   run.promise = runMarketScannerLoop(run);
 
   activeRun = run;
-  console.log('[ScannerRunner] Started run:', runId);
+  if (process.env.NODE_ENV !== 'production') console.log('[ScannerRunner] Started run:', runId);
 
   try {
     await run.promise;
@@ -243,7 +243,7 @@ export async function startMarketScanner(): Promise<void> {
     if (activeRun && activeRun.id === runId) {
       activeRun = null;
     }
-    console.log('[ScannerRunner] Run finished:', runId);
+    if (process.env.NODE_ENV !== 'production') console.log('[ScannerRunner] Run finished:', runId);
   }
 }
 
@@ -293,12 +293,12 @@ async function runMarketScannerLoop(run: ActiveRun): Promise<void> {
                          !aiCfg.configured ? 'AI Provider is not configured. Configure in Settings.' :
                          aiCfg.testStatus !== 'connected' ? `AI Provider not tested (status: ${aiCfg.testStatus}). Click Test AI Connection in Settings.` :
                          'AI Provider is unavailable.';
-          console.warn(`[ScannerRunner] AI pre-flight: ${reason}`);
+          if (process.env.NODE_ENV !== 'production') console.warn(`[ScannerRunner] AI pre-flight: ${reason}`);
           // Don't block scanner — market data still useful, AI analysis will use local rules
         }
       }
     } catch (e) {
-      console.warn('[ScannerRunner] Config pre-flight failed, continuing:', e);
+      if (process.env.NODE_ENV !== 'production') console.warn('[ScannerRunner] Config pre-flight failed, continuing:', e);
     }
 
     // Get trading universe
@@ -349,10 +349,10 @@ async function runMarketScannerLoop(run: ActiveRun): Promise<void> {
         statusMessage: summaryMsg,
       },
     });
-    console.log('[ScannerRunner] Market scan completed');
+    if (process.env.NODE_ENV !== 'production') console.log('[ScannerRunner] Market scan completed');
 
   } catch (error: any) {
-    console.error('[ScannerRunner] Market scan failed:', error);
+    if (process.env.NODE_ENV !== 'production') console.error('[ScannerRunner] Market scan failed:', error);
     const state = store.getState();
     store.updateMarketScanner({
       status: 'failed',
@@ -559,7 +559,7 @@ async function scanSymbolsLoop(run: ActiveRun, symbols: string[], aiAvailable: b
   flushDisplayBuffer();
 
   // Log scan summary
-  console.log('[ScannerRunner] Scan summary:', {
+  if (process.env.NODE_ENV !== 'production') console.log('[ScannerRunner] Scan summary:', {
     totalSymbols,
     attemptedSymbols: totalProcessed,
     successCount: totalValidated,
@@ -584,7 +584,7 @@ async function scanSymbolsLoop(run: ActiveRun, symbols: string[], aiAvailable: b
 async function processSingleSymbol(symbol: string, retryCount: number = 0): Promise<any> {
   const store = scannerStateStore;
   try {
-    console.log(`[ScannerRunner] [${symbol}] Processing (attempt ${retryCount + 1})`);
+    if (process.env.NODE_ENV !== 'production') console.log(`[ScannerRunner] [${symbol}] Processing (attempt ${retryCount + 1})`);
 
     // Stage 1: Market Data
     store.updateMarketScanner({
@@ -699,7 +699,7 @@ async function processSingleSymbol(symbol: string, retryCount: number = 0): Prom
     return result;
 
   } catch (error: any) {
-    console.error(`[ScannerRunner] [${symbol}] Processing failed:`, error.message);
+    if (process.env.NODE_ENV !== 'production') console.error(`[ScannerRunner] [${symbol}] Processing failed:`, error.message);
 
     return {
       symbol,
@@ -761,7 +761,7 @@ async function getStockNews(symbol: string): Promise<any> {
       newsCount: 0, hasNews: false
     };
   } catch (error: any) {
-    console.warn(`[ScannerRunner] [${symbol}] News fetch failed:`, error.message);
+    if (process.env.NODE_ENV !== 'production') console.warn(`[ScannerRunner] [${symbol}] News fetch failed:`, error.message);
     return {
       sentiment: null, eventRisk: null, topCatalyst: null,
       newsItems: [], source: null, topNews: null,
@@ -779,7 +779,7 @@ async function getCompanyName(symbol: string): Promise<string> {
     if (stockData?.name) return stockData.name;
     return symbol;
   } catch (error) {
-    console.warn(`[ScannerRunner] [${symbol}] Company name fetch failed:`, error);
+    if (process.env.NODE_ENV !== 'production') console.warn(`[ScannerRunner] [${symbol}] Company name fetch failed:`, error);
     return symbol;
   }
 }
@@ -853,7 +853,7 @@ async function analyzeTrend(symbol: string, stockData: any, newsData: any): Prom
       skipRetry: errorData.skipRetry || false,
     };
   } catch (error: any) {
-    console.error(`[ScannerRunner] [${symbol}] AI analysis exception:`, error.message);
+    if (process.env.NODE_ENV !== 'production') console.error(`[ScannerRunner] [${symbol}] AI analysis exception:`, error.message);
     const httpStatus = error.response?.status;
     // Non-retryable: config/auth errors (401, 403) or backend skipRetry flag
     const backendSkipRetry = error.response?.data?.skipRetry;
@@ -919,7 +919,7 @@ async function getTradingUniverse(): Promise<string[]> {
       return response.data.symbols;
     }
   } catch (e) {
-    console.warn('[ScannerRunner] Failed to fetch trading universe, using defaults:', e);
+    if (process.env.NODE_ENV !== 'production') console.warn('[ScannerRunner] Failed to fetch trading universe, using defaults:', e);
   }
 
   // Default universe

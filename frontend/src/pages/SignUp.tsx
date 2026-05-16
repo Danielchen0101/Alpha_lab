@@ -35,15 +35,6 @@ const SignUp: React.FC = () => {
     : null;
 
   useEffect(() => {
-    const vals = form.getFieldsValue();
-    const captchaOk = captchaConfigured ? !!captchaToken : isDev;
-    const passwordsMatch = vals.password === vals.confirmPassword;
-    setFormValid(
-      !!vals.fullName && !!vals.email && !!vals.password && !!vals.confirmPassword && passwordsMatch && !!vals.terms && captchaOk
-    );
-  }, [captchaToken, form, captchaConfigured, isDev]);
-
-  useEffect(() => {
     window.scrollTo(0, 0);
     if (!document.getElementById(SIGNUP_STYLE_ID)) {
       const style = document.createElement('style');
@@ -558,11 +549,13 @@ const SignUp: React.FC = () => {
                 onFinish={handleFinish}
                 onValuesChange={() => {
                   const vals = form.getFieldsValue();
+                  const passwordsMatch = vals.password === vals.confirmPassword;
                   setFormValid(
                     !!vals.fullName &&
                     !!vals.email &&
                     !!vals.password &&
                     !!vals.confirmPassword &&
+                    passwordsMatch &&
                     !!vals.terms &&
                     !!captchaToken
                   );

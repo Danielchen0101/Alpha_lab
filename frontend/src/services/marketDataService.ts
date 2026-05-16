@@ -12,11 +12,13 @@ import { supabase } from '../lib/supabaseClient';
 // 生产环境：通过环境变量REACT_APP_API_BASE_URL配置
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '/api';
 
-// 调试：输出环境变量
-console.log('[调试] API_BASE_URL:', API_BASE_URL);
-console.log('[调试] REACT_APP_API_BASE_URL:', process.env.REACT_APP_API_BASE_URL);
-console.log('[调试] REACT_APP_API_URL:', process.env.REACT_APP_API_URL);
-console.log('[调试] NODE_ENV:', process.env.NODE_ENV);
+// 调试：输出环境变量（仅开发环境）
+if (process.env.NODE_ENV !== 'production') {
+  console.log('[调试] API_BASE_URL:', API_BASE_URL);
+  console.log('[调试] REACT_APP_API_BASE_URL:', process.env.REACT_APP_API_BASE_URL);
+  console.log('[调试] REACT_APP_API_URL:', process.env.REACT_APP_API_URL);
+  console.log('[调试] NODE_ENV:', process.env.NODE_ENV);
+}
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -44,7 +46,7 @@ const attachSupabaseToken = async (config: any) => {
       const { data: refreshed } = await supabase.auth.refreshSession();
       if (refreshed.session) session = refreshed.session;
     } catch (e) {
-      console.warn('[Auth] Session refresh failed:', e);
+      if (process.env.NODE_ENV !== 'production') console.warn('[Auth] Session refresh failed:', e);
     }
   }
   if (session?.access_token) {
@@ -55,38 +57,42 @@ const attachSupabaseToken = async (config: any) => {
 
 api.interceptors.request.use(attachSupabaseToken);
 
-// 添加请求拦截器用于调试
+// 添加请求拦截器用于调试（仅开发环境）
 api.interceptors.request.use(
   (config) => {
-    console.log('[axios请求拦截器] 请求配置:', {
-      url: config.url,
-      baseURL: config.baseURL,
-      method: config.method,
-      params: config.params,
-      headers: config.headers,
-      完整URL: (config.baseURL || '') + (config.url || '')
-    });
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[axios请求拦截器] 请求配置:', {
+        url: config.url,
+        baseURL: config.baseURL,
+        method: config.method,
+        params: config.params,
+        headers: config.headers,
+        完整URL: (config.baseURL || '') + (config.url || '')
+      });
+    }
     return config;
   },
   (error) => {
-    console.error('[axios请求拦截器] 请求错误:', error);
+    if (process.env.NODE_ENV !== 'production') console.error('[axios请求拦截器] 请求错误:', error);
     return Promise.reject(error);
   }
 );
 
-// 添加响应拦截器用于调试
+// 添加响应拦截器用于调试（仅开发环境）
 api.interceptors.response.use(
   (response) => {
-    console.log('[axios响应拦截器] 响应成功:', {
-      status: response.status,
-      statusText: response.statusText,
-      url: response.config.url,
-      dataKeys: Object.keys(response.data)
-    });
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[axios响应拦截器] 响应成功:', {
+        status: response.status,
+        statusText: response.statusText,
+        url: response.config.url,
+        dataKeys: Object.keys(response.data)
+      });
+    }
     return response;
   },
   (error) => {
-    console.error('[axios响应拦截器] 响应错误:', {
+    if (process.env.NODE_ENV !== 'production') console.error('[axios响应拦截器] 响应错误:', {
       message: error.message,
       code: error.code,
       response: error.response?.data,
@@ -388,25 +394,29 @@ export const getStocks = async (symbols?: string[], dashboard?: boolean): Promis
       params.dashboard = 'true';
     }
     
-    console.log(`[marketDataService调试] 开始请求股票数据`);
-    console.log(`[marketDataService调试] 参数: symbols=${symbols?.join(',') || '无'}, dashboard=${dashboard}`);
-    console.log(`[marketDataService调试] api实例配置:`, {
-      baseURL: api.defaults.baseURL,
-      timeout: api.defaults.timeout,
-      headers: api.defaults.headers
-    });
-    console.log(`[marketDataService调试] 完整请求URL: ${api.defaults.baseURL}/market/stocks`);
-    console.log(`[marketDataService调试] 请求参数:`, params);
-    
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`[marketDataService调试] 开始请求股票数据`);
+      console.log(`[marketDataService调试] 参数: symbols=${symbols?.join(',') || '无'}, dashboard=${dashboard}`);
+      console.log(`[marketDataService调试] api实例配置:`, {
+        baseURL: api.defaults.baseURL,
+        timeout: api.defaults.timeout,
+        headers: api.defaults.headers
+      });
+      console.log(`[marketDataService调试] 完整请求URL: ${api.defaults.baseURL}/market/stocks`);
+      console.log(`[marketDataService调试] 请求参数:`, params);
+    }
+
     const response = await api.get('/market/stocks', { params });
 
-    console.log(`[前端调试] 收到响应:`, {
-      status: response.status,
-      dataKeys: Object.keys(response.data),
-      hasStocks: !!response.data.stocks,
-      stocksCount: response.data.stocks?.length || 0,
-      responseStructure: response.data
-    });
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`[前端调试] 收到响应:`, {
+        status: response.status,
+        dataKeys: Object.keys(response.data),
+        hasStocks: !!response.data.stocks,
+        stocksCount: response.data.stocks?.length || 0,
+        responseStructure: response.data
+      });
+    }
 
     // Check if backend reports auth or config issues
     if (response.data?.configStatus === 'auth_required') {
@@ -432,15 +442,15 @@ export const getStocks = async (symbols?: string[], dashboard?: boolean): Promis
         timestamp: new Date().toISOString(),
       }));
 
-      console.log(`[前端调试] 成功处理 ${stocks.length} 支股票`);
+      if (process.env.NODE_ENV !== 'production') console.log(`[前端调试] 成功处理 ${stocks.length} 支股票`);
       return stocks;
     }
 
-    console.warn(`[前端调试] 响应中没有 stocks 字段，返回空数组`);
+    if (process.env.NODE_ENV !== 'production') console.warn(`[前端调试] 响应中没有 stocks 字段，返回空数组`);
     return [];
   } catch (error: any) {
-    console.error('[前端调试] Failed to fetch stocks:', error);
-    console.error('[前端调试] 错误详情:', {
+    if (process.env.NODE_ENV !== 'production') console.error('[前端调试] Failed to fetch stocks:', error);
+    if (process.env.NODE_ENV !== 'production') console.error('[前端调试] 错误详情:', {
       message: error.message,
       code: error.code,
       response: error.response?.data,
@@ -482,7 +492,7 @@ export const getStockData = async (symbol: string): Promise<StockData> => {
     
     throw new Error(response.data?.error || `Stock ${symbol} not found`);
   } catch (error: any) {
-    console.error(`Failed to fetch stock ${symbol} data:`, error);
+    if (process.env.NODE_ENV !== 'production') console.error(`Failed to fetch stock ${symbol} data:`, error);
     throw new Error(error.response?.data?.error || error.message || `Failed to fetch stock ${symbol} data`);
   }
 };
@@ -554,7 +564,7 @@ export const getStockHistory = async (
     if (error.response?.status === 429 || msg.includes('429') || msg.includes('rate')) {
       throw new Error('rate_limited: ' + msg);
     }
-    console.error(`Failed to fetch ${symbol} historical data:`, error);
+    if (process.env.NODE_ENV !== 'production') console.error(`Failed to fetch ${symbol} historical data:`, error);
     throw error;
   }
 };
@@ -583,7 +593,7 @@ export const searchStocks = async (query: string, limit?: number): Promise<Searc
 
     return [];
   } catch (error: any) {
-    console.error('Failed to search stocks:', error);
+    if (process.env.NODE_ENV !== 'production') console.error('Failed to search stocks:', error);
     throw new Error(error.response?.data?.error || error.message || 'Failed to search stocks');
   }
 };
@@ -645,7 +655,7 @@ export const searchStockData = async (query: string): Promise<{ stocks: StockDat
     if (error.code === 'CONFIG_REQUIRED' || error.code === 'AUTH_REQUIRED') {
       throw error;
     }
-    console.error('Search failed:', error);
+    if (process.env.NODE_ENV !== 'production') console.error('Search failed:', error);
     throw new Error(error.response?.data?.error || error.message || 'Search failed. Please check API configuration or try again.');
   }
 };
@@ -660,7 +670,7 @@ export const getBatchStockData = async (symbols: string[]): Promise<StockData[]>
     
     return results.filter((result): result is StockData => result !== null);
   } catch (error: any) {
-    console.error('Failed to fetch batch stock data:', error);
+    if (process.env.NODE_ENV !== 'production') console.error('Failed to fetch batch stock data:', error);
     throw new Error(error.response?.data?.error || error.message || 'Failed to fetch batch stock data');
   }
 };
@@ -675,7 +685,7 @@ export const getUserMarketSymbols = async (): Promise<{ symbols: string[]; statu
       status: response.data?.status || 'unknown',
     };
   } catch (error: any) {
-    console.error('Failed to get user market symbols:', error);
+    if (process.env.NODE_ENV !== 'production') console.error('Failed to get user market symbols:', error);
     return { symbols: [], status: 'error' };
   }
 };
@@ -690,7 +700,7 @@ export const addUserMarketSymbols = async (symbols: string[]): Promise<{ symbols
       error: response.data?.error,
     };
   } catch (error: any) {
-    console.error('Failed to add user market symbols:', error);
+    if (process.env.NODE_ENV !== 'production') console.error('Failed to add user market symbols:', error);
     return { symbols: [], added: [], status: 'error', error: error.message };
   }
 };
@@ -704,7 +714,7 @@ export const deleteUserMarketSymbol = async (symbol: string): Promise<{ symbols:
       status: response.data?.status || 'unknown',
     };
   } catch (error: any) {
-    console.error('Failed to delete user market symbol:', error);
+    if (process.env.NODE_ENV !== 'production') console.error('Failed to delete user market symbol:', error);
     return { symbols: [], removed: symbol, status: 'error' };
   }
 };

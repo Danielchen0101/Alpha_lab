@@ -42,7 +42,7 @@ request.interceptors.request.use(
     return config;
   },
   (error: any) => {
-    console.error('[Request Interceptor Error]', error);
+    if (process.env.NODE_ENV !== 'production') console.error('[Request Interceptor Error]', error);
     return Promise.reject(error);
   }
 );
@@ -54,7 +54,7 @@ request.interceptors.response.use(
     const requestTimestamp = (response.config as any).requestTimestamp;
     if (requestTimestamp) {
       const duration = Date.now() - requestTimestamp;
-      console.log(`[Request ${(response.config as any).requestId}] ${response.config.method?.toUpperCase()} ${response.config.url} - ${duration}ms`);
+      if (process.env.NODE_ENV !== 'production') console.log(`[Request ${(response.config as any).requestId}] ${response.config.method?.toUpperCase()} ${response.config.url} - ${duration}ms`);
     }
     
     return response;
@@ -65,7 +65,7 @@ request.interceptors.response.use(
     const url = config?.url || 'unknown';
     const method = config?.method?.toUpperCase() || 'unknown';
     
-    console.error(`[Request ${requestId} Failed] ${method} ${url}`, error);
+    if (process.env.NODE_ENV !== 'production') console.error(`[Request ${requestId} Failed] ${method} ${url}`, error);
     
     // Check if this is a retry attempt
     const retryCount = (config as any).retryCount || 0;
@@ -81,7 +81,7 @@ request.interceptors.response.use(
       (config as any).retryCount = retryCount + 1;
       const delay = Math.min(1000 * Math.pow(2, retryCount), 5000);
       
-      console.log(`[Request ${requestId}] Retrying (${retryCount + 1}/${maxRetries}) in ${delay}ms`);
+      if (process.env.NODE_ENV !== 'production') console.log(`[Request ${requestId}] Retrying (${retryCount + 1}/${maxRetries}) in ${delay}ms`);
       
       return new Promise(resolve => {
         setTimeout(() => resolve(request(config)), delay);
@@ -120,7 +120,7 @@ export class ErrorHandler {
     
     // Skip if already handling this error
     if (this.activeErrors.has(errorId)) {
-      console.log(`[ErrorHandler] Skipping duplicate error in context: ${context}`);
+      if (process.env.NODE_ENV !== 'production') console.log(`[ErrorHandler] Skipping duplicate error in context: ${context}`);
       return;
     }
     

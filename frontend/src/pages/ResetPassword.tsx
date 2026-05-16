@@ -119,9 +119,23 @@ const ResetPassword: React.FC = () => {
         >
           <img src="/brand/alphalab-logo.png" alt="AlphaLab" style={{ height: 40, marginBottom: 32, cursor: 'pointer' }} onClick={() => navigate('/')} />
           <Alert message={error} type="error" showIcon style={{ marginBottom: 24, borderRadius: 8, color: '#fca5a5', background: 'rgba(255,77,79,0.08)', border: '1px solid rgba(255,77,79,0.25)' }} />
-          <Link to="/forgot-password" style={{ color: '#60a5fa', fontWeight: 600, fontSize: '0.95rem' }}>
-            {t.auth.requestNewResetLink}
-          </Link>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <Link to="/signin" style={{
+              display: 'block',
+              padding: '10px 0',
+              background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
+              borderRadius: 10,
+              color: '#fff',
+              fontWeight: 600,
+              fontSize: '0.95rem',
+              textDecoration: 'none',
+            }}>
+              {t.auth.backToSignIn}
+            </Link>
+            <Link to="/forgot-password" style={{ color: '#60a5fa', fontWeight: 600, fontSize: '0.95rem' }}>
+              {t.auth.requestNewResetLink}
+            </Link>
+          </div>
         </div>
       </div>
     );

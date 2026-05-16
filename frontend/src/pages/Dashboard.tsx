@@ -108,15 +108,16 @@ const Dashboard: React.FC = () => {
     }
 
     // 调试：输出market cap计算详情
-    console.log('[Dashboard调试] Market Cap计算详情:');
-    console.log('[Dashboard调试] 有效股票数量:', validMarketCapStocks.length);
-    console.log('[Dashboard调试] 每个股票的market cap:');
-    validMarketCapStocks.forEach((s, i) => {
-      const cap = safeNumber(s.marketCap || 0);
-      console.log(`[Dashboard调试] ${i+1}. ${s.symbol}: ${cap} (${cap/1e12}T)`);
-    });
-    console.log('[Dashboard调试] 计算的总市值:', totalMarketCap);
-    console.log('[Dashboard调试] 格式化显示:', `$${totalMarketCap/1e12}T`);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[Dashboard调试] Market Cap计算详情:');
+      console.log('[Dashboard调试] 有效股票数量:', validMarketCapStocks.length);
+      validMarketCapStocks.forEach((s, i) => {
+        const cap = safeNumber(s.marketCap || 0);
+        console.log(`[Dashboard调试] ${i+1}. ${s.symbol}: ${cap} (${cap/1e12}T)`);
+      });
+      console.log('[Dashboard调试] 计算的总市值:', totalMarketCap);
+      console.log('[Dashboard调试] 格式化显示:', `$${totalMarketCap/1e12}T`);
+    }
 
     // 找到最大市值的股票
     const largestCapStock = validMarketCapStocks.length > 0
@@ -199,7 +200,7 @@ const Dashboard: React.FC = () => {
   const fetchMarketData = async (forceRefresh = false) => {
     // 如果已经在请求中，直接返回
     if (isFetching && !forceRefresh) {
-      console.log('[Dashboard优化] 请求已在进行中，跳过重复请求');
+      if (process.env.NODE_ENV !== 'production') console.log('[Dashboard优化] 请求已在进行中，跳过重复请求');
       return;
     }
 
@@ -210,7 +211,7 @@ const Dashboard: React.FC = () => {
       setNeedsConfig(false);
       setNeedsAuth(false);
 
-      console.log('[Dashboard优化] 开始获取市场数据...');
+      if (process.env.NODE_ENV !== 'production') console.log('[Dashboard优化] 开始获取市场数据...');
 
       // 使用共享数据服务，避免重复请求
       const stocks = forceRefresh
@@ -224,7 +225,7 @@ const Dashboard: React.FC = () => {
         setSectorData([]);
       } else {
         // 成功获取数据
-        console.log('[Dashboard优化] 成功获取数据:', {
+        if (process.env.NODE_ENV !== 'production') console.log('[Dashboard优化] 成功获取数据:', {
           股票数量: stocks.length,
           数据源: stocks[0]?.dataSource || 'Alpaca',
           缓存有效: sharedDataService.isCacheValid()
@@ -233,7 +234,7 @@ const Dashboard: React.FC = () => {
         setLastFetched(Date.now());
       }
     } catch (err: any) {
-      console.error('[Dashboard优化] 获取市场数据失败:', err);
+      if (process.env.NODE_ENV !== 'production') console.error('[Dashboard优化] 获取市场数据失败:', err);
       const errorMessage = err.message || t.dashboard.errorLoading;
       const errorCode = err.code || '';
       setError(errorMessage);
@@ -260,34 +261,34 @@ const Dashboard: React.FC = () => {
   // calculateMarketStats函数已由useMemo替代，见上方marketStats计算
 
   const getTopGainers = () => {
-    console.log(`[调试] getTopGainers: marketData长度=${marketData.length}`);
+    if (process.env.NODE_ENV !== 'production') console.log(`[调试] getTopGainers: marketData长度=${marketData.length}`);
     const gainers = [...marketData].filter(s => {
       const change = getChangePercent(s);
       const isGainer = change !== null && change > 0;
-      console.log(`[调试] ${s.symbol}: change=${change}, isGainer=${isGainer}`);
+      if (process.env.NODE_ENV !== 'production') console.log(`[调试] ${s.symbol}: change=${change}, isGainer=${isGainer}`);
       return isGainer;
     }).sort((a, b) => {
       const changeA = getChangePercent(a) || 0;
       const changeB = getChangePercent(b) || 0;
       return changeB - changeA;
     });
-    console.log(`[调试] getTopGainers结果:`, gainers.map(g => ({symbol: g.symbol, changePercent: g.changePercent})));
+    if (process.env.NODE_ENV !== 'production') console.log(`[调试] getTopGainers结果:`, gainers.map(g => ({symbol: g.symbol, changePercent: g.changePercent})));
     return gainers;
   };
 
   const getTopLosers = () => {
-    console.log(`[调试] getTopLosers: marketData长度=${marketData.length}`);
+    if (process.env.NODE_ENV !== 'production') console.log(`[调试] getTopLosers: marketData长度=${marketData.length}`);
     const losers = [...marketData].filter(s => {
       const change = getChangePercent(s);
       const isLoser = change !== null && change < 0;
-      console.log(`[调试] ${s.symbol}: change=${change}, isLoser=${isLoser}`);
+      if (process.env.NODE_ENV !== 'production') console.log(`[调试] ${s.symbol}: change=${change}, isLoser=${isLoser}`);
       return isLoser;
     }).sort((a, b) => {
       const changeA = getChangePercent(a) || 0;
       const changeB = getChangePercent(b) || 0;
       return changeA - changeB;
     });
-    console.log(`[调试] getTopLosers结果:`, losers.map(l => ({symbol: l.symbol, changePercent: l.changePercent})));
+    if (process.env.NODE_ENV !== 'production') console.log(`[调试] getTopLosers结果:`, losers.map(l => ({symbol: l.symbol, changePercent: l.changePercent})));
     return losers;
   };
   const getWatchlistSymbols = () => {
@@ -302,7 +303,7 @@ const Dashboard: React.FC = () => {
       // 标准化symbols（大写、去空格）
       return watchlistSymbols.map(s => String(s).toUpperCase().trim());
     } catch (err) {
-      console.error('Failed to parse watchlist symbols:', err);
+      if (process.env.NODE_ENV !== 'production') console.error('Failed to parse watchlist symbols:', err);
       return [];
     }
   };
@@ -352,7 +353,7 @@ const Dashboard: React.FC = () => {
           setWatchlist(parsed.map(s => ({ symbol: String(s).toUpperCase().trim() })));
         }
       } catch (err) {
-        console.error('Failed to parse watchlist from localStorage:', err);
+        if (process.env.NODE_ENV !== 'production') console.error('Failed to parse watchlist from localStorage:', err);
         // watchlist解析失败不是关键错误，不设置全局error
       }
     }
@@ -374,7 +375,7 @@ const Dashboard: React.FC = () => {
               setWatchlist(parsed);
             }
           } catch (err) {
-            console.error('Failed to parse watchlist from storage event:', err);
+            if (process.env.NODE_ENV !== 'production') console.error('Failed to parse watchlist from storage event:', err);
           }
         } else {
           setWatchlist([]);

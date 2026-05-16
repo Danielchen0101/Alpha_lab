@@ -618,10 +618,10 @@ const Landing: React.FC = () => {
               <span className="feature-chip"><ExperimentOutlined style={{ color: '#60a5fa' }} /> Backtest ready</span>
             </div>
             <Space size="large" className="hero-actions">
-              <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')}>
+              <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} aria-label="hero-start-free-trial">
                 {t.landing.startBuilding || "Start Free Trial"} <ArrowRightOutlined />
               </Button>
-              <Button className="btn-secondary" onClick={() => navigate('/platform')}>
+              <Button className="btn-secondary" onClick={() => navigate('/platform')} aria-label="hero-explore-strategies">
                 {t.landing.explorePlatform || "Explore Strategies"}
               </Button>
             </Space>
@@ -706,8 +706,8 @@ const Landing: React.FC = () => {
             {t.landing.ctaDesc}
           </p>
           <Space size="large">
-            <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} style={{ height: 56, padding: '0 40px' }}>{t.landing.ctaGetStarted}</Button>
-            <Button className="btn-secondary" onClick={() => navigate('/signin')} style={{ height: 56, padding: '0 40px' }}>{t.landing.ctaSignIn}</Button>
+            <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} style={{ height: 56, padding: '0 40px' }} aria-label="cta-get-started">{t.landing.ctaGetStarted}</Button>
+            <Button className="btn-secondary" onClick={() => navigate('/signin')} style={{ height: 56, padding: '0 40px' }} aria-label="cta-sign-in">{t.landing.ctaSignIn}</Button>
           </Space>
         </div>
       </section>

@@ -290,7 +290,7 @@ class ScannerStateStore {
         }
       }
     } catch (e) {
-      console.warn('[ScannerStateStore] Failed to load from storage:', e);
+      if (process.env.NODE_ENV !== 'production') console.warn('[ScannerStateStore] Failed to load from storage:', e);
     }
     return { ...DEFAULT_STATE };
   }
@@ -300,7 +300,7 @@ class ScannerStateStore {
       this.state.lastUpdated = new Date().toISOString();
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
     } catch (e) {
-      console.warn('[ScannerStateStore] Failed to save to storage:', e);
+      if (process.env.NODE_ENV !== 'production') console.warn('[ScannerStateStore] Failed to save to storage:', e);
     }
   }
 
@@ -312,7 +312,7 @@ class ScannerStateStore {
   private notify(): void {
     const snapshot = this.getState();
     this.listeners.forEach(listener => {
-      try { listener(snapshot); } catch (e) { console.error('[ScannerStateStore] Listener error:', e); }
+      try { listener(snapshot); } catch (e) { if (process.env.NODE_ENV !== 'production') console.error('[ScannerStateStore] Listener error:', e); }
     });
   }
 

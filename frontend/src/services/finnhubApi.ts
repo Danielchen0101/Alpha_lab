@@ -34,15 +34,17 @@ api.interceptors.response.use(
   (response) => {
     // 记录数据源信息
     if (response.data?.dataSource) {
-      console.log(`市场数据来源: ${response.data.dataSource}`);
+      if (process.env.NODE_ENV !== 'production') console.log(`市场数据来源: ${response.data.dataSource}`);
     }
     return response;
   },
   (error) => {
-    console.error('Finnhub API 响应错误:', error.message);
-    if (error.response) {
-      console.error('状态码:', error.response.status);
-      console.error('错误数据:', error.response.data);
+    if (process.env.NODE_ENV !== 'production') {
+      console.error('Finnhub API 响应错误:', error.message);
+      if (error.response) {
+        console.error('状态码:', error.response.status);
+        console.error('错误数据:', error.response.data);
+      }
     }
     return Promise.reject(error);
   }

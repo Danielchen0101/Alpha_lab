@@ -30,13 +30,13 @@ class SharedDataService {
     // 检查缓存是否有效
     if (this.cache.stocks.length > 0 && 
         (now - this.cache.timestamp) < this.CACHE_DURATION) {
-      console.log('[SharedDataService] 使用缓存数据');
+      if (process.env.NODE_ENV !== 'production') console.log('[SharedDataService] 使用缓存数据');
       return this.cache.stocks;
     }
-    
+
     // 如果已经在获取中，等待
     if (this.cache.isFetching) {
-      console.log('[SharedDataService] 数据获取中，等待...');
+      if (process.env.NODE_ENV !== 'production') console.log('[SharedDataService] 数据获取中，等待...');
       return new Promise((resolve) => {
         const checkInterval = setInterval(() => {
           if (!this.cache.isFetching && this.cache.stocks.length > 0) {
@@ -51,8 +51,8 @@ class SharedDataService {
     this.cache.isFetching = true;
     
     try {
-      console.log('[SharedDataService] 从后端获取数据...');
-      
+      if (process.env.NODE_ENV !== 'production') console.log('[SharedDataService] 从后端获取数据...');
+
       // 动态导入marketDataService以避免循环依赖
       const { getStocks } = await import('./marketDataService');
       
@@ -68,7 +68,7 @@ class SharedDataService {
       
       return stocks;
     } catch (error) {
-      console.error('[SharedDataService] 获取数据失败:', error);
+      if (process.env.NODE_ENV !== 'production') console.error('[SharedDataService] 获取数据失败:', error);
       throw error;
     } finally {
       this.cache.isFetching = false;
@@ -79,7 +79,7 @@ class SharedDataService {
    * 强制刷新数据
    */
   async refreshStocks(): Promise<StockData[]> {
-    console.log('[SharedDataService] 强制刷新数据');
+    if (process.env.NODE_ENV !== 'production') console.log('[SharedDataService] 强制刷新数据');
     this.cache.timestamp = 0; // 使缓存失效
     return this.getStocks();
   }
@@ -125,11 +125,11 @@ class SharedDataService {
       try {
         listener(stocks);
       } catch (error) {
-        console.error('[SharedDataService] 监听器执行错误:', error);
+        if (process.env.NODE_ENV !== 'production') console.error('[SharedDataService] 监听器执行错误:', error);
       }
     });
   }
-  
+
   /**
    * 清空缓存
    */
@@ -139,7 +139,7 @@ class SharedDataService {
       timestamp: 0,
       isFetching: false
     };
-    console.log('[SharedDataService] 缓存已清空');
+    if (process.env.NODE_ENV !== 'production') console.log('[SharedDataService] 缓存已清空');
   }
 }
 

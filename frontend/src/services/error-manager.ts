@@ -43,13 +43,13 @@ class ErrorManager {
     
     // 检查重复
     if (this.isDuplicateError(errorKey)) {
-      console.log('[ErrorManager] 跳过重复错误:', errorKey);
+      if (process.env.NODE_ENV !== 'production') console.log('[ErrorManager] 跳过重复错误:', errorKey);
       return false;
     }
-    
+
     // 检查是否已有相同通知
     if (this.activeNotifications.has(errorKey)) {
-      console.log('[ErrorManager] 已有相同通知:', errorKey);
+      if (process.env.NODE_ENV !== 'production') console.log('[ErrorManager] 已有相同通知:', errorKey);
       return false;
     }
     

@@ -8,6 +8,8 @@ import { useLanguage } from '../contexts/LanguageContext';
 
 const { Title, Text } = Typography;
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 const ForgotPassword: React.FC = () => {
   const navigate = useNavigate();
   const { t, language } = useLanguage();
@@ -17,16 +19,21 @@ const ForgotPassword: React.FC = () => {
   const [sent, setSent] = useState(false);
   const [error, setError] = useState('');
   const [captchaToken, setCaptchaToken] = useState('');
+  const [emailValid, setEmailValid] = useState(false);
   const turnstileRef = React.useRef<BoundTurnstileObject | null>(null);
 
   const turnstileSiteKey = process.env.REACT_APP_TURNSTILE_SITE_KEY;
   const isDev = process.env.NODE_ENV === 'development';
   const captchaConfigured = !!turnstileSiteKey;
-  const canSubmit = captchaConfigured ? !!captchaToken : isDev;
+  const canSubmit = emailValid && (captchaConfigured ? !!captchaToken : isDev);
 
   const handleSend = async (values: { email: string }) => {
     setError('');
-    setSubmitting(true);
+    if (!EMAIL_RE.test(values.email)) {
+      setError(t.auth.enterValidEmail);
+      setSubmitting(false);
+      return;
+    }
     try {
       const { error: resetError } = await supabase.auth.resetPasswordForEmail(values.email, {
         redirectTo: `${window.location.origin}/reset-password`,
@@ -222,6 +229,10 @@ const ForgotPassword: React.FC = () => {
               form={form}
               layout="vertical"
               onFinish={handleSend}
+              onValuesChange={() => {
+                const email = form.getFieldValue('email');
+                setEmailValid(!!email && EMAIL_RE.test(email));
+              }}
               autoComplete="off"
             >
               {/* Email */}

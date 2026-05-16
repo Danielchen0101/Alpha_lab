@@ -7946,7 +7946,7 @@ def settings_ai_config():
         return jsonify({'success': False, 'error': 'Supabase not configured on server'}), 503
     auth_header = request.headers.get('Authorization', '')
     if not auth_header or not auth_header.startswith('Bearer '):
-        return jsonify({'success': False, 'error': 'Authentication required', 'details': 'Missing Supabase access token'}), 401
+        return jsonify({'success': False, 'error': 'Authentication required'}), 401
     user = get_supabase_user()
     if not user:
         return jsonify({'success': False, 'error': 'Authentication failed', 'details': 'Invalid or expired Supabase token'}), 401
@@ -8082,7 +8082,7 @@ def settings_broker_config():
         return jsonify({'success': False, 'error': 'Supabase not configured on server'}), 503
     auth_header = request.headers.get('Authorization', '')
     if not auth_header or not auth_header.startswith('Bearer '):
-        return jsonify({'success': False, 'error': 'Authentication required', 'details': 'Missing Supabase access token'}), 401
+        return jsonify({'success': False, 'error': 'Authentication required'}), 401
     user = get_supabase_user()
     if not user:
         return jsonify({'success': False, 'error': 'Authentication failed', 'details': 'Invalid or expired Supabase token'}), 401
@@ -8128,7 +8128,7 @@ def settings_finnhub_config():
         return jsonify({'success': False, 'error': 'Supabase not configured on server'}), 503
     auth_header = request.headers.get('Authorization', '')
     if not auth_header or not auth_header.startswith('Bearer '):
-        return jsonify({'success': False, 'error': 'Authentication required', 'details': 'Missing Supabase access token'}), 401
+        return jsonify({'success': False, 'error': 'Authentication required'}), 401
     user = get_supabase_user()
     if not user:
         return jsonify({'success': False, 'error': 'Authentication failed', 'details': 'Invalid or expired Supabase token'}), 401
