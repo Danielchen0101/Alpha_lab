@@ -18,6 +18,7 @@ const SignIn: React.FC = () => {
   const { login, isAuthenticated, loading } = useAuth();
   const { t, language, setLanguage } = useLanguage();
   const [submitting, setSubmitting] = useState(false);
+  const [oauthLoading, setOauthLoading] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [captchaToken, setCaptchaToken] = useState('');
   const turnstileRef = useRef<BoundTurnstileObject | null>(null);
@@ -137,6 +138,9 @@ const SignIn: React.FC = () => {
           opacity: 0.5 !important;
           border: none !important;
         }
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
       `;
       document.head.appendChild(style);
     }
@@ -174,8 +178,14 @@ const SignIn: React.FC = () => {
         setError(t.auth.captchaSignInError || t.auth.verifyHuman);
       } else if (errMsg.includes('invalid login credentials') || errMsg.includes('invalid email')) {
         setError(t.auth.invalidCredentials);
+      } else if (errMsg.includes('email not confirmed')) {
+        setError(t.auth.checkEmailConfirmation);
+      } else if (errMsg.includes('network') || errMsg.includes('fetch')) {
+        setError(t.auth.errorNetworkIssue);
+      } else if (errMsg.includes('session_expired') || errMsg.includes('session not found')) {
+        setError(t.auth.errorSessionExpired);
       } else {
-        setError(result.message || 'Login failed');
+        setError(result.message || t.auth.errorUnexpected);
       }
     }
   };
@@ -185,6 +195,9 @@ const SignIn: React.FC = () => {
   };
 
   const handleOAuthLogin = async (provider: Provider) => {
+    if (oauthLoading) return; // prevent double-click
+    setOauthLoading(provider);
+    setError('');
     try {
       const { error } = await supabase.auth.signInWithOAuth({
         provider,
@@ -192,10 +205,15 @@ const SignIn: React.FC = () => {
           redirectTo: `${window.location.origin}/dashboard`,
         },
       });
-      if (error) setError(error.message);
+      if (error) {
+        setError(error.message);
+        setOauthLoading(null);
+      }
+      // If no error, browser redirects — no need to reset oauthLoading
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'OAuth login failed';
       setError(msg);
+      setOauthLoading(null);
     }
   };
 
@@ -435,7 +453,7 @@ const SignIn: React.FC = () => {
             </div>
 
             {/* CAPTCHA — always shown */}
-              <div style={{ marginBottom: 16, minHeight: 65, maxWidth: '100%', overflow: 'hidden' }}>
+              <div style={{ marginBottom: 8, minHeight: 65, maxWidth: '100%', overflow: 'hidden' }}>
                 {captchaConfigured ? (
                   <Turnstile
                     sitekey={turnstileSiteKey || ''}
@@ -471,6 +489,14 @@ const SignIn: React.FC = () => {
                   </div>
                 )}
               </div>
+              {/* CAPTCHA footer — P1-4 */}
+              {captchaConfigured && (
+                <div style={{ textAlign: 'center', marginBottom: 16, marginTop: -4 }}>
+                  <span style={{ color: '#475569', fontSize: '0.65rem' }}>
+                    {t.auth.captchaFooter}
+                  </span>
+                </div>
+              )}
 
             {/* Submit button */}
             <Form.Item style={{ marginBottom: 16 }}>
@@ -535,42 +561,58 @@ const SignIn: React.FC = () => {
                   </svg>
                 ),
               },
-            ].map((btn) => (
-              <button
-                key={btn.provider}
-                type="button"
-                onClick={() => handleOAuthLogin(btn.provider)}
-                style={{
-                  width: '100%',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 10,
-                  padding: '10px 0',
-                  marginBottom: 8,
-                  background: 'rgba(255,255,255,0.04)',
-                  border: '1px solid rgba(255,255,255,0.12)',
-                  borderRadius: 10,
-                  color: '#e2e8f0',
-                  fontSize: '0.9rem',
-                  fontWeight: 500,
-                  cursor: 'pointer',
-                  transition: 'all 0.2s ease',
-                  fontFamily: 'inherit',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = 'rgba(255,255,255,0.08)';
-                  e.currentTarget.style.borderColor = 'rgba(255,255,255,0.24)';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = 'rgba(255,255,255,0.04)';
-                  e.currentTarget.style.borderColor = 'rgba(255,255,255,0.12)';
-                }}
-              >
-                {btn.icon}
-                {btn.label}
-              </button>
-            ))}
+            ].map((btn) => {
+              const isLoading = oauthLoading === btn.provider;
+              return (
+                <button
+                  key={btn.provider}
+                  type="button"
+                  onClick={() => handleOAuthLogin(btn.provider)}
+                  disabled={!!oauthLoading}
+                  style={{
+                    width: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 10,
+                    padding: '10px 0',
+                    marginBottom: 8,
+                    background: 'rgba(255,255,255,0.04)',
+                    border: '1px solid rgba(255,255,255,0.12)',
+                    borderRadius: 10,
+                    color: '#e2e8f0',
+                    fontSize: '0.9rem',
+                    fontWeight: 500,
+                    cursor: oauthLoading ? 'not-allowed' : 'pointer',
+                    opacity: oauthLoading ? 0.5 : 1,
+                    transition: 'all 0.2s ease',
+                    fontFamily: 'inherit',
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!oauthLoading) {
+                      e.currentTarget.style.background = 'rgba(255,255,255,0.08)';
+                      e.currentTarget.style.borderColor = 'rgba(255,255,255,0.24)';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = 'rgba(255,255,255,0.04)';
+                    e.currentTarget.style.borderColor = 'rgba(255,255,255,0.12)';
+                  }}
+                >
+                  {isLoading ? (
+                    <span style={{ display: 'inline-block', width: 18, height: 18, border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.6s linear infinite' }} />
+                  ) : btn.icon}
+                  {isLoading ? t.auth.signingIn : btn.label}
+                </button>
+              );
+            })}
+
+            {/* Supabase attribution — P1-3 */}
+            <div style={{ textAlign: 'center', marginTop: 10, marginBottom: 4 }}>
+              <span style={{ color: '#475569', fontSize: '0.7rem' }}>
+                {t.auth.oauthAttribution}
+              </span>
+            </div>
           </div>
 
           {/* Create account link */}

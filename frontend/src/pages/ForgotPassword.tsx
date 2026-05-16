@@ -45,8 +45,12 @@ const ForgotPassword: React.FC = () => {
           setError(t.auth.resetRateLimit);
         } else if (msg.includes('captcha') || msg.includes('captcha_token')) {
           setError(t.auth.captchaRequired);
+        } else if (msg.includes('email') && (msg.includes('not found') || msg.includes('invalid'))) {
+          setError(t.auth.enterValidEmail);
+        } else if (msg.includes('network') || msg.includes('fetch')) {
+          setError(t.auth.errorNetworkIssue);
         } else {
-          setError(resetError.message);
+          setError(resetError.message || t.auth.errorUnexpected);
         }
         setCaptchaToken('');
         turnstileRef.current?.reset();
@@ -259,7 +263,7 @@ const ForgotPassword: React.FC = () => {
               </Form.Item>
 
               {/* CAPTCHA */}
-              <div style={{ marginBottom: 24, minHeight: 65, maxWidth: '100%', overflow: 'hidden' }}>
+              <div style={{ marginBottom: 8, minHeight: 65, maxWidth: '100%', overflow: 'hidden' }}>
                 {captchaConfigured ? (
                   <Turnstile
                     sitekey={turnstileSiteKey || ''}
@@ -295,6 +299,14 @@ const ForgotPassword: React.FC = () => {
                   </div>
                 )}
               </div>
+              {/* CAPTCHA footer — P1-4 */}
+              {captchaConfigured && (
+                <div style={{ textAlign: 'center', marginBottom: 24, marginTop: -4 }}>
+                  <span style={{ color: '#475569', fontSize: '0.65rem' }}>
+                    {t.auth.captchaFooter}
+                  </span>
+                </div>
+              )}
 
               {/* Submit */}
               <Form.Item style={{ marginBottom: 16 }}>

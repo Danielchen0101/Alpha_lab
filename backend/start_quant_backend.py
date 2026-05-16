@@ -182,6 +182,94 @@ CORS(
     supports_credentials=True
 )
 
+# ==================== Security Headers ====================
+
+SENSITIVE_CACHE_PATHS = (
+    '/api/auth/', '/api/settings/', '/api/config/',
+    '/api/ai/alpaca/account', '/api/trading/', '/api/ai-agent/',
+    '/api/backtest/', '/api/ai/', '/api/entry-plan/',
+)
+
+@app.after_request
+def add_security_headers(response):
+    """Apply security headers to all responses."""
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['X-Frame-Options'] = 'DENY'
+
+    # Stricter cache control for sensitive endpoints
+    path = request.path
+    if any(path.startswith(p) for p in SENSITIVE_CACHE_PATHS):
+        response.headers['Cache-Control'] = 'no-store, max-age=0'
+
+    return response
+
+
+# ==================== Rate Limiter ====================
+
+import time as _time_mod
+
+_ratelimit_store = {}  # ip -> list of timestamps
+RATE_LIMIT_WINDOW = 60        # seconds
+RATE_LIMIT_MAX_REQUESTS = 60  # max requests per window per IP
+
+def _is_rate_limited(ip):
+    """Check if an IP has exceeded the rate limit. Returns True if limited."""
+    now = _time_mod.time()
+    window_start = now - RATE_LIMIT_WINDOW
+
+    # Get or create entry, prune old entries
+    timestamps = _ratelimit_store.get(ip, [])
+    timestamps = [t for t in timestamps if t > window_start]
+
+    if len(timestamps) >= RATE_LIMIT_MAX_REQUESTS:
+        _ratelimit_store[ip] = timestamps
+        return True
+
+    timestamps.append(now)
+    _ratelimit_store[ip] = timestamps
+    return False
+
+
+RATE_LIMITED_PATHS = (
+    '/api/ai/', '/api/config/', '/api/backtest/', '/api/trading/',
+    '/api/auth/login', '/api/auth/signup', '/api/auth/',
+)
+
+@app.before_request
+def rate_limit():
+    """Apply per-IP rate limiting to sensitive API paths."""
+    if app.config.get('TESTING'):
+        return None
+    path = request.path
+    if not any(path.startswith(p) for p in RATE_LIMITED_PATHS):
+        return None
+    ip = request.remote_addr or 'unknown'
+    if _is_rate_limited(ip):
+        _log_security_event('RATE_LIMIT', f'path={path}', ip=ip)
+        return jsonify({'error': 'Too many requests. Please try again later.'}), 429
+    return None
+
+
+# ==================== Security Event Logging ====================
+
+import datetime as _dt_mod
+
+AUDIT_LOG_PREFIX = '[AUDIT]'
+
+def _log_security_event(event_type, detail='', ip='', user_id=''):
+    """Log a security-relevant event. No sensitive data recorded."""
+    ts = _dt_mod.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    parts = [AUDIT_LOG_PREFIX, ts, event_type]
+    if ip:
+        parts.append(f'ip={ip}')
+    if user_id:
+        parts.append(f'uid={user_id}')
+    if detail:
+        parts.append(detail)
+    print(' '.join(parts))
+
+
 # ==================== Auth ====================
 
 APP_SECRET_KEY = os.getenv('APP_SECRET_KEY', 'dev-secret-change-me')
@@ -197,17 +285,21 @@ def auth_login():
     data = request.get_json() or {}
     email = data.get('email', '')
     password = data.get('password', '')
+    ip = request.remote_addr or 'unknown'
 
     # 1) Dev fallback admin (works regardless of env config)
     if email == DEV_ADMIN_EMAIL and password == DEV_ADMIN_PASSWORD:
+        _log_security_event('LOGIN_OK', 'dev_admin', ip=ip)
         token = pyjwt.encode({'email': email, 'role': 'admin', 'exp': datetime.utcnow() + timedelta(days=7)}, APP_SECRET_KEY, algorithm='HS256')
         return jsonify({'success': True, 'token': token, 'user': {'email': email, 'role': 'admin'}})
 
     # 2) Env-configured admin
     if ADMIN_PASSWORD and email == ADMIN_EMAIL and password == ADMIN_PASSWORD:
+        _log_security_event('LOGIN_OK', 'env_admin', ip=ip)
         token = pyjwt.encode({'email': email, 'exp': datetime.utcnow() + timedelta(days=7)}, APP_SECRET_KEY, algorithm='HS256')
         return jsonify({'success': True, 'token': token, 'user': {'email': email}})
 
+    _log_security_event('LOGIN_FAIL', email, ip=ip)
     return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
 
 @app.route('/api/auth/me', methods=['GET'])
@@ -301,6 +393,8 @@ def require_auth():
     """Verify Supabase JWT from Authorization header. Returns user dict or None."""
     user = get_supabase_user()
     if not user:
+        ip = request.remote_addr or 'unknown'
+        _log_security_event('AUTH_FAIL', request.path, ip=ip)
         return None
     return user
 

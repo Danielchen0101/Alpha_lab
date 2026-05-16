@@ -16,8 +16,10 @@ const SignUp: React.FC = () => {
   const navigate = useNavigate();
   const { signUp } = useAuth();
   const { t, language, setLanguage } = useLanguage();
+  const isCN = language === 'zh-CN';
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
+  const [oauthLoading, setOauthLoading] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const [confirmMessage, setConfirmMessage] = useState('');
@@ -144,6 +146,9 @@ const SignUp: React.FC = () => {
           opacity: 0.5 !important;
           border: none !important;
         }
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
       `;
       document.head.appendChild(style);
     }
@@ -173,8 +178,16 @@ const SignUp: React.FC = () => {
       const errMsg = (result.message || '').toLowerCase();
       if (errMsg.includes('invalid login credentials') || errMsg.includes('invalid email')) {
         setError(t.auth.invalidCredentials);
+      } else if (errMsg.includes('already') && errMsg.includes('registered')) {
+        setError(t.auth.errorEmailExists);
+      } else if (errMsg.includes('weak') || errMsg.includes('password')) {
+        setError(t.auth.errorWeakPassword);
+      } else if (errMsg.includes('captcha') || errMsg.includes('captcha_token')) {
+        setError(t.auth.captchaSignInError || t.auth.verifyHuman);
+      } else if (errMsg.includes('network') || errMsg.includes('fetch')) {
+        setError(t.auth.errorNetworkIssue);
       } else {
-        setError(result.message || t.auth.registrationFailed);
+        setError(result.message || t.auth.errorUnexpected);
       }
     }
   };
@@ -191,6 +204,9 @@ const SignUp: React.FC = () => {
   };
 
   const handleOAuthLogin = async (provider: Provider) => {
+    if (oauthLoading) return; // prevent double-click
+    setOauthLoading(provider);
+    setError('');
     try {
       const { error } = await supabase.auth.signInWithOAuth({
         provider,
@@ -198,10 +214,14 @@ const SignUp: React.FC = () => {
           redirectTo: `${window.location.origin}/dashboard`,
         },
       });
-      if (error) setError(error.message);
+      if (error) {
+        setError(error.message);
+        setOauthLoading(null);
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'OAuth login failed';
       setError(msg);
+      setOauthLoading(null);
     }
   };
 
@@ -688,7 +708,7 @@ const SignUp: React.FC = () => {
                 </Form.Item>
 
                 {/* CAPTCHA / Human verification — always renders */}
-                <div style={{ marginBottom: 20, minHeight: 70, maxWidth: '100%', overflow: 'hidden' }}>
+                <div style={{ marginBottom: 8, minHeight: 70, maxWidth: '100%', overflow: 'hidden' }}>
                   {captchaConfigured ? (
                     turnstileError ? (
                       <div style={{
@@ -751,6 +771,14 @@ const SignUp: React.FC = () => {
                     </div>
                   )}
                 </div>
+                {/* CAPTCHA footer — P1-4 */}
+                {captchaConfigured && (
+                  <div style={{ textAlign: 'center', marginBottom: 20, marginTop: -8 }}>
+                    <span style={{ color: '#475569', fontSize: '0.65rem' }}>
+                      {t.auth.captchaFooter}
+                    </span>
+                  </div>
+                )}
 
                 {/* Submit button */}
                 <Form.Item style={{ marginBottom: 16 }}>
@@ -816,42 +844,58 @@ const SignUp: React.FC = () => {
                       </svg>
                     ),
                   },
-                ].map((btn) => (
-                  <button
-                    key={btn.provider}
-                    type="button"
-                    onClick={() => handleOAuthLogin(btn.provider)}
-                    style={{
-                      width: '100%',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: 10,
-                      padding: '10px 0',
-                      marginBottom: 8,
-                      background: 'rgba(255,255,255,0.04)',
-                      border: '1px solid rgba(255,255,255,0.12)',
-                      borderRadius: 10,
-                      color: '#e2e8f0',
-                      fontSize: '0.9rem',
-                      fontWeight: 500,
-                      cursor: 'pointer',
-                      transition: 'all 0.2s ease',
-                      fontFamily: 'inherit',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = 'rgba(255,255,255,0.08)';
-                      e.currentTarget.style.borderColor = 'rgba(255,255,255,0.24)';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'rgba(255,255,255,0.04)';
-                      e.currentTarget.style.borderColor = 'rgba(255,255,255,0.12)';
-                    }}
-                  >
-                    {btn.icon}
-                    {btn.label}
-                  </button>
-                ))}
+                ].map((btn) => {
+                  const isLoading = oauthLoading === btn.provider;
+                  return (
+                    <button
+                      key={btn.provider}
+                      type="button"
+                      onClick={() => handleOAuthLogin(btn.provider)}
+                      disabled={!!oauthLoading}
+                      style={{
+                        width: '100%',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: 10,
+                        padding: '10px 0',
+                        marginBottom: 8,
+                        background: 'rgba(255,255,255,0.04)',
+                        border: '1px solid rgba(255,255,255,0.12)',
+                        borderRadius: 10,
+                        color: '#e2e8f0',
+                        fontSize: '0.9rem',
+                        fontWeight: 500,
+                        cursor: oauthLoading ? 'not-allowed' : 'pointer',
+                        opacity: oauthLoading ? 0.5 : 1,
+                        transition: 'all 0.2s ease',
+                        fontFamily: 'inherit',
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!oauthLoading) {
+                          e.currentTarget.style.background = 'rgba(255,255,255,0.08)';
+                          e.currentTarget.style.borderColor = 'rgba(255,255,255,0.24)';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'rgba(255,255,255,0.04)';
+                        e.currentTarget.style.borderColor = 'rgba(255,255,255,0.12)';
+                      }}
+                    >
+                      {isLoading ? (
+                        <span style={{ display: 'inline-block', width: 18, height: 18, border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.6s linear infinite' }} />
+                      ) : btn.icon}
+                      {isLoading ? (isCN ? '跳转中...' : 'Redirecting...') : btn.label}
+                    </button>
+                  );
+                })}
+
+                {/* Supabase attribution — P1-3 */}
+                <div style={{ textAlign: 'center', marginTop: 10, marginBottom: 4 }}>
+                  <span style={{ color: '#475569', fontSize: '0.7rem' }}>
+                    {t.auth.oauthAttribution}
+                  </span>
+                </div>
               </div>
 
               {/* Sign in link */}

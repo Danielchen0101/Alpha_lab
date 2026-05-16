@@ -2495,6 +2495,16 @@ const messages = {
     resetLinkInvalid: '此密码重置链接无效或已过期，请重新获取链接。',
     requestNewResetLink: '重新获取重置链接',
     backToSignIn: '返回登录',
+    // P1-3 OAuth attribution
+    oauthAttribution: '认证服务由 Supabase 提供',
+    // P1-4 CAPTCHA footer
+    captchaFooter: '由 Cloudflare Turnstile 保护',
+    // P1-5 Normalized error messages
+    errorEmailExists: '该邮箱已注册账号',
+    errorWeakPassword: '密码强度过低，请使用至少8位字符并包含字母和数字的组合。',
+    errorNetworkIssue: '网络错误，请检查网络连接后重试。',
+    errorUnexpected: '发生未知错误，请重试。',
+    errorSessionExpired: '登录已过期，请重新登录。',
   },
 
   // Legal pages

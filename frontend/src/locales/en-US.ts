@@ -2495,6 +2495,16 @@ const messages = {
     resetLinkInvalid: 'This password reset link is invalid or has expired. Please request a new link.',
     requestNewResetLink: 'Request a new reset link',
     backToSignIn: 'Back to Sign In',
+    // P1-3 OAuth attribution
+    oauthAttribution: 'Authentication powered by Supabase',
+    // P1-4 CAPTCHA footer
+    captchaFooter: 'Protected by Cloudflare Turnstile',
+    // P1-5 Normalized error messages
+    errorEmailExists: 'An account with this email already exists',
+    errorWeakPassword: 'Password is too weak. Please use at least 8 characters with mixed letters and numbers.',
+    errorNetworkIssue: 'Network error. Please check your connection and try again.',
+    errorUnexpected: 'An unexpected error occurred. Please try again.',
+    errorSessionExpired: 'Your session has expired. Please sign in again.',
   },
 
   // Legal pages
