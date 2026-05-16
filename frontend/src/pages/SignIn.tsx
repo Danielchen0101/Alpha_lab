@@ -164,6 +164,12 @@ const SignIn: React.FC = () => {
           color: #10b981;
         }
 
+        @media (max-width: 480px) {
+          .trust-strip { gap: 8px; margin-top: 16px; padding-top: 12px; }
+          .trust-item { gap: 4px; font-size: 10px; }
+          .trust-item svg { font-size: 10px; }
+        }
+
         @keyframes spin {
           to { transform: rotate(360deg); }
         }
@@ -370,7 +376,7 @@ const SignIn: React.FC = () => {
                 background: 'transparent',
               }}
               onClick={() => navigate('/')}
-              aria-label="back-to-home"
+              aria-label="Back to AlphaLab home"
             >
               <img
                 src="/brand/alphalab-logo.png"
@@ -548,6 +554,16 @@ const SignIn: React.FC = () => {
                 {submitting ? t.auth.signingIn : t.auth.signInBtn}
               </Button>
             </Form.Item>
+
+            {!canSubmit && !submitting && (
+              <div style={{ textAlign: 'center', marginTop: -8, marginBottom: 16 }}>
+                <span style={{ color: '#94a3b8', fontSize: 11 }}>
+                  {captchaConfigured && !captchaToken
+                    ? t.auth.signInHelperCaptcha
+                    : t.auth.signInHelperEmpty}
+                </span>
+              </div>
+            )}
           </Form>
 
           {/* Security Trust indicators */}

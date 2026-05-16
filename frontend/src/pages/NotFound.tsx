@@ -32,6 +32,12 @@ const NotFound: React.FC = () => {
         background: 'radial-gradient(circle, rgba(24,144,255,0.1) 0%, rgba(3,8,22,0) 70%)',
         filter: 'blur(80px)', zIndex: 0, pointerEvents: 'none',
       }} />
+      <div style={{
+        position: 'absolute', bottom: '10%', right: '15%', width: '50vw', height: '50vw',
+        maxWidth: 700, maxHeight: 700,
+        background: 'radial-gradient(circle, rgba(114,46,209,0.08) 0%, rgba(3,8,22,0) 70%)',
+        filter: 'blur(80px)', zIndex: 0, pointerEvents: 'none',
+      }} />
 
       <div style={{
         position: 'relative', zIndex: 1, width: '100%', maxWidth: 460,

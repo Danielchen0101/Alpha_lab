@@ -1,4 +1,5 @@
 import api from './api';
+import { devLog } from '../utils/logger';
 
 export interface AlpacaAccount {
   accountNumber: string;
@@ -163,7 +164,7 @@ class AlpacaBrokerService {
       // 使用与AI Trading页面相同的API
       // 注意：AI Trading页面可能没有直接的订单接口，这里使用模拟响应
       if (process.env.NODE_ENV !== 'production') {
-        console.log('Alpaca Paper Trading placeOrder called:', order);
+        devLog('Alpaca Paper Trading placeOrder called:', order);
       }
 
       // 模拟成功响应
@@ -184,7 +185,7 @@ class AlpacaBrokerService {
     try {
       // 使用与AI Trading页面相同的API
       // 注意：AI Trading页面可能没有直接的取消订单接口，这里使用模拟响应
-      console.log('Alpaca Paper Trading cancelOrder called:', orderId);
+      devLog('Alpaca Paper Trading cancelOrder called:', orderId);
       
       // 模拟成功响应
       return {

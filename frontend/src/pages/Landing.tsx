@@ -526,29 +526,32 @@ const Landing: React.FC = () => {
         }
         
         @media (max-width: 768px) {
-          .premium-title { font-size: clamp(2rem, 8vw, 2.5rem); }
-          .hero-section { padding: 60px 16px 40px; }
+          .premium-title { font-size: clamp(1.8rem, 7vw, 2.2rem); }
+          .hero-section { padding: 40px 16px 32px; min-height: auto; }
           .bg-data-overlay { display: none; }
-          .feature-chips { 
-            gap: 8px; 
-            margin-bottom: 32px; 
-          }
-          .feature-chip {
-            padding: 4px 10px;
-            font-size: 11px;
-          }
-          /* Hide secondary features on mobile to reduce density */
-          .feature-chip:nth-child(n+4) { display: none; }
+          .feature-chips { gap: 6px; margin-bottom: 20px; }
+          .feature-chip { padding: 3px 8px; font-size: 10px; }
+          .feature-chip:nth-child(n+3) { display: none; }
+          .hero-badge { margin-bottom: 12px; font-size: 0.7rem; padding: 4px 10px; }
+          .premium-subtitle { font-size: 0.85rem; margin-bottom: 16px; }
+          .hero-actions { flex-direction: column; width: 100%; gap: 10px !important; }
+          .hero-actions .ant-btn { width: 100%; height: 48px !important; font-size: 0.9rem !important; }
+        }
 
-          .hero-actions {
-            flex-direction: column;
-            width: 100%;
-            gap: 12px !important;
-          }
-          .hero-actions .ant-btn {
-            width: 100%;
-            height: 50px !important;
-          }
+        @media (max-width: 480px) {
+          .hero-section { padding: 32px 12px 24px; }
+          .premium-title { font-size: clamp(1.5rem, 6vw, 1.8rem); margin-bottom: 12px; }
+          .premium-subtitle { font-size: 0.8rem; margin-bottom: 12px; }
+          .feature-chips { margin-bottom: 16px; gap: 4px; }
+          .feature-chip { font-size: 9px; padding: 2px 6px; }
+          .hero-badge { font-size: 0.65rem; padding: 3px 8px; }
+          .hero-visual-wrapper { display: none; }
+        }
+
+        @media (min-width: 769px) and (max-width: 1024px) {
+          .hero-section { padding: 40px 24px 48px; }
+          .premium-title { font-size: clamp(2rem, 3.5vw, 2.8rem); }
+          .hero-visual-wrapper { max-width: 60%; margin: 0 auto; }
         }
 
         @media (max-height: 800px) {
@@ -639,10 +642,10 @@ const Landing: React.FC = () => {
               <span className="feature-chip"><ExperimentOutlined style={{ color: '#60a5fa' }} /> Backtest ready</span>
             </div>
             <Space size="large" className="hero-actions">
-              <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} aria-label="hero-start-free-trial">
-                {t.landing.startBuilding || "Start Free Trial"} <ArrowRightOutlined />
+              <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')}>
+                {t.landing.startBuilding || "Start Free Trial"} <ArrowRightOutlined aria-hidden="true" />
               </Button>
-              <Button className="btn-secondary" onClick={() => navigate('/platform')} aria-label="hero-explore-strategies">
+              <Button className="btn-secondary" onClick={() => navigate('/platform')}>
                 {t.landing.explorePlatform || "Explore Strategies"}
               </Button>
             </Space>
@@ -803,8 +806,8 @@ const Landing: React.FC = () => {
             {t.landing.ctaDesc}
           </p>
           <Space size="large">
-            <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} style={{ height: 56, padding: '0 40px' }} aria-label="cta-get-started">{t.landing.ctaGetStarted}</Button>
-            <Button className="btn-secondary" onClick={() => navigate('/signin')} style={{ height: 56, padding: '0 40px' }} aria-label="cta-sign-in">{t.landing.ctaSignIn}</Button>
+            <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} style={{ height: 56, padding: '0 40px' }}>{t.landing.ctaGetStarted}</Button>
+            <Button className="btn-secondary" onClick={() => navigate('/signin')} style={{ height: 56, padding: '0 40px' }}>{t.landing.ctaSignIn}</Button>
           </Space>
         </div>
       </section>

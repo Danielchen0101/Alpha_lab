@@ -2,6 +2,7 @@
  * 统一的日期处理工具函数
  * 确保所有图表使用相同的日期逻辑
  */
+import { devLog, devInfo } from './logger';
 
 /**
  * 安全解析日期，避免返回epoch时间
@@ -225,35 +226,35 @@ export function getTooltipDate(payload: any[], label: any): string {
       if (dataPoint && dataPoint.date) {
         const formatted = formatDateToYYYYMMDD(dataPoint.date);
         if (formatted) {
-          console.log('✅ 从payload找到有效日期:', { dataPoint, formatted });
+          devInfo('从payload找到有效日期:', { dataPoint, formatted });
           return formatted;
         }
       }
     }
-    
+
     // 如果payload有value但没date，检查是否是直接的数据点
     if (payload[0] && typeof payload[0] === 'object') {
       const formatted = formatDateToYYYYMMDD(payload[0]);
       if (formatted) {
-        console.log('✅ 从payload[0]解析到日期:', formatted);
+        devInfo('从payload[0]解析到日期:', formatted);
         return formatted;
       }
     }
   }
-  
+
   // 其次使用label
   if (label !== null && label !== undefined && label !== '') {
     const formatted = formatDateToYYYYMMDD(label);
     if (formatted) {
-      console.log('✅ 从label解析到日期:', formatted);
+      devInfo('从label解析到日期:', formatted);
       return formatted;
     } else {
-      console.log('❌ label解析失败:', label);
+      devLog('label解析失败:', label);
     }
   }
-  
+
   // 都无效返回N/A
-  console.log('❌ 所有日期解析都失败，返回N/A');
+  devLog('所有日期解析都失败，返回N/A');
   return 'N/A';
 }
 
@@ -269,30 +270,30 @@ export function debugDates<T extends Record<string, any>>(
   dateField: string = 'date'
 ): void {
   if (process.env.NODE_ENV === 'production') return;
-  console.log(`=== ${dataName} 日期调试 ===`);
-  console.log(`数据长度: ${data?.length || 0}`);
+  devLog(`=== ${dataName} 日期调试 ===`);
+  devLog(`数据长度: ${data?.length || 0}`);
 
   if (!data || data.length === 0) {
-    console.log('数据为空');
+    devLog('数据为空');
     return;
   }
 
   // 前5个点
-  console.log('前5个点:');
+  devLog('前5个点:');
   data.slice(0, 5).forEach((item, index) => {
     const dateValue = item[dateField];
     const date = parseDateSafe(dateValue);
-    console.log(`  [${index}] date字段: ${dateValue}, 类型: ${typeof dateValue}, 解析结果: ${date ? date.toISOString() : '无效'}`);
+    devLog(`  [${index}] date字段: ${dateValue}, 类型: ${typeof dateValue}, 解析结果: ${date ? date.toISOString() : '无效'}`);
   });
 
   // 后5个点
   if (data.length > 5) {
-    console.log('后5个点:');
+    devLog('后5个点:');
     data.slice(-5).forEach((item, index) => {
       const dateValue = item[dateField];
       const date = parseDateSafe(dateValue);
       const actualIndex = data.length - 5 + index;
-      console.log(`  [${actualIndex}] date字段: ${dateValue}, 类型: ${typeof dateValue}, 解析结果: ${date ? date.toISOString() : '无效'}`);
+      devLog(`  [${actualIndex}] date字段: ${dateValue}, 类型: ${typeof dateValue}, 解析结果: ${date ? date.toISOString() : '无效'}`);
     });
   }
 
@@ -302,12 +303,12 @@ export function debugDates<T extends Record<string, any>>(
     return parseDateSafe(dateValue) === null;
   });
 
-  console.log(`无效日期数量: ${invalidDates.length}/${data.length}`);
+  devLog(`无效日期数量: ${invalidDates.length}/${data.length}`);
 
   if (invalidDates.length > 0) {
-    console.log('无效日期示例:');
+    devLog('无效日期示例:');
     invalidDates.slice(0, 3).forEach(item => {
-      console.log(`  date字段: ${item[dateField]}, 类型: ${typeof item[dateField]}`);
+      devLog(`  date字段: ${item[dateField]}, 类型: ${typeof item[dateField]}`);
     });
   }
 }

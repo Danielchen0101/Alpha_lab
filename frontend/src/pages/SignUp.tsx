@@ -454,7 +454,7 @@ const SignUp: React.FC = () => {
                 background: 'transparent',
               }}
               onClick={() => navigate('/')}
-              aria-label="back-to-home"
+              aria-label="Back to AlphaLab home"
             >
               <img
                 src="/brand/alphalab-logo.png"
@@ -634,6 +634,32 @@ const SignUp: React.FC = () => {
                   />
                 </Form.Item>
 
+                {/* Password rule checklist */}
+                <div style={{ marginTop: -16, marginBottom: 16, paddingLeft: 4 }}>
+                  {[
+                    { test: (v: string) => v.length >= 8, label: t.auth.passwordRuleLength },
+                    { test: (v: string) => /[A-Z]/.test(v), label: t.auth.passwordRuleUpper },
+                    { test: (v: string) => /[a-z]/.test(v), label: t.auth.passwordRuleLower },
+                    { test: (v: string) => /[0-9]/.test(v), label: t.auth.passwordRuleNumber },
+                  ].map((rule, i) => {
+                    const pw = form.getFieldValue('password') || '';
+                    const met = pw ? rule.test(pw) : false;
+                    return (
+                      <div key={i} style={{
+                        color: met ? '#10b981' : '#475569',
+                        fontSize: 11,
+                        marginBottom: 2,
+                        transition: 'color 0.15s ease',
+                      }}>
+                        <span style={{ marginRight: 6, fontSize: 11 }}>
+                          {met ? '✓' : '○'}
+                        </span>
+                        {rule.label}
+                      </div>
+                    );
+                  })}
+                </div>
+
                 {/* Confirm password */}
                 <Form.Item
                   name="confirmPassword"
@@ -804,6 +830,16 @@ const SignUp: React.FC = () => {
                     {submitting ? t.auth.creatingAccount : t.auth.createAccountBtn}
                   </Button>
                 </Form.Item>
+
+                {!formValid && !submitting && (
+                  <div style={{ textAlign: 'center', marginTop: -8, marginBottom: 16 }}>
+                    <span style={{ color: '#94a3b8', fontSize: 11 }}>
+                      {captchaConfigured && !captchaToken
+                        ? t.auth.signUpHelperCaptcha
+                        : t.auth.signUpHelperTerms}
+                    </span>
+                  </div>
+                )}
               </Form>
 
               <div className="trust-strip">

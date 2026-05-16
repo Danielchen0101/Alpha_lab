@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { ErrorHandler } from '../services/request-fixed';
+import { devLog } from '../utils/logger';
 
 interface UseApiErrorOptions {
   deduplicateTimeout?: number; // milliseconds
@@ -66,7 +67,7 @@ export function useApiError(options: UseApiErrorOptions = {}) {
     const lastErrorTime = errorCache.current.get(errorKey);
     if (lastErrorTime && now - lastErrorTime < deduplicateTimeout) {
       if (process.env.NODE_ENV !== 'production') {
-        console.log(`[useApiError] Skipping duplicate error: ${errorKey}`);
+        devLog(`[useApiError] Skipping duplicate error: ${errorKey}`);
       }
       return false;
     }

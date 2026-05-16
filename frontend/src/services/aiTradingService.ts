@@ -1,4 +1,5 @@
 import api from './api';
+import { devLog } from '../utils/logger';
 
 export interface AIDecision {
   // 核心动作字段
@@ -216,7 +217,7 @@ class AITradingService {
   async previewTradeWithContext(symbol: string, context: any): Promise<AIPreviewResponse> {
     try {
       if (process.env.NODE_ENV !== 'production') {
-        console.log('Sending AI analysis with context:', { symbol, context });
+        devLog('Sending AI analysis with context:', { symbol, context });
       }
 
       const response = await api.post('/ai/trade/analyze-with-context', {
@@ -331,7 +332,7 @@ class AITradingService {
   async getAccountSnapshot() {
     try {
       if (process.env.NODE_ENV !== 'production') {
-        console.log('开始获取账户快照数据...');
+        devLog('开始获取账户快照数据...');
       }
 
       // 分别处理每个请求，避免 Promise.all 一个失败全部失败
@@ -401,7 +402,7 @@ class AITradingService {
       };
       
       if (process.env.NODE_ENV !== 'production') {
-        console.log('getAccountSnapshot 返回结果:', result);
+        devLog('getAccountSnapshot 返回结果:', result);
       }
       return result;
     } catch (error) {
@@ -648,7 +649,7 @@ class AITradingService {
   async saveProviderConfig(config: AIProviderConfig): Promise<AIProviderConfigResponse> {
     try {
       if (process.env.NODE_ENV !== 'production') {
-        console.log('saveProviderConfig 调用，配置:', { ...config, apiKey: config.apiKey ? '***' : '' });
+        devLog('saveProviderConfig 调用，配置:', { ...config, apiKey: config.apiKey ? '***' : '' });
       }
       const response = await api.post('/ai/provider/config', config);
       
@@ -821,7 +822,7 @@ class AITradingService {
           
           // 打印前3个点的详细信息 — dev only
           if (index < 3 && process.env.NODE_ENV !== 'production') {
-            console.log(`📊 [3] portfolio history点[${index}]:`, {
+            devLog(`📊 [3] portfolio history点[${index}]:`, {
               rawItem: item,
               normalized: result,
               timestamp: result.timestamp,
@@ -839,7 +840,7 @@ class AITradingService {
         });
 
         if (process.env.NODE_ENV !== 'production') {
-          console.log('📊 [4] portfolio history处理完成:', {
+          devLog('📊 [4] portfolio history处理完成:', {
             原始数据点数量: response.data.data.length,
             过滤后数据点数量: normalizedData.length,
             第一个点: normalizedData[0],
@@ -854,7 +855,7 @@ class AITradingService {
       }
 
       if (process.env.NODE_ENV !== 'production') {
-        console.log('📊 [5] portfolio history响应格式不正确:', response.data);
+        devLog('📊 [5] portfolio history响应格式不正确:', response.data);
       }
       return response.data;
     } catch (error: any) {

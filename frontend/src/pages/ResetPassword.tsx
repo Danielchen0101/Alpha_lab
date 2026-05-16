@@ -62,6 +62,13 @@ const ResetPassword: React.FC = () => {
           font-size: 12px;
           color: #10b981;
         }
+
+        @media (max-width: 480px) {
+          .trust-strip { gap: 8px; margin-top: 16px; padding-top: 12px; }
+          .trust-item { gap: 4px; font-size: 10px; }
+          .trust-item svg { font-size: 10px; }
+        }
+
         .invalid-state-icon {
           font-size: 48px;
           color: #ff4d4f;
@@ -177,6 +184,7 @@ const ResetPassword: React.FC = () => {
     return (
       <div style={containerStyle}>
         <div style={glowStyle1} />
+        <div style={glowStyle2} />
         <div style={cardStyle} className="reset-password-card">
           <div style={{ textAlign: 'center' }}>
             <img src="/brand/alphalab-logo.png" alt="AlphaLab" style={{ height: 40, marginBottom: 40, cursor: 'pointer' }} onClick={() => navigate('/')} />
@@ -329,6 +337,14 @@ const ResetPassword: React.FC = () => {
                   {submitting ? (isCN ? '更新中...' : 'Updating...') : t.auth.updatePassword}
                 </Button>
               </Form.Item>
+
+              {!formValid && !submitting && (
+                <div style={{ textAlign: 'center', marginTop: -8, marginBottom: 16 }}>
+                  <span style={{ color: '#94a3b8', fontSize: 11 }}>
+                    {t.auth.resetHelperPassword}
+                  </span>
+                </div>
+              )}
             </Form>
 
             <div className="trust-strip">

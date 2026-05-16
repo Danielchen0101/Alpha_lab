@@ -3,6 +3,7 @@
  */
 
 import axios from 'axios';
+import { devLog } from '../utils/logger';
 import { supabase } from '../lib/supabaseClient';
 
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '/api';
@@ -45,7 +46,7 @@ api.interceptors.response.use(
     // 记录数据源信息
     if (response.data?.dataSource) {
       if (process.env.NODE_ENV !== 'production') {
-        console.log(`交易数据来源: ${response.data.dataSource}`);
+        devLog(`交易数据来源: ${response.data.dataSource}`);
       }
     }
     return response;

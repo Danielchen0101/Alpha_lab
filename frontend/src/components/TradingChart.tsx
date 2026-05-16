@@ -9,6 +9,7 @@ import {
   getTooltipDate,
   debugDates
 } from '../utils/dateUtils';
+import { devLog } from '../utils/logger';
 import { useLanguage } from '../contexts/LanguageContext';
 
 interface ChartDataItem {
@@ -34,7 +35,7 @@ interface TradingChartProps {
 const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, parameters }) => {
   const { t } = useLanguage();
   // 调试：记录组件接收到的数据
-  console.log('🔍 [TradingChart] 组件入口 - 接收数据:', {
+  devLog('🔍 [TradingChart] 组件入口 - 接收数据:', {
     dataExists: !!data,
     dataLength: data?.length,
     dataFirstItem: data?.[0],
@@ -52,7 +53,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
   const [showVolume, setShowVolume] = useState(true);
 
   if (!data || data.length === 0) {
-    console.log('🔍 [TradingChart] 数据为空，显示空状态:', { 
+    devLog('🔍 [TradingChart] 数据为空，显示空状态:', { 
       data, 
       length: data?.length,
       dataType: typeof data,
@@ -86,30 +87,30 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
   debugDates(sortedData, 'TradingChart处理后的数据');
   
   // 调试：检查volume字段
-  console.log('=== TradingChart Volume 字段检查 ===');
-  console.log(`原始数据长度: ${data.length}`);
-  console.log(`处理后数据长度: ${sortedData.length}`);
+  devLog('=== TradingChart Volume 字段检查 ===');
+  devLog(`原始数据长度: ${data.length}`);
+  devLog(`处理后数据长度: ${sortedData.length}`);
   
   // 检查前5个点的volume
-  console.log('前5个点的volume字段:');
+  devLog('前5个点的volume字段:');
   data.slice(0, 5).forEach((item, index) => {
-    console.log(`  [${index}] date: ${item.date}, volume: ${item.volume}, volume类型: ${typeof item.volume}, volume存在: ${'volume' in item}`);
+    devLog(`  [${index}] date: ${item.date}, volume: ${item.volume}, volume类型: ${typeof item.volume}, volume存在: ${'volume' in item}`);
   });
   
   // 检查后5个点的volume
   if (data.length > 5) {
-    console.log('后5个点的volume字段:');
+    devLog('后5个点的volume字段:');
     data.slice(-5).forEach((item, index) => {
       const actualIndex = data.length - 5 + index;
-      console.log(`  [${actualIndex}] date: ${item.date}, volume: ${item.volume}, volume类型: ${typeof item.volume}, volume存在: ${'volume' in item}`);
+      devLog(`  [${actualIndex}] date: ${item.date}, volume: ${item.volume}, volume类型: ${typeof item.volume}, volume存在: ${'volume' in item}`);
     });
   }
   
   // 统计有volume字段的数据点
   const hasVolumeCount = data.filter(d => 'volume' in d).length;
   const hasValidVolumeCount = data.filter(d => d.volume !== undefined && d.volume !== null && d.volume > 0).length;
-  console.log(`有volume字段的数据点: ${hasVolumeCount}/${data.length}`);
-  console.log(`有有效volume值(>0)的数据点: ${hasValidVolumeCount}/${data.length}`);
+  devLog(`有volume字段的数据点: ${hasVolumeCount}/${data.length}`);
+  devLog(`有有效volume值(>0)的数据点: ${hasValidVolumeCount}/${data.length}`);
   
   // 创建统一的排序数据，包含所有需要的字段
   // 1. 先排序原始数据
@@ -183,32 +184,32 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
   // Debug: Check signal data
   const buySignals = processedChartData.filter(d => d.signal === 1);
   const sellSignals = processedChartData.filter(d => d.signal === -1);
-  console.log(`TradingChart Debug: 原始数据点: ${data.length}, 有效数据点: ${processedChartData.length}`);
-  console.log(`TradingChart Debug: Buy signals: ${buySignals.length}`);
-  console.log(`TradingChart Debug: Sell signals: ${sellSignals.length}`);
-  console.log(`TradingChart Debug: Has signals: ${hasSignals}`);
+  devLog(`TradingChart Debug: 原始数据点: ${data.length}, 有效数据点: ${processedChartData.length}`);
+  devLog(`TradingChart Debug: Buy signals: ${buySignals.length}`);
+  devLog(`TradingChart Debug: Sell signals: ${sellSignals.length}`);
+  devLog(`TradingChart Debug: Has signals: ${hasSignals}`);
   
   // 添加价格计算调试
-  console.log(`TradingChart Debug: Price calculation:`);
-  console.log(`  prices array length: ${prices.length}`);
-  console.log(`  minPrice: ${minPrice}`);
-  console.log(`  maxPrice: ${maxPrice}`);
-  console.log(`  pricePadding: ${pricePadding}`);
-  console.log(`  Y-axis domain: [${minPrice - pricePadding}, ${maxPrice + pricePadding}]`);
+  devLog(`TradingChart Debug: Price calculation:`);
+  devLog(`  prices array length: ${prices.length}`);
+  devLog(`  minPrice: ${minPrice}`);
+  devLog(`  maxPrice: ${maxPrice}`);
+  devLog(`  pricePadding: ${pricePadding}`);
+  devLog(`  Y-axis domain: [${minPrice - pricePadding}, ${maxPrice + pricePadding}]`);
   
   // 添加volume计算调试
-  console.log(`TradingChart Debug: Volume calculation:`);
-  console.log(`  volumes array length: ${volumes.length}`);
-  console.log(`  maxVolume: ${maxVolume}`);
-  console.log(`  volumePadding: ${volumePadding}`);
+  devLog(`TradingChart Debug: Volume calculation:`);
+  devLog(`  volumes array length: ${volumes.length}`);
+  devLog(`  maxVolume: ${maxVolume}`);
+  devLog(`  volumePadding: ${volumePadding}`);
   
   // 检查前几条数据
   if (data.length > 0) {
-    console.log(`TradingChart Debug: First data item:`, data[0]);
+    devLog(`TradingChart Debug: First data item:`, data[0]);
     if (data.length > 1) {
-      console.log(`TradingChart Debug: Second data item:`, data[1]);
+      devLog(`TradingChart Debug: Second data item:`, data[1]);
     }
-    console.log(`TradingChart Debug: Last data item:`, data[data.length - 1]);
+    devLog(`TradingChart Debug: Last data item:`, data[data.length - 1]);
   }
 
   // Calculate chart heights with explicit pixel values - 显著增加Volume Chart高度

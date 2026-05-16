@@ -70,6 +70,12 @@ const ForgotPassword: React.FC = () => {
           font-size: 12px;
           color: #10b981;
         }
+
+        @media (max-width: 480px) {
+          .trust-strip { gap: 8px; margin-top: 16px; padding-top: 12px; }
+          .trust-item { gap: 4px; font-size: 10px; }
+          .trust-item svg { font-size: 10px; }
+        }
       `;
       document.head.appendChild(style);
     }
@@ -374,6 +380,16 @@ const ForgotPassword: React.FC = () => {
                   {submitting ? sendingLabel : t.auth.sendResetLink}
                 </Button>
               </Form.Item>
+
+              {!canSubmit && !submitting && (
+                <div style={{ textAlign: 'center', marginTop: -8, marginBottom: 16 }}>
+                  <span style={{ color: '#94a3b8', fontSize: 11 }}>
+                    {!emailValid
+                      ? t.auth.forgotHelperEmail
+                      : t.auth.forgotHelperCaptcha}
+                  </span>
+                </div>
+              )}
             </Form>
           </>
         )}
@@ -393,8 +409,15 @@ const ForgotPassword: React.FC = () => {
           </div>
         </div>
 
+        {/* Privacy copy */}
+        <div style={{ textAlign: 'center', marginTop: 16, padding: '0 16px' }}>
+          <span style={{ color: '#64748b', fontSize: 11, lineHeight: 1.5 }}>
+            {t.auth.forgotPrivacyCopy}
+          </span>
+        </div>
+
         {/* Navigation links */}
-        <div style={{ marginTop: 32, textAlign: 'center' }}>
+        <div style={{ marginTop: 24, textAlign: 'center' }}>
           <Link
             to="/signin"
             style={{

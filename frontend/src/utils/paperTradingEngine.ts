@@ -1,5 +1,5 @@
-// Paper Trading Engine - 本地模拟交易引擎
-// 不依赖任何外部API，纯本地计算
+import { devLog } from './logger';
+
 
 // 风险控制常量
 const RISK_COOLDOWN_SECONDS = 30; // 同一symbol交易冷却时间
@@ -135,7 +135,7 @@ export const executePaperTrade = (
   const riskCheck = checkRiskControls(portfolio, order, source, sessionStartEquity, sessionRealizedPnL);
   if (!riskCheck.passed) {
     if (process.env.NODE_ENV !== 'production') {
-      console.log(`[Risk Control] Skipped ${action} ${shares} ${symbol}: ${riskCheck.reason}`);
+      devLog(`[Risk Control] Skipped ${action} ${shares} ${symbol}: ${riskCheck.reason}`);
     }
     return {
       success: false,
@@ -404,7 +404,7 @@ export const generateMACrossoverSignal = (
   if (previousShortMA <= previousLongMA * (1 + threshold) && 
       currentShortMA > currentLongMA * (1 + threshold)) {
     if (process.env.NODE_ENV !== 'production') {
-      console.log(`[MA Crossover] Golden Cross detected for ${symbol}: ` +
+      devLog(`[MA Crossover] Golden Cross detected for ${symbol}: ` +
                   `prev(${previousShortMA.toFixed(2)} <= ${previousLongMA.toFixed(2)}), ` +
                   `curr(${currentShortMA.toFixed(2)} > ${currentLongMA.toFixed(2)})`);
     }
@@ -419,7 +419,7 @@ export const generateMACrossoverSignal = (
   if (previousShortMA >= previousLongMA * (1 - threshold) &&
       currentShortMA < currentLongMA * (1 - threshold)) {
     if (process.env.NODE_ENV !== 'production') {
-      console.log(`[MA Crossover] Death Cross detected for ${symbol}: ` +
+      devLog(`[MA Crossover] Death Cross detected for ${symbol}: ` +
                   `prev(${previousShortMA.toFixed(2)} >= ${previousLongMA.toFixed(2)}), ` +
                   `curr(${currentShortMA.toFixed(2)} < ${currentLongMA.toFixed(2)})`);
     }
