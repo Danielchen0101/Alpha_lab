@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { Form, Input, Button, Typography, Alert, Checkbox } from 'antd';
-import { UserOutlined, LockOutlined, MailOutlined, ArrowLeftOutlined } from '@ant-design/icons';
+import { UserOutlined, LockOutlined, MailOutlined, ArrowLeftOutlined, SafetyCertificateOutlined, SafetyOutlined } from '@ant-design/icons';
 import Turnstile, { BoundTurnstileObject } from 'react-turnstile';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -22,7 +22,6 @@ const SignUp: React.FC = () => {
   const [oauthLoading, setOauthLoading] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [submitted, setSubmitted] = useState(false);
-  const [confirmMessage, setConfirmMessage] = useState('');
   const [formValid, setFormValid] = useState(false);
   const [captchaToken, setCaptchaToken] = useState('');
   const [turnstileError, setTurnstileError] = useState(false);
@@ -455,6 +454,7 @@ const SignUp: React.FC = () => {
                 background: 'transparent',
               }}
               onClick={() => navigate('/')}
+              aria-label="back-to-home"
             >
               <img
                 src="/brand/alphalab-logo.png"
@@ -805,6 +805,21 @@ const SignUp: React.FC = () => {
                   </Button>
                 </Form.Item>
               </Form>
+
+              <div className="trust-strip">
+                <div className="trust-item">
+                  <SafetyCertificateOutlined />
+                  <span>{t.auth.trustSupabase}</span>
+                </div>
+                <div className="trust-item">
+                  <LockOutlined />
+                  <span>{t.auth.trustEncryption}</span>
+                </div>
+                <div className="trust-item">
+                  <SafetyOutlined />
+                  <span>{t.auth.trustCloudflare}</span>
+                </div>
+              </div>
 
               {/* Divider + Social OAuth */}
               <div style={{ marginTop: 16, maxWidth: 420 }}>

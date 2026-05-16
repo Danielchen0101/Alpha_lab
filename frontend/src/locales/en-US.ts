@@ -2505,6 +2505,12 @@ const messages = {
     errorNetworkIssue: 'Network error. Please check your connection and try again.',
     errorUnexpected: 'An unexpected error occurred. Please try again.',
     errorSessionExpired: 'Your session has expired. Please sign in again.',
+    // P2 Trust indicators
+    trustCloudflare: 'Cloudflare Turnstile protected',
+    trustEmailReq: 'Email verification required',
+    trustEncryption: 'API keys encrypted',
+    trustSupabase: 'Secure Supabase Auth',
+    errorResetLinkExpired: 'Reset link expired or invalid. Please request a new one.',
   },
 
   // Legal pages
@@ -2526,6 +2532,13 @@ const messages = {
     description: 'You can now sign in and configure your trading connections.',
     continueToSignIn: 'Continue to Sign In',
     backToHome: 'Back to Home',
+  },
+  notFound: {
+    title: '404',
+    subtitle: 'Page Not Found',
+    description: 'The page you are looking for does not exist or has been moved.',
+    backToHome: 'Back to Home',
+    signIn: 'Sign In',
   },
 };
 

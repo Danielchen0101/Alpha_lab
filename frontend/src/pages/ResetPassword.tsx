@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { Form, Input, Button, Typography, Alert } from 'antd';
-import { LockOutlined, ArrowLeftOutlined } from '@ant-design/icons';
+import { LockOutlined, ArrowLeftOutlined, SafetyCertificateOutlined, SafetyOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
 import { supabase } from '../lib/supabaseClient';
 import { useLanguage } from '../contexts/LanguageContext';
 
 const { Title, Text } = Typography;
+
+const RESET_PASSWORD_STYLE_ID = 'reset-password-page-dark-styles';
 
 const ResetPassword: React.FC = () => {
   const navigate = useNavigate();
@@ -19,6 +21,57 @@ const ResetPassword: React.FC = () => {
   const [formValid, setFormValid] = useState(false);
 
   useEffect(() => {
+    window.scrollTo(0, 0);
+    if (!document.getElementById(RESET_PASSWORD_STYLE_ID)) {
+      const style = document.createElement('style');
+      style.id = RESET_PASSWORD_STYLE_ID;
+      style.innerHTML = `
+        .reset-password-card .ant-input,
+        .reset-password-card .ant-input-affix-wrapper {
+          background: rgba(0,0,0,0.35) !important;
+          border: 1px solid rgba(255,255,255,0.10) !important;
+          color: #F8FAFC !important;
+          border-radius: 12px !important;
+        }
+        .reset-password-card .ant-btn-primary[disabled],
+        .reset-password-card .ant-btn-primary[disabled]:hover {
+          color: rgba(255,255,255,0.45) !important;
+          background: rgba(255,255,255,0.08) !important;
+          opacity: 1 !important;
+          border: 1px solid rgba(255,255,255,0.1) !important;
+          cursor: not-allowed !important;
+          box-shadow: none !important;
+        }
+        .trust-strip {
+          display: flex;
+          justify-content: center;
+          gap: 16px;
+          margin-top: 24px;
+          padding-top: 16px;
+          border-top: 1px solid rgba(255,255,255,0.06);
+          flex-wrap: wrap;
+        }
+        .trust-item {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          color: rgba(255,255,255,0.35);
+          font-size: 11px;
+        }
+        .trust-item svg {
+          font-size: 12px;
+          color: #10b981;
+        }
+        .invalid-state-icon {
+          font-size: 48px;
+          color: #ff4d4f;
+          margin-bottom: 24px;
+          opacity: 0.8;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+
     const params = new URLSearchParams(window.location.hash.replace('#', '?'));
     const hashErr = params.get('error') || params.get('error_code') || params.get('error_description');
     const urlParams = new URLSearchParams(window.location.search);
@@ -26,7 +79,7 @@ const ResetPassword: React.FC = () => {
 
     if (hashErr || searchErr) {
       setLinkInvalid(true);
-      setError(t.auth.resetLinkInvalid);
+      setError(t.auth.resetLinkInvalid || 'Reset link invalid');
       return;
     }
 
@@ -38,7 +91,7 @@ const ResetPassword: React.FC = () => {
         const type = hashParams.get('type');
         if (type !== 'recovery') {
           setLinkInvalid(true);
-          setError(t.auth.resetLinkInvalid);
+          setError(t.auth.resetLinkInvalid || 'Reset link invalid');
         }
       }
     });
@@ -82,59 +135,79 @@ const ResetPassword: React.FC = () => {
     setSubmitting(false);
   };
 
+  const containerStyle: React.CSSProperties = {
+    minHeight: '100vh',
+    backgroundColor: '#020611',
+    color: '#e2e8f0',
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+    position: 'relative',
+    overflow: 'hidden',
+  };
+
+  const glowStyle1: React.CSSProperties = {
+    position: 'absolute',
+    top: '10%', left: '15%', width: '60vw', height: '60vw',
+    maxWidth: 800, maxHeight: 800,
+    background: 'radial-gradient(circle, rgba(24,144,255,0.1) 0%, rgba(3,8,22,0) 70%)',
+    filter: 'blur(80px)', zIndex: 0, pointerEvents: 'none',
+  };
+
+  const glowStyle2: React.CSSProperties = {
+    position: 'absolute',
+    bottom: '10%', right: '15%', width: '50vw', height: '50vw',
+    maxWidth: 700, maxHeight: 700,
+    background: 'radial-gradient(circle, rgba(114,46,209,0.08) 0%, rgba(3,8,22,0) 70%)',
+    filter: 'blur(80px)', zIndex: 0, pointerEvents: 'none',
+  };
+
+  const cardStyle: React.CSSProperties = {
+    position: 'relative', zIndex: 1, width: '100%', maxWidth: 460,
+    background: 'rgba(17,25,40,0.65)',
+    border: '1px solid rgba(255,255,255,0.08)', borderRadius: 24,
+    backdropFilter: 'blur(24px)',
+    boxShadow: '0 30px 60px -12px rgba(0,0,0,0.8), 0 0 40px rgba(24,144,255,0.05)',
+    padding: '48px 40px',
+  };
+
   if (linkInvalid) {
     return (
-      <div
-        style={{
-          minHeight: '100vh',
-          backgroundColor: '#020611',
-          color: '#e2e8f0',
-          fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: 24,
-          position: 'relative',
-          overflow: 'hidden',
-        }}
-      >
-        <div
-          style={{
-            position: 'absolute',
-            top: '10%', left: '15%', width: '60vw', height: '60vw',
-            maxWidth: 800, maxHeight: 800,
-            background: 'radial-gradient(circle, rgba(24,144,255,0.1) 0%, rgba(3,8,22,0) 70%)',
-            filter: 'blur(80px)', zIndex: 0, pointerEvents: 'none',
-          }}
-        />
-        <div
-          style={{
-            position: 'relative', zIndex: 1, width: '100%', maxWidth: 460,
-            background: 'rgba(17,25,40,0.65)',
-            border: '1px solid rgba(255,255,255,0.08)', borderRadius: 24,
-            backdropFilter: 'blur(24px)',
-            boxShadow: '0 30px 60px -12px rgba(0,0,0,0.8), 0 0 40px rgba(24,144,255,0.05)',
-            padding: '48px 40px', textAlign: 'center',
-          }}
-        >
-          <img src="/brand/alphalab-logo.png" alt="AlphaLab" style={{ height: 40, marginBottom: 32, cursor: 'pointer' }} onClick={() => navigate('/')} />
-          <Alert message={error} type="error" showIcon style={{ marginBottom: 24, borderRadius: 8, color: '#fca5a5', background: 'rgba(255,77,79,0.08)', border: '1px solid rgba(255,77,79,0.25)' }} />
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <Link to="/signin" style={{
-              display: 'block',
-              padding: '10px 0',
-              background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
-              borderRadius: 10,
-              color: '#fff',
-              fontWeight: 600,
-              fontSize: '0.95rem',
-              textDecoration: 'none',
-            }}>
-              {t.auth.backToSignIn}
-            </Link>
-            <Link to="/forgot-password" style={{ color: '#60a5fa', fontWeight: 600, fontSize: '0.95rem' }}>
-              {t.auth.requestNewResetLink}
-            </Link>
+      <div style={containerStyle}>
+        <div style={glowStyle1} />
+        <div style={cardStyle} className="reset-password-card">
+          <div style={{ textAlign: 'center' }}>
+            <img src="/brand/alphalab-logo.png" alt="AlphaLab" style={{ height: 40, marginBottom: 40, cursor: 'pointer' }} onClick={() => navigate('/')} />
+            <ExclamationCircleOutlined className="invalid-state-icon" />
+            <Title level={3} style={{ color: '#fff', marginBottom: 12 }}>{t.auth.resetLinkInvalid}</Title>
+            <Text style={{ color: '#94a3b8', display: 'block', marginBottom: 32, lineHeight: 1.6 }}>
+              {t.auth.errorResetLinkExpired}
+            </Text>
+            
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <Button 
+                type="primary" 
+                size="large" 
+                onClick={() => navigate('/forgot-password')}
+                style={{
+                  height: 48, borderRadius: 12, fontWeight: 600,
+                  background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
+                  border: 'none', boxShadow: '0 8px 24px rgba(24,144,255,0.3)',
+                }}
+              >
+                {t.auth.requestNewResetLink}
+              </Button>
+              <Button 
+                ghost 
+                size="large" 
+                onClick={() => navigate('/signin')}
+                style={{ height: 48, borderRadius: 12, color: '#60a5fa', borderColor: '#1890ff' }}
+              >
+                {t.auth.backToSignIn}
+              </Button>
+            </div>
           </div>
         </div>
       </div>
@@ -142,60 +215,26 @@ const ResetPassword: React.FC = () => {
   }
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        backgroundColor: '#020611',
-        color: '#e2e8f0',
-        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: 24,
-        position: 'relative',
-        overflow: 'hidden',
-      }}
-    >
-      {/* Background glow */}
-      <div style={{
-        position: 'absolute', top: '10%', left: '15%', width: '60vw', height: '60vw',
-        maxWidth: 800, maxHeight: 800,
-        background: 'radial-gradient(circle, rgba(24,144,255,0.1) 0%, rgba(3,8,22,0) 70%)',
-        filter: 'blur(80px)', zIndex: 0, pointerEvents: 'none',
-      }} />
-      <div style={{
-        position: 'absolute', bottom: '10%', right: '15%', width: '50vw', height: '50vw',
-        maxWidth: 700, maxHeight: 700,
-        background: 'radial-gradient(circle, rgba(114,46,209,0.08) 0%, rgba(3,8,22,0) 70%)',
-        filter: 'blur(80px)', zIndex: 0, pointerEvents: 'none',
-      }} />
+    <div style={containerStyle}>
+      <div style={glowStyle1} />
+      <div style={glowStyle2} />
 
-      <div style={{
-        position: 'relative', zIndex: 1, width: '100%', maxWidth: 460,
-        background: 'rgba(17,25,40,0.65)',
-        border: '1px solid rgba(255,255,255,0.08)', borderRadius: 24,
-        backdropFilter: 'blur(24px)',
-        boxShadow: '0 30px 60px -12px rgba(0,0,0,0.8), 0 0 40px rgba(24,144,255,0.05)',
-        padding: '48px 40px',
-      }}>
+      <div style={cardStyle} className="reset-password-card">
         {/* Logo */}
         <div style={{ marginBottom: 32, textAlign: 'center' }}>
           <img src="/brand/alphalab-logo.png" alt="AlphaLab" style={{ height: 40, width: 'auto', objectFit: 'contain', cursor: 'pointer' }} onClick={() => navigate('/')} />
         </div>
 
         {updated ? (
-          <>
-            <Alert
-              message={t.auth.passwordUpdated}
-              type="success"
-              showIcon
-              style={{
-                marginBottom: 24, borderRadius: 8,
-                background: 'rgba(82, 196, 26, 0.1)',
-                border: '1px solid rgba(82, 196, 26, 0.25)',
-                color: '#86efac',
-              }}
-            />
+          <div style={{ textAlign: 'center' }}>
+            <div style={{
+              width: 64, height: 64, borderRadius: '50%', margin: '0 auto 24px',
+              background: 'rgba(82, 196, 26, 0.1)', border: '2px solid #52c41a',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 28, color: '#52c41a', boxShadow: '0 0 20px rgba(82, 196, 26, 0.2)',
+            }}>✓</div>
+            <Title level={3} style={{ color: '#fff', marginBottom: 12 }}>{t.auth.passwordUpdated}</Title>
+            <Text style={{ color: '#94a3b8', display: 'block', marginBottom: 32 }}>{t.auth.signInSubtitle}</Text>
             <Button
               type="primary" block size="large"
               onClick={() => navigate('/signin')}
@@ -208,7 +247,7 @@ const ResetPassword: React.FC = () => {
             >
               {t.auth.backToSignIn}
             </Button>
-          </>
+          </div>
         ) : (
           <>
             <Title level={2} style={{
@@ -249,10 +288,6 @@ const ResetPassword: React.FC = () => {
                   prefix={<LockOutlined style={{ color: '#94A3B8' }} />}
                   placeholder={t.auth.newPassword}
                   size="large"
-                  style={{
-                    height: 48, borderRadius: 12, background: 'rgba(0,0,0,0.35)',
-                    border: '1px solid rgba(255,255,255,0.10)', color: '#F8FAFC',
-                  }}
                 />
               </Form.Item>
 
@@ -274,10 +309,6 @@ const ResetPassword: React.FC = () => {
                   prefix={<LockOutlined style={{ color: '#94A3B8' }} />}
                   placeholder={t.auth.confirmNewPassword}
                   size="large"
-                  style={{
-                    height: 48, borderRadius: 12, background: 'rgba(0,0,0,0.35)',
-                    border: '1px solid rgba(255,255,255,0.10)', color: '#F8FAFC',
-                  }}
                 />
               </Form.Item>
 
@@ -299,21 +330,36 @@ const ResetPassword: React.FC = () => {
                 </Button>
               </Form.Item>
             </Form>
+
+            <div className="trust-strip">
+              <div className="trust-item">
+                <SafetyCertificateOutlined />
+                <span>{t.auth.trustSupabase}</span>
+              </div>
+              <div className="trust-item">
+                <LockOutlined />
+                <span>{t.auth.trustEncryption}</span>
+              </div>
+              <div className="trust-item">
+                <SafetyOutlined />
+                <span>{t.auth.trustCloudflare}</span>
+              </div>
+            </div>
+
+            {/* Back to Sign In */}
+            <div style={{ marginTop: 24, textAlign: 'center' }}>
+              <Link to="/signin" style={{
+                color: '#60a5fa', fontSize: '0.9rem', textDecoration: 'none',
+                display: 'inline-flex', alignItems: 'center', gap: 6, transition: 'color 0.2s',
+              }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = '#93c5fd'; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = '#60a5fa'; }}
+              >
+                <ArrowLeftOutlined /> {t.auth.backToSignIn}
+              </Link>
+            </div>
           </>
         )}
-
-        {/* Back to Sign In */}
-        <div style={{ marginTop: 24, textAlign: 'center' }}>
-          <Link to="/signin" style={{
-            color: '#60a5fa', fontSize: '0.9rem', textDecoration: 'none',
-            display: 'inline-flex', alignItems: 'center', gap: 6, transition: 'color 0.2s',
-          }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = '#93c5fd'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = '#60a5fa'; }}
-          >
-            <ArrowLeftOutlined /> {t.auth.backToSignIn}
-          </Link>
-        </div>
       </div>
     </div>
   );

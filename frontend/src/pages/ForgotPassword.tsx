@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { Form, Input, Button, Typography, Alert } from 'antd';
-import { MailOutlined, ArrowLeftOutlined } from '@ant-design/icons';
+import { MailOutlined, ArrowLeftOutlined, SafetyCertificateOutlined, LockOutlined, SafetyOutlined } from '@ant-design/icons';
 import Turnstile, { BoundTurnstileObject } from 'react-turnstile';
 import { supabase } from '../lib/supabaseClient';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -9,6 +9,7 @@ import { useLanguage } from '../contexts/LanguageContext';
 const { Title, Text } = Typography;
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const FORGOT_PASSWORD_STYLE_ID = 'forgot-password-page-dark-styles';
 
 const ForgotPassword: React.FC = () => {
   const navigate = useNavigate();
@@ -27,8 +28,56 @@ const ForgotPassword: React.FC = () => {
   const captchaConfigured = !!turnstileSiteKey;
   const canSubmit = emailValid && (captchaConfigured ? !!captchaToken : isDev);
 
+  useEffect(() => {
+    window.scrollTo(0, 0);
+    if (!document.getElementById(FORGOT_PASSWORD_STYLE_ID)) {
+      const style = document.createElement('style');
+      style.id = FORGOT_PASSWORD_STYLE_ID;
+      style.innerHTML = `
+        .forgot-password-card .ant-input,
+        .forgot-password-card .ant-input-affix-wrapper {
+          background: rgba(0,0,0,0.35) !important;
+          border: 1px solid rgba(255,255,255,0.10) !important;
+          color: #F8FAFC !important;
+          border-radius: 12px !important;
+        }
+        .forgot-password-card .ant-btn-primary[disabled],
+        .forgot-password-card .ant-btn-primary[disabled]:hover {
+          color: rgba(255,255,255,0.45) !important;
+          background: rgba(255,255,255,0.08) !important;
+          opacity: 1 !important;
+          border: 1px solid rgba(255,255,255,0.1) !important;
+          cursor: not-allowed !important;
+          box-shadow: none !important;
+        }
+        .trust-strip {
+          display: flex;
+          justify-content: center;
+          gap: 16px;
+          margin-top: 24px;
+          padding-top: 16px;
+          border-top: 1px solid rgba(255,255,255,0.06);
+          flex-wrap: wrap;
+        }
+        .trust-item {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          color: rgba(255,255,255,0.35);
+          font-size: 11px;
+        }
+        .trust-item svg {
+          font-size: 12px;
+          color: #10b981;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+  }, []);
+
   const handleSend = async (values: { email: string }) => {
     setError('');
+    setSubmitting(true);
     if (!EMAIL_RE.test(values.email)) {
       setError(t.auth.enterValidEmail);
       setSubmitting(false);
@@ -120,6 +169,7 @@ const ForgotPassword: React.FC = () => {
       />
 
       <div
+        className="forgot-password-card"
         style={{
           position: 'relative',
           zIndex: 1,
@@ -252,13 +302,6 @@ const ForgotPassword: React.FC = () => {
                   prefix={<MailOutlined style={{ color: '#94A3B8' }} />}
                   placeholder={t.auth.emailPlaceholderSignIn}
                   size="large"
-                  style={{
-                    height: 48,
-                    borderRadius: 12,
-                    background: 'rgba(0,0,0,0.35)',
-                    border: '1px solid rgba(255,255,255,0.10)',
-                    color: '#F8FAFC',
-                  }}
                 />
               </Form.Item>
 
@@ -335,8 +378,23 @@ const ForgotPassword: React.FC = () => {
           </>
         )}
 
+        <div className="trust-strip">
+          <div className="trust-item">
+            <SafetyCertificateOutlined />
+            <span>{t.auth.trustSupabase}</span>
+          </div>
+          <div className="trust-item">
+            <LockOutlined />
+            <span>{t.auth.trustEncryption}</span>
+          </div>
+          <div className="trust-item">
+            <SafetyOutlined />
+            <span>{t.auth.trustCloudflare}</span>
+          </div>
+        </div>
+
         {/* Navigation links */}
-        <div style={{ marginTop: 24, textAlign: 'center' }}>
+        <div style={{ marginTop: 32, textAlign: 'center' }}>
           <Link
             to="/signin"
             style={{

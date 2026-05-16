@@ -2505,6 +2505,12 @@ const messages = {
     errorNetworkIssue: '网络错误，请检查网络连接后重试。',
     errorUnexpected: '发生未知错误，请重试。',
     errorSessionExpired: '登录已过期，请重新登录。',
+    // P2 Trust indicators
+    trustCloudflare: '由 Cloudflare Turnstile 提供防护',
+    trustEmailReq: '需要邮件验证',
+    trustEncryption: 'API 密钥已加密',
+    trustSupabase: '安全的 Supabase 身份验证',
+    errorResetLinkExpired: '重置链接已过期或无效。请重新请求。',
   },
 
   // Legal pages
@@ -2526,6 +2532,13 @@ const messages = {
     description: '现在可以登录并配置交易连接。',
     continueToSignIn: '前往登录',
     backToHome: '返回首页',
+  },
+  notFound: {
+    title: '404',
+    subtitle: '页面未找到',
+    description: '您访问的页面不存在或已被移动。',
+    backToHome: '返回首页',
+    signIn: '前往登录',
   },
 };
 

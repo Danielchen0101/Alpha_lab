@@ -217,6 +217,26 @@ const StockMarketHeroVisual: React.FC = () => {
           .top-ticker-card { padding: 4px 6px; }
           .top-ticker-card:nth-child(n+4) { display: none; }
         }
+        @media (max-width: 768px) {
+          .stock-visual-container {
+            padding: 12px;
+            gap: 12px;
+          }
+          /* Hide lower panels on mobile */
+          .glass-panel:nth-child(n+3) {
+            display: none;
+          }
+          /* Hide secondary tickers */
+          .top-ticker-card:nth-child(n+2) {
+            display: none;
+          }
+          .ticker-row {
+            gap: 8px;
+          }
+          .main-chart-area {
+            height: 180px;
+          }
+        }
       `}</style>
       
       {/* Top Status Bar — inside dashboard frame */}

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, Navigate, Link } from 'react-router-dom';
 import { Form, Input, Button, Typography, Alert, Checkbox } from 'antd';
-import { UserOutlined, LockOutlined, ArrowLeftOutlined } from '@ant-design/icons';
+import { UserOutlined, LockOutlined, ArrowLeftOutlined, SafetyCertificateOutlined, SafetyOutlined } from '@ant-design/icons';
 import Turnstile, { BoundTurnstileObject } from 'react-turnstile';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -133,11 +133,37 @@ const SignIn: React.FC = () => {
         }
         .signin-card .ant-btn-primary[disabled],
         .signin-card .ant-btn-primary[disabled]:hover {
-          color: rgba(255,255,255,0.5) !important;
-          background: linear-gradient(135deg, #1890ff 0%, #2f54eb 100%) !important;
-          opacity: 0.5 !important;
-          border: none !important;
+          color: rgba(255,255,255,0.45) !important;
+          background: rgba(255,255,255,0.08) !important;
+          opacity: 1 !important;
+          border: 1px solid rgba(255,255,255,0.1) !important;
+          cursor: not-allowed !important;
+          box-shadow: none !important;
         }
+
+        .trust-strip {
+          display: flex;
+          justify-content: center;
+          gap: 16px;
+          margin-top: 24px;
+          padding-top: 16px;
+          border-top: 1px solid rgba(255,255,255,0.06);
+          flex-wrap: wrap;
+        }
+        
+        .trust-item {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          color: rgba(255,255,255,0.35);
+          font-size: 11px;
+        }
+
+        .trust-item svg {
+          font-size: 12px;
+          color: #10b981;
+        }
+
         @keyframes spin {
           to { transform: rotate(360deg); }
         }
@@ -344,6 +370,7 @@ const SignIn: React.FC = () => {
                 background: 'transparent',
               }}
               onClick={() => navigate('/')}
+              aria-label="back-to-home"
             >
               <img
                 src="/brand/alphalab-logo.png"
@@ -523,8 +550,24 @@ const SignIn: React.FC = () => {
             </Form.Item>
           </Form>
 
+          {/* Security Trust indicators */}
+          <div className="trust-strip">
+            <div className="trust-item">
+              <SafetyCertificateOutlined />
+              <span>{t.auth.trustSupabase}</span>
+            </div>
+            <div className="trust-item">
+              <LockOutlined />
+              <span>{t.auth.trustEncryption}</span>
+            </div>
+            <div className="trust-item">
+              <SafetyOutlined />
+              <span>{t.auth.trustCloudflare}</span>
+            </div>
+          </div>
+
           {/* Divider + Social OAuth */}
-          <div style={{ marginTop: 16, maxWidth: 420 }}>
+          <div style={{ marginTop: 24, maxWidth: 420 }}>
             <div
               style={{
                 display: 'flex',
@@ -775,3 +818,4 @@ const SignIn: React.FC = () => {
 };
 
 export default SignIn;
+

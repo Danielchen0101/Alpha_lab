@@ -526,8 +526,29 @@ const Landing: React.FC = () => {
         }
         
         @media (max-width: 768px) {
-          .premium-title { font-size: clamp(2.5rem, 10vw, 3.5rem); }
-          .hero-section { padding: 80px 16px 40px; }
+          .premium-title { font-size: clamp(2rem, 8vw, 2.5rem); }
+          .hero-section { padding: 60px 16px 40px; }
+          .bg-data-overlay { display: none; }
+          .feature-chips { 
+            gap: 8px; 
+            margin-bottom: 32px; 
+          }
+          .feature-chip {
+            padding: 4px 10px;
+            font-size: 11px;
+          }
+          /* Hide secondary features on mobile to reduce density */
+          .feature-chip:nth-child(n+4) { display: none; }
+
+          .hero-actions {
+            flex-direction: column;
+            width: 100%;
+            gap: 12px !important;
+          }
+          .hero-actions .ant-btn {
+            width: 100%;
+            height: 50px !important;
+          }
         }
 
         @media (max-height: 800px) {
