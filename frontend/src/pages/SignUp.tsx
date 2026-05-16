@@ -525,7 +525,7 @@ const SignUp: React.FC = () => {
                   lineHeight: 1.5,
                 }}
               >
-                {confirmMessage || t.auth.accountCreatedDesc}
+                {t.auth.accountCreatedDesc}
               </Text>
               <Button
                 type="primary"
