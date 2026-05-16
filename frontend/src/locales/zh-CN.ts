@@ -927,6 +927,7 @@ const messages = {
     navWorkflow: '工作流',
     navFeatures: '功能',
     navTechnology: '技术',
+    navSecurity: '安全',
     signIn: '登录',
     getStarted: '开始使用',
 
@@ -2539,6 +2540,70 @@ const messages = {
     description: '您访问的页面不存在或已被移动。',
     backToHome: '返回首页',
     signIn: '前往登录',
+  },
+
+  // P3 — System Status Indicator
+  systemStatus: {
+    online: '系统运行正常',
+    degraded: '系统异常',
+    checking: '检查中...',
+    lastChecked: '上次检查',
+    apiHealthy: 'API 正常',
+    apiUnreachable: 'API 不可达',
+  },
+
+  // P3 — FAQ / Trust section
+  faq: {
+    title: '常见问题',
+    subtitle: '关于 AlphaLab 平台与安全实践的常见问题。',
+    q1: 'AlphaLab 是否提供财务或投资建议？',
+    a1: '不提供。AlphaLab 是一个研究、教育和决策支持平台。我们提供市场数据、AI 驱动的分析和回测工具以辅助您的研究。所有交易决策和执行均由您自行负责。我们不保证交易结果，也不提供个性化财务建议。',
+    q2: '我的 API 密钥如何保护？',
+    a2: 'API 密钥在存储前会经过应用层加密。在 UI 中显示时会被遮盖（例如 "sk-****"）。我们从不记录原始密钥，不与第三方共享，也不会通过 API 响应暴露密钥。',
+    q3: '模拟交易和实盘交易有什么区别？',
+    a3: '模拟交易使用实时市场数据以虚拟资金模拟交易 — 无真实资金风险。实盘交易连接到您的券商账户并执行实际订单。您可以在设置中随时切换模式。模拟交易非常适合策略验证。',
+    q4: 'AI 自动交易是否需要我的授权？',
+    a4: '不需要。AI Agent 提供分析、验证和入场计划建议，但所有下单前都需要用户手动确认。平台支持三种模式：手动（用户决定一切）、混合（AI 建议，用户确认）和 AI 辅助（AI 提供计划供审核）。自动执行默认不启用。',
+    q5: 'AlphaLab 使用哪些数据提供商？',
+    a5: 'AlphaLab 集成了多个提供商：Alpaca Markets（券商与交易）、Finnhub（市场数据）、Supabase（身份验证与数据库）。Cloudflare Turnstile 保护所有认证表单免受垃圾邮件和自动化滥用。',
+    q6: 'AlphaLab 是开源的吗？',
+    a6: '是的。核心平台代码在 GitHub 上以开源许可协议发布。您可以查看代码库、提交问题并参与贡献。您也可以使用自己的 API 密钥和基础设施自行部署。',
+  },
+
+  // P3 — Product Demo Walkthrough
+  walkthrough: {
+    title: 'AlphaLab 工作流程',
+    subtitle: '从市场扫描到执行 — 为清晰和可控而设计的系统化工作流。',
+    step1Title: '连接提供商',
+    step1Desc: '在一个地方关联您的 Alpaca 券商、AI 提供商密钥和数据源。',
+    step2Title: '扫描市场',
+    step2Desc: '跨数千只股票执行全局扫描。应用技术过滤器筛选候选标的。',
+    step3Title: '验证候选标的',
+    step3Desc: '使用 AI 驱动的深度验证来确认技术结构并评估风险因素。',
+    step4Title: '生成入场计划',
+    step4Desc: '获取确定性入场计划，包含目标价位、止损和仓位规模。',
+    step5Title: '自信执行',
+    step5Desc: '手动执行、审核 AI 提案或使用模拟交易在上线前验证策略。',
+  },
+
+  // P3 — Security Center (public page)
+  security: {
+    title: '安全与信任',
+    subtitle: '我们如何保护您的数据并维护平台完整性。',
+    featureAuth: '身份验证保护',
+    featureAuthDesc: '所有敏感路由需要身份验证。会话令牌通过 Supabase Auth 安全管理，支持自动令牌刷新。',
+    featureEmail: '邮件验证',
+    featureEmailDesc: '新账户需要邮件确认后才能使用平台功能。这可以防止垃圾注册并确保账户所有权。',
+    featureTurnstile: 'CAPTCHA 保护',
+    featureTurnstileDesc: '所有认证表单（登录、注册、密码重置）均受 Cloudflare Turnstile 保护，防止自动化滥用。',
+    featureEncryption: 'API 密钥加密',
+    featureEncryptionDesc: '提供商 API 密钥在静态存储时加密，在 UI 中遮盖显示。原始密钥不会被记录或通过 API 暴露。',
+    featureRateLimit: '速率限制启用',
+    featureRateLimitDesc: 'API 端点受每 IP 速率限制保护，防止滥用和暴力破解攻击。',
+    featureHeaders: '安全头已启用',
+    featureHeadersDesc: 'HTTP 安全头（HSTS、CSP、X-Frame-Options、X-Content-Type-Options）在所有页面和 API 响应中强制执行。',
+    ctaTitle: '深受研究者和交易者信赖。',
+    ctaDesc: 'AlphaLab 以安全、透明和用户控制为核心原则构建。',
   },
 };
 

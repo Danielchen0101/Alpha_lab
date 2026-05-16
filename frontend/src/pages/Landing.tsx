@@ -719,6 +719,82 @@ const Landing: React.FC = () => {
         </div>
       </section>
 
+      {/* P3 — Product Demo Walkthrough */}
+      <section className="section-container">
+        <div className="reveal-on-scroll visible" style={{ textAlign: 'center', marginBottom: 60 }}>
+          <h2 className="section-title">{t.walkthrough.title}</h2>
+          <p className="section-subtitle">{t.walkthrough.subtitle}</p>
+        </div>
+        <div style={{ position: 'relative', maxWidth: 900, margin: '0 auto' }}>
+          {/* Progress line */}
+          <div style={{
+            position: 'absolute', left: 32, top: 0, bottom: 0, width: 2,
+            background: 'linear-gradient(to bottom, rgba(24,144,255,0.4), rgba(24,144,255,0.1))',
+          }} />
+          {[
+            { icon: '🔗', title: t.walkthrough.step1Title, desc: t.walkthrough.step1Desc },
+            { icon: '🔍', title: t.walkthrough.step2Title, desc: t.walkthrough.step2Desc },
+            { icon: '✅', title: t.walkthrough.step3Title, desc: t.walkthrough.step3Desc },
+            { icon: '📋', title: t.walkthrough.step4Title, desc: t.walkthrough.step4Desc },
+            { icon: '🚀', title: t.walkthrough.step5Title, desc: t.walkthrough.step5Desc },
+          ].map((step, idx) => (
+            <div key={idx} className="reveal-on-scroll visible" style={{
+              display: 'flex', gap: 20, marginBottom: idx < 4 ? 36 : 0,
+              paddingLeft: 12, position: 'relative',
+            }}>
+              <div style={{
+                width: 52, height: 52, borderRadius: '50%', flexShrink: 0,
+                background: 'linear-gradient(135deg, rgba(24,144,255,0.15), rgba(24,144,255,0.05))',
+                border: '1px solid rgba(24,144,255,0.25)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 20, position: 'relative', zIndex: 1, backdropFilter: 'blur(8px)',
+              }}>
+                <span>{step.icon}</span>
+              </div>
+              <div style={{ flex: 1, paddingTop: 6 }}>
+                <h3 style={{ color: '#fff', fontSize: '1.1rem', fontWeight: 700, marginBottom: 6 }}>{step.title}</h3>
+                <p style={{ color: '#94a3b8', fontSize: '0.9rem', lineHeight: 1.6, margin: 0 }}>{step.desc}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* P3 — FAQ / Trust Section */}
+      <section className="section-container">
+        <div className="reveal-on-scroll visible" style={{ textAlign: 'center', marginBottom: 60 }}>
+          <h2 className="section-title">{t.faq.title}</h2>
+          <p className="section-subtitle">{t.faq.subtitle}</p>
+        </div>
+        <div style={{ maxWidth: 800, margin: '0 auto' }}>
+          {[
+            { q: t.faq.q1, a: t.faq.a1 },
+            { q: t.faq.q2, a: t.faq.a2 },
+            { q: t.faq.q3, a: t.faq.a3 },
+            { q: t.faq.q4, a: t.faq.a4 },
+            { q: t.faq.q5, a: t.faq.a5 },
+            { q: t.faq.q6, a: t.faq.a6 },
+          ].map((item, idx) => (
+            <div key={idx} className="reveal-on-scroll visible" style={{
+              background: 'rgba(255,255,255,0.02)',
+              border: '1px solid rgba(255,255,255,0.06)',
+              borderRadius: 16, padding: '24px 28px', marginBottom: 16,
+              transition: 'border-color 0.3s ease',
+            }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'rgba(24,144,255,0.3)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.06)'; }}
+            >
+              <h3 style={{ color: '#fff', fontSize: '1rem', fontWeight: 700, marginBottom: 10 }}>
+                {item.q}
+              </h3>
+              <p style={{ color: '#94a3b8', fontSize: '0.9rem', lineHeight: 1.7, margin: 0 }}>
+                {item.a}
+              </p>
+            </div>
+          ))}
+        </div>
+      </section>
+
       {/* Final CTA */}
       <section className="section-container" style={{ textAlign: 'center', padding: '100px 24px' }}>
         <div className="reveal-on-scroll visible" style={{ background: 'linear-gradient(145deg, rgba(24,144,255,0.05) 0%, rgba(114,46,209,0.05) 100%)', padding: '60px', borderRadius: '32px', border: '1px solid rgba(255,255,255,0.05)' }}>

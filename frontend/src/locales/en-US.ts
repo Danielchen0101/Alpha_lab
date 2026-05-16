@@ -927,6 +927,7 @@ const messages = {
     navWorkflow: 'Workflow',
     navFeatures: 'Features',
     navTechnology: 'Technology',
+    navSecurity: 'Security',
     signIn: 'Sign In',
     getStarted: 'Get Started',
 
@@ -2539,6 +2540,70 @@ const messages = {
     description: 'The page you are looking for does not exist or has been moved.',
     backToHome: 'Back to Home',
     signIn: 'Sign In',
+  },
+
+  // P3 — System Status Indicator
+  systemStatus: {
+    online: 'System Online',
+    degraded: 'System Degraded',
+    checking: 'Checking...',
+    lastChecked: 'Last checked',
+    apiHealthy: 'API Healthy',
+    apiUnreachable: 'API Unreachable',
+  },
+
+  // P3 — FAQ / Trust section (used on homepage)
+  faq: {
+    title: 'Frequently Asked Questions',
+    subtitle: 'Common questions about AlphaLab\'s platform and security practices.',
+    q1: 'Does AlphaLab provide financial or investment advice?',
+    a1: 'No. AlphaLab is a research, education, and decision-support platform. It provides market data, AI-powered analysis, and backtesting tools to assist your research. All trading decisions and execution are your own responsibility. We do not guarantee trading results or provide personalized financial advice.',
+    q2: 'How are my API keys protected?',
+    a2: 'API keys are encrypted at rest using application-level encryption before being stored in our database. When displayed in the UI, keys are masked (e.g. "sk-****"). We never log raw keys, share them with third parties, or expose them via API responses.',
+    q3: 'What is the difference between Paper and Real trading?',
+    a3: 'Paper trading simulates trades with virtual money using live market data — no real capital at risk. Real trading connects to your brokerage account and executes actual orders. You can switch modes in Settings at any time. Paper mode is ideal for strategy validation.',
+    q4: 'Does AI-powered trading execute automatically?',
+    a4: 'No. AI Agent provides analysis, validation, and entry plan suggestions, but manual user confirmation is required before any order is placed. The platform supports three modes: Manual (user decides everything), Hybrid (AI suggests, user confirms), and AI-assisted (AI proposes plans for review). Auto-execution is never enabled by default.',
+    q5: 'Which data providers does AlphaLab use?',
+    a5: 'AlphaLab integrates with multiple providers: Alpaca Markets for brokerage and trading, Finnhub for market data, and Supabase for authentication and database. Cloudflare Turnstile protects all auth forms against spam and automated abuse.',
+    q6: 'Is AlphaLab open source?',
+    a6: 'Yes. The core platform code is available on GitHub under an open source license. You can review the codebase, submit issues, and contribute. Self-hosting is possible with your own API keys and infrastructure.',
+  },
+
+  // P3 — Product Demo Walkthrough
+  walkthrough: {
+    title: 'How AlphaLab Works',
+    subtitle: 'From market scan to execution — a systematic workflow designed for clarity and control.',
+    step1Title: 'Connect Providers',
+    step1Desc: 'Link your Alpaca brokerage, AI provider keys, and data sources in one place.',
+    step2Title: 'Scan the Market',
+    step2Desc: 'Run global scans across thousands of equities. Apply technical filters to surface candidates.',
+    step3Title: 'Validate Candidates',
+    step3Desc: 'Use AI-driven deeper validation to verify technical structures and assess risk factors.',
+    step4Title: 'Generate Entry Plan',
+    step4Desc: 'Receive a deterministic entry plan with target levels, stop-loss, and position sizing.',
+    step5Title: 'Execute with Confidence',
+    step5Desc: 'Execute manually, review AI proposals, or use paper trading to validate before going live.',
+  },
+
+  // P3 — Security Center (public page)
+  security: {
+    title: 'Security & Trust',
+    subtitle: 'How we protect your data and maintain platform integrity.',
+    featureAuth: 'Authentication Protected',
+    featureAuthDesc: 'All sensitive routes require authentication. Session tokens are managed securely via Supabase Auth with HTTP-only cookies and automatic token refresh.',
+    featureEmail: 'Email Verification',
+    featureEmailDesc: 'New accounts require email confirmation before accessing platform features. This prevents spam and ensures account ownership.',
+    featureTurnstile: 'CAPTCHA Protected',
+    featureTurnstileDesc: 'All authentication forms (sign in, sign up, password reset) are protected by Cloudflare Turnstile to prevent automated abuse.',
+    featureEncryption: 'API Keys Encrypted',
+    featureEncryptionDesc: 'Provider API keys are encrypted at rest and masked in the UI. Raw keys are never logged or exposed via API responses.',
+    featureRateLimit: 'Rate Limiting Active',
+    featureRateLimitDesc: 'API endpoints are protected by per-IP rate limiting to prevent abuse and brute-force attacks.',
+    featureHeaders: 'Security Headers Enabled',
+    featureHeadersDesc: 'HTTP security headers (HSTS, CSP, X-Frame-Options, X-Content-Type-Options) are enforced on all pages and API responses.',
+    ctaTitle: 'Trusted by researchers and traders.',
+    ctaDesc: 'AlphaLab is built with security, transparency, and user control as core principles.',
   },
 };
 

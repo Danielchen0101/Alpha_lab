@@ -33,6 +33,7 @@ import SymbolAnalysis from './pages/SymbolAnalysis';
 import BacktestAnalysis from './pages/BacktestAnalysis';
 import LanguageTest from './pages/LanguageTest';
 import NotFound from './pages/NotFound';
+import Security from './pages/Security';
 import LanguageButtonPreview from './components/LanguageButtonPreview';
 import LanguageSwitcher from './components/LanguageSwitcher';
 import NavigationMenu from './components/NavigationMenu';
@@ -147,6 +148,7 @@ const App: React.FC = () => {
               <Route path="/forgot-password" element={<ForgotPassword />} />
               <Route path="/reset-password" element={<ResetPassword />} />
               <Route path="/scanner" element={<Navigate to="/market" replace />} />
+              <Route path="/security" element={<Security />} />
 
               {/* Protected routes - with sidebar layout */}
               <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>

@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from 'antd';
-import { GlobalOutlined } from '@ant-design/icons';
+import { GlobalOutlined, SafetyOutlined } from '@ant-design/icons';
 import { useLanguage } from '../contexts/LanguageContext';
+import SystemStatusIndicator from './SystemStatusIndicator';
 
 interface MarketingLayoutProps {
   children: React.ReactNode;
@@ -317,6 +318,15 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
           </div>
           <div style={{ color: '#475569', fontSize: '0.75rem', marginBottom: 20, lineHeight: 1.6 }}>
             {t.landing.footerPrivacy}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 24, marginBottom: 16, flexWrap: 'wrap' }}>
+            <SystemStatusIndicator />
+            <span
+              onClick={() => { navigate('/security'); window.scrollTo(0, 0); }}
+              style={{ color: '#60a5fa', fontSize: 11, cursor: 'pointer', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            >
+              <SafetyOutlined style={{ fontSize: 11 }} /> {t.landing.navSecurity || 'Security'}
+            </span>
           </div>
           <div style={{ color: '#475569', fontSize: '0.85rem', fontWeight: 600 }}>
             {t.landing.footerCopyright.replace('{year}', String(new Date().getFullYear()))}
