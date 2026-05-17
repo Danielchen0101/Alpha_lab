@@ -84,7 +84,6 @@ const NotFound: React.FC = () => {
               background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
               border: 'none', boxShadow: '0 8px 24px rgba(24,144,255,0.3)',
             }}
-            aria-label="Back to AlphaLab Home"
           >
             {t.notFound.backToHome}
           </Button>
@@ -98,7 +97,6 @@ const NotFound: React.FC = () => {
               color: '#60a5fa', 
               borderColor: 'rgba(24,144,255,0.5)' 
             }}
-            aria-label="Sign in to AlphaLab"
           >
             {t.notFound.signIn}
           </Button>

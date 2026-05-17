@@ -193,7 +193,6 @@ const ResetPassword: React.FC = () => {
             <Text style={{ color: '#94a3b8', display: 'block', marginBottom: 32, lineHeight: 1.6 }}>
               {t.auth.errorResetLinkExpired}
             </Text>
-            
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <Button 
                 type="primary" 

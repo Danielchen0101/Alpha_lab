@@ -376,7 +376,6 @@ const SignIn: React.FC = () => {
                 background: 'transparent',
               }}
               onClick={() => navigate('/')}
-              aria-label="Back to AlphaLab home"
             >
               <img
                 src="/brand/alphalab-logo.png"

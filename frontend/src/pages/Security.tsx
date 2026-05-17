@@ -137,7 +137,6 @@ const Security: React.FC = () => {
                 background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
                 border: 'none', boxShadow: '0 8px 24px rgba(24,144,255,0.3)',
               }}
-              aria-label="Back to AlphaLab Home"
             >
               {t.landing.navHome}
             </Button>
@@ -149,7 +148,6 @@ const Security: React.FC = () => {
                 height: 48, borderRadius: 12, fontWeight: 600, padding: '0 32px',
                 color: '#60a5fa', borderColor: 'rgba(24,144,255,0.5)',
               }}
-              aria-label="Get started with AlphaLab"
             >
               {t.landing.getStarted} <ArrowRightOutlined aria-hidden="true" />
             </Button>

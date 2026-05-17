@@ -806,8 +806,8 @@ const Landing: React.FC = () => {
             {t.landing.ctaDesc}
           </p>
           <Space size="large" className="hero-actions">
-            <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} style={{ height: 56, padding: '0 40px' }} aria-label="Get started with AlphaLab">{t.landing.ctaGetStarted}</Button>
-            <Button className="btn-secondary" onClick={() => navigate('/signin')} style={{ height: 56, padding: '0 40px' }} aria-label="Sign in to AlphaLab">{t.landing.ctaSignIn}</Button>
+            <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} style={{ height: 56, padding: '0 40px' }}>{t.landing.ctaGetStarted}</Button>
+            <Button className="btn-secondary" onClick={() => navigate('/signin')} style={{ height: 56, padding: '0 40px' }}>{t.landing.ctaSignIn}</Button>
           </Space>
         </div>
       </section>
