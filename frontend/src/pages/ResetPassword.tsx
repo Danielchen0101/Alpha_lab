@@ -31,7 +31,7 @@ const ResetPassword: React.FC = () => {
           background: rgba(0,0,0,0.35) !important;
           border: 1px solid rgba(255,255,255,0.10) !important;
           color: #F8FAFC !important;
-          border-radius: 12px !important;
+          border-radius: 10px !important;
         }
         .reset-password-card .ant-btn-primary[disabled],
         .reset-password-card .ant-btn-primary[disabled]:hover {
@@ -174,7 +174,7 @@ const ResetPassword: React.FC = () => {
   const cardStyle: React.CSSProperties = {
     position: 'relative', zIndex: 1, width: '100%', boxSizing: 'border-box', maxWidth: 460,
     background: 'rgba(17,25,40,0.65)',
-    border: '1px solid rgba(255,255,255,0.08)', borderRadius: 24,
+    border: '1px solid rgba(255,255,255,0.08)', borderRadius: 20,
     backdropFilter: 'blur(24px)',
     boxShadow: '0 30px 60px -12px rgba(0,0,0,0.8), 0 0 40px rgba(24,144,255,0.05)',
     padding: 'clamp(32px, 6vw, 48px) clamp(24px, 5vw, 40px)',
@@ -199,7 +199,7 @@ const ResetPassword: React.FC = () => {
                 size="large" 
                 onClick={() => navigate('/forgot-password')}
                 style={{
-                  height: 48, borderRadius: 12, fontWeight: 600,
+                  height: 48, borderRadius: 10, fontWeight: 600,
                   background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
                   border: 'none', boxShadow: '0 8px 24px rgba(24,144,255,0.3)',
                 }}
@@ -210,7 +210,7 @@ const ResetPassword: React.FC = () => {
                 ghost 
                 size="large" 
                 onClick={() => navigate('/signin')}
-                style={{ height: 48, borderRadius: 12, color: '#60a5fa', borderColor: '#1890ff' }}
+                style={{ height: 48, borderRadius: 10, color: '#60a5fa', borderColor: '#1890ff' }}
               >
                 {t.auth.backToSignIn}
               </Button>
@@ -246,7 +246,7 @@ const ResetPassword: React.FC = () => {
               type="primary" block size="large"
               onClick={() => navigate('/signin')}
               style={{
-                height: 48, borderRadius: 12, fontSize: '1rem', fontWeight: 600,
+                height: 48, borderRadius: 10, fontSize: '1rem', fontWeight: 600,
                 background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
                 border: 'none', color: '#fff',
                 boxShadow: '0 8px 24px rgba(24,144,255,0.3)',
@@ -327,7 +327,7 @@ const ResetPassword: React.FC = () => {
                   disabled={!formValid || submitting}
                   block size="large"
                   style={{
-                    height: 48, borderRadius: 12, fontSize: '1rem', fontWeight: 600,
+                    height: 48, borderRadius: 10, fontSize: '1rem', fontWeight: 600,
                     background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
                     border: 'none', color: '#fff',
                     boxShadow: '0 8px 24px rgba(24,144,255,0.3)',

@@ -532,6 +532,33 @@ const Landing: React.FC = () => {
           .feature-chip { font-size: 9px; padding: 2px 6px; }
           .hero-badge { font-size: 0.65rem; padding: 3px 8px; }
           .hero-visual-wrapper { display: none; }
+          .compact-proof-card { display: flex; }
+        }
+
+        .compact-proof-card {
+          display: none;
+          flex-direction: column;
+          align-items: center;
+          text-align: center;
+          gap: 8px;
+          padding: 16px;
+          margin: 0 auto;
+          max-width: 320px;
+          background: rgba(17,25,40,0.6);
+          border: 1px solid rgba(255,255,255,0.06);
+          border-radius: 16px;
+          backdrop-filter: blur(12px);
+        }
+        .compact-proof-badge {
+          font-size: 10px;
+          color: #60a5fa;
+          font-weight: 700;
+          letter-spacing: 0.5px;
+        }
+        .compact-proof-value {
+          font-size: 12px;
+          color: #94a3b8;
+          line-height: 1.5;
         }
 
         @media (min-width: 769px) and (max-width: 1024px) {
@@ -622,13 +649,13 @@ const Landing: React.FC = () => {
               {t.landing.heroSubtitle || "AlphaLab combines AI intelligence, real-time market data, and advanced analytics to help you trade with clarity and confidence."}
             </p>
             <div className="feature-chips">
-              <span className="feature-chip"><AimOutlined style={{ color: '#60a5fa' }} /> Real-time scanning</span>
-              <span className="feature-chip"><RobotOutlined style={{ color: '#60a5fa' }} /> AI validation</span>
-              <span className="feature-chip"><CheckCircleOutlined style={{ color: '#60a5fa' }} /> Risk-aware execution</span>
-              <span className="feature-chip"><ExperimentOutlined style={{ color: '#60a5fa' }} /> Backtest ready</span>
+              <span className="feature-chip"><AimOutlined style={{ color: '#60a5fa' }} /> {t.landing.chipScanning}</span>
+              <span className="feature-chip"><RobotOutlined style={{ color: '#60a5fa' }} /> {t.landing.chipAI}</span>
+              <span className="feature-chip"><CheckCircleOutlined style={{ color: '#60a5fa' }} /> {t.landing.chipRisk}</span>
+              <span className="feature-chip"><ExperimentOutlined style={{ color: '#60a5fa' }} /> {t.landing.chipBacktest}</span>
             </div>
             <Space size="large" className="hero-actions">
-              <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')}>
+              <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} aria-label={t.landing.ariaLabelGetStarted}>
                 {t.landing.startBuilding || "Start Free Trial"} <ArrowRightOutlined aria-hidden="true" />
               </Button>
               <Button className="btn-secondary" onClick={() => navigate('/platform')}>
@@ -644,6 +671,11 @@ const Landing: React.FC = () => {
                 <StockMarketHeroVisual />
               </div>
             </div>
+          </div>
+          {/* Compact product proof card for very small screens (<=430px) */}
+          <div className="compact-proof-card">
+            <div className="compact-proof-badge">{t.landing.heroBadge}</div>
+            <div className="compact-proof-value">{t.landing.heroSubtitle}</div>
           </div>
         </div>
       </section>
@@ -871,8 +903,8 @@ const Landing: React.FC = () => {
               {t.landing.ctaDesc}
             </p>
             <Space size="large" className="hero-actions">
-              <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} style={{ height: 56, padding: '0 40px' }}>{t.landing.ctaGetStarted}</Button>
-              <Button className="btn-secondary" onClick={() => navigate('/signin')} style={{ height: 56, padding: '0 40px' }}>{t.landing.ctaSignIn}</Button>
+              <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} style={{ height: 56, padding: '0 40px' }} aria-label={t.landing.ariaLabelGetStarted}>{t.landing.ctaGetStarted}</Button>
+              <Button className="btn-secondary" onClick={() => navigate('/signin')} style={{ height: 56, padding: '0 40px' }} aria-label={t.landing.ariaLabelSignIn}>{t.landing.ctaSignIn}</Button>
             </Space>
           </div>
         </RevealSection>

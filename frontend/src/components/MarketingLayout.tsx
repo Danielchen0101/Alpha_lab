@@ -140,6 +140,10 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
           .nav-header .btn-get-started { display: none; }
           .nav-links { display: none; }
         }
+        @media (max-width: 480px) {
+          .nav-header { padding: 0 12px !important; }
+          .nav-actions { gap: 4px !important; }
+        }
 
         /* Buttons */
         .btn-primary {
@@ -299,8 +303,8 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
         </div>
         <div className="nav-actions">
           <Button type="text" onClick={toggleLanguage} style={{ color: '#94a3b8', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'clamp(12px, 1vw, 13px)', padding: '4px 8px' }} aria-label={t.landing.ariaLabelSwitchLang}><GlobalOutlined aria-hidden="true" style={{ fontSize: 'clamp(12px, 1vw, 14px)' }} /> <span className="lang-text">{language === 'zh-CN' ? '中文' : 'EN'}</span></Button>
-          <Button type="text" style={{ color: '#fff', fontWeight: 600, fontSize: 'clamp(13px, 1vw, 14px)', padding: '4px 8px' }} onClick={() => navigate('/signin')}>{t.landing.signIn}</Button>
-          <Button type="primary" className="btn-get-started" style={{ background: '#1890ff', borderColor: '#1890ff', fontWeight: 600, boxShadow: '0 4px 12px rgba(24,144,255,0.3)' }} onClick={() => navigate('/signup')}>{t.landing.getStarted}</Button>
+          <Button type="text" style={{ color: '#fff', fontWeight: 600, fontSize: 'clamp(13px, 1vw, 14px)', padding: '4px 8px' }} onClick={() => navigate('/signin')} aria-label={t.landing.ariaLabelSignIn}>{t.landing.signIn}</Button>
+          <Button type="primary" className="btn-get-started" style={{ background: '#1890ff', borderColor: '#1890ff', fontWeight: 600, boxShadow: '0 4px 12px rgba(24,144,255,0.3)' }} onClick={() => navigate('/signup')} aria-label={t.landing.ariaLabelGetStarted}>{t.landing.getStarted}</Button>
         </div>
       </nav>
 

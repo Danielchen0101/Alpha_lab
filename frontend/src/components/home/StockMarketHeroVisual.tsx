@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { CheckCircleOutlined, LoadingOutlined, ArrowUpOutlined, ArrowDownOutlined, ThunderboltOutlined, LineChartOutlined, BarChartOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
+import { useLanguage } from '../../contexts/LanguageContext';
 
 const tickers = [
   { sym: 'NVDA', p: '1,037.89', c: '+3.42%', up: true, path: 'M0 16 Q10 10 20 12 T40 2' },
@@ -32,14 +33,14 @@ const TopTickerCard = ({ symbol, price, change, up, delay, path }: any) => (
   </motion.div>
 );
 
-const SignalRow = ({ sym, signal, score, type }: any) => (
+const SignalRow = ({ sym, signal, score, typeLabel, buyLabel, watchLabel }: any) => (
   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <span style={{ fontWeight: 700, color: '#f8fafc', fontSize: 12, width: 44 }}>{sym}</span>
-      <span style={{ fontSize: 11, color: '#94a3b8' }}>{type}</span>
+      <span style={{ fontSize: 11, color: '#94a3b8' }}>{typeLabel}</span>
     </div>
     <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-      <span style={{ fontSize: 12, fontWeight: 700, color: signal === 'BUY' ? '#10b981' : signal === 'WATCH' ? '#f59e0b' : '#ef4444' }}>{signal}</span>
+      <span style={{ fontSize: 12, fontWeight: 700, color: signal === 'BUY' ? '#10b981' : signal === 'WATCH' ? '#f59e0b' : '#ef4444' }}>{signal === 'BUY' ? buyLabel : signal === 'WATCH' ? watchLabel : signal}</span>
       <span style={{ fontSize: 12, color: '#e2e8f0', background: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: 4, whiteSpace: 'nowrap' }}>{score}</span>
     </div>
   </div>
@@ -67,6 +68,7 @@ const TradeRow = ({ sym, side, size, price, time }: any) => (
 );
 
 const StockMarketHeroVisual: React.FC = () => {
+  const { t } = useLanguage();
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
@@ -212,14 +214,14 @@ const StockMarketHeroVisual: React.FC = () => {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 4 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div className="pulse-indicator" aria-hidden="true" style={{ width: 6, height: 6 }}></div>
-          <span style={{ fontSize: 10, color: '#4ade80', fontWeight: 600, letterSpacing: 0.3 }}>AI PIPELINE ACTIVE</span>
+          <span style={{ fontSize: 10, color: '#4ade80', fontWeight: 600, letterSpacing: 0.3 }}>{t.landing.dashPreviewStatus?.toUpperCase() || 'AI PIPELINE ACTIVE'}</span>
           <span style={{ fontSize: 10, color: '#64748b' }}>|</span>
-          <span style={{ fontSize: 10, color: '#94a3b8' }}>Risk Engine Online · 42ms</span>
+          <span style={{ fontSize: 10, color: '#94a3b8' }}>{t.landing.dashPreviewRisk} · 42ms</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <ThunderboltOutlined aria-hidden="true" style={{ color: '#4ade80', fontSize: 11 }} />
           <span style={{ fontSize: 10, color: '#4ade80', fontWeight: 700 }}>NVDA</span>
-          <span style={{ fontSize: 10, color: '#4ade80', fontWeight: 800, background: 'rgba(16,185,129,0.1)', padding: '2px 6px', borderRadius: 4 }}>BUY</span>
+          <span style={{ fontSize: 10, color: '#4ade80', fontWeight: 800, background: 'rgba(16,185,129,0.1)', padding: '2px 6px', borderRadius: 4 }}>{t.landing.dashPreviewBuy}</span>
           <span style={{ fontSize: 10, color: '#94a3b8' }}>92.4%</span>
         </div>
       </div>
@@ -236,21 +238,21 @@ const StockMarketHeroVisual: React.FC = () => {
         <div style={{ flex: 0.9, display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <div className="glass-panel" style={{ padding: 10 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-              <span style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase' }}><ThunderboltOutlined aria-hidden="true" /> AI Agent Pipeline</span>
+              <span style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase' }}><ThunderboltOutlined aria-hidden="true" /> {t.landing.dashPreviewAiOrchestrator}</span>
             </div>
             
             <div className="workflow-step">
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                <span style={{ color: '#e2e8f0', fontWeight: 600, fontSize: 13 }}>Global Market Scan</span>
-                <span className="status-chip success"><CheckCircleOutlined aria-hidden="true" /> Done</span>
+                <span style={{ color: '#e2e8f0', fontWeight: 600, fontSize: 13 }}>{t.landing.dashPreviewGlobalScan}</span>
+                <span className="status-chip success"><CheckCircleOutlined aria-hidden="true" /> {t.landing.dashPreviewDone}</span>
               </div>
-              <div style={{ fontSize: 11, color: '#64748b' }}>Processed 8,421 Equities</div>
+              <div style={{ fontSize: 11, color: '#64748b' }}>{t.landing.dashPreviewProcessed}</div>
             </div>
             
             <div className="workflow-step">
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                <span style={{ color: '#e2e8f0', fontWeight: 600, fontSize: 13 }}>Signal Validation</span>
-                <span className="status-chip"><LoadingOutlined aria-hidden="true" style={{ marginRight: 4 }}/> Active</span>
+                <span style={{ color: '#e2e8f0', fontWeight: 600, fontSize: 13 }}>{t.landing.dashPreviewSignal}</span>
+                <span className="status-chip"><LoadingOutlined aria-hidden="true" style={{ marginRight: 4 }}/> {t.landing.dashPreviewActive}</span>
               </div>
               <div style={{ height: 3, background: 'rgba(255,255,255,0.05)', borderRadius: 2, overflow: 'hidden', marginTop: 8 }}>
                 <motion.div 
@@ -262,11 +264,11 @@ const StockMarketHeroVisual: React.FC = () => {
           </div>
 
           <div className="glass-panel" style={{ flex: 1, padding: 10, display: 'flex', flexDirection: 'column' }}>
-            <div style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 12 }}><BarChartOutlined aria-hidden="true" /> Top Signals</div>
-            <SignalRow sym="NVDA" type="Momentum Breakout" signal="BUY" score="92" />
-            <SignalRow sym="TSLA" type="Mean Reversion" signal="WATCH" score="64" />
-            <SignalRow sym="AAPL" type="Trend Continuation" signal="BUY" score="85" />
-            <SignalRow sym="MSFT" type="Earnings Momentum" signal="WATCH" score="72" />
+            <div style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 12 }}><BarChartOutlined aria-hidden="true" /> {t.landing.dashPreviewTopSignals}</div>
+            <SignalRow sym="NVDA" typeLabel={t.landing.dashPreviewMomentum} signal="BUY" buyLabel={t.landing.dashPreviewBuy} watchLabel={t.landing.dashPreviewWatch} score="92" />
+            <SignalRow sym="TSLA" typeLabel={t.landing.dashPreviewMeanReversion} signal="WATCH" buyLabel={t.landing.dashPreviewBuy} watchLabel={t.landing.dashPreviewWatch} score="64" />
+            <SignalRow sym="AAPL" typeLabel={t.landing.dashPreviewTrendContinuation} signal="BUY" buyLabel={t.landing.dashPreviewBuy} watchLabel={t.landing.dashPreviewWatch} score="85" />
+            <SignalRow sym="MSFT" typeLabel={t.landing.dashPreviewEarningsMomentum} signal="WATCH" buyLabel={t.landing.dashPreviewBuy} watchLabel={t.landing.dashPreviewWatch} score="72" />
           </div>
         </div>
 
@@ -275,13 +277,13 @@ const StockMarketHeroVisual: React.FC = () => {
           <div className="glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '10px 14px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
               <div>
-                <div style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 4 }}><LineChartOutlined aria-hidden="true" /> Equity Curve Preview</div>
+                <div style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 4 }}><LineChartOutlined aria-hidden="true" /> {t.landing.dashPreviewEquityCurve}</div>
                 <div style={{ color: '#f8fafc', fontSize: 22, fontWeight: 800 }}>$1.24M <span style={{ fontSize: 13, color: '#10b981', fontWeight: 600, marginLeft: 8 }}>+28.4% YTD</span></div>
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
-                <span style={{ fontSize: 11, fontWeight: 600, background: 'rgba(24,144,255,0.15)', color: '#60a5fa', padding: '4px 10px', borderRadius: 4 }}>YTD</span>
-                <span style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8', padding: '4px 10px', borderRadius: 4 }}>1M</span>
-                <span style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8', padding: '4px 10px', borderRadius: 4 }}>1W</span>
+                <span style={{ fontSize: 11, fontWeight: 600, background: 'rgba(24,144,255,0.15)', color: '#60a5fa', padding: '4px 10px', borderRadius: 4 }}>{t.landing.dashPreviewYTD}</span>
+                <span style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8', padding: '4px 10px', borderRadius: 4 }}>{t.landing.dashPreview1M}</span>
+                <span style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8', padding: '4px 10px', borderRadius: 4 }}>{t.landing.dashPreview1W}</span>
               </div>
             </div>
 
@@ -305,19 +307,19 @@ const StockMarketHeroVisual: React.FC = () => {
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '8px' }}>
              <div className="glass-panel" style={{ padding: '6px 8px' }}>
-               <div style={{ color: '#64748b', fontSize: 9, textTransform: 'uppercase', marginBottom: 2, fontWeight: 600 }}>Win Rate</div>
+               <div style={{ color: '#64748b', fontSize: 9, textTransform: 'uppercase', marginBottom: 2, fontWeight: 600 }}>{t.landing.dashPreviewWinRate}</div>
                <div style={{ color: '#f8fafc', fontSize: 14, fontWeight: 800 }}>68.2%</div>
              </div>
              <div className="glass-panel" style={{ padding: '6px 8px' }}>
-               <div style={{ color: '#64748b', fontSize: 9, textTransform: 'uppercase', marginBottom: 2, fontWeight: 600 }}>Max Drawdown</div>
+               <div style={{ color: '#64748b', fontSize: 9, textTransform: 'uppercase', marginBottom: 2, fontWeight: 600 }}>{t.landing.dashPreviewMaxDD}</div>
                <div style={{ color: '#ef4444', fontSize: 14, fontWeight: 800 }}>-4.1%</div>
              </div>
              <div className="glass-panel" style={{ padding: '6px 8px' }}>
-               <div style={{ color: '#64748b', fontSize: 9, textTransform: 'uppercase', marginBottom: 2, fontWeight: 600 }}>Risk Exposure</div>
-               <div style={{ color: '#f8fafc', fontSize: 14, fontWeight: 800 }}>Low</div>
+               <div style={{ color: '#64748b', fontSize: 9, textTransform: 'uppercase', marginBottom: 2, fontWeight: 600 }}>{t.landing.dashPreviewRiskExp}</div>
+               <div style={{ color: '#f8fafc', fontSize: 14, fontWeight: 800 }}>{t.landing.dashPreviewRiskLow}</div>
              </div>
              <div className="glass-panel" style={{ padding: '6px 8px' }}>
-               <div style={{ color: '#64748b', fontSize: 9, textTransform: 'uppercase', marginBottom: 2, fontWeight: 600 }}>Sharpe Ratio</div>
+               <div style={{ color: '#64748b', fontSize: 9, textTransform: 'uppercase', marginBottom: 2, fontWeight: 600 }}>{t.landing.dashPreviewSharpe}</div>
                <div style={{ color: '#10b981', fontSize: 14, fontWeight: 800 }}>2.45</div>
              </div>
           </div>
@@ -326,7 +328,7 @@ const StockMarketHeroVisual: React.FC = () => {
         {/* Right: Market Pulse & Sector */}
         <div style={{ flex: 1.2, display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <div className="glass-panel" style={{ padding: 12 }}>
-             <div style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 12 }}><LineChartOutlined aria-hidden="true" /> Market Pulse</div>
+             <div style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 12 }}><LineChartOutlined aria-hidden="true" /> {t.landing.dashPreviewMarketPulse}</div>
              <div style={{ marginBottom: 12 }}>
                <div style={{ color: '#e2e8f0', fontSize: 13, fontWeight: 700, marginBottom: 2 }}>S&P 500</div>
                <div style={{ color: '#10b981', fontSize: 15, fontWeight: 800 }}>5,286.10 <span style={{ fontSize: 11, fontWeight: 600 }}>+0.63%</span></div>
@@ -342,7 +344,7 @@ const StockMarketHeroVisual: React.FC = () => {
           </div>
 
           <div className="glass-panel" style={{ flex: 1, padding: 10 }}>
-             <div style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 12 }}><SafetyCertificateOutlined aria-hidden="true" /> Sector Perf</div>
+             <div style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 12 }}><SafetyCertificateOutlined aria-hidden="true" /> {t.landing.dashPreviewSectorPerf}</div>
              <SectorRow name="Technology" perf="+2.1%" up={true} />
              <SectorRow name="Communications" perf="+1.4%" up={true} />
              <SectorRow name="Healthcare" perf="-0.8%" up={false} />
@@ -357,8 +359,8 @@ const StockMarketHeroVisual: React.FC = () => {
         style={{ padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 4 }}
       >
          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
-           <span style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase' }}>Live Executions Feed</span>
-           <span className="status-chip success"><CheckCircleOutlined aria-hidden="true" /> Auto-Routing</span>
+           <span style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase' }}>{t.landing.dashPreviewLiveFeed}</span>
+           <span className="status-chip success"><CheckCircleOutlined aria-hidden="true" /> {t.landing.dashPreviewAutoRouting}</span>
          </div>
          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' }}>
             <TradeRow sym="NVDA" side="BUY" size="140 shares" price="$1,037.89" time="12ms ago" />

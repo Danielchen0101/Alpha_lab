@@ -8,10 +8,12 @@ import {
   LockOutlined, CloudServerOutlined
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
+import { useLanguage } from '../contexts/LanguageContext';
 import MarketingLayout from '../components/MarketingLayout';
 
 const Technology: React.FC = () => {
   const navigate = useNavigate();
+  const { t } = useLanguage();
 
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -20,63 +22,63 @@ const Technology: React.FC = () => {
   const techStack = [
     {
       icon: <DesktopOutlined />,
-      title: 'Frontend: React & TypeScript',
-      desc: 'High-density trading interface built for performance and type-safety. Leverages Ant Design for professional components.',
-      category: 'Client'
+      titleKey: 'stackFrontendTitle',
+      descKey: 'stackFrontendDesc',
+      catKey: 'catClient'
     },
     {
       icon: <CloudServerOutlined />,
-      title: 'Backend: Python & Flask',
-      desc: 'Asynchronous engine for market data processing and quantitative calculations. High-concurrency ready.',
-      category: 'Server'
+      titleKey: 'stackBackendTitle',
+      descKey: 'stackBackendDesc',
+      catKey: 'catServer'
     },
     {
       icon: <DatabaseOutlined />,
-      title: 'Market Data Hub',
-      desc: 'Deep integration with institutional data providers (Finnhub) for real-time and historical tick data.',
-      category: 'Data Layer'
+      titleKey: 'stackDataTitle',
+      descKey: 'stackDataDesc',
+      catKey: 'catData'
     },
     {
       icon: <ApiOutlined />,
-      title: 'Alpaca Connectivity',
-      desc: 'Direct pipeline to Alpaca Markets for low-latency paper trading and live execution routing.',
-      category: 'Execution'
+      titleKey: 'stackAlpacaTitle',
+      descKey: 'stackAlpacaDesc',
+      catKey: 'catExecution'
     },
     {
       icon: <NodeIndexOutlined />,
-      title: 'Multi-LLM Pipeline',
-      desc: 'Universal adapter for OpenAI, Claude, and DeepSeek. Specialized prompt engineering for structural audit.',
-      category: 'Intelligence'
+      titleKey: 'stackLLMTitle',
+      descKey: 'stackLLMDesc',
+      catKey: 'catIntelligence'
     },
     {
       icon: <BarChartOutlined />,
-      title: 'Quant Core Engine',
-      desc: 'Vectorized backtesting and strategy evaluation system designed for rapid hypothesis validation.',
-      category: 'Quant'
+      titleKey: 'stackQuantTitle',
+      descKey: 'stackQuantDesc',
+      catKey: 'catQuant'
     },
     {
       icon: <PartitionOutlined />,
-      title: 'Validation Pipeline',
-      desc: 'Multi-stage decision logic that aggregates technical, sentiment, and structural scores into a final signal.',
-      category: 'Logic'
+      titleKey: 'stackValidationTitle',
+      descKey: 'stackValidationDesc',
+      catKey: 'catLogic'
     },
     {
       icon: <SafetyOutlined />,
-      title: 'Account-Aware Sizing',
-      desc: 'Dynamic position sizing that reads live account equity to calculate exact unit risk per trade.',
-      category: 'Risk'
+      titleKey: 'stackRiskTitle',
+      descKey: 'stackRiskDesc',
+      catKey: 'catRisk'
     },
     {
       icon: <LockOutlined />,
-      title: 'Secure Secret Management',
-      desc: 'Users configure their own provider keys. Logic is built to ensure API secrets are never committed to public source control.',
-      category: 'Security'
+      titleKey: 'stackSecretsTitle',
+      descKey: 'stackSecretsDesc',
+      catKey: 'catSecurity'
     },
     {
       icon: <SecurityScanOutlined />,
-      title: 'Docker Orchestration',
-      desc: 'Fully containerized environment ensuring identical execution across development, testing, and production.',
-      category: 'DevOps'
+      titleKey: 'stackDockerTitle',
+      descKey: 'stackDockerDesc',
+      catKey: 'catDevOps'
     }
   ];
 
@@ -156,41 +158,41 @@ const Technology: React.FC = () => {
       `}</style>
 
       <div className="page-hero">
-        <h1 className="page-title reveal-on-scroll">Built for Scale & Extensibility</h1>
+        <h1 className="page-title reveal-on-scroll">{t.technology.heroTitle}</h1>
         <p className="page-subtitle reveal-on-scroll delay-100">
-          AlphaLab is powered by a modern tech stack engineered for high-performance quantitative analysis, seamless API integrations, and extensible multi-LLM architecture.
+          {t.technology.heroSubtitle}
         </p>
       </div>
 
       <section className="section-container" style={{ paddingTop: 0, paddingBottom: 100 }}>
         {/* Architecture Diagram Concept */}
         <div className="architecture-concept reveal-on-scroll">
-          <h2 style={{ fontSize: '2rem', fontWeight: 800, color: '#fff', marginBottom: 24 }}>System Architecture</h2>
+          <h2 style={{ fontSize: '2rem', fontWeight: 800, color: '#fff', marginBottom: 24 }}>{t.technology.archTitle}</h2>
           <Row gutter={[32, 32]} align="middle" justify="center">
             <Col xs={24} md={6}>
               <div style={{ padding: 20, background: 'rgba(24,144,255,0.1)', borderRadius: 16, border: '1px dashed rgba(24,144,255,0.3)' }}>
-                <h4 style={{ color: '#1890ff', margin: 0 }}>Market Feeds</h4>
+                <h4 style={{ color: '#1890ff', margin: 0 }}>{t.technology.archMarketFeeds}</h4>
               </div>
             </Col>
             <Col xs={24} md={1}>
-              <ArrowRightOutlined style={{ color: '#475569', fontSize: 20 }} />
+              <ArrowRightOutlined aria-hidden="true" style={{ color: '#475569', fontSize: 20 }} />
             </Col>
             <Col xs={24} md={6}>
               <div style={{ padding: 20, background: 'rgba(114,46,209,0.1)', borderRadius: 16, border: '1px solid rgba(114,46,209,0.3)' }}>
-                <h4 style={{ color: '#722ed1', margin: 0 }}>AI Validation Core</h4>
+                <h4 style={{ color: '#722ed1', margin: 0 }}>{t.technology.archAIValidation}</h4>
               </div>
             </Col>
             <Col xs={24} md={1}>
-              <ArrowRightOutlined style={{ color: '#475569', fontSize: 20 }} />
+              <ArrowRightOutlined aria-hidden="true" style={{ color: '#475569', fontSize: 20 }} />
             </Col>
             <Col xs={24} md={6}>
               <div style={{ padding: 20, background: 'rgba(73,170,25,0.1)', borderRadius: 16, border: '1px dashed rgba(73,170,25,0.3)' }}>
-                <h4 style={{ color: '#49aa19', margin: 0 }}>Broker API</h4>
+                <h4 style={{ color: '#49aa19', margin: 0 }}>{t.technology.archBrokerAPI}</h4>
               </div>
             </Col>
           </Row>
           <p style={{ color: '#64748b', marginTop: 40, maxWidth: 600, margin: '40px auto 0' }}>
-            A decoupled, modular approach where data ingestion, intelligence validation, and execution logic are separated for maximum stability.
+            {t.technology.archDesc}
           </p>
         </div>
 
@@ -198,19 +200,19 @@ const Technology: React.FC = () => {
           {techStack.map((tech, i) => (
             <Col xs={24} sm={12} lg={8} key={i}>
               <div className={`tech-card reveal-on-scroll delay-${(i % 3) * 100 + 100}`}>
-                <div className="tech-category">{tech.category}</div>
-                <div className="tech-icon">{tech.icon}</div>
-                <h4 className="tech-title">{tech.title}</h4>
-                <p className="tech-desc">{tech.desc}</p>
+                <div className="tech-category">{t.technology[tech.catKey as keyof typeof t.technology]}</div>
+                <div className="tech-icon">{React.cloneElement(tech.icon as React.ReactElement, { "aria-hidden": "true" })}</div>
+                <h4 className="tech-title">{t.technology[tech.titleKey as keyof typeof t.technology]}</h4>
+                <p className="tech-desc">{t.technology[tech.descKey as keyof typeof t.technology]}</p>
               </div>
             </Col>
           ))}
         </Row>
         
         <div style={{ textAlign: 'center', marginTop: 120 }} className="reveal-on-scroll">
-          <h3 style={{ color: '#fff', fontSize: '2rem', fontWeight: 800, marginBottom: 24 }}>Ready to leverage our stack?</h3>
+          <h3 style={{ color: '#fff', fontSize: '2rem', fontWeight: 800, marginBottom: 24 }}>{t.technology.ctaTitle}</h3>
           <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')}>
-            Get Started Now <ArrowRightOutlined />
+            {t.technology.ctaAction} <ArrowRightOutlined aria-hidden="true" />
           </Button>
         </div>
       </section>

@@ -39,7 +39,7 @@ const ForgotPassword: React.FC = () => {
           background: rgba(0,0,0,0.35) !important;
           border: 1px solid rgba(255,255,255,0.10) !important;
           color: #F8FAFC !important;
-          border-radius: 12px !important;
+          border-radius: 10px !important;
         }
         .forgot-password-card .ant-btn-primary[disabled],
         .forgot-password-card .ant-btn-primary[disabled]:hover {
@@ -184,7 +184,7 @@ const ForgotPassword: React.FC = () => {
           maxWidth: 460,
           background: 'rgba(17,25,40,0.65)',
           border: '1px solid rgba(255,255,255,0.08)',
-          borderRadius: 24,
+          borderRadius: 20,
           backdropFilter: 'blur(24px)',
           boxShadow: '0 30px 60px -12px rgba(0,0,0,0.8), 0 0 40px rgba(24,144,255,0.05)',
           padding: 'clamp(32px, 6vw, 48px) clamp(24px, 5vw, 40px)',
@@ -369,7 +369,7 @@ const ForgotPassword: React.FC = () => {
                   size="large"
                   style={{
                     height: 48,
-                    borderRadius: 12,
+                    borderRadius: 10,
                     fontSize: '1rem',
                     fontWeight: 600,
                     background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
@@ -397,15 +397,15 @@ const ForgotPassword: React.FC = () => {
 
         <div className="trust-strip">
           <div className="trust-item">
-            <SafetyCertificateOutlined />
+            <SafetyCertificateOutlined aria-hidden="true" />
             <span>{t.auth.trustSupabase}</span>
           </div>
           <div className="trust-item">
-            <LockOutlined />
+            <LockOutlined aria-hidden="true" />
             <span>{t.auth.trustEncryption}</span>
           </div>
           <div className="trust-item">
-            <SafetyOutlined />
+            <SafetyOutlined aria-hidden="true" />
             <span>{t.auth.trustCloudflare}</span>
           </div>
         </div>
