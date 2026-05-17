@@ -2520,6 +2520,7 @@ const messages = {
     nextStep2: '准备好后连接服务',
     nextStep3: '从模拟交易开始',
     oauthHint: '认证过程由 Supabase Auth 安全处理。',
+    oauthRedirecting: '跳转中...',
     registrationFailed: '注册失败',
     passwordsDoNotMatchError: '两次输入的密码不一致',
     invalidCredentials: '邮箱或密码错误',

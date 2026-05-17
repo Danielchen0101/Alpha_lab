@@ -2520,6 +2520,7 @@ const messages = {
     nextStep2: 'Connect providers when ready',
     nextStep3: 'Start with paper trading',
     oauthHint: 'Authentication is handled securely by Supabase Auth.',
+    oauthRedirecting: 'Redirecting...',
     registrationFailed: 'Registration failed',
     passwordsDoNotMatchError: 'Passwords do not match',
     invalidCredentials: 'Invalid email or password',

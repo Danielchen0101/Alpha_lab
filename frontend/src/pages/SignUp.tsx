@@ -16,7 +16,6 @@ const SignUp: React.FC = () => {
   const navigate = useNavigate();
   const { signUp } = useAuth();
   const { t, language, setLanguage } = useLanguage();
-  const isCN = language === 'zh-CN';
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
   const [oauthLoading, setOauthLoading] = useState<string | null>(null);
@@ -51,7 +50,7 @@ const SignUp: React.FC = () => {
           transition: border-color 0.25s ease, box-shadow 0.25s ease !important;
         }
         .signup-card .ant-form-item {
-          margin-bottom: 14px !important;
+          margin-bottom: 12px !important;
         }
         .signup-card .ant-form-item-label {
           padding-bottom: 4px !important;
@@ -235,7 +234,8 @@ const SignUp: React.FC = () => {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        padding: '24px 16px',
+        padding: 'clamp(12px, 2vh, 24px) clamp(12px, 3vw, 40px)',
+        boxSizing: 'border-box',
         position: 'relative',
         overflow: 'hidden',
       }}
@@ -316,7 +316,7 @@ const SignUp: React.FC = () => {
           display: 'flex',
           width: '100%',
           boxSizing: 'border-box',
-          maxWidth: 960,
+          maxWidth: 1060,
           minHeight: 'auto',
           background: 'rgba(17,25,40,0.65)',
           border: '1px solid rgba(255,255,255,0.08)',
@@ -337,7 +337,7 @@ const SignUp: React.FC = () => {
             display: 'flex',
             flexDirection: 'column',
             justifyContent: 'center',
-            padding: 'clamp(32px, 5vw, 40px) clamp(24px, 6vw, 48px)',
+            padding: 'clamp(24px, 3vw, 40px) clamp(20px, 3vw, 48px)',
             background:
               'linear-gradient(160deg, rgba(114,46,209,0.04) 0%, rgba(24,144,255,0.04) 100%)',
             borderRight: '1px solid rgba(255,255,255,0.05)',
@@ -362,16 +362,16 @@ const SignUp: React.FC = () => {
             <h3
               style={{
                 color: '#fff',
-                marginBottom: 28,
+                marginBottom: 24,
                 fontWeight: 700,
-                fontSize: '1.6rem',
+                fontSize: 'clamp(1.2rem, 1.8vw, 1.5rem)',
                 letterSpacing: '-0.02em',
               }}
             >
               {t.auth.buildYourEdge}
             </h3>
             {features.map((item, i) => (
-              <div key={i} style={{ marginBottom: 20 }}>
+              <div key={i} style={{ marginBottom: 16 }}>
                 <div
                   style={{
                     display: 'flex',
@@ -438,19 +438,21 @@ const SignUp: React.FC = () => {
         {/* Right panel — form */}
         <div
           style={{
-            flex: 1,
-            padding: 'clamp(32px, 5vw, 40px) clamp(24px, 6vw, 48px)',
+            flex: '0 1 auto',
+            width: 'clamp(360px, 40vw, 480px)',
+            padding: 'clamp(24px, 3vw, 40px) clamp(20px, 3vw, 48px)',
             display: 'flex',
             flexDirection: 'column',
             justifyContent: 'center',
           }}
+          className="signup-form-panel"
         >
           <div style={{ marginBottom: 24 }}>
             <div
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                marginBottom: 20,
+                marginBottom: 16,
                 cursor: 'pointer',
                 background: 'transparent',
               }}
@@ -474,13 +476,13 @@ const SignUp: React.FC = () => {
                 color: '#fff',
                 marginBottom: 4,
                 fontWeight: 700,
-                fontSize: '1.75rem',
+                fontSize: 'clamp(26px, 3vw, 36px)',
                 letterSpacing: '-0.02em',
               }}
             >
               {t.auth.signUpTitle}
             </Title>
-            <Text style={{ color: '#94a3b8', fontSize: '0.95rem' }}>
+            <Text style={{ color: '#94a3b8', fontSize: 'clamp(0.85rem, 1.2vw, 0.95rem)' }}>
               {t.auth.signUpSubtitle}
             </Text>
           </div>
@@ -595,7 +597,8 @@ const SignUp: React.FC = () => {
                     prefix={<UserOutlined />}
                     placeholder={t.auth.fullNamePlaceholder}
                     size="large"
-                    style={{ height: 44, fontSize: '0.95rem' }}
+                    className="auth-input"
+                    style={{ fontSize: '0.95rem' }}
                   />
                 </Form.Item>
 
@@ -612,7 +615,8 @@ const SignUp: React.FC = () => {
                     prefix={<MailOutlined />}
                     placeholder={t.auth.emailPlaceholder}
                     size="large"
-                    style={{ height: 44, fontSize: '0.95rem' }}
+                    className="auth-input"
+                    style={{ fontSize: '0.95rem' }}
                   />
                 </Form.Item>
 
@@ -630,12 +634,13 @@ const SignUp: React.FC = () => {
                     placeholder={t.auth.passwordPlaceholder}
                     size="large"
                     autoComplete="new-password"
-                    style={{ height: 44, fontSize: '0.95rem' }}
+                    className="auth-input"
+                    style={{ fontSize: '0.95rem' }}
                   />
                 </Form.Item>
 
                 {/* Password rule checklist */}
-                <div style={{ marginTop: -16, marginBottom: 16, paddingLeft: 4 }}>
+                <div className="password-checklist" style={{ marginTop: -16, marginBottom: 16, paddingLeft: 4 }}>
                   {[
                     { test: (v: string) => v.length >= 8, label: t.auth.passwordRuleLength },
                     { test: (v: string) => /[A-Z]/.test(v), label: t.auth.passwordRuleUpper },
@@ -683,7 +688,8 @@ const SignUp: React.FC = () => {
                     placeholder={t.auth.confirmPasswordPlaceholder}
                     size="large"
                     autoComplete="new-password"
-                    style={{ height: 44, fontSize: '0.95rem' }}
+                    className="auth-input"
+                    style={{ fontSize: '0.95rem' }}
                   />
                 </Form.Item>
 
@@ -815,8 +821,8 @@ const SignUp: React.FC = () => {
                     block
                     size="large"
                     disabled={!formValid || submitting}
+                    className="auth-btn"
                     style={{
-                      height: 44,
                       borderRadius: 10,
                       fontSize: '1rem',
                       fontWeight: 600,
@@ -843,15 +849,15 @@ const SignUp: React.FC = () => {
               </Form>
 
               {/* What happens next */}
-              <div style={{
+              <div className="next-steps" style={{
                 marginTop: 24,
-                marginBottom: 20,
+                marginBottom: 16,
                 padding: '16px 20px',
                 background: 'rgba(24,144,255,0.04)',
                 border: '1px solid rgba(24,144,255,0.12)',
                 borderRadius: 12,
               }}>
-                <Text style={{ color: '#94a3b8', fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px', display: 'block', marginBottom: 10 }}>
+                <Text className="next-steps-title" style={{ color: '#94a3b8', fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px', display: 'block', marginBottom: 10 }}>
                   {t.auth.nextStepsTitle}
                 </Text>
                 {[t.auth.nextStep1, t.auth.nextStep2, t.auth.nextStep3].map((step, i) => (
@@ -864,7 +870,7 @@ const SignUp: React.FC = () => {
                     }}>
                       <span style={{ color: '#60a5fa', fontSize: 10, fontWeight: 700 }}>{i + 1}</span>
                     </div>
-                    <Text style={{ color: '#cbd5e1', fontSize: '0.85rem' }}>{step}</Text>
+                    <Text className="next-step-text" style={{ color: '#cbd5e1', fontSize: '0.85rem' }}>{step}</Text>
                   </div>
                 ))}
               </div>
@@ -885,7 +891,7 @@ const SignUp: React.FC = () => {
               </div>
 
               {/* Divider + Social OAuth */}
-              <div style={{ marginTop: 16, maxWidth: 420 }}>
+              <div style={{ marginTop: 14, maxWidth: 420 }}>
                 <div
                   style={{
                     display: 'flex',
@@ -963,7 +969,7 @@ const SignUp: React.FC = () => {
                       {isLoading ? (
                         <span style={{ display: 'inline-block', width: 18, height: 18, border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.6s linear infinite' }} />
                       ) : btn.icon}
-                      {isLoading ? (isCN ? '跳转中...' : 'Redirecting...') : btn.label}
+                      {isLoading ? t.auth.oauthRedirecting : btn.label}
                     </button>
                   );
                 })}
@@ -982,7 +988,7 @@ const SignUp: React.FC = () => {
               </div>
 
               {/* Sign in link */}
-              <div style={{ marginTop: 16 }}>
+              <div style={{ marginTop: 14 }}>
                 <Text style={{ color: '#94a3b8', fontSize: '0.9rem' }}>
                   {t.auth.alreadyHaveAccount}{' '}
                   <Link
@@ -995,7 +1001,7 @@ const SignUp: React.FC = () => {
               </div>
 
               {/* Back to home */}
-              <div style={{ marginTop: 16 }}>
+              <div style={{ marginTop: 12 }}>
                 <Link
                   to="/"
                   style={{
@@ -1023,18 +1029,47 @@ const SignUp: React.FC = () => {
         </div>
       </div>
 
-      {/* Responsive: stack vertically on narrow screens */}
+      {/* Responsive styles */}
       <style>{`
+        @media (max-width: 1024px) {
+          .signup-card { max-width: 600px !important; }
+          .signup-form-panel { width: 100% !important; }
+          .signup-left-panel { display: none !important; }
+        }
         @media (max-width: 768px) {
-          .signup-card {
-            flex-direction: column !important;
-            min-height: auto !important;
-          }
-          .signup-left-panel {
-            border-right: none !important;
-            border-bottom: 1px solid rgba(255,255,255,0.05) !important;
-            padding: 40px 32px !important;
-          }
+          .signup-card { flex-direction: column !important; max-width: 100% !important; }
+          .signup-form-panel { width: 100% !important; padding: clamp(20px, 4vw, 32px) !important; }
+          .signup-left-panel { display: none !important; }
+        }
+        @media (max-width: 480px) {
+          .signup-form-panel { padding: 18px 16px !important; }
+          .signup-card .ant-form-item { margin-bottom: 10px !important; }
+          .next-steps { padding: 12px 14px !important; margin-top: 18px !important; margin-bottom: 14px !important; }
+          .next-steps .next-steps-title { font-size: 0.65rem !important; margin-bottom: 8px !important; }
+          .next-steps .next-step-text { font-size: 0.8rem !important; }
+        }
+        @media (max-width: 375px) {
+          .signup-form-panel { padding: 14px 12px !important; }
+          .next-steps { padding: 10px 12px !important; }
+        }
+        /* Turnstile: scale on small screens to prevent overflow */
+        .signup-card .cf-turnstile { transform-origin: left center; }
+        @media (max-width: 400px) {
+          .signup-card .cf-turnstile { transform: scale(0.85); }
+          .signup-card .cf-turnstile iframe { width: 300px !important; }
+        }
+        @media (max-width: 340px) {
+          .signup-card .cf-turnstile { transform: scale(0.75); }
+        }
+        /* Responsive input & button heights */
+        .signup-card .auth-input { height: clamp(40px, 4vh, 44px) !important; font-size: clamp(0.85rem, 1.1vw, 0.95rem) !important; }
+        .signup-card .auth-btn { height: clamp(40px, 4vh, 44px) !important; font-size: clamp(0.9rem, 1.2vw, 1rem) !important; }
+        @media (max-width: 480px) {
+          .signup-card .auth-input { height: 40px !important; font-size: 0.85rem !important; }
+          .signup-card .auth-btn { height: 40px !important; }
+          .password-checklist { margin-top: -12px !important; margin-bottom: 12px !important; }
+          .password-checklist div { font-size: 10px !important; margin-bottom: 1px !important; }
+          .password-checklist span { font-size: 10px !important; }
         }
       `}</style>
     </div>

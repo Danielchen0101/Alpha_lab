@@ -44,7 +44,7 @@ const SignIn: React.FC = () => {
           transition: border-color 0.25s ease, box-shadow 0.25s ease !important;
         }
         .signin-card .ant-form-item {
-          margin-bottom: 14px !important;
+          margin-bottom: 12px !important;
         }
         .signin-card .ant-form-item-label {
           padding-bottom: 4px !important;
@@ -260,7 +260,8 @@ const SignIn: React.FC = () => {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        padding: '24px 16px',
+        padding: 'clamp(12px, 2vh, 24px) clamp(12px, 3vw, 40px)',
+        boxSizing: 'border-box',
         position: 'relative',
         overflow: 'hidden',
       }}
@@ -343,7 +344,7 @@ const SignIn: React.FC = () => {
           display: 'flex',
           width: '100%',
           boxSizing: 'border-box',
-          maxWidth: 960,
+          maxWidth: 1060,
           minHeight: 'auto',
           background: 'rgba(17,25,40,0.65)',
           border: '1px solid rgba(255,255,255,0.08)',
@@ -360,19 +361,21 @@ const SignIn: React.FC = () => {
         {/* Left panel — form */}
         <div
           style={{
-            flex: 1,
-            padding: '40px 48px',
+            flex: '0 1 auto',
+            width: 'clamp(360px, 40vw, 480px)',
+            padding: 'clamp(24px, 3vw, 40px) clamp(20px, 3vw, 48px)',
             display: 'flex',
             flexDirection: 'column',
             justifyContent: 'center',
           }}
+          className="signin-form-panel"
         >
           <div style={{ marginBottom: 28 }}>
             <div
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                marginBottom: 20,
+                marginBottom: 16,
                 cursor: 'pointer',
                 background: 'transparent',
               }}
@@ -396,13 +399,13 @@ const SignIn: React.FC = () => {
                 color: '#fff',
                 marginBottom: 4,
                 fontWeight: 700,
-                fontSize: '1.75rem',
+                fontSize: 'clamp(26px, 3vw, 36px)',
                 letterSpacing: '-0.02em',
               }}
             >
               {t.auth.welcomeBack}
             </Title>
-            <Text style={{ color: '#cbd5e1', fontSize: '0.95rem' }}>
+            <Text style={{ color: '#cbd5e1', fontSize: 'clamp(0.85rem, 1.2vw, 0.95rem)' }}>
               {t.auth.signInSubtitle}
             </Text>
           </div>
@@ -440,7 +443,8 @@ const SignIn: React.FC = () => {
                 prefix={<UserOutlined />}
                 placeholder={t.auth.emailPlaceholderSignIn}
                 size="large"
-                style={{ height: 44, fontSize: '0.95rem' }}
+                className="auth-input"
+                style={{ fontSize: '0.95rem' }}
               />
             </Form.Item>
 
@@ -457,7 +461,8 @@ const SignIn: React.FC = () => {
                 placeholder={t.auth.passwordPlaceholderSignIn}
                 size="large"
                 autoComplete="current-password"
-                style={{ height: 44, fontSize: '0.95rem' }}
+                className="auth-input"
+                style={{ fontSize: '0.95rem' }}
               />
             </Form.Item>
 
@@ -466,7 +471,7 @@ const SignIn: React.FC = () => {
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
-                marginBottom: 20,
+                marginBottom: 16,
               }}
             >
               <Form.Item name="remember" valuePropName="checked" noStyle>
@@ -540,8 +545,8 @@ const SignIn: React.FC = () => {
                 disabled={!canSubmit || submitting}
                 block
                 size="large"
+                className="auth-btn"
                 style={{
-                  height: 44,
                   borderRadius: 10,
                   fontSize: '1rem',
                   fontWeight: 600,
@@ -583,7 +588,7 @@ const SignIn: React.FC = () => {
           </div>
 
           {/* Divider + Social OAuth */}
-          <div style={{ marginTop: 24, maxWidth: 420 }}>
+          <div style={{ marginTop: 20, maxWidth: 420 }}>
             <div
               style={{
                 display: 'flex',
@@ -680,7 +685,7 @@ const SignIn: React.FC = () => {
           </div>
 
           {/* Create account link */}
-          <div style={{ marginTop: 16 }}>
+          <div style={{ marginTop: 14 }}>
             <Text style={{ color: '#cbd5e1', fontSize: '0.9rem' }}>
               {t.auth.noAccount}{' '}
               <Link
@@ -693,7 +698,7 @@ const SignIn: React.FC = () => {
           </div>
 
           {/* Back to home */}
-          <div style={{ marginTop: 16 }}>
+          <div style={{ marginTop: 12 }}>
             <Link
               to="/"
               style={{
@@ -748,9 +753,9 @@ const SignIn: React.FC = () => {
             <h3
               style={{
                 color: '#fff',
-                marginBottom: 28,
+                marginBottom: 24,
                 fontWeight: 700,
-                fontSize: '1.6rem',
+                fontSize: 'clamp(1.2rem, 1.8vw, 1.5rem)',
                 letterSpacing: '-0.02em',
               }}
             >
@@ -774,7 +779,7 @@ const SignIn: React.FC = () => {
                 desc: t.auth.featurePaperDesc,
               },
             ].map((item, i) => (
-              <div key={i} style={{ marginBottom: 20 }}>
+              <div key={i} style={{ marginBottom: 16 }}>
                 <div
                   style={{
                     display: 'flex',
@@ -820,17 +825,76 @@ const SignIn: React.FC = () => {
         </div>
       </div>
 
-      {/* Responsive: stack vertically on narrow screens */}
+      {/* Responsive styles */}
       <style>{`
+        @media (max-width: 1024px) {
+          .signin-card {
+            max-width: 600px !important;
+          }
+          .signin-form-panel {
+            width: 100% !important;
+          }
+          .signin-right-panel {
+            display: none !important;
+          }
+        }
         @media (max-width: 768px) {
           .signin-card {
             flex-direction: column !important;
             min-height: auto !important;
+            max-width: 100% !important;
+          }
+          .signin-form-panel {
+            width: 100% !important;
+            padding: clamp(20px, 4vw, 32px) !important;
           }
           .signin-right-panel {
-            border-left: none !important;
-            border-top: 1px solid rgba(255,255,255,0.05) !important;
-            padding: 40px 32px !important;
+            display: none !important;
+          }
+        }
+        @media (max-width: 480px) {
+          .signin-form-panel {
+            padding: 18px 16px !important;
+          }
+        }
+        @media (max-width: 375px) {
+          .signin-form-panel {
+            padding: 14px 12px !important;
+          }
+        }
+        /* Turnstile: scale on small screens to prevent overflow */
+        .signin-card .cf-turnstile {
+          transform-origin: left center;
+        }
+        @media (max-width: 400px) {
+          .signin-card .cf-turnstile {
+            transform: scale(0.85);
+          }
+          .signin-card .cf-turnstile iframe {
+            width: 300px !important;
+          }
+        }
+        @media (max-width: 340px) {
+          .signin-card .cf-turnstile {
+            transform: scale(0.75);
+          }
+        }
+        /* Responsive input & button heights */
+        .signin-card .auth-input {
+          height: clamp(40px, 4vh, 44px) !important;
+          font-size: clamp(0.85rem, 1.1vw, 0.95rem) !important;
+        }
+        .signin-card .auth-btn {
+          height: clamp(40px, 4vh, 44px) !important;
+          font-size: clamp(0.9rem, 1.2vw, 1rem) !important;
+        }
+        @media (max-width: 480px) {
+          .signin-card .auth-input {
+            height: 40px !important;
+            font-size: 0.85rem !important;
+          }
+          .signin-card .auth-btn {
+            height: 40px !important;
           }
         }
       `}</style>
