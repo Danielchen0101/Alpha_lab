@@ -49,10 +49,10 @@ test.describe('Smoke Tests — Public Pages', () => {
   });
 
   test('protected route redirects to signin', async ({ page }) => {
-    await page.goto(`${BASE}/dashboard`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+    await expect(page).toHaveURL(/\/signin/);
     await expect(page.locator('#root')).toBeAttached();
-    await page.waitForTimeout(3000);
-    const url = page.url();
-    expect(url).toContain('/signin');
+    // Confirm sign-in form rendered — check for any input field (locale-agnostic)
+    await expect(page.locator('input').first()).toBeVisible({ timeout: 5000 });
   });
 });

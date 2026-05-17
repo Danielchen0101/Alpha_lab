@@ -9,6 +9,11 @@ coverage/
 .next/
 frontend/build/
 
+# Playwright / E2E test artifacts
+frontend/test-results/
+frontend/playwright-report/
+frontend/.playwright/
+
 # Cache
 .cache/
 **/.cache/
