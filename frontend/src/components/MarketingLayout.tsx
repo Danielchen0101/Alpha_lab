@@ -38,6 +38,19 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
           overflow-x: hidden;
         }
         
+        .landing-container p,
+        .landing-container h1,
+        .landing-container h2,
+        .landing-container h3,
+        .landing-container h4,
+        .landing-container h5,
+        .landing-container h6,
+        .landing-container span,
+        .landing-container a {
+          word-break: break-word;
+          overflow-wrap: anywhere;
+        }
+
         /* Navigation Bar */
         .nav-header {
           position: fixed;
