@@ -962,25 +962,29 @@ const messages = {
 
     // 核心功能
     capabilitiesTitle: '核心功能',
-    capabilitiesSubtitle: '现代量化交易者的全面工具集。',
-    capMarketScanner: '市场扫描器',
-    capMarketScannerDesc: '扫描数千只资产，发现异常与趋势。',
-    capAIAgent: 'AI 代理',
-    capAIAgentDesc: '自主智能，深度验证交易形态。',
-    capFineScan: '精细扫描',
-    capFineScanDesc: '精准过滤，识别高精度技术结构。',
-    capDeeperValidation: '深度验证',
-    capDeeperValidationDesc: '多模型 AI 审计市场结构与情绪。',
-    capEntryPlan: '入场计划',
-    capEntryPlanDesc: '确定性的风险感知执行价位与仓位。',
-    capBacktesting: '回测',
-    capBacktestingDesc: '基于历史市场数据验证交易假设。',
-    capOptimization: '优化',
-    capOptimizationDesc: '量化微调策略参数。',
-    capTradingModes: '交易模式',
-    capTradingModesDesc: '在模拟交易与实盘交易之间无缝切换。',
-    capWatchlist: '自选列表',
-    capWatchlistDesc: '智能监控，实时战术预警。',
+    capabilitiesSubtitle: '完整的量化流水线，贴合您的交易旅程。',
+    capMarketScanning: '市场扫描',
+    capMarketScanningDesc: '实时扫描数千种资产，识别技术结构与异常。',
+    capAIValidation: 'AI 验证',
+    capAIValidationDesc: '专用大语言模型审查市场结构与动能，提升确定性。',
+    capBacktesting: '策略回测',
+    capBacktestingDesc: '在投入真实资金前，基于历史数据验证您的交易假设。',
+    capEntryPlanning: '入场计划',
+    capEntryPlanningDesc: '自动生成确定性的入场、止损与目标价位。',
+    capRiskControls: '风险控制',
+    capRiskControlsDesc: '严格的仓位管理协议，保护下行风险并控制敞口。',
+    capExecution: '模拟与实盘执行',
+    capExecutionDesc: '在无风险的模拟交易与真实的券商执行之间无缝切换。',
+
+    // Example Output
+    exampleOutputTitle: '可执行的智能洞察',
+    exampleOutputSubtitle: '看看 AlphaLab 如何将市场扫描转化为具体计划。注意：这仅为示例展示，绝非投资建议。',
+
+    // Trust Bar
+    trustEmail: '邮件安全验证',
+    trustTurnstile: 'Turnstile 防护',
+    trustEncryption: '加密 API 密钥',
+    trustPaperFirst: '模拟盘优先工作流',
 
     // GitHub
     githubTitle: '开源透明',
@@ -2616,6 +2620,19 @@ const messages = {
     featureRateLimitDesc: 'API 端点受每 IP 速率限制保护，防止滥用和暴力破解攻击。',
     featureHeaders: '安全响应头已配置',
     featureHeadersDesc: '前端构建已配置安全响应头（HSTS、CSP、X-Frame-Options）；每次发布后仍需验证生产环境是否生效。',
+
+    // What we never do
+    neverTitle: 'AlphaLab 永远不会做的事',
+    neverSubtitle: '我们的核心理念是用户控制与数据保护。我们在以下做法上划定了不可逾越的红线。',
+    never1: '绝不暴露原始 API 密钥',
+    never1Desc: '所有密钥在存储时均已加密，且永远不会通过 API 以明文形式返回。',
+    never2: '绝不默认开启实盘交易',
+    never2Desc: '实盘交易必须由用户手动明确开启。我们始终以模拟交易（Paper trading）为默认项。',
+    never3: '绝不保证收益',
+    never3Desc: '我们提供的是确定性的分析工具，而非神奇的摇钱树。没有任何交易利润是绝对保证的。',
+    never4: '绝不默认绕过用户确认',
+    never4Desc: 'AI 可以生成交易计划，但执行必须由用户亲自确认。我们不支持盲目的全自动交易。',
+
     ctaTitle: '深受研究者和交易者信赖。',
     ctaDesc: 'AlphaLab 以安全、透明和用户控制为核心原则构建。',
   },

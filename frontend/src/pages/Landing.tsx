@@ -5,7 +5,8 @@ import {
   RobotOutlined, ArrowRightOutlined,
   ThunderboltOutlined, GithubOutlined,
   GlobalOutlined, SearchOutlined, FilterOutlined, AimOutlined,
-  ExperimentOutlined, DeploymentUnitOutlined, EyeOutlined, CheckCircleOutlined
+  ExperimentOutlined, DeploymentUnitOutlined, EyeOutlined, CheckCircleOutlined,
+  SafetyCertificateOutlined, MailOutlined, LockOutlined, SafetyOutlined
 } from '@ant-design/icons';
 import MarketingLayout from '../components/MarketingLayout';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -26,15 +27,12 @@ const Landing: React.FC = () => {
   ];
 
   const capabilities = [
-    { icon: <GlobalOutlined />, title: t.landing.capMarketScanner, desc: t.landing.capMarketScannerDesc },
-    { icon: <SearchOutlined />, title: t.landing.capAIAgent, desc: t.landing.capAIAgentDesc },
-    { icon: <FilterOutlined />, title: t.landing.capFineScan, desc: t.landing.capFineScanDesc },
-    { icon: <RobotOutlined />, title: t.landing.capDeeperValidation, desc: t.landing.capDeeperValidationDesc },
-    { icon: <AimOutlined />, title: t.landing.capEntryPlan, desc: t.landing.capEntryPlanDesc },
+    { icon: <GlobalOutlined />, title: t.landing.capMarketScanning, desc: t.landing.capMarketScanningDesc },
+    { icon: <RobotOutlined />, title: t.landing.capAIValidation, desc: t.landing.capAIValidationDesc },
     { icon: <ExperimentOutlined />, title: t.landing.capBacktesting, desc: t.landing.capBacktestingDesc },
-    { icon: <ThunderboltOutlined />, title: t.landing.capOptimization, desc: t.landing.capOptimizationDesc },
-    { icon: <DeploymentUnitOutlined />, title: t.landing.capTradingModes, desc: t.landing.capTradingModesDesc },
-    { icon: <EyeOutlined />, title: t.landing.capWatchlist, desc: t.landing.capWatchlistDesc },
+    { icon: <AimOutlined />, title: t.landing.capEntryPlanning, desc: t.landing.capEntryPlanningDesc },
+    { icon: <SafetyCertificateOutlined />, title: t.landing.capRiskControls, desc: t.landing.capRiskControlsDesc },
+    { icon: <DeploymentUnitOutlined />, title: t.landing.capExecution, desc: t.landing.capExecutionDesc },
   ];
 
   return (
@@ -760,6 +758,64 @@ const Landing: React.FC = () => {
               </div>
             </div>
           ))}
+        </div>
+      </section>
+
+      {/* Example Output */}
+      <section className="section-container" style={{ paddingTop: 0 }}>
+        <div className="reveal-on-scroll visible" style={{ textAlign: 'center', marginBottom: 40 }}>
+          <h2 className="section-title">{t.landing.exampleOutputTitle}</h2>
+          <p className="section-subtitle" style={{ color: '#94a3b8', maxWidth: 600, margin: '0 auto' }}>{t.landing.exampleOutputSubtitle}</p>
+        </div>
+        <div className="reveal-on-scroll visible" style={{ maxWidth: 600, margin: '0 auto', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 20, padding: 24 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 20 }}>
+            <div>
+              <div style={{ fontSize: '0.8rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Symbol</div>
+              <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#fff' }}>NVDA</div>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: '0.8rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Signal</div>
+              <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#60a5fa' }}>Momentum Breakout</div>
+            </div>
+          </div>
+          
+          <div style={{ background: 'rgba(16,185,129,0.05)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: 12, padding: 16, marginBottom: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ color: '#34d399', fontWeight: 600 }}>AI Verdict</span>
+              <span style={{ background: '#10b981', color: '#fff', padding: '4px 12px', borderRadius: 20, fontSize: '0.85rem', fontWeight: 700 }}>BUY</span>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16, marginBottom: 20 }}>
+            <div style={{ background: 'rgba(255,255,255,0.03)', padding: 16, borderRadius: 12 }}>
+              <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: 4 }}>Win Rate</div>
+              <div style={{ fontSize: '1.1rem', color: '#fff', fontWeight: 700 }}>68.2%</div>
+            </div>
+            <div style={{ background: 'rgba(255,255,255,0.03)', padding: 16, borderRadius: 12 }}>
+              <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: 4 }}>Max Drawdown</div>
+              <div style={{ fontSize: '1.1rem', color: '#ef4444', fontWeight: 700 }}>-4.1%</div>
+            </div>
+            <div style={{ background: 'rgba(255,255,255,0.03)', padding: 16, borderRadius: 12 }}>
+              <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: 4 }}>Sharpe</div>
+              <div style={{ fontSize: '1.1rem', color: '#fff', fontWeight: 700 }}>2.45</div>
+            </div>
+          </div>
+
+          <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 20 }}>
+            <div style={{ fontSize: '0.9rem', color: '#fff', fontWeight: 600, marginBottom: 12 }}>Risk Plan</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: '#94a3b8', marginBottom: 8 }}>
+              <span>Entry Target</span>
+              <span style={{ color: '#fff' }}>$1,037.89</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: '#94a3b8', marginBottom: 8 }}>
+              <span>Stop Loss</span>
+              <span style={{ color: '#ef4444' }}>$998.50 (-3.8%)</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: '#94a3b8' }}>
+              <span>Position Size</span>
+              <span style={{ color: '#fff' }}>140 Shares (1% Risk)</span>
+            </div>
+          </div>
         </div>
       </section>
 

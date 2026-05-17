@@ -114,6 +114,42 @@ const Security: React.FC = () => {
         </div>
       </section>
 
+      {/* What AlphaLab will never do */}
+      <section className="section-container" style={{ paddingTop: 40, paddingBottom: 40 }}>
+        <div className="reveal-on-scroll visible" style={{ textAlign: 'center', marginBottom: 40 }}>
+          <h2 style={{ fontSize: '2rem', fontWeight: 800, color: '#fff', marginBottom: 16 }}>{t.security.neverTitle}</h2>
+          <p style={{ color: '#ef4444', fontSize: '1.05rem', maxWidth: 700, margin: '0 auto', lineHeight: 1.6 }}>{t.security.neverSubtitle}</p>
+        </div>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+          gap: 24,
+          maxWidth: 900,
+          margin: '0 auto'
+        }}>
+          {[
+            { titleKey: 'never1', descKey: 'never1Desc' },
+            { titleKey: 'never2', descKey: 'never2Desc' },
+            { titleKey: 'never3', descKey: 'never3Desc' },
+            { titleKey: 'never4', descKey: 'never4Desc' },
+          ].map((feat, idx) => (
+            <div key={idx} className="reveal-on-scroll visible" style={{
+              background: 'rgba(239, 68, 68, 0.05)',
+              border: '1px solid rgba(239, 68, 68, 0.1)',
+              borderRadius: 16,
+              padding: 24,
+            }}>
+              <Title level={4} style={{ color: '#f8fafc', marginBottom: 10, fontSize: '1.1rem' }}>
+                {t.security[feat.titleKey as keyof typeof t.security]}
+              </Title>
+              <Text style={{ color: '#cbd5e1', fontSize: '0.9rem', lineHeight: 1.6 }}>
+                {t.security[feat.descKey as keyof typeof t.security]}
+              </Text>
+            </div>
+          ))}
+        </div>
+      </section>
+
       {/* CTA */}
       <section className="section-container" style={{ textAlign: 'center', paddingBottom: 100 }}>
         <div style={{

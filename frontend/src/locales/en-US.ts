@@ -962,25 +962,29 @@ const messages = {
 
     // Core Capabilities
     capabilitiesTitle: 'Core Capabilities',
-    capabilitiesSubtitle: 'Comprehensive tools for the modern systematic trader.',
-    capMarketScanner: 'Market Scanner',
-    capMarketScannerDesc: 'Scan thousands of assets for anomalies and trends.',
-    capAIAgent: 'AI Agent',
-    capAIAgentDesc: 'Autonomous intelligence for deep setup verification.',
-    capFineScan: 'Fine Scan',
-    capFineScanDesc: 'Surgical filtering for high-precision technical structures.',
-    capDeeperValidation: 'Deeper Validation',
-    capDeeperValidationDesc: 'Multi-LLM audit of market structure and sentiment.',
-    capEntryPlan: 'Entry Plan',
-    capEntryPlanDesc: 'Deterministic risk-aware execution levels and sizing.',
+    capabilitiesSubtitle: 'A complete quantitative pipeline, mapped to your trading journey.',
+    capMarketScanning: 'Market Scanning',
+    capMarketScanningDesc: 'Scan thousands of assets to identify technical structures and anomalies in real-time.',
+    capAIValidation: 'AI Validation',
+    capAIValidationDesc: 'Specialized LLMs audit market structure and momentum for higher conviction.',
     capBacktesting: 'Backtesting',
-    capBacktestingDesc: 'Validate hypotheses against historical market data.',
-    capOptimization: 'Optimization',
-    capOptimizationDesc: 'Quantitative fine-tuning of strategy parameters.',
-    capTradingModes: 'Trading Modes',
-    capTradingModesDesc: 'Seamless switch between Paper and Real trading.',
-    capWatchlist: 'Watchlist',
-    capWatchlistDesc: 'Intelligent monitoring with real-time tactical alerts.',
+    capBacktestingDesc: 'Validate your hypotheses against historical market data before risking capital.',
+    capEntryPlanning: 'Entry Planning',
+    capEntryPlanningDesc: 'Generate deterministic entry, stop-loss, and target levels automatically.',
+    capRiskControls: 'Risk Controls',
+    capRiskControlsDesc: 'Strict position sizing protocols to protect downside and manage exposure.',
+    capExecution: 'Paper & Real Execution',
+    capExecutionDesc: 'Seamlessly switch between paper trading simulation and live broker execution.',
+
+    // Example Output
+    exampleOutputTitle: 'Actionable Intelligence',
+    exampleOutputSubtitle: 'See how AlphaLab transforms a market scan into a concrete plan. Note: This is an illustrative example, not financial advice.',
+
+    // Trust Bar
+    trustEmail: 'Email verification',
+    trustTurnstile: 'Turnstile protected',
+    trustEncryption: 'Encrypted API keys',
+    trustPaperFirst: 'Paper-first workflow',
 
     // GitHub
     githubTitle: 'Open Source & Transparent',
@@ -2616,6 +2620,19 @@ const messages = {
     featureRateLimitDesc: 'API endpoints are protected by per-IP rate limiting to prevent abuse and brute-force attacks.',
     featureHeaders: 'Security Headers Configured',
     featureHeadersDesc: 'Security headers (HSTS, CSP, X-Frame-Options) are configured in the frontend build; production deployment integrity should be verified after each release.',
+    
+    // What we never do
+    neverTitle: 'What AlphaLab will never do',
+    neverSubtitle: 'Our core philosophy is user control and data protection. We draw a hard line on the following practices.',
+    never1: 'Never expose raw API keys',
+    never1Desc: 'All keys are encrypted at rest and never returned in plaintext via the API.',
+    never2: 'Never auto-enable live trading',
+    never2Desc: 'Live trading must be manually and explicitly enabled by the user. We default to Paper trading.',
+    never3: 'Never guarantee returns',
+    never3Desc: 'We provide deterministic tools, not magical money-making boxes. There is no guaranteed profit.',
+    never4: 'Never bypass user confirmation by default',
+    never4Desc: 'AI generates plans, but the user must confirm execution. We do not support blind auto-trading.',
+
     ctaTitle: 'Trusted by researchers and traders.',
     ctaDesc: 'AlphaLab is built with security, transparency, and user control as core principles.',
   },
