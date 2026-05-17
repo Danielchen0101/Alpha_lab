@@ -180,6 +180,7 @@ const ForgotPassword: React.FC = () => {
           position: 'relative',
           zIndex: 1,
           width: '100%',
+          boxSizing: 'border-box',
           maxWidth: 460,
           background: 'rgba(17,25,40,0.65)',
           border: '1px solid rgba(255,255,255,0.08)',

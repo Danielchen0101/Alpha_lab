@@ -315,6 +315,7 @@ const SignUp: React.FC = () => {
         style={{
           display: 'flex',
           width: '100%',
+          boxSizing: 'border-box',
           maxWidth: 960,
           minHeight: 'auto',
           background: 'rgba(17,25,40,0.65)',

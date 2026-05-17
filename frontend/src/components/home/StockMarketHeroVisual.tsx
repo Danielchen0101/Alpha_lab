@@ -40,7 +40,7 @@ const SignalRow = ({ sym, signal, score, type }: any) => (
     </div>
     <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
       <span style={{ fontSize: 12, fontWeight: 700, color: signal === 'BUY' ? '#10b981' : signal === 'WATCH' ? '#f59e0b' : '#ef4444' }}>{signal}</span>
-      <span style={{ fontSize: 12, color: '#e2e8f0', background: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: 4 }}>{score}</span>
+      <span style={{ fontSize: 12, color: '#e2e8f0', background: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: 4, whiteSpace: 'nowrap' }}>{score}</span>
     </div>
   </div>
 );

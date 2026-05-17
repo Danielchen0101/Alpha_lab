@@ -183,10 +183,11 @@ const Workflow: React.FC = () => {
           top: 120px;
         }
         .wf-preview-header {
-          display: flex; align-items: center; gap: clamp(16px, 3vw, 24px);
+          display: flex; align-items: center; gap: clamp(12px, 3vw, 24px);
           margin-bottom: clamp(24px, 4vw, 32px);
           padding-bottom: clamp(16px, 3vw, 24px);
           border-bottom: 1px solid rgba(255,255,255,0.05);
+          flex-wrap: wrap;
         }
         .wf-preview-icon {
           width: clamp(60px, 8vw, 80px); 

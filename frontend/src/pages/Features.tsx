@@ -142,7 +142,7 @@ const Features: React.FC = () => {
         
         .bento-grid {
           display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+          grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
           grid-gap: clamp(16px, 2vw, 24px);
         }
 

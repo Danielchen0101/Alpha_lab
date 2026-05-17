@@ -97,7 +97,7 @@ const Security: React.FC = () => {
       <section className="section-container" style={{ paddingTop: 20 }}>
         <div style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 280px), 1fr))',
           gap: 24,
         }}>
           {securityFeatures.map((feat, idx) => (
@@ -122,7 +122,7 @@ const Security: React.FC = () => {
         </div>
         <div style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 280px), 1fr))',
           gap: 24,
           maxWidth: 900,
           margin: '0 auto'

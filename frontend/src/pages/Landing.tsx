@@ -493,7 +493,7 @@ const Landing: React.FC = () => {
         }
 
         @media (max-width: 1280px) {
-          .content-relative { grid-template-columns: minmax(320px, 0.5fr) minmax(400px, 0.9fr); gap: clamp(16px, 2.5vw, 24px); }
+          .content-relative { grid-template-columns: minmax(min(100%, 320px), 0.5fr) minmax(auto, 0.9fr); gap: clamp(16px, 2.5vw, 24px); }
           .hero-section { padding: 32px 20px 48px; }
           .premium-title { font-size: clamp(2rem, 3vw, 2.8rem); }
           .premium-subtitle { font-size: clamp(0.9rem, 1vw, 1rem); }
@@ -661,9 +661,9 @@ const Landing: React.FC = () => {
         <RevealSection delay={0.1}>
           <div style={{ marginTop: 60 }}>
             <h3 style={{ color: '#64748b', fontSize: '0.9rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 2, marginBottom: 24 }}>{t.landing.builtWith}</h3>
-            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', maxWidth: 900, margin: '0 auto' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', maxWidth: 900, margin: '0 auto', gap: 8 }}>
               {techStack.map((tech, idx) => (
-                <span key={idx} className="tech-tag">{tech}</span>
+                <span key={idx} className="tech-tag" style={{ margin: 0 }}>{tech}</span>
               ))}
             </div>
           </div>
