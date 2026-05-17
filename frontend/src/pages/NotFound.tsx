@@ -77,19 +77,20 @@ const NotFound: React.FC = () => {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <Button
             type="primary" size="large"
-            icon={<HomeOutlined />}
+            icon={<HomeOutlined aria-hidden="true" />}
             onClick={() => navigate('/')}
             style={{
               height: 48, borderRadius: 12, fontSize: '1rem', fontWeight: 600,
               background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
               border: 'none', boxShadow: '0 8px 24px rgba(24,144,255,0.3)',
             }}
+            aria-label="Back to AlphaLab Home"
           >
             {t.notFound.backToHome}
           </Button>
           <Button
             ghost size="large"
-            icon={<LoginOutlined />}
+            icon={<LoginOutlined aria-hidden="true" />}
             onClick={() => navigate('/signin')}
             style={{ 
               height: 48, 
@@ -97,6 +98,7 @@ const NotFound: React.FC = () => {
               color: '#60a5fa', 
               borderColor: 'rgba(24,144,255,0.5)' 
             }}
+            aria-label="Sign in to AlphaLab"
           >
             {t.notFound.signIn}
           </Button>

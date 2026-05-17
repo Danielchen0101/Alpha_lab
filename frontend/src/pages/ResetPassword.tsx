@@ -349,15 +349,15 @@ const ResetPassword: React.FC = () => {
 
             <div className="trust-strip">
               <div className="trust-item">
-                <SafetyCertificateOutlined />
+                <SafetyCertificateOutlined aria-hidden="true" />
                 <span>{t.auth.trustSupabase}</span>
               </div>
               <div className="trust-item">
-                <LockOutlined />
+                <LockOutlined aria-hidden="true" />
                 <span>{t.auth.trustEncryption}</span>
               </div>
               <div className="trust-item">
-                <SafetyOutlined />
+                <SafetyOutlined aria-hidden="true" />
                 <span>{t.auth.trustCloudflare}</span>
               </div>
             </div>

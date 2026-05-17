@@ -801,13 +801,13 @@ const Landing: React.FC = () => {
       {/* Final CTA */}
       <section className="section-container" style={{ textAlign: 'center', padding: '100px 24px' }}>
         <div className="reveal-on-scroll visible" style={{ background: 'linear-gradient(145deg, rgba(24,144,255,0.05) 0%, rgba(114,46,209,0.05) 100%)', padding: '60px', borderRadius: '32px', border: '1px solid rgba(255,255,255,0.05)' }}>
-          <h2 style={{ fontSize: '2.8rem', fontWeight: 800, color: '#fff', marginBottom: 24 }}>{t.landing.ctaTitle}</h2>
+          <h2 className="section-title" style={{ fontSize: '2.8rem', fontWeight: 800, color: '#fff', marginBottom: 24 }}>{t.landing.ctaTitle}</h2>
           <p style={{ color: '#94a3b8', fontSize: '1.2rem', marginBottom: 40, maxWidth: 700, margin: '0 auto 40px' }}>
             {t.landing.ctaDesc}
           </p>
-          <Space size="large">
-            <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} style={{ height: 56, padding: '0 40px' }}>{t.landing.ctaGetStarted}</Button>
-            <Button className="btn-secondary" onClick={() => navigate('/signin')} style={{ height: 56, padding: '0 40px' }}>{t.landing.ctaSignIn}</Button>
+          <Space size="large" className="hero-actions">
+            <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} style={{ height: 56, padding: '0 40px' }} aria-label="Get started with AlphaLab">{t.landing.ctaGetStarted}</Button>
+            <Button className="btn-secondary" onClick={() => navigate('/signin')} style={{ height: 56, padding: '0 40px' }} aria-label="Sign in to AlphaLab">{t.landing.ctaSignIn}</Button>
           </Space>
         </div>
       </section>
@@ -815,4 +815,4 @@ const Landing: React.FC = () => {
   );
 };
 
-export default Landing;
+export default Landing;;

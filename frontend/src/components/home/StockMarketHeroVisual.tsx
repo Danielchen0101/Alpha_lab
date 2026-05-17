@@ -168,73 +168,32 @@ const StockMarketHeroVisual: React.FC = () => {
           100% { transform: translateX(-50%); }
         }
 
-        /* Equity Curve glow pulse */
-        .equity-chart-area {
-          position: relative;
-        }
-        .equity-chart-area::after {
-          content: '';
-          position: absolute;
-          inset: 0;
-          border-radius: 8px;
-          pointer-events: none;
-          animation: chartGlow 3.5s ease-in-out infinite;
-        }
-        @keyframes chartGlow {
-          0%, 100% { box-shadow: inset 0 0 12px rgba(24,144,255,0.03), 0 0 6px rgba(24,144,255,0.02); }
-          50% { box-shadow: inset 0 0 24px rgba(24,144,255,0.1), 0 0 14px rgba(24,144,255,0.04); }
-        }
-
-        /* Status chip glow pulse */
-        .status-chip {
-          animation: statusPulse 3s ease-in-out infinite;
-        }
-        @keyframes statusPulse {
-          0%, 100% { box-shadow: 0 0 4px rgba(24,144,255,0), 0 0 0 rgba(24,144,255,0); }
-          50% { box-shadow: 0 0 8px rgba(24,144,255,0.12), 0 0 16px rgba(24,144,255,0.05); }
-        }
-        .status-chip.success {
-          animation: statusPulseGreen 3s ease-in-out infinite;
-        }
-        @keyframes statusPulseGreen {
-          0%, 100% { box-shadow: 0 0 4px rgba(34,197,94,0), 0 0 0 rgba(34,197,94,0); }
-          50% { box-shadow: 0 0 10px rgba(34,197,94,0.15), 0 0 20px rgba(34,197,94,0.05); }
-        }
-
-        @media (max-width: 1500px) {
-          .top-ticker-card { padding: 4px 8px; }
-          .top-ticker-card span { font-size: 11px !important; }
-        }
-        @media (max-width: 1366px) {
-          .top-ticker-card { padding: 4px 6px; }
-          .top-ticker-card:nth-child(n+4) { display: none; }
-          .top-ticker-card span { font-size: 10px !important; }
-        }
-        @media (max-width: 1024px) {
-          .top-ticker-card:nth-child(n+3) { display: none; }
-        }
-        @media (max-height: 800px) {
-          .top-ticker-card { padding: 4px 6px; }
-          .top-ticker-card:nth-child(n+4) { display: none; }
-        }
         @media (max-width: 768px) {
           .stock-visual-container {
-            padding: 12px;
-            gap: 12px;
+            padding: 8px;
+            gap: 8px;
           }
-          /* Hide lower panels on mobile */
+          /* Hide lower panels and middle panels on mobile to keep it ultra compact */
           .glass-panel:nth-child(n+3) {
-            display: none;
+            display: none !important;
           }
           /* Hide secondary tickers */
           .top-ticker-card:nth-child(n+2) {
-            display: none;
+            display: none !important;
           }
           .ticker-row {
-            gap: 8px;
+            gap: 6px;
           }
           .main-chart-area {
-            height: 180px;
+            height: 140px;
+          }
+          /* Hide the execution feed on mobile */
+          .glass-panel.live-executions {
+            display: none !important;
+          }
+          /* Hide bottom ticker tape on mobile */
+          .ticker-tape-container {
+            display: none !important;
           }
         }
       `}</style>
@@ -242,13 +201,13 @@ const StockMarketHeroVisual: React.FC = () => {
       {/* Top Status Bar — inside dashboard frame */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 4 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div className="pulse-indicator" style={{ width: 6, height: 6 }}></div>
+          <div className="pulse-indicator" aria-hidden="true" style={{ width: 6, height: 6 }}></div>
           <span style={{ fontSize: 10, color: '#4ade80', fontWeight: 600, letterSpacing: 0.3 }}>AI PIPELINE ACTIVE</span>
           <span style={{ fontSize: 10, color: '#64748b' }}>|</span>
           <span style={{ fontSize: 10, color: '#94a3b8' }}>Risk Engine Online · 42ms</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <ThunderboltOutlined style={{ color: '#4ade80', fontSize: 11 }} />
+          <ThunderboltOutlined aria-hidden="true" style={{ color: '#4ade80', fontSize: 11 }} />
           <span style={{ fontSize: 10, color: '#4ade80', fontWeight: 700 }}>NVDA</span>
           <span style={{ fontSize: 10, color: '#4ade80', fontWeight: 800, background: 'rgba(16,185,129,0.1)', padding: '2px 6px', borderRadius: 4 }}>BUY</span>
           <span style={{ fontSize: 10, color: '#94a3b8' }}>92.4%</span>
@@ -267,13 +226,13 @@ const StockMarketHeroVisual: React.FC = () => {
         <div style={{ flex: 0.9, display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <div className="glass-panel" style={{ padding: 10 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-              <span style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase' }}><ThunderboltOutlined /> AI Agent Pipeline</span>
+              <span style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase' }}><ThunderboltOutlined aria-hidden="true" /> AI Agent Pipeline</span>
             </div>
             
             <div className="workflow-step">
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                 <span style={{ color: '#e2e8f0', fontWeight: 600, fontSize: 13 }}>Global Market Scan</span>
-                <span className="status-chip success"><CheckCircleOutlined /> Done</span>
+                <span className="status-chip success"><CheckCircleOutlined aria-hidden="true" /> Done</span>
               </div>
               <div style={{ fontSize: 11, color: '#64748b' }}>Processed 8,421 Equities</div>
             </div>
@@ -281,7 +240,7 @@ const StockMarketHeroVisual: React.FC = () => {
             <div className="workflow-step">
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                 <span style={{ color: '#e2e8f0', fontWeight: 600, fontSize: 13 }}>Signal Validation</span>
-                <span className="status-chip"><LoadingOutlined style={{ marginRight: 4 }}/> Active</span>
+                <span className="status-chip"><LoadingOutlined aria-hidden="true" style={{ marginRight: 4 }}/> Active</span>
               </div>
               <div style={{ height: 3, background: 'rgba(255,255,255,0.05)', borderRadius: 2, overflow: 'hidden', marginTop: 8 }}>
                 <motion.div 
@@ -293,7 +252,7 @@ const StockMarketHeroVisual: React.FC = () => {
           </div>
 
           <div className="glass-panel" style={{ flex: 1, padding: 10, display: 'flex', flexDirection: 'column' }}>
-            <div style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 12 }}><BarChartOutlined /> Top Signals</div>
+            <div style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 12 }}><BarChartOutlined aria-hidden="true" /> Top Signals</div>
             <SignalRow sym="NVDA" type="Momentum Breakout" signal="BUY" score="92" />
             <SignalRow sym="TSLA" type="Mean Reversion" signal="WATCH" score="64" />
             <SignalRow sym="AAPL" type="Trend Continuation" signal="BUY" score="85" />
@@ -306,7 +265,7 @@ const StockMarketHeroVisual: React.FC = () => {
           <div className="glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '10px 14px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
               <div>
-                <div style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 4 }}><LineChartOutlined /> Equity Curve Preview</div>
+                <div style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 4 }}><LineChartOutlined aria-hidden="true" /> Equity Curve Preview</div>
                 <div style={{ color: '#f8fafc', fontSize: 22, fontWeight: 800 }}>$1.24M <span style={{ fontSize: 13, color: '#10b981', fontWeight: 600, marginLeft: 8 }}>+28.4% YTD</span></div>
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
@@ -357,7 +316,7 @@ const StockMarketHeroVisual: React.FC = () => {
         {/* Right: Market Pulse & Sector */}
         <div style={{ flex: 1.2, display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <div className="glass-panel" style={{ padding: 12 }}>
-             <div style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 12 }}><LineChartOutlined /> Market Pulse</div>
+             <div style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 12 }}><LineChartOutlined aria-hidden="true" /> Market Pulse</div>
              <div style={{ marginBottom: 12 }}>
                <div style={{ color: '#e2e8f0', fontSize: 13, fontWeight: 700, marginBottom: 2 }}>S&P 500</div>
                <div style={{ color: '#10b981', fontSize: 15, fontWeight: 800 }}>5,286.10 <span style={{ fontSize: 11, fontWeight: 600 }}>+0.63%</span></div>
@@ -373,7 +332,7 @@ const StockMarketHeroVisual: React.FC = () => {
           </div>
 
           <div className="glass-panel" style={{ flex: 1, padding: 10 }}>
-             <div style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 12 }}><SafetyCertificateOutlined /> Sector Perf</div>
+             <div style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 12 }}><SafetyCertificateOutlined aria-hidden="true" /> Sector Perf</div>
              <SectorRow name="Technology" perf="+2.1%" up={true} />
              <SectorRow name="Communications" perf="+1.4%" up={true} />
              <SectorRow name="Healthcare" perf="-0.8%" up={false} />
@@ -384,12 +343,12 @@ const StockMarketHeroVisual: React.FC = () => {
       
       {/* Bottom Wide Panel: Live Executions */}
       <div
-        className="glass-panel"
+        className="glass-panel live-executions"
         style={{ padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 4 }}
       >
          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
            <span style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase' }}>Live Executions Feed</span>
-           <span className="status-chip success"><CheckCircleOutlined /> Auto-Routing</span>
+           <span className="status-chip success"><CheckCircleOutlined aria-hidden="true" /> Auto-Routing</span>
          </div>
          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' }}>
             <TradeRow sym="NVDA" side="BUY" size="140 shares" price="$1,037.89" time="12ms ago" />

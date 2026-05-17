@@ -312,24 +312,62 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
 
       {/* Footer */}
       <footer className="footer">
-        <div style={{ maxWidth: 900, margin: '0 auto' }}>
-          <div style={{ color: '#64748b', fontSize: '0.85rem', marginBottom: 12, lineHeight: 1.6 }}>
-            {t.landing.footerDisclaimer}
+        <div style={{ maxWidth: 1100, margin: '0 auto', textAlign: 'left' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 40, marginBottom: 48 }}>
+            {/* Brand Column */}
+            <div>
+              <div className="nav-logo" style={{ marginBottom: 16, cursor: 'default' }}>
+                Alpha<span>Lab</span>
+              </div>
+              <div style={{ color: '#64748b', fontSize: '0.85rem', lineHeight: 1.6 }}>
+                {t.landing.heroBadge}
+              </div>
+            </div>
+            
+            {/* Product Column */}
+            <div>
+              <h4 style={{ color: '#fff', fontWeight: 700, marginBottom: 16, fontSize: '0.9rem' }}>Product</h4>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <span onClick={() => handleNavClick('/platform')} style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>{t.landing.navPlatform}</span>
+                <span onClick={() => handleNavClick('/workflow')} style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>{t.landing.navWorkflow}</span>
+                <span onClick={() => handleNavClick('/features')} style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>{t.landing.navFeatures}</span>
+                <span onClick={() => handleNavClick('/technology')} style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>{t.landing.navTechnology}</span>
+              </div>
+            </div>
+
+            {/* Trust Column */}
+            <div>
+              <h4 style={{ color: '#fff', fontWeight: 700, marginBottom: 16, fontSize: '0.9rem' }}>Trust</h4>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <span onClick={() => { navigate('/security'); window.scrollTo(0, 0); }} style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>{t.landing.navSecurity || 'Security'}</span>
+                <span style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>Privacy Policy</span>
+                <span style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>Terms of Service</span>
+              </div>
+            </div>
+
+            {/* Resources Column */}
+            <div>
+              <h4 style={{ color: '#fff', fontWeight: 700, marginBottom: 16, fontSize: '0.9rem' }}>Resources</h4>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <a href="https://github.com/Danielchen0101/quant_platform" target="_blank" rel="noopener noreferrer" style={{ color: '#94a3b8', fontSize: '0.85rem', textDecoration: 'none' }}>GitHub</a>
+                <SystemStatusIndicator />
+              </div>
+            </div>
           </div>
-          <div style={{ color: '#475569', fontSize: '0.75rem', marginBottom: 20, lineHeight: 1.6 }}>
-            {t.landing.footerPrivacy}
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 24, marginBottom: 16, flexWrap: 'wrap' }}>
-            <SystemStatusIndicator />
-            <span
-              onClick={() => { navigate('/security'); window.scrollTo(0, 0); }}
-              style={{ color: '#60a5fa', fontSize: 11, cursor: 'pointer', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}
-            >
-              <SafetyOutlined style={{ fontSize: 11 }} /> {t.landing.navSecurity || 'Security'}
-            </span>
-          </div>
-          <div style={{ color: '#475569', fontSize: '0.85rem', fontWeight: 600 }}>
-            {t.landing.footerCopyright.replace('{year}', String(new Date().getFullYear()))}
+
+          <div style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: 32 }}>
+            <div style={{ color: '#475569', fontSize: '0.7rem', marginBottom: 16, lineHeight: 1.6 }}>
+              {t.landing.footerDisclaimer}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
+              <div style={{ color: '#475569', fontSize: '0.8rem', fontWeight: 600 }}>
+                {t.landing.footerCopyright.replace('{year}', String(new Date().getFullYear()))}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#60a5fa', fontSize: 11 }}>
+                <SafetyOutlined aria-hidden="true" style={{ fontSize: 11 }} />
+                <span>Secure quantitative environment</span>
+              </div>
+            </div>
           </div>
         </div>
       </footer>
