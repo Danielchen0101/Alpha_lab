@@ -9,9 +9,11 @@ import {
 import { useNavigate } from 'react-router-dom';
 import MarketingLayout from '../components/MarketingLayout';
 import RevealSection from '../components/RevealSection';
+import { useLanguage } from '../contexts/LanguageContext';
 
 const Platform: React.FC = () => {
   const navigate = useNavigate();
+  const { t } = useLanguage();
 
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -59,12 +61,11 @@ const Platform: React.FC = () => {
 
       <div className="page-hero">
         <RevealSection>
-          <h1 className="page-title">The AI-Powered Quant Pipeline</h1>
+          <h1 className="page-title">{t.platform.heroTitle}</h1>
         </RevealSection>
         <RevealSection delay={0.1}>
           <p className="page-subtitle">
-            AlphaLab is an end-to-end quantitative trading and market analysis platform engineered for systematic traders. 
-            We bridge the gap between institutional technical screening and modern AI reasoning.
+            {t.platform.heroSubtitle}
           </p>
         </RevealSection>
       </div>
@@ -73,9 +74,9 @@ const Platform: React.FC = () => {
         {/* End-to-End Workflow Summary */}
         <RevealSection>
           <div style={{ textAlign: 'center', marginBottom: 'clamp(40px, 8vw, 80px)' }}>
-            <h2 className="section-title">Systematic Intelligence</h2>
+            <h2 className="section-title">{t.platform.intelTitle}</h2>
             <p className="section-subtitle">
-              AlphaLab provides a complete, risk-aware algorithmic pipeline that moves from broad market discovery to deterministic execution.
+              {t.platform.intelSubtitle}
             </p>
           </div>
         </RevealSection>
@@ -84,12 +85,11 @@ const Platform: React.FC = () => {
           <Col xs={24} md={12} lg={8}>
             <RevealSection delay={0.1} style={{ height: '100%' }}>
               <div className="platform-feature-card">
-                <span className="step-num">PHASE 1</span>
+                <span className="step-num">{t.platform.phase1}</span>
                 <GlobalOutlined aria-hidden="true" style={{ fontSize: 32, color: '#1890ff', marginBottom: 24 }} />
-                <h3 style={{ color: '#fff', fontSize: 'clamp(1.3rem, 2vw, 1.5rem)', fontWeight: 700, marginBottom: 16 }}>Autonomous Scan</h3>
+                <h3 style={{ color: '#fff', fontSize: 'clamp(1.3rem, 2vw, 1.5rem)', fontWeight: 700, marginBottom: 16 }}>{t.platform.scanTitle}</h3>
                 <p style={{ color: '#94a3b8', fontSize: '1rem', lineHeight: 1.6 }}>
-                  Identify emerging technical structures across thousands of equities in real-time. 
-                  Our multi-factor scanner filters noise to surface high-probability candidates.
+                  {t.platform.scanDesc}
                 </p>
               </div>
             </RevealSection>
@@ -97,12 +97,11 @@ const Platform: React.FC = () => {
           <Col xs={24} md={12} lg={8}>
             <RevealSection delay={0.2} style={{ height: '100%' }}>
               <div className="platform-feature-card">
-                <span className="step-num">PHASE 2</span>
+                <span className="step-num">{t.platform.phase2}</span>
                 <RobotOutlined aria-hidden="true" style={{ fontSize: 32, color: '#1890ff', marginBottom: 24 }} />
-                <h3 style={{ color: '#fff', fontSize: 'clamp(1.3rem, 2vw, 1.5rem)', fontWeight: 700, marginBottom: 16 }}>AI Validation</h3>
+                <h3 style={{ color: '#fff', fontSize: 'clamp(1.3rem, 2vw, 1.5rem)', fontWeight: 700, marginBottom: 16 }}>{t.platform.aiTitle}</h3>
                 <p style={{ color: '#94a3b8', fontSize: '1rem', lineHeight: 1.6 }}>
-                  Specialized LLMs act as a secondary analyst, reviewing charts and context to verify market structure 
-                  and sentiment before a trade is even considered.
+                  {t.platform.aiDesc}
                 </p>
               </div>
             </RevealSection>
@@ -110,12 +109,11 @@ const Platform: React.FC = () => {
           <Col xs={24} md={12} lg={8}>
             <RevealSection delay={0.3} style={{ height: '100%' }}>
               <div className="platform-feature-card">
-                <span className="step-num">PHASE 3</span>
+                <span className="step-num">{t.platform.phase3}</span>
                 <AimOutlined aria-hidden="true" style={{ fontSize: 32, color: '#1890ff', marginBottom: 24 }} />
-                <h3 style={{ color: '#fff', fontSize: 'clamp(1.3rem, 2vw, 1.5rem)', fontWeight: 700, marginBottom: 16 }}>Deterministic Plan</h3>
+                <h3 style={{ color: '#fff', fontSize: 'clamp(1.3rem, 2vw, 1.5rem)', fontWeight: 700, marginBottom: 16 }}>{t.platform.planTitle}</h3>
                 <p style={{ color: '#94a3b8', fontSize: '1rem', lineHeight: 1.6 }}>
-                  Automatically generate precise entry levels, stop-losses, and profit targets. 
-                  Every plan is account-aware, enforcing strict risk-to-reward parameters.
+                  {t.platform.planDesc}
                 </p>
               </div>
             </RevealSection>
@@ -129,43 +127,43 @@ const Platform: React.FC = () => {
               <Col xs={24} lg={12}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
                   <ThunderboltOutlined aria-hidden="true" style={{ color: '#1890ff', fontSize: 24 }} />
-                  <span style={{ color: '#1890ff', fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', fontSize: '0.9rem' }}>Risk-Aware Decision Support</span>
+                  <span style={{ color: '#1890ff', fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', fontSize: '0.9rem' }}>{t.platform.riskAware}</span>
                 </div>
                 <h2 style={{ fontSize: 'clamp(2rem, 3.5vw, 2.5rem)', fontWeight: 800, color: '#fff', marginBottom: 24, lineHeight: 1.2 }}>
-                  Beyond Blind Buy Signals.
+                  {t.platform.beyondBlind}
                 </h2>
                 <p style={{ color: '#94a3b8', fontSize: 'clamp(1rem, 1.5vw, 1.15rem)', lineHeight: 1.7, marginBottom: 24 }}>
-                  We don't just alert you to setups. AlphaLab walks every candidate through a comprehensive validation pipeline, ensuring statistical robustness before any capital is risked.
+                  {t.platform.beyondBlindDesc}
                 </p>
                 <Space size="large" direction="vertical" style={{ width: '100%' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12, color: '#e2e8f0', fontWeight: 600, fontSize: '1.05rem' }}>
-                    <CheckCircleOutlined aria-hidden="true" style={{ color: '#49aa19' }}/> Multi-LLM provider compatibility.
+                    <CheckCircleOutlined aria-hidden="true" style={{ color: '#49aa19' }}/> {t.platform.check1}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12, color: '#e2e8f0', fontWeight: 600, fontSize: '1.05rem' }}>
-                    <CheckCircleOutlined aria-hidden="true" style={{ color: '#49aa19' }}/> Real-time Alpaca paper and live trading.
+                    <CheckCircleOutlined aria-hidden="true" style={{ color: '#49aa19' }}/> {t.platform.check2}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12, color: '#e2e8f0', fontWeight: 600, fontSize: '1.05rem' }}>
-                    <CheckCircleOutlined aria-hidden="true" style={{ color: '#49aa19' }}/> User-controlled AI configuration & audit trails.
+                    <CheckCircleOutlined aria-hidden="true" style={{ color: '#49aa19' }}/> {t.platform.check3}
                   </div>
                 </Space>
               </Col>
               <Col xs={24} lg={12}>
                 <div style={{ background: 'rgba(0,0,0,0.4)', borderRadius: 16, border: '1px solid rgba(255,255,255,0.1)', padding: 'clamp(24px, 4vw, 32px)', position: 'relative' }}>
                   <h3 style={{ color: '#fff', fontSize: '1.2rem', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <SafetyOutlined aria-hidden="true" style={{ color: '#1890ff' }} /> Trading Logic Hub
+                    <SafetyOutlined aria-hidden="true" style={{ color: '#1890ff' }} /> {t.platform.hubTitle}
                   </h3>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                     <div style={{ padding: 12, background: 'rgba(24,144,255,0.1)', borderLeft: '4px solid #1890ff', borderRadius: 4, color: '#e2e8f0' }}>
-                      <ExperimentOutlined aria-hidden="true" style={{ marginRight: 8 }} /> Paper Trading: Test strategies risk-free.
+                      <ExperimentOutlined aria-hidden="true" style={{ marginRight: 8 }} /> {t.platform.hubPaper}
                     </div>
                     <div style={{ padding: 12, background: 'rgba(73,170,25,0.1)', borderLeft: '4px solid #49aa19', borderRadius: 4, color: '#e2e8f0' }}>
-                      <RocketOutlined aria-hidden="true" style={{ marginRight: 8 }} /> Live Execution: Direct broker connectivity.
+                      <RocketOutlined aria-hidden="true" style={{ marginRight: 8 }} /> {t.platform.hubLive}
                     </div>
                     <div style={{ padding: 12, background: 'rgba(114,46,209,0.1)', borderLeft: '4px solid #722ed1', borderRadius: 4, color: '#e2e8f0' }}>
-                      <NodeIndexOutlined aria-hidden="true" style={{ marginRight: 8 }} /> AI Provider: Configure OpenAI, DeepSeek, or Claude.
+                      <NodeIndexOutlined aria-hidden="true" style={{ marginRight: 8 }} /> {t.platform.hubAI}
                     </div>
                     <div style={{ marginTop: 12, fontSize: '0.9rem', color: '#64748b', fontStyle: 'italic' }}>
-                      * Users bring their own API keys; secret configuration is handled securely.
+                      {t.platform.hubNote}
                     </div>
                   </div>
                 </div>
@@ -178,8 +176,8 @@ const Platform: React.FC = () => {
         <div style={{ marginTop: 'clamp(60px, 10vw, 120px)' }}>
           <RevealSection>
             <div style={{ textAlign: 'center', marginBottom: 60 }}>
-              <h2 className="section-title">Who is AlphaLab For?</h2>
-              <p className="section-subtitle">Designed for traders who value process and precision over "gut feelings" and blind alerts.</p>
+              <h2 className="section-title">{t.platform.whoTitle}</h2>
+              <p className="section-subtitle">{t.platform.whoSubtitle}</p>
             </div>
           </RevealSection>
           
@@ -188,8 +186,8 @@ const Platform: React.FC = () => {
               <RevealSection delay={0.1} style={{ height: '100%' }}>
                 <div className="who-it-is-for-card">
                   <TeamOutlined aria-hidden="true" style={{ fontSize: 32, color: '#1890ff', marginBottom: 20 }} />
-                  <h3 style={{ color: '#fff', fontSize: '1.25rem', fontWeight: 700, marginBottom: 12 }}>Systematic Traders</h3>
-                  <p style={{ color: '#94a3b8', lineHeight: 1.6 }}>Traders who have a defined ruleset and want to scale their execution through automation and AI-assisted filtering.</p>
+                  <h3 style={{ color: '#fff', fontSize: '1.25rem', fontWeight: 700, marginBottom: 12 }}>{t.platform.traderTitle}</h3>
+                  <p style={{ color: '#94a3b8', lineHeight: 1.6 }}>{t.platform.traderDesc}</p>
                 </div>
               </RevealSection>
             </Col>
@@ -197,8 +195,8 @@ const Platform: React.FC = () => {
               <RevealSection delay={0.2} style={{ height: '100%' }}>
                 <div className="who-it-is-for-card">
                   <InteractionOutlined aria-hidden="true" style={{ fontSize: 32, color: '#1890ff', marginBottom: 20 }} />
-                  <h3 style={{ color: '#fff', fontSize: '1.25rem', fontWeight: 700, marginBottom: 12 }}>Quant Analysts</h3>
-                  <p style={{ color: '#94a3b8', lineHeight: 1.6 }}>Analysts looking to integrate modern LLM reasoning into traditional quantitative screening pipelines without coding from scratch.</p>
+                  <h3 style={{ color: '#fff', fontSize: '1.25rem', fontWeight: 700, marginBottom: 12 }}>{t.platform.quantTitle}</h3>
+                  <p style={{ color: '#94a3b8', lineHeight: 1.6 }}>{t.platform.quantDesc}</p>
                 </div>
               </RevealSection>
             </Col>
@@ -206,8 +204,8 @@ const Platform: React.FC = () => {
               <RevealSection delay={0.3} style={{ height: '100%' }}>
                 <div className="who-it-is-for-card">
                   <AppstoreOutlined aria-hidden="true" style={{ fontSize: 32, color: '#1890ff', marginBottom: 20 }} />
-                  <h3 style={{ color: '#fff', fontSize: '1.25rem', fontWeight: 700, marginBottom: 12 }}>Active Scalers</h3>
-                  <p style={{ color: '#94a3b8', lineHeight: 1.6 }}>Traders managing multiple setups simultaneously who need deterministic risk controls and position sizing to preserve capital.</p>
+                  <h3 style={{ color: '#fff', fontSize: '1.25rem', fontWeight: 700, marginBottom: 12 }}>{t.platform.scalerTitle}</h3>
+                  <p style={{ color: '#94a3b8', lineHeight: 1.6 }}>{t.platform.scalerDesc}</p>
                 </div>
               </RevealSection>
             </Col>
@@ -217,10 +215,10 @@ const Platform: React.FC = () => {
         <RevealSection>
           <div style={{ textAlign: 'center', marginTop: 'clamp(60px, 10vw, 120px)' }}>
             <div style={{ background: 'rgba(24,144,255,0.05)', padding: 'clamp(40px, 8vw, 60px)', borderRadius: '32px', border: '1px solid rgba(255,255,255,0.05)', maxWidth: 800, margin: '0 auto' }}>
-              <h3 style={{ color: '#fff', fontSize: 'clamp(1.8rem, 4vw, 2.5rem)', fontWeight: 800, marginBottom: 24, letterSpacing: '-0.02em' }}>Ready to experience the platform?</h3>
-              <p style={{ color: '#94a3b8', fontSize: 'clamp(1rem, 1.5vw, 1.15rem)', marginBottom: 40 }}>Join systematic traders leveraging our AI quant pipeline.</p>
+              <h3 style={{ color: '#fff', fontSize: 'clamp(1.8rem, 4vw, 2.5rem)', fontWeight: 800, marginBottom: 24, letterSpacing: '-0.02em' }}>{t.platform.readyTitle}</h3>
+              <p style={{ color: '#94a3b8', fontSize: 'clamp(1rem, 1.5vw, 1.15rem)', marginBottom: 40 }}>{t.platform.readyDesc}</p>
               <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} style={{ height: 56, padding: '0 60px', fontSize: '1.2rem' }}>
-                Get Started Now <ArrowRightOutlined aria-hidden="true" />
+                {t.platform.getStarted} <ArrowRightOutlined aria-hidden="true" />
               </Button>
             </div>
           </div>

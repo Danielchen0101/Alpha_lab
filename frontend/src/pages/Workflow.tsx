@@ -8,101 +8,108 @@ import {
 import { useNavigate } from 'react-router-dom';
 import MarketingLayout from '../components/MarketingLayout';
 import RevealSection from '../components/RevealSection';
-
-const workflowSteps = [
-  {
-    id: 'market-scan',
-    num: '01',
-    title: 'Market Scanner',
-    status: 'Global Scan',
-    desc: 'Broad spectrum analysis across thousands of equities.',
-    icon: <GlobalOutlined aria-hidden="true" />,
-    details: {
-      purpose: 'Continuously monitors over 8,000+ assets to identify technical anomalies, liquidity spikes, and emerging trends.',
-      inputs: 'Real-time price data, volume profiles, institutional flow indicators.',
-      outputs: 'Broad list of potential candidates meeting baseline volatility and liquidity criteria.',
-      risk: 'Filters out "dead" stocks and low-liquidity traps at the source.'
-    }
-  },
-  {
-    id: 'continue-scan',
-    num: '02',
-    title: 'Continue Scan',
-    status: 'Monitoring',
-    desc: 'Persistent tracking of candidates for structural maturity.',
-    icon: <SearchOutlined aria-hidden="true" />,
-    details: {
-      purpose: 'Maintains a state-aware buffer of candidates, waiting for specific price action triggers or technical confirmations.',
-      inputs: 'Time-series technical data, historical support/resistance levels.',
-      outputs: 'High-probability setups entering the "hot" zone.',
-      risk: 'Prevents premature entries by requiring multi-candle confirmation.'
-    }
-  },
-  {
-    id: 'fine-scan',
-    num: '03',
-    title: 'Fine Scan',
-    status: 'Refinement',
-    desc: 'Surgical filtering for high-precision technical structures.',
-    icon: <FilterOutlined aria-hidden="true" />,
-    details: {
-      purpose: 'Applies complex multi-factor filters to detect early multi-timeframe structures like base breaks or mean reversions.',
-      inputs: 'Multi-timeframe charts (1H, 4H, Daily), volatility contraction factors.',
-      outputs: 'Shortlist of "Trade-Ready" candidates for AI audit.',
-      risk: 'Eliminates over-extended or low-probability technical patterns.'
-    }
-  },
-  {
-    id: 'validate',
-    num: '04',
-    title: 'Deeper Validation',
-    status: 'AI Audit',
-    desc: 'Deep AI reasoning to review context and setup quality.',
-    icon: <RobotOutlined aria-hidden="true" />,
-    details: {
-      purpose: 'Deploys specialized LLM agents to act as expert analysts, reviewing market structure context and potential catalysts.',
-      inputs: 'Detailed technical data, recent news, sector sentiment.',
-      outputs: 'AI Confidence Score and comprehensive reasoning report.',
-      risk: 'Filters out technical false positives and sentiment traps.'
-    }
-  },
-  {
-    id: 'plan',
-    num: '05',
-    title: 'Entry Plan',
-    status: 'Planning',
-    desc: 'Generate deterministic execution levels and sizing.',
-    icon: <AimOutlined aria-hidden="true" />,
-    details: {
-      purpose: 'Calculates precise limit entry zones, trailing stops, and profit targets based on volatility and account metrics.',
-      inputs: 'Average True Range (ATR), account balance, risk preference.',
-      outputs: 'Complete execution-ready trade plan with 1:2.5+ RR ratio.',
-      risk: 'Enforces strict 1% account risk per trade via position sizing.'
-    }
-  },
-  {
-    id: 'execute',
-    num: '06',
-    title: 'Watchlist / Execution',
-    status: 'Execution',
-    desc: 'Final routing to watchlist or live broker execution.',
-    icon: <DeploymentUnitOutlined aria-hidden="true" />,
-    details: {
-      purpose: 'Transitions validated plans into active monitoring or direct execution via Alpaca Markets API.',
-      inputs: 'Finalized trade plan, API credentials.',
-      outputs: 'Live or paper trade execution with automated management.',
-      risk: 'Real-time slippage protection and margin requirements check.'
-    }
-  }
-];
+import { useLanguage } from '../contexts/LanguageContext';
 
 const Workflow: React.FC = () => {
   const navigate = useNavigate();
+  const { t } = useLanguage();
+
+  const workflowSteps = [
+    {
+      id: 'market-scan',
+      num: '01',
+      title: t.workflow.step1Title,
+      status: t.workflow.step1Status,
+      desc: t.workflow.step1Desc,
+      icon: <GlobalOutlined aria-hidden="true" />,
+      details: {
+        purpose: t.workflow.step1Purpose,
+        inputs: t.workflow.step1Inputs,
+        outputs: t.workflow.step1Outputs,
+        risk: t.workflow.step1Risk
+      }
+    },
+    {
+      id: 'continue-scan',
+      num: '02',
+      title: t.workflow.step2Title,
+      status: t.workflow.step2Status,
+      desc: t.workflow.step2Desc,
+      icon: <SearchOutlined aria-hidden="true" />,
+      details: {
+        purpose: t.workflow.step2Purpose,
+        inputs: t.workflow.step2Inputs,
+        outputs: t.workflow.step2Outputs,
+        risk: t.workflow.step2Risk
+      }
+    },
+    {
+      id: 'fine-scan',
+      num: '03',
+      title: t.workflow.step3Title,
+      status: t.workflow.step3Status,
+      desc: t.workflow.step3Desc,
+      icon: <FilterOutlined aria-hidden="true" />,
+      details: {
+        purpose: t.workflow.step3Purpose,
+        inputs: t.workflow.step3Inputs,
+        outputs: t.workflow.step3Outputs,
+        risk: t.workflow.step3Risk
+      }
+    },
+    {
+      id: 'validate',
+      num: '04',
+      title: t.workflow.step4Title,
+      status: t.workflow.step4Status,
+      desc: t.workflow.step4Desc,
+      icon: <RobotOutlined aria-hidden="true" />,
+      details: {
+        purpose: t.workflow.step4Purpose,
+        inputs: t.workflow.step4Inputs,
+        outputs: t.workflow.step4Outputs,
+        risk: t.workflow.step4Risk
+      }
+    },
+    {
+      id: 'plan',
+      num: '05',
+      title: t.workflow.step5Title,
+      status: t.workflow.step5Status,
+      desc: t.workflow.step5Desc,
+      icon: <AimOutlined aria-hidden="true" />,
+      details: {
+        purpose: t.workflow.step5Purpose,
+        inputs: t.workflow.step5Inputs,
+        outputs: t.workflow.step5Outputs,
+        risk: t.workflow.step5Risk
+      }
+    },
+    {
+      id: 'execute',
+      num: '06',
+      title: t.workflow.step6Title,
+      status: t.workflow.step6Status,
+      desc: t.workflow.step6Desc,
+      icon: <DeploymentUnitOutlined aria-hidden="true" />,
+      details: {
+        purpose: t.workflow.step6Purpose,
+        inputs: t.workflow.step6Inputs,
+        outputs: t.workflow.step6Outputs,
+        risk: t.workflow.step6Risk
+      }
+    }
+  ];
+
   const [activeWorkflow, setActiveWorkflow] = useState(workflowSteps[0]);
 
   useEffect(() => {
     window.scrollTo(0, 0);
-  }, []);
+    // When language changes, update the active workflow to use translated strings
+    const currentId = activeWorkflow.id;
+    const updatedStep = workflowSteps.find(s => s.id === currentId);
+    if (updatedStep) setActiveWorkflow(updatedStep);
+  }, [t]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <MarketingLayout>
@@ -116,7 +123,7 @@ const Workflow: React.FC = () => {
           align-items: center;
           gap: clamp(12px, 2vw, 20px);
           cursor: pointer;
-          transition: all 0.3s ease;
+          transition: transform 220ms ease, background 220ms ease, border-color 220ms ease, box-shadow 220ms ease;
         }
         .workflow-board-card:hover, .workflow-board-card.active {
           background: rgba(24,144,255,0.05);
@@ -230,17 +237,15 @@ const Workflow: React.FC = () => {
       <div className="page-hero">
         <RevealSection>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '6px 16px', background: 'rgba(114,46,209,0.1)', borderRadius: 20, border: '1px solid rgba(114,46,209,0.3)', color: '#b37feb', fontSize: '0.85rem', fontWeight: 700, letterSpacing: 1, marginBottom: 16 }}>
-            <DeploymentUnitOutlined aria-hidden="true" /> CORE WORKFLOW
+            <DeploymentUnitOutlined aria-hidden="true" /> {t.workflow.coreWorkflow}
           </div>
         </RevealSection>
         <RevealSection delay={0.1}>
-          <h1 className="page-title" style={{ fontSize: 'clamp(2.5rem, 5vw, 4rem)', letterSpacing: '-0.02em', lineHeight: 1.1 }}>
-            The Systematic <span style={{ background: 'linear-gradient(90deg, #1890ff, #722ed1)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>AI Pipeline</span>
-          </h1>
+          <h1 className="page-title" style={{ fontSize: 'clamp(2.5rem, 5vw, 4rem)', letterSpacing: '-0.02em', lineHeight: 1.1 }} dangerouslySetInnerHTML={{ __html: t.workflow.heroTitle }} />
         </RevealSection>
         <RevealSection delay={0.2}>
           <p className="page-subtitle">
-            AlphaLab orchestrates a rigorous algorithmic workflow. We filter out noise, validate hypotheses objectively, and enforce strict risk management before execution.
+            {t.workflow.heroSubtitle}
           </p>
         </RevealSection>
       </div>
@@ -248,9 +253,9 @@ const Workflow: React.FC = () => {
       <section className="section-container" style={{ paddingTop: 20, paddingBottom: 100 }}>
         <RevealSection>
           <div style={{ textAlign: 'center', marginBottom: 'clamp(40px, 8vw, 60px)' }}>
-            <h2 className="section-title">Discovery to Execution</h2>
+            <h2 className="section-title">{t.workflow.sectionTitle}</h2>
             <p className="section-subtitle">
-              Interactive breakdown of the AlphaLab end-to-end quantitative research and trading pipeline.
+              {t.workflow.sectionSubtitle}
             </p>
           </div>
         </RevealSection>
@@ -287,27 +292,27 @@ const Workflow: React.FC = () => {
                    <div className="wf-preview-header">
                      <div className="wf-preview-icon">{activeWorkflow.icon}</div>
                      <div>
-                       <div style={{ color: '#1890ff', fontSize: '0.85rem', fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 }}>PHASE {activeWorkflow.num}</div>
+                       <div style={{ color: '#1890ff', fontSize: '0.85rem', fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 }}>{t.workflow.phaseLabel} {activeWorkflow.num}</div>
                        <h3 style={{ color: '#fff', fontSize: 'clamp(1.4rem, 2.5vw, 1.8rem)', margin: 0, fontWeight: 800 }}>{activeWorkflow.title}</h3>
                      </div>
                    </div>
                    
                    <div className="wf-preview-body" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
                      <div className="wf-detail-group">
-                       <div className="wf-detail-label">Purpose</div>
+                       <div className="wf-detail-label">{t.workflow.purposeLabel}</div>
                        <div className="wf-detail-text">{activeWorkflow.details.purpose}</div>
                      </div>
                      
                      <Row gutter={[16, 16]} style={{ marginTop: 8 }}>
                        <Col xs={24} sm={12}>
                          <div className="wf-detail-box">
-                           <div className="wf-box-label">Inputs</div>
+                           <div className="wf-box-label">{t.workflow.inputsLabel}</div>
                            <div className="wf-box-text">{activeWorkflow.details.inputs}</div>
                          </div>
                        </Col>
                        <Col xs={24} sm={12}>
                          <div className="wf-detail-box">
-                           <div className="wf-box-label">Outputs</div>
+                           <div className="wf-box-label">{t.workflow.outputsLabel}</div>
                            <div className="wf-box-text">{activeWorkflow.details.outputs}</div>
                          </div>
                        </Col>
@@ -316,7 +321,7 @@ const Workflow: React.FC = () => {
                      <div className="wf-risk-box">
                        <SafetyOutlined aria-hidden="true" style={{ color: '#49aa19', fontSize: 24, marginTop: 4 }} />
                        <div>
-                         <div style={{ color: '#49aa19', fontWeight: 700, fontSize: '0.85rem', textTransform: 'uppercase', marginBottom: 4 }}>Risk Check</div>
+                         <div style={{ color: '#49aa19', fontWeight: 700, fontSize: '0.85rem', textTransform: 'uppercase', marginBottom: 4 }}>{t.workflow.riskCheckLabel}</div>
                          <div style={{ color: '#e2e8f0', fontSize: '0.95rem', lineHeight: 1.5 }}>{activeWorkflow.details.risk}</div>
                        </div>
                      </div>
@@ -329,9 +334,9 @@ const Workflow: React.FC = () => {
         
         <RevealSection>
           <div style={{ textAlign: 'center', marginTop: 'clamp(60px, 10vw, 120px)' }}>
-            <h3 style={{ color: '#fff', fontSize: 'clamp(1.8rem, 4vw, 2.5rem)', fontWeight: 800, marginBottom: 24, letterSpacing: '-0.02em' }}>Ready to experience the platform?</h3>
+            <h3 style={{ color: '#fff', fontSize: 'clamp(1.8rem, 4vw, 2.5rem)', fontWeight: 800, marginBottom: 24, letterSpacing: '-0.02em' }}>{t.workflow.readyTitle}</h3>
             <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} style={{ height: 56, padding: '0 40px', fontSize: '1.2rem' }}>
-              Get Started Now <ArrowRightOutlined aria-hidden="true" />
+              {t.workflow.getStarted} <ArrowRightOutlined aria-hidden="true" />
             </Button>
           </div>
         </RevealSection>

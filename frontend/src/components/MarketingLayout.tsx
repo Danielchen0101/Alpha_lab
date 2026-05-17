@@ -295,10 +295,10 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
           <div className={`nav-item ${location.pathname === '/platform' ? 'active' : ''}`} onClick={() => handleNavClick('/platform')} aria-current={location.pathname === '/platform' ? 'page' : undefined}>{t.landing.navPlatform}</div>
           <div className={`nav-item ${location.pathname === '/workflow' ? 'active' : ''}`} onClick={() => handleNavClick('/workflow')} aria-current={location.pathname === '/workflow' ? 'page' : undefined}>{t.landing.navWorkflow}</div>
           <div className={`nav-item ${location.pathname === '/features' ? 'active' : ''}`} onClick={() => handleNavClick('/features')} aria-current={location.pathname === '/features' ? 'page' : undefined}>{t.landing.navFeatures}</div>
-          <div className={`nav-item ${location.pathname === '/technology' ? 'active' : ''}`} onClick={() => handleNavClick('/technology')} aria-current={location.pathname === '/technology' ? 'page' : undefined} aria-label="Technology page">{t.landing.navTechnology}</div>
+          <div className={`nav-item ${location.pathname === '/technology' ? 'active' : ''}`} onClick={() => handleNavClick('/technology')} aria-current={location.pathname === '/technology' ? 'page' : undefined} aria-label={t.landing.ariaLabelTechPage}>{t.landing.navTechnology}</div>
         </div>
         <div className="nav-actions">
-          <Button type="text" onClick={toggleLanguage} style={{ color: '#94a3b8', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'clamp(12px, 1vw, 13px)', padding: '4px 8px' }} aria-label="Switch Language"><GlobalOutlined aria-hidden="true" style={{ fontSize: 'clamp(12px, 1vw, 14px)' }} /> <span className="lang-text">{language === 'zh-CN' ? '中文' : 'EN'}</span></Button>
+          <Button type="text" onClick={toggleLanguage} style={{ color: '#94a3b8', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'clamp(12px, 1vw, 13px)', padding: '4px 8px' }} aria-label={t.landing.ariaLabelSwitchLang}><GlobalOutlined aria-hidden="true" style={{ fontSize: 'clamp(12px, 1vw, 14px)' }} /> <span className="lang-text">{language === 'zh-CN' ? '中文' : 'EN'}</span></Button>
           <Button type="text" style={{ color: '#fff', fontWeight: 600, fontSize: 'clamp(13px, 1vw, 14px)', padding: '4px 8px' }} onClick={() => navigate('/signin')}>{t.landing.signIn}</Button>
           <Button type="primary" className="btn-get-started" style={{ background: '#1890ff', borderColor: '#1890ff', fontWeight: 600, boxShadow: '0 4px 12px rgba(24,144,255,0.3)' }} onClick={() => navigate('/signup')}>{t.landing.getStarted}</Button>
         </div>
@@ -325,7 +325,7 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
             
             {/* Product Column */}
             <div>
-              <h4 style={{ color: '#fff', fontWeight: 700, marginBottom: 16, fontSize: '0.9rem' }}>Product</h4>
+              <h4 style={{ color: '#fff', fontWeight: 700, marginBottom: 16, fontSize: '0.9rem' }}>{t.landing.footerProduct}</h4>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <span onClick={() => handleNavClick('/platform')} style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>{t.landing.navPlatform}</span>
                 <span onClick={() => handleNavClick('/workflow')} style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>{t.landing.navWorkflow}</span>
@@ -336,19 +336,19 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
 
             {/* Trust Column */}
             <div>
-              <h4 style={{ color: '#fff', fontWeight: 700, marginBottom: 16, fontSize: '0.9rem' }}>Trust</h4>
+              <h4 style={{ color: '#fff', fontWeight: 700, marginBottom: 16, fontSize: '0.9rem' }}>{t.landing.footerTrust}</h4>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <span onClick={() => { navigate('/security'); window.scrollTo(0, 0); }} style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>{t.landing.navSecurity || 'Security'}</span>
-                <span style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>Privacy Policy</span>
-                <span style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>Terms of Service</span>
+                <span style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>{t.landing.footerPrivacyPolicy}</span>
+                <span style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>{t.landing.footerTermsOfService}</span>
               </div>
             </div>
 
             {/* Resources Column */}
             <div>
-              <h4 style={{ color: '#fff', fontWeight: 700, marginBottom: 16, fontSize: '0.9rem' }}>Resources</h4>
+              <h4 style={{ color: '#fff', fontWeight: 700, marginBottom: 16, fontSize: '0.9rem' }}>{t.landing.footerResources}</h4>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <a href="https://github.com/Danielchen0101/quant_platform" target="_blank" rel="noopener noreferrer" style={{ color: '#94a3b8', fontSize: '0.85rem', textDecoration: 'none' }}>GitHub</a>
+                <a href="https://github.com/Danielchen0101/quant_platform" target="_blank" rel="noopener noreferrer" style={{ color: '#94a3b8', fontSize: '0.85rem', textDecoration: 'none' }}>{t.landing.footerGithub}</a>
                 <SystemStatusIndicator />
               </div>
             </div>
@@ -364,7 +364,7 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#60a5fa', fontSize: 11 }}>
                 <SafetyOutlined aria-hidden="true" style={{ fontSize: 11 }} />
-                <span>Secure quantitative environment</span>
+                <span>{t.landing.footerSecureEnv}</span>
               </div>
             </div>
           </div>
