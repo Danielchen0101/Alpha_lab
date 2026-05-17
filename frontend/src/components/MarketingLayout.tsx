@@ -54,13 +54,20 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
           background: transparent;
           border-bottom: 1px solid transparent;
         }
+        /* Premium Fintech Background */
+        .nav-header:not(.scrolled) {
+          border-bottom: 1px solid rgba(255, 255, 255, 0.02) !important;
+          background: linear-gradient(to bottom, rgba(2, 6, 17, 0.8) 0%, rgba(2, 6, 17, 0) 100%) !important;
+          backdrop-filter: none !important;
+          -webkit-backdrop-filter: none !important;
+        }
+        
         .nav-header.scrolled {
-          background: rgba(2, 6, 17, 0.85);
-          backdrop-filter: blur(20px);
-          -webkit-backdrop-filter: blur(20px);
-          border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-          box-shadow: 0 4px 30px rgba(0, 0, 0, 0.6);
-          height: clamp(60px, 7vh, 70px);
+          background: rgba(2, 6, 17, 0.95) !important;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5) !important;
+          backdrop-filter: none !important;
+          -webkit-backdrop-filter: none !important;
         }
         .nav-logo {
           font-size: clamp(1.2rem, 2vw, 1.5rem);

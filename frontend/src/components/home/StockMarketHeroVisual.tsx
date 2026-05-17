@@ -78,17 +78,15 @@ const StockMarketHeroVisual: React.FC = () => {
           overflow: hidden;
         }
         .glass-panel {
-          background: rgba(15, 23, 42, 0.4);
-          backdrop-filter: blur(16px);
-          -webkit-backdrop-filter: blur(16px);
+          background: rgba(15, 23, 42, 0.75);
           border: 1px solid rgba(148, 163, 184, 0.1);
           border-radius: 16px;
           padding: 14px;
-          transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+          transition: transform 220ms ease, border-color 220ms ease, box-shadow 220ms ease;
         }
         .glass-panel:hover {
           border-color: rgba(24, 144, 255, 0.3);
-          box-shadow: 0 10px 40px rgba(0,0,0,0.4), 0 0 20px rgba(24, 144, 255, 0.1);
+          box-shadow: 0 4px 20px rgba(0,0,0,0.3), 0 0 10px rgba(24, 144, 255, 0.1);
           transform: translateY(-2px);
         }
         
@@ -98,7 +96,7 @@ const StockMarketHeroVisual: React.FC = () => {
           border: 1px solid rgba(255, 255, 255, 0.04);
           border-radius: 12px;
           padding: 6px 10px;
-          transition: all 0.3s ease;
+          transition: transform 220ms ease, border-color 220ms ease, background 220ms ease;
         }
         .top-ticker-card:hover {
           background: rgba(24, 144, 255, 0.04);
@@ -112,7 +110,7 @@ const StockMarketHeroVisual: React.FC = () => {
           border-radius: 10px;
           padding: 8px 10px;
           margin-bottom: 6px;
-          transition: all 0.3s ease;
+          transition: border-color 220ms ease, background 220ms ease;
         }
         .workflow-step:hover {
           background: rgba(24, 144, 255, 0.04);
@@ -154,18 +152,26 @@ const StockMarketHeroVisual: React.FC = () => {
           display: flex;
           white-space: nowrap;
           position: relative;
+          contain: strict;
         }
         .ticker-tape {
           display: flex;
           gap: 40px;
-          animation: slideTicker 30s linear infinite;
+          animation: slideTicker 60s linear infinite;
+          will-change: transform;
         }
         .ticker-tape:hover {
           animation-play-state: paused;
         }
         @keyframes slideTicker {
-          0% { transform: translateX(0); }
-          100% { transform: translateX(-50%); }
+          0% { transform: translate3d(0, 0, 0); }
+          100% { transform: translate3d(-50%, 0, 0); }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .ticker-tape { animation: none; transform: none; }
+          .svg-chart-path { animation: none; stroke-dashoffset: 0; }
+          .pulse-indicator { animation: none !important; opacity: 1; }
         }
 
         @media (max-width: 768px) {

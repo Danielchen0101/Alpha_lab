@@ -39,20 +39,6 @@ const Landing: React.FC = () => {
   return (
     <MarketingLayout>
       <style>{`
-        /* Premium Fintech Background */
-        .nav-header:not(.scrolled) {
-          border-bottom: 1px solid rgba(255, 255, 255, 0.02) !important;
-          background: linear-gradient(to bottom, rgba(2, 6, 17, 0.8) 0%, rgba(2, 6, 17, 0) 100%) !important;
-          backdrop-filter: none !important;
-          -webkit-backdrop-filter: none !important;
-        }
-        
-        .nav-header.scrolled {
-          background: rgba(2, 6, 17, 0.95) !important;
-          border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
-          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5) !important;
-        }
-
         .nav-item {
           letter-spacing: 0.01em;
         }
