@@ -192,14 +192,15 @@ const Landing: React.FC = () => {
         .content-relative {
           position: relative;
           z-index: 5;
-          max-width: clamp(1160px, 92vw, 1460px);
+          max-width: min(100%, 1460px);
           margin: 0 auto;
           width: 100%;
           display: grid;
-          grid-template-columns: minmax(380px, 0.5fr) minmax(520px, 0.85fr);
+          grid-template-columns: minmax(min(100%, 380px), 0.5fr) minmax(auto, 0.85fr);
           align-items: center;
           gap: clamp(28px, 3.5vw, 52px);
-          padding: 0 clamp(20px, 2vw, 40px);
+          padding: 0 clamp(16px, 2vw, 40px);
+          box-sizing: border-box;
         }
 
         .hero-text-area {
@@ -227,13 +228,13 @@ const Landing: React.FC = () => {
         }
 
         .premium-title {
-          font-size: clamp(2.4rem, 3.2vw, 3.6rem);
+          font-size: clamp(34px, 10vw, 46px);
           font-weight: 800;
-          line-height: 1.15;
+          line-height: 1.0;
           background: linear-gradient(180deg, #ffffff 0%, #cbd5e1 100%);
           -webkit-background-clip: text;
           -webkit-text-fill-color: transparent;
-          margin-bottom: 24px;
+          margin-bottom: 20px;
           letter-spacing: -0.01em;
           animation: fadeUp 0.8s ease-out forwards;
         }
@@ -244,12 +245,12 @@ const Landing: React.FC = () => {
         }
 
         .premium-subtitle {
-          font-size: clamp(0.95rem, 1.1vw, 1.1rem);
+          font-size: clamp(15px, 2.5vw, 1.1rem);
           color: rgba(203,213,225,0.8);
           margin-bottom: 32px;
-          line-height: 1.8;
+          line-height: 1.6;
           font-weight: 400;
-          max-width: 580px;
+          max-width: 100%;
           animation: fadeUp 0.8s ease-out 0.2s forwards;
           opacity: 0;
         }

@@ -176,10 +176,10 @@ const StockMarketHeroVisual: React.FC = () => {
 
         @media (max-width: 768px) {
           .stock-visual-container {
-            padding: 8px;
-            gap: 8px;
+            padding: 4px;
+            gap: 4px;
           }
-          /* Hide lower panels and middle panels on mobile to keep it ultra compact */
+          /* Hide non-essential panels to keep it ultra compact */
           .glass-panel:nth-child(n+3) {
             display: none !important;
           }
@@ -187,11 +187,15 @@ const StockMarketHeroVisual: React.FC = () => {
           .top-ticker-card:nth-child(n+2) {
             display: none !important;
           }
+          /* Make remaining card fit */
+          .top-ticker-card {
+            width: 100%;
+          }
           .ticker-row {
-            gap: 6px;
+            gap: 4px;
           }
           .main-chart-area {
-            height: 140px;
+            height: 120px;
           }
           /* Hide the execution feed on mobile */
           .glass-panel.live-executions {
