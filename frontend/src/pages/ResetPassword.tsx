@@ -177,7 +177,7 @@ const ResetPassword: React.FC = () => {
     border: '1px solid rgba(255,255,255,0.08)', borderRadius: 24,
     backdropFilter: 'blur(24px)',
     boxShadow: '0 30px 60px -12px rgba(0,0,0,0.8), 0 0 40px rgba(24,144,255,0.05)',
-    padding: '48px 40px',
+    padding: 'clamp(32px, 6vw, 48px) clamp(24px, 5vw, 40px)',
   };
 
   if (linkInvalid) {

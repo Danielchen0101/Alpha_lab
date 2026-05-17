@@ -9,6 +9,7 @@ import {
   SafetyCertificateOutlined, MailOutlined, LockOutlined, SafetyOutlined
 } from '@ant-design/icons';
 import MarketingLayout from '../components/MarketingLayout';
+import RevealSection from '../components/RevealSection';
 import { useLanguage } from '../contexts/LanguageContext';
 import StockMarketHeroVisual from '../components/home/StockMarketHeroVisual';
 
@@ -662,39 +663,45 @@ const Landing: React.FC = () => {
 
       {/* Project Overview */}
       <section className="section-container" style={{ paddingTop: 40, textAlign: 'center' }}>
-        <div className="reveal-on-scroll visible">
+        <RevealSection>
           <h2 style={{ fontSize: '2.5rem', fontWeight: 800, color: '#fff', marginBottom: 24 }}>{t.landing.overviewTitle}</h2>
           <p style={{ color: '#94a3b8', fontSize: '1.2rem', maxWidth: 800, margin: '0 auto 40px', lineHeight: 1.7 }}>
             {t.landing.overviewDesc}
           </p>
-        </div>
+        </RevealSection>
 
         {/* Tech Stack */}
-        <div className="reveal-on-scroll visible delay-100" style={{ marginTop: 60 }}>
-          <h3 style={{ color: '#64748b', fontSize: '0.9rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 2, marginBottom: 24 }}>{t.landing.builtWith}</h3>
-          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', maxWidth: 900, margin: '0 auto' }}>
-            {techStack.map((tech, idx) => (
-              <span key={idx} className="tech-tag">{tech}</span>
-            ))}
+        <RevealSection delay={0.1}>
+          <div style={{ marginTop: 60 }}>
+            <h3 style={{ color: '#64748b', fontSize: '0.9rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 2, marginBottom: 24 }}>{t.landing.builtWith}</h3>
+            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', maxWidth: 900, margin: '0 auto' }}>
+              {techStack.map((tech, idx) => (
+                <span key={idx} className="tech-tag">{tech}</span>
+              ))}
+            </div>
           </div>
-        </div>
+        </RevealSection>
       </section>
 
       {/* Core Capabilities Grid */}
       <section className="section-container">
-        <div className="reveal-on-scroll visible" style={{ textAlign: 'center', marginBottom: 60 }}>
-          <h2 style={{ fontSize: '2.5rem', fontWeight: 800, color: '#fff', marginBottom: 16 }}>{t.landing.capabilitiesTitle}</h2>
-          <p style={{ color: '#94a3b8', fontSize: '1.1rem' }}>{t.landing.capabilitiesSubtitle}</p>
-        </div>
+        <RevealSection>
+          <div style={{ textAlign: 'center', marginBottom: 60 }}>
+            <h2 style={{ fontSize: '2.5rem', fontWeight: 800, color: '#fff', marginBottom: 16 }}>{t.landing.capabilitiesTitle}</h2>
+            <p style={{ color: '#94a3b8', fontSize: '1.1rem' }}>{t.landing.capabilitiesSubtitle}</p>
+          </div>
+        </RevealSection>
         
         <Row gutter={[24, 24]}>
           {capabilities.map((cap, idx) => (
             <Col xs={24} sm={12} md={8} key={idx}>
-              <div className="cap-card reveal-on-scroll visible">
-                <div className="cap-icon">{cap.icon}</div>
-                <h3 className="cap-title">{cap.title}</h3>
-                <p className="cap-desc">{cap.desc}</p>
-              </div>
+              <RevealSection delay={(idx % 3) * 0.1} style={{ height: '100%' }}>
+                <div className="cap-card">
+                  <div className="cap-icon">{cap.icon}</div>
+                  <h3 className="cap-title">{cap.title}</h3>
+                  <p className="cap-desc">{cap.desc}</p>
+                </div>
+              </RevealSection>
             </Col>
           ))}
         </Row>
@@ -702,30 +709,34 @@ const Landing: React.FC = () => {
 
       {/* GitHub Repository Link */}
       <section className="section-container" style={{ paddingBottom: 100 }}>
-        <div className="github-section reveal-on-scroll visible">
-          <GithubOutlined style={{ fontSize: 48, color: '#fff', marginBottom: 24 }} />
-          <h2 style={{ fontSize: '2rem', fontWeight: 800, color: '#fff', marginBottom: 16 }}>{t.landing.githubTitle}</h2>
-          <p style={{ color: '#94a3b8', fontSize: '1.1rem', maxWidth: 600, margin: '0 auto 32px' }}>
-            {t.landing.githubDesc}
-          </p>
-          <Button 
-            className="btn-secondary" 
-            style={{ height: 50, padding: '0 32px' }}
-            href="https://github.com/Danielchen0101/quant_platform"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {t.landing.githubButton} <ArrowRightOutlined />
-          </Button>
-        </div>
+        <RevealSection>
+          <div className="github-section">
+            <GithubOutlined aria-hidden="true" style={{ fontSize: 48, color: '#fff', marginBottom: 24 }} />
+            <h2 style={{ fontSize: '2rem', fontWeight: 800, color: '#fff', marginBottom: 16 }}>{t.landing.githubTitle}</h2>
+            <p style={{ color: '#94a3b8', fontSize: '1.1rem', maxWidth: 600, margin: '0 auto 32px' }}>
+              {t.landing.githubDesc}
+            </p>
+            <Button 
+              className="btn-secondary" 
+              style={{ height: 50, padding: '0 32px' }}
+              href="https://github.com/Danielchen0101/quant_platform"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {t.landing.githubButton} <ArrowRightOutlined aria-hidden="true" />
+            </Button>
+          </div>
+        </RevealSection>
       </section>
 
       {/* P3 — Product Demo Walkthrough */}
       <section className="section-container">
-        <div className="reveal-on-scroll visible" style={{ textAlign: 'center', marginBottom: 60 }}>
-          <h2 className="section-title">{t.walkthrough.title}</h2>
-          <p className="section-subtitle">{t.walkthrough.subtitle}</p>
-        </div>
+        <RevealSection>
+          <div style={{ textAlign: 'center', marginBottom: 60 }}>
+            <h2 className="section-title">{t.walkthrough.title}</h2>
+            <p className="section-subtitle">{t.walkthrough.subtitle}</p>
+          </div>
+        </RevealSection>
         <div style={{ position: 'relative', maxWidth: 900, margin: '0 auto' }}>
           {/* Progress line */}
           <div style={{
@@ -739,92 +750,100 @@ const Landing: React.FC = () => {
             { icon: '📋', title: t.walkthrough.step4Title, desc: t.walkthrough.step4Desc },
             { icon: '🚀', title: t.walkthrough.step5Title, desc: t.walkthrough.step5Desc },
           ].map((step, idx) => (
-            <div key={idx} className="reveal-on-scroll visible" style={{
-              display: 'flex', gap: 20, marginBottom: idx < 4 ? 36 : 0,
-              paddingLeft: 12, position: 'relative',
-            }}>
+            <RevealSection key={idx} delay={idx * 0.1}>
               <div style={{
-                width: 52, height: 52, borderRadius: '50%', flexShrink: 0,
-                background: 'linear-gradient(135deg, rgba(24,144,255,0.15), rgba(24,144,255,0.05))',
-                border: '1px solid rgba(24,144,255,0.25)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 20, position: 'relative', zIndex: 1, backdropFilter: 'blur(8px)',
+                display: 'flex', gap: 20, marginBottom: idx < 4 ? 36 : 0,
+                paddingLeft: 12, position: 'relative',
               }}>
-                <span>{step.icon}</span>
+                <div style={{
+                  width: 52, height: 52, borderRadius: '50%', flexShrink: 0,
+                  background: 'linear-gradient(135deg, rgba(24,144,255,0.15), rgba(24,144,255,0.05))',
+                  border: '1px solid rgba(24,144,255,0.25)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 20, position: 'relative', zIndex: 1, backdropFilter: 'blur(8px)',
+                }}>
+                  <span aria-hidden="true">{step.icon}</span>
+                </div>
+                <div style={{ flex: 1, paddingTop: 6 }}>
+                  <h3 style={{ color: '#fff', fontSize: '1.1rem', fontWeight: 700, marginBottom: 6 }}>{step.title}</h3>
+                  <p style={{ color: '#94a3b8', fontSize: '0.9rem', lineHeight: 1.6, margin: 0 }}>{step.desc}</p>
+                </div>
               </div>
-              <div style={{ flex: 1, paddingTop: 6 }}>
-                <h3 style={{ color: '#fff', fontSize: '1.1rem', fontWeight: 700, marginBottom: 6 }}>{step.title}</h3>
-                <p style={{ color: '#94a3b8', fontSize: '0.9rem', lineHeight: 1.6, margin: 0 }}>{step.desc}</p>
-              </div>
-            </div>
+            </RevealSection>
           ))}
         </div>
       </section>
 
       {/* Example Output */}
       <section className="section-container" style={{ paddingTop: 0 }}>
-        <div className="reveal-on-scroll visible" style={{ textAlign: 'center', marginBottom: 40 }}>
-          <h2 className="section-title">{t.landing.exampleOutputTitle}</h2>
-          <p className="section-subtitle" style={{ color: '#94a3b8', maxWidth: 600, margin: '0 auto' }}>{t.landing.exampleOutputSubtitle}</p>
-        </div>
-        <div className="reveal-on-scroll visible" style={{ maxWidth: 600, margin: '0 auto', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 20, padding: 24 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 20 }}>
-            <div>
-              <div style={{ fontSize: '0.8rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Symbol</div>
-              <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#fff' }}>NVDA</div>
-            </div>
-            <div style={{ textAlign: 'right' }}>
-              <div style={{ fontSize: '0.8rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Signal</div>
-              <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#60a5fa' }}>Momentum Breakout</div>
-            </div>
+        <RevealSection>
+          <div style={{ textAlign: 'center', marginBottom: 40 }}>
+            <h2 className="section-title">{t.landing.exampleOutputTitle}</h2>
+            <p className="section-subtitle" style={{ color: '#94a3b8', maxWidth: 600, margin: '0 auto' }}>{t.landing.exampleOutputSubtitle}</p>
           </div>
-          
-          <div style={{ background: 'rgba(16,185,129,0.05)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: 12, padding: 16, marginBottom: 20 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ color: '#34d399', fontWeight: 600 }}>AI Verdict</span>
-              <span style={{ background: '#10b981', color: '#fff', padding: '4px 12px', borderRadius: 20, fontSize: '0.85rem', fontWeight: 700 }}>BUY</span>
+        </RevealSection>
+        <RevealSection delay={0.1}>
+          <div style={{ maxWidth: 600, margin: '0 auto', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 20, padding: 24 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 20 }}>
+              <div>
+                <div style={{ fontSize: '0.8rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Symbol</div>
+                <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#fff' }}>NVDA</div>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ fontSize: '0.8rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Signal</div>
+                <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#60a5fa' }}>Momentum Breakout</div>
+              </div>
             </div>
-          </div>
+            
+            <div style={{ background: 'rgba(16,185,129,0.05)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: 12, padding: 16, marginBottom: 20 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ color: '#34d399', fontWeight: 600 }}>AI Verdict</span>
+                <span style={{ background: '#10b981', color: '#fff', padding: '4px 12px', borderRadius: 20, fontSize: '0.85rem', fontWeight: 700 }}>BUY</span>
+              </div>
+            </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16, marginBottom: 20 }}>
-            <div style={{ background: 'rgba(255,255,255,0.03)', padding: 16, borderRadius: 12 }}>
-              <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: 4 }}>Win Rate</div>
-              <div style={{ fontSize: '1.1rem', color: '#fff', fontWeight: 700 }}>68.2%</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16, marginBottom: 20 }}>
+              <div style={{ background: 'rgba(255,255,255,0.03)', padding: 16, borderRadius: 12 }}>
+                <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: 4 }}>Win Rate</div>
+                <div style={{ fontSize: '1.1rem', color: '#fff', fontWeight: 700 }}>68.2%</div>
+              </div>
+              <div style={{ background: 'rgba(255,255,255,0.03)', padding: 16, borderRadius: 12 }}>
+                <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: 4 }}>Max Drawdown</div>
+                <div style={{ fontSize: '1.1rem', color: '#ef4444', fontWeight: 700 }}>-4.1%</div>
+              </div>
+              <div style={{ background: 'rgba(255,255,255,0.03)', padding: 16, borderRadius: 12 }}>
+                <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: 4 }}>Sharpe</div>
+                <div style={{ fontSize: '1.1rem', color: '#fff', fontWeight: 700 }}>2.45</div>
+              </div>
             </div>
-            <div style={{ background: 'rgba(255,255,255,0.03)', padding: 16, borderRadius: 12 }}>
-              <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: 4 }}>Max Drawdown</div>
-              <div style={{ fontSize: '1.1rem', color: '#ef4444', fontWeight: 700 }}>-4.1%</div>
-            </div>
-            <div style={{ background: 'rgba(255,255,255,0.03)', padding: 16, borderRadius: 12 }}>
-              <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: 4 }}>Sharpe</div>
-              <div style={{ fontSize: '1.1rem', color: '#fff', fontWeight: 700 }}>2.45</div>
-            </div>
-          </div>
 
-          <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 20 }}>
-            <div style={{ fontSize: '0.9rem', color: '#fff', fontWeight: 600, marginBottom: 12 }}>Risk Plan</div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: '#94a3b8', marginBottom: 8 }}>
-              <span>Entry Target</span>
-              <span style={{ color: '#fff' }}>$1,037.89</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: '#94a3b8', marginBottom: 8 }}>
-              <span>Stop Loss</span>
-              <span style={{ color: '#ef4444' }}>$998.50 (-3.8%)</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: '#94a3b8' }}>
-              <span>Position Size</span>
-              <span style={{ color: '#fff' }}>140 Shares (1% Risk)</span>
+            <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 20 }}>
+              <div style={{ fontSize: '0.9rem', color: '#fff', fontWeight: 600, marginBottom: 12 }}>Risk Plan</div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: '#94a3b8', marginBottom: 8 }}>
+                <span>Entry Target</span>
+                <span style={{ color: '#fff' }}>$1,037.89</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: '#94a3b8', marginBottom: 8 }}>
+                <span>Stop Loss</span>
+                <span style={{ color: '#ef4444' }}>$998.50 (-3.8%)</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: '#94a3b8' }}>
+                <span>Position Size</span>
+                <span style={{ color: '#fff' }}>140 Shares (1% Risk)</span>
+              </div>
             </div>
           </div>
-        </div>
+        </RevealSection>
       </section>
 
       {/* P3 — FAQ / Trust Section */}
       <section className="section-container">
-        <div className="reveal-on-scroll visible" style={{ textAlign: 'center', marginBottom: 60 }}>
-          <h2 className="section-title">{t.faq.title}</h2>
-          <p className="section-subtitle">{t.faq.subtitle}</p>
-        </div>
+        <RevealSection>
+          <div style={{ textAlign: 'center', marginBottom: 60 }}>
+            <h2 className="section-title">{t.faq.title}</h2>
+            <p className="section-subtitle">{t.faq.subtitle}</p>
+          </div>
+        </RevealSection>
         <div style={{ maxWidth: 800, margin: '0 auto' }}>
           {[
             { q: t.faq.q1, a: t.faq.a1 },
@@ -834,38 +853,42 @@ const Landing: React.FC = () => {
             { q: t.faq.q5, a: t.faq.a5 },
             { q: t.faq.q6, a: t.faq.a6 },
           ].map((item, idx) => (
-            <div key={idx} className="reveal-on-scroll visible" style={{
-              background: 'rgba(255,255,255,0.02)',
-              border: '1px solid rgba(255,255,255,0.06)',
-              borderRadius: 16, padding: '24px 28px', marginBottom: 16,
-              transition: 'border-color 0.3s ease',
-            }}
-              onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'rgba(24,144,255,0.3)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.06)'; }}
-            >
-              <h3 style={{ color: '#fff', fontSize: '1rem', fontWeight: 700, marginBottom: 10 }}>
-                {item.q}
-              </h3>
-              <p style={{ color: '#94a3b8', fontSize: '0.9rem', lineHeight: 1.7, margin: 0 }}>
-                {item.a}
-              </p>
-            </div>
+            <RevealSection key={idx} delay={idx * 0.1}>
+              <div style={{
+                background: 'rgba(255,255,255,0.02)',
+                border: '1px solid rgba(255,255,255,0.06)',
+                borderRadius: 16, padding: '24px 28px', marginBottom: 16,
+                transition: 'border-color 0.3s ease',
+              }}
+                onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'rgba(24,144,255,0.3)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.06)'; }}
+              >
+                <h3 style={{ color: '#fff', fontSize: '1rem', fontWeight: 700, marginBottom: 10 }}>
+                  {item.q}
+                </h3>
+                <p style={{ color: '#94a3b8', fontSize: '0.9rem', lineHeight: 1.7, margin: 0 }}>
+                  {item.a}
+                </p>
+              </div>
+            </RevealSection>
           ))}
         </div>
       </section>
 
       {/* Final CTA */}
       <section className="section-container" style={{ textAlign: 'center', padding: '100px 24px' }}>
-        <div className="reveal-on-scroll visible" style={{ background: 'linear-gradient(145deg, rgba(24,144,255,0.05) 0%, rgba(114,46,209,0.05) 100%)', padding: '60px', borderRadius: '32px', border: '1px solid rgba(255,255,255,0.05)' }}>
-          <h2 className="section-title" style={{ fontSize: '2.8rem', fontWeight: 800, color: '#fff', marginBottom: 24 }}>{t.landing.ctaTitle}</h2>
-          <p style={{ color: '#94a3b8', fontSize: '1.2rem', marginBottom: 40, maxWidth: 700, margin: '0 auto 40px' }}>
-            {t.landing.ctaDesc}
-          </p>
-          <Space size="large" className="hero-actions">
-            <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} style={{ height: 56, padding: '0 40px' }}>{t.landing.ctaGetStarted}</Button>
-            <Button className="btn-secondary" onClick={() => navigate('/signin')} style={{ height: 56, padding: '0 40px' }}>{t.landing.ctaSignIn}</Button>
-          </Space>
-        </div>
+        <RevealSection>
+          <div style={{ background: 'linear-gradient(145deg, rgba(24,144,255,0.05) 0%, rgba(114,46,209,0.05) 100%)', padding: '60px', borderRadius: '32px', border: '1px solid rgba(255,255,255,0.05)' }}>
+            <h2 className="section-title" style={{ fontSize: '2.8rem', fontWeight: 800, color: '#fff', marginBottom: 24 }}>{t.landing.ctaTitle}</h2>
+            <p style={{ color: '#94a3b8', fontSize: '1.2rem', marginBottom: 40, maxWidth: 700, margin: '0 auto 40px' }}>
+              {t.landing.ctaDesc}
+            </p>
+            <Space size="large" className="hero-actions">
+              <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} style={{ height: 56, padding: '0 40px' }}>{t.landing.ctaGetStarted}</Button>
+              <Button className="btn-secondary" onClick={() => navigate('/signin')} style={{ height: 56, padding: '0 40px' }}>{t.landing.ctaSignIn}</Button>
+            </Space>
+          </div>
+        </RevealSection>
       </section>
     </MarketingLayout>
   );

@@ -717,7 +717,7 @@ const SignIn: React.FC = () => {
             display: 'flex',
             flexDirection: 'column',
             justifyContent: 'center',
-            padding: '40px 48px',
+            padding: 'clamp(32px, 5vw, 40px) clamp(24px, 6vw, 48px)',
             background:
               'linear-gradient(145deg, rgba(24,144,255,0.03) 0%, rgba(114,46,209,0.05) 100%)',
             borderLeft: '1px solid rgba(255,255,255,0.05)',

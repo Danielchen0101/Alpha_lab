@@ -2621,17 +2621,17 @@ const messages = {
     featureHeaders: '安全响应头已配置',
     featureHeadersDesc: '前端构建已配置安全响应头（HSTS、CSP、X-Frame-Options）；每次发布后仍需验证生产环境是否生效。',
 
-    // What we never do
+    // What we never do / Security FAQ
     neverTitle: 'AlphaLab 永远不会做的事',
     neverSubtitle: '我们的核心理念是用户控制与数据保护。我们在以下做法上划定了不可逾越的红线。',
-    never1: '绝不暴露原始 API 密钥',
-    never1Desc: '所有密钥在存储时均已加密，且永远不会通过 API 以明文形式返回。',
-    never2: '绝不默认开启实盘交易',
-    never2Desc: '实盘交易必须由用户手动明确开启。我们始终以模拟交易（Paper trading）为默认项。',
-    never3: '绝不保证收益',
-    never3Desc: '我们提供的是确定性的分析工具，而非神奇的摇钱树。没有任何交易利润是绝对保证的。',
-    never4: '绝不默认绕过用户确认',
-    never4Desc: 'AI 可以生成交易计划，但执行必须由用户亲自确认。我们不支持盲目的全自动交易。',
+    never1: 'AlphaLab 会自动替我下单吗？',
+    never1Desc: '不会。AI 可以生成交易计划，但执行必须由您亲自确认。我们绝不默认开启实盘交易，也不支持盲目的全自动交易。',
+    never2: '我的 API 密钥安全吗？',
+    never2Desc: '所有密钥在存储时均采用行业标准加密。我们绝不通过 API 或 UI 暴露原始明文密钥。',
+    never3: '我可以先使用模拟盘吗？',
+    never3Desc: '当然。AlphaLab 默认采用模拟盘优先的工作流。在连接实盘账户之前，您可以完全无风险地测试策略。',
+    never4: '我该如何撤销访问权限？',
+    never4Desc: '您拥有完全的控制权。您可以随时删除 API 密钥，撤销 AlphaLab 对您券商或 AI 提供商的访问权限。',
 
     ctaTitle: '深受研究者和交易者信赖。',
     ctaDesc: 'AlphaLab 以安全、透明和用户控制为核心原则构建。',

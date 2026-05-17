@@ -2621,17 +2621,17 @@ const messages = {
     featureHeaders: 'Security Headers Configured',
     featureHeadersDesc: 'Security headers (HSTS, CSP, X-Frame-Options) are configured in the frontend build; production deployment integrity should be verified after each release.',
     
-    // What we never do
+    // What we never do / Security FAQ
     neverTitle: 'What AlphaLab will never do',
     neverSubtitle: 'Our core philosophy is user control and data protection. We draw a hard line on the following practices.',
-    never1: 'Never expose raw API keys',
-    never1Desc: 'All keys are encrypted at rest and never returned in plaintext via the API.',
-    never2: 'Never auto-enable live trading',
-    never2Desc: 'Live trading must be manually and explicitly enabled by the user. We default to Paper trading.',
-    never3: 'Never guarantee returns',
-    never3Desc: 'We provide deterministic tools, not magical money-making boxes. There is no guaranteed profit.',
-    never4: 'Never bypass user confirmation by default',
-    never4Desc: 'AI generates plans, but the user must confirm execution. We do not support blind auto-trading.',
+    never1: 'Can AlphaLab place trades without me?',
+    never1Desc: 'No. AI generates plans, but execution must be manually confirmed. We never auto-enable live trading or support blind auto-trading.',
+    never2: 'How are API keys protected?',
+    never2Desc: 'All keys are encrypted at rest with industry-standard protocols. We never expose raw API keys via our API or UI.',
+    never3: 'Can I use paper mode first?',
+    never3Desc: 'Yes. AlphaLab defaults to a paper-first workflow. You can test strategies risk-free before ever connecting a live account.',
+    never4: 'How do I revoke access?',
+    never4Desc: 'You have full control. You can delete your API keys and revoke AlphaLab\'s access to your broker or AI provider at any time.',
 
     ctaTitle: 'Trusted by researchers and traders.',
     ctaDesc: 'AlphaLab is built with security, transparency, and user control as core principles.',
