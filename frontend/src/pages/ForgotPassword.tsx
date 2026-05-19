@@ -76,6 +76,26 @@ const ForgotPassword: React.FC = () => {
           .trust-item { gap: 4px; font-size: 10px; }
           .trust-item svg { font-size: 10px; }
         }
+        .forgot-password-card .auth-input {
+          height: clamp(40px, 4vh, 44px) !important;
+          font-size: clamp(0.85rem, 1.1vw, 0.95rem) !important;
+        }
+        .forgot-password-card .auth-btn {
+          height: clamp(40px, 4vh, 44px) !important;
+          font-size: clamp(0.9rem, 1.2vw, 1rem) !important;
+        }
+        @media (max-width: 480px) {
+          .forgot-password-card .auth-input { height: 40px !important; font-size: 0.85rem !important; }
+          .forgot-password-card .auth-btn { height: 40px !important; }
+        }
+        .forgot-password-card .cf-turnstile { transform-origin: left center; }
+        @media (max-width: 400px) {
+          .forgot-password-card .cf-turnstile { transform: scale(0.85); }
+          .forgot-password-card .cf-turnstile iframe { width: 300px !important; }
+        }
+        @media (max-width: 340px) {
+          .forgot-password-card .cf-turnstile { transform: scale(0.75); }
+        }
       `;
       document.head.appendChild(style);
     }
@@ -240,14 +260,14 @@ const ForgotPassword: React.FC = () => {
               size="large"
               onClick={() => navigate('/signin')}
               style={{
-                height: 48,
-                borderRadius: 12,
+                height: 44,
+                borderRadius: 10,
                 fontSize: '1rem',
                 fontWeight: 600,
                 background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
                 border: 'none',
                 color: '#fff',
-                boxShadow: '0 8px 24px rgba(24,144,255,0.3)',
+                boxShadow: '0 8px 20px rgba(24,144,255,0.3)',
               }}
             >
               {t.auth.backToSignIn}
@@ -309,6 +329,7 @@ const ForgotPassword: React.FC = () => {
                   prefix={<MailOutlined style={{ color: '#94A3B8' }} />}
                   placeholder={t.auth.emailPlaceholderSignIn}
                   size="large"
+                  className="auth-input"
                 />
               </Form.Item>
 
@@ -367,15 +388,16 @@ const ForgotPassword: React.FC = () => {
                   disabled={!canSubmit || submitting}
                   block
                   size="large"
+                  className="auth-btn"
                   style={{
-                    height: 48,
+                    height: 44,
                     borderRadius: 10,
                     fontSize: '1rem',
                     fontWeight: 600,
                     background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
                     border: 'none',
                     color: '#fff',
-                    boxShadow: '0 8px 24px rgba(24,144,255,0.3)',
+                    boxShadow: '0 8px 20px rgba(24,144,255,0.3)',
                   }}
                 >
                   {submitting ? sendingLabel : t.auth.sendResetLink}

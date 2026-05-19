@@ -147,6 +147,31 @@ const SignUp: React.FC = () => {
         @keyframes spin {
           to { transform: rotate(360deg); }
         }
+        .trust-strip {
+          display: flex;
+          justify-content: center;
+          gap: 16px;
+          margin-top: 20px;
+          padding-top: 16px;
+          border-top: 1px solid rgba(255,255,255,0.06);
+          flex-wrap: wrap;
+        }
+        .trust-item {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          color: rgba(255,255,255,0.35);
+          font-size: 11px;
+        }
+        .trust-item svg {
+          font-size: 12px;
+          color: #10b981;
+        }
+        @media (max-width: 480px) {
+          .trust-strip { gap: 8px; margin-top: 16px; padding-top: 12px; }
+          .trust-item { gap: 4px; font-size: 10px; }
+          .trust-item svg { font-size: 10px; }
+        }
       `;
       document.head.appendChild(style);
     }
@@ -316,7 +341,7 @@ const SignUp: React.FC = () => {
           display: 'flex',
           width: '100%',
           boxSizing: 'border-box',
-          maxWidth: 1060,
+          maxWidth: 1040,
           minHeight: 'auto',
           background: 'rgba(17,25,40,0.65)',
           border: '1px solid rgba(255,255,255,0.08)',
@@ -334,10 +359,11 @@ const SignUp: React.FC = () => {
         <div
           style={{
             flex: 1,
+            maxWidth: 480,
             display: 'flex',
             flexDirection: 'column',
             justifyContent: 'center',
-            padding: 'clamp(24px, 3vw, 40px) clamp(20px, 3vw, 48px)',
+            padding: 'clamp(24px, 3vw, 36px) clamp(20px, 3vw, 40px)',
             background:
               'linear-gradient(160deg, rgba(114,46,209,0.04) 0%, rgba(24,144,255,0.04) 100%)',
             borderRight: '1px solid rgba(255,255,255,0.05)',
@@ -358,11 +384,11 @@ const SignUp: React.FC = () => {
             }}
           />
 
-          <div style={{ maxWidth: 360, position: 'relative', zIndex: 1 }}>
+          <div style={{ maxWidth: 400, position: 'relative', zIndex: 1 }}>
             <h3
               style={{
                 color: '#fff',
-                marginBottom: 24,
+                marginBottom: 20,
                 fontWeight: 700,
                 fontSize: 'clamp(1.2rem, 1.8vw, 1.5rem)',
                 letterSpacing: '-0.02em',
@@ -371,13 +397,13 @@ const SignUp: React.FC = () => {
               {t.auth.buildYourEdge}
             </h3>
             {features.map((item, i) => (
-              <div key={i} style={{ marginBottom: 16 }}>
+              <div key={i} style={{ marginBottom: 12 }}>
                 <div
                   style={{
                     display: 'flex',
                     alignItems: 'center',
                     gap: 10,
-                    marginBottom: 4,
+                    marginBottom: 2,
                   }}
                 >
                   <div
@@ -403,9 +429,9 @@ const SignUp: React.FC = () => {
                 <Text
                   style={{
                     color: '#94a3b8',
-                    fontSize: '0.9rem',
+                    fontSize: '0.85rem',
                     paddingLeft: 16,
-                    lineHeight: 1.4,
+                    lineHeight: 1.35,
                     display: 'block',
                   }}
                 >
@@ -415,8 +441,8 @@ const SignUp: React.FC = () => {
             ))}
             <div
               style={{
-                marginTop: 28,
-                padding: '12px 16px',
+                marginTop: 20,
+                padding: '10px 14px',
                 borderRadius: 10,
                 background: 'rgba(24,144,255,0.05)',
                 border: '1px solid rgba(24,144,255,0.15)',
@@ -425,8 +451,8 @@ const SignUp: React.FC = () => {
               <Text
                 style={{
                   color: '#94a3b8',
-                  fontSize: '0.85rem',
-                  lineHeight: 1.5,
+                  fontSize: '0.8rem',
+                  lineHeight: 1.4,
                 }}
               >
                 {t.auth.signUpHint}
@@ -439,20 +465,20 @@ const SignUp: React.FC = () => {
         <div
           style={{
             flex: '0 1 auto',
-            width: 'clamp(360px, 40vw, 480px)',
-            padding: 'clamp(24px, 3vw, 40px) clamp(20px, 3vw, 48px)',
+            width: 'clamp(340px, 38vw, 440px)',
+            padding: 'clamp(24px, 3vw, 36px) clamp(20px, 3vw, 40px)',
             display: 'flex',
             flexDirection: 'column',
             justifyContent: 'center',
           }}
           className="signup-form-panel"
         >
-          <div style={{ marginBottom: 24 }}>
+          <div style={{ marginBottom: 22 }}>
             <div
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                marginBottom: 16,
+                marginBottom: 12,
                 cursor: 'pointer',
                 background: 'transparent',
               }}
@@ -462,7 +488,7 @@ const SignUp: React.FC = () => {
                 src="/brand/alphalab-logo.png"
                 alt="AlphaLab"
                 style={{
-                  height: '32px',
+                  height: '28px',
                   width: 'auto',
                   objectFit: 'contain',
                   background: 'transparent',
@@ -476,7 +502,7 @@ const SignUp: React.FC = () => {
                 color: '#fff',
                 marginBottom: 4,
                 fontWeight: 700,
-                fontSize: 'clamp(26px, 3vw, 36px)',
+                fontSize: 'clamp(24px, 3vw, 34px)',
                 letterSpacing: '-0.02em',
               }}
             >
@@ -640,7 +666,7 @@ const SignUp: React.FC = () => {
                 </Form.Item>
 
                 {/* Password rule checklist */}
-                <div className="password-checklist" style={{ marginTop: -16, marginBottom: 16, paddingLeft: 4 }}>
+                <div className="password-checklist" style={{ marginTop: -14, marginBottom: 14, paddingLeft: 4 }}>
                   {[
                     { test: (v: string) => v.length >= 8, label: t.auth.passwordRuleLength },
                     { test: (v: string) => /[A-Z]/.test(v), label: t.auth.passwordRuleUpper },
@@ -653,7 +679,7 @@ const SignUp: React.FC = () => {
                       <div key={i} style={{
                         color: met ? '#10b981' : '#475569',
                         fontSize: 11,
-                        marginBottom: 2,
+                        marginBottom: 1,
                         transition: 'color 0.15s ease',
                       }}>
                         <span style={{ marginRight: 6, fontSize: 11 }}>
@@ -805,7 +831,7 @@ const SignUp: React.FC = () => {
                 </div>
                 {/* CAPTCHA footer — P1-4 */}
                 {captchaConfigured && (
-                  <div style={{ textAlign: 'center', marginBottom: 20, marginTop: -8 }}>
+                  <div style={{ textAlign: 'center', marginBottom: 14, marginTop: -8 }}>
                     <span style={{ color: '#475569', fontSize: '0.65rem' }}>
                       {t.auth.captchaFooter}
                     </span>
@@ -850,9 +876,9 @@ const SignUp: React.FC = () => {
 
               {/* What happens next */}
               <div className="next-steps" style={{
-                marginTop: 24,
-                marginBottom: 16,
-                padding: '16px 20px',
+                marginTop: 20,
+                marginBottom: 14,
+                padding: '14px 18px',
                 background: 'rgba(24,144,255,0.04)',
                 border: '1px solid rgba(24,144,255,0.12)',
                 borderRadius: 12,
@@ -891,7 +917,7 @@ const SignUp: React.FC = () => {
               </div>
 
               {/* Divider + Social OAuth */}
-              <div style={{ marginTop: 14, maxWidth: 420 }}>
+              <div style={{ marginTop: 12, maxWidth: 420 }}>
                 <div
                   style={{
                     display: 'flex',
@@ -988,7 +1014,7 @@ const SignUp: React.FC = () => {
               </div>
 
               {/* Sign in link */}
-              <div style={{ marginTop: 14 }}>
+              <div style={{ marginTop: 12 }}>
                 <Text style={{ color: '#94a3b8', fontSize: '0.9rem' }}>
                   {t.auth.alreadyHaveAccount}{' '}
                   <Link
@@ -1001,7 +1027,7 @@ const SignUp: React.FC = () => {
               </div>
 
               {/* Back to home */}
-              <div style={{ marginTop: 12 }}>
+              <div style={{ marginTop: 10 }}>
                 <Link
                   to="/"
                   style={{
@@ -1031,16 +1057,13 @@ const SignUp: React.FC = () => {
 
       {/* Responsive styles */}
       <style>{`
+        /* Tablet and below (1024px): single column, left panel hidden */
         @media (max-width: 1024px) {
-          .signup-card { max-width: 600px !important; }
-          .signup-form-panel { width: 100% !important; }
+          .signup-card { max-width: 480px !important; flex-direction: column !important; }
+          .signup-form-panel { width: 100% !important; padding: clamp(24px, 4vw, 32px) !important; }
           .signup-left-panel { display: none !important; }
         }
-        @media (max-width: 768px) {
-          .signup-card { flex-direction: column !important; max-width: 100% !important; }
-          .signup-form-panel { width: 100% !important; padding: clamp(20px, 4vw, 32px) !important; }
-          .signup-left-panel { display: none !important; }
-        }
+        /* Mobile: tighter padding */
         @media (max-width: 480px) {
           .signup-form-panel { padding: 18px 16px !important; }
           .signup-card .ant-form-item { margin-bottom: 10px !important; }
@@ -1067,7 +1090,7 @@ const SignUp: React.FC = () => {
         @media (max-width: 480px) {
           .signup-card .auth-input { height: 40px !important; font-size: 0.85rem !important; }
           .signup-card .auth-btn { height: 40px !important; }
-          .password-checklist { margin-top: -12px !important; margin-bottom: 12px !important; }
+          .password-checklist { margin-top: -14px !important; margin-bottom: 10px !important; }
           .password-checklist div { font-size: 10px !important; margin-bottom: 1px !important; }
           .password-checklist span { font-size: 10px !important; }
         }

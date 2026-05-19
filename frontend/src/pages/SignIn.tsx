@@ -145,7 +145,7 @@ const SignIn: React.FC = () => {
           display: flex;
           justify-content: center;
           gap: 16px;
-          margin-top: 24px;
+          margin-top: 20px;
           padding-top: 16px;
           border-top: 1px solid rgba(255,255,255,0.06);
           flex-wrap: wrap;
@@ -344,7 +344,7 @@ const SignIn: React.FC = () => {
           display: 'flex',
           width: '100%',
           boxSizing: 'border-box',
-          maxWidth: 1060,
+          maxWidth: 1040,
           minHeight: 'auto',
           background: 'rgba(17,25,40,0.65)',
           border: '1px solid rgba(255,255,255,0.08)',
@@ -362,20 +362,20 @@ const SignIn: React.FC = () => {
         <div
           style={{
             flex: '0 1 auto',
-            width: 'clamp(360px, 40vw, 480px)',
-            padding: 'clamp(24px, 3vw, 40px) clamp(20px, 3vw, 48px)',
+            width: 'clamp(340px, 38vw, 440px)',
+            padding: 'clamp(24px, 3vw, 36px) clamp(20px, 3vw, 40px)',
             display: 'flex',
             flexDirection: 'column',
             justifyContent: 'center',
           }}
           className="signin-form-panel"
         >
-          <div style={{ marginBottom: 28 }}>
+          <div style={{ marginBottom: 22 }}>
             <div
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                marginBottom: 16,
+                marginBottom: 12,
                 cursor: 'pointer',
                 background: 'transparent',
               }}
@@ -385,7 +385,7 @@ const SignIn: React.FC = () => {
                 src="/brand/alphalab-logo.png"
                 alt="AlphaLab"
                 style={{
-                  height: '32px',
+                  height: '28px',
                   width: 'auto',
                   objectFit: 'contain',
                   background: 'transparent',
@@ -399,7 +399,7 @@ const SignIn: React.FC = () => {
                 color: '#fff',
                 marginBottom: 4,
                 fontWeight: 700,
-                fontSize: 'clamp(26px, 3vw, 36px)',
+                fontSize: 'clamp(24px, 3vw, 34px)',
                 letterSpacing: '-0.02em',
               }}
             >
@@ -471,7 +471,7 @@ const SignIn: React.FC = () => {
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
-                marginBottom: 16,
+                marginBottom: 12,
               }}
             >
               <Form.Item name="remember" valuePropName="checked" noStyle>
@@ -529,7 +529,7 @@ const SignIn: React.FC = () => {
               </div>
               {/* CAPTCHA footer — P1-4 */}
               {captchaConfigured && (
-                <div style={{ textAlign: 'center', marginBottom: 16, marginTop: -4 }}>
+                <div style={{ textAlign: 'center', marginBottom: 12, marginTop: -4 }}>
                   <span style={{ color: '#475569', fontSize: '0.65rem' }}>
                     {t.auth.captchaFooter}
                   </span>
@@ -588,7 +588,7 @@ const SignIn: React.FC = () => {
           </div>
 
           {/* Divider + Social OAuth */}
-          <div style={{ marginTop: 20, maxWidth: 420 }}>
+          <div style={{ marginTop: 16, maxWidth: 420 }}>
             <div
               style={{
                 display: 'flex',
@@ -685,7 +685,7 @@ const SignIn: React.FC = () => {
           </div>
 
           {/* Create account link */}
-          <div style={{ marginTop: 14 }}>
+          <div style={{ marginTop: 12 }}>
             <Text style={{ color: '#cbd5e1', fontSize: '0.9rem' }}>
               {t.auth.noAccount}{' '}
               <Link
@@ -698,7 +698,7 @@ const SignIn: React.FC = () => {
           </div>
 
           {/* Back to home */}
-          <div style={{ marginTop: 12 }}>
+          <div style={{ marginTop: 10 }}>
             <Link
               to="/"
               style={{
@@ -725,10 +725,11 @@ const SignIn: React.FC = () => {
         <div
           style={{
             flex: 1,
+            maxWidth: 480,
             display: 'flex',
             flexDirection: 'column',
             justifyContent: 'center',
-            padding: 'clamp(32px, 5vw, 40px) clamp(24px, 6vw, 48px)',
+            padding: 'clamp(24px, 3vw, 36px) clamp(24px, 4vw, 40px)',
             background:
               'linear-gradient(145deg, rgba(24,144,255,0.03) 0%, rgba(114,46,209,0.05) 100%)',
             borderLeft: '1px solid rgba(255,255,255,0.05)',
@@ -749,11 +750,11 @@ const SignIn: React.FC = () => {
             }}
           />
 
-          <div style={{ maxWidth: 360, position: 'relative', zIndex: 1 }}>
+          <div style={{ maxWidth: 400, position: 'relative', zIndex: 1 }}>
             <h3
               style={{
                 color: '#fff',
-                marginBottom: 24,
+                marginBottom: 20,
                 fontWeight: 700,
                 fontSize: 'clamp(1.2rem, 1.8vw, 1.5rem)',
                 letterSpacing: '-0.02em',
@@ -779,13 +780,13 @@ const SignIn: React.FC = () => {
                 desc: t.auth.featurePaperDesc,
               },
             ].map((item, i) => (
-              <div key={i} style={{ marginBottom: 16 }}>
+              <div key={i} style={{ marginBottom: 12 }}>
                 <div
                   style={{
                     display: 'flex',
                     alignItems: 'center',
                     gap: 10,
-                    marginBottom: 4,
+                    marginBottom: 2,
                   }}
                 >
                   <div
@@ -811,9 +812,9 @@ const SignIn: React.FC = () => {
                 <Text
                   style={{
                     color: '#94a3b8',
-                    fontSize: '0.9rem',
+                    fontSize: '0.85rem',
                     paddingLeft: 16,
-                    lineHeight: 1.4,
+                    lineHeight: 1.35,
                     display: 'block',
                   }}
                 >
@@ -827,31 +828,21 @@ const SignIn: React.FC = () => {
 
       {/* Responsive styles */}
       <style>{`
+        /* Tablet and below (1024px): single column, right panel hidden */
         @media (max-width: 1024px) {
           .signin-card {
-            max-width: 600px !important;
-          }
-          .signin-form-panel {
-            width: 100% !important;
-          }
-          .signin-right-panel {
-            display: none !important;
-          }
-        }
-        @media (max-width: 768px) {
-          .signin-card {
+            max-width: 480px !important;
             flex-direction: column !important;
-            min-height: auto !important;
-            max-width: 100% !important;
           }
           .signin-form-panel {
             width: 100% !important;
-            padding: clamp(20px, 4vw, 32px) !important;
+            padding: clamp(24px, 4vw, 32px) !important;
           }
           .signin-right-panel {
             display: none !important;
           }
         }
+        /* Mobile: tighter padding */
         @media (max-width: 480px) {
           .signin-form-panel {
             padding: 18px 16px !important;
@@ -895,6 +886,9 @@ const SignIn: React.FC = () => {
           }
           .signin-card .auth-btn {
             height: 40px !important;
+          }
+          .signin-card .ant-form-item {
+            margin-bottom: 10px !important;
           }
         }
       `}</style>
