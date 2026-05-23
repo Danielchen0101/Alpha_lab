@@ -201,22 +201,22 @@ const ForgotPassword: React.FC = () => {
           zIndex: 1,
           width: '100%',
           boxSizing: 'border-box',
-          maxWidth: 460,
+          maxWidth: 440,
           background: 'rgba(17,25,40,0.65)',
           border: '1px solid rgba(255,255,255,0.08)',
           borderRadius: 20,
           backdropFilter: 'blur(24px)',
           boxShadow: '0 30px 60px -12px rgba(0,0,0,0.8), 0 0 40px rgba(24,144,255,0.05)',
-          padding: 'clamp(32px, 6vw, 48px) clamp(24px, 5vw, 40px)',
+          padding: 'clamp(28px, 5vh, 40px) clamp(24px, 5vw, 36px)',
         }}
       >
         {/* Logo */}
-        <div style={{ marginBottom: 32, textAlign: 'center' }}>
+        <div style={{ marginBottom: 24, textAlign: 'center' }}>
           <img
             src="/brand/alphalab-logo.png"
             alt="AlphaLab"
             style={{
-              height: 40,
+              height: 24,
               width: 'auto',
               objectFit: 'contain',
               cursor: 'pointer',
@@ -230,9 +230,9 @@ const ForgotPassword: React.FC = () => {
           level={2}
           style={{
             color: '#fff',
-            marginBottom: 12,
+            marginBottom: 8,
             fontWeight: 700,
-            fontSize: '1.6rem',
+            fontSize: '1.5rem',
             textAlign: 'center',
             letterSpacing: '-0.02em',
           }}

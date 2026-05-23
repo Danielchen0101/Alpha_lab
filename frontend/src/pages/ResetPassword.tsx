@@ -192,12 +192,12 @@ const ResetPassword: React.FC = () => {
   };
 
   const cardStyle: React.CSSProperties = {
-    position: 'relative', zIndex: 1, width: '100%', boxSizing: 'border-box', maxWidth: 460,
+    position: 'relative', zIndex: 1, width: '100%', boxSizing: 'border-box', maxWidth: 440,
     background: 'rgba(17,25,40,0.65)',
     border: '1px solid rgba(255,255,255,0.08)', borderRadius: 20,
     backdropFilter: 'blur(24px)',
     boxShadow: '0 30px 60px -12px rgba(0,0,0,0.8), 0 0 40px rgba(24,144,255,0.05)',
-    padding: 'clamp(32px, 6vw, 48px) clamp(24px, 5vw, 40px)',
+    padding: 'clamp(28px, 5vh, 40px) clamp(24px, 5vw, 36px)',
   };
 
   if (linkInvalid) {
@@ -207,7 +207,7 @@ const ResetPassword: React.FC = () => {
         <div style={glowStyle2} />
         <div style={cardStyle} className="reset-password-card">
           <div style={{ textAlign: 'center' }}>
-            <img src="/brand/alphalab-logo.png" alt="AlphaLab" style={{ height: 40, marginBottom: 40, cursor: 'pointer' }} onClick={() => navigate('/')} />
+            <img src="/brand/alphalab-logo.png" alt="AlphaLab" style={{ height: 24, marginBottom: 32, cursor: 'pointer' }} onClick={() => navigate('/')} />
             <ExclamationCircleOutlined className="invalid-state-icon" />
             <Title level={3} style={{ color: '#fff', marginBottom: 12 }}>{t.auth.resetLinkInvalid}</Title>
             <Text style={{ color: '#94a3b8', display: 'block', marginBottom: 32, lineHeight: 1.6 }}>
@@ -248,9 +248,8 @@ const ResetPassword: React.FC = () => {
       <div style={glowStyle2} />
 
       <div style={cardStyle} className="reset-password-card">
-        {/* Logo */}
-        <div style={{ marginBottom: 32, textAlign: 'center' }}>
-          <img src="/brand/alphalab-logo.png" alt="AlphaLab" style={{ height: 40, width: 'auto', objectFit: 'contain', cursor: 'pointer' }} onClick={() => navigate('/')} />
+        <div style={{ marginBottom: 24, textAlign: 'center' }}>
+          <img src="/brand/alphalab-logo.png" alt="AlphaLab" style={{ height: 24, width: 'auto', objectFit: 'contain', cursor: 'pointer' }} onClick={() => navigate('/')} />
         </div>
 
         {updated ? (

@@ -145,7 +145,7 @@ const SignIn: React.FC = () => {
           display: flex;
           justify-content: center;
           gap: 16px;
-          margin-top: 16px;
+          margin-top: 14px;
           padding-top: 16px;
           border-top: 1px solid rgba(255,255,255,0.06);
           flex-wrap: wrap;
@@ -344,11 +344,11 @@ const SignIn: React.FC = () => {
           display: 'flex',
           width: '100%',
           boxSizing: 'border-box',
-          maxWidth: 940,
+          maxWidth: 820,
           minHeight: 'auto',
           background: 'rgba(17,25,40,0.65)',
           border: '1px solid rgba(255,255,255,0.08)',
-          borderRadius: 24,
+          borderRadius: 20,
           overflow: 'hidden',
           backdropFilter: 'blur(24px)',
           boxShadow:
@@ -356,15 +356,15 @@ const SignIn: React.FC = () => {
           position: 'relative',
           zIndex: 1,
           flexDirection: 'row',
-          gap: 'clamp(24px, 2.5vw, 40px)',
         }}
       >
         {/* Left panel — form */}
         <div
           style={{
-            flex: '0 1 auto',
-            width: 'clamp(320px, 36vw, 400px)',
-            padding: 'clamp(20px, 2.5vw, 30px) clamp(18px, 2.5vw, 28px)',
+            flex: '1 1 auto',
+            width: '100%',
+            maxWidth: 420,
+            padding: 'clamp(24px, 4vh, 32px) clamp(20px, 4vw, 32px)',
             display: 'flex',
             flexDirection: 'column',
             justifyContent: 'center',
@@ -376,7 +376,7 @@ const SignIn: React.FC = () => {
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                marginBottom: 8,
+                marginBottom: 12,
                 cursor: 'pointer',
                 background: 'transparent',
               }}
@@ -386,7 +386,7 @@ const SignIn: React.FC = () => {
                 src="/brand/alphalab-logo.png"
                 alt="AlphaLab"
                 style={{
-                  height: '22px',
+                  height: '24px',
                   width: 'auto',
                   objectFit: 'contain',
                   background: 'transparent',
@@ -400,13 +400,13 @@ const SignIn: React.FC = () => {
                 color: '#fff',
                 marginBottom: 4,
                 fontWeight: 700,
-                fontSize: 'clamp(24px, 3vw, 32px)',
+                fontSize: 'clamp(22px, 2.5vw, 26px)',
                 letterSpacing: '-0.02em',
               }}
             >
               {t.auth.welcomeBack}
             </Title>
-            <Text style={{ color: '#cbd5e1', fontSize: 'clamp(0.85rem, 1.2vw, 0.95rem)' }}>
+            <Text style={{ color: '#94a3b8', fontSize: '0.9rem' }}>
               {t.auth.signInSubtitle}
             </Text>
           </div>
@@ -439,13 +439,13 @@ const SignIn: React.FC = () => {
               rules={[
                 { required: true, message: t.auth.enterValidEmail },
               ]}
+              style={{ marginBottom: 12 }}
             >
               <Input
                 prefix={<UserOutlined />}
                 placeholder={t.auth.emailPlaceholderSignIn}
                 size="large"
                 className="auth-input"
-                style={{ fontSize: '0.95rem' }}
               />
             </Form.Item>
 
@@ -456,6 +456,7 @@ const SignIn: React.FC = () => {
               rules={[
                 { required: true, message: t.auth.passwordMinLength },
               ]}
+              style={{ marginBottom: 12 }}
             >
               <Input.Password
                 prefix={<LockOutlined />}
@@ -463,7 +464,6 @@ const SignIn: React.FC = () => {
                 size="large"
                 autoComplete="current-password"
                 className="auth-input"
-                style={{ fontSize: '0.95rem' }}
               />
             </Form.Item>
 
@@ -481,7 +481,7 @@ const SignIn: React.FC = () => {
               <Link
                 to="/forgot-password"
                 style={{
-                  color: '#60a5fa',
+                  color: '#1890ff',
                   fontSize: 13,
                   fontWeight: 500,
                   textDecoration: 'none',
@@ -492,7 +492,7 @@ const SignIn: React.FC = () => {
             </div>
 
             {/* CAPTCHA — always shown */}
-              <div style={{ marginBottom: 8, minHeight: 65, maxWidth: '100%', overflow: 'hidden' }}>
+              <div style={{ marginBottom: 10, minHeight: 65, maxWidth: '100%', overflow: 'hidden' }}>
                 {captchaConfigured ? (
                   <Turnstile
                     sitekey={turnstileSiteKey || ''}
@@ -512,7 +512,7 @@ const SignIn: React.FC = () => {
                     fontSize: 12,
                     textAlign: 'center',
                   }}>
-                    {t.auth.captchaNotConfigured} — {t.auth.captchaBypassDev}
+                    {t.auth.captchaNotConfigured}
                   </div>
                 ) : (
                   <div style={{
@@ -528,17 +528,9 @@ const SignIn: React.FC = () => {
                   </div>
                 )}
               </div>
-              {/* CAPTCHA footer — P1-4 */}
-              {captchaConfigured && (
-                <div style={{ textAlign: 'center', marginBottom: 12, marginTop: -4 }}>
-                  <span style={{ color: '#475569', fontSize: '0.65rem' }}>
-                    {t.auth.captchaFooter}
-                  </span>
-                </div>
-              )}
 
             {/* Submit button */}
-            <Form.Item style={{ marginBottom: 16 }}>
+            <Form.Item style={{ marginBottom: 12 }}>
               <Button
                 type="primary"
                 htmlType="submit"
@@ -562,8 +554,8 @@ const SignIn: React.FC = () => {
             </Form.Item>
 
             {!canSubmit && !submitting && (
-              <div style={{ textAlign: 'center', marginTop: -8, marginBottom: 16 }}>
-                <span style={{ color: '#94a3b8', fontSize: 11 }}>
+              <div style={{ textAlign: 'center', marginTop: -8, marginBottom: 12 }}>
+                <span style={{ color: '#64748b', fontSize: 11 }}>
                   {captchaConfigured && !captchaToken
                     ? t.auth.signInHelperCaptcha
                     : t.auth.signInHelperEmpty}
@@ -582,116 +574,102 @@ const SignIn: React.FC = () => {
               <LockOutlined aria-hidden="true" />
               <span>{t.auth.trustEncryption}</span>
             </div>
-            <div className="trust-item">
-              <SafetyOutlined aria-hidden="true" />
-              <span>{t.auth.trustCloudflare}</span>
-            </div>
           </div>
 
           {/* Divider + Social OAuth */}
-          <div style={{ marginTop: 12, maxWidth: '100%' }}>
+          <div style={{ marginTop: 14, maxWidth: '100%' }}>
             <div
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 gap: 10,
-                marginBottom: 10,
+                marginBottom: 12,
               }}
             >
-              <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.08)' }} />
-              <Text style={{ color: '#64748b', fontSize: '0.8rem', whiteSpace: 'nowrap' }}>
+              <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.06)' }} />
+              <Text style={{ color: '#475569', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>
                 {t.auth.continueWith}
               </Text>
-              <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.08)' }} />
+              <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.06)' }} />
             </div>
-            {[
-              {
-                provider: 'google' as Provider,
-                label: t.auth.continueWithGoogle,
-                icon: (
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>
-                    <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-                    <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18A10.96 10.96 0 0 0 1 12c0 1.77.42 3.44 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
-                    <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-                  </svg>
-                ),
-              },
-              {
-                provider: 'github' as Provider,
-                label: t.auth.continueWithGithub,
-                icon: (
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="#e2e8f0" aria-hidden="true">
-                    <path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.87 8.17 6.84 9.5.5.08.66-.23.66-.5v-1.69c-2.77.6-3.36-1.34-3.36-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.87 1.52 2.34 1.07 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.92 0-1.11.38-2 1.03-2.71-.1-.25-.45-1.29.1-2.64 0 0 .84-.27 2.75 1.02.79-.22 1.65-.33 2.5-.33.85 0 1.71.11 2.5.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.35.2 2.39.1 2.64.65.71 1.03 1.6 1.03 2.71 0 3.82-2.34 4.66-4.57 4.91.36.31.69.92.69 1.85V21.5c0 .27.16.59.67.5C19.14 20.16 22 16.42 22 12A10 10 0 0 0 12 2z"/>
-                  </svg>
-                ),
-              },
-            ].map((btn) => {
-              const isLoading = oauthLoading === btn.provider;
-              return (
-                <button
-                  key={btn.provider}
-                  type="button"
-                  onClick={() => handleOAuthLogin(btn.provider)}
-                  disabled={!!oauthLoading}
-                  style={{
-                    width: '100%',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: 10,
-                    padding: '8px 0',
-                    marginBottom: 8,
-                    background: 'rgba(255,255,255,0.04)',
-                    border: '1px solid rgba(255,255,255,0.12)',
-                    borderRadius: 10,
-                    color: '#e2e8f0',
-                    fontSize: '0.9rem',
-                    fontWeight: 500,
-                    cursor: oauthLoading ? 'not-allowed' : 'pointer',
-                    opacity: oauthLoading ? 0.5 : 1,
-                    transition: 'all 0.2s ease',
-                    fontFamily: 'inherit',
-                  }}
-                  onMouseEnter={(e) => {
-                    if (!oauthLoading) {
-                      e.currentTarget.style.background = 'rgba(255,255,255,0.08)';
-                      e.currentTarget.style.borderColor = 'rgba(255,255,255,0.24)';
-                    }
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = 'rgba(255,255,255,0.04)';
-                    e.currentTarget.style.borderColor = 'rgba(255,255,255,0.12)';
-                  }}
-                >
-                  {isLoading ? (
-                    <span style={{ display: 'inline-block', width: 18, height: 18, border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.6s linear infinite' }} />
-                  ) : btn.icon}
-                  {isLoading ? t.auth.signingIn : btn.label}
-                </button>
-              );
-            })}
-
-            {/* Supabase attribution — P1-3 */}
-            <div style={{ textAlign: 'center', marginTop: 6, marginBottom: 0 }}>
-              <span style={{ color: '#475569', fontSize: '0.65rem' }}>
-                {t.auth.oauthAttribution}
-              </span>
-            </div>
-            <div style={{ textAlign: 'center', marginBottom: 2 }}>
-              <span style={{ color: '#475569', fontSize: '0.6rem' }}>
-                {t.auth.oauthHint}
-              </span>
+            
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              {[
+                {
+                  provider: 'google' as Provider,
+                  label: 'Google',
+                  icon: (
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>
+                      <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                      <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18A10.96 10.96 0 0 0 1 12c0 1.77.42 3.44 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
+                      <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                    </svg>
+                  ),
+                },
+                {
+                  provider: 'github' as Provider,
+                  label: 'GitHub',
+                  icon: (
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="#e2e8f0" aria-hidden="true">
+                      <path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.87 8.17 6.84 9.5.5.08.66-.23.66-.5v-1.69c-2.77.6-3.36-1.34-3.36-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.87 1.52 2.34 1.07 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.92 0-1.11.38-2 1.03-2.71-.1-.25-.45-1.29.1-2.64 0 0 .84-.27 2.75 1.02.79-.22 1.65-.33 2.5-.33.85 0 1.71.11 2.5.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.35.2 2.39.1 2.64.65.71 1.03 1.6 1.03 2.71 0 3.82-2.34 4.66-4.57 4.91.36.31.69.92.69 1.85V21.5c0 .27.16.59.67.5C19.14 20.16 22 16.42 22 12A10 10 0 0 0 12 2z"/>
+                    </svg>
+                  ),
+                },
+              ].map((btn) => {
+                const isLoading = oauthLoading === btn.provider;
+                return (
+                  <button
+                    key={btn.provider}
+                    type="button"
+                    onClick={() => handleOAuthLogin(btn.provider)}
+                    disabled={!!oauthLoading}
+                    style={{
+                      width: '100%',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 8,
+                      padding: '9px 0',
+                      background: 'rgba(255,255,255,0.04)',
+                      border: '1px solid rgba(255,255,255,0.12)',
+                      borderRadius: 10,
+                      color: '#e2e8f0',
+                      fontSize: '0.85rem',
+                      fontWeight: 500,
+                      cursor: oauthLoading ? 'not-allowed' : 'pointer',
+                      opacity: oauthLoading ? 0.5 : 1,
+                      transition: 'all 0.2s ease',
+                      fontFamily: 'inherit',
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!oauthLoading) {
+                        e.currentTarget.style.background = 'rgba(255,255,255,0.08)';
+                        e.currentTarget.style.borderColor = 'rgba(255,255,255,0.24)';
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'rgba(255,255,255,0.04)';
+                      e.currentTarget.style.borderColor = 'rgba(255,255,255,0.12)';
+                    }}
+                  >
+                    {isLoading ? (
+                      <span style={{ display: 'inline-block', width: 16, height: 16, border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.6s linear infinite' }} />
+                    ) : btn.icon}
+                    {isLoading ? '' : btn.label}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
           {/* Create account link */}
-          <div style={{ marginTop: 10 }}>
-            <Text style={{ color: '#cbd5e1', fontSize: '0.85rem' }}>
+          <div style={{ marginTop: 16, textAlign: 'center' }}>
+            <Text style={{ color: '#94a3b8', fontSize: '0.85rem' }}>
               {t.auth.noAccount}{' '}
               <Link
                 to="/signup"
-                style={{ color: '#60a5fa', fontWeight: 600 }}
+                style={{ color: '#1890ff', fontWeight: 600 }}
               >
                 {t.auth.createAccount}
               </Link>
@@ -699,25 +677,25 @@ const SignIn: React.FC = () => {
           </div>
 
           {/* Back to home */}
-          <div style={{ marginTop: 8 }}>
+          <div style={{ marginTop: 10, textAlign: 'center' }}>
             <Link
               to="/"
               style={{
-                color: '#60a5fa',
+                color: '#64748b',
                 fontSize: '0.85rem',
-                display: 'flex',
+                display: 'inline-flex',
                 alignItems: 'center',
                 gap: 6,
                 transition: 'color 0.2s ease',
               }}
               onMouseEnter={(e) =>
-                ((e.currentTarget as HTMLAnchorElement).style.color = '#93c5fd')
+                ((e.currentTarget as HTMLAnchorElement).style.color = '#e2e8f0')
               }
               onMouseLeave={(e) =>
-                ((e.currentTarget as HTMLAnchorElement).style.color = '#60a5fa')
+                ((e.currentTarget as HTMLAnchorElement).style.color = '#64748b')
               }
             >
-              <ArrowLeftOutlined /> {t.auth.backToHome}
+              <ArrowLeftOutlined style={{ fontSize: 12 }} /> {t.auth.backToHome}
             </Link>
           </div>
         </div>
@@ -725,15 +703,15 @@ const SignIn: React.FC = () => {
         {/* Right panel — features showcase */}
         <div
           style={{
-            flex: 1,
-            maxWidth: 380,
+            flex: '0 0 340px',
             display: 'flex',
             flexDirection: 'column',
             justifyContent: 'center',
-            padding: 'clamp(20px, 2.5vw, 28px) clamp(18px, 2.5vw, 24px)',
+            padding: '32px 28px',
             background:
               'linear-gradient(145deg, rgba(24,144,255,0.03) 0%, rgba(114,46,209,0.05) 100%)',
             position: 'relative',
+            borderLeft: '1px solid rgba(255,255,255,0.06)',
           }}
           className="signin-right-panel"
         >
@@ -745,80 +723,41 @@ const SignIn: React.FC = () => {
               width: '100%',
               height: '100%',
               background:
-                'radial-gradient(circle at top right, rgba(24,144,255,0.1), transparent 70%)',
+                'radial-gradient(circle at top right, rgba(24,144,255,0.08), transparent 70%)',
               pointerEvents: 'none',
             }}
           />
 
-          <div style={{ maxWidth: 340, position: 'relative', zIndex: 1 }}>
+          <div style={{ position: 'relative', zIndex: 1 }}>
             <h3
               style={{
                 color: '#fff',
-                marginBottom: 14,
+                marginBottom: 16,
                 fontWeight: 700,
-                fontSize: 'clamp(1.2rem, 1.8vw, 1.5rem)',
+                fontSize: '1.15rem',
                 letterSpacing: '-0.02em',
               }}
             >
               {t.auth.buildYourEdge}
             </h3>
             {[
-              {
-                title: t.auth.featureAiTitle,
-                desc: t.auth.featureAiDesc,
-              },
-              {
-                title: t.auth.featureBacktestTitle,
-                desc: t.auth.featureBacktestDesc,
-              },
-              {
-                title: t.auth.featureRiskTitle,
-                desc: t.auth.featureRiskDesc,
-              },
-              {
-                title: t.auth.featurePaperTitle,
-                desc: t.auth.featurePaperDesc,
-              },
-            ].map((item, i) => (
-              <div key={i} style={{ marginBottom: 10 }}>
+              t.auth.featureAiTitle,
+              t.auth.featureBacktestTitle,
+              t.auth.featurePaperTitle,
+            ].map((title, i) => (
+              <div key={i} style={{ marginBottom: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
                 <div
                   style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    marginBottom: 2,
+                    width: 5,
+                    height: 5,
+                    borderRadius: '50%',
+                    background: '#1890ff',
+                    boxShadow: '0 0 8px rgba(24,144,255,0.5)',
+                    flexShrink: 0,
                   }}
-                >
-                  <div
-                    style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: '50%',
-                      background: '#1890ff',
-                      boxShadow: '0 0 10px rgba(24,144,255,0.6)',
-                      flexShrink: 0,
-                    }}
-                  />
-                  <Text
-                    style={{
-                      color: '#fff',
-                      fontSize: '0.9rem',
-                      fontWeight: 600,
-                    }}
-                  >
-                    {item.title}
-                  </Text>
-                </div>
-                <Text
-                  style={{
-                    color: '#94a3b8',
-                    fontSize: '0.8rem',
-                    paddingLeft: 14,
-                    lineHeight: 1.3,
-                    display: 'block',
-                  }}
-                >
-                  {item.desc}
+                />
+                <Text style={{ color: '#e2e8f0', fontSize: '0.85rem' }}>
+                  {title}
                 </Text>
               </div>
             ))}
@@ -828,15 +767,10 @@ const SignIn: React.FC = () => {
 
       {/* Responsive styles */}
       <style>{`
-        /* Tablet and below (1024px): single column, right panel hidden */
-        @media (max-width: 1024px) {
+        /* Hide benefits on smaller desktops */
+        @media (max-width: 1280px) {
           .signin-card {
-            max-width: 480px !important;
-            flex-direction: column !important;
-          }
-          .signin-form-panel {
-            width: 100% !important;
-            padding: clamp(24px, 4vw, 32px) !important;
+            max-width: 440px !important;
           }
           .signin-right-panel {
             display: none !important;
@@ -845,12 +779,7 @@ const SignIn: React.FC = () => {
         /* Mobile: tighter padding */
         @media (max-width: 480px) {
           .signin-form-panel {
-            padding: 18px 16px !important;
-          }
-        }
-        @media (max-width: 375px) {
-          .signin-form-panel {
-            padding: 14px 12px !important;
+            padding: 24px 20px !important;
           }
         }
         /* Turnstile: scale on small screens to prevent overflow */
@@ -861,35 +790,15 @@ const SignIn: React.FC = () => {
           .signin-card .cf-turnstile {
             transform: scale(0.85);
           }
-          .signin-card .cf-turnstile iframe {
-            width: 300px !important;
-          }
-        }
-        @media (max-width: 340px) {
-          .signin-card .cf-turnstile {
-            transform: scale(0.75);
-          }
         }
         /* Responsive input & button heights */
         .signin-card .auth-input {
-          height: clamp(42px, 4vh, 46px) !important;
-          font-size: clamp(0.85rem, 1.1vw, 0.95rem) !important;
+          height: 44px !important;
+          font-size: 0.9rem !important;
         }
         .signin-card .auth-btn {
-          height: clamp(42px, 4vh, 46px) !important;
-          font-size: clamp(0.9rem, 1.2vw, 1rem) !important;
-        }
-        @media (max-width: 480px) {
-          .signin-card .auth-input {
-            height: 42px !important;
-            font-size: 0.85rem !important;
-          }
-          .signin-card .auth-btn {
-            height: 42px !important;
-          }
-          .signin-card .ant-form-item {
-            margin-bottom: 10px !important;
-          }
+          height: 44px !important;
+          font-size: 0.95rem !important;
         }
       `}</style>
     </div>
