@@ -29,10 +29,6 @@ const SignUp: React.FC = () => {
   const isDev = process.env.NODE_ENV === 'development';
   const captchaConfigured = !!turnstileSiteKey;
 
-  const turnstileDebug = isDev
-    ? `[DEBUG] hasSiteKey=${captchaConfigured} prefix=${turnstileSiteKey?.slice(0, 8) || 'none'} NODE_ENV=${process.env.NODE_ENV} captchaToken=${Boolean(captchaToken)} turnstileError=${turnstileError}`
-    : null;
-
   useEffect(() => {
     window.scrollTo(0, 0);
   }, []);
@@ -112,18 +108,32 @@ const SignUp: React.FC = () => {
         </button>
       </div>
 
-      <div className="auth-layout" style={{ gridTemplateColumns: 'minmax(390px, 440px) minmax(220px, 280px)', maxWidth: '780px' }}>
-        <div className="auth-form-card" style={{ maxWidth: '440px' }}>
-          <div style={{ marginBottom: 16 }}>
-            <img
-              src="/brand/alphalab-logo.png"
-              alt="AlphaLab"
-              style={{ maxWidth: 130, marginBottom: 16, cursor: 'pointer', display: 'block' }}
-              onClick={() => navigate('/')}
-            />
-            <Title level={2} className="auth-title">{t.auth.signUpTitle}</Title>
-            <Text className="auth-subtitle">{t.auth.signUpSubtitle}</Text>
+      <div className="auth-panel">
+        <div className="auth-panel-left">
+          <img
+            src="/brand/alphalab-logo.png"
+            alt="AlphaLab"
+            className="auth-brand-logo"
+            onClick={() => navigate('/')}
+          />
+          <Title level={2} className="auth-title">{t.auth.signUpTitle}</Title>
+          <Text className="auth-subtitle">{t.auth.signUpSubtitle}</Text>
+
+          <div style={{ marginTop: 16 }}>
+            <h3 className="panel-title" style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '1px', color: '#94a3b8' }}>
+              {t.auth.nextStepsTitle}
+            </h3>
+            {[t.auth.nextStep1, t.auth.nextStep2, t.auth.nextStep3].map((step, i) => (
+              <div key={i} className="panel-item">
+                <div className="step-number">{i + 1}</div>
+                <Text className="text">{step}</Text>
+              </div>
+            ))}
           </div>
+        </div>
+
+        <div className="auth-panel-right">
+          <Title level={3} className="auth-form-title">{t.auth.createAccountBtn}</Title>
 
           {submitted ? (
             <div style={{ textAlign: 'center', padding: '20px 0' }}>
@@ -225,7 +235,6 @@ const SignUp: React.FC = () => {
                   ) : (
                     <div className="auth-captcha-placeholder error">{t.auth.captchaNotConfigured}</div>
                   )}
-                  {isDev && turnstileDebug && <div style={{ marginTop: 6, fontSize: 10, color: '#64748b', textAlign: 'center', fontFamily: 'monospace' }}>{turnstileDebug}</div>}
                 </div>
 
                 <Form.Item style={{ marginBottom: 12 }}>
@@ -292,24 +301,10 @@ const SignUp: React.FC = () => {
             </>
           )}
         </div>
-
-        <div className="auth-side-panel">
-          <h3 className="panel-title" style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '1px', color: '#94a3b8' }}>
-            {t.auth.nextStepsTitle}
-          </h3>
-          {[t.auth.nextStep1, t.auth.nextStep2, t.auth.nextStep3].map((step, i) => (
-            <div key={i} className="panel-item">
-              <div style={{ width: 16, height: 16, borderRadius: '50%', background: 'rgba(24,144,255,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                <span style={{ color: '#60a5fa', fontSize: 9, fontWeight: 700 }}>{i + 1}</span>
-              </div>
-              <Text className="text" style={{ color: '#cbd5e1' }}>{step}</Text>
-            </div>
-          ))}
-        </div>
       </div>
       <style>{`
         @media (max-width: 580px) {
-          .auth-form-card div[style*="grid-template-columns: 1fr 1fr"] {
+          .auth-panel-right div[style*="grid-template-columns: 1fr 1fr"] {
             grid-template-columns: 1fr !important;
             gap: 0 !important;
           }

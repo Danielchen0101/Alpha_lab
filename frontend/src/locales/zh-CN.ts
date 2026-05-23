@@ -2474,8 +2474,8 @@ const messages = {
   },
   auth: {
     createAccount: '创建账户',
-    signUpTitle: '创建账户',
-    signUpSubtitle: '从模拟交易优先的市场研究开始。',
+    signUpTitle: '开始使用 AlphaLab',
+    signUpSubtitle: '创建你的安全工作区，用于研究、验证与模拟交易优先的执行流程。',
     fullName: '姓名',
     fullNamePlaceholder: '请输入你的姓名',
     emailAddress: '邮箱',
