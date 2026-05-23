@@ -106,33 +106,42 @@ const SignIn: React.FC = () => {
         </button>
       </div>
 
-      <div className="auth-layout">
-        <div className="auth-form-card">
-          <div style={{ marginBottom: 20 }}>
-            <img
-              src="/brand/alphalab-logo.png"
-              alt="AlphaLab"
-              style={{ maxWidth: 130, marginBottom: 16, cursor: 'pointer', display: 'block' }}
-              onClick={() => navigate('/')}
-            />
-            <Title level={2} className="auth-title">{t.auth.welcomeBack}</Title>
-            <Text className="auth-subtitle">{t.auth.signInSubtitle}</Text>
-          </div>
+      <div className="auth-panel">
+        <div className="auth-panel-left">
+          <img
+            src="/brand/alphalab-logo.png"
+            alt="AlphaLab"
+            className="auth-brand-logo"
+            onClick={() => navigate('/')}
+          />
+          <Title level={2} className="auth-title">{t.auth.welcomeBack}</Title>
+          <Text className="auth-subtitle">{t.auth.signInSubtitle}</Text>
 
-          {error && (
-            <Alert message={error} type="error" showIcon closable onClose={() => setError('')} style={{ marginBottom: 16, borderRadius: 8 }} />
-          )}
+          <div style={{ marginTop: 16 }}>
+            {[t.auth.featureAiTitle, t.auth.featureBacktestTitle, t.auth.featurePaperTitle].map((step, i) => (
+              <div key={i} className="panel-item">
+                <div className="dot" />
+                <Text className="text">{step}</Text>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="auth-panel-right">
+          <Title level={3} className="auth-form-title">{t.auth.signInBtn}</Title>
+
+          {error && <Alert message={error} type="error" showIcon closable onClose={() => setError('')} style={{ marginBottom: 16, borderRadius: 8 }} />}
 
           <Form form={form} layout="vertical" onFinish={handleLogin} autoComplete="off" style={{ maxWidth: '100%' }}>
-            <Form.Item name="email" label={t.auth.emailAddress} rules={[{ required: true, message: t.auth.enterValidEmail }]} style={{ marginBottom: 12 }}>
+            <Form.Item name="email" label={t.auth.emailAddress} rules={[{ required: true, message: t.auth.enterValidEmail }]} style={{ marginBottom: 16 }}>
               <Input prefix={<UserOutlined aria-hidden="true" />} placeholder={t.auth.emailPlaceholderSignIn} className="auth-input" />
             </Form.Item>
 
-            <Form.Item name="password" label={t.auth.password} rules={[{ required: true, message: t.auth.passwordMinLength }]} style={{ marginBottom: 12 }}>
+            <Form.Item name="password" label={t.auth.password} rules={[{ required: true, message: t.auth.passwordMinLength }]} style={{ marginBottom: 16 }}>
               <Input.Password prefix={<LockOutlined aria-hidden="true" />} placeholder={t.auth.passwordPlaceholderSignIn} autoComplete="current-password" className="auth-input" />
             </Form.Item>
 
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <Form.Item name="remember" valuePropName="checked" noStyle>
                 <Checkbox className="auth-checkbox">{t.auth.rememberEmail}</Checkbox>
               </Form.Item>
@@ -170,14 +179,8 @@ const SignIn: React.FC = () => {
           </Form>
 
           <div className="trust-strip">
-            <div className="trust-item">
-              <SafetyCertificateOutlined aria-hidden="true" />
-              <span>{t.auth.trustSecureAuth}</span>
-            </div>
-            <div className="trust-item">
-              <LockOutlined aria-hidden="true" />
-              <span>{t.auth.trustEncryptedConfigs}</span>
-            </div>
+            <div className="trust-item"><SafetyCertificateOutlined aria-hidden="true" /><span>{t.auth.trustSecureAuth}</span></div>
+            <div className="trust-item"><LockOutlined aria-hidden="true" /><span>{t.auth.trustEncryptedConfigs}</span></div>
           </div>
 
           <div className="auth-oauth-section">
@@ -223,16 +226,6 @@ const SignIn: React.FC = () => {
               <ArrowLeftOutlined aria-hidden="true" style={{ fontSize: 11 }} /> {t.auth.backToHome}
             </Link>
           </div>
-        </div>
-
-        <div className="auth-side-panel">
-          <h3 className="panel-title">{t.auth.buildYourEdge}</h3>
-          {[t.auth.featureAiTitle, t.auth.featureBacktestTitle, t.auth.featurePaperTitle].map((title, i) => (
-            <div key={i} className="panel-item">
-              <div className="dot" />
-              <Text className="text">{title}</Text>
-            </div>
-          ))}
         </div>
       </div>
     </div>
