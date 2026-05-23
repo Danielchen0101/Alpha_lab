@@ -124,14 +124,14 @@ const SignUp: React.FC = () => {
 
           {submitted ? (
             <div style={{ textAlign: 'center', padding: '20px 0' }}>
-              <div style={{ width: 64, height: 64, borderRadius: '50%', margin: '0 auto 24px', background: 'rgba(24, 144, 255, 0.1)', border: '2px solid #1890ff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, color: '#1890ff', boxShadow: '0 0 20px rgba(24,144,255,0.2)' }}>✓</div>
-              <Title level={3} style={{ color: '#fff', marginBottom: 12, fontWeight: 700 }}>{t.auth.accountCreated}</Title>
-              <Text style={{ color: '#94a3b8', fontSize: '1rem', display: 'block', marginBottom: 32, lineHeight: 1.5 }}>{t.auth.accountCreatedDesc}</Text>
+              <div style={{ width: 56, height: 56, borderRadius: '50%', margin: '0 auto 20px', background: 'rgba(24, 144, 255, 0.1)', border: '2px solid #1890ff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, color: '#1890ff', boxShadow: '0 0 20px rgba(24,144,255,0.2)' }}>✓</div>
+              <Title level={3} style={{ color: '#fff', marginBottom: 10, fontSize: '1.25rem', fontWeight: 700 }}>{t.auth.accountCreated}</Title>
+              <Text style={{ color: '#94a3b8', fontSize: '0.95rem', display: 'block', marginBottom: 28, lineHeight: 1.5 }}>{t.auth.accountCreatedDesc}</Text>
               <Button type="primary" size="large" onClick={() => navigate('/signin')} className="auth-btn" style={{ width: '100%', maxWidth: 300 }}>{t.auth.goToSignIn}</Button>
             </div>
           ) : (
             <>
-              {error && <Alert message={error} type="error" showIcon closable onClose={() => setError('')} style={{ marginBottom: 24, borderRadius: 12 }} />}
+              {error && <Alert message={error} type="error" showIcon closable onClose={() => setError('')} style={{ marginBottom: 20, borderRadius: 12 }} />}
 
               <Form
                 form={form}
@@ -146,7 +146,7 @@ const SignUp: React.FC = () => {
                 }}
                 autoComplete="off"
               >
-                <div className="signup-grid">
+                <div className="signup-form-grid">
                   <Form.Item name="fullName" label={t.auth.fullName} rules={[{ required: true, message: t.auth.enterFullName }]}>
                     <Input prefix={<UserOutlined aria-hidden="true" />} placeholder={t.auth.fullNamePlaceholder} className="auth-input" />
                   </Form.Item>
@@ -155,7 +155,7 @@ const SignUp: React.FC = () => {
                   </Form.Item>
                 </div>
 
-                <div className="signup-grid">
+                <div className="signup-form-grid">
                   <Form.Item name="password" label={t.auth.password} rules={[{ required: true, message: t.auth.passwordMinLength }, { min: 8 }]}>
                     <Input.Password prefix={<LockOutlined aria-hidden="true" />} placeholder={t.auth.passwordPlaceholder} className="auth-input" />
                   </Form.Item>
@@ -177,7 +177,7 @@ const SignUp: React.FC = () => {
                   </Form.Item>
                 </div>
 
-                <div style={{ marginTop: -12, marginBottom: 20, paddingLeft: 4, display: 'flex', gap: 16 }}>
+                <div style={{ marginTop: -12, marginBottom: 14, paddingLeft: 4, display: 'flex', gap: 16 }}>
                   {[
                     { test: (v: string) => v.length >= 8, label: t.auth.passwordRuleLength },
                     { test: (v: string) => v === form.getFieldValue('confirmPassword') && v.length > 0, label: t.auth.passwordRuleMatch },
@@ -192,7 +192,7 @@ const SignUp: React.FC = () => {
                   })}
                 </div>
 
-                <Form.Item name="terms" valuePropName="checked" style={{ marginBottom: 20 }} rules={[{ validator: (_, value) => value ? Promise.resolve() : Promise.reject(new Error(t.auth.acceptTerms)) }]}>
+                <Form.Item name="terms" valuePropName="checked" style={{ marginBottom: 14 }} rules={[{ validator: (_, value) => value ? Promise.resolve() : Promise.reject(new Error(t.auth.acceptTerms)) }]}>
                   <Checkbox className="auth-checkbox">
                     {t.auth.termsPrefix}{' '}
                     <Link to="/terms" className="auth-link-forgot">{t.auth.termsOfService}</Link>{' '}
@@ -216,7 +216,7 @@ const SignUp: React.FC = () => {
                   )}
                 </div>
 
-                <Form.Item style={{ marginBottom: 16 }}>
+                <Form.Item style={{ marginBottom: 14 }}>
                   <Button type="primary" htmlType="submit" loading={submitting} block disabled={!formValid || submitting} className="auth-btn">
                     {submitting ? t.auth.creatingAccount : t.auth.createAccountBtn}
                   </Button>

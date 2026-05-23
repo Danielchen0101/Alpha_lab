@@ -112,45 +112,47 @@ const SignIn: React.FC = () => {
       <div className="auth-card-container">
         <div className="auth-card signin">
           <div className="signin-form-grid">
-            <div className="auth-card-header" style={{ textAlign: 'left', marginBottom: 0, paddingRight: 20 }}>
+            {/* Left Column: Branding */}
+            <div className="auth-card-header" style={{ textAlign: 'left', marginBottom: 0 }}>
               <img
                 src="/brand/alphalab-logo.png"
                 alt="AlphaLab"
                 className="auth-brand-logo"
-                style={{ margin: '0 0 24px 0' }}
+                style={{ margin: '0 0 16px 0' }}
                 onClick={() => navigate('/')}
               />
               <Title level={2} className="auth-title">{t.auth.welcomeBack}</Title>
               <Text className="auth-subtitle">{t.auth.signInSubtitle}</Text>
               
-              <div className="trust-row" style={{ justifyContent: 'flex-start', marginTop: 40, opacity: 0.6 }}>
+              <div className="trust-row" style={{ justifyContent: 'flex-start', marginTop: 32, opacity: 0.6 }}>
                 <div className="trust-item"><SafetyCertificateOutlined aria-hidden="true" /> {t.auth.trustSecureAuth}</div>
                 <div className="trust-item"><LockOutlined aria-hidden="true" /> {t.auth.trustEncryptedConfigs}</div>
               </div>
             </div>
 
+            {/* Right Column: Form */}
             <div>
               {error && (
-                <Alert message={error} type="error" showIcon closable onClose={() => setError('')} style={{ marginBottom: 20, borderRadius: 12 }} />
+                <Alert message={error} type="error" showIcon closable onClose={() => setError('')} style={{ marginBottom: 16, borderRadius: 12 }} />
               )}
 
               <Form form={form} layout="vertical" onFinish={handleLogin} autoComplete="off">
-                <Form.Item name="email" label={t.auth.emailAddress} rules={[{ required: true, message: t.auth.enterValidEmail }]}>
+                <Form.Item name="email" label={t.auth.emailAddress} rules={[{ required: true, message: t.auth.enterValidEmail }]} style={{ marginBottom: 12 }}>
                   <Input prefix={<UserOutlined aria-hidden="true" />} placeholder={t.auth.emailPlaceholderSignIn} className="auth-input" />
                 </Form.Item>
 
-                <Form.Item name="password" label={t.auth.password} rules={[{ required: true, message: t.auth.passwordMinLength }]}>
+                <Form.Item name="password" label={t.auth.password} rules={[{ required: true, message: t.auth.passwordMinLength }]} style={{ marginBottom: 12 }}>
                   <Input.Password prefix={<LockOutlined aria-hidden="true" />} placeholder={t.auth.passwordPlaceholderSignIn} autoComplete="current-password" />
                 </Form.Item>
 
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
                   <Form.Item name="remember" valuePropName="checked" noStyle>
                     <Checkbox className="auth-checkbox">{t.auth.rememberEmail}</Checkbox>
                   </Form.Item>
                   <Link to="/forgot-password" className="auth-link-forgot">{t.auth.forgotPassword}</Link>
                 </div>
 
-                <div className="auth-captcha-wrapper" style={{ marginBottom: 16, minHeight: 65 }}>
+                <div className="auth-captcha-wrapper" style={{ marginBottom: 14, minHeight: 65 }}>
                   {captchaConfigured ? (
                     <Turnstile
                       sitekey={turnstileSiteKey || ''}
@@ -165,7 +167,7 @@ const SignIn: React.FC = () => {
                   )}
                 </div>
 
-                <Form.Item style={{ marginBottom: 16 }}>
+                <Form.Item style={{ marginBottom: 12 }}>
                   <Button type="primary" htmlType="submit" loading={submitting} disabled={!canSubmit || submitting} block className="auth-btn">
                     {submitting ? t.auth.signingIn : t.auth.signInBtn}
                   </Button>
@@ -197,7 +199,7 @@ const SignIn: React.FC = () => {
                 </div>
               </div>
 
-              <div className="auth-bottom-switch" style={{ borderTop: 'none', paddingTop: 0, marginTop: 16 }}>
+              <div className="auth-bottom-switch" style={{ borderTop: 'none', paddingTop: 0, marginTop: 12 }}>
                 <Text className="text">
                   {t.auth.noAccount}
                   <Link to="/signup" className="link">{t.auth.createAccount}</Link>
