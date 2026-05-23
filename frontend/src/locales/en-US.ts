@@ -2475,7 +2475,7 @@ const messages = {
   auth: {
     createAccount: 'Create account',
     signUpTitle: 'Start with AlphaLab',
-    signUpSubtitle: 'Create your secure workspace for research, validation, and paper-first execution.',
+    signUpSubtitle: 'Start with paper-first market research.',
     fullName: 'Full name',
     fullNamePlaceholder: 'Enter your full name',
     emailAddress: 'Email address',
