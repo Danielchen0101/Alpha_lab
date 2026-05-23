@@ -2522,7 +2522,7 @@ const messages = {
     invalidCredentials: 'Invalid email or password',
     checkEmailConfirmation: 'Check your email to confirm your account.',
     welcomeBack: 'Welcome back',
-    signInSubtitle: 'Access your AlphaLab workspace.',
+    signInSubtitle: 'Access your AlphaLab workspace for research, validation, and paper-first execution.',
     emailPlaceholderSignIn: 'Enter your email address',
     passwordPlaceholderSignIn: 'Enter your password',
     rememberEmail: 'Remember my email',

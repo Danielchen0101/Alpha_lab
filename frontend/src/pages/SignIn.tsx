@@ -108,22 +108,48 @@ const SignIn: React.FC = () => {
 
       <div className="auth-panel">
         <div className="auth-panel-left">
-          <img
-            src="/brand/alphalab-logo.png"
-            alt="AlphaLab"
-            className="auth-brand-logo"
-            onClick={() => navigate('/')}
-          />
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
+            <img
+              src="/brand/alphalab-logo.png"
+              alt="AlphaLab"
+              className="auth-brand-logo"
+              onClick={() => navigate('/')}
+              style={{ marginBottom: 0 }}
+            />
+            <Link to="/" className="auth-back-link-top">
+              <ArrowLeftOutlined aria-hidden="true" style={{ fontSize: 11 }} /> {t.auth.backToHome}
+            </Link>
+          </div>
           <Title level={2} className="auth-title">{t.auth.welcomeBack}</Title>
           <Text className="auth-subtitle">{t.auth.signInSubtitle}</Text>
 
-          <div style={{ marginTop: 16 }}>
-            {[t.auth.featureAiTitle, t.auth.featureBacktestTitle, t.auth.featurePaperTitle].map((step, i) => (
-              <div key={i} className="panel-item">
-                <div className="dot" />
-                <Text className="text">{step}</Text>
+          <div style={{ marginTop: 24 }}>
+            <div className="auth-mini-visual">
+              <div className="visual-header">
+                <span className="visual-dot"></span>
+                <span className="visual-title">NVDA</span>
+                <span className="visual-badge">Paper</span>
               </div>
-            ))}
+              <div className="visual-body">
+                <div className="visual-row">
+                  <span className="visual-label">AI Verdict:</span>
+                  <span className="visual-value highlight">Watch</span>
+                </div>
+                <div className="visual-row">
+                  <span className="visual-label">Risk:</span>
+                  <span className="visual-value">Low</span>
+                </div>
+              </div>
+            </div>
+            
+            <div style={{ marginTop: 24 }}>
+              {[t.auth.featureAiTitle, t.auth.featureBacktestTitle, t.auth.featurePaperTitle].map((title, i) => (
+                <div key={i} className="panel-item">
+                  <div className="dot" />
+                  <Text className="text">{title}</Text>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -219,12 +245,6 @@ const SignIn: React.FC = () => {
               {t.auth.noAccount}{' '}
               <Link to="/signup" className="link">{t.auth.createAccount}</Link>
             </Text>
-          </div>
-
-          <div className="auth-back-link">
-            <Link to="/">
-              <ArrowLeftOutlined aria-hidden="true" style={{ fontSize: 11 }} /> {t.auth.backToHome}
-            </Link>
           </div>
         </div>
       </div>

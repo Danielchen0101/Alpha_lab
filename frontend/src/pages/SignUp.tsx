@@ -47,7 +47,7 @@ const SignUp: React.FC = () => {
     }
     const redirectTo = `${window.location.origin}/auth/confirmed`;
     setSubmitting(true);
-    const result = await signUp(values.email, values.password, captchaToken, values.fullName, redirectTo);
+    const result = await signUp(values.email, values.password, captchaToken, values.fullName, redirectTo);      
     setSubmitting(false);
     if (result.success) {
       setCaptchaToken('');
@@ -110,25 +110,50 @@ const SignUp: React.FC = () => {
 
       <div className="auth-panel">
         <div className="auth-panel-left">
-          <img
-            src="/brand/alphalab-logo.png"
-            alt="AlphaLab"
-            className="auth-brand-logo"
-            onClick={() => navigate('/')}
-          />
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
+            <img
+              src="/brand/alphalab-logo.png"
+              alt="AlphaLab"
+              className="auth-brand-logo"
+              style={{ marginBottom: 0 }}
+              onClick={() => navigate('/')}
+            />
+            <Link to="/" className="auth-back-link-top">
+              <ArrowLeftOutlined aria-hidden="true" style={{ fontSize: 11 }} /> {t.auth.backToHome}
+            </Link>
+          </div>
           <Title level={2} className="auth-title">{t.auth.signUpTitle}</Title>
           <Text className="auth-subtitle">{t.auth.signUpSubtitle}</Text>
 
-          <div style={{ marginTop: 16 }}>
-            <h3 className="panel-title" style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '1px', color: '#94a3b8' }}>
-              {t.auth.nextStepsTitle}
-            </h3>
-            {[t.auth.nextStep1, t.auth.nextStep2, t.auth.nextStep3].map((step, i) => (
-              <div key={i} className="panel-item">
-                <div className="step-number">{i + 1}</div>
-                <Text className="text">{step}</Text>
+          <div style={{ marginTop: 24 }}>
+            <div className="auth-mini-visual">
+              <div className="visual-header">
+                <span className="visual-dot"></span>
+                <span className="visual-title">WORKFLOW</span>
+                <span className="visual-badge">Plan</span>
               </div>
-            ))}
+              <div className="visual-body">
+                <div className="visual-steps">
+                  <div className="visual-step active">Scan</div>
+                  <div className="visual-step-arrow">→</div>
+                  <div className="visual-step active">Validate</div>
+                  <div className="visual-step-arrow">→</div>
+                  <div className="visual-step">Plan</div>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ marginTop: 24 }}>
+              <h3 className="panel-title" style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '1px', color: '#94a3b8' }}>
+                {t.auth.nextStepsTitle}
+              </h3>
+              {[t.auth.nextStep1, t.auth.nextStep2, t.auth.nextStep3].map((step, i) => (
+                <div key={i} className="panel-item">
+                  <div className="step-number">{i + 1}</div>
+                  <Text className="text">{step}</Text>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -291,12 +316,6 @@ const SignUp: React.FC = () => {
                   {t.auth.alreadyHaveAccount}{' '}
                   <Link to="/signin" className="link">{t.auth.signIn}</Link>
                 </Text>
-              </div>
-
-              <div className="auth-back-link">
-                <Link to="/">
-                  <ArrowLeftOutlined aria-hidden="true" style={{ fontSize: 11 }} /> {t.auth.backToHome}
-                </Link>
               </div>
             </>
           )}

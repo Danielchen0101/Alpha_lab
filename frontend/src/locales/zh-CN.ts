@@ -2522,7 +2522,7 @@ const messages = {
     invalidCredentials: '邮箱或密码错误',
     checkEmailConfirmation: '请检查邮箱并完成账号确认。',
     welcomeBack: '欢迎回来',
-    signInSubtitle: '进入你的 AlphaLab 工作区。',
+    signInSubtitle: '进入你的 AlphaLab 工作区，进行研究、验证与模拟交易优先的执行流程。',
     emailPlaceholderSignIn: '请输入邮箱地址',
     passwordPlaceholderSignIn: '请输入密码',
     rememberEmail: '记住邮箱',
