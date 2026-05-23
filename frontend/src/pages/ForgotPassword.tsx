@@ -420,11 +420,11 @@ const ForgotPassword: React.FC = () => {
         <div className="trust-strip">
           <div className="trust-item">
             <SafetyCertificateOutlined aria-hidden="true" />
-            <span>{t.auth.trustSupabase}</span>
+            <span>{t.auth.trustSecureAuth}</span>
           </div>
           <div className="trust-item">
             <LockOutlined aria-hidden="true" />
-            <span>{t.auth.trustEncryption}</span>
+            <span>{t.auth.trustEncryptedConfigs}</span>
           </div>
           <div className="trust-item">
             <SafetyOutlined aria-hidden="true" />

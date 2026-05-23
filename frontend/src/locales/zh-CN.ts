@@ -2497,6 +2497,7 @@ const messages = {
     enterValidEmail: '请输入有效邮箱地址',
     passwordMinLength: '密码至少需要 8 位',
     passwordRuleLength: '至少 8 个字符',
+    passwordRuleMatch: '两次密码一致',
     passwordRuleUpper: '包含大写字母',
     passwordRuleLower: '包含小写字母',
     passwordRuleNumber: '包含数字',
@@ -2581,8 +2582,8 @@ const messages = {
     // P2 Trust indicators
     trustCloudflare: '由 Cloudflare Turnstile 提供防护',
     trustEmailReq: '需要邮件验证',
-    trustEncryption: 'API 密钥已加密',
-    trustSupabase: '安全的 Supabase 身份验证',
+    trustEncryptedConfigs: '配置加密',
+    trustSecureAuth: '安全认证',
     errorResetLinkExpired: '重置链接已过期或无效。请重新请求。',
   },
 

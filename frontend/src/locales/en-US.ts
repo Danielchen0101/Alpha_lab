@@ -2496,7 +2496,8 @@ const messages = {
     enterFullName: 'Please enter your full name',
     enterValidEmail: 'Please enter a valid email address',
     passwordMinLength: 'Password must be at least 8 characters',
-    passwordRuleLength: 'At least 8 characters',
+    passwordRuleLength: '8+ characters',
+    passwordRuleMatch: 'Passwords match',
     passwordRuleUpper: '1 uppercase letter',
     passwordRuleLower: '1 lowercase letter',
     passwordRuleNumber: '1 number',
@@ -2581,8 +2582,8 @@ const messages = {
     // P2 Trust indicators
     trustCloudflare: 'Cloudflare Turnstile protected',
     trustEmailReq: 'Email verification required',
-    trustEncryption: 'API keys encrypted',
-    trustSupabase: 'Secure Supabase Auth',
+    trustEncryptedConfigs: 'Encrypted Configs',
+    trustSecureAuth: 'Secure Auth',
     errorResetLinkExpired: 'Reset link expired or invalid. Please request a new one.',
   },
 
