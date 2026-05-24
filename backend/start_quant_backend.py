@@ -83,9 +83,22 @@ import threading
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import dateutil.parser
+
+
+def _utc_now():
+    return datetime.now(timezone.utc)
+
+
+def _utc_now_iso_z():
+    return _utc_now().isoformat().replace('+00:00', 'Z')
+
+
+def _utc_now_iso_z_seconds():
+    return _utc_now().replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+
 
 try:
     from dotenv import load_dotenv
@@ -259,7 +272,7 @@ AUDIT_LOG_PREFIX = '[AUDIT]'
 
 def _log_security_event(event_type, detail='', ip='', user_id=''):
     """Log a security-relevant event. No sensitive data recorded."""
-    ts = _dt_mod.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    ts = _utc_now().strftime('%Y-%m-%d %H:%M:%S')
     parts = [AUDIT_LOG_PREFIX, ts, event_type]
     if ip:
         parts.append(f'ip={ip}')
@@ -290,13 +303,13 @@ def auth_login():
     # 1) Dev fallback admin (works regardless of env config)
     if email == DEV_ADMIN_EMAIL and password == DEV_ADMIN_PASSWORD:
         _log_security_event('LOGIN_OK', 'dev_admin', ip=ip)
-        token = pyjwt.encode({'email': email, 'role': 'admin', 'exp': datetime.utcnow() + timedelta(days=7)}, APP_SECRET_KEY, algorithm='HS256')
+        token = pyjwt.encode({'email': email, 'role': 'admin', 'exp': _utc_now() + timedelta(days=7)}, APP_SECRET_KEY, algorithm='HS256')
         return jsonify({'success': True, 'token': token, 'user': {'email': email, 'role': 'admin'}})
 
     # 2) Env-configured admin
     if ADMIN_PASSWORD and email == ADMIN_EMAIL and password == ADMIN_PASSWORD:
         _log_security_event('LOGIN_OK', 'env_admin', ip=ip)
-        token = pyjwt.encode({'email': email, 'exp': datetime.utcnow() + timedelta(days=7)}, APP_SECRET_KEY, algorithm='HS256')
+        token = pyjwt.encode({'email': email, 'exp': _utc_now() + timedelta(days=7)}, APP_SECRET_KEY, algorithm='HS256')
         return jsonify({'success': True, 'token': token, 'user': {'email': email}})
 
     _log_security_event('LOGIN_FAIL', email, ip=ip)
@@ -479,7 +492,7 @@ def save_user_config(user_id, config_type, config_data):
             'user_id': user_id,
             'config_type': config_type,
             'config': config_to_save,
-            'updated_at': datetime.utcnow().isoformat() + 'Z',
+            'updated_at': _utc_now_iso_z(),
         }
         # Try upsert with on_conflict first, fall back to delete+insert
         try:
@@ -10750,7 +10763,7 @@ def fetch_finnhub_news(symbol, finnhub_cfg=None):
         from datetime import datetime, timedelta
 
         # 设置时间范围（最近7天）
-        to_date = datetime.utcnow()
+        to_date = _utc_now()
         from_date = to_date - timedelta(days=7)
 
         # 格式化日期
@@ -12231,7 +12244,7 @@ def get_trading_account():
         print(f'Calling Alpaca API ({mode} mode): {base_url}/v2/account')
 
         resp = requests.get(f'{base_url}/v2/account', headers=headers, timeout=10)
-        updated_at = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+        updated_at = _utc_now_iso_z_seconds()
 
         if resp.status_code == 200:
 
@@ -12340,7 +12353,7 @@ def get_trading_positions():
     try:
         headers = {'APCA-API-KEY-ID': api_key, 'APCA-API-SECRET-KEY': api_secret}
         resp = requests.get(f'{base_url}/v2/positions', headers=headers, timeout=10)
-        updated_at = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+        updated_at = _utc_now_iso_z_seconds()
         if resp.status_code == 200:
             raw = resp.json()
             positions = []
@@ -19166,7 +19179,7 @@ def ai_alpaca_portfolio_history():
 
 
         response = requests.get(f'{base_url}/v2/account/portfolio/history', headers=headers, params=params, timeout=10)
-        updated_at = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+        updated_at = _utc_now_iso_z_seconds()
 
 
 
@@ -19351,7 +19364,7 @@ def ai_alpaca_portfolio_history():
             'range': range_param,
             'modeUsed': mode,
             'source': _alpaca_source(mode),
-            'updatedAt': datetime.utcnow().replace(microsecond=0).isoformat() + 'Z',
+            'updatedAt': _utc_now_iso_z_seconds(),
             'isMockData': False,
             'message': f'Error: {str(e)[:200]}'
         })
@@ -19785,7 +19798,7 @@ def get_alpaca_news_data(symbol, alpaca_cfg=None):
 
         # 设置时间范围（最近7天）
 
-        end_date = datetime.utcnow()
+        end_date = _utc_now()
 
         start_date = end_date - timedelta(days=7)
 
@@ -21595,7 +21608,6 @@ def ai_agent_watchlist_list():
 def ai_agent_watchlist_add():
     """Add or update an item in the AI Agent watchlist."""
     import time as _time
-    from datetime import datetime as _dt
 
     try:
         data = request.get_json()
@@ -21631,8 +21643,8 @@ def ai_agent_watchlist_add():
             'invalidationComment': data.get('invalidationComment', ''),
             'source': data.get('source', 'Entry Plan'),
             'selectedBy': data.get('selectedBy', ''),
-            'createdAt': data.get('createdAt', _dt.utcnow().isoformat() + 'Z'),
-            'updatedAt': _dt.utcnow().isoformat() + 'Z',
+            'createdAt': data.get('createdAt', _utc_now_iso_z()),
+            'updatedAt': _utc_now_iso_z(),
             'status': data.get('status', 'ACTIVE')
         }
 
@@ -21674,7 +21686,6 @@ def ai_agent_watchlist_remove(item_id):
 def ai_agent_watchlist_update(item_id):
     """Update watchlist item status or other fields."""
     import time as _time
-    from datetime import datetime as _dt
 
     for i, item in enumerate(_watchlist_store):
         if item.get('id') == item_id:
@@ -21683,7 +21694,7 @@ def ai_agent_watchlist_update(item_id):
                 _watchlist_store[i]['status'] = data['status']
             if 'nextStep' in data:
                 _watchlist_store[i]['nextStep'] = data['nextStep']
-            _watchlist_store[i]['updatedAt'] = _dt.utcnow().isoformat() + 'Z'
+            _watchlist_store[i]['updatedAt'] = _utc_now_iso_z()
             print(f'[WATCHLIST] Updated {_watchlist_store[i].get("symbol")} id={item_id}')
             return jsonify({'success': True, 'item': _watchlist_store[i], 'message': 'Updated'})
     return jsonify({'success': False, 'message': 'Item not found'}), 404
@@ -21836,8 +21847,8 @@ def ai_entry_quality():
         try:
             bars_url = f'https://data.alpaca.markets/v2/stocks/{symbol}/bars'
             # Calculate date range
-            from datetime import datetime as dt_dt, timedelta as dt_td
-            bars_end = dt_dt.utcnow()
+            from datetime import timedelta as dt_td
+            bars_end = _utc_now()
             bars_start = bars_end - dt_td(days=90)
             bars_params = {
                 'timeframe': '1Day', 'limit': 100, 'adjustment': 'raw',
@@ -22606,7 +22617,7 @@ def ai_fine_scan_advanced():
         # 7a. Try Alpaca news
         try:
             alpaca_news_url = f'{_get_market_data_base_url()}/v1beta1/news'
-            now_utc = datetime.utcnow()
+            now_utc = _utc_now()
             seven_days_ago = (now_utc - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
             news_params = {'symbols': symbol, 'start': seven_days_ago, 'limit': 5, 'sort': 'desc'}
             news_resp = requests.get(alpaca_news_url, headers=headers, params=news_params, timeout=10)
@@ -24829,7 +24840,7 @@ def ai_entry_plan():
         print(f'    Execution mode: {execution_mode}')
 
         plans = []
-        from datetime import datetime as dt_dt, timedelta as dt_td
+        from datetime import timedelta as dt_td
 
         # ── Sector mapping for concentration check (hard-coded, AI cannot bypass) ──
         COMMON_SECTOR_MAP = {
@@ -24962,7 +24973,7 @@ def ai_entry_plan():
                         current_price = float(daily_bar.get('c', 0))
                     if current_price <= 0:
                         current_price = float(snap.get('prevDailyBar', {}).get('c', 0))
-                bars_end = dt_dt.utcnow()
+                bars_end = _utc_now()
                 bars_start = bars_end - dt_td(days=120)
                 bars_params = {
                     'timeframe': '1Day', 'limit': 150, 'adjustment': 'raw',
