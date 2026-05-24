@@ -1,7 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, Navigate, Link } from 'react-router-dom';
 import { Form, Input, Button, Typography, Alert, Checkbox } from 'antd';
-import { UserOutlined, LockOutlined, ArrowLeftOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
+import { 
+  UserOutlined, 
+  LockOutlined, 
+  ArrowLeftOutlined, 
+  SafetyCertificateOutlined,
+  BarChartOutlined,
+  SecurityScanOutlined,
+  KeyOutlined
+} from '@ant-design/icons';
 import Turnstile, { BoundTurnstileObject } from 'react-turnstile';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -95,6 +103,24 @@ const SignIn: React.FC = () => {
     }
   };
 
+  const features = [
+    {
+      icon: <BarChartOutlined />,
+      title: t.auth.authFeatureMarketTitle,
+      desc: t.auth.authFeatureMarketDesc,
+    },
+    {
+      icon: <SecurityScanOutlined />,
+      title: t.auth.authFeatureExecutionTitle,
+      desc: t.auth.authFeatureExecutionDesc,
+    },
+    {
+      icon: <KeyOutlined />,
+      title: t.auth.authFeatureSecurityTitle,
+      desc: t.auth.authFeatureSecurityDesc,
+    }
+  ];
+
   return (
     <div className="auth-shell">
       <div className="auth-glow auth-glow-1" />
@@ -112,36 +138,46 @@ const SignIn: React.FC = () => {
       <div className="auth-card-container">
         <div className="auth-card signin">
           <div className="signin-form-grid">
-            {/* Left Column: Branding */}
-            <div className="auth-card-header" style={{ textAlign: 'left', marginBottom: 0 }}>
-              <img
-                src="/brand/alphalab-logo.png"
-                alt="AlphaLab"
-                className="auth-brand-logo"
-                style={{ margin: '0 0 16px 0' }}
-                onClick={() => navigate('/')}
-              />
+            {/* Left Column: Branding and Features */}
+            <div className="auth-card-header" style={{ textAlign: 'left', marginBottom: 0, paddingTop: 20 }}>
+              <div className="auth-brand-logo-text" style={{ textAlign: 'left', margin: '0 0 16px 0' }} onClick={() => navigate('/')}>
+                Alpha<span className="accent">Lab</span>
+              </div>
               <Title level={2} className="auth-title">{t.auth.welcomeBack}</Title>
               <Text className="auth-subtitle">{t.auth.signInSubtitle}</Text>
               
-              <div className="trust-row" style={{ justifyContent: 'flex-start', marginTop: 32, opacity: 0.6 }}>
+              <div className="auth-features-container">
+                {features.map((f, i) => (
+                  <div key={i} className="auth-feature-item">
+                    <div className="auth-feature-icon">{f.icon}</div>
+                    <div className="auth-feature-content">
+                      <span className="auth-feature-title">{f.title}</span>
+                      <span className="auth-feature-desc">{f.desc}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="trust-row" style={{ justifyContent: 'flex-start', marginTop: 24, opacity: 0.5 }}>
                 <div className="trust-item"><SafetyCertificateOutlined aria-hidden="true" /> {t.auth.trustSecureAuth}</div>
                 <div className="trust-item"><LockOutlined aria-hidden="true" /> {t.auth.trustEncryptedConfigs}</div>
               </div>
             </div>
 
             {/* Right Column: Form */}
-            <div>
+            <div style={{ paddingLeft: 4, width: '100%', maxWidth: 420 }}>
+              <Title level={3} className="auth-form-title" style={{ marginBottom: 16 }}>{t.auth.signInBtn}</Title>
+              
               {error && (
-                <Alert message={error} type="error" showIcon closable onClose={() => setError('')} style={{ marginBottom: 16, borderRadius: 12 }} />
+                <Alert message={error} type="error" showIcon closable onClose={() => setError('')} style={{ marginBottom: 14, borderRadius: 12 }} />
               )}
 
               <Form form={form} layout="vertical" onFinish={handleLogin} autoComplete="off">
-                <Form.Item name="email" label={t.auth.emailAddress} rules={[{ required: true, message: t.auth.enterValidEmail }]} style={{ marginBottom: 12 }}>
+                <Form.Item name="email" label={t.auth.emailAddress} rules={[{ required: true, message: t.auth.enterValidEmail }]} style={{ marginBottom: 10 }}>
                   <Input prefix={<UserOutlined aria-hidden="true" />} placeholder={t.auth.emailPlaceholderSignIn} className="auth-input" />
                 </Form.Item>
 
-                <Form.Item name="password" label={t.auth.password} rules={[{ required: true, message: t.auth.passwordMinLength }]} style={{ marginBottom: 12 }}>
+                <Form.Item name="password" label={t.auth.password} rules={[{ required: true, message: t.auth.passwordMinLength }]} style={{ marginBottom: 10 }}>
                   <Input.Password prefix={<LockOutlined aria-hidden="true" />} placeholder={t.auth.passwordPlaceholderSignIn} autoComplete="current-password" />
                 </Form.Item>
 
@@ -152,7 +188,7 @@ const SignIn: React.FC = () => {
                   <Link to="/forgot-password" className="auth-link-forgot">{t.auth.forgotPassword}</Link>
                 </div>
 
-                <div className="auth-captcha-wrapper" style={{ marginBottom: 14, minHeight: 65 }}>
+                <div className="auth-captcha-wrapper" style={{ marginBottom: 14 }}>
                   {captchaConfigured ? (
                     <Turnstile
                       sitekey={turnstileSiteKey || ''}
