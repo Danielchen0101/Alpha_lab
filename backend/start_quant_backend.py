@@ -6,6 +6,8 @@
 
 from flask import Flask, request, jsonify
 
+from datetime import datetime, timedelta, time as dt_time
+
 # ===== 安全打印辅助函数 =====
 def safe_print(text, max_length=500):
     """安全打印，避免编码错误"""
@@ -82,8 +84,6 @@ import sys
 import threading
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
-from datetime import datetime, timedelta
 
 import dateutil.parser
 
@@ -238,8 +238,12 @@ RATE_LIMITED_PATHS = (
 
 @app.before_request
 def rate_limit():
-    """Apply per-IP rate limiting to sensitive API paths."""
+    """Apply per-IP rate limiting to sensitive API paths.
+    OPTIONS (CORS preflight) requests are always allowed."""
     if app.config.get('TESTING'):
+        return None
+    # CORS preflight must never be rate limited
+    if request.method == 'OPTIONS':
         return None
     path = request.path
     if not any(path.startswith(p) for p in RATE_LIMITED_PATHS):
@@ -1356,11 +1360,11 @@ def fetch_alpaca_stock_data(symbol):
 
         elif session_type == 'Previous Trading Day':
 
-            # 回退数据，无法计算涨跌幅，设为0
+            # 回退数据，无法计算涨跌幅，设为None
 
-            change = 0
+            change = None
 
-            change_percent = 0
+            change_percent = None
 
 
 
@@ -1803,11 +1807,11 @@ def fetch_alpaca_stock_data_snapshot(symbols, config=None):
 
             elif is_fallback:
 
-                # 对于回退数据，由于没有previous_close，将change和changePercent设为0
+                # 对于回退数据，由于没有previous_close，将change和changePercent设为None
 
-                change = 0
+                change = None
 
-                change_percent = 0
+                change_percent = None
 
 
 
@@ -9871,7 +9875,7 @@ def ai_market_scanner():
 
                         'price': alpaca_data.get('price', 0),
 
-                        'changePercent': alpaca_data.get('changePercent', 0),
+                        'changePercent': alpaca_data.get('changePercent'),
 
                         'volume': alpaca_data.get('volume', 0),
 
@@ -10390,7 +10394,7 @@ def get_stock_data_for_scanner(symbol):
 
                     'price': alpaca_data.get('price'),
 
-                    'changePercent': alpaca_data.get('changePercent', 0),
+                    'changePercent': alpaca_data.get('changePercent'),
 
                     'volume': final_volume,
 
@@ -10440,7 +10444,7 @@ def get_stock_data_for_scanner(symbol):
 
                         'price': finnhub_data.get('c', 0),
 
-                        'changePercent': finnhub_data.get('dp', 0),
+                        'changePercent': finnhub_data.get('dp'),
 
                         'volume': finnhub_volume,
 
@@ -26508,6 +26512,1066 @@ def calculate_mtf_alignment(frame_results):
 
     app.run(host='127.0.0.1', port=8889, debug=True, use_reloader=False)  # 使用端口8889，禁用reloader避免重复启动
 
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Pipeline Auto Scheduler — runs AI pipeline during US market hours
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── State ──
+_PA_LOCK = threading.Lock()
+_PA_SCHEDULER_STARTED = False
+_PA_SCHEDULER_THREAD = None
+_PA_SCHEDULER_STOP = threading.Event()
+_PA_SCHEDULER_LAST_HEARTBEAT = 0
+_PA_SCHEDULER_LAST_HEARTBEAT_LOCK = threading.Lock()
+_PA_SCHEDULER_LOOP_COUNT = 0
+_PA_PER_USER_LAST_CHECK = {}
+_PA_PER_USER_LAST_CHECK_LOCK = threading.Lock()
+_PA_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pipeline_auto_configs.json')
+_PA_FILE_HISTORY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pipeline_auto_history.json')
+_PA_MARKET_CACHE = {}
+_PA_MARKET_CACHE_LOCK = threading.Lock()
+_PA_CURRENT_UID = None
+
+# US market holidays (fallback when Alpaca clock is unavailable)
+# These are approximate — Alpaca clock is authoritative when available
+_PA_US_HOLIDAYS = {
+    # Fixed holidays
+    (1, 1): 'New Year',
+    (7, 4): 'Independence Day',
+    (12, 25): 'Christmas',
+    (12, 31): 'New Year Early Close',
+    # 2026 explicit dates
+    (2026, 1, 1): 'New Year',
+    (2026, 1, 19): 'MLK Day',
+    (2026, 2, 16): 'Presidents Day',
+    (2026, 4, 3): 'Good Friday',
+    (2026, 5, 25): 'Memorial Day',
+    (2026, 6, 19): 'Juneteenth',
+    (2026, 7, 3): 'Independence Day (observed)',
+    (2026, 9, 7): 'Labor Day',
+    (2026, 11, 26): 'Thanksgiving',
+    (2026, 11, 27): 'Black Friday (early close)',
+}
+
+def _pa_is_holiday(dt):
+    """Check if a date is a US market holiday. Returns holiday name or None.
+    Uses explicit dates from _PA_US_HOLIDAYS plus comprehensive recurring holiday rules.
+    Covers: New Year, MLK, Presidents, Good Friday, Memorial, Juneteenth,
+    Independence, Labor, Thanksgiving, Christmas — including weekend-observed adjustments."""
+    # Explicit dates (from _PA_US_HOLIDAYS dict) take priority
+    key = (dt.year, dt.month, dt.day)
+    if key in _PA_US_HOLIDAYS:
+        return _PA_US_HOLIDAYS[key]
+
+    # Fixed month-day holidays
+    md = (dt.month, dt.day)
+    if md == (1, 1): return 'New Year'
+    if md == (7, 4): return 'Independence Day'
+    if md == (12, 25): return 'Christmas'
+    if md == (6, 19): return 'Juneteenth'
+
+    # Observed: if fixed holiday falls on weekend, market observes on nearest weekday
+    # New Year (Jan 1) observed on Mon Jan 2, or Fri Dec 31
+    if dt.month == 1 and dt.day == 2 and dt.weekday() == 0: return 'New Year (observed)'
+    if dt.month == 12 and dt.day == 31 and dt.weekday() == 4: return 'New Year (observed)'
+    # Independence Day (Jul 4) observed on Fri Jul 3 or Mon Jul 5
+    if dt.month == 7 and dt.day == 3 and dt.weekday() == 4: return 'Independence Day (observed)'
+    if dt.month == 7 and dt.day == 5 and dt.weekday() == 0: return 'Independence Day (observed)'
+    # Juneteenth (Jun 19) observed on Fri Jun 18 or Mon Jun 20
+    if dt.month == 6 and dt.day == 18 and dt.weekday() == 4: return 'Juneteenth (observed)'
+    if dt.month == 6 and dt.day == 20 and dt.weekday() == 0: return 'Juneteenth (observed)'
+    # Christmas (Dec 25) observed on Fri Dec 24 or Mon Dec 26
+    if dt.month == 12 and dt.day == 24 and dt.weekday() == 4: return 'Christmas (observed)'
+    if dt.month == 12 and dt.day == 26 and dt.weekday() == 0: return 'Christmas (observed)'
+
+    # Recurring day-of-week holidays
+    # MLK Day: 3rd Monday of January (Jan 15-21)
+    if dt.month == 1 and dt.weekday() == 0 and 15 <= dt.day <= 21: return 'MLK Day'
+    # Presidents Day: 3rd Monday of February (Feb 15-21)
+    if dt.month == 2 and dt.weekday() == 0 and 15 <= dt.day <= 21: return 'Presidents Day'
+    # Memorial Day: last Monday of May (May 25-31)
+    if dt.month == 5 and dt.weekday() == 0 and dt.day >= 25: return 'Memorial Day'
+    # Labor Day: 1st Monday of September (Sep 1-7)
+    if dt.month == 9 and dt.weekday() == 0 and dt.day <= 7: return 'Labor Day'
+    # Thanksgiving: 4th Thursday of November (Nov 22-28)
+    if dt.month == 11 and dt.weekday() == 3 and 22 <= dt.day <= 28: return 'Thanksgiving'
+
+    return None
+
+def _pa_calc_next_open_fallback(now_et):
+    """Calculate next market open time in ET (fallback mode)."""
+    current = now_et
+    for _ in range(14):
+        current += timedelta(days=1)
+        if current.weekday() >= 5:
+            continue
+        if _pa_is_holiday(current):
+            continue
+        open_time = current.replace(hour=9, minute=30, second=0, microsecond=0)
+        return open_time
+    return now_et + timedelta(days=1)
+
+def _pa_calc_next_close_fallback(now_et):
+    """Calculate next market close time in ET (fallback mode)."""
+    if now_et.weekday() < 5 and not _pa_is_holiday(now_et):
+        today_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+        if now_et < today_close:
+            return today_close
+    next_open = _pa_calc_next_open_fallback(now_et)
+    return next_open.replace(hour=16, minute=0, second=0, microsecond=0)
+
+def _pa_get_next_trading_day(from_et):
+    """Find the next trading day's 09:30 ET open after from_et.
+    Uses _pa_is_holiday and weekday checks. Returns datetime or None."""
+    current = from_et.replace(hour=0, minute=0, second=0, microsecond=0)
+    for _ in range(14):
+        current += timedelta(days=1)
+        if current.weekday() >= 5:
+            continue
+        if _pa_is_holiday(current):
+            continue
+        return current.replace(hour=9, minute=30, second=0, microsecond=0)
+    return None
+
+def _pa_format_next_open_display(next_open_dt):
+    """Format next market open datetime as 'Tue 05-26 09:30 ET'."""
+    if not next_open_dt:
+        return ''
+    try:
+        return next_open_dt.strftime('%a %m-%d %H:%M ET')
+    except Exception:
+        return ''
+
+def _pa_now_et():
+    """Return current real time in America/New_York."""
+    import pytz
+    return datetime.now(pytz.timezone('America/New_York'))
+
+def _pa_log(msg):
+    print('[PipelineAuto] %s' % msg, flush=True)
+
+def _pa_log_error(msg):
+    print('[PipelineAuto] ERROR: %s' % msg, flush=True)
+
+def _pa_get_config(uid):
+    try:
+        from supabase import create_client
+        supabase_url = os.environ.get('SUPABASE_URL', 'https://nwpxjqgqegxttucsmvmp.supabase.co')
+        supabase_key = os.environ.get('SUPABASE_SERVICE_KEY', '')
+        if supabase_key:
+            client = create_client(supabase_url, supabase_key)
+            resp = client.table('user_pipeline_auto_configs').select('*').eq('user_id', uid).execute()
+            if resp.data:
+                return resp.data[0].get('config', {}) if isinstance(resp.data[0], dict) else {}
+    except Exception as e:
+        _pa_log_error('Supabase user_pipeline_auto_configs query failed (will fallback): %s' % e)
+    try:
+        import json
+        if os.path.exists(_PA_FILE_PATH):
+            with open(_PA_FILE_PATH, 'r') as f:
+                all_configs = json.load(f)
+                return all_configs.get(uid, {})
+    except Exception as e:
+        _pa_log_error('File fallback read failed: %s' % e)
+    return {}
+
+def _pa_save_config(uid, config):
+    try:
+        from supabase import create_client
+        supabase_url = os.environ.get('SUPABASE_URL', 'https://nwpxjqgqegxttucsmvmp.supabase.co')
+        supabase_key = os.environ.get('SUPABASE_SERVICE_KEY', '')
+        if supabase_key:
+            client = create_client(supabase_url, supabase_key)
+            row = {'user_id': uid, 'config_type': 'pipeline_auto', 'config': config}
+            client.table('user_pipeline_auto_configs').upsert(row, on_conflict='user_id').execute()
+            return True
+    except Exception as e:
+        _pa_log_error('Supabase upsert failed: %s' % e)
+    try:
+        import json
+        if os.path.exists(_PA_FILE_PATH):
+            with open(_PA_FILE_PATH, 'r') as f:
+                all_configs = json.load(f)
+        else:
+            all_configs = {}
+        all_configs[uid] = config
+        with open(_PA_FILE_PATH, 'w') as f:
+            json.dump(all_configs, f, indent=2)
+        return True
+    except Exception as e:
+        _pa_log_error('File fallback write failed: %s' % e)
+    return False
+
+def _pa_add_run_history(uid, entry):
+    ts = datetime.utcnow().isoformat()
+    entry['created_at'] = ts
+    entry['user_id'] = uid
+    try:
+        from supabase import create_client
+        supabase_url = os.environ.get('SUPABASE_URL', 'https://nwpxjqgqegxttucsmvmp.supabase.co')
+        supabase_key = os.environ.get('SUPABASE_SERVICE_KEY', '')
+        if supabase_key:
+            client = create_client(supabase_url, supabase_key)
+            row = {'user_id': uid, 'config_type': 'pipeline_auto_run', 'entry': entry}
+            client.table('user_pipeline_auto_runs').insert(row).execute()
+            return
+    except Exception as e:
+        _pa_log_error('Supabase history insert failed: %s' % e)
+    try:
+        import json
+        history = []
+        if os.path.exists(_PA_FILE_HISTORY_PATH):
+            with open(_PA_FILE_HISTORY_PATH, 'r') as f:
+                history = json.load(f)
+        history.append(entry)
+        # Keep last 50 entries
+        history = history[-50:]
+        with open(_PA_FILE_HISTORY_PATH, 'w') as f:
+            json.dump(history, f, indent=2)
+    except Exception as e:
+        _pa_log_error('File fallback history write failed: %s' % e)
+
+def _pa_get_history(uid, limit=5):
+    try:
+        from supabase import create_client
+        supabase_url = os.environ.get('SUPABASE_URL', 'https://nwpxjqgqegxttucsmvmp.supabase.co')
+        supabase_key = os.environ.get('SUPABASE_SERVICE_KEY', '')
+        if supabase_key:
+            client = create_client(supabase_url, supabase_key)
+            resp = client.table('user_pipeline_auto_runs').select('*').eq('user_id', uid).order('created_at', desc=True).limit(limit).execute()
+            if resp.data:
+                entries = []
+                for row in resp.data:
+                    entry = row.get('entry', {}) if isinstance(row, dict) else {}
+                    if entry:
+                        entries.append(entry)
+                return entries
+    except Exception as e:
+        _pa_log_error('Supabase history get failed: %s' % e)
+    try:
+        import json
+        if os.path.exists(_PA_FILE_HISTORY_PATH):
+            with open(_PA_FILE_HISTORY_PATH, 'r') as f:
+                all_history = json.load(f)
+            uid_entries = [h for h in all_history if h.get('user_id') == uid]
+            return uid_entries[-limit:]
+    except Exception as e:
+        _pa_log_error('File fallback history read failed: %s' % e)
+    return []
+
+def _pa_check_market_open(uid):
+    """Check if US market is open using Alpaca clock API, with basic-hours fallback.
+    Returns: (is_open, status_string, source_string, next_open, next_close)
+    """
+    import pytz
+    now_et = _pa_now_et()
+
+    # Try Alpaca clock API first
+    if True:
+        try:
+            alpaca_base = 'https://paper-api.alpaca.markets'
+            alpaca_key = os.environ.get('ALPACA_API_KEY', '')
+            alpaca_secret = os.environ.get('ALPACA_SECRET_KEY', '')
+            config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'alpaca_config.json')
+            if os.path.exists(config_path):
+                import json
+                with open(config_path, 'r') as f:
+                    cfg = json.load(f)
+                if not alpaca_key:
+                    alpaca_key = cfg.get('api_key', '')
+                if not alpaca_secret:
+                    alpaca_secret = cfg.get('secret_key', '')
+            if alpaca_key and alpaca_secret:
+                headers = {'Apca-Api-Key-Id': alpaca_key, 'Apca-Api-Secret-Key': alpaca_secret}
+                resp = requests.get(alpaca_base + '/v2/clock', headers=headers, timeout=5)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    is_open = data.get('is_open', False)
+                    next_open = data.get('next_open', '')
+                    next_close = data.get('next_close', '')
+                    status = 'open' if is_open else 'closed'
+                    with _PA_MARKET_CACHE_LOCK:
+                        _PA_MARKET_CACHE['status'] = status
+                        _PA_MARKET_CACHE['source'] = 'alpaca'
+                        _PA_MARKET_CACHE['next_open'] = next_open
+                        _PA_MARKET_CACHE['next_close'] = next_close
+                        _PA_MARKET_CACHE['checked_at'] = now_et.isoformat()
+                    _pa_log('Alpaca clock: is_open=%s, next_open=%s, next_close=%s' % (is_open, next_open, next_close))
+                    return is_open, status, 'alpaca', next_open or '', next_close or ''
+                else:
+                    _pa_log_error('Alpaca clock API returned %d' % resp.status_code)
+        except Exception as e:
+            _pa_log_error('Alpaca clock API failed (fallback to basic hours): %s' % e)
+
+    # Fallback: basic hours Mon-Fri 9:30-16:00 ET with holiday check
+    try:
+        weekday = now_et.weekday()
+        holiday_name = _pa_is_holiday(now_et)
+
+        if holiday_name:
+            status = 'holiday'
+            is_open = False
+        elif weekday >= 5:
+            status = 'closed'
+            is_open = False
+        else:
+            market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+            market_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+            is_open = market_open <= now_et <= market_close
+            status = 'open' if is_open else 'closed'
+
+        if is_open:
+            next_close_fb = _pa_calc_next_close_fallback(now_et)
+            next_open_fb = now_et.isoformat()
+            next_close_fb_str = next_close_fb.isoformat()
+        else:
+            next_open_fb = _pa_calc_next_open_fallback(now_et)
+            next_close_fb = next_open_fb.replace(hour=16, minute=0, second=0, microsecond=0)
+            next_open_fb_str = next_open_fb.isoformat() if next_open_fb else ''
+            next_close_fb_str = next_close_fb.isoformat() if next_close_fb else ''
+
+        with _PA_MARKET_CACHE_LOCK:
+            _PA_MARKET_CACHE['status'] = status
+            _PA_MARKET_CACHE['source'] = 'fallback_basic_hours'
+            _PA_MARKET_CACHE['next_open'] = next_open_fb_str
+            _PA_MARKET_CACHE['next_close'] = next_close_fb_str
+            _PA_MARKET_CACHE['checked_at'] = now_et.isoformat()
+
+        if holiday_name:
+            _pa_log('Fallback: holiday detected (%s)' % holiday_name)
+        return is_open, status, 'fallback_basic_hours', next_open_fb_str, next_close_fb_str
+    except Exception as e:
+        _pa_log_error('Basic hours check failed: %s' % e)
+        # Ultimate fallback — assume closed
+        return False, 'closed', 'fallback_basic_hours', '', ''
+
+def _pa_run_pipeline(uid, interval, mode):
+    """Run the AI pipeline for a single user."""
+    import pytz
+    results = {'errors': 0, 'scanned': 0, 'continue_count': 0, 'watch_count': 0, 'skip_count': 0}
+    results['startedAt'] = datetime.utcnow().isoformat()
+    try:
+        default_symbols = ['AAPL', 'MSFT', 'GOOGL', 'TSLA', 'NVDA', 'AMZN', 'META', 'JPM', 'JNJ', 'V']
+        symbols = default_symbols
+        for sym in symbols:
+            try:
+                out = get_stock_data_for_scanner(sym)
+                results['scanned'] += 1
+                if out and isinstance(out, dict):
+                    decision = out.get('decision', 'skip')
+                    if decision == 'continue':
+                        results['continue_count'] += 1
+                    elif decision == 'watch':
+                        results['watch_count'] += 1
+                    else:
+                        results['skip_count'] += 1
+            except Exception as e:
+                _pa_log_error('Scan %s failed: %s' % (sym, e))
+                results['errors'] += 1
+        _pa_log('Pipeline run complete: %d scanned, %d continue, %d watch, %d skip, %d errors' % (
+            results['scanned'], results['continue_count'], results['watch_count'],
+            results['skip_count'], results['errors']))
+    except Exception as e:
+        import traceback; _pa_log_error('Pipeline run failed: %s' % traceback.format_exc())
+        results['errors'] += 1
+    results['finishedAt'] = datetime.utcnow().isoformat()
+    return results
+
+def _pa_scheduler_loop():
+    """Main scheduler loop — runs every 30s, checks market open, runs pipelines for all enabled users."""
+    import pytz
+    global _PA_SCHEDULER_LOOP_COUNT, _PA_SCHEDULER_LAST_HEARTBEAT
+    # Set initial heartbeat immediately so status endpoint sees Running right away
+    with _PA_SCHEDULER_LAST_HEARTBEAT_LOCK:
+        _PA_SCHEDULER_LAST_HEARTBEAT = time.time()
+    try:
+        _pa_log('Scheduler loop started')
+        consecutive_errors = 0
+        hb_log_counter = 0
+
+        while not _PA_SCHEDULER_STOP.is_set():
+            loop_start = time.time()
+            try:
+                with _PA_SCHEDULER_LAST_HEARTBEAT_LOCK:
+                    _PA_SCHEDULER_LAST_HEARTBEAT = time.time()
+                _PA_SCHEDULER_LOOP_COUNT += 1
+                hb_log_counter += 1
+
+                # Log heartbeat every 3 iterations (~90s) to confirm loop is alive
+                if hb_log_counter >= 3:
+                    hb_log_counter = 0
+                    _pa_log('scheduler heartbeat loop_count=%d' % _PA_SCHEDULER_LOOP_COUNT)
+
+                now_et = _pa_now_et()
+                now_iso = now_et.isoformat()
+
+                # Check market open via Alpaca clock (with fallback)
+                is_open, mkt_status, mkt_source, next_open, next_close = _pa_check_market_open(None)
+
+                # Find all enabled users
+                enabled_users = []
+                try:
+                    import json
+                    if os.path.exists(_PA_FILE_PATH):
+                        with open(_PA_FILE_PATH, 'r') as f:
+                            all_configs = json.load(f)
+                        for uid, config in all_configs.items():
+                            if config.get('enabled') and config.get('interval_minutes', 0) > 0:
+                                enabled_users.append((uid, config))
+                except Exception as e:
+                    _pa_log_error('Failed to read configs: %s' % e)
+
+                # Also try Supabase
+                try:
+                    from supabase import create_client
+                    supabase_url = os.environ.get('SUPABASE_URL', 'https://nwpxjqgqegxttucsmvmp.supabase.co')
+                    supabase_key = os.environ.get('SUPABASE_SERVICE_KEY', '')
+                    if supabase_key:
+                        client = create_client(supabase_url, supabase_key)
+                        resp = client.table('user_pipeline_auto_configs').select('user_id').eq('enabled', True).execute()
+                        if resp.data:
+                            for row in resp.data:
+                                if isinstance(row, dict):
+                                    suid = row.get('user_id')
+                                    if suid and suid not in [u[0] for u in enabled_users]:
+                                        config = _pa_get_config(suid)
+                                        if config.get('enabled') and config.get('interval_minutes', 0) > 0:
+                                            enabled_users.append((suid, config))
+                except Exception as e:
+                    _pa_log_error('Supabase enabled users query failed: %s' % e)
+
+                for uid, config in enabled_users:
+                    interval = config.get('interval_minutes', 60)
+                    mode = config.get('mode', 'hybrid')
+                    last_run_at = config.get('last_run_at', '')
+                    effective_interval_seconds = interval * 60
+
+                    # Per-user due decision log
+                    _next_from_config = config.get('next_run_at', '')
+                    _pa_log('due check user=%s enabled=true marketOpen=%s nowEt=%s interval=%dmin lastRunAt=%s nextRunAt=%s' % (
+                        uid[:8], is_open, now_et.strftime('%H:%M'), interval,
+                        last_run_at[-19:] if last_run_at else 'none',
+                        _next_from_config[-19:] if _next_from_config else 'none'))
+
+                    if not is_open:
+                        if mkt_status == 'holiday':
+                            decision = 'skipped_holiday'
+                        elif now_et.weekday() >= 5:
+                            decision = 'skipped_weekend'
+                        else:
+                            decision = 'skipped_market_closed'
+                        _pa_log('skipped user=%s reason=%s nextOpen=%s' % (uid[:8], decision, next_open or 'unknown'))
+                        config['last_decision'] = decision
+                        config['next_run_at'] = next_open if next_open else 'Waiting for next market open'
+                        _pa_save_config(uid, config)
+                        with _PA_PER_USER_LAST_CHECK_LOCK:
+                            _PA_PER_USER_LAST_CHECK[uid] = {'time': now_iso, 'decision': decision}
+                        _pa_add_run_history(uid, {
+                            'trigger_type': 'auto_market_session', 'status': 'skipped', 'reason': decision,
+                            'source': 'backend_scheduler',
+                            'market_open': False, 'market_status': mkt_status, 'market_status_source': mkt_source,
+                            'started_at': now_iso, 'finished_at': now_iso, 'duration_seconds': 0,
+                            'interval_minutes': interval, 'mode': mode,
+                        })
+                        continue
+
+                    # Market is open (or test mode) — check interval
+                    if last_run_at:
+                        try:
+                            last = dateutil.parser.isoparse(last_run_at)
+                            now = now_et.astimezone(pytz.UTC).replace(tzinfo=None)
+                            if last.tzinfo:
+                                last_utc = last.astimezone(pytz.UTC).replace(tzinfo=None)
+                            else:
+                                last_utc = last
+                            elapsed = (now - last_utc).total_seconds()
+                            if elapsed < effective_interval_seconds:
+                                decision = 'skipped_next_run_not_due'
+                                _pa_log('skipped user=%s reason=not_due elapsed=%ds interval=%dmin' % (uid[:8], int(elapsed), interval))
+                                config['last_decision'] = decision
+                                config['next_run_at'] = (last_utc + timedelta(minutes=interval)).isoformat()
+                                _pa_save_config(uid, config)
+                                with _PA_PER_USER_LAST_CHECK_LOCK:
+                                    _PA_PER_USER_LAST_CHECK[uid] = {'time': now_iso, 'decision': decision}
+                                continue
+                        except Exception:
+                            pass
+
+                    with _PA_PER_USER_LAST_CHECK_LOCK:
+                        _PA_PER_USER_LAST_CHECK[uid] = {'time': now_iso, 'decision': 'started_pipeline'}
+
+                    _run_started_at = now_et
+                    _pa_log('auto run started user=%s trigger=auto_market_session interval=%dmin source=backend_scheduler limited=frontend_orchestration_required' % (uid[:8], interval))
+                    config['last_run_trigger'] = 'auto_market_session'
+                    config['last_run_source'] = 'backend_scheduler'
+                    config['last_run_at'] = _run_started_at.isoformat()
+                    summary = _pa_run_pipeline(uid, interval, mode)
+                    config['last_decision'] = 'pipeline_success' if summary['errors'] == 0 else 'pipeline_failed'
+                    config['last_summary'] = summary
+                    config['last_error'] = None if summary['errors'] == 0 else '%d errors' % summary['errors']
+                    config['next_run_at'] = (_run_started_at + timedelta(minutes=interval)).isoformat()
+                    # Track run count today (reset daily)
+                    today_et_str = now_et.strftime('%Y-%m-%d')
+                    if config.get('run_count_date') != today_et_str:
+                        config['run_count_today'] = 0
+                        config['run_count_date'] = today_et_str
+                    config['run_count_today'] = config.get('run_count_today', 0) + 1
+                    _pa_save_config(uid, config)
+                    _run_status = 'success' if summary['errors'] == 0 else 'failed'
+                    _pa_log('auto run completed user=%s status=%s nextRunAt=%s runCountToday=%d' % (uid[:8], _run_status, config['next_run_at'], config['run_count_today']))
+                    _pa_add_run_history(uid, {
+                        'trigger_type': 'auto_market_session',
+                        'status': 'success' if summary['errors'] == 0 else 'failed',
+                        'reason': 'pipeline completed (limited backend scanner)' if summary['errors'] == 0 else '%d errors' % summary['errors'],
+                        'source': 'backend_scheduler',
+                        'market_open': True,
+                        'market_status': mkt_status,
+                        'market_status_source': mkt_source,
+                        'started_at': summary.get('startedAt', now_iso),
+                        'finished_at': summary.get('finishedAt', now_iso),
+                        'duration_seconds': summary.get('durationSeconds', 0),
+                        'interval_minutes': interval,
+                        'mode': mode,
+                        'summary': summary,
+                        'error': None if summary['errors'] == 0 else '%d errors' % summary['errors'],
+                    })
+                    with _PA_PER_USER_LAST_CHECK_LOCK:
+                        _PA_PER_USER_LAST_CHECK[uid]['decision'] = 'pipeline_success' if summary['errors'] == 0 else 'pipeline_failed'
+
+                consecutive_errors = 0
+                elapsed = time.time() - loop_start
+                sleep_time = max(5, min(60, 30 - elapsed))
+                _PA_SCHEDULER_STOP.wait(sleep_time)
+            except Exception:
+                import traceback; _pa_log_error('Scheduler loop error: %s' % traceback.format_exc())
+                consecutive_errors += 1
+                sleep_time = min(60, 10 * consecutive_errors)
+                _PA_SCHEDULER_STOP.wait(sleep_time)
+    except Exception as e:
+        import traceback; _pa_log_error('Scheduler thread FATAL: %s' % traceback.format_exc())
+    _pa_log('Scheduler loop stopped')
+
+# ── API Routes ──
+@app.route('/api/ai-agent/pipeline-auto/status', methods=['GET'])
+def pipeline_auto_status():
+    import pytz
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    uid = user['id']
+    config = _pa_get_config(uid)
+    enabled = config.get('enabled', False) if config else False
+    interval_minutes = config.get('interval_minutes', 0) if config else 0
+    mode = config.get('mode', 'hybrid') if config else 'hybrid'
+
+    with _PA_SCHEDULER_LAST_HEARTBEAT_LOCK:
+        hb = _PA_SCHEDULER_LAST_HEARTBEAT
+    scheduler_running = (time.time() - hb) < 120 if hb > 0 else False
+    is_open, mkt_status, mkt_source, next_open, next_close = _pa_check_market_open(uid)
+
+    with _PA_PER_USER_LAST_CHECK_LOCK:
+        last_check = _PA_PER_USER_LAST_CHECK.get(uid, {})
+    last_decision = last_check.get('decision', config.get('last_decision', ''))
+    last_run_at = config.get('last_run_at', '')
+    last_summary = config.get('last_summary', {})
+    last_error = config.get('last_error', '')
+
+    # ── Phase 1: compute display next from last_run_at + interval ──
+    # Always computed, independent of market status. This is the single source
+    # of truth for nextAutoRunDisplay used by the frontend.
+    next_from_last_et = None
+    last_auto_run_display = ''
+    if enabled and interval_minutes > 0 and last_run_at:
+        try:
+            _l = dateutil.parser.isoparse(last_run_at)
+            if _l.tzinfo:
+                _l_et = _l.astimezone(pytz.timezone('America/New_York'))
+            else:
+                _l_et = pytz.UTC.localize(_l).astimezone(pytz.timezone('America/New_York'))
+            last_auto_run_display = _l_et.strftime('%H:%M')
+            next_from_last_et = _l_et + timedelta(minutes=interval_minutes)
+        except:
+            pass
+
+    # ── Phase 2: scheduler next_run_at (for backend scheduler loop) ──
+    next_run_at = ''
+    seconds_until_next = 0
+    config_next_run = config.get('next_run_at', '') if config else ''
+    if enabled and interval_minutes > 0:
+        if not is_open:
+            if next_open:
+                next_run_at = next_open
+            elif next_from_last_et:
+                next_run_at = next_from_last_et.isoformat()
+            else:
+                next_run_at = 'Waiting for next market open'
+        elif config_next_run and config_next_run not in ('', 'now', 'Waiting for next market open'):
+            try:
+                parsed = dateutil.parser.isoparse(config_next_run)
+                now_et = _pa_now_et()
+                if parsed.tzinfo:
+                    parsed_et = parsed.astimezone(pytz.timezone('America/New_York'))
+                else:
+                    parsed_et = pytz.UTC.localize(parsed).astimezone(pytz.timezone('America/New_York'))
+                if last_run_at and next_from_last_et and next_from_last_et > parsed_et:
+                    raise ValueError('config_next_run is stale')
+                next_run_at = parsed_et.isoformat()
+                seconds_until_next = max(0, (parsed_et - now_et).total_seconds())
+            except Exception:
+                if next_from_last_et:
+                    now_et = _pa_now_et()
+                    next_run_at = next_from_last_et.isoformat()
+                    seconds_until_next = max(0, (next_from_last_et - now_et).total_seconds())
+                else:
+                    next_run_at = 'now'
+        elif next_from_last_et:
+            now_et = _pa_now_et()
+            next_run_at = next_from_last_et.isoformat()
+            seconds_until_next = max(0, (next_from_last_et - now_et).total_seconds())
+        else:
+            next_run_at = 'now'
+
+    # ── Phase 3: display fields ──
+    next_auto_run_at = ''
+    next_auto_run_display = ''
+    stopped_for_today = False
+    next_run_basis = ''
+    next_market_open_display = ''
+    next_market_open_at = ''
+
+    # Helper to format next market open with date from next_open ISO string
+    def _fmt_next_open(no_val):
+        if not no_val:
+            return '', ''
+        try:
+            _no = dateutil.parser.isoparse(no_val) if isinstance(no_val, str) else no_val
+            if _no is not None and hasattr(_no, 'strftime'):
+                _no_et = _no.astimezone(pytz.timezone('America/New_York')) if getattr(_no, 'tzinfo', None) else _no
+                return _no_et.isoformat(), _no_et.strftime('%a %m-%d %H:%M ET')
+        except Exception:
+            pass
+        return '', ''
+
+    if next_from_last_et:
+        next_auto_run_at = next_from_last_et.isoformat()
+        next_auto_run_display = next_from_last_et.strftime('%H:%M')
+        # 16:00 ET cut-off: if computed next >= today 16:00, stop for today
+        _close_et = next_from_last_et.replace(hour=16, minute=0, second=0, microsecond=0)
+        if next_from_last_et >= _close_et:
+            stopped_for_today = True
+            next_run_basis = 'market_closed_after_1600'
+            next_market_open_at, next_market_open_display = _fmt_next_open(next_open)
+        else:
+            next_run_basis = 'last_run_started_at_plus_interval'
+            if not is_open:
+                stopped_for_today = True
+                next_market_open_at, next_market_open_display = _fmt_next_open(next_open)
+    elif enabled and interval_minutes > 0:
+        # No last_run_at yet — pipeline is armed and ready
+        if is_open:
+            next_auto_run_display = 'Ready'
+            next_run_basis = 'first_run_today'
+        else:
+            stopped_for_today = True
+            next_market_open_at, next_market_open_display = _fmt_next_open(next_open)
+
+    # Fallback: compute next trading day if next_open didn't yield a display
+    if stopped_for_today and not next_market_open_display:
+        now_et = _pa_now_et()
+        next_trading = _pa_get_next_trading_day(now_et)
+        if next_trading:
+            next_market_open_at = next_trading.isoformat()
+            next_market_open_display = _pa_format_next_open_display(next_trading)
+
+    # Progress / status labels
+    progress_state = 'off'
+    progress_percent = 0
+    progress_label = 'Auto pipeline off'
+    auto_status = 'Off'
+
+    if enabled:
+        if not scheduler_running:
+            progress_state = 'offline'
+            progress_label = 'Scheduler offline — auto pipeline will not run'
+            auto_status = 'Error'
+        elif not is_open:
+            if mkt_status == 'holiday':
+                progress_state = 'market_closed'
+                progress_label = 'Holiday closed — auto pipeline will not run today'
+                auto_status = 'Holiday Closed'
+            elif mkt_status == 'closed' and _pa_now_et().weekday() >= 5:
+                progress_state = 'market_closed'
+                progress_label = 'Weekend closed — auto pipeline will not run today'
+                auto_status = 'Weekend Closed'
+            else:
+                progress_state = 'market_closed'
+                progress_label = 'Market closed — waiting for next open'
+                auto_status = 'Market Closed'
+        elif last_decision == 'started_pipeline':
+            progress_state = 'running'
+            progress_label = 'Running AI pipeline...'
+            progress_percent = 50
+            auto_status = 'Running'
+        else:
+            progress_state = 'armed'
+            auto_status = 'Armed'
+            if interval_minutes > 0 and seconds_until_next > 0:
+                progress_percent = min(100, int((interval_minutes * 60 - seconds_until_next) / (interval_minutes * 60) * 100))
+                mins = int(seconds_until_next // 60)
+                secs = int(seconds_until_next % 60)
+                progress_label = 'Next auto pipeline in %02d:%02d' % (mins, secs)
+            else:
+                progress_label = 'Ready to run'
+
+    market_status_label = mkt_status
+    if mkt_status == 'open':
+        market_status_label = 'Open'
+    elif mkt_status == 'closed':
+        market_status_label = 'Closed'
+    elif mkt_status == 'holiday':
+        market_status_label = 'Holiday Closed'
+    if mkt_source == 'fallback_basic_hours':
+        market_status_label += ' (Fallback)'
+
+    resp = {
+        'success': True,
+        'enabled': enabled,
+        'intervalMinutes': interval_minutes,
+        'mode': mode,
+        'schedulerRunning': scheduler_running,
+        'schedulerLastHeartbeatAt': datetime.utcfromtimestamp(hb).isoformat() + 'Z' if hb > 0 else '',
+        'schedulerLastCheckAt': last_check.get('time', ''),
+        'schedulerLoopIntervalSeconds': 30,
+        'marketOpen': is_open,
+        'marketStatus': market_status_label,
+        'marketStatusRaw': mkt_status,
+        'marketStatusSource': mkt_source,
+        'autoStatus': auto_status,
+        'nextRunAt': next_run_at,
+        'secondsUntilNextRun': seconds_until_next,
+        'lastRunAt': last_run_at,
+        'lastRunStartedAt': last_run_at,
+        'lastDecision': last_decision,
+        'lastRunTrigger': config.get('last_run_trigger', '') if config else '',
+        'lastAutoRunDisplay': last_auto_run_display,
+        'nextAutoRunAt': next_auto_run_at,
+        'nextAutoRunDisplay': next_auto_run_display,
+        'stoppedForToday': stopped_for_today,
+        'nextRunBasis': next_run_basis,
+        'nextMarketOpenDisplay': next_market_open_display,
+        'nextMarketOpenAt': next_market_open_at,
+        'lastSummary': last_summary,
+        'lastError': last_error,
+        'runCountToday': config.get('run_count_today', 0) if config else 0,
+        # Backend headless capability — the backend scheduler can only run a limited
+        # Market Scanner (10 default symbols), not the full 6-stage pipeline.
+        # Full pipeline (Continue Scan, Fine Scan, Deeper Validation, Entry Plan, Exit Scan)
+        # requires the frontend page to be open for orchestration.
+        'backendHeadlessCapable': False,
+        'browserOpenRequiredForFullPipeline': True,
+        'lastBackendRunAt': last_run_at,
+        'lastBackendRunStatus': 'success' if last_decision == 'pipeline_success' else
+                                'failed' if last_decision == 'pipeline_failed' else
+                                'blocked' if last_decision in ('blocked_real_order_submit',) else
+                                'limited_frontend_required' if last_decision == 'started_pipeline' else
+                                '',
+        'lastBackendRunReason': config.get('last_error', '') or
+                                ('Full pipeline is frontend-orchestrated. Backend ran limited scanner.'
+                                 if last_decision == 'started_pipeline' or last_decision == 'pipeline_success'
+                                 else last_decision if last_decision else ''),
+        'lastRunSource': config.get('last_run_source', ''),
+        'marketWindow': {
+            'timezone': 'America/New_York',
+            'open': '09:30',
+            'close': '16:00',
+        },
+        'progress': {
+            'state': progress_state,
+            'percent': progress_percent,
+            'label': progress_label,
+        },
+    }
+    return jsonify(resp)
+
+
+@app.route('/api/ai-agent/pipeline-auto/config', methods=['POST'])
+def pipeline_auto_config():
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    uid = user['id']
+    data = request.get_json(silent=True) or {}
+    enabled = data.get('enabled', False)
+    interval_minutes = data.get('intervalMinutes', None)
+    mode = data.get('mode', 'hybrid')
+    last_run_at = data.get('lastRunAt', None)
+
+    config = _pa_get_config(uid)
+    was_enabled = config.get('enabled', False)
+    config['enabled'] = enabled
+    config['interval_minutes'] = interval_minutes
+    config['mode'] = mode
+    config['updated_at'] = datetime.utcnow().isoformat()
+
+    # If frontend reports a completed run, update last_run_at so backend scheduler
+    # calculates the next interval from this timestamp rather than triggering again
+    if last_run_at:
+        config['last_run_at'] = last_run_at
+        config['last_decision'] = 'pipeline_success'
+        config['last_run_source'] = 'frontend_auto'
+        next_time = dateutil.parser.isoparse(last_run_at) + timedelta(minutes=interval_minutes)
+        config['next_run_at'] = next_time.isoformat()
+        # Record in history so user can verify frontend-orchestrated pipeline runs
+        _pa_add_run_history(uid, {
+            'trigger_type': 'auto_market_session',
+            'status': 'success',
+            'reason': 'pipeline completed (frontend-orchestrated full pipeline)',
+            'source': 'frontend_auto',
+            'market_open': True,
+            'market_status': 'open',
+            'market_status_source': 'frontend_sync',
+            'started_at': last_run_at,
+            'finished_at': last_run_at,
+            'duration_seconds': 0,
+            'interval_minutes': interval_minutes or 0,
+            'mode': mode,
+        })
+
+    # If enabling, set next_run_at = 'now' so scheduler picks it up
+    if enabled and not last_run_at:
+        config['next_run_at'] = 'now'
+        config['last_decision'] = 'enabled'
+
+    success = _pa_save_config(uid, config)
+    _pa_ensure_scheduler()
+    if enabled and not was_enabled:
+        _pa_log('config enabled user=%s interval=%dm trigger_immediate=true' % (uid[:8], interval_minutes or 0))
+    elif not enabled and was_enabled:
+        _pa_log('config disabled user=%s' % uid[:8])
+    elif enabled:
+        _pa_log('config updated user=%s interval=%dm' % (uid[:8], interval_minutes or 0))
+    return jsonify({'success': success, 'message': 'Configuration saved' if success else 'Failed to save configuration'})
+
+
+@app.route('/api/ai-agent/pipeline-auto/history', methods=['GET'])
+def pipeline_auto_history():
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    uid = user['id']
+    try:
+        limit = max(1, min(100, int(request.args.get('limit', 5))))
+    except (ValueError, TypeError):
+        limit = 5
+    history = _pa_get_history(uid, limit)
+    return jsonify({'success': True, 'history': history, 'count': len(history)})
+
+
+def _pipeline_auto_get_market_schedule(uid=None, days=15):
+    """Return market open/close schedule for next `days` days.
+    Always returns a days array. Uses Alpaca calendar API with fallback.
+    Returns: (days_list, source_string, warning_string)
+    """
+    import pytz
+    now_et = _pa_now_et()
+    start_date = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_date = start_date + timedelta(days=days - 1)
+    source = 'alpaca_calendar'
+    warning = ''
+    alpaca_calendar = []
+
+    # Try Alpaca calendar API
+    try:
+        alpaca_key = os.environ.get('ALPACA_API_KEY', '')
+        alpaca_secret = os.environ.get('ALPACA_SECRET_KEY', '')
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'alpaca_config.json')
+        if os.path.exists(config_path):
+            import json as _json
+            with open(config_path, 'r') as _f:
+                _cfg = _json.load(_f)
+            if not alpaca_key:
+                alpaca_key = _cfg.get('api_key', '')
+            if not alpaca_secret:
+                alpaca_secret = _cfg.get('secret_key', '')
+        if alpaca_key and alpaca_secret:
+            alpaca_base = 'https://paper-api.alpaca.markets'
+            headers = {'Apca-Api-Key-Id': alpaca_key, 'Apca-Api-Secret-Key': alpaca_secret}
+            url = '%s/v2/calendar?start=%s&end=%s' % (
+                alpaca_base,
+                start_date.strftime('%Y-%m-%d'),
+                end_date.strftime('%Y-%m-%d')
+            )
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                alpaca_calendar = resp.json()
+                if isinstance(alpaca_calendar, list):
+                    _pa_log('Market schedule: Alpaca calendar returned %d days' % len(alpaca_calendar))
+                else:
+                    alpaca_calendar = []
+                    source = 'fallback_basic_hours'
+            else:
+                _pa_log_error('Alpaca calendar API returned %d' % resp.status_code)
+                source = 'fallback_basic_hours'
+        else:
+            source = 'fallback_basic_hours'
+    except Exception as e:
+        _pa_log_error('Alpaca calendar API failed: %s' % e)
+        source = 'fallback_basic_hours'
+
+    # Build a lookup from Alpaca calendar
+    alpaca_lookup = {}
+    if source == 'alpaca_calendar' and alpaca_calendar:
+        for entry in alpaca_calendar:
+            date_str = entry.get('date', '')
+            if date_str:
+                alpaca_lookup[date_str] = entry
+
+    if source != 'alpaca_calendar':
+        warning = 'Alpaca calendar unavailable; using weekday/time fallback'
+
+    weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+    result_days = []
+    today_str = start_date.strftime('%Y-%m-%d')
+
+    for i in range(days):
+        day = start_date + timedelta(days=i)
+        date_str = day.strftime('%Y-%m-%d')
+        weekday_num = day.weekday()
+        weekday_name = weekdays[weekday_num]
+
+        is_open = False
+        status = 'closed'
+        reason = ''
+        open_time = None
+        close_time = None
+        day_source = source
+        is_early_close = False
+
+        # Check Alpaca calendar
+        cal_entry = alpaca_lookup.get(date_str)
+        if cal_entry:
+            cal_open = cal_entry.get('open', '')
+            cal_close = cal_entry.get('close', '')
+            if cal_open and cal_close:
+                is_open = True
+                status = 'open'
+                open_time = cal_open[:5] if len(cal_open) >= 5 else cal_open
+                close_time = cal_close[:5] if len(cal_close) >= 5 else cal_close
+                reason = 'Regular trading session'
+                try:
+                    close_hour = int(cal_close[:2])
+                    if close_hour < 15 or (close_hour == 15 and int(cal_close[3:5]) < 30):
+                        is_early_close = True
+                        status = 'early_close'
+                        reason = 'Early close'
+                except (ValueError, IndexError):
+                    pass
+            else:
+                is_open = False
+                status = 'holiday'
+                reason = 'Holiday (Alpaca calendar)'
+                day_source = 'alpaca_calendar'
+        else:
+            # Not in Alpaca calendar — fallback checks.
+            # In fallback mode, NEVER show Holiday. Only weekend/open.
+            if weekday_num >= 5:
+                is_open = False
+                status = 'weekend'
+                reason = 'Weekend'
+            elif source == 'fallback_basic_hours':
+                # Fallback: check enhanced holiday calendar before marking as Open
+                holiday_name = _pa_is_holiday(day)
+                if holiday_name:
+                    is_open = False
+                    status = 'holiday'
+                    reason = '%s (fallback holiday calendar)' % holiday_name
+                    day_source = 'fallback_holiday_calendar'
+                elif weekday_num >= 5:
+                    is_open = False
+                    status = 'weekend'
+                    reason = 'Weekend'
+                else:
+                    is_open = True
+                    status = 'open'
+                    reason = 'Regular trading session (unverified fallback)'
+                    open_time = '09:30'
+                    close_time = '16:00'
+                    day_source = 'fallback_basic_hours'
+            else:
+                # Alpaca calendar source but no entry for this date — could be holiday
+                holiday_name = _pa_is_holiday(day)
+                if holiday_name:
+                    is_open = False
+                    status = 'holiday'
+                    reason = holiday_name
+                elif weekday_num >= 5:
+                    is_open = False
+                    status = 'weekend'
+                    reason = 'Weekend'
+                else:
+                    is_open = True
+                    status = 'open'
+                    reason = 'Regular trading session'
+                    open_time = '09:30'
+                    close_time = '16:00'
+
+        result_days.append({
+            'date': date_str, 'weekday': weekday_name, 'marketOpen': is_open,
+            'status': status, 'reason': reason, 'openTime': open_time,
+            'closeTime': close_time, 'autoRun': False, 'source': day_source,
+            'earlyClose': is_early_close,
+        })
+
+    # Set autoRun based on whether auto-run is enabled and market is open
+    if uid:
+        config = _pa_get_config(uid)
+        auto_enabled = config.get('enabled', False) if config else False
+        for d in result_days:
+            d['autoRun'] = auto_enabled and d['marketOpen']
+
+    return result_days, source, warning
+
+
+@app.route('/api/ai-agent/pipeline-auto/market-schedule', methods=['GET'])
+def pipeline_auto_market_schedule():
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    uid = user['id']
+    try:
+        days = max(1, min(90, int(request.args.get('days', 15))))
+    except (ValueError, TypeError):
+        days = 15
+    try:
+        schedule, source, warning = _pipeline_auto_get_market_schedule(uid, days)
+    except Exception as e:
+        _pa_log_error('Market schedule error: %s' % e)
+        schedule, source, warning = [], 'fallback_basic_hours', 'Error generating schedule: %s' % str(e)
+    result = {
+        'success': True,
+        'timezone': 'America/New_York',
+        'source': source,
+        'days': schedule,
+    }
+    if warning:
+        result['warning'] = warning
+    return jsonify(result)
+
+
+# ── Scheduler startup ──
+def _pa_ensure_scheduler():
+    global _PA_SCHEDULER_STARTED, _PA_SCHEDULER_THREAD
+    with _PA_LOCK:
+        if _PA_SCHEDULER_STARTED and _PA_SCHEDULER_THREAD and _PA_SCHEDULER_THREAD.is_alive():
+            return
+        _PA_SCHEDULER_STARTED = True
+        _PA_SCHEDULER_THREAD = threading.Thread(target=_pa_scheduler_loop, daemon=True, name='pipeline-auto-scheduler')
+        _PA_SCHEDULER_THREAD.start()
+        _pa_log('pipeline-auto scheduler started')
+
+_pa_ensure_scheduler()
 
 
 # 主程序入口

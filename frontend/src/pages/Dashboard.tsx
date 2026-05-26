@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Card, Row, Col, Button, Alert, Tag, Typography, Space, Divider } from 'antd';
+import { Card, Button, Alert, Tag, Typography, Space, Divider } from 'antd';
 import { ReloadOutlined, DashboardOutlined, RiseOutlined, FallOutlined, LineChartOutlined, EyeOutlined, PieChartOutlined, BarChartOutlined, ClockCircleOutlined, DatabaseOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { StockData, safeNumber, safeToFixed, getDashboardStatus } from '../services/marketDataService';
@@ -544,9 +544,9 @@ const Dashboard: React.FC = () => {
   };
 
   return (
-    <div className="dashboard-container" style={{ padding: '24px 32px', maxWidth: '1600px', margin: '0 auto' }}>
+    <div className="dashboard-page-shell">
       <style>{`
-        .dashboard-container {
+        .dashboard-page-shell {
           animation: fadeIn 0.5s ease-out;
         }
         @keyframes fadeIn {
@@ -554,45 +554,47 @@ const Dashboard: React.FC = () => {
           to { opacity: 1; transform: translateY(0); }
         }
         .premium-card {
-          border-radius: 12px !important;
-          border: 1px solid #f0f0f0 !important;
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03) !important;
+          border-radius: 18px !important;
+          border: 1px solid rgba(15, 23, 42, 0.08) !important;
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.02) !important;
           transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
           background: #fff !important;
+          overflow: hidden;
         }
         .premium-card:hover {
-          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06) !important;
+          box-shadow: 0 12px 28px rgba(0, 0, 0, 0.05) !important;
           transform: translateY(-2px) !important;
-          border-color: #e6e6e6 !important;
+          border-color: rgba(24, 144, 255, 0.2) !important;
         }
         .metric-card {
-          padding: 20px !important;
+          padding: 24px !important;
           display: flex;
           flex-direction: column;
           justify-content: center;
           height: 100%;
+          position: relative;
         }
         .metric-label {
           font-size: 11px;
           text-transform: uppercase;
-          letter-spacing: 0.8px;
-          color: #8c8c8c;
+          letter-spacing: 1px;
+          color: #94a3b8;
           font-weight: 700;
-          margin-bottom: 8px;
+          margin-bottom: 10px;
         }
         .metric-value {
-          font-size: 24px;
+          font-size: clamp(20px, 1.8vw, 26px);
           font-weight: 800;
-          color: #1a1a1a;
+          color: #0f172a;
           line-height: 1.1;
           font-family: 'SF Pro Display', -apple-system, system-ui, sans-serif;
         }
         .metric-icon {
           position: absolute;
           right: 20px;
-          top: 20px;
-          font-size: 20px;
-          opacity: 0.15;
+          top: 24px;
+          font-size: 22px;
+          opacity: 0.12;
           color: #1890ff;
         }
         .status-dot {
@@ -621,56 +623,92 @@ const Dashboard: React.FC = () => {
         .refresh-btn:hover {
           transform: rotate(30deg);
         }
+        .movers-grid {
+          display: grid;
+          grid-template-columns: repeat(2, 1fr);
+          gap: 24px;
+          margin-bottom: 32px;
+        }
+        .widgets-grid {
+          display: grid;
+          grid-template-columns: 1.1fr 0.95fr 0.95fr;
+          gap: 24px;
+          margin-bottom: 32px;
+        }
+        @media (max-width: 1200px) {
+          .widgets-grid {
+            grid-template-columns: repeat(2, 1fr);
+          }
+          .widgets-grid > div:first-child {
+            grid-column: span 2;
+          }
+        }
+        @media (max-width: 1100px) {
+          .movers-grid {
+            grid-template-columns: 1fr;
+          }
+        }
+        @media (max-width: 768px) {
+          .widgets-grid {
+            grid-template-columns: 1fr;
+          }
+          .widgets-grid > div:first-child {
+            grid-column: span 1;
+          }
+        }
       `}</style>
 
       {/* ── Dashboard Header ── */}
-      <div style={{ marginBottom: 32, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-            <div style={{ 
-              width: 36, height: 36, borderRadius: '8px', background: 'linear-gradient(135deg, #1890ff 0%, #003a8c 100%)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 20,
-              boxShadow: '0 4px 12px rgba(24, 144, 255, 0.3)'
-            }}>
-              <DashboardOutlined />
-            </div>
-            <Title level={1} style={{ margin: 0, fontSize: 26, fontWeight: 800, letterSpacing: '-0.5px', color: '#1a1a1a' }}>{t.dashboard.title}</Title>
+      <div style={{ marginBottom: 36, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div style={{ 
+            width: 48, height: 48, borderRadius: '14px', background: 'linear-gradient(135deg, #1890ff 0%, #003a8c 100%)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 24,
+            boxShadow: '0 6px 16px rgba(24, 144, 255, 0.25)'
+          }}>
+            <DashboardOutlined />
           </div>
-          <Text type="secondary" style={{ fontSize: 14, marginLeft: 48 }}>{t.dashboard.subtitle}</Text>
+          <div>
+            <Title level={1} style={{ margin: 0, fontSize: 'clamp(24px, 2.2vw, 30px)', fontWeight: 800, letterSpacing: '-0.02em', color: '#0f172a' }}>{t.dashboard.title}</Title>
+            <Text style={{ fontSize: 15, color: '#64748b' }}>{t.dashboard.subtitle}</Text>
+          </div>
         </div>
-        <Space size={16}>
-          <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 600, textTransform: 'uppercase', marginBottom: 2 }}>{t.dashboard.lastUpdated}</div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: '#595959', display: 'flex', alignItems: 'center', gap: 6 }}>
-              <ClockCircleOutlined style={{ fontSize: 12, color: '#1890ff' }} />
+        
+        <div style={{ display: 'flex', alignItems: 'center', gap: 20, background: '#fff', padding: '10px 20px', borderRadius: '16px', border: '1px solid rgba(15, 23, 42, 0.06)', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
+          <div style={{ textAlign: 'right', borderRight: '1px solid #f1f5f9', paddingRight: 20 }}>
+            <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', marginBottom: 2 }}>{t.dashboard.lastUpdated}</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#334155', display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
+              <ClockCircleOutlined style={{ fontSize: 13, color: '#1890ff' }} />
               {lastFetched ? new Date(lastFetched).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'N/A'}
             </div>
           </div>
-          <Button 
-            type="primary" 
-            icon={<ReloadOutlined className={loading ? 'anticon-spin' : ''} />} 
-            onClick={refresh} 
-            loading={loading}
-            style={{ borderRadius: '8px', fontWeight: 600, height: 40, padding: '0 20px' }}
-          >
-            {t.dashboard.refreshData}
-          </Button>
-          {marketData.length > 0 && marketData[0]?.dataSource && (
-            <DataSourceBadge source={marketData[0].dataSource} />
-          )}
-        </Space>
+          <Space size={12}>
+            <Button 
+              type="primary" 
+              icon={<ReloadOutlined className={loading ? 'anticon-spin' : ''} />} 
+              onClick={refresh} 
+              loading={loading}
+              style={{ borderRadius: '10px', fontWeight: 600, height: 44, padding: '0 24px', boxShadow: '0 4px 12px rgba(24, 144, 255, 0.2)' }}
+            >
+              {t.dashboard.refreshData}
+            </Button>
+            {marketData.length > 0 && marketData[0]?.dataSource && (
+              <DataSourceBadge source={marketData[0].dataSource} />
+            )}
+          </Space>
+        </div>
       </div>
 
       {/* ── Warnings & Alerts ── */}
       {(needsAuth || needsConfig || error || (marketData.length > 0 && marketData.every(stock => stock.price === null))) && (
-        <div style={{ marginBottom: 24 }}>
+        <div style={{ marginBottom: 28 }}>
           {needsAuth && (
             <Alert
               message={<Text strong>{t.dashboard.authRequired}</Text>}
               description={t.dashboard.authRequiredDesc}
               type="warning"
               showIcon
-              style={{ borderRadius: 10, border: '1px solid #ffe58f', background: '#fffbe6' }}
+              style={{ borderRadius: 14, border: '1px solid #ffe58f', background: '#fffbe6', padding: '12px 20px' }}
             />
           )}
           {needsConfig && !needsAuth && (
@@ -679,8 +717,8 @@ const Dashboard: React.FC = () => {
               description={t.dashboard.apiConfigRequiredDesc}
               type="warning"
               showIcon
-              action={<Button size="small" type="primary" onClick={() => navigate('/configuration')}>{t.dashboard.configure}</Button>}
-              style={{ borderRadius: 10, border: '1px solid #ffe58f', background: '#fffbe6' }}
+              action={<Button size="middle" type="primary" onClick={() => navigate('/configuration')} style={{ borderRadius: 8 }}>{t.dashboard.configure}</Button>}
+              style={{ borderRadius: 14, border: '1px solid #ffe58f', background: '#fffbe6', padding: '12px 20px' }}
             />
           )}
           {error && !needsAuth && !needsConfig && (
@@ -689,7 +727,7 @@ const Dashboard: React.FC = () => {
               description={error.includes('Network Error') || error.includes('ECONNREFUSED') ? t.dashboard.backendConnectionErrorDesc : error}
               type="error"
               showIcon
-              style={{ borderRadius: 10, marginTop: 12 }}
+              style={{ borderRadius: 14, marginTop: 12, padding: '12px 20px' }}
             />
           )}
           {!loading && !error && !needsAuth && !needsConfig && marketData.length > 0 && marketData.every(stock => stock.price === null) && (
@@ -698,322 +736,339 @@ const Dashboard: React.FC = () => {
               description={t.dashboard.apiNoPricesDesc}
               type="warning"
               showIcon
-              action={<Button size="small" onClick={() => navigate('/configuration')}>{t.dashboard.checkConfig}</Button>}
-              style={{ borderRadius: 10, border: '1px solid #ffe58f', background: '#fffbe6', marginTop: 12 }}
+              action={<Button size="middle" onClick={() => navigate('/configuration')} style={{ borderRadius: 8 }}>{t.dashboard.checkConfig}</Button>}
+              style={{ borderRadius: 14, border: '1px solid #ffe58f', background: '#fffbe6', marginTop: 12, padding: '12px 20px' }}
             />
           )}
         </div>
       )}
 
       {/* ── Summary Metrics Grid ── */}
-      <Row gutter={[16, 16]} style={{ marginBottom: 32 }}>
-        <Col xs={12} sm={8} lg={4}>
-          <Card className="premium-card" bodyStyle={{ padding: 0 }}>
-            <div className="metric-card">
-              <span className="metric-label">{t.dashboard.totalSymbols}</span>
-              <span className="metric-value">{marketStats.totalSymbols || '—'}</span>
-              <DatabaseOutlined className="metric-icon" />
+      <div style={{ 
+        display: 'grid', 
+        gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', 
+        gap: 16, 
+        marginBottom: 32 
+      }}>
+        <Card className="premium-card" bodyStyle={{ padding: 0 }}>
+          <div className="metric-card">
+            <span className="metric-label">{t.dashboard.totalSymbols}</span>
+            <span className="metric-value">{marketStats.totalSymbols || '—'}</span>
+            <DatabaseOutlined className="metric-icon" />
+          </div>
+        </Card>
+        <Card className="premium-card" bodyStyle={{ padding: 0 }}>
+          <div className="metric-card">
+            <span className="metric-label">{t.dashboard.gainers}</span>
+            <span className="metric-value" style={{ color: '#10b981' }}>{marketStats.gainers || '0'}</span>
+            <RiseOutlined className="metric-icon" style={{ color: '#10b981' }} />
+          </div>
+        </Card>
+        <Card className="premium-card" bodyStyle={{ padding: 0 }}>
+          <div className="metric-card">
+            <span className="metric-label">{t.dashboard.losers}</span>
+            <span className="metric-value" style={{ color: '#ef4444' }}>{marketStats.losers || '0'}</span>
+            <FallOutlined className="metric-icon" style={{ color: '#ef4444' }} />
+          </div>
+        </Card>
+        <Card className="premium-card" bodyStyle={{ padding: 0 }}>
+          <div className="metric-card">
+            <span className="metric-label">{t.dashboard.avgChange}</span>
+            <span className="metric-value" style={{ color: marketStats.avgChange > 0 ? '#10b981' : marketStats.avgChange < 0 ? '#ef4444' : '#0f172a' }}>
+              {marketStats.avgChange !== 0 ? (marketStats.avgChange > 0 ? '+' : '') + marketStats.avgChange.toFixed(2) + '%' : '0.00%'}
+            </span>
+            <LineChartOutlined className="metric-icon" />
+          </div>
+        </Card>
+        <Card className="premium-card" bodyStyle={{ padding: 0 }}>
+          <div className="metric-card">
+            <span className="metric-label">{t.dashboard.mktCap}</span>
+            <span className="metric-value">{formatMarketCap(marketStats.totalMarketCap)}</span>
+            <BarChartOutlined className="metric-icon" style={{ color: '#2f54eb' }} />
+          </div>
+        </Card>
+        <Card className="premium-card" bodyStyle={{ padding: 0 }}>
+          <div className="metric-card">
+            <span className="metric-label">{t.dashboard.largestMove}</span>
+            <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap' }}>
+              <span className="metric-value">{marketStats.largestMoveStock ? marketStats.largestMoveStock.symbol : '—'}</span>
+              {marketStats.largestMoveStock && (
+                <span style={{ fontSize: 13, marginLeft: 6, fontWeight: 700, color: marketStats.largestMoveStock.changePercent > 0 ? '#10b981' : '#ef4444' }}>
+                  ({marketStats.largestMoveStock.changePercent > 0 ? '+' : ''}{marketStats.largestMoveStock.changePercent.toFixed(1)}%)
+                </span>
+              )}
             </div>
-          </Card>
-        </Col>
-        <Col xs={12} sm={8} lg={4}>
-          <Card className="premium-card" bodyStyle={{ padding: 0 }}>
-            <div className="metric-card">
-              <span className="metric-label">{t.dashboard.gainers}</span>
-              <span className="metric-value" style={{ color: '#52c41a' }}>{marketStats.gainers || '0'}</span>
-              <RiseOutlined className="metric-icon" style={{ color: '#52c41a' }} />
-            </div>
-          </Card>
-        </Col>
-        <Col xs={12} sm={8} lg={4}>
-          <Card className="premium-card" bodyStyle={{ padding: 0 }}>
-            <div className="metric-card">
-              <span className="metric-label">{t.dashboard.losers}</span>
-              <span className="metric-value" style={{ color: '#ff4d4f' }}>{marketStats.losers || '0'}</span>
-              <FallOutlined className="metric-icon" style={{ color: '#ff4d4f' }} />
-            </div>
-          </Card>
-        </Col>
-        <Col xs={12} sm={8} lg={4}>
-          <Card className="premium-card" bodyStyle={{ padding: 0 }}>
-            <div className="metric-card">
-              <span className="metric-label">{t.dashboard.avgChange}</span>
-              <span className="metric-value" style={{ color: marketStats.avgChange > 0 ? '#52c41a' : marketStats.avgChange < 0 ? '#ff4d4f' : '#1a1a1a' }}>
-                {marketStats.avgChange !== 0 ? (marketStats.avgChange > 0 ? '+' : '') + marketStats.avgChange.toFixed(2) + '%' : '0.00%'}
-              </span>
-              <LineChartOutlined className="metric-icon" />
-            </div>
-          </Card>
-        </Col>
-        <Col xs={12} sm={8} lg={4}>
-          <Card className="premium-card" bodyStyle={{ padding: 0 }}>
-            <div className="metric-card">
-              <span className="metric-label">{t.dashboard.mktCap}</span>
-              <span className="metric-value">{formatMarketCap(marketStats.totalMarketCap)}</span>
-              <BarChartOutlined className="metric-icon" style={{ color: '#2f54eb' }} />
-            </div>
-          </Card>
-        </Col>
-        <Col xs={12} sm={8} lg={4}>
-          <Card className="premium-card" bodyStyle={{ padding: 0 }}>
-            <div className="metric-card">
-              <span className="metric-label">{t.dashboard.largestMove}</span>
-              <span className="metric-value" style={{ fontSize: 18 }}>
-                {marketStats.largestMoveStock ? marketStats.largestMoveStock.symbol : '—'}
-                {marketStats.largestMoveStock && (
-                  <span style={{ fontSize: 13, marginLeft: 6, color: marketStats.largestMoveStock.changePercent > 0 ? '#52c41a' : '#ff4d4f' }}>
-                    ({marketStats.largestMoveStock.changePercent > 0 ? '+' : ''}{marketStats.largestMoveStock.changePercent.toFixed(1)}%)
-                  </span>
-                )}
-              </span>
-              <RiseOutlined className="metric-icon" />
-            </div>
-          </Card>
-        </Col>
-      </Row>
+            <RiseOutlined className="metric-icon" />
+          </div>
+        </Card>
+      </div>
 
       {/* ── Market Movers ── */}
-      <Row gutter={[24, 24]} style={{ marginBottom: 32 }}>
-        <Col xs={24} lg={12}>
-          <Card 
-            className="premium-card" 
-            title={<span style={{ fontWeight: 700, fontSize: 15 }}><RiseOutlined style={{ color: '#52c41a', marginRight: 8 }} />{t.dashboard.topGainers}</span>}
-            bodyStyle={{ padding: '8px 0', minHeight: 340 }}
-          >
-            {getTopGainers().length === 0 ? (
-              <div className="empty-state-container">
-                <RiseOutlined style={{ fontSize: 32, color: '#f0f0f0', marginBottom: 12 }} />
-                <Text strong style={{ color: '#bfbfbf' }}>{t.dashboard.noGainersFound}</Text>
-                <Text type="secondary" style={{ fontSize: 12 }}>{t.dashboard.configureMarketData}</Text>
-              </div>
-            ) : (
-              <div style={{ padding: '0 16px' }}>
-                {getTopGainers().slice(0, 6).map((stock, i) => (
-                  <div key={stock.symbol} onClick={() => handleSymbolClick(stock.symbol)} style={{ 
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0',
-                    borderBottom: i === 5 ? 'none' : '1px solid #f5f5f5', cursor: 'pointer'
-                  }}>
+      <div className="movers-grid">
+        <Card 
+          className="premium-card" 
+          title={<span style={{ fontWeight: 800, fontSize: 16, color: '#0f172a' }}><RiseOutlined style={{ color: '#10b981', marginRight: 10 }} />{t.dashboard.topGainers}</span>}
+          extra={<Tag color="green" style={{ borderRadius: 6, fontWeight: 700 }}>TOP 5</Tag>}
+          bodyStyle={{ padding: '8px 0', minHeight: 360 }}
+        >
+          {getTopGainers().length === 0 ? (
+            <div className="empty-state-container">
+              <RiseOutlined style={{ fontSize: 32, color: '#f1f5f9', marginBottom: 12 }} />
+              <Text strong style={{ color: '#94a3b8' }}>{t.dashboard.noGainersFound}</Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>{t.dashboard.configureMarketData}</Text>
+            </div>
+          ) : (
+            <div style={{ padding: '0 20px' }}>
+              {getTopGainers().slice(0, 5).map((stock, i) => (
+                <div key={stock.symbol} onClick={() => handleSymbolClick(stock.symbol)} style={{ 
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 0',
+                  borderBottom: i === 4 ? 'none' : '1px solid #f1f5f9', cursor: 'pointer', transition: 'padding 0.2s'
+                }} className="hover-row">
+                  <Space size={14}>
+                    <div style={{ width: 42, height: 42, borderRadius: 10, background: '#f8fafc', border: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, color: '#334155' }}>
+                      {stock.symbol[0]}
+                    </div>
                     <Space direction="vertical" size={0}>
-                      <Text strong style={{ fontSize: 14 }}>{stock.symbol}</Text>
-                      <Text type="secondary" style={{ fontSize: 11 }}>{stock.name || 'N/A'}</Text>
+                      <Text strong style={{ fontSize: 15, color: '#0f172a' }}>{stock.symbol}</Text>
+                      <Text style={{ fontSize: 12, color: '#64748b' }} ellipsis>{stock.name || 'N/A'}</Text>
                     </Space>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontWeight: 700, fontSize: 14 }}>${safeToFixed(stock.price, 2)}</div>
-                      <Tag color="green" style={{ margin: 0, borderRadius: 12, fontSize: 10, fontWeight: 700 }}>
-                        +{getChangePercent(stock)?.toFixed(2)}%
-                      </Tag>
+                  </Space>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontWeight: 800, fontSize: 15, color: '#0f172a', marginBottom: 2 }}>${safeToFixed(stock.price, 2)}</div>
+                    <div style={{ 
+                      background: 'rgba(16, 185, 129, 0.1)', color: '#10b981', padding: '2px 10px', 
+                      borderRadius: 8, fontSize: 12, fontWeight: 800, display: 'inline-block' 
+                    }}>
+                      +{getChangePercent(stock)?.toFixed(2)}%
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
-          </Card>
-        </Col>
-        <Col xs={24} lg={12}>
-          <Card 
-            className="premium-card" 
-            title={<span style={{ fontWeight: 700, fontSize: 15 }}><FallOutlined style={{ color: '#ff4d4f', marginRight: 8 }} />{t.dashboard.topLosers}</span>}
-            bodyStyle={{ padding: '8px 0', minHeight: 340 }}
-          >
-            {getTopLosers().length === 0 ? (
-              <div className="empty-state-container">
-                <FallOutlined style={{ fontSize: 32, color: '#f0f0f0', marginBottom: 12 }} />
-                <Text strong style={{ color: '#bfbfbf' }}>{t.dashboard.noLosersFound}</Text>
-                <Text type="secondary" style={{ fontSize: 12 }}>{t.dashboard.configureMarketData}</Text>
-              </div>
-            ) : (
-              <div style={{ padding: '0 16px' }}>
-                {getTopLosers().slice(0, 6).map((stock, i) => (
-                  <div key={stock.symbol} onClick={() => handleSymbolClick(stock.symbol)} style={{ 
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0',
-                    borderBottom: i === 5 ? 'none' : '1px solid #f5f5f5', cursor: 'pointer'
-                  }}>
-                    <Space direction="vertical" size={0}>
-                      <Text strong style={{ fontSize: 14 }}>{stock.symbol}</Text>
-                      <Text type="secondary" style={{ fontSize: 11 }}>{stock.name || 'N/A'}</Text>
-                    </Space>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontWeight: 700, fontSize: 14 }}>${safeToFixed(stock.price, 2)}</div>
-                      <Tag color="red" style={{ margin: 0, borderRadius: 12, fontSize: 10, fontWeight: 700 }}>
-                        {getChangePercent(stock)?.toFixed(2)}%
-                      </Tag>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </Card>
-        </Col>
-      </Row>
-
-      {/* ── Mid-level Analytics ── */}
-      <Row gutter={[24, 24]} style={{ marginBottom: 32 }}>
-        <Col xs={24} lg={10}>
-          <Card 
-            className="premium-card" 
-            title={<span style={{ fontWeight: 700, fontSize: 15 }}><PieChartOutlined style={{ marginRight: 8 }} />{t.dashboard.sectorDistribution}</span>}
-            bodyStyle={{ height: 320, padding: 24 }}
-          >
-            {sectorData.length === 0 ? (
-              <div className="empty-state-container">
-                <PieChartOutlined style={{ fontSize: 32, color: '#f0f0f0', marginBottom: 12 }} />
-                <Text type="secondary">{t.dashboard.sectorDataUnavailable}</Text>
-              </div>
-            ) : (
-              <div style={{ display: 'flex', height: '100%', alignItems: 'center' }}>
-                <div style={{ width: '50%', height: '100%' }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={sectorData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={60}
-                        outerRadius={80}
-                        paddingAngle={5}
-                        dataKey="percentage"
-                      >
-                        {sectorData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={getSectorColor(entry.name)} />
-                        ))}
-                      </Pie>
-                      <Tooltip formatter={(value: number, name: string) => [`${value.toFixed(1)}%`, translateSector(name)]} />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-                <div style={{ width: '50%', paddingLeft: 20 }}>
-                  {sectorData.slice(0, 5).map(sector => (
-                    <div key={sector.name} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
-                      <Space size={8}>
-                        <div style={{ width: 8, height: 8, borderRadius: '50%', background: getSectorColor(sector.name) }} />
-                        <Text style={{ fontSize: 12, fontWeight: 500 }}>{translateSector(sector.name)}</Text>
-                      </Space>
-                      <Text strong style={{ fontSize: 12 }}>{sector.percentage.toFixed(1)}%</Text>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={7}>
-          <Card 
-            className="premium-card" 
-            title={<span style={{ fontWeight: 700, fontSize: 15 }}><BarChartOutlined style={{ marginRight: 8 }} />{t.dashboard.marketBreadth}</span>}
-            bodyStyle={{ height: 320, padding: 24, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}
-          >
-            <div style={{ textAlign: 'center', marginBottom: 30 }}>
-              <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', marginBottom: 8 }}>{t.dashboard.advancingVsDeclining}</div>
-              <Row gutter={16} align="middle" justify="center">
-                <Col>
-                  <div style={{ fontSize: 32, fontWeight: 800, color: '#52c41a' }}>{marketStats.gainers}</div>
-                  <Text type="secondary" style={{ fontSize: 10, fontWeight: 700 }}>{t.dashboard.up}</Text>
-                </Col>
-                <Col>
-                  <Divider type="vertical" style={{ height: 40, borderLeft: '2px solid #f0f0f0' }} />
-                </Col>
-                <Col>
-                  <div style={{ fontSize: 32, fontWeight: 800, color: '#ff4d4f' }}>{marketStats.losers}</div>
-                  <Text type="secondary" style={{ fontSize: 10, fontWeight: 700 }}>{t.dashboard.down}</Text>
-                </Col>
-              </Row>
-            </div>
-            <div style={{ background: '#fafafa', borderRadius: 12, padding: 16, border: '1px solid #f0f0f0' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                <Text style={{ fontSize: 12, color: '#595959' }}>{t.dashboard.overallStatus}</Text>
-                <Tag color={marketStats.avgChange > 0 ? 'green' : marketStats.avgChange < 0 ? 'red' : 'default'} style={{ margin: 0, fontWeight: 700, borderRadius: 4 }}>
-                  {marketStats.avgChange > 0.5 ? t.dashboard.bullish : marketStats.avgChange < -0.5 ? t.dashboard.bearish : t.dashboard.neutral}
-                </Tag>
-              </div>
-              <div style={{ height: 8, background: '#eee', borderRadius: 4, overflow: 'hidden', display: 'flex' }}>
-                <div style={{ height: '100%', background: '#52c41a', width: `${marketStats.totalSymbols > 0 ? (marketStats.gainers / marketStats.totalSymbols) * 100 : 0}%` }} />
-                <div style={{ height: '100%', background: '#ff4d4f', width: `${marketStats.totalSymbols > 0 ? (marketStats.losers / marketStats.totalSymbols) * 100 : 0}%` }} />
-              </div>
-            </div>
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={7}>
-          <Card 
-            className="premium-card" 
-            title={<span style={{ fontWeight: 700, fontSize: 15 }}><DatabaseOutlined style={{ marginRight: 8 }} />{t.dashboard.systemStatus}</span>}
-            bodyStyle={{ height: 320, padding: '16px 20px' }}
-          >
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 10 }}>
-              {[
-                { label: t.dashboard.marketData, status: systemStatus.marketData },
-                { label: t.dashboard.quoteFeed, status: systemStatus.quoteFeed },
-                { label: t.dashboard.brokerConnection, status: systemStatus.brokerConnection },
-                { label: t.dashboard.symbols, status: marketStats.totalSymbols.toString(), isTag: false }
-              ].map(item => (
-                <div key={item.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Text style={{ fontSize: 13, color: '#595959', fontWeight: 500 }}>{item.label}</Text>
-                  {item.isTag === false ? (
-                    <Text strong style={{ fontSize: 14 }}>{item.status}</Text>
-                  ) : (
-                    <Tag color={item.status === 'ONLINE' || item.status === 'HEALTHY' ? 'success' : item.status === 'PAPER' || item.status === 'LIVE' ? 'blue' : item.status === 'CONFIG_REQUIRED' || item.status === 'AUTH_REQUIRED' ? 'warning' : 'error'}
-                         style={{ margin: 0, fontWeight: 700, borderRadius: 4, fontSize: 10 }}>
-                      {item.status === 'CONFIG_REQUIRED' ? t.dashboard.configRequired : item.status === 'AUTH_REQUIRED' ? t.dashboard.signIn : item.status}
-                    </Tag>
-                  )}
                 </div>
               ))}
-              <Divider style={{ margin: '8px 0' }} />
-              <div style={{ background: '#f9f9f9', padding: '10px 12px', borderRadius: 8, border: '1px solid #f0f0f0' }}>
-                <div style={{ fontSize: 10, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', marginBottom: 4 }}>{t.dashboard.environment}</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <div style={{ width: 6, height: 6, borderRadius: '50%', background: systemStatus.marketData === 'CONFIG_REQUIRED' || systemStatus.marketData === 'AUTH_REQUIRED' ? '#faad14' : '#1890ff' }} />
-                  <Text strong style={{ fontSize: 12 }}>{systemStatus.environment || 'Unknown'}</Text>
+            </div>
+          )}
+        </Card>
+
+        <Card 
+          className="premium-card" 
+          title={<span style={{ fontWeight: 800, fontSize: 16, color: '#0f172a' }}><FallOutlined style={{ color: '#ef4444', marginRight: 10 }} />{t.dashboard.topLosers}</span>}
+          extra={<Tag color="red" style={{ borderRadius: 6, fontWeight: 700 }}>TOP 5</Tag>}
+          bodyStyle={{ padding: '8px 0', minHeight: 360 }}
+        >
+          {getTopLosers().length === 0 ? (
+            <div className="empty-state-container">
+              <FallOutlined style={{ fontSize: 32, color: '#f1f5f9', marginBottom: 12 }} />
+              <Text strong style={{ color: '#94a3b8' }}>{t.dashboard.noLosersFound}</Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>{t.dashboard.configureMarketData}</Text>
+            </div>
+          ) : (
+            <div style={{ padding: '0 20px' }}>
+              {getTopLosers().slice(0, 5).map((stock, i) => (
+                <div key={stock.symbol} onClick={() => handleSymbolClick(stock.symbol)} style={{ 
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 0',
+                  borderBottom: i === 4 ? 'none' : '1px solid #f1f5f9', cursor: 'pointer'
+                }} className="hover-row">
+                  <Space size={14}>
+                    <div style={{ width: 42, height: 42, borderRadius: 10, background: '#f8fafc', border: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, color: '#334155' }}>
+                      {stock.symbol[0]}
+                    </div>
+                    <Space direction="vertical" size={0}>
+                      <Text strong style={{ fontSize: 15, color: '#0f172a' }}>{stock.symbol}</Text>
+                      <Text style={{ fontSize: 12, color: '#64748b' }} ellipsis>{stock.name || 'N/A'}</Text>
+                    </Space>
+                  </Space>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontWeight: 800, fontSize: 15, color: '#0f172a', marginBottom: 2 }}>${safeToFixed(stock.price, 2)}</div>
+                    <div style={{ 
+                      background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', padding: '2px 10px', 
+                      borderRadius: 8, fontSize: 12, fontWeight: 800, display: 'inline-block' 
+                    }}>
+                      {getChangePercent(stock)?.toFixed(2)}%
+                    </div>
+                  </div>
                 </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      </div>
+
+      {/* ── Mid-level Analytics ── */}
+      <div className="widgets-grid">
+        <Card 
+          className="premium-card" 
+          title={<span style={{ fontWeight: 800, fontSize: 16, color: '#0f172a' }}><PieChartOutlined style={{ marginRight: 10, color: '#6366f1' }} />{t.dashboard.sectorDistribution}</span>}
+          bodyStyle={{ height: 340, padding: '24px 30px' }}
+        >
+          {sectorData.length === 0 ? (
+            <div className="empty-state-container">
+              <PieChartOutlined style={{ fontSize: 32, color: '#f1f5f9', marginBottom: 12 }} />
+              <Text type="secondary">{t.dashboard.sectorDataUnavailable}</Text>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', height: '100%', alignItems: 'center', gap: 30 }}>
+              <div style={{ flex: 1.2, height: '100%' }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={sectorData}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={70}
+                      outerRadius={95}
+                      paddingAngle={4}
+                      dataKey="percentage"
+                      stroke="none"
+                    >
+                      {sectorData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={getSectorColor(entry.name)} />
+                      ))}
+                    </Pie>
+                    <Tooltip 
+                      contentStyle={{ borderRadius: 12, border: 'none', boxShadow: '0 8px 24px rgba(0,0,0,0.1)' }}
+                      formatter={(value: number, name: string) => [`${value.toFixed(1)}%`, translateSector(name)]} 
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+              <div style={{ flex: 1, maxHeight: '240px', overflowY: 'auto', paddingRight: 10 }}>
+                {sectorData.slice(0, 6).map(sector => (
+                  <div key={sector.name} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14 }}>
+                    <Space size={10}>
+                      <div style={{ width: 10, height: 10, borderRadius: 3, background: getSectorColor(sector.name) }} />
+                      <Text style={{ fontSize: 13, fontWeight: 600, color: '#334155' }}>{translateSector(sector.name)}</Text>
+                    </Space>
+                    <Text strong style={{ fontSize: 13, color: '#0f172a' }}>{sector.percentage.toFixed(1)}%</Text>
+                  </div>
+                ))}
               </div>
             </div>
-          </Card>
-        </Col>
-      </Row>
+          )}
+        </Card>
+
+        <Card 
+          className="premium-card" 
+          title={<span style={{ fontWeight: 800, fontSize: 16, color: '#0f172a' }}><BarChartOutlined style={{ marginRight: 10, color: '#f59e0b' }} />{t.dashboard.marketBreadth}</span>}
+          bodyStyle={{ height: 340, padding: 30, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}
+        >
+          <div style={{ textAlign: 'center', marginBottom: 36 }}>
+            <div style={{ fontSize: 12, color: '#94a3b8', fontWeight: 800, textTransform: 'uppercase', marginBottom: 12, letterSpacing: 0.5 }}>{t.dashboard.advancingVsDeclining}</div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 24 }}>
+              <div>
+                <div style={{ fontSize: 36, fontWeight: 900, color: '#10b981', lineHeight: 1 }}>{marketStats.gainers}</div>
+                <Text style={{ fontSize: 11, fontWeight: 800, color: '#10b981', textTransform: 'uppercase' }}>{t.dashboard.up}</Text>
+              </div>
+              <div style={{ height: 44, width: 2, background: '#f1f5f9' }} />
+              <div>
+                <div style={{ fontSize: 36, fontWeight: 900, color: '#ef4444', lineHeight: 1 }}>{marketStats.losers}</div>
+                <Text style={{ fontSize: 11, fontWeight: 800, color: '#ef4444', textTransform: 'uppercase' }}>{t.dashboard.down}</Text>
+              </div>
+            </div>
+          </div>
+          <div style={{ background: '#f8fafc', borderRadius: 16, padding: 20, border: '1px solid #f1f5f9' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
+              <Text style={{ fontSize: 13, fontWeight: 600, color: '#475569' }}>{t.dashboard.overallStatus}</Text>
+              <Tag color={marketStats.avgChange > 0 ? 'green' : marketStats.avgChange < 0 ? 'red' : 'default'} style={{ margin: 0, fontWeight: 800, borderRadius: 6, padding: '0 8px' }}>
+                {marketStats.avgChange > 0.5 ? t.dashboard.bullish : marketStats.avgChange < -0.5 ? t.dashboard.bearish : t.dashboard.neutral}
+              </Tag>
+            </div>
+            <div style={{ height: 10, background: '#e2e8f0', borderRadius: 5, overflow: 'hidden', display: 'flex' }}>
+              <div style={{ height: '100%', background: '#10b981', width: `${marketStats.totalSymbols > 0 ? (marketStats.gainers / marketStats.totalSymbols) * 100 : 0}%` }} />
+              <div style={{ height: '100%', background: '#ef4444', width: `${marketStats.totalSymbols > 0 ? (marketStats.losers / marketStats.totalSymbols) * 100 : 0}%` }} />
+            </div>
+          </div>
+        </Card>
+
+        <Card 
+          className="premium-card" 
+          title={<span style={{ fontWeight: 800, fontSize: 16, color: '#0f172a' }}><DatabaseOutlined style={{ marginRight: 10, color: '#3b82f6' }} />{t.dashboard.systemStatus}</span>}
+          bodyStyle={{ height: 340, padding: '24px 26px' }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 18, marginTop: 4 }}>
+            {[
+              { label: t.dashboard.marketData, status: systemStatus.marketData },
+              { label: t.dashboard.quoteFeed, status: systemStatus.quoteFeed },
+              { label: t.dashboard.brokerConnection, status: systemStatus.brokerConnection },
+              { label: t.dashboard.symbols, status: marketStats.totalSymbols.toString(), isTag: false }
+            ].map(item => (
+              <div key={item.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text style={{ fontSize: 13, color: '#64748b', fontWeight: 600 }}>{item.label}</Text>
+                {item.isTag === false ? (
+                  <Text strong style={{ fontSize: 14, color: '#0f172a' }}>{item.status}</Text>
+                ) : (
+                  <Tag color={item.status === 'ONLINE' || item.status === 'HEALTHY' ? 'success' : item.status === 'PAPER' || item.status === 'LIVE' ? 'blue' : item.status === 'CONFIG_REQUIRED' || item.status === 'AUTH_REQUIRED' ? 'warning' : 'error'}
+                       style={{ margin: 0, fontWeight: 800, borderRadius: 6, fontSize: 11, padding: '1px 10px' }}>
+                    {item.status === 'CONFIG_REQUIRED' ? t.dashboard.configRequired : item.status === 'AUTH_REQUIRED' ? t.dashboard.signIn : item.status}
+                  </Tag>
+                )}
+              </div>
+            ))}
+            <Divider style={{ margin: '8px 0' }} />
+            <div style={{ background: '#f8fafc', padding: '14px 16px', borderRadius: 12, border: '1px solid #f1f5f9' }}>
+              <div style={{ fontSize: 10, color: '#94a3b8', fontWeight: 800, textTransform: 'uppercase', marginBottom: 6, letterSpacing: 0.5 }}>{t.dashboard.environment}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ width: 8, height: 8, borderRadius: '50%', background: systemStatus.marketData === 'CONFIG_REQUIRED' || systemStatus.marketData === 'AUTH_REQUIRED' ? '#f59e0b' : '#3b82f6', boxShadow: '0 0 8px rgba(59, 130, 246, 0.4)' }} />
+                <Text strong style={{ fontSize: 13, color: '#0f172a' }}>{systemStatus.environment || 'Unknown'}</Text>
+              </div>
+            </div>
+          </div>
+        </Card>
+      </div>
 
       {/* ── Watchlist Snapshot ── */}
       <Card 
         className="premium-card" 
-        title={<span style={{ fontWeight: 700, fontSize: 16 }}><EyeOutlined style={{ color: '#1890ff', marginRight: 8 }} />{t.dashboard.watchlistSnapshot}</span>}
-        extra={<Button type="link" onClick={handleManageWatchlist} style={{ fontWeight: 600 }}>{t.dashboard.manageAll}</Button>}
+        title={<span style={{ fontWeight: 800, fontSize: 18, color: '#0f172a' }}><EyeOutlined style={{ color: '#3b82f6', marginRight: 12 }} />{t.dashboard.watchlistSnapshot}</span>}
+        extra={<Button type="link" onClick={handleManageWatchlist} style={{ fontWeight: 700, fontSize: 14 }}>{t.dashboard.manageAll}</Button>}
+        bodyStyle={{ padding: 24 }}
       >
         {getWatchlistSymbols().length === 0 ? (
           <div className="empty-state-container">
-            <EyeOutlined style={{ fontSize: 32, color: '#f0f0f0', marginBottom: 12 }} />
-            <Text type="secondary">{t.dashboard.watchlistEmpty}</Text>
-            <Button type="link" onClick={() => navigate('/market')} style={{ marginTop: 8 }}>{t.dashboard.exploreMarket}</Button>
+            <EyeOutlined style={{ fontSize: 40, color: '#f1f5f9', marginBottom: 16 }} />
+            <Text strong style={{ color: '#94a3b8', fontSize: 16 }}>{t.dashboard.watchlistEmpty}</Text>
+            <Button type="primary" onClick={() => navigate('/market')} style={{ marginTop: 16, borderRadius: 8, fontWeight: 600 }}>{t.dashboard.exploreMarket}</Button>
           </div>
         ) : getWatchlistData().length === 0 ? (
           <div className="empty-state-container">
-            <ReloadOutlined style={{ fontSize: 32, color: '#f0f0f0', marginBottom: 12 }} />
-            <Text type="secondary">{t.dashboard.waitingForData}</Text>
+            <ReloadOutlined className="anticon-spin" style={{ fontSize: 40, color: '#3b82f6', marginBottom: 16 }} />
+            <Text strong style={{ color: '#64748b' }}>{t.dashboard.waitingForData}</Text>
           </div>
         ) : (
-          <Row gutter={[16, 16]}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 16 }}>
             {getWatchlistData().map((stock) => {
               const change = getChangePercent(stock);
+              const isUp = change && change > 0;
+              const isDown = change && change < 0;
               return (
-                <Col xs={24} sm={12} md={8} lg={6} xl={4} key={stock.symbol}>
-                  <Card 
-                    hoverable 
-                    onClick={() => handleSymbolClick(stock.symbol)}
-                    bodyStyle={{ padding: '16px' }}
-                    style={{ borderRadius: 10, border: '1px solid #f0f0f0', background: '#fafafa' }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
-                      <Text strong style={{ fontSize: 15 }}>{stock.symbol}</Text>
-                      <Tag color={change && change > 0 ? 'green' : change && change < 0 ? 'red' : 'default'} style={{ margin: 0, borderRadius: 4, fontSize: 10, fontWeight: 700 }}>
-                        {change !== null ? (change > 0 ? '+' : '') + change.toFixed(1) + '%' : '—'}
-                      </Tag>
+                <Card 
+                  key={stock.symbol}
+                  hoverable 
+                  onClick={() => handleSymbolClick(stock.symbol)}
+                  bodyStyle={{ padding: '20px' }}
+                  style={{ borderRadius: 16, border: '1px solid #f1f5f9', background: '#f8fafc', overflow: 'hidden' }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
+                    <div style={{ width: 36, height: 36, borderRadius: 8, background: '#fff', border: '1px solid #edf2f7', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, color: '#1e293b' }}>
+                      {stock.symbol[0]}
                     </div>
-                    <div style={{ fontSize: 18, fontWeight: 800, color: '#1a1a1a', marginBottom: 4 }}>
-                      ${safeToFixed(stock.price, 2)}
+                    <div style={{ 
+                      background: isUp ? 'rgba(16, 185, 129, 0.1)' : isDown ? 'rgba(239, 68, 68, 0.1)' : '#f1f5f9',
+                      color: isUp ? '#10b981' : isDown ? '#ef4444' : '#64748b',
+                      padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 800
+                    }}>
+                      {change !== null ? (change > 0 ? '+' : '') + change.toFixed(1) + '%' : '—'}
                     </div>
-                    <Text type="secondary" style={{ fontSize: 11 }} ellipsis>{stock.name || 'N/A'}</Text>
-                  </Card>
-                </Col>
+                  </div>
+                  <div style={{ marginBottom: 4 }}>
+                    <Text strong style={{ fontSize: 17, color: '#0f172a' }}>{stock.symbol}</Text>
+                  </div>
+                  <div style={{ fontSize: 20, fontWeight: 900, color: '#0f172a', marginBottom: 4 }}>
+                    ${safeToFixed(stock.price, 2)}
+                  </div>
+                  <Text style={{ fontSize: 12, color: '#64748b' }} ellipsis>{stock.name || 'N/A'}</Text>
+                </Card>
               );
             })}
-          </Row>
+          </div>
         )}
       </Card>
     </div>

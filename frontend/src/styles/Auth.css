@@ -230,8 +230,8 @@
   line-height: 1.3;
 }
 
-/* Form Styles */
-.auth-input {
+/* Scoped Ant Design Overrides for Auth Pages */
+.auth-shell .auth-input {
   height: 42px !important;
   font-size: 0.9rem !important;
   background: rgba(0, 0, 0, 0.2) !important;
@@ -240,50 +240,50 @@
   border-radius: 12px !important;
   transition: all 0.25s ease !important;
 }
-.auth-input::placeholder {
+.auth-shell .auth-input::placeholder {
   color: rgba(148, 163, 184, 0.45) !important;
 }
-.ant-input-affix-wrapper {
+.auth-shell .ant-input-affix-wrapper {
   background: rgba(0, 0, 0, 0.2) !important;
   border: 1px solid rgba(255, 255, 255, 0.1) !important;
   color: #F8FAFC !important;
   border-radius: 12px !important;
   padding: 0 14px !important;
 }
-.ant-input-affix-wrapper .ant-input::placeholder {
+.auth-shell .ant-input-affix-wrapper .ant-input::placeholder {
   color: rgba(148, 163, 184, 0.45) !important;
 }
-.ant-input-affix-wrapper > input.ant-input {
+.auth-shell .ant-input-affix-wrapper > input.ant-input {
   background: transparent !important;
   height: 40px !important;
   color: #F8FAFC !important;
 }
-.ant-input-prefix {
+.auth-shell .ant-input-prefix {
   color: #64748b !important;
   margin-right: 8px !important;
 }
-.auth-input:focus, .ant-input-affix-wrapper-focused {
+.auth-shell .auth-input:focus, .auth-shell .ant-input-affix-wrapper-focused {
   border-color: #1890ff !important;
   box-shadow: 0 0 0 4px rgba(24, 144, 255, 0.1) !important;
 }
 
-.ant-form-item-label {
+.auth-shell .ant-form-item-label {
   padding-bottom: 4px !important;
 }
-.ant-form-item-label > label {
+.auth-shell .ant-form-item-label > label {
   color: #94a3b8 !important;
   font-size: 0.8rem !important;
   font-weight: 500 !important;
 }
-.ant-form-item {
+.auth-shell .ant-form-item {
   margin-bottom: 14px !important;
 }
 
-.auth-checkbox {
+.auth-shell .auth-checkbox {
   font-size: 0.85rem !important;
   color: #94a3b8 !important;
 }
-.ant-checkbox-inner {
+.auth-shell .ant-checkbox-inner {
   background: rgba(0, 0, 0, 0.4) !important;
   border-color: rgba(255, 255, 255, 0.2) !important;
   border-radius: 4px !important;

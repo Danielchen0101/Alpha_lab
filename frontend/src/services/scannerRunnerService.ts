@@ -335,17 +335,24 @@ async function runMarketScannerLoop(run: ActiveRun): Promise<void> {
 
     // Scan completed — build summary status message
     const now = new Date().toISOString();
+    const state = store.getState();
+    const totalResults = state.marketScanner.results.length;
     const summaryMsg = summary
-      ? `Scan completed: ${summary.successCount} validated, ${summary.failedCount} failed, ${summary.retryCount} retries out of ${summary.totalSymbols} symbols`
+      ? `Processed: ${totalResults}/${summary.totalSymbols} | Success: ${summary.successCount} | Failed: ${summary.failedCount} | Retries: ${summary.retryCount}`
       : 'Scan completed';
     store.updateMarketScanner({
       status: 'completed',
       lastScanTime: now,
       currentStatus: 'completed',
       detailedScanStatus: {
-        ...store.getState().marketScanner.detailedScanStatus,
+        ...state.marketScanner.detailedScanStatus,
         currentStatus: 'completed',
         lastScanAt: now,
+        processedCount: totalResults,
+        totalCount: summary ? summary.totalSymbols : totalResults,
+        validatedCount: summary ? summary.successCount : totalResults,
+        failedCount: summary ? summary.failedCount : 0,
+        retryCount: summary ? summary.retryCount : 0,
         statusMessage: summaryMsg,
       },
     });
@@ -422,6 +429,10 @@ async function scanSymbolsLoop(run: ActiveRun, symbols: string[], aiAvailable: b
     });
   }
 
+  const RETRY_BACKOFF_MS = [500, 1000, 2000]; // exponential-like backoff
+
+  if (process.env.NODE_ENV !== 'production') console.log(`[MarketScanner] start total=${totalSymbols}`);
+
   const failedSymbols: Array<{ symbol: string; error: string }> = [];
   const retryQueue: Array<{ symbol: string; retryCount: number; lastError?: string }> = [];
   const displayBuffer: any[] = [];
@@ -454,14 +465,24 @@ async function scanSymbolsLoop(run: ActiveRun, symbols: string[], aiAvailable: b
       if (validation.valid && result.analysisStatus !== 'partial') {
         displayBuffer.push(result);
         totalValidated++;
+        if (process.env.NODE_ENV !== 'production') console.log(`[MarketScanner] symbol success symbol=${symbol} source=${result.aiSource || 'local'}`);
         return { symbol, result };
       } else if (result.skipRetry) {
+        // Generate failed result row — don't drop the symbol
+        const failedResult = buildFailedResult(symbol, result.analysisError || 'AI analysis failed', 'failed_ai_error');
+        displayBuffer.push(failedResult);
         failedSymbols.push({ symbol, error: result.analysisError || 'AI analysis failed' });
+        if (process.env.NODE_ENV !== 'production') console.log(`[MarketScanner] symbol failed symbol=${symbol} reason=${result.analysisError || 'AI analysis failed'}`);
         return { symbol, error: result.analysisError };
       } else if (retryCount < MAX_RETRIES) {
+        if (process.env.NODE_ENV !== 'production') console.log(`[MarketScanner] symbol retry symbol=${symbol} attempt=${retryCount + 1} reason=${validation.error}`);
         return { symbol, retry: true, retryCount: retryCount + 1, error: validation.error };
       } else {
+        // Out of retries — generate failed result row
+        const failedResult = buildFailedResult(symbol, validation.error || 'Unknown error', 'failed_missing_data');
+        displayBuffer.push(failedResult);
         failedSymbols.push({ symbol, error: validation.error || 'Unknown error' });
+        if (process.env.NODE_ENV !== 'production') console.log(`[MarketScanner] symbol failed symbol=${symbol} reason=${validation.error || 'Unknown error'} (max retries)`);
         return { symbol, error: validation.error };
       }
     } catch (error: any) {
@@ -471,12 +492,19 @@ async function scanSymbolsLoop(run: ActiveRun, symbols: string[], aiAvailable: b
                              error.message?.includes('not passed Test') ||
                              error.message?.includes('API key');
       if (isNonRetryable || error.skipRetry) {
+        const failedResult = buildFailedResult(symbol, error.message || 'Unknown error', 'failed_provider_error');
+        displayBuffer.push(failedResult);
         failedSymbols.push({ symbol, error: error.message });
+        if (process.env.NODE_ENV !== 'production') console.log(`[MarketScanner] symbol failed symbol=${symbol} reason=${error.message}`);
         return { symbol, error: error.message };
       } else if (retryCount < MAX_RETRIES) {
+        if (process.env.NODE_ENV !== 'production') console.log(`[MarketScanner] symbol retry symbol=${symbol} attempt=${retryCount + 1} reason=${error.message}`);
         return { symbol, retry: true, retryCount: retryCount + 1, error: error.message };
       } else {
+        const failedResult = buildFailedResult(symbol, error.message || 'Unknown error', 'failed_provider_error');
+        displayBuffer.push(failedResult);
         failedSymbols.push({ symbol, error: error.message });
+        if (process.env.NODE_ENV !== 'production') console.log(`[MarketScanner] symbol failed symbol=${symbol} reason=${error.message} (max retries)`);
         return { symbol, error: error.message };
       }
     }
@@ -508,6 +536,15 @@ async function scanSymbolsLoop(run: ActiveRun, symbols: string[], aiAvailable: b
         statusMessage: `Batch ${batchIndex}: scanning ${batch.map(b => b.symbol).join(', ')}`,
       },
     });
+
+    // Apply retry backoff delay if any symbols in this batch are retries
+    const hasRetries = batch.some(b => b.retryCount > 0);
+    if (hasRetries) {
+      const maxRetryInBatch = Math.max(...batch.map(b => b.retryCount));
+      const backoffMs = RETRY_BACKOFF_MS[Math.min(maxRetryInBatch - 1, RETRY_BACKOFF_MS.length - 1)];
+      if (process.env.NODE_ENV !== 'production') console.log(`[MarketScanner] retry backoff ${backoffMs}ms for batch with ${batch.filter(b => b.retryCount > 0).length} retries`);
+      await new Promise(resolve => setTimeout(resolve, backoffMs));
+    }
 
     // Run this batch concurrently (all 5 at once)
     const batchResults = await Promise.allSettled(
@@ -559,14 +596,13 @@ async function scanSymbolsLoop(run: ActiveRun, symbols: string[], aiAvailable: b
   flushDisplayBuffer();
 
   // Log scan summary
-  if (process.env.NODE_ENV !== 'production') console.log('[ScannerRunner] Scan summary:', {
-    totalSymbols,
-    attemptedSymbols: totalProcessed,
-    successCount: totalValidated,
-    failedCount: failedSymbols.length,
-    retryCount: totalRetries,
-    failedSymbols: failedSymbols.slice(0, 10),
-  });
+  const finalResults = store.getState().marketScanner.results;
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(`[MarketScanner] completed success=${totalValidated} failed=${failedSymbols.length} total=${totalSymbols} resultsInStore=${finalResults.length}`);
+    if (failedSymbols.length > 0) {
+      console.log('[MarketScanner] failed symbols:', failedSymbols.map(f => `${f.symbol}: ${f.error}`).join('; '));
+    }
+  }
 
   return {
     totalSymbols,
@@ -575,6 +611,69 @@ async function scanSymbolsLoop(run: ActiveRun, symbols: string[], aiAvailable: b
     failedCount: failedSymbols.length,
     retryCount: totalRetries,
     failedSymbols,
+  };
+}
+
+/**
+ * Normalize market data quote from various providers into a standard format.
+ * Handles field name aliases, computes derived fields, and preserves 0 values.
+ */
+function normalizeScannerQuote(raw: any, symbol: string): {
+  price: number | null;
+  change: number | null;
+  changePercent: number | null;
+  volume: number | null;
+  previousClose: number | null;
+  dayHigh: number | null;
+  dayLow: number | null;
+  source: string;
+} {
+  // Field aliases for price
+  const price = raw.price ?? raw.currentPrice ?? raw.latestPrice ?? raw.close ?? raw.c ?? null;
+
+  // Field aliases for changePercent
+  let changePercent: number | null = null;
+  if (raw.changePct != null) changePercent = raw.changePct;
+  else if (raw.changePercent != null) changePercent = raw.changePercent;
+  else if (raw.change_percent != null) changePercent = raw.change_percent;
+  else if (raw.percentChange != null) changePercent = raw.percentChange;
+  else if (raw.changesPercentage != null) changePercent = raw.changesPercentage;
+  else if (raw.dailyChangePercent != null) changePercent = raw.dailyChangePercent;
+  else if (raw.dp != null) changePercent = raw.dp; // Finnhub
+
+  // Field aliases for change amount
+  const change = raw.change ?? raw.changeAmount ?? raw.priceChange ?? raw.d ?? null;
+
+  // Field aliases for volume
+  const volume = raw.volume ?? raw.v ?? raw.latestVolume ?? raw.avgVolume ?? null;
+
+  // previousClose for derived changePercent calculation
+  const previousClose = raw.previousClose ?? raw.prevClose ?? raw.pc ?? null;
+
+  // Day range
+  const dayHigh = raw.dayHigh ?? raw.high ?? raw.h ?? null;
+  const dayLow = raw.dayLow ?? raw.low ?? raw.l ?? null;
+
+  // Source tracking
+  const source = raw.dataSource || raw.source || 'Unknown';
+
+  // Compute changePercent from price and previousClose if not already available
+  if (changePercent == null && price != null && previousClose != null && previousClose > 0) {
+    changePercent = ((price - previousClose) / previousClose) * 100;
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`[MarketScanner] derived changePercent symbol=${symbol} price=${price} prevClose=${previousClose} changePercent=${changePercent.toFixed(2)}%`);
+    }
+  }
+
+  return {
+    price: typeof price === 'number' ? price : null,
+    change: typeof change === 'number' ? change : null,
+    changePercent: typeof changePercent === 'number' ? changePercent : null,
+    volume: typeof volume === 'number' ? volume : null,
+    previousClose: typeof previousClose === 'number' ? previousClose : null,
+    dayHigh: typeof dayHigh === 'number' ? dayHigh : null,
+    dayLow: typeof dayLow === 'number' ? dayLow : null,
+    source,
   };
 }
 
@@ -616,20 +715,29 @@ async function processSingleSymbol(symbol: string, retryCount: number = 0): Prom
     });
     const trendAnalysis = await analyzeTrend(symbol, stockData, newsData);
 
+    // Normalize market data (handles field aliases, derived calculations, preserves 0)
+    const normalized = normalizeScannerQuote(stockData, symbol);
+    if (process.env.NODE_ENV !== 'production') {
+      const rawKeys = Object.keys(stockData).filter(k => !['apiKey', 'apiSecret', 'token', 'key'].some(s => k.toLowerCase().includes(s)));
+      console.log(`[MarketScanner] raw provider result symbol=${symbol} keys=[${rawKeys.join(',')}]`);
+      console.log(`[MarketScanner] normalized result symbol=${symbol} price=${normalized.price} changePercent=${normalized.changePercent} volume=${normalized.volume} prevClose=${normalized.previousClose}`);
+    }
+
     // Build result object
     const result = {
       symbol,
       companyName: trendAnalysis.companyName || companyName,
       trendLabel: trendAnalysis.trendLabel,
-      trendScore: trendAnalysis.trendScore || trendAnalysis.overallScore || null,
-      trendConfidence: trendAnalysis.trendConfidence || trendAnalysis.confidence || null,
-      price: stockData.price || null,
-      changePct: stockData.changePct || stockData.changePercent || null,
-      changePercent: stockData.changePercent || null,
-      volume: stockData.volume || null,
-      marketCap: stockData.marketCap || null,
-      dayHigh: stockData.dayHigh || null,
-      dayLow: stockData.dayLow || null,
+      trendScore: trendAnalysis.trendScore != null ? trendAnalysis.trendScore : (trendAnalysis.overallScore != null ? trendAnalysis.overallScore : null),
+      trendConfidence: trendAnalysis.trendConfidence != null ? trendAnalysis.trendConfidence : (trendAnalysis.confidence != null ? trendAnalysis.confidence : null),
+      price: normalized.price,
+      changePct: normalized.changePercent,
+      changePercent: normalized.changePercent,
+      volume: normalized.volume,
+      marketCap: stockData.marketCap != null ? stockData.marketCap : null,
+      dayHigh: normalized.dayHigh,
+      dayLow: normalized.dayLow,
+      previousClose: normalized.previousClose,
       newsSentiment: trendAnalysis.newsSentiment || newsData.sentiment,
       eventRisk: trendAnalysis.eventRisk || newsData.eventRisk,
       topNews: trendAnalysis.topNews || newsData.topNews,
@@ -646,14 +754,14 @@ async function processSingleSymbol(symbol: string, retryCount: number = 0): Prom
       conciseReasoning: trendAnalysis.conciseReasoning,
       volumeStatus: trendAnalysis.volumeStatus,
       provenance: trendAnalysis.provenance || {
-        marketData: stockData.dataSource || 'Unknown',
+        marketData: stockData.dataSource || normalized.source || 'Unknown',
         companyInfo: (stockData as any).profileSource || 'Finnhub',
         news: newsData?.source || 'Unknown',
         aiAnalysis: trendAnalysis.analysisSource === 'deepseek' ? 'DeepSeek' :
                    trendAnalysis.analysisSource === 'unavailable' ? 'unavailable' :
                    trendAnalysis.analysisSource === 'rule_based' ? 'Local Rules' : 'Unknown'
       },
-      dataSource: stockData.dataSource || 'Unknown',
+      dataSource: stockData.dataSource || normalized.source || 'Unknown',
       analysisStatus: trendAnalysis.trendLabel ? 'success' as 'success' : 'partial' as 'partial',
       analysisError: trendAnalysis.aiError || null,
       aiCalled: trendAnalysis.aiCalled !== undefined ? trendAnalysis.aiCalled : (trendAnalysis.analysisSource === 'deepseek'),
@@ -668,6 +776,9 @@ async function processSingleSymbol(symbol: string, retryCount: number = 0): Prom
     // Check data completeness
     const validation = validateSymbolData(result);
     if (!validation.valid) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.log(`[MarketScanner] missing fields symbol=${symbol} fields=${validation.missingFields.join(',')} retry=${retryCount}`);
+      }
       const aiOnlyFields = ['trendLabel', 'overallScore/trendScore', 'aiReasoning'];
       const onlyAiMissing = validation.missingFields.every(f => aiOnlyFields.includes(f));
       const hasAiError = result.aiError || (result as any).analysisSource === 'unavailable';
@@ -695,6 +806,10 @@ async function processSingleSymbol(symbol: string, retryCount: number = 0): Prom
         statusMessage: `${symbol} — Completed`,
       },
     });
+
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`[MarketScanner] final row source=${result.aiSource || 'local'} analysisStatus=${result.analysisStatus} symbol=${symbol} hasPrice=${result.price != null} hasScore=${result.trendScore != null}`);
+    }
 
     return result;
 
@@ -872,6 +987,56 @@ async function analyzeTrend(symbol: string, stockData: any, newsData: any): Prom
       skipRetry: isNonRetryable,
     };
   }
+}
+
+/**
+ * Build a failed result row so failed symbols appear in the UI table
+ * instead of being silently dropped.
+ */
+function buildFailedResult(symbol: string, error: string, status: string): any {
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(`[MarketScanner] local fallback symbol=${symbol} reason=${error} failStatus=${status}`);
+  }
+  return {
+    symbol,
+    companyName: null,
+    trendLabel: 'Need Data',
+    trendScore: null,
+    trendConfidence: null,
+    price: null,
+    changePct: null,
+    changePercent: null,
+    volume: null,
+    marketCap: null,
+    dayHigh: null,
+    dayLow: null,
+    newsSentiment: null,
+    eventRisk: null,
+    topNews: null,
+    sector: null,
+    scannerReason: error,
+    trendScoreDetail: null,
+    momentumScore: null,
+    volumeScore: null,
+    volatilityScore: null,
+    structureScore: null,
+    newsScore: null,
+    aiReasoning: error,
+    detailedReasoning: null,
+    conciseReasoning: null,
+    volumeStatus: null,
+    analysisStatus: 'failed' as 'failed',
+    analysisError: error,
+    provenance: { marketData: 'Failed', companyInfo: 'Failed', news: 'Failed', aiAnalysis: 'Failed' },
+    dataSource: 'Failed',
+    dataQuality: 'failed',
+    aiCalled: false,
+    aiSource: 'Failed',
+    aiModel: null,
+    aiError: error,
+    failStatus: status,
+    timestamp: new Date().toISOString()
+  };
 }
 
 /**

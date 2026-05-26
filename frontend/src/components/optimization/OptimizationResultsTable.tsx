@@ -124,10 +124,37 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
   return (
     <div className="optimization-table-container">
       <style>{`
-        .optimization-table-container .ant-table-thead > tr > th { background: #fafafa; font-weight: 700; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; color: #8c8c8c; border-bottom: 2px solid #f0f0f0; }
-        .optimization-table-container .ant-table-tbody > tr:hover > td { background: #f0f7ff !important; }
-        .top-rank-row { background: #fffdf6; }
-        .top-rank-row td { border-bottom: 1px solid #fff1b8 !important; }
+        .optimization-table-container .ant-table {
+          background: transparent !important;
+        }
+        .optimization-table-container .ant-table-thead > tr > th { 
+          background: #f8fafc !important; 
+          font-weight: 800 !important; 
+          text-transform: uppercase !important; 
+          font-size: 10.5px !important; 
+          letter-spacing: 0.8px !important; 
+          color: #94a3b8 !important; 
+          border-bottom: 1px solid rgba(15, 23, 42, 0.06) !important;
+          padding: 16px 8px !important;
+        }
+        .optimization-table-container .ant-table-tbody > tr > td {
+          padding: 14px 8px !important;
+          border-bottom: 1px solid rgba(15, 23, 42, 0.04) !important;
+        }
+        .optimization-table-container .ant-table-tbody > tr:hover > td { 
+          background: #f8fafc !important; 
+        }
+        .top-rank-row { 
+          background: rgba(250, 173, 20, 0.02); 
+        }
+        .top-rank-row td { 
+          border-bottom: 1px solid rgba(250, 173, 20, 0.1) !important; 
+        }
+        .optimization-table-container .ant-pagination {
+          padding: 16px 24px !important;
+          margin: 0 !important;
+          border-top: 1px solid rgba(15, 23, 42, 0.06);
+        }
       `}</style>
       <Table
         columns={columns}
@@ -136,13 +163,15 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
         pagination={{
           pageSize: 10,
           showSizeChanger: true,
-          showTotal: (total: number, range: [number, number]) => <Text type="secondary" style={{ fontSize: '12px' }}>{t.optimization.resultsRange.replace('{from}', String(range[0])).replace('{to}', String(range[1])).replace('{total}', String(total))}</Text>,
-          style: { marginTop: '20px' }
+          showTotal: (total: number, range: [number, number]) => (
+            <Text style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 600 }}>
+              {t.optimization.resultsRange.replace('{from}', String(range[0])).replace('{to}', String(range[1])).replace('{total}', String(total)).toUpperCase()}
+            </Text>
+          ),
         }}
-        size="middle"
+        size="small"
         scroll={{ x: 1000 }}
         rowClassName={(record: OptimizationResult) => record.rank === 1 ? 'top-rank-row' : ''}
-        style={{ background: '#fff' }}
       />
     </div>
   );

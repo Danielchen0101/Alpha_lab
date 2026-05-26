@@ -392,5 +392,16 @@ export interface TradingPosition {
   lastUpdated?: string;
 }
 
+// Pipeline Auto API (market-hours auto pipeline scheduler)
+export const pipelineAutoAPI = {
+  getStatus: () => api.get('/ai-agent/pipeline-auto/status'),
+  saveConfig: (data: { enabled: boolean; intervalMinutes?: number | null; mode: string; lastRunAt?: string }) =>
+    api.post('/ai-agent/pipeline-auto/config', data),
+  getHistory: (limit = 5) =>
+    api.get<{ success: boolean; history: any[]; count: number }>(`/ai-agent/pipeline-auto/history?limit=${limit}`),
+  getMarketSchedule: (days = 15) =>
+    api.get<{ success: boolean; timezone: string; source: string; warning?: string; days: any[] }>(`/ai-agent/pipeline-auto/market-schedule?days=${days}`),
+};
+
 export { scannerApi };
 export default api;

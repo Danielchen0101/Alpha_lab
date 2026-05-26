@@ -1185,7 +1185,7 @@ const Backtest: React.FC = () => {
     {
       title: t.backtest.select,
       key: 'selection',
-      width: 60,
+      width: 52,
       render: (_: any, record: BacktestHistoryItem) => (
         <Checkbox
           checked={selectedBacktests.includes(record.backtestId)}
@@ -1203,14 +1203,14 @@ const Backtest: React.FC = () => {
       title: t.backtest.symbolCol,
       dataIndex: 'symbol',
       key: 'symbol',
-      width: 90,
+      width: 80,
       render: (symbol: string) => <strong style={{ fontSize: '13px' }}>{symbol || 'N/A'}</strong>,
     },
     {
       title: t.backtest.strategyCol,
       dataIndex: 'strategy',
       key: 'strategy',
-      width: 120,
+      width: 130,
       render: (strategy: string) => {
         const strategyNames: Record<string, string> = {
           'moving_average': t.backtest.strategyMovingAverage,
@@ -1228,7 +1228,7 @@ const Backtest: React.FC = () => {
       title: t.backtest.periodCol,
       dataIndex: 'startDate',
       key: 'period',
-      width: 130,
+      width: 100,
       render: (startDate: string, record: BacktestHistoryItem) => {
         if (!startDate || !record.endDate) return <span style={{ color: '#999', fontSize: '11px' }}>{t.common.na}</span>;
         try {
@@ -1247,6 +1247,7 @@ const Backtest: React.FC = () => {
       dataIndex: 'totalReturn',
       key: 'totalReturn',
       width: 90,
+      align: 'right' as const,
       render: (value: number) => {
         const safeValue = safeNumber(value);
         if (safeValue === null || safeValue === undefined) return <span style={{ color: '#999' }}>--</span>;
@@ -1261,6 +1262,7 @@ const Backtest: React.FC = () => {
       dataIndex: 'sharpeRatio',
       key: 'sharpeRatio',
       width: 80,
+      align: 'right' as const,
       render: (value: number) => {
         const safeValue = safeNumber(value);
         if (safeValue === null || safeValue === undefined) return <span style={{ color: '#999' }}>--</span>;
@@ -1272,7 +1274,7 @@ const Backtest: React.FC = () => {
       title: t.backtest.statusCol,
       dataIndex: 'status',
       key: 'status',
-      width: 100,
+      width: 90,
       render: (status: string) => {
         const statusColors: Record<string, string> = {
           'running': 'blue',
@@ -1298,7 +1300,7 @@ const Backtest: React.FC = () => {
       title: language === 'zh-CN' ? '日期' : 'Date',
       dataIndex: 'createdAt',
       key: 'createdAt',
-      width: 100,
+      width: 90,
       render: (date: string) => {
         if (!date) return <span style={{ color: '#999', fontSize: '11px' }}>{t.common.na}</span>;
         try {
@@ -1314,7 +1316,7 @@ const Backtest: React.FC = () => {
     {
       title: t.backtest.actionsCol,
       key: 'actions',
-      width: 120,
+      width: 110,
       render: (_: any, record: BacktestHistoryItem) => (
         <Space size="small">
           <Button
@@ -1496,69 +1498,175 @@ const Backtest: React.FC = () => {
   };
 
   return (
-    <div className="backtest-page-container" style={{ padding: '0 8px 40px 8px' }}>
+    <div className="backtest-page-shell">
       <style>{`
-        .backtest-page-container { animation: fadeIn 0.5s ease-out; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .premium-card { border-radius: 12px !important; border: 1px solid #f0f0f0 !important; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03) !important; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important; }
-        .premium-card:hover { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06) !important; transform: translateY(-2px) !important; }
+        .backtest-page-shell {
+          max-width: 1600px;
+          margin: 0 auto;
+        }
+        .backtest-main-layout {
+          display: grid;
+          grid-template-columns: minmax(0, 1.45fr) minmax(420px, 520px);
+          gap: 20px;
+          align-items: start;
+        }
+        @media (max-width: 1250px) {
+          .backtest-main-layout {
+            grid-template-columns: 1fr;
+          }
+        }
+        .premium-card { 
+          border-radius: 16px !important; 
+          border: 1px solid rgba(15, 23, 24, 0.08) !important; 
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02) !important; 
+          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important; 
+          background: #fff !important;
+          overflow: hidden;
+        }
+        .premium-card:hover { 
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.04) !important; 
+          transform: translateY(-1px) !important; 
+          border-color: rgba(24, 144, 255, 0.15) !important;
+        }
+        .config-card .ant-card-body {
+          padding: 20px 22px !important;
+        }
+        .side-panel-card .ant-card-head {
+          padding: 0 16px !important;
+          min-height: 48px !important;
+        }
+        .side-panel-card .ant-card-head-title {
+          padding: 12px 0 !important;
+        }
         .section-header { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
-        .section-title { font-size: 18px; font-weight: 700; color: #1a1a1a; margin: 0; }
+        .section-title { font-size: 18px; font-weight: 700; color: #0f172a; margin: 0; }
         .performance-strip { display: flex; gap: 12px; margin-bottom: 24px; overflow-x: auto; padding: 4px 0 12px 0; }
-        .stat-metric-card { flex: 1; min-width: 140px; background: #fff; padding: 16px; border-radius: 10px; border: 1px solid #f0f0f0; box-shadow: 0 2px 8px rgba(0,0,0,0.02); transition: all 0.2s ease; }
-        .stat-metric-card:hover { border-color: #1890ff; box-shadow: 0 4px 12px rgba(24,144,255,0.1); }
-        .stat-metric-label { font-size: 11px; color: #8c8c8c; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 4px; display: block; }
-        .stat-metric-value { font-size: 20px; font-weight: 800; color: #262626; line-height: 1.2; }
-        .info-strip { background: linear-gradient(90deg, #f6ffed 0%, #ffffff 100%); border: 1px solid #b7eb8f; border-radius: 8px; padding: 16px 20px; margin-bottom: 24px; }
-        .blueprint-module { background: #fafafa; border-radius: 8px; padding: 16px; border: 1px solid #f0f0f0; height: 100%; }
-        .blueprint-label { font-size: 11px; color: #8c8c8c; font-weight: 600; margin-bottom: 8px; text-transform: uppercase; }
-        .blueprint-value { font-size: 14px; font-weight: 700; color: #262626; }
-        .chart-container-premium { background: #fff; border-radius: 12px; border: 1px solid #f0f0f0; padding: 20px; margin-bottom: 24px; }
-        .recent-backtest-row:hover { background-color: #f0f7ff !important; cursor: pointer; }
-        .recent-backtest-row.selected-row { background-color: #e6f7ff !important; }
-        .recent-backtest-row.selected-row:hover { background-color: #bae7ff !important; }
-        .primary-cta-button { height: 44px; font-weight: 700; letter-spacing: 0.5px; border-radius: 8px; box-shadow: 0 4px 10px rgba(24, 144, 255, 0.2); }
+        .stat-metric-card { 
+          flex: 1; 
+          min-width: 140px; 
+          background: #fff; 
+          padding: 16px 18px; 
+          border-radius: 14px; 
+          border: 1px solid rgba(15, 23, 24, 0.08); 
+          box-shadow: 0 2px 6px rgba(0,0,0,0.01); 
+          transition: all 0.2s ease; 
+        }
+        .stat-metric-card:hover { border-color: #1890ff; box-shadow: 0 4px 12px rgba(24,144,255,0.08); }
+        .stat-metric-label { font-size: 10.5px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 700; margin-bottom: 4px; display: block; }
+        .stat-metric-value { font-size: 22px; font-weight: 800; color: #0f172a; line-height: 1.1; }
+        .info-strip { 
+          background: linear-gradient(90deg, #f8fafc 0%, #ffffff 100%); 
+          border: 1px solid rgba(15, 23, 24, 0.06); 
+          border-radius: 12px; 
+          padding: 16px 20px; 
+          margin-bottom: 24px; 
+        }
+        .blueprint-module { background: #f8fafc; border-radius: 12px; padding: 18px; border: 1px solid rgba(15, 23, 24, 0.06); height: 100%; }
+        .blueprint-label { font-size: 10.5px; color: #94a3b8; font-weight: 700; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .blueprint-value { font-size: 14px; font-weight: 700; color: #0f172a; }
+        .chart-container-premium { background: #fff; border-radius: 16px; border: 1px solid rgba(15, 23, 24, 0.08); padding: 20px; margin-bottom: 24px; }
+        .recent-backtest-row:hover { background-color: rgba(24, 144, 255, 0.02) !important; cursor: pointer; }
+        .recent-backtest-row.selected-row { background-color: #eff6ff !important; }
+        
+        .backtest-form-input { height: 40px !important; border-radius: 10px !important; border-color: #e2e8f0 !important; }
+        .backtest-form-label { font-size: 13.5px; font-weight: 600; color: #475569; }
+        .execution-inner-panel {
+          background: #f8fafc;
+          border: 1px solid rgba(15, 23, 24, 0.06);
+          border-radius: 14px;
+          padding: 16px;
+          margin-bottom: 24px;
+        }
+        .primary-cta-button { 
+          height: 42px; 
+          font-weight: 700; 
+          border-radius: 12px; 
+          box-shadow: 0 4px 12px rgba(24, 144, 255, 0.15); 
+          font-size: 15px;
+        }
+        .secondary-action-btn {
+          height: 40px !important;
+          border-radius: 10px !important;
+          font-weight: 600 !important;
+          font-size: 13.5px !important;
+        }
+        .history-table-container {
+          width: 100%;
+          overflow-x: auto;
+        }
+        .history-table .ant-table-thead > tr > th {
+          background: #f1f5f9 !important;
+          font-size: 11px !important;
+          text-transform: uppercase !important;
+          letter-spacing: 0.5px !important;
+          color: #64748b !important;
+          font-weight: 700 !important;
+          padding: 12px 8px !important;
+          white-space: nowrap;
+        }
+        .history-table .ant-table-tbody > tr > td {
+          padding: 12px 8px !important;
+          height: 58px;
+        }
+        .history-table .ant-pagination {
+          padding: 12px 14px !important;
+          margin: 0 !important;
+          border-top: 1px solid rgba(15, 23, 24, 0.06);
+        }
+        /* Custom scrollbar for the table */
+        .history-table-container::-webkit-scrollbar {
+          height: 6px;
+        }
+        .history-table-container::-webkit-scrollbar-track {
+          background: #f1f5f9;
+        }
+        .history-table-container::-webkit-scrollbar-thumb {
+          background: #cbd5e1;
+          border-radius: 3px;
+        }
+        .history-table-container::-webkit-scrollbar-thumb:hover {
+          background: #94a3b8;
+        }
       `}</style>
 
       {/* ── Page Header ── */}
-      <div style={{ marginBottom: 32, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-            <div style={{ width: 40, height: 40, borderRadius: '10px', background: 'linear-gradient(135deg, #1890ff 0%, #003a8c 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 22, boxShadow: '0 4px 12px rgba(24, 144, 255, 0.3)' }}>
-              <LineChartOutlined />
-            </div>
-            <Title level={1} style={{ margin: 0, fontSize: 28, fontWeight: 800, letterSpacing: '-0.5px', color: '#1a1a1a' }}>{t.backtest.title}</Title>
+      <div style={{ marginBottom: 32, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div style={{ width: 44, height: 44, borderRadius: '12px', background: 'linear-gradient(135deg, #1890ff 0%, #003a8c 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 22, boxShadow: '0 4px 12px rgba(24, 144, 255, 0.25)' }}>
+            <LineChartOutlined />
           </div>
-          <Text type="secondary" style={{ fontSize: 15, marginLeft: 52 }}>{t.backtest.subtitleForm}</Text>
+          <div>
+            <Title level={1} style={{ margin: 0, fontSize: 'clamp(24px, 2.2vw, 30px)', fontWeight: 800, letterSpacing: '-0.02em', color: '#0f172a' }}>{t.backtest.title}</Title>
+            <Text style={{ fontSize: 14, color: '#64748b' }}>{t.backtest.subtitleForm}</Text>
+          </div>
         </div>
-        <div style={{ display: 'flex', gap: 12 }}>
-           <Badge status="processing" text={<Text strong style={{ color: '#1890ff', fontSize: 12 }}>{t.backtest.engineReady}</Text>} />
+        <div style={{ background: '#fff', padding: '8px 16px', borderRadius: '12px', border: '1px solid rgba(15, 23, 24, 0.06)' }}>
+           <Badge status="processing" text={<Text strong style={{ color: '#1890ff', fontSize: 12, letterSpacing: '0.5px' }}>{t.backtest.engineReady.toUpperCase()}</Text>} />
         </div>
       </div>
 
       {error && (
-        <Alert message={t.backtest.systemNotification} description={error} type="error" showIcon style={{ marginBottom: 24, borderRadius: 10 }} closable onClose={() => setError('')} />
+        <Alert message={t.backtest.systemNotification} description={error} type="error" showIcon style={{ marginBottom: 24, borderRadius: 12 }} closable onClose={() => setError('')} />
       )}
 
-      <Row gutter={[24, 24]}>
-        <Col span={16}>
-          <Card className="premium-card" title={<span style={{ fontWeight: 700 }}>{t.backtest.configuration}</span>}>
-            <Form form={form} layout="vertical" onFinish={handleRunBacktest}>
-              <Row gutter={20}>
+      <div className="backtest-main-layout">
+        <div className="backtest-left-panel">
+          <Card className="premium-card config-card" title={<span style={{ fontWeight: 800, fontSize: 16, color: '#0f172a' }}>{t.backtest.configuration}</span>}>
+            <Form form={form} layout="vertical" onFinish={handleRunBacktest} requiredMark={false}>
+              <Row gutter={18}>
                 <Col span={10}>
-                  <Form.Item label={<Text strong>{t.backtest.stockSymbol}</Text>} name="symbol" rules={[{ required: true, message: t.backtest.stockSymbolRequired }]} help={t.backtest.stockSymbolHelp}>
-                    <Input placeholder={t.backtest.stockSymbolPlaceholder} size="large" style={{ borderRadius: '8px' }} prefix={<LineChartOutlined style={{ color: '#bfbfbf' }} />} onChange={(e) => parseSymbols(e.target.value)} />
+                  <Form.Item label={<span className="backtest-form-label">{t.backtest.stockSymbol}</span>} name="symbol" rules={[{ required: true, message: t.backtest.stockSymbolRequired }]} help={<span style={{ fontSize: 11, color: '#94a3b8' }}>{t.backtest.stockSymbolHelp}</span>}>
+                    <Input placeholder={t.backtest.stockSymbolPlaceholder} className="backtest-form-input" prefix={<LineChartOutlined style={{ color: '#94a3b8' }} />} onChange={(e) => parseSymbols(e.target.value)} />
                   </Form.Item>
                 </Col>
                 <Col span={14}>
-                  <Form.Item label={<Text strong>{t.backtest.strategyModel}</Text>} name="strategy" rules={[{ required: true, message: t.backtest.strategyModelRequired }]}>
+                  <Form.Item label={<span className="backtest-form-label">{t.backtest.strategyModel}</span>} name="strategy" rules={[{ required: true, message: t.backtest.strategyModelRequired }]}>
                     <Select
-                      size="large"
-                      style={{ borderRadius: '8px' }}
+                      className="backtest-form-input"
+                      style={{ width: '100%' }}
                       placeholder={t.backtest.chooseStrategy} 
                       onChange={(value) => {
                         setSelectedStrategy(value);
-                        // 当切换策略时，自动填入默认推荐参数
                         if (strategyDefaults[value]) {
                           form.setFieldsValue(strategyDefaults[value]);
                         }
@@ -1571,117 +1679,111 @@ const Backtest: React.FC = () => {
               </Row>
 
               {portfolioSymbols.length > 1 && (
-                <div style={{ marginBottom: '20px', padding: '12px 16px', background: 'rgba(24, 144, 255, 0.05)', border: '1px solid #91d5ff', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <Tag color="blue" style={{ borderRadius: 4, fontWeight: 700 }}>{t.backtest.portfolioActive}</Tag>
-                  <Text style={{ fontSize: 13, color: '#0050b3' }}>{t.backtest.portfolioMode.replace('{count}', String(portfolioSymbols.length))}</Text>
+                <div style={{ marginBottom: '20px', padding: '10px 14px', background: 'rgba(24, 144, 255, 0.04)', border: '1px solid #bae7ff', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <Tag color="blue" style={{ borderRadius: 4, fontWeight: 700, fontSize: 10 }}>{t.backtest.portfolioActive}</Tag>
+                  <Text style={{ fontSize: 12.5, color: '#0050b3', fontWeight: 500 }}>{t.backtest.portfolioMode.replace('{count}', String(portfolioSymbols.length))}</Text>
                 </div>
               )}
 
-              <div style={{ marginBottom: '24px', padding: '20px', background: '#fafafa', borderRadius: '12px', border: '1px solid #f0f0f0' }}>
+              <div className="execution-inner-panel">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                  <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, textTransform: 'uppercase', color: '#595959', letterSpacing: '0.5px' }}>{t.backtest.executionParams}</h4>
-                  <Badge status="success" text={<Text type="secondary" style={{ fontSize: 12 }}>{t.backtest.realMarketData}</Text>} />
+                  <h4 style={{ margin: 0, fontSize: 11, fontWeight: 800, textTransform: 'uppercase', color: '#94a3b8', letterSpacing: '1px' }}>{t.backtest.executionParams}</h4>
+                  <Badge status="success" text={<Text style={{ fontSize: 11, color: '#64748b', fontWeight: 600 }}>{t.backtest.realMarketData}</Text>} />
                 </div>
 
                 {selectedStrategy === 'moving_average' && (
                   <Row gutter={16}>
-                    <Col span={12}><Form.Item label={t.backtest.shortMaPeriod} name="shortMaPeriod" extra={t.backtest.defaultLabel.replace('{value}', '20')}><InputNumber min={1} max={200} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
-                    <Col span={12}><Form.Item label={t.backtest.longMaPeriod} name="longMaPeriod" extra={t.backtest.defaultLabel.replace('{value}', '50')}><InputNumber min={1} max={200} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={12}><Form.Item label={<span style={{ fontSize: 12 }}>{t.backtest.shortMaPeriod}</span>} name="shortMaPeriod" extra={<span style={{ fontSize: 10, color: '#94a3b8' }}>{t.backtest.defaultLabel.replace('{value}', '20')}</span>}><InputNumber min={1} max={200} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={12}><Form.Item label={<span style={{ fontSize: 12 }}>{t.backtest.longMaPeriod}</span>} name="longMaPeriod" extra={<span style={{ fontSize: 10, color: '#94a3b8' }}>{t.backtest.defaultLabel.replace('{value}', '50')}</span>}><InputNumber min={1} max={200} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
                   </Row>
                 )}
                 {selectedStrategy === 'rsi' && (
                   <Row gutter={16}>
-                    <Col span={8}><Form.Item label={t.backtest.rsiPeriod} name="rsiPeriod" extra={t.backtest.defaultLabel.replace('{value}', '14')}><InputNumber min={1} max={50} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
-                    <Col span={8}><Form.Item label={t.backtest.oversold} name="rsiOversold" extra={t.backtest.defaultLabel.replace('{value}', '30')}><InputNumber min={1} max={100} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
-                    <Col span={8}><Form.Item label={t.backtest.overbought} name="rsiOverbought" extra={t.backtest.defaultLabel.replace('{value}', '70')}><InputNumber min={1} max={100} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={<span style={{ fontSize: 12 }}>{t.backtest.rsiPeriod}</span>} name="rsiPeriod" extra={<span style={{ fontSize: 10 }}>{t.backtest.defaultLabel.replace('{value}', '14')}</span>}><InputNumber min={1} max={50} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={<span style={{ fontSize: 12 }}>{t.backtest.oversold}</span>} name="rsiOversold" extra={<span style={{ fontSize: 10 }}>{t.backtest.defaultLabel.replace('{value}', '30')}</span>}><InputNumber min={1} max={100} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={<span style={{ fontSize: 12 }}>{t.backtest.overbought}</span>} name="rsiOverbought" extra={<span style={{ fontSize: 10 }}>{t.backtest.defaultLabel.replace('{value}', '70')}</span>}><InputNumber min={1} max={100} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
                   </Row>
                 )}
                 {selectedStrategy === 'macd' && (
                   <Row gutter={16}>
-                    <Col span={8}><Form.Item label={t.backtest.fastEma} name="macdFast" extra={t.backtest.defaultLabel.replace('{value}', '12')}><InputNumber min={1} max={50} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
-                    <Col span={8}><Form.Item label={t.backtest.slowEma} name="macdSlow" extra={t.backtest.defaultLabel.replace('{value}', '26')}><InputNumber min={1} max={50} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
-                    <Col span={8}><Form.Item label={t.backtest.signal} name="macdSignal" extra={t.backtest.defaultLabel.replace('{value}', '9')}><InputNumber min={1} max={50} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={<span style={{ fontSize: 12 }}>{t.backtest.fastEma}</span>} name="macdFast" extra={<span style={{ fontSize: 10 }}>{t.backtest.defaultLabel.replace('{value}', '12')}</span>}><InputNumber min={1} max={50} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={<span style={{ fontSize: 12 }}>{t.backtest.slowEma}</span>} name="macdSlow" extra={<span style={{ fontSize: 10 }}>{t.backtest.defaultLabel.replace('{value}', '26')}</span>}><InputNumber min={1} max={50} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={<span style={{ fontSize: 12 }}>{t.backtest.signal}</span>} name="macdSignal" extra={<span style={{ fontSize: 10 }}>{t.backtest.defaultLabel.replace('{value}', '9')}</span>}><InputNumber min={1} max={50} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
                   </Row>
                 )}
                 {selectedStrategy === 'bollinger' && (
                   <Row gutter={16}>
-                    <Col span={12}><Form.Item label={t.backtest.periodLabel} name="bollingerPeriod" extra={t.backtest.defaultLabel.replace('{value}', '20')}><InputNumber min={5} max={100} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
-                    <Col span={12}><Form.Item label={t.backtest.stdDev} name="bollingerStdDev" extra={t.backtest.defaultLabel.replace('{value}', '2')}><InputNumber min={1} max={5} step={0.1} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
+                    <Col span={12}><Form.Item label={<span style={{ fontSize: 12 }}>{t.backtest.periodLabel}</span>} name="bollingerPeriod" extra={<span style={{ fontSize: 10 }}>{t.backtest.defaultLabel.replace('{value}', '20')}</span>}><InputNumber min={5} max={100} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={12}><Form.Item label={<span style={{ fontSize: 12 }}>{t.backtest.stdDev}</span>} name="bollingerStdDev" extra={<span style={{ fontSize: 10 }}>{t.backtest.defaultLabel.replace('{value}', '2')}</span>}><InputNumber min={1} max={5} step={0.1} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
                   </Row>
                 )}
                 {selectedStrategy === 'momentum' && (
                   <Col span={12}>
-                    <Form.Item label={t.backtest.momentumPeriod} name="momentumPeriod" extra={t.backtest.defaultLabel.replace('{value}', '20')}><InputNumber min={1} max={50} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item>
+                    <Form.Item label={<span style={{ fontSize: 12 }}>{t.backtest.momentumPeriod}</span>} name="momentumPeriod" extra={<span style={{ fontSize: 10 }}>{t.backtest.defaultLabel.replace('{value}', '20')}</span>}><InputNumber min={1} max={50} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item>
                   </Col>
                 )}
                 {selectedStrategy === 'mean_reversion' && (
-                  <Row gutter={16}>
-                    <Col span={8}><Form.Item label={t.backtest.lookbackPeriod} name="lookbackPeriod" extra={t.backtest.defaultLabel.replace('{value}', '20')}><InputNumber min={5} max={100} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
-                    <Col span={8}><Form.Item label={t.backtest.entryZScore} name="entryZScore" extra={t.backtest.defaultLabel.replace('{value}', '-2.0')}><InputNumber step={0.1} min={-5} max={0} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
-                    <Col span={8}><Form.Item label={t.backtest.exitZScore} name="exitZScore" extra={t.backtest.defaultLabel.replace('{value}', '0.0')}><InputNumber step={0.1} min={-2} max={2} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
-                    <Col span={8}><Form.Item label={t.backtest.stopLossPct} name="stopLossPct" extra={t.backtest.defaultLabel.replace('{value}', '6')}><InputNumber min={1} max={20} step={0.5} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
-                    <Col span={8}><Form.Item label={t.backtest.takeProfitPct} name="takeProfitPct" extra={t.backtest.defaultLabel.replace('{value}', '8')}><InputNumber min={1} max={50} step={0.5} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
-                    <Col span={8}><Form.Item label={t.backtest.rsiPeriod} name="rsiPeriod" extra={t.backtest.defaultLabel.replace('{value}', '14')}><InputNumber min={2} max={50} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
-                    <Col span={8}><Form.Item label={t.backtest.oversoldLevel} name="oversoldLevel" extra={t.backtest.defaultLabel.replace('{value}', '30')}><InputNumber min={5} max={50} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
-                    <Col span={8}><Form.Item label={t.backtest.trendMaPeriod} name="trendMaPeriod" extra={t.backtest.defaultLabel.replace('{value}', '100')}><InputNumber min={10} max={300} size="large" style={{ width: '100%', borderRadius: 8 }} /></Form.Item></Col>
-                    <Col span={8}><Form.Item label={t.backtest.trendFilter} name="enableTrendFilter" valuePropName="checked" initialValue={true}><Checkbox>{t.backtest.enable}</Checkbox></Form.Item></Col>
+                  <Row gutter={12}>
+                    <Col span={8}><Form.Item label={<span style={{ fontSize: 12 }}>{t.backtest.lookbackPeriod}</span>} name="lookbackPeriod" extra={<span style={{ fontSize: 9 }}>{t.backtest.defaultLabel.replace('{value}', '20')}</span>}><InputNumber min={5} max={100} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={<span style={{ fontSize: 12 }}>Z-Score Entry</span>} name="entryZScore" extra={<span style={{ fontSize: 9 }}>{t.backtest.defaultLabel.replace('{value}', '-2.0')}</span>}><InputNumber step={0.1} min={-5} max={0} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={<span style={{ fontSize: 12 }}>Stop Loss %</span>} name="stopLossPct" extra={<span style={{ fontSize: 9 }}>{t.backtest.defaultLabel.replace('{value}', '6')}</span>}><InputNumber min={1} max={20} step={0.5} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
                   </Row>
                 )}
               </div>
 
               <Row gutter={20}>
-                <Col span={12}>
-                  <Form.Item label={<Text strong>{t.backtest.simulationWindow}</Text>} name="dateRange" rules={[{ required: true }]}>
-                    <RangePicker size="large" style={{ width: '100%', borderRadius: 8 }} />
+                <Col span={14}>
+                  <Form.Item label={<span className="backtest-form-label">{t.backtest.simulationWindow}</span>} name="dateRange" rules={[{ required: true }]}>
+                    <RangePicker className="backtest-form-input" style={{ width: '100%' }} />
                   </Form.Item>
                 </Col>
-                <Col span={12}>
-                  <Form.Item label={<Text strong>{t.backtest.initialLiquidity}</Text>} name="initialCapital" rules={[{ required: true }]}>
-                    <InputNumber min={1000} size="large" style={{ width: '100%', borderRadius: 8 }} formatter={v => `$ ${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')} />
+                <Col span={10}>
+                  <Form.Item label={<span className="backtest-form-label">{t.backtest.initialLiquidity}</span>} name="initialCapital" rules={[{ required: true }]}>
+                    <InputNumber min={1000} className="backtest-form-input" style={{ width: '100%' }} formatter={v => `$ ${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')} />
                   </Form.Item>
                 </Col>
               </Row>
 
               <div style={{ marginTop: 12 }}>
-                <Button type="primary" htmlType="submit" size="large" loading={loading} icon={<PlayCircleOutlined />} className="primary-cta-button" style={{ width: '100%', marginBottom: 16 }} disabled={loading}>
+                <Button type="primary" htmlType="submit" size="large" loading={loading} icon={<PlayCircleOutlined />} className="primary-cta-button" style={{ width: '100%', marginBottom: 14 }} disabled={loading}>
                   {loading ? t.backtest.executingSimulation : t.backtest.executeBacktest}
                 </Button>
-                <Row gutter={12}>
-                  <Col span={8}><Button block size="large" icon={<SaveOutlined />} onClick={saveCurrentStrategy} style={{ borderRadius: 8 }}>{t.backtest.savePlan}</Button></Col>
-                  <Col span={8}><Button block size="large" icon={<FolderOpenOutlined />} onClick={() => setShowSavedStrategies(!showSavedStrategies)} style={{ borderRadius: 8 }}>{showSavedStrategies ? t.backtest.hidePlans : t.backtest.savedPlans}</Button></Col>
-                  <Col span={8}><Button block size="large" type="dashed" icon={<PlayCircleOutlined />} onClick={() => {
+                <div style={{ display: 'flex', gap: 12 }}>
+                  <Button style={{ flex: 1 }} className="secondary-action-btn" icon={<SaveOutlined />} onClick={saveCurrentStrategy}>{t.backtest.savePlan}</Button>
+                  <Button style={{ flex: 1 }} className="secondary-action-btn" icon={<FolderOpenOutlined />} onClick={() => setShowSavedStrategies(!showSavedStrategies)}>{showSavedStrategies ? t.backtest.hidePlans : t.backtest.savedPlans}</Button>
+                  <Button style={{ flex: 1 }} className="secondary-action-btn" type="dashed" icon={<PlayCircleOutlined />} onClick={() => {
                     const formValues = form.getFieldsValue();
                     if (formValues.strategy === 'moving_average') {
                       const backtestParams = { strategy: 'MA_CROSSOVER', symbol: formValues.symbol, shortMaPeriod: formValues.shortMaPeriod || 20, longMaPeriod: formValues.longMaPeriod || 50, timestamp: new Date().toISOString() };
                       localStorage.setItem('quant_last_backtest_params', JSON.stringify(backtestParams));
                       message.success(t.backtest.strategyStaged);
                     } else { message.info(t.backtest.stageLimited); }
-                  }} style={{ borderRadius: 8 }}>{t.backtest.stageForPaper}</Button></Col>
-                </Row>
+                  }}>{t.backtest.stageForPaper}</Button>
+                </div>
               </div>
             </Form>
           </Card>
 
           {showSavedStrategies && (
-            <Card className="premium-card" title={<span style={{ fontWeight: 700 }}>{t.backtest.strategyLibrary}</span>} style={{ marginTop: 24 }}>
+            <Card className="premium-card" title={<span style={{ fontWeight: 800, fontSize: 15 }}>{t.backtest.strategyLibrary}</span>} style={{ marginTop: 24 }}>
               {savedStrategies.length === 0 ? (
                 <Empty description={t.backtest.noSavedPlans} image={Empty.PRESENTED_IMAGE_SIMPLE} />
               ) : (
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                   {savedStrategies.map((strategy) => (
-                    <Card key={strategy.id} size="small" className="premium-card" style={{ border: '1px solid #f0f0f0' }}
-                      title={<Text strong>{strategy.name}</Text>}
+                    <Card key={strategy.id} size="small" className="premium-card" style={{ border: '1px solid rgba(15,23,24,0.06)' }}
+                      title={<Text strong style={{ fontSize: 13.5 }}>{strategy.name}</Text>}
                       extra={
                         <Space>
-                          <Button type="link" size="small" onClick={() => loadStrategy(strategy)}>{t.backtest.load}</Button>
-                          <Button type="link" size="small" danger onClick={() => deleteStrategy(strategy.id)}>{t.backtest.delete}</Button>
+                          <Button type="link" size="small" onClick={() => loadStrategy(strategy)} style={{ fontSize: 12 }}>{t.backtest.load}</Button>
+                          <Button type="link" size="small" danger onClick={() => deleteStrategy(strategy.id)} style={{ fontSize: 12 }}>{t.backtest.delete}</Button>
                         </Space>
                       }
                     >
-                      <div style={{ fontSize: '11px', color: '#8c8c8c' }}>
-                        <div><strong>{t.backtest.symbolLabel}:</strong> {strategy.config.symbol}</div>
-                        <div><strong>{t.backtest.strategyLabelShort}:</strong> {strategyNames[strategy.config.strategy] || strategy.config.strategy}</div>
-                        <div><strong>{t.backtest.createdLabel}:</strong> {new Date(strategy.createdTime).toLocaleDateString()}</div>
+                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}><strong>{t.backtest.symbolLabel}:</strong> <span style={{ color: '#475569' }}>{strategy.config.symbol}</span></div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}><strong>{t.backtest.strategyLabelShort}:</strong> <span style={{ color: '#475569' }}>{strategyNames[strategy.config.strategy] || strategy.config.strategy}</span></div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}><strong>{t.backtest.createdLabel}:</strong> <span style={{ color: '#475569' }}>{new Date(strategy.createdTime).toLocaleDateString()}</span></div>
                       </div>
                     </Card>
                   ))}
@@ -1689,12 +1791,13 @@ const Backtest: React.FC = () => {
               )}
             </Card>
           )}
-        </Col>
+        </div>
 
-        <Col span={8}>
+        <div className="backtest-right-panel">
           <Card 
-            className="premium-card" 
-            title={<span style={{ fontWeight: 700 }}><HistoryOutlined style={{ marginRight: 8 }} />{t.backtest.recentSessions}</span>} 
+            className="premium-card side-panel-card" 
+            title={<span style={{ fontWeight: 800, fontSize: 15, color: '#0f172a' }}><HistoryOutlined style={{ marginRight: 8, color: '#3b82f6' }} />{t.backtest.recentSessions}</span>} 
+            bodyStyle={{ padding: '0' }}
             extra={
               <Space>
                 {selectedBacktests.length >= 2 && (
@@ -1703,54 +1806,58 @@ const Backtest: React.FC = () => {
                     size="small" 
                     icon={<LineChartOutlined />} 
                     onClick={handleCompareSelected}
-                    style={{ borderRadius: 4, height: 24, fontSize: '11px', display: 'flex', alignItems: 'center' }}
+                    style={{ borderRadius: 6, height: 26, fontSize: '11px', fontWeight: 700 }}
                   >
                     {t.backtest.compareCount.replace('{count}', String(selectedBacktests.length))}
                   </Button>
                 )}
-                <Button type="text" icon={<ReloadOutlined />} onClick={fetchBacktestHistory} loading={historyLoading} size="small" />
+                <Button type="text" icon={<ReloadOutlined style={{ fontSize: 12 }} />} onClick={fetchBacktestHistory} loading={historyLoading} size="small" />
               </Space>
             }
           >
             {historyLoading ? <div style={{ textAlign: 'center', padding: '40px' }}><Spin /></div> : backtestHistory.length > 0 ? (
-              <Table 
-                columns={historyColumns} 
-                dataSource={backtestHistory} 
-                rowKey="backtestId" 
-                pagination={{ pageSize: 6, simple: true }} 
-                size="small" 
-                rowClassName={(record) => selectedBacktests.includes(record.backtestId) ? 'recent-backtest-row selected-row' : 'recent-backtest-row'}
-              />
+              <div className="history-table-container">
+                <Table 
+                  className="history-table"
+                  columns={historyColumns} 
+                  dataSource={backtestHistory} 
+                  rowKey="backtestId" 
+                  pagination={{ pageSize: 7, simple: true }} 
+                  size="small" 
+                  scroll={{ x: 'max-content' }}
+                  rowClassName={(record) => selectedBacktests.includes(record.backtestId) ? 'recent-backtest-row selected-row' : 'recent-backtest-row'}
+                />
+              </div>
             ) : (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t.backtest.noPreviousSessions} />
+              <div style={{ padding: '40px 0' }}><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t.backtest.noPreviousSessions} /></div>
             )}
           </Card>
-          <Card className="premium-card" title={<span style={{ fontWeight: 700 }}>{t.backtest.quickInsights}</span>} style={{ marginTop: 24 }}>
-            <Space direction="vertical" style={{ width: '100%' }} size={10}>
-              <Button block onClick={() => navigate('/market')} icon={<LineChartOutlined />}>{t.backtest.exploreTopSymbols}</Button>
-              <Button block onClick={() => { form.setFieldsValue({ symbol: 'MSFT', strategy: 'rsi', initialCapital: 100000, dateRange: defaultDateRange() }); message.info(t.backtest.msftLoaded); }}>{t.backtest.loadMsftBlueprint}</Button>
-              <Button block onClick={() => { form.setFieldsValue({ symbol: 'TSLA', strategy: 'momentum', initialCapital: 100000, dateRange: defaultDateRange() }); message.info(t.backtest.tslaLoaded); }}>{t.backtest.loadTslaBlueprint}</Button>
-            </Space>
+          <Card className="premium-card" title={<span style={{ fontWeight: 800, fontSize: 15, color: '#0f172a' }}>{t.backtest.quickInsights}</span>} style={{ marginTop: 20 }} bodyStyle={{ padding: 18 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <Button block className="secondary-action-btn" onClick={() => navigate('/market')} icon={<LineChartOutlined />}>{t.backtest.exploreTopSymbols}</Button>
+              <Button block className="secondary-action-btn" onClick={() => { form.setFieldsValue({ symbol: 'MSFT', strategy: 'rsi', initialCapital: 100000, dateRange: defaultDateRange() }); message.info(t.backtest.msftLoaded); }}>{t.backtest.loadMsftBlueprint}</Button>
+              <Button block className="secondary-action-btn" onClick={() => { form.setFieldsValue({ symbol: 'TSLA', strategy: 'momentum', initialCapital: 100000, dateRange: defaultDateRange() }); message.info(t.backtest.tslaLoaded); }}>{t.backtest.loadTslaBlueprint}</Button>
+            </div>
           </Card>
-        </Col>
-      </Row>
+        </div>
+      </div>
 
       {backtestResult && (
         <div ref={resultsRef} style={{ marginTop: 40 }}>
           <div className="section-header">
-            <CheckCircleOutlined style={{ fontSize: 24, color: '#52c41a' }} />
-            <h2 className="section-title">{t.backtest.backtestReport}</h2>
-            <Tag color="success" style={{ borderRadius: 10, fontWeight: 700, fontSize: 10 }}>{t.backtest.verified}</Tag>
+            <CheckCircleOutlined style={{ fontSize: 24, color: '#10b981' }} />
+            <h2 className="section-title" style={{ fontSize: 22 }}>{t.backtest.backtestReport}</h2>
+            <Tag color="success" style={{ borderRadius: 8, fontWeight: 700, fontSize: 10, padding: '1px 8px', border: 'none', background: '#f0fdf4', color: '#10b981' }}>{t.backtest.verified.toUpperCase()}</Tag>
           </div>
 
           <div className="performance-strip">
             {[
-              { label: t.backtest.totalReturnLabel, value: `${(backtestResult.results?.totalReturn || 0) >= 0 ? '+' : ''}${safeToFixed(backtestResult.results?.totalReturn, 2)}%`, color: (backtestResult.results?.totalReturn || 0) >= 0 ? '#52c41a' : '#ff4d4f' },
-              { label: t.backtest.sharpeRatioLabel, value: safeToFixed(backtestResult.results?.sharpeRatio, 2), color: (backtestResult.results?.sharpeRatio || 0) >= 1 ? '#52c41a' : '#faad14' },
-              { label: t.backtest.maxDrawdownLabel, value: `${safeToFixed(backtestResult.results?.maxDrawdown, 2)}%`, color: '#ff4d4f' },
-              { label: t.backtest.winRateLabel, value: `${safeToFixed(backtestResult.results?.winRate, 1)}%`, color: (backtestResult.results?.winRate || 0) >= 50 ? '#52c41a' : '#faad14' },
-              { label: t.backtest.totalTrades, value: backtestResult.results?.trades || 0, color: '#262626' },
-              { label: t.backtest.netProfit, value: formatCurrency(backtestResult.results?.profitLoss || 0), color: (backtestResult.results?.profitLoss || 0) >= 0 ? '#52c41a' : '#ff4d4f' }
+              { label: t.backtest.totalReturnLabel, value: `${(backtestResult.results?.totalReturn || 0) >= 0 ? '+' : ''}${safeToFixed(backtestResult.results?.totalReturn, 2)}%`, color: (backtestResult.results?.totalReturn || 0) >= 0 ? '#10b981' : '#ef4444' },
+              { label: t.backtest.sharpeRatioLabel, value: safeToFixed(backtestResult.results?.sharpeRatio, 2), color: (backtestResult.results?.sharpeRatio || 0) >= 1 ? '#10b981' : '#f59e0b' },
+              { label: t.backtest.maxDrawdownLabel, value: `${safeToFixed(backtestResult.results?.maxDrawdown, 2)}%`, color: '#ef4444' },
+              { label: t.backtest.winRateLabel, value: `${safeToFixed(backtestResult.results?.winRate, 1)}%`, color: (backtestResult.results?.winRate || 0) >= 50 ? '#10b981' : '#f59e0b' },
+              { label: t.backtest.totalTrades, value: backtestResult.results?.trades || 0, color: '#0f172a' },
+              { label: t.backtest.netProfit, value: formatCurrency(backtestResult.results?.profitLoss || 0), color: (backtestResult.results?.profitLoss || 0) >= 0 ? '#10b981' : '#ef4444' }
             ].map(m => (
               <div key={m.label} className="stat-metric-card">
                 <span className="stat-metric-label">{m.label}</span>
@@ -1759,37 +1866,37 @@ const Backtest: React.FC = () => {
             ))}
           </div>
 
-          <Card className="premium-card" bodyStyle={{ padding: '0 24px 24px 24px' }}>
-            <Tabs defaultActiveKey="results" style={{ marginTop: 8 }} items={[
+          <Card className="premium-card" bodyStyle={{ padding: '8px 24px 24px 24px' }}>
+            <Tabs defaultActiveKey="results" items={[
               {
-                key: 'results', label: t.backtest.overview, children: (
-                  <div style={{ paddingTop: 16 }}>
+                key: 'results', label: <span style={{ fontWeight: 700 }}>{t.backtest.overview}</span>, children: (
+                  <div style={{ paddingTop: 8 }}>
                     <div className="info-strip">
                       <Row gutter={[24, 16]}>
-                        <Col span={6}><div className="blueprint-label">{t.backtest.strategyModule}</div><div className="blueprint-value">{backtestResult.parameters.strategy}</div></Col>
-                        <Col span={6}><div className="blueprint-label">{t.backtest.instrument}</div><div className="blueprint-value">{backtestResult.parameters.symbol || backtestResult.parameters.symbols?.[0] || 'N/A'}</div></Col>
-                        <Col span={6}><div className="blueprint-label">{t.backtest.initialEquity}</div><div className="blueprint-value" style={{ color: '#1890ff' }}>${backtestResult.parameters.initialCapital?.toLocaleString()}</div></Col>
-                        <Col span={6}><div className="blueprint-label">{t.backtest.simulationPeriod}</div><div className="blueprint-value">{backtestResult.parameters.period}</div></Col>
+                        <Col xs={12} sm={6}><div className="blueprint-label">{t.backtest.strategyModule}</div><div className="blueprint-value">{strategyNames[backtestResult.parameters.strategy] || backtestResult.parameters.strategy}</div></Col>
+                        <Col xs={12} sm={6}><div className="blueprint-label">{t.backtest.instrument}</div><div className="blueprint-value">{backtestResult.parameters.symbol || backtestResult.parameters.symbols?.[0] || 'N/A'}</div></Col>
+                        <Col xs={12} sm={6}><div className="blueprint-label">{t.backtest.initialEquity}</div><div className="blueprint-value" style={{ color: '#1890ff' }}>${backtestResult.parameters.initialCapital?.toLocaleString()}</div></Col>
+                        <Col xs={12} sm={6}><div className="blueprint-label">{t.backtest.simulationPeriod}</div><div className="blueprint-value" style={{ fontSize: 12.5 }}>{backtestResult.parameters.period}</div></Col>
                       </Row>
                     </div>
-                    <h4 style={{ fontSize: 15, fontWeight: 700, marginBottom: 16, color: '#595959' }}>{t.backtest.performanceBreakdown}</h4>
-                    <Table columns={resultColumns} dataSource={resultData} pagination={false} size="middle" style={{ border: '1px solid #f0f0f0', borderRadius: 8, overflow: 'hidden' }} />
+                    <h4 style={{ fontSize: 14, fontWeight: 800, marginBottom: 16, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{t.backtest.performanceBreakdown}</h4>
+                    <Table columns={resultColumns} dataSource={resultData} pagination={false} size="middle" style={{ border: '1px solid rgba(15, 23, 24, 0.08)', borderRadius: 12, overflow: 'hidden' }} />
                   </div>
                 )
               },
               {
-                key: 'charts', label: t.backtest.analyticsCharts, children: (
-                  <div style={{ paddingTop: 20 }}>
+                key: 'charts', label: <span style={{ fontWeight: 700 }}>{t.backtest.analyticsCharts}</span>, children: (
+                  <div style={{ paddingTop: 12 }}>
                     <div className="chart-container-premium">
-                      <h4 style={{ fontWeight: 700, marginBottom: 20 }}>{t.backtest.equityGrowthCurve}</h4>
-                      <div style={{ height: '380px' }}>
+                      <h4 style={{ fontWeight: 800, fontSize: 15, marginBottom: 20, color: '#0f172a' }}>{t.backtest.equityGrowthCurve}</h4>
+                      <div style={{ height: '360px' }}>
                         <ResponsiveContainer width="100%" height="100%">
                           <AreaChart data={equityCurveData}>
-                            <defs><linearGradient id="colorEquity" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#52c41a" stopOpacity={0.15}/><stop offset="95%" stopColor="#52c41a" stopOpacity={0}/></linearGradient></defs>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
-                            <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#8c8c8c' }} tickFormatter={(val) => formatDateForChartWithYear(val, getStartYear(equityCurveData))} axisLine={false} tickLine={false} ticks={generateUniformDateTicks(equityCurveData, 10)} />
+                            <defs><linearGradient id="colorEquity" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#10b981" stopOpacity={0.12}/><stop offset="95%" stopColor="#10b981" stopOpacity={0}/></linearGradient></defs>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                            <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 500 }} tickFormatter={(val) => formatDateForChartWithYear(val, getStartYear(equityCurveData))} axisLine={false} tickLine={false} ticks={generateUniformDateTicks(equityCurveData, 10)} />
                             <YAxis 
-                              tick={{ fontSize: 11, fill: '#8c8c8c' }} 
+                              tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 500 }} 
                               axisLine={false} 
                               tickLine={false} 
                               tickFormatter={(val) => {
@@ -1802,23 +1909,23 @@ const Backtest: React.FC = () => {
                             <Tooltip 
                               formatter={(value: any) => [`$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, t.backtest.portfolioValue]}
                               labelFormatter={(label) => `${t.backtest.dateLabel}: ${formatDateToYYYYMMDD(label)}`}
-                              contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} 
+                              contentStyle={{ borderRadius: 12, border: 'none', boxShadow: '0 8px 24px rgba(0,0,0,0.1)' }} 
                             />
-                            <Area type="monotone" dataKey="equity" stroke="#52c41a" strokeWidth={2.5} fillOpacity={1} fill="url(#colorEquity)" activeDot={{ r: 5, strokeWidth: 0 }} />
+                            <Area type="monotone" dataKey="equity" stroke="#10b981" strokeWidth={2.5} fillOpacity={1} fill="url(#colorEquity)" activeDot={{ r: 5, strokeWidth: 2, stroke: '#fff' }} />
                           </AreaChart>
                         </ResponsiveContainer>
                       </div>
                     </div>
                     <div className="chart-container-premium">
-                      <h4 style={{ fontWeight: 700, marginBottom: 20 }}>{t.backtest.drawdownAnalysis}</h4>
-                      <div style={{ height: '280px' }}>
+                      <h4 style={{ fontWeight: 800, fontSize: 15, marginBottom: 20, color: '#0f172a' }}>{t.backtest.drawdownAnalysis}</h4>
+                      <div style={{ height: '260px' }}>
                         <ResponsiveContainer width="100%" height="100%">
                           <AreaChart data={drawdownData.map(d => ({...d, drawdown: -Math.abs(d.drawdown)}))}>
-                            <defs><linearGradient id="colorDrawdown" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#ff4d4f" stopOpacity={0.15}/><stop offset="95%" stopColor="#ff4d4f" stopOpacity={0}/></linearGradient></defs>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
-                            <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#8c8c8c' }} tickFormatter={(val) => formatDateForChartWithYear(val, getStartYear(drawdownData))} axisLine={false} tickLine={false} ticks={generateUniformDateTicks(drawdownData, 10)} />
+                            <defs><linearGradient id="colorDrawdown" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#ef4444" stopOpacity={0.12}/><stop offset="95%" stopColor="#ef4444" stopOpacity={0}/></linearGradient></defs>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                            <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 500 }} tickFormatter={(val) => formatDateForChartWithYear(val, getStartYear(drawdownData))} axisLine={false} tickLine={false} ticks={generateUniformDateTicks(drawdownData, 10)} />
                             <YAxis 
-                              tick={{ fontSize: 11, fill: '#8c8c8c' }} 
+                              tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 500 }} 
                               axisLine={false} 
                               tickLine={false} 
                               tickFormatter={(val) => `${val.toFixed(1)}%`} 
@@ -1826,71 +1933,72 @@ const Backtest: React.FC = () => {
                             <Tooltip 
                               formatter={(value: any) => [`${Number(value).toFixed(2)}%`, t.backtest.drawdownLabel]}
                               labelFormatter={(label) => `${t.backtest.dateLabel}: ${formatDateToYYYYMMDD(label)}`}
-                              contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} 
+                              contentStyle={{ borderRadius: 12, border: 'none', boxShadow: '0 8px 24px rgba(0,0,0,0.1)' }} 
                             />
-                            <Area type="monotone" dataKey="drawdown" stroke="#ff4d4f" strokeWidth={2} fillOpacity={1} fill="url(#colorDrawdown)" activeDot={{ r: 4 }} />
+                            <Area type="monotone" dataKey="drawdown" stroke="#ef4444" strokeWidth={2} fillOpacity={1} fill="url(#colorDrawdown)" activeDot={{ r: 4, strokeWidth: 2, stroke: '#fff' }} />
                           </AreaChart>
                         </ResponsiveContainer>
                       </div>
                     </div>
                     {(!backtestResult?.parameters?.symbols || backtestResult.parameters.symbols.length <= 1) ? (
-                      <div className="chart-container-premium"><h4 style={{ fontWeight: 700, marginBottom: 20 }}>{t.backtest.detailedTradingSignals}</h4><TradingChart data={backtestResult.results.chartData || []} height={420} /></div>
+                      <div className="chart-container-premium"><h4 style={{ fontWeight: 800, fontSize: 15, marginBottom: 20, color: '#0f172a' }}>{t.backtest.detailedTradingSignals}</h4><TradingChart data={backtestResult.results.chartData || []} height={380} /></div>
                     ) : <Empty description={t.backtest.portfolioNotAvailable} style={{ padding: '60px 0' }} />}
 
                   </div>
                 )
               },
               {
-                key: 'trades', label: t.backtest.tradeLog, children: (
-                  <div style={{ paddingTop: 16 }}>
-                    <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, padding: 24, marginBottom: 24 }}>
-                      <Row gutter={32}>
-                        <Col span={6}><Statistic title={<Text type="secondary" style={{ fontSize: 12, fontWeight: 600 }}>{t.backtest.winningTrades}</Text>} value={backtestResult.results.tradesList?.filter(t => t.pnl > 0).length || 0} valueStyle={{ color: '#52c41a', fontWeight: 800 }} suffix={<span style={{ fontSize: 14, color: '#8c8c8c' }}>/ {backtestResult.results.tradesList?.length || 0}</span>} /></Col>
-                        <Col span={6}><Statistic title={<Text type="secondary" style={{ fontSize: 12, fontWeight: 600 }}>{t.backtest.profitFactorLabel}</Text>} value={backtestResult.results.profitFactor || '—'} precision={2} valueStyle={{ fontWeight: 800 }} /></Col>
-                        <Col span={6}><Statistic title={<Text type="secondary" style={{ fontSize: 12, fontWeight: 600 }}>{t.backtest.avgProfit}</Text>} value={backtestResult.results.avgWin || 0} precision={0} prefix="$" valueStyle={{ color: '#52c41a', fontWeight: 800 }} /></Col>
-                        <Col span={6}><Statistic title={<Text type="secondary" style={{ fontSize: 12, fontWeight: 600 }}>{t.backtest.avgLoss}</Text>} value={backtestResult.results.avgLoss || 0} precision={0} prefix="$" valueStyle={{ color: '#ff4d4f', fontWeight: 800 }} /></Col>
+                key: 'trades', label: <span style={{ fontWeight: 700 }}>{t.backtest.tradeLog}</span>, children: (
+                  <div style={{ paddingTop: 8 }}>
+                    <div style={{ background: '#f8fafc', border: '1px solid rgba(15, 23, 24, 0.08)', borderRadius: 14, padding: 20, marginBottom: 24 }}>
+                      <Row gutter={24}>
+                        <Col span={6}><Statistic title={<Text style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase' }}>{t.backtest.winningTrades}</Text>} value={backtestResult.results.tradesList?.filter(t => t.pnl > 0).length || 0} valueStyle={{ color: '#10b981', fontWeight: 800, fontSize: 24 }} suffix={<span style={{ fontSize: 14, color: '#94a3b8', fontWeight: 500 }}>/ {backtestResult.results.tradesList?.length || 0}</span>} /></Col>
+                        <Col span={6}><Statistic title={<Text style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase' }}>{t.backtest.profitFactorLabel}</Text>} value={backtestResult.results.profitFactor || '—'} precision={2} valueStyle={{ fontWeight: 800, fontSize: 24, color: '#0f172a' }} /></Col>
+                        <Col span={6}><Statistic title={<Text style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase' }}>{t.backtest.avgProfit}</Text>} value={backtestResult.results.avgWin || 0} precision={0} prefix="$" valueStyle={{ color: '#10b981', fontWeight: 800, fontSize: 24 }} /></Col>
+                        <Col span={6}><Statistic title={<Text style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase' }}>{t.backtest.avgLoss}</Text>} value={backtestResult.results.avgLoss || 0} precision={0} prefix="$" valueStyle={{ color: '#ef4444', fontWeight: 800, fontSize: 24 }} /></Col>
                       </Row>
                     </div>
                     <Table
+                      className="history-table"
                       columns={[
-                        { title: t.backtest.entryDate, dataIndex: 'entryDate', key: 'entryDate', render: d => <Text strong style={{ fontSize: 13 }}>{formatDateToYYYYMMDD(d)}</Text> },
-                        { title: t.backtest.symbolCol, dataIndex: 'symbol', key: 'symbol', render: s => <Tag color="blue" style={{ fontWeight: 700 }}>{s}</Tag> },
-                        { title: t.backtest.action, dataIndex: 'action', key: 'action', render: a => <Tag color={a === 'BUY' ? 'green' : 'red'}>{a}</Tag> },
-                        { title: t.backtest.entryPrice, dataIndex: 'entryPrice', key: 'entryPrice', render: p => <Text strong>${p.toFixed(2)}</Text>, align: 'right' },
-                        { title: t.backtest.exitPrice, dataIndex: 'exitPrice', key: 'exitPrice', render: p => <Text>${p?.toFixed(2) || '—'}</Text>, align: 'right' },
-                        { title: t.backtest.pnlDollar, dataIndex: 'pnl', key: 'pnl', render: p => <Text strong style={{ color: p >= 0 ? '#52c41a' : '#ff4d4f' }}>{p >= 0 ? '+' : ''}{p.toFixed(2)}</Text>, align: 'right' },
-                        { title: t.backtest.returnLabel, dataIndex: 'returnPct', key: 'returnPct', render: r => <Tag color={r >= 0 ? 'green' : 'red'}>{r >= 0 ? '+' : ''}{r.toFixed(2)}%</Tag>, align: 'right' },
+                        { title: t.backtest.entryDate, dataIndex: 'entryDate', key: 'entryDate', render: d => <Text strong style={{ fontSize: 13, color: '#0f172a' }}>{formatDateToYYYYMMDD(d)}</Text> },
+                        { title: t.backtest.symbolCol, dataIndex: 'symbol', key: 'symbol', render: s => <Tag color="blue" style={{ fontWeight: 700, borderRadius: 6, border: 'none', background: '#eff6ff', color: '#3b82f6' }}>{s}</Tag> },
+                        { title: t.backtest.action, dataIndex: 'action', key: 'action', render: a => <Tag color={a === 'BUY' ? 'green' : 'red'} style={{ borderRadius: 6, fontWeight: 700 }}>{a}</Tag> },
+                        { title: t.backtest.entryPrice, dataIndex: 'entryPrice', key: 'entryPrice', render: p => <Text strong style={{ color: '#1e293b' }}>${p.toFixed(2)}</Text>, align: 'right' },
+                        { title: t.backtest.exitPrice, dataIndex: 'exitPrice', key: 'exitPrice', render: p => <Text style={{ color: '#64748b' }}>${p?.toFixed(2) || '—'}</Text>, align: 'right' },
+                        { title: t.backtest.pnlDollar, dataIndex: 'pnl', key: 'pnl', render: p => <Text strong style={{ color: p >= 0 ? '#10b981' : '#ef4444' }}>{p >= 0 ? '+' : ''}{p.toFixed(2)}</Text>, align: 'right' },
+                        { title: t.backtest.returnLabel, dataIndex: 'returnPct', key: 'returnPct', render: r => <div style={{ background: r >= 0 ? 'rgba(16, 185, 129, 0.08)' : 'rgba(239, 68, 68, 0.08)', color: r >= 0 ? '#10b981' : '#ef4444', padding: '2px 8px', borderRadius: 6, fontWeight: 800, fontSize: 12, display: 'inline-block' }}>{r >= 0 ? '+' : ''}{r.toFixed(2)}%</div>, align: 'right' },
                       ]}
                       dataSource={backtestResult.results.tradesList || []}
                       rowKey={(record, index) => `${record.entryDate}-${index}`}
-                      pagination={{ pageSize: 15 }}
+                      pagination={{ pageSize: 12, simple: true }}
                       size="middle"
                     />
                   </div>
                 )
               },
               {
-                key: 'parameters', label: t.backtest.strategyBlueprint, children: (
-                  <div style={{ paddingTop: 20 }}>
+                key: 'parameters', label: <span style={{ fontWeight: 700 }}>{t.backtest.strategyBlueprint}</span>, children: (
+                  <div style={{ paddingTop: 12 }}>
                     <Row gutter={[24, 24]}>
-                      <Col span={12}>
+                      <Col xs={24} md={10}>
                         <div className="blueprint-module">
                           <div className="blueprint-label">{t.backtest.coreStrategyInfo}</div>
-                          <Space direction="vertical" size={12} style={{ width: '100%', marginTop: 8 }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><Text type="secondary">{t.backtest.modelName}</Text><Text strong>{strategyNameBlueprint[backtestResult.parameters.strategy] || backtestResult.parameters.strategy}</Text></div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><Text type="secondary">{t.backtest.dataProvider}</Text><Text strong>{backtestResult.parameters.dataSource || 'Alpaca'}{backtestResult.parameters.dataSource?.includes('1Day') ? '' : ` (${t.backtest.dataBars1Day})`}</Text></div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><Text type="secondary">{t.backtest.engineVersion}</Text><Tag color="blue" style={{ margin: 0 }}>V2.4 PRO</Tag></div>
-                          </Space>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: 12 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><Text style={{ color: '#64748b', fontWeight: 500 }}>{t.backtest.modelName}</Text><Text strong>{strategyNameBlueprint[backtestResult.parameters.strategy] || backtestResult.parameters.strategy}</Text></div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><Text style={{ color: '#64748b', fontWeight: 500 }}>{t.backtest.dataProvider}</Text><Text strong>{backtestResult.parameters.dataSource || 'Alpaca'}{backtestResult.parameters.dataSource?.includes('1Day') ? '' : ` (${t.backtest.dataBars1Day})`}</Text></div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><Text style={{ color: '#64748b', fontWeight: 500 }}>{t.backtest.engineVersion}</Text><Tag color="blue" style={{ margin: 0, borderRadius: 6, fontWeight: 700 }}>V2.5 PRO</Tag></div>
+                          </div>
                         </div>
                       </Col>
-                      <Col span={12}>
+                      <Col xs={24} md={14}>
                         <div className="blueprint-module">
                           <div className="blueprint-label">{t.backtest.appliedParameters}</div>
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 8 }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 12, marginTop: 12 }}>
                             {Object.entries(backtestResult.parameters.parameters || {}).map(([k, v]) => (
-                              <div key={k} style={{ background: '#fff', padding: '10px 12px', borderRadius: 6, border: '1px solid #eef2f6' }}>
-                                <div style={{ fontSize: 10, color: '#8c8c8c', textTransform: 'uppercase' }}>{paramKeyNames[k] || k.replace(/([A-Z])/g, ' $1')}</div>
-                                <div style={{ fontSize: 14, fontWeight: 700 }}>{String(v)}</div>
+                              <div key={k} style={{ background: '#fff', padding: '12px 14px', borderRadius: 10, border: '1px solid rgba(15, 23, 24, 0.06)' }}>
+                                <div style={{ fontSize: 9.5, color: '#94a3b8', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.3px', marginBottom: 4 }}>{paramKeyNames[k] || k.replace(/([A-Z])/g, ' $1')}</div>
+                                <div style={{ fontSize: 14.5, fontWeight: 800, color: '#1e293b' }}>{typeof v === 'boolean' ? (v ? 'YES' : 'NO') : String(v)}</div>
                               </div>
                             ))}
                           </div>

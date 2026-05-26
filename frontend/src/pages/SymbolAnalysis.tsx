@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Card, Row, Col, Button, Tabs, Space, Spin, Empty, Alert, message, Radio, Typography, Tag } from 'antd';
+import { Card, Row, Col, Button, Tabs, Spin, Empty, Alert, message, Radio, Typography, Tag } from 'antd';
 import { LineChartOutlined, BarChartOutlined, PlayCircleOutlined, ReloadOutlined, ArrowUpOutlined, ArrowDownOutlined, InfoCircleOutlined, RadarChartOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ReferenceArea } from 'recharts';
@@ -1295,25 +1295,47 @@ const SymbolAnalysis: React.FC = () => {
   }
 
   return (
-    <div style={{ padding: '16px', maxWidth: '1600px', margin: '0 auto' }}>
+    <div className="analysis-page-shell">
       <style>{`
+        .analysis-page-shell {
+          width: 100%;
+          max-width: 1380px;
+          margin: 0 auto;
+          padding: clamp(16px, 1.8vw, 28px);
+          animation: fadeIn 0.5s ease-out;
+        }
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(10px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .premium-card {
+          border-radius: 16px !important;
+          border: 1px solid rgba(15, 23, 42, 0.08) !important;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02) !important;
+          background: #fff !important;
+          overflow: hidden;
+        }
         .metric-card-hover:hover {
-          transform: translateY(-2px);
-          box-shadow: 0 4px 12px rgba(0,0,0,0.05) !important;
-          border-color: #1677ff !important;
+          transform: translateY(-1.5px);
+          box-shadow: 0 4px 12px rgba(0,0,0,0.04) !important;
+          border-color: #3b82f6 !important;
         }
         .signal-card-hover:hover {
-          transform: translateY(-4px);
-          box-shadow: 0 6px 16px rgba(0,0,0,0.08) !important;
-          border-color: #d9d9d9 !important;
+          transform: translateY(-2px);
+          box-shadow: 0 6px 16px rgba(0,0,0,0.06) !important;
+          border-color: #d1d5db !important;
         }
-        .ant-card {
-          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        .ant-radio-button-wrapper {
+          height: 34px !important;
+          line-height: 32px !important;
+          padding: 0 12px !important;
+          font-size: 13px !important;
+          border-radius: 6px !important;
         }
         .ant-radio-button-wrapper-checked {
-          background-color: #1677ff !important;
+          background-color: #2563eb !important;
           color: #fff !important;
-          border-color: #1677ff !important;
+          border-color: #2563eb !important;
         }
       `}</style>
       
@@ -1327,7 +1349,7 @@ const SymbolAnalysis: React.FC = () => {
             'No Historical Bars Available'
           }
           description={
-            <span>
+            <span style={{ fontSize: 13 }}>
               {fallbackTimeframeNotice
                 ? <>Showing <strong>{fallbackTimeframeNotice}</strong> data — shorter timeframes unavailable.</>
                 : historicalErrorType === 'config_required' ? 'Configure Alpaca API keys in Settings to load chart data.' :
@@ -1340,7 +1362,7 @@ const SymbolAnalysis: React.FC = () => {
           showIcon
           closable
           onClose={() => setHistoricalDataError(null)}
-          style={{ marginBottom: '16px', borderRadius: '8px' }}
+          style={{ marginBottom: '16px', borderRadius: '12px' }}
           action={
             <Button size="small" type="default" ghost onClick={loadHistoricalPrices}>
               Retry
@@ -1351,45 +1373,44 @@ const SymbolAnalysis: React.FC = () => {
 
       {/* ── 头部信息 (Professional Premium Header) ── */}
       <div style={{ 
-        marginBottom: 32, 
+        marginBottom: 24, 
         display: 'flex', 
         justifyContent: 'space-between', 
-        alignItems: 'flex-start', 
+        alignItems: 'center', 
         borderBottom: '1px solid #f1f5f9', 
-        paddingBottom: 24,
-        paddingTop: 8
+        paddingBottom: 20,
+        paddingTop: 4
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           <div style={{ 
-            width: 64, height: 64, borderRadius: 16, 
+            width: 56, height: 56, borderRadius: 14, 
             background: 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)', 
             color: '#fff', display: 'flex', alignItems: 'center', 
-            justifyContent: 'center', fontSize: 28, fontWeight: 800,
-            boxShadow: '0 10px 15px -3px rgba(59, 130, 246, 0.2), 0 4px 6px -2px rgba(59, 130, 246, 0.1)'
+            justifyContent: 'center', fontSize: 24, fontWeight: 800,
+            boxShadow: '0 4px 10px rgba(59, 130, 246, 0.2)'
           }}>
             {symbol?.substring(0, 1)}
           </div>
           <div>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
-              <span style={{ fontSize: 32, fontWeight: 800, color: '#0f172a', lineHeight: 1.1, letterSpacing: '-0.025em' }}>{symbol}</span>
-              <span style={{ fontSize: 18, fontWeight: 500, color: '#64748b' }}>{stockData.name || 'Company Name'}</span>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+              <span style={{ fontSize: 28, fontWeight: 800, color: '#0f172a', lineHeight: 1.1, letterSpacing: '-0.02em' }}>{symbol}</span>
+              <span style={{ fontSize: 16, fontWeight: 500, color: '#94a3b8' }}>{stockData.name || 'Company Name'}</span>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginTop: 10 }}>
-              <span style={{ fontSize: 28, fontWeight: 700, color: '#1e293b', lineHeight: 1, letterSpacing: '-0.01em' }}>${safeToFixed(stockData.price, 2)}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 6 }}>
+              <span style={{ fontSize: 24, fontWeight: 700, color: '#1e293b', lineHeight: 1 }}>${safeToFixed(stockData.price, 2)}</span>
               {stockData.change !== null && stockData.change !== undefined && stockData.changePercent !== null && stockData.changePercent !== undefined && (
                 <div style={{ 
-                  fontSize: 16, 
+                  fontSize: 14, 
                   fontWeight: 600, 
                   display: 'flex', 
                   alignItems: 'center', 
-                  gap: 4,
+                  gap: 3,
                   color: stockData.change >= 0 ? '#10b981' : '#ef4444',
-                  backgroundColor: stockData.change >= 0 ? '#f0fdf4' : '#fef2f2',
-                  padding: '4px 10px',
-                  borderRadius: '6px',
-                  border: `1px solid ${stockData.change >= 0 ? '#dcfce7' : '#fee2e2'}`
+                  backgroundColor: stockData.change >= 0 ? 'rgba(16, 185, 129, 0.08)' : 'rgba(239, 68, 68, 0.08)',
+                  padding: '2px 8px',
+                  borderRadius: '6px'
                 }}>
-                  {stockData.change >= 0 ? <ArrowUpOutlined style={{ fontSize: 14 }} /> : <ArrowDownOutlined style={{ fontSize: 14 }} />}
+                  {stockData.change >= 0 ? <ArrowUpOutlined style={{ fontSize: 12 }} /> : <ArrowDownOutlined style={{ fontSize: 12 }} />}
                   <span>${Math.abs(stockData.change).toFixed(2)}</span>
                   <span style={{ opacity: 0.9 }}>({stockData.change >= 0 ? '+' : ''}{safeToFixed(stockData.changePercent, 2)}%)</span>
                 </div>
@@ -1398,37 +1419,35 @@ const SymbolAnalysis: React.FC = () => {
           </div>
         </div>
         
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <Button
-            size="large"
+            size="middle"
             icon={<ReloadOutlined />}
             onClick={() => {
               loadStockData();
               loadHistoricalPrices();
             }}
             style={{ 
-              borderRadius: 10, 
+              borderRadius: 8, 
               fontWeight: 600, 
-              color: '#475569', 
-              border: '1px solid #e2e8f0',
-              height: '44px',
-              boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.05)'
+              color: '#64748b', 
+              height: '38px'
             }}
           >
             Refresh
           </Button>
           <Button
             type="primary"
-            size="large"
+            size="middle"
             icon={<PlayCircleOutlined />}
             onClick={() => navigate('/backtest')}
             style={{ 
-              borderRadius: 10, 
+              borderRadius: 8, 
               fontWeight: 700, 
-              height: '44px',
+              height: '38px',
               background: '#2563eb',
               border: 'none',
-              boxShadow: '0 4px 6px -1px rgba(37, 99, 235, 0.2), 0 2px 4px -1px rgba(37, 99, 235, 0.1)'
+              boxShadow: '0 2px 4px rgba(37, 99, 235, 0.1)'
             }}
           >
             {t.analysis.runBacktest}
@@ -1437,7 +1456,12 @@ const SymbolAnalysis: React.FC = () => {
       </div>
 
       {/* ── Metric Cards (Compact Dashboard Style) ── */}
-      <Row gutter={[16, 16]} style={{ marginBottom: 32 }}>
+      <div style={{ 
+        display: 'grid', 
+        gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', 
+        gap: 12, 
+        marginBottom: 24 
+      }}>
         {[
           { label: t.analysis.dayHigh, value: stockData.dayHigh ? `$${safeToFixed(stockData.dayHigh, 2)}` : '—' },
           { label: t.analysis.dayLow, value: stockData.dayLow ? `$${safeToFixed(stockData.dayLow, 2)}` : '—' },
@@ -1461,245 +1485,108 @@ const SymbolAnalysis: React.FC = () => {
             })()
           },
         ].map((m, idx) => (
-          <Col xs={12} sm={8} lg={3} key={idx} style={{ display: 'flex' }}>
-            <Card 
-              bordered={false} 
-              bodyStyle={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }} 
-              style={{ 
-                borderRadius: 16, 
-                background: '#ffffff', 
-                border: '1px solid #f1f5f9', 
-                boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px 0 rgba(0, 0, 0, 0.03)',
-                width: '100%',
-                transition: 'transform 0.2s ease, box-shadow 0.2s ease'
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.transform = 'translateY(-2px)';
-                e.currentTarget.style.boxShadow = '0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -2px rgba(0, 0, 0, 0.02)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.transform = 'translateY(0)';
-                e.currentTarget.style.boxShadow = '0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px 0 rgba(0, 0, 0, 0.03)';
-              }}
-            >
-              <div style={{ fontSize: 11, color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
-                {m.label}
-              </div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: m.color || '#1e293b', lineHeight: 1.2 }}>
-                {m.value}
-              </div>
-            </Card>
-          </Col>
+          <div 
+            key={idx}
+            className="premium-card metric-card-hover"
+            style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', justifyContent: 'center', height: '82px' }}
+          >
+            <div style={{ fontSize: 10.5, color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>
+              {m.label}
+            </div>
+            <div style={{ fontSize: 17, fontWeight: 700, color: m.color || '#1e293b', lineHeight: 1.1 }}>
+              {m.value}
+            </div>
+          </div>
         ))}
-      </Row>
+      </div>
 
       {/* 图表区域 - 强化 */}
 
-      <Row gutter={[16, 16]} style={{ marginBottom: '32px' }}>
+      <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
         <Col span={24}>
-          <Card
-            title={
-              <Space size="middle">
-                <span style={{ fontSize: '20px', fontWeight: '700', color: '#0f172a' }}>
-                  {t.analysis.priceAnalysis}
-                </span>
-                <div style={{ 
-                  fontSize: '12px', 
-                  color: '#94a3b8',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  fontWeight: '500',
-                  marginLeft: '12px',
-                  background: '#f8fafc',
-                  padding: '4px 10px',
-                  borderRadius: '20px',
-                  border: '1px solid #f1f5f9'
-                }}>
-                  <InfoCircleOutlined style={{ fontSize: '12px', color: '#3b82f6' }} />
-                  <span>{t.analysis.marketDataDelayed}</span>
-                </div>
-              </Space>
-            }
-            extra={
-              <Space size="large">
-                {/* 图表数据统计：基于图表可见数据计算 */}
-                {(() => {
-                  // 渲染图表统计信息
-                  const renderChartStats = () => {
-                    if (chartData.length > 0 && chartData.length >= 2) {
-                      const firstClose = chartData[0].close;
-                      const lastClose = chartData[chartData.length - 1].close;
-                      const currentPrice = lastClose; // 图表最后一个数据点的收盘价
-                      
-                      // 对于1 Day图：直接使用顶部summary的值
-                      // 对于其他timeframe：使用图表自身数据计算
-                      let change = null;
-                      let changePercent = null;
-                      let changeIsPositive = false;
-                      let periodChange = null;
-                      let periodChangePercent = null;
-                      let periodChangeIsPositive = false;
-                      
-                      if (selectedTimeframe === '1D') {
-                        // 1 Day图：Change = snapshot daily change (currentPrice - previousClose)
-                        if (stockData) {
-                          change = stockData.change !== undefined ? stockData.change : null;
-                          changePercent = stockData.changePercent !== undefined ? stockData.changePercent : null;
-                          changeIsPositive = change !== null ? change >= 0 : false;
+          <Card 
+            className="premium-card chart-container-card"
+            bodyStyle={{ padding: '16px 20px' }}
+          >
+            <div className="chart-header-row" style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: '18px', fontWeight: '800', color: '#0f172a' }}>{t.analysis.priceAnalysis}</span>
+                <Tag style={{ borderRadius: 6, fontSize: 10, background: '#f8fafc', color: '#94a3b8', border: '1px solid #f1f5f9', margin: 0 }}>
+                  Market data delayed by 15 min
+                </Tag>
+              </div>
 
-                          // Period Change = first bar → last bar intraday change
-                          if (firstClose > 0) {
-                            periodChange = lastClose - firstClose;
-                            periodChangePercent = (periodChange / firstClose) * 100;
-                            periodChangeIsPositive = periodChange >= 0;
-                          }
-                        }
-                      } else {
-                        // 1W/1M/3M/1Y：Change = prev bar close → last bar close
-                        const prevClose = chartData.length >= 2 ? chartData[chartData.length - 2].close : null;
-                        if (prevClose && prevClose > 0) {
-                          change = lastClose - prevClose;
-                          changePercent = (change / prevClose) * 100;
-                          changeIsPositive = change >= 0;
-                        }
+              <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                {chartData.length >= 2 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {(() => {
+                      const lastCloseVal = chartData[chartData.length - 1].close;
+                      const firstCloseVal = chartData[0].close;
+                      let dailyChg = stockData.changePercent || 0;
+                      let periodChg = firstCloseVal > 0 ? ((lastCloseVal - firstCloseVal) / firstCloseVal) * 100 : 0;
 
-                        // Period Change = first bar → last bar (all timeframes)
-                        if (firstClose > 0) {
-                          periodChange = lastClose - firstClose;
-                          periodChangePercent = (periodChange / firstClose) * 100;
-                          periodChangeIsPositive = periodChange >= 0;
-                        }
-                      }
-                      
-                      return (
-                        <div style={{
+                      const MetricChip = ({ label, value, color }: { label: string, value: string, color?: string }) => (
+                        <div style={{ 
+                          padding: '4px 10px', 
+                          background: '#f8fafc', 
+                          border: '1px solid rgba(15, 23, 42, 0.08)', 
+                          borderRadius: '10px',
                           display: 'flex',
+                          flexDirection: 'column',
                           alignItems: 'center',
-                          gap: '32px', 
-                          fontFamily: "'Inter', system-ui, -apple-system, sans-serif"
+                          minWidth: '82px'
                         }}>
-                          {/* Last Bar Close 组 */}
-                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-                            <div style={{
-                              fontSize: '11px',
-                              color: '#64748b',
-                              fontWeight: '700',
-                              marginBottom: '2px',
-                              textTransform: 'uppercase',
-                              letterSpacing: '0.05em'
-                            }}>
-                              {t.analysis.lastClose}
-                            </div>
-                            <div style={{
-                              fontSize: '18px',
-                              fontWeight: '700',
-                              color: '#0f172a'
-                            }}>
-                              ${currentPrice.toFixed(2)}
-                            </div>
-                          </div>
-                          
-                          <div style={{ width: '1px', height: '32px', backgroundColor: '#f1f5f9' }}></div>
-                          
-                          {/* Change 组 */}
-                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-                            <div style={{
-                              fontSize: '11px',
-                              color: '#64748b',
-                              fontWeight: '700',
-                              marginBottom: '2px',
-                              textTransform: 'uppercase',
-                              letterSpacing: '0.05em'
-                            }}>
-                              {selectedTimeframe === '1D' ? t.analysis.dailyChange : t.analysis.change}
-                            </div>
-                            <div style={{
-                              fontSize: '15px',
-                              fontWeight: '700',
-                              color: change !== null ? (changeIsPositive ? '#10b981' : '#ef4444') : '#94a3b8',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '4px'
-                            }}>
-                              {change !== null ? (changeIsPositive ? <ArrowUpOutlined style={{fontSize: 12}} /> : <ArrowDownOutlined style={{fontSize: 12}} />) : null}
-                              {change !== null ? `${Math.abs(change).toFixed(2)} (${Math.abs(changePercent!).toFixed(2)}%)` : 'N/A'}
-                            </div>
-                          </div>
-                          
-                          <div style={{ width: '1px', height: '32px', backgroundColor: '#f1f5f9' }}></div>
-
-                          {/* Period Change 组 */}
-                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-                            <div style={{
-                              fontSize: '11px',
-                              color: '#64748b',
-                              fontWeight: '700',
-                              marginBottom: '2px',
-                              textTransform: 'uppercase',
-                              letterSpacing: '0.05em'
-                            }}>
-                              {t.analysis.periodChange}
-                            </div>
-                            <div style={{
-                              fontSize: '15px',
-                              fontWeight: '700',
-                              color: periodChange !== null ? (periodChangeIsPositive ? '#10b981' : '#ef4444') : '#94a3b8',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '4px'
-                            }}>
-                              {periodChange !== null ? (periodChangeIsPositive ? <ArrowUpOutlined style={{fontSize: 12}} /> : <ArrowDownOutlined style={{fontSize: 12}} />) : null}
-                              {periodChangePercent !== null ? `${Math.abs(periodChangePercent).toFixed(2)}%` : 'N/A'}
-                            </div>
-                          </div>
+                          <span style={{ fontSize: '9px', color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', lineHeight: 1.2 }}>{label}</span>
+                          <span style={{ fontSize: '14px', fontWeight: 800, color: color || '#1e293b', lineHeight: 1.2 }}>{value}</span>
                         </div>
                       );
-                    }
-                    return null;
-                  };
-                  
-                  return renderChartStats();
-                })()}
-                
-                <Radio.Group
-                  value={selectedTimeframe}
+
+                      return (
+                        <>
+                          <MetricChip label="Last Close" value={`$${lastCloseVal.toFixed(2)}`} />
+                          <MetricChip 
+                            label="Daily Chg" 
+                            value={`${dailyChg >= 0 ? '+' : ''}${dailyChg.toFixed(2)}%`} 
+                            color={dailyChg >= 0 ? '#10b981' : '#ef4444'} 
+                          />
+                          <MetricChip 
+                            label="Period Chg" 
+                            value={`${periodChg >= 0 ? '+' : ''}${periodChg.toFixed(2)}%`} 
+                            color={periodChg >= 0 ? '#10b981' : '#ef4444'} 
+                          />
+                        </>
+                      );
+                    })()}
+                  </div>
+                )}
+
+                <div style={{ width: 1, height: 24, background: '#f1f5f9', margin: '0 4px' }} />
+
+                <Radio.Group 
+                  value={selectedTimeframe} 
                   onChange={(e) => setSelectedTimeframe(e.target.value)}
-                  size="middle"
-                  style={{ marginRight: '8px' }}
-                  buttonStyle="solid"
+                  size="small"
                 >
-                  {Object.entries(TIMEFRAMES).map(([key, config]) => (
-                    <Radio.Button
-                      key={key}
-                      value={key}
-                      style={{
-                        fontSize: '13px',
-                        fontWeight: '700',
-                        padding: '0 18px',
-                        height: '40px',
-                        lineHeight: '38px',
-                        borderRadius: key === '1D' ? '8px 0 0 8px' : key === '1Y' ? '0 8px 8px 0' : '0'
-                      }}
-                    >
-                      {timeframeLabels[key] || config.label}
-                    </Radio.Button>
+                  {Object.keys(TIMEFRAMES).map(tf => (
+                    <Radio.Button key={tf} value={tf} style={{ height: 34, lineHeight: '32px', padding: '0 12px', fontSize: '13px', fontWeight: 600 }}>{tf}</Radio.Button>
                   ))}
                 </Radio.Group>
-                
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <DataSourceBadge source={dataSource} />
+              </div>
+            </div>
+
+            <div style={{ width: '100%', height: 'calc(100% - 60px)', minHeight: 340 }}>
+              {chartLoading ? (
+                <div style={{ height: 340, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Spin tip="Loading chart data..." />
                 </div>
-              </Space>
-            }
-            style={{
-              border: '1px solid #f1f5f9',
-              boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03)',
-              borderRadius: '20px'
-            }}
-            bodyStyle={{ padding: '24px 32px' }}
-          >
-            {renderPriceChart()}
+              ) : chartData.length === 0 ? (
+                <div style={{ height: 340, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', borderRadius: 12 }}>
+                  <Empty description="No price history data available" />
+                </div>
+              ) : (
+                renderPriceChart()
+              )}
+            </div>
           </Card>
         </Col>
       </Row>

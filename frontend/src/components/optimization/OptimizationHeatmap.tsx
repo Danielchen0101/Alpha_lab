@@ -78,75 +78,93 @@ const OptimizationHeatmap: React.FC<OptimizationHeatmapProps> = ({ results, stra
   const sharpeRange = maxSharpe - minSharpe;
 
   const getColor = (sharpe: number) => {
-    if (sharpeRange === 0) return '#f0f0f0';
+    if (sharpeRange === 0) return '#f8fafc';
     const normalized = (sharpe - minSharpe) / sharpeRange;
-    // Premium color scale: Muted Red -> Neutral -> Soft Green
-    if (normalized < 0.5) {
-      const ratio = normalized * 2;
-      return `rgb(255, ${Math.round(180 + 75 * ratio)}, ${Math.round(180 + 75 * ratio)})`; // Light Red to Whiteish
+    // Professional color scale: Muted Red -> Slate -> Professional Green
+    if (normalized < 0.45) {
+      const ratio = normalized / 0.45;
+      return `rgb(254, ${Math.round(226 + 20 * ratio)}, ${Math.round(226 + 20 * ratio)})`; // Soft Red to Slate
+    } else if (normalized < 0.55) {
+      return '#f1f5f9'; // Neutral Slate
     } else {
-      const ratio = (normalized - 0.5) * 2;
-      return `rgb(${Math.round(255 - 180 * ratio)}, 255, ${Math.round(255 - 180 * ratio)})`; // Whiteish to Soft Green
+      const ratio = (normalized - 0.55) / 0.45;
+      return `rgb(${Math.round(240 - 180 * ratio)}, 253, ${Math.round(244 - 100 * ratio)})`; // Slate to Soft Green
     }
   };
 
   const safeToFixed = (v: any, d: number = 2) => (v === null || v === undefined || isNaN(v)) ? 'N/A' : Number(v).toFixed(d);
 
   return (
-    <div style={{ maxWidth: '900px', margin: '0 auto' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: `100px repeat(${xValues.length}, 1fr)`, gap: '4px' }}>
-        <div style={{ padding: '12px', background: '#fafafa', borderBottom: '2px solid #f0f0f0', borderRight: '2px solid #f0f0f0', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
-          <Text strong style={{ fontSize: '10px', color: '#8c8c8c' }}>{axisConfig.yLabel} (Y) ↓</Text>
-          <Text strong style={{ fontSize: '10px', color: '#8c8c8c' }}>{axisConfig.xLabel} (X) →</Text>
+    <div style={{ maxWidth: '1000px', margin: '0 auto' }}>
+      <style>{`
+        .heatmap-professional-tooltip .ant-tooltip-inner {
+          background-color: #ffffff !important;
+          color: #0f172a !important;
+          border: 1px solid rgba(15, 23, 42, 0.1) !important;
+          box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16) !important;
+          border-radius: 12px !important;
+          padding: 12px !important;
+        }
+        .heatmap-professional-tooltip .ant-tooltip-arrow::before {
+          background-color: #ffffff !important;
+        }
+      `}</style>
+      <div style={{ display: 'grid', gridTemplateColumns: `90px repeat(${xValues.length}, 1fr)`, gap: '2px' }}>
+        <div style={{ padding: '8px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0', borderRight: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
+          <Text strong style={{ fontSize: '9px', color: '#94a3b8', textAlign: 'center' }}>{axisConfig.yLabel.toUpperCase()} (Y) ↓</Text>
+          <Text strong style={{ fontSize: '9px', color: '#94a3b8', textAlign: 'center' }}>{axisConfig.xLabel.toUpperCase()} (X) →</Text>
         </div>
         {xValues.map(x => (
-          <div key={x} style={{ padding: '12px', textAlign: 'center', background: '#fafafa', borderBottom: '2px solid #f0f0f0' }}>
-            <Text strong style={{ fontSize: '12px', color: '#595959' }}>{axisConfig.xFormatter(x)}</Text>
+          <div key={x} style={{ padding: '8px', textAlign: 'center', background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+            <Text strong style={{ fontSize: '11px', color: '#64748b' }}>{axisConfig.xFormatter(x)}</Text>
           </div>
         ))}
         {yValues.map(y => (
           <React.Fragment key={y}>
-            <div style={{ padding: '12px', textAlign: 'center', background: '#fafafa', borderRight: '2px solid #f0f0f0' }}>
-              <Text strong style={{ fontSize: '12px', color: '#595959' }}>{axisConfig.yFormatter(y)}</Text>
+            <div style={{ padding: '8px', textAlign: 'center', background: '#f8fafc', borderRight: '1px solid #e2e8f0' }}>
+              <Text strong style={{ fontSize: '11px', color: '#64748b' }}>{axisConfig.yFormatter(y)}</Text>
             </div>
             {xValues.map(x => {
               const res = resultMap.get(`${x}_${y}`);
               return (
-                <Tooltip key={`${x}_${y}`} title={res ? (
-                  <div style={{ padding: '4px' }}>
-                    <Text strong style={{ display: 'block', marginBottom: '8px', color: '#40a9ff' }}>{t.optimization.configDetails}</Text>
-                    <Space direction="vertical" size={2} style={{ width: '100%' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '24px' }}>
-                        <Text style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.75)' }}>{t.optimization.labelSharpeRatio}</Text>
-                        <Text strong style={{ color: '#fff' }}>{safeToFixed(res.sharpeRatio)}</Text>
+                <Tooltip 
+                  key={`${x}_${y}`} 
+                  color="#ffffff"
+                  overlayClassName="heatmap-professional-tooltip"
+                  title={res ? (
+                  <div style={{ padding: '0' }}>
+                    <Text strong style={{ display: 'block', marginBottom: '10px', color: '#0f172a', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.6px' }}>{t.optimization.configDetails}</Text>
+                    <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '32px' }}>
+                        <Text style={{ fontSize: '12px', color: '#475569', fontWeight: 500 }}>{t.optimization.labelSharpeRatio}</Text>
+                        <Text strong style={{ color: '#0f172a' }}>{safeToFixed(res.sharpeRatio)}</Text>
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <Text style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.75)' }}>{t.optimization.labelTotalReturn}</Text>
-                        <Text strong style={{ color: res.totalReturn >= 0 ? '#73d13d' : '#ff4d4f' }}>{(res.totalReturn).toFixed(2)}%</Text>
+                        <Text style={{ fontSize: '12px', color: '#475569', fontWeight: 500 }}>{t.optimization.labelTotalReturn}</Text>
+                        <Text strong style={{ color: res.totalReturn >= 0 ? '#10b981' : '#ef4444' }}>{(res.totalReturn >= 0 ? '+' : '') + (res.totalReturn).toFixed(2)}%</Text>
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <Text style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.75)' }}>{t.optimization.labelMaxDrawdown}</Text>
-                        <Text strong style={{ color: '#ff4d4f' }}>{safeToFixed(res.maxDrawdown)}%</Text>
+                        <Text style={{ fontSize: '12px', color: '#475569', fontWeight: 500 }}>{t.optimization.labelMaxDrawdown}</Text>
+                        <Text strong style={{ color: '#ef4444' }}>{safeToFixed(res.maxDrawdown)}%</Text>
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <Text style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.75)' }}>{t.optimization.labelWinRate}</Text>
-                        <Text strong style={{ color: '#fff' }}>{safeToFixed(res.winRate, 1)}%</Text>
+                        <Text style={{ fontSize: '12px', color: '#475569', fontWeight: 500 }}>{t.optimization.labelWinRate}</Text>
+                        <Text strong style={{ color: '#0f172a' }}>{safeToFixed(res.winRate, 1)}%</Text>
                       </div>
                     </Space>
                   </div>                ) : null}>
                   <div style={{ 
-                    height: '40px', 
-                    background: res ? getColor(res.sharpeRatio) : '#fdfdfd', 
-                    borderRadius: '4px', 
-                    border: '1px solid #f0f0f0',
+                    height: '38px', 
+                    background: res ? getColor(res.sharpeRatio) : '#fff', 
+                    borderRadius: '2px', 
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     cursor: res ? 'pointer' : 'default',
-                    transition: 'all 0.2s'
+                    transition: 'all 0.15s ease'
                   }} className="heatmap-cell"
-                  onMouseEnter={e => { if(res) { e.currentTarget.style.transform = 'scale(1.08)'; e.currentTarget.style.zIndex = '2'; e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.1)'; } }}
-                  onMouseLeave={e => { if(res) { e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.zIndex = '1'; e.currentTarget.style.boxShadow = 'none'; } }}
+                  onMouseEnter={e => { if(res) { e.currentTarget.style.transform = 'scale(1.15)'; e.currentTarget.style.zIndex = '10'; e.currentTarget.style.boxShadow = '0 8px 16px rgba(0,0,0,0.12)'; e.currentTarget.style.borderRadius = '4px'; } }}
+                  onMouseLeave={e => { if(res) { e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.zIndex = '1'; e.currentTarget.style.boxShadow = 'none'; e.currentTarget.style.borderRadius = '2px'; } }}
                   >
-                    {res && <Text style={{ fontSize: '10px', fontWeight: 700, color: '#262626' }}>{safeToFixed(res.sharpeRatio, 1)}</Text>}
+                    {res && <Text style={{ fontSize: '10px', fontWeight: 800, color: '#1e293b' }}>{safeToFixed(res.sharpeRatio, 1)}</Text>}
                   </div>
                 </Tooltip>
               );
@@ -155,19 +173,19 @@ const OptimizationHeatmap: React.FC<OptimizationHeatmapProps> = ({ results, stra
         ))}
       </div>
       
-      <div style={{ marginTop: '24px', padding: '16px', background: '#fafafa', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '24px' }}>
-        <Text type="secondary" style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' }}>{t.optimization.heatmapTitle}:</Text>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <div style={{ width: '12px', height: '12px', background: '#ffb4b4', borderRadius: '2px' }} />
-          <Text style={{ fontSize: '11px' }}>{t.optimization.heatmapLowPerf}</Text>
+      <div style={{ marginTop: '28px', padding: '14px 20px', background: '#f8fafc', borderRadius: '12px', border: '1px solid rgba(15, 23, 42, 0.04)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '28px' }}>
+        <Text style={{ fontSize: '10px', fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.8px' }}>{t.optimization.heatmapTitle}:</Text>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{ width: '10px', height: '10px', background: '#fee2e2', borderRadius: '2px' }} />
+          <Text style={{ fontSize: '11px', color: '#64748b', fontWeight: 500 }}>{t.optimization.heatmapLowPerf}</Text>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <div style={{ width: '12px', height: '12px', background: '#f0f0f0', borderRadius: '2px' }} />
-          <Text style={{ fontSize: '11px' }}>{t.optimization.heatmapNeutral}</Text>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{ width: '10px', height: '10px', background: '#f1f5f9', borderRadius: '2px' }} />
+          <Text style={{ fontSize: '11px', color: '#64748b', fontWeight: 500 }}>{t.optimization.heatmapNeutral}</Text>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <div style={{ width: '12px', height: '12px', background: '#b4ffb4', borderRadius: '2px' }} />
-          <Text style={{ fontSize: '11px' }}>{t.optimization.heatmapOptimal}</Text>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{ width: '10px', height: '10px', background: '#f0fdf4', borderRadius: '2px', border: '1px solid rgba(16, 185, 129, 0.2)' }} />
+          <Text style={{ fontSize: '11px', color: '#64748b', fontWeight: 500 }}>{t.optimization.heatmapOptimal}</Text>
         </div>
       </div>
     </div>

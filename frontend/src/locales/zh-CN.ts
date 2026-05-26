@@ -2100,6 +2100,7 @@ const messages = {
     failedLabel: '失败',
     scanningLabel: '扫描中',
     completedLabel: '已完成',
+    skippedLabel: '已跳过',
     errorLabel: '错误',
     stoppedLabel: '已停止',
     epLocalRules: '本地规则',

@@ -2100,6 +2100,7 @@ const messages = {
     failedLabel: 'FAILED',
     scanningLabel: 'SCANNING',
     completedLabel: 'COMPLETED',
+    skippedLabel: 'SKIPPED',
     errorLabel: 'ERROR',
     stoppedLabel: 'STOPPED',
     epLocalRules: 'Local Rules',

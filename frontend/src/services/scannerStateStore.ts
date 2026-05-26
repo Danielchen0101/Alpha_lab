@@ -11,7 +11,7 @@ export type ContinueScanStatus = 'idle' | 'processing' | 'completed' | 'error';
 export type FineScanStatus = 'idle' | 'running' | 'completed' | 'failed' | 'stopped' | 'error';
 export type DeeperValidationStatus = 'idle' | 'loading' | 'completed' | 'error' | 'stopped';
 export type EntryPlanStatus = 'idle' | 'loading' | 'completed' | 'error' | 'stopped';
-export type ExitScanStatus = 'idle' | 'scanning' | 'completed' | 'failed' | 'stopped';
+export type ExitScanStatus = 'idle' | 'scanning' | 'completed' | 'failed' | 'stopped' | 'skipped';
 
 export interface ExitScanResult {
   symbol: string;

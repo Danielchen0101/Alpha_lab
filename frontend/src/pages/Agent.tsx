@@ -7,7 +7,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsToolti
 import {
   Card, Typography, Space, Statistic, Row, Col,
   Button, Divider, Table, Tag, Form, Input, Empty,
-  message, Progress, Badge, Alert, Tooltip, Spin, Modal, Pagination, Steps, Select, Segmented
+  message, Progress, Badge, Alert, Tooltip, Spin, Modal, Pagination, Steps, Select, Segmented, Switch
 } from 'antd';
 import {
   LineChartOutlined, BarChartOutlined,
@@ -18,10 +18,10 @@ import {
   InfoCircleOutlined,
   CaretDownOutlined, CaretRightOutlined,
   DeleteOutlined, ReloadOutlined, PlusOutlined, CheckOutlined, EyeOutlined,
-  WalletOutlined, FundOutlined, SwapOutlined
+  WalletOutlined, FundOutlined, SwapOutlined, WarningOutlined
 } from '@ant-design/icons';
 import aiTradingService from '../services/aiTradingService';
-import { backtraderAPI, entryQualityAPI, fineScanAdvancedAPI, deeperValidationAPI, entryPlanAPI, fineScanExplainAPI, fineScanDecisionAPI, tradingAccountAPI, aiAgentWatchlistAPI, aiExecutionAPI } from '../services/api';
+import { backtraderAPI, entryQualityAPI, fineScanAdvancedAPI, deeperValidationAPI, entryPlanAPI, fineScanExplainAPI, fineScanDecisionAPI, tradingAccountAPI, aiAgentWatchlistAPI, aiExecutionAPI, pipelineAutoAPI } from '../services/api';
 import api from '../services/api';
 import OrderModal from '../components/OrderModal';
 import marketDataService from '../services/marketDataService';
@@ -475,13 +475,14 @@ const Agent: React.FC = (): React.ReactElement => {
   const [pipelineStage, setPipelineStage] = useState<string>('idle');
   const [pipelineError, setPipelineError] = useState<string | null>(null);
   const pipelineStopRequestedRef = useRef(false);
+  const holdingsRef = useRef<any[]>([]);
 
   // Keep ref in sync with state for timer callbacks
   useEffect(() => { pipelineRunningRef.current = pipelineRunning; }, [pipelineRunning]);
 
   // Ref for runAIPipeline so timer callbacks always call the latest version
-  const runAIPipelineRef = useRef<() => Promise<void>>();
-  useEffect(() => { runAIPipelineRef.current = async () => { await runAIPipeline(); }; });
+  const runAIPipelineRef = useRef<(opts?: { trigger?: string }) => Promise<void>>();
+  useEffect(() => { runAIPipelineRef.current = async (opts?: { trigger?: string }) => { await runAIPipeline(opts); }; });
   const [aiExecutionList, setAiExecutionList] = useState<any[]>(() => {
     try {
       return scannerStateStore.getAiExecutionCandidates();
@@ -505,8 +506,137 @@ const Agent: React.FC = (): React.ReactElement => {
     return scannerStateStore.getPipelineSchedule().nextRunAt;
   });
   const pipelineTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Ref to prevent duplicate auto-run triggers from backend scheduler
+  const autoRunTriggeredRef = useRef<string | null>(null);
 
   const SCHEDULE_INTERVALS: Record<string, number> = { '15m': 15 * 60 * 1000, '30m': 30 * 60 * 1000, '1h': 60 * 60 * 1000, '2h': 120 * 60 * 1000 };
+
+  // Pipeline Auto (market-hours scheduler) state
+  const [pipelineAutoStatus, setPipelineAutoStatus] = useState<any>(null);
+  const [pipelineAutoLoading, setPipelineAutoLoading] = useState(false);
+  const [pipelineAutoHistory, setPipelineAutoHistory] = useState<any[]>([]);
+  const [pipelineAutoHistoryExpanded, setPipelineAutoHistoryExpanded] = useState(false);
+  const [pipelineAutoSchedule, setPipelineAutoSchedule] = useState<any[] | null>(null);
+  const [pipelineAutoScheduleSource, setPipelineAutoScheduleSource] = useState<string>('');
+  const [pipelineAutoScheduleWarning, setPipelineAutoScheduleWarning] = useState<string>('');
+  const [pipelineAutoScheduleLoading, setPipelineAutoScheduleLoading] = useState(false);
+  const [pipelineAutoScheduleExpanded, setPipelineAutoScheduleExpanded] = useState(false);
+  const [pipelineAutoScheduleError, setPipelineAutoScheduleError] = useState<string>('');
+
+  const fetchPipelineAutoStatus = useCallback(async () => {
+    try {
+      const res = await pipelineAutoAPI.getStatus();
+      if (res.data.success) {
+        setPipelineAutoStatus(res.data);
+      }
+    } catch {
+      // Backend may not be available
+    }
+  }, []);
+
+  const fetchPipelineAutoHistory = useCallback(async () => {
+    try {
+      const res = await pipelineAutoAPI.getHistory(5);
+      if (res.data.success) {
+        setPipelineAutoHistory(res.data.history);
+      }
+    } catch {
+      // Silently ignore
+    }
+  }, []);
+
+  const fetchPipelineAutoSchedule = useCallback(async () => {
+    setPipelineAutoScheduleLoading(true);
+    setPipelineAutoScheduleError('');
+    try {
+      const res = await pipelineAutoAPI.getMarketSchedule(15);
+      if (res.data.success) {
+        setPipelineAutoSchedule(res.data.days || []);
+        setPipelineAutoScheduleSource(res.data.source || '');
+        setPipelineAutoScheduleWarning(res.data.warning || '');
+      } else {
+        setPipelineAutoSchedule([]);
+        setPipelineAutoScheduleError((res.data as any).message || 'API returned error');
+      }
+    } catch (err: any) {
+      setPipelineAutoSchedule([]);
+      setPipelineAutoScheduleError(err?.message || 'Failed to fetch market schedule');
+    } finally {
+      setPipelineAutoScheduleLoading(false);
+    }
+  }, []);
+
+  // Fetch schedule when expanded
+  useEffect(() => {
+    if (pipelineAutoScheduleExpanded) {
+      fetchPipelineAutoSchedule();
+    }
+  }, [pipelineAutoScheduleExpanded, fetchPipelineAutoSchedule]);
+
+  // Save pipeline-auto config when schedule changes
+  const savePipelineAutoConfig = useCallback(async (schedule: 'off' | '15m' | '30m' | '1h' | '2h') => {
+    setPipelineAutoLoading(true);
+    const wasOff = pipelineSchedule === 'off';
+    try {
+      const enabled = schedule !== 'off';
+      const intervalMap: Record<string, number> = { '15m': 15, '30m': 30, '1h': 60, '2h': 120 };
+      await pipelineAutoAPI.saveConfig({
+        enabled,
+        intervalMinutes: enabled ? intervalMap[schedule] : null,
+        mode: pipelineMode,
+      });
+      // Fetch updated status
+      await fetchPipelineAutoStatus();
+      // Toggle-on immediate run: when switching from Off to On with market open
+      if (enabled && wasOff && runAIPipelineRef.current) {
+        console.log('[AutoRun] Toggle-on immediate trigger after 500ms delay');
+        autoRunTriggeredRef.current = 'armed_ready'; // prevent useEffect from re-triggering
+        setTimeout(() => {
+          runAIPipelineRef.current?.({ trigger: 'auto_market_session' });
+        }, 500);
+      }
+    } catch {
+      // Silently ignore
+    } finally {
+      setPipelineAutoLoading(false);
+    }
+  }, [pipelineMode, fetchPipelineAutoStatus, pipelineSchedule]);
+
+  // Poll pipeline-auto status (only when schedule is active)
+  useEffect(() => {
+    if (pipelineSchedule === 'off') return;
+    fetchPipelineAutoStatus();
+    const id = setInterval(fetchPipelineAutoStatus, 15000);
+    return () => clearInterval(id);
+  }, [pipelineSchedule, fetchPipelineAutoStatus]);
+
+  // Auto-trigger runAIPipeline when backend scheduler reports "Ready" (nextRunAt === 'now')
+  useEffect(() => {
+    if (pipelineSchedule === 'off') return;
+    if (!pipelineAutoStatus) return;
+    if (pipelineRunningRef.current) return;
+
+    const isArmed = pipelineAutoStatus.autoStatus === 'Armed';
+    const isMarketOpen = pipelineAutoStatus.marketOpen === true;
+    const isReady = pipelineAutoStatus.nextRunAt === 'now';
+    const alreadyTriggered = autoRunTriggeredRef.current === 'armed_ready';
+
+    if (isArmed && isMarketOpen && isReady && !alreadyTriggered) {
+      autoRunTriggeredRef.current = 'armed_ready';
+      console.log('[AutoRun] Auto-triggering runAIPipeline from Market Auto Run (nextRunAt=now)');
+      runAIPipelineRef.current?.({ trigger: 'auto_market_session' });
+    } else if (!isReady || !isArmed || !isMarketOpen) {
+      // Reset trigger when status advances (re-arm for next interval)
+      autoRunTriggeredRef.current = null;
+    }
+  }, [pipelineAutoStatus, pipelineSchedule]);
+
+  // Fetch history when expanded
+  useEffect(() => {
+    if (pipelineAutoHistoryExpanded) {
+      fetchPipelineAutoHistory();
+    }
+  }, [pipelineAutoHistoryExpanded, fetchPipelineAutoHistory]);
 
   // Current Holding state
   const [holdings, setHoldings] = useState<any[]>([]);
@@ -529,9 +659,9 @@ const Agent: React.FC = (): React.ReactElement => {
       if (posRes.status === 'fulfilled' && posRes.value.data.success) {
         positions = posRes.value.data.positions || [];
       } else if (posRes.status === 'fulfilled') {
-        setHoldingsError(posRes.value.data.error || 'Failed to fetch positions');
+        setHoldingsError(posRes.value.data.error || 'Configure Alpaca API in Settings to load positions.');
       } else {
-        setHoldingsError('Failed to fetch positions');
+        setHoldingsError('Configure Alpaca API in Settings to load positions.');
       }
 
       // Collect open sell orders
@@ -552,12 +682,18 @@ const Agent: React.FC = (): React.ReactElement => {
         ['open', 'accepted', 'pending_new', 'accepted_for_bidding', 'pending_replace'].includes(o.status)
       );
 
+      // Update both React state AND ref synchronously so pipeline await fetchHoldings()
+      // immediately sees fresh data without waiting for React re-render (useEffect).
       setHoldings(positions);
+      holdingsRef.current = positions;
       setOpenSellOrders(activeSellOrders);
+      console.log(`[ExitScan] holdings fetched: mode=${m}, count=${positions.length}, symbols=[${positions.map((p: any) => p.symbol).join(',')}]`);
     } catch (e: any) {
-      setHoldingsError(e?.response?.data?.error || e?.message || 'Failed to fetch positions');
+      setHoldingsError(e?.response?.data?.error || e?.message || 'Configure Alpaca API in Settings to load positions.');
       setHoldings([]);
+      holdingsRef.current = [];
       setOpenSellOrders([]);
+      console.error(`[ExitScan] holdings fetch failed: mode=${m}, error=${e?.response?.data?.error || e?.message}`);
     } finally {
       setHoldingsLoading(false);
     }
@@ -565,6 +701,9 @@ const Agent: React.FC = (): React.ReactElement => {
 
   // Fetch holdings when trading account mode changes
   useEffect(() => { fetchHoldings(); }, [fetchHoldings]);
+
+  // Sync holdings to ref so pipeline closure always reads latest
+  useEffect(() => { holdingsRef.current = holdings; }, [holdings]);
 
   // Cancel a sell order for a holding
   const handleCancelSellOrder = useCallback(async (orderId: string, symbol: string) => {
@@ -755,7 +894,7 @@ const Agent: React.FC = (): React.ReactElement => {
       startTime: Date.now(),
       estimatedTimeRemaining: null,
       processedCount: 0,
-      totalCount: marketScannerResults.length
+      totalCount: (scannerStateStore.getState().marketScanner.results || []).length
     });
 
     // 开始处理
@@ -765,7 +904,15 @@ const Agent: React.FC = (): React.ReactElement => {
   // Continue Scan处理函数 - 重构为纯rule-based continue scan
   const processContinueScan = async () => {
     try {
-      console.log(`Starting rule-based continue scan for ${marketScannerResults.length} market scan results...`);
+      // Read directly from store to avoid stale React closure (pipeline may have
+      // updated store via startMarketScanner() without React re-rendering yet)
+      const msResults = scannerStateStore.getState().marketScanner.results || [];
+      console.log(`Starting rule-based continue scan for ${msResults.length} market scan results...`);
+      if (msResults.length > 0) {
+        const sample = msResults[0];
+        console.log(`[Pipeline] scanner result keys (${Object.keys(sample).length}): ${Object.keys(sample).slice(0, 20).join(', ')}`);
+        console.log(`[Pipeline] first result symbol=${sample.symbol} trendLabel=${sample.trendLabel} trendScore=${sample.trendScore}`);
+      }
 
       // 阶段A: 初始化 (0%)
       setContinueScanProgress(0);
@@ -773,7 +920,7 @@ const Agent: React.FC = (): React.ReactElement => {
         ...prev,
         currentStage: 'Initializing rule-based scan...',
         processedCount: 0,
-        totalCount: marketScannerResults.length,
+        totalCount: msResults.length,
         estimatedTimeRemaining: null
       }));
 
@@ -811,7 +958,7 @@ const Agent: React.FC = (): React.ReactElement => {
       }
 
       // 检查是否有有效的market scan结果
-      if (marketScannerResults.length === 0) {
+      if (msResults.length === 0) {
         setPreferredContinueScanList([]);
         setContinueScanStatus('completed');
         setContinueScanProgress(100);
@@ -831,8 +978,23 @@ const Agent: React.FC = (): React.ReactElement => {
         currentStage: 'Loading market scan results...'
       }));
 
+      // Filter out failed/incomplete symbols before Continue Scan evaluation
+      const eligibleForContinue = msResults.filter((r: any) => {
+        if (r.analysisStatus === 'failed') return false;
+        if (r.trendLabel === 'Need Data') return false;
+        if (r.price == null || r.price <= 0) return false;
+        if (r.trendScore == null && r.overallScore == null) return false;
+        return true;
+      });
+      if (process.env.NODE_ENV !== 'production') {
+        const excluded = msResults.length - eligibleForContinue.length;
+        if (excluded > 0) {
+          console.log(`[ContinueScan] excluded ${excluded} failed/Need Data symbols from ${msResults.length} total`);
+        }
+      }
+
       // 准备所有候选的原始数据
-      const allCandidates = marketScannerResults.map(candidate => ({
+      const allCandidates = eligibleForContinue.map(candidate => ({
         symbol: candidate.symbol || 'N/A',
         trend: candidate.trendLabel || 'Neutral',
         score: candidate.overallScore || candidate.trendScore || 0,
@@ -1062,6 +1224,14 @@ const Agent: React.FC = (): React.ReactElement => {
       setContinueScanStatus('completed');
 
       console.log(`Continue scan completed. Rule-based selection found ${finalList.length} candidates for follow-up.`);
+      if (finalList.length > 0) {
+        const topSymbols = finalList.slice(0, 5).map((c: any) => `${c.symbol}(score=${c.priorityScore},trend=${c.trend})`).join(', ');
+        console.log(`[Pipeline] top continue candidates: ${topSymbols}`);
+      } else {
+        // Log why no candidates were selected for debugging
+        const sampleScores = msResults.slice(0, 5).map((c: any) => `${c.symbol}(trendLabel=${c.trendLabel},trendScore=${c.trendScore},eventRisk=${c.eventRisk})`).join(', ');
+        console.log(`[Pipeline] no candidates selected. Sample scanner data: ${sampleScores}`);
+      }
 
     } catch (error) {
       console.error('Continue scan processing failed:', error);
@@ -1220,6 +1390,7 @@ const Agent: React.FC = (): React.ReactElement => {
       }
     } catch (e) {
       console.warn('Failed to fetch config status:', e);
+      setConfigStatus(prev => ({ ...prev, loaded: true }));
     }
   };
 
@@ -1260,13 +1431,11 @@ const Agent: React.FC = (): React.ReactElement => {
           baseUrl: config.baseUrl || 'https://api.deepseek.com'
         });
       } else {
-        console.warn('AI 配置加载失败或为空，保留现有配置');
-        // 不覆盖现有配置，只显示警告
-        message.warning('AI 配置加载失败，保留现有配置');
+        console.error('[ai-config] load failed — response had no config data, keeping existing');
+        // 不覆盖现有配置，静默保持现有值
       }
     } catch (error) {
-      console.error('加载 AI 配置失败:', error);
-      message.error('加载 AI 配置失败，保留现有配置');
+      console.error('[ai-config] load failed', error);
       // 不覆盖现有配置，避免清空用户已保存的设置
     }
   };
@@ -1791,23 +1960,35 @@ const Agent: React.FC = (): React.ReactElement => {
                   <div>
                     <div className="scanner-detail-label" style={{ marginBottom: 4 }}>{t.agent.currentPrice}</div>
                     <div className="scanner-detail-value" style={{ fontSize: '22px', color: '#1f1f1f' }}>
-                      ${(record.price || 0).toFixed(2)}
+                      ${(record.price != null && record.price > 0) ? record.price.toFixed(2) : '—'}
                     </div>
                   </div>
                   <div style={{ textAlign: 'right' }}>
                     <div className="scanner-detail-label" style={{ marginBottom: 4 }}>{t.agent.change24h}</div>
-                    <div style={{ 
-                      fontSize: '16px', 
-                      fontWeight: 800, 
-                      padding: '2px 8px',
-                      borderRadius: '4px',
-                      backgroundColor: (record.changePct || record.changePercent || 0) >= 0 ? '#f6ffed' : '#fff1f0',
-                      color: (record.changePct || record.changePercent || 0) >= 0 ? '#52c41a' : '#ff4d4f',
-                      display: 'inline-block'
-                    }}>
-                      {(record.changePct || record.changePercent || 0) >= 0 ? '▲' : '▼'}
-                      {Math.abs(record.changePct || record.changePercent || 0).toFixed(2)}%
-                    </div>
+                    {(() => {
+                      const cp = record.changePct != null ? record.changePct : (record.changePercent != null ? record.changePercent : null);
+                      if (cp == null) {
+                        return (
+                          <div style={{
+                            fontSize: '16px', fontWeight: 800, padding: '2px 8px',
+                            borderRadius: '4px', backgroundColor: '#f5f5f5',
+                            color: '#bfbfbf', display: 'inline-block'
+                          }}>—</div>
+                        );
+                      }
+                      return (
+                        <div style={{
+                          fontSize: '16px', fontWeight: 800, padding: '2px 8px',
+                          borderRadius: '4px',
+                          backgroundColor: cp >= 0 ? '#f6ffed' : '#fff1f0',
+                          color: cp >= 0 ? '#52c41a' : '#ff4d4f',
+                          display: 'inline-block'
+                        }}>
+                          {cp >= 0 ? '▲' : '▼'}
+                          {Math.abs(cp).toFixed(2)}%
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
 
@@ -1815,11 +1996,11 @@ const Agent: React.FC = (): React.ReactElement => {
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', padding: '0 4px' }}>
                   <div>
                     <div className="scanner-detail-label">{t.agent.dayLow}</div>
-                    <div className="scanner-detail-value" style={{ color: '#595959' }}>${(record.dayLow || 0).toFixed(2)}</div>
+                    <div className="scanner-detail-value" style={{ color: '#595959' }}>{record.dayLow != null ? `$${record.dayLow.toFixed(2)}` : '—'}</div>
                   </div>
                   <div style={{ textAlign: 'right' }}>
                     <div className="scanner-detail-label">{t.agent.dayHigh}</div>
-                    <div className="scanner-detail-value" style={{ color: '#595959' }}>${(record.dayHigh || 0).toFixed(2)}</div>
+                    <div className="scanner-detail-value" style={{ color: '#595959' }}>{record.dayHigh != null ? `$${record.dayHigh.toFixed(2)}` : '—'}</div>
                   </div>
                 </div>
 
@@ -1829,11 +2010,20 @@ const Agent: React.FC = (): React.ReactElement => {
                 <div style={{ padding: '0 4px' }}>
                   <div className="scanner-detail-label">{t.agent.volumeLiquidity}</div>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
-                    <span className="scanner-detail-value" style={{ fontSize: '16px' }}>{marketDataService.formatVolume(record.volume || 0)}</span>
-                    <Tag color={record.volumeStatus === 'High' ? 'red' : record.volumeStatus === 'Low' ? 'green' : 'gold'} 
-                         style={{ fontSize: '10px', fontWeight: 800, borderRadius: '4px', margin: 0 }}>
-                      {(() => { const vs = record.volumeStatus || 'Normal'; const vsMap: Record<string, string> = { 'High': t.agent.volumeHigh, 'Normal': t.agent.volumeNormal, 'Low': t.agent.volumeLow }; return vsMap[vs] || vs; })()}
-                    </Tag>
+                    <span className="scanner-detail-value" style={{ fontSize: '16px' }}>{(record.volume != null && record.volume > 0) ? marketDataService.formatVolume(record.volume) : '—'}</span>
+                    {(() => {
+                      const vs = (record.volumeStatus != null && record.analysisStatus !== 'failed') ? record.volumeStatus : null;
+                      if (!vs) {
+                        return <Tag color="default" style={{ fontSize: '10px', fontWeight: 800, borderRadius: '4px', margin: 0 }}>N/A</Tag>;
+                      }
+                      const vsColor = vs === 'High' ? 'red' : vs === 'Low' ? 'green' : 'gold';
+                      const vsMap: Record<string, string> = { 'High': t.agent.volumeHigh, 'Normal': t.agent.volumeNormal, 'Low': t.agent.volumeLow };
+                      return (
+                        <Tag color={vsColor} style={{ fontSize: '10px', fontWeight: 800, borderRadius: '4px', margin: 0 }}>
+                          {vsMap[vs] || vs}
+                        </Tag>
+                      );
+                    })()}
                   </div>
                 </div>
 
@@ -2174,15 +2364,50 @@ const Agent: React.FC = (): React.ReactElement => {
 
     try {
       const results: any[] = [];
-      const candidates = preferredContinueScanList;
+      // Read from store directly to avoid stale React closure after processContinueScan
+      const csResults = scannerStateStore.getState().continueScan.results;
+      const candidates = csResults.length > 0 ? csResults : preferredContinueScanList;
       const candidateCount = candidates.length;
 
-      // Build a lookup map from marketScannerResults for primary data
+      // Build a lookup map from market scanner results (store direct for freshness)
+      const msResults = scannerStateStore.getState().marketScanner.results || [];
       const scannerMap = new Map<string, any>();
-      for (const s of marketScannerResults) {
+      for (const s of msResults.length > 0 ? msResults : marketScannerResults) {
         if (s.symbol) scannerMap.set(s.symbol.toUpperCase(), s);
       }
 
+
+      // Retry helper for API calls that hit 429 rate limits
+      const _fetchWithRetry = async <T extends unknown>(
+        label: string,
+        fn: () => Promise<T>,
+        maxRetries = 3
+      ): Promise<{ data: T | null; rateLimited: boolean; error: string | null }> => {
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+          try {
+            const result = await fn();
+            return { data: result, rateLimited: false, error: null };
+          } catch (e: any) {
+            const status = e?.response?.status || e?.status;
+            if (status === 429 && attempt < maxRetries) {
+              const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+              console.warn(`[FineScan] ${label} rate limited (429), retry ${attempt + 1}/${maxRetries} after ${delay}ms`);
+              await new Promise(r => setTimeout(r, delay));
+              continue;
+            }
+            // Non-retryable or out of retries
+            const errMsg = status === 429
+              ? 'Rate limited — API throttled'
+              : status === 401 || status === 403
+                ? 'Config/Auth required'
+                : status >= 500
+                  ? `Server error (${status})`
+                  : e.message || 'Request failed';
+            return { data: null, rateLimited: status === 429, error: errMsg };
+          }
+        }
+        return { data: null, rateLimited: true, error: 'Rate limited — max retries exceeded' };
+      };
 
       // --- Fine Scan helper: process one symbol ---
       const _processOneFineScanSymbol = async (
@@ -2528,6 +2753,7 @@ const Agent: React.FC = (): React.ReactElement => {
 
         results.push({
           symbol,
+          __rateLimited: false, // tracks 429 rate limit for fallback decisions
           regime,
           matchedStrategies,
           matchReason,
@@ -2591,6 +2817,8 @@ const Agent: React.FC = (): React.ReactElement => {
         let perfStatus: string | null = null;
         let overallSummary = '';
 
+        const rec = results[results.length - 1];
+
         if (matchedStrategies && matchedStrategies.length > 0) {
           for (let si = 0; si < matchedStrategies.length; si++) {
             const stratName = matchedStrategies[si];
@@ -2617,24 +2845,31 @@ const Agent: React.FC = (): React.ReactElement => {
         setFineScanCurrentStep('Backtest');
         setFineScanMessage(`[${i+1}/${candidateCount}] ${symbol}: ${stratName} testing on ${win}...`);
 
-              try {
-                const payload = {
-                  strategy: mappedName, symbol, startDate: sd, endDate: ed,
-                  initialCapital: 100000, dataMode: 'real', parameters: {},
-                };
-                btParams = payload;
-                const resp = await backtraderAPI.runBacktest(payload);
-                const btResult = (resp as any)?.data?.result;
+              const payload = {
+                strategy: mappedName, symbol, startDate: sd, endDate: ed,
+                initialCapital: 100000, dataMode: 'real', parameters: {},
+              };
+              btParams = payload;
+              const { data: btResp, rateLimited: btLimited, error: btErr } = await _fetchWithRetry(
+                `Backtest ${symbol} ${stratName} ${win}`,
+                () => backtraderAPI.runBacktest(payload) as any,
+                2 // 1s, 2s retries
+              );
+              if (btResp) {
+                const btResult = (btResp as any)?.data?.result;
                 if (btResult?.results) {
                   btData = btResult.results;
                   btSuccess = true;
                   break;
                 }
-              } catch (_) { /* continue fallback */ }
+              }
+              // Track rate limit for fallback decision
+              if (btLimited) rec.__rateLimited = true;
             }
 
             if (!btSuccess || !btData) {
-              perStrategyResults.push({ strategy: stratName, status: 'error', reason: 'Backtest failed for all time windows', totalReturn: null, sharpe: null, maxDrawdown: null, winRate: null, profitFactor: null, tradeCount: null, window: null, _params: btParams });
+              const reason = rec.__rateLimited ? 'Backtest rate limited — API throttled' : 'Backtest failed for all time windows';
+              perStrategyResults.push({ strategy: stratName, status: 'error', reason, totalReturn: null, sharpe: null, maxDrawdown: null, winRate: null, profitFactor: null, tradeCount: null, window: null, _params: btParams });
               continue;
             }
 
@@ -2700,8 +2935,7 @@ const Agent: React.FC = (): React.ReactElement => {
           overallSummary = 'No strategy to test';
         }
 
-        // Update last result record
-        const rec = results[results.length - 1];
+        // Update last result record (rec already declared above)
         if (rec && rec.symbol === symbol) {
           rec.backtestStatus = execStatus;
           rec.backtestPerformance = perfStatus;
@@ -2922,66 +3156,84 @@ const Agent: React.FC = (): React.ReactElement => {
         // --- End Step 3 (Quick Backtest + Optimization) ---
 
         // --- Step 4: Entry Quality Scan (Alpaca-based) ---
-        try {
         setFineScanStepProgress(57);
         setFineScanCurrentStep('Entry Quality');
         setFineScanMessage(`[${i + 1}/${candidateCount}] ${symbol}: assessing entry quality...`);
-          const eqResponse = await entryQualityAPI.assessEntry(symbol);
-          if (eqResponse.data && eqResponse.data.success) {
-            rec.entryQuality = eqResponse.data.entry_quality;
-            rec.entryReason = eqResponse.data.entry_reason || '';
-            rec.entryScore = eqResponse.data.entry_score || 0;
-            rec.entryDetails = eqResponse.data.details || null;
-            if (rec.provenance) rec.provenance.entrySource = 'Entry Quality API (Alpaca)';
+        {
+          const { data: eqResp, rateLimited: eqRL, error: eqErr } = await _fetchWithRetry(
+            `EntryQuality ${symbol}`,
+            () => entryQualityAPI.assessEntry(symbol) as any,
+          );
+          if (eqResp) {
+            const ed = (eqResp as any).data;
+            if (ed?.success) {
+              rec.entryQuality = ed.entry_quality;
+              rec.entryReason = ed.entry_reason || '';
+              rec.entryScore = ed.entry_score || 0;
+              rec.entryDetails = ed.details || null;
+              if (rec.provenance) rec.provenance.entrySource = 'Entry Quality API (Alpaca)';
+            } else {
+              rec.entryQuality = 'Error / No Data';
+              rec.entryReason = ed?.message || 'API returned no valid data';
+              rec.entryDetails = null;
+              if (rec.provenance) { rec.provenance.entrySource = 'Entry Quality Failed'; rec.provenance.dataQuality = 'PARTIAL'; }
+            }
           } else {
-            rec.entryQuality = 'Error / No Data';
-            rec.entryReason = eqResponse.data?.message || 'API returned no valid data';
+            rec.entryQuality = eqRL ? 'Rate Limited' : 'Error / No Data';
+            rec.entryReason = eqErr || 'Alpaca request failed';
             rec.entryDetails = null;
-            if (rec.provenance) { rec.provenance.entrySource = 'Entry Quality Failed'; rec.provenance.dataQuality = 'PARTIAL'; }
+            rec.__rateLimited = eqRL || rec.__rateLimited;
+            if (rec.provenance) { rec.provenance.entrySource = `Entry Quality ${eqRL ? 'Rate Limited' : 'Failed'}`; rec.provenance.dataQuality = 'PARTIAL'; }
+            if (eqRL) console.warn(`[EntryQuality] ${symbol} rate limited after retries`);
           }
-        } catch (eqErr: any) {
-          console.warn(`[EntryQuality] ${symbol} failed:`, eqErr.message);
-          rec.entryQuality = 'Error / No Data';
-          rec.entryReason = eqErr.message || 'Alpaca request failed';
-          rec.entryDetails = null;
-          if (rec.provenance) { rec.provenance.entrySource = 'Entry Quality Failed'; rec.provenance.dataQuality = 'PARTIAL'; }
         }
         // --- End Step 4: Entry Quality ---
 
         // --- Step 5: Liquidity / Volume Scan (Step 6) ---
-        try {
         setFineScanStepProgress(71);
         setFineScanCurrentStep('Liquidity / Volume Check');
         setFineScanMessage(`[${i + 1}/${candidateCount}] ${symbol}: liquidity/volume check...`);
-          const advResponse = await fineScanAdvancedAPI.scan(symbol, rec.entryDetails);
-          if (advResponse.data && advResponse.data.success) {
-            rec.liquidityGrade = advResponse.data.liquidity?.grade || 'Error';
-            rec.liquidityReason = advResponse.data.liquidity?.reason || '';
-            rec.liquidityDetails = advResponse.data.liquidity?.details || null;
-            rec.newsGrade = advResponse.data.news?.grade || 'Error';
-            rec.newsReason = advResponse.data.news?.reason || '';
-            rec.newsDetails = advResponse.data.news?.details || null;
-            rec.riskGrade = advResponse.data.risk?.grade || 'MEDIUM';
-            rec.riskReason = advResponse.data.risk?.reason || '';
-            rec.riskDetails = advResponse.data.risk?.details || null;
-            if (rec.provenance) {
-              rec.provenance.liquiditySource = 'Fine Scan Advanced API';
-              rec.provenance.newsSource = 'Fine Scan Advanced API (Finnhub/Alpaca)';
+        {
+          const { data: advResp, rateLimited: advRL, error: advErr } = await _fetchWithRetry(
+            `FineScanAdvanced ${symbol}`,
+            () => fineScanAdvancedAPI.scan(symbol, rec.entryDetails) as any,
+          );
+          if (advResp) {
+            const ad = (advResp as any).data;
+            if (ad?.success) {
+              rec.liquidityGrade = ad.liquidity?.grade || 'Error';
+              rec.liquidityReason = ad.liquidity?.reason || '';
+              rec.liquidityDetails = ad.liquidity?.details || null;
+              rec.newsGrade = ad.news?.grade || 'Error';
+              rec.newsReason = ad.news?.reason || '';
+              rec.newsDetails = ad.news?.details || null;
+              rec.riskGrade = ad.risk?.grade || 'MEDIUM';
+              rec.riskReason = ad.risk?.reason || '';
+              rec.riskDetails = ad.risk?.details || null;
+              if (rec.provenance) {
+                rec.provenance.liquiditySource = 'Fine Scan Advanced API';
+                rec.provenance.newsSource = 'Fine Scan Advanced API (Finnhub/Alpaca)';
+              }
+            } else {
+              rec.liquidityGrade = 'Error';
+              rec.newsGrade = 'Error';
+              rec.riskGrade = 'SKIP';
+              rec.riskReason = 'API returned no valid data';
+              if (rec.provenance) { rec.provenance.liquiditySource = 'Failed'; rec.provenance.newsSource = 'Failed'; rec.provenance.dataQuality = 'PARTIAL'; }
             }
           } else {
-            rec.liquidityGrade = 'Error';
-            rec.newsGrade = 'Error';
-            rec.riskGrade = 'SKIP';
-            rec.riskReason = 'API returned no valid data';
-            if (rec.provenance) { rec.provenance.liquiditySource = 'Failed'; rec.provenance.newsSource = 'Failed'; rec.provenance.dataQuality = 'PARTIAL'; }
+            rec.liquidityGrade = advRL ? 'Rate Limited' : 'Error';
+            rec.newsGrade = advRL ? 'Rate Limited' : 'Error';
+            rec.riskGrade = advRL ? 'Unknown' : 'SKIP';
+            rec.riskReason = advErr || 'advanced scan failed';
+            rec.__rateLimited = advRL || rec.__rateLimited;
+            if (rec.provenance) {
+              rec.provenance.liquiditySource = advRL ? 'Rate Limited' : 'Failed';
+              rec.provenance.newsSource = advRL ? 'Rate Limited' : 'Failed';
+              rec.provenance.dataQuality = 'PARTIAL';
+            }
+            if (advRL) console.warn(`[FineScanAdvanced] ${symbol} rate limited after retries`);
           }
-        } catch (advErr: any) {
-          console.warn(`[FineScanAdvanced] ${symbol} failed:`, advErr.message);
-          rec.liquidityGrade = 'Error';
-          rec.newsGrade = 'Error';
-          rec.riskGrade = 'SKIP';
-          rec.riskReason = advErr.message || 'advanced scan failed';
-          if (rec.provenance) { rec.provenance.liquiditySource = 'Failed'; rec.provenance.newsSource = 'Failed'; rec.provenance.dataQuality = 'PARTIAL'; }
         }
         // --- End Steps 5-6-7: Liquidity, News, Risk ---
 
@@ -2990,162 +3242,179 @@ const Agent: React.FC = (): React.ReactElement => {
         rec.decisionSource = 'pending';
         rec.fineScanGrade = 'MEDIUM';
         rec.decisionConfidence = 0;
-        try {
-          const decisionResp = await fineScanDecisionAPI.decide({
-            symbol: rec.symbol,
-            trendLabel: rec.trendLabel || rec.trend || 'Neutral',
-            trendScore: rec.scanScore || 50,
-            matchedStrategies: rec.matchedStrategies || [],
-            matchConfidence: rec.matchConfidence || 0,
-            backtestStatus: rec.backtestStatus || '',
-            backtestPerformance: rec.backtestPerformance || '',
-            backtestTotalReturn: rec.backtestPerStrategy?.[0]?.totalReturn,
-            entryQuality: {
-              grade: rec.entryQuality || '',
-              score: rec.entryScore || 0,
-              zone: rec.entryDetails?.zone || '',
-            },
-            liquidityGrade: rec.liquidityGrade || '',
-            newsGrade: rec.newsGrade || '',
-            riskGrade: rec.riskGrade || '',
-            riskScore: rec.riskScore || 0,
-            entryScore: rec.entryScore || 0,
-          });
-          if (decisionResp.data && decisionResp.data.success) {
-            const rawDecision = (decisionResp.data.decision || '').toUpperCase();
-            rec.rawAiVerdict = rawDecision; // preserve for debug
-            if (rawDecision === 'CONTINUE') rec.decision = 'Continue';
-            else if (rawDecision === 'REJECT') rec.decision = 'Reject';
-            else if (rawDecision === 'NEED_MORE_DATA') rec.decision = 'NeedMoreData';
-            else if (rawDecision === 'WATCH') rec.decision = 'Watch';
-            else if (rawDecision === 'SKIP') rec.decision = 'Skip';
-            else rec.decision = 'Watch'; // fallback
-            rec.fineScanGrade = decisionResp.data.grade;
-            rec.decisionConfidence = decisionResp.data.confidence;
-            rec.decisionSource = decisionResp.data.source;
-            rec.decisionReason = decisionResp.data.reason;
-            if (decisionResp.data.decisionDetail) {
-              rec.decisionStrengths = decisionResp.data.decisionDetail.strengths || [];
-              rec.decisionWarnings = decisionResp.data.decisionDetail.warnings || [];
-              rec.decisionBlockers = decisionResp.data.decisionDetail.blockers || [];
+        {
+          const { data: decisionResp, rateLimited: decRL, error: decErr } = await _fetchWithRetry(
+            `FineScanDecision ${symbol}`,
+            () => fineScanDecisionAPI.decide({
+              symbol: rec.symbol,
+              trendLabel: rec.trendLabel || rec.trend || 'Neutral',
+              trendScore: rec.scanScore || 50,
+              matchedStrategies: rec.matchedStrategies || [],
+              matchConfidence: rec.matchConfidence || 0,
+              backtestStatus: rec.backtestStatus || '',
+              backtestPerformance: rec.backtestPerformance || '',
+              backtestTotalReturn: rec.backtestPerStrategy?.[0]?.totalReturn,
+              entryQuality: {
+                grade: rec.entryQuality || '',
+                score: rec.entryScore || 0,
+                zone: rec.entryDetails?.zone || '',
+              },
+              liquidityGrade: rec.liquidityGrade || '',
+              newsGrade: rec.newsGrade || '',
+              riskGrade: rec.riskGrade || '',
+              riskScore: rec.riskScore || 0,
+              entryScore: rec.entryScore || 0,
+            }) as any,
+          );
+          if (decisionResp) {
+            const dd = (decisionResp as any).data;
+            if (dd && dd.success) {
+              const rawDecision = (dd.decision || '').toUpperCase();
+              rec.rawAiVerdict = rawDecision;
+              if (rawDecision === 'CONTINUE') rec.decision = 'Continue';
+              else if (rawDecision === 'REJECT') rec.decision = 'Reject';
+              else if (rawDecision === 'NEED_MORE_DATA') rec.decision = 'NeedMoreData';
+              else if (rawDecision === 'WATCH') rec.decision = 'Watch';
+              else if (rawDecision === 'SKIP') rec.decision = 'Skip';
+              else rec.decision = 'Watch';
+              rec.fineScanGrade = dd.grade;
+              rec.decisionConfidence = dd.confidence;
+              rec.decisionSource = dd.source;
+              rec.decisionReason = dd.reason;
+              if (dd.decisionDetail) {
+                rec.decisionStrengths = dd.decisionDetail.strengths || [];
+                rec.decisionWarnings = dd.decisionDetail.warnings || [];
+                rec.decisionBlockers = dd.decisionDetail.blockers || [];
+              }
+              if (!rec.decisionBlockers) rec.decisionBlockers = [];
+              if (!rec.decisionWarnings) rec.decisionWarnings = [];
+              if (rec.provenance) {
+                rec.provenance.decisionSource = dd.source === 'ai' ? 'DeepSeek AI' : 'Local Rules';
+                rec.provenance.aiCalled = dd.source === 'ai';
+              }
+              console.log(`[FineScanDecision] ${symbol}: AI raw=${rawDecision} → final=${rec.decision} reason=${rec.decisionReason}`);
+            } else {
+              console.warn(`[FineScanDecision] ${symbol} API returned no data, using local rules`);
+              // fall through to local rules below
             }
-            // Ensure blockers/warnings always exist
-            if (!rec.decisionBlockers) rec.decisionBlockers = [];
-            if (!rec.decisionWarnings) rec.decisionWarnings = [];
-            if (rec.provenance) {
-              rec.provenance.decisionSource = decisionResp.data.source === 'ai' ? 'DeepSeek AI' : 'Local Rules';
-              rec.provenance.aiCalled = decisionResp.data.source === 'ai';
+          }
+          if (!decisionResp || !((decisionResp as any)?.data?.success)) {
+            // 429 / error: log and use local rules
+            if (decRL) {
+              rec.__rateLimited = true;
+              rec.decision = 'NeedMoreData';
+              rec.fineScanGrade = 'LOW';
+              rec.decisionReason = 'Rate limited — API throttled. Will retry next interval.';
+              rec.decisionBlockers = ['Rate limited — retry later'];
+              rec.decisionSource = 'rate_limit';
+              if (rec.provenance) rec.provenance.decisionSource = 'Rate Limited';
+              console.warn(`[FineScanDecision] ${symbol} rate limited, marking as NeedMoreData`);
+            } else {
+              // Non-rate-limit error: use local rules
+              console.warn(`[FineScanDecision] ${symbol} error: ${decErr}, using local rules`);
+              const btOk = rec.backtestStatus === 'pass' && (rec.backtestPerformance === 'positive' || rec.backtestPerformance === 'caution');
+              const btMissing = !rec.backtestStatus || rec.backtestStatus === 'pending' || rec.backtestStatus === 'skipped';
+              const btFail = rec.backtestStatus === 'fail' || rec.backtestPerformance === 'negative';
+              const eqOk = rec.entryQuality === 'Excellent' || rec.entryQuality === 'Good' || rec.entryQuality === 'Wait for Pullback' || rec.entryQuality === 'Breakout Setup';
+              const eqBad = rec.entryQuality === 'Avoid / Downtrend' || rec.entryQuality === 'Chasing / Extended';
+              const eqAcceptable = eqOk || rec.entryQuality === 'Acceptable' || rec.entryQuality === 'Fair';
+              const riskOk = rec.riskGrade === 'LOW' || rec.riskGrade === 'MEDIUM';
+              const riskHigh = rec.riskGrade === 'HIGH';
+              const riskSkip = rec.riskGrade === 'SKIP';
+              const riskUnknown = !rec.riskGrade || rec.riskGrade === '' || rec.riskGrade === 'Unknown';
+              const liqPoor = rec.liquidityGrade === 'Poor';
+              const liqUnknown = !rec.liquidityGrade || rec.liquidityGrade === '' || rec.liquidityGrade === 'Data Unavailable' || rec.liquidityGrade === 'Unknown';
+              const score = rec.matchConfidence || 0;
+              const trendBullish = rec.trendLabel === 'Strong Bullish' || rec.trendLabel === 'Bullish';
+              const trendBearish = rec.trendLabel === 'Strong Bearish' || rec.trendLabel === 'Bearish';
+              const hasPrice = rec.price > 0;
+              const hasVolume = rec.volume > 0;
+
+              const blockers: string[] = [];
+              const warnings: string[] = [];
+
+              if (!hasPrice) blockers.push('price missing');
+              if (!hasVolume) warnings.push('volume missing or zero');
+              if (btFail) blockers.push('backtest negative');
+              if (eqBad) blockers.push(`entry quality: ${rec.entryQuality}`);
+              if (riskSkip) blockers.push('risk SKIP (critical data missing)');
+              if (trendBearish) warnings.push('bearish trend');
+              if (riskHigh) warnings.push('risk HIGH');
+              if (liqPoor) warnings.push('liquidity Poor');
+              if (liqUnknown) warnings.push('liquidity data unavailable');
+              if (btMissing) warnings.push('backtest not run');
+              if (rec.liquidityGrade === 'Error') warnings.push('liquidity check failed');
+
+              if (!hasPrice) {
+                rec.decision = 'NeedMoreData';
+                rec.fineScanGrade = 'LOW';
+                rec.decisionReason = 'Price data missing — cannot assess';
+              }
+              // REJECT: only truly critical blockers
+              else if (riskSkip) {
+                rec.decision = 'Reject';
+                rec.fineScanGrade = 'LOW';
+                rec.decisionReason = `Risk SKIP: ${rec.riskReason || 'critical data missing'}`;
+              }
+              else if (eqBad && trendBearish) {
+                rec.decision = 'Reject';
+                rec.fineScanGrade = 'LOW';
+                rec.decisionReason = `Entry ${rec.entryQuality} + bearish trend`;
+              }
+              // CONTINUE: strong signals — riskOk preferred but riskHigh alone does NOT block
+              else if (score >= 55 && trendBullish && !eqBad && (riskOk || riskUnknown)) {
+                rec.decision = 'Continue';
+                rec.fineScanGrade = btOk ? 'HIGH' : 'MEDIUM';
+                rec.decisionReason = `Score ${score}, ${rec.trendLabel}, entry ${rec.entryQuality || 'N/A'}, risk ${rec.riskGrade || 'N/A'}`;
+              }
+              // CONTINUE: strong signals + riskHigh → still Continue but flag warning
+              else if (score >= 60 && trendBullish && !eqBad && riskHigh) {
+                rec.decision = 'Continue';
+                rec.fineScanGrade = 'MEDIUM';
+                rec.decisionReason = `Score ${score}, trend bullish, but risk HIGH — proceed with caution`;
+              }
+              // CONTINUE: good backtest + decent score
+              else if (btOk && score >= 40 && !eqBad) {
+                rec.decision = 'Continue';
+                rec.fineScanGrade = 'MEDIUM';
+                rec.decisionReason = `Backtest OK, score ${score}`;
+              }
+              // CONTINUE: backtest missing but trend/entry/risk acceptable
+              else if (btMissing && score >= 45 && trendBullish && (riskOk || riskUnknown) && eqAcceptable) {
+                rec.decision = 'Continue';
+                rec.fineScanGrade = 'MEDIUM';
+                rec.decisionReason = `Score ${score}, trend bullish, backtest N/A (not blocking)`;
+              }
+              // CONTINUE: score decent + entry OK + not bearish, regardless of risk (risk is advisory at Fine Scan)
+              else if (score >= 50 && !eqBad && !trendBearish && (riskOk || riskHigh || riskUnknown)) {
+                rec.decision = 'Continue';
+                rec.fineScanGrade = 'MEDIUM';
+                rec.decisionReason = `Score ${score}, entry OK, risk ${rec.riskGrade || 'N/A'} (advisory)`;
+              }
+              // WATCH: mixed signals
+              else if (score >= 30 && hasPrice) {
+                rec.decision = 'Watch';
+                rec.fineScanGrade = 'MEDIUM';
+                rec.decisionReason = `Score ${score}, mixed signals. Blockers: ${blockers.length > 0 ? blockers.join('; ') : 'none'}. Warnings: ${warnings.join('; ') || 'none'}`;
+              }
+              // NeedMoreData: score too low and no backtest
+              else if (score < 30 && btMissing) {
+                rec.decision = 'NeedMoreData';
+                rec.fineScanGrade = 'LOW';
+                rec.decisionReason = `Low score (${score}), backtest missing`;
+              }
+              // Default Watch
+              else {
+                rec.decision = 'Watch';
+                rec.fineScanGrade = 'MEDIUM';
+                rec.decisionReason = `Default Watch — score ${score}, blockers: ${blockers.join('; ') || 'none'}`;
+              }
+              rec.decisionSource = 'local-rule';
+              rec.decisionConfidence = score;
+              rec.decisionBlockers = blockers;
+              rec.decisionWarnings = warnings;
             }
-            console.log(`[FineScanDecision] ${symbol}: AI raw=${rawDecision} → final=${rec.decision} reason=${rec.decisionReason}`);
-          } else {
-            throw new Error('Decision API returned no data');
           }
-        } catch (decErr: any) {
-          console.warn(`[FineScanDecision] ${symbol} AI decision failed: ${decErr.message}, using local rules`);
-          // Local fallback — 4-category: Continue / Watch / Reject / NeedMoreData
-          const btOk = rec.backtestStatus === 'pass' && (rec.backtestPerformance === 'positive' || rec.backtestPerformance === 'caution');
-          const btMissing = !rec.backtestStatus || rec.backtestStatus === 'pending' || rec.backtestStatus === 'skipped';
-          const btFail = rec.backtestStatus === 'fail' || rec.backtestPerformance === 'negative';
-          const eqOk = rec.entryQuality === 'Excellent' || rec.entryQuality === 'Good' || rec.entryQuality === 'Wait for Pullback' || rec.entryQuality === 'Breakout Setup';
-          const eqBad = rec.entryQuality === 'Avoid / Downtrend' || rec.entryQuality === 'Chasing / Extended';
-          const eqAcceptable = eqOk || rec.entryQuality === 'Acceptable' || rec.entryQuality === 'Fair';
-          const riskOk = rec.riskGrade === 'LOW' || rec.riskGrade === 'MEDIUM';
-          const riskHigh = rec.riskGrade === 'HIGH';
-          const riskSkip = rec.riskGrade === 'SKIP';
-          const riskUnknown = !rec.riskGrade || rec.riskGrade === '' || rec.riskGrade === 'Unknown';
-          const liqPoor = rec.liquidityGrade === 'Poor';
-          const liqUnknown = !rec.liquidityGrade || rec.liquidityGrade === '' || rec.liquidityGrade === 'Data Unavailable' || rec.liquidityGrade === 'Unknown';
-          const score = rec.matchConfidence || 0;
-          const trendBullish = rec.trendLabel === 'Strong Bullish' || rec.trendLabel === 'Bullish';
-          const trendBearish = rec.trendLabel === 'Strong Bearish' || rec.trendLabel === 'Bearish';
-          const hasPrice = rec.price > 0;
-          const hasVolume = rec.volume > 0;
-
-          // Track blocking reasons
-          const blockers: string[] = [];
-          const warnings: string[] = [];
-
-          if (!hasPrice) blockers.push('price missing');
-          if (!hasVolume) warnings.push('volume missing or zero');
-          if (btFail) blockers.push('backtest negative');
-          if (eqBad) blockers.push(`entry quality: ${rec.entryQuality}`);
-          if (riskSkip) blockers.push('risk SKIP (critical data missing)');
-          if (trendBearish) warnings.push('bearish trend');
-          if (riskHigh) warnings.push('risk HIGH');
-          if (liqPoor) warnings.push('liquidity Poor');
-          if (liqUnknown) warnings.push('liquidity data unavailable');
-          if (btMissing) warnings.push('backtest not run');
-          if (rec.liquidityGrade === 'Error') warnings.push('liquidity check failed');
-
-          // Core data check — if price completely missing, need more data
-          if (!hasPrice) {
-            rec.decision = 'NeedMoreData';
-            rec.fineScanGrade = 'LOW';
-            rec.decisionReason = 'Price data missing — cannot assess';
-          }
-          // REJECT: only truly critical blockers
-          else if (riskSkip) {
-            rec.decision = 'Reject';
-            rec.fineScanGrade = 'LOW';
-            rec.decisionReason = `Risk SKIP: ${rec.riskReason || 'critical data missing'}`;
-          }
-          else if (eqBad && trendBearish) {
-            rec.decision = 'Reject';
-            rec.fineScanGrade = 'LOW';
-            rec.decisionReason = `Entry ${rec.entryQuality} + bearish trend`;
-          }
-          // CONTINUE: strong signals — riskOk preferred but riskHigh alone does NOT block
-          else if (score >= 55 && trendBullish && !eqBad && (riskOk || riskUnknown)) {
-            rec.decision = 'Continue';
-            rec.fineScanGrade = btOk ? 'HIGH' : 'MEDIUM';
-            rec.decisionReason = `Score ${score}, ${rec.trendLabel}, entry ${rec.entryQuality || 'N/A'}, risk ${rec.riskGrade || 'N/A'}`;
-          }
-          // CONTINUE: strong signals + riskHigh → still Continue but flag warning
-          else if (score >= 60 && trendBullish && !eqBad && riskHigh) {
-            rec.decision = 'Continue';
-            rec.fineScanGrade = 'MEDIUM';
-            rec.decisionReason = `Score ${score}, trend bullish, but risk HIGH — proceed with caution`;
-          }
-          // CONTINUE: good backtest + decent score
-          else if (btOk && score >= 40 && !eqBad) {
-            rec.decision = 'Continue';
-            rec.fineScanGrade = 'MEDIUM';
-            rec.decisionReason = `Backtest OK, score ${score}`;
-          }
-          // CONTINUE: backtest missing but trend/entry/risk acceptable
-          else if (btMissing && score >= 45 && trendBullish && (riskOk || riskUnknown) && eqAcceptable) {
-            rec.decision = 'Continue';
-            rec.fineScanGrade = 'MEDIUM';
-            rec.decisionReason = `Score ${score}, trend bullish, backtest N/A (not blocking)`;
-          }
-          // CONTINUE: score decent + entry OK + not bearish, regardless of risk (risk is advisory at Fine Scan)
-          else if (score >= 50 && !eqBad && !trendBearish && (riskOk || riskHigh || riskUnknown)) {
-            rec.decision = 'Continue';
-            rec.fineScanGrade = 'MEDIUM';
-            rec.decisionReason = `Score ${score}, entry OK, risk ${rec.riskGrade || 'N/A'} (advisory)`;
-          }
-          // WATCH: mixed signals
-          else if (score >= 30 && hasPrice) {
-            rec.decision = 'Watch';
-            rec.fineScanGrade = 'MEDIUM';
-            rec.decisionReason = `Score ${score}, mixed signals. Blockers: ${blockers.length > 0 ? blockers.join('; ') : 'none'}. Warnings: ${warnings.join('; ') || 'none'}`;
-          }
-          // NeedMoreData: score too low and no backtest
-          else if (score < 30 && btMissing) {
-            rec.decision = 'NeedMoreData';
-            rec.fineScanGrade = 'LOW';
-            rec.decisionReason = `Low score (${score}), backtest missing`;
-          }
-          // Default Watch
-          else {
-            rec.decision = 'Watch';
-            rec.fineScanGrade = 'MEDIUM';
-            rec.decisionReason = `Default Watch — score ${score}, blockers: ${blockers.join('; ') || 'none'}`;
-          }
-          rec.decisionSource = 'local-rule';
-          rec.decisionConfidence = score;
-          rec.decisionBlockers = blockers;
-          rec.decisionWarnings = warnings;
         }
 
         // Dev Test override: if this is a test candidate and didn't get Continue, force it
@@ -3169,7 +3438,7 @@ const Agent: React.FC = (): React.ReactElement => {
           setFineScanCurrentStep('AI Reasoning');
           setFineScanMessage(`[${i+1}/${candidateCount}] ${symbol}: AI reasoning...`);
 
-          try {
+          { // rate-limited fetch for Explain
             const explainData: import('../services/api').FineScanExplainRequest = {
               symbol: rec.symbol,
               trendLabel: rec.trendLabel || rec.trend || 'Neutral',
@@ -3209,25 +3478,36 @@ const Agent: React.FC = (): React.ReactElement => {
               },
             };
 
-            const resp = (await fineScanExplainAPI.explain(explainData)).data;
-            if (resp.success) {
-              if (resp.whyMatched) rec.matchReason = resp.whyMatched;
-              if (resp.keySignalExplanation) rec.keySignalExplanation = resp.keySignalExplanation;
-              if (resp.finalReason) rec.finalReason = resp.finalReason;
-              if (resp.nextStep) rec.nextStep = resp.nextStep;
-              rec.aiExplained = true;
-              if (rec.provenance) {
-                rec.provenance.explanationSource = 'DeepSeek AI';
-                rec.provenance.aiCalled = true;
-                rec.provenance.aiSource = 'DeepSeek';
-                rec.provenance.aiModel = 'deepseek-chat';
+            const { data: explainResp, rateLimited: expRL } = await _fetchWithRetry(
+              `FineScanExplain ${symbol}`,
+              () => fineScanExplainAPI.explain(explainData) as any,
+              2
+            );
+            if (explainResp) {
+              const resp = (explainResp as any).data;
+              if (resp.success) {
+                if (resp.whyMatched) rec.matchReason = resp.whyMatched;
+                if (resp.keySignalExplanation) rec.keySignalExplanation = resp.keySignalExplanation;
+                if (resp.finalReason) rec.finalReason = resp.finalReason;
+                if (resp.nextStep) rec.nextStep = resp.nextStep;
+                rec.aiExplained = true;
+                if (rec.provenance) {
+                  rec.provenance.explanationSource = 'DeepSeek AI';
+                  rec.provenance.aiCalled = true;
+                  rec.provenance.aiSource = 'DeepSeek';
+                  rec.provenance.aiModel = 'deepseek-chat';
+                }
+              } else {
+                if (rec.provenance) rec.provenance.explanationSource = 'Explain API failed';
               }
             } else {
-              if (rec.provenance) rec.provenance.explanationSource = 'Explain API failed';
+              if (expRL) {
+                rec.__rateLimited = true;
+                if (rec.provenance) rec.provenance.explanationSource = 'Rate Limited';
+              } else {
+                if (rec.provenance) rec.provenance.explanationSource = 'Explain API error';
+              }
             }
-          } catch (e: any) {
-            console.warn(`[FineScanExplain] AI failed for ${symbol}: ${e.message}`);
-            if (rec.provenance) rec.provenance.explanationSource = 'Explain API error';
           }
         }
 
@@ -3240,6 +3520,10 @@ const Agent: React.FC = (): React.ReactElement => {
         await _processOneFineScanSymbol(i, candidates[i], candidateCount, results, scannerMap);
         // Update UI after each symbol completes
         setFineScanResults([...results]);
+        // Small delay between symbols to avoid overwhelming rate limit
+        if (i < candidateCount - 1) {
+          await new Promise(r => setTimeout(r, 400 + Math.random() * 400)); // 400-800ms jitter
+        }
       }
       setFineScanProgress(100);
       setFineScanStatus('completed');
@@ -3661,14 +3945,23 @@ const Agent: React.FC = (): React.ReactElement => {
   // Run Exit Scan
   const [exitScanRunning, setExitScanRunning] = useState(false);
 
-  const runExitScan = useCallback(async (options?: { autoSubmit?: boolean; mode?: 'paper' | 'real' }) => {
+  const runExitScan = useCallback(async (options?: { autoSubmit?: boolean; mode?: 'paper' | 'real'; holdingsOverride?: any[] }) => {
     if (exitScanRunning) return;
-    if (holdings.length === 0) {
-      message.warning('No current holdings to scan.');
+    // Use holdingsOverride if provided, then ref (always fresh), then closure variable as fallback
+    const holdingsToScan = options?.holdingsOverride || holdingsRef.current || holdings;
+    const exitScanMode = options?.mode || tradeMode;
+    console.log(`[ExitScan] start`);
+    console.log(`[ExitScan] tradingMode=${exitScanMode}`);
+    console.log(`[ExitScan] holdings count=${holdingsToScan.length}, override=${!!options?.holdingsOverride}, ref=${holdingsRef.current.length}, closure=${holdings.length}`);
+    if (holdingsToScan.length > 0) {
+      console.log(`[ExitScan] holdings symbols=[${holdingsToScan.map((p: any) => p.symbol).join(',')}]`);
+    }
+    if (holdingsToScan.length === 0) {
+      console.log('[ExitScan] skip reason=no_current_holdings');
+      setExitScanStatus('skipped');
       return;
     }
     const shouldAutoSubmit = options?.autoSubmit !== false; // default true
-    const exitScanMode = options?.mode || tradeMode;
 
     // Check for already-submitted exit orders to prevent duplicates
     const existingExitOrderSymbols = new Set([
@@ -3681,7 +3974,7 @@ const Agent: React.FC = (): React.ReactElement => {
     const results: any[] = [];
 
     try {
-      for (const position of holdings) {
+      for (const position of holdingsToScan) {
         const symbol = position.symbol;
 
         // Skip if already has a pending exit order
@@ -4986,7 +5279,7 @@ const Agent: React.FC = (): React.ReactElement => {
       check();
     });
 
-  const runAIPipeline = async () => {
+  const runAIPipeline = async (opts?: { trigger?: string }) => {
     // Pre-checks
     if (isAnyScanRunning) {
       message.warning(t.agent.scanAlreadyRunning);
@@ -4997,6 +5290,8 @@ const Agent: React.FC = (): React.ReactElement => {
     setPipelineError(null);
     setPipelineStage('Market Scanner');
     pipelineStopRequestedRef.current = false;
+    const _startTime = new Date().toISOString();
+    setLastPipelineRun(_startTime);
 
     try {
       // ── Stage 1: Market Scanner ──
@@ -5028,12 +5323,25 @@ const Agent: React.FC = (): React.ReactElement => {
       // ── Stage 3: Fine Scan ──
       setPipelineStage('Fine Scan');
       const fsResults = scannerStateStore.getState().continueScan.results;
-      if (!fsResults || fsResults.length === 0) throw new Error('No Continue Scan candidates');
+      const msCount = scannerStateStore.getState().marketScanner.results.length;
+      if (!fsResults || fsResults.length === 0) {
+        const msSample = scannerStateStore.getState().marketScanner.results.slice(0, 3).map((r: any) =>
+          `${r.symbol}(trend=${r.trendLabel},score=${r.trendScore})`).join(', ');
+        throw new Error(`No Continue Scan candidates: Market Scanner completed ${msCount} symbols but 0 passed rule filter. Sample: ${msSample || '(empty scanner data)'}`);
+      }
       const fineScanPromise = _runFineScanLoop();
       registerFineScanRun(fineScanPromise);
       await fineScanPromise;
       const fsStatus = scannerStateStore.getState().fineScan.status;
-      if (fsStatus !== 'completed') throw new Error(`Fine Scan ${fsStatus}`);
+      if (fsStatus !== 'completed') {
+        const fsResults = scannerStateStore.getState().fineScan.results || [];
+        const rateLimitedCount = fsResults.filter((r: any) => r.__rateLimited).length;
+        const completedCount = fsResults.filter((r: any) => r.scanStatus === 'completed').length;
+        const rlSuffix = rateLimitedCount > 0
+          ? ` (${rateLimitedCount}/${fsResults.length} symbols rate limited, ${completedCount} completed)`
+          : ` (${completedCount}/${fsResults.length} completed)`;
+        throw new Error(`Fine Scan ${fsStatus}${rlSuffix}`);
+      }
 
       // ── Stage 4: Deeper Validation ──
       setPipelineStage('Deeper Validation');
@@ -5044,7 +5352,12 @@ const Agent: React.FC = (): React.ReactElement => {
       registerDeeperValidationRun(dvPromise);
       await dvPromise;
       const dvStatus = scannerStateStore.getState().deeperValidation.status;
-      if (dvStatus !== 'completed') throw new Error(`Deeper Validation ${dvStatus}`);
+      if (dvStatus !== 'completed') {
+        const dvErrDetail = dvErrorMessage
+          ? ` — ${dvErrorMessage}`
+          : ` (status=${dvStatus})`;
+        throw new Error(`Deeper Validation failed${dvErrDetail}`);
+      }
 
       // ── Stage 5: Entry Plan ──
       setPipelineStage('Entry Plan');
@@ -5060,14 +5373,16 @@ const Agent: React.FC = (): React.ReactElement => {
       // ── Stage 6: Exit Scan ──
       setPipelineStage('Exit Scan');
       const currentTradingMode = tradeMode;
+      console.log(`[Pipeline] Exit Scan: mode=${currentTradingMode}, fetching holdings...`);
       await fetchHoldings(currentTradingMode);
-      // Brief delay to let holdings state settle
-      await new Promise(r => setTimeout(r, 500));
+      console.log(`[Pipeline] Exit Scan: holdings after fetch=${holdingsRef.current.length}, mode=${currentTradingMode}`);
       const exitScanMode = localStorage.getItem('pipelineMode') || 'hybrid';
       const exitAutoSubmit = exitScanMode === 'ai';
-      await runExitScan({ autoSubmit: exitAutoSubmit, mode: currentTradingMode });
+      // Pass holdingsOverride from ref to avoid stale closure
+      await runExitScan({ autoSubmit: exitAutoSubmit, mode: currentTradingMode, holdingsOverride: holdingsRef.current });
       const esStatus = scannerStateStore.getState().exitScan.status;
-      if (esStatus !== 'completed') throw new Error(`Exit Scan ${esStatus}`);
+      // 'skipped' means no holdings — valid, not an error
+      if (esStatus !== 'completed' && esStatus !== 'skipped') throw new Error(`Exit Scan ${esStatus}`);
 
       // ── Auto-classify results (keep Exit Scan stage active during classification) ──
       const plans = scannerStateStore.getState().entryPlan.results || [];
@@ -5236,11 +5551,21 @@ const Agent: React.FC = (): React.ReactElement => {
       message.error(msg);
     } finally {
       setPipelineRunning(false);
-      const now = new Date().toISOString();
-      setLastPipelineRun(now);
       const result = pipelineStage === 'failed' ? 'failed' : pipelineStopRequestedRef.current ? 'stopped' : 'success';
-      scannerStateStore.updatePipelineSchedule({ lastRunAt: now, lastRunResult: result });
+      scannerStateStore.updatePipelineSchedule({ lastRunAt: _startTime, lastRunResult: result });
       scheduleNextRun(true);
+      // Sync run completion to backend scheduler so it advances nextRunAt
+      if (opts?.trigger === 'auto_market_session') {
+        const intervalMs = pipelineAutoStatus?.intervalMinutes
+          ? pipelineAutoStatus.intervalMinutes * 60000
+          : SCHEDULE_INTERVALS[pipelineSchedule] || 15 * 60 * 1000;
+        pipelineAutoAPI.saveConfig({
+          enabled: true,
+          intervalMinutes: Math.round(intervalMs / 60000),
+          mode: pipelineMode,
+          lastRunAt: _startTime,
+        }).catch(() => {});
+      }
     }
   };
 
@@ -5299,8 +5624,8 @@ const Agent: React.FC = (): React.ReactElement => {
       }
       if (isScanRunning() || isFineScanRunning() || isDeeperValidationRunning() || isEntryPlanRunning()) return;
 
-      // Fire the pipeline
-      runAIPipelineRef.current?.();
+      // Fire the pipeline (timer-triggered = auto_market_session)
+      runAIPipelineRef.current?.({ trigger: 'auto_market_session' });
     }, 30000); // 30-second poll
   }, [clearScheduleTimer]);
 
@@ -5552,16 +5877,21 @@ const Agent: React.FC = (): React.ReactElement => {
         }
       }
 
+      const dvHttpStatus = err.response?.status;
       const backendMsg = err.response?.data?.message || err.response?.data?.error;
       const backendErrors = err.response?.data?.errors || [];
       const isTimeout = err.code === 'ECONNABORTED' || (err.message || '').includes('timeout');
+      const errSymbols = selected.map((r: any) => r.symbol);
+      const errDetail = backendErrors.length > 0
+        ? backendErrors.slice(0, 3).map((e: any) => `${e.symbol||''}: ${e.message||e}`).join('; ') + (backendErrors.length > 3 ? ` (+${backendErrors.length - 3} more)` : '')
+        : '';
       const errMsg = isConfigError
-        ? (backendMsg || 'Configuration error. Check AI Provider settings.')
+        ? `Config error (HTTP ${dvHttpStatus || '?'}): ${backendMsg || 'Check AI Provider settings.'}`
         : isRateLimit
-          ? 'Rate limited by AI service. Please wait and try again.'
+          ? `Rate Limited (429)${errDetail ? ` — ${errDetail}` : ''}. Backend API throttled. Retry will happen next interval.`
           : isTimeout
-            ? 'Validation is still running longer than expected. Try fewer symbols or retry.'
-            : (backendMsg || ('Validation failed: ' + (err.message || 'Unknown error')));
+            ? `Timed out${errDetail ? ` — ${errDetail}` : ''}. Try fewer symbols or retry.`
+            : `HTTP ${dvHttpStatus || '?'}: ${backendMsg || err.message || 'Unknown error'}${errDetail ? ` — ${errDetail}` : ''} [${errSymbols.slice(0, 5).join(', ')}${errSymbols.length > 5 ? '...' : ''}]`;
       setDeeperValidationStatus('error');
       setDvErrorMessage(errMsg);
       setDvErrors(backendErrors);
@@ -5918,8 +6248,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           <Button type="text" icon={<SettingOutlined />} onClick={() => navigate('/settings/configuration')} style={{ color: '#1890ff', fontWeight: 600, fontSize: 13 }}>{t.agent.manageSettings}</Button>
         </div>
       </div>
-
-      {/* 1.5 Trading Account Mode */}
+{/* 1.5 Trading Account Mode */}
       <div style={{ marginBottom: 24 }}>
         <Card
           className="premium-card"
@@ -6108,7 +6437,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   <Button
                     type="primary"
                     icon={<ThunderboltOutlined />}
-                    onClick={runAIPipeline}
+                    onClick={() => runAIPipeline({ trigger: 'manual' })}
                     disabled={pipelineMode === 'manual' ? false : isAnyScanRunning}
                     style={{ 
                       ...AI_AGENT_PRIMARY_BTN_STYLE, 
@@ -6158,7 +6487,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   {(['ai', 'hybrid', 'manual'] as const).map(m => (
                     <Button key={m} size="small"
                       type={pipelineMode === m ? 'primary' : 'text'}
-                      onClick={() => setPipelineMode(m)}
+                      onClick={() => { setPipelineMode(m); if (pipelineSchedule !== 'off') savePipelineAutoConfig(pipelineSchedule); }}
                       style={{ 
                         flex: 1, 
                         borderRadius: 6, 
@@ -6182,7 +6511,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   {(['off', '15m', '30m', '1h', '2h'] as const).map(s => (
                     <Button key={s} size="small"
                       type={pipelineSchedule === s ? 'primary' : 'text'}
-                      onClick={() => setPipelineSchedule(s)}
+                      onClick={() => { setPipelineSchedule(s); savePipelineAutoConfig(s); }}
                       disabled={pipelineMode === 'manual' && s !== 'off'}
                       style={{ 
                         flex: 1, 
@@ -6208,12 +6537,19 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
               </Col>
               <Col span={7}>
                 <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>{t.agent.status}</div>
+
+                {/* Pipeline mode section — label matches current mode */}
                 <div style={{ fontSize: 12, lineHeight: '20px' }}>
+                  <div style={{ fontSize: 10, color: '#8c8c8c', fontWeight: 600, marginBottom: 2 }}>
+                    {pipelineMode === 'ai' ? 'AI' : pipelineMode === 'hybrid' ? 'Hybrid' : 'Manual'}
+                  </div>
                   {lastPipelineRun ? (
                     <div style={{ color: '#595959' }}>
                       <ClockCircleOutlined style={{ marginRight: 6, opacity: 0.6 }} />
                       {t.agent.lastRunLabel}<Text strong>{new Date(lastPipelineRun).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
-                      {(() => {
+                      {pipelineRunning ? (
+                        <Tag icon={<SyncOutlined spin />} color="processing" bordered={false} style={{ fontSize: 9, marginLeft: 6 }}>{t.agent.statusRunning}</Tag>
+                      ) : (() => {
                         const result = scannerStateStore.getPipelineSchedule().lastRunResult;
                         if (result === 'success') return <Tag color="green" bordered={false} style={{ fontSize: 9, marginLeft: 6 }}>{t.agent.statusOK}</Tag>;
                         if (result === 'failed') return <Tag color="red" bordered={false} style={{ fontSize: 9, marginLeft: 6 }}>{t.agent.statusFailed}</Tag>;
@@ -6222,16 +6558,335 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                       })()}
                     </div>
                   ) : <div style={{ color: '#bfbfbf', fontStyle: 'italic' }}>{t.agent.noData}</div>}
-                  
-                  {nextPipelineRun && pipelineSchedule !== 'off' && (
-                    <div style={{ color: '#1890ff', marginTop: 2 }}>
-                      <ThunderboltOutlined style={{ marginRight: 6 }} /> 
-                      {t.agent.nextRunLabel}<Text strong style={{ color: '#1890ff' }}>{new Date(nextPipelineRun).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
-                    </div>
-                  )}
                 </div>
+
+                {/* Auto section */}
+                {pipelineAutoStatus && (
+                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed #e8e8e8', fontSize: 11, lineHeight: '18px' }}>
+                    <div style={{ fontSize: 10, color: '#8c8c8c', fontWeight: 600, marginBottom: 4 }}>Auto</div>
+
+                    {pipelineAutoStatus.autoStatus === 'Off' ? (
+                      <Tag color="default" bordered={false} style={{ fontSize: 9, fontWeight: 600, margin: 0, lineHeight: '16px', borderRadius: 4 }}>Off</Tag>
+                    ) : (
+                      <>
+                        {/* Tags row: autoStatus + reason + source */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginBottom: 2 }}>
+                          <Tag color={pipelineAutoStatus.autoStatus === 'Armed' ? 'green' : pipelineAutoStatus.autoStatus === 'Running' ? 'processing' : 'orange'}
+                            bordered={false} style={{ fontSize: 9, fontWeight: 600, margin: 0, lineHeight: '16px', borderRadius: 4 }}>
+                            {pipelineAutoStatus.autoStatus}
+                          </Tag>
+                          {!pipelineAutoStatus.marketOpen && (
+                            <>
+                              {pipelineAutoStatus.marketStatusRaw === 'holiday' && (
+                                <Tag color="red" bordered={false} style={{ fontSize: 9, fontWeight: 600, margin: 0, lineHeight: '16px', borderRadius: 4 }}>Holiday Closed</Tag>
+                              )}
+                              {pipelineAutoStatus.marketStatusSource === 'fallback_basic_hours' && (
+                                <Tag color="default" bordered={false} style={{ fontSize: 9, fontWeight: 600, margin: 0, lineHeight: '16px', borderRadius: 4 }}>Fallback</Tag>
+                              )}
+                            </>
+                          )}
+                        </div>
+
+                        {/* Running state */}
+                        {pipelineAutoStatus.autoStatus === 'Running' && (
+                          <div style={{ color: '#722ed1', marginTop: 1 }}>
+                            <SyncOutlined spin style={{ marginRight: 4 }} />Running AI Pipeline...
+                          </div>
+                        )}
+
+                        {/* Run count today */}
+                        <div style={{ color: '#595959', marginTop: 1, fontSize: 10 }}>
+                          Run count today: <Text strong>{pipelineAutoStatus.runCountToday || 0}</Text>
+                        </div>
+
+                        {/* Next auto run: always show when enabled */}
+                        {(() => {
+                          const fmtTime = (iso: string) => {
+                            try {
+                              const d = new Date(iso);
+                              if (!isNaN(d.getTime())) {
+                                return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                              }
+                            } catch (_) { /* ignore */ }
+                            return '';
+                          };
+                          const computeNext = (baseIso: string | null, intervalMin: number) => {
+                            if (!baseIso || !intervalMin) return '';
+                            try {
+                              const dt = new Date(baseIso);
+                              if (!isNaN(dt.getTime())) {
+                                const next = new Date(dt.getTime() + intervalMin * 60000);
+                                return next.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                              }
+                            } catch (_) { /* ignore */ }
+                            return '';
+                          };
+
+                          // Priority 1: frontend lastPipelineRun + intervalMinutes
+                          let displayValue = computeNext(lastPipelineRun, pipelineAutoStatus.intervalMinutes);
+
+                          // Priority 2: backend lastRunStartedAt + intervalMinutes
+                          if (!displayValue) {
+                            displayValue = computeNext(
+                              pipelineAutoStatus.lastRunStartedAt || pipelineAutoStatus.lastRunAt,
+                              pipelineAutoStatus.intervalMinutes
+                            );
+                          }
+
+                          // Priority 3: backend nextAutoRunDisplay or nextAutoRunAt
+                          if (!displayValue) {
+                            displayValue = pipelineAutoStatus.nextAutoRunDisplay
+                              || fmtTime(pipelineAutoStatus.nextAutoRunAt)
+                              || '';
+                          }
+
+                          // Priority 4: scheduler says run now
+                          if (!displayValue && pipelineAutoStatus.nextRunAt === 'now') {
+                            displayValue = 'Ready';
+                          }
+
+                          // Show dash only when stopped and no computed value
+                          if (!displayValue && pipelineAutoStatus.stoppedForToday) {
+                            return (
+                              <div style={{ color: '#8c8c8c', fontSize: 10 }}>
+                                Next auto run: <Text strong>—</Text>
+                              </div>
+                            );
+                          }
+
+                          // Have display → show it
+                          if (displayValue) {
+                            return (
+                              <div style={{ color: displayValue === 'Ready' ? '#1890ff' : '#595959', fontSize: 10 }}>
+                                Next auto run: <Text strong style={{ color: displayValue === 'Ready' ? '#1890ff' : undefined }}>
+                                  {displayValue}
+                                </Text>
+                              </div>
+                            );
+                          }
+
+                          // Enabled but no data yet → show Ready
+                          if (pipelineAutoStatus.enabled) {
+                            return (
+                              <div style={{ color: '#1890ff', fontSize: 10 }}>
+                                Next auto run: <Text strong style={{ color: '#1890ff' }}>Ready</Text>
+                              </div>
+                            );
+                          }
+
+                          return null;
+                        })()}
+
+                        {/* Scheduler */}
+                        <div style={{ color: '#595959', marginTop: 1 }}>
+                          Scheduler: <span style={{ fontWeight: 600, color: pipelineAutoStatus.schedulerRunning ? '#52c41a' : '#ff4d4f' }}>
+                            {pipelineAutoStatus.schedulerRunning ? 'Running' : 'Offline'}
+                          </span>
+                        </div>
+
+                        {/* Background capability note */}
+                        {pipelineAutoStatus.schedulerRunning && pipelineAutoStatus.enabled && (
+                          <div style={{ color: '#8c8c8c', fontSize: 9, marginTop: 2, lineHeight: 1.4 }}>
+                            Background: Limited
+                            <Tooltip title="Backend scheduler runs a limited market scanner. Full 6-stage pipeline (Continue Scan, Fine Scan, Deeper Validation, Entry Plan, Exit Scan) requires this page to stay open.">
+                              <InfoCircleOutlined style={{ marginLeft: 4, fontSize: 10, color: '#bfbfbf' }} />
+                            </Tooltip>
+                          </div>
+                        )}
+
+                      </>
+                    )}
+                  </div>
+                )}
               </Col>
             </Row>
+
+            {/* Market Auto Run Section — compact */}
+            <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed #e8e8e8' }}>
+              <Row gutter={[12, 6]} align="middle">
+                {/* Left: title + toggle + description */}
+                <Col flex="300px">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: '#262626', whiteSpace: 'nowrap' }}>Market Auto Run</span>
+                    <Switch
+                      size="small"
+                      checked={pipelineSchedule !== 'off'}
+                      loading={pipelineAutoLoading}
+                      onChange={(checked) => {
+                        if (checked) {
+                          const defaultSchedule = pipelineSchedule === 'off' ? '15m' : pipelineSchedule;
+                          setPipelineSchedule(defaultSchedule);
+                          savePipelineAutoConfig(defaultSchedule);
+                        } else {
+                          setPipelineSchedule('off');
+                          savePipelineAutoConfig('off');
+                        }
+                      }}
+                    />
+                    <Tag
+                      color={pipelineSchedule !== 'off' ? 'green' : 'default'}
+                      bordered={false}
+                      style={{ fontSize: 9, fontWeight: 700, margin: 0, borderRadius: 4 }}
+                    >
+                      {pipelineSchedule !== 'off' ? 'On' : 'Off'}
+                    </Tag>
+                  </div>
+                  <div style={{ fontSize: 10, color: '#8c8c8c', marginTop: 1, lineHeight: '14px' }}>
+                    Runs AI Pipeline automatically during US market hours only.
+                  </div>
+                </Col>
+
+                {/* Right: compact status (only when enabled) */}
+                <Col flex="auto">
+                  {pipelineSchedule === 'off' ? (
+                    <span style={{ fontSize: 10, color: '#8c8c8c', fontStyle: 'italic' }}>Auto market pipeline off</span>
+                  ) : pipelineAutoStatus && pipelineAutoStatus.autoStatus === 'Off' ? (
+                    <span style={{ fontSize: 10, color: '#8c8c8c', fontStyle: 'italic' }}>Auto market pipeline off</span>
+                  ) : pipelineAutoStatus && !pipelineAutoStatus.marketOpen ? (
+                    /* Holiday / Weekend / Closed — compact pill, no progress bar */
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <Tag
+                        color={pipelineAutoStatus.marketStatusRaw === 'holiday' ? 'red' : 'orange'}
+                        bordered={false}
+                        style={{ fontSize: 10, fontWeight: 700, margin: 0, borderRadius: 4, lineHeight: '20px' }}
+                      >
+                        {pipelineAutoStatus.marketStatusRaw === 'holiday'
+                          ? 'HOLIDAY — NO AUTO RUN'
+                          : pipelineAutoStatus.marketStatusRaw === 'closed' ? 'MARKET CLOSED — WAITING' : 'CLOSED'}
+                      </Tag>
+                      {pipelineAutoStatus.progress?.label && (
+                        <span style={{ fontSize: 10, color: '#8c8c8c' }}>{pipelineAutoStatus.progress.label}</span>
+                      )}
+                    </div>
+                  ) : pipelineAutoStatus && pipelineAutoStatus.autoStatus === 'Armed' ? (
+                    /* Armed — no progress bar here; status shown in scheduler area above */
+                    null
+                  ) : pipelineAutoStatus && pipelineAutoStatus.autoStatus === 'Running' ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <SyncOutlined spin style={{ color: '#722ed1' }} />
+                      <span style={{ fontSize: 11, color: '#722ed1', fontWeight: 600 }}>Running AI Pipeline...</span>
+                    </div>
+                  ) : pipelineAutoStatus && pipelineAutoStatus.autoStatus === 'Error' ? (
+                    <Alert
+                      type="error"
+                      showIcon
+                      message={pipelineAutoStatus.lastError || 'Auto pipeline error'}
+                      style={{ borderRadius: 6, fontSize: 10, padding: '2px 8px' }}
+                    />
+                  ) : null}
+                </Col>
+              </Row>
+            </div>
+
+            {/* Next 15 Days Market Schedule — expandable */}
+            {pipelineSchedule !== 'off' && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed #e8e8e8' }}>
+                <div
+                  onClick={() => setPipelineAutoScheduleExpanded(!pipelineAutoScheduleExpanded)}
+                  style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#8c8c8c', userSelect: 'none' }}
+                >
+                  <span style={{ fontSize: 10 }}>{pipelineAutoScheduleExpanded ? '▼' : '▶'}</span>
+                  <span style={{ fontWeight: 600 }}>Next 15 Days Market Schedule</span>
+                  {pipelineAutoScheduleLoading && <Spin size="small" style={{ marginLeft: 4 }} />}
+                </div>
+                {pipelineAutoScheduleExpanded && (
+                  <div style={{ marginTop: 8, maxHeight: 320, overflowY: 'auto' }}>
+                    {pipelineAutoScheduleError ? (
+                      <div style={{ fontSize: 10, color: '#ff4d4f', padding: '8px 8px' }}>
+                        {pipelineAutoScheduleError}
+                      </div>
+                    ) : pipelineAutoSchedule && pipelineAutoSchedule.length > 0 ? (
+                      <>
+                        {pipelineAutoSchedule.map((day: any, i: number) => {
+                          const statusColor = day.status === 'open' ? '#52c41a' :
+                                              day.status === 'early_close' ? '#faad14' :
+                                              day.status === 'holiday' ? '#ff4d4f' :
+                                              day.status === 'weekend' ? '#8c8c8c' : '#8c8c8c';
+                          const bgColor = i % 2 === 0 ? '#fafafa' : 'transparent';
+                          const autoRunText = day.autoRun ? 'Will run' : 'Will not run';
+                          const autoRunColor = day.autoRun ? '#52c41a' : '#8c8c8c';
+                          const hours = day.openTime && day.closeTime ? `${day.openTime}–${day.closeTime}` : '—';
+                          return (
+                            <div key={day.date} style={{
+                              display: 'flex', alignItems: 'center', gap: 6,
+                              padding: '5px 8px', fontSize: 10, lineHeight: '16px',
+                              background: bgColor, borderRadius: 4, marginBottom: 2
+                            }}>
+                              <span style={{ minWidth: 80, fontWeight: 600, color: '#262626' }}>
+                                {day.weekday?.slice(0, 3)} {day.date?.slice(5)}
+                              </span>
+                              <Tag bordered={false} style={{ fontSize: 9, margin: 0, lineHeight: '16px', borderRadius: 3, minWidth: 48, textAlign: 'center', background: statusColor + '18', color: statusColor, fontWeight: 700 }}>
+                                {day.status === 'early_close' ? 'Early Cls' : day.status === 'open' ? 'Open' : day.status === 'holiday' ? 'Holiday' : day.status === 'weekend' ? 'Weekend' : day.status || '—'}
+                              </Tag>
+                              <span style={{ color: '#595959', minWidth: 58, fontSize: 9 }}>{hours}</span>
+                              <span style={{ color: autoRunColor, fontWeight: 600, minWidth: 50, fontSize: 9 }}>{autoRunText}</span>
+                              <span style={{ color: '#8c8c8c', fontSize: 8, minWidth: 40 }}>
+                                {day.source === 'alpaca_calendar' ? 'Alpaca' : day.source === 'fallback_basic_hours' ? 'Fallbk' : ''}
+                              </span>
+                              {day.reason && (
+                                <span style={{ color: '#8c8c8c', fontSize: 9, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                                  {day.reason}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                        <div style={{ fontSize: 9, color: '#8c8c8c', marginTop: 4, paddingLeft: 8 }}>
+                          Source: {pipelineAutoScheduleSource === 'alpaca_calendar' ? 'Alpaca Calendar' : 'Fallback basic hours'} / {pipelineAutoScheduleWarning && <span style={{ color: '#faad14' }}>{pipelineAutoScheduleWarning}</span>}
+                        </div>
+                      </>
+                    ) : (
+                      <div style={{ fontSize: 10, color: '#8c8c8c', fontStyle: 'italic', padding: '8px 8px' }}>
+                        {pipelineAutoScheduleLoading ? 'Loading...' : 'No schedule data available.'}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Auto Run History — expandable */}
+            {pipelineAutoStatus && pipelineSchedule !== 'off' && pipelineAutoHistory.length > 0 && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed #e8e8e8' }}>
+                <div
+                  onClick={() => setPipelineAutoHistoryExpanded(!pipelineAutoHistoryExpanded)}
+                  style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#8c8c8c', userSelect: 'none' }}
+                >
+                  <span style={{ fontSize: 10 }}>{pipelineAutoHistoryExpanded ? '▼' : '▶'}</span>
+                  <span style={{ fontWeight: 600 }}>Recent Auto Runs</span>
+                  <Tag bordered={false} style={{ fontSize: 9, margin: 0, lineHeight: '16px', borderRadius: 4, background: '#f0f2f5', color: '#595959' }}>
+                    {pipelineAutoHistory.length}
+                  </Tag>
+                </div>
+                {pipelineAutoHistoryExpanded && (
+                  <div style={{ marginTop: 8 }}>
+                    {pipelineAutoHistory.map((entry: any, i: number) => (
+                      <div key={i} style={{
+                        display: 'flex', alignItems: 'center', gap: 8,
+                        padding: '4px 8px', fontSize: 10, lineHeight: '18px',
+                        background: i % 2 === 0 ? '#fafafa' : 'transparent',
+                        borderRadius: 4, marginBottom: 2
+                      }}>
+                        <Tag bordered={false} style={{ fontSize: 9, margin: 0, lineHeight: '16px', borderRadius: 3, minWidth: 36, textAlign: 'center' }}
+                          color={entry.status === 'success' ? 'green' : entry.status === 'failed' ? 'red' : entry.status === 'blocked' ? 'orange' : entry.status === 'skipped' ? 'default' : 'orange'}>
+                          {entry.status || '—'}
+                        </Tag>
+                        <span style={{ color: '#595959', minWidth: 50 }}>{entry.trigger_type || '—'}</span>
+                        <span style={{ color: '#8c8c8c' }}>
+                          {entry.started_at ? new Date(entry.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
+                        </span>
+                        <span style={{ color: '#8c8c8c' }}>
+                          {entry.duration_seconds ? `${entry.duration_seconds}s` : '—'}
+                        </span>
+                        <span style={{ color: '#595959', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {entry.reason || entry.error || ''}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {pipelineStage !== 'idle' && (
               <div style={{ marginTop: 24, paddingTop: 20, borderTop: '1px dashed #e8e8e8' }}>
@@ -6523,20 +7178,31 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
               }
             />
           ) : (
-          <div className="execution-table-container">
-            <style>{`
-              .execution-table .ant-table-thead > tr > th { background: #f9fafb !important; padding: 12px 8px !important; }
-              .execution-row:hover > td { background-color: #fffdf0 !important; }
-              .execution-row-expanded > td { background-color: #f8f9fb !important; }
-            `}</style>
-            <Table
-              className="execution-table"
-              dataSource={aiExecutionList}
-              rowKey={(r: any) => r.symbol + (r.addedAt || '')}
-              size="middle"
-              pagination={false}
-              scroll={{ x: 2000 }}
-              style={{ fontSize: 12 }}
+            <div className="execution-table-container" style={{ width: '100%', overflowX: 'auto', paddingBottom: '12px' }}>
+              <style>{`
+                .execution-table .ant-table-thead > tr > th { 
+                  background: #f8fafc !important; 
+                  padding: 16px 12px !important; 
+                  font-size: 10.5px !important; 
+                  text-transform: uppercase !important; 
+                  letter-spacing: 0.8px !important; 
+                  color: #94a3b8 !important; 
+                  font-weight: 800 !important; 
+                  border-bottom: 1px solid rgba(15, 23, 42, 0.06) !important;
+                }
+                .execution-table .ant-table-tbody > tr > td { padding: 12px !important; height: 68px; border-bottom: 1px solid rgba(15, 23, 42, 0.04) !important; }
+                .execution-row:hover > td { background-color: #fffdf0 !important; }
+                .execution-row-expanded > td { background-color: #f8fafc !important; }
+                .ant-table-fixed-right { background: #fff !important; }
+              `}</style>
+              <Table
+                className="execution-table"
+                dataSource={aiExecutionList}
+                rowKey={(r: any) => r.symbol + (r.addedAt || '')}
+                size="small"
+                pagination={false}
+                scroll={{ x: 1600 }}
+                style={{ fontSize: '12px' }}
               rowClassName={(record) => record.id === expandedRows[0] ? 'execution-row execution-row-expanded' : 'execution-row'}
               expandable={{
                 expandedRowRender: (record: any) => {
@@ -7533,8 +8199,11 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
         progressText={detailedScanStatus.currentStatus === 'scanning' ? `${detailedScanStatus.processedCount}/${detailedScanStatus.totalCount}` : undefined}
         summaryChips={marketScannerResults.length > 0 ? [
           { label: t.agent.completed, value: marketScannerResults.length },
-          { label: 'AI', value: marketScannerResults.filter((r: any) => r.aiCalled).length, color: '#1890ff' },
-          { label: t.agent.localRules, value: marketScannerResults.filter((r: any) => !r.aiCalled).length },
+          { label: 'AI Success', value: marketScannerResults.filter((r: any) => r.aiCalled && r.analysisStatus !== 'failed').length, color: '#1890ff' },
+          { label: t.agent.localRules, value: marketScannerResults.filter((r: any) => !r.aiCalled && r.analysisStatus !== 'failed').length },
+          ...(marketScannerResults.filter((r: any) => r.analysisStatus === 'failed').length > 0
+            ? [{ label: 'Need Data', value: marketScannerResults.filter((r: any) => r.analysisStatus === 'failed').length, color: '#ff4d4f' }]
+            : []),
         ] : undefined}
         actionButton={
           <Tooltip title={pipelineRunning && detailedScanStatus.currentStatus !== 'scanning' ? t.agent.pipelineDisabled : ''}>
@@ -7657,7 +8326,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
               </div>
               <Text type="secondary" style={{ fontSize: '13px' }}>
                 {marketScannerResults.length > 0
-                  ? `${marketScannerResults.filter((r: any) => r.aiCalled).length} AI / ${marketScannerResults.filter((r: any) => !r.aiCalled).length} ${t.agent.localRules}`
+                  ? `${marketScannerResults.filter((r: any) => r.aiCalled && r.analysisStatus !== 'failed').length} AI · ${marketScannerResults.filter((r: any) => !r.aiCalled && r.analysisStatus !== 'failed').length} ${t.agent.localRules}${marketScannerResults.filter((r: any) => r.analysisStatus === 'failed').length > 0 ? ` · ${marketScannerResults.filter((r: any) => r.analysisStatus === 'failed').length} Need Data` : ''}`
                   : configStatus.aiTestStatus === 'connected' ? t.agent.connected :
                     configStatus.aiTestStatus === 'saved' ? t.agent.notTested :
                     configStatus.aiTestStatus === 'error' ? t.agent.error :
@@ -7884,6 +8553,18 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     key: 'trendScore',
                     width: 140,
                     render: (score: number, record: any) => {
+                      const hasScore = score != null || record.overallScore != null;
+                      if (!hasScore) {
+                        return (
+                          <div style={{ width: '100%' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                              <span style={{ fontSize: '12px', fontWeight: 700, color: '#bfbfbf' }}>—</span>
+                              <span style={{ fontSize: '10px', color: '#8c8c8c' }}>{t.agent.confidence}: —</span>
+                            </div>
+                            <Progress percent={0} size="small" strokeColor="#d9d9d9" showInfo={false} style={{ margin: 0 }} />
+                          </div>
+                        );
+                      }
                       const displayScore = score || record.overallScore || 0;
                       const conf = record.trendConfidence ? (record.trendConfidence * (record.trendConfidence <= 1 ? 100 : 1)).toFixed(0) : '0';
                       const scoreColor = displayScore >= 70 ? '#52c41a' : displayScore >= 40 ? '#faad14' : '#ff4d4f';
@@ -7893,11 +8574,11 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                             <span style={{ fontSize: '12px', fontWeight: 700, color: scoreColor }}>{displayScore.toFixed(0)}</span>
                             <span style={{ fontSize: '10px', color: '#8c8c8c' }}>{t.agent.confidence}: {conf}%</span>
                           </div>
-                          <Progress 
-                            percent={displayScore} 
-                            size="small" 
-                            strokeColor={scoreColor} 
-                            showInfo={false} 
+                          <Progress
+                            percent={displayScore}
+                            size="small"
+                            strokeColor={scoreColor}
+                            showInfo={false}
                             style={{ margin: 0 }}
                           />
                         </div>
@@ -7910,11 +8591,12 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     key: 'price',
                     width: 120,
                     render: (price: number, record: any) => {
-                      const changePct = record.changePct || 0;
-                      const changeColor = changePct >= 0 ? '#52c41a' : '#ff4d4f';
+                      const hasPrice = price != null && price > 0;
+                      const changePct = (record.changePct != null) ? record.changePct : (record.changePercent != null ? record.changePercent : null);
+                      const changeColor = changePct != null ? (changePct >= 0 ? '#52c41a' : '#ff4d4f') : '#bfbfbf';
                       return (
                         <div>
-                          <div className="scanner-price-text">${(price || 0).toFixed(2)}</div>
+                          <div className="scanner-price-text">{hasPrice ? `$${price.toFixed(2)}` : '—'}</div>
                           <div style={{
                             display: 'inline-flex',
                             alignItems: 'center',
@@ -7923,12 +8605,18 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                             color: changeColor,
                             fontWeight: 600,
                             padding: '2px 6px',
-                            backgroundColor: `${changeColor}10`,
+                            backgroundColor: changePct != null ? `${changeColor}10` : '#f5f5f5',
                             borderRadius: '4px',
                             marginTop: 4
                           }}>
-                            <span>{changePct >= 0 ? '▲' : '▼'}</span>
-                            <span>{changePct >= 0 ? '+' : ''}{changePct.toFixed(2)}%</span>
+                            {changePct != null ? (
+                              <>
+                                <span>{changePct >= 0 ? '▲' : '▼'}</span>
+                                <span>{changePct >= 0 ? '+' : ''}{changePct.toFixed(2)}%</span>
+                              </>
+                            ) : (
+                              <span>—</span>
+                            )}
                           </div>
                         </div>
                       );
@@ -7940,27 +8628,41 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     key: 'volume',
                     width: 130,
                     render: (volume: number, record: any) => {
-                      const status = record.volumeStatus || 'Normal';
+                      const hasVolume = volume != null && volume > 0;
+                      const status = (record.volumeStatus != null && record.analysisStatus !== 'failed') ? record.volumeStatus : null;
                       const statusColor = status === 'High' ? '#ff4d4f' : status === 'Low' ? '#52c41a' : '#faad14';
                       const volumeStatusMap: Record<string, string> = { 'High': t.agent.volumeHigh, 'Normal': t.agent.volumeNormal, 'Low': t.agent.volumeLow };
                       return (
                         <div>
                           <div style={{ fontSize: '13px', fontWeight: 600, color: '#262626' }}>
-                            {marketDataService.formatVolume(volume)}
+                            {hasVolume ? marketDataService.formatVolume(volume) : '—'}
                           </div>
                           <div style={{ marginTop: 4 }}>
-                            <span style={{
-                              fontSize: '10px',
-                              color: statusColor,
-                              fontWeight: 700,
-                              textTransform: 'uppercase',
-                              padding: '1px 6px',
-                              borderRadius: '4px',
-                              backgroundColor: `${statusColor}10`,
-                              border: `1px solid ${statusColor}30`
-                            }}>
-                              {volumeStatusMap[status] || status}
-                            </span>
+                            {status ? (
+                              <span style={{
+                                fontSize: '10px',
+                                color: statusColor,
+                                fontWeight: 700,
+                                textTransform: 'uppercase',
+                                padding: '1px 6px',
+                                borderRadius: '4px',
+                                backgroundColor: `${statusColor}10`,
+                                border: `1px solid ${statusColor}30`
+                              }}>
+                                {volumeStatusMap[status] || status}
+                              </span>
+                            ) : (
+                              <span style={{
+                                fontSize: '10px',
+                                color: '#bfbfbf',
+                                fontWeight: 700,
+                                textTransform: 'uppercase',
+                                padding: '1px 6px',
+                                borderRadius: '4px',
+                                backgroundColor: '#f5f5f5',
+                                border: '1px solid #d9d9d9'
+                              }}>N/A</span>
+                            )}
                           </div>
                         </div>
                       );
@@ -7999,19 +8701,32 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   {
                     title: t.agent.colDataQual,
                     key: 'dataQuality',
-                    width: 100,
+                    width: 110,
                     render: (record: any) => {
+                      const isFailed = record.analysisStatus === 'failed';
                       const hasPrice = record.price != null && record.price > 0;
                       const hasVolume = record.volume != null && record.volume > 0;
-                      const hasTrend = record.trendLabel != null;
-                      const dqOk = hasPrice && hasVolume && hasTrend;
-                      const dq = dqOk ? t.agent.goodData : t.agent.partialData;
-                      const dqColor = dqOk ? '#52c41a' : '#faad14';
+                      const hasTrend = record.trendLabel != null && record.trendLabel !== 'Need Data';
+                      const dqOk = hasPrice && hasVolume && hasTrend && !isFailed;
+                      let dq: string;
+                      let dqColor: string;
+                      if (isFailed) {
+                        dq = 'Failed';
+                        dqColor = '#ff4d4f';
+                      } else if (dqOk) {
+                        dq = t.agent.goodData;
+                        dqColor = '#52c41a';
+                      } else {
+                        dq = t.agent.partialData;
+                        dqColor = '#faad14';
+                      }
+                      const sourceLabel = isFailed ? (record.aiSource === 'Failed' ? 'Local fallback' : record.aiSource || 'Failed')
+                        : record.aiCalled ? record.aiSource : t.agent.localLabel;
                       return (
                         <div>
-                          <div style={{ 
-                            fontSize: '10px', 
-                            fontWeight: 700, 
+                          <div style={{
+                            fontSize: '10px',
+                            fontWeight: 700,
                             color: dqColor,
                             display: 'flex',
                             alignItems: 'center',
@@ -8021,7 +8736,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                             {dq}
                           </div>
                           <div style={{ fontSize: '10px', color: '#bfbfbf', marginTop: 2 }}>
-                            {record.aiCalled ? record.aiSource : t.agent.localLabel}
+                            {sourceLabel}
                           </div>
                         </div>
                       );
@@ -9629,677 +10344,617 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
               )}
 
               {/* Main table */}
-              <Table
-                dataSource={entryPlanResults}
-                rowKey="symbol"
-                size="small"
-                pagination={false}
-                expandable={{
-                  expandedRowKeys: expandedEntryPlanSymbol ? [expandedEntryPlanSymbol] : [],
-                  onExpand: (expanded, record) => {
-                    setExpandedEntryPlanSymbol(expanded ? record.symbol : null);
-                  },
-                  expandedRowRender: (record) => {
-                    const ep = record;
-                    const rg = ep.hardRiskGate || {};
-                    const dq = ep.dataQuality || 'PARTIAL';
-                    const ds = ep.dataSources || {};
-                    const ed = ep.executionDetails || {};
-                    const fontStk = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
-
-                    const fmtPrice = (v: number | null | undefined) => v != null ? `$${v.toFixed(2)}` : '—';
-                    const fmtPct = (v: number | null | undefined) => v != null ? `${v.toFixed(1)}%` : '—';
-                    const fmtRR = (v: number | null | undefined) => v != null ? `${v.toFixed(1)}:1` : '—';
-                    const fmtDollars = (v: number | null | undefined) => v != null ? `$${v.toFixed(0)}` : '—';
-                    const fmtShares = (v: number | null | undefined) => v != null ? v.toLocaleString() : '—';
-
-                    const sym = record.symbol || '—';
-                    const setupLabel = ep.setup || '—';
-                    const aiDecision = ep.aiDecision || '—';
-                    const finalAction = ep.finalAction || '—';
-                    const confidence = ep.confidence || ep.aiConfidence || '—';
-                    const tradeReadiness = ep.tradeReadiness || '—';
-
-                    const aiColor = (v: string) => v === 'BUY' ? '#52c41a' : v === 'WATCH' ? '#d48806' : v === 'SKIP' ? '#e84749' : undefined;
-                    const dqColor = dq === 'GOOD' ? '#52c41a' : dq === 'PARTIAL' ? '#fa8c16' : '#ff4d4f';
-                    const trColor = tradeReadiness === 'READY' ? '#52c41a' : tradeReadiness === 'WAIT' ? '#fa8c16' : '#ff4d4f';
-                    const rgColor = rg.status === 'PASS' ? '#52c41a' : rg.status === 'REVIEW' ? '#fa8c16' : '#ff4d4f';
-                    const faColor = finalAction === 'BUY_READY' ? '#52c41a' : finalAction === 'WAIT_FOR_ENTRY' ? '#fa8c16' : '#ff4d4f';
-
-                    const curPrice = ep.currentPrice || ep.price;
-                    const loPrice = ep.entryLow || ep.entryZoneLow;
-                    const hiPrice = ep.entryHigh || ep.entryZoneHigh;
-                    let distText = '—';
-                    let distColor = '#8c8c8c';
-                    if (curPrice && loPrice && hiPrice) {
-                      if (curPrice < loPrice) {
-                        const diff = loPrice - curPrice;
-                        const pct = (diff / curPrice) * 100;
-                        distText = t.agent.belowEntry.replace('${diff}', `$${diff.toFixed(2)}`).replace('{pct}', pct.toFixed(1)); // eslint-disable-line no-template-curly-in-string
-                        distColor = '#fa8c16';
-                      } else if (curPrice > hiPrice) {
-                        const diff = curPrice - hiPrice;
-                        const pct = (diff / hiPrice) * 100;
-                        distText = t.agent.aboveEntry.replace('${diff}', `$${diff.toFixed(2)}`).replace('{pct}', pct.toFixed(1)); // eslint-disable-line no-template-curly-in-string
-                        distColor = '#fa8c16';
-                      } else {
-                        distText = t.agent.inEntryZone;
-                        distColor = '#52c41a';
-                      }
-                    }
-
-                    const SectionHeader = ({ title, color }: { title: string; color?: string }) => (
-                      <div style={{ 
-                        fontSize: '12px', 
-                        fontWeight: 700, 
-                        color: color || '#595959', 
-                        textTransform: 'uppercase', 
-                        letterSpacing: '0.6px', 
-                        marginBottom: '10px', 
-                        paddingBottom: '6px', 
-                        borderBottom: '1px solid #f0f2f5',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px'
-                      }}>
-                        {title}
-                      </div>
-                    );
-
-                    const Label = ({ text }: { text: string }) => (
-                      <span style={{ fontSize: '11px', color: '#8c8c8c', fontWeight: 500 }}>{text}</span>
-                    );
-                    
-                    const Value = ({ v, bold, color, subText }: { v: string; bold?: boolean; color?: string; subText?: string }) => (
-                      <div style={{ display: 'flex', flexDirection: 'column' }}>
-                        <span style={{ fontSize: '12px', fontWeight: bold ? 700 : 500, color: color || '#262626' }}>{v}</span>
-                        {subText && <span style={{ fontSize: '10px', color: '#8c8c8c', marginTop: '1px' }}>{subText}</span>}
-                      </div>
-                    );
-
-                    const ActionBadge = ({ label, color }: { label: string; color: string }) => (
-                      <span style={{ 
-                        backgroundColor: `${color}15`, 
-                        color: color, 
-                        padding: '2px 8px', 
-                        borderRadius: '4px', 
-                        fontSize: '10px', 
-                        fontWeight: 700,
-                        border: `1px solid ${color}30`,
-                        textTransform: 'uppercase'
-                      }}>
-                        {label}
-                      </span>
-                    );
-
-                    return (
-                      <div style={{ 
-                        padding: '16px', 
-                        background: '#f8fafc', 
-                        border: '1px solid #e5e7eb', 
-                        borderRadius: '10px', 
-                        fontFamily: fontStk, 
-                        lineHeight: '1.4',
-                        boxShadow: '0 1px 3px rgba(0,0,0,0.02)'
-                      }}>
-                        {/* ── Professional Header ── */}
-                        <div style={{ 
-                          display: 'flex', 
-                          justifyContent: 'space-between', 
-                          alignItems: 'center', 
-                          paddingBottom: '12px', 
-                          borderBottom: '1px solid #e5e7eb', 
-                          marginBottom: '16px' 
-                        }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                            <span style={{ fontSize: '18px', fontWeight: 800, color: '#111827', letterSpacing: '-0.2px' }}>{sym}</span>
-                            <Tag color={setupLabel.includes('Pullback') ? 'gold' : setupLabel.includes('Breakout') ? 'purple' : setupLabel.includes('Range') ? 'green' : 'blue'} 
-                                 style={{ fontSize: '11px', fontWeight: 600, borderRadius: '4px', margin: 0 }}>
-                              {setupLabel}
-                            </Tag>
-                            <Tag color={aiDecision === 'BUY' ? 'success' : aiDecision === 'WATCH' ? 'warning' : 'error'} 
-                                 style={{ fontSize: '11px', fontWeight: 700, borderRadius: '4px', margin: 0 }}>
-                              AI: {aiDecision}
-                            </Tag>
-                            <span style={{ fontSize: '11px', fontWeight: 600, color: '#6b7280', backgroundColor: '#f3f4f6', padding: '2px 8px', borderRadius: '4px' }}>
-                              Confidence {confidence}%
-                            </span>
-                          </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                            <div style={{ display: 'flex', gap: '6px', marginRight: '8px' }}>
-                              <ActionBadge label={`Data: ${dq}`} color={dqColor} />
-                              <ActionBadge label={`Gate: ${rg.status || 'N/A'}`} color={rgColor} />
-                              <ActionBadge label={finalAction} color={faColor} />
-                            </div>
-                            <Space size={8}>
-                              <Button
-                                size="middle"
-                                type={finalAction === 'BUY_READY' ? 'primary' : finalAction === 'READY_REVIEW' ? 'primary' : 'default'}
-                                ghost={finalAction === 'READY_REVIEW' && pipelineMode !== 'ai'}
-                                danger={finalAction === 'BLOCKED_BY_RISK'}
-                                disabled={finalAction === 'SKIP' || finalAction === 'BLOCKED_BY_RISK' || dq === 'POOR'}
-                                onClick={() => handleEntryPlanAction(ep)}
-                                style={{
-                                  fontSize: '12px',
-                                  fontWeight: 600,
-                                  borderRadius: '6px',
-                                  height: '32px'
-                                }}
-                              >
-                                {finalAction === 'BUY_READY' ? t.agent.epExecuteTrade : finalAction === 'READY_REVIEW' ? t.agent.reviewAndExecute : finalAction === 'WAIT_FOR_ENTRY' ? t.agent.epMonitorEntry : finalAction === 'SKIP' ? t.agent.planSkipped : t.agent.epRiskBlocked}
-                              </Button>
-                              <Button
-                                size="middle"
-                                icon={isInWatchlist(ep.symbol) ? <CheckOutlined /> : <PlusOutlined />}
-                                onClick={() => addToWatchlist(ep)}
-                                style={{
-                                  fontSize: '12px', 
-                                  fontWeight: 600,
-                                  borderRadius: '6px',
-                                  height: '32px',
-                                  color: isInWatchlist(ep.symbol) ? '#52c41a' : '#2563eb',
-                                  borderColor: isInWatchlist(ep.symbol) ? '#52c41a' : '#2563eb',
-                                  backgroundColor: isInWatchlist(ep.symbol) ? '#f0fdf4' : '#eff6ff'
-                                }}
-                              >
-                                {isInWatchlist(ep.symbol) ? t.agent.inWatchlist : t.agent.addToWatchlist}
-                              </Button>
-                            </Space>
-                          </div>
-                        </div>
-
-                        {/* ── 4-Card Balanced Grid ── */}
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
-
-                          {/* A. Execution Plan */}
-                          <div style={{ background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
-                            <SectionHeader title={t.agent.executionPlan} />
-                            <div style={{ display: 'grid', gridTemplateColumns: '95px 1fr', gap: '8px 12px', alignItems: 'baseline' }}>
-                              <Label text={t.agent.epCurrentPrice} /><Value v={curPrice != null ? `$${curPrice.toFixed(2)}` : '—'} bold color="#111827" />
-                              <Label text={t.agent.distance} /><Value v={distText} color={distColor} bold />
-                              <Label text={t.agent.entryZone} /><Value v={loPrice != null ? `$${loPrice.toFixed(2)} – $${(hiPrice ?? 0).toFixed(2)}` : '—'} bold color="#111827" />
-                              <Label text={t.agent.epTrigger} /><Value v={ep.triggerCondition || '—'} color="#4b5563" />
-                              <Label text={t.agent.stopLoss} /><Value v={fmtPrice(ep.stopLoss)} bold color="#dc2626" subText={`${ep.stopLossPct != null ? fmtPct(ep.stopLossPct) : 'N/A'} ${t.agent.fromEntry} ${ep.stopSource || 'entry'}`} />
-                              <Label text={t.agent.epTargets} />
-                              <div style={{ display: 'flex', gap: '16px' }}>
-                                <Value v={fmtPrice(ep.takeProfit1)} bold color="#16a34a" subText={`T1 (R/R ${fmtRR(ep.riskReward1)})`} />
-                                <Value v={fmtPrice(ep.takeProfit2)} color="#16a34a" subText={`T2 (R/R ${fmtRR(ep.riskReward2)})`} />
-                              </div>
-                              <Label text={t.agent.epInvalidation} /><Value v={ep.invalidationCondition || '—'} color="#dc2626" />
-                              <Label text={t.agent.orderTypeSuggestion} /><Value v={ed.orderTypeSuggestion || 'N/A'} bold color={ed.orderTypeSuggestion === 'Not Available' ? '#dc2626' : '#16a34a'} subText={ed.orderTypeReason} />
-                            </div>
-                          </div>
-
-                          {/* B. Position & Risk */}
-                          <div style={{ background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
-                            <SectionHeader title={t.agent.positionRisk} />
-                            <div style={{ display: 'grid', gridTemplateColumns: '95px 1fr', gap: '8px 12px', alignItems: 'baseline' }}>
-                              <Label text={t.agent.epPortfolio} /><Value v={fmtDollars(ep.positionCapital)} bold />
-                              <Label text={t.agent.epBuyingPower} /><Value v={fmtDollars(ep.accountBuyingPower)} />
-                              <Label text={t.agent.riskBudget} /><Value v={fmtDollars(ep.riskBudget)} subText={`${fmtPct(ep.riskPct)} ${t.agent.ofRiskBudget}`} />
-                              <Label text={t.agent.actualRisk} /><Value v={fmtDollars(ep.riskDollars)} bold color="#dc2626" />
-                              <Label text={t.agent.riskUsed} /><Value v={ep.riskUsedPct != null ? `${ep.riskUsedPct.toFixed(1)}%` : (ep.riskBudget > 0 ? `${(ep.riskDollars / ep.riskBudget * 100).toFixed(1)}%` : '—')} bold color={ep.riskUsedPct > 80 ? '#dc2626' : '#d97706'} subText={t.agent.ofRiskBudget} />
-                              <Label text={t.agent.size} />
-                              <div style={{ display: 'flex', gap: '16px' }}>
-                                <Value v={fmtShares(ep.positionSize || ep.positionSizeShares)} bold subText={t.agent.sharesLabel} />
-                                <Value v={fmtDollars(ep.positionValue || ep.positionSizeDollars)} bold subText={t.agent.estValue} />
-                              </div>
-                              <Label text={t.agent.capStatus} /><Value v={ep.positionCapStatus || (ep.positionCapped ? `${t.agent.cappedAt} ${fmtPct(ep.positionPct)}` : `${t.agent.okAt.replace('{pct}', fmtPct(ep.positionPct))}`)} bold color={ep.positionCapped ? '#d97706' : '#16a34a'} />
-                            </div>
-                          </div>
-
-                          {/* C. Decision */}
-                          <div style={{ background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
-                            <SectionHeader title={t.agent.decision} />
-                            <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: '8px 12px', alignItems: 'baseline' }}>
-                              <Label text={t.agent.epAIDecision} /><Value v={ep.aiDecision || '—'} color={aiColor(ep.aiDecision)} bold />
-                              <Label text={t.agent.epConfidence} /><Value v={`${confidence}%`} bold />
-                              <Label text={t.agent.epRiskGate} /><Value v={rg.status || 'N/A'} color={rgColor} bold />
-                              <Label text={t.agent.finalAction} /><Value v={finalAction} color={faColor} bold />
-                              <Label text={t.agent.tradeReadinessLabel} /><Value v={tradeReadiness} color={trColor} bold />
-                              <Label text={t.agent.entryTrigger} /><Value v={ep.entryTriggerMet ? t.agent.readyOrWaiting : t.agent.waiting} color={ep.entryTriggerMet ? '#16a34a' : '#d97706'} bold />
-                              <Label text={t.agent.bestStrategy} /><Value v={ep.bestStrategy || '—'} />
-                            </div>
-                          </div>
-
-                          {/* D. Data Quality */}
-                          <div style={{ background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
-                            <SectionHeader title={t.agent.dataQualityCard} color={dqColor} />
-                            <div style={{ display: 'grid', gridTemplateColumns: '95px 1fr', gap: '8px 12px', alignItems: 'baseline' }}>
-                              <Label text={t.agent.marketDataLabel} /><Value v={ds.marketData || 'N/A'} bold />
-                              <Label text={t.agent.accountData} /><Value v={ds.accountData || 'N/A'} />
-                              <Label text={t.agent.aiProviderLabel} />
-                              <div style={{ display: 'flex', flexDirection: 'column' }}>
-                                {ep.aiCalled ? (
-                                  <span style={{ fontSize: '12px', fontWeight: 600, color: '#16a34a' }}>{ep.aiSource || 'AI'} ({ep.aiModel || 'LLM'}) <CheckOutlined style={{ fontSize: '10px' }} /></span>
-                                ) : (
-                                  <Tooltip title={ep.aiError || t.agent.noAIProviderConfigured}>
-                                    <span style={{ fontSize: '12px', fontWeight: 600, color: '#d97706', cursor: 'help', borderBottom: '1px dotted #d97706' }}>{t.agent.localRulesFallback}</span>
-                                  </Tooltip>
-                                )}
-                              </div>
-                              <Label text={t.agent.broker} /><Value v={ed.brokerSource || t.agent.notConnected} bold color={ed.brokerConnected ? '#16a34a' : '#dc2626'} />
-                              {ep.aiError && <><Label text={t.agent.aiErrorLabel} /><Value v={ep.aiError} color="#dc2626" /></>}
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* ── Bottom Text Insights ── */}
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', borderTop: '1px solid #e5e7eb', paddingTop: '12px' }}>
-                          {/* Left: Decision Reason + Next Step */}
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                            <div>
-                              <div style={{ fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '6px' }}>
-                                {t.agent.decisionReason} {ep.aiCalled ? '(AI)' : `(${t.agent.epLocalRules})`}
-                              </div>
-                              <div style={{ fontSize: '13px', color: '#374151', lineHeight: '1.6', background: '#fff', padding: '8px 12px', borderRadius: '6px', border: '1px solid #f3f4f6' }}>
-                                {ep.decisionReason || ep.reason || t.agent.noDetailedReasoning}
-                              </div>
-                            </div>
-                            <div>
-                              <div style={{ fontSize: '10px', fontWeight: 700, color: '#2563eb', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '4px' }}>{t.agent.nextStep}</div>
-                              <div style={{ fontSize: '13px', color: '#1d4ed8', lineHeight: '1.5', fontWeight: 600, paddingLeft: '4px' }}>
-                                → {ep.nextStep || t.agent.waitForFurtherSignals}
-                              </div>
-                            </div>
-                            {ep.riskComment && (
-                              <div style={{ background: '#fff7ed', padding: '8px 12px', borderRadius: '6px', border: '1px solid #ffedd5' }}>
-                                <div style={{ fontSize: '10px', fontWeight: 700, color: '#c2410c', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '4px' }}>{t.agent.riskComment}</div>
-                                <div style={{ fontSize: '12px', color: '#9a3412', lineHeight: '1.5' }}>{ep.riskComment}</div>
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Right: Risk Notes + Blockers */}
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                            <div>
-                              <div style={{ fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '6px' }}>{t.agent.riskAssessment}</div>
-                              <div style={{ background: '#fff', padding: '8px 12px', borderRadius: '6px', border: '1px solid #f3f4f6', minHeight: '60px' }}>
-                                {(() => {
-                                  const warnings = rg.warnings || [];
-                                  if (warnings.length === 0) return <div style={{ color: '#9ca3af', fontStyle: 'italic', fontSize: '12px' }}>{t.agent.noRiskWarnings}</div>;
-                                  return warnings.slice(0, 4).map((r: string, i: number) => (
-                                    <div key={i} style={{ marginBottom: '3px', color: '#4b5563', fontSize: '12px', display: 'flex', gap: '6px' }}>
-                                      <span style={{ color: '#f59e0b' }}>•</span> <span>{r}</span>
-                                    </div>
-                                  ));
-                                })()}
-                              </div>
-                            </div>
-                            
-                            {(ep.blockers || rg.blockers || []).length > 0 && (
-                              <div style={{ background: '#fef2f2', padding: '8px 12px', borderRadius: '6px', border: '1px solid #fee2e2' }}>
-                                <div style={{ fontSize: '10px', fontWeight: 700, color: '#b91c1c', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '6px' }}>{t.agent.criticalBlockers}</div>
-                                {(() => {
-                                  const blockers = ep.blockers || rg.blockers || [];
-                                  return blockers.slice(0, 4).map((r: string, i: number) => (
-                                    <div key={i} style={{ marginBottom: '2px', color: '#991b1b', fontSize: '12px', fontWeight: 500, display: 'flex', gap: '6px' }}>
-                                      <span>✕</span> <span>{r}</span>
-                                    </div>
-                                  ));
-                                })()}
-                              </div>
-                            )}
-
-                            {ep.invalidationComment && (
-                              <div style={{ fontSize: '12px', color: '#b91c1c', borderLeft: '3px solid #f87171', paddingLeft: '8px', marginTop: '4px' }}>
-                                <span style={{ fontWeight: 700 }}>{t.agent.invalidationLabel}</span> {ep.invalidationComment}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  },
-                }}
-                                columns={[
-                  {
-                    title: t.agent.colSymbol,
-                    dataIndex: 'symbol',
-                    key: 'symbol',
-                    width: 80,
-                    fixed: 'left',
-                    render: (text, record) => (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 3, padding: '1px 0' }}>
-                        <span style={{ fontSize: '13px', fontWeight: 600, fontFamily: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif", color: '#333', letterSpacing: '0.2px' }}>{text}</span>
-                        {record.isDevTest && <Tag style={{ fontSize: 8, padding: '0 2px', lineHeight: '12px', margin: 0 }} color="red">DEV TEST</Tag>}
-                        {record.dataQuality === 'PARTIAL' && <Tag style={{ fontSize: '9px', marginLeft: '2px', padding: '0 4px', lineHeight: '16px' }} color="gold">P</Tag>}
-                        {record.dataQuality === 'POOR' && <Tag style={{ fontSize: '9px', marginLeft: '2px', padding: '0 4px', lineHeight: '16px' }} color="red">!</Tag>}
-                        {record.aiCalled === false && (
-                          <Tooltip title="Local Rules — no LLM call. AI provider not configured or call failed.">
-                            <Tag style={{ fontSize: '9px', marginLeft: '2px', padding: '0 4px', lineHeight: '16px', cursor: 'help' }} color="default">LR</Tag>
-                          </Tooltip>
-                        )}
-                      </div>
-                    ),
-                  },
-                  {
-                    title: t.agent.colSetup,
-                    dataIndex: 'setup',
-                    key: 'setup',
-                    width: 110,
-                    render: (text) => {
-                      const colors: Record<string, string> = { 'Pullback Entry': 'gold', 'Breakout Entry': 'purple', 'Range Support Entry': 'green', 'Watch Only': 'blue', 'No Trade': 'red' };
-                      return <Tag color={colors[text] || 'default'} style={{ fontSize: '10px', fontWeight: 600, padding: '0 6px', lineHeight: '18px', borderRadius: '4px', border: 'none' }}>{text || '-'}</Tag>;
+              <div className="entry-plan-table-wrapper" style={{ width: '100%', overflowX: 'auto', paddingBottom: '12px' }}>
+                <Table
+                  dataSource={entryPlanResults}
+                  rowKey="symbol"
+                  size="small"
+                  pagination={false}
+                  expandable={{
+                    expandedRowKeys: expandedEntryPlanSymbol ? [expandedEntryPlanSymbol] : [],
+                    onExpand: (expanded, record) => {
+                      setExpandedEntryPlanSymbol(expanded ? record.symbol : null);
                     },
-                  },
-                  {
-                    title: t.agent.colCurrent,
-                    key: 'currentPrice',
-                    width: 90,
-                    render: (record) => {
-                      const p = record.currentPrice || record.price;
-                      const lo = record.entryLow || record.entryZoneLow;
-                      const hi = record.entryHigh || record.entryZoneHigh;
-                      if (!p) return <span style={{ fontSize: '11px', color: '#bbb' }}>N/A</span>;
-                      
-                      let distShort = '';
-                      let distColor = '#aaa';
-                      if (lo && hi) {
-                        if (p < lo) {
-                          const pct = ((lo - p) / p) * 100;
-                          distShort = `-${pct.toFixed(1)}%`;
+                    expandedRowRender: (record) => {
+                      const ep = record;
+                      const rg = ep.hardRiskGate || {};
+                      const dq = ep.dataQuality || 'PARTIAL';
+                      const ds = ep.dataSources || {};
+                      const ed = ep.executionDetails || {};
+                      const fontStk = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+
+                      const fmtPrice = (v: number | null | undefined) => v != null ? `$${v.toFixed(2)}` : '—';
+                      const fmtPct = (v: number | null | undefined) => v != null ? `${v.toFixed(1)}%` : '—';
+                      const fmtRR = (v: number | null | undefined) => v != null ? `${v.toFixed(1)}:1` : '—';
+                      const fmtDollars = (v: number | null | undefined) => v != null ? `$${v.toFixed(0)}` : '—';
+                      const fmtShares = (v: number | null | undefined) => v != null ? v.toLocaleString() : '—';
+
+                      const sym = record.symbol || '—';
+                      const setupLabel = ep.setup || '—';
+                      const aiDecision = ep.aiDecision || '—';
+                      const finalAction = ep.finalAction || '—';
+                      const confidence = ep.confidence || ep.aiConfidence || '—';
+                      const tradeReadiness = ep.tradeReadiness || '—';
+
+                      const aiColor = (v: string) => v === 'BUY' ? '#52c41a' : v === 'WATCH' ? '#d48806' : v === 'SKIP' ? '#e84749' : undefined;
+                      const dqColor = dq === 'GOOD' ? '#52c41a' : dq === 'PARTIAL' ? '#fa8c16' : '#ff4d4f';
+                      const trColor = tradeReadiness === 'READY' ? '#52c41a' : tradeReadiness === 'WAIT' ? '#fa8c16' : '#ff4d4f';
+                      const rgColor = rg.status === 'PASS' ? '#52c41a' : rg.status === 'REVIEW' ? '#fa8c16' : '#ff4d4f';
+                      const faColor = finalAction === 'BUY_READY' ? '#52c41a' : finalAction === 'WAIT_FOR_ENTRY' ? '#fa8c16' : '#ff4d4f';
+
+                      const curPrice = ep.currentPrice || ep.price;
+                      const loPrice = ep.entryLow || ep.entryZoneLow;
+                      const hiPrice = ep.entryHigh || ep.entryZoneHigh;
+                      let distText = '—';
+                      let distColor = '#8c8c8c';
+                      if (curPrice && loPrice && hiPrice) {
+                        if (curPrice < loPrice) {
+                          const diff = loPrice - curPrice;
+                          const pct = (diff / curPrice) * 100;
+                          distText = t.agent.belowEntry.replace('${diff}', `$${diff.toFixed(2)}`).replace('{pct}', pct.toFixed(1)); // eslint-disable-line no-template-curly-in-string
                           distColor = '#fa8c16';
-                        } else if (p > hi) {
-                          const pct = ((p - hi) / hi) * 100;
-                          distShort = `+${pct.toFixed(1)}%`;
+                        } else if (curPrice > hiPrice) {
+                          const diff = curPrice - hiPrice;
+                          const pct = (diff / hiPrice) * 100;
+                          distText = t.agent.aboveEntry.replace('${diff}', `$${diff.toFixed(2)}`).replace('{pct}', pct.toFixed(1)); // eslint-disable-line no-template-curly-in-string
                           distColor = '#fa8c16';
                         } else {
-                          distShort = t.agent.inZone;
+                          distText = t.agent.inEntryZone;
                           distColor = '#52c41a';
                         }
                       }
-                      
-                      return (
-                        <div style={{ lineHeight: '1.4' }}>
-                          <div style={{ fontSize: '12px', fontWeight: 600, color: '#111827' }}>${p.toFixed(2)}</div>
-                          {distShort && <div style={{ fontSize: '9px', color: distColor, fontWeight: 700 }}>{distShort}</div>}
-                        </div>
-                      );
-                    },
-                  },
-                  {
-                    title: t.agent.colEntryZone,
-                    key: 'entryZone',
-                    width: 120,
-                    render: (record) => {
-                      const lo = record.entryLow || record.entryZoneLow;
-                      const hi = record.entryHigh || record.entryZoneHigh;
-                      const setup = record.setup || '';
-                      if (lo == null || hi == null || (lo === 0 && hi === 0)) {
-                        return <span style={{ fontSize: '11px', color: '#bbb', fontStyle: 'italic' }}>N/A</span>;
-                      }
-                      const zoneLabel = setup.includes('Pullback') ? t.agent.pullback :
-                                        setup.includes('Breakout') ? t.agent.breakout :
-                                        setup.includes('Range') ? t.agent.support : '';
-                      return (
-                        <div>
-                          <Text style={{ fontSize: '12px', fontFamily: 'Inter, sans-serif', fontWeight: 500 }}>${lo.toFixed(2)} – ${hi.toFixed(2)}</Text>
-                          {zoneLabel && <div style={{ fontSize: '9px', color: '#aaa', marginTop: '1px' }}>{zoneLabel}</div>}
-                        </div>
-                      );
-                    },
-                  },
-                  {
-                    title: t.agent.colStop,
-                    key: 'stopLoss',
-                    width: 95,
-                    render: (record) => {
-                      const v = record.stopLoss;
-                      const pct = record.stopLossPct;
-                      if (v == null || v === 0) {
-                        return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
-                      }
-                      return (
-                        <div>
-                          <Text style={{ fontSize: '12px', fontFamily: 'Inter, sans-serif', color: '#e84749', fontWeight: 500 }}>${v.toFixed(2)}</Text>
-                          {pct != null && pct > 0 && <div style={{ fontSize: '9px', color: '#aaa', marginTop: '1px' }}>{pct.toFixed(1)}% {t.agent.fromEntry}</div>}
-                        </div>
-                      );
-                    },
-                  },
-                  {
-                    title: t.agent.colTargets,
-                    key: 'targets',
-                    width: 110,
-                    render: (record) => {
-                      const t1 = record.takeProfit1;
-                      const t2 = record.takeProfit2;
-                      const rr1 = record.riskReward1 || 0;
-                      const rr2 = record.riskReward2 || 0;
-                      if (t1 == null && t2 == null) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
-                      return (
-                        <div style={{ lineHeight: '1.6' }}>
-                          {t1 != null && t1 > 0 ? <div><span style={{ fontSize: '12px', fontWeight: 500, color: '#52c41a', fontFamily: 'Inter, sans-serif' }}>${t1.toFixed(2)}</span><span style={{ fontSize: '9px', color: '#aaa' }}> R{rr1.toFixed(1)}</span></div> : null}
-                          {t2 != null && t2 > 0 ? <div style={{ marginTop: '1px' }}><span style={{ fontSize: '12px', fontWeight: 500, color: '#52c41a', fontFamily: 'Inter, sans-serif' }}>${t2.toFixed(2)}</span><span style={{ fontSize: '9px', color: '#aaa' }}> R{rr2.toFixed(1)}</span></div> : null}
-                        </div>
-                      );
-                    },
-                  },
-                  {
-                    title: t.agent.colPosition,
-                    key: 'position',
-                    width: 105,
-                    render: (record) => {
-                      const sh = record.positionSize || record.positionSizeShares || 0;
-                      const val = record.positionValue || record.positionSizeDollars || 0;
-                      const capPct = record.positionPct || 0;
-                      const capped = record.positionCapped;
-                      if (sh === 0 && val === 0) {
-                        return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
-                      }
-                      return (
-                        <div style={{ lineHeight: '1.5' }}>
-                          <Text style={{ fontSize: '11px', fontFamily: 'Inter, sans-serif' }}>{sh} sh</Text>
-                          <div style={{ fontSize: '10px', color: '#888', fontFamily: 'Inter, sans-serif' }}>
-                            ${val.toFixed(0)}
-                            {capped && <span style={{ color: '#d48806', marginLeft: '3px', fontSize: '9px' }}>CAP {capPct.toFixed(1)}%</span>}
-                          </div>
-                        </div>
-                      );
-                    },
-                  },
-                  {
-                    title: t.agent.colAIDecision,
-                    key: 'aiDecision',
-                    width: 82,
-                    render: (record) => {
-                      const d = record.aiDecision;
-                      if (!d) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
-                      const tagColor = d === 'BUY' ? 'green' : d === 'WATCH' ? 'gold' : d === 'SKIP' ? 'red' : 'default';
-                      const sourceLabel = record.aiCalled ? 'AI' : 'Rule';
-                      return (
-                        <div>
-                          <Tag color={tagColor} style={{ fontSize: '10px', fontWeight: 600, padding: '0 6px', lineHeight: '18px', margin: 0 }}>{d}</Tag>
-                          <div style={{ fontSize: '8px', color: '#aaa', marginTop: '1px' }}>
-                            {record.confidence != null ? `${record.confidence}% ` : ''}
-                            <Tooltip title={record.aiCalled ? `${record.aiSource || 'AI'} (${record.aiModel || 'LLM'}) called` : `Local Rules (deterministic)${record.aiError ? ' — ' + record.aiError : ''}`}>
-                              <span style={{ cursor: 'help', borderBottom: '1px dotted #ccc' }}>{sourceLabel}</span>
-                            </Tooltip>
-                          </div>
-                        </div>
-                      );
-                    },
-                  },
-                  {
-                    title: t.agent.colGate,
-                    key: 'riskGate',
-                    width: 70,
-                    render: (record) => {
-                      const rg = record.riskGate || record.hardRiskGate;
-                      const status = rg?.status;
-                      if (!status) return <span style={{ fontSize: '11px', color: '#ccc' }}>N/A</span>;
-                      const tagColor = status === 'PASS' ? 'green' : status === 'REVIEW' ? 'gold' : 'red';
-                      // Build tooltip with review reasons
-                      const reasons = rg?.warnings || rg?.reasons || [];
-                      const tipTitle = status === 'REVIEW' && reasons.length > 0
-                        ? `Review: ${reasons.slice(0, 3).join('; ')}`
-                        : status === 'BLOCK' && reasons.length > 0
-                        ? `Blocked: ${reasons.slice(0, 3).join('; ')}`
-                        : `Gate: ${status}`;
-                      return (
-                        <Tooltip title={tipTitle}>
-                          <Tag color={tagColor} style={{ fontSize: '10px', fontWeight: 600, padding: '0 6px', lineHeight: '18px', margin: 0, cursor: 'help' }}>{status}</Tag>
-                        </Tooltip>
-                      );
-                    },
-                  },
-                  {
-                    title: t.agent.colFinalAction,
-                    key: 'finalAction',
-                    width: 115,
-                    render: (record) => {
-                      const a = record.finalAction;
-                      if (!a) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
-                      const displayText: Record<string, string> = {
-                        'BUY_READY': 'BUY READY',
-                        'BUY_ALLOWED': 'BUY',
-                        'READY_REVIEW': 'READY REVIEW',
-                        'WAIT_FOR_ENTRY': 'WAIT ENTRY',
-                        'WATCH_ONLY': 'WATCH',
-                        'SKIP': 'SKIP',
-                        'BLOCKED_BY_RISK': 'BLOCKED',
-                        'NEEDS_REVIEW': 'REVIEW',
-                      };
-                      const tagColor = a === 'BUY_READY' || a === 'BUY_ALLOWED' ? 'green' : a === 'READY_REVIEW' ? 'blue' : a === 'WAIT_FOR_ENTRY' || a === 'WATCH_ONLY' ? 'gold' : 'red';
-                      return <Tag color={tagColor} style={{ fontSize: '10px', fontWeight: 600, padding: '0 6px', lineHeight: '18px', margin: 0 }}>{displayText[a] || a}</Tag>;
-                    },
-                  },
-                  {
-                    title: t.agent.colData,
-                    key: 'dataQuality',
-                    width: 75,
-                    render: (record) => {
-                      const dq = record.dataQuality || 'PARTIAL';
-                      const tagColor = dq === 'GOOD' ? 'green' : dq === 'PARTIAL' ? 'gold' : 'red';
-                      const aiInfo = record.aiCalled
-                        ? `${record.aiSource || 'AI'}`
-                        : `LR${record.aiError ? ': ' + record.aiError.substring(0, 20) : ''}`;
-                      return (
-                        <div>
-                          <Tag color={tagColor} style={{ fontSize: '9px', fontWeight: 600, padding: '0 4px', lineHeight: '16px', margin: 0 }}>{dq}</Tag>
-                          <Tooltip title={record.aiCalled ? `${record.aiSource || 'AI'} / ${record.aiModel || 'LLM'} called` : `Local Rules${record.aiError ? ' — ' + record.aiError : ' — no LLM call'}`}>
-                            <div style={{ fontSize: '8px', color: '#aaa', marginTop: '1px', cursor: 'help' }}>{aiInfo}</div>
-                          </Tooltip>
-                        </div>
-                      );
-                    },
-                  },
-                  {
-                    title: t.agent.reason,
-                    dataIndex: 'reason',
-                    key: 'reason',
-                    width: 220,
-                    render: (text, record) => {
-                      const fullText = record.decisionReason || text || '';
-                      const displayText = fullText.length > 80 ? fullText.slice(0, 80) + '...' : fullText || '-';
-                      return (
-                        <Tooltip title={fullText || t.agent.noReasonProvided}>
-                          <span style={{ fontSize: '11px', color: fullText ? '#555' : '#ccc', cursor: fullText ? 'pointer' : 'default', lineHeight: '1.4' }}>
-                            {displayText}
-                          </span>
-                        </Tooltip>
-                      );
-                    },
-                  },
-                  {
-                    title: t.agent.actions,
-                    key: 'action',
-                    width: 110,
-                    fixed: 'right' as const,
-                    render: (record) => {
-                      const fa = record.finalAction;
-                      const aiDec = record.aiDecision;
-                      const dq = record.dataQuality;
-                      const rg = record.riskGate || record.hardRiskGate || {};
 
-                      if (fa === 'BLOCKED_BY_RISK' || rg.status === 'BLOCK' || dq === 'POOR') {
-                        return (
-                          <Tooltip title={(record.blockers || rg.blockers || ['Blocked']).slice(0, 2).join('; ')}>
-                            <Button size="small" danger disabled style={AI_AGENT_COMPACT_BTN_STYLE}>{t.agent.blocked}</Button>
-                          </Tooltip>
-                        );
-                      }
-                      if (fa === 'SKIP' || aiDec === 'SKIP') {
-                        return <Button size="small" disabled style={AI_AGENT_COMPACT_BTN_STYLE}>{t.agent.skipped}</Button>;
-                      }
-                      if (fa === 'BLOCKED_BY_RISK' || rg.status === 'BLOCK' || dq === 'POOR') {
-                        return (
-                          <Tooltip title={(record.blockers || rg.blockers || ['Blocked']).slice(0, 2).join('; ')}>
-                            <Button size="small" danger disabled style={AI_AGENT_COMPACT_BTN_STYLE}>{t.agent.blocked}</Button>
-                          </Tooltip>
-                        );
-                      }
-                      if (fa === 'BUY_READY') {
-                        return (
-                          <Button size="small" type="primary" onClick={() => handleEntryPlanAction(record)} style={AI_AGENT_COMPACT_BTN_STYLE}>
-                            {t.agent.execute}
-                          </Button>
-                        );
-                      }
-                      if (fa === 'READY_REVIEW') {
-                        const inWl = isInWatchlist(record.symbol);
-                        return (
-                          <Space size={4}>
-                            <Button size="small" type="primary" ghost onClick={() => handleEntryPlanAction(record)} style={AI_AGENT_COMPACT_BTN_STYLE}>
-                              {t.agent.review}
-                            </Button>
-                            <Button
-                              size="small"
-                              icon={inWl ? <CheckOutlined /> : <PlusOutlined />}
-                              onClick={() => addToWatchlist(record)}
-                              style={{ ...AI_AGENT_COMPACT_BTN_STYLE, color: inWl ? '#52c41a' : '#d48806', borderColor: inWl ? '#52c41a' : '#d48806' }}
-                            />
-                          </Space>
-                        );
-                      }
-                      if (fa === 'WAIT_FOR_ENTRY' || aiDec === 'WATCH') {
-                        const inWl = isInWatchlist(record.symbol);
-                        return (
-                          <Button
-                            size="small"
-                            icon={inWl ? <CheckOutlined /> : <PlusOutlined />}
-                            onClick={() => addToWatchlist(record)}
-                            style={{ ...AI_AGENT_COMPACT_BTN_STYLE, color: inWl ? '#52c41a' : '#d48806', borderColor: inWl ? '#52c41a' : '#d48806' }}
-                          >
-                            {inWl ? t.agent.update : t.agent.plusWatchlist}
-                          </Button>
-                        );
-                      }
-                      return <span style={{ fontSize: '10px', color: '#bbb' }}>—</span>;
+                      const SectionHeader = ({ title, color }: { title: string; color?: string }) => (
+                        <div style={{ 
+                          fontSize: '12px', 
+                          fontWeight: 700, 
+                          color: color || '#595959', 
+                          textTransform: 'uppercase', 
+                          letterSpacing: '0.6px', 
+                          marginBottom: '10px', 
+                          paddingBottom: '6px', 
+                          borderBottom: '1px solid #f0f2f5',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px'
+                        }}>
+                          {title}
+                        </div>
+                      );
+
+                      const Label = ({ text }: { text: string }) => (
+                        <span style={{ fontSize: '11px', color: '#8c8c8c', fontWeight: 500 }}>{text}</span>
+                      );
+                      
+                      const Value = ({ v, bold, color, subText }: { v: string; bold?: boolean; color?: string; subText?: string }) => (
+                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                          <span style={{ fontSize: '12px', fontWeight: bold ? 700 : 500, color: color || '#262626' }}>{v}</span>
+                          {subText && <span style={{ fontSize: '10px', color: '#8c8c8c', marginTop: '1px' }}>{subText}</span>}
+                        </div>
+                      );
+
+                      const ActionBadge = ({ label, color }: { label: string; color: string }) => (
+                        <span style={{ 
+                          backgroundColor: `${color}15`, 
+                          color: color, 
+                          padding: '2px 8px', 
+                          borderRadius: '4px', 
+                          fontSize: '10px', 
+                          fontWeight: 700,
+                          border: `1px solid ${color}30`,
+                          textTransform: 'uppercase'
+                        }}>
+                          {label}
+                        </span>
+                      );
+
+                      return (
+                        <div style={{ 
+                          padding: '16px', 
+                          background: '#f8fafc', 
+                          border: '1px solid #e5e7eb', 
+                          borderRadius: '10px', 
+                          fontFamily: fontStk, 
+                          lineHeight: '1.4',
+                          boxShadow: '0 1px 3px rgba(0,0,0,0.02)'
+                        }}>
+                          {/* ── Professional Header ── */}
+                          <div style={{ 
+                            display: 'flex', 
+                            justifyContent: 'space-between', 
+                            alignItems: 'center', 
+                            paddingBottom: '12px', 
+                            borderBottom: '1px solid #e5e7eb', 
+                            marginBottom: '16px' 
+                          }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                              <span style={{ fontSize: '18px', fontWeight: 800, color: '#111827', letterSpacing: '-0.2px' }}>{sym}</span>
+                              <Tag color={setupLabel.includes('Pullback') ? 'gold' : setupLabel.includes('Breakout') ? 'purple' : setupLabel.includes('Range') ? 'green' : 'blue'} 
+                                   style={{ fontSize: '11px', fontWeight: 600, borderRadius: '4px', margin: 0 }}>
+                                {setupLabel}
+                              </Tag>
+                              <Tag color={aiDecision === 'BUY' ? 'success' : aiDecision === 'WATCH' ? 'warning' : 'error'} 
+                                   style={{ fontSize: '11px', fontWeight: 700, borderRadius: '4px', margin: 0 }}>
+                                AI: {aiDecision}
+                              </Tag>
+                              <span style={{ fontSize: '11px', fontWeight: 600, color: '#6b7280', backgroundColor: '#f3f4f6', padding: '2px 8px', borderRadius: '4px' }}>
+                                Confidence {confidence}%
+                              </span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                              <div style={{ display: 'flex', gap: '6px', marginRight: '8px' }}>
+                                <ActionBadge label={`Data: ${dq}`} color={dqColor} />
+                                <ActionBadge label={`Gate: ${rg.status || 'N/A'}`} color={rgColor} />
+                                <ActionBadge label={finalAction} color={faColor} />
+                              </div>
+                              <Space size={8}>
+                                <Button
+                                  size="middle"
+                                  type={finalAction === 'BUY_READY' ? 'primary' : finalAction === 'READY_REVIEW' ? 'primary' : 'default'}
+                                  ghost={finalAction === 'READY_REVIEW' && pipelineMode !== 'ai'}
+                                  danger={finalAction === 'BLOCKED_BY_RISK'}
+                                  disabled={finalAction === 'SKIP' || finalAction === 'BLOCKED_BY_RISK' || dq === 'POOR'}
+                                  onClick={() => handleEntryPlanAction(ep)}
+                                  style={{
+                                    fontSize: '12px',
+                                    fontWeight: 600,
+                                    borderRadius: '6px',
+                                    height: '32px'
+                                  }}
+                                >
+                                  {finalAction === 'BUY_READY' ? t.agent.epExecuteTrade : finalAction === 'READY_REVIEW' ? t.agent.reviewAndExecute : finalAction === 'WAIT_FOR_ENTRY' ? t.agent.epMonitorEntry : finalAction === 'SKIP' ? t.agent.planSkipped : t.agent.epRiskBlocked}
+                                </Button>
+                                <Button
+                                  size="middle"
+                                  icon={isInWatchlist(ep.symbol) ? <CheckOutlined /> : <PlusOutlined />}
+                                  onClick={() => addToWatchlist(ep)}
+                                  style={{
+                                    fontSize: '12px', 
+                                    fontWeight: 600,
+                                    borderRadius: '6px',
+                                    height: '32px',
+                                    color: isInWatchlist(ep.symbol) ? '#52c41a' : '#2563eb',
+                                    borderColor: isInWatchlist(ep.symbol) ? '#52c41a' : '#2563eb',
+                                    backgroundColor: isInWatchlist(ep.symbol) ? '#f0fdf4' : '#eff6ff'
+                                  }}
+                                >
+                                  {isInWatchlist(ep.symbol) ? t.agent.inWatchlist : t.agent.addToWatchlist}
+                                </Button>
+                              </Space>
+                            </div>
+                          </div>
+
+                          {/* ── 4-Card Balanced Grid ── */}
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
+
+                            {/* A. Execution Plan */}
+                            <div style={{ background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
+                              <SectionHeader title={t.agent.executionPlan} />
+                              <div style={{ display: 'grid', gridTemplateColumns: '95px 1fr', gap: '8px 12px', alignItems: 'baseline' }}>
+                                <Label text={t.agent.epCurrentPrice} /><Value v={curPrice != null ? `$${curPrice.toFixed(2)}` : '—'} bold color="#111827" />
+                                <Label text={t.agent.distance} /><Value v={distText} color={distColor} bold />
+                                <Label text={t.agent.entryZone} /><Value v={loPrice != null ? `$${loPrice.toFixed(2)} – $${(hiPrice ?? 0).toFixed(2)}` : '—'} bold color="#111827" />
+                                <Label text={t.agent.epTrigger} /><Value v={ep.triggerCondition || '—'} color="#4b5563" />
+                                <Label text={t.agent.stopLoss} /><Value v={fmtPrice(ep.stopLoss)} bold color="#dc2626" subText={`${ep.stopLossPct != null ? fmtPct(ep.stopLossPct) : 'N/A'} ${t.agent.fromEntry} ${ep.stopSource || 'entry'}`} />
+                                <Label text={t.agent.epTargets} />
+                                <div style={{ display: 'flex', gap: '16px' }}>
+                                  <Value v={fmtPrice(ep.takeProfit1)} bold color="#16a34a" subText={`T1 (R/R ${fmtRR(ep.riskReward1)})`} />
+                                  <Value v={fmtPrice(ep.takeProfit2)} color="#16a34a" subText={`T2 (R/R ${fmtRR(ep.riskReward2)})`} />
+                                </div>
+                                <Label text={t.agent.epInvalidation} /><Value v={ep.invalidationCondition || '—'} color="#dc2626" />
+                                <Label text={t.agent.orderTypeSuggestion} /><Value v={ed.orderTypeSuggestion || 'N/A'} bold color={ed.orderTypeSuggestion === 'Not Available' ? '#dc2626' : '#16a34a'} subText={ed.orderTypeReason} />
+                              </div>
+                            </div>
+
+                            {/* B. Position & Risk */}
+                            <div style={{ background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
+                              <SectionHeader title={t.agent.positionRisk} />
+                              <div style={{ display: 'grid', gridTemplateColumns: '95px 1fr', gap: '8px 12px', alignItems: 'baseline' }}>
+                                <Label text={t.agent.epPortfolio} /><Value v={fmtDollars(ep.positionCapital)} bold />
+                                <Label text={t.agent.epBuyingPower} /><Value v={fmtDollars(ep.accountBuyingPower)} />
+                                <Label text={t.agent.riskBudget} /><Value v={fmtDollars(ep.riskBudget)} subText={`${fmtPct(ep.riskPct)} ${t.agent.ofRiskBudget}`} />
+                                <Label text={t.agent.actualRisk} /><Value v={fmtDollars(ep.riskDollars)} bold color="#dc2626" />
+                                <Label text={t.agent.riskUsed} /><Value v={ep.riskUsedPct != null ? `${ep.riskUsedPct.toFixed(1)}%` : (ep.riskBudget > 0 ? `${(ep.riskDollars / ep.riskBudget * 100).toFixed(1)}%` : '—')} bold color={ep.riskUsedPct > 80 ? '#dc2626' : '#d97706'} subText={t.agent.ofRiskBudget} />
+                                <Label text={t.agent.size} />
+                                <div style={{ display: 'flex', gap: '16px' }}>
+                                  <Value v={fmtShares(ep.positionSize || ep.positionSizeShares)} bold subText={t.agent.sharesLabel} />
+                                  <Value v={fmtDollars(ep.positionValue || ep.positionSizeDollars)} bold subText={t.agent.estValue} />
+                                </div>
+                                <Label text={t.agent.capStatus} /><Value v={ep.positionCapStatus || (ep.positionCapped ? `${t.agent.cappedAt} ${fmtPct(ep.positionPct)}` : `${t.agent.okAt.replace('{pct}', fmtPct(ep.positionPct))}`)} bold color={ep.positionCapped ? '#d97706' : '#16a34a'} />
+                              </div>
+                            </div>
+
+                            {/* C. Decision */}
+                            <div style={{ background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
+                              <SectionHeader title={t.agent.decision} />
+                              <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: '8px 12px', alignItems: 'baseline' }}>
+                                <Label text={t.agent.epAIDecision} /><Value v={ep.aiDecision || '—'} color={aiColor(ep.aiDecision)} bold />
+                                <Label text={t.agent.epConfidence} /><Value v={`${confidence}%`} bold />
+                                <Label text={t.agent.epRiskGate} /><Value v={rg.status || 'N/A'} color={rgColor} bold />
+                                <Label text={t.agent.finalAction} /><Value v={finalAction} color={faColor} bold />
+                                <Label text={t.agent.tradeReadinessLabel} /><Value v={tradeReadiness} color={trColor} bold />
+                                <Label text={t.agent.entryTrigger} /><Value v={ep.entryTriggerMet ? t.agent.readyOrWaiting : t.agent.waiting} color={ep.entryTriggerMet ? '#16a34a' : '#d97706'} bold />
+                                <Label text={t.agent.bestStrategy} /><Value v={ep.bestStrategy || '—'} />
+                              </div>
+                            </div>
+
+                            {/* D. Data Quality */}
+                            <div style={{ background: '#fff', borderRadius: '8px', border: '1px solid #e5e7eb', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
+                              <SectionHeader title={t.agent.dataQualityCard} color={dqColor} />
+                              <div style={{ display: 'grid', gridTemplateColumns: '95px 1fr', gap: '8px 12px', alignItems: 'baseline' }}>
+                                <Label text={t.agent.marketDataLabel} /><Value v={ds.marketData || 'N/A'} bold />
+                                <Label text={t.agent.accountData} /><Value v={ds.accountData || 'N/A'} />
+                                <Label text={t.agent.aiProviderLabel} />
+                                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                  {ep.aiCalled ? (
+                                    <span style={{ fontSize: '12px', fontWeight: 600, color: '#16a34a' }}>{ep.aiSource || 'AI'} ({ep.aiModel || 'LLM'}) <CheckOutlined style={{ fontSize: '10px' }} /></span>
+                                  ) : (
+                                    <Tooltip title={ep.aiError || t.agent.noAIProviderConfigured}>
+                                      <span style={{ fontSize: '12px', fontWeight: 600, color: '#d97706', cursor: 'help', borderBottom: '1px dotted #d97706' }}>{t.agent.localRulesFallback}</span>
+                                    </Tooltip>
+                                  )}
+                                </div>
+                                <Label text={t.agent.broker} /><Value v={ed.brokerSource || t.agent.notConnected} bold color={ed.brokerConnected ? '#16a34a' : '#dc2626'} />
+                                {ep.aiError && <><Label text={t.agent.aiErrorLabel} /><Value v={ep.aiError} color="#dc2626" /></>}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* ── Bottom Text Insights ── */}
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', borderTop: '1px solid #e5e7eb', paddingTop: '12px' }}>
+                            {/* Left: Decision Reason + Next Step */}
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                              <div>
+                                <div style={{ fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '6px' }}>
+                                  {t.agent.decisionReason} {ep.aiCalled ? '(AI)' : `(${t.agent.epLocalRules})`}
+                                </div>
+                                <div style={{ fontSize: '13px', color: '#374151', lineHeight: '1.6', background: '#fff', padding: '8px 12px', borderRadius: '6px', border: '1px solid #f3f4f6' }}>
+                                  {ep.decisionReason || ep.reason || t.agent.noDetailedReasoning}
+                                </div>
+                              </div>
+                              <div>
+                                <div style={{ fontSize: '10px', fontWeight: 700, color: '#2563eb', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '4px' }}>{t.agent.nextStep}</div>
+                                <div style={{ fontSize: '13px', color: '#1d4ed8', lineHeight: '1.5', fontWeight: 600, paddingLeft: '4px' }}>
+                                  → {ep.nextStep || t.agent.waitForFurtherSignals}
+                                </div>
+                              </div>
+                              {ep.riskComment && (
+                                <div style={{ background: '#fff7ed', padding: '8px 12px', borderRadius: '6px', border: '1px solid #ffedd5' }}>
+                                  <div style={{ fontSize: '10px', fontWeight: 700, color: '#c2410c', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '4px' }}>{t.agent.riskComment}</div>
+                                  <div style={{ fontSize: '12px', color: '#9a3412', lineHeight: '1.5' }}>{ep.riskComment}</div>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Right: Risk Notes + Blockers */}
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                              <div>
+                                <div style={{ fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '6px' }}>{t.agent.riskAssessment}</div>
+                                <div style={{ background: '#fff', padding: '8px 12px', borderRadius: '6px', border: '1px solid #f3f4f6', minHeight: '60px' }}>
+                                  {(() => {
+                                    const warnings = rg.warnings || [];
+                                    if (warnings.length === 0) return <div style={{ color: '#9ca3af', fontStyle: 'italic', fontSize: '12px' }}>{t.agent.noRiskWarnings}</div>;
+                                    return warnings.slice(0, 4).map((r: string, i: number) => (
+                                      <div key={i} style={{ marginBottom: '3px', color: '#4b5563', fontSize: '12px', display: 'flex', gap: '6px' }}>
+                                        <span style={{ color: '#f59e0b' }}>•</span> <span>{r}</span>
+                                      </div>
+                                    ));
+                                  })()}
+                                </div>
+                              </div>
+                              
+                              {(ep.blockers || rg.blockers || []).length > 0 && (
+                                <div style={{ background: '#fef2f2', padding: '8px 12px', borderRadius: '6px', border: '1px solid #fee2e2' }}>
+                                  <div style={{ fontSize: '10px', fontWeight: 700, color: '#b91c1c', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '6px' }}>{t.agent.criticalBlockers}</div>
+                                  {(() => {
+                                    const blockers = ep.blockers || rg.blockers || [];
+                                    return blockers.slice(0, 4).map((r: string, i: number) => (
+                                      <div key={i} style={{ marginBottom: '2px', color: '#991b1b', fontSize: '12px', fontWeight: 500, display: 'flex', gap: '6px' }}>
+                                        <span>✕</span> <span>{r}</span>
+                                      </div>
+                                    ));
+                                  })()}
+                                </div>
+                              )}
+
+                              {ep.invalidationComment && (
+                                <div style={{ fontSize: '12px', color: '#b91c1c', borderLeft: '3px solid #f87171', paddingLeft: '8px', marginTop: '4px' }}>
+                                  <span style={{ fontWeight: 700 }}>{t.agent.invalidationLabel}</span> {ep.invalidationComment}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
                     },
-                  },
-                ]}
-                scroll={{ x: 1420 }}
-                style={{ fontSize: '12px', marginTop: '16px', fontFamily: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" }}
-                rowClassName={() => 'ep-table-row'}
-              />
+                  }}
+                  columns={[
+                    {
+                      title: t.agent.colSymbol,
+                      dataIndex: 'symbol',
+                      key: 'symbol',
+                      width: 140,
+                      fixed: 'left',
+                      render: (text, record) => (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '1px 0' }}>
+                          <span style={{ fontSize: '15px', fontWeight: 800, color: '#0f172a', letterSpacing: '-0.1px' }}>{text}</span>
+                          <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
+                            {record.isDevTest && <Tag style={{ fontSize: 9, padding: '0 4px', lineHeight: '16px', margin: 0, fontWeight: 800 }} color="error">DEV</Tag>}
+                            {record.dataQuality === 'PARTIAL' && <Tag style={{ fontSize: '9px', padding: '0 4px', lineHeight: '16px', margin: 0, fontWeight: 800 }} color="gold">P</Tag>}
+                            {record.aiCalled === false && (
+                              <Tooltip title="Local Rules — no LLM call.">
+                                <Tag style={{ fontSize: '9px', padding: '0 4px', lineHeight: '16px', margin: 0, fontWeight: 800, cursor: 'help' }} color="default">LR</Tag>
+                              </Tooltip>
+                            )}
+                          </div>
+                        </div>
+                      ),
+                    },
+                    {
+                      title: t.agent.colSetup,
+                      dataIndex: 'setup',
+                      key: 'setup',
+                      width: 130,
+                      render: (text) => {
+                        const colors: Record<string, string> = { 'Pullback Entry': 'gold', 'Breakout Entry': 'purple', 'Range Support Entry': 'green', 'Watch Only': 'blue', 'No Trade': 'red' };
+                        return <Tag color={colors[text] || 'default'} bordered={false} style={{ fontSize: '10.5px', fontWeight: 800, padding: '0 8px', lineHeight: '22px', borderRadius: '6px', margin: 0 }}>{text?.toUpperCase() || '-'}</Tag>;
+                      },
+                    },
+                    {
+                      title: t.agent.colCurrent,
+                      key: 'currentPrice',
+                      width: 110,
+                      render: (record) => {
+                        const p = record.currentPrice || record.price;
+                        const lo = record.entryLow || record.entryZoneLow;
+                        const hi = record.entryHigh || record.entryZoneHigh;
+                        if (!p) return <span style={{ fontSize: '11px', color: '#bbb' }}>N/A</span>;
+                        
+                        let distShort = '';
+                        let distColor = '#aaa';
+                        if (lo && hi) {
+                          if (p < lo) {
+                            const pct = ((lo - p) / p) * 100;
+                            distShort = `-${pct.toFixed(1)}%`;
+                            distColor = '#f59e0b';
+                          } else if (p > hi) {
+                            const pct = ((p - hi) / hi) * 100;
+                            distShort = `+${pct.toFixed(1)}%`;
+                            distColor = '#f59e0b';
+                          } else {
+                            distShort = t.agent.inZone;
+                            distColor = '#10b981';
+                          }
+                        }
+                        
+                        return (
+                          <div style={{ lineHeight: '1.3' }}>
+                            <div style={{ fontSize: '14px', fontWeight: 800, color: '#0f172a' }}>${p.toFixed(2)}</div>
+                            {distShort && <div style={{ fontSize: '10px', color: distColor, fontWeight: 800, letterSpacing: '0.2px' }}>{distShort}</div>}
+                          </div>
+                        );
+                      },
+                    },
+                    {
+                      title: t.agent.colEntryZone,
+                      key: 'entryZone',
+                      width: 150,
+                      render: (record) => {
+                        const lo = record.entryLow || record.entryZoneLow;
+                        const hi = record.entryHigh || record.entryZoneHigh;
+                        if (lo == null || hi == null || (lo === 0 && hi === 0)) {
+                          return <span style={{ fontSize: '11px', color: '#bbb', fontStyle: 'italic' }}>N/A</span>;
+                        }
+                        return (
+                          <div style={{ lineHeight: '1.3' }}>
+                            <div style={{ fontSize: '13px', fontWeight: 700, color: '#334155' }}>${lo.toFixed(2)} – ${hi.toFixed(2)}</div>
+                            <div style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600, textTransform: 'uppercase' }}>Entry Zone</div>
+                          </div>
+                        );
+                      },
+                    },
+                    {
+                      title: t.agent.colStop,
+                      key: 'stopLoss',
+                      width: 120,
+                      render: (record) => {
+                        const v = record.stopLoss;
+                        const pct = record.stopLossPct;
+                        if (v == null || v === 0) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
+                        return (
+                          <div style={{ lineHeight: '1.3' }}>
+                            <div style={{ fontSize: '13px', fontWeight: 800, color: '#ef4444' }}>${v.toFixed(2)}</div>
+                            {pct != null && pct > 0 && <div style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600 }}>{pct.toFixed(1)}% RISK</div>}
+                          </div>
+                        );
+                      },
+                    },
+                    {
+                      title: t.agent.colTargets,
+                      key: 'targets',
+                      width: 140,
+                      render: (record) => {
+                        const t1 = record.takeProfit1;
+                        const rr1 = record.riskReward1 || 0;
+                        if (t1 == null || t1 === 0) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
+                        return (
+                          <div style={{ lineHeight: '1.3' }}>
+                            <div style={{ fontSize: '13px', fontWeight: 800, color: '#10b981' }}>${t1.toFixed(2)}</div>
+                            <div style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600 }}>R/R {rr1.toFixed(1)}x</div>
+                          </div>
+                        );
+                      },
+                    },
+                    {
+                      title: t.agent.colPosition,
+                      key: 'position',
+                      width: 120,
+                      render: (record) => {
+                        const sh = record.positionSize || record.positionSizeShares || 0;
+                        const val = record.positionValue || record.positionSizeDollars || 0;
+                        if (sh === 0 && val === 0) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
+                        return (
+                          <div style={{ lineHeight: '1.3' }}>
+                            <div style={{ fontSize: '13.5px', fontWeight: 800, color: '#3b82f6' }}>{sh} SHARES</div>
+                            <div style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600 }}>${val.toFixed(0)} EST.</div>
+                          </div>
+                        );
+                      },
+                    },
+                    {
+                      title: t.agent.colAIDecision,
+                      key: 'aiDecision',
+                      width: 110,
+                      render: (record) => {
+                        const d = record.aiDecision;
+                        if (!d) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
+                        const tagColor = d === 'BUY' ? 'success' : d === 'WATCH' ? 'warning' : 'error';
+                        return (
+                          <div>
+                            <Tag color={tagColor} bordered={false} style={{ fontSize: '10.5px', fontWeight: 800, padding: '0 8px', lineHeight: '22px', borderRadius: '6px', margin: 0 }}>{d}</Tag>
+                            <div style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 700, marginTop: 2 }}>{record.confidence != null ? `${record.confidence}% CONF` : ''}</div>
+                          </div>
+                        );
+                      },
+                    },
+                    {
+                      title: t.agent.colGate,
+                      key: 'riskGate',
+                      width: 100,
+                      render: (record) => {
+                        const rg = record.riskGate || record.hardRiskGate;
+                        const status = rg?.status;
+                        if (!status) return <span style={{ fontSize: '11px', color: '#ccc' }}>N/A</span>;
+                        const tagColor = status === 'PASS' ? 'success' : status === 'REVIEW' ? 'warning' : 'error';
+                        return (
+                          <Tooltip title={rg.warnings?.join('; ') || status}>
+                            <Tag color={tagColor} bordered={false} style={{ fontSize: '10.5px', fontWeight: 800, padding: '0 8px', lineHeight: '22px', borderRadius: '6px', margin: 0 }}>{status}</Tag>
+                          </Tooltip>
+                        );
+                      },
+                    },
+                    {
+                      title: t.agent.colFinalAction,
+                      key: 'finalAction',
+                      width: 130,
+                      render: (record) => {
+                        const a = record.finalAction;
+                        if (!a) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
+                        const displayText: Record<string, string> = {
+                          'BUY_READY': 'BUY READY',
+                          'BUY_ALLOWED': 'BUY',
+                          'READY_REVIEW': 'READY REVIEW',
+                          'WAIT_FOR_ENTRY': 'WAIT ENTRY',
+                          'WATCH_ONLY': 'WATCH',
+                          'SKIP': 'SKIP',
+                          'BLOCKED_BY_RISK': 'BLOCKED',
+                          'NEEDS_REVIEW': 'REVIEW',
+                        };
+                        const tagColor = a.includes('BUY') ? 'success' : a === 'READY_REVIEW' ? 'processing' : a.includes('WAIT') || a === 'WATCH_ONLY' ? 'warning' : 'error';
+                        return <Tag color={tagColor} bordered={false} style={{ fontSize: '10.5px', fontWeight: 800, padding: '0 8px', lineHeight: '22px', borderRadius: '6px', margin: 0 }}>{displayText[a] || a}</Tag>;
+                      },
+                    },
+                    {
+                      title: t.agent.colData,
+                      key: 'dataQuality',
+                      width: 100,
+                      render: (record) => {
+                        const dq = record.dataQuality || 'PARTIAL';
+                        const tagColor = dq === 'GOOD' ? 'success' : dq === 'PARTIAL' ? 'warning' : 'error';
+                        return (
+                          <div style={{ display: 'flex', flexDirection: 'column' }}>
+                            <Tag color={tagColor} bordered={false} style={{ fontSize: '9.5px', fontWeight: 800, padding: '0 6px', lineHeight: '18px', borderRadius: '4px', width: 'fit-content', margin: 0 }}>{dq}</Tag>
+                            <span style={{ fontSize: '9px', color: '#94a3b8', fontWeight: 700, marginTop: 2 }}>{record.aiCalled ? record.aiSource || 'AI' : 'RULES'}</span>
+                          </div>
+                        );
+                      },
+                    },
+                    {
+                      title: t.agent.reason,
+                      dataIndex: 'reason',
+                      key: 'reason',
+                      width: 260,
+                      render: (text, record) => {
+                        const fullText = record.decisionReason || text || '';
+                        return (
+                          <Tooltip title={fullText} overlayClassName="heatmap-professional-tooltip">
+                            <div style={{ fontSize: '12px', color: '#64748b', lineHeight: 1.5, WebkitLineClamp: 2, display: '-webkit-box', WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                              {fullText || '—'}
+                            </div>
+                          </Tooltip>
+                        );
+                      },
+                    },
+                    {
+                      title: t.agent.actions,
+                      key: 'action',
+                      width: 140,
+                      fixed: 'right' as const,
+                      render: (record) => {
+                        const fa = record.finalAction;
+                        const aiDec = record.aiDecision;
+                        const dq = record.dataQuality;
+                        const rg = record.riskGate || record.hardRiskGate || {};
+
+                        if (fa === 'BLOCKED_BY_RISK' || rg.status === 'BLOCK' || dq === 'POOR') {
+                          return <Button size="small" danger disabled style={{ height: 32, borderRadius: 8, fontSize: 11, fontWeight: 700, width: '100%' }}>{t.agent.blocked}</Button>;
+                        }
+                        if (fa === 'SKIP' || aiDec === 'SKIP') {
+                          return <Button size="small" disabled style={{ height: 32, borderRadius: 8, fontSize: 11, fontWeight: 700, width: '100%' }}>{t.agent.skipped}</Button>;
+                        }
+                        if (fa === 'BUY_READY') {
+                          return <Button size="small" type="primary" onClick={() => handleEntryPlanAction(record)} style={{ height: 32, borderRadius: 8, fontSize: 11, fontWeight: 700, width: '100%', background: '#10b981', borderColor: '#10b981' }}>{t.agent.execute}</Button>;
+                        }
+                        if (fa === 'READY_REVIEW') {
+                          const inWl = isInWatchlist(record.symbol);
+                          return (
+                            <Space size={6}>
+                              <Button size="small" type="primary" ghost onClick={() => handleEntryPlanAction(record)} style={{ height: 32, borderRadius: 8, fontSize: 11, fontWeight: 700 }}>{t.agent.review}</Button>
+                              <Button size="small" icon={inWl ? <CheckOutlined /> : <PlusOutlined />} onClick={() => addToWatchlist(record)} style={{ height: 32, width: 32, borderRadius: 8, color: inWl ? '#10b981' : '#3b82f6', borderColor: inWl ? '#10b981' : '#3b82f6' }} />
+                            </Space>
+                          );
+                        }
+                        if (fa === 'WAIT_FOR_ENTRY' || aiDec === 'WATCH') {
+                          const inWl = isInWatchlist(record.symbol);
+                          return <Button size="small" icon={inWl ? <CheckOutlined /> : <PlusOutlined />} onClick={() => addToWatchlist(record)} style={{ height: 32, borderRadius: 8, fontSize: 11, fontWeight: 700, width: '100%', color: inWl ? '#10b981' : '#3b82f6', borderColor: inWl ? '#10b981' : '#3b82f6' }}>{inWl ? t.agent.update : t.agent.plusWatchlist}</Button>;
+                        }
+                        return <span style={{ fontSize: '10px', color: '#bbb' }}>—</span>;
+                      },
+                    },
+                  ]}
+                  scroll={{ x: 1750 }}
+                  style={{ fontSize: '12px', marginTop: '16px' }}
+                  rowClassName={() => 'ep-table-row'}
+                />
+              </div>
               <style>{`
                 .ep-table-row {
-                  height: 58px !important;
+                  height: 72px !important;
                 }
                 .ep-table-row > td {
-                  padding: 12px 10px !important;
+                  padding: 10px 12px !important;
                   vertical-align: middle;
-                  font-size: 13px !important;
-                  font-family: "Inter", -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif !important;
+                  font-size: 13.5px !important;
+                  background: #fff;
                 }
-                .ant-table-thead > tr > th {
-                  font-weight: 600 !important;
-                  font-size: 11px !important;
-                  color: #444 !important;
-                  background: #f5f6f8 !important;
-                  padding: 14px 10px !important;
-                  border-bottom: 1px solid #e0e0e0 !important;
-                  letter-spacing: 0.3px !important;
+                .entry-plan-table-wrapper .ant-table-thead > tr > th {
+                  font-weight: 800 !important;
+                  font-size: 10.5px !important;
+                  color: #94a3b8 !important;
+                  background: #f8fafc !important;
+                  padding: 16px 12px !important;
+                  border-bottom: 1px solid rgba(15, 23, 42, 0.06) !important;
+                  letter-spacing: 0.8px !important;
                   text-transform: uppercase !important;
-                  font-family: "Inter", -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif !important;
                 }
                 .ep-table-row:hover > td {
-                  background: #f8faff !important;
+                  background: #f8fbff !important;
                 }
                 .ant-table-thead > tr > th:not(:last-child)::after {
                   display: none !important;
+                }
+                .ant-table-fixed-right {
+                  background: #fff !important;
                 }
               `}</style>
             </>
@@ -10314,12 +10969,14 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
         statusText={
           exitScanStatus === 'scanning' ? t.agent.scanningLabel :
           exitScanStatus === 'completed' ? t.agent.completedLabel :
+          exitScanStatus === 'skipped' ? `${t.agent.skippedLabel}: ${t.agent.noActiveHoldings}` :
           exitScanStatus === 'failed' ? t.agent.errorLabel :
           exitScanStatus === 'stopped' ? t.agent.stoppedLabel : 'IDLE'
         }
         statusColor={
           exitScanStatus === 'scanning' ? 'processing' :
           exitScanStatus === 'completed' ? 'success' :
+          exitScanStatus === 'skipped' ? 'warning' :
           exitScanStatus === 'failed' ? 'error' :
           exitScanStatus === 'stopped' ? 'warning' : 'default'
         }
@@ -10328,7 +10985,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
         onToggle={() => setExitScanExpanded(!exitScanExpanded)}
         actionButton={
           <div style={{ display: 'flex', gap: 8 }}>
-            {exitScanStatus !== 'idle' && exitScanStatus !== 'scanning' && (
+            {exitScanStatus !== 'idle' && exitScanStatus !== 'scanning' && exitScanStatus !== 'skipped' && (
               <Tooltip title={t.agent.clearResults}>
                 <Button
                   size="middle"
@@ -10366,7 +11023,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     boxShadow: exitScanStatus !== 'scanning' && holdings.length > 0 ? '0 2px 6px rgba(24,144,255,0.3)' : 'none'
                   }}
                 >
-                  {exitScanStatus === 'scanning' ? t.agent.stopScanner : exitScanStatus === 'completed' || exitScanStatus === 'stopped' ? t.agent.reRunExitScan : t.agent.runExitScan}
+                  {exitScanStatus === 'scanning' ? t.agent.stopScanner : exitScanStatus === 'completed' || exitScanStatus === 'stopped' || exitScanStatus === 'skipped' ? t.agent.reRunExitScan : t.agent.runExitScan}
                 </Button>
               </span>
             </Tooltip>

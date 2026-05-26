@@ -1,5 +1,5 @@
 import React from 'react';
-import { Row, Col, Typography, Badge, Divider } from 'antd';
+import { Row, Col, Typography, Badge, Divider, Tag } from 'antd';
 import { TrophyOutlined, ThunderboltOutlined, PercentageOutlined, RiseOutlined, FallOutlined, AimOutlined, BarChartOutlined } from '@ant-design/icons';
 import { OptimizationResult } from './OptimizationHeatmap';
 import { useLanguage } from '../../contexts/LanguageContext';
@@ -102,17 +102,17 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
       textAlign: 'center', 
       padding: '20px 16px', 
       background: '#fff', 
-      borderRadius: '12px', 
-      border: '1px solid #f0f0f0',
-      boxShadow: '0 2px 8px rgba(0,0,0,0.02)',
+      borderRadius: '16px', 
+      border: '1px solid rgba(15, 23, 42, 0.08)',
+      boxShadow: '0 2px 6px rgba(0,0,0,0.01)',
       height: '100%',
-      transition: 'all 0.3s'
+      transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
     }} className="metric-card-hover">
-      <div style={{ color: '#8c8c8c', fontSize: '12px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+      <div style={{ color: '#94a3b8', fontSize: '10.5px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
         {icon} {title}
       </div>
-      <div style={{ fontSize: '24px', fontWeight: 800, color: color || '#262626', lineHeight: 1 }}>
-        {value}<span style={{ fontSize: '14px', marginLeft: '2px' }}>{suffix}</span>
+      <div style={{ fontSize: '26px', fontWeight: 800, color: color || '#0f172a', lineHeight: 1 }}>
+        {value}<span style={{ fontSize: '15px', marginLeft: '2px', color: '#94a3b8', fontWeight: 600 }}>{suffix}</span>
       </div>
     </div>
   );
@@ -120,88 +120,115 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
   return (
     <div style={{ marginBottom: '24px' }}>
       <style>{`
-        .metric-card-hover:hover { transform: translateY(-4px); box-shadow: 0 6px 16px rgba(0,0,0,0.06); border-color: #d9d9d9; }
-        .best-combination-card { background: #fff; border: 1px solid #b7eb8f; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 20px rgba(82, 196, 26, 0.05); }
-        .best-combination-header { background: linear-gradient(90deg, #f6ffed 0%, #e6ffd9 100%); padding: 16px 24px; border-bottom: 1px solid #b7eb8f; display: flex; justify-content: space-between; align-items: center; }
-        .param-tile { background: #f8f9fa; padding: 12px; border-radius: 8px; border: 1px solid #eef2f6; text-align: center; }
+        .metric-card-hover:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.04); border-color: rgba(114, 46, 209, 0.15); }
+        .best-combination-card { 
+          background: #fff; 
+          border: 1px solid rgba(16, 185, 129, 0.2); 
+          border-radius: 18px; 
+          overflow: hidden; 
+          box-shadow: 0 4px 12px rgba(16, 185, 129, 0.03); 
+        }
+        .best-combination-header { 
+          background: linear-gradient(90deg, #f0fdf4 0%, #ffffff 100%); 
+          padding: 18px 24px; 
+          border-bottom: 1px solid rgba(16, 185, 129, 0.1); 
+          display: flex; 
+          justify-content: space-between; 
+          align-items: center; 
+        }
+        .param-tile { 
+          background: #f8fafc; 
+          padding: 14px; 
+          border-radius: 12px; 
+          border: 1px solid rgba(15, 23, 42, 0.04); 
+          text-align: center;
+          transition: all 0.2s ease;
+        }
+        .param-tile:hover {
+          border-color: rgba(24, 144, 255, 0.2);
+          background: #fff;
+        }
         .metric-tile { text-align: center; padding: 8px; }
+        @media (max-width: 991px) {
+          .perf-metrics-col { margin-top: 24px; }
+        }
         `}</style>
 
         <div style={{ marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-        <BarChartOutlined style={{ fontSize: '20px', color: '#722ed1' }} />
-        <Title level={4} style={{ margin: 0 }}>{t.optimization.summaryTitle}</Title>
+          <BarChartOutlined style={{ fontSize: '20px', color: '#722ed1' }} />
+          <Title level={4} style={{ margin: 0, fontWeight: 800, color: '#0f172a' }}>{t.optimization.summaryTitle}</Title>
         </div>
 
-        <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
-        <Col span={4}><MetricCard title={t.optimization.combinations} value={stats.totalCombinations} icon={<ThunderboltOutlined />} color="#1890ff" /></Col>
-        <Col span={4}><MetricCard title={t.optimization.validResults} value={stats.validCombinations} icon={<AimOutlined />} color="#52c41a" /></Col>
-        <Col span={4}><MetricCard title={t.optimization.bestReturnCard} value={safePercent(stats.bestReturn).replace('%', '')} suffix="%" icon={<RiseOutlined />} color="#3f8600" /></Col>
-        <Col span={4}><MetricCard title={t.optimization.worstReturnCard} value={safePercent(stats.worstReturn).replace('%', '')} suffix="%" icon={<FallOutlined />} color="#cf1322" /></Col>
-        <Col span={4}><MetricCard title={t.optimization.avgReturn} value={safePercent(stats.avgReturn).replace('%', '')} suffix="%" icon={<PercentageOutlined />} color="#fa8c16" /></Col>
-        <Col span={4}><MetricCard title={t.optimization.bestSharpeCard} value={safeToFixed(stats.bestSharpeRatio, 2)} icon={<TrophyOutlined />} color="#722ed1" /></Col>
+        <Row gutter={[20, 20]} style={{ marginBottom: '24px' }}>
+          <Col xs={12} sm={8} lg={4}><MetricCard title={t.optimization.combinations} value={stats.totalCombinations} icon={<ThunderboltOutlined />} color="#722ed1" /></Col>
+          <Col xs={12} sm={8} lg={4}><MetricCard title={t.optimization.validResults} value={stats.validCombinations} icon={<AimOutlined />} color="#10b981" /></Col>
+          <Col xs={12} sm={8} lg={4}><MetricCard title={t.optimization.bestReturnCard} value={safePercent(stats.bestReturn).replace('%', '').replace('+', '')} suffix="%" icon={<RiseOutlined />} color="#10b981" /></Col>
+          <Col xs={12} sm={8} lg={4}><MetricCard title={t.optimization.worstReturnCard} value={safePercent(stats.worstReturn).replace('%', '')} suffix="%" icon={<FallOutlined />} color="#ef4444" /></Col>
+          <Col xs={12} sm={8} lg={4}><MetricCard title={t.optimization.avgReturn} value={safePercent(stats.avgReturn).replace('%', '').replace('+', '')} suffix="%" icon={<PercentageOutlined />} color="#f59e0b" /></Col>
+          <Col xs={12} sm={8} lg={4}><MetricCard title={t.optimization.bestSharpeCard} value={safeToFixed(stats.bestSharpeRatio, 2)} icon={<TrophyOutlined />} color="#722ed1" /></Col>
         </Row>
 
         {stats.bestCombinationBySharpe && (
         <div className="best-combination-card">
           <div className="best-combination-header">
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: '#52c41a', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}>
+              <div style={{ width: '36px', height: '36px', borderRadius: '10px', background: '#10b981', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', boxShadow: '0 4px 10px rgba(16, 185, 129, 0.2)' }}>
                 <TrophyOutlined />
               </div>
               <div>
-                <Text strong style={{ fontSize: '16px', color: '#1b4d0e' }}>{t.optimization.bestCombinationTitle}</Text>
-                <div style={{ fontSize: '12px', color: '#52c41a', fontWeight: 600 }}>{t.optimization.optimizedBySharpe}</div>
+                <Text strong style={{ fontSize: '16px', color: '#064e3b' }}>{t.optimization.bestCombinationTitle}</Text>
+                <div style={{ fontSize: '12px', color: '#10b981', fontWeight: 700, letterSpacing: '0.4px' }}>{t.optimization.optimizedBySharpe.toUpperCase()}</div>
               </div>
             </div>
-            <Badge count={t.optimization.recommended} style={{ backgroundColor: '#52c41a', fontWeight: 700, padding: '0 10px', height: '24px', lineHeight: '24px', borderRadius: '6px', marginLeft: '16px' }} />
+            <Tag color="success" style={{ fontWeight: 800, borderRadius: '6px', padding: '2px 12px', border: 'none', background: '#10b981', color: '#fff' }}>{t.optimization.recommended.toUpperCase()}</Tag>
           </div>          
-          <div style={{ padding: '24px' }}>
-            <Row gutter={48}>
-              <Col span={10}>
-                <Text type="secondary" style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px', display: 'block', marginBottom: '16px' }}>{t.optimization.paramConfiguration}</Text>
-                <Row gutter={12}>
+          <div style={{ padding: '28px 32px' }}>
+            <Row gutter={48} align="middle">
+              <Col xs={24} lg={10}>
+                <Text style={{ fontSize: '11px', fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '1px', display: 'block', marginBottom: '20px' }}>{t.optimization.paramConfiguration}</Text>
+                <Row gutter={[12, 12]}>
                   {strategyConfig.params.map((p, idx) => (
-                    <Col key={p.key} span={24 / Math.min(strategyConfig.params.length, 3)}>
+                    <Col key={p.key} span={strategyConfig.isSingleParam ? 24 : 12}>
                       <div className="param-tile">
-                        <div style={{ fontSize: '20px', fontWeight: 800, color: '#1890ff' }}>
+                        <div style={{ fontSize: '22px', fontWeight: 800, color: '#0f172a' }}>
                           {p.format ? p.format(stats.bestCombinationBySharpe?.[p.key]) : safeToFixed(stats.bestCombinationBySharpe?.[p.key], 0)}
                         </div>
-                        <Text type="secondary" style={{ fontSize: '11px', fontWeight: 600 }}>{p.label}</Text>
+                        <Text style={{ fontSize: '11px', fontWeight: 700, color: '#64748b' }}>{p.label}</Text>
                       </div>
                     </Col>
                   ))}
                 </Row>
               </Col>
               
-              <Col span={1}>
-                <Divider type="vertical" style={{ height: '100%', margin: 0 }} />
+              <Col xs={0} lg={1}>
+                <Divider type="vertical" style={{ height: '80px', margin: '0 auto', borderColor: 'rgba(15, 23, 42, 0.06)' }} />
               </Col>
               
-              <Col span={13}>
-                <Text type="secondary" style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px', display: 'block', marginBottom: '16px' }}>{t.optimization.perfMetrics}</Text>
+              <Col xs={24} lg={13} className="perf-metrics-col">
+                <Text style={{ fontSize: '11px', fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '1px', display: 'block', marginBottom: '20px' }}>{t.optimization.perfMetrics}</Text>
                 <Row gutter={16}>
                   <Col span={6}>
                     <div className="metric-tile">
-                      <div style={{ fontSize: '20px', fontWeight: 800, color: '#722ed1' }}>{safeToFixed(stats.bestCombinationBySharpe?.sharpeRatio, 2)}</div>
-                      <Text type="secondary" style={{ fontSize: '11px' }}>{t.optimization.labelSharpeRatio}</Text>
+                      <div style={{ fontSize: '22px', fontWeight: 800, color: '#722ed1' }}>{safeToFixed(stats.bestCombinationBySharpe?.sharpeRatio, 2)}</div>
+                      <Text style={{ fontSize: '11px', fontWeight: 700, color: '#64748b' }}>{t.optimization.labelSharpeRatio}</Text>
                     </div>
                   </Col>
                   <Col span={6}>
                     <div className="metric-tile">
-                      <div style={{ fontSize: '20px', fontWeight: 800, color: '#3f8600' }}>{safePercent(stats.bestCombinationBySharpe?.totalReturn)}</div>
-                      <Text type="secondary" style={{ fontSize: '11px' }}>{t.optimization.labelTotalReturn}</Text>
+                      <div style={{ fontSize: '22px', fontWeight: 800, color: '#10b981' }}>{safePercent(stats.bestCombinationBySharpe?.totalReturn)}</div>
+                      <Text style={{ fontSize: '11px', fontWeight: 700, color: '#64748b' }}>{t.optimization.labelTotalReturn}</Text>
                     </div>
                   </Col>
                   <Col span={6}>
                     <div className="metric-tile">
-                      <div style={{ fontSize: '20px', fontWeight: 800, color: '#cf1322' }}>{safeToFixed(stats.bestCombinationBySharpe?.maxDrawdown, 2)}%</div>
-                      <Text type="secondary" style={{ fontSize: '11px' }}>{t.optimization.labelMaxDrawdown}</Text>
+                      <div style={{ fontSize: '22px', fontWeight: 800, color: '#ef4444' }}>{safeToFixed(stats.bestCombinationBySharpe?.maxDrawdown, 2)}%</div>
+                      <Text style={{ fontSize: '11px', fontWeight: 700, color: '#64748b' }}>{t.optimization.labelMaxDrawdown}</Text>
                     </div>
                   </Col>
                   <Col span={6}>
                     <div className="metric-tile">
-                      <div style={{ fontSize: '20px', fontWeight: 800, color: '#fa8c16' }}>{safeToFixed(stats.bestCombinationBySharpe?.winRate, 1)}%</div>
-                      <Text type="secondary" style={{ fontSize: '11px' }}>{t.optimization.labelWinRate}</Text>
+                      <div style={{ fontSize: '22px', fontWeight: 800, color: '#f59e0b' }}>{safeToFixed(stats.bestCombinationBySharpe?.winRate, 1)}%</div>
+                      <Text style={{ fontSize: '11px', fontWeight: 700, color: '#64748b' }}>{t.optimization.labelWinRate}</Text>
                     </div>
                   </Col>
                 </Row>

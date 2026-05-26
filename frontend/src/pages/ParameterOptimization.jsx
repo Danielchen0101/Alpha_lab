@@ -130,31 +130,25 @@ const ParameterOptimization = () => {
   }, [selectedStrategy, form]);
 
   const renderParameterRange = (title, namePrefix) => (
-    <div style={{ 
-      background: '#f8f9fa', 
-      padding: '16px', 
-      borderRadius: '10px', 
-      border: '1px solid #eef2f6',
-      height: '100%'
-    }}>
-      <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-        <SettingOutlined style={{ color: '#1890ff' }} />
-        <Text strong style={{ fontSize: '13px', color: '#595959', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{title}</Text>
+    <div className="inner-param-card">
+      <div className="inner-param-title">
+        <SettingOutlined style={{ color: '#722ed1', fontSize: 14 }} />
+        <span>{title}</span>
       </div>
-      <Row gutter={12}>
-        <Col span={8}>
-          <Form.Item label={<Text type="secondary" style={{ fontSize: '12px' }}>{t.optimization.start}</Text>} name={`${namePrefix}Start`}>
-            <InputNumber min={0.1} max={500} style={{ width: '100%', borderRadius: '6px' }} />
+      <Row gutter={14}>
+        <Col xs={24} sm={8}>
+          <Form.Item label={<Text style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8' }}>{t.optimization.start.toUpperCase()}</Text>} name={`${namePrefix}Start`}>
+            <InputNumber min={0.1} max={500} className="optimize-form-input" style={{ width: '100%' }} />
           </Form.Item>
         </Col>
-        <Col span={8}>
-          <Form.Item label={<Text type="secondary" style={{ fontSize: '12px' }}>{t.optimization.end}</Text>} name={`${namePrefix}End`}>
-            <InputNumber min={0.1} max={500} style={{ width: '100%', borderRadius: '6px' }} />
+        <Col xs={24} sm={8}>
+          <Form.Item label={<Text style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8' }}>{t.optimization.end.toUpperCase()}</Text>} name={`${namePrefix}End`}>
+            <InputNumber min={0.1} max={500} className="optimize-form-input" style={{ width: '100%' }} />
           </Form.Item>
         </Col>
-        <Col span={8}>
-          <Form.Item label={<Text type="secondary" style={{ fontSize: '12px' }}>{t.optimization.step}</Text>} name={`${namePrefix}Step`}>
-            <InputNumber min={0.1} max={100} style={{ width: '100%', borderRadius: '6px' }} />
+        <Col xs={24} sm={8}>
+          <Form.Item label={<Text style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8' }}>{t.optimization.step.toUpperCase()}</Text>} name={`${namePrefix}Step`}>
+            <InputNumber min={0.1} max={100} className="optimize-form-input" style={{ width: '100%' }} />
           </Form.Item>
         </Col>
       </Row>
@@ -354,40 +348,148 @@ const ParameterOptimization = () => {
   };
 
   return (
-    <div style={{ padding: '0 8px 40px 8px', maxWidth: '1600px', margin: '0 auto', animation: 'fadeIn 0.5s ease-out' }}>
+    <div className="optimize-page-shell">
       <style>{`
+        .optimize-page-shell {
+          max-width: 1400px;
+          margin: 0 auto;
+          padding: clamp(16px, 1.8vw, 28px);
+          animation: fadeIn 0.5s ease-out;
+        }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .premium-card { border-radius: 12px !important; border: 1px solid #f0f0f0 !important; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03) !important; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important; }
-        .premium-card:hover { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06) !important; }
-        .primary-cta-button { height: 48px; font-weight: 700; letter-spacing: 0.5px; border-radius: 10px; box-shadow: 0 4px 14px rgba(24, 144, 255, 0.25); transition: all 0.3s; }
-        .primary-cta-button:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(24, 144, 255, 0.35); }
-        @keyframes subtlePulse { 0% { opacity: 0.8; transform: scale(1); } 50% { opacity: 1; transform: scale(1.02); } 100% { opacity: 0.8; transform: scale(1); } }
+        
+        .premium-card { 
+          border-radius: 18px !important; 
+          border: 1px solid rgba(15, 23, 42, 0.08) !important; 
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02) !important; 
+          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important; 
+          background: #fff !important;
+          overflow: hidden;
+        }
+        .premium-card:hover { 
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.04) !important; 
+        }
+        .premium-card .ant-card-head {
+          padding: 0 24px !important;
+          border-bottom: 1px solid rgba(15, 23, 42, 0.06) !important;
+          min-height: 56px !important;
+        }
+        .premium-card .ant-card-head-title {
+          padding: 16px 0 !important;
+          font-weight: 800 !important;
+          font-size: 16px !important;
+          color: #0f172a !important;
+        }
+        .premium-card .ant-card-body {
+          padding: 24px !important;
+        }
+
+        .config-grid {
+          display: grid;
+          grid-template-columns: repeat(4, 1fr);
+          gap: 20px;
+        }
+        @media (max-width: 1200px) {
+          .config-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        @media (max-width: 640px) {
+          .config-grid { grid-template-columns: 1fr; }
+        }
+
+        .param-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+          gap: 20px;
+          margin-bottom: 24px;
+        }
+        @media (max-width: 1100px) {
+          .param-grid { grid-template-columns: 1fr; }
+        }
+
+        .inner-param-card {
+          background: #f8fafc;
+          padding: 20px;
+          border-radius: 16px;
+          border: 1px solid rgba(15, 23, 42, 0.06);
+          height: 100%;
+          transition: border-color 0.2s ease;
+        }
+        .inner-param-card:hover {
+          border-color: rgba(114, 46, 209, 0.2);
+        }
+        .inner-param-title {
+          font-size: 12px;
+          font-weight: 800;
+          color: #64748b;
+          text-transform: uppercase;
+          letter-spacing: 0.8px;
+          margin-bottom: 18px;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .optimize-form-input { 
+          height: 42px !important; 
+          border-radius: 10px !important; 
+          border-color: #e2e8f0 !important; 
+        }
+        .optimize-form-label { font-size: 13.5px; font-weight: 600; color: #475569; }
+
+        .primary-cta-button { 
+          height: 46px; 
+          font-weight: 700; 
+          border-radius: 14px; 
+          box-shadow: 0 4px 14px rgba(114, 46, 209, 0.2); 
+          transition: all 0.3s; 
+          font-size: 15.5px;
+          padding: 0 40px;
+        }
+        .primary-cta-button:hover:not(:disabled) { 
+          transform: translateY(-1px); 
+          box-shadow: 0 6px 20px rgba(114, 46, 209, 0.3); 
+        }
+        @keyframes subtlePulse { 0% { opacity: 0.8; transform: scale(1); } 50% { opacity: 1; transform: scale(1.01); } 100% { opacity: 0.8; transform: scale(1); } }
         .running-pulse { animation: subtlePulse 2s infinite ease-in-out; }
+
+        .status-badge {
+          background: #fff;
+          padding: 8px 16px;
+          border-radius: 12px;
+          border: 1px solid rgba(15, 23, 42, 0.06);
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
       `}</style>
 
       {/* ── Page Header ── */}
-      <div style={{ marginBottom: 32, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-            <div style={{ width: 42, height: 42, borderRadius: '12px', background: 'linear-gradient(135deg, #722ed1 0%, #391085 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 24, boxShadow: '0 4px 12px rgba(114, 46, 209, 0.3)' }}>
-              <ExperimentOutlined />
-            </div>
-            <Title level={1} style={{ margin: 0, fontSize: 28, fontWeight: 800, letterSpacing: '-0.5px', color: '#1a1a1a' }}>{t.optimization.title}</Title>
+      <div style={{ marginBottom: 36, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div style={{ width: 44, height: 44, borderRadius: '12px', background: 'linear-gradient(135deg, #722ed1 0%, #391085 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 22, boxShadow: '0 4px 12px rgba(114, 46, 209, 0.25)' }}>
+            <ExperimentOutlined />
           </div>
-          <Text type="secondary" style={{ fontSize: 15, marginLeft: 54 }}>{t.optimization.subtitle}</Text>
+          <div>
+            <Title level={1} style={{ margin: 0, fontSize: 'clamp(24px, 2.2vw, 32px)', fontWeight: 800, letterSpacing: '-0.02em', color: '#0f172a' }}>{t.optimization.title}</Title>
+            <Text style={{ fontSize: 14.5, color: '#64748b' }}>{t.optimization.subtitle}</Text>
+          </div>
         </div>
-        <div style={{ display: 'flex', gap: 12 }}>
-          <Badge status="processing" color="#722ed1" text={<Text strong style={{ color: '#722ed1', fontSize: 12, letterSpacing: '0.5px' }}>{t.optimization.optimizationReady}</Text>} />
+        <div className="status-badge">
+           <Badge status="processing" color="#722ed1" text={<Text strong style={{ color: '#722ed1', fontSize: 12, letterSpacing: '0.6px' }}>{t.optimization.optimizationReady.toUpperCase()}</Text>} />
         </div>
       </div>
 
       <Row gutter={[24, 24]}>
         <Col span={24}>
-          <Card className="premium-card" title={<Space><SearchOutlined style={{ color: '#722ed1' }} /><span style={{ fontWeight: 700 }}>{t.optimization.engineConfiguration}</span></Space>}>
+          <Card 
+            className="premium-card" 
+            title={<Space><SettingOutlined style={{ color: '#722ed1' }} /><span>{t.optimization.engineConfiguration}</span></Space>}
+          >
             <Form
               form={form}
               layout="vertical"
               onFinish={handleRunOptimization}
+              requiredMark={false}
               initialValues={{
                 symbol: 'AAPL',
                 strategy: 'moving_average',
@@ -397,48 +499,78 @@ const ParameterOptimization = () => {
                 longMaStart: 50, longMaEnd: 200, longMaStep: 25
               }}
             >
-              <Row gutter={24}>
-                <Col span={6}>
-                  <Form.Item label={<Text strong>{t.optimization.stockSymbol}</Text>} name="symbol" rules={[{ required: true }]}>
-                    <Input prefix={<LineChartOutlined style={{ color: '#bfbfbf' }} />} placeholder={t.backtest.stockSymbolPlaceholder} size="large" style={{ borderRadius: '8px' }} />
-                  </Form.Item>
-                </Col>
-                <Col span={6}>
-                  <Form.Item label={<Text strong>{t.optimization.strategyModel}</Text>} name="strategy" rules={[{ required: true }]}>
-                    <Select options={strategyOptions} size="large" style={{ borderRadius: '8px' }} />
-                  </Form.Item>
-                </Col>
-                <Col span={6}>
-                  <Form.Item label={<Text strong>{t.optimization.lookbackPeriod}</Text>} name="period" rules={[{ required: true }]}>
-                    <Select size="large" style={{ borderRadius: '8px' }}>
-                      <Select.Option value="3m">{t.optimization.threeMonthsData}</Select.Option>
-                      <Select.Option value="6m">{t.optimization.sixMonthsData}</Select.Option>
-                      <Select.Option value="1y">{t.optimization.oneYearData}</Select.Option>
-                    </Select>
-                  </Form.Item>
-                </Col>
-                <Col span={6}>
-                  <Form.Item label={<Text strong>{t.optimization.initialLiquidity}</Text>} name="initial_capital" rules={[{ required: true }]}>
-                    <InputNumber min={1000} size="large" style={{ width: '100%', borderRadius: '8px' }} formatter={v => `$ ${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')} />
-                  </Form.Item>
-                </Col>
-              </Row>
-
-              <Divider style={{ margin: '12px 0 24px 0' }} />
-              
-              <div style={{ marginBottom: 16 }}>
-                <Text strong style={{ fontSize: '15px', color: '#1f1f1f', display: 'block', marginBottom: 20 }}>{t.optimization.parameterSearchSpace}</Text>
-                {renderStrategyParameters()}
+              <div className="config-grid">
+                <Form.Item label={<span className="optimize-form-label">{t.optimization.stockSymbol}</span>} name="symbol" rules={[{ required: true }]}>
+                  <Input prefix={<LineChartOutlined style={{ color: '#94a3b8' }} />} placeholder="e.g. AAPL" className="optimize-form-input" />
+                </Form.Item>
+                
+                <Form.Item label={<span className="optimize-form-label">{t.optimization.strategyModel}</span>} name="strategy" rules={[{ required: true }]}>
+                  <Select options={strategyOptions} className="optimize-form-input" />
+                </Form.Item>
+                
+                <Form.Item label={<span className="optimize-form-label">{t.optimization.lookbackPeriod}</span>} name="period" rules={[{ required: true }]}>
+                  <Select className="optimize-form-input">
+                    <Select.Option value="3m">{t.optimization.threeMonthsData}</Select.Option>
+                    <Select.Option value="6m">{t.optimization.sixMonthsData}</Select.Option>
+                    <Select.Option value="1y">{t.optimization.oneYearData}</Select.Option>
+                  </Select>
+                </Form.Item>
+                
+                <Form.Item label={<span className="optimize-form-label">{t.optimization.initialLiquidity}</span>} name="initial_capital" rules={[{ required: true }]}>
+                  <InputNumber min={1000} className="optimize-form-input" style={{ width: '100%' }} formatter={v => `$ ${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')} />
+                </Form.Item>
               </div>
 
-              <div style={{ display: 'flex', justifyContent: 'center', marginTop: 32 }}>
+              <div style={{ marginTop: 24, marginBottom: 20 }}>
+                <Text strong style={{ fontSize: '15px', color: '#0f172a', display: 'block', marginBottom: 20 }}>{t.optimization.parameterSearchSpace}</Text>
+                <div className="param-grid">
+                  {selectedStrategy === 'moving_average' && (
+                    <>
+                      {renderParameterRange(t.optimization.shortMaParameters, 'shortMa')}
+                      {renderParameterRange(t.optimization.longMaParameters, 'longMa')}
+                    </>
+                  )}
+                  {selectedStrategy === 'momentum' && (
+                    renderParameterRange(t.optimization.momentumPeriodBlock, 'momentumPeriod')
+                  )}
+                  {selectedStrategy === 'rsi' && (
+                    <>
+                      {renderParameterRange(t.optimization.rsiPeriodBlock, 'rsiPeriod')}
+                      {renderParameterRange(t.optimization.oversoldLevelBlock, 'oversold')}
+                      {renderParameterRange(t.optimization.overboughtLevelBlock, 'overbought')}
+                    </>
+                  )}
+                  {selectedStrategy === 'macd' && (
+                    <>
+                      {renderParameterRange(t.optimization.fastEmaBlock, 'fast')}
+                      {renderParameterRange(t.optimization.slowEmaBlock, 'slow')}
+                      {renderParameterRange(t.optimization.signalEmaBlock, 'signal')}
+                    </>
+                  )}
+                  {selectedStrategy === 'bollinger' && (
+                    <>
+                      {renderParameterRange(t.optimization.periodBlock, 'period')}
+                      {renderParameterRange(t.optimization.stdDevBlock, 'stdDev')}
+                    </>
+                  )}
+                  {selectedStrategy === 'mean_reversion' && (
+                    <>
+                      {renderParameterRange(t.optimization.lookbackBlock, 'lookback')}
+                      {renderParameterRange(t.optimization.entryZScoreBlock, 'entryZ')}
+                      {renderParameterRange(t.optimization.exitZScoreBlock, 'exitZ')}
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'center', marginTop: 12 }}>
                 <Button 
                   type="primary" 
                   htmlType="submit" 
                   loading={loading} 
                   icon={<RocketOutlined />} 
                   className={`primary-cta-button ${loading ? 'running-pulse' : ''}`}
-                  style={{ width: '100%', maxWidth: '400px', background: 'linear-gradient(90deg, #722ed1 0%, #1890ff 100%)', border: 'none' }}
+                  style={{ background: 'linear-gradient(90deg, #722ed1 0%, #1890ff 100%)', border: 'none' }}
                 >
                   {loading ? t.optimization.runningGeneticSearch : t.optimization.runOptimization}
                 </Button>
@@ -450,12 +582,12 @@ const ParameterOptimization = () => {
         {success && (
           <Col span={24}>
             <Alert 
-              message={<Text strong style={{ color: '#389e0d' }}>{t.optimization.optimizationSuccess}</Text>} 
+              message={<Text strong style={{ color: '#10b981' }}>{t.optimization.optimizationSuccess}</Text>} 
               description={success} 
               type="success" 
               showIcon 
               icon={<CheckCircleOutlined />}
-              style={{ borderRadius: '12px', border: '1px solid #b7eb8f', background: '#f6ffed' }} 
+              style={{ borderRadius: '16px', border: 'none', background: '#f0fdf4', padding: '16px 20px' }} 
             />
           </Col>
         )}
@@ -463,12 +595,12 @@ const ParameterOptimization = () => {
         {error && (
           <Col span={24}>
             <Alert 
-              message={<Text strong style={{ color: '#cf1322' }}>{t.optimization.configurationError}</Text>} 
+              message={<Text strong style={{ color: '#ef4444' }}>{t.optimization.configurationError}</Text>} 
               description={error} 
               type="error" 
               showIcon 
               icon={<WarningOutlined />}
-              style={{ borderRadius: '12px', border: '1px solid #ffa39e', background: '#fff1f0' }} 
+              style={{ borderRadius: '16px', border: 'none', background: '#fef2f2', padding: '16px 20px' }} 
             />
           </Col>
         )}
@@ -485,15 +617,15 @@ const ParameterOptimization = () => {
             </Col>
 
             <Col span={24}>
-              <Card className="premium-card" title={<Space><ExperimentOutlined style={{ color: '#722ed1' }} /><span style={{ fontWeight: 700 }}>{t.optimization.performanceHeatmap}</span></Space>}>
-                <div style={{ padding: '20px 0' }}>
+              <Card className="premium-card" title={<Space><ExperimentOutlined style={{ color: '#722ed1' }} /><span>{t.optimization.performanceHeatmap}</span></Space>}>
+                <div style={{ padding: '8px 0' }}>
                   <OptimizationHeatmap results={optimizationResults} strategy={selectedStrategy} />
                 </div>
               </Card>
             </Col>
 
             <Col span={24}>
-              <Card className="premium-card" title={<Space><LineChartOutlined style={{ color: '#1890ff' }} /><span style={{ fontWeight: 700 }}>{t.optimization.detailedResultMatrix}</span></Space>}>
+              <Card className="premium-card" title={<Space><LineChartOutlined style={{ color: '#1890ff' }} /><span>{t.optimization.detailedResultMatrix}</span></Space>}>
                 <OptimizationResultsTable results={optimizationResults} strategy={selectedStrategy} />
               </Card>
             </Col>
