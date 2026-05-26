@@ -40,7 +40,8 @@ userApi.interceptors.request.use(async (config) => {
 userApi.interceptors.response.use(
   (response) => response,
   async (error) => {
-    if (error.response?.status === 401) {
+    const hadAuthHeader = !!error.config?.headers?.Authorization;
+    if (error.response?.status === 401 && hadAuthHeader) {
       await supabase.auth.signOut();
       window.location.href = '/signin';
     }
@@ -48,11 +49,30 @@ userApi.interceptors.response.use(
   }
 );
 
+type ServiceStatus =
+  | 'loading'
+  | 'connected'
+  | 'not_configured'
+  | 'session_unavailable'
+  | 'unauthorized'
+  | 'backend_unreachable'
+  | 'service_error'
+  | 'schema_migration';
+
+const resolveStatusError = (error: any): ServiceStatus => {
+  if (!error.response) return 'backend_unreachable';
+  if (error.response.status === 401 || error.response.status === 403) return 'unauthorized';
+  const code = error.response.data?.code || '';
+  const msg = `${error.response.data?.message || ''} ${error.response.data?.error || ''}`;
+  if (code.includes('config_type') || msg.toLowerCase().includes('migration')) return 'schema_migration';
+  return 'service_error';
+};
+
 const Settings: React.FC = () => {
   const navigate = useNavigate();
-  const { user, logout } = useAuth();
+  const { user, session, loading, logout } = useAuth();
   const { t } = useLanguage();
-  const [statuses, setStatuses] = useState({
+  const [statuses, setStatuses] = useState<Record<'alpaca' | 'ai' | 'finnhub', ServiceStatus>>({
     alpaca: 'loading',
     ai: 'loading',
     finnhub: 'loading'
@@ -60,6 +80,19 @@ const Settings: React.FC = () => {
 
   useEffect(() => {
     const checkStatuses = async () => {
+      if (loading) return;
+      if (!user || !session?.access_token) {
+        const { data: { session: currentSession } } = await supabase.auth.getSession();
+        if (!currentSession?.access_token) {
+          setStatuses({
+            alpaca: 'session_unavailable',
+            ai: 'session_unavailable',
+            finnhub: 'session_unavailable'
+          });
+          return;
+        }
+      }
+
       try {
         const [alpacaRes, aiRes, finnhubRes] = await Promise.allSettled([
           userApi.get('/settings/broker-config'),
@@ -70,13 +103,13 @@ const Settings: React.FC = () => {
         const alpacaConfig = alpacaRes.status === 'fulfilled' ? alpacaRes.value.data?.config : null;
         setStatuses({
           alpaca: alpacaRes.status === 'rejected'
-            ? 'error'
+            ? resolveStatusError(alpacaRes.reason)
             : (alpacaConfig?.paper_api_key || alpacaConfig?.paper_api_key_masked || alpacaConfig?.live_api_key || alpacaConfig?.live_api_key_masked)
               ? 'connected'
               : 'not_configured',
-          ai: aiRes.status === 'rejected' ? 'error' : aiRes.value.data?.hasUserKey ? 'connected' : 'not_configured',
+          ai: aiRes.status === 'rejected' ? resolveStatusError(aiRes.reason) : aiRes.value.data?.hasUserKey ? 'connected' : 'not_configured',
           finnhub: finnhubRes.status === 'rejected'
-            ? 'error'
+            ? resolveStatusError(finnhubRes.reason)
             : (finnhubRes.value.data?.config?.api_key || finnhubRes.value.data?.config?.api_key_masked)
               ? 'connected'
               : 'not_configured'
@@ -86,12 +119,16 @@ const Settings: React.FC = () => {
       }
     };
     checkStatuses();
-  }, []);
+  }, [loading, user, session]);
 
-  const StatusTag = ({ status }: { status: string }) => {
+  const StatusTag = ({ status }: { status: ServiceStatus }) => {
     if (status === 'loading') return <Badge status="processing" text={t.settings.checking} />;
     if (status === 'connected') return <Tag color="success">{t.settings.configured}</Tag>;
-    if (status === 'error') return <Tag color="error">Status unavailable</Tag>;
+    if (status === 'session_unavailable') return <Tag color="warning">Session unavailable</Tag>;
+    if (status === 'unauthorized') return <Tag color="error">Sign in again</Tag>;
+    if (status === 'backend_unreachable') return <Tag color="error">Backend unreachable</Tag>;
+    if (status === 'schema_migration') return <Tag color="warning">Schema migration needed</Tag>;
+    if (status === 'service_error') return <Tag color="error">Configuration service error</Tag>;
     return <Tag color="default">{t.settings.notConfigured}</Tag>;
   };
 

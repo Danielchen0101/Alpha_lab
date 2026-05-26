@@ -616,6 +616,8 @@ const Agent: React.FC = (): React.ReactElement => {
   useEffect(() => {
     if (pipelineSchedule === 'off' || !pipelineAutoStatus) return;
     if (pipelineRunningRef.current) return;
+    // Skip if backend is already running a headless scan
+    if (pipelineAutoStatus.isRunning) return;
 
     if (pipelineAutoStatus.shouldRunNow && pipelineAutoStatus.marketOpen) {
       const triggerKey = pipelineAutoStatus.nextAutoRunAt || 'now';
@@ -623,6 +625,7 @@ const Agent: React.FC = (): React.ReactElement => {
       autoRunTriggeredRef.current = triggerKey;
       console.log('[PipelineAuto] due detected nextAutoRunAt=%s shouldRunNow=true',
         pipelineAutoStatus.nextAutoRunDisplay || pipelineAutoStatus.nextAutoRunAt);
+      console.log('[PipelineAuto] invoking Run Pipeline from auto interval');
       runAIPipelineRef.current?.({ trigger: 'auto_market_interval' });
     } else if (!pipelineAutoStatus.shouldRunNow) {
       autoRunTriggeredRef.current = null;
@@ -5314,6 +5317,10 @@ const Agent: React.FC = (): React.ReactElement => {
     pipelineStopRequestedRef.current = false;
     const _startTime = new Date().toISOString();
     setLastPipelineRun(_startTime);
+    const _triggerType = opts?.trigger || 'manual';
+    if (_triggerType === 'auto_market_interval') {
+      console.log('[PipelineAuto] auto interval run started');
+    }
 
     try {
       // ── Stage 1: Market Scanner ──
@@ -5576,8 +5583,11 @@ const Agent: React.FC = (): React.ReactElement => {
       const result = pipelineStage === 'failed' ? 'failed' : pipelineStopRequestedRef.current ? 'stopped' : 'success';
       scannerStateStore.updatePipelineSchedule({ lastRunAt: _startTime, lastRunResult: result });
       scheduleNextRun(true);
+      if (_triggerType === 'auto_market_interval') {
+        console.log('[PipelineAuto] auto interval run %s', result === 'success' ? 'completed' : 'failed');
+      }
       // Sync run completion to backend scheduler so it advances nextRunAt
-      if (opts?.trigger === 'auto_market_session') {
+      if (opts?.trigger === 'auto_market_session' || opts?.trigger === 'auto_market_interval') {
         const intervalMs = pipelineAutoStatus?.intervalMinutes
           ? pipelineAutoStatus.intervalMinutes * 60000
           : SCHEDULE_INTERVALS[pipelineSchedule] || 15 * 60 * 1000;

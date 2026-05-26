@@ -5,6 +5,20 @@ All notable changes to the Professional Quantitative Trading Platform will be do
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.5] - 2026-05-26
+
+### Added
+- Settings page status error subtype resolution: `session_unavailable`, `unauthorized`, `backend_unreachable`, `schema_migration`, `service_error`
+- Settings status waits for Supabase session/token before making requests
+- `hadAuthHeader` guard in Settings API 401 interceptor — only sign out when a real auth token was sent
+
+### Fixed
+- Settings page showing "Status unavailable" for all non-connected states — now shows specific error messages
+- 401 response without auth header no longer triggers sign out (prevented page load during session initialization)
+
+### Security
+- API key status display uses masked values (`paper_api_key_masked`) instead of raw keys
+
 ## [2.7.4] - 2026-05-26
 
 ### Added

@@ -559,6 +559,7 @@ def mask_key(key):
 # ==================== Discord Notification Helpers ====================
 
 DISCORD_EVENT_FLAGS = {
+    'auto_scan_started': 'notifyScanSummary',  # reuses summary toggle
     'scan_summary': 'notifyScanSummary',
     'entry_plan': 'notifyEntryPlan',
     'order': 'notifyOrders',
@@ -614,6 +615,7 @@ def _discord_should_send(user_id, event_type, payload):
 
 def _discord_embed(event_type, payload):
     color_map = {
+        'auto_scan_started': 0x8B5CF6,
         'scan_summary': 0x1677FF,
         'entry_plan': 0x22C55E,
         'order': 0x1677FF,
@@ -621,6 +623,7 @@ def _discord_embed(event_type, payload):
         'error': 0xEF4444,
     }
     title_map = {
+        'auto_scan_started': 'Auto Scan Started',
         'scan_summary': 'Market Scanner Completed',
         'entry_plan': 'Entry Plan Generated',
         'order': 'Order Event',
@@ -629,6 +632,15 @@ def _discord_embed(event_type, payload):
     }
     fields = []
     description = payload.get('description') or ''
+
+    if event_type == 'auto_scan_started':
+        fields = [
+            {'name': 'Trigger', 'value': str(payload.get('trigger', '-')), 'inline': True},
+            {'name': 'Mode', 'value': str(payload.get('mode', '-')).upper(), 'inline': True},
+            {'name': 'Interval', 'value': '%s min' % str(payload.get('intervalMinutes', '-')), 'inline': True},
+            {'name': 'Next Run', 'value': str(payload.get('nextRunAt', '-')), 'inline': True},
+            {'name': 'Time (ET)', 'value': str(payload.get('timeEt', '-')), 'inline': True},
+        ]
 
     if event_type == 'scan_summary':
         fields = [
@@ -27758,6 +27770,7 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False):
 def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=False):
     """Run the full AI pipeline headlessly for one user."""
     started = time.time()
+    _now_et = _pa_now_et()
     summary = {
         'errors': 0, 'scanned': 0, 'continue_count': 0, 'fine_count': 0,
         'validation_count': 0, 'entry_plan_count': 0, 'orders_submitted': 0,
@@ -27765,7 +27778,20 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         'startedAt': datetime.utcnow().isoformat(),
         'steps': [],
     }
-    _pa_log('headless pipeline started user=%s trigger=%s dryRun=%s' % (uid[:8], trigger, dry_run))
+    _pa_log('[PipelineAuto] headless pipeline started user=%s trigger=%s dryRun=%s' % (uid[:8], trigger, dry_run))
+
+    # Send auto_scan_started Discord notification at start
+    _next_et = _now_et + timedelta(minutes=interval)
+    send_discord_notification(uid, 'auto_scan_started', {
+        'event_id': f'headless-scan-{int(started)}',
+        'trigger': trigger,
+        'mode': mode,
+        'intervalMinutes': interval,
+        'nextRunAt': _next_et.strftime('%H:%M ET'),
+        'timeEt': _now_et.strftime('%H:%M ET'),
+        'description': 'Auto pipeline scan started.',
+    })
+
     try:
         symbols = _pa_default_symbols_for_user(uid)
         scan_resp, scan_status = _pa_call_endpoint(uid, '/api/ai/market/scanner', ai_market_scanner, {
@@ -27778,18 +27804,30 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         scanner_results = scan_resp.get('results') or []
         summary['scanned'] = len(scanner_results)
         summary['steps'].append({'step': 'market_scanner', 'status': 'completed', 'count': len(scanner_results)})
-        _pa_log('step completed step=market_scanner count=%d' % len(scanner_results))
+        _pa_log('[PipelineAuto] step completed step=market_scanner count=%d' % len(scanner_results))
+
+        # Send scan_summary Discord notification
+        send_discord_notification(uid, 'scan_summary', {
+            'event_id': f'headless-scan-{int(started)}-scanner',
+            'processed': len(scanner_results),
+            'aiSuccess': len([r for r in scanner_results if r.get('analysisStatus') == 'completed']),
+            'needData': len([r for r in scanner_results if r.get('trendLabel') == 'Need Data']),
+            'topSymbols': [r.get('symbol', '?') for r in scanner_results[:5] if r.get('symbol')],
+            'mode': mode,
+            'runTime': _now_et.strftime('%H:%M ET'),
+            'description': 'Headless Market Scanner completed.',
+        })
 
         continue_results = _pa_continue_scan_headless(scanner_results)
         summary['continue_count'] = len(continue_results)
         summary['steps'].append({'step': 'continue_scan', 'status': 'completed', 'count': len(continue_results)})
-        _pa_log('step completed step=continue_scan count=%d' % len(continue_results))
+        _pa_log('[PipelineAuto] step completed step=continue_scan count=%d' % len(continue_results))
 
         fine_results = _pa_fine_scan_headless(uid, continue_results)
         fine_candidates = [r for r in fine_results if r.get('decision') in ('Continue', 'Watch')]
         summary['fine_count'] = len(fine_results)
         summary['steps'].append({'step': 'fine_scan', 'status': 'completed', 'count': len(fine_results), 'candidates': len(fine_candidates)})
-        _pa_log('step completed step=fine_scan count=%d candidates=%d' % (len(fine_results), len(fine_candidates)))
+        _pa_log('[PipelineAuto] step completed step=fine_scan count=%d candidates=%d' % (len(fine_results), len(fine_candidates)))
 
         dv_results = []
         if fine_candidates:
@@ -27804,7 +27842,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                 raise Exception(dv_resp.get('message') or 'Deeper Validation failed')
         summary['validation_count'] = len(dv_results)
         summary['steps'].append({'step': 'deeper_validation', 'status': 'completed', 'count': len(dv_results)})
-        _pa_log('step completed step=deeper_validation count=%d' % len(dv_results))
+        _pa_log('[PipelineAuto] step completed step=deeper_validation count=%d' % len(dv_results))
 
         ep_candidates = [r for r in dv_results if r.get('verdict') in ('Confirmed', 'Watch', 'Review', 'Pass')]
         entry_plans = []
@@ -27833,7 +27871,25 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         summary['watch_count'] = watch_count
         summary['skip_count'] = skip_count
         summary['steps'].append({'step': 'entry_plan', 'status': 'completed', 'count': len(entry_plans), 'buy': buy_count, 'watch': watch_count, 'skip': skip_count})
-        _pa_log('step completed step=entry_plan buy=%d watch=%d skip=%d' % (buy_count, watch_count, skip_count))
+        _pa_log('[PipelineAuto] step completed step=entry_plan buy=%d watch=%d skip=%d' % (buy_count, watch_count, skip_count))
+
+        # Send entry_plan Discord notification
+        send_discord_notification(uid, 'entry_plan', {
+            'event_id': f'headless-entry-{int(started)}',
+            'buyCount': buy_count,
+            'watchCount': watch_count,
+            'skipCount': skip_count,
+            'buyCandidates': [{
+                'symbol': p.get('symbol', '?'),
+                'entryZone': str(p.get('entryZone', p.get('suggestedEntry', '-')))[:60],
+                'stop': str(p.get('stopLoss', p.get('suggestedStop', '-')))[:60],
+                'target': str(p.get('takeProfit', p.get('suggestedTarget', '-')))[:60],
+                'riskReward': str(p.get('riskReward', p.get('rrProfile', '-')))[:30],
+                'positionSize': str(p.get('positionSize', '-'))[:30],
+                'reason': str(p.get('decisionReason', p.get('reason', '-')))[:180],
+            } for p in entry_plans if p.get('finalAction') in ('BUY_READY', 'READY_REVIEW')],
+            'description': 'Headless Entry Plan completed.',
+        })
 
         execution_results = []
         if mode == 'ai':
@@ -27853,9 +27909,24 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                 execution_results.append(exec_resp)
                 if exec_resp.get('action') == 'ORDER_SUBMITTED':
                     summary['orders_submitted'] += 1
-                    _pa_log('order submitted mode=PAPER symbol=%s status=%s' % (plan.get('symbol'), exec_resp.get('orderStatus')))
+                    _pa_log('[PipelineAuto] order submitted mode=PAPER symbol=%s status=%s' % (plan.get('symbol'), exec_resp.get('orderStatus')))
+                    # Send order Discord notification
+                    order_data = exec_resp.get('order') or exec_resp.get('orderData') or {}
+                    send_discord_notification(uid, 'order', {
+                        'event_id': f'headless-order-{int(started)}-{plan.get("symbol")}',
+                        'mode': 'paper',
+                        'side': 'buy',
+                        'symbol': plan.get('symbol', '?'),
+                        'qty': str(order_data.get('qty', plan.get('positionSize', '-'))),
+                        'orderType': str(order_data.get('order_type', order_data.get('type', 'market'))),
+                        'price': str(order_data.get('limit_price', order_data.get('price', 'market'))),
+                        'status': str(exec_resp.get('orderStatus', 'submitted')),
+                        'orderId': str(order_data.get('id', '')),
+                        'reason': str(exec_resp.get('message', ''))[:220],
+                        'description': 'Auto pipeline order submitted.',
+                    })
         else:
-            _pa_log('step completed step=execution count=0 reason=mode_not_ai')
+            _pa_log('[PipelineAuto] step completed step=execution count=0 reason=mode_not_ai')
         summary['steps'].append({'step': 'execution', 'status': 'completed', 'count': len(execution_results), 'submitted': summary['orders_submitted']})
 
         exit_summary = _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=dry_run)
@@ -27869,12 +27940,12 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
             'signals': exit_summary.get('signals', [])[:8],
             'description': 'Headless Exit Scan completed%s.' % (' (dry run)' if dry_run else ''),
         })
-        _pa_log('step completed step=exit_scan count=%d' % summary['exit_scan_count'])
+        _pa_log('[PipelineAuto] step completed step=exit_scan count=%d' % summary['exit_scan_count'])
 
     except Exception as e:
         summary['errors'] += 1
         summary['lastError'] = str(e)[:300]
-        _pa_log_error('headless pipeline failed user=%s error=%s' % (uid[:8], summary['lastError']))
+        _pa_log_error('[PipelineAuto] headless pipeline failed user=%s error=%s' % (uid[:8], summary['lastError']))
         send_discord_notification(uid, 'error', {
             'event_id': f'headless-pipeline-error-{int(started)}',
             'step': 'Headless Pipeline',
@@ -27884,7 +27955,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         })
     summary['finishedAt'] = datetime.utcnow().isoformat()
     summary['durationSeconds'] = round(time.time() - started, 2)
-    _pa_log('headless pipeline finished user=%s errors=%d duration=%.1fs' % (uid[:8], summary['errors'], summary['durationSeconds']))
+    _pa_log('[PipelineAuto] headless pipeline finished user=%s errors=%d duration=%.1fs' % (uid[:8], summary['errors'], summary['durationSeconds']))
     return summary
 
 def _pa_scheduler_loop():
@@ -27966,8 +28037,8 @@ def _pa_scheduler_loop():
                     _next_from_config = config.get('next_run_at', '')
                     _pa_log('due check user=%s enabled=true marketOpen=%s nowEt=%s interval=%dmin lastBackendScanAt=%s nextRunAt=%s' % (
                         uid[:8], is_open, now_et.strftime('%H:%M'), interval,
-                        last_backend_scan_at[-19:] if last_backend_scan_at else 'none',
-                        _next_from_config[-19:] if _next_from_config else 'none'))
+                        last_backend_scan_at[:26] if last_backend_scan_at else 'none',
+                        _next_from_config[:26] if _next_from_config else 'none'))
 
                     if not is_open:
                         if mkt_status == 'holiday':
@@ -28018,10 +28089,12 @@ def _pa_scheduler_loop():
                     reason = 'first_run_after_open' if not last_backend_scan_at else 'interval_due'
                     _pa_log('due user=%s reason=%s interval=%d' % (uid[:8], reason, interval))
                     _pa_log('auto run started user=%s trigger=market_auto_run interval=%dmin source=backend_scheduler headless=true' % (uid[:8], interval))
-                    # Backend saves to SEPARATE fields so frontend can still detect
-                    # shouldRunNow=true via last_run_at/next_run_at (which are frontend-only).
-                    # The status endpoint computes next_run_at from last_run_at + interval, not from this.
+                    # Backend tracks its own scan time AND updates last_run_at/next_run_at
+                    # so the frontend status endpoint sees a consistent timeline:
+                    # shouldRunNow becomes false until the next interval elapses.
                     config['last_backend_scan_at'] = _run_started_at.isoformat()
+                    config['last_run_source'] = 'backend_scheduler'
+                    config['last_run_trigger'] = 'market_auto_run'
                     with _PA_RUNNING_USERS_LOCK:
                         _PA_RUNNING_USERS.add(uid)
                     try:
@@ -28029,11 +28102,18 @@ def _pa_scheduler_loop():
                     finally:
                         with _PA_RUNNING_USERS_LOCK:
                             _PA_RUNNING_USERS.discard(uid)
+                    _run_completed_at = _pa_now_et()
                     config['last_backend_scan_status'] = 'success' if summary['errors'] == 0 else 'failed'
                     config['last_backend_scan_summary'] = summary
                     config['last_backend_scan_error'] = None if summary['errors'] == 0 else '%d errors' % summary['errors']
+                    # Update last_run_at/next_run_at so status endpoint shows correct next run time
+                    config['last_run_at'] = _run_started_at.isoformat()
+                    config['next_run_at'] = (_run_completed_at + timedelta(minutes=interval)).isoformat()
+                    config['last_decision'] = 'pipeline_success' if summary['errors'] == 0 else 'pipeline_failed'
+                    config['last_summary'] = summary
+                    config['last_error'] = None if summary['errors'] == 0 else '%d errors' % summary['errors']
                     _pa_save_config(uid, config)
-                    _pa_log('[PipelineAuto] backend headless scan completed user=%s status=%s (frontend last_run_at/next_run_at untouched for shouldRunNow)' % (uid[:8], config['last_backend_scan_status']))
+                    _pa_log('[PipelineAuto] backend headless scan completed user=%s status=%s last_run_at=%s next_run_at=%s' % (uid[:8], config['last_backend_scan_status'], config['last_run_at'][:19], config['next_run_at'][:19]))
                     _pa_add_run_history(uid, {
                         'trigger_type': 'market_auto_run',
                         'status': 'success' if summary['errors'] == 0 else 'failed',
