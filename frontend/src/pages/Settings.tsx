@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Typography, Card, Button, Space, Row, Col, Badge, Tag, Divider } from 'antd';
 import { 
   SettingOutlined, 
@@ -20,7 +20,7 @@ import { supabase } from '../lib/supabaseClient';
 const { Title, Text, Paragraph } = Typography;
 
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '/api';
-const userApi = axios.create({ baseURL: API_BASE_URL, timeout: 5000 });
+const userApi = axios.create({ baseURL: API_BASE_URL, timeout: 15000 });
 userApi.interceptors.request.use(async (config) => {
   let { data: { session } } = await supabase.auth.getSession();
   if (session?.access_token) {
@@ -53,11 +53,33 @@ type ServiceStatus =
   | 'loading'
   | 'connected'
   | 'not_configured'
+  | 'backend_waking'
   | 'session_unavailable'
   | 'unauthorized'
   | 'backend_unreachable'
   | 'service_error'
   | 'schema_migration';
+
+const STATUS_RETRY_DELAYS = [800, 1500];
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+const getWithRetry = async (url: string) => {
+  let lastError: any;
+  for (let attempt = 0; attempt <= STATUS_RETRY_DELAYS.length; attempt += 1) {
+    try {
+      return await userApi.get(url);
+    } catch (error: any) {
+      lastError = error;
+      const status = error.response?.status;
+      if (status === 401 || status === 403) throw error;
+      if (attempt < STATUS_RETRY_DELAYS.length) {
+        await sleep(STATUS_RETRY_DELAYS[attempt]);
+      }
+    }
+  }
+  throw lastError;
+};
 
 const resolveStatusError = (error: any): ServiceStatus => {
   if (!error.response) return 'backend_unreachable';
@@ -72,6 +94,7 @@ const Settings: React.FC = () => {
   const navigate = useNavigate();
   const { user, session, loading, logout } = useAuth();
   const { t } = useLanguage();
+  const requestIdRef = useRef(0);
   const [statuses, setStatuses] = useState<Record<'alpaca' | 'ai' | 'finnhub', ServiceStatus>>({
     alpaca: 'loading',
     ai: 'loading',
@@ -79,12 +102,24 @@ const Settings: React.FC = () => {
   });
 
   useEffect(() => {
+    let mounted = true;
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    const isCurrentRequest = () => mounted && requestIdRef.current === requestId;
+
     const checkStatuses = async () => {
       if (loading) return;
+      if (isCurrentRequest()) {
+        setStatuses({
+          alpaca: 'loading',
+          ai: 'loading',
+          finnhub: 'loading'
+        });
+      }
       if (!user || !session?.access_token) {
         const { data: { session: currentSession } } = await supabase.auth.getSession();
         if (!currentSession?.access_token) {
-          setStatuses({
+          if (isCurrentRequest()) setStatuses({
             alpaca: 'session_unavailable',
             ai: 'session_unavailable',
             finnhub: 'session_unavailable'
@@ -94,13 +129,34 @@ const Settings: React.FC = () => {
       }
 
       try {
-        const [alpacaRes, aiRes, finnhubRes] = await Promise.allSettled([
-          userApi.get('/settings/broker-config'),
-          userApi.get('/settings/ai-config'),
-          userApi.get('/settings/finnhub-config')
+        try {
+          await getWithRetry('/health');
+        } catch (healthError) {
+          if (isCurrentRequest()) setStatuses({
+            alpaca: 'backend_unreachable',
+            ai: 'backend_unreachable',
+            finnhub: 'backend_unreachable'
+          });
+          return;
+        }
+
+        const [alpacaRes, aiRes, finnhubRes] = await Promise.all([
+          getWithRetry('/settings/broker-config').then(
+            res => ({ status: 'fulfilled' as const, value: res }),
+            reason => ({ status: 'rejected' as const, reason })
+          ),
+          getWithRetry('/settings/ai-config').then(
+            res => ({ status: 'fulfilled' as const, value: res }),
+            reason => ({ status: 'rejected' as const, reason })
+          ),
+          getWithRetry('/settings/finnhub-config').then(
+            res => ({ status: 'fulfilled' as const, value: res }),
+            reason => ({ status: 'rejected' as const, reason })
+          )
         ]);
 
         const alpacaConfig = alpacaRes.status === 'fulfilled' ? alpacaRes.value.data?.config : null;
+        if (!isCurrentRequest()) return;
         setStatuses({
           alpaca: alpacaRes.status === 'rejected'
             ? resolveStatusError(alpacaRes.reason)
@@ -116,13 +172,22 @@ const Settings: React.FC = () => {
         });
       } catch (e) {
         console.error('Failed to fetch statuses', e);
+        if (isCurrentRequest()) setStatuses({
+          alpaca: resolveStatusError(e),
+          ai: resolveStatusError(e),
+          finnhub: resolveStatusError(e)
+        });
       }
     };
     checkStatuses();
+    return () => {
+      mounted = false;
+    };
   }, [loading, user, session]);
 
   const StatusTag = ({ status }: { status: ServiceStatus }) => {
     if (status === 'loading') return <Badge status="processing" text={t.settings.checking} />;
+    if (status === 'backend_waking') return <Badge status="processing" text="Backend waking up..." />;
     if (status === 'connected') return <Tag color="success">{t.settings.configured}</Tag>;
     if (status === 'session_unavailable') return <Tag color="warning">Session unavailable</Tag>;
     if (status === 'unauthorized') return <Tag color="error">Sign in again</Tag>;
