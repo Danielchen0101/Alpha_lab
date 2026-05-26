@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Menu, Tag } from 'antd';
+import { Menu, Popconfirm, Tag, Tooltip } from 'antd';
 import {
   DashboardOutlined,
   LineChartOutlined,
@@ -95,17 +95,31 @@ const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
                 <button
                   className={`${styles.tradeModeBtn} ${tradeMode === 'paper' ? styles.tradeModeBtnActive : ''}`}
                   onClick={() => setTradeMode('paper')}
+                  type="button"
                 >
                   <span className={styles.modeDot} style={{ backgroundColor: '#1890ff', opacity: tradeMode === 'paper' ? 1 : 0.2 }} />
                   {t.navigation.paperMode}
                 </button>
-                <button
-                  className={`${styles.tradeModeBtn} ${tradeMode === 'real' ? styles.tradeModeBtnRealActive : ''}`}
-                  onClick={() => setTradeMode('real')}
+                <Popconfirm
+                  title="Switch to Real Trading?"
+                  description="Real mode can submit live Alpaca orders when trading workflows execute. Confirm that live credentials and risk controls are configured."
+                  okText="Use Real"
+                  cancelText="Stay Paper"
+                  okButtonProps={{ danger: true }}
+                  disabled={tradeMode === 'real'}
+                  onConfirm={() => setTradeMode('real')}
                 >
-                  <span className={styles.modeDot} style={{ backgroundColor: '#ff4d4f', opacity: tradeMode === 'real' ? 1 : 0.2 }} />
-                  {t.navigation.realMode}
-                </button>
+                  <button
+                    className={`${styles.tradeModeBtn} ${tradeMode === 'real' ? styles.tradeModeBtnRealActive : ''}`}
+                    onClick={(event) => {
+                      if (tradeMode === 'real') event.preventDefault();
+                    }}
+                    type="button"
+                  >
+                    <span className={styles.modeDot} style={{ backgroundColor: '#ff4d4f', opacity: tradeMode === 'real' ? 1 : 0.2 }} />
+                    {t.navigation.realMode}
+                  </button>
+                </Popconfirm>
               </div>
             </div>
           )}
@@ -131,18 +145,20 @@ const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
       {/* BOTTOM UTILITY AREA */}
       <div className={styles.sidebarFooter}>
         {collapsed ? (
-          <div className={styles.collapsedStatus}>
-            <div className={styles.statusDot} style={{ backgroundColor: '#52c41a' }} />
-          </div>
+          <Tooltip title="Check connection status in Settings">
+            <div className={styles.collapsedStatus}>
+              <div className={styles.statusDot} style={{ backgroundColor: '#faad14', color: '#faad14' }} />
+            </div>
+          </Tooltip>
         ) : (
           <div className={styles.expandedStatus}>
             <div className={styles.statusRow}>
-              <span className={styles.statusLabel}>DATA</span>
-              <Tag color="blue" className={styles.statusTag}>ALPACA</Tag>
+              <span className={styles.statusLabel}>CONFIG</span>
+              <Tag color="gold" className={styles.statusTag}>SETTINGS</Tag>
             </div>
             <div className={styles.statusInfo}>
-              <div className={styles.statusDot} style={{ backgroundColor: '#52c41a' }} />
-              <span className={styles.statusText}>System Online</span>
+              <div className={styles.statusDot} style={{ backgroundColor: '#faad14', color: '#faad14' }} />
+              <span className={styles.statusText}>Verify connections</span>
             </div>
           </div>
         )}

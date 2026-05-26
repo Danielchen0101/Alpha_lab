@@ -12,7 +12,7 @@ const LanguageSwitcher: React.FC = () => {
   };
 
   return (
-    <Button 
+    <Button
       onClick={toggleLanguage}
       style={{
         display: 'flex',
@@ -29,7 +29,7 @@ const LanguageSwitcher: React.FC = () => {
     >
       <GlobalOutlined style={{ marginRight: '6px', fontSize: '14px', color: '#1890ff' }} />
       <span style={{ letterSpacing: '0.5px' }}>
-        {language === 'zh-CN' ? 'CN 中文' : 'US ENGLISH'}
+        {language === 'zh-CN' ? 'CN Chinese' : 'US English'}
       </span>
     </Button>
   );

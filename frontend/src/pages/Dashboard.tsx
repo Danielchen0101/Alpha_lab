@@ -97,14 +97,13 @@ const Dashboard: React.FC = () => {
       return marketCap !== null && marketCap !== undefined && marketCap > 0;
     });
 
-    // 如果没有marketCap数据，使用价格作为替代指标
+    // If market cap is unavailable, keep it blank rather than showing estimated data.
     let totalMarketCap = 0;
     if (validMarketCapStocks.length > 0) {
       totalMarketCap = validMarketCapStocks.reduce((sum, s) => sum + safeNumber(s.marketCap || 0), 0);
     } else {
       // 使用价格作为替代，假设每股市值约等于价格的1000倍（简化估算）
-      const validPriceStocks = marketData.filter(s => safeNumber(s.price) > 0);
-      totalMarketCap = validPriceStocks.reduce((sum, s) => sum + (safeNumber(s.price || 0) * 1000), 0);
+      totalMarketCap = 0;
     }
 
     // 调试：输出market cap计算详情
@@ -717,7 +716,7 @@ const Dashboard: React.FC = () => {
               description={t.dashboard.apiConfigRequiredDesc}
               type="warning"
               showIcon
-              action={<Button size="middle" type="primary" onClick={() => navigate('/configuration')} style={{ borderRadius: 8 }}>{t.dashboard.configure}</Button>}
+              action={<Button size="middle" type="primary" onClick={() => navigate('/settings/configuration')} style={{ borderRadius: 8 }}>{t.dashboard.configure}</Button>}
               style={{ borderRadius: 14, border: '1px solid #ffe58f', background: '#fffbe6', padding: '12px 20px' }}
             />
           )}
@@ -736,7 +735,7 @@ const Dashboard: React.FC = () => {
               description={t.dashboard.apiNoPricesDesc}
               type="warning"
               showIcon
-              action={<Button size="middle" onClick={() => navigate('/configuration')} style={{ borderRadius: 8 }}>{t.dashboard.checkConfig}</Button>}
+              action={<Button size="middle" onClick={() => navigate('/settings/configuration')} style={{ borderRadius: 8 }}>{t.dashboard.checkConfig}</Button>}
               style={{ borderRadius: 14, border: '1px solid #ffe58f', background: '#fffbe6', marginTop: 12, padding: '12px 20px' }}
             />
           )}
@@ -783,7 +782,7 @@ const Dashboard: React.FC = () => {
         <Card className="premium-card" bodyStyle={{ padding: 0 }}>
           <div className="metric-card">
             <span className="metric-label">{t.dashboard.mktCap}</span>
-            <span className="metric-value">{formatMarketCap(marketStats.totalMarketCap)}</span>
+            <span className="metric-value">{marketStats.totalMarketCap > 0 ? formatMarketCap(marketStats.totalMarketCap) : '-'}</span>
             <BarChartOutlined className="metric-icon" style={{ color: '#2f54eb' }} />
           </div>
         </Card>

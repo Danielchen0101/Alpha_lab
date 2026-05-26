@@ -146,12 +146,12 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  box-shadow: 0 0 6px rgba(82, 196, 26, 0.4);
+  box-shadow: 0 0 6px currentColor;
 }
 
 .statusText {
   font-size: 12px;
-  color: #52c41a;
+  color: #fbbf24;
   font-weight: 500;
 }
 

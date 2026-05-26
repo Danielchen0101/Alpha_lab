@@ -26601,7 +26601,16 @@ def _pa_is_holiday(dt):
     return None
 
 def _pa_calc_next_open_fallback(now_et):
-    """Calculate next market open time in ET (fallback mode)."""
+    """Calculate next market open time in ET (fallback mode).
+    If today is a trading day and we are before 09:30, return today 09:30.
+    If today is a trading day and we are after 16:00, skip to next trading day.
+    """
+    # Check if today is a trading day and we haven't opened yet
+    if now_et.weekday() < 5 and not _pa_is_holiday(now_et):
+        today_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+        if now_et < today_open:
+            return today_open
+    # Today is either past close, weekend, or holiday — find next trading day
     current = now_et
     for _ in range(14):
         current += timedelta(days=1)
@@ -26622,10 +26631,14 @@ def _pa_calc_next_close_fallback(now_et):
     next_open = _pa_calc_next_open_fallback(now_et)
     return next_open.replace(hour=16, minute=0, second=0, microsecond=0)
 
-def _pa_get_next_trading_day(from_et):
+def _pa_get_next_trading_day(from_et, include_today=False):
     """Find the next trading day's 09:30 ET open after from_et.
+    If include_today=True, check today first (for premarket case).
     Uses _pa_is_holiday and weekday checks. Returns datetime or None."""
     current = from_et.replace(hour=0, minute=0, second=0, microsecond=0)
+    if include_today:
+        if current.weekday() < 5 and not _pa_is_holiday(current):
+            return current.replace(hour=9, minute=30, second=0, microsecond=0)
     for _ in range(14):
         current += timedelta(days=1)
         if current.weekday() >= 5:
@@ -26763,10 +26776,29 @@ def _pa_get_history(uid, limit=5):
 
 def _pa_check_market_open(uid):
     """Check if US market is open using Alpaca clock API, with basic-hours fallback.
-    Returns: (is_open, status_string, source_string, next_open, next_close)
+    Returns: (is_open, status_string, source_string, next_open, next_close, market_stage)
+    market_stage: 'premarket' | 'open' | 'after_hours' | 'weekend' | 'holiday'
     """
     import pytz
     now_et = _pa_now_et()
+
+    def _derive_market_stage(_is_open, _raw_status, _now):
+        """Derive fine-grained market stage from is_open and status."""
+        if _is_open:
+            return 'open'
+        if _raw_status == 'holiday':
+            return 'holiday'
+        weekday = _now.weekday()
+        if weekday >= 5:
+            return 'weekend'
+        # Not open, not holiday, not weekend — check premarket vs after_hours
+        market_open = _now.replace(hour=9, minute=30, second=0, microsecond=0)
+        market_close = _now.replace(hour=16, minute=0, second=0, microsecond=0)
+        if _now < market_open:
+            return 'premarket'
+        elif _now >= market_close:
+            return 'after_hours'
+        return 'premarket'  # should not reach here
 
     # Try Alpaca clock API first
     if True:
@@ -26792,14 +26824,15 @@ def _pa_check_market_open(uid):
                     next_open = data.get('next_open', '')
                     next_close = data.get('next_close', '')
                     status = 'open' if is_open else 'closed'
+                    market_stage = _derive_market_stage(is_open, status, now_et)
                     with _PA_MARKET_CACHE_LOCK:
                         _PA_MARKET_CACHE['status'] = status
                         _PA_MARKET_CACHE['source'] = 'alpaca'
                         _PA_MARKET_CACHE['next_open'] = next_open
                         _PA_MARKET_CACHE['next_close'] = next_close
                         _PA_MARKET_CACHE['checked_at'] = now_et.isoformat()
-                    _pa_log('Alpaca clock: is_open=%s, next_open=%s, next_close=%s' % (is_open, next_open, next_close))
-                    return is_open, status, 'alpaca', next_open or '', next_close or ''
+                    _pa_log('Alpaca clock: is_open=%s, next_open=%s, next_close=%s, stage=%s' % (is_open, next_open, next_close, market_stage))
+                    return is_open, status, 'alpaca', next_open or '', next_close or '', market_stage
                 else:
                     _pa_log_error('Alpaca clock API returned %d' % resp.status_code)
         except Exception as e:
@@ -26813,14 +26846,22 @@ def _pa_check_market_open(uid):
         if holiday_name:
             status = 'holiday'
             is_open = False
+            market_stage = 'holiday'
         elif weekday >= 5:
             status = 'closed'
             is_open = False
+            market_stage = 'weekend'
         else:
             market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
             market_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
             is_open = market_open <= now_et <= market_close
             status = 'open' if is_open else 'closed'
+            if is_open:
+                market_stage = 'open'
+            elif now_et < market_open:
+                market_stage = 'premarket'
+            else:
+                market_stage = 'after_hours'
 
         if is_open:
             next_close_fb = _pa_calc_next_close_fallback(now_et)
@@ -26841,11 +26882,12 @@ def _pa_check_market_open(uid):
 
         if holiday_name:
             _pa_log('Fallback: holiday detected (%s)' % holiday_name)
-        return is_open, status, 'fallback_basic_hours', next_open_fb_str, next_close_fb_str
+        _pa_log('Fallback market: stage=%s is_open=%s next_open=%s' % (market_stage, is_open, next_open_fb_str[:19] if next_open_fb_str else ''))
+        return is_open, status, 'fallback_basic_hours', next_open_fb_str, next_close_fb_str, market_stage
     except Exception as e:
         _pa_log_error('Basic hours check failed: %s' % e)
         # Ultimate fallback — assume closed
-        return False, 'closed', 'fallback_basic_hours', '', ''
+        return False, 'closed', 'fallback_basic_hours', '', '', 'after_hours'
 
 def _pa_run_pipeline(uid, interval, mode):
     """Run the AI pipeline for a single user."""
@@ -26908,7 +26950,7 @@ def _pa_scheduler_loop():
                 now_iso = now_et.isoformat()
 
                 # Check market open via Alpaca clock (with fallback)
-                is_open, mkt_status, mkt_source, next_open, next_close = _pa_check_market_open(None)
+                is_open, mkt_status, mkt_source, next_open, next_close, market_stage_sched = _pa_check_market_open(None)
 
                 # Find all enabled users
                 enabled_users = []
@@ -27069,7 +27111,7 @@ def pipeline_auto_status():
     with _PA_SCHEDULER_LAST_HEARTBEAT_LOCK:
         hb = _PA_SCHEDULER_LAST_HEARTBEAT
     scheduler_running = (time.time() - hb) < 120 if hb > 0 else False
-    is_open, mkt_status, mkt_source, next_open, next_close = _pa_check_market_open(uid)
+    is_open, mkt_status, mkt_source, next_open, next_close, market_stage = _pa_check_market_open(uid)
 
     with _PA_PER_USER_LAST_CHECK_LOCK:
         last_check = _PA_PER_USER_LAST_CHECK.get(uid, {})
@@ -27101,12 +27143,8 @@ def pipeline_auto_status():
     config_next_run = config.get('next_run_at', '') if config else ''
     if enabled and interval_minutes > 0:
         if not is_open:
-            if next_open:
-                next_run_at = next_open
-            elif next_from_last_et:
-                next_run_at = next_from_last_et.isoformat()
-            else:
-                next_run_at = 'Waiting for next market open'
+            # When market is closed, ALWAYS point to next market open, never use last_run+interval
+            next_run_at = next_open if next_open else 'Waiting for next market open'
         elif config_next_run and config_next_run not in ('', 'now', 'Waiting for next market open'):
             try:
                 parsed = dateutil.parser.isoparse(config_next_run)
@@ -27137,6 +27175,7 @@ def pipeline_auto_status():
     next_auto_run_at = ''
     next_auto_run_display = ''
     stopped_for_today = False
+    blocked_for_day = False
     next_run_basis = ''
     next_market_open_display = ''
     next_market_open_at = ''
@@ -27154,31 +27193,54 @@ def pipeline_auto_status():
             pass
         return '', ''
 
-    if next_from_last_et:
-        next_auto_run_at = next_from_last_et.isoformat()
-        next_auto_run_display = next_from_last_et.strftime('%H:%M')
-        # 16:00 ET cut-off: if computed next >= today 16:00, stop for today
-        _close_et = next_from_last_et.replace(hour=16, minute=0, second=0, microsecond=0)
-        if next_from_last_et >= _close_et:
-            stopped_for_today = True
-            next_run_basis = 'market_closed_after_1600'
-            next_market_open_at, next_market_open_display = _fmt_next_open(next_open)
-        else:
-            next_run_basis = 'last_run_started_at_plus_interval'
-            if not is_open:
+    if is_open:
+        # Market is open — use interval-based scheduling
+        if next_from_last_et:
+            next_auto_run_at = next_from_last_et.isoformat()
+            next_auto_run_display = next_from_last_et.strftime('%H:%M')
+            # 16:00 ET cut-off: if computed next >= today 16:00, stop for today
+            _close_et = next_from_last_et.replace(hour=16, minute=0, second=0, microsecond=0)
+            if next_from_last_et >= _close_et:
                 stopped_for_today = True
+                next_run_basis = 'market_closed_after_1600'
                 next_market_open_at, next_market_open_display = _fmt_next_open(next_open)
-    elif enabled and interval_minutes > 0:
-        # No last_run_at yet — pipeline is armed and ready
-        if is_open:
+            else:
+                next_run_basis = 'last_run_started_at_plus_interval'
+        elif enabled and interval_minutes > 0:
             next_auto_run_display = 'Ready'
             next_run_basis = 'first_run_today'
-        else:
+    elif market_stage == 'premarket':
+        # Trading day, before 09:30 — next run is today at open
+        stopped_for_today = False
+        blocked_for_day = False
+        next_run_basis = 'premarket'
+        now_et = _pa_now_et()
+        today_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+        next_auto_run_at = today_open.isoformat()
+        next_auto_run_display = today_open.strftime('%H:%M')
+        next_market_open_at = today_open.isoformat()
+        next_market_open_display = today_open.strftime('%a %m-%d %H:%M ET')
+    elif market_stage == 'after_hours':
+        # Market closed for the day — next is next trading day
+        stopped_for_today = True
+        blocked_for_day = False
+        next_run_basis = 'after_hours'
+        next_market_open_at, next_market_open_display = _fmt_next_open(next_open)
+    elif market_stage in ('weekend', 'holiday'):
+        # No market at all today
+        stopped_for_today = True
+        blocked_for_day = True
+        next_run_basis = market_stage
+        next_market_open_at, next_market_open_display = _fmt_next_open(next_open)
+    else:
+        # Fallback: unknown market stage
+        if enabled and interval_minutes > 0:
             stopped_for_today = True
+            blocked_for_day = True
             next_market_open_at, next_market_open_display = _fmt_next_open(next_open)
 
     # Fallback: compute next trading day if next_open didn't yield a display
-    if stopped_for_today and not next_market_open_display:
+    if (stopped_for_today or blocked_for_day) and not next_market_open_display:
         now_et = _pa_now_et()
         next_trading = _pa_get_next_trading_day(now_et)
         if next_trading:
@@ -27197,11 +27259,15 @@ def pipeline_auto_status():
             progress_label = 'Scheduler offline — auto pipeline will not run'
             auto_status = 'Error'
         elif not is_open:
-            if mkt_status == 'holiday':
+            if market_stage == 'premarket':
+                progress_state = 'premarket'
+                progress_label = 'Premarket — waiting for open at 09:30 ET'
+                auto_status = 'Premarket'
+            elif market_stage == 'holiday':
                 progress_state = 'market_closed'
                 progress_label = 'Holiday closed — auto pipeline will not run today'
                 auto_status = 'Holiday Closed'
-            elif mkt_status == 'closed' and _pa_now_et().weekday() >= 5:
+            elif market_stage == 'weekend':
                 progress_state = 'market_closed'
                 progress_label = 'Weekend closed — auto pipeline will not run today'
                 auto_status = 'Weekend Closed'
@@ -27248,6 +27314,9 @@ def pipeline_auto_status():
         'marketStatus': market_status_label,
         'marketStatusRaw': mkt_status,
         'marketStatusSource': mkt_source,
+        'marketStage': market_stage,
+        'nowEt': _pa_now_et().isoformat(),
+        'todayDateEt': _pa_now_et().strftime('%Y-%m-%d'),
         'autoStatus': auto_status,
         'nextRunAt': next_run_at,
         'secondsUntilNextRun': seconds_until_next,
@@ -27259,6 +27328,7 @@ def pipeline_auto_status():
         'nextAutoRunAt': next_auto_run_at,
         'nextAutoRunDisplay': next_auto_run_display,
         'stoppedForToday': stopped_for_today,
+        'blockedForDay': blocked_for_day,
         'nextRunBasis': next_run_basis,
         'nextMarketOpenDisplay': next_market_open_display,
         'nextMarketOpenAt': next_market_open_at,

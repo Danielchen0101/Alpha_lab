@@ -24,7 +24,7 @@ import {
   Tooltip as RechartsTooltip,
   ResponsiveContainer,
 } from 'recharts';
-import { PieChartOutlined, ReloadOutlined, ArrowUpOutlined, ArrowDownOutlined } from '@ant-design/icons';
+import { PieChartOutlined, ReloadOutlined, ArrowUpOutlined, ArrowDownOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { tradingAccountAPI, TradingAccountResponse, TradingPosition } from '../services/api';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -677,13 +677,23 @@ const Portfolio: React.FC = () => {
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
-              {usingFallback && (
+              {usingFallback ? (
+                <Alert
+                  message={t.portfolio.fallbackHistoryBanner}
+                  type="warning"
+                  showIcon
+                  style={{ marginTop: 16, borderRadius: 8 }}
+                />
+              ) : source ? (
                 <div style={{ textAlign: 'right', marginRight: 12 }}>
-                  <Text type="secondary" style={{ fontSize: 11, opacity: 0.7 }}>
-                    ℹ️ {t.portfolio.fallbackHistoryNote}
+                  <Text type="secondary" style={{ fontSize: 11 }}>
+                    <SafetyCertificateOutlined style={{ color: '#52c41a', marginRight: 4 }} />
+                    {t.portfolio.verifiedAlpacaHistory}
+                    {' · '}
+                    {sourceLabel}
                   </Text>
                 </div>
-              )}
+              ) : null}
               </>
             )}
           </Card>

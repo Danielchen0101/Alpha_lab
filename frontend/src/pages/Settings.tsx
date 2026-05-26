@@ -37,6 +37,16 @@ userApi.interceptors.request.use(async (config) => {
   }
   return config;
 });
+userApi.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    if (error.response?.status === 401) {
+      await supabase.auth.signOut();
+      window.location.href = '/signin';
+    }
+    return Promise.reject(error);
+  }
+);
 
 const Settings: React.FC = () => {
   const navigate = useNavigate();
@@ -57,10 +67,19 @@ const Settings: React.FC = () => {
           userApi.get('/settings/finnhub-config')
         ]);
 
+        const alpacaConfig = alpacaRes.status === 'fulfilled' ? alpacaRes.value.data?.config : null;
         setStatuses({
-          alpaca: alpacaRes.status === 'fulfilled' && alpacaRes.value.data?.config?.paper_api_key ? 'connected' : 'not_configured',
-          ai: aiRes.status === 'fulfilled' && aiRes.value.data?.hasUserKey ? 'connected' : 'not_configured',
-          finnhub: finnhubRes.status === 'fulfilled' && (finnhubRes.value.data?.config?.api_key || finnhubRes.value.data?.config?.api_key_masked) ? 'connected' : 'not_configured'
+          alpaca: alpacaRes.status === 'rejected'
+            ? 'error'
+            : (alpacaConfig?.paper_api_key || alpacaConfig?.paper_api_key_masked || alpacaConfig?.live_api_key || alpacaConfig?.live_api_key_masked)
+              ? 'connected'
+              : 'not_configured',
+          ai: aiRes.status === 'rejected' ? 'error' : aiRes.value.data?.hasUserKey ? 'connected' : 'not_configured',
+          finnhub: finnhubRes.status === 'rejected'
+            ? 'error'
+            : (finnhubRes.value.data?.config?.api_key || finnhubRes.value.data?.config?.api_key_masked)
+              ? 'connected'
+              : 'not_configured'
         });
       } catch (e) {
         console.error('Failed to fetch statuses', e);
@@ -72,6 +91,7 @@ const Settings: React.FC = () => {
   const StatusTag = ({ status }: { status: string }) => {
     if (status === 'loading') return <Badge status="processing" text={t.settings.checking} />;
     if (status === 'connected') return <Tag color="success">{t.settings.configured}</Tag>;
+    if (status === 'error') return <Tag color="error">Status unavailable</Tag>;
     return <Tag color="default">{t.settings.notConfigured}</Tag>;
   };
 

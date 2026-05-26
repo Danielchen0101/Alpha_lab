@@ -513,6 +513,8 @@ const Agent: React.FC = (): React.ReactElement => {
 
   // Pipeline Auto (market-hours scheduler) state
   const [pipelineAutoStatus, setPipelineAutoStatus] = useState<any>(null);
+  const pipelineAutoStatusRef = useRef<any>(null);
+  useEffect(() => { pipelineAutoStatusRef.current = pipelineAutoStatus; }, [pipelineAutoStatus]);
   const [pipelineAutoLoading, setPipelineAutoLoading] = useState(false);
   const [pipelineAutoHistory, setPipelineAutoHistory] = useState<any[]>([]);
   const [pipelineAutoHistoryExpanded, setPipelineAutoHistoryExpanded] = useState(false);
@@ -528,10 +530,12 @@ const Agent: React.FC = (): React.ReactElement => {
       const res = await pipelineAutoAPI.getStatus();
       if (res.data.success) {
         setPipelineAutoStatus(res.data);
+        return res.data;
       }
     } catch {
       // Backend may not be available
     }
+    return null;
   }, []);
 
   const fetchPipelineAutoHistory = useCallback(async () => {
@@ -585,15 +589,18 @@ const Agent: React.FC = (): React.ReactElement => {
         intervalMinutes: enabled ? intervalMap[schedule] : null,
         mode: pipelineMode,
       });
-      // Fetch updated status
-      await fetchPipelineAutoStatus();
-      // Toggle-on immediate run: when switching from Off to On with market open
-      if (enabled && wasOff && runAIPipelineRef.current) {
-        console.log('[AutoRun] Toggle-on immediate trigger after 500ms delay');
+      // Fetch updated status and gate toggle-on trigger on market open
+      const statusData = await fetchPipelineAutoStatus();
+      const marketOpen = statusData?.marketOpen === true;
+      const stoppedForToday = statusData?.stoppedForToday === true;
+      if (enabled && wasOff && runAIPipelineRef.current && marketOpen && !stoppedForToday) {
+        console.log('[AutoRun] Toggle-on immediate trigger after 500ms delay (market open)');
         autoRunTriggeredRef.current = 'armed_ready'; // prevent useEffect from re-triggering
         setTimeout(() => {
           runAIPipelineRef.current?.({ trigger: 'auto_market_session' });
         }, 500);
+      } else if (enabled && wasOff && !marketOpen) {
+        console.log('[AutoRun] Toggle-on: armed but market closed — waiting for next market open');
       }
     } catch {
       // Silently ignore
@@ -5624,6 +5631,23 @@ const Agent: React.FC = (): React.ReactElement => {
       }
       if (isScanRunning() || isFineScanRunning() || isDeeperValidationRunning() || isEntryPlanRunning()) return;
 
+      // MARKET GATE: only fire during market hours (09:30-16:00 ET)
+      const paStatus = pipelineAutoStatusRef.current;
+      if (paStatus && !paStatus.marketOpen) {
+        console.log('[AutoRun] Timer skipped: market is closed — waiting for next market open trigger from backend');
+        clearScheduleTimer();
+        setNextPipelineRun(null);
+        scannerStateStore.updatePipelineSchedule({ nextRunAt: null });
+        return;
+      }
+      if (paStatus?.stoppedForToday) {
+        console.log('[AutoRun] Timer skipped: stoppedForToday — no more runs today');
+        clearScheduleTimer();
+        setNextPipelineRun(null);
+        scannerStateStore.updatePipelineSchedule({ nextRunAt: null });
+        return;
+      }
+
       // Fire the pipeline (timer-triggered = auto_market_session)
       runAIPipelineRef.current?.({ trigger: 'auto_market_session' });
     }, 30000); // 30-second poll
@@ -6516,10 +6540,20 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   ))}
                 </div>
                 {pipelineSchedule !== 'off' && (
-                  <div style={{ marginTop: 16, padding: '10px 12px', background: '#f6ffed', borderRadius: 8, border: '1px solid #b7eb8f', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <SyncOutlined spin={pipelineRunning} style={{ color: '#52c41a', fontSize: 14 }} />
-                    <span style={{ fontSize: 12, fontWeight: 600, color: '#237804' }}>
-                      {pipelineRunning ? t.agent.scheduleRunningWait : `Scheduled: Every ${pipelineSchedule}`}
+                  <div style={{
+                    marginTop: 16, padding: '10px 12px', borderRadius: 8, border: '1px solid',
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    ...(pipelineAutoStatus?.marketOpen
+                      ? { background: '#f6ffed', borderColor: '#b7eb8f' }
+                      : { background: '#fffbe6', borderColor: '#ffe58f' }
+                    )
+                  }}>
+                    <SyncOutlined spin={pipelineRunning} style={{ color: pipelineAutoStatus?.marketOpen ? '#52c41a' : '#faad14', fontSize: 14 }} />
+                    <span style={{ fontSize: 12, fontWeight: 600, color: pipelineAutoStatus?.marketOpen ? '#237804' : '#8c6d00' }}>
+                      {pipelineRunning
+                        ? t.agent.scheduleRunningWait
+                        : `Scheduled: Every ${pipelineSchedule}${pipelineAutoStatus?.marketOpen ? '' : ' (during market hours only)'}`
+                      }
                     </span>
                   </div>
                 )}
@@ -6563,8 +6597,8 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                         ) : pipelineAutoStatus.autoStatus === 'Running' ? (
                           <Tag color="processing" bordered={false} style={{ margin: 0, fontWeight: 700 }}>Running</Tag>
                         ) : !pipelineAutoStatus.marketOpen ? (
-                          <Tag color={pipelineAutoStatus.marketStatusRaw === 'holiday' ? 'red' : 'orange'} bordered={false} style={{ margin: 0, fontWeight: 700 }}>
-                            {pipelineAutoStatus.marketStatusRaw === 'holiday' ? 'Holiday Closed' : 'Market Closed'}
+                          <Tag color={pipelineAutoStatus.marketStage === 'premarket' ? 'blue' : pipelineAutoStatus.marketStatusRaw === 'holiday' ? 'red' : 'orange'} bordered={false} style={{ margin: 0, fontWeight: 700 }}>
+                            {pipelineAutoStatus.marketStage === 'premarket' ? 'Premarket' : pipelineAutoStatus.marketStatusRaw === 'holiday' ? 'Holiday Closed' : 'Market Closed'}
                           </Tag>
                         ) : (
                           <Tag color="green" bordered={false} style={{ margin: 0, fontWeight: 700 }}>Armed</Tag>
@@ -6609,10 +6643,17 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   {pipelineSchedule === 'off' ? (
                     'Automation is disabled.'
                   ) : pipelineAutoStatus && !pipelineAutoStatus.marketOpen ? (
-                    <span style={{ color: '#faad14', fontWeight: 500 }}>
-                      <WarningOutlined style={{ marginRight: 6 }} />
-                      Market is closed. Automation is armed but waiting for open.
-                    </span>
+                    pipelineAutoStatus.marketStage === 'premarket' ? (
+                      <span style={{ color: '#1890ff', fontWeight: 500 }}>
+                        <ClockCircleOutlined style={{ marginRight: 6 }} />
+                        Premarket — automation armed, next run at 09:30 ET.
+                      </span>
+                    ) : (
+                      <span style={{ color: '#faad14', fontWeight: 500 }}>
+                        <WarningOutlined style={{ marginRight: 6 }} />
+                        Market is closed. Automation is armed but waiting for open.
+                      </span>
+                    )
                   ) : (
                     <span style={{ color: '#52c41a', fontWeight: 500 }}>
                       <CheckCircleOutlined style={{ marginRight: 6 }} />
@@ -6626,11 +6667,30 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
               <div style={{ fontSize: 12, color: '#595959', fontWeight: 500, textAlign: 'right' }}>
                 {pipelineSchedule !== 'off' && pipelineAutoStatus && (
                   <>
-                    {!pipelineAutoStatus.marketOpen && pipelineAutoStatus.nextMarketOpen && (
-                      <span style={{ display: 'block' }}>Next Open: <span style={{ fontWeight: 700, color: '#262626' }}>{new Date(pipelineAutoStatus.nextMarketOpen).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></span>
+                    {!pipelineAutoStatus.marketOpen ? (
+                      <span style={{ display: 'block' }}>
+                        {pipelineAutoStatus.nextMarketOpenAt ? (
+                          <>Next auto run: <span style={{ fontWeight: 700, color: '#1890ff' }}>{new Date(pipelineAutoStatus.nextMarketOpenAt).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York' })} ET</span></>
+                        ) : pipelineAutoStatus.nextMarketOpenDisplay ? (
+                          <span style={{ fontWeight: 700, color: '#faad14' }}>{pipelineAutoStatus.nextMarketOpenDisplay}</span>
+                        ) : (
+                          <span style={{ color: '#8c8c8c' }}>Waiting for next market open</span>
+                        )}
+                      </span>
+                    ) : (
+                      <>
+                        {pipelineAutoStatus.nextAutoRunDisplay === 'Ready' ? (
+                          <span style={{ display: 'block' }}>Next auto run: <span style={{ fontWeight: 700, color: '#52c41a' }}>Ready</span></span>
+                        ) : pipelineAutoStatus.nextAutoRunAt ? (
+                          <span style={{ display: 'block' }}>Next auto run: <span style={{ fontWeight: 700, color: '#1890ff' }}>{new Date(pipelineAutoStatus.nextAutoRunAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York' })}</span></span>
+                        ) : null}
+                      </>
                     )}
-                    {pipelineAutoStatus.marketOpen && pipelineAutoStatus.autoStatus === 'Armed' && pipelineAutoStatus.nextAutoRun && (
-                      <span style={{ display: 'block' }}>Next Run: <span style={{ fontWeight: 700, color: '#1890ff' }}>{new Date(pipelineAutoStatus.nextAutoRun).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></span>
+                    {pipelineAutoStatus.stoppedForToday && !pipelineAutoStatus.blockedForDay && (
+                      <span style={{ display: 'block', fontSize: 10, color: '#8c8c8c', marginTop: 2 }}>Stopped for today — resumes next market open</span>
+                    )}
+                    {pipelineAutoStatus.blockedForDay && (
+                      <span style={{ display: 'block', fontSize: 10, color: '#8c8c8c', marginTop: 2 }}>No trading today — resumes next trading day</span>
                     )}
                   </>
                 )}
@@ -7081,7 +7141,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 className="execution-table"
                 dataSource={aiExecutionList}
                 rowKey={(r: any) => r.symbol + (r.addedAt || '')}
-                size="small"
+                size="middle"
                 pagination={false}
                 scroll={{ x: 1600 }}
                 style={{ fontSize: '12px' }}
@@ -8645,6 +8705,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     dataIndex: 'conciseReasoning',
                     key: 'conciseReasoning',
                     width: 250,
+                    ellipsis: { showTitle: false },
                     render: (reason: string, record: any) => {
                       const rawReason = reason || record.scannerReason || record.aiReasoning || t.agent.noAnalysisAvailable;
                       const displayReason = rawReason;

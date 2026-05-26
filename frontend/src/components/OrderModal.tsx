@@ -563,7 +563,7 @@ const OrderModal: React.FC<OrderModalProps> = ({
       {/* Footer */}
       <div className="order-ticket-footer">
         <Button onClick={handleCancel} disabled={submitting} style={{ borderRadius: 6, fontWeight: 600 }}>
-          {tradeMode === 'real' && realDoubleConfirm ? 'Cancel' : 'Back'}
+          {confirmStep ? (tradeMode === 'real' && realDoubleConfirm ? 'Cancel' : 'Back') : 'Cancel'}
         </Button>
         <Button
           type="primary"

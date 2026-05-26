@@ -108,9 +108,21 @@ code {
   .ant-layout-sider {
     display: none;
   }
+
+  .app-main-layout {
+    margin-left: 0 !important;
+  }
   
   .ant-layout-content {
     margin-left: 0 !important;
+    margin: 12px !important;
+    height: auto !important;
+    min-height: calc(100vh - 88px) !important;
+    overflow-x: auto !important;
+  }
+
+  .ant-layout-content > div {
+    padding: 16px !important;
   }
   
   .ant-card {
