@@ -1,6 +1,6 @@
 {
   "name": "quant-dashboard",
-  "version": "2.7.5",
+  "version": "2.7.7",
   "private": true,
   "description": "量化交易平台前端 - Ant Design Pro",
   "scripts": {

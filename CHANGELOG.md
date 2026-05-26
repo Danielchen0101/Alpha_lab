@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.7.7] - 2026-05-26\
+\
+### Changed\
+- Frontend shouldRunNow effect no longer invokes runAIPipeline — backend scheduler exclusively owns auto-run execution\
+- Toggle-on during market open fires immediate headless pipeline via _pa_execute_and_save in background thread\
+- Scheduler interval due also uses _pa_execute_and_save for atomic config-save-before-lock-release pattern\
+- Refactored scheduler inline pipeline execution into shared _pa_execute_and_save helper\
+\
+### Fixed\
+- Race condition: scheduler released _PA_RUNNING_USERS lock before _pa_save_config, creating window for duplicate triggers\
+- shouldRunNow in status endpoint now includes `and not is_running` check\
+- Duplicate scan_summary Discord removed from ai_market_scanner (_pa_run_pipeline already sends it)\
+- Frontend + backend double-trigger risk eliminated (backend only for auto-runs)\
+- Same-run duplicate Discord notification risk fixed via atomic execution pattern\
+\
+### Security\
+- Discord webhook URL validation pattern confirmed no real URLs in codebase\
+
 All notable changes to the Professional Quantitative Trading Platform will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),

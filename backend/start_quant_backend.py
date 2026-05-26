@@ -175,7 +175,10 @@ class AlpacaAPIError(Exception):
 
 app = Flask(__name__)
 
-allowed_origins = os.getenv("FRONTEND_ORIGIN", "*")
+raw_allowed_origins = os.getenv("CORS_ORIGINS") or os.getenv("FRONTEND_ORIGIN", "*")
+allowed_origins = "*" if raw_allowed_origins == "*" else [
+    origin.strip() for origin in raw_allowed_origins.split(",") if origin.strip()
+]
 
 CORS(
     app,
@@ -568,6 +571,7 @@ DISCORD_EVENT_FLAGS = {
 }
 _discord_notify_dedupe = {}
 _discord_last_sent_at = {}
+_discord_error_counts = {}  # key -> [timestamp, ...] for 3x/5min throttle
 
 
 def _discord_user_label(user_id):
@@ -579,6 +583,11 @@ def _discord_short_order_id(order_id):
         return '-'
     s = str(order_id)
     return s[:8] + '...' if len(s) > 8 else s
+
+
+def _discord_fmt(value, fallback='-'):
+    """Format a value for Discord embed display. Maps None to fallback, otherwise str()."""
+    return fallback if value is None else str(value)
 
 
 def get_discord_config(user_id):
@@ -596,6 +605,9 @@ def _discord_dedupe_key(user_id, event_type, payload):
     if event_id:
         return f'{user_id}:{event_type}:{event_id}'
     symbol = payload.get('symbol') or payload.get('symbols') or ''
+    if event_type == 'error':
+        reason = (payload.get('reason') or '')[:80]
+        return f'{user_id}:{event_type}:{symbol}:{reason}'
     minute = datetime.utcnow().strftime('%Y%m%d%H%M')
     return f'{user_id}:{event_type}:{symbol}:{minute}'
 
@@ -607,6 +619,16 @@ def _discord_should_send(user_id, event_type, payload):
         if now - ts > 3600:
             _discord_notify_dedupe.pop(key, None)
     key = _discord_dedupe_key(user_id, event_type, payload)
+    if event_type == 'error':
+        # Error throttle: max 3 occurrences per 5 minutes for the same dedup key
+        timestamps = _discord_error_counts.get(key, [])
+        timestamps = [t for t in timestamps if now - t < 300]
+        if len(timestamps) >= 3:
+            return False
+        timestamps.append(now)
+        _discord_error_counts[key] = timestamps
+        _discord_notify_dedupe[key] = now
+        return True
     if key in _discord_notify_dedupe and now - _discord_notify_dedupe[key] < 300:
         return False
     _discord_notify_dedupe[key] = now
@@ -632,31 +654,32 @@ def _discord_embed(event_type, payload):
     }
     fields = []
     description = payload.get('description') or ''
+    _fmt = _discord_fmt
 
     if event_type == 'auto_scan_started':
         fields = [
-            {'name': 'Trigger', 'value': str(payload.get('trigger', '-')), 'inline': True},
-            {'name': 'Mode', 'value': str(payload.get('mode', '-')).upper(), 'inline': True},
-            {'name': 'Interval', 'value': '%s min' % str(payload.get('intervalMinutes', '-')), 'inline': True},
-            {'name': 'Next Run', 'value': str(payload.get('nextRunAt', '-')), 'inline': True},
-            {'name': 'Time (ET)', 'value': str(payload.get('timeEt', '-')), 'inline': True},
+            {'name': 'Trigger', 'value': _fmt(payload.get('trigger'), '-'), 'inline': True},
+            {'name': 'Mode', 'value': _fmt(payload.get('mode'), '-').upper(), 'inline': True},
+            {'name': 'Interval', 'value': '%s min' % _fmt(payload.get('intervalMinutes'), '-'), 'inline': True},
+            {'name': 'Next Run', 'value': _fmt(payload.get('nextRunAt'), '-'), 'inline': True},
+            {'name': 'Time (ET)', 'value': _fmt(payload.get('timeEt'), '-'), 'inline': True},
         ]
 
     if event_type == 'scan_summary':
         fields = [
-            {'name': 'Processed', 'value': str(payload.get('processed', '-')), 'inline': True},
-            {'name': 'AI Success', 'value': str(payload.get('aiSuccess', '-')), 'inline': True},
-            {'name': 'Need Data', 'value': str(payload.get('needData', '-')), 'inline': True},
+            {'name': 'Processed', 'value': _fmt(payload.get('processed'), '-'), 'inline': True},
+            {'name': 'AI Success', 'value': _fmt(payload.get('aiSuccess'), '-'), 'inline': True},
+            {'name': 'Need Data', 'value': _fmt(payload.get('needData'), '-'), 'inline': True},
             {'name': 'Top Symbols', 'value': ', '.join(payload.get('topSymbols') or []) or '-', 'inline': False},
-            {'name': 'Market Mode', 'value': str(payload.get('mode', '-')).upper(), 'inline': True},
-            {'name': 'Run Time', 'value': str(payload.get('runTime', '-')), 'inline': True},
+            {'name': 'Market Mode', 'value': _fmt(payload.get('mode'), '-').upper(), 'inline': True},
+            {'name': 'Run Time', 'value': _fmt(payload.get('runTime'), '-'), 'inline': True},
         ]
     elif event_type == 'entry_plan':
         buy_candidates = payload.get('buyCandidates') or []
         fields = [
-            {'name': 'BUY', 'value': str(payload.get('buyCount', 0)), 'inline': True},
-            {'name': 'WATCH', 'value': str(payload.get('watchCount', 0)), 'inline': True},
-            {'name': 'SKIP', 'value': str(payload.get('skipCount', 0)), 'inline': True},
+            {'name': 'BUY', 'value': _fmt(payload.get('buyCount'), 0), 'inline': True},
+            {'name': 'WATCH', 'value': _fmt(payload.get('watchCount'), 0), 'inline': True},
+            {'name': 'SKIP', 'value': _fmt(payload.get('skipCount'), 0), 'inline': True},
         ]
         for c in buy_candidates[:8]:
             fields.append({
@@ -669,18 +692,18 @@ def _discord_embed(event_type, payload):
                 'inline': False
             })
     elif event_type == 'order':
-        mode = str(payload.get('mode', '-')).upper()
+        mode = _fmt(payload.get('mode'), '-').upper()
         description = payload.get('description') or ('REAL TRADING\n' if mode == 'REAL' else '')
         fields = [
             {'name': 'Mode', 'value': mode, 'inline': True},
-            {'name': 'Side', 'value': str(payload.get('side', '-')).upper(), 'inline': True},
-            {'name': 'Symbol', 'value': str(payload.get('symbol', '-')).upper(), 'inline': True},
-            {'name': 'Qty / Notional', 'value': str(payload.get('qty') or payload.get('notional') or '-'), 'inline': True},
-            {'name': 'Order Type', 'value': str(payload.get('orderType', '-')), 'inline': True},
-            {'name': 'Price', 'value': str(payload.get('price') or payload.get('limitPrice') or '-'), 'inline': True},
-            {'name': 'Status', 'value': str(payload.get('status', '-')), 'inline': True},
+            {'name': 'Side', 'value': _fmt(payload.get('side'), '-').upper(), 'inline': True},
+            {'name': 'Symbol', 'value': _fmt(payload.get('symbol'), '-').upper(), 'inline': True},
+            {'name': 'Qty / Notional', 'value': _fmt(payload.get('qty') or payload.get('notional'), '-'), 'inline': True},
+            {'name': 'Order Type', 'value': _fmt(payload.get('orderType'), '-'), 'inline': True},
+            {'name': 'Price', 'value': _fmt(payload.get('price') or payload.get('limitPrice'), 'N/A'), 'inline': True},
+            {'name': 'Status', 'value': _fmt(payload.get('status'), '-'), 'inline': True},
             {'name': 'Order ID', 'value': _discord_short_order_id(payload.get('orderId')), 'inline': True},
-            {'name': 'Reason', 'value': str(payload.get('reason', '-'))[:220], 'inline': False},
+            {'name': 'Reason', 'value': _fmt(payload.get('reason'), '-')[:220], 'inline': False},
         ]
     elif event_type == 'exit_scan':
         signals = payload.get('signals') or []
@@ -688,23 +711,23 @@ def _discord_embed(event_type, payload):
         if sell_reduce is None:
             sell_reduce = (payload.get('sellCount') or 0) + (payload.get('reduceCount') or 0)
         fields = [
-            {'name': 'Holdings Scanned', 'value': str(payload.get('holdingsScanned', '-')), 'inline': True},
-            {'name': 'Sell/Reduce', 'value': str(sell_reduce), 'inline': True},
-            {'name': 'Hold', 'value': str(payload.get('holdCount', '-')), 'inline': True},
+            {'name': 'Holdings Scanned', 'value': _fmt(payload.get('holdingsScanned'), '-'), 'inline': True},
+            {'name': 'Sell/Reduce', 'value': _fmt(sell_reduce, '-'), 'inline': True},
+            {'name': 'Hold', 'value': _fmt(payload.get('holdCount'), '-'), 'inline': True},
         ]
         for s in signals[:8]:
             fields.append({
-                'name': str(s.get('symbol', 'Signal')),
-                'value': f"{s.get('action', '-')} | {s.get('currentPrice') or s.get('price') or '-'}\n{str(s.get('reason', '-'))[:180]}",
+                'name': _fmt(s.get('symbol'), 'Signal'),
+                'value': f"{_fmt(s.get('action'), '-')} | {_fmt(s.get('currentPrice') or s.get('price'), 'N/A')}\n{_fmt(s.get('reason'), '-')[:180]}",
                 'inline': False
             })
     elif event_type == 'error':
         fields = [
-            {'name': 'Step', 'value': str(payload.get('step', '-')), 'inline': True},
-            {'name': 'Status', 'value': str(payload.get('status', '-')), 'inline': True},
-            {'name': 'Symbol', 'value': str(payload.get('symbol', '-')), 'inline': True},
-            {'name': 'Reason', 'value': str(payload.get('reason', '-'))[:350], 'inline': False},
-            {'name': 'Recommended Action', 'value': str(payload.get('action', 'Review Settings and retry.'))[:220], 'inline': False},
+            {'name': 'Step', 'value': _fmt(payload.get('step'), '-'), 'inline': True},
+            {'name': 'Status', 'value': _fmt(payload.get('status'), '-'), 'inline': True},
+            {'name': 'Symbol', 'value': _fmt(payload.get('symbol'), '-'), 'inline': True},
+            {'name': 'Reason', 'value': _fmt(payload.get('reason'), '-')[:350], 'inline': False},
+            {'name': 'Recommended Action', 'value': _fmt(payload.get('action'), 'Review Settings and retry.')[:220], 'inline': False},
         ]
 
     return {
@@ -10372,38 +10395,44 @@ def ai_market_scanner():
         shortlist = []
 
         for symbol in symbols:
+            try:
+                if symbol in batch_data:
 
-            if symbol in batch_data:
+                    data = batch_data[symbol]
 
-                data = batch_data[symbol]
+                    price = data.get('price')
 
-                price = data.get('price')
+                    volume = data.get('volume')
 
-                volume = data.get('volume')
-
-                change_pct = data.get('changePercent')
+                    change_pct = data.get('changePercent')
 
 
 
-                # 快速筛选条件
+                    # 快速筛选条件
 
-                if (price is not None and price > 1 and  # 价格高于$1
+                    if (price is not None and price > 1 and  # 价格高于$1
 
-                    volume is not None and volume > 1000 and  # 成交量大于1k
+                        volume is not None and volume > 1000 and  # 成交量大于1k
 
-                    change_pct is not None and abs(change_pct) < 50):  # 涨跌幅小于50%
+                        change_pct is not None and abs(change_pct) < 50):  # 涨跌幅小于50%
 
-                    shortlist.append(symbol)
+                        shortlist.append(symbol)
 
-                    print(f'✓ {symbol}: 预筛选通过 (price=${price}, volume={volume}, change={change_pct:.2f}%)')
+                        print(f'✓ {symbol}: 预筛选通过 (price=$%s, volume=%s, change=%s)' % (price, volume, '%+.2f%%' % change_pct))
+
+                    else:
+
+                        _price_str = '$%.2f' % price if price is not None else 'N/A'
+                        _vol_str = '%.0f' % volume if volume is not None else 'N/A'
+                        _chg_str = '%+.2f%%' % change_pct if change_pct is not None else 'N/A'
+                        print(f'✗ {symbol}: 预筛选过滤 (price={_price_str}, volume={_vol_str}, change={_chg_str})')
 
                 else:
 
-                    print(f'✗ {symbol}: 预筛选过滤 (price=${price}, volume={volume}, change={change_pct:.2f}%)')
-
-            else:
-
-                print(f'✗ {symbol}: 无数据')
+                    print(f'✗ {symbol}: 无数据')
+            except Exception as e:
+                print(f'✗ {symbol}: 预筛选异常 - {str(e)[:100]}')
+                continue
 
 
 
@@ -10654,15 +10683,6 @@ def ai_market_scanner():
                 )[:5]
                 if r.get('symbol')
             ]
-            send_discord_notification(user['id'], 'scan_summary', {
-                'event_id': f"scanner-{int(start_time)}-{len(results)}",
-                'processed': f'{len(results)}/{len(symbols)}',
-                'aiSuccess': sum(1 for r in results if r.get('aiCalled') and not r.get('aiError')),
-                'needData': sum(1 for r in results if r.get('dataQuality') != 'GOOD'),
-                'topSymbols': top_symbols,
-                'mode': (request.get_json(silent=True) or {}).get('mode', 'paper'),
-                'runTime': f'{total_time:.1f}s',
-            })
 
 
 
@@ -20891,6 +20911,13 @@ def ai_analyze_single():
         symbol_upper = symbol.upper()
 
         print(f'[AI分析接口] 分析股票: {symbol_upper}')
+        print(f'[MarketScannerAPI] request symbol={symbol_upper}')
+
+        _perf_alpaca_ms = 0
+        _perf_finnhub_ms = 0
+        _perf_news_ms = 0
+        _perf_ai_ms = 0
+        _perf_t0 = time.time()
 
         # Check AI config and test status from Supabase user config
         ai_cfg, ai_source = resolve_ai_config(require_user_config=True)
@@ -20960,7 +20987,7 @@ def ai_analyze_single():
 
             print(f'[AI分析接口] 获取标准化市场数据: {symbol_upper}')
 
-
+            _perf_t_stage = time.time()
 
             # 直接调用 snapshots 函数 (使用 market_data config)
             alpaca_cfg, alpaca_src = resolve_alpaca_config('market_data', require_user_config=True)
@@ -21017,6 +21044,8 @@ def ai_analyze_single():
 
                     market_data = {'error': err_reason, 'symbol': symbol_upper}
 
+                _perf_alpaca_ms = round((time.time() - _perf_t_stage) * 1000)
+
             except Exception as snap_err:
 
                 print(f'[AI分析接口] snapshots调用异常: {snap_err}')
@@ -21065,6 +21094,8 @@ def ai_analyze_single():
 
             print(f'[AI分析接口] 获取公司信息: {symbol_upper}')
 
+            _perf_t_stage = time.time()
+
             company_profile, profile_error = fetch_finnhub_profile(symbol_upper)
 
 
@@ -21080,6 +21111,8 @@ def ai_analyze_single():
                 company_info = company_profile
 
                 print(f'[AI分析接口] 公司信息获取成功')
+
+            _perf_finnhub_ms = round((time.time() - _perf_t_stage) * 1000)
 
         except Exception as e:
 
@@ -21097,6 +21130,8 @@ def ai_analyze_single():
 
             print(f'[AI分析接口] 获取新闻数据: {symbol_upper}')
 
+            _perf_t_stage = time.time()
+
             # 调用内部的新闻分析函数
 
             news_analysis = analyze_news_for_stock(symbol_upper)
@@ -21111,6 +21146,7 @@ def ai_analyze_single():
 
             news_data = None
 
+        _perf_news_ms = round((time.time() - _perf_t_stage) * 1000)
 
 
         # 4. 使用用户配置的AI provider进行真实分析
@@ -21152,6 +21188,7 @@ def ai_analyze_single():
 
 
 
+        _perf_t_ai_start = time.time()
         try:
 
             # 直接调用AI分析函数
@@ -21178,6 +21215,7 @@ def ai_analyze_single():
             }
 
             print(f'[AI分析接口] AI分析失败，返回错误: {response_data}')
+            _perf_ai_ms = round((time.time() - _perf_t_ai_start) * 1000)
 
         else:
 
@@ -21356,6 +21394,7 @@ def ai_analyze_single():
 
 
 
+                _perf_ai_ms = round((time.time() - _perf_t_ai_start) * 1000)
                 print(f'[AI分析接口] 最终响应数据: {response_data}')
 
             else:
@@ -21450,6 +21489,8 @@ def ai_analyze_single():
                     })
 
 
+        _perf_total_ms = round((time.time() - _perf_t0) * 1000)
+        print(f'[MarketScannerAPI] response symbol={symbol_upper} total_ms={_perf_total_ms} alpaca_ms={_perf_alpaca_ms} finnhub_ms={_perf_finnhub_ms} news_ms={_perf_news_ms} ai_ms={_perf_ai_ms} status=success')
 
         return jsonify(response_data)
 
@@ -27253,6 +27294,28 @@ def _pa_format_next_open_display(next_open_dt):
     except Exception:
         return ''
 
+
+def _pa_safe_float(value, default=None):
+    """Convert value to float safely. Returns default if value is None or not convertible."""
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+def _pa_fmt_money(value, fallback='N/A'):
+    v = _pa_safe_float(value)
+    return fallback if v is None else '$%.2f' % v
+
+def _pa_fmt_pct(value, fallback='N/A'):
+    v = _pa_safe_float(value)
+    return fallback if v is None else '%+.2f%%' % v
+
+def _pa_fmt_number(value, fallback='N/A'):
+    v = _pa_safe_float(value)
+    return fallback if v is None else '%.0f' % v
+
 def _pa_now_et():
     """Return current real time in America/New_York."""
     import pytz
@@ -27958,6 +28021,39 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
     _pa_log('[PipelineAuto] headless pipeline finished user=%s errors=%d duration=%.1fs' % (uid[:8], summary['errors'], summary['durationSeconds']))
     return summary
 
+
+def _pa_execute_and_save(uid, config, interval, mode, trigger):
+    """Run pipeline for one user and save config BEFORE releasing running lock.
+
+    This prevents the race window where status endpoint sees isRunning=false
+    but config.last_run_at/next_run_at haven't been updated yet.
+    Used by the scheduler loop and toggle-on immediate pipeline.
+    """
+    _run_started_at = _pa_now_et()
+    config['last_backend_scan_at'] = _run_started_at.isoformat()
+    config['last_run_source'] = 'backend_scheduler'
+    config['last_run_trigger'] = trigger
+    with _PA_RUNNING_USERS_LOCK:
+        _PA_RUNNING_USERS.add(uid)
+    try:
+        summary = _pa_run_pipeline(uid, interval, mode, trigger=trigger)
+    finally:
+        _run_completed_at = _pa_now_et()
+        success = summary['errors'] == 0 if summary else False
+        config['last_backend_scan_status'] = 'success' if success else 'failed'
+        config['last_backend_scan_summary'] = summary or {}
+        config['last_backend_scan_error'] = None if success else ('%d errors' % summary['errors']) if summary else 'unknown error'
+        config['last_run_at'] = _run_started_at.isoformat()
+        config['next_run_at'] = (_run_completed_at + timedelta(minutes=interval)).isoformat()
+        config['last_decision'] = 'pipeline_success' if success else 'pipeline_failed'
+        config['last_summary'] = summary or {}
+        config['last_error'] = None if success else (('%d errors' % summary['errors']) if summary else 'unknown error')
+        _pa_save_config(uid, config)
+        with _PA_RUNNING_USERS_LOCK:
+            _PA_RUNNING_USERS.discard(uid)
+    return summary or {'errors': 1}
+
+
 def _pa_scheduler_loop():
     """Main scheduler loop — runs every 30s, checks market open, runs pipelines for all enabled users."""
     import pytz
@@ -28089,30 +28185,7 @@ def _pa_scheduler_loop():
                     reason = 'first_run_after_open' if not last_backend_scan_at else 'interval_due'
                     _pa_log('due user=%s reason=%s interval=%d' % (uid[:8], reason, interval))
                     _pa_log('auto run started user=%s trigger=market_auto_run interval=%dmin source=backend_scheduler headless=true' % (uid[:8], interval))
-                    # Backend tracks its own scan time AND updates last_run_at/next_run_at
-                    # so the frontend status endpoint sees a consistent timeline:
-                    # shouldRunNow becomes false until the next interval elapses.
-                    config['last_backend_scan_at'] = _run_started_at.isoformat()
-                    config['last_run_source'] = 'backend_scheduler'
-                    config['last_run_trigger'] = 'market_auto_run'
-                    with _PA_RUNNING_USERS_LOCK:
-                        _PA_RUNNING_USERS.add(uid)
-                    try:
-                        summary = _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run')
-                    finally:
-                        with _PA_RUNNING_USERS_LOCK:
-                            _PA_RUNNING_USERS.discard(uid)
-                    _run_completed_at = _pa_now_et()
-                    config['last_backend_scan_status'] = 'success' if summary['errors'] == 0 else 'failed'
-                    config['last_backend_scan_summary'] = summary
-                    config['last_backend_scan_error'] = None if summary['errors'] == 0 else '%d errors' % summary['errors']
-                    # Update last_run_at/next_run_at so status endpoint shows correct next run time
-                    config['last_run_at'] = _run_started_at.isoformat()
-                    config['next_run_at'] = (_run_completed_at + timedelta(minutes=interval)).isoformat()
-                    config['last_decision'] = 'pipeline_success' if summary['errors'] == 0 else 'pipeline_failed'
-                    config['last_summary'] = summary
-                    config['last_error'] = None if summary['errors'] == 0 else '%d errors' % summary['errors']
-                    _pa_save_config(uid, config)
+                    summary = _pa_execute_and_save(uid, config, interval, mode, trigger='market_auto_run')
                     _pa_log('[PipelineAuto] backend headless scan completed user=%s status=%s last_run_at=%s next_run_at=%s' % (uid[:8], config['last_backend_scan_status'], config['last_run_at'][:19], config['next_run_at'][:19]))
                     _pa_add_run_history(uid, {
                         'trigger_type': 'market_auto_run',
@@ -28363,6 +28436,7 @@ def pipeline_auto_status():
         and is_open
         and not stopped_for_today
         and not blocked_for_day
+        and not is_running
         and last_decision != 'started_pipeline'
         and (
             not last_run_at  # never run before
@@ -28532,6 +28606,19 @@ def pipeline_auto_config():
     _pa_ensure_scheduler()
     if enabled and not was_enabled:
         _pa_log('config enabled user=%s interval=%dm trigger_immediate=true' % (uid[:8], interval_minutes or 0))
+        # Toggle-on during market open: fire pipeline immediately in background thread
+        if interval_minutes:
+            _immed_is_open, _, _, _, _, _ = _pa_check_market_open(uid)
+            if _immed_is_open:
+                _pa_log('[PipelineAuto] toggle-on market open — firing immediate pipeline user=%s' % uid[:8])
+                def _immediate_run():
+                    time.sleep(0.5)  # Let HTTP response return first
+                    cfg = _pa_get_config(uid)
+                    if not cfg.get('enabled'):
+                        return
+                    _pa_log('[PipelineAuto] toggle-on immediate run starting user=%s' % uid[:8])
+                    _pa_execute_and_save(uid, cfg, interval_minutes, mode, trigger='toggle_on')
+                threading.Thread(target=_immediate_run, daemon=True).start()
     elif not enabled and was_enabled:
         _pa_log('config disabled user=%s' % uid[:8])
     elif enabled:

@@ -623,10 +623,8 @@ const Agent: React.FC = (): React.ReactElement => {
       const triggerKey = pipelineAutoStatus.nextAutoRunAt || 'now';
       if (autoRunTriggeredRef.current === triggerKey) return;
       autoRunTriggeredRef.current = triggerKey;
-      console.log('[PipelineAuto] due detected nextAutoRunAt=%s shouldRunNow=true',
+      console.log('[PipelineAuto] due detected nextAutoRunAt=%s shouldRunNow=true — backend scheduler handles execution',
         pipelineAutoStatus.nextAutoRunDisplay || pipelineAutoStatus.nextAutoRunAt);
-      console.log('[PipelineAuto] invoking Run Pipeline from auto interval');
-      runAIPipelineRef.current?.({ trigger: 'auto_market_interval' });
     } else if (!pipelineAutoStatus.shouldRunNow) {
       autoRunTriggeredRef.current = null;
     }
