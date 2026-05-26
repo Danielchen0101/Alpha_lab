@@ -87,3 +87,8 @@ Thumbs.db
 
 # Memory / temp scripts
 memory/*.py
+
+# Runtime state files (auto-generated)
+backend/auto_scan_configs.json
+backend/pipeline_auto_configs.json
+backend/pipeline_auto_history.json

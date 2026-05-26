@@ -12,7 +12,7 @@ import {
 import {
   LineChartOutlined, BarChartOutlined,
   SettingOutlined, PauseCircleOutlined, SearchOutlined,
-  ThunderboltOutlined, CheckCircleOutlined, ClockCircleOutlined,
+  ThunderboltOutlined, CheckCircleOutlined, ClockCircleOutlined, CheckCircleFilled,
   RobotOutlined, CloseCircleOutlined, ExclamationCircleOutlined, SyncOutlined, LoadingOutlined, SafetyCertificateOutlined,
   ArrowUpOutlined, ArrowDownOutlined, ArrowRightOutlined, MinusOutlined,
   InfoCircleOutlined,
@@ -84,8 +84,8 @@ const CollapsibleStageSection: React.FC<CollapsibleStageSectionProps> = ({
   // Custom styles for different status colors to match professional palette
   const getStatusStyle = () => {
     if (isRunning) return { background: 'rgba(24, 144, 255, 0.05)', border: '1px solid #91caff' };
-    if (statusColor === 'success') return { background: 'rgba(82, 196, 26, 0.03)', border: '1px solid #b7eb8f' };
-    if (statusColor === 'error') return { background: 'rgba(255, 77, 79, 0.03)', border: '1px solid #ffa39e' };
+    if (statusColor === 'success') return { background: 'rgba(82, 196, 26, 0.03)', border: '1px solid #eaff8f' };
+    if (statusColor === 'error') return { background: 'rgba(255, 77, 79, 0.03)', border: '1px solid #ffd8bf' };
     return { background: '#fff', border: '1px solid #f0f0f0' };
   };
 
@@ -6190,42 +6190,43 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
       `}</style>
 
       {/* ── Page Header ── */}
-      <div style={{ marginBottom: 32, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-            <div style={{ width: 40, height: 40, borderRadius: '10px', background: 'linear-gradient(135deg, #1890ff 0%, #003a8c 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 22, boxShadow: '0 4px 12px rgba(24, 144, 255, 0.3)' }}>
-              <RobotOutlined />
-            </div>
-            <Title level={1} style={{ margin: 0, fontSize: 28, fontWeight: 800, letterSpacing: '-0.5px', color: '#1a1a1a' }}>{t.agent.pageTitle}</Title>
+      <div style={{ marginBottom: 20, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div style={{ width: 48, height: 48, borderRadius: '12px', background: 'linear-gradient(135deg, #f0f5ff 0%, #e6f7ff 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#1890ff', fontSize: 24, border: '1px solid #91caff', boxShadow: '0 2px 8px rgba(24, 144, 255, 0.1)' }}>
+            <RobotOutlined />
           </div>
-          <Text type="secondary" style={{ fontSize: 15, marginLeft: 52 }}>{t.agent.pageSubtitle}</Text>
+          <div>
+            <Title level={1} style={{ margin: 0, fontSize: 24, fontWeight: 800, letterSpacing: '-0.5px', color: '#1a1a1a', lineHeight: 1.2 }}>{t.agent.pageTitle}</Title>
+            <Text type="secondary" style={{ fontSize: 14, fontWeight: 500 }}>{t.agent.pageSubtitle}</Text>
+          </div>
         </div>
-        <div style={{ display: 'flex', gap: 12 }}>
-           <Badge status="processing" text={<Text strong style={{ color: '#52c41a', fontSize: 12 }}>{t.agent.systemOnline}</Text>} />
+        <div>
+          <Tag color="success" style={{ margin: 0, padding: '4px 12px', borderRadius: '16px', fontWeight: 700, fontSize: 12, border: '1px solid #b7eb8f', background: '#f6ffed', color: '#52c41a', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#52c41a', boxShadow: '0 0 4px #52c41a' }} />
+            {t.agent.systemOnline}
+          </Tag>
         </div>
       </div>
 
-      <Divider />
-
-      {/* 1. AI Configuration — compact status strip */}
-      <div style={{ marginBottom: 24 }}>
-        <div className="status-strip">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap' }}>
-            <div className="stat-box">
-              <span className="stat-label">{t.agent.aiProvider}</span>
-              <span className="stat-value" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                {aiConfig.provider || t.agent.notSet}
-                <Tag color="blue" bordered={false} style={{ margin: 0, fontSize: 10, lineHeight: '16px' }}>V3</Tag>
-              </span>
+      {/* 1. System Configuration & Status */}
+      <div style={{ marginBottom: 20, background: '#fff', borderRadius: 12, border: '1px solid #f0f0f0', padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 2px 8px rgba(0, 0, 0, 0.02)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 32, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>{t.agent.aiProvider}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 14, fontWeight: 700, color: '#262626' }}>{aiConfig.provider || t.agent.notSet}</span>
+              <Tag color="blue" bordered={false} style={{ margin: 0, fontSize: 10, fontWeight: 700, borderRadius: 4 }}>V3</Tag>
             </div>
-            <Divider type="vertical" style={{ height: 32, margin: 0 }} />
-            <div className="stat-box">
-              <span className="stat-label">{t.agent.model}</span>
-              <span className="stat-value">{aiConfig.model || t.agent.notSet}</span>
-            </div>
-            <Divider type="vertical" style={{ height: 32, margin: 0 }} />
-            <div className="stat-box">
-              <span className="stat-label">{t.agent.aiStatus}</span>
+          </div>
+          <Divider type="vertical" style={{ height: 28, margin: 0, opacity: 0.5 }} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>{t.agent.model}</span>
+            <span style={{ fontSize: 14, fontWeight: 600, color: '#595959' }}>{aiConfig.model || t.agent.notSet}</span>
+          </div>
+          <Divider type="vertical" style={{ height: 28, margin: 0, opacity: 0.5 }} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>{t.agent.aiStatus}</span>
+            <div>
               {configStatus.loaded ? (
                 configStatus.aiTestStatus === 'connected' ? <Tag color="success" style={{ margin: 0, borderRadius: 10, fontWeight: 700, fontSize: 10 }}>{t.agent.connected}</Tag> :
                 configStatus.aiTestStatus === 'saved' ? <Tag color="warning" style={{ margin: 0, borderRadius: 10, fontWeight: 700, fontSize: 10 }}>{t.agent.notTested}</Tag> :
@@ -6234,202 +6235,188 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 <Tag color="default" style={{ margin: 0, borderRadius: 10, fontWeight: 700, fontSize: 10 }}>{t.agent.notConfigured}</Tag>
               ) : <Spin size="small" />}
             </div>
-            <Divider type="vertical" style={{ height: 32, margin: 0 }} />
-            <div className="stat-box">
-              <span className="stat-label">{t.agent.marketData}</span>
+          </div>
+          <Divider type="vertical" style={{ height: 28, margin: 0, opacity: 0.5 }} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>{t.agent.marketData}</span>
+            <div>
               {configStatus.loaded ? <Tag color="processing" style={{ margin: 0, borderRadius: 10, fontWeight: 700, fontSize: 10 }}>{t.agent.alpaca}</Tag> : <Spin size="small" />}
             </div>
-            <Divider type="vertical" style={{ height: 32, margin: 0 }} />
-            <div className="stat-box">
-              <span className="stat-label">{t.agent.trading}</span>
+          </div>
+          <Divider type="vertical" style={{ height: 28, margin: 0, opacity: 0.5 }} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>{t.agent.trading}</span>
+            <div>
               {configStatus.loaded ? (configStatus.alpaca ? <Tag color="processing" style={{ margin: 0, borderRadius: 10, fontWeight: 700, fontSize: 10 }}>{t.agent.paper}</Tag> : <Tag color="default" style={{ margin: 0, borderRadius: 10, fontWeight: 700, fontSize: 10 }}>{t.agent.notLinked}</Tag>) : <Spin size="small" />}
             </div>
           </div>
-          <Button type="text" icon={<SettingOutlined />} onClick={() => navigate('/settings/configuration')} style={{ color: '#1890ff', fontWeight: 600, fontSize: 13 }}>{t.agent.manageSettings}</Button>
         </div>
+        <Button type="text" icon={<SettingOutlined />} onClick={() => navigate('/settings/configuration')} style={{ color: '#8c8c8c', fontWeight: 600, fontSize: 13, background: '#fafafa', border: '1px solid #e8e8e8', borderRadius: 6, height: 32 }}>
+          {t.agent.manageSettings}
+        </Button>
       </div>
-{/* 1.5 Trading Account Mode */}
-      <div style={{ marginBottom: 24 }}>
+
+      {/* 1.5 Trading Account Mode */}
+      <div style={{ marginBottom: 20 }}>
         <Card
           className="premium-card"
-          title={
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 16, fontWeight: 700 }}>
-                <SettingOutlined style={{ marginRight: 8, color: '#1890ff' }} />
+          bodyStyle={{ padding: '20px 24px' }}
+          title={null}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span style={{ fontSize: 16, fontWeight: 800, color: '#262626', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <WalletOutlined style={{ color: '#1890ff', fontSize: 18 }} />
                 {t.agent.tradingAccountMode}
               </span>
-              <Tag color={tradeMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ fontSize: 11, fontWeight: 700, borderRadius: 4, margin: 0 }}>
+              <Tag color={tradeMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 4, margin: 0, padding: '2px 8px' }}>
                 {tradeMode === 'paper' ? t.agent.paperTrading : t.agent.realTrading}
               </Tag>
+              {tradeMode === 'real' && (
+                <span style={{ fontSize: 12, color: '#faad14', display: 'flex', alignItems: 'center', gap: 4, background: '#fffbe6', padding: '2px 8px', borderRadius: 4, border: '1px solid #ffe58f' }}>
+                  <WarningOutlined />
+                  {t.agent.tradingModeRealHint}
+                </span>
+              )}
             </div>
-          }
-        >
-          <div style={{ fontSize: 13, color: '#8c8c8c', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 6 }}>
-            <InfoCircleOutlined style={{ color: '#1890ff' }} />
-            {t.agent.tradingAccountDesc} <Text type="secondary" style={{ fontSize: 12 }}>{t.agent.tradingAccountDescNote}</Text>
+            <div style={{ fontSize: 13, color: '#8c8c8c', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <InfoCircleOutlined style={{ color: '#1890ff' }} />
+              {t.agent.tradingAccountDescNote}
+            </div>
           </div>
           
-          <div style={{ background: '#fafafa', borderRadius: 12, padding: '20px', border: '1px solid #f0f0f0', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.02)' }}>
+          <div style={{ background: '#fafafa', borderRadius: 10, padding: '16px', border: '1px solid #f0f0f0' }}>
             {tradingAccountLoading ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#8c8c8c' }}>
-                <Spin indicator={<LoadingOutlined style={{ fontSize: 16 }} spin />} />
-                <span>{t.agent.syncAccountData}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#8c8c8c', height: 48 }}>
+                <Spin indicator={<LoadingOutlined style={{ fontSize: 18 }} spin />} />
+                <span style={{ fontWeight: 500 }}>{t.agent.syncAccountData}</span>
               </div>
             ) : tradingAccountData?.success ? (
-              <Row gutter={40} align="middle">
-                <Col>
-                  <div className="stat-box">
-                    <span className="stat-label" style={{ fontSize: 10 }}>{t.agent.accountType}</span>
-                    <span className="stat-value" style={{ fontSize: 15, display: 'flex', alignItems: 'center', gap: 6 }}>
-                      {tradingAccountData?.mode === 'paper' ? <><Tag color="blue" bordered={false} style={{ margin: 0, fontWeight: 700 }}>{t.agent.paper}</Tag></> : <><Tag color="error" bordered={false} style={{ margin: 0, fontWeight: 700 }}>{t.agent.live}</Tag></>}
-                    </span>
-                  </div>
-                </Col>
-                <Col>
-                  <div className="stat-box">
-                    <span className="stat-label" style={{ fontSize: 10 }}>{t.agent.status}</span>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, height: 22 }}>
-                      <Badge status={tradingAccountData.status === 'ACTIVE' ? 'success' : 'warning'} />
-                      <span style={{ fontWeight: 800, fontSize: 14, color: tradingAccountData.status === 'ACTIVE' ? '#52c41a' : '#faad14' }}>
+              <Row gutter={16}>
+                <Col span={6}>
+                  <div style={{ padding: '12px 16px', background: '#fff', borderRadius: 8, border: '1px solid #e8e8e8', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <span style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 600, textTransform: 'uppercase' }}>{t.agent.status}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <div style={{ width: 8, height: 8, borderRadius: '50%', background: tradingAccountData.status === 'ACTIVE' ? '#52c41a' : '#faad14' }} />
+                      <span style={{ fontWeight: 800, fontSize: 15, color: tradingAccountData.status === 'ACTIVE' ? '#262626' : '#faad14' }}>
                         {tradingAccountData.status || 'N/A'}
                       </span>
                     </div>
                   </div>
                 </Col>
-                <Col style={{ flex: 1 }}>
-                  <Divider type="vertical" style={{ height: 40, margin: 0, opacity: 0.5 }} />
+                <Col span={6}>
+                  <div style={{ padding: '12px 16px', background: '#fff', borderRadius: 8, border: '1px solid #e8e8e8', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <span style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 600, textTransform: 'uppercase' }}>{t.agent.portfolioValue}</span>
+                    <span style={{ fontWeight: 800, fontSize: 18, color: '#1890ff', fontFamily: "'Inter', sans-serif", letterSpacing: '-0.5px' }}>
+                      ${(tradingAccountData.portfolioValue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
                 </Col>
-                <Col>
-                  <div className="stat-box">
-                    <span className="stat-label" style={{ fontSize: 10 }}>{t.agent.cash}</span>
-                    <span style={{ fontWeight: 800, fontSize: 18, color: '#1f1f1f', fontFamily: "'Inter', sans-serif" }}>
+                <Col span={6}>
+                  <div style={{ padding: '12px 16px', background: '#fff', borderRadius: 8, border: '1px solid #e8e8e8', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <span style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 600, textTransform: 'uppercase' }}>{t.agent.cash}</span>
+                    <span style={{ fontWeight: 800, fontSize: 18, color: '#262626', fontFamily: "'Inter', sans-serif", letterSpacing: '-0.5px' }}>
                       ${(tradingAccountData.cash ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                   </div>
                 </Col>
-                <Col>
-                  <div className="stat-box">
-                    <span className="stat-label" style={{ fontSize: 10 }}>{t.agent.buyingPower}</span>
-                    <span style={{ fontWeight: 800, fontSize: 18, color: '#1f1f1f', fontFamily: "'Inter', sans-serif" }}>
+                <Col span={6}>
+                  <div style={{ padding: '12px 16px', background: '#fff', borderRadius: 8, border: '1px solid #e8e8e8', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <span style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 600, textTransform: 'uppercase' }}>{t.agent.buyingPower}</span>
+                    <span style={{ fontWeight: 800, fontSize: 18, color: '#262626', fontFamily: "'Inter', sans-serif", letterSpacing: '-0.5px' }}>
                       ${(tradingAccountData.buyingPower ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </span>
-                  </div>
-                </Col>
-                <Col>
-                  <div className="stat-box">
-                    <span className="stat-label" style={{ fontSize: 10 }}>{t.agent.portfolioValue}</span>
-                    <span style={{ fontWeight: 800, fontSize: 18, color: '#1890ff', fontFamily: "'Inter', sans-serif" }}>
-                      ${(tradingAccountData.portfolioValue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                   </div>
                 </Col>
               </Row>
             ) : (
-              <div style={{ color: '#8c8c8c', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ color: '#8c8c8c', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, height: 48 }}>
                 {tradingAccountData?.error ? (
                   <><ExclamationCircleOutlined style={{ color: '#faad14' }} />{tradingAccountData.error}</>
                 ) : (
                   <><InfoCircleOutlined /> {t.agent.noAccountData}</>
                 )}
-                <Tag style={{ marginLeft: 8 }}>{t.agent.configureAlpaca}</Tag>
+                <Tag style={{ marginLeft: 8, fontWeight: 600 }}>{t.agent.configureAlpaca}</Tag>
               </div>
             )}
           </div>
-
-          {tradeMode === 'real' && (
-            <div style={{
-              marginTop: 12,
-              padding: '6px 12px',
-              background: '#fafafa',
-              borderRadius: 6,
-              border: '1px solid #e8e8e8',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              fontSize: 11,
-              color: '#595959'
-            }}>
-              <ExclamationCircleOutlined style={{ color: '#faad14', fontSize: 12 }} />
-              <span>{t.agent.tradingModeRealHint}</span>
-            </div>
-          )}
         </Card>
       </div>
 
       {/* 1.52 Trading Preferences */}
       <div style={{ marginBottom: 24 }}>
-        <Card
-          className="premium-card"
-          title={
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 16, fontWeight: 700 }}>
-                <FundOutlined style={{ marginRight: 8, color: '#722ed1' }} />
-                {t.agent.tradingPreferences}
-              </span>
-            </div>
-          }
-        >
-          <Row gutter={32}>
-            <Col flex="1">
-              <div style={{ marginBottom: 8 }}>
-                <Text strong style={{ fontSize: 13 }}>{t.agent.riskProfile}</Text>
-                <Text type="secondary" style={{ fontSize: 11, marginLeft: 8 }}>{t.agent.riskProfileDesc}</Text>
+        <Row gutter={20}>
+          <Col span={12}>
+            <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #f0f0f0', padding: '20px', boxShadow: '0 2px 8px rgba(0, 0, 0, 0.02)', height: '100%' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                <FundOutlined style={{ color: '#722ed1', fontSize: 18 }} />
+                <span style={{ fontSize: 15, fontWeight: 800, color: '#262626' }}>{t.agent.riskProfile}</span>
+              </div>
+              <div style={{ fontSize: 13, color: '#8c8c8c', marginBottom: 16, minHeight: 20 }}>
+                {t.agent.riskProfileDesc}
               </div>
               <Segmented
                 block
                 value={riskProfile}
                 onChange={handleRiskProfileChange}
                 options={[
-                  { label: t.agent.lowRisk, value: 'low' },
-                  { label: t.agent.mediumRisk, value: 'medium' },
-                  { label: t.agent.highRisk, value: 'high' },
+                  { label: <span style={{ fontWeight: 600, padding: '4px 0' }}>{t.agent.lowRisk}</span>, value: 'low' },
+                  { label: <span style={{ fontWeight: 600, padding: '4px 0' }}>{t.agent.mediumRisk}</span>, value: 'medium' },
+                  { label: <span style={{ fontWeight: 600, padding: '4px 0' }}>{t.agent.highRisk}</span>, value: 'high' },
                 ]}
-                style={{ background: '#f5f5f5', borderRadius: 8 }}
+                style={{ background: '#f5f5f5', borderRadius: 8, padding: 4 }}
               />
-            </Col>
-            <Col flex="1">
-              <div style={{ marginBottom: 8 }}>
-                <Text strong style={{ fontSize: 13 }}>{t.agent.timeHorizon}</Text>
-                <Text type="secondary" style={{ fontSize: 11, marginLeft: 8 }}>{t.agent.timeHorizonDesc}</Text>
+            </div>
+          </Col>
+          <Col span={12}>
+            <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #f0f0f0', padding: '20px', boxShadow: '0 2px 8px rgba(0, 0, 0, 0.02)', height: '100%' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                <ClockCircleOutlined style={{ color: '#1890ff', fontSize: 18 }} />
+                <span style={{ fontSize: 15, fontWeight: 800, color: '#262626' }}>{t.agent.timeHorizon}</span>
+              </div>
+              <div style={{ fontSize: 13, color: '#8c8c8c', marginBottom: 16, minHeight: 20 }}>
+                {t.agent.timeHorizonDesc}
               </div>
               <Segmented
                 block
                 value={timeHorizon}
                 onChange={handleTimeHorizonChange}
                 options={[
-                  { label: t.agent.shortTerm, value: 'short' },
-                  { label: t.agent.midTerm, value: 'mid' },
-                  { label: t.agent.longTerm, value: 'long' },
+                  { label: <span style={{ fontWeight: 600, padding: '4px 0' }}>{t.agent.shortTerm}</span>, value: 'short' },
+                  { label: <span style={{ fontWeight: 600, padding: '4px 0' }}>{t.agent.midTerm}</span>, value: 'mid' },
+                  { label: <span style={{ fontWeight: 600, padding: '4px 0' }}>{t.agent.longTerm}</span>, value: 'long' },
                 ]}
-                style={{ background: '#f5f5f5', borderRadius: 8 }}
+                style={{ background: '#f5f5f5', borderRadius: 8, padding: 4 }}
               />
-            </Col>
-          </Row>
-        </Card>
+            </div>
+          </Col>
+        </Row>
       </div>
 
       {/* 1.55 AI Auto Pipeline */}
       <div style={{ marginBottom: 24 }}>
         <Card
           className="premium-card"
+          bodyStyle={{ padding: 0 }}
           title={
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <div style={{ width: 32, height: 32, borderRadius: 8, background: 'rgba(114, 46, 209, 0.1)', color: '#722ed1', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid #f0f0f0' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div style={{ width: 36, height: 36, borderRadius: 10, background: 'linear-gradient(135deg, #f9f0ff 0%, #efdbff 100%)', color: '#722ed1', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, border: '1px solid #d3adf7' }}>
                   <RobotOutlined />
                 </div>
-                <span style={{ fontWeight: 700, fontSize: 16 }}>{t.agent.aiPipeline}</span>
-                <Tag color={pipelineMode === 'ai' ? 'purple' : pipelineMode === 'hybrid' ? 'blue' : 'default'} bordered={false} style={{ fontSize: 10, fontWeight: 800, borderRadius: 4 }}>
+                <span style={{ fontWeight: 800, fontSize: 18, color: '#1f1f1f', letterSpacing: '-0.3px' }}>{t.agent.aiPipeline}</span>
+                <Tag color={pipelineMode === 'ai' ? 'purple' : pipelineMode === 'hybrid' ? 'blue' : 'default'} bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, margin: 0, padding: '2px 8px' }}>
                   {pipelineMode === 'ai' ? t.agent.buyAction : pipelineMode === 'hybrid' ? t.agent.modeHybrid : t.agent.skipAction}
                 </Tag>
               </span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 {pipelineRunning ? (
                   <Button
                     danger
+                    type="primary"
                     icon={<PauseCircleOutlined />}
                     onClick={stopPipeline}
-                    style={{ ...AI_AGENT_PRIMARY_BTN_STYLE, height: 34 }}
+                    style={{ borderRadius: 8, height: 36, fontWeight: 700, fontSize: 13, boxShadow: '0 2px 6px rgba(255, 77, 79, 0.2)' }}
                   >
                     {t.agent.stop}
                   </Button>
@@ -6440,15 +6427,17 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     onClick={() => runAIPipeline({ trigger: 'manual' })}
                     disabled={pipelineMode === 'manual' ? false : isAnyScanRunning}
                     style={{ 
-                      ...AI_AGENT_PRIMARY_BTN_STYLE, 
-                      background: '#722ed1', 
+                      background: 'linear-gradient(135deg, #722ed1 0%, #531dab 100%)', 
                       borderColor: '#722ed1', 
-                      color: '#ffffff', // FIX: ensure high contrast white text
-                      height: 34,
-                      boxShadow: '0 4px 10px rgba(114, 46, 209, 0.3)'
+                      color: '#ffffff',
+                      height: 36,
+                      borderRadius: 8,
+                      fontWeight: 700,
+                      fontSize: 13,
+                      boxShadow: '0 4px 12px rgba(114, 46, 209, 0.2)'
                     }}
                   >
-                    {pipelineMode === 'manual' ? t.agent.runPipeline : t.agent.runPipeline}
+                    {t.agent.runPipeline}
                   </Button>
                 )}
               </div>
@@ -6456,20 +6445,10 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           }
         >
           {/* Mode-specific compact hint */}
-          <div style={{ marginBottom: 16 }}>
-            <div style={{
-              padding: '6px 12px',
-              background: '#fafafa',
-              borderRadius: 6,
-              border: '1px solid #e8e8e8',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              fontSize: 11,
-              color: '#595959'
-            }}>
-              <InfoCircleOutlined style={{ color: '#8c8c8c', fontSize: 12 }} />
-              <span>
+          <div style={{ padding: '16px 20px', background: '#fafafa', borderBottom: '1px solid #f0f0f0' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#595959', fontSize: 12, background: '#fff', padding: '8px 12px', borderRadius: 8, border: '1px solid #e8e8e8' }}>
+              <InfoCircleOutlined style={{ color: '#1890ff', fontSize: 14 }} />
+              <span style={{ fontWeight: 500 }}>
                 {pipelineMode === 'ai'
                   ? t.agent.pipelineModeAiDesc
                   : pipelineMode === 'hybrid'
@@ -6480,48 +6459,56 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           </div>
 
           <div style={{ background: '#fafafa', padding: '16px 20px', borderRadius: 12, border: '1px solid #f0f0f0' }}>
-            <Row gutter={[32, 16]}>
+            <Row gutter={32}>
+              {/* Left Column: Pipeline Mode */}
               <Col span={8}>
-                <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>{t.agent.aiPipeline}</div>
-                <div style={{ display: 'flex', background: '#f0f2f5', padding: 3, borderRadius: 8, gap: 4, border: '1px solid #e8e8e8' }}>
+                <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>{t.agent.aiPipeline} Mode</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {(['ai', 'hybrid', 'manual'] as const).map(m => (
-                    <Button key={m} size="small"
-                      type={pipelineMode === m ? 'primary' : 'text'}
+                    <div
+                      key={m}
                       onClick={() => { setPipelineMode(m); if (pipelineSchedule !== 'off') savePipelineAutoConfig(pipelineSchedule); }}
-                      style={{ 
-                        flex: 1, 
-                        borderRadius: 6, 
-                        height: 28, 
-                        fontSize: 11, 
-                        fontWeight: pipelineMode === m ? 700 : 500, 
-                        border: 'none',
-                        color: pipelineMode === m ? '#fff' : '#8c8c8c',
-                        background: pipelineMode === m ? (m === 'ai' ? '#722ed1' : undefined) : 'transparent',
-                        boxShadow: pipelineMode === m ? '0 2px 4px rgba(0,0,0,0.1)' : 'none'
+                      style={{
+                        padding: '10px 16px',
+                        borderRadius: 10,
+                        cursor: 'pointer',
+                        border: pipelineMode === m ? (m === 'ai' ? '2px solid #722ed1' : m === 'hybrid' ? '2px solid #1890ff' : '2px solid #d9d9d9') : '1px solid #f0f0f0',
+                        background: pipelineMode === m ? (m === 'ai' ? '#f9f0ff' : m === 'hybrid' ? '#e6f7ff' : '#fafafa') : '#fff',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        transition: 'all 0.2s',
+                        boxShadow: pipelineMode === m ? '0 2px 8px rgba(0,0,0,0.05)' : 'none'
                       }}
                     >
-                      {m === 'ai' ? t.agent.modeAI : m === 'hybrid' ? t.agent.modeHybrid : t.agent.modeManual}
-                    </Button>
+                      <span style={{ fontWeight: 700, fontSize: 14, color: pipelineMode === m ? (m === 'ai' ? '#531dab' : m === 'hybrid' ? '#096dd9' : '#595959') : '#8c8c8c' }}>
+                        {m === 'ai' ? t.agent.modeAI : m === 'hybrid' ? t.agent.modeHybrid : t.agent.modeManual}
+                      </span>
+                      {pipelineMode === m && <CheckCircleFilled style={{ color: m === 'ai' ? '#722ed1' : m === 'hybrid' ? '#1890ff' : '#8c8c8c', fontSize: 16 }} />}
+                    </div>
                   ))}
                 </div>
               </Col>
-              <Col span={9}>
-                <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>{t.agent.pipelineRunning}</div>
-                <div style={{ display: 'flex', background: '#f0f2f5', padding: 3, borderRadius: 8, gap: 2, border: '1px solid #e8e8e8' }}>
-                  {(['off', '15m', '30m', '1h', '2h'] as const).map(s => (
-                    <Button key={s} size="small"
-                      type={pipelineSchedule === s ? 'primary' : 'text'}
+
+              {/* Middle Column: Schedule */}
+              <Col span={8}>
+                <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>{t.agent.pipelineRunning} Schedule</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
+                  {(['off', '15m', '30m', '1h', '2h'] as const).map((s, idx) => (
+                    <Button key={s}
+                      type={pipelineSchedule === s ? 'primary' : 'default'}
                       onClick={() => { setPipelineSchedule(s); savePipelineAutoConfig(s); }}
                       disabled={pipelineMode === 'manual' && s !== 'off'}
                       style={{ 
-                        flex: 1, 
-                        borderRadius: 6, 
-                        height: 28, 
-                        fontSize: 10, 
+                        borderRadius: 8, 
+                        height: 36, 
+                        fontSize: 12, 
                         fontWeight: pipelineSchedule === s ? 700 : 500, 
-                        border: 'none',
-                        color: pipelineSchedule === s ? '#fff' : '#8c8c8c',
-                        boxShadow: pipelineSchedule === s ? '0 2px 4px rgba(0,0,0,0.1)' : 'none'
+                        gridColumn: s === 'off' ? '1 / -1' : undefined,
+                        background: pipelineSchedule === s ? '#1890ff' : '#fff',
+                        color: pipelineSchedule === s ? '#fff' : '#595959',
+                        borderColor: pipelineSchedule === s ? '#1890ff' : '#d9d9d9',
+                        boxShadow: pipelineSchedule === s ? '0 2px 6px rgba(24, 144, 255, 0.2)' : 'none'
                       }}
                     >
                       {s === 'off' ? t.agent.scheduleOff : s === '15m' ? t.agent.schedule15m : s === '30m' ? t.agent.schedule30m : s === '1h' ? t.agent.schedule1h : t.agent.schedule2h}
@@ -6529,253 +6516,125 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   ))}
                 </div>
                 {pipelineSchedule !== 'off' && (
-                  <div style={{ fontSize: 10, color: '#52c41a', marginTop: 6, fontWeight: 600 }}>
-                    <SyncOutlined spin={pipelineRunning} style={{ marginRight: 4 }} />
-                    {pipelineRunning ? t.agent.scheduleRunningWait : `${t.agent.scheduleEvery}${pipelineSchedule === '15m' ? t.agent.schedule15m : pipelineSchedule === '30m' ? t.agent.schedule30m : pipelineSchedule === '1h' ? t.agent.schedule1h : t.agent.schedule2h}`}
+                  <div style={{ marginTop: 16, padding: '10px 12px', background: '#f6ffed', borderRadius: 8, border: '1px solid #b7eb8f', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <SyncOutlined spin={pipelineRunning} style={{ color: '#52c41a', fontSize: 14 }} />
+                    <span style={{ fontSize: 12, fontWeight: 600, color: '#237804' }}>
+                      {pipelineRunning ? t.agent.scheduleRunningWait : `Scheduled: Every ${pipelineSchedule}`}
+                    </span>
                   </div>
                 )}
               </Col>
-              <Col span={7}>
-                <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>{t.agent.status}</div>
 
-                {/* Pipeline mode section — label matches current mode */}
-                <div style={{ fontSize: 12, lineHeight: '20px' }}>
-                  <div style={{ fontSize: 10, color: '#8c8c8c', fontWeight: 600, marginBottom: 2 }}>
-                    {pipelineMode === 'ai' ? 'AI' : pipelineMode === 'hybrid' ? 'Hybrid' : 'Manual'}
-                  </div>
-                  {lastPipelineRun ? (
-                    <div style={{ color: '#595959' }}>
-                      <ClockCircleOutlined style={{ marginRight: 6, opacity: 0.6 }} />
-                      {t.agent.lastRunLabel}<Text strong>{new Date(lastPipelineRun).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
-                      {pipelineRunning ? (
-                        <Tag icon={<SyncOutlined spin />} color="processing" bordered={false} style={{ fontSize: 9, marginLeft: 6 }}>{t.agent.statusRunning}</Tag>
-                      ) : (() => {
-                        const result = scannerStateStore.getPipelineSchedule().lastRunResult;
-                        if (result === 'success') return <Tag color="green" bordered={false} style={{ fontSize: 9, marginLeft: 6 }}>{t.agent.statusOK}</Tag>;
-                        if (result === 'failed') return <Tag color="red" bordered={false} style={{ fontSize: 9, marginLeft: 6 }}>{t.agent.statusFailed}</Tag>;
-                        if (result === 'stopped') return <Tag color="orange" bordered={false} style={{ fontSize: 9, marginLeft: 6 }}>{t.agent.statusStopped}</Tag>;
-                        return null;
-                      })()}
-                    </div>
-                  ) : <div style={{ color: '#bfbfbf', fontStyle: 'italic' }}>{t.agent.noData}</div>}
-                </div>
-
-                {/* Auto section */}
-                {pipelineAutoStatus && (
-                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed #e8e8e8', fontSize: 11, lineHeight: '18px' }}>
-                    <div style={{ fontSize: 10, color: '#8c8c8c', fontWeight: 600, marginBottom: 4 }}>Auto</div>
-
-                    {pipelineAutoStatus.autoStatus === 'Off' ? (
-                      <Tag color="default" bordered={false} style={{ fontSize: 9, fontWeight: 600, margin: 0, lineHeight: '16px', borderRadius: 4 }}>Off</Tag>
+              {/* Right Column: Status Summary */}
+              <Col span={8}>
+                <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>Status Summary</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12, background: '#fafafa', padding: 16, borderRadius: 10, border: '1px solid #f0f0f0', height: '100%' }}>
+                  
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 12, color: '#595959', fontWeight: 500 }}>{t.agent.lastRunLabel}</span>
+                    {lastPipelineRun ? (
+                      <span style={{ fontSize: 13, fontWeight: 700, color: '#262626' }}>{new Date(lastPipelineRun).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                     ) : (
-                      <>
-                        {/* Tags row: autoStatus + reason + source */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginBottom: 2 }}>
-                          <Tag color={pipelineAutoStatus.autoStatus === 'Armed' ? 'green' : pipelineAutoStatus.autoStatus === 'Running' ? 'processing' : 'orange'}
-                            bordered={false} style={{ fontSize: 9, fontWeight: 600, margin: 0, lineHeight: '16px', borderRadius: 4 }}>
-                            {pipelineAutoStatus.autoStatus}
-                          </Tag>
-                          {!pipelineAutoStatus.marketOpen && (
-                            <>
-                              {pipelineAutoStatus.marketStatusRaw === 'holiday' && (
-                                <Tag color="red" bordered={false} style={{ fontSize: 9, fontWeight: 600, margin: 0, lineHeight: '16px', borderRadius: 4 }}>Holiday Closed</Tag>
-                              )}
-                              {pipelineAutoStatus.marketStatusSource === 'fallback_basic_hours' && (
-                                <Tag color="default" bordered={false} style={{ fontSize: 9, fontWeight: 600, margin: 0, lineHeight: '16px', borderRadius: 4 }}>Fallback</Tag>
-                              )}
-                            </>
-                          )}
-                        </div>
-
-                        {/* Running state */}
-                        {pipelineAutoStatus.autoStatus === 'Running' && (
-                          <div style={{ color: '#722ed1', marginTop: 1 }}>
-                            <SyncOutlined spin style={{ marginRight: 4 }} />Running AI Pipeline...
-                          </div>
-                        )}
-
-                        {/* Run count today */}
-                        <div style={{ color: '#595959', marginTop: 1, fontSize: 10 }}>
-                          Run count today: <Text strong>{pipelineAutoStatus.runCountToday || 0}</Text>
-                        </div>
-
-                        {/* Next auto run: always show when enabled */}
-                        {(() => {
-                          const fmtTime = (iso: string) => {
-                            try {
-                              const d = new Date(iso);
-                              if (!isNaN(d.getTime())) {
-                                return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                              }
-                            } catch (_) { /* ignore */ }
-                            return '';
-                          };
-                          const computeNext = (baseIso: string | null, intervalMin: number) => {
-                            if (!baseIso || !intervalMin) return '';
-                            try {
-                              const dt = new Date(baseIso);
-                              if (!isNaN(dt.getTime())) {
-                                const next = new Date(dt.getTime() + intervalMin * 60000);
-                                return next.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                              }
-                            } catch (_) { /* ignore */ }
-                            return '';
-                          };
-
-                          // Priority 1: frontend lastPipelineRun + intervalMinutes
-                          let displayValue = computeNext(lastPipelineRun, pipelineAutoStatus.intervalMinutes);
-
-                          // Priority 2: backend lastRunStartedAt + intervalMinutes
-                          if (!displayValue) {
-                            displayValue = computeNext(
-                              pipelineAutoStatus.lastRunStartedAt || pipelineAutoStatus.lastRunAt,
-                              pipelineAutoStatus.intervalMinutes
-                            );
-                          }
-
-                          // Priority 3: backend nextAutoRunDisplay or nextAutoRunAt
-                          if (!displayValue) {
-                            displayValue = pipelineAutoStatus.nextAutoRunDisplay
-                              || fmtTime(pipelineAutoStatus.nextAutoRunAt)
-                              || '';
-                          }
-
-                          // Priority 4: scheduler says run now
-                          if (!displayValue && pipelineAutoStatus.nextRunAt === 'now') {
-                            displayValue = 'Ready';
-                          }
-
-                          // Show dash only when stopped and no computed value
-                          if (!displayValue && pipelineAutoStatus.stoppedForToday) {
-                            return (
-                              <div style={{ color: '#8c8c8c', fontSize: 10 }}>
-                                Next auto run: <Text strong>—</Text>
-                              </div>
-                            );
-                          }
-
-                          // Have display → show it
-                          if (displayValue) {
-                            return (
-                              <div style={{ color: displayValue === 'Ready' ? '#1890ff' : '#595959', fontSize: 10 }}>
-                                Next auto run: <Text strong style={{ color: displayValue === 'Ready' ? '#1890ff' : undefined }}>
-                                  {displayValue}
-                                </Text>
-                              </div>
-                            );
-                          }
-
-                          // Enabled but no data yet → show Ready
-                          if (pipelineAutoStatus.enabled) {
-                            return (
-                              <div style={{ color: '#1890ff', fontSize: 10 }}>
-                                Next auto run: <Text strong style={{ color: '#1890ff' }}>Ready</Text>
-                              </div>
-                            );
-                          }
-
-                          return null;
-                        })()}
-
-                        {/* Scheduler */}
-                        <div style={{ color: '#595959', marginTop: 1 }}>
-                          Scheduler: <span style={{ fontWeight: 600, color: pipelineAutoStatus.schedulerRunning ? '#52c41a' : '#ff4d4f' }}>
-                            {pipelineAutoStatus.schedulerRunning ? 'Running' : 'Offline'}
-                          </span>
-                        </div>
-
-                        {/* Background capability note */}
-                        {pipelineAutoStatus.schedulerRunning && pipelineAutoStatus.enabled && (
-                          <div style={{ color: '#8c8c8c', fontSize: 9, marginTop: 2, lineHeight: 1.4 }}>
-                            Background: Limited
-                            <Tooltip title="Backend scheduler runs a limited market scanner. Full 6-stage pipeline (Continue Scan, Fine Scan, Deeper Validation, Entry Plan, Exit Scan) requires this page to stay open.">
-                              <InfoCircleOutlined style={{ marginLeft: 4, fontSize: 10, color: '#bfbfbf' }} />
-                            </Tooltip>
-                          </div>
-                        )}
-
-                      </>
+                      <span style={{ fontSize: 12, color: '#bfbfbf', fontStyle: 'italic' }}>—</span>
                     )}
                   </div>
-                )}
+                  
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 12, color: '#595959', fontWeight: 500 }}>Result</span>
+                    {pipelineRunning ? (
+                      <Tag icon={<SyncOutlined spin />} color="processing" bordered={false} style={{ margin: 0, fontWeight: 700 }}>Running</Tag>
+                    ) : (() => {
+                      const result = scannerStateStore.getPipelineSchedule().lastRunResult;
+                      if (result === 'success') return <Tag color="green" bordered={false} style={{ margin: 0, fontWeight: 700 }}>Success</Tag>;
+                      if (result === 'failed') return <Tag color="red" bordered={false} style={{ margin: 0, fontWeight: 700 }}>Failed</Tag>;
+                      if (result === 'stopped') return <Tag color="orange" bordered={false} style={{ margin: 0, fontWeight: 700 }}>Stopped</Tag>;
+                      return <span style={{ fontSize: 12, color: '#bfbfbf' }}>—</span>;
+                    })()}
+                  </div>
+
+                  <Divider style={{ margin: '4px 0', opacity: 0.5 }} />
+
+                  {pipelineAutoStatus ? (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: 12, color: '#595959', fontWeight: 500 }}>Auto Status</span>
+                        {pipelineAutoStatus.autoStatus === 'Off' ? (
+                          <Tag color="default" bordered={false} style={{ margin: 0, fontWeight: 700 }}>Off</Tag>
+                        ) : pipelineAutoStatus.autoStatus === 'Running' ? (
+                          <Tag color="processing" bordered={false} style={{ margin: 0, fontWeight: 700 }}>Running</Tag>
+                        ) : !pipelineAutoStatus.marketOpen ? (
+                          <Tag color={pipelineAutoStatus.marketStatusRaw === 'holiday' ? 'red' : 'orange'} bordered={false} style={{ margin: 0, fontWeight: 700 }}>
+                            {pipelineAutoStatus.marketStatusRaw === 'holiday' ? 'Holiday Closed' : 'Market Closed'}
+                          </Tag>
+                        ) : (
+                          <Tag color="green" bordered={false} style={{ margin: 0, fontWeight: 700 }}>Armed</Tag>
+                        )}
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: 12, color: '#595959', fontWeight: 500 }}>Runs Today</span>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: '#262626' }}>{pipelineAutoStatus.runCountToday || 0}</span>
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{ fontSize: 12, color: '#8c8c8c', fontStyle: 'italic', textAlign: 'center', marginTop: 8 }}>Auto status unavailable</div>
+                  )}
+                </div>
               </Col>
             </Row>
 
-            {/* Market Auto Run Section — compact */}
-            <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed #e8e8e8' }}>
-              <Row gutter={[12, 6]} align="middle">
-                {/* Left: title + toggle + description */}
-                <Col flex="300px">
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: '#262626', whiteSpace: 'nowrap' }}>Market Auto Run</span>
-                    <Switch
-                      size="small"
-                      checked={pipelineSchedule !== 'off'}
-                      loading={pipelineAutoLoading}
-                      onChange={(checked) => {
-                        if (checked) {
-                          const defaultSchedule = pipelineSchedule === 'off' ? '15m' : pipelineSchedule;
-                          setPipelineSchedule(defaultSchedule);
-                          savePipelineAutoConfig(defaultSchedule);
-                        } else {
-                          setPipelineSchedule('off');
-                          savePipelineAutoConfig('off');
-                        }
-                      }}
-                    />
-                    <Tag
-                      color={pipelineSchedule !== 'off' ? 'green' : 'default'}
-                      bordered={false}
-                      style={{ fontSize: 9, fontWeight: 700, margin: 0, borderRadius: 4 }}
-                    >
-                      {pipelineSchedule !== 'off' ? 'On' : 'Off'}
-                    </Tag>
-                  </div>
-                  <div style={{ fontSize: 10, color: '#8c8c8c', marginTop: 1, lineHeight: '14px' }}>
-                    Runs AI Pipeline automatically during US market hours only.
-                  </div>
-                </Col>
-
-                {/* Right: compact status (only when enabled) */}
-                <Col flex="auto">
+            {/* Compact Automation Strip */}
+            <div style={{ marginTop: 24, background: '#fff', border: '1px solid #e8e8e8', borderRadius: 10, padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: '0 1px 4px rgba(0,0,0,0.02)', flexWrap: 'wrap', gap: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <ThunderboltOutlined style={{ color: pipelineSchedule !== 'off' ? '#52c41a' : '#bfbfbf', fontSize: 16 }} />
+                  <span style={{ fontSize: 14, fontWeight: 700, color: '#262626' }}>Market Auto Run</span>
+                  <Switch
+                    size="small"
+                    checked={pipelineSchedule !== 'off'}
+                    loading={pipelineAutoLoading}
+                    onChange={(checked) => {
+                      if (checked) {
+                        const defaultSchedule = pipelineSchedule === 'off' ? '15m' : pipelineSchedule;
+                        setPipelineSchedule(defaultSchedule);
+                        savePipelineAutoConfig(defaultSchedule);
+                      } else {
+                        setPipelineSchedule('off');
+                        savePipelineAutoConfig('off');
+                      }
+                    }}
+                  />
+                </div>
+                <Divider type="vertical" style={{ margin: 0, height: 16 }} />
+                <div style={{ fontSize: 12, color: '#8c8c8c' }}>
                   {pipelineSchedule === 'off' ? (
-                    <span style={{ fontSize: 10, color: '#8c8c8c', fontStyle: 'italic' }}>Auto market pipeline off</span>
-                  ) : pipelineAutoStatus && pipelineAutoStatus.autoStatus === 'Off' ? (
-                    <span style={{ fontSize: 10, color: '#8c8c8c', fontStyle: 'italic' }}>Auto market pipeline off</span>
+                    'Automation is disabled.'
                   ) : pipelineAutoStatus && !pipelineAutoStatus.marketOpen ? (
-                    /* Holiday / Weekend / Closed — compact pill, no progress bar */
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      <Tag
-                        color={pipelineAutoStatus.marketStatusRaw === 'holiday' ? 'red' : 'orange'}
-                        bordered={false}
-                        style={{ fontSize: 10, fontWeight: 700, margin: 0, borderRadius: 4, lineHeight: '20px' }}
-                      >
-                        {pipelineAutoStatus.marketStatusRaw === 'holiday'
-                          ? 'HOLIDAY — NO AUTO RUN'
-                          : pipelineAutoStatus.marketStatusRaw === 'closed' ? 'MARKET CLOSED — WAITING' : 'CLOSED'}
-                      </Tag>
-                      {pipelineAutoStatus.progress?.label && (
-                        <span style={{ fontSize: 10, color: '#8c8c8c' }}>{pipelineAutoStatus.progress.label}</span>
-                      )}
-                    </div>
-                  ) : pipelineAutoStatus && pipelineAutoStatus.autoStatus === 'Armed' ? (
-                    /* Armed — no progress bar here; status shown in scheduler area above */
-                    null
-                  ) : pipelineAutoStatus && pipelineAutoStatus.autoStatus === 'Running' ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <SyncOutlined spin style={{ color: '#722ed1' }} />
-                      <span style={{ fontSize: 11, color: '#722ed1', fontWeight: 600 }}>Running AI Pipeline...</span>
-                    </div>
-                  ) : pipelineAutoStatus && pipelineAutoStatus.autoStatus === 'Error' ? (
-                    <Alert
-                      type="error"
-                      showIcon
-                      message={pipelineAutoStatus.lastError || 'Auto pipeline error'}
-                      style={{ borderRadius: 6, fontSize: 10, padding: '2px 8px' }}
-                    />
-                  ) : null}
-                </Col>
-              </Row>
+                    <span style={{ color: '#faad14', fontWeight: 500 }}>
+                      <WarningOutlined style={{ marginRight: 6 }} />
+                      Market is closed. Automation is armed but waiting for open.
+                    </span>
+                  ) : (
+                    <span style={{ color: '#52c41a', fontWeight: 500 }}>
+                      <CheckCircleOutlined style={{ marginRight: 6 }} />
+                      Automation is active and monitoring during market hours.
+                    </span>
+                  )}
+                </div>
+              </div>
+              
+              {/* Next Market Open / Next Auto Run info */}
+              <div style={{ fontSize: 12, color: '#595959', fontWeight: 500, textAlign: 'right' }}>
+                {pipelineSchedule !== 'off' && pipelineAutoStatus && (
+                  <>
+                    {!pipelineAutoStatus.marketOpen && pipelineAutoStatus.nextMarketOpen && (
+                      <span style={{ display: 'block' }}>Next Open: <span style={{ fontWeight: 700, color: '#262626' }}>{new Date(pipelineAutoStatus.nextMarketOpen).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></span>
+                    )}
+                    {pipelineAutoStatus.marketOpen && pipelineAutoStatus.autoStatus === 'Armed' && pipelineAutoStatus.nextAutoRun && (
+                      <span style={{ display: 'block' }}>Next Run: <span style={{ fontWeight: 700, color: '#1890ff' }}>{new Date(pipelineAutoStatus.nextAutoRun).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></span>
+                    )}
+                  </>
+                )}
+              </div>
             </div>
 
             {/* Next 15 Days Market Schedule — expandable */}
@@ -6926,34 +6785,39 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
       <div style={{ marginBottom: 24 }}>
         <Card
           className="premium-card"
+          bodyStyle={{ padding: 0 }}
           title={
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid #f0f0f0' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ 
-                  width: 38, height: 38, borderRadius: 10, 
-                  background: 'linear-gradient(135deg, #52c41a 0%, #389e0d 100%)', 
-                  color: '#fff', display: 'flex', alignItems: 'center', 
-                  justifyContent: 'center', fontSize: 20,
-                  boxShadow: '0 4px 10px rgba(82, 196, 26, 0.2)'
+                <div style={{
+                  width: 36, height: 36, borderRadius: 10,
+                  background: 'linear-gradient(135deg, #f6ffed 0%, #d9f7be 100%)',
+                  color: '#52c41a', display: 'flex', alignItems: 'center',
+                  justifyContent: 'center', fontSize: 18,
+                  border: '1px solid #b7eb8f'
                 }}>
                   <WalletOutlined />
                 </div>
-                <div>
-                  <div style={{ fontSize: 16, fontWeight: 800, color: '#111827', lineHeight: 1.2 }}>{t.agent.positions}</div>
-                  <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 500 }}>{t.agent.accountOverview}</div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 18, fontWeight: 800, color: '#1f1f1f', letterSpacing: '-0.3px' }}>{t.agent.positions}</span>
+                    <Tag color="success" bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, margin: 0, padding: '0 8px' }}>
+                      {holdings.length}
+                    </Tag>
+                  </div>
+                  <span style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 500 }}>{t.agent.accountOverview}</span>
                 </div>
-                <Tag color="green" bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, marginLeft: 4, height: 20, lineHeight: '20px' }}>{holdings.length}</Tag>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <Tag color={tradeMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ fontSize: 10, fontWeight: 700, borderRadius: 4 }}>
+                <Tag color={tradeMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, margin: 0, padding: '4px 8px' }}>
                   {tradeMode?.toUpperCase()} TRADING
                 </Tag>
-                <Divider type="vertical" style={{ height: 24 }} />
-                <Button 
-                  size="middle" 
-                  icon={<ReloadOutlined spin={holdingsLoading} />} 
-                  onClick={() => fetchHoldings()} 
-                  style={{ borderRadius: 8, height: 34, fontSize: 12, fontWeight: 600, color: '#6b7280', border: '1px solid #e5e7eb' }}
+                <Divider type="vertical" style={{ height: 24, margin: 0, opacity: 0.5 }} />
+                <Button
+                  type="text"
+                  icon={<ReloadOutlined spin={holdingsLoading} />}
+                  onClick={() => fetchHoldings()}
+                  style={{ color: '#8c8c8c', fontWeight: 600, fontSize: 13, background: '#fafafa', border: '1px solid #e8e8e8', borderRadius: 8, height: 32 }}
                 >
                   {t.agent.refresh}
                 </Button>
@@ -6962,27 +6826,37 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           }
         >
           {holdingsError && (
-            <Alert type="error" showIcon message={holdingsError} style={{ marginBottom: 16, borderRadius: 10 }} closable onClose={() => setHoldingsError(null)} />
+            <Alert type="error" showIcon message={holdingsError} style={{ margin: '16px 20px', borderRadius: 8 }} closable onClose={() => setHoldingsError(null)} />
           )}
-          
+
           {holdingsLoading && holdings.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '40px 0', color: '#8c8c8c' }}><Spin size="large" /> <div style={{ marginTop: 12 }}>{t.agent.loading}</div></div>
+            <div style={{ textAlign: 'center', padding: '40px 0', color: '#8c8c8c' }}><Spin size="large" /> <div style={{ marginTop: 12, fontWeight: 500 }}>{t.agent.loading}</div></div>
           ) : holdings.length === 0 ? (
             <Empty
               image={Empty.PRESENTED_IMAGE_SIMPLE}
               description={
                 <div style={{ padding: '30px 0' }}>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: '#4b5563' }}>{t.agent.noOpenPositions}</div>
-                  <div style={{ fontSize: 13, color: '#9ca3af', marginTop: 4 }}>{t.agent.noData}</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: '#595959' }}>{t.agent.noOpenPositions}</div>
+                  <div style={{ fontSize: 13, color: '#bfbfbf', marginTop: 4 }}>{t.agent.noData}</div>
                 </div>
               }
+              style={{ margin: 0 }}
             />
           ) : (
             <div className="holdings-table-container">
               <style>{`
-                .holdings-table .ant-table-thead > tr > th { background: #f9fafb !important; padding: 12px 8px !important; }
+                .holdings-table .ant-table-thead > tr > th { 
+                  background: #fafafa !important; 
+                  padding: 12px 16px !important; 
+                  color: #8c8c8c !important;
+                  font-weight: 700 !important;
+                  font-size: 11px !important;
+                  letter-spacing: 0.5px !important;
+                  border-bottom: 1px solid #f0f0f0 !important;
+                }
+                .holdings-table .ant-table-tbody > tr > td { padding: 12px 16px !important; border-bottom: 1px solid #f0f0f0 !important; }
                 .holdings-row:hover > td { background-color: #f6ffed !important; }
-                .holdings-row-expanded > td { background-color: #f8f9fb !important; }
+                .holdings-row-expanded > td { background-color: #fafafa !important; }
               `}</style>
               <Table
                 className="holdings-table"
@@ -6991,29 +6865,30 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 size="middle"
                 pagination={holdings.length > 10 ? { pageSize: 10, size: 'small' } : false}
                 scroll={{ x: 900 }}
-                style={{ fontSize: 12 }}
+                style={{ fontSize: 13 }}
                 rowClassName={(record) => record.id === expandedRows[0] ? 'holdings-row holdings-row-expanded' : 'holdings-row'}
                 expandable={{
+                  expandIconColumnIndex: 0,
                   expandedRowRender: (h: any) => (
-                    <div style={{ padding: '20px', background: '#f8f9fb', borderRadius: 16, margin: '8px 0', border: '1px solid #f0f0f0' }}>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: '#1890ff', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 16 }}>{t.agent.colPosition} {t.agent.details}</div>
+                    <div style={{ padding: '16px 24px', background: '#fafafa', borderRadius: 8, margin: '8px 16px', border: '1px solid #e8e8e8', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.02)' }}>
+                      <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 16 }}>{t.agent.colPosition} {t.agent.details}</div>
                       <Row gutter={[24, 16]}>
                         {[
                           { label: t.agent.symbol, value: <span style={{ fontWeight: 800 }}>{h.symbol}</span> },
-                          { label: t.agent.side, value: <Tag color={h.side === 'short' ? 'red' : 'green'} style={{ margin: 0 }}>{h.side?.toUpperCase() || t.agent.longSide}</Tag> },
+                          { label: t.agent.side, value: <Tag color={h.side === 'short' ? 'red' : 'green'} bordered={false} style={{ margin: 0, fontWeight: 700 }}>{h.side?.toUpperCase() || t.agent.longSide}</Tag> },
                           { label: t.agent.qty, value: h.qty },
                           { label: 'Asset Class', value: h.assetClass || 'us_equity' },
                           { label: t.agent.avgEntry, value: `$${(h.avgEntryPrice || 0).toFixed(2)}` },
                           { label: t.agent.currentPrice, value: `$${(h.currentPrice || 0).toFixed(2)}` },
                           { label: t.agent.marketValue, value: `$${(h.marketValue || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}` },
                           { label: 'Cost Basis', value: `$${(h.costBasis || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}` },
-                          { label: t.agent.plDollar, value: <span style={{ color: (h.unrealizedPL || 0) >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>${(h.unrealizedPL || 0).toFixed(2)}</span> },
-                          { label: t.agent.plPercent, value: <span style={{ color: (h.unrealizedPLPercent || 0) >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>{((h.unrealizedPLPercent || 0) * 100).toFixed(2)}%</span> },
+                          { label: t.agent.plDollar, value: <span style={{ color: (h.unrealizedPL || 0) >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 700 }}>${(h.unrealizedPL || 0).toFixed(2)}</span> },
+                          { label: t.agent.plPercent, value: <span style={{ color: (h.unrealizedPLPercent || 0) >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 700 }}>{((h.unrealizedPLPercent || 0) * 100).toFixed(2)}%</span> },
                           { label: 'Exchange', value: h.exchange || 'N/A' },
                         ].map((item, idx) => (
                           <Col span={6} key={idx}>
                             <div style={{ fontSize: 11, color: '#8c8c8c', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>{item.label}</div>
-                            <div style={{ fontSize: 13, color: '#111827', fontWeight: 500 }}>{item.value}</div>
+                            <div style={{ fontSize: 14, color: '#262626', fontWeight: 600 }}>{item.value}</div>
                           </Col>
                         ))}
                       </Row>
@@ -7022,53 +6897,54 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 }}
                 columns={[
                   { 
-                    title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.symbol}</span>,
-                    dataIndex: 'symbol', key: 'symbol', width: 80, fixed: 'left' as const,
-                    render: (t: string) => <span style={{ fontWeight: 800, fontSize: 15, color: '#111827', letterSpacing: '-0.2px' }}>{t}</span>
+                    title: t.agent.symbol.toUpperCase(),
+                    dataIndex: 'symbol', key: 'symbol', width: 90, fixed: 'left' as const,
+                    render: (t: string) => <span style={{ fontWeight: 800, fontSize: 15, color: '#262626', letterSpacing: '-0.3px' }}>{t}</span>
                   },
                   {
-                    title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.qty}</span>,
-                    dataIndex: 'qty', key: 'qty', width: 60,
-                    render: (v: number) => <span style={{ fontSize: 13, fontWeight: 700 }}>{v}</span>
+                    title: t.agent.qty.toUpperCase(),
+                    dataIndex: 'qty', key: 'qty', width: 70, align: 'right' as const,
+                    render: (v: number) => <span style={{ fontSize: 14, fontWeight: 600, color: '#595959', fontVariantNumeric: 'tabular-nums' }}>{v}</span>
                   },
                   {
-                    title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.avgEntry}</span>,
-                    dataIndex: 'avgEntryPrice', key: 'avgEntry', width: 90,
-                    render: (v: number) => <span style={{ fontSize: 12, color: '#374151', fontWeight: 600 }}>${(v || 0).toFixed(2)}</span>
+                    title: t.agent.avgEntry.toUpperCase(),
+                    dataIndex: 'avgEntryPrice', key: 'avgEntry', width: 90, align: 'right' as const,
+                    render: (v: number) => <span style={{ fontSize: 13, color: '#595959', fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>${(v || 0).toFixed(2)}</span>
                   },
                   {
-                    title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.colCurrent}</span>,
-                    dataIndex: 'currentPrice', key: 'current', width: 90,
-                    render: (v: number) => <span style={{ fontSize: 12, color: '#374151', fontWeight: 600 }}>${(v || 0).toFixed(2)}</span>
+                    title: t.agent.colCurrent.toUpperCase(),
+                    dataIndex: 'currentPrice', key: 'current', width: 90, align: 'right' as const,
+                    render: (v: number) => <span style={{ fontSize: 13, color: '#595959', fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>${(v || 0).toFixed(2)}</span>
                   },
                   {
-                    title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.marketValue}</span>,
-                    dataIndex: 'marketValue', key: 'mktVal', width: 100,
-                    render: (v: number) => <span style={{ fontSize: 12, color: '#374151', fontWeight: 700 }}>${(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                    title: t.agent.marketValue.toUpperCase(),
+                    dataIndex: 'marketValue', key: 'mktVal', width: 110, align: 'right' as const,
+                    render: (v: number) => <span style={{ fontSize: 14, color: '#262626', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>${(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   },
                   {
-                    title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.plDollar}</span>,
-                    dataIndex: 'unrealizedPL', key: 'pl', width: 110,
-                    render: (v: number) => <span style={{ color: (v || 0) >= 0 ? '#10b981' : '#ef4444', fontWeight: 800, fontSize: 15, fontFamily: 'Inter, -apple-system, sans-serif' }}>{(v || 0) >= 0 ? '+' : ''}${(v || 0).toFixed(2)}</span>
+                    title: t.agent.plDollar.toUpperCase(),
+                    dataIndex: 'unrealizedPL', key: 'pl', width: 110, align: 'right' as const,
+                    render: (v: number) => <span style={{ color: (v || 0) >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 700, fontSize: 15, fontVariantNumeric: 'tabular-nums' }}>{(v || 0) >= 0 ? '+' : ''}${(v || 0).toFixed(2)}</span>
                   },
                   {
-                    title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.plPercent}</span>,
-                    dataIndex: 'unrealizedPLPercent', key: 'plpct', width: 100,
-                    render: (v: number) => <span style={{ color: (v || 0) >= 0 ? '#10b981' : '#ef4444', fontWeight: 800, fontSize: 14, fontFamily: 'Inter, -apple-system, sans-serif' }}>{(v || 0) >= 0 ? '+' : ''}{((v || 0) * 100).toFixed(2)}%</span>
+                    title: t.agent.plPercent.toUpperCase(),
+                    dataIndex: 'unrealizedPLPercent', key: 'plpct', width: 100, align: 'right' as const,
+                    render: (v: number) => <Tag color={(v || 0) >= 0 ? 'success' : 'error'} bordered={false} style={{ fontWeight: 700, fontSize: 13, margin: 0, padding: '2px 8px', borderRadius: 6, fontVariantNumeric: 'tabular-nums' }}>{(v || 0) >= 0 ? '+' : ''}{((v || 0) * 100).toFixed(2)}%</Tag>
                   },
                   {
-                    title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.sell}</span>,
+                    title: t.agent.sell.toUpperCase(),
                     key: 'sell',
-                    width: 180,
+                    width: 120,
                     fixed: 'right' as const,
+                    align: 'center' as const,
                     render: (_: any, record: any) => {
                       const sellOrder = openSellOrders.find(o => o.symbol === record.symbol);
                       if (sellOrder) {
                         const orderType = (sellOrder.type || 'market').toUpperCase();
                         const priceStr = sellOrder.limit_price ? ` $${Number(sellOrder.limit_price).toFixed(2)}` : sellOrder.stop_price ? ` $${Number(sellOrder.stop_price).toFixed(2)}` : '';
                         return (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <Tag color="orange" style={{ fontSize: 10, fontWeight: 700, borderRadius: 4, margin: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center' }}>
+                            <Tag color="warning" bordered={false} style={{ fontSize: 10, fontWeight: 700, borderRadius: 4, margin: 0 }}>
                               {orderType}{priceStr}
                             </Tag>
                             <Button
@@ -7085,9 +6961,9 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                       }
                       return (
                         <Button
-                          size="middle"
+                          size="small"
                           danger
-                          style={{ borderRadius: 8, height: 32, fontSize: 12, fontWeight: 700, width: '100%' }}
+                          style={{ borderRadius: 6, height: 28, fontSize: 12, fontWeight: 600, border: '1px solid #ff4d4f', color: '#ff4d4f', background: 'transparent' }}
                           onClick={() => openSellModal(record.symbol, record.qty)}
                         >
                           {t.agent.sell}
@@ -7101,39 +6977,41 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           )}
         </Card>
       </div>
-
       {/* 1.7 AI Execution Candidates */}
       <div style={{ marginBottom: 24 }}>
         <Card
           className="premium-card"
+          bodyStyle={{ padding: 0 }}
           title={
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid #f0f0f0' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <div style={{ 
-                  width: 38, height: 38, borderRadius: 10, 
-                  background: 'linear-gradient(135deg, #faad14 0%, #d48806 100%)', 
-                  color: '#fff', display: 'flex', alignItems: 'center', 
-                  justifyContent: 'center', fontSize: 20,
-                  boxShadow: '0 4px 10px rgba(250, 173, 20, 0.2)'
+                  width: 36, height: 36, borderRadius: 10, 
+                  background: 'linear-gradient(135deg, #fffbe6 0%, #fff1b8 100%)', 
+                  color: '#faad14', display: 'flex', alignItems: 'center', 
+                  justifyContent: 'center', fontSize: 18,
+                  border: '1px solid #ffe58f'
                 }}>
                   <FundOutlined />
                 </div>
-                <div>
-                  <div style={{ fontSize: 16, fontWeight: 800, color: '#111827', lineHeight: 1.2 }}>{t.agent.executionCandidates}</div>
-                  <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 500 }}>{t.agent.aiExecution}</div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 18, fontWeight: 800, color: '#1f1f1f', letterSpacing: '-0.3px' }}>{t.agent.executionCandidates}</span>
+                    <Tag color="warning" bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, margin: 0, padding: '0 8px' }}>
+                      {aiExecutionList.length}
+                    </Tag>
+                  </div>
+                  <span style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 500 }}>{t.agent.aiExecution}</span>
                 </div>
-                <Tag color="gold" bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, marginLeft: 4, height: 20, lineHeight: '20px' }}>
-                  {aiExecutionList.length}
-                </Tag>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <Tag color={tradeMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ fontSize: 10, fontWeight: 700, borderRadius: 4 }}>
+                <Tag color={tradeMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, margin: 0, padding: '4px 8px' }}>
                   {tradeMode?.toUpperCase()} TRADING
                 </Tag>
-                <Divider type="vertical" style={{ height: 24 }} />
-                {aiExecutionList.length > 0 && (
+                <Divider type="vertical" style={{ height: 24, margin: 0, opacity: 0.5 }} />
+                {aiExecutionList.length > 0 ? (
                   <Button 
-                    size="middle" 
+                    type="text" 
                     danger 
                     icon={<DeleteOutlined />} 
                     onClick={() => {
@@ -7143,56 +7021,60 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                         onOk: () => { setAiExecutionList([]); scannerStateStore.clearAiExecutionCandidates(); }
                       });
                     }} 
-                    style={{ borderRadius: 8, height: 34, fontWeight: 600 }}
+                    style={{ fontWeight: 600, fontSize: 13, background: '#fff1f0', border: '1px solid #ffccc7', borderRadius: 8, height: 32 }}
                   >
-                    {t.agent.clearWatchlist}
+                    Clear
                   </Button>
+                ) : (
+                  <Button type="text" disabled style={{ fontWeight: 600, fontSize: 13, background: '#fafafa', border: '1px solid #e8e8e8', borderRadius: 8, height: 32 }}>Clear</Button>
                 )}
               </div>
             </div>
           }
         >
-          <Alert
-            type={pipelineMode === 'ai' ? 'info' : 'warning'}
-            showIcon
-            message={
-              <div style={{ fontSize: 13, fontWeight: 500 }}>
+          {/* Info Strip */}
+          <div style={{ padding: '12px 20px', background: '#fafafa', borderBottom: '1px solid #f0f0f0' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#595959', fontSize: 12 }}>
+              <InfoCircleOutlined style={{ color: pipelineMode === 'ai' ? '#1890ff' : '#faad14', fontSize: 14 }} />
+              <span style={{ fontWeight: 500 }}>
                 {pipelineMode === 'ai'
-                  ? (tradeMode === 'paper' ? t.agent.aiModePaperDesc : t.agent.aiModeLiveDesc)
+                  ? (tradeMode === 'paper' ? 'Paper AI mode: approved BUY plans may be submitted automatically. Blocked plans require review.' : 'Live AI mode: approved BUY plans may be submitted automatically. Blocked plans require review.')
                   : pipelineMode === 'hybrid'
                     ? t.agent.hybridModeDesc
                     : t.agent.manualModeDesc}
-              </div>
-            }
-            style={{ marginBottom: 16, borderRadius: 10 }}
-          />
+              </span>
+            </div>
+          </div>
 
           {aiExecutionList.length === 0 ? (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={
-                <div style={{ padding: '30px 0' }}>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: '#4b5563' }}>{t.agent.noExecutionCandidates}</div>
-                  <div style={{ fontSize: 13, color: '#9ca3af', marginTop: 4 }}>{t.agent.noData}</div>
-                </div>
-              }
-            />
+            <div style={{ padding: '40px 20px', textAlign: 'center', background: '#fff' }}>
+              <div style={{ width: 48, height: 48, borderRadius: '50%', background: '#fafafa', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', border: '1px dashed #d9d9d9' }}>
+                <CheckCircleOutlined style={{ fontSize: 20, color: '#bfbfbf' }} />
+              </div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: '#262626', marginBottom: 4 }}>No execution candidates</div>
+              <div style={{ fontSize: 13, color: '#8c8c8c', marginBottom: 16 }}>Qualified Entry Plan results will appear here for review or submission.</div>
+              <div style={{ display: 'flex', justifyContent: 'center', gap: 8 }}>
+                <Tag bordered={false} style={{ margin: 0, color: '#8c8c8c', background: '#f5f5f5', borderRadius: 4 }}>Waiting for Entry Plan</Tag>
+                <Tag bordered={false} style={{ margin: 0, color: '#8c8c8c', background: '#f5f5f5', borderRadius: 4 }}>Risk gate required</Tag>
+                <Tag bordered={false} style={{ margin: 0, color: '#8c8c8c', background: '#f5f5f5', borderRadius: 4 }}>Auto-submit protected</Tag>
+              </div>
+            </div>
           ) : (
-            <div className="execution-table-container" style={{ width: '100%', overflowX: 'auto', paddingBottom: '12px' }}>
+            <div className="execution-table-container" style={{ width: '100%', overflowX: 'auto' }}>
               <style>{`
                 .execution-table .ant-table-thead > tr > th { 
-                  background: #f8fafc !important; 
-                  padding: 16px 12px !important; 
-                  font-size: 10.5px !important; 
-                  text-transform: uppercase !important; 
-                  letter-spacing: 0.8px !important; 
-                  color: #94a3b8 !important; 
-                  font-weight: 800 !important; 
-                  border-bottom: 1px solid rgba(15, 23, 42, 0.06) !important;
+                  background: #fafafa !important; 
+                  padding: 12px 16px !important; 
+                  color: #8c8c8c !important;
+                  font-weight: 700 !important;
+                  font-size: 11px !important;
+                  letter-spacing: 0.5px !important;
+                  border-bottom: 1px solid #f0f0f0 !important;
                 }
-                .execution-table .ant-table-tbody > tr > td { padding: 12px !important; height: 68px; border-bottom: 1px solid rgba(15, 23, 42, 0.04) !important; }
-                .execution-row:hover > td { background-color: #fffdf0 !important; }
-                .execution-row-expanded > td { background-color: #f8fafc !important; }
+                .execution-table .ant-table-tbody > tr > td { padding: 12px 16px !important; border-bottom: 1px solid #f0f0f0 !important; }
+                .execution-row:hover > td { background-color: #f6ffed !important; }
+                .execution-row-expanded > td { background-color: #fafafa !important; }
+                .execution-log-row > td { padding: 8px 12px !important; border-bottom: 1px solid #f0f0f0 !important; }
                 .ant-table-fixed-right { background: #fff !important; }
               `}</style>
               <Table
@@ -7909,64 +7791,67 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
       <div style={{ marginBottom: 24 }}>
         <Card
           className="premium-card"
+          bodyStyle={{ padding: 0 }}
           title={
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid #f0f0f0' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <div style={{ 
-                  width: 38, height: 38, borderRadius: 10, 
-                  background: 'linear-gradient(135deg, #1890ff 0%, #096dd9 100%)', 
-                  color: '#fff', display: 'flex', alignItems: 'center', 
-                  justifyContent: 'center', fontSize: 20,
-                  boxShadow: '0 4px 10px rgba(24, 144, 255, 0.2)'
+                  width: 36, height: 36, borderRadius: 10, 
+                  background: 'linear-gradient(135deg, #e6f7ff 0%, #bae0ff 100%)', 
+                  color: '#1890ff', display: 'flex', alignItems: 'center', 
+                  justifyContent: 'center', fontSize: 18,
+                  border: '1px solid #91caff'
                 }}>
                   <EyeOutlined />
                 </div>
-                <div>
-                  <div style={{ fontSize: 16, fontWeight: 800, color: '#111827', lineHeight: 1.2 }}>{t.agent.aiWatchlist}</div>
-                  <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 500 }}>{t.agent.activeEntryMonitoring}</div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 18, fontWeight: 800, color: '#1f1f1f', letterSpacing: '-0.3px' }}>{t.agent.aiWatchlist}</span>
+                    <Tag color="processing" bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, margin: 0, padding: '0 8px' }}>
+                      {aiWatchlistItems.length}
+                    </Tag>
+                  </div>
+                  <span style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 500 }}>{t.agent.activeEntryMonitoring}</span>
                 </div>
-                <Tag color="blue" bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, marginLeft: 4, height: 20, lineHeight: '20px' }}>{aiWatchlistItems.length}</Tag>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <Input
                   placeholder={t.agent.searchSymbol}
-                  size="middle"
+                  size="small"
                   prefix={<SearchOutlined style={{ color: '#bfbfbf' }} />}
                   value={aiWatchlistSearch}
                   onChange={e => setAiWatchlistSearch(e.target.value.toUpperCase())}
-                  style={{ width: 180, borderRadius: 8, fontSize: 13, height: 34, background: '#f9fafb', border: '1px solid #e5e7eb' }}
+                  style={{ width: 160, borderRadius: 8, fontSize: 12, height: 32, background: '#fafafa', border: '1px solid #d9d9d9' }}
                   allowClear
                 />
-                <Divider type="vertical" style={{ height: 24 }} />
-                <Space size={8}>
+                <Divider type="vertical" style={{ height: 24, margin: 0, opacity: 0.5 }} />
+                <Button
+                  type="text"
+                  icon={<ReloadOutlined spin={aiWatchlistLoading} />}
+                  onClick={() => { setAiWatchlistLoading(true); refreshWatchlistPrices().finally(() => setAiWatchlistLoading(false)); }}
+                  style={{ color: '#8c8c8c', fontWeight: 600, fontSize: 13, background: '#fafafa', border: '1px solid #e8e8e8', borderRadius: 8, height: 32 }}
+                >
+                  {t.agent.refresh}
+                </Button>
+                {aiWatchlistItems.length > 0 && (
                   <Button
-                    size="middle"
-                    icon={<ReloadOutlined spin={aiWatchlistLoading} />}
-                    onClick={() => { setAiWatchlistLoading(true); refreshWatchlistPrices().finally(() => setAiWatchlistLoading(false)); }}
-                    style={{ borderRadius: 8, height: 34, fontWeight: 600, color: '#6b7280', border: '1px solid #e5e7eb' }}
+                    type="text"
+                    danger
+                    icon={<DeleteOutlined />}
+                    onClick={clearAllWatchlist}
+                    style={{ fontWeight: 600, fontSize: 13, background: '#fff1f0', border: '1px solid #ffccc7', borderRadius: 8, height: 32 }}
                   >
-                    {t.agent.refresh}
+                    Clear
                   </Button>
-                  {aiWatchlistItems.length > 0 && (
-                    <Button
-                      size="middle"
-                      danger
-                      icon={<DeleteOutlined />}
-                      onClick={clearAllWatchlist}
-                      style={{ borderRadius: 8, height: 34, fontWeight: 600 }}
-                    >
-                      {t.agent.clearWatchlist}
-                    </Button>
-                  )}
-                </Space>
+                )}
               </div>
             </div>
           }
         >
           {aiWatchlistItems.length > 0 && (
             <div style={{ 
-              display: 'flex', gap: 12, marginBottom: 20, padding: '16px', 
-              background: '#f8fafc', borderRadius: 12, border: '1px solid #f1f5f9' 
+              display: 'flex', gap: 12, padding: '16px 20px', 
+              background: '#fafafa', borderBottom: '1px solid #f0f0f0' 
             }}>
               {[
                 { label: t.agent.total, value: aiWatchlistItems.length, color: '#1f1f1f', icon: <EyeOutlined /> },
@@ -7998,21 +7883,34 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           )}
 
           {aiWatchlistItems.length === 0 ? (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={
-                <div style={{ padding: '30px 0' }}>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: '#4b5563' }}>{t.agent.noAIWatchlistCandidates}</div>
-                  <div style={{ fontSize: 13, color: '#9ca3af', marginTop: 4 }}>{t.agent.addFromEntryPlan}</div>
-                </div>
-              }
-            />
+            <div style={{ padding: '40px 20px', textAlign: 'center', background: '#fff' }}>
+              <div style={{ width: 48, height: 48, borderRadius: '50%', background: '#fafafa', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', border: '1px dashed #d9d9d9' }}>
+                <EyeOutlined style={{ fontSize: 20, color: '#bfbfbf' }} />
+              </div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: '#262626', marginBottom: 4 }}>No watchlist candidates yet</div>
+              <div style={{ fontSize: 13, color: '#8c8c8c', marginBottom: 16 }}>Watch candidates from Entry Plan will appear here for automated entry monitoring.</div>
+              <div style={{ display: 'flex', justifyContent: 'center', gap: 8 }}>
+                <Tag bordered={false} style={{ margin: 0, color: '#8c8c8c', background: '#f5f5f5', borderRadius: 4 }}>Waiting for Entry Plan</Tag>
+                <Tag bordered={false} style={{ margin: 0, color: '#8c8c8c', background: '#f5f5f5', borderRadius: 4 }}>Entry zone monitoring</Tag>
+                <Tag bordered={false} style={{ margin: 0, color: '#8c8c8c', background: '#f5f5f5', borderRadius: 4 }}>Alerts ready</Tag>
+              </div>
+            </div>
           ) : (
-            <div className="watchlist-table-container">
+            <div className="watchlist-table-container" style={{ width: '100%', overflowX: 'auto' }}>
               <style>{`
-                .watchlist-table .ant-table-thead > tr > th { background: #f9fafb !important; padding: 14px 12px !important; }
-                .watchlist-row:hover > td { background-color: #f0f7ff !important; }
-                .watchlist-row-expanded > td { background-color: #f8f9fb !important; }
+                .watchlist-table .ant-table-thead > tr > th { 
+                  background: #fafafa !important; 
+                  padding: 12px 16px !important; 
+                  color: #8c8c8c !important;
+                  font-weight: 700 !important;
+                  font-size: 11px !important;
+                  letter-spacing: 0.5px !important;
+                  border-bottom: 1px solid #f0f0f0 !important;
+                }
+                .watchlist-table .ant-table-tbody > tr > td { padding: 12px 16px !important; border-bottom: 1px solid #f0f0f0 !important; }
+                .watchlist-row:hover > td { background-color: #f6ffed !important; }
+                .watchlist-row-expanded > td { background-color: #fafafa !important; }
+                .ant-table-fixed-right { background: #fff !important; }
               `}</style>
               <Table
                 className="watchlist-table"
@@ -9030,9 +8928,42 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     scroll={{ x: 1300 }}
                     rowKey="symbol"
                     size="middle"
+                    onRow={(record) => ({
+                      onClick: () => toggleRowExpand(record.symbol),
+                      style: { cursor: 'pointer' }
+                    })}
+                    rowClassName={(record) => expandedRows.includes(record.symbol) ? 'continue-scan-row-expanded' : 'continue-scan-row'}
                     expandable={{
-                      expandedRowRender: (record: any) => renderDetailPanel(record),
+                      expandedRowKeys: expandedRows,
+                      expandIcon: () => null,
                       rowExpandable: () => true,
+                      expandedRowRender: (record: any) => (
+                        <div style={{ padding: '16px 24px', background: '#fafafa', borderRadius: 8, margin: '8px 16px', border: '1px solid #e8e8e8', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.02)' }}>
+                          <Row gutter={[24, 24]}>
+                            <Col span={14}>
+                              <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Selection Reason</div>
+                              <div style={{ fontSize: 13, color: '#262626', lineHeight: 1.6, background: '#fff', padding: 12, borderRadius: 6, border: '1px solid #f0f0f0' }}>
+                                {record.selectionReason || record.scannerReason || record.finalReason || 'No detailed reason provided.'}
+                              </div>
+                              {record.nextStep && (
+                                <div style={{ marginTop: 12 }}>
+                                  <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>Next Step Readiness</div>
+                                  <div style={{ fontSize: 13, color: '#1890ff', fontWeight: 600 }}>{record.nextStep}</div>
+                                </div>
+                              )}
+                            </Col>
+                            <Col span={10}>
+                              <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Metrics Summary</div>
+                              <div style={{ background: '#fff', padding: 12, borderRadius: 6, border: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#8c8c8c', fontSize: 12 }}>Source</span> <Tag color={record.reasonSource === 'AI' ? 'cyan' : 'orange'} style={{ margin: 0, fontWeight: 700 }}>{record.reasonSource === 'AI' ? 'AI Agent' : 'Local Rules'}</Tag></div>
+                                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#8c8c8c', fontSize: 12 }}>Score</span> <span style={{ fontWeight: 700, color: '#262626' }}>{record.overallScore || record.trendScore || '—'}</span></div>
+                                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#8c8c8c', fontSize: 12 }}>Trend</span> <span style={{ fontWeight: 700 }}>{record.trendLabel || '—'}</span></div>
+                                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#8c8c8c', fontSize: 12 }}>Risk</span> <span style={{ fontWeight: 700, color: record.eventRisk === 'Low' ? '#52c41a' : record.eventRisk === 'High' ? '#ff4d4f' : '#faad14' }}>{record.eventRisk || 'Medium'}</span></div>
+                              </div>
+                            </Col>
+                          </Row>
+                        </div>
+                      )
                     }}
                     columns={[
                       {
@@ -9475,6 +9406,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 expandedRowRender: (record: any) => renderFineScanDetailPanel(record),
                 rowExpandable: (record: any) => true,
                 expandedRowKeys: fineScanExpandedRows,
+                expandIcon: () => null,
                 onExpand: (expanded: any, record: any) => {
                   if (expanded) {
                     setFineScanExpandedRows((prev: any) => [...prev, record.symbol]);
@@ -9483,6 +9415,19 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   }
                 }
               }}
+              onRow={(record) => ({
+                onClick: (e) => {
+                  if ((e.target as HTMLElement).closest('button') || (e.target as HTMLElement).closest('a')) return;
+                  const isExpanded = fineScanExpandedRows.includes(record.symbol);
+                  if (isExpanded) {
+                    setFineScanExpandedRows((prev: any) => prev.filter((s: any) => s !== record.symbol));
+                  } else {
+                    setFineScanExpandedRows((prev: any) => [...prev, record.symbol]);
+                  }
+                },
+                style: { cursor: 'pointer' }
+              })}
+              rowClassName={(record) => fineScanExpandedRows.includes(record.symbol) ? 'fine-scan-row-expanded' : 'fine-scan-row'}
               columns={[
                 {
                   title: t.agent.colSymbol,
@@ -9890,19 +9835,22 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   expandable={{
                     expandedRowRender: (record: any) => renderDVDetailPanel(record, t, language),
                     rowExpandable: () => true,
-                    expandIcon: ({ expanded, onExpand, record }) => (
-                      <Button
-                        type="text"
-                        size="small"
-                        icon={expanded ? <ArrowDownOutlined /> : <ArrowRightOutlined />}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onExpand(record, e);
-                        }}
-                        style={{ padding: 0, width: 24, height: 24, color: '#bfbfbf' }}
-                      />
-                    )
+                    expandedRowKeys: expandedRows,
+                    expandIcon: () => null,
                   }}
+                  onRow={(record) => ({
+                    onClick: (e) => {
+                      if ((e.target as HTMLElement).closest('button') || (e.target as HTMLElement).closest('a')) return;
+                      const isExpanded = expandedRows.includes(record.symbol);
+                      if (isExpanded) {
+                        setExpandedRows(prev => prev.filter(s => s !== record.symbol));
+                      } else {
+                        setExpandedRows(prev => [...prev, record.symbol]);
+                      }
+                    },
+                    style: { cursor: 'pointer' }
+                  })}
+                  rowClassName={(record) => expandedRows.includes(record.symbol) ? 'dv-row-expanded' : 'dv-row'}
                   columns={[
                     {
                       title: t.agent.colSymbol,
@@ -10350,8 +10298,18 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   rowKey="symbol"
                   size="small"
                   pagination={false}
+                  onRow={(record) => ({
+                    onClick: (e) => {
+                      if ((e.target as HTMLElement).closest('button') || (e.target as HTMLElement).closest('a')) return;
+                      const isExpanded = expandedEntryPlanSymbol === record.symbol;
+                      setExpandedEntryPlanSymbol(isExpanded ? null : record.symbol);
+                    },
+                    style: { cursor: 'pointer' }
+                  })}
+                  rowClassName={(record) => expandedEntryPlanSymbol === record.symbol ? 'entry-plan-row-expanded' : 'entry-plan-row'}
                   expandable={{
                     expandedRowKeys: expandedEntryPlanSymbol ? [expandedEntryPlanSymbol] : [],
+                    expandIcon: () => null,
                     onExpand: (expanded, record) => {
                       setExpandedEntryPlanSymbol(expanded ? record.symbol : null);
                     },
@@ -10673,7 +10631,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                       title: t.agent.colSymbol,
                       dataIndex: 'symbol',
                       key: 'symbol',
-                      width: 140,
+                      width: 120,
                       fixed: 'left',
                       render: (text, record) => (
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '1px 0' }}>
@@ -10694,16 +10652,27 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                       title: t.agent.colSetup,
                       dataIndex: 'setup',
                       key: 'setup',
-                      width: 130,
+                      width: 160,
                       render: (text) => {
                         const colors: Record<string, string> = { 'Pullback Entry': 'gold', 'Breakout Entry': 'purple', 'Range Support Entry': 'green', 'Watch Only': 'blue', 'No Trade': 'red' };
-                        return <Tag color={colors[text] || 'default'} bordered={false} style={{ fontSize: '10.5px', fontWeight: 800, padding: '0 8px', lineHeight: '22px', borderRadius: '6px', margin: 0 }}>{text?.toUpperCase() || '-'}</Tag>;
+                        return (
+                          <Tooltip title={text}>
+                            <div style={{
+                              maxWidth: '140px',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap'
+                            }}>
+                              <Tag color={colors[text] || 'default'} bordered={false} style={{ fontSize: '10.5px', fontWeight: 800, padding: '0 8px', lineHeight: '22px', borderRadius: '6px', margin: 0 }}>{text?.toUpperCase() || '-'}</Tag>
+                            </div>
+                          </Tooltip>
+                        );
                       },
                     },
                     {
                       title: t.agent.colCurrent,
                       key: 'currentPrice',
-                      width: 110,
+                      width: 120,
                       render: (record) => {
                         const p = record.currentPrice || record.price;
                         const lo = record.entryLow || record.entryZoneLow;
@@ -10728,7 +10697,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                         }
                         
                         return (
-                          <div style={{ lineHeight: '1.3' }}>
+                          <div style={{ lineHeight: '1.4' }}>
                             <div style={{ fontSize: '14px', fontWeight: 800, color: '#0f172a' }}>${p.toFixed(2)}</div>
                             {distShort && <div style={{ fontSize: '10px', color: distColor, fontWeight: 800, letterSpacing: '0.2px' }}>{distShort}</div>}
                           </div>
@@ -10738,7 +10707,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     {
                       title: t.agent.colEntryZone,
                       key: 'entryZone',
-                      width: 150,
+                      width: 160,
                       render: (record) => {
                         const lo = record.entryLow || record.entryZoneLow;
                         const hi = record.entryHigh || record.entryZoneHigh;
@@ -10746,7 +10715,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                           return <span style={{ fontSize: '11px', color: '#bbb', fontStyle: 'italic' }}>N/A</span>;
                         }
                         return (
-                          <div style={{ lineHeight: '1.3' }}>
+                          <div style={{ lineHeight: '1.4' }}>
                             <div style={{ fontSize: '13px', fontWeight: 700, color: '#334155' }}>${lo.toFixed(2)} – ${hi.toFixed(2)}</div>
                             <div style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600, textTransform: 'uppercase' }}>Entry Zone</div>
                           </div>
@@ -10756,13 +10725,13 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     {
                       title: t.agent.colStop,
                       key: 'stopLoss',
-                      width: 120,
+                      width: 130,
                       render: (record) => {
                         const v = record.stopLoss;
                         const pct = record.stopLossPct;
                         if (v == null || v === 0) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
                         return (
-                          <div style={{ lineHeight: '1.3' }}>
+                          <div style={{ lineHeight: '1.4' }}>
                             <div style={{ fontSize: '13px', fontWeight: 800, color: '#ef4444' }}>${v.toFixed(2)}</div>
                             {pct != null && pct > 0 && <div style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600 }}>{pct.toFixed(1)}% RISK</div>}
                           </div>
@@ -10772,13 +10741,13 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     {
                       title: t.agent.colTargets,
                       key: 'targets',
-                      width: 140,
+                      width: 130,
                       render: (record) => {
                         const t1 = record.takeProfit1;
                         const rr1 = record.riskReward1 || 0;
                         if (t1 == null || t1 === 0) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
                         return (
-                          <div style={{ lineHeight: '1.3' }}>
+                          <div style={{ lineHeight: '1.4' }}>
                             <div style={{ fontSize: '13px', fontWeight: 800, color: '#10b981' }}>${t1.toFixed(2)}</div>
                             <div style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600 }}>R/R {rr1.toFixed(1)}x</div>
                           </div>
@@ -10788,14 +10757,14 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     {
                       title: t.agent.colPosition,
                       key: 'position',
-                      width: 120,
+                      width: 130,
                       render: (record) => {
                         const sh = record.positionSize || record.positionSizeShares || 0;
                         const val = record.positionValue || record.positionSizeDollars || 0;
                         if (sh === 0 && val === 0) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
                         return (
-                          <div style={{ lineHeight: '1.3' }}>
-                            <div style={{ fontSize: '13.5px', fontWeight: 800, color: '#3b82f6' }}>{sh} SHARES</div>
+                          <div style={{ lineHeight: '1.4' }}>
+                            <div style={{ fontSize: '13px', fontWeight: 700, color: '#3b82f6' }}>{sh} SHARES</div>
                             <div style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600 }}>${val.toFixed(0)} EST.</div>
                           </div>
                         );
@@ -10804,7 +10773,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     {
                       title: t.agent.colAIDecision,
                       key: 'aiDecision',
-                      width: 110,
+                      width: 130,
                       render: (record) => {
                         const d = record.aiDecision;
                         if (!d) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
@@ -10820,7 +10789,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     {
                       title: t.agent.colGate,
                       key: 'riskGate',
-                      width: 100,
+                      width: 110,
                       render: (record) => {
                         const rg = record.riskGate || record.hardRiskGate;
                         const status = rg?.status;
@@ -10828,7 +10797,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                         const tagColor = status === 'PASS' ? 'success' : status === 'REVIEW' ? 'warning' : 'error';
                         return (
                           <Tooltip title={rg.warnings?.join('; ') || status}>
-                            <Tag color={tagColor} bordered={false} style={{ fontSize: '10.5px', fontWeight: 800, padding: '0 8px', lineHeight: '22px', borderRadius: '6px', margin: 0 }}>{status}</Tag>
+                            <Tag color={tagColor} bordered={false} style={{ fontSize: '10.5px', fontWeight: 800, padding: '0 8px', lineHeight: '22px', borderRadius: '6px', margin: 0, textAlign: 'center', width: '60px' }}>{status}</Tag>
                           </Tooltip>
                         );
                       },
@@ -10855,25 +10824,10 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                       },
                     },
                     {
-                      title: t.agent.colData,
-                      key: 'dataQuality',
-                      width: 100,
-                      render: (record) => {
-                        const dq = record.dataQuality || 'PARTIAL';
-                        const tagColor = dq === 'GOOD' ? 'success' : dq === 'PARTIAL' ? 'warning' : 'error';
-                        return (
-                          <div style={{ display: 'flex', flexDirection: 'column' }}>
-                            <Tag color={tagColor} bordered={false} style={{ fontSize: '9.5px', fontWeight: 800, padding: '0 6px', lineHeight: '18px', borderRadius: '4px', width: 'fit-content', margin: 0 }}>{dq}</Tag>
-                            <span style={{ fontSize: '9px', color: '#94a3b8', fontWeight: 700, marginTop: 2 }}>{record.aiCalled ? record.aiSource || 'AI' : 'RULES'}</span>
-                          </div>
-                        );
-                      },
-                    },
-                    {
                       title: t.agent.reason,
                       dataIndex: 'reason',
                       key: 'reason',
-                      width: 260,
+                      width: 180,
                       render: (text, record) => {
                         const fullText = record.decisionReason || text || '';
                         return (
@@ -10888,7 +10842,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     {
                       title: t.agent.actions,
                       key: 'action',
-                      width: 140,
+                      width: 160,
                       fixed: 'right' as const,
                       render: (record) => {
                         const fa = record.finalAction;
@@ -10922,9 +10876,8 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                       },
                     },
                   ]}
-                  scroll={{ x: 1750 }}
+                  scroll={{ x: 1600 }}
                   style={{ fontSize: '12px', marginTop: '16px' }}
-                  rowClassName={() => 'ep-table-row'}
                 />
               </div>
               <style>{`

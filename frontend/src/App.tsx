@@ -52,7 +52,7 @@ const AppLayout: React.FC = () => {
         collapsible 
         collapsed={collapsed} 
         onCollapse={(value) => setCollapsed(value)}
-        width={240}
+        width="var(--app-sidebar-width, 220px)"
         collapsedWidth={80}
         theme="dark"
         className="app-sidebar"
@@ -85,8 +85,8 @@ const AppLayout: React.FC = () => {
         </div>
         <NavigationMenu collapsed={collapsed} />
       </Sider>
-      <Layout style={{ 
-        marginLeft: collapsed ? 80 : 240, 
+      <Layout className="app-main-layout" style={{ 
+        marginLeft: collapsed ? 80 : 'var(--app-sidebar-width, 220px)', 
         transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
         background: '#f8fafc' 
       }}>
@@ -128,7 +128,20 @@ const App: React.FC = () => {
   return (
     <LanguageProvider>
       <TradeModeProvider>
-      <ConfigProvider theme={{ token: { colorPrimary: '#1890ff', borderRadius: 6 } }}>
+      <ConfigProvider theme={{ 
+        token: { 
+          colorPrimary: '#1890ff', 
+          borderRadius: 6,
+          fontSize: 13.5,
+          fontSizeSM: 12,
+          controlHeight: 30,
+          controlHeightSM: 24,
+          padding: 16,
+          paddingSM: 12,
+          margin: 16,
+          marginSM: 12,
+        } 
+      }}>
         <Router>
           <AuthProvider>
             <Routes>

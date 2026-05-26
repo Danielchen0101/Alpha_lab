@@ -11,3 +11,62 @@ code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
     monospace;
 }
+
+/* Global Compact Density Tokens - approximating a 90% scale naturally */
+:root {
+  --app-font-base: 13.5px;
+  --app-font-small: 12px;
+  --app-card-padding: 16px 20px;
+  --app-section-gap: 16px;
+  --app-sidebar-width: 220px;
+}
+
+/* Base resets leveraging the tokens */
+body {
+  font-size: var(--app-font-base);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  margin-top: 0;
+  margin-bottom: 0.5em;
+}
+
+/* Responsive constraints to keep elements tight on huge screens and compressed on laptops */
+@media screen and (max-width: 1536px) {
+  :root {
+    --app-font-base: 13px;
+    --app-card-padding: 14px 18px;
+    --app-section-gap: 14px;
+    --app-sidebar-width: 200px;
+  }
+}
+
+@media screen and (max-width: 1280px) {
+  :root {
+    --app-font-base: 12.5px;
+    --app-font-small: 11px;
+    --app-card-padding: 12px 16px;
+    --app-section-gap: 12px;
+  }
+}
+
+/* Density overrides for Ant Design generic containers used globally */
+.ant-card.premium-card .ant-card-body {
+  padding: var(--app-card-padding) !important;
+}
+
+.ant-card.premium-card .ant-card-head {
+  min-height: 40px !important;
+  padding: 0 var(--app-card-padding) !important;
+}
+
+/* Table density overrides for all tables */
+.ant-table-wrapper .ant-table-thead > tr > th {
+  padding: 10px 12px !important;
+  font-size: var(--app-font-small) !important;
+}
+
+.ant-table-wrapper .ant-table-tbody > tr > td {
+  padding: 10px 12px !important;
+  font-size: var(--app-font-base) !important;
+}
