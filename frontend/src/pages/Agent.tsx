@@ -589,16 +589,11 @@ const Agent: React.FC = (): React.ReactElement => {
         intervalMinutes: enabled ? intervalMap[schedule] : null,
         mode: pipelineMode,
       });
-      // Fetch updated status and gate toggle-on trigger on market open
+      // Fetch updated status; backend scheduler owns all auto-run triggers.
       const statusData = await fetchPipelineAutoStatus();
       const marketOpen = statusData?.marketOpen === true;
-      const stoppedForToday = statusData?.stoppedForToday === true;
-      if (enabled && wasOff && runAIPipelineRef.current && marketOpen && !stoppedForToday) {
-        console.log('[AutoRun] Toggle-on immediate trigger after 500ms delay (market open)');
-        autoRunTriggeredRef.current = 'armed_ready'; // prevent useEffect from re-triggering
-        setTimeout(() => {
-          runAIPipelineRef.current?.({ trigger: 'auto_market_session' });
-        }, 500);
+      if (enabled && wasOff && marketOpen) {
+        console.log('[AutoRun] Toggle-on: backend scheduler armed during market hours');
       } else if (enabled && wasOff && !marketOpen) {
         console.log('[AutoRun] Toggle-on: armed but market closed — waiting for next market open');
       }
@@ -617,23 +612,19 @@ const Agent: React.FC = (): React.ReactElement => {
     return () => clearInterval(id);
   }, [pipelineSchedule, fetchPipelineAutoStatus]);
 
-  // Auto-trigger runAIPipeline when backend scheduler reports "Ready" (nextRunAt === 'now')
+  // Auto-trigger full pipeline when backend scheduler signals shouldRunNow
   useEffect(() => {
-    if (pipelineSchedule === 'off') return;
-    if (!pipelineAutoStatus) return;
+    if (pipelineSchedule === 'off' || !pipelineAutoStatus) return;
     if (pipelineRunningRef.current) return;
 
-    const isArmed = pipelineAutoStatus.autoStatus === 'Armed';
-    const isMarketOpen = pipelineAutoStatus.marketOpen === true;
-    const isReady = pipelineAutoStatus.nextRunAt === 'now';
-    const alreadyTriggered = autoRunTriggeredRef.current === 'armed_ready';
-
-    if (isArmed && isMarketOpen && isReady && !alreadyTriggered) {
-      autoRunTriggeredRef.current = 'armed_ready';
-      console.log('[AutoRun] Auto-triggering runAIPipeline from Market Auto Run (nextRunAt=now)');
-      runAIPipelineRef.current?.({ trigger: 'auto_market_session' });
-    } else if (!isReady || !isArmed || !isMarketOpen) {
-      // Reset trigger when status advances (re-arm for next interval)
+    if (pipelineAutoStatus.shouldRunNow && pipelineAutoStatus.marketOpen) {
+      const triggerKey = pipelineAutoStatus.nextAutoRunAt || 'now';
+      if (autoRunTriggeredRef.current === triggerKey) return;
+      autoRunTriggeredRef.current = triggerKey;
+      console.log('[PipelineAuto] due detected nextAutoRunAt=%s shouldRunNow=true',
+        pipelineAutoStatus.nextAutoRunDisplay || pipelineAutoStatus.nextAutoRunAt);
+      runAIPipelineRef.current?.({ trigger: 'auto_market_interval' });
+    } else if (!pipelineAutoStatus.shouldRunNow) {
       autoRunTriggeredRef.current = null;
     }
   }, [pipelineAutoStatus, pipelineSchedule]);
@@ -5618,6 +5609,9 @@ const Agent: React.FC = (): React.ReactElement => {
       scannerStateStore.updatePipelineSchedule({ nextRunAt: null });
       return;
     }
+    setNextPipelineRun(null);
+    scannerStateStore.updatePipelineSchedule({ nextRunAt: null });
+    if (savedSchedule !== '__legacy_browser_timer__') return;
     const intervalMs = SCHEDULE_INTERVALS[savedSchedule];
     if (!intervalMs) { setNextPipelineRun(null); return; }
 
@@ -5626,7 +5620,7 @@ const Agent: React.FC = (): React.ReactElement => {
     if (!fromNow) {
       // Recovery mode: use persisted nextRunAt if still in the future, else run now
       const persisted = scannerStateStore.getPipelineSchedule().nextRunAt;
-      const persistedTime = persisted ? new Date(persisted).getTime() : 0;
+      const persistedTime = persisted ? new Date(String(persisted)).getTime() : 0;
       nextTime = persistedTime > Date.now() ? persistedTime : Date.now() + 5000; // 5s grace if missed
     } else {
       nextTime = Date.now() + intervalMs;

@@ -4,7 +4,7 @@
 
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, has_request_context
 
 from datetime import datetime, timedelta, time as dt_time
 
@@ -82,6 +82,7 @@ import os
 import sys
 
 import threading
+from contextlib import contextmanager
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -337,6 +338,24 @@ SUPABASE_CONFIG_CACHE_TTL_SECONDS = 60  # 1 minute
 _auth_cache = {}    # token_hash -> (user_dict, timestamp)
 _config_cache = {}  # (user_id, config_type) -> (config_dict, timestamp)
 _cache_lock = threading.Lock()
+_headless_auth_context = threading.local()
+
+
+@contextmanager
+def headless_user_context(user_id):
+    """Temporarily bind a user id for scheduler/headless backend work."""
+    previous = getattr(_headless_auth_context, 'user_id', None)
+    _headless_auth_context.user_id = user_id
+    try:
+        yield
+    finally:
+        if previous is None:
+            try:
+                delattr(_headless_auth_context, 'user_id')
+            except AttributeError:
+                pass
+        else:
+            _headless_auth_context.user_id = previous
 
 def _cache_get(cache, key, ttl_seconds):
     """Return cached value if not expired, else None."""
@@ -365,8 +384,13 @@ def _hash_token(token):
 def get_supabase_user():
     """Verify Supabase access token from Authorization header. Returns user dict or None.
     Uses auth cache to avoid per-request Supabase Auth API calls."""
+    headless_user_id = getattr(_headless_auth_context, 'user_id', None)
+    if headless_user_id:
+        return {'id': headless_user_id, 'email': None, 'source': 'headless'}
     if not supabase_admin:
         safe_print('[Auth] supabase_admin is None — cannot verify token')
+        return None
+    if not has_request_context():
         return None
     auth_header = request.headers.get('Authorization', '')
     has_token = auth_header.startswith('Bearer ') if auth_header else False
@@ -542,6 +566,7 @@ DISCORD_EVENT_FLAGS = {
     'error': 'notifyErrors',
 }
 _discord_notify_dedupe = {}
+_discord_last_sent_at = {}
 
 
 def _discord_user_label(user_id):
@@ -685,10 +710,13 @@ def send_discord_notification(user_id, event_type, payload):
         cfg = get_discord_config(user_id)
         webhook_url = cfg.get('webhookUrl', '')
         if not cfg.get('enabled') or not webhook_url:
+            safe_print(f'[DiscordNotify] skipped event={event_type} user={_discord_user_label(user_id)} reason=disabled_or_missing')
             return {'sent': False, 'reason': 'disabled_or_missing'}
         if not _discord_event_enabled(cfg, event_type):
+            safe_print(f'[DiscordNotify] skipped event={event_type} user={_discord_user_label(user_id)} reason=disabled_type')
             return {'sent': False, 'reason': 'event_disabled'}
         if not _discord_should_send(user_id, event_type, payload or {}):
+            safe_print(f'[DiscordNotify] skipped event={event_type} user={_discord_user_label(user_id)} reason=deduped')
             return {'sent': False, 'reason': 'deduped'}
 
         body = {
@@ -699,6 +727,8 @@ def send_discord_notification(user_id, event_type, payload):
         if resp.status_code not in (200, 204):
             safe_print(f'[DiscordNotify] failed user={_discord_user_label(user_id)} event={event_type} status={resp.status_code}')
             return {'sent': False, 'reason': 'discord_error', 'status': resp.status_code}
+        _discord_last_sent_at[user_id] = datetime.utcnow().isoformat() + 'Z'
+        safe_print(f'[DiscordNotify] sent event={event_type} user={_discord_user_label(user_id)}')
         return {'sent': True}
     except Exception as e:
         safe_print(f'[DiscordNotify] failed user={_discord_user_label(user_id)} event={event_type} status=exception {type(e).__name__}')
@@ -27085,6 +27115,8 @@ _PA_FILE_HISTORY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 _PA_MARKET_CACHE = {}
 _PA_MARKET_CACHE_LOCK = threading.Lock()
 _PA_CURRENT_UID = None
+_PA_RUNNING_USERS = set()
+_PA_RUNNING_USERS_LOCK = threading.Lock()
 
 # US market holidays (fallback when Alpaca clock is unavailable)
 # These are approximate — Alpaca clock is authoritative when available
@@ -27350,7 +27382,8 @@ def _pa_check_market_open(uid):
             return 'premarket'
         elif _now >= market_close:
             return 'after_hours'
-        return 'premarket'  # should not reach here
+        # Between 09:30 and 16:00 but Alpaca says closed — treat as after_hours
+        return 'after_hours'
 
     # Try Alpaca clock API first
     if True:
@@ -27364,9 +27397,16 @@ def _pa_check_market_open(uid):
                 with open(config_path, 'r') as f:
                     cfg = json.load(f)
                 if not alpaca_key:
-                    alpaca_key = cfg.get('api_key', '')
-                if not alpaca_secret:
-                    alpaca_secret = cfg.get('secret_key', '')
+                    # Try paper keys first, then live keys based on environment setting
+                    env_mode = cfg.get('environment', 'paper')
+                    if env_mode == 'paper':
+                        alpaca_key = cfg.get('paper_api_key', '')
+                        alpaca_secret = cfg.get('paper_api_secret', '')
+                    else:
+                        alpaca_key = cfg.get('live_api_key', '')
+                        alpaca_secret = cfg.get('live_api_secret', '')
+                    if alpaca_key and not alpaca_secret:
+                        alpaca_secret = cfg.get('paper_api_secret', '') or cfg.get('live_api_secret', '')
             if alpaca_key and alpaca_secret:
                 headers = {'Apca-Api-Key-Id': alpaca_key, 'Apca-Api-Secret-Key': alpaca_secret}
                 resp = requests.get(alpaca_base + '/v2/clock', headers=headers, timeout=5)
@@ -27375,6 +27415,16 @@ def _pa_check_market_open(uid):
                     is_open = data.get('is_open', False)
                     next_open = data.get('next_open', '')
                     next_close = data.get('next_close', '')
+                    local_open = (
+                        now_et.weekday() < 5
+                        and not _pa_is_holiday(now_et)
+                        and now_et.replace(hour=9, minute=30, second=0, microsecond=0) <= now_et < now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+                    )
+                    if local_open and not is_open:
+                        _pa_log('Alpaca clock returned closed during regular session; using ET regular-hours override')
+                        is_open = True
+                        if not next_close:
+                            next_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0).isoformat()
                     status = 'open' if is_open else 'closed'
                     market_stage = _derive_market_stage(is_open, status, now_et)
                     with _PA_MARKET_CACHE_LOCK:
@@ -27406,7 +27456,7 @@ def _pa_check_market_open(uid):
         else:
             market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
             market_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
-            is_open = market_open <= now_et <= market_close
+            is_open = market_open <= now_et < market_close
             status = 'open' if is_open else 'closed'
             if is_open:
                 market_stage = 'open'
@@ -27417,7 +27467,7 @@ def _pa_check_market_open(uid):
 
         if is_open:
             next_close_fb = _pa_calc_next_close_fallback(now_et)
-            next_open_fb = now_et.isoformat()
+            next_open_fb_str = now_et.isoformat()
             next_close_fb_str = next_close_fb.isoformat()
         else:
             next_open_fb = _pa_calc_next_open_fallback(now_et)
@@ -27441,37 +27491,401 @@ def _pa_check_market_open(uid):
         # Ultimate fallback — assume closed
         return False, 'closed', 'fallback_basic_hours', '', '', 'after_hours'
 
-def _pa_run_pipeline(uid, interval, mode):
-    """Run the AI pipeline for a single user."""
-    import pytz
-    results = {'errors': 0, 'scanned': 0, 'continue_count': 0, 'watch_count': 0, 'skip_count': 0}
-    results['startedAt'] = datetime.utcnow().isoformat()
+def _pa_json_from_response(resp):
+    status_code = 200
+    body = resp
+    if isinstance(resp, tuple):
+        body = resp[0]
+        if len(resp) > 1 and isinstance(resp[1], int):
+            status_code = resp[1]
+    if hasattr(body, 'get_json'):
+        return body.get_json(silent=True) or {}, status_code
+    return body if isinstance(body, dict) else {'value': body}, status_code
+
+
+def _pa_call_endpoint(uid, path, view_func, payload=None, method='POST', query_string=None):
+    with app.test_request_context(path, method=method, json=payload, query_string=query_string):
+        with headless_user_context(uid):
+            return _pa_json_from_response(view_func())
+
+
+def _pa_default_symbols_for_user(uid):
+    cfg = get_user_config(uid, 'market_symbols') or {}
+    symbols = cfg.get('symbols') if isinstance(cfg, dict) else None
+    if isinstance(symbols, list) and symbols:
+        clean = [str(s).upper().strip() for s in symbols if str(s).strip()]
+        if clean:
+            return clean[:50]
+    return ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'AMD', 'JPM', 'XOM', 'WMT', 'HD']
+
+
+def _pa_continue_scan_headless(scanner_results):
+    eligible = []
+    for r in scanner_results or []:
+        if r.get('analysisStatus') == 'failed' or r.get('trendLabel') == 'Need Data':
+            continue
+        if not r.get('price') or r.get('price') <= 0:
+            continue
+        if r.get('trendScore') is None and r.get('overallScore') is None:
+            continue
+        trend = r.get('trendLabel') or 'Neutral'
+        score = r.get('overallScore') or r.get('trendScore') or 0
+        risk = r.get('eventRisk') or 'Medium'
+        is_bullish = trend in ('Bullish', 'Strong Bullish')
+        is_constructive = trend in ('Constructive', 'Neutral')
+        if not is_bullish and not is_constructive:
+            continue
+        if is_bullish and score < 70:
+            continue
+        if is_constructive and score < 80:
+            continue
+        if risk == 'High':
+            continue
+        news = r.get('newsSentiment') or 'Neutral'
+        change = r.get('changePct') or r.get('changePercent') or 0
+        volume_status = r.get('volumeStatus') or 'Normal'
+        priority = 0
+        priority += 35 if trend == 'Strong Bullish' else 25 if trend == 'Bullish' else 15
+        priority += round(score * 0.5)
+        priority += 12 if risk == 'Low' else 6 if risk == 'Medium' else 0
+        priority += 10 if news == 'Positive' else 4 if news == 'Neutral' else -8 if news == 'Negative' else 0
+        priority += 8 if change >= 3 else 5 if change >= 1 else 2 if change > 0 else -6
+        priority += 8 if volume_status == 'High' else 4 if volume_status == 'Normal' else 0
+        priority = max(0, min(100, priority))
+        if priority >= 60:
+            item = dict(r)
+            item.update({
+                'includeInContinueScan': True,
+                'priorityScore': priority,
+                'continueScanStatus': 'completed',
+                'reasonSource': 'Backend Local Rules',
+                'selectedBy': 'Backend Local Rules',
+                'generatedAt': datetime.utcnow().isoformat() + 'Z',
+            })
+            eligible.append(item)
+    eligible.sort(key=lambda x: x.get('priorityScore', 0), reverse=True)
+    return eligible[:20]
+
+
+def _pa_backtest_snapshot(symbol, strategy='moving_average'):
     try:
-        default_symbols = ['AAPL', 'MSFT', 'GOOGL', 'TSLA', 'NVDA', 'AMZN', 'META', 'JPM', 'JNJ', 'V']
-        symbols = default_symbols
-        for sym in symbols:
-            try:
-                out = get_stock_data_for_scanner(sym)
-                results['scanned'] += 1
-                if out and isinstance(out, dict):
-                    decision = out.get('decision', 'skip')
-                    if decision == 'continue':
-                        results['continue_count'] += 1
-                    elif decision == 'watch':
-                        results['watch_count'] += 1
-                    else:
-                        results['skip_count'] += 1
-            except Exception as e:
-                _pa_log_error('Scan %s failed: %s' % (sym, e))
-                results['errors'] += 1
-        _pa_log('Pipeline run complete: %d scanned, %d continue, %d watch, %d skip, %d errors' % (
-            results['scanned'], results['continue_count'], results['watch_count'],
-            results['skip_count'], results['errors']))
+        data_result = _fetch_1y_data(symbol)
+        if not data_result or data_result[0] is None:
+            return {}, 'no_data'
+        data_daily, _source = data_result
+        params = DEFAULT_FALLBACK_PARAMS.get(strategy, {})
+        bt_result, bt_err = _run_backtest_core(symbol, strategy, params, data_daily)
+        if bt_err or not bt_result:
+            return {}, bt_err or 'backtest_failed'
+        metrics = bt_result.get('metrics', {})
+        total_return = metrics.get('totalReturn', 0)
+        return {
+            'status': 'pass' if total_return is not None else 'skipped',
+            'performance': 'positive' if (total_return or 0) >= 0 else 'negative',
+            'totalReturn': total_return,
+            'metrics': metrics,
+            'strategy': strategy,
+            'parameters': params,
+        }, None
     except Exception as e:
-        import traceback; _pa_log_error('Pipeline run failed: %s' % traceback.format_exc())
-        results['errors'] += 1
-    results['finishedAt'] = datetime.utcnow().isoformat()
+        return {}, str(e)[:120]
+
+
+def _pa_fine_scan_headless(uid, candidates):
+    results = []
+    for idx, cand in enumerate(candidates or []):
+        symbol = (cand.get('symbol') or '').upper().strip()
+        if not symbol:
+            continue
+        try:
+            rec = dict(cand)
+            rec['symbol'] = symbol
+            rec['scanStatus'] = 'running'
+            strategy = 'moving_average'
+            bt, bt_err = _pa_backtest_snapshot(symbol, strategy)
+            entry_resp, _ = _pa_call_endpoint(uid, '/api/ai/entry-quality', ai_entry_quality, {'symbol': symbol})
+            entry_details = (entry_resp or {}).get('details') or {}
+            entry_details['entry_quality'] = (entry_resp or {}).get('entry_quality', '')
+            adv_resp, _ = _pa_call_endpoint(uid, '/api/ai/fine-scan-advanced', ai_fine_scan_advanced, {
+                'symbol': symbol,
+                'entryDetails': entry_details,
+            })
+            rec.update({
+                'bestStrategy': strategy,
+                'strategy': strategy,
+                'matchedStrategy': strategy,
+                'matchedStrategies': [strategy],
+                'matchConfidence': min(100, max(0, int(rec.get('priorityScore') or rec.get('trendScore') or 50))),
+                'scanScore': min(100, max(0, int(rec.get('priorityScore') or rec.get('trendScore') or 50))),
+                'backtestStatus': bt.get('status', 'skipped'),
+                'backtestPerformance': bt.get('performance', 'N/A'),
+                'backtestPerStrategy': [bt] if bt else [],
+                'backtestError': bt_err,
+                'entryQuality': (entry_resp or {}).get('entry_quality', ''),
+                'entryReason': (entry_resp or {}).get('entry_reason', ''),
+                'entryScore': (entry_resp or {}).get('entry_score', 0),
+                'entryDetails': entry_details,
+                'liquidityGrade': ((adv_resp or {}).get('liquidity') or {}).get('grade', ''),
+                'liquidityReason': ((adv_resp or {}).get('liquidity') or {}).get('reason', ''),
+                'newsGrade': ((adv_resp or {}).get('news') or {}).get('grade', ''),
+                'newsReason': ((adv_resp or {}).get('news') or {}).get('reason', ''),
+                'riskGrade': ((adv_resp or {}).get('risk') or {}).get('grade', ''),
+                'riskReason': ((adv_resp or {}).get('risk') or {}).get('reason', ''),
+                'riskScore': (((adv_resp or {}).get('risk') or {}).get('details') or {}).get('risk_score') or 0,
+                'scanStatus': 'completed',
+            })
+            decision_payload = {
+                'symbol': symbol,
+                'trendLabel': rec.get('trendLabel') or rec.get('trend') or 'Neutral',
+                'trendScore': rec.get('scanScore') or 50,
+                'matchedStrategies': rec.get('matchedStrategies') or [],
+                'matchConfidence': rec.get('matchConfidence') or 0,
+                'backtestStatus': rec.get('backtestStatus') or '',
+                'backtestPerformance': rec.get('backtestPerformance') or '',
+                'backtestTotalReturn': bt.get('totalReturn') if bt else None,
+                'entryQuality': {
+                    'grade': rec.get('entryQuality') or '',
+                    'score': rec.get('entryScore') or 0,
+                    'zone': entry_details.get('zone') or '',
+                },
+                'liquidityGrade': rec.get('liquidityGrade') or '',
+                'newsGrade': rec.get('newsGrade') or '',
+                'riskGrade': rec.get('riskGrade') or '',
+                'riskScore': rec.get('riskScore') or 0,
+                'entryScore': rec.get('entryScore') or 0,
+            }
+            dec_resp, _ = _pa_call_endpoint(uid, '/api/ai/fine-scan-decision', fine_scan_decision, decision_payload)
+            if dec_resp and dec_resp.get('success'):
+                raw_decision = (dec_resp.get('decision') or '').upper()
+                rec['decision'] = 'Continue' if raw_decision == 'CONTINUE' else 'Reject' if raw_decision == 'REJECT' else 'NeedMoreData' if raw_decision == 'NEED_MORE_DATA' else 'Watch'
+                rec['fineScanDecision'] = rec['decision']
+                rec['fineScanGrade'] = dec_resp.get('grade')
+                rec['decisionConfidence'] = dec_resp.get('confidence')
+                rec['decisionSource'] = dec_resp.get('source')
+                rec['decisionReason'] = dec_resp.get('reason')
+            else:
+                with app.test_request_context('/internal/fine-scan-fallback'):
+                    local_resp = _fine_scan_fallback_decision(
+                        symbol, decision_payload['trendLabel'], decision_payload['trendScore'],
+                        decision_payload['matchedStrategies'], decision_payload['matchConfidence'],
+                        decision_payload['backtestStatus'], decision_payload['backtestPerformance'],
+                        decision_payload['backtestTotalReturn'], decision_payload['entryQuality']['grade'],
+                        decision_payload['entryQuality']['zone'], decision_payload['liquidityGrade'],
+                        decision_payload['newsGrade'], decision_payload['riskGrade'], decision_payload['riskScore']
+                    )
+                local_json, _ = _pa_json_from_response(local_resp)
+                raw_decision = (local_json.get('decision') or '').upper()
+                rec['decision'] = 'Continue' if raw_decision == 'CONTINUE' else 'Skip' if raw_decision == 'SKIP' else 'Watch'
+                rec['fineScanDecision'] = rec['decision']
+                rec['fineScanGrade'] = local_json.get('grade')
+                rec['decisionSource'] = 'local-rule'
+                rec['decisionReason'] = local_json.get('reason')
+            results.append(rec)
+            _pa_log('step completed step=fine_scan_symbol symbol=%s index=%d/%d decision=%s' % (symbol, idx + 1, len(candidates), rec.get('decision')))
+        except Exception as e:
+            _pa_log_error('Fine Scan %s failed: %s' % (symbol, e))
+            failed = dict(cand)
+            failed.update({'symbol': symbol, 'scanStatus': 'failed', 'decision': 'NeedMoreData', 'error': str(e)[:200]})
+            results.append(failed)
     return results
+
+
+def _pa_fetch_positions_for_mode(uid, mode):
+    alpaca_mode = 'paper' if mode != 'real' else 'live'
+    with headless_user_context(uid):
+        cfg, src = resolve_alpaca_config(alpaca_mode, require_user_config=True)
+    api_key = cfg.get('api_key', '')
+    api_secret = cfg.get('api_secret', '')
+    base_url = cfg.get('base_url', 'https://paper-api.alpaca.markets' if alpaca_mode == 'paper' else 'https://api.alpaca.markets')
+    if not api_key or not api_secret:
+        return [], 'config_required'
+    try:
+        headers = {'APCA-API-KEY-ID': api_key, 'APCA-API-SECRET-KEY': api_secret}
+        resp = requests.get(f'{base_url}/v2/positions', headers=headers, timeout=15)
+        if resp.status_code == 200:
+            return resp.json() or [], None
+        return [], f'alpaca_http_{resp.status_code}'
+    except Exception as e:
+        return [], str(e)[:120]
+
+
+def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False):
+    positions, pos_err = _pa_fetch_positions_for_mode(uid, mode)
+    plan_by_symbol = {str(p.get('symbol', '')).upper(): p for p in (entry_plans or [])}
+    results = []
+    submitted = []
+    if pos_err:
+        return {'holdingsScanned': 0, 'signals': [], 'submitted': [], 'error': pos_err}
+    for pos in positions:
+        symbol = str(pos.get('symbol', '')).upper()
+        qty = float(pos.get('qty') or 0)
+        current_price = float(pos.get('current_price') or pos.get('market_value') or 0)
+        if qty and current_price > 100000:
+            current_price = current_price / qty
+        plan = plan_by_symbol.get(symbol, {})
+        stop = plan.get('stopLoss') or plan.get('entryPlanStop')
+        target = plan.get('takeProfit1') or plan.get('entryPlanTarget')
+        decision = 'hold'
+        reason = 'No active entry plan from current headless run.'
+        if stop and current_price and current_price <= float(stop):
+            decision = 'sell_now'
+            reason = 'Current price is at or below entry plan stop.'
+        elif target and current_price and current_price >= float(target):
+            decision = 'reduce'
+            reason = 'Current price reached entry plan first target.'
+        signal = {'symbol': symbol, 'qty': qty, 'currentPrice': current_price, 'action': decision, 'reason': reason, 'status': 'dry_run' if dry_run else 'pending'}
+        if decision in ('sell_now', 'reduce') and mode == 'ai' and not dry_run:
+            order_payload = {
+                'symbol': symbol,
+                'side': 'sell',
+                'type': 'market',
+                'time_in_force': 'day',
+                'tradingMode': 'paper',
+                'automationMode': 'full-ai',
+                'executionSource': 'exit_scan',
+                'confirmed': True,
+                'qty': qty if decision == 'sell_now' else max(0.01, round(qty / 2, 4)),
+            }
+            order_resp, _ = _pa_call_endpoint(uid, '/api/ai/execution/order', ai_execution_order, order_payload)
+            signal['status'] = order_resp.get('status', 'unknown')
+            signal['orderId'] = (order_resp.get('order') or {}).get('id')
+            submitted.append(signal)
+            _pa_log('order submitted mode=PAPER symbol=%s status=%s' % (symbol, signal['status']))
+        results.append(signal)
+    return {'holdingsScanned': len(positions), 'signals': results, 'submitted': submitted, 'error': None}
+
+
+def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=False):
+    """Run the full AI pipeline headlessly for one user."""
+    started = time.time()
+    summary = {
+        'errors': 0, 'scanned': 0, 'continue_count': 0, 'fine_count': 0,
+        'validation_count': 0, 'entry_plan_count': 0, 'orders_submitted': 0,
+        'exit_scan_count': 0, 'dryRun': dry_run, 'trigger': trigger,
+        'startedAt': datetime.utcnow().isoformat(),
+        'steps': [],
+    }
+    _pa_log('headless pipeline started user=%s trigger=%s dryRun=%s' % (uid[:8], trigger, dry_run))
+    try:
+        symbols = _pa_default_symbols_for_user(uid)
+        scan_resp, scan_status = _pa_call_endpoint(uid, '/api/ai/market/scanner', ai_market_scanner, {
+            'symbols': symbols,
+            'maxSymbols': min(len(symbols), 50),
+            'mode': mode,
+        })
+        if scan_status >= 400 or not scan_resp.get('success'):
+            raise Exception(scan_resp.get('message') or scan_resp.get('error') or 'Market scanner failed')
+        scanner_results = scan_resp.get('results') or []
+        summary['scanned'] = len(scanner_results)
+        summary['steps'].append({'step': 'market_scanner', 'status': 'completed', 'count': len(scanner_results)})
+        _pa_log('step completed step=market_scanner count=%d' % len(scanner_results))
+
+        continue_results = _pa_continue_scan_headless(scanner_results)
+        summary['continue_count'] = len(continue_results)
+        summary['steps'].append({'step': 'continue_scan', 'status': 'completed', 'count': len(continue_results)})
+        _pa_log('step completed step=continue_scan count=%d' % len(continue_results))
+
+        fine_results = _pa_fine_scan_headless(uid, continue_results)
+        fine_candidates = [r for r in fine_results if r.get('decision') in ('Continue', 'Watch')]
+        summary['fine_count'] = len(fine_results)
+        summary['steps'].append({'step': 'fine_scan', 'status': 'completed', 'count': len(fine_results), 'candidates': len(fine_candidates)})
+        _pa_log('step completed step=fine_scan count=%d candidates=%d' % (len(fine_results), len(fine_candidates)))
+
+        dv_results = []
+        if fine_candidates:
+            dv_resp, dv_status = _pa_call_endpoint(uid, '/api/ai/deeper-validation', deeper_validation, {
+                'candidates': fine_candidates,
+                'period': '1y',
+                'initialCapital': 100000,
+            })
+            if dv_status < 400 and dv_resp.get('success'):
+                dv_results = dv_resp.get('results') or []
+            else:
+                raise Exception(dv_resp.get('message') or 'Deeper Validation failed')
+        summary['validation_count'] = len(dv_results)
+        summary['steps'].append({'step': 'deeper_validation', 'status': 'completed', 'count': len(dv_results)})
+        _pa_log('step completed step=deeper_validation count=%d' % len(dv_results))
+
+        ep_candidates = [r for r in dv_results if r.get('verdict') in ('Confirmed', 'Watch', 'Review', 'Pass')]
+        entry_plans = []
+        if ep_candidates:
+            ep_resp, ep_status = _pa_call_endpoint(uid, '/api/ai/entry-plan', ai_entry_plan, {
+                'candidates': ep_candidates,
+                'accountSize': 100000,
+                'riskPerTradePct': 1,
+                'maxPositionPct': 10,
+                'existingPositions': [],
+                'dailyLoss': 0,
+                'holdingSymbols': [],
+                'executionMode': 'Recommend Only',
+                'accountMode': 'paper',
+                'riskProfile': 'medium',
+                'timeHorizon': 'mid',
+            })
+            if ep_status < 400 and ep_resp.get('success'):
+                entry_plans = ep_resp.get('plans') or []
+            else:
+                raise Exception(ep_resp.get('message') or 'Entry Plan failed')
+        buy_count = sum(1 for p in entry_plans if p.get('finalAction') in ('BUY_READY', 'READY_REVIEW'))
+        watch_count = sum(1 for p in entry_plans if p.get('finalAction') == 'WAIT_FOR_ENTRY' or p.get('aiDecision') == 'WATCH')
+        skip_count = sum(1 for p in entry_plans if p.get('finalAction') in ('SKIP', 'BLOCKED_BY_RISK'))
+        summary['entry_plan_count'] = len(entry_plans)
+        summary['watch_count'] = watch_count
+        summary['skip_count'] = skip_count
+        summary['steps'].append({'step': 'entry_plan', 'status': 'completed', 'count': len(entry_plans), 'buy': buy_count, 'watch': watch_count, 'skip': skip_count})
+        _pa_log('step completed step=entry_plan buy=%d watch=%d skip=%d' % (buy_count, watch_count, skip_count))
+
+        execution_results = []
+        if mode == 'ai':
+            for plan in entry_plans:
+                if plan.get('finalAction') != 'BUY_READY':
+                    continue
+                if dry_run:
+                    execution_results.append({'symbol': plan.get('symbol'), 'status': 'dry_run', 'action': 'would_submit'})
+                    continue
+                exec_resp, _ = _pa_call_endpoint(uid, '/api/entry-plan/execute', entry_plan_execute, {
+                    'symbol': plan.get('symbol'),
+                    'planSnapshot': plan,
+                    'executionMode': 'paper',
+                    'liveConfirm': False,
+                    'confirmText': '',
+                })
+                execution_results.append(exec_resp)
+                if exec_resp.get('action') == 'ORDER_SUBMITTED':
+                    summary['orders_submitted'] += 1
+                    _pa_log('order submitted mode=PAPER symbol=%s status=%s' % (plan.get('symbol'), exec_resp.get('orderStatus')))
+        else:
+            _pa_log('step completed step=execution count=0 reason=mode_not_ai')
+        summary['steps'].append({'step': 'execution', 'status': 'completed', 'count': len(execution_results), 'submitted': summary['orders_submitted']})
+
+        exit_summary = _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=dry_run)
+        summary['exit_scan_count'] = exit_summary.get('holdingsScanned', 0)
+        summary['steps'].append({'step': 'exit_scan', 'status': 'completed' if not exit_summary.get('error') else 'partial', 'count': summary['exit_scan_count']})
+        send_discord_notification(uid, 'exit_scan', {
+            'event_id': f'headless-exit-{int(started)}-{summary["exit_scan_count"]}',
+            'holdingsScanned': exit_summary.get('holdingsScanned', 0),
+            'sellReduceCount': sum(1 for s in exit_summary.get('signals', []) if s.get('action') in ('sell_now', 'reduce')),
+            'holdCount': sum(1 for s in exit_summary.get('signals', []) if s.get('action') == 'hold'),
+            'signals': exit_summary.get('signals', [])[:8],
+            'description': 'Headless Exit Scan completed%s.' % (' (dry run)' if dry_run else ''),
+        })
+        _pa_log('step completed step=exit_scan count=%d' % summary['exit_scan_count'])
+
+    except Exception as e:
+        summary['errors'] += 1
+        summary['lastError'] = str(e)[:300]
+        _pa_log_error('headless pipeline failed user=%s error=%s' % (uid[:8], summary['lastError']))
+        send_discord_notification(uid, 'error', {
+            'event_id': f'headless-pipeline-error-{int(started)}',
+            'step': 'Headless Pipeline',
+            'status': 'failed',
+            'reason': summary['lastError'],
+            'action': 'Review backend logs and API configuration.',
+        })
+    summary['finishedAt'] = datetime.utcnow().isoformat()
+    summary['durationSeconds'] = round(time.time() - started, 2)
+    _pa_log('headless pipeline finished user=%s errors=%d duration=%.1fs' % (uid[:8], summary['errors'], summary['durationSeconds']))
+    return summary
 
 def _pa_scheduler_loop():
     """Main scheduler loop — runs every 30s, checks market open, runs pipelines for all enabled users."""
@@ -27503,6 +27917,8 @@ def _pa_scheduler_loop():
 
                 # Check market open via Alpaca clock (with fallback)
                 is_open, mkt_status, mkt_source, next_open, next_close, market_stage_sched = _pa_check_market_open(None)
+                _pa_log('scheduler tick nowEt=%s stage=%s enabledUsersCheck=true marketOpen=%s' % (
+                    now_et.isoformat(), market_stage_sched, is_open))
 
                 # Find all enabled users
                 enabled_users = []
@@ -27539,14 +27955,18 @@ def _pa_scheduler_loop():
                 for uid, config in enabled_users:
                     interval = config.get('interval_minutes', 60)
                     mode = config.get('mode', 'hybrid')
-                    last_run_at = config.get('last_run_at', '')
+                    last_backend_scan_at = config.get('last_backend_scan_at', '')
                     effective_interval_seconds = interval * 60
+                    with _PA_RUNNING_USERS_LOCK:
+                        if uid in _PA_RUNNING_USERS:
+                            _pa_log('skipped user=%s reason=already_running' % uid[:8])
+                            continue
 
                     # Per-user due decision log
                     _next_from_config = config.get('next_run_at', '')
-                    _pa_log('due check user=%s enabled=true marketOpen=%s nowEt=%s interval=%dmin lastRunAt=%s nextRunAt=%s' % (
+                    _pa_log('due check user=%s enabled=true marketOpen=%s nowEt=%s interval=%dmin lastBackendScanAt=%s nextRunAt=%s' % (
                         uid[:8], is_open, now_et.strftime('%H:%M'), interval,
-                        last_run_at[-19:] if last_run_at else 'none',
+                        last_backend_scan_at[-19:] if last_backend_scan_at else 'none',
                         _next_from_config[-19:] if _next_from_config else 'none'))
 
                     if not is_open:
@@ -27557,13 +27977,12 @@ def _pa_scheduler_loop():
                         else:
                             decision = 'skipped_market_closed'
                         _pa_log('skipped user=%s reason=%s nextOpen=%s' % (uid[:8], decision, next_open or 'unknown'))
-                        config['last_decision'] = decision
-                        config['next_run_at'] = next_open if next_open else 'Waiting for next market open'
+                        config['last_backend_decision'] = decision
                         _pa_save_config(uid, config)
                         with _PA_PER_USER_LAST_CHECK_LOCK:
                             _PA_PER_USER_LAST_CHECK[uid] = {'time': now_iso, 'decision': decision}
                         _pa_add_run_history(uid, {
-                            'trigger_type': 'auto_market_session', 'status': 'skipped', 'reason': decision,
+                            'trigger_type': 'market_auto_run', 'status': 'skipped', 'reason': decision,
                             'source': 'backend_scheduler',
                             'market_open': False, 'market_status': mkt_status, 'market_status_source': mkt_source,
                             'started_at': now_iso, 'finished_at': now_iso, 'duration_seconds': 0,
@@ -27571,10 +27990,10 @@ def _pa_scheduler_loop():
                         })
                         continue
 
-                    # Market is open (or test mode) — check interval
-                    if last_run_at:
+                    # Market is open (or test mode) — check interval using backend's own tracking
+                    if last_backend_scan_at:
                         try:
-                            last = dateutil.parser.isoparse(last_run_at)
+                            last = dateutil.parser.isoparse(last_backend_scan_at)
                             now = now_et.astimezone(pytz.UTC).replace(tzinfo=None)
                             if last.tzinfo:
                                 last_utc = last.astimezone(pytz.UTC).replace(tzinfo=None)
@@ -27584,8 +28003,7 @@ def _pa_scheduler_loop():
                             if elapsed < effective_interval_seconds:
                                 decision = 'skipped_next_run_not_due'
                                 _pa_log('skipped user=%s reason=not_due elapsed=%ds interval=%dmin' % (uid[:8], int(elapsed), interval))
-                                config['last_decision'] = decision
-                                config['next_run_at'] = (last_utc + timedelta(minutes=interval)).isoformat()
+                                config['last_backend_decision'] = decision
                                 _pa_save_config(uid, config)
                                 with _PA_PER_USER_LAST_CHECK_LOCK:
                                     _PA_PER_USER_LAST_CHECK[uid] = {'time': now_iso, 'decision': decision}
@@ -27597,28 +28015,29 @@ def _pa_scheduler_loop():
                         _PA_PER_USER_LAST_CHECK[uid] = {'time': now_iso, 'decision': 'started_pipeline'}
 
                     _run_started_at = now_et
-                    _pa_log('auto run started user=%s trigger=auto_market_session interval=%dmin source=backend_scheduler limited=frontend_orchestration_required' % (uid[:8], interval))
-                    config['last_run_trigger'] = 'auto_market_session'
-                    config['last_run_source'] = 'backend_scheduler'
-                    config['last_run_at'] = _run_started_at.isoformat()
-                    summary = _pa_run_pipeline(uid, interval, mode)
-                    config['last_decision'] = 'pipeline_success' if summary['errors'] == 0 else 'pipeline_failed'
-                    config['last_summary'] = summary
-                    config['last_error'] = None if summary['errors'] == 0 else '%d errors' % summary['errors']
-                    config['next_run_at'] = (_run_started_at + timedelta(minutes=interval)).isoformat()
-                    # Track run count today (reset daily)
-                    today_et_str = now_et.strftime('%Y-%m-%d')
-                    if config.get('run_count_date') != today_et_str:
-                        config['run_count_today'] = 0
-                        config['run_count_date'] = today_et_str
-                    config['run_count_today'] = config.get('run_count_today', 0) + 1
+                    reason = 'first_run_after_open' if not last_backend_scan_at else 'interval_due'
+                    _pa_log('due user=%s reason=%s interval=%d' % (uid[:8], reason, interval))
+                    _pa_log('auto run started user=%s trigger=market_auto_run interval=%dmin source=backend_scheduler headless=true' % (uid[:8], interval))
+                    # Backend saves to SEPARATE fields so frontend can still detect
+                    # shouldRunNow=true via last_run_at/next_run_at (which are frontend-only).
+                    # The status endpoint computes next_run_at from last_run_at + interval, not from this.
+                    config['last_backend_scan_at'] = _run_started_at.isoformat()
+                    with _PA_RUNNING_USERS_LOCK:
+                        _PA_RUNNING_USERS.add(uid)
+                    try:
+                        summary = _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run')
+                    finally:
+                        with _PA_RUNNING_USERS_LOCK:
+                            _PA_RUNNING_USERS.discard(uid)
+                    config['last_backend_scan_status'] = 'success' if summary['errors'] == 0 else 'failed'
+                    config['last_backend_scan_summary'] = summary
+                    config['last_backend_scan_error'] = None if summary['errors'] == 0 else '%d errors' % summary['errors']
                     _pa_save_config(uid, config)
-                    _run_status = 'success' if summary['errors'] == 0 else 'failed'
-                    _pa_log('auto run completed user=%s status=%s nextRunAt=%s runCountToday=%d' % (uid[:8], _run_status, config['next_run_at'], config['run_count_today']))
+                    _pa_log('[PipelineAuto] backend headless scan completed user=%s status=%s (frontend last_run_at/next_run_at untouched for shouldRunNow)' % (uid[:8], config['last_backend_scan_status']))
                     _pa_add_run_history(uid, {
-                        'trigger_type': 'auto_market_session',
+                        'trigger_type': 'market_auto_run',
                         'status': 'success' if summary['errors'] == 0 else 'failed',
-                        'reason': 'pipeline completed (limited backend scanner)' if summary['errors'] == 0 else '%d errors' % summary['errors'],
+                        'reason': 'headless pipeline completed' if summary['errors'] == 0 else '%d errors' % summary['errors'],
                         'source': 'backend_scheduler',
                         'market_open': True,
                         'market_status': mkt_status,
@@ -27671,6 +28090,10 @@ def pipeline_auto_status():
     last_run_at = config.get('last_run_at', '')
     last_summary = config.get('last_summary', {})
     last_error = config.get('last_error', '')
+    with _PA_RUNNING_USERS_LOCK:
+        is_running = uid in _PA_RUNNING_USERS
+    discord_cfg = get_discord_config(uid)
+    discord_enabled = bool(discord_cfg.get('enabled') and discord_cfg.get('webhookUrl'))
 
     # ── Phase 1: compute display next from last_run_at + interval ──
     # Always computed, independent of market status. This is the single source
@@ -27827,7 +28250,7 @@ def pipeline_auto_status():
                 progress_state = 'market_closed'
                 progress_label = 'Market closed — waiting for next open'
                 auto_status = 'Market Closed'
-        elif last_decision == 'started_pipeline':
+        elif is_running or last_decision == 'started_pipeline':
             progress_state = 'running'
             progress_label = 'Running AI pipeline...'
             progress_percent = 50
@@ -27853,9 +28276,25 @@ def pipeline_auto_status():
     if mkt_source == 'fallback_basic_hours':
         market_status_label += ' (Fallback)'
 
+    # ── Phase 5: shouldRunNow — diagnostics only; backend scheduler owns execution ──
+    _now_et = _pa_now_et()
+    should_run_now = (
+        enabled
+        and is_open
+        and not stopped_for_today
+        and not blocked_for_day
+        and last_decision != 'started_pipeline'
+        and (
+            not last_run_at  # never run before
+            or next_run_basis == 'first_run_today'  # market just opened
+            or (next_from_last_et is not None and _now_et >= next_from_last_et)  # interval elapsed
+        )
+    )
+
     resp = {
         'success': True,
         'enabled': enabled,
+        'shouldRunNow': should_run_now,
         'intervalMinutes': interval_minutes,
         'mode': mode,
         'schedulerRunning': scheduler_running,
@@ -27874,6 +28313,7 @@ def pipeline_auto_status():
         'secondsUntilNextRun': seconds_until_next,
         'lastRunAt': last_run_at,
         'lastRunStartedAt': last_run_at,
+        'isRunning': is_running,
         'lastDecision': last_decision,
         'lastRunTrigger': config.get('last_run_trigger', '') if config else '',
         'lastAutoRunDisplay': last_auto_run_display,
@@ -27891,16 +28331,18 @@ def pipeline_auto_status():
         # Market Scanner (10 default symbols), not the full 6-stage pipeline.
         # Full pipeline (Continue Scan, Fine Scan, Deeper Validation, Entry Plan, Exit Scan)
         # requires the frontend page to be open for orchestration.
-        'backendHeadlessCapable': False,
-        'browserOpenRequiredForFullPipeline': True,
+        'backendHeadlessCapable': True,
+        'browserOpenRequiredForFullPipeline': False,
+        'discordEnabled': discord_enabled,
+        'discordLastSentAt': _discord_last_sent_at.get(uid, ''),
         'lastBackendRunAt': last_run_at,
         'lastBackendRunStatus': 'success' if last_decision == 'pipeline_success' else
                                 'failed' if last_decision == 'pipeline_failed' else
                                 'blocked' if last_decision in ('blocked_real_order_submit',) else
-                                'limited_frontend_required' if last_decision == 'started_pipeline' else
+                                'running' if is_running or last_decision == 'started_pipeline' else
                                 '',
         'lastBackendRunReason': config.get('last_error', '') or
-                                ('Full pipeline is frontend-orchestrated. Backend ran limited scanner.'
+                                ('Backend scheduler runs the headless full pipeline.'
                                  if last_decision == 'started_pipeline' or last_decision == 'pipeline_success'
                                  else last_decision if last_decision else ''),
         'lastRunSource': config.get('last_run_source', ''),
@@ -27916,6 +28358,46 @@ def pipeline_auto_status():
         },
     }
     return jsonify(resp)
+
+
+@app.route('/api/ai-agent/pipeline-auto/run-headless-test', methods=['POST'])
+def pipeline_auto_run_headless_test():
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    uid = user['id']
+    data = request.get_json(silent=True) or {}
+    dry_run = bool(data.get('dryRun', True))
+    interval = int(data.get('intervalMinutes') or 15)
+    mode = data.get('mode') or (_pa_get_config(uid).get('mode', 'ai') if _pa_get_config(uid) else 'ai')
+    if not dry_run and mode != 'ai':
+        dry_run = True
+    with _PA_RUNNING_USERS_LOCK:
+        if uid in _PA_RUNNING_USERS:
+            return jsonify({'success': False, 'message': 'Headless pipeline is already running', 'status': 'already_running'}), 409
+        _PA_RUNNING_USERS.add(uid)
+    try:
+        summary = _pa_run_pipeline(uid, interval, mode, trigger='headless_test', dry_run=dry_run)
+        _pa_add_run_history(uid, {
+            'trigger_type': 'headless_test',
+            'status': 'success' if summary.get('errors', 0) == 0 else 'failed',
+            'reason': 'headless dry-run test completed' if dry_run else 'headless test completed',
+            'source': 'backend_test_endpoint',
+            'market_open': None,
+            'market_status': 'test',
+            'market_status_source': 'manual_test',
+            'started_at': summary.get('startedAt'),
+            'finished_at': summary.get('finishedAt'),
+            'duration_seconds': summary.get('durationSeconds', 0),
+            'interval_minutes': interval,
+            'mode': mode,
+            'summary': summary,
+            'error': summary.get('lastError'),
+        })
+        return jsonify({'success': summary.get('errors', 0) == 0, 'dryRun': dry_run, 'mode': mode, 'summary': summary})
+    finally:
+        with _PA_RUNNING_USERS_LOCK:
+            _PA_RUNNING_USERS.discard(uid)
 
 
 @app.route('/api/ai-agent/pipeline-auto/config', methods=['POST'])
@@ -27945,11 +28427,11 @@ def pipeline_auto_config():
         config['last_run_source'] = 'frontend_auto'
         next_time = dateutil.parser.isoparse(last_run_at) + timedelta(minutes=interval_minutes)
         config['next_run_at'] = next_time.isoformat()
-        # Record in history so user can verify frontend-orchestrated pipeline runs
+        # Legacy compatibility: accept old frontend completion sync if it appears.
         _pa_add_run_history(uid, {
             'trigger_type': 'auto_market_session',
             'status': 'success',
-            'reason': 'pipeline completed (frontend-orchestrated full pipeline)',
+            'reason': 'pipeline completed (legacy frontend sync)',
             'source': 'frontend_auto',
             'market_open': True,
             'market_status': 'open',

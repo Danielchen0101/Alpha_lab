@@ -401,6 +401,8 @@ export const pipelineAutoAPI = {
     api.get<{ success: boolean; history: any[]; count: number }>(`/ai-agent/pipeline-auto/history?limit=${limit}`),
   getMarketSchedule: (days = 15) =>
     api.get<{ success: boolean; timezone: string; source: string; warning?: string; days: any[] }>(`/ai-agent/pipeline-auto/market-schedule?days=${days}`),
+  runHeadlessTest: (data?: { dryRun?: boolean; mode?: string; intervalMinutes?: number }) =>
+    api.post('/ai-agent/pipeline-auto/run-headless-test', data || { dryRun: true }),
 };
 
 // Discord webhook notification settings and event bridge

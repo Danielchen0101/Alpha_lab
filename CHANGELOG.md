@@ -5,6 +5,29 @@ All notable changes to the Professional Quantitative Trading Platform will be do
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.4] - 2026-05-26
+
+### Added
+- Frontend auto-trigger: when "Next auto run" is due, `runAIPipeline` (same handler as Run Pipeline button) is invoked automatically
+- Backend scheduler `last_backend_scan_at` / `last_backend_decision` tracking — separate from frontend `last_run_at`/`next_run_at`
+- `autoRunTriggeredRef` lock prevents duplicate triggers for the same `nextAutoRunAt` window
+
+### Changed
+- Backend scheduler due check now uses `last_backend_scan_at` (not `last_run_at`) so its own headless scan tracking doesn't interfere with frontend `shouldRunNow` detection
+- Backend skipped paths (market-closed, weekend, not-due) write `last_backend_decision` instead of `last_decision`, and no longer overwrite `next_run_at` — preventing "next run jumped forward without scanning"
+- Backend `_pa_save_config` restored after headless pipeline run (was accidentally removed)
+- Status endpoint `shouldRunNow` remains based on `last_run_at` (frontend-only), unchanged
+
+### Fixed
+- Market Auto Run due time arriving would only advance `nextRunAt` to the next interval without triggering a real scan
+- Backend pipeline-run path did not persist scan results (`_pa_save_config` missing)
+- Frontend auto-trigger `useEffect` was replaced with a no-op (only resetting `autoRunTriggeredRef`)
+- Headless backend scan `reason` line referenced undefined `last_run_at` variable (NameError)
+- Scheduler skipped path updating `next_run_at` caused UI to show advanced time without a scan
+
+### Security
+- Discord webhook URL validation checks use URL patterns, never log actual webhook URLs
+
 ## [2.6.3] - 2026-05-10
 
 ### Added
