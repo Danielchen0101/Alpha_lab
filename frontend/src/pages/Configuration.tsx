@@ -1,13 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Typography, Card, Form, Input, Select, Button, Space, Tag, message, Row, Col, Divider, Alert,
+  Typography, Card, Form, Input, Select, Button, Space, Tag, message, Row, Col, Divider, Alert, Switch, Checkbox,
 } from 'antd';
 import {
   CheckCircleOutlined, CloseCircleOutlined, QuestionCircleOutlined,
   SaveOutlined, ApiOutlined, ExperimentOutlined, BankOutlined, CloudOutlined,
   ArrowLeftOutlined, SafetyCertificateOutlined,
-  InfoCircleOutlined, RobotOutlined, ThunderboltOutlined,
+  InfoCircleOutlined, RobotOutlined, ThunderboltOutlined, BellOutlined,
 } from '@ant-design/icons';
 import axios from 'axios';
 import { supabase } from '../lib/supabaseClient';
@@ -759,6 +759,212 @@ const FinnhubSection: React.FC<{ t: any }> = ({ t }) => {
 };
 
 // =====================================================================
+// Section F: Discord Notifications
+// =====================================================================
+const DiscordNotificationsSection: React.FC<{ t: any }> = ({ t }) => {
+  const [form] = Form.useForm();
+  const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState('not_tested');
+  const [hasSaved, setHasSaved] = useState(false);
+  const [testingAll, setTestingAll] = useState(false);
+  const [configLoaded, setConfigLoaded] = useState(false);
+
+  const loadConfig = useCallback(async () => {
+    try {
+      const res = await userApi.get('/notifications/discord/config');
+      if (res.data?.success) {
+        const cfg = res.data.config || {};
+        form.setFieldsValue({
+          enabled: cfg.enabled === true,
+          webhookUrl: cfg.webhookUrlMasked || '',
+          notifyScanSummary: cfg.notifyScanSummary !== false,
+          notifyEntryPlan: cfg.notifyEntryPlan !== false,
+          notifyOrders: cfg.notifyOrders !== false,
+          notifyExitScan: cfg.notifyExitScan !== false,
+          notifyErrors: cfg.notifyErrors !== false,
+        });
+        setHasSaved(!!cfg.hasWebhookUrl);
+        setStatus(cfg.testStatus === 'connected' ? 'connected' : cfg.hasWebhookUrl ? 'saved' : 'not_tested');
+      }
+    } catch {
+      setStatus('error');
+    } finally {
+      setConfigLoaded(true);
+    }
+  }, [form]);
+
+  useEffect(() => {
+    loadConfig();
+  }, [loadConfig]);
+
+  const handleSave = async () => {
+    try {
+      const token = await requireSession(t.config.pleaseSignIn);
+      if (!token) return;
+      setSaving(true);
+      const values = await form.validateFields();
+      const payload: any = {
+        enabled: values.enabled === true,
+        notifyScanSummary: values.notifyScanSummary !== false,
+        notifyEntryPlan: values.notifyEntryPlan !== false,
+        notifyOrders: values.notifyOrders !== false,
+        notifyExitScan: values.notifyExitScan !== false,
+        notifyErrors: values.notifyErrors !== false,
+      };
+      if (values.webhookUrl && !values.webhookUrl.includes('****')) {
+        payload.webhookUrl = values.webhookUrl.trim();
+      }
+      const res = await userApi.post('/notifications/discord/config', payload);
+      if (res.data?.success) {
+        message.success('Discord notification settings saved.');
+        await loadConfig();
+      } else {
+        setStatus('error');
+        console.error('Discord settings save failed:', res.data);
+        message.error('Discord settings could not be saved. Please check backend/Supabase configuration.');
+      }
+    } catch (e: any) {
+      if (e.errorFields) return;
+      setStatus('error');
+      console.error('Discord settings save failed:', e);
+      message.error('Discord settings could not be saved. Please check backend/Supabase configuration.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleTest = async (testAll?: boolean) => {
+    try {
+      const token = await requireSession(t.config.pleaseSignIn);
+      if (!token) return;
+      if (testAll) {
+        setTestingAll(true);
+      } else {
+        setTesting(true);
+      }
+      const mode = localStorage.getItem('tradingMode') || localStorage.getItem('tradeMode') || 'paper';
+      const payload: any = { mode };
+      if (testAll) {
+        payload.testAll = true;
+      }
+      const res = await userApi.post('/notifications/discord/test', payload);
+      if (res.data?.success) {
+        setStatus('connected');
+        const typeCount = res.data.results ? Object.keys(res.data.results).length : 1;
+        message.success(testAll
+          ? `All ${typeCount} Discord test notification types sent.`
+          : 'Discord test notification sent.');
+        await loadConfig();
+      } else {
+        setStatus('error');
+        message.error(res.data?.message || 'Discord test notification failed.');
+      }
+    } catch (e: any) {
+      setStatus('error');
+      message.error(e.response?.data?.message || e.message || 'Discord test notification failed.');
+    } finally {
+      setTesting(false);
+      setTestingAll(false);
+    }
+  };
+
+  const statusTexts = {
+    connected: 'Connected',
+    saved: 'Saved',
+    error: 'Error',
+    notTested: hasSaved ? 'Saved' : 'Not Configured',
+  };
+
+  // Only show form after config has been loaded from backend to avoid initialValues flash
+  if (!configLoaded) {
+    return (
+      <Card bordered={false} style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', marginBottom: 24 }}>
+        <SectionHeader
+          icon={<BellOutlined />}
+          title="Discord Notifications"
+          subtitle="Send scanner, entry plan, order, exit scan, and error events to a Discord channel."
+          status="not_tested"
+          statusTexts={{ notTested: 'Loading...' }}
+        />
+        <div style={{ textAlign: 'center', padding: '40px 0', color: '#8c8c8c' }}>Loading Discord settings...</div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card bordered={false} style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', marginBottom: 24 }}>
+      <SectionHeader
+        icon={<BellOutlined />}
+        title="Discord Notifications"
+        subtitle="Send scanner, entry plan, order, exit scan, and error events to a Discord channel."
+        status={status}
+        statusTexts={statusTexts}
+      />
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 20 }}
+        message="Webhook URLs are encrypted at rest and are never shown after saving."
+      />
+      <Form form={form} layout="vertical">
+        <Row gutter={16}>
+          <Col xs={24} md={10}>
+            <Form.Item name="enabled" label={<Text strong style={{ fontSize: 13 }}>Enable Discord Notifications</Text>} valuePropName="checked">
+              <Switch />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={14}>
+            <Form.Item
+              name="webhookUrl"
+              label={<Text strong style={{ fontSize: 13 }}>Discord Webhook URL</Text>}
+              extra={hasSaved ? 'A webhook is saved. Enter a new URL only if you want to replace it.' : 'Create a webhook in your Discord channel integrations.'}
+            >
+              <Input.Password placeholder={hasSaved ? 'Saved webhook URL' : 'https://discord.com/api/webhooks/...'} autoComplete="off" />
+            </Form.Item>
+          </Col>
+        </Row>
+
+        <Text strong style={{ display: 'block', marginBottom: 12, fontSize: 13 }}>Notification Types</Text>
+        <Row gutter={[16, 10]}>
+          <Col xs={24} sm={12} md={8}>
+            <Form.Item name="notifyScanSummary" valuePropName="checked" noStyle>
+              <Checkbox>Scan Summary</Checkbox>
+            </Form.Item>
+          </Col>
+          <Col xs={24} sm={12} md={8}>
+            <Form.Item name="notifyEntryPlan" valuePropName="checked" noStyle>
+              <Checkbox>Entry Plan Recommendations</Checkbox>
+            </Form.Item>
+          </Col>
+          <Col xs={24} sm={12} md={8}>
+            <Form.Item name="notifyOrders" valuePropName="checked" noStyle>
+              <Checkbox>Order Submitted / Filled</Checkbox>
+            </Form.Item>
+          </Col>
+          <Col xs={24} sm={12} md={8}>
+            <Form.Item name="notifyExitScan" valuePropName="checked" noStyle>
+              <Checkbox>Exit Scan / Sell Signals</Checkbox>
+            </Form.Item>
+          </Col>
+          <Col xs={24} sm={12} md={8}>
+            <Form.Item name="notifyErrors" valuePropName="checked" noStyle>
+              <Checkbox>Errors / Blocked Actions</Checkbox>
+            </Form.Item>
+          </Col>
+        </Row>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 24 }}>
+          <Button onClick={() => handleTest(false)} loading={testing} disabled={testingAll || !hasSaved} icon={<ExperimentOutlined />}>Test Notification</Button>
+          <Button onClick={() => handleTest(true)} loading={testingAll} disabled={testing || !hasSaved} icon={<ThunderboltOutlined />}>Test All Types</Button>
+          <Button type="primary" onClick={handleSave} loading={saving} icon={<SaveOutlined />}>Save Discord Settings</Button>
+        </div>
+      </Form>
+    </Card>
+  );
+};
+
+// =====================================================================
 // Main Configuration Page
 // =====================================================================
 const Configuration: React.FC = () => {
@@ -795,6 +1001,7 @@ const Configuration: React.FC = () => {
       <MarketDataSection reloadKey={marketDataReloadKey} t={t} />
       <AIProviderSection t={t} />
       <FinnhubSection t={t} />
+      <DiscordNotificationsSection t={t} />
 
       <div style={{ marginTop: 40, textAlign: 'center' }}>
         <Text type="secondary" style={{ fontSize: 13 }}>

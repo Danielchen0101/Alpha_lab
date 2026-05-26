@@ -21,7 +21,7 @@ import {
   WalletOutlined, FundOutlined, SwapOutlined, WarningOutlined
 } from '@ant-design/icons';
 import aiTradingService from '../services/aiTradingService';
-import { backtraderAPI, entryQualityAPI, fineScanAdvancedAPI, deeperValidationAPI, entryPlanAPI, fineScanExplainAPI, fineScanDecisionAPI, tradingAccountAPI, aiAgentWatchlistAPI, aiExecutionAPI, pipelineAutoAPI } from '../services/api';
+import { backtraderAPI, entryQualityAPI, fineScanAdvancedAPI, deeperValidationAPI, entryPlanAPI, fineScanExplainAPI, fineScanDecisionAPI, tradingAccountAPI, aiAgentWatchlistAPI, aiExecutionAPI, pipelineAutoAPI, notificationAPI } from '../services/api';
 import api from '../services/api';
 import OrderModal from '../components/OrderModal';
 import marketDataService from '../services/marketDataService';
@@ -4113,9 +4113,33 @@ const Agent: React.FC = (): React.ReactElement => {
       setExitScanResults(results);
       setExitScanStatus('completed');
       message.success(`Exit Scan completed: ${results.length} positions scanned`);
+      const actionableExitSignals = results.filter(r => r.exitDecision === 'sell_now' || r.exitDecision === 'place_target_limit');
+      notificationAPI.sendDiscordEvent('exit_scan', {
+        event_id: `exit-scan-${Date.now()}-${results.length}`,
+        mode: exitScanMode,
+        holdingsScanned: results.length,
+        sellCount: results.filter(r => r.exitDecision === 'sell_now').length,
+        reduceCount: results.filter(r => r.exitDecision === 'place_target_limit').length,
+        holdCount: results.filter(r => r.exitDecision === 'hold' || r.status === 'no_order').length,
+        signals: actionableExitSignals.slice(0, 8).map(r => ({
+          symbol: r.symbol,
+          action: r.exitDecision === 'sell_now' ? 'SELL' : 'REDUCE',
+          reason: r.reason,
+          currentPrice: r.currentPrice,
+          target: r.entryPlanTarget,
+          stop: r.entryPlanStop,
+        })),
+      }).catch(() => {});
     } catch (e: any) {
       setExitScanStatus('failed');
       message.error(`Exit Scan failed: ${e?.message || 'Unknown error'}`);
+      notificationAPI.sendDiscordEvent('error', {
+        event_id: `exit-scan-error-${Date.now()}`,
+        step: 'Exit Scan',
+        status: 'failed',
+        reason: e?.message || 'Unknown error',
+        action: 'Review holdings, Alpaca configuration, and exit scan inputs.',
+      }).catch(() => {});
     } finally {
       setExitScanRunning(false);
       // Refresh holdings if any orders were submitted

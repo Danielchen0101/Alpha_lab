@@ -433,6 +433,7 @@ SENSITIVE_FIELDS = {
         'market_data_api_key', 'market_data_api_secret'
     ],
     'finnhub': ['api_key'],
+    'discord': ['webhookUrl'],
 }
 
 
@@ -489,15 +490,22 @@ def save_user_config(user_id, config_type, config_data):
         try:
             supabase_admin.table('user_api_configs').upsert(row, on_conflict='user_id,config_type').execute()
         except Exception as upsert_err:
-            safe_print(f'[Supabase] upsert with on_conflict failed, trying delete+insert: {upsert_err}')
+            upsert_text = str(upsert_err)
+            if 'user_api_configs_config_type_check' in upsert_text or '23514' in upsert_text:
+                raise upsert_err
+            safe_print(f'[Supabase] upsert with on_conflict failed type={config_type} status={type(upsert_err).__name__}; trying delete+insert')
             supabase_admin.table('user_api_configs').delete().eq('user_id', user_id).eq('config_type', config_type).execute()
             supabase_admin.table('user_api_configs').insert(row).execute()
         # Invalidate config cache for this user/config_type
         _cache_invalidate(_config_cache, (user_id, config_type))
         return True, None
     except Exception as e:
-        safe_print(f'[Supabase] save_user_config failed: {e}')
-        return False, str(e)[:200]
+        err_text = str(e)
+        if 'user_api_configs_config_type_check' in err_text or '23514' in err_text:
+            safe_print(f'[Supabase] save_user_config failed type={config_type} status=config_type_check')
+            return False, 'config_type_check'
+        safe_print(f'[Supabase] save_user_config failed type={config_type} status={type(e).__name__}')
+        return False, 'supabase_save_failed'
 
 
 def mask_key(key):
@@ -522,6 +530,179 @@ def mask_key(key):
     if len(v) <= 8:
         return v[:2] + '****'
     return v[:4] + '****' + v[-4:]
+
+
+# ==================== Discord Notification Helpers ====================
+
+DISCORD_EVENT_FLAGS = {
+    'scan_summary': 'notifyScanSummary',
+    'entry_plan': 'notifyEntryPlan',
+    'order': 'notifyOrders',
+    'exit_scan': 'notifyExitScan',
+    'error': 'notifyErrors',
+}
+_discord_notify_dedupe = {}
+
+
+def _discord_user_label(user_id):
+    return (user_id or 'unknown')[:8] + '...'
+
+
+def _discord_short_order_id(order_id):
+    if not order_id:
+        return '-'
+    s = str(order_id)
+    return s[:8] + '...' if len(s) > 8 else s
+
+
+def get_discord_config(user_id):
+    cfg = get_user_config(user_id, 'discord') or {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _discord_event_enabled(cfg, event_type):
+    flag = DISCORD_EVENT_FLAGS.get(event_type)
+    return bool(flag and cfg.get(flag, True))
+
+
+def _discord_dedupe_key(user_id, event_type, payload):
+    event_id = payload.get('event_id') or payload.get('eventId')
+    if event_id:
+        return f'{user_id}:{event_type}:{event_id}'
+    symbol = payload.get('symbol') or payload.get('symbols') or ''
+    minute = datetime.utcnow().strftime('%Y%m%d%H%M')
+    return f'{user_id}:{event_type}:{symbol}:{minute}'
+
+
+def _discord_should_send(user_id, event_type, payload):
+    now = time.time()
+    # Drop stale entries opportunistically.
+    for key, ts in list(_discord_notify_dedupe.items())[:200]:
+        if now - ts > 3600:
+            _discord_notify_dedupe.pop(key, None)
+    key = _discord_dedupe_key(user_id, event_type, payload)
+    if key in _discord_notify_dedupe and now - _discord_notify_dedupe[key] < 300:
+        return False
+    _discord_notify_dedupe[key] = now
+    return True
+
+
+def _discord_embed(event_type, payload):
+    color_map = {
+        'scan_summary': 0x1677FF,
+        'entry_plan': 0x22C55E,
+        'order': 0x1677FF,
+        'exit_scan': 0xF59E0B,
+        'error': 0xEF4444,
+    }
+    title_map = {
+        'scan_summary': 'Market Scanner Completed',
+        'entry_plan': 'Entry Plan Generated',
+        'order': 'Order Event',
+        'exit_scan': 'Exit Scan Completed',
+        'error': 'Pipeline Alert',
+    }
+    fields = []
+    description = payload.get('description') or ''
+
+    if event_type == 'scan_summary':
+        fields = [
+            {'name': 'Processed', 'value': str(payload.get('processed', '-')), 'inline': True},
+            {'name': 'AI Success', 'value': str(payload.get('aiSuccess', '-')), 'inline': True},
+            {'name': 'Need Data', 'value': str(payload.get('needData', '-')), 'inline': True},
+            {'name': 'Top Symbols', 'value': ', '.join(payload.get('topSymbols') or []) or '-', 'inline': False},
+            {'name': 'Market Mode', 'value': str(payload.get('mode', '-')).upper(), 'inline': True},
+            {'name': 'Run Time', 'value': str(payload.get('runTime', '-')), 'inline': True},
+        ]
+    elif event_type == 'entry_plan':
+        buy_candidates = payload.get('buyCandidates') or []
+        fields = [
+            {'name': 'BUY', 'value': str(payload.get('buyCount', 0)), 'inline': True},
+            {'name': 'WATCH', 'value': str(payload.get('watchCount', 0)), 'inline': True},
+            {'name': 'SKIP', 'value': str(payload.get('skipCount', 0)), 'inline': True},
+        ]
+        for c in buy_candidates[:8]:
+            fields.append({
+                'name': str(c.get('symbol', 'BUY')),
+                'value': (
+                    f"Entry {c.get('entryZone', '-')} | Stop {c.get('stop', '-')} | "
+                    f"Target {c.get('target', '-')} | R/R {c.get('riskReward', '-')}\n"
+                    f"Size {c.get('positionSize', '-')} | {str(c.get('reason', '-'))[:180]}"
+                ),
+                'inline': False
+            })
+    elif event_type == 'order':
+        mode = str(payload.get('mode', '-')).upper()
+        description = payload.get('description') or ('REAL TRADING\n' if mode == 'REAL' else '')
+        fields = [
+            {'name': 'Mode', 'value': mode, 'inline': True},
+            {'name': 'Side', 'value': str(payload.get('side', '-')).upper(), 'inline': True},
+            {'name': 'Symbol', 'value': str(payload.get('symbol', '-')).upper(), 'inline': True},
+            {'name': 'Qty / Notional', 'value': str(payload.get('qty') or payload.get('notional') or '-'), 'inline': True},
+            {'name': 'Order Type', 'value': str(payload.get('orderType', '-')), 'inline': True},
+            {'name': 'Price', 'value': str(payload.get('price') or payload.get('limitPrice') or '-'), 'inline': True},
+            {'name': 'Status', 'value': str(payload.get('status', '-')), 'inline': True},
+            {'name': 'Order ID', 'value': _discord_short_order_id(payload.get('orderId')), 'inline': True},
+            {'name': 'Reason', 'value': str(payload.get('reason', '-'))[:220], 'inline': False},
+        ]
+    elif event_type == 'exit_scan':
+        signals = payload.get('signals') or []
+        sell_reduce = payload.get('sellReduceCount')
+        if sell_reduce is None:
+            sell_reduce = (payload.get('sellCount') or 0) + (payload.get('reduceCount') or 0)
+        fields = [
+            {'name': 'Holdings Scanned', 'value': str(payload.get('holdingsScanned', '-')), 'inline': True},
+            {'name': 'Sell/Reduce', 'value': str(sell_reduce), 'inline': True},
+            {'name': 'Hold', 'value': str(payload.get('holdCount', '-')), 'inline': True},
+        ]
+        for s in signals[:8]:
+            fields.append({
+                'name': str(s.get('symbol', 'Signal')),
+                'value': f"{s.get('action', '-')} | {s.get('currentPrice') or s.get('price') or '-'}\n{str(s.get('reason', '-'))[:180]}",
+                'inline': False
+            })
+    elif event_type == 'error':
+        fields = [
+            {'name': 'Step', 'value': str(payload.get('step', '-')), 'inline': True},
+            {'name': 'Status', 'value': str(payload.get('status', '-')), 'inline': True},
+            {'name': 'Symbol', 'value': str(payload.get('symbol', '-')), 'inline': True},
+            {'name': 'Reason', 'value': str(payload.get('reason', '-'))[:350], 'inline': False},
+            {'name': 'Recommended Action', 'value': str(payload.get('action', 'Review Settings and retry.'))[:220], 'inline': False},
+        ]
+
+    return {
+        'title': title_map.get(event_type, 'AlphaLab Notification'),
+        'description': description[:350] if description else '',
+        'color': color_map.get(event_type, 0x1677FF),
+        'fields': fields[:25],
+        'timestamp': datetime.utcnow().isoformat() + 'Z',
+    }
+
+
+def send_discord_notification(user_id, event_type, payload):
+    """Best-effort Discord webhook notification. Never raises into trading/pipeline flows."""
+    try:
+        cfg = get_discord_config(user_id)
+        webhook_url = cfg.get('webhookUrl', '')
+        if not cfg.get('enabled') or not webhook_url:
+            return {'sent': False, 'reason': 'disabled_or_missing'}
+        if not _discord_event_enabled(cfg, event_type):
+            return {'sent': False, 'reason': 'event_disabled'}
+        if not _discord_should_send(user_id, event_type, payload or {}):
+            return {'sent': False, 'reason': 'deduped'}
+
+        body = {
+            'username': 'AlphaLab',
+            'embeds': [_discord_embed(event_type, payload or {})],
+        }
+        resp = requests.post(webhook_url, json=body, timeout=5)
+        if resp.status_code not in (200, 204):
+            safe_print(f'[DiscordNotify] failed user={_discord_user_label(user_id)} event={event_type} status={resp.status_code}')
+            return {'sent': False, 'reason': 'discord_error', 'status': resp.status_code}
+        return {'sent': True}
+    except Exception as e:
+        safe_print(f'[DiscordNotify] failed user={_discord_user_label(user_id)} event={event_type} status=exception {type(e).__name__}')
+        return {'sent': False, 'reason': 'exception'}
 
 
 def _is_invalid_key(value):
@@ -7914,7 +8095,7 @@ def system_config_diag():
         return jsonify({'authenticated': False, 'error': 'No valid Supabase session'}), 401
 
     results = {}
-    for config_type in ['alpaca', 'finnhub', 'ai_provider']:
+    for config_type in ['alpaca', 'finnhub', 'ai_provider', 'discord']:
         try:
             cfg = get_user_config(user['id'], config_type)
             if cfg is None:
@@ -7939,6 +8120,223 @@ def system_config_diag():
         'userId': user['id'][:8] + '...',
         'configs': results,
     })
+
+
+@app.route('/api/notifications/discord/config', methods=['GET', 'POST'])
+def discord_notification_config():
+    user = get_supabase_user()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+
+    user_id = user['id']
+    if request.method == 'GET':
+        cfg = get_discord_config(user_id)
+        webhook = cfg.get('webhookUrl', '')
+        return jsonify({
+            'success': True,
+            'config': {
+                'provider': 'discord',
+                'enabled': bool(cfg.get('enabled', False)),
+                'webhookUrlMasked': mask_key(webhook),
+                'hasWebhookUrl': bool(webhook),
+                'notifyScanSummary': bool(cfg.get('notifyScanSummary', True)),
+                'notifyEntryPlan': bool(cfg.get('notifyEntryPlan', True)),
+                'notifyOrders': bool(cfg.get('notifyOrders', True)),
+                'notifyExitScan': bool(cfg.get('notifyExitScan', True)),
+                'notifyErrors': bool(cfg.get('notifyErrors', True)),
+                'testStatus': cfg.get('testStatus', 'not_tested'),
+                'lastTestedAt': cfg.get('lastTestedAt'),
+            }
+        })
+
+    data = request.get_json() or {}
+    existing = get_discord_config(user_id)
+    incoming_webhook = str(data.get('webhookUrl') or '').strip()
+    webhook_url = existing.get('webhookUrl', '')
+    if incoming_webhook and '****' not in incoming_webhook and not incoming_webhook.startswith('********'):
+        webhook_url = incoming_webhook
+
+    if webhook_url and not webhook_url.startswith('https://discord.com/api/webhooks/') and not webhook_url.startswith('https://discordapp.com/api/webhooks/'):
+        return jsonify({'success': False, 'message': 'Invalid Discord webhook URL'}), 400
+
+    enabled_incoming = data.get('enabled')
+    enabled_saved = bool(enabled_incoming if enabled_incoming is not None else existing.get('enabled', False))
+    cfg = {
+        'provider': 'discord',
+        'webhookUrl': webhook_url,
+        'enabled': enabled_saved,
+        'notifyScanSummary': bool(data.get('notifyScanSummary', existing.get('notifyScanSummary', True))),
+        'notifyEntryPlan': bool(data.get('notifyEntryPlan', existing.get('notifyEntryPlan', True))),
+        'notifyOrders': bool(data.get('notifyOrders', existing.get('notifyOrders', True))),
+        'notifyExitScan': bool(data.get('notifyExitScan', existing.get('notifyExitScan', True))),
+        'notifyErrors': bool(data.get('notifyErrors', existing.get('notifyErrors', True))),
+        'testStatus': existing.get('testStatus', 'saved') if webhook_url else 'not_configured',
+        'updatedAt': datetime.utcnow().isoformat() + 'Z',
+    }
+    safe_print(f'[Discord] save config user={_discord_user_label(user_id)} enabled_in={enabled_incoming} enabled_saved={enabled_saved} has_webhook={bool(webhook_url)}')
+    ok, err = save_user_config(user_id, 'discord', cfg)
+    if not ok:
+        if err == 'config_type_check':
+            return jsonify({
+                'success': False,
+                'message': 'Discord settings could not be saved. Please apply the Supabase Discord config migration.',
+                'code': 'discord_config_type_not_allowed',
+            }), 500
+        return jsonify({
+            'success': False,
+            'message': 'Discord settings could not be saved. Please check backend/Supabase configuration.',
+            'code': 'discord_config_save_failed',
+        }), 500
+    return jsonify({'success': True, 'message': 'Discord notification settings saved', 'hasWebhookUrl': bool(webhook_url)})
+
+
+@app.route('/api/notifications/discord/test', methods=['POST'])
+def discord_notification_test():
+    user = get_supabase_user()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+
+    cfg = get_discord_config(user['id'])
+    if not cfg.get('webhookUrl'):
+        return jsonify({'success': False, 'message': 'Discord webhook URL is not configured'}), 400
+
+    data = request.get_json() or {}
+    mode = str(data.get('mode', '-')).upper()
+    event_type = data.get('eventType', '')
+    test_all = bool(data.get('testAll', False))
+
+    # Build list of event types to test
+    if test_all:
+        event_types_to_test = ['scan_summary', 'entry_plan', 'order', 'exit_scan', 'error']
+    elif event_type and event_type in DISCORD_EVENT_FLAGS:
+        event_types_to_test = [event_type]
+    else:
+        event_types_to_test = ['error']
+
+    # Temporarily enable for manual test (test bypasses enabled flag)
+    original_enabled = cfg.get('enabled', False)
+    original_flags = {
+        et: cfg.get(DISCORD_EVENT_FLAGS[et], True)
+        for et in event_types_to_test
+    }
+    if not original_enabled:
+        cfg['enabled'] = True
+    for et in event_types_to_test:
+        flag = DISCORD_EVENT_FLAGS[et]
+        cfg[flag] = True
+    ok, err = save_user_config(user['id'], 'discord', cfg)
+    if not ok:
+        return jsonify({
+            'success': False,
+            'message': 'Discord settings could not be saved. Please check backend/Supabase configuration.',
+            'code': 'discord_config_save_failed',
+        }), 500
+
+    test_payloads = {
+        'scan_summary': {
+            'event_id': f'discord-test-scan-{int(time.time())}',
+            'processed': 10,
+            'aiSuccess': 8,
+            'needData': 2,
+            'topSymbols': ['AAPL', 'NVDA', 'MSFT'],
+            'mode': mode,
+            'runTime': '1.2s',
+            'description': 'This is a test notification — Scan Summary.',
+        },
+        'entry_plan': {
+            'event_id': f'discord-test-entry-{int(time.time())}',
+            'buyCount': 3,
+            'watchCount': 5,
+            'skipCount': 2,
+            'buyCandidates': [
+                {'symbol': 'AAPL', 'entryZone': '150-152', 'stop': '148', 'target': '160', 'riskReward': '1:4', 'positionSize': '10 shares', 'reason': 'Test entry plan — bullish flag pattern.'},
+                {'symbol': 'NVDA', 'entryZone': '420-425', 'stop': '415', 'target': '445', 'riskReward': '1:4', 'positionSize': '5 shares', 'reason': 'Test entry plan — volume surge above 20-day MA.'},
+            ],
+            'description': 'This is a test notification — Entry Plan Recommendations.',
+        },
+        'order': {
+            'event_id': f'discord-test-order-{int(time.time())}',
+            'mode': mode,
+            'side': 'buy',
+            'symbol': 'AAPL',
+            'qty': '10',
+            'orderType': 'limit',
+            'limitPrice': '150.00',
+            'status': 'submitted',
+            'orderId': f'test-order-{int(time.time())}',
+            'reason': 'Test order submission — triggered by entry plan.',
+            'description': 'This is a test notification — Order Submitted.',
+        },
+        'exit_scan': {
+            'event_id': f'discord-test-exit-{int(time.time())}',
+            'holdingsScanned': 5,
+            'sellCount': 1,
+            'reduceCount': 1,
+            'holdCount': 3,
+            'signals': [
+                {'symbol': 'MSFT', 'action': 'SELL', 'currentPrice': '430.00', 'reason': 'Test exit signal — stop loss hit at -2%.'},
+                {'symbol': 'GOOGL', 'action': 'REDUCE', 'currentPrice': '175.00', 'reason': 'Test exit signal — RSI above 80, take partial profit.'},
+            ],
+            'description': 'This is a test notification — Exit Scan Signals.',
+        },
+        'error': {
+            'event_id': f'discord-test-error-{int(time.time())}',
+            'step': 'Discord Test',
+            'status': 'connected',
+            'symbol': '-',
+            'reason': f'AlphaLab Discord notifications connected. Mode: {mode}. Time: {datetime.utcnow().isoformat()}Z. This is a test notification — Error / Blocked Action.',
+            'action': 'No action required.',
+            'description': 'This is a test notification — Error / Blocked Action.',
+        },
+    }
+
+    results = {}
+    all_sent = True
+    for et in event_types_to_test:
+        payload = test_payloads.get(et, {})
+        payload['mode'] = mode
+        result = send_discord_notification(user['id'], et, payload)
+        results[et] = {'sent': result.get('sent', False)}
+        if not result.get('sent'):
+            all_sent = False
+            results[et]['reason'] = result.get('reason', 'unknown')
+
+    # Restore original config
+    cfg = get_discord_config(user['id'])
+    cfg['testStatus'] = 'connected' if all_sent else 'partial'
+    cfg['lastTestedAt'] = datetime.utcnow().isoformat() + 'Z'
+    if not original_enabled:
+        cfg['enabled'] = False
+    for et in event_types_to_test:
+        flag = DISCORD_EVENT_FLAGS[et]
+        cfg[flag] = original_flags.get(et, True)
+    save_user_config(user['id'], 'discord', cfg)
+
+    if all_sent:
+        return jsonify({
+            'success': True,
+            'message': f'Discord test notification{"s" if len(event_types_to_test) > 1 else ""} sent ({len(event_types_to_test)} type{"s" if len(event_types_to_test) > 1 else ""}).',
+            'results': results,
+        })
+    return jsonify({
+        'success': False,
+        'message': 'Some Discord test notifications failed.',
+        'results': results,
+    }), 400
+
+
+@app.route('/api/notifications/discord/event', methods=['POST'])
+def discord_notification_event():
+    user = get_supabase_user()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    data = request.get_json() or {}
+    event_type = data.get('eventType') or data.get('event_type')
+    if event_type not in DISCORD_EVENT_FLAGS:
+        return jsonify({'success': False, 'message': 'Unsupported Discord event type'}), 400
+    payload = data.get('payload') or {}
+    result = send_discord_notification(user['id'], event_type, payload)
+    return jsonify({'success': True, 'notification': result})
 
 
 # ==================== Config Status Endpoint ====================
@@ -10203,6 +10601,26 @@ def ai_market_scanner():
         strong_trend_count = sum(1 for r in results if 'Strong' in r.get('trendLabel', ''))
 
         news_risk_count = sum(1 for r in results if r.get('eventRisk') == 'High')
+
+        user = get_supabase_user()
+        if user:
+            top_symbols = [
+                r.get('symbol') for r in sorted(
+                    results,
+                    key=lambda x: (x.get('trendScore') or 0, x.get('trendConfidence') or 0),
+                    reverse=True
+                )[:5]
+                if r.get('symbol')
+            ]
+            send_discord_notification(user['id'], 'scan_summary', {
+                'event_id': f"scanner-{int(start_time)}-{len(results)}",
+                'processed': f'{len(results)}/{len(symbols)}',
+                'aiSuccess': sum(1 for r in results if r.get('aiCalled') and not r.get('aiError')),
+                'needData': sum(1 for r in results if r.get('dataQuality') != 'GOOD'),
+                'topSymbols': top_symbols,
+                'mode': (request.get_json(silent=True) or {}).get('mode', 'paper'),
+                'runTime': f'{total_time:.1f}s',
+            })
 
 
 
@@ -12541,6 +12959,7 @@ def place_trading_order():
     data = request.get_json()
     if not data:
         return jsonify({'success': False, 'error': 'Request body required', 'status': 'validation_error'})
+    user = get_supabase_user()
 
     mode = (data.get('mode') or 'paper').strip().lower()
     if mode not in ('paper', 'real'):
@@ -12668,6 +13087,21 @@ def place_trading_order():
 
         if resp.status_code == 200:
             order_data = resp.json()
+            if user:
+                send_discord_notification(user['id'], 'order', {
+                    'event_id': order_data.get('id') or data.get('client_order_id') or f'trading-order-{int(time.time())}',
+                    'mode': mode,
+                    'side': side,
+                    'symbol': symbol,
+                    'qty': qty,
+                    'notional': notional,
+                    'orderType': order_type,
+                    'limitPrice': limit_price,
+                    'price': order_data.get('filled_avg_price') or limit_price,
+                    'status': order_data.get('status', 'submitted'),
+                    'orderId': order_data.get('id'),
+                    'reason': 'Order submitted from Alpaca Trade ticket.',
+                })
             return jsonify({
                 'success': True,
                 'status': 'submitted',
@@ -12679,6 +13113,15 @@ def place_trading_order():
         else:
             error_text = resp.text[:500]
             print(f'[Trading Order] Alpaca error: {resp.status_code} - {error_text}')
+            if user:
+                send_discord_notification(user['id'], 'error', {
+                    'event_id': f'trading-order-error-{symbol}-{int(time.time())}',
+                    'step': 'Trade Order',
+                    'status': f'api_error_{resp.status_code}',
+                    'symbol': symbol,
+                    'reason': error_text[:300],
+                    'action': 'Review order inputs, Alpaca credentials, account status, and buying power.',
+                })
             return jsonify({
                 'success': False,
                 'status': 'api_error',
@@ -12689,6 +13132,15 @@ def place_trading_order():
             })
     except Exception as e:
         print(f'[Trading Order] Exception: {e}')
+        if user:
+            send_discord_notification(user['id'], 'error', {
+                'event_id': f'trading-order-exception-{symbol}-{int(time.time())}',
+                'step': 'Trade Order',
+                'status': 'exception',
+                'symbol': symbol,
+                'reason': str(e)[:300],
+                'action': 'Retry later or check Alpaca connectivity.',
+            })
         return jsonify({'success': False, 'status': 'api_error', 'error': str(e), 'modeUsed': mode})
 
 
@@ -21217,6 +21669,7 @@ def entry_plan_execute():
         data = request.get_json()
         if not data:
             return jsonify({'success': False, 'action': 'BLOCKED', 'reason': 'No data provided', 'blockers': ['Empty request']}), 400
+        user = get_supabase_user()
 
         symbol = data.get('symbol', '').upper().strip()
         plan_snapshot = data.get('planSnapshot', {})
@@ -21257,6 +21710,15 @@ def entry_plan_execute():
 
         if blockers:
             print(f'[ENTRY EXECUTE] {symbol} BLOCKED: {blockers}')
+            if user:
+                send_discord_notification(user['id'], 'error', {
+                    'event_id': f'entry-execute-blocked-{symbol}-{int(time.time())}',
+                    'step': 'Entry Plan Execute',
+                    'status': 'blocked',
+                    'symbol': symbol,
+                    'reason': '; '.join(blockers)[:300],
+                    'action': 'Review risk gate, data quality, and trade readiness.',
+                })
             return jsonify({
                 'success': False, 'action': 'BLOCKED', 'symbol': symbol,
                 'reason': 'Safety gates not passed', 'blockers': blockers
@@ -21264,6 +21726,15 @@ def entry_plan_execute():
 
         # ── 3. Check execution mode ──
         if execution_mode == 'recommend_only':
+            if user:
+                send_discord_notification(user['id'], 'error', {
+                    'event_id': f'entry-execute-review-only-{symbol}-{int(time.time())}',
+                    'step': 'Entry Plan Execute',
+                    'status': 'blocked',
+                    'symbol': symbol,
+                    'reason': 'Recommend Only mode - no order placement allowed',
+                    'action': 'Switch execution mode only if you intend to submit orders.',
+                })
             return jsonify({
                 'success': False, 'action': 'BLOCKED', 'symbol': symbol,
                 'reason': 'Recommend Only mode — no order placement allowed',
@@ -21365,6 +21836,20 @@ def entry_plan_execute():
             order_id = order_data.get('id', 'unknown')
             order_status = order_data.get('status', 'unknown')
             print(f'[ENTRY EXECUTE] {symbol}: ORDER SUBMITTED id={order_id} status={order_status}')
+            if user:
+                send_discord_notification(user['id'], 'order', {
+                    'event_id': order_id,
+                    'mode': 'real' if mode_label == 'live' else 'paper',
+                    'side': 'buy',
+                    'symbol': symbol,
+                    'qty': shares,
+                    'orderType': order_type,
+                    'limitPrice': limit_price,
+                    'price': limit_price,
+                    'status': order_status,
+                    'orderId': order_id,
+                    'reason': 'Entry Plan execution submitted order.',
+                })
 
             # Build response with stop/take profit note
             note = f'Stop loss (${stop_loss:.2f}) and take profit (${take_profit:.2f}) are plan values, not attached broker orders yet.'
@@ -21403,6 +21888,15 @@ def entry_plan_execute():
         else:
             error_text = order_resp.text[:300]
             print(f'[ENTRY EXECUTE] {symbol}: Alpaca API error {order_resp.status_code}: {error_text}')
+            if user:
+                send_discord_notification(user['id'], 'error', {
+                    'event_id': f'entry-execute-api-{symbol}-{int(time.time())}',
+                    'step': 'Entry Plan Execute',
+                    'status': f'api_error_{order_resp.status_code}',
+                    'symbol': symbol,
+                    'reason': error_text[:300],
+                    'action': 'Check Alpaca account status, order parameters, and buying power.',
+                })
             return jsonify({
                 'success': False, 'action': 'BLOCKED', 'symbol': symbol,
                 'reason': f'Alpaca API error {order_resp.status_code}',
@@ -21435,6 +21929,16 @@ def ai_execution_order():
     if not user:
         return jsonify({'success': False, 'status': 'auth_required', 'message': 'Authentication required. Please sign in.'})
 
+    def _notify_ai_exec_block(status, message):
+        send_discord_notification(user['id'], 'error', {
+            'event_id': f'ai-exec-{status}-{symbol or "unknown"}-{int(time.time())}',
+            'step': 'AI Execution Order',
+            'status': status,
+            'symbol': symbol,
+            'reason': str(message)[:300],
+            'action': 'Review AI execution mode, risk controls, and order inputs.',
+        })
+
     # ── 2. Validate required fields ──
     symbol = (data.get('symbol') or '').upper().strip()
     side = (data.get('side') or '').lower().strip()
@@ -21451,8 +21955,10 @@ def ai_execution_order():
     time_in_force = data.get('time_in_force', 'day')
 
     if not symbol:
+        _notify_ai_exec_block('risk_blocked', 'Symbol is required.')
         return jsonify({'success': False, 'status': 'risk_blocked', 'message': 'Symbol is required.'})
     if side not in ('buy', 'sell'):
+        _notify_ai_exec_block('risk_blocked', 'Side must be buy or sell.')
         return jsonify({'success': False, 'status': 'risk_blocked', 'message': 'Side must be "buy" or "sell".'})
     valid_types = ('market', 'limit', 'stop', 'stop_limit', 'trailing_stop')
     if order_type not in valid_types:
@@ -21474,6 +21980,7 @@ def ai_execution_order():
 
     # ── 3. Automation mode gates ──
     if automation_mode == 'manual':
+        _notify_ai_exec_block('risk_blocked', 'Manual mode - review only. No orders will be placed.')
         return jsonify({'success': False, 'status': 'risk_blocked',
                         'message': 'Manual mode — review only. No orders will be placed.'})
     order_preview = {
@@ -21499,6 +22006,7 @@ def ai_execution_order():
         return jsonify({'success': False, 'status': 'auth_required', 'message': 'Session expired. Please sign in again.'})
     if cfg_status == 'config_required':
         mode_label = 'Paper Trading' if alpaca_mode == 'paper' else 'Live Trading'
+        _notify_ai_exec_block('config_required', f'{mode_label} API keys not configured.')
         return jsonify({'success': False, 'status': 'config_required',
                         'message': f'{mode_label} API keys not configured. Please go to Settings > Configuration to set up your Alpaca keys.'})
 
@@ -21551,6 +22059,19 @@ def ai_execution_order():
         if resp.status_code == 200:
             order_data = resp.json()
             print(f'[AI EXECUTION] {symbol}: ORDER SUBMITTED id={order_data.get("id")} status={order_data.get("status")}')
+            send_discord_notification(user['id'], 'order', {
+                'event_id': order_data.get('id') or order_data.get('client_order_id') or f'ai-exec-order-{symbol}-{int(time.time())}',
+                'mode': mode_label,
+                'side': side,
+                'symbol': symbol,
+                'qty': qty,
+                'notional': notional,
+                'orderType': order_type,
+                'limitPrice': limit_price,
+                'status': order_data.get('status') or 'submitted',
+                'orderId': order_data.get('id'),
+                'reason': f'AI execution {automation_mode} submitted order.',
+            })
             return jsonify({
                 'success': True, 'status': 'submitted',
                 'message': f'{mode_label.capitalize()} {order_type} order submitted for {symbol}',
@@ -21561,6 +22082,7 @@ def ai_execution_order():
         else:
             error_text = resp.text[:300]
             print(f'[AI EXECUTION] {symbol}: Alpaca error {resp.status_code}: {error_text}')
+            _notify_ai_exec_block(f'api_error_{resp.status_code}', error_text)
             return jsonify({
                 'success': False, 'status': 'api_error',
                 'message': f'Alpaca API error ({resp.status_code}): {error_text}',
@@ -21568,6 +22090,7 @@ def ai_execution_order():
             })
     except Exception as e:
         print(f'[AI EXECUTION] {symbol}: Exception {e}')
+        _notify_ai_exec_block('api_error', str(e))
         return jsonify({
             'success': False, 'status': 'api_error',
             'message': f'Order submission failed: {str(e)[:200]}',
@@ -25995,10 +26518,39 @@ def ai_entry_plan():
         error_count = sum(1 for p in plans if p.get('finalAction') == 'BLOCKED_BY_RISK' and p.get('setup') == 'Error')
         ep_status = 'completed' if error_count == 0 else ('failed' if error_count == len(plans) else 'partial')
         print(f'=== ENTRY PLAN COMPLETE: {len(plans)} plans ({ai_success_count} with AI decisions, {error_count} errors) ===')
+        user = get_supabase_user()
+        if user:
+            buy_plans = [p for p in plans if p.get('finalAction') in ('BUY_READY', 'READY_REVIEW')]
+            watch_count = sum(1 for p in plans if p.get('finalAction') == 'WAIT_FOR_ENTRY' or p.get('aiDecision') == 'WATCH')
+            skip_count = sum(1 for p in plans if p.get('finalAction') in ('SKIP', 'BLOCKED_BY_RISK'))
+            send_discord_notification(user['id'], 'entry_plan', {
+                'event_id': f"entry-plan-{int(time.time())}-{len(plans)}",
+                'buyCount': len(buy_plans),
+                'watchCount': watch_count,
+                'skipCount': skip_count,
+                'buyCandidates': [{
+                    'symbol': p.get('symbol'),
+                    'entryZone': p.get('entryZoneDesc') or f"${p.get('entryZoneLow', '-')}-${p.get('entryZoneHigh', '-')}",
+                    'stop': p.get('stopLoss'),
+                    'target': p.get('takeProfit1'),
+                    'riskReward': p.get('riskReward1'),
+                    'positionSize': p.get('positionSizeShares'),
+                    'reason': p.get('decisionReason') or p.get('reason'),
+                } for p in buy_plans[:8]],
+            })
         return jsonify({'success': True, 'status': ep_status, 'plans': plans, 'errors': errors})
 
     except Exception as e:
         print(f'[ENTRY PLAN] Error: {e}')
+        user = get_supabase_user()
+        if user:
+            send_discord_notification(user['id'], 'error', {
+                'event_id': f'entry-plan-error-{int(time.time())}',
+                'step': 'Entry Plan',
+                'status': 'failed',
+                'reason': str(e)[:300],
+                'action': 'Review candidate data, Alpaca configuration, and AI provider status.',
+            })
         import traceback
         traceback.print_exc()
         # Return partial results if any plans were generated before the error

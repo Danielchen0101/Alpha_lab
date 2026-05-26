@@ -403,5 +403,16 @@ export const pipelineAutoAPI = {
     api.get<{ success: boolean; timezone: string; source: string; warning?: string; days: any[] }>(`/ai-agent/pipeline-auto/market-schedule?days=${days}`),
 };
 
+// Discord webhook notification settings and event bridge
+export const notificationAPI = {
+  getDiscordConfig: () => api.get('/notifications/discord/config'),
+  saveDiscordConfig: (data: any) => api.post('/notifications/discord/config', data),
+  testDiscord: (data?: any) => api.post('/notifications/discord/test', data || {}),
+  sendDiscordEvent: (
+    eventType: 'scan_summary' | 'entry_plan' | 'order' | 'exit_scan' | 'error',
+    payload: any
+  ) => api.post('/notifications/discord/event', { eventType, payload }),
+};
+
 export { scannerApi };
 export default api;
