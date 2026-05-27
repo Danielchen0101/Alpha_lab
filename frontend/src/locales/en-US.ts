@@ -1468,7 +1468,16 @@ const messages = {
     exitScanFailed: 'Exit Scan failed',
     // AI Pipeline
     aiPipeline: 'AI Pipeline',
-    runPipeline: 'Run Pipeline',
+    runPipeline: 'Run Manual Pipeline',
+    runAutoPipelineNow: 'Run Auto Pipeline Now',
+    // Market Auto Run
+    marketAutoRun: 'Market Auto Run',
+    marketAutoRunSubtitle: 'Background scheduled pipeline during market hours.',
+    backgroundSchedule: 'Background Schedule',
+    scheduleHelperText: 'Runs only during US market hours, 09:30–16:00 ET.',
+    lastAutoScan: 'Last Auto Scan',
+    nextAutoScan: 'Next Auto Scan',
+    autoStatus: 'Auto Status',
     pipelineRunning: 'Pipeline Running',
     pipelineComplete: 'Pipeline complete!',
     pipelineDisabled: 'Disabled while AI Pipeline is running.',

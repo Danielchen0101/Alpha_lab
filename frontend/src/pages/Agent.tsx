@@ -480,9 +480,6 @@ const Agent: React.FC = (): React.ReactElement => {
   // Keep ref in sync with state for timer callbacks
   useEffect(() => { pipelineRunningRef.current = pipelineRunning; }, [pipelineRunning]);
 
-  // Ref for runAIPipeline so timer callbacks always call the latest version
-  const runAIPipelineRef = useRef<(opts?: { trigger?: string }) => Promise<void>>();
-  useEffect(() => { runAIPipelineRef.current = async (opts?: { trigger?: string }) => { await runAIPipeline(opts); }; });
   const [aiExecutionList, setAiExecutionList] = useState<any[]>(() => {
     try {
       return scannerStateStore.getAiExecutionCandidates();
@@ -499,22 +496,17 @@ const Agent: React.FC = (): React.ReactElement => {
     const saved = localStorage.getItem('pipelineSchedule');
     return saved === '15m' || saved === '30m' || saved === '1h' || saved === '2h' ? saved : 'off';
   });
-  const [lastPipelineRun, setLastPipelineRun] = useState<string | null>(() => {
-    return scannerStateStore.getPipelineSchedule().lastRunAt;
-  });
-  const [nextPipelineRun, setNextPipelineRun] = useState<string | null>(() => {
-    return scannerStateStore.getPipelineSchedule().nextRunAt;
-  });
-  const pipelineTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Ref to prevent duplicate auto-run triggers from backend scheduler
-  const autoRunTriggeredRef = useRef<string | null>(null);
-
-  const SCHEDULE_INTERVALS: Record<string, number> = { '15m': 15 * 60 * 1000, '30m': 30 * 60 * 1000, '1h': 60 * 60 * 1000, '2h': 120 * 60 * 1000 };
+  // Ref: only sync pipelineSchedule from backend on first successful status fetch
+  const initialAutoSyncRef = useRef(true);
 
   // Pipeline Auto (market-hours scheduler) state
   const [pipelineAutoStatus, setPipelineAutoStatus] = useState<any>(null);
   const pipelineAutoStatusRef = useRef<any>(null);
   useEffect(() => { pipelineAutoStatusRef.current = pipelineAutoStatus; }, [pipelineAutoStatus]);
+  // Auto-run background display state — separate from manual pipeline state
+  const [autoRunActive, setAutoRunActive] = useState(false);
+  const [autoRunStep, setAutoRunStep] = useState('');
+  const [autoRunProgress, setAutoRunProgress] = useState(0);
   const [pipelineAutoLoading, setPipelineAutoLoading] = useState(false);
   const [pipelineAutoHistory, setPipelineAutoHistory] = useState<any[]>([]);
   const [pipelineAutoHistoryExpanded, setPipelineAutoHistoryExpanded] = useState(false);
@@ -580,29 +572,95 @@ const Agent: React.FC = (): React.ReactElement => {
   // Save pipeline-auto config when schedule changes
   const savePipelineAutoConfig = useCallback(async (schedule: 'off' | '15m' | '30m' | '1h' | '2h') => {
     setPipelineAutoLoading(true);
-    const wasOff = pipelineSchedule === 'off';
+    // Mark user as having interacted — initial sync effect should not overwrite this
+    initialAutoSyncRef.current = false;
+    const prevSchedule = pipelineSchedule;
     try {
       const enabled = schedule !== 'off';
       const intervalMap: Record<string, number> = { '15m': 15, '30m': 30, '1h': 60, '2h': 120 };
-      await pipelineAutoAPI.saveConfig({
+      const res = await pipelineAutoAPI.saveConfig({
         enabled,
         intervalMinutes: enabled ? intervalMap[schedule] : null,
         mode: pipelineMode,
       });
-      // Fetch updated status; backend scheduler owns all auto-run triggers.
+      if (!res?.data?.success) {
+        const reason = res?.data?.reason || res?.data?.message || 'Unknown error';
+        throw new Error('Save failed: ' + reason);
+      }
+      console.log('[PipelineAutoFrontend] save config response enabled=%s', enabled);
+
+      // Save succeeded — sync from backend status to get truth
       const statusData = await fetchPipelineAutoStatus();
+      const intervalToKey: Record<number, '15m' | '30m' | '1h' | '2h'> = { 15: '15m', 30: '30m', 60: '1h', 120: '2h' };
+      const backendEnabled = statusData?.enabled === true;
+      const newSchedule = backendEnabled && statusData?.intervalMinutes
+        ? (intervalToKey[statusData.intervalMinutes] || 'off')
+        : 'off';
+      setPipelineSchedule(newSchedule);
+      localStorage.setItem('pipelineSchedule', newSchedule);
       const marketOpen = statusData?.marketOpen === true;
-      if (enabled && wasOff && marketOpen) {
+      if (enabled && prevSchedule === 'off' && marketOpen) {
         console.log('[AutoRun] Toggle-on: backend scheduler armed during market hours');
-      } else if (enabled && wasOff && !marketOpen) {
+      } else if (enabled && prevSchedule === 'off' && !marketOpen) {
         console.log('[AutoRun] Toggle-on: armed but market closed — waiting for next market open');
       }
-    } catch {
-      // Silently ignore
+    } catch (err: any) {
+      // Show specific error message based on backend reason
+      const errMsg = err?.message || '';
+      let displayMsg = 'Failed to save Market Auto Run setting.';
+      if (errMsg.includes('missing_table')) {
+        displayMsg = 'Failed to save: Supabase table missing. Please run the database migration.';
+      } else if (errMsg.includes('missing_column')) {
+        displayMsg = 'Failed to save: database schema mismatch. Please run the database migration.';
+      } else if (errMsg.includes('rls_blocked')) {
+        displayMsg = 'Failed to save: database permission denied.';
+      } else if (errMsg.includes('upsert_conflict')) {
+        displayMsg = 'Failed to save: duplicate configuration conflict.';
+      } else if (errMsg.includes('service_role_missing')) {
+        displayMsg = 'Failed to save: backend service role key not configured.';
+      } else if (errMsg.includes('schema_mismatch')) {
+        displayMsg = 'Failed to save: database schema mismatch. Please run the database migration.';
+      } else if (errMsg.includes('supabase_write_failed')) {
+        displayMsg = 'Failed to save: database write error. Check backend logs.';
+      } else if (errMsg.includes('Save failed:')) {
+        displayMsg = errMsg;
+      }
+      message.error(displayMsg);
+      // Rollback: fetch backend truth and force-sync the toggle
+      const statusData = await fetchPipelineAutoStatus();
+      if (statusData) {
+        const intervalToKey: Record<number, '15m' | '30m' | '1h' | '2h'> = { 15: '15m', 30: '30m', 60: '1h', 120: '2h' };
+        const backendEnabled = statusData.enabled === true;
+        const newSchedule = backendEnabled && statusData.intervalMinutes
+          ? (intervalToKey[statusData.intervalMinutes] || 'off')
+          : 'off';
+        setPipelineSchedule(newSchedule);
+        localStorage.setItem('pipelineSchedule', newSchedule);
+        console.log('[PipelineAutoConfig] rollback toggle to backend state: enabled=%s schedule=%s', backendEnabled, newSchedule);
+      }
     } finally {
       setPipelineAutoLoading(false);
     }
   }, [pipelineMode, fetchPipelineAutoStatus, pipelineSchedule]);
+
+  // Initial fetch: always fetch pipeline-auto status on mount to correct stale localStorage
+  useEffect(() => {
+    fetchPipelineAutoStatus();
+  }, [fetchPipelineAutoStatus]);
+
+  // Sync pipelineSchedule from backend status on first successful fetch
+  useEffect(() => {
+    if (!pipelineAutoStatus || !initialAutoSyncRef.current) return;
+    initialAutoSyncRef.current = false;
+    const backendEnabled = pipelineAutoStatus.enabled === true;
+    const intervalToKey: Record<number, '15m' | '30m' | '1h' | '2h'> = { 15: '15m', 30: '30m', 60: '1h', 120: '2h' };
+    const key = backendEnabled && pipelineAutoStatus.intervalMinutes ? intervalToKey[pipelineAutoStatus.intervalMinutes] : null;
+    const newSchedule = key || 'off';
+    setPipelineSchedule(newSchedule);
+    localStorage.setItem('pipelineSchedule', newSchedule);
+    console.log('[PipelineAutoConfig] initial sync from backend: enabled=%s interval=%s schedule=%s',
+      backendEnabled, pipelineAutoStatus.intervalMinutes, newSchedule);
+  }, [pipelineAutoStatus]);
 
   // Poll pipeline-auto status (only when schedule is active)
   useEffect(() => {
@@ -612,23 +670,21 @@ const Agent: React.FC = (): React.ReactElement => {
     return () => clearInterval(id);
   }, [pipelineSchedule, fetchPipelineAutoStatus]);
 
-  // Auto-trigger full pipeline when backend scheduler signals shouldRunNow
+  // Track background auto-run status from activeRun (display only, never touches scannerStateStore)
+  // Only auto triggers (not manual) affect autoRunActive state
+  const AUTO_TRIGGERS = new Set(['market_auto_run', 'headless_market_auto_run', 'toggle_on', 'auto_manual_now']);
   useEffect(() => {
-    if (pipelineSchedule === 'off' || !pipelineAutoStatus) return;
-    if (pipelineRunningRef.current) return;
-    // Skip if backend is already running a headless scan
-    if (pipelineAutoStatus.isRunning) return;
-
-    if (pipelineAutoStatus.shouldRunNow && pipelineAutoStatus.marketOpen) {
-      const triggerKey = pipelineAutoStatus.nextAutoRunAt || 'now';
-      if (autoRunTriggeredRef.current === triggerKey) return;
-      autoRunTriggeredRef.current = triggerKey;
-      console.log('[PipelineAuto] due detected nextAutoRunAt=%s shouldRunNow=true — backend scheduler handles execution',
-        pipelineAutoStatus.nextAutoRunDisplay || pipelineAutoStatus.nextAutoRunAt);
-    } else if (!pipelineAutoStatus.shouldRunNow) {
-      autoRunTriggeredRef.current = null;
+    const activeRun = pipelineAutoStatus?.activeRun;
+    if (!activeRun || activeRun.status !== 'running' || !AUTO_TRIGGERS.has(activeRun.trigger || '')) {
+      setAutoRunActive(false);
+      setAutoRunStep('');
+      setAutoRunProgress(0);
+      return;
     }
-  }, [pipelineAutoStatus, pipelineSchedule]);
+    setAutoRunActive(true);
+    setAutoRunStep(activeRun.currentStep || '');
+    setAutoRunProgress(activeRun.progressPct || 0);
+  }, [pipelineAutoStatus?.activeRun]);
 
   // Fetch history when expanded
   useEffect(() => {
@@ -901,7 +957,7 @@ const Agent: React.FC = (): React.ReactElement => {
   };
 
   // Continue Scan处理函数 - 重构为纯rule-based continue scan
-  const processContinueScan = async () => {
+  const processContinueScan = async (): Promise<any[]> => {
     try {
       // Read directly from store to avoid stale React closure (pipeline may have
       // updated store via startMarketScanner() without React re-rendering yet)
@@ -934,7 +990,7 @@ const Agent: React.FC = (): React.ReactElement => {
           estimatedTimeRemaining: null,
         }));
         message.error(preflight.error || 'Session expired');
-        return;
+        return [];
       }
       if (!preflight.alpacaConfigured) {
         setContinueScanStatus('error');
@@ -945,7 +1001,7 @@ const Agent: React.FC = (): React.ReactElement => {
           estimatedTimeRemaining: null,
         }));
         message.error('Alpaca Market Data API is not configured.');
-        return;
+        return [];
       }
       // AI is optional for Continue Scan (rule-based), but warn if unavailable
       if (!preflight.aiAvailable) {
@@ -967,7 +1023,7 @@ const Agent: React.FC = (): React.ReactElement => {
           estimatedTimeRemaining: 0
         }));
         console.log('No market scan results available for continue scan');
-        return;
+        return [];
       }
 
       // 阶段B: 读取market scan results (20%)
@@ -1050,7 +1106,7 @@ const Agent: React.FC = (): React.ReactElement => {
             currentStage: 'Continue scan aborted: new market scan started',
             estimatedTimeRemaining: null
           }));
-          return;
+          return [];
         }
 
         // 应用入选基本条件
@@ -1231,6 +1287,7 @@ const Agent: React.FC = (): React.ReactElement => {
         const sampleScores = msResults.slice(0, 5).map((c: any) => `${c.symbol}(trendLabel=${c.trendLabel},trendScore=${c.trendScore},eventRisk=${c.eventRisk})`).join(', ');
         console.log(`[Pipeline] no candidates selected. Sample scanner data: ${sampleScores}`);
       }
+      return finalList;
 
     } catch (error) {
       console.error('Continue scan processing failed:', error);
@@ -1241,6 +1298,7 @@ const Agent: React.FC = (): React.ReactElement => {
         currentStage: `Error: ${error instanceof Error ? error.message : String(error)}`,
         estimatedTimeRemaining: null
       }));
+      return [];
     }
   };
 
@@ -2320,7 +2378,7 @@ const Agent: React.FC = (): React.ReactElement => {
     await fineScanPromise;
   };
 
-  const _runFineScanLoop = async () => {
+  const _runFineScanLoop = async (): Promise<any[]> => {
     setFineScanStatus('running');
     setFineScanProgress(0);
     setFineScanStepProgress(0);
@@ -2340,14 +2398,14 @@ const Agent: React.FC = (): React.ReactElement => {
       setFineScanMessage(preflight.error || 'Session expired');
       unregisterFineScanRun();
       message.error(preflight.error || 'Session expired');
-      return;
+      return [];
     }
     if (!preflight.alpacaConfigured) {
       setFineScanStatus('failed');
       setFineScanMessage('Alpaca Market Data API is not configured. Configure in Settings.');
       unregisterFineScanRun();
       message.error('Alpaca Market Data API is not configured.');
-      return;
+      return [];
     }
     if (!preflight.aiAvailable) {
       const reason = preflight.aiKeyIsMasked ? 'AI key is invalid (masked). Re-enter in Settings.' :
@@ -2358,7 +2416,7 @@ const Agent: React.FC = (): React.ReactElement => {
       setFineScanMessage(reason);
       unregisterFineScanRun();
       message.error(reason);
-      return;
+      return [];
     }
 
     try {
@@ -3529,11 +3587,13 @@ const Agent: React.FC = (): React.ReactElement => {
       unregisterFineScanRun();
 
       message.success(`Fine Scan complete: ${results.length} candidates analyzed`);
+      return results;
     } catch (error) {
       console.error('Fine scan error:', error);
       setFineScanStatus('error');
       unregisterFineScanRun();
       message.error('Fine scan failed: ' + (error as any).message);
+      return [];
     }
   };
 
@@ -3545,8 +3605,14 @@ const Agent: React.FC = (): React.ReactElement => {
   // entryPlanStatus and entryPlanResults are read from store snapshot above
   const [expandedEntryPlanSymbol, setExpandedEntryPlanSymbol] = useState<string | null>(null);
   const [entryPlanAccountSize] = useState<number>(100000);
-  const [entryPlanRiskPerTrade] = useState<number>(1);
-  const [entryPlanExecutionMode, _setEntryPlanExecutionMode] = useState<string>('Recommend Only'); // eslint-disable-line @typescript-eslint/no-unused-vars
+  // Derived from global riskProfile: Low→0.5%, Medium→1.0%, High→1.5%
+  const entryPlanRiskPerTrade = riskProfile === 'low' ? 0.5 : riskProfile === 'high' ? 1.5 : 1.0;
+  // Derived from pipelineMode + tradeMode
+  const entryPlanExecutionMode = pipelineMode === 'ai'
+    ? 'Recommend Only'
+    : tradeMode === 'real'
+      ? 'Real Trade if Triggered'
+      : 'Paper Trade if Triggered';
 
   // ===== Entry Plan Execution State =====
   const [executeModalVisible, setExecuteModalVisible] = useState(false);
@@ -3945,7 +4011,7 @@ const Agent: React.FC = (): React.ReactElement => {
   const [exitScanRunning, setExitScanRunning] = useState(false);
 
   const runExitScan = useCallback(async (options?: { autoSubmit?: boolean; mode?: 'paper' | 'real'; holdingsOverride?: any[] }) => {
-    if (exitScanRunning) return;
+    if (exitScanRunning) return [];
     // Use holdingsOverride if provided, then ref (always fresh), then closure variable as fallback
     const holdingsToScan = options?.holdingsOverride || holdingsRef.current || holdings;
     const exitScanMode = options?.mode || tradeMode;
@@ -3958,7 +4024,7 @@ const Agent: React.FC = (): React.ReactElement => {
     if (holdingsToScan.length === 0) {
       console.log('[ExitScan] skip reason=no_current_holdings');
       setExitScanStatus('skipped');
-      return;
+      return [];
     }
     const shouldAutoSubmit = options?.autoSubmit !== false; // default true
 
@@ -4122,6 +4188,7 @@ const Agent: React.FC = (): React.ReactElement => {
           stop: r.entryPlanStop,
         })),
       }).catch(() => {});
+      return [...results];
     } catch (e: any) {
       setExitScanStatus('failed');
       message.error(`Exit Scan failed: ${e?.message || 'Unknown error'}`);
@@ -4132,6 +4199,7 @@ const Agent: React.FC = (): React.ReactElement => {
         reason: e?.message || 'Unknown error',
         action: 'Review holdings, Alpaca configuration, and exit scan inputs.',
       }).catch(() => {});
+      return [];
     } finally {
       setExitScanRunning(false);
       // Refresh holdings if any orders were submitted
@@ -4752,7 +4820,8 @@ const Agent: React.FC = (): React.ReactElement => {
     await epPromise;
   }, [getEntryPlanCandidates, entryPlanAccountSize, entryPlanRiskPerTrade, entryPlanExecutionMode, tradeMode, tradingAccountData]);
 
-  const _runEntryPlanLoop = async (candidates: any[]) => {
+  const _runEntryPlanLoop = async (candidates: any[]): Promise<any[]> => {
+    let _epResult: any[] = [];
     setEntryPlanStatus('loading');
     setEntryPlanResults(null);
 
@@ -4832,6 +4901,7 @@ const Agent: React.FC = (): React.ReactElement => {
           isDevTest: devTestSymbols.has(p.symbol) || p.isDevTest || false,
         }));
         setEntryPlanResults(enrichedPlans);
+        _epResult = enrichedPlans;
         const epStatus = res.data.status || 'completed';
         const epErrors = res.data.errors || [];
         if (epStatus === 'partial' && epErrors.length > 0) {
@@ -4886,9 +4956,10 @@ const Agent: React.FC = (): React.ReactElement => {
               ...p, isDevTest: devTestSymbols.has(p.symbol) || p.isDevTest || false,
             }));
             setEntryPlanResults(enrichedPlans);
+            _epResult = enrichedPlans;
             setEntryPlanStatus('completed');
             unregisterEntryPlanRun();
-            return;
+            return _epResult;
           }
         } catch (retryErr: any) {
           console.error('[EntryPlan] Retry also failed:', retryErr.message);
@@ -4906,6 +4977,7 @@ const Agent: React.FC = (): React.ReactElement => {
       message.error(errMsg);
       throw new Error(errMsg);
     }
+    return _epResult;
   };
 
   // ===== AI Auto Pipeline =====
@@ -5292,417 +5364,331 @@ const Agent: React.FC = (): React.ReactElement => {
     return map[name] || name;
   };
 
-  const pollStore = (getter: () => any, done: (v: any) => boolean, intervalMs = 2000): Promise<void> =>
-    new Promise((resolve, reject) => {
-      const check = () => {
-        if (pipelineStopRequestedRef.current) { reject(new Error('Pipeline stopped by user')); return; }
-        const v = getter();
-        if (done(v)) { resolve(); } else { setTimeout(check, intervalMs); }
-      };
-      check();
-    });
+  // ── Run Auto Pipeline Now (background auto-run, does NOT touch manual state) ──
+  const handleRunAutoNow = async () => {
+    if (pipelineRunning) {
+      message.warning('Manual pipeline is running. Please wait for it to complete.');
+      return;
+    }
+    if (autoRunActive) {
+      message.warning('Auto pipeline is already running.');
+      return;
+    }
+    setPipelineAutoLoading(true);
+    try {
+      const res = await pipelineAutoAPI.runNow({
+        mode: pipelineMode,
+        riskProfile,
+        timeHorizon,
+        tradeMode,
+      });
+      if (!res?.data?.success) {
+        throw new Error(res?.data?.message || res?.data?.error || 'Failed to start auto pipeline');
+      }
+      console.log('[AutoPipelineNow] started runId=%s', res.data.runId);
+      message.success('Auto pipeline started in background.');
+      // Refresh auto status to show running state
+      fetchPipelineAutoStatus();
+    } catch (e: any) {
+      console.log('[AutoPipelineNow] failed: %s', e.message);
+      message.error(e.message || 'Failed to start auto pipeline');
+    } finally {
+      setPipelineAutoLoading(false);
+    }
+  };
 
   const runAIPipeline = async (opts?: { trigger?: string }) => {
-    // Pre-checks
+    if (autoRunActive) {
+      console.log('[PipelineUI] early return reason=background_auto_run_active');
+      message.warning('Background auto-run is active. Please wait for it to complete or stop it first.');
+      return;
+    }
     if (isAnyScanRunning) {
+      console.log('[PipelineUI] early return before start reason=isAnyScanRunning pipelineRunning=%s', pipelineRunning);
       message.warning(t.agent.scanAlreadyRunning);
       return;
     }
 
+    const runTrigger = opts?.trigger || 'manual';
+    console.log('[ManualPipeline] start trigger=%s mode=%s risk=%s horizon=%s tradeMode=%s',
+      runTrigger, pipelineMode, riskProfile, timeHorizon, tradeMode);
+
+    // Clear all old pipeline result states for a fresh run
     setPipelineRunning(true);
     setPipelineError(null);
     setPipelineStage('Market Scanner');
+    setFineScanResults([]);
+    setDeeperValidationStatus('idle');
+    setDeeperValidationResults(null);
+    setEntryPlanResults(null);
     pipelineStopRequestedRef.current = false;
-    const _startTime = new Date().toISOString();
-    setLastPipelineRun(_startTime);
-    const _triggerType = opts?.trigger || 'manual';
-    if (_triggerType === 'auto_market_interval') {
-      console.log('[PipelineAuto] auto interval run started');
-    }
+
+    // Reset all scanner state store sections — clears old STOPPED states, results, progress
+    scannerStateStore.resetMarketScanner();
+    scannerStateStore.resetContinueScan();
+    scannerStateStore.resetFineScan();
+    scannerStateStore.resetDeeperValidation();
+    scannerStateStore.resetEntryPlan();
+    scannerStateStore.resetExitScan();
+
+    const DEFAULT_SCAN_TOTAL = 50;
+    scannerStateStore.updateMarketScanner({
+      status: 'running' as const,
+      progress: 0,
+      totalSymbols: DEFAULT_SCAN_TOTAL,
+      scannedSymbols: 0,
+      detailedScanStatus: {
+        currentStatus: 'scanning' as const,
+        processedCount: 0,
+        totalCount: DEFAULT_SCAN_TOTAL,
+        percent: 0,
+        activeSymbols: [],
+        retryCount: 0,
+        validatedCount: 0,
+        failedCount: 0,
+        lastFailureReason: '',
+        lastScanAt: null,
+        nextScanAt: null,
+        statusMessage: 'Pipeline scanning in progress...',
+      },
+    });
+    console.log('[ManualPipeline] reset complete marketScanner=scanning');
 
     try {
-      // ── Stage 1: Market Scanner ──
-      setPipelineStage('Market Scanner');
-      await startMarketScanner();
-      await pollStore(
-        () => scannerStateStore.getState().marketScanner.status,
-        (s) => s === 'completed' || s === 'failed' || s === 'stopped',
-      );
-      const msStatus = scannerStateStore.getState().marketScanner.status;
-      if (msStatus !== 'completed') throw new Error(`Market Scanner ${msStatus}`);
+      const useSharedBackendPipeline = true;
+      if (useSharedBackendPipeline) {
+        const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+        const stepLabelMap: Record<string, typeof PIPELINE_STAGES[number]> = {
+          market_scanner: 'Market Scanner',
+          continue_scan: 'Continue Scan',
+          fine_scan: 'Fine Scan',
+          deeper_validation: 'Deeper Validation',
+          entry_plan: 'Entry Plan',
+          execution: 'Entry Plan',
+          exit_scan: 'Exit Scan',
+        };
 
-      // ── Stage 2: Continue Scan ──
-      setPipelineStage('Continue Scan');
-      setContinueScanStatus('processing');
-      setContinueScanProgress(0);
-      setPreferredContinueScanList([]);
-      setContinueScanDetails({
-        currentStage: 'Initializing...',
-        startTime: Date.now(),
-        estimatedTimeRemaining: null,
-        processedCount: 0,
-        totalCount: scannerStateStore.getState().marketScanner.results.length,
-      });
-      await processContinueScan();
-      const csStatus = scannerStateStore.getState().continueScan.status;
-      if (csStatus !== 'completed') throw new Error('Continue Scan failed');
-
-      // ── Stage 3: Fine Scan ──
-      setPipelineStage('Fine Scan');
-      const fsResults = scannerStateStore.getState().continueScan.results;
-      const msCount = scannerStateStore.getState().marketScanner.results.length;
-      if (!fsResults || fsResults.length === 0) {
-        const msSample = scannerStateStore.getState().marketScanner.results.slice(0, 3).map((r: any) =>
-          `${r.symbol}(trend=${r.trendLabel},score=${r.trendScore})`).join(', ');
-        throw new Error(`No Continue Scan candidates: Market Scanner completed ${msCount} symbols but 0 passed rule filter. Sample: ${msSample || '(empty scanner data)'}`);
-      }
-      const fineScanPromise = _runFineScanLoop();
-      registerFineScanRun(fineScanPromise);
-      await fineScanPromise;
-      const fsStatus = scannerStateStore.getState().fineScan.status;
-      if (fsStatus !== 'completed') {
-        const fsResults = scannerStateStore.getState().fineScan.results || [];
-        const rateLimitedCount = fsResults.filter((r: any) => r.__rateLimited).length;
-        const completedCount = fsResults.filter((r: any) => r.scanStatus === 'completed').length;
-        const rlSuffix = rateLimitedCount > 0
-          ? ` (${rateLimitedCount}/${fsResults.length} symbols rate limited, ${completedCount} completed)`
-          : ` (${completedCount}/${fsResults.length} completed)`;
-        throw new Error(`Fine Scan ${fsStatus}${rlSuffix}`);
-      }
-
-      // ── Stage 4: Deeper Validation ──
-      setPipelineStage('Deeper Validation');
-      // Read from store directly to avoid stale React snapshot after fine scan
-      const dvCandidates = _getValidationCandidatesFromStore();
-      if (dvCandidates.length === 0) throw new Error('Fine Scan completed but no Continue or Watch-to-Validate candidates found.');
-      const dvPromise = _runDeeperValidationLoop(dvCandidates);
-      registerDeeperValidationRun(dvPromise);
-      await dvPromise;
-      const dvStatus = scannerStateStore.getState().deeperValidation.status;
-      if (dvStatus !== 'completed') {
-        const dvErrDetail = dvErrorMessage
-          ? ` — ${dvErrorMessage}`
-          : ` (status=${dvStatus})`;
-        throw new Error(`Deeper Validation failed${dvErrDetail}`);
-      }
-
-      // ── Stage 5: Entry Plan ──
-      setPipelineStage('Entry Plan');
-      // Read from store directly to avoid stale React snapshot after DV
-      const epCandidates = _getEntryPlanCandidatesFromStore();
-      if (epCandidates.length === 0) throw new Error('Deeper Validation completed but no Confirmed/Watch/Review candidates found for Entry Plan.');
-      const epPromise = _runEntryPlanLoop(epCandidates);
-      registerEntryPlanRun(epPromise);
-      await epPromise;
-      const epStatus = scannerStateStore.getState().entryPlan.status;
-      if (epStatus !== 'completed') throw new Error(`Entry Plan ${epStatus}`);
-
-      // ── Stage 6: Exit Scan ──
-      setPipelineStage('Exit Scan');
-      const currentTradingMode = tradeMode;
-      console.log(`[Pipeline] Exit Scan: mode=${currentTradingMode}, fetching holdings...`);
-      await fetchHoldings(currentTradingMode);
-      console.log(`[Pipeline] Exit Scan: holdings after fetch=${holdingsRef.current.length}, mode=${currentTradingMode}`);
-      const exitScanMode = localStorage.getItem('pipelineMode') || 'hybrid';
-      const exitAutoSubmit = exitScanMode === 'ai';
-      // Pass holdingsOverride from ref to avoid stale closure
-      await runExitScan({ autoSubmit: exitAutoSubmit, mode: currentTradingMode, holdingsOverride: holdingsRef.current });
-      const esStatus = scannerStateStore.getState().exitScan.status;
-      // 'skipped' means no holdings — valid, not an error
-      if (esStatus !== 'completed' && esStatus !== 'skipped') throw new Error(`Exit Scan ${esStatus}`);
-
-      // ── Auto-classify results (keep Exit Scan stage active during classification) ──
-      const plans = scannerStateStore.getState().entryPlan.results || [];
-      const newExecution: any[] = [];
-      // Risk-adjusted R/R threshold (matches AI prompt thresholds)
-      const rrThreshold = riskProfile === 'high' ? 1.2 : riskProfile === 'low' ? 2.0 : 1.5;
-      for (const plan of plans) {
-        const fa = plan.finalAction || '';
-        const rr = plan.riskReward1 || 0;
-        const sl = plan.stopLoss || 0;
-        const tp = plan.takeProfit1 || 0;
-        const isLeveraged = plan.isLeveragedAlternative === true;
-        // AI mode: BUY_READY and READY_REVIEW both qualify for auto-execution
-        // Hybrid/Manual: only BUY_READY qualifies (READY_REVIEW stays in review)
-        const qualifiesForExec = pipelineMode === 'ai'
-          ? (fa === 'BUY_READY' || fa === 'READY_REVIEW')
-          : (fa === 'BUY_READY');
-        if (qualifiesForExec && rr >= rrThreshold && sl > 0 && tp > 0) {
-          const shares = plan.positionSizeShares || plan.shares || 0;
-          const entryPrice = plan.entryZoneHigh || plan.entryZoneLow || 0;
-          newExecution.push({
-            symbol: plan.symbol,
-            originalSymbol: plan.originalSymbol,
-            isLeveragedAlternative: isLeveraged,
-            alternativeDirection: plan.alternativeDirection,
-            alternativeRiskWarning: plan.alternativeRiskWarning,
-            setup: plan.setup || plan.setupType,
-            entryZoneLow: plan.entryZoneLow,
-            entryZoneHigh: plan.entryZoneHigh,
-            stopLoss: plan.stopLoss,
-            takeProfit1: plan.takeProfit1,
-            riskReward1: plan.riskReward1,
-            confidence: plan.confidence,
-            aiDecision: plan.aiDecision,
-            riskGateStatus: (plan.hardRiskGate || plan.riskGate || {}).status || plan.riskGateStatus,
-            dataQuality: plan.dataQuality,
-            positionSizeShares: shares,
-            positionSizeDollars: plan.positionSizeDollars,
-            qtyMode: 'shares',
-            userQty: shares > 0 ? shares : 1,
-            dollarAmount: shares > 0 && entryPrice > 0 ? Math.round(shares * entryPrice) : 0,
-            currentPrice: plan.currentPrice || 0,
-            orderType: entryPrice > 0 ? 'limit' : 'market',
-            limitPrice: entryPrice > 0 ? entryPrice : undefined,
-            stopPrice: plan.stopLoss || undefined,
-            trailPrice: undefined,
-            trailPercent: undefined,
-            timeInForce: 'day',
-            executionStatus: 'draft',
-            source: 'ai_mode',
-            addedAt: new Date().toISOString(),
-            entryPlan: plan,
-          });
-        } else if (fa === 'WAIT_FOR_ENTRY' || plan.aiDecision === 'WATCH') {
-          await addToWatchlist(plan);
+        const startResp = await pipelineAutoAPI.runPipeline({
+          trigger: 'manual',
+          mode: pipelineMode,
+          intervalMinutes: 0,
+          riskProfile,
+          timeHorizon,
+          tradeMode,
+        });
+        if (!startResp.data?.success || !startResp.data?.runId) {
+          throw new Error(startResp.data?.message || 'Failed to start manual pipeline');
         }
-      }
-      if (newExecution.length > 0) setAiExecutionList(prev => [...prev, ...newExecution]);
+        const backendRunId = startResp.data.runId;
+        console.log('[ManualPipeline] backend shared run started runId=%s', backendRunId);
 
-      // ── Auto-execute in AI mode ──
-      const currentMode = localStorage.getItem('pipelineMode') || 'hybrid';
-      const canAutoExecute = currentMode === 'ai';
-
-      if (canAutoExecute && newExecution.length > 0) {
-        // Keep Exit Scan stage active during auto-execution
-        let submitted = 0;
-        let failed = 0;
-        for (const item of newExecution) {
-          try {
-            // Determine order type based on current price vs entry zone
-            const cp = item.currentPrice || 0;
-            const eLow = item.entryZoneLow || 0;
-            const eHigh = item.entryZoneHigh || 0;
-            let orderType = item.orderType || 'market';
-            let limitPrice = item.limitPrice;
-            if (eLow > 0 && eHigh > 0 && cp > 0) {
-              if (cp >= eLow && cp <= eHigh) {
-                orderType = 'market'; // Price in zone — execute immediately
-              } else if (cp < eLow) {
-                orderType = 'limit';
-                limitPrice = eLow; // Below zone — limit at zone low
-              } else {
-                orderType = 'limit';
-                limitPrice = eHigh; // Above zone — limit at zone high
-              }
-            }
-            const orderData: any = {
-              symbol: item.symbol,
-              side: 'buy',
-              type: orderType,
-              time_in_force: item.timeInForce || 'day',
-              tradingMode: tradeMode,
-              automationMode: 'full-ai',
-              executionSource: 'ai_mode',
-              confirmed: shouldAutoConfirmOrder,
-            };
-            if (item.qtyMode === 'dollars' && item.dollarAmount > 0) {
-              orderData.notional = item.dollarAmount;
-            } else {
-              orderData.qty = item.userQty || item.positionSizeShares || 1;
-            }
-            if (orderType === 'limit' && limitPrice > 0) orderData.limit_price = limitPrice;
-            if (orderType === 'stop' && item.stopPrice > 0) orderData.stop_price = item.stopPrice;
-            if (orderType === 'stop_limit') {
-              if (item.stopPrice > 0) orderData.stop_price = item.stopPrice;
-              if (item.limitPrice > 0) orderData.limit_price = item.limitPrice;
-            }
-            if (orderType === 'trailing_stop') {
-              if (item.trailPrice > 0) orderData.trail_price = item.trailPrice;
-              else if (item.trailPercent > 0) orderData.trail_percent = item.trailPercent;
-            }
-            const res = await aiExecutionAPI.placeOrder(orderData);
-            const d = res.data;
-            if (d.success && d.status === 'submitted') {
-              submitted++;
-              // Remove from execution list on success
-              setAiExecutionList(prev => prev.filter(e => e.symbol !== item.symbol));
-              const logEntry = {
-                id: d.order?.id || Date.now().toString(),
-                symbol: item.symbol,
-                side: 'buy',
-                qty: orderData.qty || orderData.notional || 0,
-                mode: d.modeUsed,
-                orderId: d.order?.id,
-                orderStatus: d.order?.status,
-                submittedAt: new Date().toISOString(),
-                message: d.message,
-              };
-              setExecutionLog(prev => [logEntry, ...prev]);
-            } else if (d.status === 'confirmation_required') {
-              // Show confirmation modal (Hybrid mode, or unexpected backend rejection)
-              setOrderConfirmTarget({ record: item, preview: d.orderPreview || {} });
-              setOrderConfirmVisible(true);
-              setOrderConfirmText('');
-              // Stop auto-execution, let user confirm remaining orders manually
+        let terminalStatus = '';
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < 900000) {
+          if (pipelineStopRequestedRef.current) {
+            await pipelineAutoAPI.stopPipeline().catch(() => {});
+          }
+          const statusResp = await pipelineAutoAPI.getStatus();
+          const activeRun = statusResp.data?.activeRun;
+          if (activeRun?.runId === backendRunId) {
+            setPipelineStage(stepLabelMap[activeRun.currentStep] || 'Market Scanner');
+            if (activeRun.currentStep === 'market_scanner') scannerStateStore.updateMarketScanner({ status: 'running', progress: activeRun.progressPct || 0 });
+            if (activeRun.currentStep === 'continue_scan') scannerStateStore.updateContinueScan({ status: 'processing', progress: activeRun.progressPct || 0 });
+            if (activeRun.currentStep === 'fine_scan') scannerStateStore.updateFineScan({ status: 'running', progress: activeRun.progressPct || 0 });
+            if (activeRun.currentStep === 'deeper_validation') scannerStateStore.updateDeeperValidation({ status: 'loading' });
+            if (activeRun.currentStep === 'entry_plan' || activeRun.currentStep === 'execution') scannerStateStore.updateEntryPlan({ status: 'loading' });
+            if (activeRun.currentStep === 'exit_scan') scannerStateStore.updateExitScan({ status: 'scanning' });
+            if (['completed', 'failed', 'stopped'].includes(activeRun.status)) {
+              terminalStatus = activeRun.status;
               break;
-            } else {
-              failed++;
-              setAiExecutionList(prev => prev.map(e =>
-                e.symbol === item.symbol ? { ...e, executionStatus: 'failed', executionError: d.message || 'Order rejected' } : e
-              ));
             }
-          } catch (e: any) {
-            failed++;
-            setAiExecutionList(prev => prev.map(e =>
-              e.symbol === item.symbol ? { ...e, executionStatus: 'failed', executionError: e?.response?.data?.message || e?.message || 'Order failed' } : e
-            ));
+          }
+          await sleep(2000);
+        }
+
+        if (!terminalStatus) throw new Error('Manual pipeline timed out waiting for backend result');
+        if (terminalStatus === 'stopped' || pipelineStopRequestedRef.current) throw new Error('STOPPED');
+
+        let resultResp: any = null;
+        for (let i = 0; i < 10; i++) {
+          try {
+            resultResp = await pipelineAutoAPI.getPipelineResult(backendRunId, 'manual');
+            if (resultResp.data?.success) break;
+          } catch {
+            await sleep(1000);
           }
         }
-        // Refresh holdings after auto-execution
-        if (submitted > 0) {
-          fetchHoldings();
+        const dump = resultResp?.data?.result;
+        if (!dump) throw new Error('Manual pipeline result was not available');
+
+        const ms = dump.market_scanner || {};
+        const msResults = ms.results || [];
+        scannerStateStore.setMarketScannerResults(msResults);
+        scannerStateStore.updateMarketScanner({
+          status: 'completed',
+          progress: 100,
+          totalSymbols: ms.symbols?.length || ms.processed || msResults.length,
+          scannedSymbols: ms.processed || msResults.length,
+          lastScanTime: dump.finishedAt || new Date().toISOString(),
+          currentStatus: 'completed',
+          detailedScanStatus: {
+            ...scannerStateStore.getState().marketScanner.detailedScanStatus,
+            currentStatus: 'completed',
+            processedCount: ms.processed || msResults.length,
+            totalCount: ms.symbols?.length || ms.processed || msResults.length,
+            percent: 100,
+            validatedCount: msResults.length,
+            failedCount: ms.filtered || 0,
+            activeSymbols: [],
+            statusMessage: `Processed: ${ms.processed || msResults.length}/${ms.symbols?.length || ms.processed || msResults.length} | AI Success: ${ms.aiSuccess || 0}`,
+          },
+        });
+
+        const continueResults = dump.continue_scan?.results || [];
+        setPreferredContinueScanList(continueResults);
+        setContinueScanStatus('completed');
+        setContinueScanProgress(100);
+        setContinueScanDetails({
+          currentStage: 'Completed',
+          startTime: Date.now(),
+          estimatedTimeRemaining: 0,
+          processedCount: continueResults.length,
+          totalCount: msResults.length,
+        });
+
+        const fineResults = dump.fine_scan?.results || [];
+        setFineScanResults(fineResults);
+        setFineScanProgress(100);
+        setFineScanStatus('completed');
+        setFineScanMessage(`Fine Scan complete: ${fineResults.length} candidates analyzed`);
+        setDeeperValidationResults(dump.deeper_validation?.results || []);
+        setDeeperValidationStatus('completed');
+        setEntryPlanResults(dump.entry_plan?.results || []);
+        setEntryPlanStatus('completed');
+        setExitScanResults((dump.exit_scan?.results || []).map((r: any) => ({ ...r, exitDecision: r.exitDecision || r.action })));
+        setExitScanStatus('completed');
+
+        setPipelineStage('idle');
+        console.log('[CompareManual] %s', JSON.stringify(dump));
+        console.log('[ManualPipeline] completed trigger=%s runId=%s', runTrigger, backendRunId);
+        message.success('Pipeline complete!');
+        return;
+      }
+      // ── Step 1: Market Scanner ──
+      console.log('[ManualPipeline] step=market_scanner');
+      setPipelineStage('Market Scanner');
+      await startMarketScanner();
+      if (pipelineStopRequestedRef.current) {
+        scannerStateStore.updateMarketScanner({ status: 'stopped' });
+        throw new Error('STOPPED');
+      }
+      console.log('[ManualPipeline] market_scanner completed');
+
+      // ── Step 2: Continue Scan ──
+      console.log('[ManualPipeline] step=continue_scan');
+      setPipelineStage('Continue Scan');
+      const continueResults = await processContinueScan();
+      if (pipelineStopRequestedRef.current) {
+        scannerStateStore.updateContinueScan({ status: 'idle' });
+        throw new Error('STOPPED');
+      }
+      console.log('[ManualPipeline] continue_scan completed candidates=%d', continueResults.length);
+
+      // ── Step 3: Fine Scan ──
+      if (continueResults.length === 0) {
+        console.log('[ManualPipeline] step=fine_scan status=skipped reason=no_continue_candidates');
+        scannerStateStore.updateFineScan({ status: 'idle', message: 'No candidates from Continue Scan' });
+      } else {
+        console.log('[ManualPipeline] step=fine_scan');
+        setPipelineStage('Fine Scan');
+        await _runFineScanLoop();
+        if (pipelineStopRequestedRef.current) {
+          scannerStateStore.updateFineScan({ status: 'stopped', message: 'Stopped by user' });
+          throw new Error('STOPPED');
         }
-        message.info(`Auto-execution: ${submitted} submitted, ${failed} failed out of ${newExecution.length} candidates.`);
+        console.log('[ManualPipeline] fine_scan completed');
       }
 
+      // ── Step 4: Deeper Validation ──
+      const dvCandidates = _getValidationCandidatesFromStore();
+      if (dvCandidates.length === 0) {
+        console.log('[ManualPipeline] step=deeper_validation status=skipped reason=no_candidates');
+        scannerStateStore.updateDeeperValidation({ status: 'idle' });
+      } else {
+        console.log('[ManualPipeline] step=deeper_validation candidates=%d', dvCandidates.length);
+        setPipelineStage('Deeper Validation');
+        await _runDeeperValidationLoop(dvCandidates);
+        if (pipelineStopRequestedRef.current) {
+          scannerStateStore.updateDeeperValidation({ status: 'stopped' });
+          throw new Error('STOPPED');
+        }
+        console.log('[ManualPipeline] deeper_validation completed');
+      }
+
+      // ── Step 5: Entry Plan ──
+      const epCandidates = _getEntryPlanCandidatesFromStore();
+      if (epCandidates.length === 0) {
+        console.log('[ManualPipeline] step=entry_plan status=skipped reason=no_candidates');
+        scannerStateStore.updateEntryPlan({ status: 'idle' });
+      } else {
+        console.log('[ManualPipeline] step=entry_plan candidates=%d', epCandidates.length);
+        setPipelineStage('Entry Plan');
+        try {
+          await _runEntryPlanLoop(epCandidates);
+          if (pipelineStopRequestedRef.current) {
+            scannerStateStore.updateEntryPlan({ status: 'stopped' });
+            throw new Error('STOPPED');
+          }
+          console.log('[ManualPipeline] entry_plan completed');
+        } catch (epErr: any) {
+          console.log('[ManualPipeline] entry_plan failed error=%s', epErr.message);
+          // Entry plan failure is non-fatal — continue to exit scan
+        }
+      }
+
+      // ── Step 6: Exit Scan ──
+      console.log('[ManualPipeline] step=exit_scan');
+      setPipelineStage('Exit Scan');
+      await runExitScan({ autoSubmit: pipelineMode !== 'manual' });
+      if (pipelineStopRequestedRef.current) {
+        scannerStateStore.updateExitScan({ status: 'stopped' });
+        throw new Error('STOPPED');
+      }
+      console.log('[ManualPipeline] exit_scan completed');
+
       setPipelineStage('idle');
-      const exitResults = scannerStateStore.getState().exitScan.results || [];
-      const exitSubmitted = exitResults.filter((r: any) => r.status === 'submitted').length;
-      const exitMsg = exitSubmitted > 0 ? `, ${exitSubmitted} exit orders submitted` : '';
-      message.success(`Pipeline complete! ${newExecution.length} execution candidates, ${plans.length - newExecution.length} added to watchlist${exitMsg}.`);
+      console.log('[ManualPipeline] completed trigger=%s', runTrigger);
+      message.success('Pipeline complete!');
     } catch (e: any) {
-      const msg = e.message || 'Pipeline failed';
-      setPipelineError(msg);
-      setPipelineStage('failed');
-      message.error(msg);
+      if (e.message === 'STOPPED') {
+        setPipelineStage('idle');
+        console.log('[ManualPipeline] stopped by user trigger=%s', runTrigger);
+        message.info('Pipeline stopped by user');
+      } else {
+        const msg = e.message || 'Pipeline failed';
+        console.log('[ManualPipeline] failed trigger=%s error=%s', runTrigger, msg);
+        setPipelineError(msg);
+        setPipelineStage('failed');
+        message.error(msg);
+      }
     } finally {
       setPipelineRunning(false);
-      const result = pipelineStage === 'failed' ? 'failed' : pipelineStopRequestedRef.current ? 'stopped' : 'success';
-      scannerStateStore.updatePipelineSchedule({ lastRunAt: _startTime, lastRunResult: result });
-      scheduleNextRun(true);
-      if (_triggerType === 'auto_market_interval') {
-        console.log('[PipelineAuto] auto interval run %s', result === 'success' ? 'completed' : 'failed');
-      }
-      // Sync run completion to backend scheduler so it advances nextRunAt
-      if (opts?.trigger === 'auto_market_session' || opts?.trigger === 'auto_market_interval') {
-        const intervalMs = pipelineAutoStatus?.intervalMinutes
-          ? pipelineAutoStatus.intervalMinutes * 60000
-          : SCHEDULE_INTERVALS[pipelineSchedule] || 15 * 60 * 1000;
-        pipelineAutoAPI.saveConfig({
-          enabled: true,
-          intervalMinutes: Math.round(intervalMs / 60000),
-          mode: pipelineMode,
-          lastRunAt: _startTime,
-        }).catch(() => {});
-      }
+      fetchPipelineAutoStatus();
     }
   };
 
   const stopPipeline = () => {
     pipelineStopRequestedRef.current = true;
-    if (pipelineStage === 'Market Scanner') stopMarketScannerByUser();
+    pipelineAutoAPI.stopPipeline().catch(() => {});
   };
-
-  // Schedule next pipeline run — robust implementation with persistence and polling
-  const clearScheduleTimer = useCallback(() => {
-    if (pipelineTimerRef.current) { clearInterval(pipelineTimerRef.current); pipelineTimerRef.current = null; }
-  }, []);
-
-  const scheduleNextRun = useCallback((fromNow = true) => {
-    clearScheduleTimer();
-    const savedSchedule = localStorage.getItem('pipelineSchedule') || 'off';
-    if (savedSchedule === 'off' || savedSchedule === 'manual') {
-      setNextPipelineRun(null);
-      scannerStateStore.updatePipelineSchedule({ nextRunAt: null });
-      return;
-    }
-    setNextPipelineRun(null);
-    scannerStateStore.updatePipelineSchedule({ nextRunAt: null });
-    if (savedSchedule !== '__legacy_browser_timer__') return;
-    const intervalMs = SCHEDULE_INTERVALS[savedSchedule];
-    if (!intervalMs) { setNextPipelineRun(null); return; }
-
-    // Compute next run time
-    let nextTime: number;
-    if (!fromNow) {
-      // Recovery mode: use persisted nextRunAt if still in the future, else run now
-      const persisted = scannerStateStore.getPipelineSchedule().nextRunAt;
-      const persistedTime = persisted ? new Date(String(persisted)).getTime() : 0;
-      nextTime = persistedTime > Date.now() ? persistedTime : Date.now() + 5000; // 5s grace if missed
-    } else {
-      nextTime = Date.now() + intervalMs;
-    }
-    const nextIso = new Date(nextTime).toISOString();
-    setNextPipelineRun(nextIso);
-    scannerStateStore.updatePipelineSchedule({ nextRunAt: nextIso });
-
-    // Poll every 30 seconds to check if it's time
-    pipelineTimerRef.current = setInterval(() => {
-      const now = Date.now();
-      const currentNext = scannerStateStore.getPipelineSchedule().nextRunAt;
-      if (!currentNext) { clearScheduleTimer(); return; }
-      const nextMs = new Date(currentNext).getTime();
-      if (now < nextMs) return; // Not time yet
-
-      // Time to run — check guards
-      const mode = localStorage.getItem('pipelineMode') || 'hybrid';
-      if (mode === 'manual') return;
-      if (pipelineRunningRef.current) {
-        // Pipeline busy — skip this run, schedule next
-        const newNext = new Date(Date.now() + intervalMs).toISOString();
-        setNextPipelineRun(newNext);
-        scannerStateStore.updatePipelineSchedule({ nextRunAt: newNext });
-        return;
-      }
-      if (isScanRunning() || isFineScanRunning() || isDeeperValidationRunning() || isEntryPlanRunning()) return;
-
-      // MARKET GATE: only fire during market hours (09:30-16:00 ET)
-      const paStatus = pipelineAutoStatusRef.current;
-      if (paStatus && !paStatus.marketOpen) {
-        console.log('[AutoRun] Timer skipped: market is closed — waiting for next market open trigger from backend');
-        clearScheduleTimer();
-        setNextPipelineRun(null);
-        scannerStateStore.updatePipelineSchedule({ nextRunAt: null });
-        return;
-      }
-      if (paStatus?.stoppedForToday) {
-        console.log('[AutoRun] Timer skipped: stoppedForToday — no more runs today');
-        clearScheduleTimer();
-        setNextPipelineRun(null);
-        scannerStateStore.updatePipelineSchedule({ nextRunAt: null });
-        return;
-      }
-
-      // Fire the pipeline (timer-triggered = auto_market_session)
-      runAIPipelineRef.current?.({ trigger: 'auto_market_session' });
-    }, 30000); // 30-second poll
-  }, [clearScheduleTimer]);
-
-  // On mount: recover schedule. On unmount: cleanup.
-  useEffect(() => {
-    const savedSchedule = localStorage.getItem('pipelineSchedule') || 'off';
-    if (savedSchedule !== 'off' && savedSchedule !== 'manual') {
-      // Recovery: check if we missed a scheduled run
-      scheduleNextRun(false); // false = recovery mode
-    }
-    return () => { clearScheduleTimer(); };
-  }, []);
 
   // Persist pipeline mode to localStorage
   useEffect(() => { localStorage.setItem('pipelineMode', pipelineMode); }, [pipelineMode]);
 
-  // When schedule setting changes, restart timer
+  // Persist pipeline schedule choice to localStorage
   useEffect(() => {
     localStorage.setItem('pipelineSchedule', pipelineSchedule);
     scannerStateStore.updatePipelineSchedule({ intervalKey: pipelineSchedule });
-    if (pipelineSchedule === 'off') {
-      clearScheduleTimer();
-      setNextPipelineRun(null);
-      scannerStateStore.updatePipelineSchedule({ nextRunAt: null });
-    } else {
-      scheduleNextRun(true); // true = from now
-    }
   }, [pipelineSchedule]);
 
   const selectValidationCandidates = useCallback(() => {
@@ -5779,7 +5765,8 @@ const Agent: React.FC = (): React.ReactElement => {
     await dvPromise;
   };
 
-  const _runDeeperValidationLoop = async (selected: any[]) => {
+  const _runDeeperValidationLoop = async (selected: any[]): Promise<any[]> => {
+    let _result: any[] = [];
     setDeeperValidationStatus('loading');
     setDeeperValidationResults(null);
     setDvErrorMessage(null);
@@ -5790,7 +5777,7 @@ const Agent: React.FC = (): React.ReactElement => {
       setDeeperValidationStatus('error');
       unregisterDeeperValidationRun();
       message.error(preflight.error || 'Session expired');
-      return;
+      return _result;
     }
     if (!preflight.aiAvailable) {
       const reason = preflight.aiKeyIsMasked ? 'AI key is invalid (masked). Re-enter in Settings.' :
@@ -5800,7 +5787,7 @@ const Agent: React.FC = (): React.ReactElement => {
       setDeeperValidationStatus('error');
       unregisterDeeperValidationRun();
       message.error(reason);
-      return;
+      return _result;
     }
 
     try {
@@ -5844,6 +5831,7 @@ const Agent: React.FC = (): React.ReactElement => {
           selectedBy: selectedByMap.get(r.symbol) || 'Continue',
         }));
         setDeeperValidationResults(enrichedResults);
+        _result = enrichedResults;
         setDvErrors(resp.errors || []);
 
         const dvStatus = resp.status || 'completed';
@@ -5900,6 +5888,7 @@ const Agent: React.FC = (): React.ReactElement => {
               selectedBy: selectedByMap.get(r.symbol) || 'Continue',
             }));
             setDeeperValidationResults(enrichedResults);
+            _result = enrichedResults;
             setDvErrors(resp.errors || []);
 
             const dvStatus = resp.status || 'completed';
@@ -5920,7 +5909,7 @@ const Agent: React.FC = (): React.ReactElement => {
               message.success(`Deeper validation completed for ${resp.results.length} results`);
             }
             unregisterDeeperValidationRun();
-            return;
+            return _result;
           }
         } catch (retryErr: any) {
           console.error('[DeeperValidation] Retry also failed:', retryErr.message);
@@ -5948,6 +5937,7 @@ const Agent: React.FC = (): React.ReactElement => {
       unregisterDeeperValidationRun();
       message.error(errMsg);
     }
+    return _result;
   };
 
 
@@ -6393,6 +6383,389 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
         </Card>
       </div>
 
+      {/* Market Auto Run — standalone background auto pipeline card */}
+      <div style={{ marginBottom: 24 }}>
+        <Card
+          className="premium-card"
+          bodyStyle={{ padding: 0 }}
+          title={
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 20px', borderBottom: '1px solid #f0f0f0' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div style={{ width: 36, height: 36, borderRadius: 10, background: 'linear-gradient(135deg, #e6f7ff 0%, #bae7ff 100%)', color: '#1890ff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, border: '1px solid #91d5ff' }}>
+                  <SyncOutlined />
+                </div>
+                <span style={{ fontWeight: 800, fontSize: 18, color: '#1f1f1f', letterSpacing: '-0.3px' }}>{t.agent.marketAutoRun}</span>
+                <Tag color={pipelineSchedule !== 'off' ? 'green' : 'default'} bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, margin: 0, padding: '2px 8px' }}>
+                  {pipelineSchedule !== 'off' ? 'On' : 'Off'}
+                </Tag>
+              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <Switch
+                  checked={pipelineSchedule !== 'off'}
+                  loading={pipelineAutoLoading}
+                  onChange={(checked) => {
+                    if (checked) {
+                      const defaultSchedule = pipelineSchedule === 'off' ? '15m' : pipelineSchedule;
+                      setPipelineSchedule(defaultSchedule);
+                      savePipelineAutoConfig(defaultSchedule);
+                    } else {
+                      setPipelineSchedule('off');
+                      savePipelineAutoConfig('off');
+                    }
+                  }}
+                />
+              </div>
+            </div>
+          }
+        >
+          {/* Subtitle */}
+          <div style={{ padding: '10px 20px', background: '#fafafa', borderBottom: '1px solid #f0f0f0' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#595959', fontSize: 12 }}>
+              <InfoCircleOutlined style={{ color: '#1890ff', fontSize: 13 }} />
+              <span style={{ fontWeight: 500 }}>{t.agent.marketAutoRunSubtitle}</span>
+            </div>
+          </div>
+
+          <div style={{ background: '#fafafa', padding: '16px 20px' }}>
+            <Row gutter={32}>
+              {/* Left Column: Control */}
+              <Col span={8}>
+                <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>Control</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <ThunderboltOutlined style={{ color: pipelineSchedule !== 'off' ? '#52c41a' : '#bfbfbf', fontSize: 14 }} />
+                    <span style={{ fontSize: 12, color: '#595959', fontWeight: 500 }}>
+                      {pipelineSchedule === 'off' ? (
+                        'Automation is disabled.'
+                      ) : pipelineAutoStatus && !pipelineAutoStatus.marketOpen ? (
+                        pipelineAutoStatus.marketStage === 'premarket' ? (
+                          <span style={{ color: '#1890ff' }}>Premarket — armed, next run at 09:30 ET.</span>
+                        ) : (
+                          <span style={{ color: '#faad14' }}>Market closed — armed, waiting for open.</span>
+                        )
+                      ) : (
+                        <span style={{ color: '#52c41a' }}>Active — monitoring during market hours.</span>
+                      )}
+                    </span>
+                  </div>
+                  <Tooltip title="Runs one background auto scan without enabling the scheduler. Does not affect manual pipeline sections.">
+                    <Button
+                      type="primary"
+                      ghost
+                      icon={<ThunderboltOutlined />}
+                      onClick={handleRunAutoNow}
+                      disabled={pipelineRunning || autoRunActive || pipelineAutoLoading}
+                      loading={pipelineAutoLoading}
+                      block
+                      style={{
+                        borderRadius: 8,
+                        height: 36,
+                        fontSize: 12,
+                        fontWeight: 700,
+                        borderColor: pipelineRunning || autoRunActive ? '#d9d9d9' : '#1890ff',
+                        color: pipelineRunning || autoRunActive ? '#bfbfbf' : '#1890ff',
+                      }}
+                    >
+                      {autoRunActive ? 'Auto Running...' : t.agent.runAutoPipelineNow}
+                    </Button>
+                  </Tooltip>
+                  <div style={{ fontSize: 10, color: '#bfbfbf', textAlign: 'center' }}>
+                    {pipelineSchedule === 'off'
+                      ? 'Run once without enabling schedule'
+                      : 'Trigger an immediate background scan'}
+                  </div>
+                </div>
+              </Col>
+
+              {/* Middle Column: Schedule */}
+              <Col span={8}>
+                <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>{t.agent.backgroundSchedule}</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
+                  {(['off', '15m', '30m', '1h', '2h'] as const).map((s) => (
+                    <Button key={s}
+                      type={pipelineSchedule === s ? 'primary' : 'default'}
+                      onClick={() => savePipelineAutoConfig(s)}
+                      disabled={pipelineAutoLoading}
+                      style={{
+                        borderRadius: 8,
+                        height: 36,
+                        fontSize: 12,
+                        fontWeight: pipelineSchedule === s ? 700 : 500,
+                        gridColumn: s === 'off' ? '1 / -1' : undefined,
+                        background: pipelineSchedule === s ? '#1890ff' : '#fff',
+                        color: pipelineSchedule === s ? '#fff' : '#595959',
+                        borderColor: pipelineSchedule === s ? '#1890ff' : '#d9d9d9',
+                        boxShadow: pipelineSchedule === s ? '0 2px 6px rgba(24, 144, 255, 0.2)' : 'none'
+                      }}
+                    >
+                      {s === 'off' ? t.agent.scheduleOff : s === '15m' ? t.agent.schedule15m : s === '30m' ? t.agent.schedule30m : s === '1h' ? t.agent.schedule1h : t.agent.schedule2h}
+                    </Button>
+                  ))}
+                </div>
+                <div style={{ fontSize: 10, color: '#bfbfbf', textAlign: 'center', marginTop: 8 }}>
+                  {t.agent.scheduleHelperText}
+                </div>
+                {pipelineSchedule !== 'off' && (
+                  <div style={{
+                    marginTop: 10, padding: '8px 10px', borderRadius: 6, border: '1px solid',
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    ...(pipelineAutoStatus?.marketOpen
+                      ? { background: '#f6ffed', borderColor: '#b7eb8f' }
+                      : { background: '#fffbe6', borderColor: '#ffe58f' }
+                    )
+                  }}>
+                    <SyncOutlined spin={autoRunActive} style={{ color: pipelineAutoStatus?.marketOpen ? '#52c41a' : '#faad14', fontSize: 13 }} />
+                    <span style={{ fontSize: 11, fontWeight: 600, color: pipelineAutoStatus?.marketOpen ? '#237804' : '#8c6d00' }}>
+                      {autoRunActive
+                        ? `Background auto scan running (${autoRunProgress}%)`
+                        : `Scheduled: Every ${pipelineSchedule}${pipelineAutoStatus?.marketOpen ? '' : ' (during market hours only)'}`
+                      }
+                    </span>
+                  </div>
+                )}
+              </Col>
+
+              {/* Right Column: Status Summary */}
+              <Col span={8}>
+                <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>Status Summary</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, background: '#fff', padding: 14, borderRadius: 10, border: '1px solid #f0f0f0', height: '100%' }}>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 11, color: '#595959', fontWeight: 500 }}>{t.agent.autoStatus}</span>
+                    {pipelineAutoStatus ? (
+                      pipelineAutoStatus.autoStatus === 'Off' ? (
+                        <Tag color="default" bordered={false} style={{ margin: 0, fontWeight: 700, fontSize: 10 }}>Off</Tag>
+                      ) : pipelineAutoStatus.autoStatus === 'Running' ? (
+                        <Tag color="processing" bordered={false} style={{ margin: 0, fontWeight: 700, fontSize: 10 }}>Running</Tag>
+                      ) : !pipelineAutoStatus.marketOpen ? (
+                        <Tag color={pipelineAutoStatus.marketStage === 'premarket' ? 'blue' : pipelineAutoStatus.marketStatusRaw === 'holiday' ? 'red' : 'orange'} bordered={false} style={{ margin: 0, fontWeight: 700, fontSize: 10 }}>
+                          {pipelineAutoStatus.marketStage === 'premarket' ? 'Premarket' : pipelineAutoStatus.marketStatusRaw === 'holiday' ? 'Holiday Closed' : 'Market Closed'}
+                        </Tag>
+                      ) : (
+                        <Tag color="green" bordered={false} style={{ margin: 0, fontWeight: 700, fontSize: 10 }}>Armed</Tag>
+                      )
+                    ) : (
+                      <span style={{ fontSize: 11, color: '#bfbfbf' }}>—</span>
+                    )}
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 11, color: '#595959', fontWeight: 500 }}>{t.agent.lastAutoScan}</span>
+                    {pipelineAutoStatus?.lastRunAt ? (
+                      <span style={{ fontSize: 12, fontWeight: 700, color: '#262626' }}>{new Date(pipelineAutoStatus.lastRunAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    ) : (
+                      <span style={{ fontSize: 11, color: '#bfbfbf', fontStyle: 'italic' }}>—</span>
+                    )}
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 11, color: '#595959', fontWeight: 500 }}>{t.agent.nextAutoScan}</span>
+                    {pipelineSchedule === 'off' ? (
+                      <span style={{ fontSize: 11, color: '#bfbfbf', fontStyle: 'italic' }}>Disabled</span>
+                    ) : pipelineAutoStatus?.nextAutoRunAt ? (
+                      <span style={{ fontSize: 12, fontWeight: 700, color: '#1890ff' }}>{new Date(pipelineAutoStatus.nextAutoRunAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    ) : pipelineAutoStatus?.nextAutoRunDisplay ? (
+                      <span style={{ fontSize: 11, fontWeight: 600, color: '#52c41a' }}>{pipelineAutoStatus.nextAutoRunDisplay}</span>
+                    ) : (
+                      <span style={{ fontSize: 11, color: '#bfbfbf', fontStyle: 'italic' }}>—</span>
+                    )}
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 11, color: '#595959', fontWeight: 500 }}>Runs Today</span>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: '#262626' }}>{pipelineAutoStatus?.runCountToday || 0}</span>
+                  </div>
+
+                  <Divider style={{ margin: '2px 0', opacity: 0.4 }} />
+
+                  {/* Background auto-run progress */}
+                  {autoRunActive && (
+                    <div style={{ background: '#e6f7ff', border: '1px solid #91d5ff', borderRadius: 6, padding: '6px 8px' }}>
+                      <div style={{ fontSize: 10, fontWeight: 600, color: '#0050b3', marginBottom: 3 }}>
+                        <SyncOutlined spin style={{ marginRight: 4 }} />
+                        Background Auto Run
+                      </div>
+                      <div style={{ fontSize: 10, color: '#003a8c' }}>
+                        Step: {autoRunStep.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                      </div>
+                      <div style={{ fontSize: 10, color: '#003a8c' }}>
+                        Progress: {autoRunProgress}%
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Recent auto-run summary */}
+                  {!autoRunActive && pipelineAutoStatus?.lastAutoSummary?.completedAt && (
+                    <div style={{ background: '#f5f5f5', borderRadius: 6, padding: '6px 8px' }}>
+                      <div style={{ fontSize: 9, fontWeight: 600, color: '#595959', marginBottom: 3, textTransform: 'uppercase' }}>Last Background Scan</div>
+                      <div style={{ fontSize: 10, color: '#262626', lineHeight: 1.5 }}>
+                        {pipelineAutoStatus.lastAutoSummary.scanned > 0 && (
+                          <div>{pipelineAutoStatus.lastAutoSummary.scanned} scanned, {pipelineAutoStatus.lastAutoSummary.aiSuccess} AI, {(pipelineAutoStatus.lastAutoSummary.scanned || 0) - (pipelineAutoStatus.lastAutoSummary.aiSuccess || 0)} filtered</div>
+                        )}
+                        {pipelineAutoStatus.lastAutoSummary.entryPlanCount > 0 && (
+                          <div>Entry Plan: {pipelineAutoStatus.lastAutoSummary.entryPlanCount} candidates</div>
+                        )}
+                        {pipelineAutoStatus.lastAutoSummary.exitScanCount > 0 && (
+                          <div>Exit Scan: {pipelineAutoStatus.lastAutoSummary.exitScanCount} positions</div>
+                        )}
+                        <div style={{ fontSize: 9, color: '#8c8c8c', marginTop: 2 }}>
+                          {new Date(pipelineAutoStatus.lastAutoSummary.completedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          {' · '}{pipelineAutoStatus.lastAutoSummary.durationSeconds || 0}s
+                          {' · '}{pipelineAutoStatus.lastAutoSummary.trigger || 'auto'}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </Col>
+            </Row>
+
+            {/* Bottom: Next auto run info */}
+            {pipelineSchedule !== 'off' && pipelineAutoStatus && (
+              <div style={{ marginTop: 16, background: '#fff', border: '1px solid #e8e8e8', borderRadius: 8, padding: '8px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                <div style={{ fontSize: 11, color: '#595959', fontWeight: 500 }}>
+                  {!pipelineAutoStatus.marketOpen ? (
+                    <>
+                      {pipelineAutoStatus.nextMarketOpenAt ? (
+                        <>Next auto run: <span style={{ fontWeight: 700, color: '#1890ff' }}>{new Date(pipelineAutoStatus.nextMarketOpenAt).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York' })} ET</span></>
+                      ) : pipelineAutoStatus.nextMarketOpenDisplay ? (
+                        <span style={{ fontWeight: 700, color: '#faad14' }}>{pipelineAutoStatus.nextMarketOpenDisplay}</span>
+                      ) : (
+                        <span style={{ color: '#8c8c8c' }}>Waiting for next market open</span>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      {pipelineAutoStatus.nextAutoRunDisplay === 'Ready' ? (
+                        <>Next auto run: <span style={{ fontWeight: 700, color: '#52c41a' }}>Ready</span></>
+                      ) : pipelineAutoStatus.nextAutoRunAt ? (
+                        <>Next auto run: <span style={{ fontWeight: 700, color: '#1890ff' }}>{new Date(pipelineAutoStatus.nextAutoRunAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York' })}</span></>
+                      ) : null}
+                    </>
+                  )}
+                  {pipelineAutoStatus.stoppedForToday && !pipelineAutoStatus.blockedForDay && (
+                    <span style={{ display: 'block', fontSize: 10, color: '#8c8c8c', marginTop: 2 }}>Stopped for today — resumes next market open</span>
+                  )}
+                  {pipelineAutoStatus.blockedForDay && (
+                    <span style={{ display: 'block', fontSize: 10, color: '#8c8c8c', marginTop: 2 }}>No trading today — resumes next trading day</span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Next 15 Days Market Schedule — expandable */}
+            {pipelineSchedule !== 'off' && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed #e8e8e8' }}>
+                <div
+                  onClick={() => setPipelineAutoScheduleExpanded(!pipelineAutoScheduleExpanded)}
+                  style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#8c8c8c', userSelect: 'none' }}
+                >
+                  <span style={{ fontSize: 10 }}>{pipelineAutoScheduleExpanded ? '▼' : '▶'}</span>
+                  <span style={{ fontWeight: 600 }}>Next 15 Days Market Schedule</span>
+                  {pipelineAutoScheduleLoading && <Spin size="small" style={{ marginLeft: 4 }} />}
+                </div>
+                {pipelineAutoScheduleExpanded && (
+                  <div style={{ marginTop: 8, maxHeight: 320, overflowY: 'auto' }}>
+                    {pipelineAutoScheduleError ? (
+                      <div style={{ fontSize: 10, color: '#ff4d4f', padding: '8px' }}>
+                        {pipelineAutoScheduleError}
+                      </div>
+                    ) : pipelineAutoSchedule && pipelineAutoSchedule.length > 0 ? (
+                      <>
+                        {pipelineAutoSchedule.map((day: any, i: number) => {
+                          const statusColor = day.status === 'open' ? '#52c41a' :
+                                              day.status === 'early_close' ? '#faad14' :
+                                              day.status === 'holiday' ? '#ff4d4f' :
+                                              day.status === 'weekend' ? '#8c8c8c' : '#8c8c8c';
+                          const bgColor = i % 2 === 0 ? '#fafafa' : 'transparent';
+                          const autoRunText = day.autoRun ? 'Will run' : 'Will not run';
+                          const autoRunColor = day.autoRun ? '#52c41a' : '#8c8c8c';
+                          const hours = day.openTime && day.closeTime ? `${day.openTime}–${day.closeTime}` : '—';
+                          return (
+                            <div key={day.date} style={{
+                              display: 'flex', alignItems: 'center', gap: 6,
+                              padding: '5px 8px', fontSize: 10, lineHeight: '16px',
+                              background: bgColor, borderRadius: 4, marginBottom: 2
+                            }}>
+                              <span style={{ minWidth: 80, fontWeight: 600, color: '#262626' }}>
+                                {day.weekday?.slice(0, 3)} {day.date?.slice(5)}
+                              </span>
+                              <Tag bordered={false} style={{ fontSize: 9, margin: 0, lineHeight: '16px', borderRadius: 3, minWidth: 48, textAlign: 'center', background: statusColor + '18', color: statusColor, fontWeight: 700 }}>
+                                {day.status === 'early_close' ? 'Early Cls' : day.status === 'open' ? 'Open' : day.status === 'holiday' ? 'Holiday' : day.status === 'weekend' ? 'Weekend' : day.status || '—'}
+                              </Tag>
+                              <span style={{ color: '#595959', minWidth: 58, fontSize: 9 }}>{hours}</span>
+                              <span style={{ color: autoRunColor, fontWeight: 600, minWidth: 50, fontSize: 9 }}>{autoRunText}</span>
+                              <span style={{ color: '#8c8c8c', fontSize: 8, minWidth: 40 }}>
+                                {day.source === 'alpaca_calendar' ? 'Alpaca' : day.source === 'fallback_basic_hours' ? 'Fallbk' : ''}
+                              </span>
+                              {day.reason && (
+                                <span style={{ color: '#8c8c8c', fontSize: 9, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                                  {day.reason}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                        <div style={{ fontSize: 9, color: '#8c8c8c', marginTop: 4, paddingLeft: 8 }}>
+                          Source: {pipelineAutoScheduleSource === 'alpaca_calendar' ? 'Alpaca Calendar' : 'Fallback basic hours'} / {pipelineAutoScheduleWarning && <span style={{ color: '#faad14' }}>{pipelineAutoScheduleWarning}</span>}
+                        </div>
+                      </>
+                    ) : (
+                      <div style={{ fontSize: 10, color: '#8c8c8c', fontStyle: 'italic', padding: '8px' }}>
+                        {pipelineAutoScheduleLoading ? 'Loading...' : 'No schedule data available.'}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Auto Run History — expandable */}
+            {pipelineAutoStatus && pipelineAutoHistory.length > 0 && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed #e8e8e8' }}>
+                <div
+                  onClick={() => setPipelineAutoHistoryExpanded(!pipelineAutoHistoryExpanded)}
+                  style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#8c8c8c', userSelect: 'none' }}
+                >
+                  <span style={{ fontSize: 10 }}>{pipelineAutoHistoryExpanded ? '▼' : '▶'}</span>
+                  <span style={{ fontWeight: 600 }}>Recent Auto Runs</span>
+                  <Tag bordered={false} style={{ fontSize: 9, margin: 0, lineHeight: '16px', borderRadius: 4, background: '#f0f2f5', color: '#595959' }}>
+                    {pipelineAutoHistory.length}
+                  </Tag>
+                </div>
+                {pipelineAutoHistoryExpanded && (
+                  <div style={{ marginTop: 8 }}>
+                    {pipelineAutoHistory.map((entry: any, i: number) => (
+                      <div key={i} style={{
+                        display: 'flex', alignItems: 'center', gap: 8,
+                        padding: '4px 8px', fontSize: 10, lineHeight: '18px',
+                        background: i % 2 === 0 ? '#fafafa' : 'transparent',
+                        borderRadius: 4, marginBottom: 2
+                      }}>
+                        <Tag bordered={false} style={{ fontSize: 9, margin: 0, lineHeight: '16px', borderRadius: 3, minWidth: 36, textAlign: 'center' }}
+                          color={entry.status === 'success' ? 'green' : entry.status === 'failed' ? 'red' : entry.status === 'blocked' ? 'orange' : entry.status === 'skipped' ? 'default' : 'orange'}>
+                          {entry.status || '—'}
+                        </Tag>
+                        <span style={{ color: '#595959', minWidth: 50 }}>{entry.trigger_type || '—'}</span>
+                        <span style={{ color: '#8c8c8c' }}>
+                          {entry.started_at ? new Date(entry.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
+                        </span>
+                        <span style={{ color: '#8c8c8c' }}>
+                          {entry.duration_seconds ? `${entry.duration_seconds}s` : '—'}
+                        </span>
+                        <span style={{ color: '#595959', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {entry.reason || entry.error || ''}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </Card>
+      </div>
+
       {/* 1.52 Trading Preferences */}
       <div style={{ marginBottom: 24 }}>
         <Row gutter={20}>
@@ -6475,7 +6848,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     type="primary"
                     icon={<ThunderboltOutlined />}
                     onClick={() => runAIPipeline({ trigger: 'manual' })}
-                    disabled={pipelineMode === 'manual' ? false : isAnyScanRunning}
+                    disabled={autoRunActive || (pipelineMode === 'manual' ? false : isAnyScanRunning)}
                     style={{ 
                       background: 'linear-gradient(135deg, #722ed1 0%, #531dab 100%)', 
                       borderColor: '#722ed1', 
@@ -6509,329 +6882,36 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           </div>
 
           <div style={{ background: '#fafafa', padding: '16px 20px', borderRadius: 12, border: '1px solid #f0f0f0' }}>
-            <Row gutter={32}>
-              {/* Left Column: Pipeline Mode */}
-              <Col span={8}>
-                <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>{t.agent.aiPipeline} Mode</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {(['ai', 'hybrid', 'manual'] as const).map(m => (
-                    <div
-                      key={m}
-                      onClick={() => { setPipelineMode(m); if (pipelineSchedule !== 'off') savePipelineAutoConfig(pipelineSchedule); }}
-                      style={{
-                        padding: '10px 16px',
-                        borderRadius: 10,
-                        cursor: 'pointer',
-                        border: pipelineMode === m ? (m === 'ai' ? '2px solid #722ed1' : m === 'hybrid' ? '2px solid #1890ff' : '2px solid #d9d9d9') : '1px solid #f0f0f0',
-                        background: pipelineMode === m ? (m === 'ai' ? '#f9f0ff' : m === 'hybrid' ? '#e6f7ff' : '#fafafa') : '#fff',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        transition: 'all 0.2s',
-                        boxShadow: pipelineMode === m ? '0 2px 8px rgba(0,0,0,0.05)' : 'none'
-                      }}
-                    >
-                      <span style={{ fontWeight: 700, fontSize: 14, color: pipelineMode === m ? (m === 'ai' ? '#531dab' : m === 'hybrid' ? '#096dd9' : '#595959') : '#8c8c8c' }}>
-                        {m === 'ai' ? t.agent.modeAI : m === 'hybrid' ? t.agent.modeHybrid : t.agent.modeManual}
-                      </span>
-                      {pipelineMode === m && <CheckCircleFilled style={{ color: m === 'ai' ? '#722ed1' : m === 'hybrid' ? '#1890ff' : '#8c8c8c', fontSize: 16 }} />}
-                    </div>
-                  ))}
-                </div>
-              </Col>
-
-              {/* Middle Column: Schedule */}
-              <Col span={8}>
-                <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>{t.agent.pipelineRunning} Schedule</div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
-                  {(['off', '15m', '30m', '1h', '2h'] as const).map((s, idx) => (
-                    <Button key={s}
-                      type={pipelineSchedule === s ? 'primary' : 'default'}
-                      onClick={() => { setPipelineSchedule(s); savePipelineAutoConfig(s); }}
-                      disabled={pipelineMode === 'manual' && s !== 'off'}
-                      style={{ 
-                        borderRadius: 8, 
-                        height: 36, 
-                        fontSize: 12, 
-                        fontWeight: pipelineSchedule === s ? 700 : 500, 
-                        gridColumn: s === 'off' ? '1 / -1' : undefined,
-                        background: pipelineSchedule === s ? '#1890ff' : '#fff',
-                        color: pipelineSchedule === s ? '#fff' : '#595959',
-                        borderColor: pipelineSchedule === s ? '#1890ff' : '#d9d9d9',
-                        boxShadow: pipelineSchedule === s ? '0 2px 6px rgba(24, 144, 255, 0.2)' : 'none'
-                      }}
-                    >
-                      {s === 'off' ? t.agent.scheduleOff : s === '15m' ? t.agent.schedule15m : s === '30m' ? t.agent.schedule30m : s === '1h' ? t.agent.schedule1h : t.agent.schedule2h}
-                    </Button>
-                  ))}
-                </div>
-                {pipelineSchedule !== 'off' && (
-                  <div style={{
-                    marginTop: 16, padding: '10px 12px', borderRadius: 8, border: '1px solid',
-                    display: 'flex', alignItems: 'center', gap: 8,
-                    ...(pipelineAutoStatus?.marketOpen
-                      ? { background: '#f6ffed', borderColor: '#b7eb8f' }
-                      : { background: '#fffbe6', borderColor: '#ffe58f' }
-                    )
-                  }}>
-                    <SyncOutlined spin={pipelineRunning} style={{ color: pipelineAutoStatus?.marketOpen ? '#52c41a' : '#faad14', fontSize: 14 }} />
-                    <span style={{ fontSize: 12, fontWeight: 600, color: pipelineAutoStatus?.marketOpen ? '#237804' : '#8c6d00' }}>
-                      {pipelineRunning
-                        ? t.agent.scheduleRunningWait
-                        : `Scheduled: Every ${pipelineSchedule}${pipelineAutoStatus?.marketOpen ? '' : ' (during market hours only)'}`
-                      }
-                    </span>
-                  </div>
-                )}
-              </Col>
-
-              {/* Right Column: Status Summary */}
-              <Col span={8}>
-                <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>Status Summary</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12, background: '#fafafa', padding: 16, borderRadius: 10, border: '1px solid #f0f0f0', height: '100%' }}>
-                  
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 12, color: '#595959', fontWeight: 500 }}>{t.agent.lastRunLabel}</span>
-                    {lastPipelineRun ? (
-                      <span style={{ fontSize: 13, fontWeight: 700, color: '#262626' }}>{new Date(lastPipelineRun).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                    ) : (
-                      <span style={{ fontSize: 12, color: '#bfbfbf', fontStyle: 'italic' }}>—</span>
-                    )}
-                  </div>
-                  
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 12, color: '#595959', fontWeight: 500 }}>Result</span>
-                    {pipelineRunning ? (
-                      <Tag icon={<SyncOutlined spin />} color="processing" bordered={false} style={{ margin: 0, fontWeight: 700 }}>Running</Tag>
-                    ) : (() => {
-                      const result = scannerStateStore.getPipelineSchedule().lastRunResult;
-                      if (result === 'success') return <Tag color="green" bordered={false} style={{ margin: 0, fontWeight: 700 }}>Success</Tag>;
-                      if (result === 'failed') return <Tag color="red" bordered={false} style={{ margin: 0, fontWeight: 700 }}>Failed</Tag>;
-                      if (result === 'stopped') return <Tag color="orange" bordered={false} style={{ margin: 0, fontWeight: 700 }}>Stopped</Tag>;
-                      return <span style={{ fontSize: 12, color: '#bfbfbf' }}>—</span>;
-                    })()}
-                  </div>
-
-                  <Divider style={{ margin: '4px 0', opacity: 0.5 }} />
-
-                  {pipelineAutoStatus ? (
-                    <>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: 12, color: '#595959', fontWeight: 500 }}>Auto Status</span>
-                        {pipelineAutoStatus.autoStatus === 'Off' ? (
-                          <Tag color="default" bordered={false} style={{ margin: 0, fontWeight: 700 }}>Off</Tag>
-                        ) : pipelineAutoStatus.autoStatus === 'Running' ? (
-                          <Tag color="processing" bordered={false} style={{ margin: 0, fontWeight: 700 }}>Running</Tag>
-                        ) : !pipelineAutoStatus.marketOpen ? (
-                          <Tag color={pipelineAutoStatus.marketStage === 'premarket' ? 'blue' : pipelineAutoStatus.marketStatusRaw === 'holiday' ? 'red' : 'orange'} bordered={false} style={{ margin: 0, fontWeight: 700 }}>
-                            {pipelineAutoStatus.marketStage === 'premarket' ? 'Premarket' : pipelineAutoStatus.marketStatusRaw === 'holiday' ? 'Holiday Closed' : 'Market Closed'}
-                          </Tag>
-                        ) : (
-                          <Tag color="green" bordered={false} style={{ margin: 0, fontWeight: 700 }}>Armed</Tag>
-                        )}
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: 12, color: '#595959', fontWeight: 500 }}>Runs Today</span>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: '#262626' }}>{pipelineAutoStatus.runCountToday || 0}</span>
-                      </div>
-                    </>
-                  ) : (
-                    <div style={{ fontSize: 12, color: '#8c8c8c', fontStyle: 'italic', textAlign: 'center', marginTop: 8 }}>Auto status unavailable</div>
-                  )}
-                </div>
-              </Col>
-            </Row>
-
-            {/* Compact Automation Strip */}
-            <div style={{ marginTop: 24, background: '#fff', border: '1px solid #e8e8e8', borderRadius: 10, padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: '0 1px 4px rgba(0,0,0,0.02)', flexWrap: 'wrap', gap: 16 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <ThunderboltOutlined style={{ color: pipelineSchedule !== 'off' ? '#52c41a' : '#bfbfbf', fontSize: 16 }} />
-                  <span style={{ fontSize: 14, fontWeight: 700, color: '#262626' }}>Market Auto Run</span>
-                  <Switch
-                    size="small"
-                    checked={pipelineSchedule !== 'off'}
-                    loading={pipelineAutoLoading}
-                    onChange={(checked) => {
-                      if (checked) {
-                        const defaultSchedule = pipelineSchedule === 'off' ? '15m' : pipelineSchedule;
-                        setPipelineSchedule(defaultSchedule);
-                        savePipelineAutoConfig(defaultSchedule);
-                      } else {
-                        setPipelineSchedule('off');
-                        savePipelineAutoConfig('off');
-                      }
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+              <div style={{ fontSize: 11, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, whiteSpace: 'nowrap' }}>{t.agent.aiPipeline} Mode</div>
+              <div style={{ display: 'flex', gap: 8, flex: 1 }}>
+                {(['ai', 'hybrid', 'manual'] as const).map(m => (
+                  <div
+                    key={m}
+                    onClick={() => { setPipelineMode(m); }}
+                    style={{
+                      flex: 1,
+                      padding: '10px 16px',
+                      borderRadius: 10,
+                      cursor: 'pointer',
+                      border: pipelineMode === m ? (m === 'ai' ? '2px solid #722ed1' : m === 'hybrid' ? '2px solid #1890ff' : '2px solid #d9d9d9') : '1px solid #f0f0f0',
+                      background: pipelineMode === m ? (m === 'ai' ? '#f9f0ff' : m === 'hybrid' ? '#e6f7ff' : '#fafafa') : '#fff',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 6,
+                      transition: 'all 0.2s',
+                      boxShadow: pipelineMode === m ? '0 2px 8px rgba(0,0,0,0.05)' : 'none'
                     }}
-                  />
-                </div>
-                <Divider type="vertical" style={{ margin: 0, height: 16 }} />
-                <div style={{ fontSize: 12, color: '#8c8c8c' }}>
-                  {pipelineSchedule === 'off' ? (
-                    'Automation is disabled.'
-                  ) : pipelineAutoStatus && !pipelineAutoStatus.marketOpen ? (
-                    pipelineAutoStatus.marketStage === 'premarket' ? (
-                      <span style={{ color: '#1890ff', fontWeight: 500 }}>
-                        <ClockCircleOutlined style={{ marginRight: 6 }} />
-                        Premarket — automation armed, next run at 09:30 ET.
-                      </span>
-                    ) : (
-                      <span style={{ color: '#faad14', fontWeight: 500 }}>
-                        <WarningOutlined style={{ marginRight: 6 }} />
-                        Market is closed. Automation is armed but waiting for open.
-                      </span>
-                    )
-                  ) : (
-                    <span style={{ color: '#52c41a', fontWeight: 500 }}>
-                      <CheckCircleOutlined style={{ marginRight: 6 }} />
-                      Automation is active and monitoring during market hours.
+                  >
+                    <span style={{ fontWeight: 700, fontSize: 14, color: pipelineMode === m ? (m === 'ai' ? '#531dab' : m === 'hybrid' ? '#096dd9' : '#595959') : '#8c8c8c' }}>
+                      {m === 'ai' ? t.agent.modeAI : m === 'hybrid' ? t.agent.modeHybrid : t.agent.modeManual}
                     </span>
-                  )}
-                </div>
-              </div>
-              
-              {/* Next Market Open / Next Auto Run info */}
-              <div style={{ fontSize: 12, color: '#595959', fontWeight: 500, textAlign: 'right' }}>
-                {pipelineSchedule !== 'off' && pipelineAutoStatus && (
-                  <>
-                    {!pipelineAutoStatus.marketOpen ? (
-                      <span style={{ display: 'block' }}>
-                        {pipelineAutoStatus.nextMarketOpenAt ? (
-                          <>Next auto run: <span style={{ fontWeight: 700, color: '#1890ff' }}>{new Date(pipelineAutoStatus.nextMarketOpenAt).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York' })} ET</span></>
-                        ) : pipelineAutoStatus.nextMarketOpenDisplay ? (
-                          <span style={{ fontWeight: 700, color: '#faad14' }}>{pipelineAutoStatus.nextMarketOpenDisplay}</span>
-                        ) : (
-                          <span style={{ color: '#8c8c8c' }}>Waiting for next market open</span>
-                        )}
-                      </span>
-                    ) : (
-                      <>
-                        {pipelineAutoStatus.nextAutoRunDisplay === 'Ready' ? (
-                          <span style={{ display: 'block' }}>Next auto run: <span style={{ fontWeight: 700, color: '#52c41a' }}>Ready</span></span>
-                        ) : pipelineAutoStatus.nextAutoRunAt ? (
-                          <span style={{ display: 'block' }}>Next auto run: <span style={{ fontWeight: 700, color: '#1890ff' }}>{new Date(pipelineAutoStatus.nextAutoRunAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York' })}</span></span>
-                        ) : null}
-                      </>
-                    )}
-                    {pipelineAutoStatus.stoppedForToday && !pipelineAutoStatus.blockedForDay && (
-                      <span style={{ display: 'block', fontSize: 10, color: '#8c8c8c', marginTop: 2 }}>Stopped for today — resumes next market open</span>
-                    )}
-                    {pipelineAutoStatus.blockedForDay && (
-                      <span style={{ display: 'block', fontSize: 10, color: '#8c8c8c', marginTop: 2 }}>No trading today — resumes next trading day</span>
-                    )}
-                  </>
-                )}
+                    {pipelineMode === m && <CheckCircleFilled style={{ color: m === 'ai' ? '#722ed1' : m === 'hybrid' ? '#1890ff' : '#8c8c8c', fontSize: 14 }} />}
+                  </div>
+                ))}
               </div>
             </div>
-
-            {/* Next 15 Days Market Schedule — expandable */}
-            {pipelineSchedule !== 'off' && (
-              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed #e8e8e8' }}>
-                <div
-                  onClick={() => setPipelineAutoScheduleExpanded(!pipelineAutoScheduleExpanded)}
-                  style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#8c8c8c', userSelect: 'none' }}
-                >
-                  <span style={{ fontSize: 10 }}>{pipelineAutoScheduleExpanded ? '▼' : '▶'}</span>
-                  <span style={{ fontWeight: 600 }}>Next 15 Days Market Schedule</span>
-                  {pipelineAutoScheduleLoading && <Spin size="small" style={{ marginLeft: 4 }} />}
-                </div>
-                {pipelineAutoScheduleExpanded && (
-                  <div style={{ marginTop: 8, maxHeight: 320, overflowY: 'auto' }}>
-                    {pipelineAutoScheduleError ? (
-                      <div style={{ fontSize: 10, color: '#ff4d4f', padding: '8px 8px' }}>
-                        {pipelineAutoScheduleError}
-                      </div>
-                    ) : pipelineAutoSchedule && pipelineAutoSchedule.length > 0 ? (
-                      <>
-                        {pipelineAutoSchedule.map((day: any, i: number) => {
-                          const statusColor = day.status === 'open' ? '#52c41a' :
-                                              day.status === 'early_close' ? '#faad14' :
-                                              day.status === 'holiday' ? '#ff4d4f' :
-                                              day.status === 'weekend' ? '#8c8c8c' : '#8c8c8c';
-                          const bgColor = i % 2 === 0 ? '#fafafa' : 'transparent';
-                          const autoRunText = day.autoRun ? 'Will run' : 'Will not run';
-                          const autoRunColor = day.autoRun ? '#52c41a' : '#8c8c8c';
-                          const hours = day.openTime && day.closeTime ? `${day.openTime}–${day.closeTime}` : '—';
-                          return (
-                            <div key={day.date} style={{
-                              display: 'flex', alignItems: 'center', gap: 6,
-                              padding: '5px 8px', fontSize: 10, lineHeight: '16px',
-                              background: bgColor, borderRadius: 4, marginBottom: 2
-                            }}>
-                              <span style={{ minWidth: 80, fontWeight: 600, color: '#262626' }}>
-                                {day.weekday?.slice(0, 3)} {day.date?.slice(5)}
-                              </span>
-                              <Tag bordered={false} style={{ fontSize: 9, margin: 0, lineHeight: '16px', borderRadius: 3, minWidth: 48, textAlign: 'center', background: statusColor + '18', color: statusColor, fontWeight: 700 }}>
-                                {day.status === 'early_close' ? 'Early Cls' : day.status === 'open' ? 'Open' : day.status === 'holiday' ? 'Holiday' : day.status === 'weekend' ? 'Weekend' : day.status || '—'}
-                              </Tag>
-                              <span style={{ color: '#595959', minWidth: 58, fontSize: 9 }}>{hours}</span>
-                              <span style={{ color: autoRunColor, fontWeight: 600, minWidth: 50, fontSize: 9 }}>{autoRunText}</span>
-                              <span style={{ color: '#8c8c8c', fontSize: 8, minWidth: 40 }}>
-                                {day.source === 'alpaca_calendar' ? 'Alpaca' : day.source === 'fallback_basic_hours' ? 'Fallbk' : ''}
-                              </span>
-                              {day.reason && (
-                                <span style={{ color: '#8c8c8c', fontSize: 9, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                                  {day.reason}
-                                </span>
-                              )}
-                            </div>
-                          );
-                        })}
-                        <div style={{ fontSize: 9, color: '#8c8c8c', marginTop: 4, paddingLeft: 8 }}>
-                          Source: {pipelineAutoScheduleSource === 'alpaca_calendar' ? 'Alpaca Calendar' : 'Fallback basic hours'} / {pipelineAutoScheduleWarning && <span style={{ color: '#faad14' }}>{pipelineAutoScheduleWarning}</span>}
-                        </div>
-                      </>
-                    ) : (
-                      <div style={{ fontSize: 10, color: '#8c8c8c', fontStyle: 'italic', padding: '8px 8px' }}>
-                        {pipelineAutoScheduleLoading ? 'Loading...' : 'No schedule data available.'}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Auto Run History — expandable */}
-            {pipelineAutoStatus && pipelineSchedule !== 'off' && pipelineAutoHistory.length > 0 && (
-              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed #e8e8e8' }}>
-                <div
-                  onClick={() => setPipelineAutoHistoryExpanded(!pipelineAutoHistoryExpanded)}
-                  style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#8c8c8c', userSelect: 'none' }}
-                >
-                  <span style={{ fontSize: 10 }}>{pipelineAutoHistoryExpanded ? '▼' : '▶'}</span>
-                  <span style={{ fontWeight: 600 }}>Recent Auto Runs</span>
-                  <Tag bordered={false} style={{ fontSize: 9, margin: 0, lineHeight: '16px', borderRadius: 4, background: '#f0f2f5', color: '#595959' }}>
-                    {pipelineAutoHistory.length}
-                  </Tag>
-                </div>
-                {pipelineAutoHistoryExpanded && (
-                  <div style={{ marginTop: 8 }}>
-                    {pipelineAutoHistory.map((entry: any, i: number) => (
-                      <div key={i} style={{
-                        display: 'flex', alignItems: 'center', gap: 8,
-                        padding: '4px 8px', fontSize: 10, lineHeight: '18px',
-                        background: i % 2 === 0 ? '#fafafa' : 'transparent',
-                        borderRadius: 4, marginBottom: 2
-                      }}>
-                        <Tag bordered={false} style={{ fontSize: 9, margin: 0, lineHeight: '16px', borderRadius: 3, minWidth: 36, textAlign: 'center' }}
-                          color={entry.status === 'success' ? 'green' : entry.status === 'failed' ? 'red' : entry.status === 'blocked' ? 'orange' : entry.status === 'skipped' ? 'default' : 'orange'}>
-                          {entry.status || '—'}
-                        </Tag>
-                        <span style={{ color: '#595959', minWidth: 50 }}>{entry.trigger_type || '—'}</span>
-                        <span style={{ color: '#8c8c8c' }}>
-                          {entry.started_at ? new Date(entry.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
-                        </span>
-                        <span style={{ color: '#8c8c8c' }}>
-                          {entry.duration_seconds ? `${entry.duration_seconds}s` : '—'}
-                        </span>
-                        <span style={{ color: '#595959', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {entry.reason || entry.error || ''}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
 
             {pipelineStage !== 'idle' && (
               <div style={{ marginTop: 24, paddingTop: 20, borderTop: '1px dashed #e8e8e8' }}>
@@ -8781,9 +8861,15 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           {marketScannerResults.length === 0 && marketScannerStatus.status !== 'running' && (
             <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
               <LineChartOutlined style={{ fontSize: '48px', marginBottom: 16 }} />
-              <div style={{ fontSize: '14px' }}>{t.agent.noMarketScanResults}</div>
+              <div style={{ fontSize: '14px' }}>
+                {marketScannerStatus.status === 'completed'
+                  ? 'No qualified candidates / all filtered'
+                  : t.agent.noMarketScanResults}
+              </div>
               <div style={{ fontSize: '12px', marginTop: 8 }}>
-                {t.agent.clickRunScanner}
+                {marketScannerStatus.status === 'completed'
+                  ? `${detailedScanStatus.processedCount} symbols scanned, 0 passed filters`
+                  : t.agent.clickRunScanner}
               </div>
             </div>
           )}
@@ -10348,25 +10434,69 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   </div>
                 </div>
 
-                {/* Block 4: Execution Mode */}
-                <div style={{ background: '#f8f9fa', borderRadius: '8px', border: '1px solid #e8eaed', padding: '12px 14px' }}>
-                  <div style={{ fontSize: '10px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.6px', fontWeight: 500, marginBottom: '6px' }}>{t.agent.execution}</div>
-                  <div style={{ fontSize: '12px', fontWeight: 500, color: '#555', fontFamily: "'Inter', sans-serif", marginBottom: '4px' }}>
-                    {pipelineMode === 'ai'
-                      ? t.agent.aiModeLiveConfirm
-                      : pipelineMode === 'hybrid'
-                        ? t.agent.hybridModeManual
-                        : t.agent.manualModeRecommendations}
-                  </div>
-                  <div style={{ fontSize: '10px', color: '#999' }}>
-                    {pipelineMode === 'ai'
-                      ? t.agent.paperPreviewOnly
-                      : pipelineMode === 'hybrid'
-                        ? t.agent.noAutomaticOrders
-                        : t.agent.manualOnly}
+                {/* Block 4: Current Global Settings (read-only) */}
+                <div style={{ background: '#f8f9fa', borderRadius: '8px', border: '1px solid #e8eaed', padding: '10px 14px' }}>
+                  <div style={{ fontSize: '10px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.6px', fontWeight: 500, marginBottom: '8px' }}>Global Settings</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 12px', fontSize: '11px' }}>
+                    <span style={{ color: '#888' }}>Risk:</span>
+                    <span style={{ fontWeight: 600, color: riskProfile === 'high' ? '#e84749' : riskProfile === 'low' ? '#52c41a' : '#d48806' }}>{riskProfile === 'low' ? 'Low Risk' : riskProfile === 'high' ? 'High Risk' : 'Medium Risk'}</span>
+                    <span style={{ color: '#888' }}>Horizon:</span>
+                    <span style={{ fontWeight: 600, color: '#475569' }}>{timeHorizon === 'short' ? 'Short-term' : timeHorizon === 'long' ? 'Long-term' : 'Mid-term'}</span>
+                    <span style={{ color: '#888' }}>Mode:</span>
+                    <span style={{ fontWeight: 600, color: '#2563eb' }}>{pipelineMode === 'ai' ? 'AI' : pipelineMode === 'hybrid' ? 'Hybrid' : 'Manual'}</span>
+                    <span style={{ color: '#888' }}>Trade:</span>
+                    <span style={{ fontWeight: 600, color: tradeMode === 'real' ? '#e84749' : '#52c41a' }}>{tradeMode === 'real' ? 'Real' : 'Paper'}</span>
+                    <span style={{ color: '#888' }}>Risk/Trade:</span>
+                    <span style={{ fontWeight: 600, color: '#475569' }}>{entryPlanRiskPerTrade}%</span>
+                    <span style={{ color: '#888' }}>Execution:</span>
+                    <span style={{ fontWeight: 600, color: entryPlanExecutionMode.includes('Real') ? '#e84749' : '#475569', fontSize: '10px' }}>{entryPlanExecutionMode}</span>
                   </div>
                 </div>
               </div>
+
+              {/* F3: Buying Power Summary */}
+              {tradingAccountData?.buyingPower > 0 && (() => {
+                const bp = tradingAccountData.buyingPower || 0;
+                const totalAllocated = entryPlanResults
+                  .filter((p: any) => p.finalAction === 'BUY_READY' || p.finalAction === 'READY_REVIEW')
+                  .reduce((sum: number, p: any) => sum + (p.allocationDollars || p.positionSizeDollars || 0), 0);
+                const remaining = Math.max(0, bp * 0.9 - totalAllocated);
+                return (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '20px' }}>
+                    <div style={{ background: '#f0fdf4', borderRadius: '8px', border: '1px solid #bbf7d0', padding: '10px 14px', textAlign: 'center' }}>
+                      <div style={{ fontSize: '10px', color: '#166534', textTransform: 'uppercase', letterSpacing: '0.6px', fontWeight: 600 }}>Buying Power</div>
+                      <div style={{ fontSize: '16px', fontWeight: 800, color: '#15803d', fontFamily: "'Inter', sans-serif" }}>${bp.toLocaleString()}</div>
+                    </div>
+                    <div style={{ background: '#eff6ff', borderRadius: '8px', border: '1px solid #bfdbfe', padding: '10px 14px', textAlign: 'center' }}>
+                      <div style={{ fontSize: '10px', color: '#1e40af', textTransform: 'uppercase', letterSpacing: '0.6px', fontWeight: 600 }}>Allocated</div>
+                      <div style={{ fontSize: '16px', fontWeight: 800, color: '#1d4ed8', fontFamily: "'Inter', sans-serif" }}>${totalAllocated.toLocaleString()}</div>
+                    </div>
+                    <div style={{ background: '#fefce8', borderRadius: '8px', border: '1px solid #fef08a', padding: '10px 14px', textAlign: 'center' }}>
+                      <div style={{ fontSize: '10px', color: '#854d0e', textTransform: 'uppercase', letterSpacing: '0.6px', fontWeight: 600 }}>Remaining (90% BP)</div>
+                      <div style={{ fontSize: '16px', fontWeight: 800, color: '#a16207', fontFamily: "'Inter', sans-serif" }}>${remaining.toLocaleString()}</div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* F5: Account unavailable warning */}
+              {tradingAccountData && tradingAccountData.success !== true && (
+                <Alert
+                  message="Trading account not connected. Entry Plan will not generate executable BUY orders. Please connect your Alpaca account in Settings."
+                  type="error"
+                  showIcon
+                  style={{ marginBottom: '12px', fontSize: '12px', padding: '8px 16px' }}
+                />
+              )}
+              {/* F5: Account data unavailable (no positions/buying power) */}
+              {(!tradingAccountData || !tradingAccountData.buyingPower || tradingAccountData.buyingPower <= 0) && (
+                <Alert
+                  message="Buying power data unavailable. Position sizing may be unreliable. Ensure Alpaca account is connected in Settings."
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: '12px', fontSize: '12px', padding: '8px 16px' }}
+                />
+              )}
 
               {/* Execution mode warning for Real Trading — only in Hybrid/Manual modes */}
               {pipelineMode !== 'ai' && entryPlanExecutionMode === 'Real Trade if Triggered' && (
@@ -10602,10 +10732,22 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                                 <Label text={t.agent.riskUsed} /><Value v={ep.riskUsedPct != null ? `${ep.riskUsedPct.toFixed(1)}%` : (ep.riskBudget > 0 ? `${(ep.riskDollars / ep.riskBudget * 100).toFixed(1)}%` : '—')} bold color={ep.riskUsedPct > 80 ? '#dc2626' : '#d97706'} subText={t.agent.ofRiskBudget} />
                                 <Label text={t.agent.size} />
                                 <div style={{ display: 'flex', gap: '16px' }}>
-                                  <Value v={fmtShares(ep.positionSize || ep.positionSizeShares)} bold subText={t.agent.sharesLabel} />
-                                  <Value v={fmtDollars(ep.positionValue || ep.positionSizeDollars)} bold subText={t.agent.estValue} />
+                                  <Value v={fmtShares(ep.shares || ep.positionSize || ep.positionSizeShares)} bold subText={t.agent.sharesLabel} />
+                                  <Value v={fmtDollars(ep.allocationDollars || ep.positionValue || ep.positionSizeDollars)} bold subText={t.agent.estValue} />
                                 </div>
                                 <Label text={t.agent.capStatus} /><Value v={ep.positionCapStatus || (ep.positionCapped ? `${t.agent.cappedAt} ${fmtPct(ep.positionPct)}` : `${t.agent.okAt.replace('{pct}', fmtPct(ep.positionPct))}`)} bold color={ep.positionCapped ? '#d97706' : '#16a34a'} />
+                                <Label text="Holding Period" /><Value v={ep.holdingPeriod || '—'} bold color="#475569" />
+                                <Label text="BP Before/After" />
+                                <Value v={ep.buyingPowerBefore != null ? `${fmtDollars(ep.buyingPowerBefore)} → ${fmtDollars(ep.buyingPowerAfter)}` : '—'} color="#475569" />
+                                {ep.isLeveraged && (
+                                  <><Label text="Leverage" /><Value v={ep.leverageReason || ep.alternativeReason || 'Leveraged ETF'} bold color="#e84749" /></>
+                                )}
+                                {ep.existingOpenOrder && (
+                                  <><Label text="Open Order" /><Value v="Existing open buy order" color="#e84749" bold /></>
+                                )}
+                                {ep.existingPosition && (
+                                  <><Label text="Position" /><Value v="Already holding" color="#fa8c16" bold /></>
+                                )}
                               </div>
                             </div>
 
@@ -10846,15 +10988,57 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                       key: 'position',
                       width: 130,
                       render: (record) => {
-                        const sh = record.positionSize || record.positionSizeShares || 0;
-                        const val = record.positionValue || record.positionSizeDollars || 0;
-                        if (sh === 0 && val === 0) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
+                        const sh = record.shares || record.positionSize || record.positionSizeShares || 0;
+                        const alloc = record.allocationDollars || record.positionValue || record.positionSizeDollars || 0;
+                        const bpBefore = record.buyingPowerBefore;
+                        const bpAfter = record.buyingPowerAfter;
+                        if (sh === 0 && alloc === 0) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
                         return (
                           <div style={{ lineHeight: '1.4' }}>
-                            <div style={{ fontSize: '13px', fontWeight: 700, color: '#3b82f6' }}>{sh} SHARES</div>
-                            <div style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600 }}>${val.toFixed(0)} EST.</div>
+                            <div style={{ fontSize: '13px', fontWeight: 700, color: '#3b82f6' }}>{typeof sh === 'number' ? sh.toLocaleString() : sh} sh</div>
+                            <div style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600 }}>${alloc.toLocaleString()} alloc</div>
+                            {bpBefore != null && bpAfter != null && (
+                              <div style={{ fontSize: '9px', color: '#aaa', fontWeight: 500 }}>
+                                BP: ${typeof bpBefore === 'number' ? bpBefore.toFixed(0) : bpBefore} → ${typeof bpAfter === 'number' ? bpAfter.toFixed(0) : bpAfter}
+                              </div>
+                            )}
                           </div>
                         );
+                      },
+                    },
+                    {
+                      title: 'Order Plan',
+                      key: 'orderPlan',
+                      width: 120,
+                      render: (record: any) => {
+                        const ot = record.orderType || record.executionDetails?.orderPreview?.orderType || '';
+                        const tif = record.timeInForce || record.executionDetails?.orderPreview?.timeInForce || '';
+                        const isLev = record.isLeveraged || record.isLeveragedAlternative;
+                        if (!ot || ot === 'N/A') {
+                          const fa = record.finalAction || '';
+                          if (fa === 'WAIT_FOR_ENTRY') return <Tag color="orange" style={{ fontSize: '10px', margin: 0 }}>WATCH</Tag>;
+                          if (fa === 'BLOCKED_BY_RISK') return <Tag color="red" style={{ fontSize: '10px', margin: 0 }}>BLOCKED</Tag>;
+                          if (fa === 'SKIP') return <Tag color="default" style={{ fontSize: '10px', margin: 0 }}>SKIP</Tag>;
+                          return <span style={{ fontSize: '10px', color: '#bbb' }}>-</span>;
+                        }
+                        const label = ot === 'market' ? `Market Buy ${tif}` : ot === 'limit' ? `Limit Buy ${tif}` : ot === 'stop_limit' ? `Stop-Limit ${tif}` : ot;
+                        const color = ot === 'market' ? 'blue' : ot === 'limit' ? 'green' : 'purple';
+                        return (
+                          <div style={{ lineHeight: '1.4' }}>
+                            <Tag color={color} style={{ fontSize: '10px', fontWeight: 700, margin: 0 }}>{label}</Tag>
+                            {isLev && <div style={{ fontSize: '9px', color: '#e84749', fontWeight: 700, marginTop: 2 }}>LEV</div>}
+                          </div>
+                        );
+                      },
+                    },
+                    {
+                      title: 'Hold',
+                      key: 'holdingPeriod',
+                      width: 100,
+                      render: (record: any) => {
+                        const hp = record.holdingPeriod;
+                        if (!hp || hp === 'N/A') return <span style={{ fontSize: '10px', color: '#bbb' }}>-</span>;
+                        return <span style={{ fontSize: '11px', fontWeight: 600, color: '#475569' }}>{hp}</span>;
                       },
                     },
                     {

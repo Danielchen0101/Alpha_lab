@@ -403,6 +403,15 @@ export const pipelineAutoAPI = {
     api.get<{ success: boolean; timezone: string; source: string; warning?: string; days: any[] }>(`/ai-agent/pipeline-auto/market-schedule?days=${days}`),
   runHeadlessTest: (data?: { dryRun?: boolean; mode?: string; intervalMinutes?: number }) =>
     api.post('/ai-agent/pipeline-auto/run-headless-test', data || { dryRun: true }),
+  runNow: (data: { mode?: string; riskProfile?: string; timeHorizon?: string; tradeMode?: string }) =>
+    api.post<{ success: boolean; runId?: string; status?: string; error?: string; message?: string }>('/ai-agent/pipeline-auto/run-now', data),
+  runPipeline: (data: { trigger?: string; mode?: string; intervalMinutes?: number; riskProfile?: string; timeHorizon?: string; tradeMode?: string }) =>
+    api.post('/ai-agent/pipeline/run', data),
+  getPipelineResult: (runId?: string, kind?: 'manual' | 'auto') =>
+    api.get('/ai-agent/pipeline/result', { params: { runId, kind } }),
+  stopPipeline: () => api.post('/ai-agent/pipeline/stop'),
+  // DEPRECATED: Auto-run is now fully headless. No frontend claim needed.
+  // claimRun: (runKey: string) => api.post('/ai-agent/pipeline-auto/claim-run', { runKey }),
 };
 
 // Discord webhook notification settings and event bridge

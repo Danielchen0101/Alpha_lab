@@ -45,7 +45,7 @@ export function getActiveRun(): { id: string; type: string; startedAt: number } 
  * Register a Fine Scan async loop as active.
  * Called from Portfolio.tsx when Fine Scan starts.
  */
-export function registerFineScanRun(promise: Promise<void>): string {
+export function registerFineScanRun(promise: Promise<any>): string {
   const runId = generateRunId();
   const abortController = new AbortController();
   const run: ActiveRun = {
@@ -83,7 +83,7 @@ export function isFineScanRunning(): boolean {
 /**
  * Register a Deeper Validation async loop as active.
  */
-export function registerDeeperValidationRun(promise: Promise<void>): string {
+export function registerDeeperValidationRun(promise: Promise<any>): string {
   const runId = generateRunId();
   const abortController = new AbortController();
   const run: ActiveRun = {
@@ -121,7 +121,7 @@ export function isDeeperValidationRunning(): boolean {
 /**
  * Register an Entry Plan async loop as active.
  */
-export function registerEntryPlanRun(promise: Promise<void>): string {
+export function registerEntryPlanRun(promise: Promise<any>): string {
   const runId = generateRunId();
   const abortController = new AbortController();
   const run: ActiveRun = {

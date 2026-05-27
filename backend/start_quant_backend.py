@@ -7,6 +7,13 @@
 from flask import Flask, request, jsonify, has_request_context
 
 from datetime import datetime, timedelta, time as dt_time
+import sys
+
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
 
 # ===== 安全打印辅助函数 =====
 def safe_print(text, max_length=500):
@@ -340,6 +347,7 @@ SUPABASE_CONFIG_CACHE_TTL_SECONDS = 60  # 1 minute
 
 _auth_cache = {}    # token_hash -> (user_dict, timestamp)
 _config_cache = {}  # (user_id, config_type) -> (config_dict, timestamp)
+_pipeline_ai_result_cache = {}
 _cache_lock = threading.Lock()
 _headless_auth_context = threading.local()
 
@@ -383,6 +391,28 @@ def _cache_invalidate(cache, key):
 def _hash_token(token):
     """Hash a bearer token for use as cache key."""
     return hashlib.sha256(token.encode()).hexdigest()[:16]
+
+
+def _pipeline_ai_cache_key(namespace, payload):
+    try:
+        raw = json.dumps(payload, sort_keys=True, default=str, separators=(',', ':'))
+    except Exception:
+        raw = str(payload)
+    return '%s:%s' % (namespace, hashlib.sha256(raw.encode('utf-8')).hexdigest())
+
+
+def _pipeline_ai_cache_get(namespace, payload):
+    key = _pipeline_ai_cache_key(namespace, payload)
+    with _cache_lock:
+        return _pipeline_ai_result_cache.get(key)
+
+
+def _pipeline_ai_cache_set(namespace, payload, value):
+    key = _pipeline_ai_cache_key(namespace, payload)
+    with _cache_lock:
+        if len(_pipeline_ai_result_cache) > 1000:
+            _pipeline_ai_result_cache.clear()
+        _pipeline_ai_result_cache[key] = value
 
 def get_supabase_user():
     """Verify Supabase access token from Authorization header. Returns user dict or None.
@@ -596,7 +626,13 @@ def get_discord_config(user_id):
 
 
 def _discord_event_enabled(cfg, event_type):
-    flag = DISCORD_EVENT_FLAGS.get(event_type)
+    # Handle suffixed event types like 'order_AAPL' → use 'order' flag
+    base_type = event_type
+    if '_' in event_type:
+        _prefix = event_type.split('_')[0]
+        if _prefix in DISCORD_EVENT_FLAGS:
+            base_type = _prefix
+    flag = DISCORD_EVENT_FLAGS.get(base_type)
     return bool(flag and cfg.get(flag, True))
 
 
@@ -657,41 +693,88 @@ def _discord_embed(event_type, payload):
     _fmt = _discord_fmt
 
     if event_type == 'auto_scan_started':
+        # For one-shot runs (auto_manual_now), show "Run once" instead of "X min"
+        interval_val = payload.get('intervalMinutes')
+        if interval_val is not None and str(interval_val) not in ('', '0', '0.0'):
+            interval_display = '%s min' % _fmt(interval_val, '-')
+        else:
+            interval_display = 'Run once'
+        next_run_val = payload.get('nextRunAt')
+        if next_run_val is None or str(next_run_val) in ('', '-'):
+            next_run_display = 'N/A (one-shot)' if interval_display == 'Run once' else '-'
+        else:
+            next_run_display = next_run_val
         fields = [
             {'name': 'Trigger', 'value': _fmt(payload.get('trigger'), '-'), 'inline': True},
             {'name': 'Mode', 'value': _fmt(payload.get('mode'), '-').upper(), 'inline': True},
-            {'name': 'Interval', 'value': '%s min' % _fmt(payload.get('intervalMinutes'), '-'), 'inline': True},
-            {'name': 'Next Run', 'value': _fmt(payload.get('nextRunAt'), '-'), 'inline': True},
+            {'name': 'Interval', 'value': interval_display, 'inline': True},
+            {'name': 'Next Run', 'value': _fmt(next_run_display, '-'), 'inline': True},
             {'name': 'Time (ET)', 'value': _fmt(payload.get('timeEt'), '-'), 'inline': True},
         ]
 
     if event_type == 'scan_summary':
+        _top_formatted = payload.get('topCandidates') or []
+        _top_display = '\n'.join(_top_formatted[:5]) if _top_formatted else (', '.join(payload.get('topSymbols') or []) or '-')
         fields = [
             {'name': 'Processed', 'value': _fmt(payload.get('processed'), '-'), 'inline': True},
             {'name': 'AI Success', 'value': _fmt(payload.get('aiSuccess'), '-'), 'inline': True},
             {'name': 'Need Data', 'value': _fmt(payload.get('needData'), '-'), 'inline': True},
-            {'name': 'Top Symbols', 'value': ', '.join(payload.get('topSymbols') or []) or '-', 'inline': False},
+            {'name': 'Passed Candidates', 'value': _fmt(payload.get('passedCandidates'), '-'), 'inline': True},
+            {'name': 'Bearish / Low Score', 'value': '%s / %s' % (_fmt(payload.get('bearishFiltered'), '-'), _fmt(payload.get('lowScoreFiltered'), '-')), 'inline': True},
+            {'name': 'Top Candidates', 'value': _top_display, 'inline': False},
             {'name': 'Market Mode', 'value': _fmt(payload.get('mode'), '-').upper(), 'inline': True},
             {'name': 'Run Time', 'value': _fmt(payload.get('runTime'), '-'), 'inline': True},
         ]
+        _scan_warn = payload.get('warning', '')
+        if _scan_warn:
+            fields.append({'name': 'Warning', 'value': _scan_warn, 'inline': False})
     elif event_type == 'entry_plan':
         buy_candidates = payload.get('buyCandidates') or []
-        fields = [
-            {'name': 'BUY', 'value': _fmt(payload.get('buyCount'), 0), 'inline': True},
-            {'name': 'WATCH', 'value': _fmt(payload.get('watchCount'), 0), 'inline': True},
-            {'name': 'SKIP', 'value': _fmt(payload.get('skipCount'), 0), 'inline': True},
-        ]
-        for c in buy_candidates[:8]:
-            fields.append({
-                'name': str(c.get('symbol', 'BUY')),
-                'value': (
-                    f"Entry {c.get('entryZone', '-')} | Stop {c.get('stop', '-')} | "
-                    f"Target {c.get('target', '-')} | R/R {c.get('riskReward', '-')}\n"
-                    f"Size {c.get('positionSize', '-')} | {str(c.get('reason', '-'))[:180]}"
-                ),
-                'inline': False
-            })
-    elif event_type == 'order':
+        if payload.get('skipped'):
+            _skip_reason_full = payload.get('skipReason') or 'No candidates passed Deeper Validation.'
+            fields = [
+                {'name': 'Status', 'value': 'Skipped', 'inline': True},
+                {'name': 'Reason', 'value': _skip_reason_full[:1024], 'inline': False},
+            ]
+            # Continue candidate names
+            _cc_names = payload.get('continueCandidateNames', '')
+            if _cc_names:
+                fields.append({'name': 'Continue Candidates', 'value': _cc_names, 'inline': False})
+            # Fine scan summary
+            _fs_summary = payload.get('fineScanSummary', '')
+            if _fs_summary:
+                fields.append({'name': 'Fine Scan', 'value': _fs_summary, 'inline': True})
+            # DV reject details
+            _dv_list = payload.get('dvRejectList') or []
+            if _dv_list:
+                fields.append({'name': 'DV Rejected (%d)' % payload.get('dvRejectCount', len(_dv_list)), 'value': '\n'.join(_dv_list[:5]), 'inline': False})
+            # Recommended action
+            _ra = payload.get('recommendedAction', '')
+            if _ra:
+                fields.append({'name': 'Recommended Action', 'value': _ra, 'inline': False})
+        else:
+            fields = [
+                {'name': 'BUY', 'value': _fmt(payload.get('buyCount'), 0), 'inline': True},
+                {'name': 'WATCH', 'value': _fmt(payload.get('watchCount'), 0), 'inline': True},
+                {'name': 'SKIP', 'value': _fmt(payload.get('skipCount'), 0), 'inline': True},
+            ]
+            ndc = payload.get('needDataCount')
+            if ndc is not None and ndc > 0:
+                fields.append({'name': 'Need Data', 'value': _fmt(ndc, 0), 'inline': True})
+            _ep_warn = payload.get('warning', '')
+            if _ep_warn:
+                fields.append({'name': 'Data Quality Warning', 'value': _ep_warn, 'inline': False})
+            for c in buy_candidates[:8]:
+                fields.append({
+                    'name': str(c.get('symbol', 'BUY')),
+                    'value': (
+                        f"Entry {c.get('entryZone', '-')} | Stop {c.get('stop', '-')} | "
+                        f"Target {c.get('target', '-')} | R/R {c.get('riskReward', '-')}\n"
+                        f"Size {c.get('positionSize', '-')} | {str(c.get('reason', '-'))[:180]}"
+                    ),
+                    'inline': False
+                })
+    elif event_type == 'order' or event_type.startswith('order_'):
         mode = _fmt(payload.get('mode'), '-').upper()
         description = payload.get('description') or ('REAL TRADING\n' if mode == 'REAL' else '')
         fields = [
@@ -715,6 +798,9 @@ def _discord_embed(event_type, payload):
             {'name': 'Sell/Reduce', 'value': _fmt(sell_reduce, '-'), 'inline': True},
             {'name': 'Hold', 'value': _fmt(payload.get('holdCount'), '-'), 'inline': True},
         ]
+        _ep_note = payload.get('entryPlanNote', '')
+        if _ep_note:
+            fields.append({'name': 'Entry Plan', 'value': _ep_note, 'inline': False})
         for s in signals[:8]:
             fields.append({
                 'name': _fmt(s.get('symbol'), 'Signal'),
@@ -730,8 +816,11 @@ def _discord_embed(event_type, payload):
             {'name': 'Recommended Action', 'value': _fmt(payload.get('action'), 'Review Settings and retry.')[:220], 'inline': False},
         ]
 
+    _embed_title = title_map.get(event_type, 'AlphaLab Notification')
+    if event_type == 'entry_plan' and payload.get('skipped'):
+        _embed_title = 'Entry Plan Skipped'
     return {
-        'title': title_map.get(event_type, 'AlphaLab Notification'),
+        'title': _embed_title,
         'description': description[:350] if description else '',
         'color': color_map.get(event_type, 0x1677FF),
         'fields': fields[:25],
@@ -892,6 +981,57 @@ except ImportError as e:
     REQUEST_TIMEOUT = 10
     TWELVEDATA_BASE_URL = "https://api.twelvedata.com"
     TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
+
+
+# ==================== Module-level default scanner universe ====================
+# MUST be at module scope (not inside try/except) so background threads can access it.
+
+ALPHA_SCANNER_UNIVERSE = [
+    # Large-cap Technology (10)
+    "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "AMD", "INTC", "AVGO", "CSCO",
+    # Financial Services (6)
+    "JPM", "V", "MA", "BAC", "WFC", "GS",
+    # Healthcare (6)
+    "JNJ", "UNH", "PFE", "ABBV", "MRK", "LLY",
+    # Consumer Cyclical (5)
+    "TSLA", "HD", "NKE", "MCD", "SBUX",
+    # Consumer Defensive (4)
+    "WMT", "PG", "KO", "PEP",
+    # Energy (3)
+    "XOM", "CVX", "COP",
+    # Industrial & Transport (4)
+    "CAT", "BA", "UPS", "GE",
+    # Communication Services (3)
+    "DIS", "NFLX", "CMCSA",
+    # Real Estate & Utilities (3)
+    "AMT", "PLD", "NEE",
+    # Materials & Others (6)
+    "LIN", "SHW", "FCX", "NEM", "ABT", "TMO",
+]
+
+
+def get_market_scan_universe(user_id=None, limit=None):
+    """Return the market scanner symbol universe for a user.
+
+    Priority:
+    1. User's saved market_symbols config from Supabase
+    2. ALPHA_SCANNER_UNIVERSE (50-symbol default)
+
+    Returns (symbols_list, source_label).
+    Never raises — returns default universe on any error.
+    """
+    max_count = limit or 50
+    if user_id:
+        try:
+            cfg = get_user_config(user_id, 'market_symbols') or {}
+            symbols = cfg.get('symbols') if isinstance(cfg, dict) else None
+            if isinstance(symbols, list) and symbols:
+                clean = [str(s).upper().strip() for s in symbols if str(s).strip()]
+                if clean:
+                    return clean[:max_count], 'user_saved'
+        except Exception:
+            pass
+    return ALPHA_SCANNER_UNIVERSE[:max_count], 'default_universe'
 
 
 # ==================== NVIDIA NIM Rate Limiter ====================
@@ -1304,49 +1444,60 @@ def fetch_alpaca_stock_data(symbol):
 
 
 
-        # 3.2 获取日线bars（用于previousClose和非交易日回退）
-
+        # 3.2 获取日线bars（用于previousClose计算）
+        # 请求足够的日线bar来获取前一日收盘价
         daily_bars_url = f'{_get_market_data_base_url()}/v2/stocks/{symbol}/bars'
-
         daily_params = {
-
             'timeframe': '1Day',
-
-            'limit': 10  # 获取10根日线bar，用于非交易日回退检测
-
+            'limit': 10,
+            'feed': 'iex',
         }
-
         daily_bars_response = requests.get(daily_bars_url, headers=market_headers, params=daily_params, timeout=5)
 
-
-
         daily_bars = []
-
         if daily_bars_response.status_code == 200:
-
             daily_data = daily_bars_response.json()
-
-            print(f'[Alpaca数据] 股票 {symbol} 日线bars响应: {daily_data}')
-
-            daily_bars = daily_data.get('bars', [])
-
-            if daily_bars is None:
-
-                print(f'[Alpaca数据] 股票 {symbol} 日线bars为None，使用空列表')
-
-                daily_bars = []
-
-            if len(daily_bars) > 0:
-
-                print(f'[Alpaca数据] 股票 {symbol} 获取到 {len(daily_bars)} 根日线bars数据')
-
+            daily_bars = daily_data.get('bars') or []
+            # Sort bars by timestamp ascending for reliable previous-close lookup
+            if daily_bars:
+                daily_bars.sort(key=lambda b: b.get('t', ''))
+                print(f'[Alpaca数据] 股票 {symbol} 获取到 {len(daily_bars)} 根日线bars')
             else:
-
-                print(f'[Alpaca数据] 股票 {symbol} 日线bars数据为空')
-
+                print(f'[Alpaca数据] 股票 {symbol} 日线bars响应无bars字段')
         else:
+            print(f'[Alpaca数据] 股票 {symbol} 日线bars获取失败: {daily_bars_response.status_code} body={daily_bars_response.text[:200]}')
 
-            print(f'[Alpaca数据] 股票 {symbol} 日线bars数据获取失败: {daily_bars_response.status_code}')
+        # Retry with explicit date range if we got fewer than 2 bars (need at least 2 for previousClose)
+        if len(daily_bars) < 2:
+            print(f'[MarketData] {symbol} only {len(daily_bars)} daily bar(s), retrying with date range')
+            try:
+                from datetime import timedelta as _td
+                _end_dt = datetime.utcnow()
+                _start_dt = _end_dt - _td(days=14)  # Cover 10 trading days with buffer
+                retry_params = {
+                    'timeframe': '1Day',
+                    'start': _start_dt.strftime('%Y-%m-%dT00:00:00Z'),
+                    'end': _end_dt.strftime('%Y-%m-%dT23:59:59Z'),
+                    'limit': 10,
+                    'feed': 'iex',
+                }
+                retry_resp = requests.get(daily_bars_url, headers=market_headers, params=retry_params, timeout=5)
+                if retry_resp.status_code == 200:
+                    retry_data = retry_resp.json()
+                    retry_bars = retry_data.get('bars') or []
+                    if retry_bars:
+                        retry_bars.sort(key=lambda b: b.get('t', ''))
+                        daily_bars = retry_bars
+                        print(f'[MarketData] {symbol} retry returned {len(daily_bars)} daily bars')
+                    else:
+                        print(f'[MarketData] {symbol} retry returned 0 bars')
+                else:
+                    print(f'[MarketData] {symbol} retry failed: {retry_resp.status_code} body={retry_resp.text[:200]}')
+            except Exception as _retry_e:
+                print(f'[MarketData] {symbol} retry exception: {_retry_e}')
+
+        if len(daily_bars) < 2:
+            print(f'[MarketData] {symbol} previousClose unavailable after retry ({len(daily_bars)} bar(s))')
 
 
 
@@ -1554,63 +1705,20 @@ def fetch_alpaca_stock_data(symbol):
 
 
 
-        # 6. 计算 change 和 changePercent（如果有price和previousClose）
-
-        # 首先确定previous_close：如果effective_bar是前一个交易日，则需要找到更早的bar作为previous_close
-
+        # 6. 计算 change 和 changePercent
+        # Use the 2nd-to-last daily bar's close as previousClose
         previous_close = None
-
-        if daily_bars and effective_bar:
-
-            # 找到effective_bar在daily_bars中的索引
-
-            try:
-
-                bar_index = None
-
-                for i, bar in enumerate(daily_bars):
-
-                    if bar.get('t') == effective_bar.get('t'):
-
-                        bar_index = i
-
-                        break
-
-                # 如果找到了，且不是第一个bar，则前一个bar的收盘价作为previous_close
-
-                if bar_index is not None and bar_index > 0:
-
-                    prev_bar = daily_bars[bar_index - 1]
-
-                    previous_close = float(prev_bar.get('c')) if prev_bar.get('c') else None
-
-            except Exception as e:
-
-                print(f'[Alpaca数据] 股票 {symbol} 查找previous_close失败: {e}')
-
-
-
-        # 如果previous_close仍然为None，且session_type为'Previous Trading Day'，则无法计算涨跌幅
-
-        # 此时将change和changePercent设为0
+        if len(daily_bars) >= 2:
+            prev_bar = daily_bars[-2]
+            previous_close = float(prev_bar.get('c')) if prev_bar.get('c') else None
 
         change = None
-
         change_percent = None
-
         if price is not None and previous_close is not None and previous_close != 0:
-
             change = price - previous_close
-
             change_percent = (change / previous_close) * 100
 
-        elif session_type == 'Previous Trading Day':
-
-            # 回退数据，无法计算涨跌幅，设为None
-
-            change = None
-
-            change_percent = None
+        print(f'[MarketData] {symbol} current={price} previousClose={previous_close} changePct={change_percent}')
 
 
 
@@ -1634,7 +1742,13 @@ def fetch_alpaca_stock_data(symbol):
 
             "dayLow": bar_low,    # 使用bars数据
 
+            "high": bar_high,     # OHLC high
+
+            "low": bar_low,       # OHLC low
+
             "open": bar_open,     # 使用bars数据
+
+            "close": bar_close,   # OHLC close
 
             "previousClose": previous_close,  # 使用日线bar的收盘价作为previousClose
 
@@ -2394,6 +2508,22 @@ def get_alpaca_history(symbol, interval, range_param):
 
 
 
+def _normalize_alpaca_timeframe(tf):
+    """Normalize loose timeframe values to Alpaca API format (e.g. 'day' → '1Day')."""
+    if not tf or not isinstance(tf, str):
+        return tf
+    _t = tf.strip().lower()
+    return {
+        'day': '1Day', 'daily': '1Day', '1d': '1Day',
+        'hour': '1Hour', '1h': '1Hour',
+        'min': '1Min', '1m': '1Min', 'minute': '1Min',
+        '15min': '15Min', '30min': '30Min',
+        '5min': '5Min', '5m': '5Min',
+        'week': '1Week', '1w': '1Week', 'weekly': '1Week',
+        'month': '1Month', '1mo': '1Month', 'monthly': '1Month',
+    }.get(_t, tf)
+
+
 def fetch_alpaca_bars(symbol, timeframe, range_param):
 
     """获取Alpaca真实bars数据 - 根据环境配置选择key"""
@@ -2404,7 +2534,7 @@ def fetch_alpaca_bars(symbol, timeframe, range_param):
 
         import time
 
-
+        timeframe = _normalize_alpaca_timeframe(timeframe)
 
         print(f'[Alpaca bars] 请求 {symbol} bars: timeframe={timeframe}, range={range_param}')
 
@@ -4750,6 +4880,8 @@ def fetch_alpaca_bars_for_backtest(symbol, timeframe, start_date_utc, end_date_u
         import requests
 
         import time
+
+        timeframe = _normalize_alpaca_timeframe(timeframe)
 
 
 
@@ -7668,7 +7800,7 @@ def resolve_ai_config(require_user_config=False):
                     'lastTestError': user_cfg.get('lastTestError'),
                     'keyIsMasked': False,
                 }
-                return (result, 'user_config/supabase') if require_user_config else result
+                return (result, 'user_config/supabase')
             elif key_is_masked:
                 safe_print(f'[resolve_ai_config] source=supabase user={user["id"][:8]}... WARNING: stored key appears masked')
                 return ({
@@ -7680,10 +7812,7 @@ def resolve_ai_config(require_user_config=False):
                     'lastTestedAt': user_cfg.get('lastTestedAt'),
                     'lastTestError': user_cfg.get('lastTestError'),
                     'keyIsMasked': True,
-                }, 'user_config/supabase') if require_user_config else {
-                    'apiKey': '', 'baseURL': '', 'model': '', 'provider': '',
-                    'testStatus': 'not_configured', 'keyIsMasked': True,
-                }
+                }, 'user_config/supabase')
             else:
                 safe_print(f'[resolve_ai_config] source=supabase user={user["id"][:8]}... hasKey=False (empty apiKey in DB)')
         else:
@@ -7772,6 +7901,119 @@ def resolve_alpaca_config(mode='paper', require_user_config=False):
     # No .env / global fallback — user must configure via Settings page
     print(f'[resolve_alpaca_config] no valid user config found for mode={mode}')
     return ({}, 'missing')
+
+
+# ── User-ID-based config resolvers for background threads (no request auth context) ──
+
+def resolve_alpaca_config_for_user(uid, mode='paper'):
+    """Resolve Alpaca config for a specific user_id (no request context needed).
+    Used by auto background pipeline threads where request auth is unavailable.
+    Returns dict with keys: api_key, api_secret, base_url, or empty dict if not configured."""
+    if not uid:
+        safe_print('[resolve_alpaca_config_for_user] no uid provided')
+        return {}
+    user_cfg = get_user_config(uid, 'alpaca')
+    if not user_cfg:
+        safe_print('[resolve_alpaca_config_for_user] user=%s mode=%s no config row' % (uid[:8], mode))
+        return {}
+
+    if mode == 'market_data':
+        for src_field, src_label in [
+            ('market_data_api_key', 'market_data_override'),
+            ('live_api_key', 'live_auto_synced'),
+            ('paper_api_key', 'paper_fallback'),
+        ]:
+            key = user_cfg.get(src_field, '')
+            secret_field = src_field.replace('_api_key', '_api_secret')
+            secret = user_cfg.get(secret_field, '')
+            key_bad, key_bad_reason = _is_invalid_key(key)
+            if key and secret and not key_bad:
+                safe_print('[resolve_alpaca_config_for_user] user=%s mode=market_data hasKey=True (%s)' % (uid[:8], src_label))
+                return {'api_key': key, 'api_secret': secret, 'base_url': 'https://data.alpaca.markets'}
+            elif key:
+                safe_print('[resolve_alpaca_config_for_user] user=%s mode=market_data %s key INVALID (%s)' % (uid[:8], src_label, key_bad_reason))
+        safe_print('[resolve_alpaca_config_for_user] user=%s mode=market_data hasKey=False' % uid[:8])
+        return {}
+
+    if mode == 'paper':
+        key = user_cfg.get('paper_api_key', '')
+        secret = user_cfg.get('paper_api_secret', '')
+        url = user_cfg.get('paper_base_url', 'https://paper-api.alpaca.markets')
+    else:
+        key = user_cfg.get('live_api_key', '')
+        secret = user_cfg.get('live_api_secret', '')
+        url = user_cfg.get('live_base_url', 'https://api.alpaca.markets')
+
+    key_bad, key_bad_reason = _is_invalid_key(key)
+    if key and secret and not key_bad:
+        safe_print('[resolve_alpaca_config_for_user] user=%s mode=%s hasKey=True' % (uid[:8], mode))
+        return {'api_key': key, 'api_secret': secret, 'base_url': url}
+    elif key and key_bad:
+        safe_print('[resolve_alpaca_config_for_user] user=%s mode=%s key INVALID (%s)' % (uid[:8], mode, key_bad_reason))
+    else:
+        safe_print('[resolve_alpaca_config_for_user] user=%s mode=%s hasKey=False (incomplete)' % (uid[:8], mode))
+    return {}
+
+
+def resolve_ai_config_for_user(uid):
+    """Resolve AI config for a specific user_id (no request context needed).
+    Returns (config_dict, source_string)."""
+    if not uid:
+        safe_print('[resolve_ai_config_for_user] no uid provided')
+        return ({'apiKey': '', 'baseURL': '', 'model': '', 'provider': '', 'testStatus': 'not_configured',
+                 'lastTestedAt': None, 'lastTestError': None, 'keyIsMasked': False}, 'missing')
+    user_cfg = get_user_config(uid, 'ai_provider')
+    if user_cfg:
+        api_key = user_cfg.get('apiKey', '')
+        has_key = bool(api_key and api_key.strip())
+        key_is_masked = '****' in api_key if api_key else False
+        if has_key and not key_is_masked:
+            safe_print('[resolve_ai_config_for_user] user=%s hasKey=True provider=%s' % (uid[:8], user_cfg.get('provider', '')))
+            return ({
+                'apiKey': api_key,
+                'baseURL': user_cfg.get('baseURL', user_cfg.get('baseUrl', '')),
+                'model': user_cfg.get('model', 'deepseek-chat'),
+                'provider': user_cfg.get('provider', 'DeepSeek'),
+                'testStatus': user_cfg.get('aiTestStatus', 'not_tested'),
+                'lastTestedAt': user_cfg.get('lastTestedAt'),
+                'lastTestError': user_cfg.get('lastTestError'),
+                'keyIsMasked': False,
+            }, 'user_config/supabase')
+        elif key_is_masked:
+            safe_print('[resolve_ai_config_for_user] user=%s key appears masked' % uid[:8])
+            return ({'apiKey': '', 'baseURL': user_cfg.get('baseURL', ''), 'model': user_cfg.get('model', ''),
+                     'provider': user_cfg.get('provider', ''), 'testStatus': user_cfg.get('aiTestStatus', 'not_tested'),
+                     'lastTestedAt': user_cfg.get('lastTestedAt'), 'lastTestError': user_cfg.get('lastTestError'),
+                     'keyIsMasked': True}, 'user_config/supabase')
+        else:
+            safe_print('[resolve_ai_config_for_user] user=%s hasKey=False' % uid[:8])
+    else:
+        safe_print('[resolve_ai_config_for_user] user=%s no config row' % uid[:8])
+    return ({'apiKey': '', 'baseURL': '', 'model': '', 'provider': '', 'testStatus': 'not_configured',
+             'lastTestedAt': None, 'lastTestError': None, 'keyIsMasked': False}, 'missing')
+
+
+def resolve_finnhub_config_for_user(uid):
+    """Resolve Finnhub config for a specific user_id (no request context needed).
+    Returns (config_dict, source_string)."""
+    if not uid:
+        safe_print('[resolve_finnhub_config_for_user] no uid provided')
+        return ({'api_key': '', 'base_url': 'https://finnhub.io/api/v1'}, 'missing')
+    user_cfg = get_user_config(uid, 'finnhub')
+    if user_cfg:
+        api_key = user_cfg.get('api_key', '')
+        has_key = bool(api_key and api_key.strip())
+        key_is_masked = '****' in api_key if api_key else False
+        if has_key and not key_is_masked:
+            safe_print('[resolve_finnhub_config_for_user] user=%s hasKey=True' % uid[:8])
+            return ({'api_key': api_key, 'base_url': user_cfg.get('base_url', 'https://finnhub.io/api/v1')}, 'user_config/supabase')
+        elif key_is_masked:
+            safe_print('[resolve_finnhub_config_for_user] user=%s key appears masked' % uid[:8])
+        else:
+            safe_print('[resolve_finnhub_config_for_user] user=%s hasKey=False' % uid[:8])
+    else:
+        safe_print('[resolve_finnhub_config_for_user] user=%s no config row' % uid[:8])
+    return ({'api_key': '', 'base_url': 'https://finnhub.io/api/v1'}, 'missing')
 
 
 def resolve_finnhub_config(require_user_config=False):
@@ -10256,6 +10498,11 @@ def generate_context_based_analysis(symbol, context):
 
 
 
+def _safe_str(value):
+    """Return the string value if it's a string, otherwise return empty string."""
+    return value if isinstance(value, str) else ""
+
+
 @app.route('/api/ai/market/scanner', methods=['POST'])
 
 def ai_market_scanner():
@@ -10266,7 +10513,7 @@ def ai_market_scanner():
 
     try:
 
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
 
         symbols = data.get('symbols', [])
 
@@ -10277,16 +10524,15 @@ def ai_market_scanner():
 
 
         if not symbols:
-
-            # 如果没有提供符号，使用默认列表
-
-            symbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'AMD', 'JPM', 'XOM', 'WMT', 'HD']
+            # No symbols provided — use the full default universe
+            user = get_supabase_user()
+            uid = user['id'] if user else None
+            symbols, _src = get_market_scan_universe(uid, limit=50)
 
 
 
         # 限制扫描数量
-
-        symbols = symbols[:max_symbols]
+        symbols = (symbols or [])[:max_symbols]
 
 
 
@@ -10300,11 +10546,11 @@ def ai_market_scanner():
 
         if resume_info and resume_info.get('scanned_symbols'):
 
-            scanned_symbols = resume_info.get('scanned_symbols', [])
+            scanned_symbols = resume_info.get('scanned_symbols', []) or []
 
             # 过滤掉已扫描的symbols
 
-            symbols = [s for s in symbols if s not in scanned_symbols]
+            symbols = [s for s in (symbols or []) if s not in scanned_symbols]
 
             print(f'恢复扫描: 已扫描 {len(scanned_symbols)} 只，剩余 {len(symbols)} 只')
 
@@ -10324,7 +10570,7 @@ def ai_market_scanner():
 
         batch_data = {}
 
-        for symbol in symbols:
+        for symbol in (symbols or []):
 
             try:
 
@@ -10340,7 +10586,19 @@ def ai_market_scanner():
 
                         'changePercent': alpaca_data.get('changePercent'),
 
+                        'change': alpaca_data.get('change'),
+
+                        'previousClose': alpaca_data.get('previousClose'),
+
                         'volume': alpaca_data.get('volume', 0),
+
+                        'high': alpaca_data.get('high') or alpaca_data.get('dayHigh'),
+
+                        'low': alpaca_data.get('low') or alpaca_data.get('dayLow'),
+
+                        'open': alpaca_data.get('open'),
+
+                        'close': alpaca_data.get('close'),
 
                         'dataSource': 'Alpaca'
 
@@ -10393,8 +10651,9 @@ def ai_market_scanner():
         print('=== 第二层：快速预筛选 ===')
 
         shortlist = []
+        need_data_symbols = set()  # symbols with valid price/volume but missing changePercent
 
-        for symbol in symbols:
+        for symbol in (symbols or []):
             try:
                 if symbol in batch_data:
 
@@ -10408,24 +10667,28 @@ def ai_market_scanner():
 
 
 
-                    # 快速筛选条件
-
-                    if (price is not None and price > 1 and  # 价格高于$1
-
-                        volume is not None and volume > 1000 and  # 成交量大于1k
-
-                        change_pct is not None and abs(change_pct) < 50):  # 涨跌幅小于50%
-
-                        shortlist.append(symbol)
-
-                        print(f'✓ {symbol}: 预筛选通过 (price=$%s, volume=%s, change=%s)' % (price, volume, '%+.2f%%' % change_pct))
-
-                    else:
-
+                    # 快速筛选条件 — changePercent is NOT required as a hard filter
+                    has_price_vol = (price is not None and price > 1 and
+                                     volume is not None and volume > 1000)
+                    if not has_price_vol:
                         _price_str = '$%.2f' % price if price is not None else 'N/A'
                         _vol_str = '%.0f' % volume if volume is not None else 'N/A'
                         _chg_str = '%+.2f%%' % change_pct if change_pct is not None else 'N/A'
                         print(f'✗ {symbol}: 预筛选过滤 (price={_price_str}, volume={_vol_str}, change={_chg_str})')
+                        continue
+
+                    # Filter extreme movers only if change data is available
+                    if change_pct is not None and abs(change_pct) >= 50:
+                        print(f'✗ {symbol}: 预筛选过滤 extreme move (change=%+.2f%%)' % change_pct)
+                        continue
+
+                    if change_pct is None:
+                        need_data_symbols.add(symbol)
+                        print(f'⚠ {symbol}: 预筛选通过 但 change=N/A 标记 needData (price=$%.2f, volume=%.0f)' % (price, volume))
+                    else:
+                        print(f'✓ {symbol}: 预筛选通过 (price=$%.2f, volume=%.0f, change=%+.2f%%)' % (price, volume, change_pct))
+
+                    shortlist.append(symbol)
 
                 else:
 
@@ -10480,7 +10743,22 @@ def ai_market_scanner():
                 if _ai_can_call:
                     try:
                         print(f'[Scanner AI] 调用AI分析 {symbol}')
-                        ai_result = analyze_trend_with_deepseek(symbol, stock_data, None, None)
+                        _scanner_cache_payload = {
+                            'provider': _ai_provider,
+                            'model': _ai_model,
+                            'symbol': symbol,
+                            'price': round(float(stock_data.get('price') or 0), 4),
+                            'previousClose': round(float(stock_data.get('previousClose') or 0), 4),
+                            'changePercent': round(float(stock_data.get('changePercent') or 0), 4),
+                            'volume': int(float(stock_data.get('volume') or 0)),
+                            'dataSource': stock_data.get('dataSource'),
+                        }
+                        ai_result = _pipeline_ai_cache_get('market_scanner_ai', _scanner_cache_payload)
+                        if ai_result is None:
+                            ai_result = analyze_trend_with_deepseek(symbol, stock_data, None, None)
+                            _pipeline_ai_cache_set('market_scanner_ai', _scanner_cache_payload, ai_result)
+                        else:
+                            print(f'[Scanner AI] cache hit {symbol}')
                         print(f'[Scanner AI] {symbol} AI分析完成: success={ai_result.get("success")}')
                     except Exception as ai_e:
                         print(f'[Scanner AI] {symbol} AI分析异常: {ai_e}')
@@ -10496,12 +10774,20 @@ def ai_market_scanner():
                 ai_reasoning = None
                 scanner_reason = None
 
-                if ai_result and ai_result.get('success'):
-                    trend_label = ai_result.get('trendLabel')
-                    trend_score = ai_result.get('trendScore')
-                    trend_confidence = ai_result.get('trendConfidence')
-                    ai_reasoning = ai_result.get('aiReasoning')
-                    scanner_reason = ai_result.get('scannerReason')
+                # Detect AI success from multiple fields for robustness
+                ai_success = bool(
+                    ai_result and (
+                        ai_result.get('success')
+                        or ai_result.get('aiSuccess')
+                        or ai_result.get('overallScore') is not None
+                    )
+                )
+                if ai_success:
+                    trend_label = ai_result.get('trendLabel') or "Neutral"
+                    trend_score = ai_result.get('overallScore') or ai_result.get('trendScore')
+                    trend_confidence = ai_result.get('confidence') or ai_result.get('trendConfidence')
+                    ai_reasoning = ai_result.get('aiReasoning') or ai_result.get('detailedReasoning')
+                    scanner_reason = ai_result.get('scannerReason') or ai_result.get('conciseReasoning')
                 elif ai_result:
                     ai_error = ai_result.get('error', 'AI analysis failed')
                     scanner_reason = ai_error
@@ -10529,6 +10815,8 @@ def ai_market_scanner():
 
                     'dataSource': stock_data.get('dataSource', 'unknown'),
 
+                    'dataQuality': 'PARTIAL' if not (price and volume) else ('need_data' if symbol in need_data_symbols else 'ok'),
+
                     'sector': stock_data.get('sector') or None,
 
                     'newsSentiment': None,
@@ -10547,9 +10835,15 @@ def ai_market_scanner():
 
                     'trendConfidence': trend_confidence,
 
+                    'overallScore': trend_score,  # Standardized score field
+
                     'scannerReason': scanner_reason,
 
                     'analysisSource': 'ai' if _ai_can_call else 'unavailable',
+
+                    'aiSuccess': ai_success,  # Explicit AI success flag
+
+                    'analysisStatus': 'completed' if ai_success else ('failed' if ai_error else 'unavailable'),
 
                     'aiCalled': ai_called,
 
@@ -10562,8 +10856,6 @@ def ai_market_scanner():
                     'aiError': ai_error,
 
                     'aiReasoning': ai_reasoning,
-
-                    'dataQuality': 'PARTIAL' if not (price and volume) else 'GOOD',
 
                     'dataSources': {
 
@@ -10585,13 +10877,15 @@ def ai_market_scanner():
 
                 results.append(result_obj)
 
-                print(f'✓ {symbol}: 分析完成 - {trend_label}')
+                print(f'[Scanner AI] {symbol} AI分析完成: success={ai_success} score={trend_score} trend={trend_label}')
 
 
 
             except Exception as e:
 
+                import traceback
                 print(f'✗ {symbol}: 分析失败 - {str(e)}')
+                print(f'[Scanner] {symbol} full traceback:\n{traceback.format_exc()}')
 
                 # 添加错误结果（不使用fake数据）
 
@@ -10639,6 +10933,12 @@ def ai_market_scanner():
 
                     'aiSource': 'unavailable',
 
+                    'aiSuccess': False,
+
+                    'overallScore': None,
+
+                    'analysisStatus': 'failed',
+
                     'timestamp': int(time.time()),
 
                     'error': True
@@ -10661,20 +10961,20 @@ def ai_market_scanner():
 
 
 
-        # 计算摘要统计
-
-        bullish_count = sum(1 for r in results if 'Bullish' in r.get('trendLabel', ''))
-
-        bearish_count = sum(1 for r in results if 'Bearish' in r.get('trendLabel', ''))
-
-        neutral_count = sum(1 for r in results if r.get('trendLabel') == 'Neutral')
-
-        strong_trend_count = sum(1 for r in results if 'Strong' in r.get('trendLabel', ''))
-
-        news_risk_count = sum(1 for r in results if r.get('eventRisk') == 'High')
+        # 计算摘要统计 (None-safe)
+        try:
+            bullish_count = sum(1 for r in (results or []) if "Bullish" in _safe_str((r or {}).get("trendLabel")))
+            bearish_count = sum(1 for r in (results or []) if "Bearish" in _safe_str((r or {}).get("trendLabel")))
+            neutral_count = sum(1 for r in (results or []) if _safe_str((r or {}).get("trendLabel")) == "Neutral")
+            strong_trend_count = sum(1 for r in (results or []) if "Strong" in _safe_str((r or {}).get("trendLabel")))
+            news_risk_count = sum(1 for r in (results or []) if (r or {}).get("eventRisk") == "High")
+        except Exception as _summary_e:
+            print(f'[Scanner] summary计算异常，使用默认值: {_summary_e}')
+            bullish_count = bearish_count = neutral_count = strong_trend_count = news_risk_count = 0
 
         user = get_supabase_user()
-        if user:
+        suppress_discord = bool(data.get('suppressDiscord')) if isinstance(data, dict) else False
+        if user and not suppress_discord:
             top_symbols = [
                 r.get('symbol') for r in sorted(
                     results,
@@ -10732,7 +11032,10 @@ def ai_market_scanner():
 
     except Exception as e:
 
+        import traceback
+        _tb = traceback.format_exc()
         print(f'市场扫描失败: {str(e)}')
+        print(f'[MarketScanner] full traceback:\n{_tb}')
 
         return jsonify({
 
@@ -10740,7 +11043,9 @@ def ai_market_scanner():
 
             'error': str(e),
 
-            'message': f'市场扫描失败: {str(e)}'
+            'message': f'市场扫描失败: {str(e)}',
+
+            'traceback': _tb[:2000],
 
         })
 
@@ -11962,9 +12267,12 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
                 print(f'DeepSeek分析 {symbol} 成功: {analysis_result["trendLabel"]}')
 
-                # 标记分析来源
+                # 标记分析来源 + 标准化 success 字段
+                analysis_result['success'] = True
+                analysis_result['aiSuccess'] = True
                 analysis_result['analysisSource'] = 'deepseek'
                 analysis_result['aiUsed'] = True
+                analysis_result['symbol'] = symbol
                 analysis_result['provider'] = _resolved_ai.get('provider', 'DeepSeek')
                 analysis_result['model'] = _resolved_ai.get('model', 'deepseek-chat')
                 analysis_result['configSource'] = _ai_source
@@ -12649,6 +12957,16 @@ def _alpaca_bool(value):
 
 def _alpaca_source(mode):
     return 'alpaca_real' if mode == 'real' else 'alpaca_paper'
+
+
+@app.route('/api/trading/universe', methods=['GET'])
+def trading_universe():
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    limit = request.args.get('limit', 50, type=int) or 50
+    symbols, source = get_market_scan_universe(user['id'], limit=min(limit, 50))
+    return jsonify({'success': True, 'symbols': symbols, 'source': source, 'count': len(symbols)})
 
 
 @app.route('/api/trading/account', methods=['GET'])
@@ -21742,7 +22060,8 @@ def entry_plan_execute():
     """
     Execute an entry plan order via Alpaca broker.
     Requires BUY_READY + all safety gates passed + broker connected.
-    Never uses market orders. Paper/Live modes with live requiring confirmation.
+    Supports market, limit, and stop_limit orders. All buy orders enforce time_in_force=day.
+    Paper/Live modes with live requiring confirmation.
     """
     import requests as _req
     import time as _time
@@ -21775,6 +22094,11 @@ def entry_plan_execute():
         shares = plan_snapshot.get('shares', plan_snapshot.get('positionSizeShares', 0))
         order_preview = plan_snapshot.get('orderPreview', {}) or {}
         order_type = order_preview.get('orderType', '')
+        time_in_force = plan_snapshot.get('timeInForce', order_preview.get('timeInForce', 'day'))
+
+        # B9: Explicitly reject GTC for buy orders — all buy orders must be day
+        if time_in_force and str(time_in_force).lower() == 'gtc':
+            blockers.append('GTC time-in-force is not allowed for buy orders. Entry Plan orders must use day orders only.')
 
         if final_action != 'BUY_READY':
             blockers.append(f'finalAction is {final_action}, not BUY_READY')
@@ -21788,8 +22112,8 @@ def entry_plan_execute():
             blockers.append(f'Shares is {shares}, must be > 0')
         if not order_preview:
             blockers.append('No orderPreview in plan')
-        if order_type not in ('limit', 'stop_limit'):
-            blockers.append(f'Order type {order_type} is not limit or stop_limit')
+        if order_type not in ('limit', 'stop_limit', 'market'):
+            blockers.append(f'Order type {order_type} is not limit, stop_limit, or market')
 
         if blockers:
             print(f'[ENTRY EXECUTE] {symbol} BLOCKED: {blockers}')
@@ -21903,6 +22227,14 @@ def entry_plan_execute():
                 'limit_price': str(limit_price),
                 'time_in_force': 'day'
             }
+        elif order_type == 'market':
+            order_payload = {
+                'symbol': symbol,
+                'side': 'buy',
+                'qty': str(shares),
+                'type': 'market',
+                'time_in_force': 'day'
+            }
         else:
             return jsonify({
                 'success': False, 'action': 'BLOCKED', 'symbol': symbol,
@@ -21910,7 +22242,7 @@ def entry_plan_execute():
                 'blockers': [f'Order type {order_type} not supported']
             })
 
-        print(f'[ENTRY EXECUTE] {symbol}: submitting {mode_label} {order_type} order: shares={shares} limit=${limit_price}')
+        print(f'[ENTRY EXECUTE] {symbol}: submitting {mode_label} {order_type} order: shares={shares}' + (f' limit=${limit_price}' if limit_price and order_type != 'market' else ''))
 
         order_resp = _req.post(f'{base_url}/v2/orders', headers=headers, json=order_payload, timeout=30)
 
@@ -25151,6 +25483,20 @@ def _call_ai_entry_final_decision(plans, execution_mode, account_mode, risk_prof
     if not base_url.startswith('http'):
         base_url = 'https://' + base_url
 
+    _entry_ai_cache_payload = {
+        'provider': provider,
+        'model': model,
+        'executionMode': execution_mode,
+        'accountMode': account_mode,
+        'riskProfile': risk_profile,
+        'timeHorizon': time_horizon,
+        'plans': plans,
+    }
+    cached_entry_decisions = _pipeline_ai_cache_get('entry_plan_ai_decision', _entry_ai_cache_payload)
+    if cached_entry_decisions is not None:
+        print('[AI Entry Decision] cache hit for %d plans' % len(plans))
+        return cached_entry_decisions
+
     # Build prompt with deterministic data only (no AI can invent prices)
     plan_lines = []
     for i, p in enumerate(plans):
@@ -25310,6 +25656,7 @@ Return ONLY valid JSON (no markdown, no preamble):
                 result_map[sym]['aiError'] = 'AI did not return decision for this symbol'
 
         print(f'[AI Entry Decision] Completed: {sum(1 for v in result_map.values() if v["aiCalled"])}/{len(result_map)} plans received AI decisions ({elapsed}s)')
+        _pipeline_ai_cache_set('entry_plan_ai_decision', _entry_ai_cache_payload, result_map)
         return result_map
 
     except _json.JSONDecodeError as e:
@@ -25370,6 +25717,7 @@ def ai_entry_plan():
         live_buying_power = 0
         live_portfolio_value = 0
         live_equity = 0
+        open_buy_orders = []  # B8: for duplicate open order prevention
         # Resolve Alpaca config from per-user Supabase
         alpaca_mode = 'paper' if account_mode == 'paper' else 'live'
         alpaca_cfg, alpaca_src = resolve_alpaca_config(alpaca_mode, require_user_config=True)
@@ -25409,6 +25757,17 @@ def ai_entry_plan():
                             print(f'    [POSITIONS FETCH OK] {len(real_holdings)} positions: {real_holdings}')
                     except Exception as pos_e:
                         print(f'    [POSITIONS FETCH FAILED] {pos_e}')
+
+                    # B8: Fetch open buy orders for duplicate prevention
+                    open_buy_orders = []
+                    try:
+                        orders_resp = req_lib.get(f'{acc_url}/v2/orders?status=open&direction=buy', headers=acc_headers, timeout=10)
+                        if orders_resp.status_code == 200:
+                            all_open = orders_resp.json()
+                            open_buy_orders = [o.get('symbol', '').upper() for o in all_open if o.get('side') == 'buy']
+                            print(f'    [OPEN ORDERS FETCH OK] {len(open_buy_orders)} open buy orders: {open_buy_orders}')
+                    except Exception as ord_e:
+                        print(f'    [OPEN ORDERS FETCH FAILED] {ord_e}')
                 else:
                     print(f'    [ACCOUNT FETCH FAILED] HTTP {acc_resp.status_code}')
             except Exception as acc_e:
@@ -25419,21 +25778,74 @@ def ai_entry_plan():
         if not account_data_fetched and account_size == 100000:
             print(f'    ⚠ Using estimated account_size={account_size} (no live data available)')
 
+        # B12: When account data fetch fails, position sizing is unreliable — mark all as blocked
+        _position_sizing_blocked = not account_data_fetched
+
         if not candidates:
             return jsonify({'success': False, 'message': 'No candidates provided'}), 400
 
-        # Adjust risk parameters based on risk profile
+        # B4: Tiered allocation caps by riskProfile (replaces simple multiplier approach)
+        ALLOCATION_RULES = {
+            'low': {
+                'max_total_bp_pct': 0.30,
+                'max_per_trade_pv_pct': 0.05,
+                'max_per_trade_bp_pct': 0.10,
+                'max_open_buys': 2,
+                'leveraged_allowed': False,
+                'label': 'Conservative',
+            },
+            'medium': {
+                'max_total_bp_pct': 0.50,
+                'max_per_trade_pv_pct': 0.08,
+                'max_per_trade_bp_pct': 0.15,
+                'max_open_buys': 5,
+                'leveraged_allowed': 'limited',
+                'leveraged_max_pct': 0.20,
+                'label': 'Moderate',
+            },
+            'high': {
+                'max_total_bp_pct': 0.70,
+                'max_per_trade_pv_pct': 0.12,
+                'max_per_trade_bp_pct': 0.25,
+                'max_open_buys': 8,
+                'leveraged_allowed': True,
+                'leveraged_max_pct': 0.35,
+                'label': 'Aggressive',
+            },
+        }
+        _rules = ALLOCATION_RULES.get(risk_profile, ALLOCATION_RULES['medium'])
+
+        # Per-trade cap: min(portfolio_value * pv_pct, available_bp * bp_pct)
+        _safe_bp = max(live_buying_power * 0.90, 0)  # 10% safety buffer
+        _max_total_allocation = _safe_bp * _rules['max_total_bp_pct']
+        _max_per_trade = min(
+            account_size * _rules['max_per_trade_pv_pct'],
+            _safe_bp * _rules['max_per_trade_bp_pct']
+        ) if account_size > 0 else 0
+        _max_open_buys = _rules['max_open_buys']
+        _lev_allowed = _rules['leveraged_allowed']
+        _lev_max_pct = _rules.get('leveraged_max_pct', 0.0)
+
+        # Legacy-compatible multipliers for stop/target adjustments
         risk_multiplier = {'low': 0.6, 'medium': 1.0, 'high': 1.5}.get(risk_profile, 1.0)
         max_pos_multiplier = {'low': 0.7, 'medium': 1.0, 'high': 1.3}.get(risk_profile, 1.0)
         adjusted_risk_pct = risk_per_trade_pct * risk_multiplier
-        adjusted_max_pos_pct = min(max_position_pct * max_pos_multiplier, 25.0)  # hard cap 25%
+        adjusted_max_pos_pct = min(max_position_pct * max_pos_multiplier, 25.0)
 
         risk_dollars = account_size * (adjusted_risk_pct / 100.0)
         max_pos_dollars = account_size * (adjusted_max_pos_pct / 100.0)
-        daily_loss_limit = account_size * 0.03  # 3% max daily loss
+        daily_loss_limit = account_size * 0.03
+
+        # B2: Budget tracker for multi-order buying power management
+        _total_allocated = 0.0
+        _open_buy_count = 0
+        _leveraged_allocated = 0.0
 
         print(f'\n=== ENTRY PLAN START: {len(candidates)} candidates ===')
-        print(f'    Account: portfolio_value=${account_size:.0f}, risk/trade=${risk_dollars:.0f} (adjusted {adjusted_risk_pct:.2f}%), max_pos=${max_pos_dollars:.0f} (adjusted {adjusted_max_pos_pct:.1f}%)')
+        print(f'    Account: portfolio_value=${account_size:.0f}, bp=${live_buying_power:.0f}, safe_bp=${_safe_bp:.0f}')
+        print(f'    Allocation rules: {_rules["label"]} — max_total=${_max_total_allocation:.0f}, max_per_trade=${_max_per_trade:.0f}, max_open_buys={_max_open_buys}')
+        print(f'    Leveraged: {_lev_allowed}' + (f' (max {_lev_max_pct*100:.0f}% of total)' if _lev_allowed else ''))
+        print(f'    Legacy: risk/trade=${risk_dollars:.0f} (adjusted {adjusted_risk_pct:.2f}%), max_pos=${max_pos_dollars:.0f} (adjusted {adjusted_max_pos_pct:.1f}%)')
         print(f'    Risk profile: {risk_profile}, Time horizon: {time_horizon}')
         print(f'    Existing positions: {existing_positions}, Daily loss: ${daily_loss:.0f}/{daily_loss_limit:.0f}')
         print(f'    Execution mode: {execution_mode}')
@@ -25482,6 +25894,21 @@ def ai_entry_plan():
 
         errors = []
 
+        # B3: Sort candidates by priority for budget allocation
+        # Higher priority candidates get first access to limited buying power
+        def _candidate_sort_key(c):
+            v = str(c.get('verdict', '')).lower()
+            verdict_order = {'confirmed': 0, 'pass': 0, 'watch': 1, 'review': 2, 'needs manual review': 2}
+            vo = verdict_order.get(v, 3)
+            sharpe = float(c.get('sharpeRatio') or c.get('sharpe') or 0)
+            pf = float(c.get('profitFactor') or 0)
+            wr = float(c.get('winRate') or 0)
+            conf = float(c.get('confidence') or c.get('matchConfidence') or 50)
+            stability = float(c.get('stabilityScore') or 50)
+            # Negative sharpe so higher is better; negative vo so lower (better) verdict comes first
+            return (-vo, -sharpe, -pf, -wr, -conf, -stability)
+        candidates = sorted(candidates, key=_candidate_sort_key)
+
         for candidate in candidates:
             symbol = candidate.get('symbol', '').upper().strip()
             if not symbol:
@@ -25502,6 +25929,101 @@ def ai_entry_plan():
             risk_grade = candidate.get('riskGrade', '')
             fine_scan_decision = candidate.get('fineScanDecision', 'Pass')
             fine_scan_score = candidate.get('fineScanScore', 0)
+
+            # B8: Duplicate prevention — check for existing open buy orders and positions
+            _existing_open_order = symbol in (open_buy_orders if account_data_fetched else [])
+            _existing_position = symbol in (existing_positions if existing_positions else [])
+            if _existing_open_order or _existing_position:
+                _dup_reason_parts = []
+                if _existing_open_order:
+                    _dup_reason_parts.append('open buy order exists')
+                if _existing_position:
+                    _dup_reason_parts.append('position already held')
+                _dup_reason = 'Duplicate: ' + ' and '.join(_dup_reason_parts)
+                plans.append({
+                    'symbol': symbol,
+                    'underlyingSymbol': symbol,
+                    'selectedSymbol': symbol,
+                    'strategy': strategy,
+                    'setup': 'No Trade',
+                    'entryZoneLow': 0, 'entryZoneHigh': 0,
+                    'entryZoneDesc': 'N/A - Duplicate',
+                    'triggerCondition': 'N/A', 'stopLoss': 0, 'stopLossPct': 0,
+                    'stopSource': 'N/A',
+                    'invalidationCondition': 'N/A',
+                    'takeProfit1': 0, 'takeProfit2': 0, 'trailingStop': None,
+                    'riskReward1': 0, 'riskReward2': 0, 'riskRewardReview': False,
+                    'positionSizeShares': 0, 'positionSizeDollars': 0,
+                    'shares': 0, 'allocationDollars': 0, 'estimatedValue': 0,
+                    'positionCapital': round(account_size, 2),
+                    'positionCapped': False, 'positionCapStatus': 'N/A',
+                    'positionPct': 0,
+                    'accountMode': account_mode,
+                    'accountBuyingPower': round(live_buying_power, 2),
+                    'buyingPowerBefore': round(_safe_bp - _total_allocated, 2),
+                    'buyingPowerAfter': round(_safe_bp - _total_allocated, 2),
+                    'riskDollars': 0, 'riskBudget': 0, 'riskUsedPct': 0,
+                    'riskPct': risk_per_trade_pct, 'maxLossPct': 0,
+                    'holdingPeriod': 'N/A',
+                    'timeHorizon': time_horizon,
+                    'riskProfile': risk_profile,
+                    'orderType': 'N/A',
+                    'limitPrice': None,
+                    'timeInForce': 'day',
+                    'isLeveraged': False,
+                    'leverageReason': None,
+                    'existingOpenOrder': _existing_open_order,
+                    'existingPosition': _existing_position,
+                    'aiDecision': 'SKIP', 'confidence': 0, 'bestStrategy': strategy,
+                    'finalAction': 'BLOCKED_BY_RISK', 'tradeReadiness': 'BLOCKED', 'entryTriggerMet': False,
+                    'hardRiskGate': {
+                        'status': 'BLOCK', 'passed': False,
+                        'blockers': [_dup_reason],
+                        'warnings': [], 'reasons': [_dup_reason]
+                    },
+                    'riskGateReasons': {
+                        'blockers': [_dup_reason],
+                        'warnings': [],
+                        'all': [_dup_reason]
+                    },
+                    'dataQuality': 'GOOD' if account_data_fetched else 'PARTIAL',
+                    'dataSources': {
+                        'marketData': 'N/A',
+                        'technicalData': 'N/A',
+                        'accountData': account_data_source if account_data_fetched else 'Fallback',
+                        'aiData': 'N/A'
+                    },
+                    'aiSource': 'Local Rules',
+                    'aiCalled': False, 'aiModel': None, 'aiError': None,
+                    'executionDetails': {
+                        'mode': execution_mode,
+                        'canExecute': False,
+                        'reason': _dup_reason,
+                        'brokerSource': f'Alpaca {account_mode.capitalize()}' if account_data_fetched else 'Not Connected',
+                        'brokerConnected': account_data_fetched,
+                        'orderTypeSuggestion': 'N/A',
+                        'orderTypeReason': _dup_reason,
+                        'orderPreview': None
+                    },
+                    'sourceVerdict': verdict,
+                    'currentPrice': 0,
+                    'reason': _dup_reason,
+                    'decisionReason': _dup_reason,
+                    'riskNotes': [_dup_reason],
+                    'riskComment': '',
+                    'invalidationComment': '',
+                    'nextStep': 'Close existing position or cancel open order before entering.',
+                    'blockers': [_dup_reason],
+                    'dataSource': 'duplicate_check',
+                    'entryReadiness': 'Wait',
+                    'isInEntryZone': False,
+                    'readyReviewReason': '',
+                    'atrPct': 0,
+                    'ema20': None, 'ema50': None,
+                    'atr': 0,
+                    'support': 0, 'resistance': 0,
+                })
+                continue
 
             # ── Handle Rejected/Avoid verdict ──
             if verdict in ('Rejected', 'Reject', 'Avoid'):
@@ -25548,8 +26070,98 @@ def ai_entry_plan():
                 })
                 continue
 
+            # ── Data quality gate: block candidates with incomplete market data ──
+            _candidate_dq = str(candidate.get('dataQuality', '')).lower()
+            if _candidate_dq in ('need_data', 'partial'):
+                _dq_block_reason = 'Market data incomplete: missing previous close/change percent (scanner dataQuality=%s)' % _candidate_dq
+                plans.append({
+                    'symbol': symbol,
+                    'underlyingSymbol': symbol,
+                    'selectedSymbol': symbol,
+                    'strategy': strategy, 'setup': 'No Trade',
+                    'entryZoneLow': 0, 'entryZoneHigh': 0,
+                    'entryZoneDesc': 'N/A - Market data incomplete',
+                    'triggerCondition': 'N/A', 'stopLoss': 0, 'stopLossPct': 0,
+                    'stopSource': 'N/A',
+                    'invalidationCondition': 'N/A',
+                    'takeProfit1': 0, 'takeProfit2': 0, 'trailingStop': None,
+                    'riskReward1': 0, 'riskReward2': 0, 'riskRewardReview': False,
+                    'positionSizeShares': 0, 'positionSizeDollars': 0,
+                    'shares': 0, 'allocationDollars': 0, 'estimatedValue': 0,
+                    'positionCapital': round(account_size, 2),
+                    'positionCapped': False, 'positionCapStatus': 'N/A',
+                    'positionPct': 0,
+                    'accountMode': account_mode,
+                    'accountBuyingPower': round(live_buying_power, 2),
+                    'buyingPowerBefore': round(_safe_bp - _total_allocated, 2),
+                    'buyingPowerAfter': round(_safe_bp - _total_allocated, 2),
+                    'riskDollars': 0, 'riskBudget': 0, 'riskUsedPct': 0,
+                    'riskPct': risk_per_trade_pct, 'maxLossPct': 0,
+                    'holdingPeriod': 'N/A',
+                    'timeHorizon': time_horizon,
+                    'riskProfile': risk_profile,
+                    'orderType': 'N/A',
+                    'limitPrice': None,
+                    'timeInForce': 'day',
+                    'isLeveraged': False,
+                    'leverageReason': None,
+                    'existingOpenOrder': False,
+                    'existingPosition': symbol in (existing_positions if existing_positions else []),
+                    'aiDecision': 'SKIP', 'confidence': 0, 'bestStrategy': strategy,
+                    'finalAction': 'BLOCKED_BY_RISK', 'tradeReadiness': 'BLOCKED', 'entryTriggerMet': False,
+                    'hardRiskGate': {
+                        'status': 'BLOCK', 'passed': False,
+                        'blockers': [_dq_block_reason],
+                        'warnings': [], 'reasons': [_dq_block_reason]
+                    },
+                    'riskGateReasons': {
+                        'blockers': [_dq_block_reason],
+                        'warnings': [],
+                        'all': [_dq_block_reason]
+                    },
+                    'dataQuality': _candidate_dq.upper(),
+                    'dataSources': {
+                        'marketData': 'Incomplete',
+                        'technicalData': 'N/A',
+                        'accountData': account_data_source if account_data_fetched else 'Fallback',
+                        'aiData': 'N/A'
+                    },
+                    'aiSource': 'Local Rules',
+                    'aiCalled': False, 'aiModel': None, 'aiError': _dq_block_reason,
+                    'executionDetails': {
+                        'mode': execution_mode,
+                        'canExecute': False,
+                        'reason': _dq_block_reason,
+                        'brokerSource': f'Alpaca {account_mode.capitalize()}' if account_data_fetched else 'Not Connected',
+                        'brokerConnected': account_data_fetched,
+                        'orderTypeSuggestion': 'N/A',
+                        'orderTypeReason': _dq_block_reason,
+                        'orderPreview': None
+                    },
+                    'sourceVerdict': verdict,
+                    'currentPrice': 0,
+                    'reason': _dq_block_reason,
+                    'decisionReason': _dq_block_reason,
+                    'riskNotes': [_dq_block_reason],
+                    'riskComment': '',
+                    'invalidationComment': '',
+                    'nextStep': 'Wait for complete market data (previous close + change percent) before generating entry plan.',
+                    'blockers': [_dq_block_reason],
+                    'dataSource': 'data_quality_gate',
+                    'entryReadiness': 'Wait',
+                    'isInEntryZone': False,
+                    'readyReviewReason': '',
+                    'atrPct': 0,
+                    'ema20': None, 'ema50': None,
+                    'atr': 0,
+                    'support': 0, 'resistance': 0,
+                })
+                continue
+
             # ── 1. Fetch real Alpaca data for this symbol ──
             current_price = 0
+            previous_close = None
+            change_percent = None
             closes = []
             highs = []
             lows = []
@@ -25567,11 +26179,16 @@ def ai_entry_plan():
                     snap = snap_resp.json()
                     latest_trade = snap.get('latestTrade', {}) or {}
                     daily_bar = snap.get('dailyBar', {}) or {}
+                    prev_daily = snap.get('prevDailyBar', {}) or {}
                     current_price = float(latest_trade.get('p', 0))
                     if current_price <= 0:
                         current_price = float(daily_bar.get('c', 0))
                     if current_price <= 0:
-                        current_price = float(snap.get('prevDailyBar', {}).get('c', 0))
+                        current_price = float(prev_daily.get('c', 0))
+                    # Track previousClose for data quality assessment
+                    previous_close = float(prev_daily.get('c')) if prev_daily.get('c') else None
+                    if previous_close is not None and current_price > 0 and previous_close > 0:
+                        change_percent = ((current_price - previous_close) / previous_close) * 100
                 bars_end = dt_dt.utcnow()
                 bars_start = bars_end - dt_td(days=120)
                 bars_params = {
@@ -25924,6 +26541,76 @@ def ai_entry_plan():
                 risk_gate_blockers.append(f'Insufficient buying power (${live_buying_power:.2f}) or risk budget for {symbol} at ${current_price:.2f}. Minimum fractional order requires $1.00 notional.')
                 risk_gate_passed = False
 
+            # B12: Account fetch failure — block all executable BUYs
+            if _position_sizing_blocked:
+                risk_gate_blockers.append('Account buying power unavailable — cannot size positions reliably. Please ensure Alpaca account is connected in Settings.')
+                risk_gate_passed = False
+                final_action = 'BLOCKED_BY_RISK'
+
+            # B2: Budget-aware allocation — cap per-trade and total budget
+            _bp_before = _safe_bp - _total_allocated
+            if pos_dollars > _max_per_trade and pos_shares > 0 and not _position_sizing_blocked:
+                # Cap position size to per-trade limit
+                _capped_shares = round(_max_per_trade / current_price, 4) if current_price > 0 else 0
+                if _capped_shares >= 0.01:
+                    pos_shares = _capped_shares
+                    pos_dollars = pos_shares * current_price
+                    pos_pct = round(pos_dollars / account_size * 100, 2) if account_size > 0 else 0
+                    risk_dollars_actual = pos_shares * risk_per_share
+                    position_capped = True
+                    position_cap_status = f'capped by per-trade limit (${_max_per_trade:.0f})'
+                    risk_gate_warnings.append(f'Position capped to per-trade limit ${_max_per_trade:.0f} ({_rules["label"]} risk profile)')
+                else:
+                    risk_gate_blockers.append(f'Per-trade cap ${_max_per_trade:.0f} yields {_capped_shares:.4f} shares — below minimum 0.01')
+                    pos_shares = 0
+                    pos_dollars = 0
+                    risk_gate_passed = False
+
+            # B2: Check total budget — block if allocation would exceed remaining buying power
+            if pos_dollars > 0 and not _position_sizing_blocked:
+                _remaining = _max_total_allocation - _total_allocated
+                if pos_dollars > _remaining and _remaining <= 0:
+                    risk_gate_blockers.append(
+                        f'Total allocation ${_total_allocated:.0f} already exceeds max ${_max_total_allocation:.0f} '
+                        f'({_rules["label"]} cap: {_rules["max_total_bp_pct"]*100:.0f}% of ${_safe_bp:.0f} buying power). '
+                        f'{symbol} blocked — insufficient buying power after higher priority allocations.')
+                    risk_gate_passed = False
+                    final_action = 'BLOCKED_BY_RISK'
+                elif pos_dollars > _remaining:
+                    # Try to fit remaining budget
+                    _fit_shares = round(_remaining / current_price, 4) if current_price > 0 else 0
+                    if _fit_shares >= 0.01:
+                        pos_shares = _fit_shares
+                        pos_dollars = pos_shares * current_price
+                        pos_pct = round(pos_dollars / account_size * 100, 2) if account_size > 0 else 0
+                        risk_dollars_actual = pos_shares * risk_per_share
+                        position_capped = True
+                        position_cap_status = f'capped by remaining budget (${_remaining:.0f})'
+                        risk_gate_warnings.append(
+                            f'Position reduced to fit remaining budget ${_remaining:.0f}. '
+                            f'Total allocation will reach ${_total_allocated + pos_dollars:.0f} / ${_max_total_allocation:.0f}.')
+                    else:
+                        risk_gate_blockers.append(
+                            f'Remaining budget ${_remaining:.0f} yields {_fit_shares:.4f} shares — below minimum 0.01. '
+                            f'{symbol} blocked — insufficient buying power after higher priority allocations.')
+                        pos_shares = 0
+                        pos_dollars = 0
+                        risk_gate_passed = False
+                        final_action = 'BLOCKED_BY_RISK'
+
+            # B2: Check max open BUY count
+            if pos_dollars > 0 and final_action not in ('BLOCKED_BY_RISK', 'SKIP') and _open_buy_count >= _max_open_buys:
+                risk_gate_blockers.append(
+                    f'Maximum {_max_open_buys} new BUY orders reached ({_rules["label"]} risk profile). '
+                    f'{symbol} blocked — open buy limit exceeded.')
+                risk_gate_passed = False
+                final_action = 'BLOCKED_BY_RISK'
+
+            # B2: Update budget tracker if position is viable
+            if pos_dollars > 0 and final_action not in ('BLOCKED_BY_RISK', 'SKIP'):
+                _total_allocated += pos_dollars
+                _open_buy_count += 1
+
             # 9c. Daily loss < 3%
             if daily_loss >= daily_loss_limit:
                 risk_gate_blockers.append(f'Daily loss ${daily_loss:.0f} exceeds 3% limit ${daily_loss_limit:.0f} - BLOCK ALL TRADING')
@@ -25993,16 +26680,25 @@ def ai_entry_plan():
             # ── Data Quality assessment (needed by finalAction logic) ──
             data_source = 'alpaca' if current_price > 0 and closes else ('candidate_fallback' if current_price > 0 else 'unknown')
             market_data_ok = current_price > 0 and closes
+            # previousClose is required for reliable entry zone / stop / target computation
+            previous_close_ok = previous_close is not None and previous_close > 0
+            change_pct_ok = change_percent is not None
             technical_data_ok = atr > 0 and ema20 is not None and ema50 is not None
             account_data_ok = account_data_fetched
             data_fallback_used = data_source != 'alpaca'
 
-            if market_data_ok and technical_data_ok and account_data_ok and not data_fallback_used:
+            if market_data_ok and previous_close_ok and change_pct_ok and technical_data_ok and account_data_ok and not data_fallback_used:
                 data_quality = 'GOOD'
+            elif market_data_ok and (not previous_close_ok or not change_pct_ok):
+                data_quality = 'need_data'
             elif market_data_ok and (not technical_data_ok or data_fallback_used):
                 data_quality = 'PARTIAL'
             else:
                 data_quality = 'POOR'
+
+            # For BUY-ready decisions, require previousClose (not just "not POOR")
+            data_ok_for_buy = data_quality == 'GOOD'
+            data_ok_for_plan = data_quality != 'POOR'
 
             # ── Determine final_action with smart gating ──
             # BUY_READY: in-zone, no hard blockers, R/R ok, levels ok, data ok, AI BUY
@@ -26026,7 +26722,7 @@ def ai_entry_plan():
                 final_action = 'BLOCKED_BY_RISK'
             elif ai_skip:
                 final_action = 'SKIP'
-            elif is_in_entry_zone and rr_ok and levels_ok and data_ok and ai_buy_or_watch:
+            elif is_in_entry_zone and rr_ok and levels_ok and data_ok_for_buy and ai_buy_or_watch:
                 if ai_decision == 'BUY':
                     final_action = 'BUY_READY'
                 else:
@@ -26038,8 +26734,8 @@ def ai_entry_plan():
                         review_factors.extend(risk_gate_warnings[:2])
                     if not entry_trigger_met:
                         review_factors.append('Entry trigger not confirmed')
-                    if data_quality == 'PARTIAL':
-                        review_factors.append('Data quality PARTIAL')
+                    if data_quality in ('PARTIAL', 'need_data'):
+                        review_factors.append('Data quality %s' % data_quality)
                     ready_review_reason = '; '.join(review_factors) if review_factors else 'AI decision is WATCH — needs manual review'
             elif not is_in_entry_zone or not entry_trigger_met:
                 final_action = 'WAIT_FOR_ENTRY'
@@ -26162,37 +26858,98 @@ def ai_entry_plan():
             else:
                 execution_details['orderPreview'] = None
 
+            # B5: timeHorizon-based holding period and stop/target adjustments
+            HOLDING_PERIOD_MAP = {
+                'short': {'label': '1-3 trading days', 'stop_mult': 0.85, 'target_mult': 0.80},
+                'mid':   {'label': '3-15 trading days', 'stop_mult': 1.0, 'target_mult': 1.0},
+                'long':  {'label': '2-8 weeks', 'stop_mult': 1.2, 'target_mult': 1.3},
+            }
+            _hp = HOLDING_PERIOD_MAP.get(time_horizon, HOLDING_PERIOD_MAP['mid'])
+            _holding_period_label = _hp['label']
+            # Adjust stop loss and take profit by timeHorizon
+            _adj_stop_loss = round(stop_loss * _hp['stop_mult'], 2) if stop_loss > 0 else stop_loss
+            _adj_tp1 = round(tp1 * _hp['target_mult'], 2) if tp1 > 0 else tp1
+            _adj_tp2 = round(tp2 * _hp['target_mult'], 2) if tp2 > 0 else tp2
+            # Recompute R/R with adjusted values
+            _adj_risk_per_share = round(abs(current_price - _adj_stop_loss), 2) if current_price > 0 and _adj_stop_loss > 0 else risk_per_share
+            _adj_rr1 = round((_adj_tp1 - current_price) / _adj_risk_per_share, 1) if _adj_risk_per_share > 0 and _adj_tp1 > current_price else rr1
+            _adj_rr2 = round((_adj_tp2 - current_price) / _adj_risk_per_share, 1) if _adj_risk_per_share > 0 and _adj_tp2 > current_price else rr2
+
+            # B7: In-zone → market order; Out-of-zone → limit order
+            if is_in_entry_zone and pos_shares > 0:
+                _order_type_hint = 'Market Buy'
+                _order_preview_type = 'market'
+                _limit_price = None
+            elif pos_shares > 0:
+                _order_type_hint = 'Limit Buy'
+                _order_preview_type = 'limit'
+                _limit_price = round(entry_zone_low, 2)
+            else:
+                _order_type_hint = 'N/A'
+                _order_preview_type = 'N/A'
+                _limit_price = None
+
+            # Build order preview with B7 logic
+            if pos_shares > 0:
+                execution_details['orderPreview'] = {
+                    'symbol': symbol,
+                    'shares': pos_shares,
+                    'orderType': _order_preview_type,
+                    'limitPrice': _limit_price,
+                    'stopLoss': round(_adj_stop_loss, 2),
+                    'takeProfit': round(_adj_tp1, 2) if _adj_tp1 > 0 else None,
+                    'maxRisk': round(risk_dollars_actual, 2),
+                    'timeInForce': 'day',
+                }
+            else:
+                execution_details['orderPreview'] = None
+
             plans.append({
                 'symbol': symbol,
+                'underlyingSymbol': symbol,
+                'selectedSymbol': symbol,
                 'strategy': strategy,
                 'setup': setup,
                 'entryZoneLow': round(entry_zone_low, 2),
                 'entryZoneHigh': round(entry_zone_high, 2),
                 'entryZoneDesc': entry_zone_desc,
                 'triggerCondition': trigger_condition,
-                'stopLoss': round(stop_loss, 2),
+                'stopLoss': round(_adj_stop_loss, 2),
                 'stopLossPct': stop_loss_pct,
                 'stopSource': stop_source,
                 'invalidationCondition': invalidation,
-                'takeProfit1': round(tp1, 2) if tp1 > 0 else 0,
-                'takeProfit2': round(tp2, 2) if tp2 > 0 else 0,
+                'takeProfit1': round(_adj_tp1, 2) if _adj_tp1 > 0 else 0,
+                'takeProfit2': round(_adj_tp2, 2) if _adj_tp2 > 0 else 0,
                 'trailingStop': trailing_stop,
-                'riskReward1': rr1,
-                'riskReward2': rr2,
+                'riskReward1': _adj_rr1,
+                'riskReward2': _adj_rr2,
                 'riskRewardReview': risk_reward_review,
                 'positionSizeShares': pos_shares,
                 'positionSizeDollars': round(pos_dollars, 2),
+                'shares': pos_shares,
+                'allocationDollars': round(pos_dollars, 2),
+                'estimatedValue': round(pos_dollars, 2),
                 'positionCapital': round(account_size, 2),
                 'positionCapped': position_capped,
                 'positionCapStatus': position_cap_status,
                 'accountMode': account_mode,
                 'accountBuyingPower': round(live_buying_power, 2),
+                'buyingPowerBefore': round(_bp_before, 2) if pos_dollars > 0 else round(_safe_bp - _total_allocated, 2),
+                'buyingPowerAfter': round(_safe_bp - _total_allocated - pos_dollars, 2) if pos_dollars > 0 else round(_safe_bp - _total_allocated, 2),
                 'positionPct': pos_pct,
                 'riskDollars': round(risk_dollars_actual, 2),
                 'riskBudget': risk_budget_dollars,
                 'riskUsedPct': risk_used_pct,
                 'riskPct': risk_per_trade_pct,
                 'maxLossPct': max_loss_pct,
+                'holdingPeriod': _holding_period_label,
+                'timeHorizon': time_horizon,
+                'riskProfile': risk_profile,
+                'orderType': _order_preview_type,
+                'limitPrice': _limit_price,
+                'timeInForce': 'day',
+                'isLeveraged': False,
+                'leverageReason': None,
                 'aiDecision': ai_decision,
                 'confidence': confidence,
                 'bestStrategy': best_strategy,
@@ -26237,6 +26994,8 @@ def ai_entry_plan():
                 'atr': round(atr, 2),
                 'support': round(support, 2),
                 'resistance': round(resistance, 2),
+                'existingOpenOrder': _existing_open_order,
+                'existingPosition': _existing_position,
             })
 
         print(f'=== ENTRY PLAN DETERMINISTIC: {len(plans)} plans generated ===')
@@ -26346,8 +27105,8 @@ def ai_entry_plan():
                 else:
                     plan['dataSources']['aiData'] = 'AI unavailable' + (f' — {ai_error}' if ai_error else '')
 
-        # ── 14. Leveraged ETF Alternative Lookup (High Risk + Soft Blockers) ──
-        if risk_profile == 'high':
+        # ── 14. Leveraged ETF Alternative Lookup (per riskProfile allocation caps) ──
+        if _lev_allowed:
             LEVERAGED_ETF_MAP = {
                 'TSLA': {'bull': ['TSLL', 'TSLR'], 'bear': ['TSLQ', 'TSLZ']},
                 'NVDA': {'bull': ['NVDL', 'NVDU'], 'bear': ['NVD', 'NVDQ']},
@@ -26430,6 +27189,9 @@ def ai_entry_plan():
 
                     # Fetch price via market data
                     alt_price = 0
+                    alt_previous_close = None
+                    alt_change_pct = None
+                    alt_volume = 0
                     try:
                         md_acfg, _ = resolve_alpaca_config('market_data', require_user_config=True)
                         snap_url2 = f'https://data.alpaca.markets/v2/stocks/{alt_sym}/snapshot'
@@ -26440,6 +27202,13 @@ def ai_entry_plan():
                             alt_price = float(s2.get('latestTrade', {}).get('p', 0))
                             if alt_price <= 0:
                                 alt_price = float(s2.get('dailyBar', {}).get('c', 0))
+                            # Extract previousClose and volume for data quality check
+                            alt_prev_daily = s2.get('prevDailyBar', {}) or {}
+                            alt_previous_close = float(alt_prev_daily.get('c')) if alt_prev_daily.get('c') else None
+                            alt_daily_bar = s2.get('dailyBar', {}) or {}
+                            alt_volume = int(alt_daily_bar.get('v', 0)) if alt_daily_bar.get('v') else 0
+                            if alt_previous_close and alt_price > 0 and alt_previous_close > 0:
+                                alt_change_pct = ((alt_price - alt_previous_close) / alt_previous_close) * 100
                     except Exception:
                         pass
 
@@ -26455,6 +27224,35 @@ def ai_entry_plan():
                             'tradeReadiness': 'BLOCKED',
                             'aiDecision': 'SKIP',
                             'decisionReason': f'Leveraged alternative {alt_sym} — price unavailable.',
+                        })
+                        continue
+
+                    # Data quality gate for leveraged ETF: require complete data before BUY
+                    _alt_data_incomplete = (
+                        alt_previous_close is None
+                        or alt_change_pct is None
+                        or alt_volume <= 0
+                    )
+                    if _alt_data_incomplete:
+                        _alt_dq_reason_parts = []
+                        if alt_previous_close is None:
+                            _alt_dq_reason_parts.append('previousClose unavailable')
+                        if alt_change_pct is None:
+                            _alt_dq_reason_parts.append('changePercent unavailable')
+                        if alt_volume <= 0:
+                            _alt_dq_reason_parts.append('volume=0')
+                        _alt_dq_reason = f'{alt_sym} market data incomplete: {", ".join(_alt_dq_reason_parts)}. Leveraged ETFs require complete data for safe entry.'
+                        plans.append({
+                            'symbol': alt_sym,
+                            'isLeveragedAlternative': True,
+                            'originalSymbol': sym,
+                            'alternativeDirection': direction,
+                            'alternativeFailed': True,
+                            'alternativeFailReason': _alt_dq_reason,
+                            'finalAction': 'BLOCKED_BY_RISK',
+                            'tradeReadiness': 'BLOCKED',
+                            'aiDecision': 'SKIP',
+                            'decisionReason': _alt_dq_reason,
                         })
                         continue
 
@@ -26475,10 +27273,45 @@ def ai_entry_plan():
                     alt_risk_dollars_actual = round(alt_pos_shares * alt_risk_per_share, 2)
                     alt_rr = round((alt_tp - alt_price) / alt_risk_per_share, 1) if alt_risk_per_share > 0 else 0
 
-                    # Gate check
+                    # Gate check — initialize before B10 allocation cap
                     alt_blockers = []
                     alt_warnings = []
                     alt_passed = True
+
+                    # B10: Leveraged allocation cap per riskProfile
+                    _lev_cap_total = _safe_bp * _lev_max_pct  # max total leveraged allocation
+                    _lev_reduction = 0.40  # reduce leveraged position to 40% of non-leveraged amount
+                    _lev_remaining = _lev_cap_total - _leveraged_allocated
+                    if _lev_remaining <= 0:
+                        # Leveraged cap exhausted, skip this alternative
+                        plans.append({
+                            'symbol': alt_sym,
+                            'isLeveragedAlternative': True,
+                            'originalSymbol': sym,
+                            'alternativeDirection': direction,
+                            'alternativeFailed': True,
+                            'alternativeFailReason': f'Leveraged allocation cap reached (${_lev_cap_total:.0f} max, ${_leveraged_allocated:.0f} already allocated).',
+                            'finalAction': 'BLOCKED_BY_RISK',
+                            'tradeReadiness': 'BLOCKED',
+                            'aiDecision': 'SKIP',
+                            'decisionReason': f'Leveraged alternative {alt_sym} — allocation cap exhausted.',
+                        })
+                        continue
+                    # Reduce leveraged shares to 40% of calculated non-leveraged amount
+                    _lev_reduced_shares = round(alt_pos_shares * _lev_reduction, 4)
+                    _lev_reduced_dollars = round(_lev_reduced_shares * alt_price, 2)
+                    if _lev_reduced_dollars > _lev_remaining:
+                        _lev_reduced_shares = round(_lev_remaining / alt_price, 4)
+                        _lev_reduced_dollars = round(_lev_reduced_shares * alt_price, 2)
+                    if _lev_reduced_shares >= 0.01 and _lev_reduced_dollars >= 1.0:
+                        alt_pos_shares = _lev_reduced_shares
+                        alt_pos_dollars = _lev_reduced_dollars
+                        alt_pos_pct = round(alt_pos_dollars / account_size * 100, 2) if account_size > 0 else 0
+                        alt_risk_dollars_actual = round(alt_pos_shares * alt_risk_per_share, 2)
+                        _leveraged_allocated += alt_pos_dollars
+                    elif _lev_reduced_shares > 0:
+                        alt_blockers.append(f'Leveraged reduction to {_lev_reduction*100:.0f}% yields {_lev_reduced_shares:.4f} shares — below minimum')
+                        alt_passed = False
 
                     if alt_pos_shares < 0.01:
                         alt_blockers.append(f'{alt_sym}: position {alt_pos_shares:.4f} shares below 0.01 minimum')
@@ -26589,6 +27422,23 @@ def ai_entry_plan():
                         'accountMode': account_mode,
                         'accountBuyingPower': round(live_buying_power, 2),
                         'positionCapital': round(account_size, 2),
+                        'underlyingSymbol': sym,
+                        'selectedSymbol': alt_sym,
+                        'shares': alt_pos_shares,
+                        'allocationDollars': alt_pos_dollars,
+                        'estimatedValue': alt_pos_dollars,
+                        'buyingPowerBefore': round(_safe_bp - _total_allocated - _leveraged_allocated + alt_pos_dollars, 2) if alt_pos_dollars > 0 else round(_safe_bp - _total_allocated - _leveraged_allocated, 2),
+                        'buyingPowerAfter': round(_safe_bp - _total_allocated - _leveraged_allocated, 2),
+                        'holdingPeriod': _holding_period_label,
+                        'timeHorizon': time_horizon,
+                        'riskProfile': risk_profile,
+                        'orderType': 'limit',
+                        'limitPrice': round(alt_price, 2),
+                        'timeInForce': 'day',
+                        'isLeveraged': True,
+                        'leverageReason': f'{alt_sym} is a leveraged {direction} ETF tracking {sym} ({_lev_reduction*100:.0f}% allocation vs. non-leveraged)',
+                        'existingPosition': alt_sym in (existing_positions if existing_positions else []),
+                        'existingOpenOrder': alt_sym in (open_buy_orders if account_data_fetched else []),
                     }
                     alt_plans.append(alt_plan)
                     break  # First valid candidate
@@ -26602,7 +27452,8 @@ def ai_entry_plan():
         ep_status = 'completed' if error_count == 0 else ('failed' if error_count == len(plans) else 'partial')
         print(f'=== ENTRY PLAN COMPLETE: {len(plans)} plans ({ai_success_count} with AI decisions, {error_count} errors) ===')
         user = get_supabase_user()
-        if user:
+        suppress_discord = bool(data.get('suppressDiscord')) if isinstance(data, dict) else False
+        if user and not suppress_discord:
             buy_plans = [p for p in plans if p.get('finalAction') in ('BUY_READY', 'READY_REVIEW')]
             watch_count = sum(1 for p in plans if p.get('finalAction') == 'WAIT_FOR_ENTRY' or p.get('aiDecision') == 'WATCH')
             skip_count = sum(1 for p in plans if p.get('finalAction') in ('SKIP', 'BLOCKED_BY_RISK'))
@@ -27170,6 +28021,181 @@ _PA_MARKET_CACHE_LOCK = threading.Lock()
 _PA_CURRENT_UID = None
 _PA_RUNNING_USERS = set()
 _PA_RUNNING_USERS_LOCK = threading.Lock()
+_PA_ACTIVE_RUNS = {}
+_PA_ACTIVE_RUNS_LOCK = threading.Lock()
+# Discord dedup: set of (run_id, event_type) tuples sent during a pipeline run
+# Cleared when a new run starts for the same run_id.
+_PA_SENT_DISCORD_EVENTS = set()
+_PA_DISCORD_DEDUP_LOCK = threading.Lock()
+# Claim mechanism: pending runs waiting for frontend to claim
+# Structure: {uid: {'runKey': str, 'createdAt': float, 'expiresAt': float, 'claimed': bool, 'claimedAt': float}}
+_PA_PENDING_RUNS = {}
+_PA_PENDING_RUNS_LOCK = threading.Lock()
+_PA_LAST_PIPELINE_RESULTS = {}
+_PA_LAST_PIPELINE_RESULTS_LOCK = threading.Lock()
+
+
+def _pa_update_active_run(uid, **kwargs):
+    """Update or initialize the active run state for a user. Thread-safe.
+
+    Maintains a live view of the current backend pipeline run for frontend polling.
+    Steps dict is deep-merged so caller can update individual steps without
+    overwriting others.
+    """
+    with _PA_ACTIVE_RUNS_LOCK:
+        run = _PA_ACTIVE_RUNS.get(uid)
+        if run is None:
+            run = {
+                'runId': '',
+                'trigger': '',
+                'status': 'running',
+                'startedAt': datetime.utcnow().isoformat(),
+                'updatedAt': datetime.utcnow().isoformat(),
+                'currentStep': '',
+                'stepIndex': 0,
+                'totalSteps': 6,
+                'progressPct': 0,
+                'message': '',
+                'steps': {
+                    'market_scanner': {'status': 'pending'},
+                    'continue_scan': {'status': 'pending'},
+                    'fine_scan': {'status': 'pending'},
+                    'deeper_validation': {'status': 'pending'},
+                    'entry_plan': {'status': 'pending'},
+                    'execution': {'status': 'pending'},
+                    'exit_scan': {'status': 'pending'},
+                },
+                'lastError': None,
+                'stopRequested': False,
+                'finishedAt': None,
+            }
+            _PA_ACTIVE_RUNS[uid] = run
+        for k, v in kwargs.items():
+            if k == 'steps' and isinstance(v, dict):
+                if run.setdefault('steps', {}) is None:
+                    run['steps'] = {}
+                for step_key, step_val in v.items():
+                    if step_key in run['steps'] and isinstance(step_val, dict) and isinstance(run['steps'][step_key], dict):
+                        run['steps'][step_key].update(step_val)
+                    else:
+                        run['steps'][step_key] = step_val
+            else:
+                run[k] = v
+        run['updatedAt'] = datetime.utcnow().isoformat()
+
+
+def _pa_get_active_run(uid):
+    """Get a copy of the active run state. Returns None if no active run exists."""
+    with _PA_ACTIVE_RUNS_LOCK:
+        run = _PA_ACTIVE_RUNS.get(uid)
+        return dict(run) if run else None
+
+
+def _pa_clear_active_run(uid):
+    """Remove the active run state for a user."""
+    with _PA_ACTIVE_RUNS_LOCK:
+        _PA_ACTIVE_RUNS.pop(uid, None)
+
+
+def _pa_active_run_step(uid, step_key, step_index, total_steps, status='running', message=None, step_data=None):
+    """Convenience: update active run at a step boundary."""
+    pct = int((step_index / total_steps) * 100) if total_steps > 0 else 0
+    updates = {
+        'currentStep': step_key,
+        'stepIndex': step_index,
+        'totalSteps': total_steps,
+        'progressPct': pct,
+        'steps': {step_key: {'status': status, **(step_data or {})}},
+    }
+    if message:
+        updates['message'] = message
+    _pa_update_active_run(uid, **updates)
+    _pa_log('[PipelineRun] run step uid=%s step=%s status=%s progress=%d%%' % (uid[:8], step_key, status, pct))
+
+
+def _pa_discord_send_once(uid, run_id, event_type, payload):
+    """Send Discord notification only once per (run_id, event_type). Thread-safe."""
+    key = (run_id, event_type)
+    with _PA_DISCORD_DEDUP_LOCK:
+        if key in _PA_SENT_DISCORD_EVENTS:
+            _pa_log('[DiscordDedup] skipped duplicate run_id=%s event=%s' % (run_id[:20], event_type))
+            return
+        _PA_SENT_DISCORD_EVENTS.add(key)
+    send_discord_notification(uid, event_type, payload)
+    _pa_log('[DiscordDedup] sent run_id=%s event=%s' % (run_id[:20], event_type))
+
+
+def _pa_check_stop_requested(uid):
+    """Check if stop was requested for this user's active run. Returns True if stopped."""
+    run = _pa_get_active_run(uid)
+    if run and run.get('stopRequested'):
+        _pa_update_active_run(uid, status='stopped', progressPct=0,
+                              message='Pipeline stopped by user',
+                              finishedAt=datetime.utcnow().isoformat())
+        _pa_log('[PipelineRun] stop requested user=%s run=%s' % (uid[:8], run.get('runId', '?')[:20]))
+        return True
+    return False
+
+
+def _pa_get_pending_run_key(uid, now_et=None):
+    """Get pending runKey for frontend claim. Clears expired entries."""
+    with _PA_PENDING_RUNS_LOCK:
+        pending = _PA_PENDING_RUNS.get(uid)
+        if not pending:
+            return ''
+        if time.time() > pending.get('expiresAt', 0):
+            _PA_PENDING_RUNS.pop(uid, None)
+            return ''
+        return pending.get('runKey', '')
+
+
+def _pa_get_claim_expires_at(uid):
+    """Get ISO timestamp when the claim window expires."""
+    with _PA_PENDING_RUNS_LOCK:
+        pending = _PA_PENDING_RUNS.get(uid)
+        if not pending:
+            return ''
+        if time.time() > pending.get('expiresAt', 0):
+            _PA_PENDING_RUNS.pop(uid, None)
+            return ''
+        return datetime.utcfromtimestamp(pending['expiresAt']).isoformat() + 'Z'
+
+
+def _pa_get_claim_expires_in(uid):
+    """Get seconds remaining in claim window (0 if none)."""
+    with _PA_PENDING_RUNS_LOCK:
+        pending = _PA_PENDING_RUNS.get(uid)
+        if not pending:
+            return 0
+        remaining = int(pending.get('expiresAt', 0) - time.time())
+        if remaining <= 0:
+            _PA_PENDING_RUNS.pop(uid, None)
+            return 0
+        return remaining
+
+
+def _pa_has_unclaimed_pending(uid):
+    """Check if there is a non-expired, non-claimed pending run for this uid."""
+    with _PA_PENDING_RUNS_LOCK:
+        pending = _PA_PENDING_RUNS.get(uid)
+        if not pending:
+            return False
+        if pending.get('claimed'):
+            return False
+        if time.time() > pending.get('expiresAt', 0):
+            _PA_PENDING_RUNS.pop(uid, None)
+            return False
+        return True
+
+
+def _pa_discord_source_prefix(trigger):
+    """Return a Discord-friendly source label based on pipeline trigger."""
+    if trigger in ('market_auto_run', 'headless_market_auto_run', 'toggle_on', 'auto_manual_now'):
+        return 'Auto Background'
+    if trigger == 'manual':
+        return 'Manual'
+    return 'Headless'
+
 
 # US market holidays (fallback when Alpaca clock is unavailable)
 # These are approximate — Alpaca clock is authoritative when available
@@ -27327,18 +28353,42 @@ def _pa_log(msg):
 def _pa_log_error(msg):
     print('[PipelineAuto] ERROR: %s' % msg, flush=True)
 
-def _pa_get_config(uid):
+def _pa_supabase_client():
+    if supabase_admin:
+        return supabase_admin
     try:
         from supabase import create_client
         supabase_url = os.environ.get('SUPABASE_URL', 'https://nwpxjqgqegxttucsmvmp.supabase.co')
-        supabase_key = os.environ.get('SUPABASE_SERVICE_KEY', '')
+        supabase_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or os.environ.get('SUPABASE_SERVICE_KEY', '')
         if supabase_key:
-            client = create_client(supabase_url, supabase_key)
+            return create_client(supabase_url, supabase_key)
+    except Exception as e:
+        _pa_log_error('Supabase client init failed: %s' % type(e).__name__)
+    return None
+
+def _pa_file_fallback_enabled():
+    flag = os.environ.get('PIPELINE_AUTO_FILE_FALLBACK', '').strip().lower()
+    if flag in ('1', 'true', 'yes', 'on'):
+        return True
+    env_name = (os.environ.get('FLASK_ENV') or os.environ.get('ENV') or '').strip().lower()
+    return env_name in ('dev', 'development', 'local', 'test')
+
+def _pa_get_config(uid):
+    try:
+        client = _pa_supabase_client()
+        if client:
             resp = client.table('user_pipeline_auto_configs').select('*').eq('user_id', uid).execute()
             if resp.data:
-                return resp.data[0].get('config', {}) if isinstance(resp.data[0], dict) else {}
+                cfg = resp.data[0].get('config', {}) if isinstance(resp.data[0], dict) else {}
+                _pa_log('[PipelineAutoConfig] load from DB user=%s enabled=%s interval=%s' % (uid[:8], cfg.get('enabled'), cfg.get('interval_minutes')))
+                return cfg
+            else:
+                _pa_log('[PipelineAutoConfig] no DB record found user=%s' % uid[:8])
     except Exception as e:
-        _pa_log_error('Supabase user_pipeline_auto_configs query failed (will fallback): %s' % e)
+        _pa_log_error('[PipelineAutoConfig] Supabase query failed: %s user=%s' % (e, uid[:8]))
+    if not _pa_file_fallback_enabled():
+        _pa_log('[PipelineAutoConfig] file fallback disabled user=%s returning empty' % uid[:8])
+        return {}
     try:
         import json
         if os.path.exists(_PA_FILE_PATH):
@@ -27351,16 +28401,49 @@ def _pa_get_config(uid):
 
 def _pa_save_config(uid, config):
     try:
-        from supabase import create_client
-        supabase_url = os.environ.get('SUPABASE_URL', 'https://nwpxjqgqegxttucsmvmp.supabase.co')
-        supabase_key = os.environ.get('SUPABASE_SERVICE_KEY', '')
-        if supabase_key:
-            client = create_client(supabase_url, supabase_key)
-            row = {'user_id': uid, 'config_type': 'pipeline_auto', 'config': config}
+        client = _pa_supabase_client()
+        if client:
+            row = {
+                'user_id': uid,
+                'config_type': 'pipeline_auto',
+                'config': config,
+                'enabled': bool(config.get('enabled', False)),
+                'interval_minutes': int(config.get('interval_minutes') or 0),
+                'mode': config.get('mode', 'hybrid'),
+                'last_run_at': config.get('last_run_at') or None,
+            }
+            next_run = config.get('next_run_at')
+            if next_run and next_run not in ('now', 'Waiting for next market open'):
+                row['next_run_at'] = next_run
+            else:
+                row['next_run_at'] = None
             client.table('user_pipeline_auto_configs').upsert(row, on_conflict='user_id').execute()
-            return True
+            _pa_log('[PipelineAutoConfig] save success user=%s enabled=%s interval=%d' % (uid[:8], row['enabled'], row['interval_minutes']))
+            return True, ''
+        else:
+            _pa_log_error('[PipelineAutoConfig] supabase client is None user=%s' % uid[:8])
+            return False, 'service_role_missing'
     except Exception as e:
-        _pa_log_error('Supabase upsert failed: %s' % e)
+        err_str = str(e).lower()
+        _pa_log_error('[PipelineAutoConfig] Supabase upsert failed: %s user=%s' % (e, uid[:8]))
+        # Categorize error safely without exposing raw error to client
+        if 'does not exist' in err_str and 'relation' in err_str:
+            reason = 'missing_table'
+        elif 'does not exist' in err_str and 'column' in err_str:
+            reason = 'missing_column'
+        elif 'permission denied' in err_str or 'policy' in err_str:
+            reason = 'rls_blocked'
+        elif 'conflict' in err_str or 'duplicate key' in err_str:
+            reason = 'upsert_conflict'
+        elif 'type' in err_str and 'cannot' in err_str:
+            reason = 'schema_mismatch'
+        else:
+            reason = 'supabase_write_failed'
+        _pa_log_error('[PipelineAutoConfig] categorized reason=%s user=%s' % (reason, uid[:8]))
+    if not _pa_file_fallback_enabled():
+        _pa_log_error('[PipelineAutoConfig] save failed and file fallback disabled user=%s reason=%s' % (uid[:8], reason))
+        return False, reason
+    # File fallback (dev only)
     try:
         import json
         if os.path.exists(_PA_FILE_PATH):
@@ -27371,34 +28454,38 @@ def _pa_save_config(uid, config):
         all_configs[uid] = config
         with open(_PA_FILE_PATH, 'w') as f:
             json.dump(all_configs, f, indent=2)
-        return True
+        _pa_log('[PipelineAutoConfig] save to file fallback user=%s' % uid[:8])
+        return True, ''
     except Exception as e:
-        _pa_log_error('File fallback write failed: %s' % e)
-    return False
+        _pa_log_error('[PipelineAutoConfig] File fallback write failed: %s' % e)
+    return False, reason or 'save_failed'
 
 def _pa_add_run_history(uid, entry):
-    ts = datetime.utcnow().isoformat()
-    entry['created_at'] = ts
-    entry['user_id'] = uid
+    """Insert a row into user_pipeline_auto_runs using only columns that exist in the schema."""
     try:
-        from supabase import create_client
-        supabase_url = os.environ.get('SUPABASE_URL', 'https://nwpxjqgqegxttucsmvmp.supabase.co')
-        supabase_key = os.environ.get('SUPABASE_SERVICE_KEY', '')
-        if supabase_key:
-            client = create_client(supabase_url, supabase_key)
-            row = {'user_id': uid, 'config_type': 'pipeline_auto_run', 'entry': entry}
+        client = _pa_supabase_client()
+        if client:
+            row = {'user_id': uid}
+            # Map caller-provided fields to table columns (exact names must match schema)
+            for col in ('trigger_type', 'status', 'reason', 'market_open', 'market_status',
+                        'market_status_source', 'started_at', 'finished_at', 'duration_seconds',
+                        'interval_minutes', 'mode', 'summary', 'error'):
+                if col in entry:
+                    row[col] = entry[col]
             client.table('user_pipeline_auto_runs').insert(row).execute()
             return
     except Exception as e:
         _pa_log_error('Supabase history insert failed: %s' % e)
+    # File fallback for offline / error cases
     try:
         import json
+        entry['created_at'] = datetime.utcnow().isoformat()
+        entry['user_id'] = uid
         history = []
         if os.path.exists(_PA_FILE_HISTORY_PATH):
             with open(_PA_FILE_HISTORY_PATH, 'r') as f:
                 history = json.load(f)
         history.append(entry)
-        # Keep last 50 entries
         history = history[-50:]
         with open(_PA_FILE_HISTORY_PATH, 'w') as f:
             json.dump(history, f, indent=2)
@@ -27407,18 +28494,14 @@ def _pa_add_run_history(uid, entry):
 
 def _pa_get_history(uid, limit=5):
     try:
-        from supabase import create_client
-        supabase_url = os.environ.get('SUPABASE_URL', 'https://nwpxjqgqegxttucsmvmp.supabase.co')
-        supabase_key = os.environ.get('SUPABASE_SERVICE_KEY', '')
-        if supabase_key:
-            client = create_client(supabase_url, supabase_key)
+        client = _pa_supabase_client()
+        if client:
             resp = client.table('user_pipeline_auto_runs').select('*').eq('user_id', uid).order('created_at', desc=True).limit(limit).execute()
             if resp.data:
                 entries = []
                 for row in resp.data:
-                    entry = row.get('entry', {}) if isinstance(row, dict) else {}
-                    if entry:
-                        entries.append(entry)
+                    if isinstance(row, dict):
+                        entries.append(dict(row))
                 return entries
     except Exception as e:
         _pa_log_error('Supabase history get failed: %s' % e)
@@ -27585,37 +28668,72 @@ def _pa_call_endpoint(uid, path, view_func, payload=None, method='POST', query_s
 
 
 def _pa_default_symbols_for_user(uid):
-    cfg = get_user_config(uid, 'market_symbols') or {}
-    symbols = cfg.get('symbols') if isinstance(cfg, dict) else None
-    if isinstance(symbols, list) and symbols:
-        clean = [str(s).upper().strip() for s in symbols if str(s).strip()]
-        if clean:
-            return clean[:50]
-    return ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'AMD', 'JPM', 'XOM', 'WMT', 'HD']
+    symbols, _source = get_market_scan_universe(uid, limit=50)
+    return symbols, _source
 
 
 def _pa_continue_scan_headless(scanner_results):
     eligible = []
+    ai_unavailable_count = 0
+    filtered_no_price = 0
+    filtered_bearish = 0
+    filtered_low_score = 0
     for r in scanner_results or []:
-        if r.get('analysisStatus') == 'failed' or r.get('trendLabel') == 'Need Data':
-            continue
+        symbol = r.get('symbol', '?')
+        # Check if AI was unavailable for this result
+        ai_available = not r.get('aiError') and r.get('analysisSource') != 'unavailable'
+
         if not r.get('price') or r.get('price') <= 0:
+            filtered_no_price += 1
             continue
-        if r.get('trendScore') is None and r.get('overallScore') is None:
-            continue
-        trend = r.get('trendLabel') or 'Neutral'
-        score = r.get('overallScore') or r.get('trendScore') or 0
+
+        trend = r.get('trendLabel')
+        score = r.get('overallScore') or r.get('trendScore')
         risk = r.get('eventRisk') or 'Medium'
+
+        # When AI is unavailable, fall back to price/change heuristics
+        if not ai_available or trend is None or score is None:
+            ai_unavailable_count += 1
+            change = r.get('changePct') or r.get('changePercent') or 0
+            # Derive trend from price change
+            if change > 2:
+                trend = 'Bullish'
+                score = min(95, 55 + abs(change) * 2)
+            elif change > 0.5:
+                trend = 'Constructive'
+                score = min(85, 45 + abs(change) * 3)
+            elif change > -0.5:
+                trend = 'Neutral'
+                score = 40 + abs(change) * 3
+            elif change > -2:
+                trend = 'Bearish'
+                score = 30
+            else:
+                trend = 'Bearish'
+                score = 15
+            # Boost score for high volume
+            vol = r.get('volume') or 0
+            if vol > 5000000:
+                score = min(100, score + 10)
+            elif vol > 1000000:
+                score = min(100, score + 5)
+            if ai_available:
+                r['trendLabel'] = trend  # persist derived trend back
+
         is_bullish = trend in ('Bullish', 'Strong Bullish')
         is_constructive = trend in ('Constructive', 'Neutral')
         if not is_bullish and not is_constructive:
+            filtered_bearish += 1
             continue
         if is_bullish and score < 70:
+            filtered_low_score += 1
             continue
         if is_constructive and score < 80:
+            filtered_low_score += 1
             continue
         if risk == 'High':
             continue
+
         news = r.get('newsSentiment') or 'Neutral'
         change = r.get('changePct') or r.get('changePercent') or 0
         volume_status = r.get('volumeStatus') or 'Normal'
@@ -27627,19 +28745,28 @@ def _pa_continue_scan_headless(scanner_results):
         priority += 8 if change >= 3 else 5 if change >= 1 else 2 if change > 0 else -6
         priority += 8 if volume_status == 'High' else 4 if volume_status == 'Normal' else 0
         priority = max(0, min(100, priority))
-        if priority >= 60:
+        if priority >= 50:  # Lowered from 60 to allow AI-unavailable candidates
             item = dict(r)
             item.update({
                 'includeInContinueScan': True,
                 'priorityScore': priority,
                 'continueScanStatus': 'completed',
-                'reasonSource': 'Backend Local Rules',
+                'reasonSource': 'Backend Local Rules (AI unavailable)' if not ai_available else 'Backend Local Rules',
                 'selectedBy': 'Backend Local Rules',
                 'generatedAt': datetime.utcnow().isoformat() + 'Z',
             })
             eligible.append(item)
     eligible.sort(key=lambda x: x.get('priorityScore', 0), reverse=True)
-    return eligible[:20]
+    _pa_log('[PipelineAuto] continue_scan headless: input=%d ai_unavailable=%d no_price=%d bearish=%d low_score=%d eligible=%d' % (
+        len(scanner_results or []), ai_unavailable_count, filtered_no_price, filtered_bearish, filtered_low_score, len(eligible)))
+    stats = {
+        'ai_unavailable': ai_unavailable_count,
+        'no_price': filtered_no_price,
+        'bearish': filtered_bearish,
+        'low_score': filtered_low_score,
+        'eligible': len(eligible),
+    }
+    return eligible[:20], stats
 
 
 def _pa_backtest_snapshot(symbol, strategy='moving_average'):
@@ -27729,7 +28856,18 @@ def _pa_fine_scan_headless(uid, candidates):
                 'riskScore': rec.get('riskScore') or 0,
                 'entryScore': rec.get('entryScore') or 0,
             }
-            dec_resp, _ = _pa_call_endpoint(uid, '/api/ai/fine-scan-decision', fine_scan_decision, decision_payload)
+            _fine_decision_cache_payload = {
+                'uid': uid,
+                'provider': (ai_provider_config_state or {}).get('provider'),
+                'model': (ai_provider_config_state or {}).get('model'),
+                'payload': decision_payload,
+            }
+            dec_resp = _pipeline_ai_cache_get('fine_scan_decision', _fine_decision_cache_payload)
+            if dec_resp is None:
+                dec_resp, _ = _pa_call_endpoint(uid, '/api/ai/fine-scan-decision', fine_scan_decision, decision_payload)
+                _pipeline_ai_cache_set('fine_scan_decision', _fine_decision_cache_payload, dec_resp)
+            else:
+                _pa_log('fine_scan_decision cache hit symbol=%s' % symbol)
             if dec_resp and dec_resp.get('success'):
                 raw_decision = (dec_resp.get('decision') or '').upper()
                 rec['decision'] = 'Continue' if raw_decision == 'CONTINUE' else 'Reject' if raw_decision == 'REJECT' else 'NeedMoreData' if raw_decision == 'NEED_MORE_DATA' else 'Watch'
@@ -27791,7 +28929,7 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False):
     submitted = []
     if pos_err:
         return {'holdingsScanned': 0, 'signals': [], 'submitted': [], 'error': pos_err}
-    for pos in positions:
+    for pos in (positions or []):
         symbol = str(pos.get('symbol', '')).upper()
         qty = float(pos.get('qty') or 0)
         current_price = float(pos.get('current_price') or pos.get('market_value') or 0)
@@ -27801,7 +28939,12 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False):
         stop = plan.get('stopLoss') or plan.get('entryPlanStop')
         target = plan.get('takeProfit1') or plan.get('entryPlanTarget')
         decision = 'hold'
-        reason = 'No active entry plan from current headless run.'
+        if plan:
+            reason = 'Entry plan stop/target not triggered.'
+        elif entry_plans:
+            reason = 'No entry plan for this symbol in current run.'
+        else:
+            reason = 'No entry plan candidates were generated for this run.'
         if stop and current_price and current_price <= float(stop):
             decision = 'sell_now'
             reason = 'Current price is at or below entry plan stop.'
@@ -27830,8 +28973,127 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False):
     return {'holdingsScanned': len(positions), 'signals': results, 'submitted': submitted, 'error': None}
 
 
-def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=False):
+def _pa_pipeline_count_decisions(items, field, values):
+    counts = {v: 0 for v in values}
+    for item in items or []:
+        val = item.get(field)
+        if val in counts:
+            counts[val] += 1
+    return counts
+
+
+def _pa_build_pipeline_debug_dump(uid, run_id, trigger, mode, risk_profile, time_horizon,
+                                  trade_mode, summary, run_context):
+    market_results = run_context.get('market_results') or []
+    continue_results = run_context.get('continue_candidates') or []
+    fine_results = run_context.get('fine_results') or []
+    dv_results = run_context.get('validation_results') or []
+    entry_plans = run_context.get('entry_plans') or []
+    exit_results = run_context.get('exit_results') or {}
+    symbols = run_context.get('symbols') or [r.get('symbol') for r in market_results if r.get('symbol')]
+    scanner_passed = [r.get('symbol') for r in market_results if r.get('symbol')]
+    dump = {
+        'success': (summary or {}).get('errors', 0) == 0,
+        'runId': run_id,
+        'userId': uid,
+        'trigger': trigger,
+        'mode': mode,
+        'riskProfile': risk_profile,
+        'timeHorizon': time_horizon,
+        'tradeMode': trade_mode,
+        'startedAt': (summary or {}).get('startedAt'),
+        'finishedAt': (summary or {}).get('finishedAt'),
+        'durationSeconds': (summary or {}).get('durationSeconds'),
+        'summary': summary or {},
+        'market_scanner': {
+            'source': run_context.get('universe_source'),
+            'symbols': symbols,
+            'processed': (summary or {}).get('scannedTotal', len(symbols)),
+            'aiSuccess': (summary or {}).get('aiSuccess', 0),
+            'filtered': (summary or {}).get('filtered', 0),
+            'needData': (summary or {}).get('needData', 0),
+            'passedCandidates': scanner_passed,
+            'topSymbols': [r.get('symbol') for r in sorted(
+                market_results,
+                key=lambda x: (x.get('overallScore') or x.get('trendScore') or 0,
+                               x.get('trendConfidence') or x.get('confidence') or 0),
+                reverse=True
+            )[:5] if r.get('symbol')],
+            'results': market_results,
+        },
+        'continue_scan': {
+            'inputSymbols': [r.get('symbol') for r in market_results if r.get('symbol')],
+            'outputCandidates': [r.get('symbol') for r in continue_results if r.get('symbol')],
+            'selectedSymbols': [r.get('symbol') for r in continue_results if r.get('symbol')],
+            'results': continue_results,
+        },
+        'fine_scan': {
+            'inputSymbols': [r.get('symbol') for r in continue_results if r.get('symbol')],
+            'scannedCount': len(fine_results),
+            'decisions': _pa_pipeline_count_decisions(
+                fine_results, 'decision', ['Continue', 'Watch', 'Reject', 'Skip', 'NeedMoreData']
+            ),
+            'results': fine_results,
+        },
+        'deeper_validation': {
+            'inputSymbols': [r.get('symbol') for r in fine_results if r.get('decision') in ('Continue', 'Watch')],
+            'decisions': _pa_pipeline_count_decisions(
+                dv_results, 'verdict', ['Confirmed', 'Pass', 'Watch', 'Review', 'Rejected', 'Blocked']
+            ),
+            'results': dv_results,
+        },
+        'entry_plan': {
+            'inputSymbols': [r.get('symbol') for r in dv_results if r.get('verdict') in ('Confirmed', 'Watch', 'Review', 'Pass')],
+            'decisions': _pa_pipeline_count_decisions(
+                entry_plans, 'finalAction', ['BUY_READY', 'READY_REVIEW', 'WAIT_FOR_ENTRY', 'SKIP', 'BLOCKED_BY_RISK']
+            ),
+            'results': entry_plans,
+        },
+        'exit_scan': {
+            'holdingsScanned': exit_results.get('holdingsScanned', 0) if isinstance(exit_results, dict) else 0,
+            'results': exit_results.get('signals', []) if isinstance(exit_results, dict) else [],
+            'raw': exit_results,
+        },
+    }
+    return dump
+
+
+def _pa_save_pipeline_debug_dump(uid, run_id, trigger, mode, risk_profile, time_horizon,
+                                 trade_mode, summary, run_context):
+    dump = _pa_build_pipeline_debug_dump(uid, run_id, trigger, mode, risk_profile,
+                                         time_horizon, trade_mode, summary, run_context)
+    with _PA_LAST_PIPELINE_RESULTS_LOCK:
+        _PA_LAST_PIPELINE_RESULTS[(uid, run_id)] = dump
+        _PA_LAST_PIPELINE_RESULTS[(uid, '__last__')] = dump
+        if trigger == 'manual':
+            _PA_LAST_PIPELINE_RESULTS[(uid, '__last_manual__')] = dump
+        else:
+            _PA_LAST_PIPELINE_RESULTS[(uid, '__last_auto__')] = dump
+    try:
+        filename = 'debug_manual_pipeline_result.json' if trigger == 'manual' else 'debug_auto_pipeline_result.json'
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(dump, f, indent=2, default=str)
+        _pa_log('[PipelineCompare] wrote %s runId=%s trigger=%s' % (filename, run_id, trigger))
+    except Exception as e:
+        _pa_log_error('[PipelineCompare] debug dump write failed: %s' % e)
+    return dump
+
+
+def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=False,
+                     risk_profile='medium', time_horizon='mid', trade_mode='paper',
+                     run_id=None):
     """Run the full AI pipeline headlessly for one user."""
+    PIPELINE_TIMEOUT = 1800  # 30-minute hard timeout for the entire pipeline (50 symbols + AI)
+    STAGE_TIMEOUTS = {
+        'market_scanner': 900,  # 15 min for scanner with 50 symbols + AI analysis
+        'continue_scan': 30,
+        'fine_scan': 120,
+        'deeper_validation': 120,
+        'entry_plan': 60,
+        'execution': 60,
+        'exit_scan': 60,
+    }
     started = time.time()
     _now_et = _pa_now_et()
     summary = {
@@ -27841,92 +29103,383 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         'startedAt': datetime.utcnow().isoformat(),
         'steps': [],
     }
+    # run_context carries data between pipeline stages
+    run_context = {
+        'market_results': [],
+        'continue_candidates': [],
+        'fine_results': [],
+        'validation_results': [],
+        'entry_plans': [],
+        'exit_results': [],
+    }
+
+    class _PipelineStop(Exception):
+        pass
+
+    class _PipelineTimeout(Exception):
+        def __init__(self, stage, elapsed, limit):
+            self.stage = stage
+            self.elapsed = elapsed
+            self.limit = limit
+            super().__init__('Pipeline timed out at stage=%s elapsed=%.0fs limit=%ds' % (stage, elapsed, limit))
+
+    def _check_stopped():
+        if _pa_check_stop_requested(uid):
+            raise _PipelineStop()
+
+    def _check_timeout(stage=None):
+        """Raise _PipelineTimeout if the pipeline or current stage exceeds its time limit."""
+        elapsed = time.time() - started
+        if elapsed > PIPELINE_TIMEOUT:
+            raise _PipelineTimeout(stage or 'unknown', elapsed, PIPELINE_TIMEOUT)
+        if stage and stage in STAGE_TIMEOUTS:
+            stage_limit = STAGE_TIMEOUTS[stage]
+            if elapsed > stage_limit:
+                # Only enforce stage timeout if we're still on an early stage
+                # (later stages get more leeway from the pipeline timeout)
+                pass  # Stage timeouts are soft; pipeline timeout is the hard limit
+
     _pa_log('[PipelineAuto] headless pipeline started user=%s trigger=%s dryRun=%s' % (uid[:8], trigger, dry_run))
 
-    # Send auto_scan_started Discord notification at start
-    _next_et = _now_et + timedelta(minutes=interval)
-    send_discord_notification(uid, 'auto_scan_started', {
-        'event_id': f'headless-scan-{int(started)}',
-        'trigger': trigger,
-        'mode': mode,
-        'intervalMinutes': interval,
-        'nextRunAt': _next_et.strftime('%H:%M ET'),
-        'timeEt': _now_et.strftime('%H:%M ET'),
-        'description': 'Auto pipeline scan started.',
-    })
+    if trigger in ('market_auto_run', 'toggle_on'):
+        fresh_config = _pa_get_config(uid) or {}
+        if not fresh_config.get('enabled'):
+            summary['skipped'] = True
+            summary['lastDecision'] = 'auto_disabled_before_start'
+            summary['finishedAt'] = datetime.utcnow().isoformat()
+            summary['durationSeconds'] = round(time.time() - started, 2)
+            _pa_log('stopped because auto disabled user=%s trigger=%s' % (uid[:8], trigger))
+            return summary
+
+    # Initialize active run state for frontend visibility
+    _run_id = run_id or ('headless-scan-%d' % int(started))
+    _pa_update_active_run(uid, runId=_run_id, trigger=trigger, status='running',
+                          startedAt=datetime.utcnow().isoformat(),
+                          lastError=None, finishedAt=None, stopRequested=False)
+
+    # Dedup: clear previous events for this run_id
+    with _PA_DISCORD_DEDUP_LOCK:
+        _PA_SENT_DISCORD_EVENTS.clear()
+
+    # Send scan_started Discord notification at start (once per run)
+    # Manual pipeline: no Discord notifications at all
+    is_manual = (trigger == 'manual')
+    if not is_manual and trigger == 'auto_manual_now':
+        _pa_discord_send_once(uid, _run_id, 'auto_scan_started', {
+            'event_id': f'auto-manual-now-{int(started)}',
+            'trigger': 'Auto Manual Now',
+            'mode': mode,
+            'riskProfile': risk_profile,
+            'timeHorizon': time_horizon,
+            'tradingMode': trade_mode,
+            'timeEt': _now_et.strftime('%H:%M ET'),
+            'source': 'Auto Background',
+            'description': 'Auto pipeline scan triggered manually from Auto Run panel.',
+        })
+    elif not is_manual:
+        _next_et = _now_et + timedelta(minutes=interval)
+        _pa_discord_send_once(uid, _run_id, 'auto_scan_started', {
+            'event_id': f'headless-scan-{int(started)}',
+            'trigger': trigger,
+            'mode': mode,
+            'intervalMinutes': interval,
+            'nextRunAt': _next_et.strftime('%H:%M ET'),
+            'timeEt': _now_et.strftime('%H:%M ET'),
+            'source': 'Auto Background',
+            'description': 'Auto pipeline scan started.',
+        })
+
+    if is_manual:
+        _pa_log('[ManualPipeline] started user=%s mode=%s risk=%s horizon=%s tradeMode=%s runId=%s' % (
+            uid[:8], mode, risk_profile, time_horizon, trade_mode, _run_id))
+
+    _pa_active_run_step(uid, 'market_scanner', 1, 6, 'running',
+                        message='Market Scanner starting...',
+                        step_data={'total': 0})
 
     try:
-        symbols = _pa_default_symbols_for_user(uid)
+        # ── Step 1: Market Scanner ──
+        symbols, _universe_src = _pa_default_symbols_for_user(uid)
+        run_context['symbols'] = symbols
+        run_context['universe_source'] = _universe_src
+        _pa_log('[AutoPipeline] universe source=%s count=%d' % (_universe_src, len(symbols)))
+        _pa_log('[AutoPipeline] stage=market_scanner start symbols=%d' % len(symbols))
+        _pa_active_run_step(uid, 'market_scanner', 1, 6, 'running',
+                            message='Scanning %d symbols...' % len(symbols),
+                            step_data={'total': len(symbols), 'processed': 0})
+        _check_timeout('market_scanner')
         scan_resp, scan_status = _pa_call_endpoint(uid, '/api/ai/market/scanner', ai_market_scanner, {
             'symbols': symbols,
             'maxSymbols': min(len(symbols), 50),
             'mode': mode,
         })
+        _check_stopped()
+        _check_timeout('market_scanner')
         if scan_status >= 400 or not scan_resp.get('success'):
             raise Exception(scan_resp.get('message') or scan_resp.get('error') or 'Market scanner failed')
         scanner_results = scan_resp.get('results') or []
-        summary['scanned'] = len(scanner_results)
-        summary['steps'].append({'step': 'market_scanner', 'status': 'completed', 'count': len(scanner_results)})
-        _pa_log('[PipelineAuto] step completed step=market_scanner count=%d' % len(scanner_results))
+        scanner_results = scanner_results or []
+        run_context['market_results'] = scanner_results
+        _total_scanned = len(symbols)
+        _result_count = len(scanner_results)
+        # aiSuccess: results where AI returned a valid analysis (not dependent on trend direction)
+        _ai_success_count = len([r for r in scanner_results if r.get('aiSuccess') or r.get('analysisStatus') == 'completed'])
+        # needData: results missing usable market data (changePercent=None, partial data quality)
+        _need_data_count = len([r for r in scanner_results if r.get('dataQuality') in ('need_data', 'PARTIAL') or r.get('changePct') is None])
+        _filtered = _total_scanned - _result_count
+        summary['scanned'] = _result_count
+        summary['scannedTotal'] = _total_scanned
+        summary['aiSuccess'] = _ai_success_count
+        summary['needData'] = _need_data_count
+        summary['filtered'] = _filtered
+        summary['steps'].append({'step': 'market_scanner', 'status': 'completed', 'count': _result_count, 'total': _total_scanned, 'aiSuccess': _ai_success_count, 'filtered': _filtered, 'needData': _need_data_count})
+        _pa_log('[AutoPipeline] stage=market_scanner done processed=%d aiSuccess=%d passed=%d filtered=%d needData=%d' % (_total_scanned, _ai_success_count, _result_count, _filtered, _need_data_count))
+        _pa_active_run_step(uid, 'market_scanner', 1, 6, 'completed',
+                            message='Market Scanner: %d processed, %d AI success, %d results' % (_total_scanned, _ai_success_count, _result_count),
+                            step_data={
+                                'processed': _total_scanned, 'total': _total_scanned,
+                                'passed': _result_count, 'filtered': _filtered,
+                                'aiSuccess': _ai_success_count, 'needData': _need_data_count,
+                                'results': [{'symbol': r.get('symbol'), 'trendLabel': r.get('trendLabel'),
+                                             'overallScore': r.get('overallScore'), 'trendScore': r.get('trendScore'),
+                                             'price': r.get('price'), 'changePct': r.get('changePct'),
+                                             'volume': r.get('volume'), 'volumeStatus': r.get('volumeStatus'),
+                                             'newsSentiment': r.get('newsSentiment'), 'eventRisk': r.get('eventRisk'),
+                                             'analysisStatus': r.get('analysisStatus'),
+                                             'aiSuccess': r.get('aiSuccess'),
+                                             'dataQuality': r.get('dataQuality', ''),
+                                             'reasoning': r.get('reasoning', '')[:200] if r.get('reasoning') else ''}
+                                            for r in (scanner_results or [])[:50]],
+                            })
 
-        # Send scan_summary Discord notification
-        send_discord_notification(uid, 'scan_summary', {
-            'event_id': f'headless-scan-{int(started)}-scanner',
-            'processed': len(scanner_results),
-            'aiSuccess': len([r for r in scanner_results if r.get('analysisStatus') == 'completed']),
-            'needData': len([r for r in scanner_results if r.get('trendLabel') == 'Need Data']),
-            'topSymbols': [r.get('symbol', '?') for r in scanner_results[:5] if r.get('symbol')],
-            'mode': mode,
-            'runTime': _now_et.strftime('%H:%M ET'),
-            'description': 'Headless Market Scanner completed.',
-        })
-
-        continue_results = _pa_continue_scan_headless(scanner_results)
+        # ── Step 2: Continue Scan ──
+        _check_stopped()
+        _check_timeout('continue_scan')
+        _pa_log('[AutoPipeline] stage=continue_scan start input=%d' % len(scanner_results))
+        _pa_active_run_step(uid, 'continue_scan', 2, 6, 'running',
+                            message='Continue Scan processing...',
+                            step_data={'total': len(scanner_results), 'processed': 0})
+        _cs_raw = _pa_continue_scan_headless(scanner_results) if scanner_results else ([], {})
+        continue_results, _cs_stats = _cs_raw if isinstance(_cs_raw, tuple) else (_cs_raw or [], {})
+        continue_results = continue_results or []
+        run_context['continue_candidates'] = continue_results
         summary['continue_count'] = len(continue_results)
         summary['steps'].append({'step': 'continue_scan', 'status': 'completed', 'count': len(continue_results)})
-        _pa_log('[PipelineAuto] step completed step=continue_scan count=%d' % len(continue_results))
+        _cs_msg = ('Continue Scan: %d candidates' % len(continue_results)) if continue_results else ('Continue Scan: AI analysis completed, but no symbols passed candidate thresholds (input=%d, aiSuccess=%d)' % (len(scanner_results or []), _ai_success_count))
+        _pa_log('[AutoPipeline] stage=continue_scan done candidates=%d input=%d aiSuccess=%d' % (len(continue_results), len(scanner_results or []), _ai_success_count))
+        _pa_active_run_step(uid, 'continue_scan', 2, 6, 'completed',
+                            message=_cs_msg,
+                            step_data={
+                                'processed': len(continue_results), 'total': len(continue_results),
+                                'candidates': [{'symbol': r.get('symbol'), 'trendLabel': r.get('trendLabel'),
+                                                'overallScore': r.get('overallScore'),
+                                                'reason': (r.get('overallReasoning') or '')[:200]}
+                                               for r in (continue_results or [])[:30]],
+                            })
 
-        fine_results = _pa_fine_scan_headless(uid, continue_results)
+        # Send scan_summary Discord (once per run, after continue_scan for full stats)
+        if not is_manual:
+            _desc_prefix = _pa_discord_source_prefix(trigger)
+            _nd_pct = (_need_data_count / _total_scanned * 100) if _total_scanned > 0 else 0
+            _scan_warning_parts = []
+            if _nd_pct > 30:
+                _scan_warning_parts.append('Market data incomplete for %d/%d symbols (%.0f%%).' % (_need_data_count, _total_scanned, _nd_pct))
+            _cs_passed = len(continue_results)
+            _cs_bearish = _cs_stats.get('bearish', 0)
+            _cs_low = _cs_stats.get('low_score', 0)
+            if _cs_passed < 5 and _total_scanned > 10:
+                _scan_warning_parts.append('Only %d of %d passed Continue Scan prefilter (bearish=%d low_score=%d).' % (_cs_passed, _total_scanned, _cs_bearish, _cs_low))
+            _scan_warning = ' '.join(_scan_warning_parts)
+            # Top Candidates: sorted by overallScore descending
+            _sorted_results = sorted(
+                [r for r in (scanner_results or []) if r.get('symbol')],
+                key=lambda r: (float(r.get('overallScore') or r.get('trendScore') or 0), float(r.get('trendConfidence') or r.get('confidence') or 0)),
+                reverse=True
+            )
+            _top_candidates = _sorted_results[:5]
+            _top_formatted = [
+                '%s — Score %s, %s%s' % (
+                    r.get('symbol', '?'),
+                    str(r.get('overallScore') or r.get('trendScore') or '?'),
+                    r.get('trendLabel') or '?',
+                    ' [CONTINUE]' if r.get('symbol') in [c.get('symbol') for c in continue_results] else '',
+                )
+                for r in _top_candidates
+            ]
+            _pa_discord_send_once(uid, _run_id, 'scan_summary', {
+                'processed': _total_scanned,
+                'filtered': _filtered,
+                'aiSuccess': _ai_success_count,
+                'needData': _need_data_count,
+                'needDataPct': round(_nd_pct, 0),
+                'passedCandidates': _cs_passed,
+                'bearishFiltered': _cs_bearish,
+                'lowScoreFiltered': _cs_low,
+                'warning': _scan_warning,
+                'topSymbols': [r.get('symbol', '?') for r in _top_candidates],
+                'topCandidates': _top_formatted,
+                'mode': mode,
+                'runTime': _now_et.strftime('%H:%M ET'),
+                'description': '%s Market Scanner completed.' % _desc_prefix,
+            })
+
+        # ── Step 3: Fine Scan ──
+        _check_stopped()
+        _check_timeout('fine_scan')
+        if continue_results:
+            _pa_log('[AutoPipeline] stage=fine_scan start input=%d' % len(continue_results))
+            _pa_active_run_step(uid, 'fine_scan', 3, 6, 'running',
+                                message='Fine Scan running...',
+                                step_data={'total': len(continue_results), 'processed': 0})
+            with headless_user_context(uid):
+                fine_results = _pa_fine_scan_headless(uid, continue_results)
+        else:
+            _pa_log('[AutoPipeline] stage=fine_scan skipped reason=no_candidates')
+            _pa_active_run_step(uid, 'fine_scan', 3, 6, 'completed',
+                                message='Fine Scan: skipped (no continue candidates)',
+                                step_data={'total': 0, 'processed': 0, 'candidates': 0})
+            fine_results = []
+        run_context['fine_results'] = fine_results or []
+        fine_results = fine_results or []
         fine_candidates = [r for r in fine_results if r.get('decision') in ('Continue', 'Watch')]
         summary['fine_count'] = len(fine_results)
         summary['steps'].append({'step': 'fine_scan', 'status': 'completed', 'count': len(fine_results), 'candidates': len(fine_candidates)})
-        _pa_log('[PipelineAuto] step completed step=fine_scan count=%d candidates=%d' % (len(fine_results), len(fine_candidates)))
+        _pa_log('[AutoPipeline] stage=fine_scan done scanned=%d continue=%d watch=%d' % (len(fine_results), len(fine_candidates), len([r for r in fine_results if r.get('decision') == 'Watch'])))
+        _pa_active_run_step(uid, 'fine_scan', 3, 6, 'completed',
+                            message='Fine Scan: %d results, %d candidates' % (len(fine_results), len(fine_candidates)),
+                            step_data={
+                                'processed': len(fine_results), 'total': len(fine_results),
+                                'candidates': len(fine_candidates),
+                                'results': [{'symbol': r.get('symbol'), 'decision': r.get('decision'),
+                                             'grade': r.get('grade'), 'score': r.get('score'),
+                                             'confidence': r.get('confidence'),
+                                             'explanation': (r.get('explanation') or '')[:200]}
+                                            for r in (fine_results or [])[:30]],
+                            })
 
+        # ── Step 4: Deeper Validation ──
+        _check_stopped()
+        _check_timeout('deeper_validation')
         dv_results = []
         if fine_candidates:
+            _pa_log('[AutoPipeline] stage=deeper_validation start input=%d' % len(fine_candidates))
+            _pa_active_run_step(uid, 'deeper_validation', 4, 6, 'running',
+                                message='Deeper Validation running... (%d candidates)' % len(fine_candidates),
+                                step_data={'total': len(fine_candidates), 'processed': 0})
             dv_resp, dv_status = _pa_call_endpoint(uid, '/api/ai/deeper-validation', deeper_validation, {
                 'candidates': fine_candidates,
                 'period': '1y',
                 'initialCapital': 100000,
             })
+            _check_stopped()
             if dv_status < 400 and dv_resp.get('success'):
                 dv_results = dv_resp.get('results') or []
             else:
                 raise Exception(dv_resp.get('message') or 'Deeper Validation failed')
+        else:
+            _pa_log('[AutoPipeline] stage=deeper_validation skipped reason=no_fine_candidates')
+            _pa_active_run_step(uid, 'deeper_validation', 4, 6, 'completed',
+                                message='Deeper Validation: skipped (no fine scan candidates)',
+                                step_data={'total': 0, 'processed': 0})
+        dv_results = dv_results or []
+        run_context['validation_results'] = dv_results
         summary['validation_count'] = len(dv_results)
         summary['steps'].append({'step': 'deeper_validation', 'status': 'completed', 'count': len(dv_results)})
-        _pa_log('[PipelineAuto] step completed step=deeper_validation count=%d' % len(dv_results))
+        _pa_log('[AutoPipeline] stage=deeper_validation done passed=%d blocked=%d' % (len([r for r in dv_results if r.get('verdict') in ('Confirmed', 'Pass')]), len([r for r in dv_results if r.get('verdict') in ('Rejected', 'Blocked')])))
+        _pa_active_run_step(uid, 'deeper_validation', 4, 6, 'completed',
+                            message='Deeper Validation: %d results' % len(dv_results),
+                            step_data={
+                                'processed': len(dv_results), 'total': len(dv_results),
+                                'results': [{'symbol': r.get('symbol'), 'verdict': r.get('verdict'),
+                                             'sharpe': r.get('sharpe'), 'maxDrawdown': r.get('maxDrawdown'),
+                                             'profitFactor': r.get('profitFactor'),
+                                             'tradeCount': r.get('tradeCount'),
+                                             'reason': (r.get('reason') or '')[:200]}
+                                            for r in (dv_results or [])[:20]],
+                            })
 
+        # ── Step 5: Entry Plan ──
+        _check_stopped()
+        _check_timeout('entry_plan')
+        # Fetch real Alpaca account data for position sizing (same pattern as ai_entry_plan)
+        pipeline_account_size = 100000
+        pipeline_live_buying_power = 0
+        pipeline_account_fetched = False
+        pipeline_holdings = []
+        pipeline_open_orders = []
+        try:
+            alpaca_cfg = resolve_alpaca_config_for_user(uid, trade_mode)
+            _pa_key = alpaca_cfg.get('api_key', '')
+            _pa_secret = alpaca_cfg.get('api_secret', '')
+            _pa_url = alpaca_cfg.get('base_url', 'https://paper-api.alpaca.markets' if trade_mode == 'paper' else 'https://api.alpaca.markets')
+            if _pa_key and _pa_secret:
+                _pa_headers = {'APCA-API-KEY-ID': _pa_key, 'APCA-API-SECRET-KEY': _pa_secret}
+                _acc_resp = requests.get(f'{_pa_url}/v2/account', headers=_pa_headers, timeout=10)
+                if _acc_resp.status_code == 200:
+                    _acc = _acc_resp.json()
+                    _pv = float(_acc.get('portfolio_value', 0))
+                    _eq = float(_acc.get('equity', 0))
+                    _bp = float(_acc.get('buying_power', 0))
+                    pipeline_live_buying_power = _bp
+                    pipeline_account_size = int(_pv if _pv > 0 else (_eq if _eq > 0 else (_bp if _bp > 0 else 100000)))
+                    pipeline_account_fetched = True
+                    _pa_log('[PipelineAuto] account fetched mode=%s portfolio=$%.0f equity=$%.0f bp=$%.0f accountSize=%d' % (
+                        trade_mode, _pv, _eq, _bp, pipeline_account_size))
+                    # Fetch open orders for duplicate prevention
+                    try:
+                        _ord_resp = requests.get(f'{_pa_url}/v2/orders?status=open&direction=buy', headers=_pa_headers, timeout=10)
+                        if _ord_resp.status_code == 200:
+                            pipeline_open_orders = [o.get('symbol', '').upper() for o in (_ord_resp.json() or [])]
+                    except Exception:
+                        pass
+                    # Fetch current positions
+                    try:
+                        _pos_resp = requests.get(f'{_pa_url}/v2/positions', headers=_pa_headers, timeout=10)
+                        if _pos_resp.status_code == 200:
+                            pipeline_holdings = [p.get('symbol', '').upper() for p in (_pos_resp.json() or [])]
+                    except Exception:
+                        pass
+        except Exception as _pa_acct_err:
+            _pa_log('[PipelineAuto] account fetch failed: %s' % str(_pa_acct_err)[:100])
         ep_candidates = [r for r in dv_results if r.get('verdict') in ('Confirmed', 'Watch', 'Review', 'Pass')]
         entry_plans = []
+        # Derive riskPerTradePct from riskProfile: Low→0.5, Medium→1.0, High→1.5
+        _ep_risk_pct = {'low': 0.5, 'medium': 1.0, 'high': 1.5}.get(risk_profile, 1.0)
+        # Derive execution mode from trigger + trade_mode
+        if trigger == 'manual':
+            _ep_exec_mode = 'Recommend Only'
+        elif trade_mode == 'real':
+            _ep_exec_mode = 'Real Trade if Triggered'
+        else:
+            _ep_exec_mode = 'Paper Trade if Triggered'
         if ep_candidates:
+            _pa_log('[PipelineAuto] stage=entry_plan start input=%d riskPct=%.1f execMode=%s' % (len(ep_candidates), _ep_risk_pct, _ep_exec_mode))
             ep_resp, ep_status = _pa_call_endpoint(uid, '/api/ai/entry-plan', ai_entry_plan, {
                 'candidates': ep_candidates,
-                'accountSize': 100000,
-                'riskPerTradePct': 1,
+                'accountSize': pipeline_account_size,
+                'riskPerTradePct': _ep_risk_pct,
                 'maxPositionPct': 10,
-                'existingPositions': [],
+                'existingPositions': pipeline_holdings,
                 'dailyLoss': 0,
-                'holdingSymbols': [],
-                'executionMode': 'Recommend Only',
-                'accountMode': 'paper',
-                'riskProfile': 'medium',
-                'timeHorizon': 'mid',
+                'holdingSymbols': pipeline_holdings,
+                'executionMode': _ep_exec_mode,
+                'accountMode': trade_mode,
+                'riskProfile': risk_profile,
+                'timeHorizon': time_horizon,
+                'suppressDiscord': True,
             })
+            _check_stopped()
             if ep_status < 400 and ep_resp.get('success'):
                 entry_plans = ep_resp.get('plans') or []
             else:
                 raise Exception(ep_resp.get('message') or 'Entry Plan failed')
+        else:
+            _pa_log('[AutoPipeline] stage=entry_plan skipped reason=no_validation_candidates')
+            _pa_active_run_step(uid, 'entry_plan', 5, 6, 'completed',
+                                message='Entry Plan: skipped (no validation candidates — all symbols were filtered before DV)',
+                                step_data={'total': 0, 'processed': 0, 'buy': 0, 'watch': 0, 'skip': 0})
+        entry_plans = entry_plans or []
+        run_context['entry_plans'] = entry_plans
         buy_count = sum(1 for p in entry_plans if p.get('finalAction') in ('BUY_READY', 'READY_REVIEW'))
         watch_count = sum(1 for p in entry_plans if p.get('finalAction') == 'WAIT_FOR_ENTRY' or p.get('aiDecision') == 'WATCH')
         skip_count = sum(1 for p in entry_plans if p.get('finalAction') in ('SKIP', 'BLOCKED_BY_RISK'))
@@ -27934,29 +29487,83 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         summary['watch_count'] = watch_count
         summary['skip_count'] = skip_count
         summary['steps'].append({'step': 'entry_plan', 'status': 'completed', 'count': len(entry_plans), 'buy': buy_count, 'watch': watch_count, 'skip': skip_count})
-        _pa_log('[PipelineAuto] step completed step=entry_plan buy=%d watch=%d skip=%d' % (buy_count, watch_count, skip_count))
+        _pa_log('[AutoPipeline] stage=entry_plan done buy=%d watch=%d skip=%d' % (buy_count, watch_count, skip_count))
+        _pa_active_run_step(uid, 'entry_plan', 5, 6, 'completed',
+                            message='Entry Plan: %d plans (buy=%d watch=%d skip=%d)' % (len(entry_plans), buy_count, watch_count, skip_count),
+                            step_data={
+                                'processed': len(entry_plans), 'total': len(entry_plans),
+                                'buy': buy_count, 'watch': watch_count, 'skip': skip_count,
+                                'plans': [{'symbol': p.get('symbol'), 'finalAction': p.get('finalAction'),
+                                           'entryZone': str(p.get('entryZone') or p.get('entryZoneDesc', ''))[:60],
+                                           'stopLoss': str(p.get('stopLoss', ''))[:60],
+                                           'takeProfit': str(p.get('takeProfit') or p.get('takeProfit1', ''))[:60],
+                                           'riskReward': str(p.get('riskReward') or p.get('riskReward1', ''))[:30],
+                                           'positionSize': str(p.get('positionSize', ''))[:30],
+                                           'reason': str(p.get('decisionReason', ''))[:200]}
+                                          for p in (entry_plans or [])[:15]],
+                            })
 
-        # Send entry_plan Discord notification
-        send_discord_notification(uid, 'entry_plan', {
-            'event_id': f'headless-entry-{int(started)}',
-            'buyCount': buy_count,
-            'watchCount': watch_count,
-            'skipCount': skip_count,
-            'buyCandidates': [{
-                'symbol': p.get('symbol', '?'),
-                'entryZone': str(p.get('entryZone', p.get('suggestedEntry', '-')))[:60],
-                'stop': str(p.get('stopLoss', p.get('suggestedStop', '-')))[:60],
-                'target': str(p.get('takeProfit', p.get('suggestedTarget', '-')))[:60],
-                'riskReward': str(p.get('riskReward', p.get('rrProfile', '-')))[:30],
-                'positionSize': str(p.get('positionSize', '-'))[:30],
-                'reason': str(p.get('decisionReason', p.get('reason', '-')))[:180],
-            } for p in entry_plans if p.get('finalAction') in ('BUY_READY', 'READY_REVIEW')],
-            'description': 'Headless Entry Plan completed.',
-        })
+        # Send entry_plan Discord notification (once per run) — manual never sends Discord
+        if not is_manual:
+            _ep_nd_count = summary.get('needData', 0)
+            _ep_nd_pct = (_ep_nd_count / max(summary.get('scannedTotal', 1), 1) * 100)
+            _ep_warning = ('Data quality warning: %d/%d symbols have incomplete market data. BUY candidates with incomplete data were BLOCKED.' % (_ep_nd_count, summary.get('scannedTotal', 0))) if _ep_nd_pct > 30 else ''
+            _ep_skipped = bool(not entry_plans and not ep_candidates)
+            # Build candidate flow for skipped case
+            _continue_names = [r.get('symbol', '?') for r in (continue_results or [])[:10]]
+            _fine_continue = sum(1 for r in (fine_results or []) if r.get('decision') == 'Continue')
+            _fine_watch = sum(1 for r in (fine_results or []) if r.get('decision') == 'Watch')
+            _fine_reject = sum(1 for r in (fine_results or []) if r.get('decision') in ('Reject', 'NeedMoreData'))
+            _dv_rejected = [r for r in (dv_results or []) if r.get('verdict') in ('Rejected', 'Reject', 'Blocked')]
+            _dv_reject_list = [
+                '%s — %s' % (
+                    r.get('symbol', '?'),
+                    r.get('reason', 'unknown')[:120],
+                ) for r in _dv_rejected[:8]
+            ]
+            _skip_reason = 'No candidates passed Deeper Validation.\n\n**Candidate Flow:**\nMarket Scanner: %d scanned → %d AI success → %d continue candidates (%s)\nFine Scan: %d scanned → %d continue / %d watch / %d reject\nDeeper Validation: %d tested → 0 confirmed / %d rejected' % (
+                summary.get('scanned', 0), summary.get('aiSuccess', 0),
+                len(continue_results or []), ', '.join(_continue_names) if _continue_names else 'none',
+                len(fine_results or []), _fine_continue, _fine_watch, _fine_reject,
+                len(dv_results or []), len(_dv_rejected),
+            )
+            _recommend_action = 'No entry order created. Review scanner thresholds or wait for stronger candidates.'
+            _pa_discord_send_once(uid, _run_id, 'entry_plan', {
+                'buyCount': buy_count,
+                'watchCount': watch_count,
+                'skipCount': skip_count,
+                'blockedCount': skip_count,
+                'needDataCount': _ep_nd_count,
+                'warning': _ep_warning,
+                'skipped': _ep_skipped,
+                'skipReason': _skip_reason if _ep_skipped else '',
+                'upstreamScanned': summary.get('scanned', 0),
+                'upstreamAiSuccess': summary.get('aiSuccess', 0),
+                'upstreamContinueCount': len(continue_results or []),
+                'upstreamValidationCount': len(dv_results or []),
+                'upstreamValidationPassed': len(ep_candidates),
+                'continueCandidateNames': ', '.join(_continue_names) if _continue_names else 'none',
+                'fineScanSummary': '%d continue / %d watch / %d reject' % (_fine_continue, _fine_watch, _fine_reject),
+                'dvRejectCount': len(_dv_rejected),
+                'dvRejectList': _dv_reject_list,
+                'recommendedAction': _recommend_action if _ep_skipped else '',
+                'description': ('%s Entry Plan skipped.' % _pa_discord_source_prefix(trigger)) if _ep_skipped else ('%s Entry Plan completed.' % _pa_discord_source_prefix(trigger)),
+                'buyCandidates': [{
+                    'symbol': p.get('symbol', '?'),
+                    'entryZone': str(p.get('entryZone') or p.get('entryZoneDesc') or p.get('suggestedEntry', '-'))[:60],
+                    'stop': str(p.get('stopLoss') or p.get('suggestedStop', '-'))[:60],
+                    'target': str(p.get('takeProfit') or p.get('takeProfit1') or p.get('suggestedTarget', '-'))[:60],
+                    'riskReward': str(p.get('riskReward') or p.get('riskReward1') or p.get('rrProfile', '-'))[:30],
+                    'positionSize': str(p.get('positionSize') or p.get('positionSizeDollars') or p.get('positionCapital', '-'))[:30],
+                    'reason': str(p.get('decisionReason') or p.get('reason') or p.get('alternativeReason', '-'))[:180],
+                } for p in (entry_plans or []) if p.get('finalAction') in ('BUY_READY', 'READY_REVIEW')],
+            })
 
+        # ── Step 6: Execution ──
+        _check_stopped()
         execution_results = []
         if mode == 'ai':
-            for plan in entry_plans:
+            for plan in (entry_plans or []):
                 if plan.get('finalAction') != 'BUY_READY':
                     continue
                 if dry_run:
@@ -27973,79 +29580,219 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                 if exec_resp.get('action') == 'ORDER_SUBMITTED':
                     summary['orders_submitted'] += 1
                     _pa_log('[PipelineAuto] order submitted mode=PAPER symbol=%s status=%s' % (plan.get('symbol'), exec_resp.get('orderStatus')))
-                    # Send order Discord notification
-                    order_data = exec_resp.get('order') or exec_resp.get('orderData') or {}
-                    send_discord_notification(uid, 'order', {
-                        'event_id': f'headless-order-{int(started)}-{plan.get("symbol")}',
-                        'mode': 'paper',
-                        'side': 'buy',
-                        'symbol': plan.get('symbol', '?'),
-                        'qty': str(order_data.get('qty', plan.get('positionSize', '-'))),
-                        'orderType': str(order_data.get('order_type', order_data.get('type', 'market'))),
-                        'price': str(order_data.get('limit_price', order_data.get('price', 'market'))),
-                        'status': str(exec_resp.get('orderStatus', 'submitted')),
-                        'orderId': str(order_data.get('id', '')),
-                        'reason': str(exec_resp.get('message', ''))[:220],
-                        'description': 'Auto pipeline order submitted.',
-                    })
+                    # Send order Discord notification (once per order, dedup by run_id + symbol) — manual never sends Discord
+                    if not is_manual:
+                        order_data = exec_resp.get('order') or exec_resp.get('orderData') or {}
+                        _pa_discord_send_once(uid, _run_id, 'order_%s' % plan.get('symbol'), {
+                            'mode': 'paper',
+                            'side': 'buy',
+                            'symbol': plan.get('symbol', '?'),
+                            'qty': str(order_data.get('qty', plan.get('positionSize', '-'))),
+                            'orderType': str(order_data.get('order_type', order_data.get('type', 'market'))),
+                            'price': str(order_data.get('limit_price', order_data.get('price', 'market'))),
+                            'status': str(exec_resp.get('orderStatus', 'submitted')),
+                            'orderId': str(order_data.get('id', '')),
+                            'reason': str(exec_resp.get('message', ''))[:220],
+                            'description': 'Auto pipeline order submitted.',
+                        })
         else:
             _pa_log('[PipelineAuto] step completed step=execution count=0 reason=mode_not_ai')
         summary['steps'].append({'step': 'execution', 'status': 'completed', 'count': len(execution_results), 'submitted': summary['orders_submitted']})
+        _pa_active_run_step(uid, 'execution', 5, 6, 'completed' if not summary['orders_submitted'] else 'completed',
+                            message='Execution: %d submitted' % summary['orders_submitted'],
+                            step_data={
+                                'processed': len(execution_results), 'total': len(entry_plans or []),
+                                'submitted': summary['orders_submitted'],
+                                'orders': [{'symbol': o.get('symbol'), 'status': o.get('status', o.get('orderStatus', '?')),
+                                            'action': o.get('action', o.get('orderAction', '?')),
+                                            'orderId': (o.get('order') or {}).get('id', '') if isinstance(o, dict) else ''}
+                                           for o in (execution_results or [])[:10]],
+                            })
+
+        # ── Step 7: Exit Scan ──
+        _check_stopped()
+        _check_timeout('exit_scan')
+        _pa_log('[AutoPipeline] stage=exit_scan start holdings=%d entryPlans=%d' % (len(pipeline_holdings), len(entry_plans)))
+        _pa_active_run_step(uid, 'exit_scan', 6, 6, 'running',
+                            message='Exit Scan running...', step_data={'total': 0, 'processed': 0})
 
         exit_summary = _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=dry_run)
+        run_context['exit_results'] = exit_summary
         summary['exit_scan_count'] = exit_summary.get('holdingsScanned', 0)
+        _exit_signals = exit_summary.get('signals', []) or []
+        _sell_count = sum(1 for s in _exit_signals if s.get('action') in ('sell_now', 'reduce'))
+        _hold_count = sum(1 for s in _exit_signals if s.get('action') == 'hold')
         summary['steps'].append({'step': 'exit_scan', 'status': 'completed' if not exit_summary.get('error') else 'partial', 'count': summary['exit_scan_count']})
-        send_discord_notification(uid, 'exit_scan', {
-            'event_id': f'headless-exit-{int(started)}-{summary["exit_scan_count"]}',
-            'holdingsScanned': exit_summary.get('holdingsScanned', 0),
-            'sellReduceCount': sum(1 for s in exit_summary.get('signals', []) if s.get('action') in ('sell_now', 'reduce')),
-            'holdCount': sum(1 for s in exit_summary.get('signals', []) if s.get('action') == 'hold'),
-            'signals': exit_summary.get('signals', [])[:8],
-            'description': 'Headless Exit Scan completed%s.' % (' (dry run)' if dry_run else ''),
-        })
-        _pa_log('[PipelineAuto] step completed step=exit_scan count=%d' % summary['exit_scan_count'])
+        # Send exit_scan Discord notification (once per run) — manual never sends Discord
+        if not is_manual:
+            _ep_note = ''
+            if not entry_plans:
+                _ep_note = 'No new entry candidates passed validation in this run.'
+            elif buy_count > 0:
+                _ep_note = '%d BUY orders ready for execution.' % buy_count
+            _pa_discord_send_once(uid, _run_id, 'exit_scan', {
+                'holdingsScanned': exit_summary.get('holdingsScanned', 0),
+                'sellReduceCount': _sell_count,
+                'holdCount': _hold_count,
+                'signals': _exit_signals[:8],
+                'noEntryCandidates': bool(not entry_plans),
+                'entryPlanNote': _ep_note,
+                'description': '%s Exit Scan completed%s.' % (_pa_discord_source_prefix(trigger), ' (dry run)' if dry_run else ''),
+            })
+        _pa_log('[AutoPipeline] stage=exit_scan done sell=%d hold=%d' % (_sell_count, _hold_count))
+        _pa_active_run_step(uid, 'exit_scan', 6, 6, 'completed',
+                            message='Exit Scan: %d holdings scanned' % summary['exit_scan_count'],
+                            step_data={
+                                'processed': summary['exit_scan_count'], 'total': summary['exit_scan_count'],
+                                'results': exit_summary.get('signals', [])[:10],
+                            })
+
+    except _PipelineStop:
+        summary['stopped'] = True
+        summary['finishedAt'] = datetime.utcnow().isoformat()
+        summary['durationSeconds'] = round(time.time() - started, 2)
+        _pa_log('[PipelineAuto] pipeline stopped by user user=%s' % uid[:8])
+
+    except _PipelineTimeout as e:
+        summary['errors'] += 1
+        summary['lastError'] = 'Pipeline timed out at stage=%s (elapsed=%.0fs, limit=%ds)' % (e.stage, e.elapsed, e.limit)
+        summary['timedOut'] = True
+        summary['timedOutStage'] = e.stage
+        _pa_log_error('[PipelineAuto] headless pipeline TIMEOUT user=%s stage=%s elapsed=%.0fs' % (uid[:8], e.stage, e.elapsed))
+        _pa_update_active_run(uid, status='failed', currentStep='error', progressPct=0,
+                              message='Pipeline timed out at %s' % e.stage,
+                              lastError=summary['lastError'], finishedAt=datetime.utcnow().isoformat(),
+                              steps={e.stage: {'status': 'failed', 'error': 'Timed out after %.0fs' % e.elapsed}})
+        if not is_manual:
+            _pa_discord_send_once(uid, _run_id, 'error', {
+                'step': 'Pipeline Timeout',
+                'status': 'timeout',
+                'reason': 'Timed out at stage: %s (%.0fs elapsed, %ds limit)' % (e.stage, e.elapsed, e.limit),
+                'action': 'Check backend logs and Alpaca API connectivity.',
+            })
 
     except Exception as e:
+        import traceback
+        _tb = traceback.format_exc()
         summary['errors'] += 1
         summary['lastError'] = str(e)[:300]
+        summary['traceback'] = _tb[:2000]
         _pa_log_error('[PipelineAuto] headless pipeline failed user=%s error=%s' % (uid[:8], summary['lastError']))
-        send_discord_notification(uid, 'error', {
-            'event_id': f'headless-pipeline-error-{int(started)}',
-            'step': 'Headless Pipeline',
-            'status': 'failed',
-            'reason': summary['lastError'],
-            'action': 'Review backend logs and API configuration.',
-        })
+        _pa_log_error('[PipelineAuto] full traceback:\n%s' % _tb)
+        _pa_update_active_run(uid, status='failed', currentStep='error', progressPct=0,
+                              message='Pipeline failed: %s' % summary['lastError'],
+                              lastError=summary['lastError'], finishedAt=datetime.utcnow().isoformat(),
+                              steps={'error': {'status': 'failed', 'error': summary['lastError']}})
+        # Categorize the error for a more useful Discord message
+        _err_str = str(e)
+        if 'NoneType' in _err_str and 'not iterable' in _err_str:
+            _discord_reason = 'Data pipeline error: a required dataset was empty or unavailable. Check Alpaca API connectivity and market data subscriptions.'
+        elif 'timeout' in _err_str.lower() or 'timed' in _err_str.lower():
+            _discord_reason = 'A backend service timed out. This may be temporary — try again in a few minutes.'
+        elif 'connection' in _err_str.lower() or 'refused' in _err_str.lower():
+            _discord_reason = 'Could not connect to an external API (Alpaca, Supabase, or AI provider). Check your network and API keys.'
+        elif 'key' in _err_str.lower() or 'unauthorized' in _err_str.lower() or 'auth' in _err_str.lower():
+            _discord_reason = 'API key or authentication issue. Verify your Alpaca and AI provider keys in Settings.'
+        elif 'config' in _err_str.lower():
+            _discord_reason = 'Missing configuration. Make sure Alpaca, AI provider, and market data configs are set in Settings.'
+        else:
+            _discord_reason = summary['lastError']
+        if not is_manual:
+            _pa_discord_send_once(uid, _run_id, 'error', {
+                'step': 'Headless Pipeline',
+                'status': 'failed',
+                'reason': _discord_reason,
+                'action': 'Review backend logs and API configuration.',
+            })
+    else:
+        _pa_update_active_run(uid, status='completed', progressPct=100,
+                              message='Pipeline completed',
+                              finishedAt=datetime.utcnow().isoformat())
     summary['finishedAt'] = datetime.utcnow().isoformat()
     summary['durationSeconds'] = round(time.time() - started, 2)
-    _pa_log('[PipelineAuto] headless pipeline finished user=%s errors=%d duration=%.1fs' % (uid[:8], summary['errors'], summary['durationSeconds']))
+    _pa_log('[AutoPipeline] run completed runId=%s user=%s errors=%d stopped=%s duration=%.1fs' % (
+        _run_id, uid[:8], summary['errors'], summary.get('stopped', False), summary['durationSeconds']))
+    if is_manual:
+        _pa_log('[ManualPipeline] finished user=%s scanned=%d passed=%d continue=%d fine=%d dv=%d ep=%d exit=%d errors=%d duration=%.1fs' % (
+            uid[:8], summary.get('scannedTotal', summary.get('scanned', 0)), summary.get('scanned', 0),
+            summary.get('continue_count', 0), summary.get('fine_count', 0),
+            summary.get('validation_count', 0), summary.get('entry_plan_count', 0),
+            summary.get('exit_scan_count', 0), summary['errors'], summary['durationSeconds']))
+    _pa_save_pipeline_debug_dump(uid, _run_id, trigger, mode, risk_profile, time_horizon,
+                                 trade_mode, summary, run_context)
     return summary
 
 
-def _pa_execute_and_save(uid, config, interval, mode, trigger):
+def _pa_execute_and_save(uid, config, interval, mode, trigger,
+                         risk_profile='medium', time_horizon='mid', trade_mode='paper',
+                         run_id=None):
     """Run pipeline for one user and save config BEFORE releasing running lock.
 
     This prevents the race window where status endpoint sees isRunning=false
     but config.last_run_at/next_run_at haven't been updated yet.
     Used by the scheduler loop and toggle-on immediate pipeline.
     """
+    is_manual = (trigger == 'manual')
     _run_started_at = _pa_now_et()
     config['last_backend_scan_at'] = _run_started_at.isoformat()
-    config['last_run_source'] = 'backend_scheduler'
+    config['last_run_source'] = 'manual_run' if is_manual else 'backend_scheduler'
     config['last_run_trigger'] = trigger
+    config['current_auto_run_id'] = run_id or ('%s-%s' % (trigger, int(time.time())))
     with _PA_RUNNING_USERS_LOCK:
         _PA_RUNNING_USERS.add(uid)
     try:
-        summary = _pa_run_pipeline(uid, interval, mode, trigger=trigger)
+        summary = _pa_run_pipeline(uid, interval, mode, trigger=trigger,
+                                   risk_profile=risk_profile, time_horizon=time_horizon,
+                                   trade_mode=trade_mode, run_id=run_id)
     finally:
         _run_completed_at = _pa_now_et()
         success = summary['errors'] == 0 if summary else False
+        latest_config = _pa_get_config(uid) or {}
+        disabled_during_run = (
+            trigger in ('market_auto_run', 'toggle_on')
+            and (not latest_config or not latest_config.get('enabled', False))
+        )
+        if latest_config:
+            config.clear()
+            config.update(latest_config)
         config['last_backend_scan_status'] = 'success' if success else 'failed'
         config['last_backend_scan_summary'] = summary or {}
         config['last_backend_scan_error'] = None if success else ('%d errors' % summary['errors']) if summary else 'unknown error'
         config['last_run_at'] = _run_started_at.isoformat()
-        config['next_run_at'] = (_run_completed_at + timedelta(minutes=interval)).isoformat()
-        config['last_decision'] = 'pipeline_success' if success else 'pipeline_failed'
+        config['last_run_source'] = 'manual_run' if is_manual else 'backend_scheduler'
+        config['last_run_trigger'] = trigger
+        if disabled_during_run:
+            config['enabled'] = False
+            config['next_run_at'] = ''
+            config['stopRequested'] = False
+            config['last_decision'] = 'disabled_after_run'
+            _pa_update_active_run(uid, status='stopped', progressPct=100,
+                                  message='Auto disabled during run',
+                                  finishedAt=datetime.utcnow().isoformat())
+            _pa_log('stopped because auto disabled user=%s trigger=%s after current run' % (uid[:8], trigger))
+        elif is_manual or trigger == 'auto_manual_now':
+            # Manual run or one-shot auto run: do NOT update next_run_at, interval, or enabled
+            if is_manual:
+                config['last_decision'] = 'manual_pipeline_success' if success else 'manual_pipeline_failed'
+            else:
+                config['last_decision'] = 'auto_manual_now_success' if success else 'auto_manual_now_failed'
+        else:
+            _next_dt = _run_completed_at + timedelta(minutes=interval)
+            # Cap at 16:00 ET for market hours — if next run would be after close,
+            # schedule next trading day 09:30 instead
+            _today_1600 = _next_dt.replace(hour=16, minute=0, second=0, microsecond=0)
+            if _next_dt >= _today_1600:
+                _next_trading = _pa_get_next_trading_day(_run_completed_at)
+                if _next_trading:
+                    config['next_run_at'] = _next_trading.isoformat()
+                    config['last_decision'] = 'stopped_for_day'
+                else:
+                    config['next_run_at'] = ''
+                    config['last_decision'] = 'stopped_for_day_no_next'
+            else:
+                config['next_run_at'] = _next_dt.isoformat()
+                config['last_decision'] = 'pipeline_success' if success else 'pipeline_failed'
+        config['current_auto_run_id'] = ''
         config['last_summary'] = summary or {}
         config['last_error'] = None if success else (('%d errors' % summary['errors']) if summary else 'unknown error')
         _pa_save_config(uid, config)
@@ -28087,124 +29834,155 @@ def _pa_scheduler_loop():
                 _pa_log('scheduler tick nowEt=%s stage=%s enabledUsersCheck=true marketOpen=%s' % (
                     now_et.isoformat(), market_stage_sched, is_open))
 
-                # Find all enabled users
+                # Find all enabled users from Supabase only (fresh read every tick)
                 enabled_users = []
                 try:
-                    import json
-                    if os.path.exists(_PA_FILE_PATH):
-                        with open(_PA_FILE_PATH, 'r') as f:
-                            all_configs = json.load(f)
-                        for uid, config in all_configs.items():
-                            if config.get('enabled') and config.get('interval_minutes', 0) > 0:
-                                enabled_users.append((uid, config))
-                except Exception as e:
-                    _pa_log_error('Failed to read configs: %s' % e)
-
-                # Also try Supabase
-                try:
-                    from supabase import create_client
-                    supabase_url = os.environ.get('SUPABASE_URL', 'https://nwpxjqgqegxttucsmvmp.supabase.co')
-                    supabase_key = os.environ.get('SUPABASE_SERVICE_KEY', '')
-                    if supabase_key:
-                        client = create_client(supabase_url, supabase_key)
+                    client = _pa_supabase_client()
+                    if client:
                         resp = client.table('user_pipeline_auto_configs').select('user_id').eq('enabled', True).execute()
                         if resp.data:
                             for row in resp.data:
                                 if isinstance(row, dict):
                                     suid = row.get('user_id')
-                                    if suid and suid not in [u[0] for u in enabled_users]:
-                                        config = _pa_get_config(suid)
-                                        if config.get('enabled') and config.get('interval_minutes', 0) > 0:
-                                            enabled_users.append((suid, config))
+                                    if suid:
+                                        enabled_users.append(suid)
                 except Exception as e:
                     _pa_log_error('Supabase enabled users query failed: %s' % e)
 
-                for uid, config in enabled_users:
+                for uid in enabled_users:
+                    # Fresh DB read per user every tick — never stale
+                    config = _pa_get_config(uid) or {}
+                    if not config.get('enabled') or not config.get('interval_minutes', 0):
+                        with _PA_PER_USER_LAST_CHECK_LOCK:
+                            _PA_PER_USER_LAST_CHECK[uid] = {'time': now_iso, 'decision': 'disabled'}
+                        continue
+
                     interval = config.get('interval_minutes', 60)
                     mode = config.get('mode', 'hybrid')
-                    last_backend_scan_at = config.get('last_backend_scan_at', '')
-                    effective_interval_seconds = interval * 60
+
                     with _PA_RUNNING_USERS_LOCK:
                         if uid in _PA_RUNNING_USERS:
                             _pa_log('skipped user=%s reason=already_running' % uid[:8])
                             continue
 
-                    # Per-user due decision log
-                    _next_from_config = config.get('next_run_at', '')
-                    _pa_log('due check user=%s enabled=true marketOpen=%s nowEt=%s interval=%dmin lastBackendScanAt=%s nextRunAt=%s' % (
-                        uid[:8], is_open, now_et.strftime('%H:%M'), interval,
-                        last_backend_scan_at[:26] if last_backend_scan_at else 'none',
-                        _next_from_config[:26] if _next_from_config else 'none'))
+                    # ── Market-hours decision logic ──
+                    # Rules:
+                    #   weekend/holiday → skip, nextRunAt = next trading day 09:30
+                    #   now < 09:30 ET → skip, nextRunAt = today 09:30
+                    #   09:30 <= now < 16:00 → if no run today: run now; elif due: run now; else skip
+                    #   now >= 16:00 → skip, nextRunAt = next trading day 09:30
+                    today_0930 = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+                    today_1600 = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
 
-                    if not is_open:
-                        if mkt_status == 'holiday':
-                            decision = 'skipped_holiday'
-                        elif now_et.weekday() >= 5:
-                            decision = 'skipped_weekend'
+                    decision = 'skip'
+                    should_run = False
+                    run_reason = ''
+                    computed_next_run = ''
+
+                    _pa_log('scheduler user=%s enabled=true mktStage=%s now=%s interval=%dmin' % (
+                        uid[:8], market_stage_sched, now_et.strftime('%H:%M'), interval))
+
+                    if market_stage_sched in ('weekend', 'holiday'):
+                        next_trading = _pa_get_next_trading_day(now_et)
+                        computed_next_run = next_trading.isoformat() if next_trading else ''
+                        decision = 'skipped_%s' % market_stage_sched
+                        _pa_log('skipped user=%s reason=%s nextRun=%s' % (uid[:8], decision, computed_next_run))
+                    elif now_et < today_0930:
+                        computed_next_run = today_0930.isoformat()
+                        decision = 'skipped_premarket'
+                        _pa_log('skipped user=%s reason=premarket nextRun=%s' % (uid[:8], today_0930.strftime('%H:%M')))
+                    elif today_0930 <= now_et < today_1600:
+                        # Market open hours: 09:30 - 16:00 ET
+                        last_run_at = config.get('last_run_at', '')
+                        run_today = False
+                        if last_run_at:
+                            try:
+                                last_dt = dateutil.parser.isoparse(last_run_at)
+                                if last_dt.tzinfo:
+                                    last_dt_et = last_dt.astimezone(pytz.timezone('America/New_York'))
+                                else:
+                                    last_dt_et = pytz.UTC.localize(last_dt).astimezone(pytz.timezone('America/New_York'))
+                                run_today = (last_dt_et.date() == now_et.date())
+                            except Exception:
+                                pass
+
+                        if not run_today:
+                            should_run = True
+                            run_reason = 'first_run_today'
                         else:
-                            decision = 'skipped_market_closed'
-                        _pa_log('skipped user=%s reason=%s nextOpen=%s' % (uid[:8], decision, next_open or 'unknown'))
-                        config['last_backend_decision'] = decision
+                            next_run_from_config = config.get('next_run_at', '')
+                            if next_run_from_config:
+                                try:
+                                    next_dt = dateutil.parser.isoparse(next_run_from_config)
+                                    if next_dt.tzinfo:
+                                        next_dt_et = next_dt.astimezone(pytz.timezone('America/New_York'))
+                                    else:
+                                        next_dt_et = pytz.UTC.localize(next_dt).astimezone(pytz.timezone('America/New_York'))
+                                    if now_et >= next_dt_et:
+                                        should_run = True
+                                        run_reason = 'interval_due'
+                                    else:
+                                        run_reason = 'not_due'
+                                except Exception:
+                                    should_run = True
+                                    run_reason = 'interval_due_fallback'
+                            else:
+                                should_run = True
+                                run_reason = 'first_run_no_next'
+                    else:
+                        # After hours (now >= 16:00) — schedule next trading day
+                        next_trading = _pa_get_next_trading_day(now_et)
+                        computed_next_run = next_trading.isoformat() if next_trading else ''
+                        decision = 'skipped_after_hours'
+                        _pa_log('skipped user=%s reason=after_hours nextRun=%s' % (uid[:8], computed_next_run))
+
+                    if should_run:
+                        # ── Immediate headless execution (no claim window) ──
+                        decision = 'started_pipeline'
+                        with _PA_PER_USER_LAST_CHECK_LOCK:
+                            _PA_PER_USER_LAST_CHECK[uid] = {'time': now_iso, 'decision': decision}
+                        _pa_log('due user=%s reason=%s interval=%d — executing headless' % (uid[:8], run_reason, interval))
+
+                        def _scheduler_run(_uid, _cfg, _interval, _mode, _mkt_status, _mkt_source, _now_iso):
+                            summary = None
+                            try:
+                                summary = _pa_execute_and_save(_uid, _cfg, _interval, _mode, trigger='market_auto_run')
+                                _pa_log('[PipelineAuto] backend scan completed user=%s status=%s' % (
+                                    _uid[:8], _cfg.get('last_backend_scan_status', 'unknown')))
+                                _pa_add_run_history(_uid, {
+                                    'trigger_type': 'market_auto_run',
+                                    'status': 'success' if summary and summary.get('errors', 0) == 0 else 'failed',
+                                    'reason': 'headless pipeline completed' if summary and summary.get('errors', 0) == 0 else '%d errors' % (summary.get('errors', 0) if summary else 1),
+                                    'source': 'backend_scheduler',
+                                    'market_open': True,
+                                    'market_status': _mkt_status,
+                                    'market_status_source': _mkt_source,
+                                    'started_at': summary.get('startedAt', _now_iso) if summary else _now_iso,
+                                    'finished_at': summary.get('finishedAt', _now_iso) if summary else _now_iso,
+                                    'duration_seconds': summary.get('durationSeconds', 0) if summary else 0,
+                                    'interval_minutes': _interval,
+                                    'mode': _mode,
+                                    'summary': summary or {},
+                                    'error': None if summary and summary.get('errors', 0) == 0 else '%d errors' % (summary.get('errors', 0) if summary else 1),
+                                })
+                            except Exception:
+                                import traceback
+                                _pa_log_error('[Scheduler] headless run error: %s' % traceback.format_exc())
+                            finally:
+                                with _PA_PER_USER_LAST_CHECK_LOCK:
+                                    _PA_PER_USER_LAST_CHECK[_uid]['decision'] = 'pipeline_success' if summary and summary.get('errors', 0) == 0 else 'pipeline_failed'
+
+                        threading.Thread(target=_scheduler_run, args=(
+                            uid, dict(config), interval, mode, mkt_status, mkt_source, now_iso
+                        ), daemon=True).start()
+                    else:
+                        # Skipped this tick — save decision and next_run_at for frontend visibility
+                        config['last_decision'] = decision
+                        if computed_next_run:
+                            config['next_run_at'] = computed_next_run
                         _pa_save_config(uid, config)
                         with _PA_PER_USER_LAST_CHECK_LOCK:
                             _PA_PER_USER_LAST_CHECK[uid] = {'time': now_iso, 'decision': decision}
-                        _pa_add_run_history(uid, {
-                            'trigger_type': 'market_auto_run', 'status': 'skipped', 'reason': decision,
-                            'source': 'backend_scheduler',
-                            'market_open': False, 'market_status': mkt_status, 'market_status_source': mkt_source,
-                            'started_at': now_iso, 'finished_at': now_iso, 'duration_seconds': 0,
-                            'interval_minutes': interval, 'mode': mode,
-                        })
-                        continue
-
-                    # Market is open (or test mode) — check interval using backend's own tracking
-                    if last_backend_scan_at:
-                        try:
-                            last = dateutil.parser.isoparse(last_backend_scan_at)
-                            now = now_et.astimezone(pytz.UTC).replace(tzinfo=None)
-                            if last.tzinfo:
-                                last_utc = last.astimezone(pytz.UTC).replace(tzinfo=None)
-                            else:
-                                last_utc = last
-                            elapsed = (now - last_utc).total_seconds()
-                            if elapsed < effective_interval_seconds:
-                                decision = 'skipped_next_run_not_due'
-                                _pa_log('skipped user=%s reason=not_due elapsed=%ds interval=%dmin' % (uid[:8], int(elapsed), interval))
-                                config['last_backend_decision'] = decision
-                                _pa_save_config(uid, config)
-                                with _PA_PER_USER_LAST_CHECK_LOCK:
-                                    _PA_PER_USER_LAST_CHECK[uid] = {'time': now_iso, 'decision': decision}
-                                continue
-                        except Exception:
-                            pass
-
-                    with _PA_PER_USER_LAST_CHECK_LOCK:
-                        _PA_PER_USER_LAST_CHECK[uid] = {'time': now_iso, 'decision': 'started_pipeline'}
-
-                    _run_started_at = now_et
-                    reason = 'first_run_after_open' if not last_backend_scan_at else 'interval_due'
-                    _pa_log('due user=%s reason=%s interval=%d' % (uid[:8], reason, interval))
-                    _pa_log('auto run started user=%s trigger=market_auto_run interval=%dmin source=backend_scheduler headless=true' % (uid[:8], interval))
-                    summary = _pa_execute_and_save(uid, config, interval, mode, trigger='market_auto_run')
-                    _pa_log('[PipelineAuto] backend headless scan completed user=%s status=%s last_run_at=%s next_run_at=%s' % (uid[:8], config['last_backend_scan_status'], config['last_run_at'][:19], config['next_run_at'][:19]))
-                    _pa_add_run_history(uid, {
-                        'trigger_type': 'market_auto_run',
-                        'status': 'success' if summary['errors'] == 0 else 'failed',
-                        'reason': 'headless pipeline completed' if summary['errors'] == 0 else '%d errors' % summary['errors'],
-                        'source': 'backend_scheduler',
-                        'market_open': True,
-                        'market_status': mkt_status,
-                        'market_status_source': mkt_source,
-                        'started_at': summary.get('startedAt', now_iso),
-                        'finished_at': summary.get('finishedAt', now_iso),
-                        'duration_seconds': summary.get('durationSeconds', 0),
-                        'interval_minutes': interval,
-                        'mode': mode,
-                        'summary': summary,
-                        'error': None if summary['errors'] == 0 else '%d errors' % summary['errors'],
-                    })
-                    with _PA_PER_USER_LAST_CHECK_LOCK:
-                        _PA_PER_USER_LAST_CHECK[uid]['decision'] = 'pipeline_success' if summary['errors'] == 0 else 'pipeline_failed'
 
                 consecutive_errors = 0
                 elapsed = time.time() - loop_start
@@ -28429,26 +30207,50 @@ def pipeline_auto_status():
     if mkt_source == 'fallback_basic_hours':
         market_status_label += ' (Fallback)'
 
-    # ── Phase 5: shouldRunNow — diagnostics only; backend scheduler owns execution ──
+    # ── Phase 5: auto-run display fields ──
     _now_et = _pa_now_et()
-    should_run_now = (
-        enabled
-        and is_open
-        and not stopped_for_today
-        and not blocked_for_day
-        and not is_running
-        and last_decision != 'started_pipeline'
-        and (
-            not last_run_at  # never run before
-            or next_run_basis == 'first_run_today'  # market just opened
-            or (next_from_last_et is not None and _now_et >= next_from_last_et)  # interval elapsed
-        )
-    )
+    active_run = _pa_get_active_run(uid)
+    # Stale detection: if activeRun hasn't been updated in 15+ minutes while "running", mark as stalled.
+    # Note: market_scanner with 50 symbols + AI analysis can take 5+ minutes, so 5 min is too short.
+    STALE_THRESHOLD = 900  # 15 minutes
+    stale_detected = False
+    if active_run and active_run.get('status') == 'running' and active_run.get('updatedAt'):
+        try:
+            _updated = dateutil.parser.isoparse(active_run['updatedAt'])
+            _age = (datetime.utcnow().replace(tzinfo=_updated.tzinfo) - _updated).total_seconds() if _updated.tzinfo else (datetime.utcnow() - _updated).total_seconds()
+            if _age > STALE_THRESHOLD:
+                stale_detected = True
+                _pa_log_error('[PipelineAuto] stale run detected user=%s age=%.0fs step=%s (threshold=%ds)' % (uid[:8], _age, active_run.get('currentStep', '?'), STALE_THRESHOLD))
+        except Exception:
+            pass
+    is_auto_run_running = is_running and not stale_detected
+    current_auto_step = active_run.get('currentStep', '') if active_run else ''
+    current_auto_progress_pct = active_run.get('progressPct', 0) if active_run else 0
+    if stale_detected:
+        current_auto_step = 'stale'
+        current_auto_progress_pct = 0
+    last_auto_summary = {}
+    if last_summary:
+        last_auto_summary = {
+            'trigger': last_summary.get('trigger', ''),
+            'completedAt': last_summary.get('finishedAt', ''),
+            'durationSeconds': last_summary.get('durationSeconds', 0),
+            'scanned': last_summary.get('scanned', 0),
+            'aiSuccess': last_summary.get('continue_count', 0),
+            'fineScanCount': last_summary.get('fine_count', 0),
+            'validationCount': last_summary.get('validation_count', 0),
+            'entryPlanCount': last_summary.get('entry_plan_count', 0),
+            'ordersSubmitted': last_summary.get('orders_submitted', 0),
+            'exitScanCount': last_summary.get('exit_scan_count', 0),
+            'errors': last_summary.get('errors', 0),
+        }
 
     resp = {
         'success': True,
         'enabled': enabled,
-        'shouldRunNow': should_run_now,
+        'autoRunEnabledFromDb': enabled,
+        'configUpdatedAt': config.get('updated_at', '') if config else '',
+        'stopRequested': bool(config.get('stopRequested', False)) if config else False,
         'intervalMinutes': interval_minutes,
         'mode': mode,
         'schedulerRunning': scheduler_running,
@@ -28470,6 +30272,14 @@ def pipeline_auto_status():
         'isRunning': is_running,
         'lastDecision': last_decision,
         'lastRunTrigger': config.get('last_run_trigger', '') if config else '',
+        'currentAutoRunId': config.get('current_auto_run_id', '') if config else '',
+        'activeRun': active_run,
+        'isAutoRunRunning': is_auto_run_running,
+        'currentAutoStep': current_auto_step,
+        'currentAutoProgressPct': current_auto_progress_pct,
+        'staleDetected': stale_detected,
+        'lastAutoError': active_run.get('lastError', '') if active_run else '',
+        'lastAutoSummary': last_auto_summary,
         'lastAutoRunDisplay': last_auto_run_display,
         'nextAutoRunAt': next_auto_run_at,
         'nextAutoRunDisplay': next_auto_run_display,
@@ -28481,7 +30291,7 @@ def pipeline_auto_status():
         'lastSummary': last_summary,
         'lastError': last_error,
         'runCountToday': config.get('run_count_today', 0) if config else 0,
-        # Backend headless capability — the backend scheduler can only run a limited
+        # Backend headless capability — auto-run is fully headless, no frontend required
         # Market Scanner (10 default symbols), not the full 6-stage pipeline.
         # Full pipeline (Continue Scan, Fine Scan, Deeper Validation, Entry Plan, Exit Scan)
         # requires the frontend page to be open for orchestration.
@@ -28512,6 +30322,105 @@ def pipeline_auto_status():
         },
     }
     return jsonify(resp)
+
+
+@app.route('/api/ai-agent/pipeline-auto/claim-run', methods=['POST'])
+def pipeline_auto_claim_run():
+    """DEPRECATED: Auto-run no longer requires frontend claim.
+    Returns success: false with a deprecation message.
+    """
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    return jsonify({
+        'success': False,
+        'claimed': False,
+        'message': 'Claim mechanism is deprecated. Auto-run is now fully headless.',
+    })
+
+
+@app.route('/api/ai-agent/pipeline/run', methods=['POST'])
+def pipeline_run():
+    """Shared entry point for manual and auto pipeline runs.
+    Returns run_id immediately; frontend polls activeRun via status endpoint.
+    """
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    uid = user['id']
+    data = request.get_json(silent=True) or {}
+    mode = data.get('mode', 'hybrid')
+    trigger = data.get('trigger', 'manual')
+    interval = int(data.get('intervalMinutes') or 0)  # 0 for manual runs (no scheduling)
+    risk_profile = data.get('riskProfile', 'medium')
+    time_horizon = data.get('timeHorizon', 'mid')
+    trade_mode = data.get('tradeMode', 'paper')
+    run_id = 'pipeline-run-%d' % int(time.time())
+
+    is_manual_req = (trigger == 'manual')
+    if is_manual_req:
+        _pa_log('[ManualPipeline] endpoint received trigger=%s mode=%s risk=%s horizon=%s tradeMode=%s runId=%s uid=%s' % (
+            trigger, mode, risk_profile, time_horizon, trade_mode, run_id, uid[:8]))
+
+    with _PA_RUNNING_USERS_LOCK:
+        if uid in _PA_RUNNING_USERS:
+            # Check if it's a background auto-run vs manual run
+            active_run = _pa_get_active_run(uid)
+            is_auto = active_run and active_run.get('trigger', '') in ('market_auto_run', 'headless_market_auto_run', 'toggle_on', 'auto_manual_now')
+            msg = 'Background auto-run is active. Please wait for it to complete or stop it first.' if is_auto else 'Pipeline already running'
+            return jsonify({'success': False, 'message': msg, 'status': 'already_running'}), 409
+        _PA_RUNNING_USERS.add(uid)
+
+    def _background_run():
+        try:
+            if is_manual_req:
+                _pa_log('[ManualPipeline] background thread starting runId=%s' % run_id)
+            config = _pa_get_config(uid) or {}
+            config['current_auto_run_id'] = run_id
+            _pa_execute_and_save(uid, config, interval, mode, trigger=trigger,
+                                 risk_profile=risk_profile, time_horizon=time_horizon,
+                                 trade_mode=trade_mode, run_id=run_id)
+            if is_manual_req:
+                _pa_log('[ManualPipeline] background thread completed runId=%s' % run_id)
+        except Exception:
+            import traceback
+            _pa_log_error('[PipelineRun] background error: %s' % traceback.format_exc())
+            with _PA_RUNNING_USERS_LOCK:
+                _PA_RUNNING_USERS.discard(uid)
+
+    threading.Thread(target=_background_run, daemon=True).start()
+    return jsonify({'success': True, 'runId': run_id, 'message': 'Pipeline started'})
+
+
+@app.route('/api/ai-agent/pipeline/result', methods=['GET'])
+def pipeline_result():
+    """Return the latest full pipeline result/debug dump for the current user."""
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    uid = user['id']
+    run_id = (request.args.get('runId') or '').strip()
+    kind = (request.args.get('kind') or '').strip().lower()
+    key = (uid, run_id) if run_id else (uid, '__last_manual__' if kind == 'manual' else '__last_auto__' if kind == 'auto' else '__last__')
+    with _PA_LAST_PIPELINE_RESULTS_LOCK:
+        result = _PA_LAST_PIPELINE_RESULTS.get(key)
+    if not result:
+        return jsonify({'success': False, 'message': 'Pipeline result not available yet'}), 404
+    return jsonify({'success': True, 'runId': result.get('runId'), 'result': result})
+
+
+@app.route('/api/ai-agent/pipeline/stop', methods=['POST'])
+def pipeline_stop():
+    """Request the active pipeline to stop at the next step boundary."""
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    uid = user['id']
+    with _PA_ACTIVE_RUNS_LOCK:
+        if uid in _PA_ACTIVE_RUNS:
+            _PA_ACTIVE_RUNS[uid]['stopRequested'] = True
+            return jsonify({'success': True, 'message': 'Stop requested at next step boundary'})
+    return jsonify({'success': False, 'message': 'No active pipeline to stop'}), 404
 
 
 @app.route('/api/ai-agent/pipeline-auto/run-headless-test', methods=['POST'])
@@ -28554,6 +30463,82 @@ def pipeline_auto_run_headless_test():
             _PA_RUNNING_USERS.discard(uid)
 
 
+@app.route('/api/ai-agent/pipeline-auto/run-now', methods=['POST'])
+def pipeline_auto_run_now():
+    """Run one background auto pipeline immediately without enabling scheduler.
+
+    Trigger = auto_manual_now. Source = Auto Background.
+    Does NOT modify enabled, intervalMinutes, or next_run_at.
+    Caller: frontend "Run Auto Pipeline Now" button.
+    """
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    uid = user['id']
+    data = request.get_json(silent=True) or {}
+    mode = data.get('mode', 'hybrid')
+    risk_profile = data.get('riskProfile', 'medium')
+    time_horizon = data.get('timeHorizon', 'mid')
+    trade_mode = data.get('tradeMode', 'paper')
+    trigger = 'auto_manual_now'
+
+    with _PA_RUNNING_USERS_LOCK:
+        if uid in _PA_RUNNING_USERS:
+            active_run = _pa_get_active_run(uid)
+            is_auto = active_run and active_run.get('trigger', '') in ('market_auto_run', 'headless_market_auto_run', 'toggle_on', 'auto_manual_now')
+            if is_auto:
+                return jsonify({'success': False, 'error': 'auto_run_already_running',
+                                'message': 'An auto pipeline is already running.'}), 409
+            else:
+                return jsonify({'success': False, 'error': 'manual_pipeline_running',
+                                'message': 'Manual pipeline is running. Please wait for it to complete.'}), 409
+        _PA_RUNNING_USERS.add(uid)
+
+    config = _pa_get_config(uid) or {}
+    interval = config.get('interval_minutes') or 15
+
+    run_id = 'auto-now-%d' % int(time.time())
+    _pa_log('[ManualPipeline] auto-run-now requested user=%s mode=%s risk=%s horizon=%s tradeMode=%s runId=%s' % (
+        uid[:8], mode, risk_profile, time_horizon, trade_mode, run_id))
+
+    def _background_auto_now():
+        try:
+            cfg_copy = _pa_get_config(uid) or {}
+            # Do NOT change enabled or intervalMinutes
+            summary = _pa_execute_and_save(uid, cfg_copy, interval, mode, trigger=trigger,
+                                            risk_profile=risk_profile, time_horizon=time_horizon,
+                                            trade_mode=trade_mode, run_id=run_id)
+            _pa_add_run_history(uid, {
+                'trigger_type': trigger,
+                'status': 'success' if (summary and summary.get('errors', 0) == 0) else 'failed',
+                'reason': 'Auto pipeline triggered manually from Run Auto Pipeline Now button.',
+                'source': 'frontend_run_now_button',
+                'market_open': None,
+                'market_status': 'manual_trigger',
+                'market_status_source': 'frontend_button',
+                'started_at': summary.get('startedAt') if summary else None,
+                'finished_at': summary.get('finishedAt') if summary else None,
+                'duration_seconds': summary.get('durationSeconds', 0) if summary else 0,
+                'interval_minutes': interval,
+                'mode': mode,
+                'summary': summary,
+                'error': summary.get('lastError') if summary else 'No summary returned',
+                'run_id': run_id,
+            })
+            _pa_log('[ManualPipeline] auto-run-now completed user=%s runId=%s errors=%d' % (
+                uid[:8], run_id, summary.get('errors', 0) if summary else -1))
+        except Exception:
+            import traceback
+            _pa_log_error('[ManualPipeline] auto-run-now failed: %s' % traceback.format_exc())
+        finally:
+            with _PA_RUNNING_USERS_LOCK:
+                _PA_RUNNING_USERS.discard(uid)
+
+    threading.Thread(target=_background_auto_now, daemon=True).start()
+    return jsonify({'success': True, 'runId': run_id, 'status': 'running',
+                    'message': 'Auto pipeline started in background.'})
+
+
 @app.route('/api/ai-agent/pipeline-auto/config', methods=['POST'])
 def pipeline_auto_config():
     user = require_auth()
@@ -28561,7 +30546,8 @@ def pipeline_auto_config():
         return jsonify({'success': False, 'message': 'Authentication required'}), 401
     uid = user['id']
     data = request.get_json(silent=True) or {}
-    enabled = data.get('enabled', False)
+    enabled_raw = data.get('enabled', False)
+    enabled = enabled_raw is True or (isinstance(enabled_raw, str) and enabled_raw.lower() == 'true')
     interval_minutes = data.get('intervalMinutes', None)
     mode = data.get('mode', 'hybrid')
     last_run_at = data.get('lastRunAt', None)
@@ -28572,6 +30558,11 @@ def pipeline_auto_config():
     config['interval_minutes'] = interval_minutes
     config['mode'] = mode
     config['updated_at'] = datetime.utcnow().isoformat()
+    if not enabled:
+        config['next_run_at'] = ''
+        config['stopRequested'] = True
+        config['disabled_at'] = datetime.utcnow().isoformat()
+        config['last_decision'] = 'disabled'
 
     # If frontend reports a completed run, update last_run_at so backend scheduler
     # calculates the next interval from this timestamp rather than triggering again
@@ -28602,28 +30593,38 @@ def pipeline_auto_config():
         config['next_run_at'] = 'now'
         config['last_decision'] = 'enabled'
 
-    success = _pa_save_config(uid, config)
+    success, reason = _pa_save_config(uid, config)
     _pa_ensure_scheduler()
-    if enabled and not was_enabled:
+    if enabled and not was_enabled and success:
         _pa_log('config enabled user=%s interval=%dm trigger_immediate=true' % (uid[:8], interval_minutes or 0))
-        # Toggle-on during market open: fire pipeline immediately in background thread
         if interval_minutes:
-            _immed_is_open, _, _, _, _, _ = _pa_check_market_open(uid)
+            _immed_is_open, _immed_mkt_status, _immed_mkt_source, _, _, _immed_stage = _pa_check_market_open(uid)
+            _pa_log('[PipelineAutoConfig] toggle requested enabled=true marketStage=%s' % (_immed_stage or 'closed'))
             if _immed_is_open:
-                _pa_log('[PipelineAuto] toggle-on market open — firing immediate pipeline user=%s' % uid[:8])
-                def _immediate_run():
-                    time.sleep(0.5)  # Let HTTP response return first
-                    cfg = _pa_get_config(uid)
-                    if not cfg.get('enabled'):
-                        return
-                    _pa_log('[PipelineAuto] toggle-on immediate run starting user=%s' % uid[:8])
-                    _pa_execute_and_save(uid, cfg, interval_minutes, mode, trigger='toggle_on')
-                threading.Thread(target=_immediate_run, daemon=True).start()
+                # Execute headless immediately — no claim window, no frontend involvement
+                _pa_log('[PipelineAutoConfig] toggle-on immediate headless run start')
+                def _toggle_run(_uid, _cfg, _interval, _mode):
+                    try:
+                        cfg_copy = _pa_get_config(_uid) or {}
+                        _pa_execute_and_save(_uid, cfg_copy, _interval, _mode, trigger='toggle_on')
+                    except Exception:
+                        import traceback
+                        _pa_log_error('[ToggleOn] headless run error: %s' % traceback.format_exc())
+                threading.Thread(target=_toggle_run, args=(
+                    uid, dict(config), interval_minutes, mode
+                ), daemon=True).start()
+                return jsonify({
+                    'success': True,
+                    'message': 'Configuration saved, pipeline started',
+                    'enabled': True,
+                })
     elif not enabled and was_enabled:
-        _pa_log('config disabled user=%s' % uid[:8])
+        _pa_log('config disabled user=%s saved enabled=false stopRequested=true' % uid[:8])
     elif enabled:
         _pa_log('config updated user=%s interval=%dm' % (uid[:8], interval_minutes or 0))
-    return jsonify({'success': success, 'message': 'Configuration saved' if success else 'Failed to save configuration'})
+    if last_run_at:
+        return jsonify({'success': success, 'message': 'Configuration saved' if success else 'Failed to save configuration', 'reason': reason, 'lastRunAtSynced': True})
+    return jsonify({'success': success, 'message': 'Configuration saved' if success else 'Failed to save configuration', 'reason': reason})
 
 
 @app.route('/api/ai-agent/pipeline-auto/history', methods=['GET'])

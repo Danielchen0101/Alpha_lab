@@ -92,3 +92,7 @@ memory/*.py
 backend/auto_scan_configs.json
 backend/pipeline_auto_configs.json
 backend/pipeline_auto_history.json
+
+# Debug dumps — never commit
+backend/debug_manual_pipeline_result.json
+backend/debug_auto_pipeline_result.json

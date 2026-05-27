@@ -1468,7 +1468,16 @@ const messages = {
     exitScanFailed: '退出扫描失败',
     // AI 流水线
     aiPipeline: 'AI 流水线',
-    runPipeline: '运行流水线',
+    runPipeline: '运行手动流水线',
+    runAutoPipelineNow: '立即运行自动流水线',
+    // 市场自动运行
+    marketAutoRun: '市场自动运行',
+    marketAutoRunSubtitle: '市场时段内后台定时流水线。',
+    backgroundSchedule: '后台定时',
+    scheduleHelperText: '仅在美国市场时段运行，09:30–16:00 ET。',
+    lastAutoScan: '上次自动扫描',
+    nextAutoScan: '下次自动扫描',
+    autoStatus: '自动状态',
     pipelineRunning: '流水线运行中',
     pipelineComplete: '流水线完成！',
     pipelineDisabled: 'AI 流水线运行时禁用。',
