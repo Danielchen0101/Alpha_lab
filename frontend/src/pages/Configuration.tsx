@@ -61,24 +61,25 @@ const StatusBadge: React.FC<{ status: string; texts?: { connected?: string; save
 
 // --- Section Header ---
 const SectionHeader: React.FC<{ icon: React.ReactNode; title: string; subtitle: string; status?: string; statusTexts?: { connected?: string; saved?: string; error?: string; notTested?: string } }> = ({ icon, title, subtitle, status, statusTexts }) => (
-  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
+  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, flexWrap: 'wrap', gap: '12px' }}>
     <Space size={16} align="start">
       <div style={{
         width: 40,
         height: 40,
         borderRadius: 10,
-        background: '#f5f5f5',
+        background: 'var(--app-card-bg-soft)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         fontSize: 20,
-        color: '#1890ff'
+        color: 'var(--app-blue-text)',
+        border: '1px solid var(--app-border-soft)'
       }}>
         {icon}
       </div>
       <div>
-        <Title level={4} style={{ margin: 0 }}>{title}</Title>
-        <Text type="secondary" style={{ fontSize: 13 }}>{subtitle}</Text>
+        <Title level={4} style={{ margin: 0, color: 'var(--app-text-strong)', fontWeight: 700 }}>{title}</Title>
+        <Text style={{ fontSize: 13, color: 'var(--app-text-muted)', fontWeight: 500 }}>{subtitle}</Text>
       </div>
     </Space>
     {status && <StatusBadge status={status} texts={statusTexts} />}
@@ -87,9 +88,18 @@ const SectionHeader: React.FC<{ icon: React.ReactNode; title: string; subtitle: 
 
 // --- Security Note ---
 const SecurityNote: React.FC<{ text: string }> = ({ text }) => (
-  <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: '#fafafa', borderRadius: 6, border: '1px solid #f0f0f0' }}>
-    <SafetyCertificateOutlined style={{ color: '#52c41a' }} />
-    <Text type="secondary" style={{ fontSize: 12 }}>{text}</Text>
+  <div style={{ 
+    marginTop: 16, 
+    display: 'flex', 
+    alignItems: 'center', 
+    gap: 8, 
+    padding: '10px 14px', 
+    background: 'rgba(74, 222, 128, 0.05)', 
+    borderRadius: 8, 
+    border: '1px solid rgba(74, 222, 128, 0.15)' 
+  }}>
+    <SafetyCertificateOutlined style={{ color: '#4ade80' }} />
+    <Text style={{ fontSize: 12, color: 'var(--app-text-muted)', fontWeight: 500 }}>{text}</Text>
   </div>
 );
 
@@ -174,7 +184,7 @@ const AlpacaPaperSection: React.FC<{ t: any }> = ({ t }) => {
   const statusTexts = { connected: t.config.statusConnected, saved: t.config.statusSaved, error: t.config.statusError, notTested: t.config.statusNotTested };
 
   return (
-    <Card bordered={false} style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', marginBottom: 24 }}>
+    <Card bordered={false} style={{ borderRadius: 12, marginBottom: 24 }}>
       <SectionHeader
         icon={<ThunderboltOutlined />}
         title={t.config.paperTitle}
@@ -297,9 +307,9 @@ const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string
   const statusTexts = { connected: t.config.statusConnected, saved: t.config.statusSaved, error: t.config.statusError, notTested: t.config.statusNotTested };
 
   return (
-    <Card bordered={false} style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', marginBottom: 24, borderLeft: '4px solid #ff4d4f' }}>
+    <Card bordered={false} style={{ borderRadius: 12, marginBottom: 24 }}>
       <SectionHeader
-        icon={<BankOutlined style={{ color: '#ff4d4f' }} />}
+        icon={<BankOutlined style={{ color: '#ef4444' }} />}
         title={t.config.liveTitle}
         subtitle={t.config.liveSubtitle}
         status={status}
@@ -411,7 +421,7 @@ const MarketDataSection: React.FC<{ reloadKey?: number; t: any }> = ({ reloadKey
   const statusTexts = { connected: t.config.statusConnected, saved: t.config.statusSaved, error: t.config.statusError, notTested: t.config.statusNotTested };
 
   return (
-    <Card bordered={false} style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', marginBottom: 24 }}>
+    <Card bordered={false} style={{ borderRadius: 12, marginBottom: 24 }}>
       <SectionHeader
         icon={<CloudOutlined />}
         title={t.config.marketDataTitle}
@@ -598,7 +608,7 @@ const AIProviderSection: React.FC<{ t: any }> = ({ t }) => {
   const statusTexts = { connected: t.config.statusConnected, saved: t.config.statusSaved, error: t.config.statusError, notTested: t.config.statusNotTested };
 
   return (
-    <Card bordered={false} style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', marginBottom: 24 }}>
+    <Card bordered={false} style={{ borderRadius: 12, marginBottom: 24 }}>
       <SectionHeader
         icon={<RobotOutlined />}
         title={t.config.aiTitle}
@@ -728,7 +738,7 @@ const FinnhubSection: React.FC<{ t: any }> = ({ t }) => {
   const statusTexts = { connected: t.config.statusConnected, saved: t.config.statusSaved, error: t.config.statusError, notTested: t.config.statusNotTested };
 
   return (
-    <Card bordered={false} style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', marginBottom: 24 }}>
+    <Card bordered={false} style={{ borderRadius: 12, marginBottom: 24 }}>
       <SectionHeader
         icon={<CloudOutlined />}
         title={t.config.finnhubTitle}
@@ -879,7 +889,7 @@ const DiscordNotificationsSection: React.FC<{ t: any }> = ({ t }) => {
   // Only show form after config has been loaded from backend to avoid initialValues flash
   if (!configLoaded) {
     return (
-      <Card bordered={false} style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', marginBottom: 24 }}>
+      <Card bordered={false} style={{ borderRadius: 12, marginBottom: 24 }}>
         <SectionHeader
           icon={<BellOutlined />}
           title="Discord Notifications"
@@ -893,7 +903,7 @@ const DiscordNotificationsSection: React.FC<{ t: any }> = ({ t }) => {
   }
 
   return (
-    <Card bordered={false} style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', marginBottom: 24 }}>
+    <Card bordered={false} style={{ borderRadius: 12, marginBottom: 24 }}>
       <SectionHeader
         icon={<BellOutlined />}
         title="Discord Notifications"
@@ -979,22 +989,54 @@ const Configuration: React.FC = () => {
           type="text" 
           icon={<ArrowLeftOutlined />} 
           onClick={() => navigate('/settings')}
-          style={{ marginLeft: -16, marginBottom: 8 }}
+          style={{ marginLeft: -16, marginBottom: 8, color: 'var(--app-text-muted)' }}
         >
           {t.config.backToSettings}
         </Button>
         <div>
-          <Title level={2} style={{ margin: 0 }}>
-            <ApiOutlined style={{ marginRight: 12, color: '#1890ff' }} />
+          <Title level={2} style={{ margin: 0, color: 'var(--app-text-strong)', fontWeight: 800, letterSpacing: '-0.5px' }}>
+            <ApiOutlined style={{ marginRight: 12, color: 'var(--app-blue-text)' }} />
             {t.config.title}
           </Title>
-          <Text type="secondary" style={{ fontSize: 15 }}>
+          <Text style={{ fontSize: 15, color: 'var(--app-text-muted)', fontWeight: 500 }}>
             {t.config.subtitle}
           </Text>
         </div>
       </div>
 
-      <Divider style={{ margin: '32px 0' }} />
+      <Divider style={{ margin: '32px 0', borderColor: 'var(--app-border-soft)' }} />
+
+      <style>{`
+        .ant-card {
+          background: var(--app-card-bg) !important;
+          border: 1px solid var(--app-border-soft) !important;
+          box-shadow: var(--app-shadow-sm) !important;
+        }
+        .ant-input, .ant-input-password, .ant-select-selector {
+          background-color: var(--app-input-bg) !important;
+          color: var(--app-text) !important;
+          border-color: var(--app-border) !important;
+        }
+        .ant-form-item-label label {
+          color: var(--app-text) !important;
+        }
+        .ant-btn-default {
+          background: var(--app-card-bg-soft) !important;
+          color: var(--app-text) !important;
+          border-color: var(--app-border) !important;
+        }
+        .ant-btn-primary {
+          box-shadow: 0 2px 4px rgba(24, 144, 255, 0.2);
+        }
+        .ant-alert-info {
+          background-color: var(--app-blue-bg-soft) !important;
+          border-color: var(--app-blue-border) !important;
+        }
+        .ant-alert-warning {
+          background-color: rgba(251, 191, 36, 0.05) !important;
+          border-color: rgba(251, 191, 36, 0.2) !important;
+        }
+      `}</style>
 
       <AlpacaPaperSection t={t} />
       <AlpacaRealSection onMarketDataSynced={() => setMarketDataReloadKey(k => k + 1)} t={t} />
@@ -1004,8 +1046,8 @@ const Configuration: React.FC = () => {
       <DiscordNotificationsSection t={t} />
 
       <div style={{ marginTop: 40, textAlign: 'center' }}>
-        <Text type="secondary" style={{ fontSize: 13 }}>
-          <SafetyCertificateOutlined style={{ marginRight: 8 }} />
+        <Text style={{ fontSize: 13, color: 'var(--app-text-muted)' }}>
+          <SafetyCertificateOutlined style={{ marginRight: 8, color: '#4ade80' }} />
           {t.config.footerSecurity}
         </Text>
       </div>

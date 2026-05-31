@@ -124,3 +124,14 @@ code {
 .number-animate:hover {
   transform: scale(1.05);
 }
+
+/* Dark Mode Aware Scrollbar */
+:root[data-theme="dark"] ::-webkit-scrollbar-track {
+  background: var(--app-card-bg-soft);
+}
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: var(--app-border);
+}
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: var(--app-text-muted);
+}

@@ -6,6 +6,7 @@ import marketDataService, { StockData, searchStockData, safeNumber, safeToFixed,
 import { sharedDataService } from '../services/sharedDataService';
 import { formatMarketCap } from '../utils/format';
 import { useLanguage } from '../contexts/LanguageContext';
+import { useTradeMode } from '../contexts/TradeModeContext';
 
 const MAX_MARKET_SYMBOLS = 100;
 
@@ -14,6 +15,7 @@ const { Text } = Typography;
 
 const Market: React.FC = () => {
   const { t, translateSector } = useLanguage();
+  const { tradeMode } = useTradeMode();
   const [stocks, setStocks] = useState<StockData[]>([]);
   const [filteredStocks, setFilteredStocks] = useState<StockData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -62,10 +64,10 @@ const Market: React.FC = () => {
     };
   }, []);
 
-  // 过滤和排序股票（不依赖searchText，搜索只在点击按钮/Enter时触发API调用）
+  // 过滤和排序股票（依赖searchText实现实时过滤）
   useEffect(() => {
     filterAndSortStocks();
-  }, [stocks, selectedSector, sortField, sortOrder]);
+  }, [stocks, selectedSector, sortField, sortOrder, searchText]);
 
   // 监听localStorage变化，实现页面间watchlist同步
   useEffect(() => {
@@ -94,6 +96,15 @@ const Market: React.FC = () => {
 
   const filterAndSortStocks = () => {
     let result = [...stocks];
+
+    // 按搜索文本过滤 (local filter by symbol or name)
+    if (searchText.trim()) {
+      const q = searchText.trim().toUpperCase();
+      result = result.filter(stock =>
+        stock.symbol.toUpperCase().includes(q) ||
+        (stock.name && stock.name.toUpperCase().includes(q))
+      );
+    }
 
     // 按行业过滤
     if (selectedSector !== 'all') {
@@ -273,10 +284,19 @@ const Market: React.FC = () => {
 
   const handleSearch = async () => {
     const q = searchText.trim();
-    if (q) {
-      await searchStockBySymbol(q);
-      setSearchText(''); // Clear search input after search
+    if (!q) {
+      // Empty search — show all
+      return;
     }
+    // Check if symbol exists in current stocks (case-insensitive)
+    const qUpper = q.toUpperCase();
+    const existsLocally = stocks.some(s => s.symbol.toUpperCase() === qUpper);
+    if (existsLocally) {
+      // Already filtered by searchText in real-time; just keep it filtered
+      return;
+    }
+    // Symbol not in current list — try external search to add it
+    await searchStockBySymbol(q);
   };
 
   const addSymbolToUserList = async (symbol: string) => {
@@ -442,7 +462,7 @@ const Market: React.FC = () => {
       render: (symbol: string, record: StockData) => (
         <div>
           <div style={{ fontWeight: '700', fontSize: '16px', letterSpacing: '-0.2px' }}>{symbol}</div>
-          <div style={{ fontSize: '12px', color: '#666', fontWeight: 400, marginTop: '2px', lineHeight: 1.3 }}>
+          <div style={{ fontSize: '12px', color: "var(--app-text-muted)", fontWeight: 400, marginTop: '2px', lineHeight: 1.3 }}>
             {record.name || symbol}
           </div>
         </div>
@@ -462,7 +482,7 @@ const Market: React.FC = () => {
             fontFeatureSettings: '"tnum"',
             textAlign: 'center',
             lineHeight: '40px',
-            color: '#1f1f1f',
+            color: "var(--app-text)",
             letterSpacing: '-0.2px'
           }}>
             {price !== null ? `$${safeToFixed(price, 2)}` : '--'}
@@ -478,8 +498,8 @@ const Market: React.FC = () => {
       sorter: true,
       render: (dayHigh: number | null) => {
         // 只读取dayHigh字段，如果没有真实数据就显示--
-        if (dayHigh === null || dayHigh === 0) return <div style={{ fontSize: '13px', fontWeight: 500, color: '#bfbfbf', textAlign: 'center', lineHeight: '40px' }}>--</div>;
-        return <div style={{ fontSize: '14px', fontWeight: 600, color: '#595959', fontFeatureSettings: '"tnum"', textAlign: 'center', lineHeight: '40px' }}>${safeToFixed(dayHigh, 2)}</div>;
+        if (dayHigh === null || dayHigh === 0) return <div style={{ fontSize: '13px', fontWeight: 500, color: "var(--app-text-muted)", textAlign: 'center', lineHeight: '40px' }}>--</div>;
+        return <div style={{ fontSize: '14px', fontWeight: 600, color: "var(--app-text)", fontFeatureSettings: '"tnum"', textAlign: 'center', lineHeight: '40px' }}>${safeToFixed(dayHigh, 2)}</div>;
       },
     },
     {
@@ -490,8 +510,8 @@ const Market: React.FC = () => {
       sorter: true,
       render: (dayLow: number | null) => {
         // 只读取dayLow字段，如果没有真实数据就显示--
-        if (dayLow === null || dayLow === 0) return <div style={{ fontSize: '13px', fontWeight: 500, color: '#bfbfbf', textAlign: 'center', lineHeight: '40px' }}>--</div>;
-        return <div style={{ fontSize: '14px', fontWeight: 600, color: '#595959', fontFeatureSettings: '"tnum"', textAlign: 'center', lineHeight: '40px' }}>${safeToFixed(dayLow, 2)}</div>;
+        if (dayLow === null || dayLow === 0) return <div style={{ fontSize: '13px', fontWeight: 500, color: "var(--app-text-muted)", textAlign: 'center', lineHeight: '40px' }}>--</div>;
+        return <div style={{ fontSize: '14px', fontWeight: 600, color: "var(--app-text)", fontFeatureSettings: '"tnum"', textAlign: 'center', lineHeight: '40px' }}>${safeToFixed(dayLow, 2)}</div>;
       },
     },
 
@@ -508,7 +528,7 @@ const Market: React.FC = () => {
             <div style={{ 
               fontSize: '16px', 
               fontWeight: 700, 
-              color: '#666',
+              color: "var(--app-text-muted)",
               fontFeatureSettings: '"tnum"',
               textAlign: 'center',
               lineHeight: '40px'
@@ -612,7 +632,7 @@ const Market: React.FC = () => {
       className: 'market-cap-column',
       render: (marketCap: number | null) => {
         const formatted = formatMarketCap(marketCap);
-        return <div style={{ fontSize: '13px', fontWeight: 600, color: '#595959', fontFeatureSettings: '"tnum"', lineHeight: '40px', textAlign: 'center' }}>{formatted}</div>;
+        return <div style={{ fontSize: '13px', fontWeight: 600, color: "var(--app-text)", fontFeatureSettings: '"tnum"', lineHeight: '40px', textAlign: 'center' }}>{formatted}</div>;
       },
     },
     {
@@ -622,12 +642,12 @@ const Market: React.FC = () => {
       width: 100,
       sorter: true,
       render: (volume: number | null) => {
-        if (volume === null || volume === undefined || volume === 0) return <div style={{ fontSize: '13px', fontWeight: 500, color: '#bfbfbf', textAlign: 'center', lineHeight: '40px' }}>--</div>;
+        if (volume === null || volume === undefined || volume === 0) return <div style={{ fontSize: '13px', fontWeight: 500, color: "var(--app-text-muted)", textAlign: 'center', lineHeight: '40px' }}>--</div>;
         const num = Number(volume);
-        if (isNaN(num) || num === 0) return <div style={{ fontSize: '13px', fontWeight: 500, color: '#bfbfbf', textAlign: 'center', lineHeight: '40px' }}>--</div>;
-        if (num >= 1000000) return <div style={{ fontSize: '13px', fontWeight: 600, color: '#595959', fontFeatureSettings: '"tnum"', lineHeight: '40px', textAlign: 'center' }}>${(num / 1000000).toFixed(1)}M</div>;
-        if (num >= 1000) return <div style={{ fontSize: '13px', fontWeight: 600, color: '#595959', fontFeatureSettings: '"tnum"', lineHeight: '40px', textAlign: 'center' }}>${(num / 1000).toFixed(1)}K</div>;
-        return <div style={{ fontSize: '13px', fontWeight: 600, color: '#595959', fontFeatureSettings: '"tnum"', lineHeight: '40px', textAlign: 'center' }}>${num.toFixed(0)}</div>;
+        if (isNaN(num) || num === 0) return <div style={{ fontSize: '13px', fontWeight: 500, color: "var(--app-text-muted)", textAlign: 'center', lineHeight: '40px' }}>--</div>;
+        if (num >= 1000000) return <div style={{ fontSize: '13px', fontWeight: 600, color: "var(--app-text)", fontFeatureSettings: '"tnum"', lineHeight: '40px', textAlign: 'center' }}>${(num / 1000000).toFixed(1)}M</div>;
+        if (num >= 1000) return <div style={{ fontSize: '13px', fontWeight: 600, color: "var(--app-text)", fontFeatureSettings: '"tnum"', lineHeight: '40px', textAlign: 'center' }}>${(num / 1000).toFixed(1)}K</div>;
+        return <div style={{ fontSize: '13px', fontWeight: 600, color: "var(--app-text)", fontFeatureSettings: '"tnum"', lineHeight: '40px', textAlign: 'center' }}>${num.toFixed(0)}</div>;
       },
     },
 
@@ -650,7 +670,7 @@ const Market: React.FC = () => {
               fontWeight: 500,
               borderRadius: '6px',
               backgroundColor: '#f5f5f5',
-              color: '#595959',
+              color: "var(--app-text)",
               border: '1px solid #e8e8e8',
               display: 'inline-block',
               lineHeight: '14px'
@@ -748,10 +768,10 @@ const Market: React.FC = () => {
 
     .premium-card {
       border-radius: 16px !important;
-      border: 1px solid rgba(15, 23, 42, 0.08) !important;
+      border: 1px solid var(--app-border-soft) !important;
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02) !important;
       transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
-      background: #fff !important;
+      background: var(--app-card-bg) !important;
       overflow: hidden;
     }
     
@@ -773,14 +793,14 @@ const Market: React.FC = () => {
     .market-title {
       font-size: clamp(22px, 2vw, 26px);
       font-weight: 800;
-      color: #0f172a;
+      color: var(--app-text-strong);
       margin: 0;
       letter-spacing: -0.02em;
     }
     
     .market-subtitle {
       font-size: 14px;
-      color: #64748b;
+      color: var(--app-text-muted);
     }
 
     .count-badge {
@@ -811,7 +831,7 @@ const Market: React.FC = () => {
       font-size: 10.5px;
       text-transform: uppercase;
       letter-spacing: 0.8px;
-      color: #94a3b8;
+      color: var(--app-text-muted);
       font-weight: 700;
       margin-bottom: 8px;
     }
@@ -819,7 +839,7 @@ const Market: React.FC = () => {
     .metric-value {
       font-size: 24px;
       font-weight: 800;
-      color: #0f172a;
+      color: var(--app-text-strong);
       line-height: 1.1;
     }
 
@@ -833,10 +853,10 @@ const Market: React.FC = () => {
     }
     
     .toolbar-card {
-      background: #ffffff;
+      background: var(--app-card-bg);
       padding: 14px 18px;
       border-radius: 16px;
-      border: 1px solid rgba(15, 23, 42, 0.08);
+      border: 1px solid var(--app-border-soft);
       margin-bottom: 20px;
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
     }
@@ -855,64 +875,73 @@ const Market: React.FC = () => {
     }
     
     .market-search-input {
-      background: #fff !important;
-      border: 1px solid #e2e8f0 !important;
+      background: var(--app-input-bg) !important;
+      border: 1px solid var(--app-border-soft) !important;
       border-radius: 10px !important;
       height: 40px !important;
+      color: var(--app-text-strong) !important;
     }
     
     .sector-select .ant-select-selector {
       border-radius: 10px !important;
       height: 40px !important;
-      border-color: #e2e8f0 !important;
+      border-color: var(--app-border-soft) !important;
       display: flex !important;
       align-items: center !important;
+      background: var(--app-input-bg) !important;
+      color: var(--app-text-strong) !important;
     }
 
     .market-table-container {
-      background: #fff;
+      background: var(--app-card-bg);
       border-radius: 16px;
-      border: 1px solid rgba(15, 23, 42, 0.08);
+      border: 1px solid var(--app-border-soft);
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
       overflow: hidden;
     }
 
     .market-table .ant-table-thead > tr > th {
-      background: #f8fafc !important;
-      color: #64748b !important;
+      background: var(--app-table-header-bg) !important;
+      color: var(--app-text-muted) !important;
       font-weight: 700 !important;
       font-size: 10.5px !important;
       text-transform: uppercase !important;
       letter-spacing: 0.5px !important;
       padding: 14px !important;
-      border-bottom: 1px solid #f1f5f9 !important;
+      border-bottom: 1px solid var(--app-border-soft) !important;
+    }
+    .market-table .ant-table-column-sorter {
+      color: var(--app-text-muted) !important;
+    }
+    .market-table .ant-select-selection-item {
+      color: var(--app-text-strong) !important;
     }
     
     .market-table .ant-table-tbody > tr > td {
       padding: 12px 14px !important;
-      border-bottom: 1px solid #f1f5f9 !important;
+      border-bottom: 1px solid var(--app-border-soft) !important;
     }
     
     .market-table .ant-table-tbody > tr:hover > td {
-      background: rgba(24, 144, 255, 0.02) !important;
+      background: var(--app-table-row-hover-bg, rgba(59, 130, 246, 0.08)) !important;
     }
     
     .symbol-tag {
       font-weight: 800;
-      color: #0f172a;
+      color: var(--app-text-strong);
       font-size: 15px;
     }
     
     .company-name {
       font-size: 11px;
-      color: #94a3b8;
+      color: var(--app-text-muted);
       font-weight: 500;
     }
     
     .price-text {
       font-weight: 800;
       font-size: 15px;
-      color: #0f172a;
+      color: var(--app-text-strong);
     }
     
     .action-btn-compact {
@@ -922,17 +951,26 @@ const Market: React.FC = () => {
       padding: 0 10px !important;
       font-size: 13px !important;
     }
+    .action-btn-compact.ant-btn-default {
+      background: transparent !important;
+      border-color: var(--app-border) !important;
+      color: var(--app-text) !important;
+    }
+    .action-btn-compact.ant-btn-default:hover {
+      border-color: #3b82f6 !important;
+      color: #3b82f6 !important;
+    }
     
     .status-pill {
       display: inline-flex;
       align-items: center;
       padding: 5px 12px;
       border-radius: 10px;
-      background: #f8fafc;
-      color: #94a3b8;
+      background: var(--app-card-bg-soft);
+      color: var(--app-text-muted);
       font-size: 11px;
       font-weight: 600;
-      border: 1px solid #f1f5f9;
+      border: 1px solid var(--app-border-soft);
     }
     
     .status-dot {
@@ -964,9 +1002,29 @@ const Market: React.FC = () => {
               {userSymbols.length}/{MAX_MARKET_SYMBOLS}
             </span>
           </div>
-          <div className="market-subtitle">{t.market.subtitle}</div>
+          <div className="market-subtitle" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <span>{t.market.subtitle}</span>
+            <Tag color={tradeMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ fontSize: 10, fontWeight: 700, borderRadius: 4, margin: 0 }}>
+              {tradeMode === 'paper' ? 'PAPER MODE' : 'REAL MODE'}
+            </Tag>
+            {stocks.length > 0 && (
+              <Tag color="green" bordered={false} style={{ fontSize: 10, fontWeight: 700, borderRadius: 4, margin: 0 }}>
+                Data: {stocks[0]?.dataSource || 'Alpaca'}
+              </Tag>
+            )}
+            {stocks.length > 0 && stocks[0]?.dataSource?.toLowerCase().includes('fallback') && (
+              <Tag color="warning" bordered={false} style={{ fontSize: 10, fontWeight: 700, borderRadius: 4, margin: 0 }}>
+                MOCK DATA
+              </Tag>
+            )}
+            {lastUpdated && (
+              <span style={{ fontSize: 11, color: "var(--app-text-muted)", fontWeight: 500 }}>
+                Updated: {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            )}
+          </div>
         </div>
-        
+
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           {stocks.length > 0 && (
             <div className="status-pill">
@@ -1024,11 +1082,12 @@ const Market: React.FC = () => {
         <div className="toolbar-grid">
           <Input
             placeholder={t.market.searchPlaceholder}
-            prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
+            prefix={<SearchOutlined style={{ color: "var(--app-text-muted)" }} />}
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
             onPressEnter={handleSearch}
             className="market-search-input"
+            allowClear
             suffix={searching ? <Spin size="small" /> : null}
           />
           <Select
@@ -1073,11 +1132,38 @@ const Market: React.FC = () => {
           <div style={{ padding: '40px 30px' }}>
             <Skeleton active paragraph={{ rows: 10 }} />
           </div>
-        ) : filteredStocks.length === 0 ? (
+        ) : filteredStocks.length === 0 && stocks.length > 0 ? (
           <div style={{ padding: '80px 0' }}>
             <Empty
               image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={<span style={{ color: '#94a3b8', fontSize: '14px', fontWeight: 500 }}>{t.market.noResults}</span>}
+              description={
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: "var(--app-text)", marginBottom: 4 }}>
+                    No matching symbols for "{searchText || selectedSector}"
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--app-text-muted)" }}>
+                    Try adjusting your search or filters, or add a new symbol to analyze.
+                  </div>
+                </div>
+              }
+            >
+              <Space>
+                <Button type="link" onClick={() => { setSearchText(''); setSelectedSector('all'); }}>
+                  Clear Filters
+                </Button>
+                {searchText.trim() && (
+                  <Button type="primary" size="small" icon={<SearchOutlined />} onClick={() => searchStockBySymbol(searchText.trim())}>
+                    Search & Add "{searchText.trim().toUpperCase()}"
+                  </Button>
+                )}
+              </Space>
+            </Empty>
+          </div>
+        ) : filteredStocks.length === 0 && stocks.length === 0 ? (
+          <div style={{ padding: '80px 0' }}>
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={<span style={{ color: "var(--app-text-muted)", fontSize: '14px', fontWeight: 500 }}>{t.market.noResults}</span>}
             >
               <Button type="link" onClick={() => { setSearchText(''); setSelectedSector('all'); initializeMarket(); }}>
                 Clear Filters
@@ -1094,7 +1180,7 @@ const Market: React.FC = () => {
                   width: 170,
                   render: (symbol: string, record: StockData) => (
                     <Space size={12}>
-                      <div style={{ width: 34, height: 34, borderRadius: 8, background: '#f8fafc', border: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, color: '#334155', fontSize: 14 }}>
+                      <div style={{ width: 34, height: 34, borderRadius: 8, background: 'var(--app-card-bg-soft)', border: "1px solid var(--app-border-soft)", display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, color: "var(--app-text-strong)", fontSize: 14 }}>
                         {symbol[0]}
                       </div>
                       <Space direction="vertical" size={0}>
@@ -1146,7 +1232,7 @@ const Market: React.FC = () => {
                 return {
                   ...col,
                   render: (sector: string) => (
-                    <Tag color="blue" style={{ borderRadius: 6, fontWeight: 600, padding: '1px 8px', border: 'none', background: '#eff6ff', color: '#3b82f6', fontSize: 11 }}>
+                    <Tag color="blue" style={{ borderRadius: 6, fontWeight: 600, padding: '1px 8px', border: "1px solid var(--app-blue-border, transparent)", background: "var(--app-blue-bg, #eff6ff)", color: "var(--app-blue-text, #3b82f6)", fontSize: 11 }}>
                       {translateSector(sector) || 'N/A'}
                     </Tag>
                   )
@@ -1198,7 +1284,7 @@ const Market: React.FC = () => {
               pageSize: 15,
               showSizeChanger: true,
               showTotal: (total, range) => (
-                <span style={{ color: '#94a3b8', fontSize: '12.5px', fontWeight: 500 }}>
+                <span style={{ color: "var(--app-text-muted)", fontSize: '12.5px', fontWeight: 500 }}>
                   {range[0]}-{range[1]} {t.market.of} {total}
                 </span>
               ),
@@ -1211,7 +1297,7 @@ const Market: React.FC = () => {
 
       <div style={{ marginTop: 20, display: 'flex', justifyContent: 'flex-end' }}>
         {lastUpdated && (
-          <div style={{ fontSize: '11px', color: '#cbd5e1', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+          <div style={{ fontSize: '11px', color: "var(--app-text-muted)", fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
             <ClockCircleOutlined style={{ marginRight: 5 }} />
             {t.market.lastSynchronized}: {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
           </div>

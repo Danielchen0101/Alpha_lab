@@ -65,11 +65,11 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
         display: 'flex', 
         alignItems: 'center', 
         justifyContent: 'center',
-        border: '1px solid #e8e8e8',
+        border: '1px solid var(--app-border-soft)',
         borderRadius: '8px',
-        backgroundColor: '#fafafa'
+        backgroundColor: 'var(--app-card-bg-soft)'
       }}>
-        <div style={{ color: '#999', fontSize: '16px' }}>No chart data available</div>
+        <div style={{ color: 'var(--app-text-muted)', fontSize: '16px' }}>No chart data available</div>
       </div>
     );
   }
@@ -488,9 +488,9 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
 
       return (
         <div style={{
-          backgroundColor: 'rgba(255, 255, 255, 0.98)',
+          backgroundColor: 'var(--app-card-bg)',
           padding: '14px',
-          border: '1px solid #e8e8e8',
+          border: '1px solid var(--app-border-soft)',
           borderRadius: '8px',
           boxShadow: '0 6px 16px rgba(0,0,0,0.12)',
           backdropFilter: 'blur(8px)',
@@ -506,7 +506,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
             <div style={{ 
               fontSize: '14px', // 增大字号
               fontWeight: '700', 
-              color: '#333',
+              color: 'var(--app-text-strong)',
               marginBottom: '3px',
               letterSpacing: '0.4px'
             }}>
@@ -514,7 +514,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
             </div>
             <div style={{ 
               fontSize: '11px', // 增大字号
-              color: '#8c8c8c',
+              color: 'var(--app-text-muted)',
               display: 'flex',
               alignItems: 'center',
               textTransform: 'uppercase',
@@ -536,13 +536,13 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
           <div style={{ marginBottom: '12px' }}>
             <div style={{ 
               fontSize: '11px', 
-              color: '#595959',
+              color: 'var(--app-text-muted)',
               marginBottom: '6px',
               display: 'flex',
               justifyContent: 'space-between',
               alignItems: 'center',
               paddingBottom: '4px',
-              borderBottom: '1px solid #f0f0f0'
+              borderBottom: '1px solid var(--app-border-soft)'
             }}>
               <span style={{ fontWeight: '600' }}>{t.backtest.price}</span>
               <span style={{ 
@@ -562,14 +562,14 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
             {dataPoint.sma20 !== undefined && dataPoint.sma20 !== null && (
               <div style={{ 
                 fontSize: '10px', 
-                color: '#8c8c8c',
+                color: 'var(--app-text-muted)',
                 marginBottom: '4px',
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center'
               }}>
                 <span style={{ color: '#52c41a', fontWeight: '500' }}>SMA 20</span>
-                <span style={{ fontWeight: '600', color: '#333' }}>
+                <span style={{ fontWeight: '600', color: 'var(--app-text-strong)' }}>
                   ${Number(dataPoint.sma20).toLocaleString('en-US', {
                     minimumFractionDigits: 2,
                     maximumFractionDigits: 2
@@ -581,14 +581,14 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
             {dataPoint.sma50 !== undefined && dataPoint.sma50 !== null && (
               <div style={{ 
                 fontSize: '10px', 
-                color: '#8c8c8c',
+                color: 'var(--app-text-muted)',
                 marginBottom: '4px',
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center'
               }}>
                 <span style={{ color: '#fa8c16', fontWeight: '500' }}>SMA 50</span>
-                <span style={{ fontWeight: '600', color: '#333' }}>
+                <span style={{ fontWeight: '600', color: 'var(--app-text-strong)' }}>
                   ${Number(dataPoint.sma50).toLocaleString('en-US', {
                     minimumFractionDigits: 2,
                     maximumFractionDigits: 2
@@ -603,18 +603,18 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
             {dataPoint.volume !== undefined && dataPoint.volume > 0 && (
               <div style={{ 
                 fontSize: '10px', 
-                color: '#8c8c8c',
+                color: 'var(--app-text-muted)',
                 marginBottom: '8px',
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
                 padding: '6px 8px',
-                backgroundColor: '#fafafa',
+                backgroundColor: 'var(--app-card-bg-soft)',
                 borderRadius: '4px',
-                border: '1px solid #f0f0f0'
+                border: '1px solid var(--app-border-soft)'
               }}>
                 <span style={{ fontWeight: '500' }}>{t.backtest.volume}</span>
-                <span style={{ fontWeight: '700', color: '#333' }}>
+                <span style={{ fontWeight: '700', color: 'var(--app-text-strong)' }}>
                   {formatVolume(dataPoint.volume)}
                 </span>
               </div>
@@ -682,9 +682,9 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
 
       return (
         <div style={{
-          backgroundColor: 'rgba(255, 255, 255, 0.98)',
+          backgroundColor: 'var(--app-card-bg)',
           padding: '14px',
-          border: '1px solid #e8e8e8',
+          border: '1px solid var(--app-border-soft)',
           borderRadius: '8px',
           boxShadow: '0 6px 16px rgba(0,0,0,0.12)',
           backdropFilter: 'blur(8px)',
@@ -700,7 +700,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
             <div style={{ 
               fontSize: '14px',
               fontWeight: '700', 
-              color: '#333',
+              color: 'var(--app-text-strong)',
               marginBottom: '3px',
               letterSpacing: '0.4px'
             }}>
@@ -708,7 +708,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
             </div>
             <div style={{ 
               fontSize: '11px',
-              color: '#8c8c8c',
+              color: 'var(--app-text-muted)',
               display: 'flex',
               alignItems: 'center',
               textTransform: 'uppercase',
@@ -729,13 +729,13 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
           {/* 交易量信息 */}
           <div style={{ 
             fontSize: '11px', 
-            color: '#595959',
+            color: 'var(--app-text-muted)',
             marginBottom: '6px',
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
             paddingBottom: '4px',
-            borderBottom: '1px solid #f0f0f0'
+            borderBottom: '1px solid var(--app-border-soft)'
           }}>
             <span style={{ fontWeight: '600' }}>VOLUME</span>
             <span style={{ 
@@ -763,24 +763,24 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               alignItems: 'center',
               justifyContent: 'center',
               letterSpacing: '0.5px'
-            }}>
-              <span style={{
-                display: 'inline-block',
-                width: '8px',
-                height: '8px',
-                backgroundColor: directionColor,
-                borderRadius: '50%',
-                marginRight: '8px',
-                boxShadow: `0 0 8px ${isUp ? 'rgba(82, 196, 26, 0.6)' : 'rgba(245, 34, 45, 0.6)'}`
-              }}></span>
-              {isUp ? t.backtest.priceUp : t.backtest.priceDown}
+                }}>
+                  <span style={{
+                    display: 'inline-block',
+                    width: '8px',
+                    height: '8px',
+                    backgroundColor: directionColor,
+                    borderRadius: '50%',
+                    marginRight: '8px',
+                    boxShadow: `0 0 8px ${isUp ? 'rgba(82, 196, 26, 0.6)' : 'rgba(245, 34, 45, 0.6)'}`
+                  }}></span>
+                  {isUp ? t.backtest.priceUp : t.backtest.priceDown}
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-      );
-    }
-    return null;
-  };
+          );
+        }
+        return null;
+      };
 
   // Format currency
   const formatCurrency = (amount: number): string => {
@@ -803,7 +803,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
           cy={cy} 
           r={size}
           fill="#52c41a" 
-          stroke="white" 
+          stroke="var(--app-card-bg)" 
           strokeWidth={3}
           opacity={1}
           filter="drop-shadow(0px 3px 6px rgba(82, 196, 26, 0.4))"
@@ -846,7 +846,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
           cy={cy} 
           r={size}
           fill="#f5222d" 
-          stroke="white" 
+          stroke="var(--app-card-bg)" 
           strokeWidth={3}
           opacity={1}
           filter="drop-shadow(0px 3px 6px rgba(245, 34, 45, 0.4))"
@@ -880,10 +880,10 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
 
   return (
     <div style={{ 
-      border: '1px solid #e8e8e8', 
+      border: '1px solid var(--app-border-soft)', 
       borderRadius: '8px', 
       padding: '32px', // 进一步增加内边距
-      backgroundColor: '#fff',
+      backgroundColor: 'var(--app-card-bg)',
       minHeight: Math.max(height, 700), // 显著增加外层容器高度，至少700px
       display: 'flex',
       flexDirection: 'column'
@@ -896,18 +896,18 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
         marginBottom: '24px', // 增加间距：24px
         padding: '0 4px' // 减少内边距，让标题更靠近边缘
       }}>
-        <h4 style={{ margin: 0, color: '#333', fontSize: '18px', fontWeight: '600' }}>{t.backtest.priceChartWithSignals}</h4>
+        <h4 style={{ margin: 0, color: 'var(--app-text-strong)', fontSize: '18px', fontWeight: '600' }}>{t.backtest.priceChartWithSignals}</h4>
         
         {/* Chart Controls - 更紧凑利落的专业交易平台风格 */}
         <div style={{ 
           display: 'flex',
           alignItems: 'center',
           padding: '6px 14px',
-          backgroundColor: '#f8f9fa',
+          backgroundColor: 'var(--app-card-bg-soft)',
           borderRadius: '8px',
-          border: '1px solid #e9ecef',
+          border: '1px solid var(--app-border-soft)',
           fontSize: '11px',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.08)'
+          boxShadow: 'var(--app-shadow)'
         }}>
           <Space direction="horizontal" size={10}>
             <Checkbox 
@@ -918,7 +918,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               <span style={{ color: '#1890ff', fontWeight: '700', letterSpacing: '0.5px' }}>{t.backtest.price}</span>
             </Checkbox>
             
-            <div style={{ width: '1px', height: '12px', backgroundColor: '#dee2e6', margin: '0 2px' }}></div>
+            <div style={{ width: '1px', height: '12px', backgroundColor: 'var(--app-border-soft)', margin: '0 2px' }}></div>
             
             {hasSMA20 && (
               <Checkbox 
@@ -940,7 +940,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               </Checkbox>
             )}
             
-            <div style={{ width: '1px', height: '12px', backgroundColor: '#dee2e6', margin: '0 2px' }}></div>
+            <div style={{ width: '1px', height: '12px', backgroundColor: 'var(--app-border-soft)', margin: '0 2px' }}></div>
             
             {hasSignals && (
               <Checkbox 
@@ -948,19 +948,19 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                 onChange={(e) => setShowSignals(e.target.checked)}
                 style={{ fontSize: '9px', marginRight: '0', padding: '0' }}
               >
-                <span style={{ color: '#666', opacity: 0.9, fontWeight: '500' }}>{t.backtest.signals}</span>
+                <span style={{ color: 'var(--app-text-muted)', opacity: 0.9, fontWeight: '500' }}>{t.backtest.signals}</span>
               </Checkbox>
             )}
             
             {hasVolumeData && (
               <>
-                <div style={{ width: '1px', height: '12px', backgroundColor: '#dee2e6', margin: '0 2px' }}></div>
+                <div style={{ width: '1px', height: '12px', backgroundColor: 'var(--app-border-soft)', margin: '0 2px' }}></div>
                 <Checkbox 
                   checked={showVolume} 
                   onChange={(e) => setShowVolume(e.target.checked)}
                   style={{ fontSize: '9px', padding: '0' }}
                 >
-                  <span style={{ color: '#666', opacity: 0.9, fontWeight: '500' }}>{t.backtest.volume}</span>
+                  <span style={{ color: 'var(--app-text-muted)', opacity: 0.9, fontWeight: '500' }}>{t.backtest.volume}</span>
                 </Checkbox>
               </>
             )}
@@ -979,20 +979,20 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
             data={processedChartData}
             margin={{ top: 10, right: 25, left: 25, bottom: 10 }}
           >
-            <CartesianGrid strokeDasharray="3 3" stroke="#f8f8f8" vertical={false} />
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--app-border-soft)" vertical={false} />
             <XAxis 
               dataKey="date" 
-              tick={{ fontSize: 11, fill: '#666' }} // 增大字号
+              tick={{ fontSize: 11, fill: 'var(--app-text-muted)' }} // 增大字号
               tickFormatter={smartTickFormatter}
-              axisLine={{ stroke: '#d9d9d9' }}
-              tickLine={{ stroke: '#d9d9d9' }}
+              axisLine={{ stroke: 'var(--app-border-soft)' }}
+              tickLine={{ stroke: 'var(--app-border-soft)' }}
               height={38}
               // 使用统一的日期刻度
               ticks={dateTicks}
             />
             <YAxis 
               domain={[minPrice - pricePadding, maxPrice + pricePadding]}
-              tick={{ fontSize: 11, fill: '#666' }} // 增大字号
+              tick={{ fontSize: 11, fill: 'var(--app-text-muted)' }} // 增大字号
               tickFormatter={(value) => {
                 const val = Number(value);
                 if (isNaN(val)) return '$0.00';
@@ -1002,8 +1002,8 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                   maximumFractionDigits: 2
                 })}`;
               }}
-              axisLine={{ stroke: '#d9d9d9' }}
-              tickLine={{ stroke: '#d9d9d9' }}
+              axisLine={{ stroke: 'var(--app-border-soft)' }}
+              tickLine={{ stroke: 'var(--app-border-soft)' }}
               width={70}
               // 给价格留出更多空白，看起来更专业
               padding={{ top: 22, bottom: 22 }}
@@ -1011,7 +1011,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
             <Tooltip 
               content={<ProfessionalTooltip />}
               offset={12}
-              cursor={{ stroke: '#d9d9d9', strokeWidth: 1, strokeDasharray: '3 3' }}
+              cursor={{ stroke: 'var(--app-border-soft)', strokeWidth: 1, strokeDasharray: '3 3' }}
             />
             <Legend 
               wrapperStyle={{ 
@@ -1037,7 +1037,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                   r: 7, // 增加hover点大小
                   stroke: '#1890ff', 
                   strokeWidth: 2, 
-                  fill: 'white',
+                  fill: 'var(--app-card-bg)',
                   strokeOpacity: 0.8
                 }}
                 connectNulls={true}
@@ -1111,10 +1111,10 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
             alignItems: 'center',
             marginBottom: '12px',
             padding: '8px 14px',
-            backgroundColor: '#f8f9fa',
+            backgroundColor: 'var(--app-card-bg-soft)',
             borderRadius: '8px',
-            border: '1px solid #e9ecef',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.04)'
+            border: '1px solid var(--app-border-soft)',
+            boxShadow: 'var(--app-shadow)'
           }}>
             <div style={{ display: 'flex', alignItems: 'center' }}>
               <div style={{
@@ -1128,7 +1128,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               <div>
                 <h5 style={{ 
                   margin: 0, 
-                  color: '#495057', 
+                  color: 'var(--app-text-strong)', 
                   fontSize: '14px', // 增大字号
                   fontWeight: '700',
                   letterSpacing: '0.6px',
@@ -1137,7 +1137,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                 }}>{t.backtest.volumeChart}</h5>
                 <div style={{ 
                   fontSize: '11px', // 增大字号
-                  color: '#6c757d',
+                  color: 'var(--app-text-muted)',
                   fontWeight: '500',
                   letterSpacing: '0.3px'
                 }}>{t.backtest.tradingVolumeGreenRed}</div>
@@ -1145,12 +1145,12 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
             </div>
             <div style={{ 
               fontSize: '11px', // 增大字号
-              color: '#495057',
+              color: 'var(--app-text-strong)',
               fontWeight: '600',
               padding: '5px 12px',
-              backgroundColor: 'white',
+              backgroundColor: 'var(--app-card-bg)',
               borderRadius: '6px',
-              border: '1px solid #dee2e6',
+              border: '1px solid var(--app-border-soft)',
               boxShadow: '0 2px 4px rgba(0,0,0,0.08)'
             }}>
               {t.backtest.volume}
@@ -1161,19 +1161,19 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               data={processedChartData}
               margin={{ top: 8, right: 30, left: 30, bottom: 15 }}
             >
-              <CartesianGrid strokeDasharray="3 3" stroke="#f8f8f8" vertical={false} />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--app-border-soft)" vertical={false} />
               <XAxis 
                 dataKey="date" 
-                tick={{ fontSize: 10, fill: '#666' }} // 增大字号
+                tick={{ fontSize: 10, fill: 'var(--app-text-muted)' }} // 增大字号
                 tickFormatter={smartTickFormatter}
-                axisLine={{ stroke: '#d9d9d9' }}
-                tickLine={{ stroke: '#d9d9d9' }}
+                axisLine={{ stroke: 'var(--app-border-soft)' }}
+                tickLine={{ stroke: 'var(--app-border-soft)' }}
                 height={28}
                 // 使用统一的日期刻度
                 ticks={dateTicks}
               />
               <YAxis 
-                tick={{ fontSize: 10, fill: '#666' }} // 增大字号
+                tick={{ fontSize: 10, fill: 'var(--app-text-muted)' }} // 增大字号
                 tickFormatter={(value) => {
                   const val = Number(value);
                   if (isNaN(val)) return '0';
@@ -1181,8 +1181,8 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                   if (val >= 1000) return `${(val / 1000).toFixed(0)}K`;
                   return val.toFixed(0);
                 }}
-                axisLine={{ stroke: '#d9d9d9' }}
-                tickLine={{ stroke: '#d9d9d9' }}
+                axisLine={{ stroke: 'var(--app-border-soft)' }}
+                tickLine={{ stroke: 'var(--app-border-soft)' }}
                 width={55} // 增加宽度，避免标签被裁剪
                 // 给Volume Chart的Y轴也留出适当空白
                 padding={{ top: 18, bottom: 18 }} // 增加padding
@@ -1244,9 +1244,9 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
         <div style={{ 
           marginTop: '24px',
           padding: '20px',
-          backgroundColor: '#f8f9fa',
+          backgroundColor: 'var(--app-card-bg-soft)',
           borderRadius: '8px',
-          border: '1px solid #e9ecef'
+          border: '1px solid var(--app-border-soft)'
         }}>
           <div style={{ 
             display: 'flex', 
@@ -1254,13 +1254,13 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
             alignItems: 'center',
             marginBottom: '16px',
             paddingBottom: '12px',
-            borderBottom: '1px solid #dee2e6'
+            borderBottom: '1px solid var(--app-border-soft)'
           }}>
-            <h5 style={{ margin: 0, color: '#495057', fontSize: '15px', fontWeight: '600' }}>Backtest Parameters</h5>
+            <h5 style={{ margin: 0, color: 'var(--app-text-strong)', fontSize: '15px', fontWeight: '600' }}>Backtest Parameters</h5>
             <span style={{ 
               fontSize: '12px', 
-              color: '#6c757d', 
-              backgroundColor: '#e9ecef',
+              color: 'var(--app-text-muted)', 
+              backgroundColor: 'var(--app-card-bg)',
               padding: '4px 8px',
               borderRadius: '4px'
             }}>
@@ -1273,15 +1273,15 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               <Col xs={24} sm={12} md={6} lg={6}>
                 <div style={{ 
                   padding: '16px',
-                  backgroundColor: 'white',
+                  backgroundColor: 'var(--app-card-bg)',
                   borderRadius: '6px',
-                  border: '1px solid #dee2e6',
+                  border: '1px solid var(--app-border-soft)',
                   boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
                   transition: 'all 0.2s ease'
                 }}>
                   <div style={{ 
                     fontSize: '11px', 
-                    color: '#868e96', 
+                    color: 'var(--app-text-muted)', 
                     marginBottom: '6px',
                     textTransform: 'uppercase',
                     letterSpacing: '0.5px',
@@ -1290,7 +1290,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                   <div style={{ 
                     fontSize: '15px', 
                     fontWeight: '600', 
-                    color: '#212529',
+                    color: 'var(--app-text-strong)',
                     display: 'flex',
                     alignItems: 'center'
                   }}>
@@ -1311,15 +1311,15 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               <Col xs={24} sm={12} md={6} lg={6}>
                 <div style={{ 
                   padding: '16px',
-                  backgroundColor: 'white',
+                  backgroundColor: 'var(--app-card-bg)',
                   borderRadius: '6px',
-                  border: '1px solid #dee2e6',
+                  border: '1px solid var(--app-border-soft)',
                   boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
                   transition: 'all 0.2s ease'
                 }}>
                   <div style={{ 
                     fontSize: '11px', 
-                    color: '#868e96', 
+                    color: 'var(--app-text-muted)', 
                     marginBottom: '6px',
                     textTransform: 'uppercase',
                     letterSpacing: '0.5px',
@@ -1328,7 +1328,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                   <div style={{ 
                     fontSize: '15px', 
                     fontWeight: '600', 
-                    color: '#212529',
+                    color: 'var(--app-text-strong)',
                     display: 'flex',
                     alignItems: 'center'
                   }}>
@@ -1349,15 +1349,15 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               <Col xs={24} sm={12} md={6} lg={6}>
                 <div style={{ 
                   padding: '16px',
-                  backgroundColor: 'white',
+                  backgroundColor: 'var(--app-card-bg)',
                   borderRadius: '6px',
-                  border: '1px solid #dee2e6',
+                  border: '1px solid var(--app-border-soft)',
                   boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
                   transition: 'all 0.2s ease'
                 }}>
                   <div style={{ 
                     fontSize: '11px', 
-                    color: '#868e96', 
+                    color: 'var(--app-text-muted)', 
                     marginBottom: '6px',
                     textTransform: 'uppercase',
                     letterSpacing: '0.5px',
@@ -1366,7 +1366,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                   <div style={{ 
                     fontSize: '15px', 
                     fontWeight: '600', 
-                    color: '#212529',
+                    color: 'var(--app-text-strong)',
                     display: 'flex',
                     alignItems: 'center'
                   }}>
@@ -1387,15 +1387,15 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
               <Col xs={24} sm={12} md={6} lg={6}>
                 <div style={{ 
                   padding: '16px',
-                  backgroundColor: 'white',
+                  backgroundColor: 'var(--app-card-bg)',
                   borderRadius: '6px',
-                  border: '1px solid #dee2e6',
+                  border: '1px solid var(--app-border-soft)',
                   boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
                   transition: 'all 0.2s ease'
                 }}>
                   <div style={{ 
                     fontSize: '11px', 
-                    color: '#868e96', 
+                    color: 'var(--app-text-muted)', 
                     marginBottom: '6px',
                     textTransform: 'uppercase',
                     letterSpacing: '0.5px',
@@ -1404,7 +1404,7 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, paramet
                   <div style={{ 
                     fontSize: '15px', 
                     fontWeight: '600', 
-                    color: '#212529',
+                    color: 'var(--app-text-strong)',
                     display: 'flex',
                     alignItems: 'center'
                   }}>

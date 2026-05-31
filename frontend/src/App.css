@@ -11,7 +11,8 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background-color: #f5f5f5;
+  background-color: var(--app-bg);
+  color: var(--app-text);
 }
 
 code {
@@ -26,22 +27,22 @@ code {
 }
 
 ::-webkit-scrollbar-track {
-  background: #f1f1f1;
+  background: var(--app-card-bg-soft);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #888;
+  background: var(--app-scrollbar-thumb);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #555;
+  background: var(--app-scrollbar-thumb-hover);
 }
 
 /* Layout Fixes */
 .ant-layout {
-  background: #f6f8fb;
+  background: var(--app-bg);
 }
 
 .dashboard-page-shell,
@@ -72,12 +73,12 @@ code {
 /* Card Styles */
 .ant-card {
   border-radius: 12px;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.1);
-  border: 2px solid #f0f0f0;
+  box-shadow: var(--app-card-shadow);
+  border: 1px solid var(--app-border-soft);
 }
 
 .ant-card:hover {
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.15);
+  box-shadow: var(--app-shadow);
   transform: translateY(-3px);
   transition: all 0.3s ease;
 }
@@ -89,7 +90,7 @@ code {
 }
 
 .ant-table-thead > tr > th {
-  background: #fafafa;
+  background: var(--app-table-header-bg);
   font-weight: 600;
 }
 
@@ -165,19 +166,19 @@ code {
 }
 
 .second-rank-row {
-  background: #fafafa !important;
+  background: var(--app-card-bg-soft) !important;
 }
 
 .second-rank-row:hover {
-  background: #f5f5f5 !important;
+  background: var(--app-table-header-bg) !important;
 }
 
 .third-rank-row {
-  background: #fafafa !important;
+  background: var(--app-card-bg-soft) !important;
 }
 
 .third-rank-row:hover {
-  background: #f5f5f5 !important;
+  background: var(--app-table-header-bg) !important;
 }
 
 /* Card hover effects for optimization cards */
@@ -221,8 +222,8 @@ code {
   font-weight: 500;
   padding: 2px 8px;
   border-radius: 10px;
-  background: #f0f0f0;
-  color: #8c8c8c;
+  background: var(--app-card-bg-soft);
+  color: var(--app-text-muted);
 }
 
 /* Section header styling */
@@ -258,11 +259,11 @@ code {
 
 /* Market Scanner Table UI Improvements */
 .scanner-table-container .ant-table-thead > tr > th {
-  background-color: #fafafa !important;
-  color: #595959 !important;
+  background-color: var(--app-table-header-bg) !important;
+  color: var(--app-text-muted) !important;
   font-weight: 700 !important;
   font-size: 13px !important;
-  border-bottom: 2px solid #f0f0f0 !important;
+  border-bottom: 2px solid var(--app-border-soft) !important;
   padding: 12px 16px !important;
 }
 
@@ -272,11 +273,11 @@ code {
 }
 
 .scanner-table-container .ant-table-row:hover > td {
-  background-color: #f0f7ff !important;
+  background-color: var(--app-blue-bg) !important;
 }
 
 .scanner-table-container .scanner-row-expanded > td {
-  background-color: #f6ffed !important;
+  background-color: var(--app-card-bg-soft) !important;
   border-bottom: none !important;
 }
 
@@ -300,13 +301,13 @@ code {
 .scanner-symbol-text {
   font-weight: 700;
   font-size: 14px;
-  color: #1f1f1f;
+  color: var(--app-text-strong);
   letter-spacing: -0.3px;
 }
 
 .scanner-company-text {
   font-size: 11px;
-  color: #8c8c8c;
+  color: var(--app-text-muted);
   margin-top: 2px;
   white-space: nowrap;
   overflow: hidden;
@@ -317,13 +318,13 @@ code {
 .scanner-price-text {
   font-size: 15px;
   font-weight: 700;
-  color: #1f1f1f;
+  color: var(--app-text-strong);
 }
 
 .scanner-reasoning-text {
   font-size: 12px;
   line-height: 1.5;
-  color: #595959;
+  color: var(--app-text);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -334,9 +335,9 @@ code {
 /* Scanner Detail Panel Styles */
 .scanner-detail-container {
   padding: 24px;
-  background-color: #ffffff;
+  background-color: var(--app-card-bg);
   border-radius: 12px;
-  border: 1px solid #f0f0f0;
+  border: 1px solid var(--app-border-soft);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
 }
 
@@ -346,7 +347,7 @@ code {
   align-items: flex-start;
   margin-bottom: 24px;
   padding-bottom: 16px;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--app-border-soft);
 }
 
 .scanner-detail-title-group {
@@ -358,37 +359,38 @@ code {
 .scanner-detail-symbol {
   font-size: 28px;
   font-weight: 800;
-  color: #1f1f1f;
+  color: var(--app-text-strong);
   letter-spacing: -0.5px;
 }
 
 .scanner-detail-company {
   font-size: 16px;
-  color: #8c8c8c;
+  color: var(--app-text-muted);
   font-weight: 500;
 }
 
 .scanner-detail-meta {
   font-size: 12px;
-  color: #bfbfbf;
+  color: var(--app-text-muted);
   margin-top: 4px;
 }
 
 .scanner-detail-card {
   height: 100%;
-  border: 1px solid #f0f0f0 !important;
+  border: 1px solid var(--app-border-soft) !important;
   border-radius: 10px !important;
   transition: all 0.3s;
+  background-color: var(--app-card-bg) !important;
 }
 
 .scanner-detail-card:hover {
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.03);
-  border-color: #d9d9d9 !important;
+  box-shadow: var(--app-shadow-sm);
+  border-color: var(--app-border) !important;
 }
 
 .scanner-detail-card .ant-card-head {
-  background-color: #fafafa;
-  border-bottom: 1px solid #f0f0f0;
+  background-color: var(--app-card-bg-soft);
+  border-bottom: 1px solid var(--app-border-soft);
   min-height: 44px;
   padding: 0 16px;
 }
@@ -396,14 +398,14 @@ code {
 .scanner-detail-card .ant-card-head-title {
   font-size: 13px;
   font-weight: 700;
-  color: #595959;
+  color: var(--app-text-strong);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
 .scanner-detail-label {
   font-size: 11px;
-  color: #8c8c8c;
+  color: var(--app-text-muted);
   text-transform: uppercase;
   font-weight: 600;
   letter-spacing: 0.3px;
@@ -413,7 +415,7 @@ code {
 .scanner-detail-value {
   font-size: 15px;
   font-weight: 700;
-  color: #262626;
+  color: var(--app-text-strong);
 }
 
 .scanner-detail-dimension-grid {
@@ -424,29 +426,29 @@ code {
 
 .scanner-detail-dimension-item {
   padding: 10px;
-  background-color: #fafafa;
+  background-color: var(--app-card-bg-soft);
   border-radius: 8px;
-  border: 1px solid #f0f0f0;
+  border: 1px solid var(--app-border-soft);
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
 .scanner-detail-reasoning-box {
-  background-color: #f6ffed;
-  border: 1px solid #b7eb8f;
+  background-color: var(--app-input-bg);
+  border: 1px solid var(--app-border-soft);
   border-radius: 8px;
   padding: 14px;
   font-size: 13px;
   line-height: 1.6;
-  color: #262626;
+  color: var(--app-text);
   max-height: 200px;
   overflow-y: auto;
 }
 
 .scanner-detail-news-box {
-  background-color: #f9f9f9;
-  border: 1px solid #f0f0f0;
+  background-color: var(--app-card-bg-soft);
+  border: 1px solid var(--app-border-soft);
   border-radius: 8px;
   padding: 12px;
 }
@@ -454,14 +456,14 @@ code {
 .scanner-detail-news-title {
   font-size: 13px;
   font-weight: 700;
-  color: #1f1f1f;
+  color: var(--app-blue-text);
   margin-bottom: 6px;
   display: block;
 }
 
 .scanner-detail-news-summary {
   font-size: 12px;
-  color: #595959;
+  color: var(--app-text);
   line-height: 1.5;
 }
 
@@ -476,11 +478,11 @@ code {
   gap: 12px;
   margin-bottom: 16px;
   font-size: 12px;
-  color: #8c8c8c;
-  background-color: #fafafa;
+  color: var(--app-text-muted);
+  background-color: var(--app-card-bg-soft);
   padding: 8px 16px;
   border-radius: 8px;
-  border: 1px solid #f0f0f0;
+  border: 1px solid var(--app-border-soft);
 }
 
 .continue-scan-status-badge {
@@ -499,20 +501,20 @@ code {
 
 .continue-scan-stat-card {
   padding: 12px;
-  background-color: #ffffff;
+  background-color: var(--app-card-bg-soft);
   border-radius: 10px;
-  border: 1px solid #f0f0f0;
+  border: 1px solid var(--app-border-soft);
   transition: all 0.2s;
 }
 
 .continue-scan-stat-card:hover {
-  border-color: #d9d9d9;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  border-color: var(--app-border);
+  box-shadow: var(--app-shadow-sm);
 }
 
 .continue-scan-stat-label {
   font-size: 10px;
-  color: #8c8c8c;
+  color: var(--app-text-muted);
   text-transform: uppercase;
   font-weight: 700;
   letter-spacing: 0.5px;
@@ -522,20 +524,20 @@ code {
 .continue-scan-stat-value {
   font-size: 20px;
   font-weight: 800;
-  color: #262626;
+  color: var(--app-text-strong);
   line-height: 1.2;
 }
 
 .continue-scan-stat-sub {
   font-size: 11px;
-  color: #bfbfbf;
+  color: var(--app-text-muted);
   margin-left: 4px;
   font-weight: 400;
 }
 
 .continue-scan-table-container .ant-table-thead > tr > th {
-  background-color: #fafafa !important;
-  color: #595959 !important;
+  background-color: var(--app-table-header-bg) !important;
+  color: var(--app-text-muted) !important;
   font-weight: 700 !important;
   font-size: 12px !important;
   padding: 12px 16px !important;
@@ -556,7 +558,7 @@ code {
 .continue-scan-selection-reason {
   font-size: 11px;
   line-height: 1.4;
-  color: #595959;
+  color: var(--app-text);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -579,10 +581,10 @@ code {
   display: flex;
   align-items: center;
   gap: 16px;
-  background-color: #fafafa;
+  background-color: var(--app-card-bg-soft);
   padding: 10px 20px;
   border-radius: 8px;
-  border: 1px solid #f0f0f0;
+  border: 1px solid var(--app-border-soft);
   margin-bottom: 16px;
 }
 
@@ -594,22 +596,22 @@ code {
 }
 
 .fine-scan-progress-panel {
-  background-color: #f0f7ff;
-  border: 1px solid #bae7ff;
+  background-color: var(--app-blue-bg);
+  border: 1px solid var(--app-blue-border);
   border-radius: 10px;
   padding: 16px;
   margin-bottom: 16px;
 }
 
 .fine-scan-table-container .ant-table-thead > tr > th {
-  background-color: #fafafa !important;
-  color: #595959 !important;
+  background-color: var(--app-table-header-bg) !important;
+  color: var(--app-text-muted) !important;
   font-weight: 700 !important;
   font-size: 11px !important;
   text-transform: uppercase;
   letter-spacing: 0.3px;
   padding: 12px 10px !important;
-  border-bottom: 2px solid #f0f0f0 !important;
+  border-bottom: 2px solid var(--app-border-soft) !important;
 }
 
 .fine-scan-table-container .ant-table-row td {
@@ -627,17 +629,17 @@ code {
 
 .fine-scan-strategy-tag {
   font-size: 10px;
-  background-color: #f5f5f5;
-  color: #595959;
+  background-color: var(--app-card-bg-soft);
+  color: var(--app-text);
   padding: 1px 6px;
   border-radius: 3px;
-  border: 1px solid #d9d9d9;
+  border: 1px solid var(--app-border);
 }
 
 .fine-scan-why-matched {
   font-size: 11px;
   line-height: 1.4;
-  color: #8c8c8c;
+  color: var(--app-text-muted);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -654,10 +656,10 @@ code {
   display: flex;
   align-items: center;
   gap: 16px;
-  background-color: #fafafa;
+  background-color: var(--app-card-bg-soft);
   padding: 10px 20px;
   border-radius: 8px;
-  border: 1px solid #f0f0f0;
+  border: 1px solid var(--app-border-soft);
   margin-bottom: 16px;
 }
 
@@ -669,14 +671,14 @@ code {
 }
 
 .validation-table-container .ant-table-thead > tr > th {
-  background-color: #fafafa !important;
-  color: #595959 !important;
+  background-color: var(--app-table-header-bg) !important;
+  color: var(--app-text-muted) !important;
   font-weight: 700 !important;
   font-size: 11px !important;
   text-transform: uppercase;
   letter-spacing: 0.3px;
   padding: 12px 8px !important;
-  border-bottom: 2px solid #f0f0f0 !important;
+  border-bottom: 2px solid var(--app-border-soft) !important;
 }
 
 .validation-table-container .ant-table-row td {
@@ -695,7 +697,7 @@ code {
 .validation-reason {
   font-size: 11px;
   line-height: 1.4;
-  color: #8c8c8c;
+  color: var(--app-text-muted);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -712,10 +714,10 @@ code {
   display: flex;
   align-items: center;
   gap: 16px;
-  background-color: #fafafa;
+  background-color: var(--app-card-bg-soft);
   padding: 10px 20px;
   border-radius: 8px;
-  border: 1px solid #f0f0f0;
+  border: 1px solid var(--app-border-soft);
   margin-bottom: 16px;
 }
 
@@ -735,9 +737,9 @@ code {
 
 .entry-plan-stat-card {
   padding: 14px;
-  background-color: #ffffff;
+  background-color: var(--app-card-bg);
   border-radius: 10px;
-  border: 1px solid #f0f0f0;
+  border: 1px solid var(--app-border-soft);
   transition: all 0.2s;
   height: 100%;
   display: flex;
@@ -746,13 +748,13 @@ code {
 }
 
 .entry-plan-stat-card:hover {
-  border-color: #d9d9d9;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+  border-color: var(--app-border);
+  box-shadow: var(--app-shadow-sm);
 }
 
 .entry-plan-stat-label {
   font-size: 10px;
-  color: #8c8c8c;
+  color: var(--app-text-muted);
   text-transform: uppercase;
   font-weight: 700;
   letter-spacing: 0.5px;
@@ -762,19 +764,19 @@ code {
 .entry-plan-stat-value {
   font-size: 18px;
   font-weight: 800;
-  color: #262626;
+  color: var(--app-text-strong);
   line-height: 1.2;
 }
 
 .entry-plan-table-container .ant-table-thead > tr > th {
-  background-color: #fafafa !important;
-  color: #595959 !important;
+  background-color: var(--app-table-header-bg) !important;
+  color: var(--app-text-muted) !important;
   font-weight: 700 !important;
   font-size: 11px !important;
   text-transform: uppercase;
   letter-spacing: 0.3px;
   padding: 12px 8px !important;
-  border-bottom: 2px solid #f0f0f0 !important;
+  border-bottom: 2px solid var(--app-border-soft) !important;
 }
 
 .entry-plan-table-container .ant-table-row td {
@@ -793,7 +795,7 @@ code {
 .entry-plan-price-text {
   font-size: 13px;
   font-weight: 700;
-  color: #1f1f1f;
+  color: var(--app-text-strong);
 }
 
 .entry-plan-zone-text {
@@ -805,10 +807,308 @@ code {
 .entry-plan-reason {
   font-size: 11px;
   line-height: 1.4;
-  color: #8c8c8c;
+  color: var(--app-text-muted);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+
+/* Dark Mode Aware Scrollbar */
+:root[data-theme="dark"] ::-webkit-scrollbar-track {
+  background: var(--app-card-bg-soft);
+}
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: var(--app-border);
+}
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: var(--app-text-muted);
+}
+
+
+/* Table Header / Sticky Polish for Dark Mode */
+:root[data-theme="dark"] .ant-table-cell-fix-left,
+:root[data-theme="dark"] .ant-table-cell-fix-right {
+  background: var(--app-card-bg) !important;
+}
+
+:root[data-theme="dark"] .ant-table-thead > tr > th.ant-table-cell-fix-left,
+:root[data-theme="dark"] .ant-table-thead > tr > th.ant-table-cell-fix-right {
+  background: var(--app-table-header-bg) !important;
+}
+
+:root[data-theme="dark"] .ant-table-wrapper .ant-table-thead > tr > th {
+  white-space: nowrap !important;
+}
+
+/* Specific fix for exit scan and general symbol column squeezing */
+.exitscan-table th, .ant-table th {
+  white-space: nowrap !important;
+}
+
+:root[data-theme="dark"] .status-strip {
+  background: var(--app-card-bg) !important;
+  border: 1px solid var(--app-border-soft) !important;
+}
+
+/* Refined spacing for expanded details */
+.scanner-detail-card .ant-card-body {
+  padding: 16px !important;
+}
+
+/* Reduce horizontal scrollbar visual weight */
+:root[data-theme="dark"] .ant-table-body::-webkit-scrollbar {
+  height: 6px;
+}
+
+:root[data-theme="dark"] .ant-table-body::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.3);
+  border-radius: 3px;
+}
+
+:root[data-theme="dark"] .ant-table-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Detailed Analysis Box inner styles */
+.scanner-detail-reasoning-box::-webkit-scrollbar,
+.validation-reason::-webkit-scrollbar {
+  width: 6px;
+}
+.scanner-detail-reasoning-box::-webkit-scrollbar-thumb,
+.validation-reason::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.3);
+  border-radius: 3px;
+}
+
+
+/* Lighter sticky shadow for dark mode */
+:root[data-theme="dark"] .ant-table-cell-fix-right-first::after, 
+:root[data-theme="dark"] .ant-table-cell-fix-left-last::after {
+  box-shadow: inset -6px 0 6px -4px rgba(0, 0, 0, 0.15) !important;
+}
+
+
+/* Market Scanner Trend Tabs */
+.agent-trend-tabs-container {
+  display: flex;
+  background: var(--app-card-bg-soft);
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid var(--app-border-soft);
+  gap: 4px;
+}
+
+.agent-trend-tab {
+  padding: 4px 12px;
+  font-size: 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: 1px solid transparent;
+}
+
+.agent-trend-tab-inactive {
+  font-weight: 400;
+  color: var(--app-text-muted);
+  background: transparent;
+}
+
+.agent-trend-tab-inactive:hover {
+  background: rgba(59, 130, 246, 0.10);
+  color: var(--app-text-strong);
+}
+
+.agent-trend-tab-active {
+  font-weight: 600;
+  background: rgba(59, 130, 246, 0.16);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.28);
+}
+:root[data-theme="light"] .agent-trend-tab-active {
+  color: #2563eb;
+}
+
+
+/* Global Quant Dashboard Polish */
+
+/* 1. Global Tables */
+.ant-table-wrapper .ant-table-thead > tr > th {
+  white-space: nowrap !important;
+  font-size: 11px !important;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  padding: 12px 10px !important;
+  background-color: var(--app-table-header-bg) !important;
+  border-bottom: 2px solid var(--app-border-soft) !important;
+}
+
+.ant-table-wrapper .ant-table-row > td {
+  padding: 10px 10px !important;
+  font-size: 13px !important;
+  border-bottom: 1px solid var(--app-border-soft) !important;
+}
+
+:root[data-theme="dark"] .ant-table-tbody > tr.ant-table-row:hover > td,
+:root[data-theme="dark"] .ant-table-tbody > tr > td.ant-table-cell-row-hover {
+  background: rgba(59, 130, 246, 0.08) !important;
+}
+
+/* 2. Scrollbars (Thinner, Darker, More Professional) */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+:root[data-theme="dark"] ::-webkit-scrollbar-track {
+  background: var(--app-bg);
+  border-radius: 3px;
+}
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.2);
+  border-radius: 3px;
+}
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.4);
+}
+
+/* 3. Sticky Columns Shadow Fix */
+:root[data-theme="dark"] .ant-table-cell-fix-left,
+:root[data-theme="dark"] .ant-table-cell-fix-right {
+  background: var(--app-card-bg) !important;
+}
+:root[data-theme="dark"] .ant-table-thead > tr > th.ant-table-cell-fix-left,
+:root[data-theme="dark"] .ant-table-thead > tr > th.ant-table-cell-fix-right {
+  background: var(--app-table-header-bg) !important;
+}
+:root[data-theme="dark"] .ant-table-cell-fix-right-first::after, 
+:root[data-theme="dark"] .ant-table-cell-fix-left-last::after {
+  box-shadow: inset -4px 0 4px -4px rgba(0, 0, 0, 0.2) !important;
+}
+
+/* 4. Badges and Tags */
+.ant-tag {
+  border-radius: 4px;
+  font-weight: 600;
+  padding: 0 6px;
+}
+:root[data-theme="dark"] .ant-tag-success, :root[data-theme="dark"] .ant-tag-green {
+  background: rgba(16, 185, 129, 0.12) !important;
+  color: #34d399 !important;
+  border-color: rgba(16, 185, 129, 0.25) !important;
+}
+:root[data-theme="dark"] .ant-tag-processing, :root[data-theme="dark"] .ant-tag-blue {
+  background: rgba(59, 130, 246, 0.12) !important;
+  color: #60a5fa !important;
+  border-color: rgba(59, 130, 246, 0.25) !important;
+}
+:root[data-theme="dark"] .ant-tag-warning, :root[data-theme="dark"] .ant-tag-orange {
+  background: rgba(245, 158, 11, 0.12) !important;
+  color: #fbbf24 !important;
+  border-color: rgba(245, 158, 11, 0.25) !important;
+}
+:root[data-theme="dark"] .ant-tag-error, :root[data-theme="dark"] .ant-tag-red {
+  background: rgba(239, 68, 68, 0.12) !important;
+  color: #f87171 !important;
+  border-color: rgba(239, 68, 68, 0.25) !important;
+}
+:root[data-theme="dark"] .ant-tag-default {
+  background: var(--app-card-bg-soft) !important;
+  color: var(--app-text-muted) !important;
+  border-color: var(--app-border) !important;
+}
+
+/* 5. Expanded Detail Panels */
+:root[data-theme="dark"] .ant-table-expanded-row > td {
+  background-color: var(--app-card-bg-soft) !important;
+  padding: 16px 24px !important;
+}
+.scanner-detail-card .ant-card-body {
+  padding: 16px !important;
+}
+:root[data-theme="dark"] .scanner-detail-card {
+  border-radius: 8px !important;
+  border: 1px solid var(--app-border-soft) !important;
+  background-color: var(--app-card-bg) !important;
+  box-shadow: var(--app-card-shadow) !important;
+}
+
+/* Specific Exit Scan Column Constraint */
+.exitscan-table th {
+  white-space: nowrap !important;
+}
+
+
+/* Dashboard Alerts Polish */
+.dashboard-alert {
+  border-radius: 14px !important;
+  padding: 12px 20px !important;
+  transition: all 0.2s ease-in-out;
+}
+
+.dashboard-alert .ant-alert-message,
+.dashboard-alert .ant-alert-message .ant-typography {
+  color: var(--app-text-strong) !important;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.dashboard-alert .ant-alert-description {
+  color: var(--app-text) !important;
+  font-size: 13px;
+}
+
+/* Light Mode defaults (Ant Design handles mostly, but we enforce specific borders/bg for our custom alerts) */
+:root[data-theme="light"] .dashboard-alert-warning {
+  border: 1px solid #ffe58f !important;
+  background: #fffbe6 !important;
+}
+
+:root[data-theme="light"] .dashboard-alert-error {
+  border: 1px solid #ffa39e !important;
+  background: #fff1f0 !important;
+}
+
+:root[data-theme="light"] .dashboard-alert-info {
+  border: 1px solid #91caff !important;
+  background: #e6f4ff !important;
+}
+
+:root[data-theme="light"] .dashboard-alert-success {
+  border: 1px solid #b7eb8f !important;
+  background: #f6ffed !important;
+}
+
+/* Dark Mode Overrides */
+:root[data-theme="dark"] .dashboard-alert-warning {
+  background: rgba(245, 158, 11, 0.12) !important;
+  border: 1px solid rgba(245, 158, 11, 0.35) !important;
+}
+:root[data-theme="dark"] .dashboard-alert-warning .ant-alert-icon {
+  color: #fbbf24 !important;
+}
+
+:root[data-theme="dark"] .dashboard-alert-error {
+  background: rgba(239, 68, 68, 0.12) !important;
+  border: 1px solid rgba(239, 68, 68, 0.35) !important;
+}
+:root[data-theme="dark"] .dashboard-alert-error .ant-alert-icon {
+  color: #f87171 !important;
+}
+
+:root[data-theme="dark"] .dashboard-alert-info {
+  background: rgba(59, 130, 246, 0.12) !important;
+  border: 1px solid rgba(59, 130, 246, 0.35) !important;
+}
+:root[data-theme="dark"] .dashboard-alert-info .ant-alert-icon {
+  color: #60a5fa !important;
+}
+
+:root[data-theme="dark"] .dashboard-alert-success {
+  background: rgba(16, 185, 129, 0.12) !important;
+  border: 1px solid rgba(16, 185, 129, 0.35) !important;
+}
+:root[data-theme="dark"] .dashboard-alert-success .ant-alert-icon {
+  color: #34d399 !important;
 }

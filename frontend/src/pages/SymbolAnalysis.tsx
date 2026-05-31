@@ -842,7 +842,7 @@ const SymbolAnalysis: React.FC = () => {
 
   // Helper to format return percentage
   const formatReturn = (value: number | null): { text: string; color: string } => {
-    if (value === null) return { text: 'N/A', color: '#94a3b8' };
+    if (value === null) return { text: 'N/A', color: "var(--app-text-muted)" };
     const sign = value >= 0 ? '+' : '';
     return { text: `${sign}${value.toFixed(1)}%`, color: value >= 0 ? '#10b981' : '#ef4444' };
   };
@@ -893,8 +893,8 @@ const SymbolAnalysis: React.FC = () => {
     
     return (
       <div style={{
-        backgroundColor: 'rgba(255, 255, 255, 0.98)',
-        border: '1px solid #e2e8f0',
+        backgroundColor: 'var(--app-card-bg)',
+        border: "1px solid var(--app-border)",
         borderRadius: '8px',
         padding: '12px',
         boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
@@ -905,8 +905,8 @@ const SymbolAnalysis: React.FC = () => {
         <div style={{
           fontWeight: '700',
           marginBottom: '8px',
-          color: '#1e293b',
-          borderBottom: '1px solid #f1f5f9',
+          color: "var(--app-text-strong)",
+          borderBottom: "1px solid var(--app-border-soft)",
           paddingBottom: '6px',
         }}>
           {isDaily || isWeekly ? formatAsNewYorkTime(date, true) : date.toLocaleDateString()}
@@ -914,7 +914,7 @@ const SymbolAnalysis: React.FC = () => {
         
         {isRSI ? (
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ color: '#64748b' }}>RSI (14):</span>
+            <span style={{ color: "var(--app-text-muted)" }}>RSI (14):</span>
             <span style={{ 
               fontWeight: '700', 
               fontSize: '14px',
@@ -927,29 +927,29 @@ const SymbolAnalysis: React.FC = () => {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ color: '#64748b' }}>Price:</span>
+              <span style={{ color: "var(--app-text-muted)" }}>Price:</span>
               <span style={{ fontWeight: '700', color: '#1677ff', fontSize: '14px' }}>
                 ${data.close.toFixed(2)}
               </span>
             </div>
             {!isDaily && (
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', opacity: 0.8 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#94a3b8' }}>O:</span><span>{data.open.toFixed(2)}</span></div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#94a3b8' }}>H:</span><span style={{ color: '#10b981' }}>{data.high.toFixed(2)}</span></div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#94a3b8' }}>L:</span><span style={{ color: '#ef4444' }}>{data.low.toFixed(2)}</span></div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#94a3b8' }}>V:</span><span>{data.volume > 1e6 ? (data.volume/1e6).toFixed(1)+'M' : (data.volume/1e3).toFixed(0)+'K'}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: "var(--app-text-muted)" }}>O:</span><span>{data.open.toFixed(2)}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: "var(--app-text-muted)" }}>H:</span><span style={{ color: '#10b981' }}>{data.high.toFixed(2)}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: "var(--app-text-muted)" }}>L:</span><span style={{ color: '#ef4444' }}>{data.low.toFixed(2)}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: "var(--app-text-muted)" }}>V:</span><span>{data.volume > 1e6 ? (data.volume/1e6).toFixed(1)+'M' : (data.volume/1e3).toFixed(0)+'K'}</span></div>
               </div>
             )}
             {stockData?.previousClose && (
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px', paddingTop: '4px', borderTop: '1px solid #f1f5f9' }}>
-                <span style={{ color: '#64748b' }}>Change:</span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px', paddingTop: '4px', borderTop: "1px solid var(--app-border-soft)" }}>
+                <span style={{ color: "var(--app-text-muted)" }}>Change:</span>
                 <span style={{ fontWeight: '600', color: data.close >= stockData.previousClose ? '#10b981' : '#ef4444' }}>
                   {((data.close - stockData.previousClose) / stockData.previousClose * 100).toFixed(2)}%
                 </span>
               </div>
             )}
-            {data.sma20 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#64748b' }}>SMA20:</span><span style={{ color: '#10b981', fontWeight: '500' }}>${data.sma20.toFixed(2)}</span></div>}
-            {data.sma50 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#64748b' }}>SMA50:</span><span style={{ color: '#f59e0b', fontWeight: '500' }}>${data.sma50.toFixed(2)}</span></div>}
+            {data.sma20 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: "var(--app-text-muted)" }}>SMA20:</span><span style={{ color: '#10b981', fontWeight: '500' }}>${data.sma20.toFixed(2)}</span></div>}
+            {data.sma50 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: "var(--app-text-muted)" }}>SMA50:</span><span style={{ color: '#f59e0b', fontWeight: '500' }}>${data.sma50.toFixed(2)}</span></div>}
           </div>
         )}
       </div>
@@ -981,18 +981,18 @@ const SymbolAnalysis: React.FC = () => {
   // 渲染价格图表
   const renderPriceChart = () => {
     if (chartLoading) return (
-      <div style={{ textAlign: 'center', padding: '120px 0', background: '#f8fafc', borderRadius: '16px' }}>
-        <Spin size="large" tip={<span style={{marginTop: '12px', color: '#64748b', fontWeight: 500}}>{t.analysis.chartDataUnavailable}...</span>} />
+      <div style={{ textAlign: 'center', padding: '120px 0', background: "var(--app-card-bg-soft)", borderRadius: '16px' }}>
+        <Spin size="large" tip={<span style={{marginTop: '12px', color: "var(--app-text-muted)", fontWeight: 500}}>{t.analysis.chartDataUnavailable}...</span>} />
       </div>
     );
 
     if (chartData.length === 0) return (
-      <div style={{ padding: '40px 32px', background: '#f8fafc', borderRadius: '16px', border: '1px solid #e2e8f0', textAlign: 'center' }}>
+      <div style={{ padding: '40px 32px', background: "var(--app-card-bg-soft)", borderRadius: '16px', border: "1px solid var(--app-border)", textAlign: 'center' }}>
         <div style={{ marginBottom: 20 }}>
-          <InfoCircleOutlined style={{ color: '#94a3b8', fontSize: '32px' }} />
+          <InfoCircleOutlined style={{ color: "var(--app-text-muted)", fontSize: '32px' }} />
         </div>
-        <Title level={4} style={{ color: '#1e293b', marginBottom: 8 }}>Chart data unavailable</Title>
-        <Text style={{ color: '#64748b', display: 'block', marginBottom: 24 }}>
+        <Title level={4} style={{ color: "var(--app-text-strong)", marginBottom: 8 }}>Chart data unavailable</Title>
+        <Text style={{ color: "var(--app-text-muted)", display: 'block', marginBottom: 24 }}>
           No historical bars were returned for {symbol} in the {selectedTimeframe} timeframe.
         </Text>
         <Button 
@@ -1013,14 +1013,14 @@ const SymbolAnalysis: React.FC = () => {
         <LineChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
           <CartesianGrid 
             strokeDasharray="3 3" 
-            stroke="#f1f5f9" 
+            stroke="var(--app-border-soft)" 
             vertical={false} 
             strokeOpacity={1} 
           />
           <XAxis 
             dataKey="date" 
-            tick={{ fontSize: 11, fill: '#94a3b8', fontWeight: 500 }} 
-            axisLine={{ stroke: '#e2e8f0' }} 
+            tick={{ fontSize: 11, fill: "var(--app-text-muted)", fontWeight: 500 }} 
+            axisLine={{ stroke: "var(--app-border-soft)" }} 
             tickLine={false} 
             height={40} 
             tickFormatter={formatXAxisTick} 
@@ -1036,7 +1036,7 @@ const SymbolAnalysis: React.FC = () => {
           <YAxis 
             domain={yDomain} 
             orientation="right" 
-            tick={{ fontSize: 11, fill: '#94a3b8', fontWeight: 500 }} 
+            tick={{ fontSize: 11, fill: "var(--app-text-muted)", fontWeight: 500 }} 
             axisLine={false} 
             tickLine={false} 
             width={65} 
@@ -1096,7 +1096,7 @@ const SymbolAnalysis: React.FC = () => {
               label={{ 
                 value: 'PREV CLOSE', 
                 position: 'left', 
-                fill: '#94a3b8', 
+                fill: "var(--app-text-muted)", 
                 fontSize: 10, 
                 fontWeight: 700, 
                 offset: 10,
@@ -1111,7 +1111,7 @@ const SymbolAnalysis: React.FC = () => {
             height={40} 
             iconType="circle" 
             iconSize={8} 
-            wrapperStyle={{ paddingBottom: '20px', fontSize: '12px', fontWeight: 500, color: '#64748b' }}
+            wrapperStyle={{ paddingBottom: '20px', fontSize: '12px', fontWeight: 500, color: "var(--app-text-muted)" }}
           />
         </LineChart>
       </ResponsiveContainer>
@@ -1124,16 +1124,16 @@ const SymbolAnalysis: React.FC = () => {
     
     if (chartData.length === 0) {
       return (
-        <div style={{ padding: '60px 0', textAlign: 'center', background: '#f8fafc', borderRadius: '12px' }}>
-          <Empty description={<span style={{color: '#94a3b8'}}>Market data unavailable for RSI</span>} image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        <div style={{ padding: '60px 0', textAlign: 'center', background: "var(--app-card-bg-soft)", borderRadius: '12px' }}>
+          <Empty description={<span style={{color: "var(--app-text-muted)"}}>Market data unavailable for RSI</span>} image={Empty.PRESENTED_IMAGE_SIMPLE} />
         </div>
       );
     }
     
     if (!hasValidRSIData) {
       return (
-        <div style={{ padding: '60px 0', textAlign: 'center', background: '#f8fafc', borderRadius: '12px' }}>
-          <Empty description={<span style={{color: '#94a3b8'}}>Insufficient data to calculate RSI (14)</span>} image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        <div style={{ padding: '60px 0', textAlign: 'center', background: "var(--app-card-bg-soft)", borderRadius: '12px' }}>
+          <Empty description={<span style={{color: "var(--app-text-muted)"}}>Insufficient data to calculate RSI (14)</span>} image={Empty.PRESENTED_IMAGE_SIMPLE} />
         </div>
       );
     }
@@ -1145,15 +1145,15 @@ const SymbolAnalysis: React.FC = () => {
         <LineChart data={rsiData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
           <CartesianGrid 
             strokeDasharray="3 3" 
-            stroke="#f1f5f9" 
+            stroke="var(--app-border-soft)" 
             vertical={false} 
             strokeOpacity={1} 
           />
           
           <XAxis 
             dataKey="date" 
-            tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 500 }} 
-            axisLine={{ stroke: '#e2e8f0' }} 
+            tick={{ fontSize: 10, fill: "var(--app-text-muted)", fontWeight: 500 }} 
+            axisLine={{ stroke: "var(--app-border-soft)" }} 
             tickLine={false} 
             height={40} 
             tickFormatter={formatXAxisTick}
@@ -1170,7 +1170,7 @@ const SymbolAnalysis: React.FC = () => {
           <YAxis 
             domain={[0, 100]} 
             orientation="right" 
-            tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 600 }} 
+            tick={{ fontSize: 10, fill: "var(--app-text-muted)", fontWeight: 600 }} 
             axisLine={false} 
             tickLine={false} 
             width={40} 
@@ -1203,8 +1203,8 @@ const SymbolAnalysis: React.FC = () => {
             strokeOpacity={0.4} 
           />
           
-          <ReferenceArea y1={70} y2={100} fill="#fee2e2" fillOpacity={0.2} />
-          <ReferenceArea y1={0} y2={30} fill="#dcfce7" fillOpacity={0.2} />
+          <ReferenceArea y1={70} y2={100} fill="rgba(239,68,68,0.10)" fillOpacity={1} />
+          <ReferenceArea y1={0} y2={30} fill="rgba(34,197,94,0.10)" fillOpacity={1} />
           
           <Line 
             type="monotone" 
@@ -1224,7 +1224,7 @@ const SymbolAnalysis: React.FC = () => {
             height={36} 
             iconType="circle" 
             iconSize={6} 
-            wrapperStyle={{ paddingTop: '10px', fontSize: '11px', fontWeight: 500, color: '#64748b' }}
+            wrapperStyle={{ paddingTop: '10px', fontSize: '11px', fontWeight: 500, color: "var(--app-text-muted)" }}
           />
         </LineChart>
       </ResponsiveContainer>
@@ -1310,9 +1310,9 @@ const SymbolAnalysis: React.FC = () => {
         }
         .premium-card {
           border-radius: 16px !important;
-          border: 1px solid rgba(15, 23, 42, 0.08) !important;
+          border: 1px solid var(--app-border-soft) !important;
           box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02) !important;
-          background: #fff !important;
+          background: var(--app-card-bg) !important;
           overflow: hidden;
         }
         .metric-card-hover:hover {
@@ -1332,10 +1332,18 @@ const SymbolAnalysis: React.FC = () => {
           font-size: 13px !important;
           border-radius: 6px !important;
         }
+        .ant-radio-button-wrapper {
+          background-color: var(--app-card-bg-soft);
+          color: var(--app-text);
+          border-color: var(--app-border-soft);
+        }
+        .ant-radio-button-wrapper:hover {
+          color: var(--app-blue-text, #3b82f6);
+        }
         .ant-radio-button-wrapper-checked {
-          background-color: #2563eb !important;
+          background-color: var(--app-blue-bg, #2563eb) !important;
           color: #fff !important;
-          border-color: #2563eb !important;
+          border-color: var(--app-blue-border, #2563eb) !important;
         }
       `}</style>
       
@@ -1377,7 +1385,7 @@ const SymbolAnalysis: React.FC = () => {
         display: 'flex', 
         justifyContent: 'space-between', 
         alignItems: 'center', 
-        borderBottom: '1px solid #f1f5f9', 
+        borderBottom: "1px solid var(--app-border-soft)", 
         paddingBottom: 20,
         paddingTop: 4
       }}>
@@ -1393,11 +1401,11 @@ const SymbolAnalysis: React.FC = () => {
           </div>
           <div>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
-              <span style={{ fontSize: 28, fontWeight: 800, color: '#0f172a', lineHeight: 1.1, letterSpacing: '-0.02em' }}>{symbol}</span>
-              <span style={{ fontSize: 16, fontWeight: 500, color: '#94a3b8' }}>{stockData.name || 'Company Name'}</span>
+              <span style={{ fontSize: 28, fontWeight: 800, color: "var(--app-text-strong)", lineHeight: 1.1, letterSpacing: '-0.02em' }}>{symbol}</span>
+              <span style={{ fontSize: 16, fontWeight: 500, color: "var(--app-text-muted)" }}>{stockData.name || 'Company Name'}</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 6 }}>
-              <span style={{ fontSize: 24, fontWeight: 700, color: '#1e293b', lineHeight: 1 }}>${safeToFixed(stockData.price, 2)}</span>
+              <span style={{ fontSize: 24, fontWeight: 700, color: "var(--app-text-strong)", lineHeight: 1 }}>${safeToFixed(stockData.price, 2)}</span>
               {stockData.change !== null && stockData.change !== undefined && stockData.changePercent !== null && stockData.changePercent !== undefined && (
                 <div style={{ 
                   fontSize: 14, 
@@ -1430,7 +1438,7 @@ const SymbolAnalysis: React.FC = () => {
             style={{ 
               borderRadius: 8, 
               fontWeight: 600, 
-              color: '#64748b', 
+              color: "var(--app-text-muted)", 
               height: '38px'
             }}
           >
@@ -1478,10 +1486,10 @@ const SymbolAnalysis: React.FC = () => {
             })(),
             color: (() => {
               const pct = calculateRangePosition(stockData.price, stockData.yearHigh, stockData.yearLow).percentage;
-              if (pct === null) return '#1e293b';
+              if (pct === null) return 'var(--app-text-strong)';
               if (pct >= 80) return '#10b981';
               if (pct <= 20) return '#ef4444';
-              return '#1e293b';
+              return 'var(--app-text-strong)';
             })()
           },
         ].map((m, idx) => (
@@ -1490,10 +1498,10 @@ const SymbolAnalysis: React.FC = () => {
             className="premium-card metric-card-hover"
             style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', justifyContent: 'center', height: '82px' }}
           >
-            <div style={{ fontSize: 10.5, color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>
+            <div style={{ fontSize: 10.5, color: "var(--app-text-muted)", fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>
               {m.label}
             </div>
-            <div style={{ fontSize: 17, fontWeight: 700, color: m.color || '#1e293b', lineHeight: 1.1 }}>
+            <div style={{ fontSize: 17, fontWeight: 700, color: m.color || 'var(--app-text-strong)', lineHeight: 1.1 }}>
               {m.value}
             </div>
           </div>
@@ -1510,8 +1518,8 @@ const SymbolAnalysis: React.FC = () => {
           >
             <div className="chart-header-row" style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{ fontSize: '18px', fontWeight: '800', color: '#0f172a' }}>{t.analysis.priceAnalysis}</span>
-                <Tag style={{ borderRadius: 6, fontSize: 10, background: '#f8fafc', color: '#94a3b8', border: '1px solid #f1f5f9', margin: 0 }}>
+                <span style={{ fontSize: '18px', fontWeight: '800', color: "var(--app-text-strong)" }}>{t.analysis.priceAnalysis}</span>
+                <Tag style={{ borderRadius: 6, fontSize: 10, background: "var(--app-card-bg-soft)", color: "var(--app-text-muted)", border: "1px solid var(--app-border-soft)", margin: 0 }}>
                   Market data delayed by 15 min
                 </Tag>
               </div>
@@ -1528,7 +1536,7 @@ const SymbolAnalysis: React.FC = () => {
                       const MetricChip = ({ label, value, color }: { label: string, value: string, color?: string }) => (
                         <div style={{ 
                           padding: '4px 10px', 
-                          background: '#f8fafc', 
+                          background: "var(--app-card-bg-soft)", 
                           border: '1px solid rgba(15, 23, 42, 0.08)', 
                           borderRadius: '10px',
                           display: 'flex',
@@ -1536,8 +1544,8 @@ const SymbolAnalysis: React.FC = () => {
                           alignItems: 'center',
                           minWidth: '82px'
                         }}>
-                          <span style={{ fontSize: '9px', color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', lineHeight: 1.2 }}>{label}</span>
-                          <span style={{ fontSize: '14px', fontWeight: 800, color: color || '#1e293b', lineHeight: 1.2 }}>{value}</span>
+                          <span style={{ fontSize: '9px', color: "var(--app-text-muted)", fontWeight: 700, textTransform: 'uppercase', lineHeight: 1.2 }}>{label}</span>
+                          <span style={{ fontSize: '14px', fontWeight: 800, color: color || 'var(--app-text-strong)', lineHeight: 1.2 }}>{value}</span>
                         </div>
                       );
 
@@ -1560,7 +1568,7 @@ const SymbolAnalysis: React.FC = () => {
                   </div>
                 )}
 
-                <div style={{ width: 1, height: 24, background: '#f1f5f9', margin: '0 4px' }} />
+                <div style={{ width: 1, height: 24, background: "var(--app-border-soft)", margin: '0 4px' }} />
 
                 <Radio.Group 
                   value={selectedTimeframe} 
@@ -1580,7 +1588,7 @@ const SymbolAnalysis: React.FC = () => {
                   <Spin tip="Loading chart data..." />
                 </div>
               ) : chartData.length === 0 ? (
-                <div style={{ height: 340, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', borderRadius: 12 }}>
+                <div style={{ height: 340, display: 'flex', alignItems: 'center', justifyContent: 'center', background: "var(--app-card-bg-soft)", borderRadius: 12 }}>
                   <Empty description="No price history data available" />
                 </div>
               ) : (
@@ -1599,14 +1607,14 @@ const SymbolAnalysis: React.FC = () => {
             title={
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                 <BarChartOutlined style={{ color: '#3b82f6', fontSize: '20px' }} />
-                <span style={{ fontSize: '20px', fontWeight: '700', color: '#0f172a' }}>
+                <span style={{ fontSize: '20px', fontWeight: '700', color: "var(--app-text-strong)" }}>
                   {t.analysis.technicalSignalSummary}
                 </span>
               </div>
             }
             style={{
               borderRadius: '24px',
-              border: '1px solid #f1f5f9',
+              border: "1px solid var(--app-border-soft)",
               boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03)',
               overflow: 'hidden'
             }}
@@ -1619,9 +1627,9 @@ const SymbolAnalysis: React.FC = () => {
                   className="signal-card-hover"
                   style={{
                     padding: '24px',
-                    border: '1px solid #f1f5f9',
+                    border: "1px solid var(--app-border-soft)",
                     borderRadius: '20px',
-                    background: '#f8fafc',
+                    background: "var(--app-card-bg-soft)",
                     height: '100%',
                     display: 'flex',
                     flexDirection: 'column',
@@ -1631,7 +1639,7 @@ const SymbolAnalysis: React.FC = () => {
                   <div>
                     <div style={{
                       fontSize: '13px',
-                      color: '#64748b',
+                      color: "var(--app-text-muted)",
                       fontWeight: '700',
                       marginBottom: '16px',
                       display: 'flex',
@@ -1645,7 +1653,7 @@ const SymbolAnalysis: React.FC = () => {
                     <div style={{ fontSize: '24px', fontWeight: '800', marginBottom: '8px' }}>
                       {(() => {
                         const hasEnoughData = chartData.length >= 20;
-                        if (!stockData.price || !hasEnoughData) return <span style={{ color: '#94a3b8' }}>{t.analysis.analyzing}</span>;
+                        if (!stockData.price || !hasEnoughData) return <span style={{ color: "var(--app-text-muted)" }}>{t.analysis.analyzing}</span>;
                         
                         const currentPrice = stockData.price;
                         const lastChartData = chartData[chartData.length - 1];
@@ -1680,11 +1688,11 @@ const SymbolAnalysis: React.FC = () => {
                         if (scoreDiff > 0.5) return <span style={{ color: '#10b981', opacity: 0.8 }}><ArrowUpOutlined /> {t.analysis.bullish}</span>;
                         if (scoreDiff < -1.5) return <span style={{ color: '#ef4444' }}><ArrowDownOutlined /> {t.analysis.strongBearish}</span>;
                         if (scoreDiff < -0.5) return <span style={{ color: '#ef4444', opacity: 0.8 }}><ArrowDownOutlined /> {t.analysis.bearish}</span>;
-                        return <span style={{ color: '#64748b' }}>{t.analysis.neutral}</span>;
+                        return <span style={{ color: "var(--app-text-muted)" }}>{t.analysis.neutral}</span>;
                       })()}
                     </div>
                   </div>
-                  <div style={{ fontSize: '12px', color: '#94a3b8', lineHeight: '1.6', fontWeight: 500 }}>
+                  <div style={{ fontSize: '12px', color: "var(--app-text-muted)", lineHeight: '1.6', fontWeight: 500 }}>
                     {t.analysis.trendDescription.replace('{count}', String(chartData.length))}
                   </div>
                 </div>
@@ -1696,9 +1704,9 @@ const SymbolAnalysis: React.FC = () => {
                   className="signal-card-hover"
                   style={{
                     padding: '24px',
-                    border: '1px solid #f1f5f9',
+                    border: "1px solid var(--app-border-soft)",
                     borderRadius: '20px',
-                    background: '#f8fafc',
+                    background: "var(--app-card-bg-soft)",
                     height: '100%',
                     display: 'flex',
                     flexDirection: 'column',
@@ -1708,7 +1716,7 @@ const SymbolAnalysis: React.FC = () => {
                   <div>
                     <div style={{
                       fontSize: '13px',
-                      color: '#64748b',
+                      color: "var(--app-text-muted)",
                       fontWeight: '700',
                       marginBottom: '16px',
                       display: 'flex',
@@ -1722,17 +1730,17 @@ const SymbolAnalysis: React.FC = () => {
                     <div style={{ fontSize: '24px', fontWeight: '800', marginBottom: '8px' }}>
                       {(() => {
                         const validRSI = chartData.filter(d => d.rsi !== undefined && !isNaN(d.rsi));
-                        if (validRSI.length === 0) return <span style={{ color: '#94a3b8' }}>{t.analysis.noRSIData}</span>;
+                        if (validRSI.length === 0) return <span style={{ color: "var(--app-text-muted)" }}>{t.analysis.noRSIData}</span>;
                         const latestRSI = validRSI[validRSI.length - 1].rsi!;
                         if (latestRSI >= 70) return <span style={{ color: '#ef4444' }}>{t.analysis.overbought}</span>;
                         if (latestRSI <= 30) return <span style={{ color: '#10b981' }}>{t.analysis.oversold}</span>;
                         if (latestRSI > 55) return <span style={{ color: '#10b981', opacity: 0.8 }}>{t.analysis.bullish}</span>;
                         if (latestRSI < 45) return <span style={{ color: '#ef4444', opacity: 0.8 }}>{t.analysis.bearish}</span>;
-                        return <span style={{ color: '#64748b' }}>{t.analysis.neutral}</span>;
+                        return <span style={{ color: "var(--app-text-muted)" }}>{t.analysis.neutral}</span>;
                       })()}
                     </div>
                   </div>
-                  <div style={{ fontSize: '12px', color: '#94a3b8', lineHeight: '1.6', fontWeight: 500 }}>
+                  <div style={{ fontSize: '12px', color: "var(--app-text-muted)", lineHeight: '1.6', fontWeight: 500 }}>
                     {t.analysis.rsiDescription.replace('{value}', chartData[chartData.length - 1]?.rsi?.toFixed(2) || '—')}
                   </div>
                 </div>
@@ -1744,9 +1752,9 @@ const SymbolAnalysis: React.FC = () => {
                   className="signal-card-hover"
                   style={{
                     padding: '24px',
-                    border: '1px solid #f1f5f9',
+                    border: "1px solid var(--app-border-soft)",
                     borderRadius: '20px',
-                    background: '#f8fafc',
+                    background: "var(--app-card-bg-soft)",
                     height: '100%',
                     display: 'flex',
                     flexDirection: 'column',
@@ -1756,7 +1764,7 @@ const SymbolAnalysis: React.FC = () => {
                   <div>
                     <div style={{
                       fontSize: '13px',
-                      color: '#64748b',
+                      color: "var(--app-text-muted)",
                       fontWeight: '700',
                       marginBottom: '16px',
                       display: 'flex',
@@ -1781,7 +1789,7 @@ const SymbolAnalysis: React.FC = () => {
                       })()}
                     </div>
                   </div>
-                  <div style={{ fontSize: '12px', color: '#94a3b8', lineHeight: '1.6', fontWeight: 500 }}>
+                  <div style={{ fontSize: '12px', color: "var(--app-text-muted)", lineHeight: '1.6', fontWeight: 500 }}>
                     {t.analysis.rangeDescription.replace('{high}', `$${(stockData.yearHigh || 0).toFixed(2)}`).replace('{low}', `$${(stockData.yearLow || 0).toFixed(2)}`)}
                   </div>
                 </div>
@@ -1849,17 +1857,17 @@ const SymbolAnalysis: React.FC = () => {
                   <div style={{
                     padding: '16px 20px',
                     borderRadius: '16px',
-                    background: '#ffffff',
-                    border: '1px solid #f1f5f9',
+                    background: "var(--app-card-bg)",
+                    border: "1px solid var(--app-border-soft)",
                     display: 'flex',
                     flexDirection: 'column',
                     gap: '4px'
                   }}>
-                    <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{item.label}</span>
+                    <span style={{ fontSize: '11px', color: "var(--app-text-muted)", fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{item.label}</span>
                     <span style={{ 
                       fontSize: '18px', 
                       fontWeight: '800', 
-                      color: item.status === 'bullish' ? '#10b981' : item.status === 'bearish' ? '#ef4444' : '#1e293b'
+                      color: item.status === 'bullish' ? '#10b981' : item.status === 'bearish' ? '#ef4444' : 'var(--app-text-strong)'
                     }}>
                       {item.value}
                     </span>
@@ -1879,14 +1887,14 @@ const SymbolAnalysis: React.FC = () => {
             title={
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                 <LineChartOutlined style={{ color: '#10b981', fontSize: '20px' }} />
-                <span style={{ fontSize: '20px', fontWeight: '700', color: '#0f172a' }}>
+                <span style={{ fontSize: '20px', fontWeight: '700', color: "var(--app-text-strong)" }}>
                   {t.analysis.tradeSetupReference}
                 </span>
               </div>
             }
             style={{
               borderRadius: '24px',
-              border: '1px solid #f1f5f9',
+              border: "1px solid var(--app-border-soft)",
               boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03)'
             }}
             bodyStyle={{ padding: '32px' }}
@@ -1897,42 +1905,42 @@ const SymbolAnalysis: React.FC = () => {
                 <div style={{
                   padding: '24px',
                   borderRadius: '20px',
-                  background: '#f8fafc',
-                  border: '1px solid #f1f5f9',
+                  background: "var(--app-card-bg-soft)",
+                  border: "1px solid var(--app-border-soft)",
                   height: '100%'
                 }}>
-                  <div style={{ fontSize: '13px', color: '#64748b', fontWeight: '700', marginBottom: '20px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  <div style={{ fontSize: '13px', color: "var(--app-text-muted)", fontWeight: '700', marginBottom: '20px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                     {t.analysis.supportResistance}
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                     <div>
-                      <div style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 600, marginBottom: '6px' }}>{t.analysis.supportLevels}</div>
+                      <div style={{ fontSize: '11px', color: "var(--app-text-muted)", fontWeight: 600, marginBottom: '6px' }}>{t.analysis.supportLevels}</div>
                       {(() => {
                         const hasEnoughData = chartData.length >= 20;
-                        if (!stockData.price || !hasEnoughData) return <div style={{ color: '#94a3b8' }}>{t.analysis.analyzing}</div>;
+                        if (!stockData.price || !hasEnoughData) return <div style={{ color: "var(--app-text-muted)" }}>{t.analysis.analyzing}</div>;
                         const dataToUse = chartData.slice(-40);
                         const recentLows = dataToUse.map(d => d.low);
                         const minLow = Math.min(...recentLows);
                         return (
                           <div style={{ display: 'flex', gap: '12px' }}>
-                            <Tag color="success" style={{ borderRadius: '6px', fontWeight: 700, margin: 0 }}>S1: ${(minLow * 0.99).toFixed(2)}</Tag>
-                            <Tag color="success" style={{ borderRadius: '6px', fontWeight: 700, margin: 0, opacity: 0.7 }}>S2: ${(minLow * 0.97).toFixed(2)}</Tag>
+                            <Tag style={{ borderRadius: "6px", fontWeight: 700, margin: 0, background: "rgba(34,197,94,0.14)", color: "#4ade80", border: "none" }}>S1: ${(minLow * 0.99).toFixed(2)}</Tag>
+                            <Tag style={{ borderRadius: "6px", fontWeight: 700, margin: 0, background: "rgba(34,197,94,0.14)", color: "#4ade80", border: "none", opacity: 0.7 }}>S2: ${(minLow * 0.97).toFixed(2)}</Tag>
                           </div>
                         );
                       })()}
                     </div>
                     <div>
-                      <div style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 600, marginBottom: '6px' }}>{t.analysis.resistanceLevels}</div>
+                      <div style={{ fontSize: '11px', color: "var(--app-text-muted)", fontWeight: 600, marginBottom: '6px' }}>{t.analysis.resistanceLevels}</div>
                       {(() => {
                         const hasEnoughData = chartData.length >= 20;
-                        if (!stockData.price || !hasEnoughData) return <div style={{ color: '#94a3b8' }}>{t.analysis.analyzing}</div>;
+                        if (!stockData.price || !hasEnoughData) return <div style={{ color: "var(--app-text-muted)" }}>{t.analysis.analyzing}</div>;
                         const dataToUse = chartData.slice(-40);
                         const recentHighs = dataToUse.map(d => d.high);
                         const maxHigh = Math.max(...recentHighs);
                         return (
                           <div style={{ display: 'flex', gap: '12px' }}>
-                            <Tag color="error" style={{ borderRadius: '6px', fontWeight: 700, margin: 0 }}>R1: ${(maxHigh * 1.01).toFixed(2)}</Tag>
-                            <Tag color="error" style={{ borderRadius: '6px', fontWeight: 700, margin: 0, opacity: 0.7 }}>R2: ${(maxHigh * 1.03).toFixed(2)}</Tag>
+                            <Tag style={{ borderRadius: "6px", fontWeight: 700, margin: 0, background: "rgba(239,68,68,0.14)", color: "#f87171", border: "none" }}>R1: ${(maxHigh * 1.01).toFixed(2)}</Tag>
+                            <Tag style={{ borderRadius: "6px", fontWeight: 700, margin: 0, background: "rgba(239,68,68,0.14)", color: "#f87171", border: "none", opacity: 0.7 }}>R2: ${(maxHigh * 1.03).toFixed(2)}</Tag>
                           </div>
                         );
                       })()}
@@ -1946,20 +1954,20 @@ const SymbolAnalysis: React.FC = () => {
                 <div style={{
                   padding: '24px',
                   borderRadius: '20px',
-                  background: '#f8fafc',
-                  border: '1px solid #f1f5f9',
+                  background: "var(--app-card-bg-soft)",
+                  border: "1px solid var(--app-border-soft)",
                   height: '100%'
                 }}>
-                  <div style={{ fontSize: '13px', color: '#64748b', fontWeight: '700', marginBottom: '20px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  <div style={{ fontSize: '13px', color: "var(--app-text-muted)", fontWeight: '700', marginBottom: '20px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                     {t.analysis.riskManagement}
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '13px', color: '#64748b', fontWeight: 500 }}>{t.analysis.entryTarget}</span>
+                      <span style={{ fontSize: '13px', color: "var(--app-text-muted)", fontWeight: 500 }}>{t.analysis.entryTarget}</span>
                       <span style={{ fontSize: '16px', fontWeight: '700', color: '#3b82f6' }}>${((stockData.price || 0) * 0.995).toFixed(2)}</span>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '13px', color: '#64748b', fontWeight: 500 }}>{t.analysis.stopLoss}</span>
+                      <span style={{ fontSize: '13px', color: "var(--app-text-muted)", fontWeight: 500 }}>{t.analysis.stopLoss}</span>
                       <span style={{ fontSize: '16px', fontWeight: '700', color: '#ef4444' }}>
                         {(() => {
                           const dataToUse = chartData.slice(-20);
@@ -1969,7 +1977,7 @@ const SymbolAnalysis: React.FC = () => {
                       </span>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '13px', color: '#64748b', fontWeight: 500 }}>{t.analysis.takeProfit}</span>
+                      <span style={{ fontSize: '13px', color: "var(--app-text-muted)", fontWeight: 500 }}>{t.analysis.takeProfit}</span>
                       <span style={{ fontSize: '16px', fontWeight: '700', color: '#10b981' }}>
                         {(() => {
                           const dataToUse = chartData.slice(-20);
@@ -1987,8 +1995,8 @@ const SymbolAnalysis: React.FC = () => {
                 <div style={{
                   padding: '24px',
                   borderRadius: '20px',
-                  background: '#f0f9ff',
-                  border: '1px solid #e0f2fe',
+                  background: "var(--app-card-bg-soft)",
+                  border: "1px solid var(--app-border-soft)",
                   height: '100%',
                   display: 'flex',
                   flexDirection: 'column',
@@ -1996,10 +2004,10 @@ const SymbolAnalysis: React.FC = () => {
                   justifyContent: 'center',
                   textAlign: 'center'
                 }}>
-                  <div style={{ fontSize: '12px', color: '#0369a1', fontWeight: '700', marginBottom: '8px', textTransform: 'uppercase' }}>
+                  <div style={{ fontSize: '12px', color: "var(--app-blue-text, #3b82f6)", fontWeight: '700', marginBottom: '8px', textTransform: 'uppercase' }}>
                     {t.analysis.riskRewardRatio}
                   </div>
-                  <div style={{ fontSize: '42px', fontWeight: '900', color: '#0c4a6e', lineHeight: 1 }}>
+                  <div style={{ fontSize: '42px', fontWeight: '900', color: "var(--app-text-strong)", lineHeight: 1 }}>
                     {(() => {
                       if (!stockData.price || chartData.length < 10) return '—';
                       const dataToUse = chartData.slice(-10);
@@ -2053,14 +2061,14 @@ const SymbolAnalysis: React.FC = () => {
             title={
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                 <RadarChartOutlined style={{ color: '#8b5cf6', fontSize: '20px' }} />
-                <span style={{ fontSize: '20px', fontWeight: '700', color: '#0f172a' }}>
+                <span style={{ fontSize: '20px', fontWeight: '700', color: "var(--app-text-strong)" }}>
                   {t.analysis.technicalIndicators}
                 </span>
               </div>
             }
             style={{
               borderRadius: '24px',
-              border: '1px solid #f1f5f9',
+              border: "1px solid var(--app-border-soft)",
               boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03)',
               overflow: 'hidden'
             }}
@@ -2072,7 +2080,7 @@ const SymbolAnalysis: React.FC = () => {
               style={{ padding: '0 32px' }}
               tabBarStyle={{
                 marginBottom: 0,
-                borderBottom: '1px solid #f1f5f9'
+                borderBottom: "1px solid var(--app-border-soft)"
               }}
             >
               <TabPane
@@ -2098,16 +2106,16 @@ const SymbolAnalysis: React.FC = () => {
                 <div style={{ padding: '32px 0' }}>
                   <Row gutter={[24, 24]}>
                     {[
-                      { label: t.analysis.currentPrice, value: `$${safeToFixed(stockData.price, 2)}`, color: '#3b82f6', bg: '#eff6ff' },
+                      { label: t.analysis.currentPrice, value: `$${safeToFixed(stockData.price, 2)}`, color: '#3b82f6', bg: "var(--app-card-bg-soft)" },
                       { 
                         label: 'SMA 20', 
                         value: chartData[chartData.length - 1]?.sma20 ? `$${safeToFixed(chartData[chartData.length - 1].sma20, 2)}` : 'N/A',
-                        color: '#10b981', bg: '#f0fdf4'
+                        color: '#10b981', bg: "var(--app-card-bg-soft)"
                       },
                       { 
                         label: 'SMA 50', 
                         value: chartData[chartData.length - 1]?.sma50 ? `$${safeToFixed(chartData[chartData.length - 1].sma50, 2)}` : 'N/A',
-                        color: '#f59e0b', bg: '#fffbeb'
+                        color: '#f59e0b', bg: "var(--app-card-bg-soft)"
                       },
                     ].map((item, idx) => (
                       <Col xs={24} md={8} key={idx}>
@@ -2119,19 +2127,19 @@ const SymbolAnalysis: React.FC = () => {
                           border: '1px solid transparent',
                           transition: 'all 0.2s ease'
                         }}>
-                          <div style={{ fontSize: '12px', color: '#64748b', fontWeight: '700', marginBottom: '8px', textTransform: 'uppercase' }}>{item.label}</div>
+                          <div style={{ fontSize: '12px', color: "var(--app-text-muted)", fontWeight: '700', marginBottom: '8px', textTransform: 'uppercase' }}>{item.label}</div>
                           <div style={{ fontSize: '32px', fontWeight: '900', color: item.color, lineHeight: 1 }}>{item.value}</div>
                         </div>
                       </Col>
                     ))}
                   </Row>
                   
-                  <div style={{ marginTop: '24px', padding: '20px', background: '#f8fafc', borderRadius: '16px', border: '1px solid #f1f5f9' }}>
-                    <div style={{ fontSize: '14px', fontWeight: '700', color: '#1e293b', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div style={{ marginTop: '24px', padding: '20px', background: "var(--app-card-bg-soft)", borderRadius: '16px', border: "1px solid var(--app-border-soft)" }}>
+                    <div style={{ fontSize: '14px', fontWeight: '700', color: "var(--app-text-strong)", marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <InfoCircleOutlined style={{ color: '#3b82f6' }} />
                       {t.analysis.analysisInsights}
                     </div>
-                    <div style={{ fontSize: '13px', color: '#64748b', lineHeight: '1.6' }}>
+                    <div style={{ fontSize: '13px', color: "var(--app-text-muted)", lineHeight: '1.6' }}>
                       {(() => {
                         const last = chartData[chartData.length - 1];
                         if (!last?.sma20 || !last?.sma50) return t.analysis.maInsufficient;
@@ -2157,7 +2165,7 @@ const SymbolAnalysis: React.FC = () => {
           <Card
             bordered={false}
             title={<span style={{ fontSize: '18px', fontWeight: '700' }}>{t.analysis.companyInsights}</span>}
-            style={{ borderRadius: '24px', border: '1px solid #f1f5f9', height: '100%' }}
+            style={{ borderRadius: '24px', border: "1px solid var(--app-border-soft)", height: '100%' }}
             bodyStyle={{ padding: '24px' }}
           >
             <Row gutter={[24, 24]}>
@@ -2168,8 +2176,8 @@ const SymbolAnalysis: React.FC = () => {
                 { label: t.analysis.divYield, value: stockData.dividendYield ? `${safeToFixed(stockData.dividendYield, 2)}%` : 'N/A' },
               ].map((item, idx) => (
                 <Col span={12} key={idx}>
-                  <div style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 600, textTransform: 'uppercase', marginBottom: '4px' }}>{item.label}</div>
-                  <div style={{ fontSize: '16px', fontWeight: '700', color: '#1e293b' }}>{item.value}</div>
+                  <div style={{ fontSize: '12px', color: "var(--app-text-muted)", fontWeight: 600, textTransform: 'uppercase', marginBottom: '4px' }}>{item.label}</div>
+                  <div style={{ fontSize: '16px', fontWeight: '700', color: "var(--app-text-strong)" }}>{item.value}</div>
                 </Col>
               ))}
             </Row>
@@ -2179,7 +2187,7 @@ const SymbolAnalysis: React.FC = () => {
           <Card
             bordered={false}
             title={<span style={{ fontSize: '18px', fontWeight: '700' }}>{t.analysis.recentPerformance}</span>}
-            style={{ borderRadius: '24px', border: '1px solid #f1f5f9', height: '100%' }}
+            style={{ borderRadius: '24px', border: "1px solid var(--app-border-soft)", height: '100%' }}
             bodyStyle={{ padding: '24px' }}
           >
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -2188,8 +2196,8 @@ const SymbolAnalysis: React.FC = () => {
                 { label: t.analysis.threeMonthReturn, data: formatReturn(performanceData.threeMonth) },
                 { label: t.analysis.yearToDate, data: formatReturn(performanceData.ytd) },
               ].map((item, idx) => (
-                <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', background: '#f8fafc', borderRadius: '12px' }}>
-                  <span style={{ fontSize: '14px', fontWeight: 500, color: '#64748b' }}>{item.label}</span>
+                <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', background: "var(--app-card-bg-soft)", borderRadius: '12px' }}>
+                  <span style={{ fontSize: '14px', fontWeight: 500, color: "var(--app-text-muted)" }}>{item.label}</span>
                   <span style={{ fontSize: '16px', fontWeight: '700', color: item.data.color }}>{item.data.text}</span>
                 </div>
               ))}
@@ -2198,9 +2206,9 @@ const SymbolAnalysis: React.FC = () => {
         </Col>
       </Row>
       {/* 数据源信息 */}
-      <Row style={{ marginTop: '32px', paddingTop: '16px', borderTop: '1px solid #f1f5f9' }}>
+      <Row style={{ marginTop: '32px', paddingTop: '16px', borderTop: "1px solid var(--app-border-soft)" }}>
         <Col span={24}>
-          <div style={{ fontSize: '12px', color: '#94a3b8', textAlign: 'left', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{ fontSize: '12px', color: "var(--app-text-muted)", textAlign: 'left', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <DataSourceBadge source={dataSource} />
             <span>•</span>
             <span>{t.analysis.dataUpdated} {stockData.timestamp ? new Date(stockData.timestamp).toLocaleString() : 'N/A'}</span>

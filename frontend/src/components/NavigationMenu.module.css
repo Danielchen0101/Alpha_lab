@@ -3,7 +3,8 @@
 .navigationMenuContainer {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 96px); /* Logo height + margins */
+  flex: 1;
+  overflow: hidden;
 }
 
 .menuScrollArea {
@@ -100,15 +101,19 @@
 
 /* Sidebar Footer */
 .sidebarFooter {
-  padding: 16px;
+  padding: 16px 16px 80px 16px; /* Increased padding to safely clear the Ant Design Sider trigger (typically 48px) */
   border-top: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(0, 0, 0, 0.1);
+  background: rgba(0, 0, 0, 0.15);
+  position: relative;
+  z-index: 2;
 }
 
-.expandedStatus {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+/* Ensure the scroll area doesn't get cut off */
+.menuScrollArea {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  margin-bottom: 0;
 }
 
 .statusRow {

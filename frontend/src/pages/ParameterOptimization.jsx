@@ -360,25 +360,25 @@ const ParameterOptimization = () => {
         
         .premium-card { 
           border-radius: 18px !important; 
-          border: 1px solid rgba(15, 23, 42, 0.08) !important; 
-          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02) !important; 
+          border: 1px solid var(--app-border-soft) !important; 
+          box-shadow: var(--app-card-shadow) !important; 
           transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important; 
-          background: #fff !important;
+          background: var(--app-card-bg) !important;
           overflow: hidden;
         }
         .premium-card:hover { 
-          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.04) !important; 
+          box-shadow: var(--app-shadow) !important; 
         }
         .premium-card .ant-card-head {
           padding: 0 24px !important;
-          border-bottom: 1px solid rgba(15, 23, 42, 0.06) !important;
+          border-bottom: 1px solid var(--app-border-soft) !important;
           min-height: 56px !important;
         }
         .premium-card .ant-card-head-title {
           padding: 16px 0 !important;
           font-weight: 800 !important;
           font-size: 16px !important;
-          color: #0f172a !important;
+          color: var(--app-text-strong) !important;
         }
         .premium-card .ant-card-body {
           padding: 24px !important;
@@ -407,10 +407,10 @@ const ParameterOptimization = () => {
         }
 
         .inner-param-card {
-          background: #f8fafc;
+          background: var(--app-card-bg-soft);
           padding: 20px;
           border-radius: 16px;
-          border: 1px solid rgba(15, 23, 42, 0.06);
+          border: 1px solid var(--app-border-soft);
           height: 100%;
           transition: border-color 0.2s ease;
         }
@@ -420,7 +420,7 @@ const ParameterOptimization = () => {
         .inner-param-title {
           font-size: 12px;
           font-weight: 800;
-          color: #64748b;
+          color: var(--app-text-muted);
           text-transform: uppercase;
           letter-spacing: 0.8px;
           margin-bottom: 18px;
@@ -432,9 +432,11 @@ const ParameterOptimization = () => {
         .optimize-form-input { 
           height: 42px !important; 
           border-radius: 10px !important; 
-          border-color: #e2e8f0 !important; 
+          border-color: var(--app-border) !important; 
+          background: var(--app-input-bg) !important;
+          color: var(--app-text-strong) !important;
         }
-        .optimize-form-label { font-size: 13.5px; font-weight: 600; color: #475569; }
+        .optimize-form-label { font-size: 13.5px; font-weight: 600; color: var(--app-text-muted); }
 
         .primary-cta-button { 
           height: 46px; 
@@ -453,10 +455,10 @@ const ParameterOptimization = () => {
         .running-pulse { animation: subtlePulse 2s infinite ease-in-out; }
 
         .status-badge {
-          background: #fff;
+          background: var(--app-card-bg-soft);
           padding: 8px 16px;
           border-radius: 12px;
-          border: 1px solid rgba(15, 23, 42, 0.06);
+          border: 1px solid var(--app-border-soft);
           display: flex;
           align-items: center;
           gap: 10px;
@@ -470,12 +472,12 @@ const ParameterOptimization = () => {
             <ExperimentOutlined />
           </div>
           <div>
-            <Title level={1} style={{ margin: 0, fontSize: 'clamp(24px, 2.2vw, 32px)', fontWeight: 800, letterSpacing: '-0.02em', color: '#0f172a' }}>{t.optimization.title}</Title>
-            <Text style={{ fontSize: 14.5, color: '#64748b' }}>{t.optimization.subtitle}</Text>
+            <Title level={1} style={{ margin: 0, fontSize: 'clamp(24px, 2.2vw, 32px)', fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--app-text-strong)' }}>{t.optimization.title}</Title>
+            <Text style={{ fontSize: 14.5, color: 'var(--app-text-muted)' }}>{t.optimization.subtitle}</Text>
           </div>
         </div>
-        <div className="status-badge">
-           <Badge status="processing" color="#722ed1" text={<Text strong style={{ color: '#722ed1', fontSize: 12, letterSpacing: '0.6px' }}>{t.optimization.optimizationReady.toUpperCase()}</Text>} />
+        <div className="status-badge" style={{ background: 'rgba(114, 92, 246, 0.14)', border: '1px solid rgba(114, 92, 246, 0.28)' }}>
+           <Badge status="processing" color="#722ed1" text={<Text strong style={{ color: '#c4b5fd', fontSize: 12, letterSpacing: '0.6px' }}>{t.optimization.optimizationReady.toUpperCase()}</Text>} />
         </div>
       </div>
 
@@ -483,7 +485,7 @@ const ParameterOptimization = () => {
         <Col span={24}>
           <Card 
             className="premium-card" 
-            title={<Space><SettingOutlined style={{ color: '#722ed1' }} /><span>{t.optimization.engineConfiguration}</span></Space>}
+            title={<Space><SettingOutlined style={{ color: '#722ed1' }} /><span style={{ color: 'var(--app-text-strong)' }}>{t.optimization.engineConfiguration}</span></Space>}
           >
             <Form
               form={form}
@@ -501,7 +503,7 @@ const ParameterOptimization = () => {
             >
               <div className="config-grid">
                 <Form.Item label={<span className="optimize-form-label">{t.optimization.stockSymbol}</span>} name="symbol" rules={[{ required: true }]}>
-                  <Input prefix={<LineChartOutlined style={{ color: '#94a3b8' }} />} placeholder="e.g. AAPL" className="optimize-form-input" />
+                  <Input prefix={<LineChartOutlined style={{ color: 'var(--app-text-muted)' }} />} placeholder="e.g. AAPL" className="optimize-form-input" />
                 </Form.Item>
                 
                 <Form.Item label={<span className="optimize-form-label">{t.optimization.strategyModel}</span>} name="strategy" rules={[{ required: true }]}>
@@ -522,7 +524,7 @@ const ParameterOptimization = () => {
               </div>
 
               <div style={{ marginTop: 24, marginBottom: 20 }}>
-                <Text strong style={{ fontSize: '15px', color: '#0f172a', display: 'block', marginBottom: 20 }}>{t.optimization.parameterSearchSpace}</Text>
+                <Text strong style={{ fontSize: '15px', color: 'var(--app-text-strong)', display: 'block', marginBottom: 20 }}>{t.optimization.parameterSearchSpace}</Text>
                 <div className="param-grid">
                   {selectedStrategy === 'moving_average' && (
                     <>
@@ -582,12 +584,12 @@ const ParameterOptimization = () => {
         {success && (
           <Col span={24}>
             <Alert 
-              message={<Text strong style={{ color: '#10b981' }}>{t.optimization.optimizationSuccess}</Text>} 
-              description={success} 
+              message={<Text strong style={{ color: '#4ade80' }}>{t.optimization.optimizationSuccess}</Text>} 
+              description={<Text style={{ color: 'var(--app-text)' }}>{success}</Text>} 
               type="success" 
               showIcon 
-              icon={<CheckCircleOutlined />}
-              style={{ borderRadius: '16px', border: 'none', background: '#f0fdf4', padding: '16px 20px' }} 
+              icon={<CheckCircleOutlined style={{ color: '#4ade80' }} />}
+              style={{ borderRadius: '16px', border: '1px solid rgba(34, 197, 94, 0.25)', background: 'rgba(34, 197, 94, 0.10)', padding: '16px 20px' }} 
             />
           </Col>
         )}
@@ -596,11 +598,11 @@ const ParameterOptimization = () => {
           <Col span={24}>
             <Alert 
               message={<Text strong style={{ color: '#ef4444' }}>{t.optimization.configurationError}</Text>} 
-              description={error} 
+              description={<Text style={{ color: 'var(--app-text)' }}>{error}</Text>} 
               type="error" 
               showIcon 
-              icon={<WarningOutlined />}
-              style={{ borderRadius: '16px', border: 'none', background: '#fef2f2', padding: '16px 20px' }} 
+              icon={<WarningOutlined style={{ color: '#ef4444' }} />}
+              style={{ borderRadius: '16px', border: '1px solid rgba(239, 68, 68, 0.25)', background: 'rgba(239, 68, 68, 0.10)', padding: '16px 20px' }} 
             />
           </Col>
         )}
@@ -617,7 +619,7 @@ const ParameterOptimization = () => {
             </Col>
 
             <Col span={24}>
-              <Card className="premium-card" title={<Space><ExperimentOutlined style={{ color: '#722ed1' }} /><span>{t.optimization.performanceHeatmap}</span></Space>}>
+              <Card className="premium-card" title={<Space><ExperimentOutlined style={{ color: '#722ed1' }} /><span style={{ color: 'var(--app-text-strong)' }}>{t.optimization.performanceHeatmap}</span></Space>}>
                 <div style={{ padding: '8px 0' }}>
                   <OptimizationHeatmap results={optimizationResults} strategy={selectedStrategy} />
                 </div>
@@ -625,7 +627,7 @@ const ParameterOptimization = () => {
             </Col>
 
             <Col span={24}>
-              <Card className="premium-card" title={<Space><LineChartOutlined style={{ color: '#1890ff' }} /><span>{t.optimization.detailedResultMatrix}</span></Space>}>
+              <Card className="premium-card" title={<Space><LineChartOutlined style={{ color: '#1890ff' }} /><span style={{ color: 'var(--app-text-strong)' }}>{t.optimization.detailedResultMatrix}</span></Space>}>
                 <OptimizationResultsTable results={optimizationResults} strategy={selectedStrategy} />
               </Card>
             </Col>

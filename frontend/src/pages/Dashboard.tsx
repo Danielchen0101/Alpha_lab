@@ -7,6 +7,7 @@ import { sharedDataService } from '../services/sharedDataService';
 import DataSourceBadge from '../components/DataSourceBadge';
 import { formatMarketCap } from '../utils/format';
 import { useLanguage } from '../contexts/LanguageContext';
+import { useTradeMode } from '../contexts/TradeModeContext';
 
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 
@@ -49,6 +50,7 @@ const STORAGE_KEY = "quant_watchlist_symbols";
 const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const { t, translateSector } = useLanguage();
+  const { tradeMode } = useTradeMode();
   const [marketData, setMarketData] = useState<StockData[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -554,10 +556,10 @@ const Dashboard: React.FC = () => {
         }
         .premium-card {
           border-radius: 18px !important;
-          border: 1px solid rgba(15, 23, 42, 0.08) !important;
+          border: 1px solid var(--app-border-soft) !important;
           box-shadow: 0 4px 12px rgba(0, 0, 0, 0.02) !important;
           transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
-          background: #fff !important;
+          background: var(--app-card-bg) !important;
           overflow: hidden;
         }
         .premium-card:hover {
@@ -577,14 +579,14 @@ const Dashboard: React.FC = () => {
           font-size: 11px;
           text-transform: uppercase;
           letter-spacing: 1px;
-          color: #94a3b8;
+          color: var(--app-text-muted);
           font-weight: 700;
           margin-bottom: 10px;
         }
         .metric-value {
           font-size: clamp(20px, 1.8vw, 26px);
           font-weight: 800;
-          color: #0f172a;
+          color: var(--app-text-strong);
           line-height: 1.1;
           font-family: 'SF Pro Display', -apple-system, system-ui, sans-serif;
         }
@@ -613,7 +615,7 @@ const Dashboard: React.FC = () => {
           text-align: center;
         }
         .ant-table-thead > tr > th {
-          background: #fafafa !important;
+          background: var(--app-table-header-bg) !important; color: var(--app-text-strong) !important; border-bottom: 1px solid var(--app-border-soft) !important;
           font-size: 11px !important;
           text-transform: uppercase !important;
           letter-spacing: 0.5px !important;
@@ -668,15 +670,25 @@ const Dashboard: React.FC = () => {
             <DashboardOutlined />
           </div>
           <div>
-            <Title level={1} style={{ margin: 0, fontSize: 'clamp(24px, 2.2vw, 30px)', fontWeight: 800, letterSpacing: '-0.02em', color: '#0f172a' }}>{t.dashboard.title}</Title>
-            <Text style={{ fontSize: 15, color: '#64748b' }}>{t.dashboard.subtitle}</Text>
+            <Title level={1} style={{ margin: 0, fontSize: 'clamp(24px, 2.2vw, 30px)', fontWeight: 800, letterSpacing: '-0.02em', color: "var(--app-text-strong)" }}>{t.dashboard.title}</Title>
+            <Text style={{ fontSize: 15, color: "var(--app-text-muted)" }}>{t.dashboard.subtitle}</Text>
+            <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+              <Tag color={tradeMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ fontSize: 10, fontWeight: 700, borderRadius: 4, margin: 0 }}>
+                {tradeMode === 'paper' ? 'PAPER MODE' : 'REAL MODE'}
+              </Tag>
+              {marketData.length > 0 && (
+                <Tag color="green" bordered={false} style={{ fontSize: 10, fontWeight: 700, borderRadius: 4, margin: 0 }}>
+                  Data: {marketData[0]?.dataSource || 'Alpaca'}
+                </Tag>
+              )}
+            </div>
           </div>
         </div>
         
-        <div style={{ display: 'flex', alignItems: 'center', gap: 20, background: '#fff', padding: '10px 20px', borderRadius: '16px', border: '1px solid rgba(15, 23, 42, 0.06)', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
-          <div style={{ textAlign: 'right', borderRight: '1px solid #f1f5f9', paddingRight: 20 }}>
-            <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', marginBottom: 2 }}>{t.dashboard.lastUpdated}</div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: '#334155', display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 20, background: "var(--app-card-bg)", padding: "10px 20px", borderRadius: "16px", border: "1px solid var(--app-border-soft)", boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
+          <div style={{ textAlign: 'right', borderRight: "1px solid var(--app-border-soft)", paddingRight: 20 }}>
+            <div style={{ fontSize: 11, color: "var(--app-text-muted)", fontWeight: 700, textTransform: 'uppercase', marginBottom: 2 }}>{t.dashboard.lastUpdated}</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--app-text-strong)", display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
               <ClockCircleOutlined style={{ fontSize: 13, color: '#1890ff' }} />
               {lastFetched ? new Date(lastFetched).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'N/A'}
             </div>
@@ -707,7 +719,7 @@ const Dashboard: React.FC = () => {
               description={t.dashboard.authRequiredDesc}
               type="warning"
               showIcon
-              style={{ borderRadius: 14, border: '1px solid #ffe58f', background: '#fffbe6', padding: '12px 20px' }}
+              className="dashboard-alert dashboard-alert-warning"
             />
           )}
           {needsConfig && !needsAuth && (
@@ -717,7 +729,7 @@ const Dashboard: React.FC = () => {
               type="warning"
               showIcon
               action={<Button size="middle" type="primary" onClick={() => navigate('/settings/configuration')} style={{ borderRadius: 8 }}>{t.dashboard.configure}</Button>}
-              style={{ borderRadius: 14, border: '1px solid #ffe58f', background: '#fffbe6', padding: '12px 20px' }}
+              className="dashboard-alert dashboard-alert-warning"
             />
           )}
           {error && !needsAuth && !needsConfig && (
@@ -726,7 +738,7 @@ const Dashboard: React.FC = () => {
               description={error.includes('Network Error') || error.includes('ECONNREFUSED') ? t.dashboard.backendConnectionErrorDesc : error}
               type="error"
               showIcon
-              style={{ borderRadius: 14, marginTop: 12, padding: '12px 20px' }}
+              className="dashboard-alert dashboard-alert-error" style={{ marginTop: 12 }}
             />
           )}
           {!loading && !error && !needsAuth && !needsConfig && marketData.length > 0 && marketData.every(stock => stock.price === null) && (
@@ -736,7 +748,7 @@ const Dashboard: React.FC = () => {
               type="warning"
               showIcon
               action={<Button size="middle" onClick={() => navigate('/settings/configuration')} style={{ borderRadius: 8 }}>{t.dashboard.checkConfig}</Button>}
-              style={{ borderRadius: 14, border: '1px solid #ffe58f', background: '#fffbe6', marginTop: 12, padding: '12px 20px' }}
+              className="dashboard-alert dashboard-alert-warning" style={{ marginTop: 12 }}
             />
           )}
         </div>
@@ -773,7 +785,7 @@ const Dashboard: React.FC = () => {
         <Card className="premium-card" bodyStyle={{ padding: 0 }}>
           <div className="metric-card">
             <span className="metric-label">{t.dashboard.avgChange}</span>
-            <span className="metric-value" style={{ color: marketStats.avgChange > 0 ? '#10b981' : marketStats.avgChange < 0 ? '#ef4444' : '#0f172a' }}>
+            <span className="metric-value" style={{ color: marketStats.avgChange > 0 ? '#10b981' : marketStats.avgChange < 0 ? '#ef4444' : "var(--app-text-strong)" }}>
               {marketStats.avgChange !== 0 ? (marketStats.avgChange > 0 ? '+' : '') + marketStats.avgChange.toFixed(2) + '%' : '0.00%'}
             </span>
             <LineChartOutlined className="metric-icon" />
@@ -806,14 +818,14 @@ const Dashboard: React.FC = () => {
       <div className="movers-grid">
         <Card 
           className="premium-card" 
-          title={<span style={{ fontWeight: 800, fontSize: 16, color: '#0f172a' }}><RiseOutlined style={{ color: '#10b981', marginRight: 10 }} />{t.dashboard.topGainers}</span>}
+          title={<span style={{ fontWeight: 800, fontSize: 16, color: "var(--app-text-strong)" }}><RiseOutlined style={{ color: '#10b981', marginRight: 10 }} />{t.dashboard.topGainers}</span>}
           extra={<Tag color="green" style={{ borderRadius: 6, fontWeight: 700 }}>TOP 5</Tag>}
           bodyStyle={{ padding: '8px 0', minHeight: 360 }}
         >
           {getTopGainers().length === 0 ? (
             <div className="empty-state-container">
               <RiseOutlined style={{ fontSize: 32, color: '#f1f5f9', marginBottom: 12 }} />
-              <Text strong style={{ color: '#94a3b8' }}>{t.dashboard.noGainersFound}</Text>
+              <Text strong style={{ color: "var(--app-text-muted)" }}>{t.dashboard.noGainersFound}</Text>
               <Text type="secondary" style={{ fontSize: 12 }}>{t.dashboard.configureMarketData}</Text>
             </div>
           ) : (
@@ -821,19 +833,19 @@ const Dashboard: React.FC = () => {
               {getTopGainers().slice(0, 5).map((stock, i) => (
                 <div key={stock.symbol} onClick={() => handleSymbolClick(stock.symbol)} style={{ 
                   display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 0',
-                  borderBottom: i === 4 ? 'none' : '1px solid #f1f5f9', cursor: 'pointer', transition: 'padding 0.2s'
+                  borderBottom: i === 4 ? 'none' : "1px solid var(--app-border-soft)", cursor: 'pointer', transition: 'padding 0.2s'
                 }} className="hover-row">
                   <Space size={14}>
-                    <div style={{ width: 42, height: 42, borderRadius: 10, background: '#f8fafc', border: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, color: '#334155' }}>
+                    <div style={{ width: 42, height: 42, borderRadius: 10, background: 'var(--app-card-bg-soft)', border: "1px solid var(--app-border-soft)", display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, color: "var(--app-text-strong)" }}>
                       {stock.symbol[0]}
                     </div>
                     <Space direction="vertical" size={0}>
-                      <Text strong style={{ fontSize: 15, color: '#0f172a' }}>{stock.symbol}</Text>
-                      <Text style={{ fontSize: 12, color: '#64748b' }} ellipsis>{stock.name || 'N/A'}</Text>
+                      <Text strong style={{ fontSize: 15, color: "var(--app-text-strong)" }}>{stock.symbol}</Text>
+                      <Text style={{ fontSize: 12, color: "var(--app-text-muted)" }} ellipsis>{stock.name || 'N/A'}</Text>
                     </Space>
                   </Space>
                   <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontWeight: 800, fontSize: 15, color: '#0f172a', marginBottom: 2 }}>${safeToFixed(stock.price, 2)}</div>
+                    <div style={{ fontWeight: 800, fontSize: 15, color: "var(--app-text-strong)", marginBottom: 2 }}>${safeToFixed(stock.price, 2)}</div>
                     <div style={{ 
                       background: 'rgba(16, 185, 129, 0.1)', color: '#10b981', padding: '2px 10px', 
                       borderRadius: 8, fontSize: 12, fontWeight: 800, display: 'inline-block' 
@@ -849,14 +861,14 @@ const Dashboard: React.FC = () => {
 
         <Card 
           className="premium-card" 
-          title={<span style={{ fontWeight: 800, fontSize: 16, color: '#0f172a' }}><FallOutlined style={{ color: '#ef4444', marginRight: 10 }} />{t.dashboard.topLosers}</span>}
+          title={<span style={{ fontWeight: 800, fontSize: 16, color: "var(--app-text-strong)" }}><FallOutlined style={{ color: '#ef4444', marginRight: 10 }} />{t.dashboard.topLosers}</span>}
           extra={<Tag color="red" style={{ borderRadius: 6, fontWeight: 700 }}>TOP 5</Tag>}
           bodyStyle={{ padding: '8px 0', minHeight: 360 }}
         >
           {getTopLosers().length === 0 ? (
             <div className="empty-state-container">
               <FallOutlined style={{ fontSize: 32, color: '#f1f5f9', marginBottom: 12 }} />
-              <Text strong style={{ color: '#94a3b8' }}>{t.dashboard.noLosersFound}</Text>
+              <Text strong style={{ color: "var(--app-text-muted)" }}>{t.dashboard.noLosersFound}</Text>
               <Text type="secondary" style={{ fontSize: 12 }}>{t.dashboard.configureMarketData}</Text>
             </div>
           ) : (
@@ -864,19 +876,19 @@ const Dashboard: React.FC = () => {
               {getTopLosers().slice(0, 5).map((stock, i) => (
                 <div key={stock.symbol} onClick={() => handleSymbolClick(stock.symbol)} style={{ 
                   display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 0',
-                  borderBottom: i === 4 ? 'none' : '1px solid #f1f5f9', cursor: 'pointer'
+                  borderBottom: i === 4 ? 'none' : "1px solid var(--app-border-soft)", cursor: 'pointer'
                 }} className="hover-row">
                   <Space size={14}>
-                    <div style={{ width: 42, height: 42, borderRadius: 10, background: '#f8fafc', border: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, color: '#334155' }}>
+                    <div style={{ width: 42, height: 42, borderRadius: 10, background: 'var(--app-card-bg-soft)', border: "1px solid var(--app-border-soft)", display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, color: "var(--app-text-strong)" }}>
                       {stock.symbol[0]}
                     </div>
                     <Space direction="vertical" size={0}>
-                      <Text strong style={{ fontSize: 15, color: '#0f172a' }}>{stock.symbol}</Text>
-                      <Text style={{ fontSize: 12, color: '#64748b' }} ellipsis>{stock.name || 'N/A'}</Text>
+                      <Text strong style={{ fontSize: 15, color: "var(--app-text-strong)" }}>{stock.symbol}</Text>
+                      <Text style={{ fontSize: 12, color: "var(--app-text-muted)" }} ellipsis>{stock.name || 'N/A'}</Text>
                     </Space>
                   </Space>
                   <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontWeight: 800, fontSize: 15, color: '#0f172a', marginBottom: 2 }}>${safeToFixed(stock.price, 2)}</div>
+                    <div style={{ fontWeight: 800, fontSize: 15, color: "var(--app-text-strong)", marginBottom: 2 }}>${safeToFixed(stock.price, 2)}</div>
                     <div style={{ 
                       background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', padding: '2px 10px', 
                       borderRadius: 8, fontSize: 12, fontWeight: 800, display: 'inline-block' 
@@ -895,7 +907,7 @@ const Dashboard: React.FC = () => {
       <div className="widgets-grid">
         <Card 
           className="premium-card" 
-          title={<span style={{ fontWeight: 800, fontSize: 16, color: '#0f172a' }}><PieChartOutlined style={{ marginRight: 10, color: '#6366f1' }} />{t.dashboard.sectorDistribution}</span>}
+          title={<span style={{ fontWeight: 800, fontSize: 16, color: "var(--app-text-strong)" }}><PieChartOutlined style={{ marginRight: 10, color: '#6366f1' }} />{t.dashboard.sectorDistribution}</span>}
           bodyStyle={{ height: 340, padding: '24px 30px' }}
         >
           {sectorData.length === 0 ? (
@@ -934,9 +946,9 @@ const Dashboard: React.FC = () => {
                   <div key={sector.name} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14 }}>
                     <Space size={10}>
                       <div style={{ width: 10, height: 10, borderRadius: 3, background: getSectorColor(sector.name) }} />
-                      <Text style={{ fontSize: 13, fontWeight: 600, color: '#334155' }}>{translateSector(sector.name)}</Text>
+                      <Text style={{ fontSize: 13, fontWeight: 600, color: "var(--app-text-strong)" }}>{translateSector(sector.name)}</Text>
                     </Space>
-                    <Text strong style={{ fontSize: 13, color: '#0f172a' }}>{sector.percentage.toFixed(1)}%</Text>
+                    <Text strong style={{ fontSize: 13, color: "var(--app-text-strong)" }}>{sector.percentage.toFixed(1)}%</Text>
                   </div>
                 ))}
               </div>
@@ -946,31 +958,31 @@ const Dashboard: React.FC = () => {
 
         <Card 
           className="premium-card" 
-          title={<span style={{ fontWeight: 800, fontSize: 16, color: '#0f172a' }}><BarChartOutlined style={{ marginRight: 10, color: '#f59e0b' }} />{t.dashboard.marketBreadth}</span>}
+          title={<span style={{ fontWeight: 800, fontSize: 16, color: "var(--app-text-strong)" }}><BarChartOutlined style={{ marginRight: 10, color: '#f59e0b' }} />{t.dashboard.marketBreadth}</span>}
           bodyStyle={{ height: 340, padding: 30, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}
         >
           <div style={{ textAlign: 'center', marginBottom: 36 }}>
-            <div style={{ fontSize: 12, color: '#94a3b8', fontWeight: 800, textTransform: 'uppercase', marginBottom: 12, letterSpacing: 0.5 }}>{t.dashboard.advancingVsDeclining}</div>
+            <div style={{ fontSize: 12, color: "var(--app-text-muted)", fontWeight: 800, textTransform: 'uppercase', marginBottom: 12, letterSpacing: 0.5 }}>{t.dashboard.advancingVsDeclining}</div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 24 }}>
               <div>
                 <div style={{ fontSize: 36, fontWeight: 900, color: '#10b981', lineHeight: 1 }}>{marketStats.gainers}</div>
                 <Text style={{ fontSize: 11, fontWeight: 800, color: '#10b981', textTransform: 'uppercase' }}>{t.dashboard.up}</Text>
               </div>
-              <div style={{ height: 44, width: 2, background: '#f1f5f9' }} />
+              <div style={{ height: 44, width: 2, background: "var(--app-border-soft)" }} />
               <div>
                 <div style={{ fontSize: 36, fontWeight: 900, color: '#ef4444', lineHeight: 1 }}>{marketStats.losers}</div>
                 <Text style={{ fontSize: 11, fontWeight: 800, color: '#ef4444', textTransform: 'uppercase' }}>{t.dashboard.down}</Text>
               </div>
             </div>
           </div>
-          <div style={{ background: '#f8fafc', borderRadius: 16, padding: 20, border: '1px solid #f1f5f9' }}>
+          <div style={{ background: 'var(--app-card-bg-soft)', borderRadius: 16, padding: 20, border: "1px solid var(--app-border-soft)" }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
-              <Text style={{ fontSize: 13, fontWeight: 600, color: '#475569' }}>{t.dashboard.overallStatus}</Text>
+              <Text style={{ fontSize: 13, fontWeight: 600, color: "var(--app-text-muted)" }}>{t.dashboard.overallStatus}</Text>
               <Tag color={marketStats.avgChange > 0 ? 'green' : marketStats.avgChange < 0 ? 'red' : 'default'} style={{ margin: 0, fontWeight: 800, borderRadius: 6, padding: '0 8px' }}>
                 {marketStats.avgChange > 0.5 ? t.dashboard.bullish : marketStats.avgChange < -0.5 ? t.dashboard.bearish : t.dashboard.neutral}
               </Tag>
             </div>
-            <div style={{ height: 10, background: '#e2e8f0', borderRadius: 5, overflow: 'hidden', display: 'flex' }}>
+            <div style={{ height: 10, background: 'var(--app-border)', borderRadius: 5, overflow: 'hidden', display: 'flex' }}>
               <div style={{ height: '100%', background: '#10b981', width: `${marketStats.totalSymbols > 0 ? (marketStats.gainers / marketStats.totalSymbols) * 100 : 0}%` }} />
               <div style={{ height: '100%', background: '#ef4444', width: `${marketStats.totalSymbols > 0 ? (marketStats.losers / marketStats.totalSymbols) * 100 : 0}%` }} />
             </div>
@@ -979,7 +991,7 @@ const Dashboard: React.FC = () => {
 
         <Card 
           className="premium-card" 
-          title={<span style={{ fontWeight: 800, fontSize: 16, color: '#0f172a' }}><DatabaseOutlined style={{ marginRight: 10, color: '#3b82f6' }} />{t.dashboard.systemStatus}</span>}
+          title={<span style={{ fontWeight: 800, fontSize: 16, color: "var(--app-text-strong)" }}><DatabaseOutlined style={{ marginRight: 10, color: '#3b82f6' }} />{t.dashboard.systemStatus}</span>}
           bodyStyle={{ height: 340, padding: '24px 26px' }}
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 18, marginTop: 4 }}>
@@ -990,9 +1002,9 @@ const Dashboard: React.FC = () => {
               { label: t.dashboard.symbols, status: marketStats.totalSymbols.toString(), isTag: false }
             ].map(item => (
               <div key={item.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text style={{ fontSize: 13, color: '#64748b', fontWeight: 600 }}>{item.label}</Text>
+                <Text style={{ fontSize: 13, color: "var(--app-text-muted)", fontWeight: 600 }}>{item.label}</Text>
                 {item.isTag === false ? (
-                  <Text strong style={{ fontSize: 14, color: '#0f172a' }}>{item.status}</Text>
+                  <Text strong style={{ fontSize: 14, color: "var(--app-text-strong)" }}>{item.status}</Text>
                 ) : (
                   <Tag color={item.status === 'ONLINE' || item.status === 'HEALTHY' ? 'success' : item.status === 'PAPER' || item.status === 'LIVE' ? 'blue' : item.status === 'CONFIG_REQUIRED' || item.status === 'AUTH_REQUIRED' ? 'warning' : 'error'}
                        style={{ margin: 0, fontWeight: 800, borderRadius: 6, fontSize: 11, padding: '1px 10px' }}>
@@ -1002,11 +1014,11 @@ const Dashboard: React.FC = () => {
               </div>
             ))}
             <Divider style={{ margin: '8px 0' }} />
-            <div style={{ background: '#f8fafc', padding: '14px 16px', borderRadius: 12, border: '1px solid #f1f5f9' }}>
-              <div style={{ fontSize: 10, color: '#94a3b8', fontWeight: 800, textTransform: 'uppercase', marginBottom: 6, letterSpacing: 0.5 }}>{t.dashboard.environment}</div>
+            <div style={{ background: 'var(--app-card-bg-soft)', padding: '14px 16px', borderRadius: 12, border: "1px solid var(--app-border-soft)" }}>
+              <div style={{ fontSize: 10, color: "var(--app-text-muted)", fontWeight: 800, textTransform: 'uppercase', marginBottom: 6, letterSpacing: 0.5 }}>{t.dashboard.environment}</div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <div style={{ width: 8, height: 8, borderRadius: '50%', background: systemStatus.marketData === 'CONFIG_REQUIRED' || systemStatus.marketData === 'AUTH_REQUIRED' ? '#f59e0b' : '#3b82f6', boxShadow: '0 0 8px rgba(59, 130, 246, 0.4)' }} />
-                <Text strong style={{ fontSize: 13, color: '#0f172a' }}>{systemStatus.environment || 'Unknown'}</Text>
+                <Text strong style={{ fontSize: 13, color: "var(--app-text-strong)" }}>{systemStatus.environment || 'Unknown'}</Text>
               </div>
             </div>
           </div>
@@ -1016,20 +1028,20 @@ const Dashboard: React.FC = () => {
       {/* ── Watchlist Snapshot ── */}
       <Card 
         className="premium-card" 
-        title={<span style={{ fontWeight: 800, fontSize: 18, color: '#0f172a' }}><EyeOutlined style={{ color: '#3b82f6', marginRight: 12 }} />{t.dashboard.watchlistSnapshot}</span>}
+        title={<span style={{ fontWeight: 800, fontSize: 18, color: "var(--app-text-strong)" }}><EyeOutlined style={{ color: '#3b82f6', marginRight: 12 }} />{t.dashboard.watchlistSnapshot}</span>}
         extra={<Button type="link" onClick={handleManageWatchlist} style={{ fontWeight: 700, fontSize: 14 }}>{t.dashboard.manageAll}</Button>}
         bodyStyle={{ padding: 24 }}
       >
         {getWatchlistSymbols().length === 0 ? (
           <div className="empty-state-container">
             <EyeOutlined style={{ fontSize: 40, color: '#f1f5f9', marginBottom: 16 }} />
-            <Text strong style={{ color: '#94a3b8', fontSize: 16 }}>{t.dashboard.watchlistEmpty}</Text>
+            <Text strong style={{ color: "var(--app-text-muted)", fontSize: 16 }}>{t.dashboard.watchlistEmpty}</Text>
             <Button type="primary" onClick={() => navigate('/market')} style={{ marginTop: 16, borderRadius: 8, fontWeight: 600 }}>{t.dashboard.exploreMarket}</Button>
           </div>
         ) : getWatchlistData().length === 0 ? (
           <div className="empty-state-container">
             <ReloadOutlined className="anticon-spin" style={{ fontSize: 40, color: '#3b82f6', marginBottom: 16 }} />
-            <Text strong style={{ color: '#64748b' }}>{t.dashboard.waitingForData}</Text>
+            <Text strong style={{ color: "var(--app-text-muted)" }}>{t.dashboard.waitingForData}</Text>
           </div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 16 }}>
@@ -1043,27 +1055,27 @@ const Dashboard: React.FC = () => {
                   hoverable 
                   onClick={() => handleSymbolClick(stock.symbol)}
                   bodyStyle={{ padding: '20px' }}
-                  style={{ borderRadius: 16, border: '1px solid #f1f5f9', background: '#f8fafc', overflow: 'hidden' }}
+                  style={{ borderRadius: 16, border: "1px solid var(--app-border-soft)", background: 'var(--app-card-bg-soft)', overflow: 'hidden' }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
-                    <div style={{ width: 36, height: 36, borderRadius: 8, background: '#fff', border: '1px solid #edf2f7', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, color: '#1e293b' }}>
+                    <div style={{ width: 36, height: 36, borderRadius: 8, background: "var(--app-card-bg)", border: "1px solid var(--app-border-soft)", display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, color: "var(--app-text-strong)" }}>
                       {stock.symbol[0]}
                     </div>
                     <div style={{ 
                       background: isUp ? 'rgba(16, 185, 129, 0.1)' : isDown ? 'rgba(239, 68, 68, 0.1)' : '#f1f5f9',
-                      color: isUp ? '#10b981' : isDown ? '#ef4444' : '#64748b',
+                      color: isUp ? '#10b981' : isDown ? '#ef4444' : "var(--app-text-muted)",
                       padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 800
                     }}>
                       {change !== null ? (change > 0 ? '+' : '') + change.toFixed(1) + '%' : '—'}
                     </div>
                   </div>
                   <div style={{ marginBottom: 4 }}>
-                    <Text strong style={{ fontSize: 17, color: '#0f172a' }}>{stock.symbol}</Text>
+                    <Text strong style={{ fontSize: 17, color: "var(--app-text-strong)" }}>{stock.symbol}</Text>
                   </div>
-                  <div style={{ fontSize: 20, fontWeight: 900, color: '#0f172a', marginBottom: 4 }}>
+                  <div style={{ fontSize: 20, fontWeight: 900, color: "var(--app-text-strong)", marginBottom: 4 }}>
                     ${safeToFixed(stock.price, 2)}
                   </div>
-                  <Text style={{ fontSize: 12, color: '#64748b' }} ellipsis>{stock.name || 'N/A'}</Text>
+                  <Text style={{ fontSize: 12, color: "var(--app-text-muted)" }} ellipsis>{stock.name || 'N/A'}</Text>
                 </Card>
               );
             })}

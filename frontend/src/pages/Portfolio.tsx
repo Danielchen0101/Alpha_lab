@@ -5,6 +5,7 @@ import {
   Card,
   Col,
   Descriptions,
+  Divider,
   Empty,
   Row,
   Select,
@@ -52,9 +53,9 @@ const normalizeTimestamp = (timestamp: number | string): number | null => {
 };
 
 const toneColor = (value: number): string => {
-  if (value > 0) return '#10b981'; // Closer to a professional green
-  if (value < 0) return '#ef4444'; // Closer to a professional red
-  return '#6b7280';
+  if (value > 0) return '#4ade80'; // Vibrant green
+  if (value < 0) return '#ef4444'; // Vibrant red
+  return 'var(--app-text-muted)';
 };
 
 const formatMoney = (value: any): string => {
@@ -164,28 +165,28 @@ const CustomTooltip: React.FC<any> = ({ active, payload, label, t, localeName, h
 
     return (
       <div style={{
-        backgroundColor: 'rgba(255, 255, 255, 0.96)',
-        border: '1px solid #e2e8f0',
+        backgroundColor: 'var(--app-card-bg)',
+        border: '1px solid var(--app-border)',
         padding: '12px 16px',
         borderRadius: '12px',
-        boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)',
+        boxShadow: 'var(--app-shadow)',
         minWidth: '200px'
       }}>
-        <div style={{ marginBottom: '8px', borderBottom: '1px solid #f1f5f9', paddingBottom: '4px' }}>
-          <Text type="secondary" style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' }}>
+        <div style={{ marginBottom: '8px', borderBottom: '1px solid var(--app-border-soft)', paddingBottom: '4px' }}>
+          <Text style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', color: 'var(--app-text-muted)' }}>
             {t.portfolio.tooltipTime}
           </Text>
-          <div style={{ fontSize: '13px', fontWeight: 700, color: '#1e293b' }}>{dateStr}</div>
+          <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--app-text-strong)' }}>{dateStr}</div>
         </div>
         <div style={{ marginBottom: '8px' }}>
-          <Text type="secondary" style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' }}>
+          <Text style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', color: 'var(--app-text-muted)' }}>
             {t.portfolio.tooltipEquity}
           </Text>
-          <div style={{ fontSize: '18px', fontWeight: 800, color: '#1e293b' }}>{formatMoney(data.equity)}</div>
+          <div style={{ fontSize: '18px', fontWeight: 800, color: 'var(--app-text-strong)' }}>{formatMoney(data.equity)}</div>
         </div>
         <div style={{ display: 'flex', gap: '16px' }}>
           <div>
-            <Text type="secondary" style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' }}>
+            <Text style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', color: 'var(--app-text-muted)' }}>
               {t.portfolio.tooltipChange}
             </Text>
             <div style={{ fontSize: '13px', fontWeight: 700, color: toneColor(changeVal) }}>
@@ -193,7 +194,7 @@ const CustomTooltip: React.FC<any> = ({ active, payload, label, t, localeName, h
             </div>
           </div>
           <div>
-            <Text type="secondary" style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' }}>
+            <Text style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', color: 'var(--app-text-muted)' }}>
               {t.portfolio.tooltipChangePct}
             </Text>
             <div style={{ fontSize: '13px', fontWeight: 700, color: toneColor(changeVal) }}>
@@ -518,17 +519,51 @@ const Portfolio: React.FC = () => {
     <div style={{ maxWidth: 1440, margin: '0 auto' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, marginBottom: 20, flexWrap: 'wrap' }}>
         <div>
-          <Title level={2} style={{ marginBottom: 4 }}>
-            <PieChartOutlined style={{ marginRight: 12, color: '#2563eb' }} />
+          <Title level={2} style={{ marginBottom: 4, color: 'var(--app-text-strong)', fontWeight: 800, letterSpacing: '-0.5px' }}>
+            <PieChartOutlined style={{ marginRight: 12, color: 'var(--app-blue-text)' }} />
             {t.portfolio.title}
           </Title>
-          <Text type="secondary">{t.portfolio.subtitle}</Text>
+          <Text style={{ color: 'var(--app-text-muted)', fontSize: 14, fontWeight: 500 }}>{t.portfolio.subtitle}</Text>
         </div>
         <Space wrap>
-          <Tag color={tradeMode === 'real' ? 'red' : 'blue'} style={{ fontSize: 13, padding: '4px 12px', borderRadius: 6 }}>
+          <Tag color={tradeMode === 'real' ? 'red' : 'blue'} bordered={false} style={{ 
+            fontSize: 13, 
+            padding: '4px 12px', 
+            borderRadius: 6,
+            backgroundColor: tradeMode === 'real' ? 'rgba(239, 68, 68, 0.12)' : 'rgba(59, 130, 246, 0.12)',
+            color: tradeMode === 'real' ? '#ef4444' : '#60a5fa',
+            border: `1px solid ${tradeMode === 'real' ? 'rgba(239, 68, 68, 0.25)' : 'rgba(59, 130, 246, 0.25)'}`,
+            fontWeight: 700
+          }}>
             {modeLabel}
           </Tag>
-          <Button icon={<ReloadOutlined />} onClick={() => loadData()} loading={loading}>
+          <Tag color="green" bordered={false} style={{ 
+            fontSize: 11, 
+            fontWeight: 800, 
+            borderRadius: 4,
+            backgroundColor: 'rgba(74, 222, 128, 0.1)',
+            color: '#4ade80',
+            border: '1px solid rgba(74, 222, 128, 0.2)'
+          }}>
+            Data: {sourceLabel}
+          </Tag>
+          {lastUpdated && (
+            <span style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 500 }}>
+              Updated: {formatDateTime(lastUpdated)}
+            </span>
+          )}
+          <Button 
+            icon={<ReloadOutlined />} 
+            onClick={() => loadData()} 
+            loading={loading}
+            style={{ 
+              borderRadius: 8, 
+              background: 'var(--app-card-bg-soft)', 
+              color: 'var(--app-text)', 
+              borderColor: 'var(--app-border)',
+              fontWeight: 600
+            }}
+          >
             {t.portfolio.refresh}
           </Button>
         </Space>
@@ -538,24 +573,27 @@ const Portfolio: React.FC = () => {
         <Alert
           type="error"
           showIcon
-          message={t.portfolio.apiErrorTitle}
+          message={<span style={{ fontWeight: 700 }}>{t.portfolio.apiErrorTitle}</span>}
           description={error}
-          action={<Button size="small" onClick={() => navigate('/settings/configuration')}>{t.portfolio.configureAction}</Button>}
-          style={{ marginBottom: 20, borderRadius: 8 }}
+          action={<Button size="small" type="primary" danger onClick={() => navigate('/settings/configuration')}>{t.portfolio.configureAction}</Button>}
+          style={{ marginBottom: 20, borderRadius: 10, border: '1px solid #ef4444', background: 'rgba(239, 68, 68, 0.05)' }}
         />
       )}
 
       <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
         {kpis.map((kpi) => (
           <Col xs={24} sm={12} xl={kpi.label === t.portfolio.totalUnrealizedPL ? 4 : 5} key={kpi.label}>
-            <Card style={{ borderRadius: 8, minHeight: 128 }} bodyStyle={{ padding: 18 }}>
+            <Card 
+              style={{ borderRadius: 10, minHeight: 128, background: 'var(--app-card-bg)', border: '1px solid var(--app-border-soft)', boxShadow: 'var(--app-shadow)' }} 
+              bodyStyle={{ padding: 18 }}
+            >
               {loading ? (
                 <Skeleton active paragraph={{ rows: 1 }} title={{ width: '55%' }} />
               ) : (
                 <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                  <Text type="secondary" style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase' }}>{kpi.label}</Text>
-                  <Text style={{ fontSize: 24, fontWeight: 800, color: toneColor(kpi.tone) }}>{kpi.value}</Text>
-                  <Text type="secondary" style={{ fontSize: 12 }}>{kpi.detail}</Text>
+                  <Text style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--app-text-muted)', letterSpacing: '0.5px' }}>{kpi.label}</Text>
+                  <Text style={{ fontSize: 24, fontWeight: 800, color: toneColor(kpi.tone), letterSpacing: '-0.5px' }}>{kpi.value}</Text>
+                  <Text style={{ fontSize: 12, color: 'var(--app-text-muted)', fontWeight: 500 }}>{kpi.detail}</Text>
                 </Space>
               )}
             </Card>
@@ -566,7 +604,7 @@ const Portfolio: React.FC = () => {
       <Row gutter={[16, 16]}>
         <Col xs={24} xl={17}>
           <Card
-            title={t.portfolio.portfolioPerformance}
+            title={<span style={{ color: 'var(--app-text-strong)', fontWeight: 700 }}>{t.portfolio.portfolioPerformance}</span>}
             extra={
               <Space wrap>
                 <Tag
@@ -578,13 +616,18 @@ const Portfolio: React.FC = () => {
                     borderRadius: 6,
                     fontWeight: 700,
                     border: 'none',
-                    backgroundColor: portfolioChange.value >= 0 ? '#ecfdf5' : '#fef2f2',
-                    color: portfolioChange.value >= 0 ? '#059669' : '#dc2626'
+                    backgroundColor: portfolioChange.value >= 0 ? 'rgba(74, 222, 128, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                    color: portfolioChange.value >= 0 ? '#4ade80' : '#ef4444'
                   }}
                 >
                   {formatSignedMoney(portfolioChange.value)} ({formatPercent(portfolioChange.percent)})
                 </Tag>
-                <Select value={portfolioRange} onChange={handlePortfolioRangeChange} style={{ width: 112 }}>
+                <Select 
+                  value={portfolioRange} 
+                  onChange={handlePortfolioRangeChange} 
+                  style={{ width: 112 }}
+                  dropdownStyle={{ background: 'var(--app-card-bg)' }}
+                >
                   <Option value="1D">{t.portfolio.range1Day}</Option>
                   <Option value="1W">{t.portfolio.range1Week}</Option>
                   <Option value="1M">{t.portfolio.range1Month}</Option>
@@ -594,17 +637,17 @@ const Portfolio: React.FC = () => {
                 </Select>
               </Space>
             }
-            style={{ borderRadius: 8, marginBottom: 16 }}
+            style={{ borderRadius: 10, marginBottom: 16, background: 'var(--app-card-bg)', border: '1px solid var(--app-border-soft)', boxShadow: 'var(--app-shadow)' }}
           >
             {loading ? (
               <Skeleton active paragraph={{ rows: 8 }} />
             ) : error ? (
               <Empty description={t.portfolio.portfolioHistoryLoadFailed}>
-                <Text type="secondary" style={{ color: '#ef4444' }}>{error}</Text>
+                <Text style={{ color: '#ef4444', fontWeight: 600 }}>{error}</Text>
               </Empty>
             ) : portfolioHistory.length === 0 ? (
               <Empty description={t.portfolio.noPortfolioHistory}>
-                <Text type="secondary">{t.portfolio.noPortfolioHistoryDesc}</Text>
+                <Text style={{ color: 'var(--app-text-muted)' }}>{t.portfolio.noPortfolioHistoryDesc}</Text>
               </Empty>
             ) : (
               <>
@@ -613,17 +656,17 @@ const Portfolio: React.FC = () => {
                   <AreaChart data={portfolioHistory} margin={{ top: 10, right: 12, bottom: 4, left: 0 }}>
                     <defs>
                       <linearGradient id="colorEquity" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#2563eb" stopOpacity={0.15}/>
-                        <stop offset="95%" stopColor="#2563eb" stopOpacity={0.01}/>
+                        <stop offset="5%" stopColor="var(--app-blue-text)" stopOpacity={0.15}/>
+                        <stop offset="95%" stopColor="var(--app-blue-text)" stopOpacity={0.01}/>
                       </linearGradient>
                     </defs>
-                    <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="#f1f5f9" />
+                    <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="rgba(148, 163, 184, 0.12)" />
                     <XAxis
                       dataKey="timestamp"
                       type="number"
                       scale="time"
                       domain={['dataMin', 'dataMax']}
-                      tick={{ fill: '#94a3b8', fontSize: 11 }}
+                      tick={{ fill: 'var(--app-text-muted)', fontSize: 11 }}
                       tickLine={false}
                       axisLine={false}
                       tickMargin={12}
@@ -655,7 +698,7 @@ const Portfolio: React.FC = () => {
                     <YAxis
                       tickFormatter={(v) => formatCompactMoney(v)}
                       width={64}
-                      tick={{ fill: '#94a3b8', fontSize: 11 }}
+                      tick={{ fill: 'var(--app-text-muted)', fontSize: 11 }}
                       tickLine={false}
                       axisLine={false}
                       domain={yDomain}
@@ -667,12 +710,12 @@ const Portfolio: React.FC = () => {
                     <Area
                       type="monotone"
                       dataKey="equity"
-                      stroke="#2563eb"
+                      stroke="var(--app-blue-text)"
                       strokeWidth={2.5}
                       fillOpacity={1}
                       fill="url(#colorEquity)"
                       name={t.portfolio.portfolioValueLine}
-                      activeDot={{ r: 6, stroke: '#fff', strokeWidth: 2, fill: '#2563eb' }}
+                      activeDot={{ r: 6, stroke: 'var(--app-card-bg)', strokeWidth: 2, fill: 'var(--app-blue-text)' }}
                     />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -682,12 +725,12 @@ const Portfolio: React.FC = () => {
                   message={t.portfolio.fallbackHistoryBanner}
                   type="warning"
                   showIcon
-                  style={{ marginTop: 16, borderRadius: 8 }}
+                  style={{ marginTop: 16, borderRadius: 10 }}
                 />
               ) : source ? (
                 <div style={{ textAlign: 'right', marginRight: 12 }}>
-                  <Text type="secondary" style={{ fontSize: 11 }}>
-                    <SafetyCertificateOutlined style={{ color: '#52c41a', marginRight: 4 }} />
+                  <Text style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 500 }}>
+                    <SafetyCertificateOutlined style={{ color: '#4ade80', marginRight: 4 }} />
                     {t.portfolio.verifiedAlpacaHistory}
                     {' · '}
                     {sourceLabel}
@@ -698,38 +741,69 @@ const Portfolio: React.FC = () => {
             )}
           </Card>
 
-          <Card title={t.portfolio.holdings} style={{ borderRadius: 8 }}>
+          <Card 
+            title={<span style={{ color: 'var(--app-text-strong)', fontWeight: 700 }}>{t.portfolio.holdings}</span>} 
+            style={{ borderRadius: 10, background: 'var(--app-card-bg)', border: '1px solid var(--app-border-soft)', boxShadow: 'var(--app-shadow)' }}
+            bodyStyle={{ padding: 0 }}
+          >
+            <style>{`
+              .portfolio-table .ant-table-thead > tr > th { 
+                background: var(--app-table-header-bg) !important; 
+                color: var(--app-text-muted) !important;
+                font-weight: 700 !important;
+                font-size: 11px !important;
+                text-transform: uppercase !important;
+                letter-spacing: 0.5px !important;
+                padding: 12px 16px !important;
+                border-bottom: 1px solid var(--app-border-soft) !important;
+              }
+              .portfolio-table .ant-table-thead > tr > th:first-child,
+              .portfolio-table .ant-table-tbody > tr > td:first-child { padding-left: 24px !important; }
+              .portfolio-row > td { border-bottom: 1px solid var(--app-border-soft) !important; background: var(--app-card-bg) !important; color: var(--app-text) !important; }
+              .portfolio-row:hover > td { background-color: var(--app-card-bg-soft) !important; }
+              .ant-table-placeholder .ant-table-cell { background: var(--app-card-bg) !important; border-bottom: none !important; }
+            `}</style>
             {loading ? (
-              <Skeleton active paragraph={{ rows: 10 }} />
+              <Skeleton active paragraph={{ rows: 10 }} style={{ padding: 24 }} />
             ) : positions.length === 0 ? (
-              <Empty description={t.portfolio.noPositions} />
+              <Empty description={t.portfolio.noPositions} style={{ padding: '40px 0' }} />
             ) : (
               <Table
+                className="portfolio-table"
                 columns={positionsColumns}
                 dataSource={positions}
                 rowKey={(record) => record.symbol}
                 size="middle"
                 pagination={{ pageSize: 12, showSizeChanger: false }}
                 scroll={{ x: 1180 }}
+                rowClassName="portfolio-row"
               />
             )}
           </Card>
         </Col>
 
         <Col xs={24} xl={7}>
-          <Card title={t.portfolio.summary} style={{ borderRadius: 8 }}>
+          <Card 
+            title={<span style={{ color: 'var(--app-text-strong)', fontWeight: 700 }}>{t.portfolio.summary}</span>} 
+            style={{ borderRadius: 10, background: 'var(--app-card-bg)', border: '1px solid var(--app-border-soft)', boxShadow: 'var(--app-shadow)' }}
+          >
             {loading ? (
               <Skeleton active paragraph={{ rows: 7 }} />
             ) : !account ? (
               <Empty description={t.portfolio.dataUnavailable} />
             ) : (
-              <Space direction="vertical" size={16} style={{ width: '100%' }}>
-                <Descriptions column={1} size="small">
+              <Space direction="vertical" size={20} style={{ width: '100%' }}>
+                <Descriptions 
+                  column={1} 
+                  size="small" 
+                  labelStyle={{ color: 'var(--app-text-muted)', fontWeight: 600 }}
+                  contentStyle={{ color: 'var(--app-text-strong)', fontWeight: 700, textAlign: 'right', display: 'block' }}
+                >
                   <Descriptions.Item label={t.portfolio.accountStatus}>
-                    <Tag color={account?.status === 'ACTIVE' ? 'green' : account?.status ? 'orange' : 'default'}>{account?.status || '-'}</Tag>
+                    <Tag color={account?.status === 'ACTIVE' ? 'green' : account?.status ? 'orange' : 'default'} style={{ margin: 0 }}>{account?.status || '-'}</Tag>
                   </Descriptions.Item>
                   <Descriptions.Item label={t.portfolio.tradingMode}>
-                    <Tag color={tradeMode === 'real' ? 'red' : 'blue'}>{modeLabel}</Tag>
+                    <Tag color={tradeMode === 'real' ? 'red' : 'blue'} style={{ margin: 0 }}>{modeLabel}</Tag>
                   </Descriptions.Item>
                   <Descriptions.Item label={t.portfolio.dataSource}>{sourceLabel}</Descriptions.Item>
                   <Descriptions.Item label={t.portfolio.lastUpdated}>{formatDateTime(lastUpdated)}</Descriptions.Item>
@@ -738,18 +812,25 @@ const Portfolio: React.FC = () => {
                   <Descriptions.Item label={t.portfolio.maintenanceMargin}>{formatMoney(account?.maintenanceMargin)}</Descriptions.Item>
                 </Descriptions>
 
+                <Divider style={{ margin: '4px 0', borderColor: 'var(--app-border-soft)' }} />
+
                 <div>
-                  <Text type="secondary" style={{ display: 'block', marginBottom: 8, fontWeight: 700 }}>{t.portfolio.riskStatus}</Text>
+                  <Text style={{ display: 'block', marginBottom: 12, fontWeight: 700, color: 'var(--app-text-muted)', textTransform: 'uppercase', fontSize: 11, letterSpacing: '0.5px' }}>{t.portfolio.riskStatus}</Text>
                   <Space wrap>
-                    {account?.tradingBlocked && <Tag color="red">{t.portfolio.tradingBlocked}</Tag>}
-                    {account?.accountBlocked && <Tag color="red">{t.portfolio.accountBlocked}</Tag>}
-                    {account?.patternDayTrader && <Tag color="gold">{t.portfolio.patternDayTrader}</Tag>}
-                    {!account?.tradingBlocked && !account?.accountBlocked && !account?.patternDayTrader && <Tag color="green">{t.portfolio.riskClear}</Tag>}
+                    {account?.tradingBlocked && <Tag color="red" style={{ fontWeight: 700 }}>{t.portfolio.tradingBlocked}</Tag>}
+                    {account?.accountBlocked && <Tag color="red" style={{ fontWeight: 700 }}>{t.portfolio.accountBlocked}</Tag>}
+                    {account?.patternDayTrader && <Tag color="gold" style={{ fontWeight: 700 }}>{t.portfolio.patternDayTrader}</Tag>}
+                    {!account?.tradingBlocked && !account?.accountBlocked && !account?.patternDayTrader && <Tag color="green" style={{ fontWeight: 700 }}>{t.portfolio.riskClear}</Tag>}
                   </Space>
                 </div>
 
-                <div style={{ padding: 12, borderRadius: 8, background: tradeMode === 'real' ? '#fff7ed' : '#eff6ff', border: `1px solid ${tradeMode === 'real' ? '#fed7aa' : '#bfdbfe'}` }}>
-                  <Text style={{ color: tradeMode === 'real' ? '#9a3412' : '#1d4ed8', fontWeight: 700 }}>
+                <div style={{ 
+                  padding: '16px', 
+                  borderRadius: 10, 
+                  background: tradeMode === 'real' ? 'rgba(239, 68, 68, 0.05)' : 'rgba(59, 130, 246, 0.05)', 
+                  border: `1px solid ${tradeMode === 'real' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(59, 130, 246, 0.15)'}` 
+                }}>
+                  <Text style={{ color: tradeMode === 'real' ? '#ef4444' : 'var(--app-blue-text)', fontWeight: 600, fontSize: 13, lineHeight: 1.5, display: 'block' }}>
                     {tradeMode === 'real' ? t.portfolio.realModeNote : t.portfolio.paperModeNote}
                   </Text>
                 </div>

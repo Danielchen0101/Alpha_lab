@@ -1,6 +1,6 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Outlet, Navigate } from 'react-router-dom';
-import { Layout, ConfigProvider } from 'antd';
+import { Layout, ConfigProvider, theme, Alert, Space } from 'antd';
 import { AuthProvider } from './contexts/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import Landing from './pages/Landing';
@@ -36,41 +36,49 @@ import NotFound from './pages/NotFound';
 import Security from './pages/Security';
 import LanguageButtonPreview from './components/LanguageButtonPreview';
 import LanguageSwitcher from './components/LanguageSwitcher';
+import ThemeSwitcher from './components/ThemeSwitcher';
 import NavigationMenu from './components/NavigationMenu';
 import { LanguageProvider } from './contexts/LanguageContext';
-import { TradeModeProvider } from './contexts/TradeModeContext';
+import { useLanguage } from './contexts/LanguageContext';
+import { TradeModeProvider, useTradeMode } from './contexts/TradeModeContext';
+import { ThemeProvider, useTheme } from './contexts/ThemeContext';
 import './App.css';
 
 const { Header, Content, Sider } = Layout;
 
 const AppLayout: React.FC = () => {
   const [collapsed, setCollapsed] = React.useState(false);
-  
+  const { tradeMode } = useTradeMode();
+  const { t } = useLanguage();
+  const isRealMode = tradeMode === 'real';
+
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Sider 
-        collapsible 
-        collapsed={collapsed} 
+    <Layout style={{ minHeight: '100vh', background: 'var(--app-bg)' }}>
+      <Sider
+        collapsible
+        collapsed={collapsed}
         onCollapse={(value) => setCollapsed(value)}
         width="var(--app-sidebar-width, 220px)"
         collapsedWidth={80}
         theme="dark"
         className="app-sidebar"
         style={{
-          overflow: 'auto',
+          overflow: 'hidden',
           height: '100vh',
           position: 'fixed',
           left: 0,
           top: 0,
           bottom: 0,
           zIndex: 100,
-          transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)'
+          transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+          display: 'flex',
+          flexDirection: 'column'
         }}
       >
         <div className="sidebar-logo-container" style={{
-          height: 64, 
-          margin: '16px 0', 
-          display: 'flex', 
+          height: 64,
+          margin: '16px 0',
+          display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           background: 'transparent',
@@ -85,36 +93,57 @@ const AppLayout: React.FC = () => {
         </div>
         <NavigationMenu collapsed={collapsed} />
       </Sider>
-      <Layout className="app-main-layout" style={{ 
-        marginLeft: collapsed ? 80 : 'var(--app-sidebar-width, 220px)', 
+      <Layout className="app-main-layout" style={{
+        marginLeft: collapsed ? 80 : 'var(--app-sidebar-width, 220px)',
         transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-        background: '#f8fafc' 
+        background: 'var(--app-bg)'
       }}>
-        <Header style={{ 
-          padding: '0 24px', 
-          background: '#fff', 
-          display: 'flex', 
-          justifyContent: 'flex-end', 
+        <Header style={{
+          padding: '0 24px',
+          background: 'var(--app-header-bg)',
+          display: 'flex',
+          justifyContent: 'flex-end',
           alignItems: 'center',
-          boxShadow: '0 1px 4px rgba(0,21,41,0.08)',
+          boxShadow: 'var(--app-header-shadow)',
           zIndex: 99
         }}>
-          <LanguageSwitcher />
+          {isRealMode && (
+            <Alert
+              message={t.navigation.realTradingBanner}
+              type="error"
+              banner
+              showIcon={false}
+              style={{
+                flex: 1,
+                marginRight: 16,
+                borderRadius: 0,
+                padding: '2px 12px',
+                fontSize: 12,
+                fontWeight: 700,
+                textAlign: 'center',
+              }}
+            />
+          )}
+          <Space size={8}>
+            <ThemeSwitcher />
+            <LanguageSwitcher />
+          </Space>
         </Header>
-        <Content style={{ 
-          margin: '24px 24px 0', 
-          overflowY: 'auto', 
-          overflowX: 'hidden', 
-          height: 'calc(100vh - 112px)', 
+        <Content style={{
+          margin: '24px 24px 0',
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          height: 'calc(100vh - 112px)',
           minHeight: 0,
           paddingBottom: 24
         }}>
-          <div style={{ 
-            padding: 32, 
-            background: '#fff', 
-            borderRadius: 12, 
+          <div style={{
+            padding: 32,
+            background: 'var(--app-surface)',
+            borderRadius: 12,
             minHeight: '100%',
-            boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
+            boxShadow: 'var(--app-shadow)',
+            color: 'var(--app-text)'
           }}>
             <Outlet />
           </div>
@@ -124,72 +153,83 @@ const AppLayout: React.FC = () => {
   );
 };
 
+const ThemedApp: React.FC = () => {
+  const { resolvedTheme } = useTheme();
+  
+  return (
+    <ConfigProvider theme={{ 
+      algorithm: resolvedTheme === 'dark' ? theme.darkAlgorithm : theme.defaultAlgorithm,
+      token: { 
+        colorPrimary: '#1890ff', 
+        borderRadius: 6,
+        fontSize: 13.5,
+        fontSizeSM: 12,
+        controlHeight: 30,
+        controlHeightSM: 24,
+        padding: 16,
+        paddingSM: 12,
+        margin: 16,
+        marginSM: 12,
+      } 
+    }}>
+      <Router>
+        <AuthProvider>
+          <Routes>
+            {/* Public routes - no sidebar */}
+            <Route path="/" element={<Landing />} />
+            <Route path="/platform" element={<Platform />} />
+            <Route path="/workflow" element={<Workflow />} />
+            <Route path="/features" element={<Features />} />
+            <Route path="/technology" element={<Technology />} />
+            <Route path="/about" element={<About />} />
+            <Route path="/login" element={<SignIn />} />
+            <Route path="/signin" element={<SignIn />} />
+            <Route path="/signup" element={<SignUp />} />
+            <Route path="/terms" element={<Terms />} />
+            <Route path="/privacy" element={<Privacy />} />
+            <Route path="/auth/confirmed" element={<AuthConfirmed />} />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
+            <Route path="/reset-password" element={<ResetPassword />} />
+            <Route path="/scanner" element={<Navigate to="/market" replace />} />
+            <Route path="/security" element={<Security />} />
+
+            {/* Protected routes - with sidebar layout */}
+            <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
+              <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/market" element={<Market />} />
+              <Route path="/backtest" element={<Backtest />} />
+              <Route path="/backtest/:id" element={<BacktestDetail />} />
+              <Route path="/backtest-analysis" element={<BacktestAnalysis />} />
+              <Route path="/analysis/:symbol" element={<SymbolAnalysis />} />
+              <Route path="/compare" element={<StrategyComparison />} />
+              <Route path="/optimize" element={<ParameterOptimization />} />
+              <Route path="/watchlist" element={<Watchlist />} />
+              <Route path="/ranking" element={<StrategyRanking />} />
+              <Route path="/agent" element={<Agent />} />
+              <Route path="/trade" element={<Trade />} />
+              <Route path="/portfolio" element={<Portfolio />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="/settings/configuration" element={<Configuration />} />
+              <Route path="/language-test" element={<LanguageTest />} />
+              <Route path="/button-preview" element={<LanguageButtonPreview />} />
+            </Route>
+
+            {/* Fallback 404 — must be last */}
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </AuthProvider>
+      </Router>
+    </ConfigProvider>
+  );
+};
+
 const App: React.FC = () => {
   return (
     <LanguageProvider>
       <TradeModeProvider>
-      <ConfigProvider theme={{ 
-        token: { 
-          colorPrimary: '#1890ff', 
-          borderRadius: 6,
-          fontSize: 13.5,
-          fontSizeSM: 12,
-          controlHeight: 30,
-          controlHeightSM: 24,
-          padding: 16,
-          paddingSM: 12,
-          margin: 16,
-          marginSM: 12,
-        } 
-      }}>
-        <Router>
-          <AuthProvider>
-            <Routes>
-              {/* Public routes - no sidebar */}
-              <Route path="/" element={<Landing />} />
-              <Route path="/platform" element={<Platform />} />
-              <Route path="/workflow" element={<Workflow />} />
-              <Route path="/features" element={<Features />} />
-              <Route path="/technology" element={<Technology />} />
-              <Route path="/about" element={<About />} />
-              <Route path="/login" element={<SignIn />} />
-              <Route path="/signin" element={<SignIn />} />
-              <Route path="/signup" element={<SignUp />} />
-              <Route path="/terms" element={<Terms />} />
-              <Route path="/privacy" element={<Privacy />} />
-              <Route path="/auth/confirmed" element={<AuthConfirmed />} />
-              <Route path="/forgot-password" element={<ForgotPassword />} />
-              <Route path="/reset-password" element={<ResetPassword />} />
-              <Route path="/scanner" element={<Navigate to="/market" replace />} />
-              <Route path="/security" element={<Security />} />
-
-              {/* Protected routes - with sidebar layout */}
-              <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
-                <Route path="/dashboard" element={<Dashboard />} />
-                <Route path="/market" element={<Market />} />
-                <Route path="/backtest" element={<Backtest />} />
-                <Route path="/backtest/:id" element={<BacktestDetail />} />
-                <Route path="/backtest-analysis" element={<BacktestAnalysis />} />
-                <Route path="/analysis/:symbol" element={<SymbolAnalysis />} />
-                <Route path="/compare" element={<StrategyComparison />} />
-                <Route path="/optimize" element={<ParameterOptimization />} />
-                <Route path="/watchlist" element={<Watchlist />} />
-                <Route path="/ranking" element={<StrategyRanking />} />
-                <Route path="/agent" element={<Agent />} />
-                <Route path="/trade" element={<Trade />} />
-                <Route path="/portfolio" element={<Portfolio />} />
-                <Route path="/settings" element={<Settings />} />
-                <Route path="/settings/configuration" element={<Configuration />} />
-                <Route path="/language-test" element={<LanguageTest />} />
-                <Route path="/button-preview" element={<LanguageButtonPreview />} />
-              </Route>
-
-              {/* Fallback 404 — must be last */}
-              <Route path="*" element={<NotFound />} />
-            </Routes>
-          </AuthProvider>
-        </Router>
-      </ConfigProvider>
+        <ThemeProvider>
+          <ThemedApp />
+        </ThemeProvider>
       </TradeModeProvider>
     </LanguageProvider>
   );

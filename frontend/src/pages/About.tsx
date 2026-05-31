@@ -2,94 +2,77 @@ import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button, Typography, Divider, Space } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
+import { useLanguage } from '../contexts/LanguageContext';
 
 const { Title, Paragraph, Text } = Typography;
 
 const About: React.FC = () => {
   const navigate = useNavigate();
+  const { t } = useLanguage();
 
   return (
-    <div style={{ minHeight: '100vh', background: '#f0f2f5' }}>
+    <div style={{ minHeight: '100vh', background: 'var(--app-bg)', color: 'var(--app-text)' }}>
       <div style={{ maxWidth: 800, margin: '0 auto', padding: '40px 24px' }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')} style={{ marginBottom: 24 }}>Back to Home</Button>
+        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')} style={{ marginBottom: 24 }}>{t.about.backToHome}</Button>
 
-        <Title>What is AlphaLab?</Title>
-        <Paragraph>
-          AlphaLab is an AI-powered quantitative trading and market analysis platform.
-          It combines technical analysis, backtesting, and AI-driven insights to help traders
-          make data-driven decisions.
-        </Paragraph>
+        <Title>{t.about.title}</Title>
+        <Paragraph>{t.about.intro}</Paragraph>
 
         <Divider />
 
-        <Title level={2}>AI Trading Workflow</Title>
-        <div style={{ background: '#fff', padding: 24, borderRadius: 8, marginBottom: 24 }}>
+        <Title level={2}>{t.about.workflowTitle}</Title>
+        <div style={{ background: 'var(--app-card-bg)', padding: 24, borderRadius: 8, marginBottom: 24 }}>
           <Paragraph>
-            <Text strong>1. Market Scanner</Text> — Screen stocks across multiple sectors using technical indicators and strategy matching.
+            <Text strong>{t.about.workflowScannerTitle}</Text> — {t.about.workflowScannerDesc}
           </Paragraph>
           <Paragraph>
-            <Text strong>2. Preferred Continue Scan</Text> — AI selects the most promising candidates from the scan results.
+            <Text strong>{t.about.workflowContinueTitle}</Text> — {t.about.workflowContinueDesc}
           </Paragraph>
           <Paragraph>
-            <Text strong>3. Fine Scan</Text> — Deep analysis of selected stocks including liquidity, news sentiment, and risk assessment.
+            <Text strong>{t.about.workflowFineTitle}</Text> — {t.about.workflowFineDesc}
           </Paragraph>
           <Paragraph>
-            <Text strong>4. Deeper Validation</Text> — AI verdict on whether each candidate is worth trading based on comprehensive data.
+            <Text strong>{t.about.workflowValidationTitle}</Text> — {t.about.workflowValidationDesc}
           </Paragraph>
           <Paragraph>
-            <Text strong>5. Entry Plan</Text> — Deterministic entry price, stop-loss, and target calculation with position sizing.
+            <Text strong>{t.about.workflowEntryTitle}</Text> — {t.about.workflowEntryDesc}
           </Paragraph>
           <Paragraph>
-            <Text strong>6. AI Watchlist</Text> — Continuous monitoring of approved trades with AI-driven recommendations.
+            <Text strong>{t.about.workflowWatchlistTitle}</Text> — {t.about.workflowWatchlistDesc}
           </Paragraph>
         </div>
 
         <Divider />
 
-        <Title level={2}>Paper Trading vs Real Trading</Title>
-        <Paragraph>
-          AlphaLab supports both paper trading (simulated) and real trading via Alpaca Markets.
-          Paper trading uses real market data but executes orders in a simulated environment.
-          Real trading connects to Alpaca's live API for actual order execution.
-        </Paragraph>
+        <Title level={2}>{t.about.tradingModesTitle}</Title>
+        <Paragraph>{t.about.tradingModesDesc}</Paragraph>
 
         <Divider />
 
-        <Title level={2}>API Configuration</Title>
-        <Paragraph>
-          AlphaLab requires API keys for market data (Finnhub), trading (Alpaca), and AI analysis (DeepSeek/OpenAI/NVIDIA NIM).
-          All keys are configured through the Settings page and stored securely on the backend.
-          No API keys are exposed to the frontend.
-        </Paragraph>
+        <Title level={2}>{t.about.apiTitle}</Title>
+        <Paragraph>{t.about.apiDesc}</Paragraph>
 
         <Divider />
 
-        <Title level={2}>Risk Control Philosophy</Title>
-        <Paragraph>
-          AlphaLab enforces strict risk controls at every stage:
-        </Paragraph>
+        <Title level={2}>{t.about.riskTitle}</Title>
+        <Paragraph>{t.about.riskDesc}</Paragraph>
         <ul style={{ lineHeight: 2 }}>
-          <li>Position sizing based on account equity and risk per trade</li>
-          <li>Maximum position concentration limits</li>
-          <li>Daily loss limits</li>
-          <li>AI-driven risk assessment before entry</li>
-          <li>Backtesting validation before live execution</li>
+          <li>{t.about.riskPositionSizing}</li>
+          <li>{t.about.riskConcentration}</li>
+          <li>{t.about.riskDailyLoss}</li>
+          <li>{t.about.riskAiAssessment}</li>
+          <li>{t.about.riskBacktest}</li>
         </ul>
 
         <Divider />
 
-        <Title level={2}>Disclaimer</Title>
-        <Paragraph type="warning">
-          AlphaLab is a research and analysis tool. Nothing on this platform constitutes financial advice.
-          Past performance does not guarantee future results. Trading stocks involves risk of capital loss.
-          Always conduct your own research and consult a qualified financial advisor before making investment decisions.
-          The creators of AlphaLab are not responsible for any losses incurred from using this platform.
-        </Paragraph>
+        <Title level={2}>{t.about.disclaimerTitle}</Title>
+        <Paragraph type="warning">{t.about.disclaimerDesc}</Paragraph>
 
         <div style={{ textAlign: 'center', marginTop: 40 }}>
           <Space>
-            <Button type="primary" onClick={() => navigate('/signup')}>Get Started</Button>
-            <Button onClick={() => navigate('/')}>Back to Home</Button>
+            <Button type="primary" onClick={() => navigate('/signup')}>{t.about.getStarted}</Button>
+            <Button onClick={() => navigate('/')}>{t.about.backToHome}</Button>
           </Space>
         </div>
       </div>

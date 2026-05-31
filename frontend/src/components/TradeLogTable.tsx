@@ -1,6 +1,7 @@
 import React from 'react';
 import { Table } from 'antd';
 import { formatDateToYYYYMMDD } from '../utils/dateUtils';
+import { useLanguage } from '../contexts/LanguageContext';
 
 interface TradeItem {
   entryDate: string;
@@ -18,17 +19,19 @@ interface TradeLogTableProps {
 }
 
 const TradeLogTable: React.FC<TradeLogTableProps> = ({ data }) => {
+  const { t } = useLanguage();
+
   if (!data || data.length === 0) {
     return (
       <div style={{ 
         textAlign: 'center', 
         padding: '40px', 
-        color: '#999',
-        background: '#fafafa',
+        color: 'var(--app-text-muted)',
+        background: 'var(--app-card-bg-soft)',
         borderRadius: '8px',
-        border: '1px solid #e8e8e8'
+        border: '1px solid var(--app-border-soft)'
       }}>
-        No trade data available
+        {t.backtest.noTradeData}
       </div>
     );
   }
@@ -56,7 +59,7 @@ const TradeLogTable: React.FC<TradeLogTableProps> = ({ data }) => {
   // Table columns
   const columns = [
     {
-      title: 'Entry Date',
+      title: t.backtest.entryDate,
       dataIndex: 'entryDate',
       key: 'entryDate',
       sorter: (a: TradeItem, b: TradeItem) => a.entryDate.localeCompare(b.entryDate),
@@ -64,27 +67,27 @@ const TradeLogTable: React.FC<TradeLogTableProps> = ({ data }) => {
       render: (date: string) => formatDateToYYYYMMDD(date) || date,
     },
     {
-      title: 'Exit Date',
+      title: t.backtest.exitDate,
       dataIndex: 'exitDate',
       key: 'exitDate',
       render: (date: string) => date ? formatDateToYYYYMMDD(date) : 'N/A',
     },
     {
-      title: 'Entry Price',
+      title: t.backtest.entryPrice,
       dataIndex: 'entryPrice',
       key: 'entryPrice',
       render: (value: number) => formatCurrency(value),
       align: 'right' as const,
     },
     {
-      title: 'Exit Price',
+      title: t.backtest.exitPrice,
       dataIndex: 'exitPrice',
       key: 'exitPrice',
       render: (value: number) => formatCurrency(value),
       align: 'right' as const,
     },
     {
-      title: 'PnL',
+      title: t.backtest.pnlLabel,
       dataIndex: 'pnl',
       key: 'pnl',
       render: (value: number) => (
@@ -99,7 +102,7 @@ const TradeLogTable: React.FC<TradeLogTableProps> = ({ data }) => {
       sorter: (a: TradeItem, b: TradeItem) => a.pnl - b.pnl,
     },
     {
-      title: 'Return %',
+      title: t.backtest.returnPercent,
       dataIndex: 'returnPct',
       key: 'returnPct',
       render: (value: number) => (
@@ -114,14 +117,14 @@ const TradeLogTable: React.FC<TradeLogTableProps> = ({ data }) => {
       sorter: (a: TradeItem, b: TradeItem) => a.returnPct - b.returnPct,
     },
     {
-      title: 'Holding Days',
+      title: t.backtest.holdingDays,
       dataIndex: 'holdingDays',
       key: 'holdingDays',
       align: 'right' as const,
       sorter: (a: TradeItem, b: TradeItem) => a.holdingDays - b.holdingDays,
     },
     {
-      title: 'Position',
+      title: t.backtest.position,
       dataIndex: 'position',
       key: 'position',
       render: (value: number) => (
@@ -134,7 +137,7 @@ const TradeLogTable: React.FC<TradeLogTableProps> = ({ data }) => {
           fontSize: '12px',
           fontWeight: '500'
         }}>
-          {value === 1 ? 'Long' : 'Short'}
+          {value === 1 ? t.backtest.longPosition : t.backtest.shortPosition}
         </span>
       ),
       align: 'center' as const,
@@ -155,25 +158,25 @@ const TradeLogTable: React.FC<TradeLogTableProps> = ({ data }) => {
       <div style={{ 
         marginBottom: '16px',
         padding: '12px 16px',
-        backgroundColor: '#fafafa',
+        backgroundColor: 'var(--app-card-bg-soft)',
         borderRadius: '8px',
-        border: '1px solid #e8e8e8',
+        border: '1px solid var(--app-border-soft)',
         fontSize: '13px',
-        color: '#666',
+        color: 'var(--app-text)',
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
         gap: '12px'
       }}>
         <div>
-          <div style={{ fontSize: '11px', color: '#999', marginBottom: '2px' }}>Total Trades</div>
-          <div style={{ fontSize: '14px', fontWeight: '600', color: '#333' }}>{totalTrades}</div>
+          <div style={{ fontSize: '11px', color: 'var(--app-text-muted)', marginBottom: '2px' }}>{t.backtest.totalTrades}</div>
+          <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--app-text-strong)' }}>{totalTrades}</div>
         </div>
         <div>
-          <div style={{ fontSize: '11px', color: '#999', marginBottom: '2px' }}>Win Rate</div>
+          <div style={{ fontSize: '11px', color: 'var(--app-text-muted)', marginBottom: '2px' }}>{t.backtest.winRateLabel}</div>
           <div style={{ fontSize: '14px', fontWeight: '600', color: '#3f8600' }}>{winRate.toFixed(1)}%</div>
         </div>
         <div>
-          <div style={{ fontSize: '11px', color: '#999', marginBottom: '2px' }}>Total PnL</div>
+          <div style={{ fontSize: '11px', color: 'var(--app-text-muted)', marginBottom: '2px' }}>{t.backtest.totalPnl}</div>
           <div style={{ 
             fontSize: '14px', 
             fontWeight: '600', 
@@ -183,7 +186,7 @@ const TradeLogTable: React.FC<TradeLogTableProps> = ({ data }) => {
           </div>
         </div>
         <div>
-          <div style={{ fontSize: '11px', color: '#999', marginBottom: '2px' }}>Avg Return</div>
+          <div style={{ fontSize: '11px', color: 'var(--app-text-muted)', marginBottom: '2px' }}>{t.backtest.avgReturn}</div>
           <div style={{ 
             fontSize: '14px', 
             fontWeight: '600', 
@@ -193,18 +196,18 @@ const TradeLogTable: React.FC<TradeLogTableProps> = ({ data }) => {
           </div>
         </div>
         <div>
-          <div style={{ fontSize: '11px', color: '#999', marginBottom: '2px' }}>Winning Trades</div>
+          <div style={{ fontSize: '11px', color: 'var(--app-text-muted)', marginBottom: '2px' }}>{t.backtest.winningTradesCount}</div>
           <div style={{ fontSize: '14px', fontWeight: '600', color: '#3f8600' }}>{winningTrades}</div>
         </div>
         <div>
-          <div style={{ fontSize: '11px', color: '#999', marginBottom: '2px' }}>Losing Trades</div>
+          <div style={{ fontSize: '11px', color: 'var(--app-text-muted)', marginBottom: '2px' }}>{t.backtest.losingTradesCount}</div>
           <div style={{ fontSize: '14px', fontWeight: '600', color: '#cf1322' }}>{losingTrades}</div>
         </div>
       </div>
 
       {/* Trade Table */}
       <div style={{ 
-        border: '1px solid #e8e8e8',
+        border: '1px solid var(--app-border-soft)',
         borderRadius: '8px',
         overflow: 'hidden'
       }}>
@@ -216,7 +219,10 @@ const TradeLogTable: React.FC<TradeLogTableProps> = ({ data }) => {
             showSizeChanger: true,
             showQuickJumper: true,
             pageSizeOptions: ['10', '20', '50', '100'],
-            showTotal: (total, range) => `${range[0]}-${range[1]} of ${total} trades`
+            showTotal: (total, range) => t.backtest.tradeRange
+              .replace('{start}', String(range[0]))
+              .replace('{end}', String(range[1]))
+              .replace('{total}', String(total))
           }}
           size="middle"
           scroll={{ x: 'max-content' }}
@@ -232,12 +238,12 @@ const TradeLogTable: React.FC<TradeLogTableProps> = ({ data }) => {
           background-color: rgba(255, 77, 79, 0.02);
         }
         .ant-table-thead > tr > th {
-          background-color: #fafafa;
+          background-color: var(--app-table-header-bg);
           font-weight: 600;
-          color: #333;
+          color: var(--app-text);
         }
         .ant-table-tbody > tr:hover > td {
-          background-color: #f5f5f5;
+          background-color: var(--app-card-bg-soft);
         }
       `}</style>
     </div>

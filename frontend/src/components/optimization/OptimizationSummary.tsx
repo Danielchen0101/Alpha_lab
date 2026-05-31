@@ -101,18 +101,18 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
     <div style={{ 
       textAlign: 'center', 
       padding: '20px 16px', 
-      background: '#fff', 
+      background: 'var(--app-card-bg)', 
       borderRadius: '16px', 
-      border: '1px solid rgba(15, 23, 42, 0.08)',
-      boxShadow: '0 2px 6px rgba(0,0,0,0.01)',
+      border: '1px solid var(--app-border-soft)',
+      boxShadow: 'var(--app-card-shadow)',
       height: '100%',
       transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
     }} className="metric-card-hover">
-      <div style={{ color: '#94a3b8', fontSize: '10.5px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+      <div style={{ color: 'var(--app-text-muted)', fontSize: '10.5px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
         {icon} {title}
       </div>
-      <div style={{ fontSize: '26px', fontWeight: 800, color: color || '#0f172a', lineHeight: 1 }}>
-        {value}<span style={{ fontSize: '15px', marginLeft: '2px', color: '#94a3b8', fontWeight: 600 }}>{suffix}</span>
+      <div style={{ fontSize: '26px', fontWeight: 800, color: color || 'var(--app-text-strong)', lineHeight: 1 }}>
+        {value}<span style={{ fontSize: '15px', marginLeft: '2px', color: 'var(--app-text-muted)', fontWeight: 600 }}>{suffix}</span>
       </div>
     </div>
   );
@@ -120,33 +120,33 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
   return (
     <div style={{ marginBottom: '24px' }}>
       <style>{`
-        .metric-card-hover:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.04); border-color: rgba(114, 46, 209, 0.15); }
+        .metric-card-hover:hover { transform: translateY(-3px); box-shadow: var(--app-shadow); border-color: rgba(114, 46, 209, 0.15); }
         .best-combination-card { 
-          background: #fff; 
-          border: 1px solid rgba(16, 185, 129, 0.2); 
+          background: var(--app-card-bg); 
+          border: 1px solid var(--app-border-soft); 
           border-radius: 18px; 
           overflow: hidden; 
-          box-shadow: 0 4px 12px rgba(16, 185, 129, 0.03); 
+          box-shadow: var(--app-card-shadow); 
         }
         .best-combination-header { 
-          background: linear-gradient(90deg, #f0fdf4 0%, #ffffff 100%); 
+          background: linear-gradient(90deg, rgba(34, 197, 94, 0.08) 0%, transparent 100%); 
           padding: 18px 24px; 
-          border-bottom: 1px solid rgba(16, 185, 129, 0.1); 
+          border-bottom: 1px solid var(--app-border-soft); 
           display: flex; 
           justify-content: space-between; 
           align-items: center; 
         }
         .param-tile { 
-          background: #f8fafc; 
+          background: var(--app-card-bg-soft); 
           padding: 14px; 
           border-radius: 12px; 
-          border: 1px solid rgba(15, 23, 42, 0.04); 
+          border: 1px solid var(--app-border-soft); 
           text-align: center;
           transition: all 0.2s ease;
         }
         .param-tile:hover {
           border-color: rgba(24, 144, 255, 0.2);
-          background: #fff;
+          background: var(--app-card-bg);
         }
         .metric-tile { text-align: center; padding: 8px; }
         @media (max-width: 991px) {
@@ -156,7 +156,7 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
 
         <div style={{ marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '10px' }}>
           <BarChartOutlined style={{ fontSize: '20px', color: '#722ed1' }} />
-          <Title level={4} style={{ margin: 0, fontWeight: 800, color: '#0f172a' }}>{t.optimization.summaryTitle}</Title>
+          <Title level={4} style={{ margin: 0, fontWeight: 800, color: 'var(--app-text-strong)' }}>{t.optimization.summaryTitle}</Title>
         </div>
 
         <Row gutter={[20, 20]} style={{ marginBottom: '24px' }}>
@@ -176,7 +176,7 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
                 <TrophyOutlined />
               </div>
               <div>
-                <Text strong style={{ fontSize: '16px', color: '#064e3b' }}>{t.optimization.bestCombinationTitle}</Text>
+                <Text strong style={{ fontSize: '16px', color: '#4ade80' }}>{t.optimization.bestCombinationTitle}</Text>
                 <div style={{ fontSize: '12px', color: '#10b981', fontWeight: 700, letterSpacing: '0.4px' }}>{t.optimization.optimizedBySharpe.toUpperCase()}</div>
               </div>
             </div>
@@ -185,15 +185,15 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
           <div style={{ padding: '28px 32px' }}>
             <Row gutter={48} align="middle">
               <Col xs={24} lg={10}>
-                <Text style={{ fontSize: '11px', fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '1px', display: 'block', marginBottom: '20px' }}>{t.optimization.paramConfiguration}</Text>
+                <Text style={{ fontSize: '11px', fontWeight: 800, color: 'var(--app-text-muted)', textTransform: 'uppercase', letterSpacing: '1px', display: 'block', marginBottom: '20px' }}>{t.optimization.paramConfiguration}</Text>
                 <Row gutter={[12, 12]}>
                   {strategyConfig.params.map((p, idx) => (
                     <Col key={p.key} span={strategyConfig.isSingleParam ? 24 : 12}>
                       <div className="param-tile">
-                        <div style={{ fontSize: '22px', fontWeight: 800, color: '#0f172a' }}>
+                        <div style={{ fontSize: '22px', fontWeight: 800, color: 'var(--app-text-strong)' }}>
                           {p.format ? p.format(stats.bestCombinationBySharpe?.[p.key]) : safeToFixed(stats.bestCombinationBySharpe?.[p.key], 0)}
                         </div>
-                        <Text style={{ fontSize: '11px', fontWeight: 700, color: '#64748b' }}>{p.label}</Text>
+                        <Text style={{ fontSize: '11px', fontWeight: 700, color: 'var(--app-text-muted)' }}>{p.label}</Text>
                       </div>
                     </Col>
                   ))}
@@ -201,34 +201,34 @@ const OptimizationSummary: React.FC<OptimizationSummaryProps> = ({
               </Col>
               
               <Col xs={0} lg={1}>
-                <Divider type="vertical" style={{ height: '80px', margin: '0 auto', borderColor: 'rgba(15, 23, 42, 0.06)' }} />
+                <Divider type="vertical" style={{ height: '80px', margin: '0 auto', borderColor: 'var(--app-border-soft)' }} />
               </Col>
               
               <Col xs={24} lg={13} className="perf-metrics-col">
-                <Text style={{ fontSize: '11px', fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '1px', display: 'block', marginBottom: '20px' }}>{t.optimization.perfMetrics}</Text>
+                <Text style={{ fontSize: '11px', fontWeight: 800, color: 'var(--app-text-muted)', textTransform: 'uppercase', letterSpacing: '1px', display: 'block', marginBottom: '20px' }}>{t.optimization.perfMetrics}</Text>
                 <Row gutter={16}>
                   <Col span={6}>
                     <div className="metric-tile">
                       <div style={{ fontSize: '22px', fontWeight: 800, color: '#722ed1' }}>{safeToFixed(stats.bestCombinationBySharpe?.sharpeRatio, 2)}</div>
-                      <Text style={{ fontSize: '11px', fontWeight: 700, color: '#64748b' }}>{t.optimization.labelSharpeRatio}</Text>
+                      <Text style={{ fontSize: '11px', fontWeight: 700, color: 'var(--app-text-muted)' }}>{t.optimization.labelSharpeRatio}</Text>
                     </div>
                   </Col>
                   <Col span={6}>
                     <div className="metric-tile">
                       <div style={{ fontSize: '22px', fontWeight: 800, color: '#10b981' }}>{safePercent(stats.bestCombinationBySharpe?.totalReturn)}</div>
-                      <Text style={{ fontSize: '11px', fontWeight: 700, color: '#64748b' }}>{t.optimization.labelTotalReturn}</Text>
+                      <Text style={{ fontSize: '11px', fontWeight: 700, color: 'var(--app-text-muted)' }}>{t.optimization.labelTotalReturn}</Text>
                     </div>
                   </Col>
                   <Col span={6}>
                     <div className="metric-tile">
                       <div style={{ fontSize: '22px', fontWeight: 800, color: '#ef4444' }}>{safeToFixed(stats.bestCombinationBySharpe?.maxDrawdown, 2)}%</div>
-                      <Text style={{ fontSize: '11px', fontWeight: 700, color: '#64748b' }}>{t.optimization.labelMaxDrawdown}</Text>
+                      <Text style={{ fontSize: '11px', fontWeight: 700, color: 'var(--app-text-muted)' }}>{t.optimization.labelMaxDrawdown}</Text>
                     </div>
                   </Col>
                   <Col span={6}>
                     <div className="metric-tile">
                       <div style={{ fontSize: '22px', fontWeight: 800, color: '#f59e0b' }}>{safeToFixed(stats.bestCombinationBySharpe?.winRate, 1)}%</div>
-                      <Text style={{ fontSize: '11px', fontWeight: 700, color: '#64748b' }}>{t.optimization.labelWinRate}</Text>
+                      <Text style={{ fontSize: '11px', fontWeight: 700, color: 'var(--app-text-muted)' }}>{t.optimization.labelWinRate}</Text>
                     </div>
                   </Col>
                 </Row>

@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Modal, Form, Input, Select, InputNumber, Switch, Button, Space,
-  Typography, Divider, Alert, Descriptions, Radio, Tooltip, Row, Col
+  Typography, Divider, Alert, Descriptions, Radio, Tooltip, Row, Col, message
 } from 'antd';
 
 import {
-  ExclamationCircleOutlined, SafetyOutlined,
+  SafetyOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import { tradingAccountAPI } from '../services/api';
 import { useTradeMode } from '../contexts/TradeModeContext';
@@ -80,19 +80,24 @@ const OrderModal: React.FC<OrderModalProps> = ({
   const [form] = Form.useForm<OrderFormValues>();
   const [submitting, setSubmitting] = useState(false);
   const [confirmStep, setConfirmStep] = useState(false);
-  const [realDoubleConfirm, setRealDoubleConfirm] = useState(false);
+  const [realFinalConfirm, setRealFinalConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const orderType = Form.useWatch('type', form) || 'market';
   const orderClass = Form.useWatch('order_class', form) || 'simple';
   const amountMode = Form.useWatch('amountMode', form) || 'shares';
   const trailMode = Form.useWatch('trailMode', form) || 'price';
+  const watchedSymbol = Form.useWatch('symbol', form);
+  const watchedSide = Form.useWatch('side', form);
+  const watchedQty = Form.useWatch('qty', form);
+  const watchedNotional = Form.useWatch('notional', form);
+  const watchedLimitPrice = Form.useWatch('limit_price', form);
 
   // Reset form when modal opens with new preset
   useEffect(() => {
     if (visible) {
       setConfirmStep(false);
-      setRealDoubleConfirm(false);
+      setRealFinalConfirm(false);
       setError(null);
       form.setFieldsValue({
         symbol: preset?.symbol || '',
@@ -110,6 +115,18 @@ const OrderModal: React.FC<OrderModalProps> = ({
       });
     }
   }, [visible, preset, form]);
+
+  const isFormValid = useMemo((): boolean => {
+    const symbol = watchedSymbol?.trim();
+    const side = watchedSide;
+    const qty = watchedQty;
+    const notional = watchedNotional;
+    if (!symbol) return false;
+    if (!side) return false;
+    if (amountMode === 'shares' && (!qty || qty <= 0)) return false;
+    if (amountMode === 'dollars' && (!notional || notional <= 0)) return false;
+    return true;
+  }, [watchedSymbol, watchedSide, watchedQty, watchedNotional, amountMode]);
 
   const validate = (): string | null => {
     const v = form.getFieldsValue();
@@ -131,6 +148,25 @@ const OrderModal: React.FC<OrderModalProps> = ({
     return null;
   };
 
+  // Estimated value for review step
+  const estimatedValue = useMemo((): number | null => {
+    if (amountMode === 'dollars' && watchedNotional) return watchedNotional;
+    if (amountMode === 'shares' && watchedQty && watchedLimitPrice) {
+      return watchedQty * watchedLimitPrice;
+    }
+    return null;
+  }, [amountMode, watchedQty, watchedNotional, watchedLimitPrice]);
+
+  const handleReviewClick = () => {
+    const validationError = validate();
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+    setConfirmStep(true);
+    setError(null);
+  };
+
   const handleSubmit = async () => {
     const validationError = validate();
     if (validationError) {
@@ -138,14 +174,8 @@ const OrderModal: React.FC<OrderModalProps> = ({
       return;
     }
 
-    if (!confirmStep) {
-      setConfirmStep(true);
-      setError(null);
-      return;
-    }
-
-    if (tradeMode === 'real' && !realDoubleConfirm) {
-      setRealDoubleConfirm(true);
+    if (tradeMode === 'real' && !realFinalConfirm) {
+      setRealFinalConfirm(true);
       return;
     }
 
@@ -196,27 +226,35 @@ const OrderModal: React.FC<OrderModalProps> = ({
 
       const res = await tradingAccountAPI.placeOrder(payload);
       if (res.data.success) {
+        message.success(`Order placed successfully: ${v.side.toUpperCase()} ${v.qty || v.notional} ${v.symbol?.toUpperCase()}`);
         onSuccess();
         onClose();
       } else {
         const errMsg = res.data.error || res.data.message || 'Order failed';
         setError(errMsg);
+        message.error(errMsg);
         if (res.data.status === 'confirmation_required') {
           setConfirmStep(false);
-          setRealDoubleConfirm(false);
+          setRealFinalConfirm(false);
         }
       }
     } catch (e: any) {
-      setError(e?.response?.data?.error || e?.message || 'Order submission failed');
+      const errMsg = e?.response?.data?.error || e?.message || 'Order submission failed';
+      setError(errMsg);
+      message.error(errMsg);
     } finally {
       setSubmitting(false);
     }
   };
 
   const handleCancel = () => {
+    if (realFinalConfirm && !submitting) {
+      setRealFinalConfirm(false);
+      return;
+    }
     if (confirmStep && !submitting) {
       setConfirmStep(false);
-      setRealDoubleConfirm(false);
+      setRealFinalConfirm(false);
       setError(null);
       return;
     }
@@ -229,17 +267,17 @@ const OrderModal: React.FC<OrderModalProps> = ({
     <Modal
       title={
         <Space>
-          <span style={{ fontWeight: 700, fontSize: 16 }}>
-            {confirmStep ? 'Confirm Order' : 'New Order'}
+          <span style={{ fontWeight: 700, fontSize: 16, color: 'var(--app-text-strong)' }}>
+            {realFinalConfirm ? 'Final Confirmation' : confirmStep ? 'Review Order' : 'New Order'}
           </span>
           <span style={{
             fontSize: 11,
             fontWeight: 700,
             padding: '2px 8px',
             borderRadius: 4,
-            background: tradeMode === 'real' ? '#fff1f0' : '#e6f7ff',
-            color: tradeMode === 'real' ? '#cf1322' : '#096dd9',
-            border: `1px solid ${tradeMode === 'real' ? '#ffa39e' : '#91d5ff'}`,
+            background: tradeMode === 'real' ? 'rgba(239, 68, 68, 0.12)' : 'rgba(59, 130, 246, 0.12)',
+            color: tradeMode === 'real' ? '#ef4444' : '#60a5fa',
+            border: `1px solid ${tradeMode === 'real' ? 'rgba(239, 68, 68, 0.25)' : 'rgba(59, 130, 246, 0.25)'}`,
           }}>
             {tradeMode === 'real' ? 'REAL TRADING' : 'PAPER TRADING'}
           </span>
@@ -247,19 +285,20 @@ const OrderModal: React.FC<OrderModalProps> = ({
       }
       open={visible}
       onCancel={handleCancel}
-      width={640}
+      width={680}
       footer={null}
       destroyOnClose
+      maskClosable={false}
+      className="dark-modal"
     >
       {tradeMode === 'real' && (
         <Alert
-          message="Real Trading Mode"
-          description="You are placing orders with real money. Orders will be sent to api.alpaca.markets. Please verify all details before confirming."
+          message="Real Trading Mode - Orders will be sent to api.alpaca.markets"
+          description="You are placing orders with real money. Please verify all details carefully. This is a live trading environment."
           type="error"
           showIcon
-          icon={<ExclamationCircleOutlined />}
-          style={{ marginBottom: 16 }}
-          banner
+          icon={<WarningOutlined />}
+          style={{ marginBottom: 16, borderRadius: 8, background: 'rgba(239, 68, 68, 0.05)', border: '1px solid rgba(239, 68, 68, 0.2)' }}
         />
       )}
 
@@ -270,43 +309,70 @@ const OrderModal: React.FC<OrderModalProps> = ({
           showIcon
           closable
           onClose={() => setError(null)}
-          style={{ marginBottom: 16 }}
+          style={{ marginBottom: 16, borderRadius: 8 }}
         />
       )}
 
       {confirmStep ? (
-        /* ── Confirm Preview ── */
+        /* ── Review / Confirm Step ── */
         <div>
+          {tradeMode === 'real' && realFinalConfirm && (
+            <Alert
+              message="FINAL WARNING: This will place a REAL order with REAL money"
+              description={
+                <div style={{ marginTop: 4 }}>
+                  <Text strong type="danger" style={{ fontSize: 14 }}>
+                    Orders cannot be undone once submitted. Verify ALL details before proceeding.
+                  </Text>
+                </div>
+              }
+              type="error"
+              showIcon
+              icon={<SafetyOutlined />}
+              style={{ marginBottom: 16, borderRadius: 8, border: '2px solid #ef4444' }}
+            />
+          )}
+
+          {tradeMode === 'real' && !realFinalConfirm && (
+            <Alert
+              message="Review your order carefully"
+              description="Click 'Confirm & Place Real Order' to proceed. A final confirmation will be required."
+              type="warning"
+              showIcon
+              style={{ marginBottom: 16, borderRadius: 8 }}
+            />
+          )}
+
           <Descriptions
             column={2}
             bordered
             size="small"
             style={{ marginBottom: 16 }}
-            labelStyle={{ fontWeight: 600, fontSize: 12, color: '#595959' }}
-            contentStyle={{ fontSize: 13 }}
+            labelStyle={{ fontWeight: 600, fontSize: 12, color: 'var(--app-text-muted)', background: 'var(--app-card-bg-soft)' }}
+            contentStyle={{ fontSize: 13, background: 'var(--app-card-bg)', color: 'var(--app-text)' }}
           >
             <Descriptions.Item label="Mode">
-              <Text strong type={tradeMode === 'real' ? 'danger' : undefined}>
-                {tradeMode === 'paper' ? 'Paper' : 'Real'}
+              <Text strong type={tradeMode === 'real' ? 'danger' : undefined} style={{ color: tradeMode === 'real' ? '#ef4444' : 'var(--app-blue-text)' }}>
+                {tradeMode === 'paper' ? 'Paper Trading' : 'Real Trading'}
               </Text>
             </Descriptions.Item>
             <Descriptions.Item label="Endpoint">
-              <Text code style={{ fontSize: 11 }}>
+              <Text code style={{ fontSize: 11, background: 'var(--app-input-bg)', border: '1px solid var(--app-border-soft)' }}>
                 {tradeMode === 'paper' ? 'paper-api.alpaca.markets' : 'api.alpaca.markets'}
               </Text>
             </Descriptions.Item>
             <Descriptions.Item label="Symbol">
-              <Text strong>{previewValues.symbol?.toUpperCase()}</Text>
+              <Text strong style={{ fontSize: 15, color: 'var(--app-text-strong)' }}>{previewValues.symbol?.toUpperCase()}</Text>
             </Descriptions.Item>
             <Descriptions.Item label="Side">
-              <Text type={previewValues.side === 'buy' ? 'success' : 'danger'} strong>
+              <Text type={previewValues.side === 'buy' ? 'success' : 'danger'} strong style={{ color: previewValues.side === 'buy' ? '#4ade80' : '#ef4444' }}>
                 {previewValues.side?.toUpperCase()}
               </Text>
             </Descriptions.Item>
-            <Descriptions.Item label={amountMode === 'shares' ? 'Quantity' : 'Amount'}>
+            <Descriptions.Item label={amountMode === 'shares' ? 'Quantity' : 'Notional Amount'}>
               {amountMode === 'shares'
                 ? `${previewValues.qty} shares`
-                : `$${previewValues.notional?.toFixed(2)}`
+                : `$${Number(previewValues.notional || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
               }
             </Descriptions.Item>
             <Descriptions.Item label="Order Type">
@@ -317,17 +383,17 @@ const OrderModal: React.FC<OrderModalProps> = ({
             </Descriptions.Item>
             {previewValues.limit_price && (
               <Descriptions.Item label="Limit Price">
-                ${previewValues.limit_price}
+                <span style={{ fontWeight: 700, color: 'var(--app-text-strong)' }}>${Number(previewValues.limit_price).toFixed(2)}</span>
               </Descriptions.Item>
             )}
             {previewValues.stop_price && (
               <Descriptions.Item label="Stop Price">
-                ${previewValues.stop_price}
+                <span style={{ fontWeight: 700, color: '#ef4444' }}>${Number(previewValues.stop_price).toFixed(2)}</span>
               </Descriptions.Item>
             )}
             {previewValues.type === 'trailing_stop' && previewValues.trail_price && (
               <Descriptions.Item label="Trail Price">
-                ${previewValues.trail_price}
+                ${Number(previewValues.trail_price).toFixed(2)}
               </Descriptions.Item>
             )}
             {previewValues.type === 'trailing_stop' && previewValues.trail_percent && (
@@ -342,248 +408,244 @@ const OrderModal: React.FC<OrderModalProps> = ({
                 </Descriptions.Item>
                 {previewValues.take_profit_limit_price && (
                   <Descriptions.Item label="Take Profit">
-                    ${previewValues.take_profit_limit_price}
+                    <span style={{ fontWeight: 700, color: '#4ade80' }}>${Number(previewValues.take_profit_limit_price).toFixed(2)}</span>
                   </Descriptions.Item>
                 )}
                 {previewValues.stop_loss_stop_price && (
                   <Descriptions.Item label="Stop Loss">
-                    ${previewValues.stop_loss_stop_price}
-                    {previewValues.stop_loss_limit_price && ` (limit: $${previewValues.stop_loss_limit_price})`}
+                    <span style={{ fontWeight: 700, color: '#ef4444' }}>${Number(previewValues.stop_loss_stop_price).toFixed(2)}</span>
+                    {previewValues.stop_loss_limit_price && ` (limit: $${Number(previewValues.stop_loss_limit_price).toFixed(2)})`}
                   </Descriptions.Item>
                 )}
               </>
             )}
             {previewValues.extended_hours && (
               <Descriptions.Item label="Extended Hours">
-                <Text type="warning">Yes</Text>
+                <Text type="warning" style={{ color: '#fbbf24' }}>Yes</Text>
+              </Descriptions.Item>
+            )}
+            {estimatedValue && (
+              <Descriptions.Item label="Estimated Value">
+                <Text strong style={{ color: 'var(--app-text-strong)' }}>${estimatedValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
               </Descriptions.Item>
             )}
           </Descriptions>
 
-          {tradeMode === 'real' && realDoubleConfirm && (
-            <Alert
-              message="Final Confirmation Required"
-              description={
-                <div style={{ marginTop: 8 }}>
-                  <Text strong type="danger" style={{ fontSize: 14 }}>
-                    This will place a REAL order with REAL money.
-                  </Text>
-                  <br />
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    Click "Submit REAL Order" to confirm. This action cannot be undone.
-                  </Text>
-                </div>
-              }
-              type="warning"
-              showIcon
-              style={{ marginBottom: 16 }}
-            />
-          )}
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <Button onClick={handleCancel} disabled={submitting}>
-              {tradeMode === 'real' && realDoubleConfirm ? 'Cancel' : 'Back'}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Button onClick={handleCancel} disabled={submitting} size="large" style={{ borderRadius: 8, background: 'var(--app-card-bg-soft)', color: 'var(--app-text)', borderColor: 'var(--app-border)' }}>
+              {realFinalConfirm ? 'Cancel' : 'Back'}
             </Button>
             <Button
               type="primary"
-              danger={tradeMode === 'real'}
+              danger={tradeMode === 'real' && realFinalConfirm}
               loading={submitting}
               onClick={handleSubmit}
-              icon={tradeMode === 'real' && realDoubleConfirm ? <SafetyOutlined /> : undefined}
+              size="large"
+              icon={tradeMode === 'real' && realFinalConfirm ? <SafetyOutlined /> : undefined}
+              style={{
+                borderRadius: 8,
+                fontWeight: 700,
+                minWidth: 200,
+                background: tradeMode === 'real' && realFinalConfirm ? '#ef4444' : undefined,
+                borderColor: tradeMode === 'real' && realFinalConfirm ? '#ef4444' : undefined,
+              }}
             >
               {tradeMode === 'real'
-                ? (realDoubleConfirm ? 'Submit REAL Order' : 'Review & Confirm')
-                : 'Submit Paper Order'
+                ? (realFinalConfirm ? 'Place Real Order' : 'Confirm & Place Real Order')
+                : 'Place Paper Order'
               }
             </Button>
           </div>
         </div>
       ) : (
         /* ── Order Form ── */
-        <Form
-          form={form}
-          layout="vertical"
-          initialValues={{
-            side: 'buy',
-            amountMode: 'shares',
-            type: 'market',
-            time_in_force: 'day',
-            trailMode: 'price',
-            extended_hours: false,
-            order_class: 'simple',
-          }}
-          size="small"
-        >
-          {/* ── Basic Order ── */}
-          <div style={{ marginBottom: 4 }}>
-            <Text strong style={{ fontSize: 12, color: '#8c8c8c', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Basic Order
-            </Text>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-            <Form.Item name="symbol" label="Symbol" rules={[{ required: true }]}>
-              <Input placeholder="AAPL" style={{ textTransform: 'uppercase' }} />
+        <div>
+          <Form
+            form={form}
+            layout="vertical"
+            initialValues={{
+              side: 'buy',
+              amountMode: 'shares',
+              type: 'market',
+              time_in_force: 'day',
+              trailMode: 'price',
+              extended_hours: false,
+              order_class: 'simple',
+            }}
+            size="small"
+          >
+            {/* ── Basic Order ── */}
+            <div style={{ marginBottom: 4 }}>
+              <Text strong style={{ fontSize: 12, color: 'var(--app-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Basic Order
+              </Text>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+              <Form.Item name="symbol" label={<span style={{ color: 'var(--app-text)' }}>Symbol</span>} rules={[{ required: true, message: 'Symbol is required' }]}>
+                <Input placeholder="AAPL" style={{ textTransform: 'uppercase', background: 'var(--app-input-bg)', color: 'var(--app-text)', borderColor: 'var(--app-border)' }} />
+              </Form.Item>
+              <Form.Item name="side" label={<span style={{ color: 'var(--app-text)' }}>Side</span>} rules={[{ required: true }]}>
+                <Select dropdownStyle={{ background: 'var(--app-card-bg)' }}>
+                  <Option value="buy">Buy</Option>
+                  <Option value="sell">Sell</Option>
+                </Select>
+              </Form.Item>
+              <Form.Item name="time_in_force" label={<span style={{ color: 'var(--app-text)' }}>Time in Force</span>}>
+                <Select dropdownStyle={{ background: 'var(--app-card-bg)' }}>
+                  {TIME_IN_FORCE_OPTIONS.map(t => (
+                    <Option key={t.value} value={t.value}>{t.label}</Option>
+                  ))}
+                </Select>
+              </Form.Item>
+            </div>
+
+            <Divider style={{ margin: '12px 0', borderColor: 'var(--app-border-soft)' }} />
+
+            {/* ── Amount ── */}
+            <div style={{ marginBottom: 4 }}>
+              <Text strong style={{ fontSize: 12, color: 'var(--app-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Amount
+              </Text>
+            </div>
+            <Form.Item name="amountMode" label={<span style={{ color: 'var(--app-text)' }}>Amount Mode</span>}>
+              <Radio.Group>
+                <Radio.Button value="shares">Shares</Radio.Button>
+                <Radio.Button value="dollars">Dollars</Radio.Button>
+              </Radio.Group>
             </Form.Item>
-            <Form.Item name="side" label="Side" rules={[{ required: true }]}>
-              <Select>
-                <Option value="buy">Buy</Option>
-                <Option value="sell">Sell</Option>
-              </Select>
-            </Form.Item>
-            <Form.Item name="time_in_force" label="Time in Force">
-              <Select>
-                {TIME_IN_FORCE_OPTIONS.map(t => (
+            {amountMode === 'shares' ? (
+              <Form.Item name="qty" label={<span style={{ color: 'var(--app-text)' }}>Quantity</span>} rules={[{ required: true, message: 'Quantity is required' }]}>
+                <InputNumber min={0.0001} step={0.01} style={{ width: '100%', background: 'var(--app-input-bg)', color: 'var(--app-text)', borderColor: 'var(--app-border)' }} placeholder="Shares, e.g. 0.5" />
+              </Form.Item>
+            ) : (
+              <Form.Item name="notional" label={<span style={{ color: 'var(--app-text)' }}>Dollar Amount ($)</span>} rules={[{ required: true, message: 'Dollar amount is required' }]}>
+                <InputNumber min={0.01} step={1} style={{ width: '100%', background: 'var(--app-input-bg)', color: 'var(--app-text)', borderColor: 'var(--app-border)' }} placeholder="Dollar amount" prefix="$" />
+              </Form.Item>
+            )}
+
+            <Divider style={{ margin: '12px 0', borderColor: 'var(--app-border-soft)' }} />
+
+            {/* ── Order Type ── */}
+            <div style={{ marginBottom: 4 }}>
+              <Text strong style={{ fontSize: 12, color: 'var(--app-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Order Type
+              </Text>
+            </div>
+            <Form.Item name="type" label={<span style={{ color: 'var(--app-text)' }}>Type</span>}>
+              <Select dropdownStyle={{ background: 'var(--app-card-bg)' }}>
+                {ORDER_TYPES.map(t => (
                   <Option key={t.value} value={t.value}>{t.label}</Option>
                 ))}
               </Select>
             </Form.Item>
-          </div>
 
-          <Divider style={{ margin: '12px 0' }} />
-
-          {/* ── Amount ── */}
-          <div style={{ marginBottom: 4 }}>
-            <Text strong style={{ fontSize: 12, color: '#8c8c8c', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Amount
-            </Text>
-          </div>
-          <Form.Item name="amountMode" label="Amount Mode">
-            <Radio.Group>
-              <Radio.Button value="shares">Shares</Radio.Button>
-              <Radio.Button value="dollars">Dollars</Radio.Button>
-            </Radio.Group>
-          </Form.Item>
-          {amountMode === 'shares' ? (
-            <Form.Item name="qty" label="Quantity" rules={[{ required: true }]}>
-              <InputNumber min={0.0001} step={0.01} style={{ width: '100%' }} placeholder="Shares, e.g. 0.5" />
-            </Form.Item>
-          ) : (
-            <Form.Item name="notional" label="Dollar Amount ($)" rules={[{ required: true }]}>
-              <InputNumber min={0.01} step={1} style={{ width: '100%' }} placeholder="Dollar amount" prefix="$" />
-            </Form.Item>
-          )}
-
-          <Divider style={{ margin: '12px 0' }} />
-
-          {/* ── Order Type ── */}
-          <div style={{ marginBottom: 4 }}>
-            <Text strong style={{ fontSize: 12, color: '#8c8c8c', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Order Type
-            </Text>
-          </div>
-          <Form.Item name="type" label="Type">
-            <Select>
-              {ORDER_TYPES.map(t => (
-                <Option key={t.value} value={t.value}>{t.label}</Option>
-              ))}
-            </Select>
-          </Form.Item>
-
-          {(orderType === 'limit' || orderType === 'stop_limit') && (
-            <Form.Item name="limit_price" label="Limit Price" rules={[{ required: true }]}>
-              <InputNumber min={0} step={0.01} style={{ width: '100%' }} prefix="$" />
-            </Form.Item>
-          )}
-          {(orderType === 'stop' || orderType === 'stop_limit') && (
-            <Form.Item name="stop_price" label="Stop Price" rules={[{ required: true }]}>
-              <InputNumber min={0} step={0.01} style={{ width: '100%' }} prefix="$" />
-            </Form.Item>
-          )}
-          {orderType === 'trailing_stop' && (
-            <>
-              <Form.Item name="trailMode" label="Trail Type">
-                <Radio.Group>
-                  <Radio.Button value="price">Trail Price</Radio.Button>
-                  <Radio.Button value="percent">Trail Percent</Radio.Button>
-                </Radio.Group>
+            {(orderType === 'limit' || orderType === 'stop_limit') && (
+              <Form.Item name="limit_price" label={<span style={{ color: 'var(--app-text)' }}>Limit Price</span>} rules={[{ required: true, message: 'Limit price is required' }]}>
+                <InputNumber min={0} step={0.01} style={{ width: '100%', background: 'var(--app-input-bg)', color: 'var(--app-text)', borderColor: 'var(--app-border)' }} prefix="$" />
               </Form.Item>
-              {trailMode === 'price' ? (
-                <Form.Item name="trail_price" label={<span style={{ fontSize: 12, fontWeight: 600 }}>Trail Price ($) <span style={{ color: '#ff4d4f' }}>*</span></span>} rules={[{ required: true }]}>
-                  <InputNumber prefix="$" style={{ width: '100%', height: 36 }} min={0.01} step={0.01} />
+            )}
+            {(orderType === 'stop' || orderType === 'stop_limit') && (
+              <Form.Item name="stop_price" label={<span style={{ color: 'var(--app-text)' }}>Stop Price</span>} rules={[{ required: true, message: 'Stop price is required' }]}>
+                <InputNumber min={0} step={0.01} style={{ width: '100%', background: 'var(--app-input-bg)', color: 'var(--app-text)', borderColor: 'var(--app-border)' }} prefix="$" />
+              </Form.Item>
+            )}
+            {orderType === 'trailing_stop' && (
+              <>
+                <Form.Item name="trailMode" label={<span style={{ color: 'var(--app-text)' }}>Trail Type</span>}>
+                  <Radio.Group>
+                    <Radio.Button value="price">Trail Price</Radio.Button>
+                    <Radio.Button value="percent">Trail Percent</Radio.Button>
+                  </Radio.Group>
                 </Form.Item>
-              ) : (
-                <Form.Item name="trail_percent" label={<span style={{ fontSize: 12, fontWeight: 600 }}>Trail Percent (%) <span style={{ color: '#ff4d4f' }}>*</span></span>} rules={[{ required: true }]}>
-                  <InputNumber suffix="%" style={{ width: '100%', height: 36 }} min={0.1} step={0.1} />
-                </Form.Item>
-              )}
-            </>
-          )}
-
-          <Divider style={{ margin: '12px 0' }} />
-
-          {/* ── Advanced Options ── */}
-          <div className="form-section-title">Advanced Options</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <Form.Item name="extended_hours" label={<span style={{ fontSize: 12, fontWeight: 600 }}>Extended Hours</span>} valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            <Form.Item name="client_order_id" label={<span style={{ fontSize: 12, fontWeight: 600 }}>Client Order ID (optional)</span>}>
-              <Input placeholder="Custom ID" style={{ height: 36 }} />
-            </Form.Item>
-          </div>
-
-          <Divider style={{ margin: '12px 0' }} />
-
-          {/* ── Risk / Bracket ── */}
-          <div className="form-section-title">Risk / Bracket Orders</div>
-          <Form.Item name="order_class" label={<span style={{ fontSize: 12, fontWeight: 600 }}>Order Class</span>}>
-            <Select style={{ height: 36 }}>
-              {ORDER_CLASSES.map(c => <Option key={c.value} value={c.value}>{c.label}</Option>)}
-            </Select>
-          </Form.Item>
-
-          {orderClass !== 'simple' && (
-            <div style={{ background: '#f8f9fb', padding: '16px', borderRadius: 8, marginTop: 8, border: '1px solid #e8e8e8' }}>
-              <Row gutter={16}>
-                <Col span={12}>
-                  <Form.Item name="take_profit_limit_price" label={<span style={{ fontSize: 11, fontWeight: 600, color: '#52c41a' }}>Take Profit Limit <span style={{ color: '#ff4d4f' }}>*</span></span>} rules={[{ required: true }]} style={{ marginBottom: 12 }}>
-                    <InputNumber prefix="$" style={{ width: '100%', height: 36 }} min={0.01} step={0.01} />
+                {trailMode === 'price' ? (
+                  <Form.Item name="trail_price" label={<span style={{ fontSize: 12, fontWeight: 600, color: 'var(--app-text)' }}>Trail Price ($) <span style={{ color: '#ff4d4f' }}>*</span></span>} rules={[{ required: true }]}>
+                    <InputNumber prefix="$" style={{ width: '100%', height: 36, background: 'var(--app-input-bg)', color: 'var(--app-text)', borderColor: 'var(--app-border)' }} min={0.01} step={0.01} />
                   </Form.Item>
-                </Col>
-              </Row>
-              <Row gutter={16}>
-                <Col span={12}>
-                  <Form.Item name="stop_loss_stop_price" label={<span style={{ fontSize: 11, fontWeight: 600, color: '#ff4d4f' }}>Stop Loss Price <span style={{ color: '#ff4d4f' }}>*</span></span>} rules={[{ required: true }]} style={{ marginBottom: 0 }}>
-                    <InputNumber prefix="$" style={{ width: '100%', height: 36 }} min={0.01} step={0.01} />
+                ) : (
+                  <Form.Item name="trail_percent" label={<span style={{ fontSize: 12, fontWeight: 600, color: 'var(--app-text)' }}>Trail Percent (%) <span style={{ color: '#ff4d4f' }}>*</span></span>} rules={[{ required: true }]}>
+                    <InputNumber suffix="%" style={{ width: '100%', height: 36, background: 'var(--app-input-bg)', color: 'var(--app-text)', borderColor: 'var(--app-border)' }} min={0.1} step={0.1} />
                   </Form.Item>
-                </Col>
-                <Col span={12}>
-                  <Form.Item name="stop_loss_limit_price" label={<span style={{ fontSize: 11, fontWeight: 600, color: '#8c8c8c' }}>Stop Limit (Optional)</span>} style={{ marginBottom: 0 }}>
-                    <Tooltip title="Optional: if not set, stop loss triggers a market order">
-                      <InputNumber prefix="$" style={{ width: '100%', height: 36 }} min={0.01} step={0.01} />
-                    </Tooltip>
-                  </Form.Item>
-                </Col>
-              </Row>
+                )}
+              </>
+            )}
+
+            <Divider style={{ margin: '12px 0', borderColor: 'var(--app-border-soft)' }} />
+
+            {/* ── Advanced Options ── */}
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--app-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+              Advanced Options
             </div>
-          )}
-        </Form>
-      )}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <Form.Item name="extended_hours" label={<span style={{ fontSize: 12, fontWeight: 600, color: 'var(--app-text)' }}>Extended Hours</span>} valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item name="client_order_id" label={<span style={{ fontSize: 12, fontWeight: 600, color: 'var(--app-text)' }}>Client Order ID (optional)</span>}>
+                <Input placeholder="Custom ID" style={{ height: 36, background: 'var(--app-input-bg)', color: 'var(--app-text)', borderColor: 'var(--app-border)' }} />
+              </Form.Item>
+            </div>
 
-      {/* Footer */}
-      <div className="order-ticket-footer">
-        <Button onClick={handleCancel} disabled={submitting} style={{ borderRadius: 6, fontWeight: 600 }}>
-          {confirmStep ? (tradeMode === 'real' && realDoubleConfirm ? 'Cancel' : 'Back') : 'Cancel'}
-        </Button>
-        <Button
-          type="primary"
-          danger={previewValues.side === 'sell' || tradeMode === 'real'}
-          loading={submitting}
-          onClick={handleSubmit}
-          icon={tradeMode === 'real' && realDoubleConfirm ? <SafetyOutlined /> : undefined}
-          style={{ 
-            borderRadius: 6, fontWeight: 700, minWidth: 120,
-            background: confirmStep ? (tradeMode === 'real' ? '#ff4d4f' : '#1890ff') : (previewValues.side === 'sell' ? '#faad14' : '#1890ff'),
-            borderColor: confirmStep ? (tradeMode === 'real' ? '#ff4d4f' : '#1890ff') : (previewValues.side === 'sell' ? '#faad14' : '#1890ff'),
-            color: '#fff'
-          }}
-        >
-          {confirmStep 
-            ? (tradeMode === 'real' ? 'Submit LIVE Order' : 'Submit Paper Order')
-            : `Review ${previewValues.side === 'buy' ? 'Buy' : 'Sell'}`
-          }
-        </Button>
-      </div>
+            <Divider style={{ margin: '12px 0', borderColor: 'var(--app-border-soft)' }} />
+
+            {/* ── Risk / Bracket ── */}
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--app-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+              Risk / Bracket Orders
+            </div>
+            <Form.Item name="order_class" label={<span style={{ fontSize: 12, fontWeight: 600, color: 'var(--app-text)' }}>Order Class</span>}>
+              <Select style={{ height: 36 }} dropdownStyle={{ background: 'var(--app-card-bg)' }}>
+                {ORDER_CLASSES.map(c => <Option key={c.value} value={c.value}>{c.label}</Option>)}
+              </Select>
+            </Form.Item>
+
+            {orderClass !== 'simple' && (
+              <div style={{ background: 'var(--app-card-bg-soft)', padding: '16px', borderRadius: 8, marginTop: 8, border: '1px solid var(--app-border-soft)' }}>
+                <Row gutter={16}>
+                  <Col span={12}>
+                    <Form.Item name="take_profit_limit_price" label={<span style={{ fontSize: 11, fontWeight: 600, color: '#4ade80' }}>Take Profit Limit <span style={{ color: '#ff4d4f' }}>*</span></span>} rules={[{ required: true }]} style={{ marginBottom: 12 }}>
+                      <InputNumber prefix="$" style={{ width: '100%', height: 36, background: 'var(--app-input-bg)', color: 'var(--app-text)', borderColor: 'var(--app-border)' }} min={0.01} step={0.01} />
+                    </Form.Item>
+                  </Col>
+                </Row>
+                <Row gutter={16}>
+                  <Col span={12}>
+                    <Form.Item name="stop_loss_stop_price" label={<span style={{ fontSize: 11, fontWeight: 600, color: '#ef4444' }}>Stop Loss Price <span style={{ color: '#ff4d4f' }}>*</span></span>} rules={[{ required: true }]} style={{ marginBottom: 0 }}>
+                      <InputNumber prefix="$" style={{ width: '100%', height: 36, background: 'var(--app-input-bg)', color: 'var(--app-text)', borderColor: 'var(--app-border)' }} min={0.01} step={0.01} />
+                    </Form.Item>
+                  </Col>
+                  <Col span={12}>
+                    <Form.Item name="stop_loss_limit_price" label={<span style={{ fontSize: 11, fontWeight: 600, color: 'var(--app-text-muted)' }}>Stop Limit (Optional)</span>} style={{ marginBottom: 0 }}>
+                      <Tooltip title="Optional: if not set, stop loss triggers a market order">
+                        <InputNumber prefix="$" style={{ width: '100%', height: 36, background: 'var(--app-input-bg)', color: 'var(--app-text)', borderColor: 'var(--app-border)' }} min={0.01} step={0.01} />
+                      </Tooltip>
+                    </Form.Item>
+                  </Col>
+                </Row>
+              </div>
+            )}
+          </Form>
+
+          {/* Form footer buttons */}
+          <Divider style={{ margin: '16px 0', borderColor: 'var(--app-border-soft)' }} />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <Button onClick={onClose} disabled={submitting} style={{ borderRadius: 8, fontWeight: 600, background: 'var(--app-card-bg-soft)', color: 'var(--app-text)', borderColor: 'var(--app-border)' }}>
+              Cancel
+            </Button>
+            <Button
+              type="primary"
+              disabled={!isFormValid}
+              onClick={handleReviewClick}
+              style={{
+                borderRadius: 8,
+                fontWeight: 700,
+                minWidth: 140,
+                background: previewValues.side === 'sell' ? '#faad14' : '#1890ff',
+                borderColor: previewValues.side === 'sell' ? '#faad14' : '#1890ff',
+              }}
+            >
+              Review {previewValues.side === 'buy' ? 'Buy' : 'Sell'}
+            </Button>
+          </div>
+        </div>
+      )}
     </Modal>
   );
 };

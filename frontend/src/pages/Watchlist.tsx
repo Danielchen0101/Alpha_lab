@@ -282,15 +282,15 @@ const Watchlist: React.FC = () => {
       render: (symbol: string, record: WatchlistDisplayItem) => (
         <Space size={12}>
           <div style={{ 
-            width: 36, height: 36, borderRadius: 10, background: '#f8fafc', 
-            border: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', 
-            justifyContent: 'center', fontWeight: 800, color: '#334155', fontSize: 14 
+            width: 36, height: 36, borderRadius: 10, background: "var(--app-card-bg-soft)", 
+            border: "1px solid var(--app-border-soft)", display: 'flex', alignItems: 'center', 
+            justifyContent: 'center', fontWeight: 800, color: "var(--app-text-strong)", fontSize: 14 
           }}>
             {symbol[0]}
           </div>
           <Space direction="vertical" size={0}>
-            <span style={{ fontWeight: 800, fontSize: 15, color: '#0f172a', letterSpacing: '-0.01em' }}>{symbol}</span>
-            <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500, maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <span style={{ fontWeight: 800, fontSize: 15, color: "var(--app-text-strong)", letterSpacing: '-0.01em' }}>{symbol}</span>
+            <div style={{ fontSize: 11, color: "var(--app-text-muted)", fontWeight: 500, maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {record.name || symbol}
             </div>
           </Space>
@@ -305,7 +305,7 @@ const Watchlist: React.FC = () => {
       align: 'right' as const,
       sorter: true,
       render: (price: number) => (
-        <span style={{ fontWeight: 800, fontSize: 15, color: '#0f172a' }}>
+        <span style={{ fontWeight: 800, fontSize: 15, color: "var(--app-text-strong)" }}>
           {price != null ? `$${safeToFixed(price, 2)}` : '—'}
         </span>
       ),
@@ -321,12 +321,12 @@ const Watchlist: React.FC = () => {
         const safePercent = percent || 0;
         const isUp = safePercent > 0;
         const isDown = safePercent < 0;
-        const color = isUp ? '#10b981' : isDown ? '#ef4444' : '#64748b';
+        const color = isUp ? '#10b981' : isDown ? '#ef4444' : "var(--app-text-muted)";
         
         return (
           <div style={{ textAlign: 'right' }}>
             <div style={{ 
-              background: isUp ? 'rgba(16, 185, 129, 0.08)' : isDown ? 'rgba(239, 68, 68, 0.08)' : '#f1f5f9',
+              background: isUp ? 'rgba(16, 185, 129, 0.08)' : isDown ? 'rgba(239, 68, 68, 0.08)' : "var(--app-border-soft)",
               color, padding: '3px 8px', borderRadius: '6px', fontSize: '13px', 
               fontWeight: 800, display: 'inline-block', minWidth: '65px'
             }}>
@@ -346,15 +346,15 @@ const Watchlist: React.FC = () => {
         const pos = range === 0 ? 0 : ((record.price - record.dayLow) / range) * 100;
         return (
           <div style={{ padding: '0 4px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#94a3b8', fontWeight: 700, marginBottom: 4 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: "var(--app-text-muted)", fontWeight: 700, marginBottom: 4 }}>
               <span>{record.dayLow.toFixed(2)}</span>
               <span>{record.dayHigh.toFixed(2)}</span>
             </div>
-            <div style={{ height: 4, background: '#f1f5f9', borderRadius: 2, position: 'relative' }}>
+            <div style={{ height: 4, background: "var(--app-border-soft)", borderRadius: 2, position: 'relative' }}>
               <div style={{ 
                 position: 'absolute', left: `${Math.max(0, Math.min(100, pos))}%`, 
-                top: -2, width: 8, height: 8, background: '#3b82f6', 
-                borderRadius: '50%', border: '2px solid #fff', boxShadow: '0 1px 4px rgba(59,130,246,0.3)'
+                top: -2, width: 8, height: 8, background: "var(--app-blue-bg, #3b82f6)", 
+                borderRadius: '50%', border: "2px solid var(--app-card-bg)", boxShadow: '0 1px 4px rgba(59,130,246,0.3)'
               }} />
             </div>
           </div>
@@ -368,11 +368,11 @@ const Watchlist: React.FC = () => {
       render: (_: any, record: WatchlistDisplayItem) => {
         const signal = getSignal(record);
         const displaySignal = translateSignal(signal);
-        let color = '#3b82f6';
-        let bgColor = '#eff6ff';
+        let color = "var(--app-blue-text, #3b82f6)";
+        let bgColor = "var(--app-blue-bg, #eff6ff)";
         if (signal.includes('Bullish')) { color = '#10b981'; bgColor = '#f0fdf4'; }
         else if (signal.includes('Bearish')) { color = '#ef4444'; bgColor = '#fef2f2'; }
-        else if (signal.includes('resistance')) { color = '#f59e0b'; bgColor = '#fffbeb'; }
+        else if (signal.includes('resistance')) { color = '#f59e0b'; bgColor = "var(--app-card-bg-soft)"; }
 
         return (
           <Tag style={{ 
@@ -390,7 +390,7 @@ const Watchlist: React.FC = () => {
       key: 'sector',
       width: 120,
       render: (sector: string | null) => (
-        <span style={{ fontSize: 12, color: '#64748b', fontWeight: 500 }}>
+        <span style={{ fontSize: 12, color: "var(--app-text-muted)", fontWeight: 500 }}>
           {sector ? translateSector(sector) : 'N/A'}
         </span>
       ),
@@ -408,7 +408,7 @@ const Watchlist: React.FC = () => {
             size="small"
             icon={<LineChartOutlined />}
             onClick={() => handleAnalyze(record.symbol)}
-            style={{ borderRadius: 8, height: 32, fontWeight: 700, fontSize: 13, background: '#3b82f6' }}
+            style={{ borderRadius: 8, height: 32, fontWeight: 700, fontSize: 13, background: "var(--app-blue-bg, #3b82f6)" }}
           >
             {t.watchlist.analyze}
           </Button>
@@ -463,10 +463,10 @@ const Watchlist: React.FC = () => {
       <style>{`
         .premium-card {
           border-radius: 18px !important;
-          border: 1px solid rgba(15, 23, 42, 0.08) !important;
+          border: 1px solid var(--app-border-soft) !important;
           box-shadow: 0 4px 12px rgba(0, 0, 0, 0.02) !important;
           transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
-          background: #fff !important;
+          background: var(--app-card-bg) !important;
           overflow: hidden;
         }
         .metric-card-content {
@@ -479,14 +479,14 @@ const Watchlist: React.FC = () => {
           font-size: 11px;
           text-transform: uppercase;
           letter-spacing: 1px;
-          color: #94a3b8;
+          color: var(--app-text-muted);
           font-weight: 700;
           margin-bottom: 8px;
         }
         .metric-value {
           font-size: 24px;
           font-weight: 800;
-          color: #0f172a;
+          color: var(--app-text-strong);
           line-height: 1.1;
         }
         .metric-icon-bg {
@@ -498,20 +498,21 @@ const Watchlist: React.FC = () => {
           color: #1890ff;
         }
         .watchlist-table .ant-table-thead > tr > th {
-          background: #f8fafc !important;
-          color: #64748b !important;
+          background: var(--app-table-header-bg) !important;
+          color: var(--app-text-muted) !important;
           font-weight: 700 !important;
           font-size: 10.5px !important;
           text-transform: uppercase !important;
           letter-spacing: 0.5px !important;
           padding: 14px 16px !important;
-          border-bottom: 1px solid #f1f5f9 !important;
+          border-bottom: 1px solid var(--app-border-soft) !important;
         }
         .watchlist-table .ant-table-tbody > tr > td {
           padding: 14px 16px !important;
-          border-bottom: 1px solid #f1f5f9 !important;
+          border-bottom: 1px solid var(--app-border-soft) !important;
         }
         .watchlist-table .ant-table-tbody > tr:hover > td {
+          background: var(--app-table-row-hover-bg, rgba(59, 130, 246, 0.08)) !important;
           background: rgba(24, 144, 255, 0.02) !important;
         }
         .note-chip {
@@ -519,10 +520,10 @@ const Watchlist: React.FC = () => {
           align-items: center;
           gap: 8px;
           padding: 8px 16px;
-          background: #fff;
+          background: var(--app-card-bg);
           border: 1px solid rgba(15, 23, 42, 0.06);
           border-radius: 12px;
-          color: #64748b;
+          color: var(--app-text-muted);
           font-size: 13px;
           font-weight: 500;
           box-shadow: 0 2px 4px rgba(0,0,0,0.01);
@@ -532,31 +533,31 @@ const Watchlist: React.FC = () => {
       {/* Header Section */}
       <div style={{ marginBottom: 32, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 24 }}>
         <div style={{ flex: 1, minWidth: 300 }}>
-          <Title level={1} style={{ margin: 0, fontSize: 'clamp(26px, 2.5vw, 32px)', fontWeight: 800, letterSpacing: '-0.02em', color: '#0f172a' }}>{t.watchlist.title}</Title>
-          <Text style={{ fontSize: 15, color: '#64748b', display: 'block', marginTop: 4 }}>{t.watchlist.subtitle}</Text>
+          <Title level={1} style={{ margin: 0, fontSize: 'clamp(26px, 2.5vw, 32px)', fontWeight: 800, letterSpacing: '-0.02em', color: "var(--app-text-strong)" }}>{t.watchlist.title}</Title>
+          <Text style={{ fontSize: 15, color: "var(--app-text-muted)", display: 'block', marginTop: 4 }}>{t.watchlist.subtitle}</Text>
           <div style={{ marginTop: 16, display: 'flex', gap: 20, flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#fff', padding: '6px 12px', borderRadius: 10, border: '1px solid #f1f5f9' }}>
-              <ThunderboltOutlined style={{ color: '#3b82f6' }} />
-              <span style={{ fontSize: 13, color: '#475569', fontWeight: 600 }}>{totalSymbols} <span style={{ color: '#94a3b8', fontWeight: 500 }}>Symbols</span></span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: "var(--app-card-bg-soft)", padding: "6px 12px", borderRadius: 10, border: "1px solid var(--app-border-soft)" }}>
+              <ThunderboltOutlined style={{ color: "var(--app-blue-text, #3b82f6)" }} />
+              <span style={{ fontSize: 13, color: "var(--app-text-muted)", fontWeight: 600 }}>{totalSymbols} <span style={{ color: "var(--app-text-muted)", fontWeight: 500 }}>Symbols</span></span>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#fff', padding: '6px 12px', borderRadius: 10, border: '1px solid #f1f5f9' }}>
-              <ClockCircleOutlined style={{ color: '#64748b' }} />
-              <span style={{ fontSize: 13, color: '#475569', fontWeight: 600 }}>{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: "var(--app-card-bg-soft)", padding: "6px 12px", borderRadius: 10, border: "1px solid var(--app-border-soft)" }}>
+              <ClockCircleOutlined style={{ color: "var(--app-text-muted)" }} />
+              <span style={{ fontSize: 13, color: "var(--app-text-muted)", fontWeight: 600 }}>{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#fff', padding: '6px 12px', borderRadius: 10, border: '1px solid #f1f5f9' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: "var(--app-card-bg-soft)", padding: "6px 12px", borderRadius: 10, border: "1px solid var(--app-border-soft)" }}>
               <RiseOutlined style={{ color: avgChange >= 0 ? '#10b981' : '#ef4444' }} />
-              <span style={{ fontSize: 13, color: avgChange >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>{avgChange.toFixed(2)}% <span style={{ color: '#94a3b8', fontWeight: 500, marginLeft: 2 }}>Avg</span></span>
+              <span style={{ fontSize: 13, color: avgChange >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>{avgChange.toFixed(2)}% <span style={{ color: "var(--app-text-muted)", fontWeight: 500, marginLeft: 2 }}>Avg</span></span>
             </div>
           </div>
         </div>
         
         {/* Add Symbol Panel */}
         <div className="premium-card" style={{ width: 360, padding: 18 }}>
-          <div style={{ fontSize: 11, fontWeight: 800, marginBottom: 12, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{t.watchlist.addSymbolToWatchlist}</div>
+          <div style={{ fontSize: 11, fontWeight: 800, marginBottom: 12, color: "var(--app-text-muted)", textTransform: 'uppercase', letterSpacing: '0.1em' }}>{t.watchlist.addSymbolToWatchlist}</div>
           <Space.Compact style={{ width: '100%', marginBottom: 10 }}>
             <Input
               placeholder={t.watchlist.symbolPlaceholder}
-              prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
+              prefix={<SearchOutlined style={{ color: "var(--app-text-muted)" }} />}
               value={newSymbol}
               onChange={(e) => setNewSymbol(e.target.value.toUpperCase())}
               onKeyPress={handleKeyPress}
@@ -573,8 +574,8 @@ const Watchlist: React.FC = () => {
             </Button>
           </Space.Compact>
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '0 2px' }}>
-            <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}>Press Enter to add</span>
-            <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}>Supports names</span>
+            <span style={{ fontSize: 11, color: "var(--app-text-muted)", fontWeight: 500 }}>Press Enter to add</span>
+            <span style={{ fontSize: 11, color: "var(--app-text-muted)", fontWeight: 500 }}>Supports names</span>
           </div>
         </div>
       </div>
@@ -617,15 +618,15 @@ const Watchlist: React.FC = () => {
 
       {/* Watchlist Table Card */}
       <div className="premium-card" style={{ marginBottom: 32 }}>
-        <div style={{ padding: '18px 24px', borderBottom: '1px solid #f1f5f9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
+        <div style={{ padding: '18px 24px', borderBottom: "1px solid var(--app-border-soft)", display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <span style={{ fontSize: 17, fontWeight: 800, color: '#0f172a' }}>{t.watchlist.watchlistItems}</span>
-            <Tag color="blue" style={{ borderRadius: 6, fontSize: 11, fontWeight: 700, padding: '0 8px', border: 'none', background: '#eff6ff', color: '#3b82f6' }}>{watchlistSymbols.length}</Tag>
+            <span style={{ fontSize: 17, fontWeight: 800, color: "var(--app-text-strong)" }}>{t.watchlist.watchlistItems}</span>
+            <Tag color="blue" style={{ borderRadius: 6, fontSize: 11, fontWeight: 700, padding: '0 8px', border: 'none', background: "var(--app-blue-bg, #eff6ff)", color: "var(--app-blue-text, #3b82f6)" }}>{watchlistSymbols.length}</Tag>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <Input 
               placeholder={t.watchlist.searchWatchlist}
-              prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
+              prefix={<SearchOutlined style={{ color: "var(--app-text-muted)" }} />}
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
               style={{ width: 260, borderRadius: 10, height: 38 }}
@@ -656,8 +657,8 @@ const Watchlist: React.FC = () => {
             style={{ padding: '80px 0' }}
             description={
               <div>
-                <Title level={4} style={{ marginBottom: 8, color: '#1e293b' }}>{t.watchlist.noSymbols}</Title>
-                <Text style={{ color: '#64748b' }}>{t.watchlist.addSymbolPrompt}</Text>
+                <Title level={4} style={{ marginBottom: 8, color: "var(--app-text-strong)" }}>{t.watchlist.noSymbols}</Title>
+                <Text style={{ color: "var(--app-text-muted)" }}>{t.watchlist.addSymbolPrompt}</Text>
                 <div style={{ marginTop: 24 }}>
                   <Button type="primary" onClick={() => { setNewSymbol('AAPL'); handleAddSymbol(); }} icon={<PlusOutlined />} style={{ borderRadius: 8, fontWeight: 700, height: 40, padding: '0 24px' }}>
                     {t.watchlist.tryAAPL}
@@ -673,7 +674,7 @@ const Watchlist: React.FC = () => {
       {watchlistSymbols.length > 0 && (
         <div style={{ display: 'flex', justifyContent: 'center', gap: 16, flexWrap: 'wrap' }}>
           <div className="note-chip">
-            <LineChartOutlined style={{ color: '#3b82f6' }} />
+            <LineChartOutlined style={{ color: "var(--app-blue-text, #3b82f6)" }} />
             <span>{t.watchlist.analyzeTip}</span>
           </div>
           <div className="note-chip">

@@ -244,7 +244,7 @@ const Trade: React.FC = () => {
     } finally {
       setLoadingData({ account: false, positions: false, orders: false, history: false, portfolio: false });
     }
-  }, [tradeMode, portfolioRange]);
+  }, [tradeMode, portfolioRange, t.trade.credentialsNotConfigured, t.trade.liveLabel, t.trade.paperLabel, t.trade.refreshFailed]);
 
   useEffect(() => {
     refreshAllAlpacaData();
@@ -430,7 +430,7 @@ const Trade: React.FC = () => {
     <div>
       {/* 页面标题 + Trade Mode */}
       <div style={{ marginBottom: 24 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: '16px' }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
               <div style={{ 
@@ -438,17 +438,26 @@ const Trade: React.FC = () => {
                 background: 'linear-gradient(135deg, #1890ff 0%, #096dd9 100%)', 
                 color: '#fff', display: 'flex', alignItems: 'center', 
                 justifyContent: 'center', fontSize: 20,
-                boxShadow: '0 4px 10px rgba(24, 144, 255, 0.2)'
+                boxShadow: 'var(--app-shadow-sm)'
               }}>
                 <RobotOutlined />
               </div>
-              <Title level={2} style={{ margin: 0, fontWeight: 800, color: '#111827', letterSpacing: '-0.5px' }}>{t.trade.title}</Title>
+              <Title level={2} style={{ margin: 0, fontWeight: 800, color: 'var(--app-text-strong)', letterSpacing: '-0.5px' }}>{t.trade.title}</Title>
             </div>
-            <Text type="secondary" style={{ fontSize: 14, fontWeight: 500, color: '#6b7280' }}>{t.trade.subtitle}</Text>
+            <Text style={{ fontSize: 14, fontWeight: 500, color: 'var(--app-text-muted)' }}>{t.trade.subtitle}</Text>
           </div>
           
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            <Tag color={tradeMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ fontSize: 11, fontWeight: 700, borderRadius: 4, margin: 0, padding: '2px 10px' }}>
+            <Tag color={tradeMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ 
+              fontSize: 11, 
+              fontWeight: 700, 
+              borderRadius: 4, 
+              margin: 0, 
+              padding: '4px 12px',
+              backgroundColor: tradeMode === 'paper' ? 'rgba(59, 130, 246, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+              border: `1px solid ${tradeMode === 'paper' ? 'rgba(59, 130, 246, 0.25)' : 'rgba(239, 68, 68, 0.25)'}`,
+              color: tradeMode === 'paper' ? '#60a5fa' : '#ef4444'
+            }}>
               {tradeMode === 'paper' ? t.trade.paperTrading : t.trade.liveTrading}
             </Tag>
             <Button
@@ -456,7 +465,14 @@ const Trade: React.FC = () => {
               icon={<ReloadOutlined />}
               onClick={() => refreshAllAlpacaData()}
               loading={loadingData.account || loadingData.positions || loadingData.orders || loadingData.portfolio}
-              style={{ borderRadius: 8, height: 34, fontWeight: 600, color: '#4b5563', border: '1px solid #e5e7eb' }}
+              style={{ 
+                borderRadius: 8, 
+                height: 34, 
+                fontWeight: 600, 
+                color: 'var(--app-text)', 
+                background: 'var(--app-card-bg-soft)',
+                border: '1px solid var(--app-border)' 
+              }}
             >
               {t.trade.refreshData}
             </Button>
@@ -466,12 +482,12 @@ const Trade: React.FC = () => {
 
       {tradeMode === 'real' && (
         <Alert
-          message={t.trade.realModeTitle}
+          message={<span style={{ fontWeight: 700 }}>{t.trade.realModeTitle}</span>}
           description={t.trade.realModeDesc}
           type="error"
           showIcon
           icon={<SafetyOutlined />}
-          style={{ marginBottom: 24, borderRadius: 10, border: '1px solid #ffa39e' }}
+          style={{ marginBottom: 24, borderRadius: 10, border: '1px solid #ef4444', background: 'rgba(239, 68, 68, 0.05)' }}
         />
       )}
 
@@ -479,6 +495,7 @@ const Trade: React.FC = () => {
       <div style={{ marginBottom: 24 }}>
         <Card
           className="premium-card"
+          style={{ background: 'var(--app-card-bg)', border: '1px solid var(--app-border-soft)', boxShadow: 'var(--app-shadow)' }}
           title={
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -492,20 +509,28 @@ const Trade: React.FC = () => {
                   <EyeOutlined />
                 </div>
                 <div>
-                  <div style={{ fontSize: 15, fontWeight: 800, color: '#111827', lineHeight: 1.2 }}>{t.trade.watchlistTitle}</div>
-                  <div style={{ fontSize: 10, color: '#8c8c8c', fontWeight: 500 }}>{t.trade.watchlistSubtitle}</div>
+                  <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--app-text-strong)', lineHeight: 1.2 }}>{t.trade.watchlistTitle}</div>
+                  <div style={{ fontSize: 10, color: 'var(--app-text-muted)', fontWeight: 500 }}>{t.trade.watchlistSubtitle}</div>
                 </div>
                 <Tag color="blue" bordered={false} style={{ fontSize: 10, fontWeight: 800, borderRadius: 6, marginLeft: 4 }}>{watchlistItems.length}</Tag>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <Tag color="blue" bordered={false} style={{ fontSize: 9, margin: 0, fontWeight: 700, borderRadius: 4 }}>ALPACA REAL-TIME</Tag>
-                <Divider type="vertical" style={{ height: 20 }} />
+                <Divider type="vertical" style={{ height: 20, borderColor: 'var(--app-border-soft)' }} />
                 <Button 
                   size="middle" 
                   icon={<ReloadOutlined spin={watchlistLoading} />} 
                   onClick={loadWatchlist} 
                   loading={watchlistLoading} 
-                  style={{ borderRadius: 8, height: 32, fontSize: 12, fontWeight: 600, color: '#6b7280', border: '1px solid #e5e7eb' }}
+                  style={{ 
+                    borderRadius: 8, 
+                    height: 32, 
+                    fontSize: 12, 
+                    fontWeight: 600, 
+                    color: 'var(--app-text-muted)', 
+                    background: 'var(--app-card-bg-soft)',
+                    border: '1px solid var(--app-border)' 
+                  }}
                 >
                   {t.trade.refresh}
                 </Button>
@@ -518,8 +543,8 @@ const Trade: React.FC = () => {
               image={Empty.PRESENTED_IMAGE_SIMPLE}
               description={
                 <div style={{ padding: '20px 0' }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: '#4b5563' }}>{t.trade.noWatchlist}</div>
-                  <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>{t.trade.noWatchlistDesc}</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--app-text-strong)' }}>{t.trade.noWatchlist}</div>
+                  <div style={{ fontSize: 12, color: 'var(--app-text-muted)', marginTop: 4 }}>{t.trade.noWatchlistDesc}</div>
                 </div>
               }
             />
@@ -528,23 +553,23 @@ const Trade: React.FC = () => {
               {/* Summary stats strip */}
               <div style={{ 
                 display: 'flex', gap: 12, marginBottom: 16, padding: '12px', 
-                background: '#f8fafc', borderRadius: 10, border: '1px solid #f1f5f9' 
+                background: 'var(--app-card-bg-soft)', borderRadius: 10, border: '1px solid var(--app-border-soft)' 
               }}>
                 {[
-                  { label: t.trade.statActive, value: watchlistItems.filter(w => w.status === 'ACTIVE').length, color: '#1890ff', icon: <EyeOutlined /> },
-                  { label: t.trade.statReadySoon, value: watchlistItems.filter(w => w.finalAction === 'BUY_READY' || (w.riskGateStatus === 'PASS' && w.dataQuality === 'GOOD')).length, color: '#10b981', icon: <ThunderboltOutlined /> },
-                  { label: t.trade.statReview, value: watchlistItems.filter(w => w.riskGateStatus === 'REVIEW' || w.finalAction === 'WAIT_FOR_ENTRY').length, color: '#d97706', icon: <ClockCircleOutlined /> },
-                  { label: t.trade.statArchived, value: watchlistItems.filter(w => w.status !== 'ACTIVE').length, color: '#6b7280', icon: <CheckCircleOutlined /> }
+                  { label: t.trade.statActive, value: watchlistItems.filter(w => w.status === 'ACTIVE').length, color: 'var(--app-blue-text)', icon: <EyeOutlined /> },
+                  { label: t.trade.statReadySoon, value: watchlistItems.filter(w => w.finalAction === 'BUY_READY' || (w.riskGateStatus === 'PASS' && w.dataQuality === 'GOOD')).length, color: '#4ade80', icon: <ThunderboltOutlined /> },
+                  { label: t.trade.statReview, value: watchlistItems.filter(w => w.riskGateStatus === 'REVIEW' || w.finalAction === 'WAIT_FOR_ENTRY').length, color: '#fbbf24', icon: <ClockCircleOutlined /> },
+                  { label: t.trade.statArchived, value: watchlistItems.filter(w => w.status !== 'ACTIVE').length, color: 'var(--app-text-muted)', icon: <CheckCircleOutlined /> }
                 ].map((stat, idx) => (
                   <React.Fragment key={stat.label}>
                     <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8 }}>
                       <div style={{ color: stat.color, fontSize: 14 }}>{stat.icon}</div>
                       <div>
-                        <div style={{ fontSize: 9, color: '#8c8c8c', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>{stat.label}</div>
+                        <div style={{ fontSize: 9, color: 'var(--app-text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>{stat.label}</div>
                         <div style={{ fontSize: 15, fontWeight: 800, color: stat.color, lineHeight: 1.1 }}>{stat.value}</div>
                       </div>
                     </div>
-                    {idx < 3 && <Divider type="vertical" style={{ height: 24, margin: 0, borderColor: '#e2e8f0' }} />}
+                    {idx < 3 && <Divider type="vertical" style={{ height: 24, margin: 0, borderColor: 'var(--app-border-soft)' }} />}
                   </React.Fragment>
                 ))}
               </div>
@@ -552,11 +577,16 @@ const Trade: React.FC = () => {
               {/* Table */}
               <div className="watchlist-table-container">
                 <style>{`
-                  .watchlist-table .ant-table-thead > tr > th { background: #f9fafb !important; padding: 12px 8px !important; border-bottom: 1px solid #f0f0f0 !important; }
+                  .watchlist-table .ant-table-thead > tr > th { 
+                    background: var(--app-table-header-bg) !important; 
+                    padding: 12px 8px !important; 
+                    border-bottom: 1px solid var(--app-border-soft) !important; 
+                    color: var(--app-text-muted) !important;
+                  }
                   .watchlist-table .ant-table-thead > tr > th:first-child,
                   .watchlist-table .ant-table-tbody > tr > td:first-child { padding-left: 24px !important; }
-                  .watchlist-row > td { border-bottom: 1px solid #f0f0f0 !important; }
-                  .watchlist-row:hover > td { background-color: #f0f7ff !important; }
+                  .watchlist-row > td { border-bottom: 1px solid var(--app-border-soft) !important; background: var(--app-card-bg) !important; }
+                  .watchlist-row:hover > td { background-color: var(--app-card-bg-soft) !important; }
                 `}</style>
                 <Table
                   className="watchlist-table"
@@ -568,54 +598,54 @@ const Trade: React.FC = () => {
                   scroll={{ x: 1200 }}
                   rowClassName="watchlist-row"
                   columns={[
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colSymbol}</span>,
+                    { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colSymbol}</span>,
                       dataIndex: 'symbol', key: 'symbol', width: 90, fixed: 'left' as const,
-                      render: (text: string) => <span style={{ fontWeight: 800, fontSize: 14, color: '#111827' }}>{text}</span> },
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colSetup}</span>,
+                      render: (text: string) => <span style={{ fontWeight: 800, fontSize: 14, color: 'var(--app-text-strong)' }}>{text}</span> },
+                    { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colSetup}</span>,
                       dataIndex: 'setupType', key: 'setup', width: 120,
                       render: (v: string) => {
                         const c: Record<string, string> = { 'Pullback Entry': 'gold', 'Breakout Entry': 'purple', 'Range Support Entry': 'green', 'Watch Only': 'blue' };
                         return <Tag color={c[v] || 'default'} style={{ fontSize: 9, fontWeight: 700, borderRadius: 4 }}>{v?.toUpperCase() || '—'}</Tag>;
                       }},
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colAI}</span>,
+                    { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colAI}</span>,
                       dataIndex: 'aiDecision', key: 'aiDecision', width: 75,
                       render: (d: string) => {
                         const c = d === 'BUY' ? 'green' : d === 'WATCH' ? 'gold' : 'red';
                         return <Tag color={c} bordered={false} style={{ fontSize: 9, fontWeight: 800, borderRadius: 4, width: '100%', textAlign: 'center' }}>{d || '—'}</Tag>;
                       }},
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colCnf}</span>,
+                    { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colCnf}</span>,
                       dataIndex: 'confidence', key: 'confidence', width: 60,
-                      render: (v: number) => <span style={{ fontSize: 12, fontWeight: 700, color: v >= 80 ? '#10b981' : '#1890ff' }}>{v != null ? `${v}%` : '—'}</span> },
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colEntryZone}</span>,
+                      render: (v: number) => <span style={{ fontSize: 12, fontWeight: 700, color: v >= 80 ? '#4ade80' : 'var(--app-blue-text)' }}>{v != null ? `${v}%` : '—'}</span> },
+                    { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colEntryZone}</span>,
                       key: 'entryZone', width: 140,
-                      render: (_: any, r: any) => r.entryZoneLow != null ? <span style={{ fontSize: 12, color: '#374151', fontWeight: 600 }}>${r.entryZoneLow?.toFixed(2)} – ${r.entryZoneHigh?.toFixed(2)}</span> : <span style={{ color: '#d1d5db' }}>—</span> },
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colStop}</span>,
+                      render: (_: any, r: any) => r.entryZoneLow != null ? <span style={{ fontSize: 12, color: 'var(--app-text)', fontWeight: 600 }}>${r.entryZoneLow?.toFixed(2)} – ${r.entryZoneHigh?.toFixed(2)}</span> : <span style={{ color: 'var(--app-text-muted)' }}>—</span> },
+                    { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colStop}</span>,
                       dataIndex: 'stopLoss', key: 'stop', width: 85,
                       render: (v: number) => v != null ? <span style={{ fontSize: 12, color: '#ef4444', fontWeight: 700 }}>${v.toFixed(2)}</span> : '—' },
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colTarget}</span>,
+                    { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colTarget}</span>,
                       dataIndex: 'takeProfit1', key: 'tp1', width: 85,
-                      render: (v: number) => v != null ? <span style={{ fontSize: 12, color: '#10b981', fontWeight: 700 }}>${v.toFixed(2)}</span> : '—' },
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colRR}</span>,
+                      render: (v: number) => v != null ? <span style={{ fontSize: 12, color: '#4ade80', fontWeight: 700 }}>${v.toFixed(2)}</span> : '—' },
+                    { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colRR}</span>,
                       dataIndex: 'riskReward', key: 'rr', width: 65,
-                      render: (v: number) => v != null ? <span style={{ fontSize: 12, fontWeight: 700, color: v >= 2 ? '#10b981' : '#6b7280' }}>{v.toFixed(1)}:1</span> : '—' },
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colGate}</span>,
+                      render: (v: number) => v != null ? <span style={{ fontSize: 12, fontWeight: 700, color: v >= 2 ? '#4ade80' : 'var(--app-text-muted)' }}>{v.toFixed(1)}:1</span> : '—' },
+                    { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colGate}</span>,
                       dataIndex: 'riskGateStatus', key: 'gate', width: 80,
                       render: (s: string) => {
                         const c = s === 'PASS' ? 'green' : s === 'REVIEW' ? 'gold' : 'red';
                         return s ? <Tag color={c} bordered={false} style={{ fontSize: 9, fontWeight: 800, borderRadius: 4 }}>{s}</Tag> : '—';
                       }},
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colFinal}</span>,
+                    { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colFinal}</span>,
                       dataIndex: 'finalAction', key: 'final', width: 110,
                       render: (a: string) => {
                         const labels: Record<string, string> = { 'BUY_READY': t.trade.finalBuyReady, 'WAIT_FOR_ENTRY': t.trade.finalWaitEntry, 'SKIP': t.trade.finalSkip, 'BLOCKED_BY_RISK': t.trade.finalBlocked };
                         const c = a === 'BUY_READY' ? 'green' : a === 'WAIT_FOR_ENTRY' ? 'gold' : 'red';
                         return <Tag color={c} style={{ fontSize: 9, fontWeight: 700, borderRadius: 4 }}>{labels[a]?.toUpperCase() || a || '—'}</Tag>;
                       }},
-                    { title: <span style={{ fontWeight: 700, color: '#6b7280', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colNextStep}</span>, 
+                    { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.trade.colNextStep}</span>, 
                       dataIndex: 'nextStep', key: 'nextStep', width: 200, ellipsis: true,
                       render: (t: string) => (
                         <Tooltip title={t}>
-                          <span style={{ fontSize: 11, color: '#6b7280', fontWeight: 500 }}>{t || '—'}</span>
+                          <span style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 500 }}>{t || '—'}</span>
                         </Tooltip>
                       )},
                     {
@@ -632,7 +662,10 @@ const Trade: React.FC = () => {
                             })} style={{ padding: 0, width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8 }} />
                           </Tooltip>
                           <Tooltip title={t.trade.remove}>
-                            <Button size="small" type="text" danger icon={<DeleteOutlined style={{ fontSize: 15 }} />} onClick={() => removeWatchlistItem(r.id)} style={{ padding: 0, width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, background: '#fef2f2' }} />
+                            <Button size="small" type="text" danger icon={<DeleteOutlined style={{ fontSize: 15 }} />} onClick={() => removeWatchlistItem(r.id)} style={{ 
+                              padding: 0, width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, 
+                              background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)' 
+                            }} />
                           </Tooltip>
                         </div>
                       ),
@@ -645,55 +678,113 @@ const Trade: React.FC = () => {
         </Card>
       </div>
 
-      <Divider />
+      <Divider style={{ borderColor: 'var(--app-border-soft)' }} />
 
       {/* Account Snapshot */}
       <div style={{ marginBottom: 24 }}>
-        <Title level={4}>{t.trade.accountSnapshot}</Title>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <Title level={4} style={{ margin: 0, color: 'var(--app-text-strong)' }}>{t.trade.accountSnapshot}</Title>
+          <Button
+            type="primary"
+            size="middle"
+            icon={<PlusOutlined />}
+            onClick={() => openOrderModal()}
+            style={{ borderRadius: 8, height: 36, fontWeight: 700, boxShadow: '0 4px 12px rgba(24, 144, 255, 0.2)' }}
+          >
+            {t.trade.newOrder}
+          </Button>
+        </div>
+        
         <Card
           size="small"
-          title={t.trade.accountSnapshot}
-          style={{ marginTop: '16px' }}
-          extra={
-            <Button
-              type="primary"
-              size="small"
-              icon={<PlusOutlined />}
-              onClick={() => openOrderModal()}
-            >
-              {t.trade.newOrder}
-            </Button>
-          }
+          style={{ background: 'var(--app-card-bg)', border: '1px solid var(--app-border-soft)', boxShadow: 'var(--app-shadow)' }}
+          bodyStyle={{ padding: '24px' }}
         >
-          <Row gutter={[16, 16]}>
+          <Row gutter={[24, 24]}>
             <Col xs={24} sm={12} lg={6}>
-              <Statistic title={t.trade.cash} value={accountSnapshot.cash} prefix="$" />
+              <div style={{ background: 'var(--app-card-bg-soft)', padding: '16px', borderRadius: 10, border: '1px solid var(--app-border-soft)' }}>
+                <Statistic 
+                  title={<span style={{ color: 'var(--app-text-muted)', fontSize: 12, textTransform: 'uppercase', fontWeight: 600 }}>{t.trade.cash}</span>} 
+                  value={accountSnapshot.cash} 
+                  prefix="$" 
+                  valueStyle={{ color: 'var(--app-text-strong)', fontWeight: 800 }}
+                />
+              </div>
             </Col>
             <Col xs={24} sm={12} lg={6}>
-              <Statistic title={t.trade.equity} value={accountSnapshot.equity} prefix="$" />
+              <div style={{ background: 'var(--app-card-bg-soft)', padding: '16px', borderRadius: 10, border: '1px solid var(--app-border-soft)' }}>
+                <Statistic 
+                  title={<span style={{ color: 'var(--app-text-muted)', fontSize: 12, textTransform: 'uppercase', fontWeight: 600 }}>{t.trade.equity}</span>} 
+                  value={accountSnapshot.equity} 
+                  prefix="$" 
+                  valueStyle={{ color: 'var(--app-blue-text)', fontWeight: 800 }}
+                />
+              </div>
             </Col>
             <Col xs={24} sm={12} lg={6}>
-              <Statistic title={t.trade.buyingPower} value={accountSnapshot.buyingPower} prefix="$" />
+              <div style={{ background: 'var(--app-card-bg-soft)', padding: '16px', borderRadius: 10, border: '1px solid var(--app-border-soft)' }}>
+                <Statistic 
+                  title={<span style={{ color: 'var(--app-text-muted)', fontSize: 12, textTransform: 'uppercase', fontWeight: 600 }}>{t.trade.buyingPower}</span>} 
+                  value={accountSnapshot.buyingPower} 
+                  prefix="$" 
+                  valueStyle={{ color: '#fbbf24', fontWeight: 800 }}
+                />
+              </div>
             </Col>
             <Col xs={24} sm={12} lg={6}>
-              <Statistic title={t.trade.portfolioValue} value={accountSnapshot.portfolioValue} prefix="$" />
+              <div style={{ background: 'var(--app-card-bg-soft)', padding: '16px', borderRadius: 10, border: '1px solid var(--app-border-soft)' }}>
+                <Statistic 
+                  title={<span style={{ color: 'var(--app-text-muted)', fontSize: 12, textTransform: 'uppercase', fontWeight: 600 }}>{t.trade.portfolioValue}</span>} 
+                  value={accountSnapshot.portfolioValue} 
+                  prefix="$" 
+                  valueStyle={{ color: 'var(--app-text-strong)', fontWeight: 800 }}
+                />
+              </div>
             </Col>
           </Row>
-          <div style={{ marginTop: '16px' }}>
-            <Text type="secondary">
-              {t.trade.accountLabel}: {accountSnapshot.accountNumber} | {t.trade.statusLabel}: {accountSnapshot.status} |
-              {t.trade.positionsLabel}: {accountSnapshot.positionsCount} | {t.trade.openOrdersLabel}: {accountSnapshot.openOrdersCount}
-            </Text>
+          <div style={{ 
+            marginTop: '20px', 
+            padding: '12px 16px', 
+            background: 'var(--app-input-bg)', 
+            borderRadius: 8, 
+            border: '1px solid var(--app-border-soft)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '12px'
+          }}>
+            <div style={{ display: 'flex', gap: 16 }}>
+              <Text style={{ color: 'var(--app-text-muted)', fontSize: 12 }}>
+                <strong style={{ color: 'var(--app-text)' }}>{t.trade.accountLabel}:</strong> {accountSnapshot.accountNumber}
+              </Text>
+              <Text style={{ color: 'var(--app-text-muted)', fontSize: 12 }}>
+                <strong style={{ color: 'var(--app-text)' }}>{t.trade.statusLabel}:</strong> 
+                <Tag color="success" style={{ marginLeft: 6, fontWeight: 700, borderRadius: 4 }}>{accountSnapshot.status || 'ACTIVE'}</Tag>
+              </Text>
+            </div>
+            <div style={{ display: 'flex', gap: 16 }}>
+              <Text style={{ color: 'var(--app-text-muted)', fontSize: 12 }}>
+                <strong style={{ color: 'var(--app-text)' }}>{t.trade.positionsLabel}:</strong> {accountSnapshot.positionsCount}
+              </Text>
+              <Text style={{ color: 'var(--app-text-muted)', fontSize: 12 }}>
+                <strong style={{ color: 'var(--app-text)' }}>{t.trade.openOrdersLabel}:</strong> {accountSnapshot.openOrdersCount}
+              </Text>
+            </div>
           </div>
         </Card>
       </div>
       
       {/* Portfolio Performance */}
       <div style={{ marginBottom: 24 }}>
-        <Card className="premium-card" bodyStyle={{ padding: '24px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+        <Card 
+          className="premium-card" 
+          style={{ background: 'var(--app-card-bg)', border: '1px solid var(--app-border-soft)', boxShadow: 'var(--app-shadow)' }}
+          bodyStyle={{ padding: '24px' }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '16px' }}>
             <div>
-              <Title level={4} style={{ margin: 0 }}>{t.trade.portfolioPerformance}</Title>
+              <Title level={4} style={{ margin: 0, color: 'var(--app-text-strong)' }}>{t.trade.portfolioPerformance}</Title>
             </div>
             <div>
               <Select 
@@ -701,6 +792,7 @@ const Trade: React.FC = () => {
                 onChange={handlePortfolioRangeChange} 
                 style={{ width: 120 }}
                 size="middle"
+                dropdownStyle={{ background: 'var(--app-card-bg)' }}
               >
                 <Option value="1D">{t.trade.range1Day}</Option>
                 <Option value="1W">{t.trade.range1Week}</Option>
@@ -718,8 +810,8 @@ const Trade: React.FC = () => {
               description={
                 <div style={{ padding: '20px 0' }}>
                   <div style={{ fontSize: 14, fontWeight: 700, color: '#ef4444' }}>{t.trade.portfolioUnavailable}</div>
-                  <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>{t.trade.portfolioUnavailableDesc}</div>
-                  <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 8 }}>{portfolioError}</div>
+                  <div style={{ fontSize: 12, color: 'var(--app-text-muted)', marginTop: 4 }}>{t.trade.portfolioUnavailableDesc}</div>
+                  <div style={{ fontSize: 11, color: 'var(--app-text-muted)', marginTop: 8, opacity: 0.8 }}>{portfolioError}</div>
                 </div>
               }
             />
@@ -728,25 +820,25 @@ const Trade: React.FC = () => {
               image={Empty.PRESENTED_IMAGE_SIMPLE} 
               description={
                 <div style={{ padding: '20px 0' }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: '#4b5563' }}>{t.trade.noPortfolioHistory}</div>
-                  <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>{t.trade.noPortfolioHistoryDesc}</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--app-text-strong)' }}>{t.trade.noPortfolioHistory}</div>
+                  <div style={{ fontSize: 12, color: 'var(--app-text-muted)', marginTop: 4 }}>{t.trade.noPortfolioHistoryDesc}</div>
                 </div>
               }
             />
           ) : portfolioHistory.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '60px 0' }}>
-              <Spin size="large" />
-              <div style={{ marginTop: 16, color: '#8c8c8c' }}>{t.trade.loadingPortfolio}</div>
+              <Spin size="large" indicator={<ReloadOutlined spin style={{ fontSize: 24, color: 'var(--app-blue-text)' }} />} />
+              <div style={{ marginTop: 16, color: 'var(--app-text-muted)' }}>{t.trade.loadingPortfolio}</div>
             </div>
           ) : (
             <>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px' }}>
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
-                  <span style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600, textTransform: 'uppercase' }}>{t.trade.periodChange}</span>
+                  <span style={{ fontSize: 12, color: 'var(--app-text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>{t.trade.periodChange}</span>
                   <span style={{ 
                     fontSize: 24, 
                     fontWeight: 800, 
-                    color: portfolioChange.value >= 0 ? '#10b981' : '#ef4444',
+                    color: portfolioChange.value >= 0 ? '#4ade80' : '#ef4444',
                     display: 'flex',
                     alignItems: 'center',
                     gap: 8,
@@ -761,18 +853,18 @@ const Trade: React.FC = () => {
                 </div>
               </div>
 
-              <div style={{ height: 300, width: '100%' }}>
+              <div style={{ height: 300, width: '100%', marginTop: '10px' }}>
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={portfolioHistory} margin={{ top: 5, right: 0, left: 0, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+                  <LineChart data={portfolioHistory} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.12)" vertical={false} />
                     <XAxis 
                       dataKey="timestamp" 
                       type="number"
                       scale="time"
                       domain={['dataMin', 'dataMax']}
-                      tick={{ fill: '#8c8c8c', fontSize: 11 }}
+                      tick={{ fill: 'var(--app-text-muted)', fontSize: 11 }}
                       tickLine={false}
-                      axisLine={{ stroke: '#e8e8e8' }}
+                      axisLine={{ stroke: 'var(--app-border-soft)' }}
                       dy={10}
                       tickFormatter={(timestamp) => {
                         const ts = normalizeTimestamp(timestamp);
@@ -805,37 +897,29 @@ const Trade: React.FC = () => {
                       }}
                     />
                     <YAxis 
-                      domain={(() => {
-                        const values = portfolioHistory
-                          .map(d => Number(d?.equity))
-                          .filter(v => Number.isFinite(v));
-                        
-                        if (values.length === 0) return ['auto', 'auto'] as ['auto', 'auto'];
-                        
-                        const min = Math.min(...values);
-                        const max = Math.max(...values);
-                        
-                        if (min === max) {
-                          return [min - 1, max + 1] as [number, number];
-                        } else {
-                          const pad = Math.max((max - min) * 0.1, 1);
-                          return [min - pad, max + pad] as [number, number];
-                        }
-                      })()}
-                      tick={{ fill: '#8c8c8c', fontSize: 11, fontWeight: 500 }}
+                      hide={false}
+                      orientation="right"
+                      domain={['auto', 'auto']}
+                      tick={{ fill: 'var(--app-text-muted)', fontSize: 11, fontWeight: 500 }}
                       tickLine={false}
                       axisLine={false}
-                      dx={-10}
+                      dx={10}
                       tickFormatter={(value) => {
                          if (value >= 1000000) return `$${(value / 1000000).toFixed(1)}M`;
                          if (value >= 1000) return `$${(value / 1000).toFixed(1)}K`;
-                         return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                         return `$${Math.round(value)}`;
                       }}
                     />
                     <RechartsTooltip
-                      contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', padding: '12px' }}
-                      itemStyle={{ color: '#111827', fontWeight: 700 }}
-                      labelStyle={{ color: '#6b7280', fontSize: 12, marginBottom: 4 }}
+                      contentStyle={{ 
+                        backgroundColor: 'var(--app-card-bg)', 
+                        borderRadius: 12, 
+                        border: '1px solid var(--app-border)', 
+                        boxShadow: 'var(--app-shadow)', 
+                        padding: '12px' 
+                      }}
+                      itemStyle={{ color: 'var(--app-text-strong)', fontWeight: 700 }}
+                      labelStyle={{ color: 'var(--app-text-muted)', fontSize: 12, marginBottom: 4 }}
                       labelFormatter={(timestamp) => {
                         const ts = normalizeTimestamp(timestamp);
                         if (!ts) return 'Invalid Date';
@@ -857,10 +941,10 @@ const Trade: React.FC = () => {
                     <Line 
                       type="monotone" 
                       dataKey="equity" 
-                      stroke="#1890ff" 
+                      stroke="var(--app-blue-text)" 
                       strokeWidth={3}
                       dot={false}
-                      activeDot={{ r: 6, strokeWidth: 0, fill: '#1890ff' }}
+                      activeDot={{ r: 6, strokeWidth: 0, fill: 'var(--app-blue-text)' }}
                       name="Portfolio Value"
                     />
                   </LineChart>
@@ -874,20 +958,14 @@ const Trade: React.FC = () => {
       {/* Positions */}
       <div style={{ marginBottom: 24 }}>
         <Card 
-          title={<span style={{ fontSize: 16, fontWeight: 800 }}>{t.trade.positions}</span>}
+          title={<span style={{ fontSize: 16, fontWeight: 800, color: 'var(--app-text-strong)' }}>{t.trade.positions}</span>}
           loading={loadingData.positions}
           className="premium-card"
+          style={{ background: 'var(--app-card-bg)', border: '1px solid var(--app-border-soft)', boxShadow: 'var(--app-shadow)' }}
           bodyStyle={{ padding: 0 }}
         >
-          <style>{`
-            .trade-table .ant-table-thead > tr > th { background: #f9fafb !important; padding: 12px 16px !important; border-bottom: 1px solid #f0f0f0 !important; }
-            .trade-table .ant-table-thead > tr > th:first-child,
-            .trade-table .ant-table-tbody > tr > td:first-child { padding-left: 24px !important; }
-            .trade-row > td { border-bottom: 1px solid #f0f0f0 !important; }
-            .trade-row:hover > td { background-color: #f8fafc !important; }
-          `}</style>
           {alpacaPositions.length === 0 ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span style={{ color: '#8c8c8c' }}>{t.trade.noPositions}</span>} style={{ padding: '30px 0' }} />
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span style={{ color: 'var(--app-text-muted)' }}>{t.trade.noPositions}</span>} style={{ padding: '30px 0' }} />
           ) : (
             <Table 
               className="trade-table"
@@ -896,7 +974,7 @@ const Trade: React.FC = () => {
               rowKey="symbol"
               size="middle"
               pagination={alpacaPositions.length > 10 ? { pageSize: 10, size: 'small' } : false}
-              scroll={{ x: 900 }}
+              scroll={{ x: 1000 }}
               rowClassName="trade-row"
             />
           )}
@@ -906,13 +984,14 @@ const Trade: React.FC = () => {
       {/* Open Orders */}
       <div style={{ marginBottom: 24 }}>
         <Card 
-          title={<span style={{ fontSize: 16, fontWeight: 800 }}>{t.trade.openOrders}</span>}
+          title={<span style={{ fontSize: 16, fontWeight: 800, color: 'var(--app-text-strong)' }}>{t.trade.openOrders}</span>}
           loading={loadingData.orders}
           className="premium-card"
+          style={{ background: 'var(--app-card-bg)', border: '1px solid var(--app-border-soft)', boxShadow: 'var(--app-shadow)' }}
           bodyStyle={{ padding: 0 }}
         >
           {alpacaOrders.length === 0 ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span style={{ color: '#8c8c8c' }}>{t.trade.noOpenOrders}</span>} style={{ padding: '30px 0' }} />
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span style={{ color: 'var(--app-text-muted)' }}>{t.trade.noOpenOrders}</span>} style={{ padding: '30px 0' }} />
           ) : (
             <Table 
               className="trade-table"
@@ -921,7 +1000,7 @@ const Trade: React.FC = () => {
               rowKey="id"
               size="middle"
               pagination={alpacaOrders.length > 5 ? { pageSize: 5, size: 'small' } : false}
-              scroll={{ x: 900 }}
+              scroll={{ x: 1000 }}
               rowClassName="trade-row"
             />
           )}
@@ -931,13 +1010,14 @@ const Trade: React.FC = () => {
       {/* Order History */}
       <div style={{ marginBottom: 24 }}>
         <Card 
-          title={<span style={{ fontSize: 16, fontWeight: 800 }}>{t.trade.orderHistory}</span>}
+          title={<span style={{ fontSize: 16, fontWeight: 800, color: 'var(--app-text-strong)' }}>{t.trade.orderHistory}</span>}
           loading={loadingData.history}
           className="premium-card"
+          style={{ background: 'var(--app-card-bg)', border: '1px solid var(--app-border-soft)', boxShadow: 'var(--app-shadow)' }}
           bodyStyle={{ padding: 0 }}
         >
           {alpacaOrdersHistory.length === 0 ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span style={{ color: '#8c8c8c' }}>{t.trade.noOrderHistory}</span>} style={{ padding: '30px 0' }} />
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span style={{ color: 'var(--app-text-muted)' }}>{t.trade.noOrderHistory}</span>} style={{ padding: '30px 0' }} />
           ) : (
             <Table 
               className="trade-table"
@@ -946,7 +1026,7 @@ const Trade: React.FC = () => {
               rowKey="id"
               size="middle"
               pagination={alpacaOrdersHistory.length > 10 ? { pageSize: 10, size: 'small' } : false}
-              scroll={{ x: 900 }}
+              scroll={{ x: 1000 }}
               rowClassName="trade-row"
             />
           )}

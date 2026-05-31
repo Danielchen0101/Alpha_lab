@@ -395,7 +395,7 @@ export interface TradingPosition {
 // Pipeline Auto API (market-hours auto pipeline scheduler)
 export const pipelineAutoAPI = {
   getStatus: () => api.get('/ai-agent/pipeline-auto/status'),
-  saveConfig: (data: { enabled: boolean; intervalMinutes?: number | null; mode: string; lastRunAt?: string }) =>
+  saveConfig: (data: { enabled: boolean; intervalMinutes?: number | null; mode: string; lastRunAt?: string; riskProfile?: string; timeHorizon?: string; tradeMode?: string }) =>
     api.post('/ai-agent/pipeline-auto/config', data),
   getHistory: (limit = 5) =>
     api.get<{ success: boolean; history: any[]; count: number }>(`/ai-agent/pipeline-auto/history?limit=${limit}`),
@@ -403,13 +403,21 @@ export const pipelineAutoAPI = {
     api.get<{ success: boolean; timezone: string; source: string; warning?: string; days: any[] }>(`/ai-agent/pipeline-auto/market-schedule?days=${days}`),
   runHeadlessTest: (data?: { dryRun?: boolean; mode?: string; intervalMinutes?: number }) =>
     api.post('/ai-agent/pipeline-auto/run-headless-test', data || { dryRun: true }),
-  runNow: (data: { mode?: string; riskProfile?: string; timeHorizon?: string; tradeMode?: string }) =>
-    api.post<{ success: boolean; runId?: string; status?: string; error?: string; message?: string }>('/ai-agent/pipeline-auto/run-now', data),
+  runNow: (data?: {}) =>
+    api.post<{ success: boolean; runId?: string; status?: string; error?: string; message?: string }>('/ai-agent/pipeline-auto/run-now', data || {}),
   runPipeline: (data: { trigger?: string; mode?: string; intervalMinutes?: number; riskProfile?: string; timeHorizon?: string; tradeMode?: string }) =>
     api.post('/ai-agent/pipeline/run', data),
   getPipelineResult: (runId?: string, kind?: 'manual' | 'auto') =>
     api.get('/ai-agent/pipeline/result', { params: { runId, kind } }),
   stopPipeline: () => api.post('/ai-agent/pipeline/stop'),
+  // Shared Continue Scan + Fine Scan — delegates to backend shared helpers
+  runContinueScan: (data: { scannerResults: any[]; riskProfile?: string; timeHorizon?: string; pipelineMode?: string; tradeMode?: string }) =>
+    api.post('/ai-agent/continue-scan', data),
+  runFineScan: (data: { candidates: any[]; riskProfile?: string; timeHorizon?: string; pipelineMode?: string; tradeMode?: string }) =>
+    api.post('/ai-agent/fine-scan', data),
+  // Lazy-fetch Finnhub news for a single symbol (on-demand when user expands a detail row)
+  fetchScannerNews: (symbol: string) =>
+    api.get(`/ai-agent/scanner-news/${symbol}`),
   // DEPRECATED: Auto-run is now fully headless. No frontend claim needed.
   // claimRun: (runKey: string) => api.post('/ai-agent/pipeline-auto/claim-run', { runKey }),
 };

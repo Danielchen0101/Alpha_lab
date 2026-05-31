@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Menu, Popconfirm, Tag, Tooltip } from 'antd';
+import { Menu, Tag, Tooltip, Modal, Input, Typography, Alert } from 'antd';
 import {
   DashboardOutlined,
   LineChartOutlined,
@@ -11,11 +11,14 @@ import {
   RocketOutlined,
   PieChartOutlined,
   RobotOutlined,
-  SettingOutlined
+  SettingOutlined,
+  WarningOutlined,
 } from '@ant-design/icons';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTradeMode } from '../contexts/TradeModeContext';
 import styles from './NavigationMenu.module.css';
+
+const { Text } = Typography;
 
 interface NavigationMenuProps {
   collapsed?: boolean;
@@ -25,7 +28,9 @@ const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
   const { t } = useLanguage();
   const { tradeMode, setTradeMode } = useTradeMode();
   const location = useLocation();
-
+  const [realModalOpen, setRealModalOpen] = useState(false);
+  const [realConfirmText, setRealConfirmText] = useState('');
+  const [realSwitchError, setRealSwitchError] = useState<string | null>(null);
 
   // Map routes to menu keys
   const routeToKey: Record<string, string> = {
@@ -46,6 +51,30 @@ const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
     || Object.entries(routeToKey).find(([path]) => location.pathname.startsWith(path + '/'))?.[1]
     || '1';
 
+  const handleRealModeClick = () => {
+    if (tradeMode === 'real') return;
+    setRealModalOpen(true);
+    setRealConfirmText('');
+    setRealSwitchError(null);
+  };
+
+  const handleRealConfirm = () => {
+    if (realConfirmText.trim() !== 'REAL') {
+      setRealSwitchError(t.navigation.typeRealValidation);
+      return;
+    }
+    setTradeMode('real');
+    setRealModalOpen(false);
+    setRealConfirmText('');
+    setRealSwitchError(null);
+  };
+
+  const handleRealModalCancel = () => {
+    setRealModalOpen(false);
+    setRealConfirmText('');
+    setRealSwitchError(null);
+  };
+
   return (
     <div className={styles.navigationMenuContainer}>
       <div className={styles.menuScrollArea}>
@@ -56,7 +85,7 @@ const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
           className={styles.sidebarMenu}
         >
           {/* RESEARCH GROUP */}
-          {!collapsed && <div className={styles.menuDivider}>RESEARCH</div>}
+          {!collapsed && <div className={styles.menuDivider}>{t.navigation.researchGroup}</div>}
           <Menu.Item key="1" icon={<DashboardOutlined />} title={collapsed ? t.navigation.dashboard : undefined}>
             <Link to="/dashboard">{t.navigation.dashboard}</Link>
           </Menu.Item>
@@ -68,7 +97,7 @@ const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
           </Menu.Item>
 
           {/* STRATEGY GROUP */}
-          {!collapsed && <div className={styles.menuDivider}>STRATEGY</div>}
+          {!collapsed && <div className={styles.menuDivider}>{t.navigation.strategyGroup}</div>}
           <Menu.Item key="4" icon={<BarChartOutlined />} title={collapsed ? t.navigation.backtest : undefined}>
             <Link to="/backtest">{t.navigation.backtest}</Link>
           </Menu.Item>
@@ -83,7 +112,7 @@ const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
           </Menu.Item>
 
           {/* TRADING GROUP */}
-          {!collapsed && <div className={styles.menuDivider}>TRADING</div>}
+          {!collapsed && <div className={styles.menuDivider}>{t.navigation.tradingGroup}</div>}
 
           {/* TRADE MODE TOGGLE */}
           {!collapsed && (
@@ -100,26 +129,14 @@ const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
                   <span className={styles.modeDot} style={{ backgroundColor: '#1890ff', opacity: tradeMode === 'paper' ? 1 : 0.2 }} />
                   {t.navigation.paperMode}
                 </button>
-                <Popconfirm
-                  title="Switch to Real Trading?"
-                  description="Real mode can submit live Alpaca orders when trading workflows execute. Confirm that live credentials and risk controls are configured."
-                  okText="Use Real"
-                  cancelText="Stay Paper"
-                  okButtonProps={{ danger: true }}
-                  disabled={tradeMode === 'real'}
-                  onConfirm={() => setTradeMode('real')}
+                <button
+                  className={`${styles.tradeModeBtn} ${tradeMode === 'real' ? styles.tradeModeBtnRealActive : ''}`}
+                  onClick={handleRealModeClick}
+                  type="button"
                 >
-                  <button
-                    className={`${styles.tradeModeBtn} ${tradeMode === 'real' ? styles.tradeModeBtnRealActive : ''}`}
-                    onClick={(event) => {
-                      if (tradeMode === 'real') event.preventDefault();
-                    }}
-                    type="button"
-                  >
-                    <span className={styles.modeDot} style={{ backgroundColor: '#ff4d4f', opacity: tradeMode === 'real' ? 1 : 0.2 }} />
-                    {t.navigation.realMode}
-                  </button>
-                </Popconfirm>
+                  <span className={styles.modeDot} style={{ backgroundColor: '#ff4d4f', opacity: tradeMode === 'real' ? 1 : 0.2 }} />
+                  {t.navigation.realMode}
+                </button>
               </div>
             </div>
           )}
@@ -135,17 +152,61 @@ const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
           </Menu.Item>
 
           {/* SYSTEM GROUP */}
-          {!collapsed && <div className={styles.menuDivider}>SYSTEM</div>}
+          {!collapsed && <div className={styles.menuDivider}>{t.navigation.systemGroup}</div>}
           <Menu.Item key="12" icon={<SettingOutlined />} title={collapsed ? t.navigation.settings : undefined}>
             <Link to="/settings">{t.navigation.settings}</Link>
           </Menu.Item>
         </Menu>
       </div>
 
+      {/* Real Mode Confirmation Modal */}
+      <Modal
+        title={
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <WarningOutlined style={{ color: '#ff4d4f', fontSize: 20 }} />
+            {t.navigation.switchToRealTrading}
+          </span>
+        }
+        open={realModalOpen}
+        onOk={handleRealConfirm}
+        onCancel={handleRealModalCancel}
+        okText={t.navigation.switchToRealMode}
+        cancelText={t.navigation.stayInPaperMode}
+        okButtonProps={{ danger: true, disabled: realConfirmText.trim() !== 'REAL' }}
+        width={520}
+        destroyOnClose
+      >
+        <Alert
+          message={t.navigation.realTradingWarning}
+          description={t.navigation.realTradingWarningDesc}
+          type="error"
+          showIcon
+          icon={<WarningOutlined />}
+          style={{ marginBottom: 16, borderRadius: 8 }}
+        />
+        <div style={{ marginBottom: 8 }}>
+          <Text strong type="danger">{t.navigation.typeRealToConfirm}</Text>
+        </div>
+        <Input
+          value={realConfirmText}
+          onChange={(e) => {
+            setRealConfirmText(e.target.value);
+            setRealSwitchError(null);
+          }}
+          onPressEnter={handleRealConfirm}
+          placeholder={t.navigation.typeRealPlaceholder}
+          style={{ textTransform: 'uppercase', fontWeight: 700 }}
+          autoFocus
+        />
+        {realSwitchError && (
+          <Text type="danger" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>{realSwitchError}</Text>
+        )}
+      </Modal>
+
       {/* BOTTOM UTILITY AREA */}
       <div className={styles.sidebarFooter}>
         {collapsed ? (
-          <Tooltip title="Check connection status in Settings">
+          <Tooltip title={t.navigation.checkConnectionStatus}>
             <div className={styles.collapsedStatus}>
               <div className={styles.statusDot} style={{ backgroundColor: '#faad14', color: '#faad14' }} />
             </div>
@@ -153,12 +214,12 @@ const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
         ) : (
           <div className={styles.expandedStatus}>
             <div className={styles.statusRow}>
-              <span className={styles.statusLabel}>CONFIG</span>
-              <Tag color="gold" className={styles.statusTag}>SETTINGS</Tag>
+              <span className={styles.statusLabel}>{t.navigation.configLabel}</span>
+              <Tag color="gold" className={styles.statusTag}>{t.navigation.settingsLabel}</Tag>
             </div>
             <div className={styles.statusInfo}>
               <div className={styles.statusDot} style={{ backgroundColor: '#faad14', color: '#faad14' }} />
-              <span className={styles.statusText}>Verify connections</span>
+              <span className={styles.statusText}>{t.navigation.verifyConnections}</span>
             </div>
           </div>
         )}

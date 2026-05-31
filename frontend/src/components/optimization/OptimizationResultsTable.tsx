@@ -128,21 +128,22 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
           background: transparent !important;
         }
         .optimization-table-container .ant-table-thead > tr > th { 
-          background: #f8fafc !important; 
+          background: var(--app-table-header-bg) !important; 
           font-weight: 800 !important; 
           text-transform: uppercase !important; 
           font-size: 10.5px !important; 
           letter-spacing: 0.8px !important; 
-          color: #94a3b8 !important; 
-          border-bottom: 1px solid rgba(15, 23, 42, 0.06) !important;
+          color: var(--app-text-muted) !important; 
+          border-bottom: 1px solid var(--app-border-soft) !important;
           padding: 16px 8px !important;
         }
         .optimization-table-container .ant-table-tbody > tr > td {
           padding: 14px 8px !important;
-          border-bottom: 1px solid rgba(15, 23, 42, 0.04) !important;
+          border-bottom: 1px solid var(--app-border-soft) !important;
+          color: var(--app-text) !important;
         }
         .optimization-table-container .ant-table-tbody > tr:hover > td { 
-          background: #f8fafc !important; 
+          background: var(--app-card-bg-soft) !important; 
         }
         .top-rank-row { 
           background: rgba(250, 173, 20, 0.02); 
@@ -153,7 +154,7 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
         .optimization-table-container .ant-pagination {
           padding: 16px 24px !important;
           margin: 0 !important;
-          border-top: 1px solid rgba(15, 23, 42, 0.06);
+          border-top: 1px solid var(--app-border-soft);
         }
       `}</style>
       <Table
