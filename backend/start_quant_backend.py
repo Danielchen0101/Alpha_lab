@@ -693,7 +693,7 @@ def _discord_embed(event_type, payload):
     _fmt = _discord_fmt
 
     if event_type == 'auto_scan_started':
-        # For one-shot runs (auto_manual_now), show "Run once" instead of "X min"
+        # For one-shot runs (auto_run_now), show "Run once" instead of "X min"
         interval_val = payload.get('intervalMinutes')
         if interval_val is not None and str(interval_val) not in ('', '0', '0.0'):
             interval_display = '%s min' % _fmt(interval_val, '-')
@@ -4139,9 +4139,12 @@ def fetch_finnhub_company_news(symbol, days_back=7, finnhub_cfg=None):
 
 
 
-        # 缓存结果（5分钟缓存）
-
-        stock_cache.set(cache_key, valid_news, ttl=300)
+        # 缓存结果
+        try:
+            stock_cache.set(cache_key, valid_news)
+            print(f"[ScannerNews] symbol={symbol} fetched={len(valid_news)} cacheSet=ok")
+        except Exception as _cache_e:
+            print(f"[ScannerNews] symbol={symbol} fetched={len(valid_news)} cacheSet=failed reason={_cache_e}")
 
         return valid_news, None
 
@@ -4150,6 +4153,7 @@ def fetch_finnhub_company_news(symbol, days_back=7, finnhub_cfg=None):
     except Exception as e:
 
         print(f"[Finnhub News] 异常: {str(e)}，返回空列表")
+        print(f"[ScannerNews] symbol={symbol} fetched=0 cacheSet=failed reason={e}")
 
         return [], f"异常: {str(e)}"
 
@@ -10521,6 +10525,11 @@ def ai_market_scanner():
 
         resume_info = data.get('resumeInfo', None)  # 恢复信息：已扫描symbols，剩余symbols
 
+        # User context for AI prompt
+        _scanner_risk_profile = data.get('riskProfile', 'medium')
+        _scanner_time_horizon = data.get('timeHorizon', 'mid')
+        _scanner_trade_mode = data.get('tradeMode', 'paper')
+
 
 
         if not symbols:
@@ -10564,6 +10573,10 @@ def ai_market_scanner():
 
         start_time = time.time()
 
+        # Resolve uid for per-symbol progress updates
+        _scanner_user = get_supabase_user()
+        _scanner_uid = _scanner_user['id'] if _scanner_user else None
+
 
 
         # 使用批量API获取数据
@@ -10596,6 +10609,10 @@ def ai_market_scanner():
 
                         'low': alpaca_data.get('low') or alpaca_data.get('dayLow'),
 
+                        'dayHigh': alpaca_data.get('dayHigh') or alpaca_data.get('high'),
+
+                        'dayLow': alpaca_data.get('dayLow') or alpaca_data.get('low'),
+
                         'open': alpaca_data.get('open'),
 
                         'close': alpaca_data.get('close'),
@@ -10618,6 +10635,10 @@ def ai_market_scanner():
 
                         'volume': None,
 
+                        'dayHigh': None,
+
+                        'dayLow': None,
+
                         'dataSource': 'Failed'
 
                     }
@@ -10633,6 +10654,10 @@ def ai_market_scanner():
                     'changePercent': None,
 
                     'volume': None,
+
+                    'dayHigh': None,
+
+                    'dayLow': None,
 
                     'dataSource': 'Error'
 
@@ -10703,7 +10728,57 @@ def ai_market_scanner():
 
 
 
-        # 第三层：简化分析（不调用AI）
+        # ── 第2.5层：获取新闻 for ALL shortlist symbols (在AI分析之前) ──
+        print('=== 第2.5层：获取新闻 (all %d symbols) ===' % len(shortlist))
+        MAX_NEWS_WORKERS = 3
+        NEWS_TIMEOUT_PER_SYMBOL = 8
+        news_start_time = time.time()
+
+        # Check Finnhub config once
+        _fh_cfg, _fh_src = resolve_finnhub_config(require_user_config=True)
+        _fh_api_key = _fh_cfg.get('api_key', '')
+        _fh_configured = bool(_fh_api_key and _fh_api_key.strip())
+        print(f'[Scanner News] finnhub_configured={_fh_configured} key_source={_fh_src}')
+
+        news_cache = {}  # symbol -> (news_items_list_or_None, error_string_or_None)
+        _news_rate_limited = False
+
+        if _fh_configured and shortlist:
+            def _fetch_news_one(sym):
+                try:
+                    items, err = fetch_finnhub_company_news(sym, days_back=7, finnhub_cfg=_fh_cfg)
+                    # Detect rate limiting from error string
+                    if err and ('429' in str(err) or 'rate limit' in str(err).lower()):
+                        return sym, None, 'finnhub_rate_limited: %s' % str(err)[:100]
+                    return sym, items, err
+                except Exception as _ne:
+                    return sym, None, str(_ne)
+
+            with ThreadPoolExecutor(max_workers=MAX_NEWS_WORKERS) as _news_exec:
+                _futures = {_news_exec.submit(_fetch_news_one, s): s for s in shortlist}
+                for _fut in as_completed(_futures):
+                    try:
+                        _sym, _items, _err = _fut.result(timeout=NEWS_TIMEOUT_PER_SYMBOL)
+                        news_cache[_sym] = (_items, _err)
+                        if _err:
+                            if 'rate_limit' in str(_err).lower() or '429' in str(_err):
+                                _news_rate_limited = True
+                                print(f'[Scanner News] {_sym}: RATE LIMITED — {_err}')
+                            else:
+                                print(f'[Scanner News] {_sym}: fetch FAILED — {_err}')
+                        elif _items and len(_items) > 0:
+                            print(f'[Scanner News] {_sym}: fetched {len(_items)} articles')
+                        else:
+                            print(f'[Scanner News] {_sym}: no news in 7d')
+                    except Exception as _fe:
+                        news_cache[_futures[_fut]] = (None, 'timeout_or_exception: %s' % str(_fe))
+                        print(f'[Scanner News] {_futures[_fut]}: TIMEOUT/EXCEPTION — {_fe}')
+
+        news_time = time.time() - news_start_time
+        print(f'第2.5层完成，耗时: {news_time:.2f}秒 rate_limited={_news_rate_limited}')
+
+
+        # 第三层：AI分析 (now with news_data for top candidates)
 
         print('=== 第三层：AI分析 ===')
 
@@ -10736,13 +10811,87 @@ def ai_market_scanner():
 
                 volume = stock_data.get('volume')
 
+                # Fetch company profile for name, sector, industry
+                company_name = None
+                sector = None
+                industry = None
+                profile_fetched = False
+                _profile_data_for_ai = {}
+                try:
+                    profile_data, profile_error = fetch_finnhub_profile(symbol)
+                    if profile_data and not profile_error:
+                        profile_fetched = True
+                        company_name = profile_data.get('name')
+                        sector = profile_data.get('finnhubIndustry') or profile_data.get('sector')
+                        industry = profile_data.get('finnhubIndustry') or profile_data.get('industry')
+                        _profile_data_for_ai = profile_data or {}
+                        print(f'[Scanner] {symbol} profile: name={company_name} sector={sector}')
+                    else:
+                        print(f'[Scanner] {symbol} profile unavailable: {profile_error}')
+                except Exception as _prof_e:
+                    print(f'[Scanner] {symbol} profile fetch exception: {_prof_e}')
+
+                # Build news_data for AI (pre-fetched for ALL symbols in Layer 2.5)
+                _news_data_for_ai = None
+                _ai_used_news = False
+                _ai_news_count = 0
+                _ai_news_window = '7d'
+                _sentiment_source = 'AI_NO_RECENT_NEWS'
+
+                _n_items, _n_err = news_cache.get(symbol, (None, 'not_in_cache'))
+                if _n_items and len(_n_items) > 0:
+                    _sent_scores = [n.get('sentiment_score') for n in _n_items if n.get('sentiment_score') is not None]
+                    _news_data_for_ai = {
+                        'items': _n_items[:5],
+                        'newsCount': len(_n_items),
+                        'sentiment': round(sum(_sent_scores) / len(_sent_scores), 3) if _sent_scores else None,
+                        'eventRisk': None,
+                        'topCatalyst': None,
+                    }
+                    _ai_used_news = True
+                    _ai_news_count = len(_n_items)
+                    _sentiment_source = 'AI_WITH_FINNHUB_NEWS'
+                    print(f'[Scanner] {symbol}: AI will use {_ai_news_count} news items')
+                elif _n_err and ('rate_limit' in str(_n_err).lower() or '429' in str(_n_err)):
+                    _news_data_for_ai = {
+                        'items': [], 'newsCount': 0, 'sentiment': None,
+                        'eventRisk': None, 'topCatalyst': None,
+                        'reason': 'finnhub_rate_limited',
+                    }
+                    _sentiment_source = 'AI_NO_NEWS_RATE_LIMITED'
+                    print(f'[Scanner] {symbol}: news rate limited — AI informed')
+                elif _n_err:
+                    _news_data_for_ai = {
+                        'items': [], 'newsCount': 0, 'sentiment': None,
+                        'eventRisk': None, 'topCatalyst': None,
+                        'reason': 'finnhub_news_api_failed',
+                    }
+                    _sentiment_source = 'AI_NO_NEWS_API_FAILED'
+                    print(f'[Scanner] {symbol}: news fetch failed — AI informed ({_n_err})')
+                elif not _fh_configured:
+                    _news_data_for_ai = {
+                        'items': [], 'newsCount': 0, 'sentiment': None,
+                        'eventRisk': None, 'topCatalyst': None,
+                        'reason': 'finnhub_not_configured',
+                    }
+                    _sentiment_source = 'AI_NO_NEWS_NOT_CONFIGURED'
+                else:
+                    _news_data_for_ai = {
+                        'items': [], 'newsCount': 0, 'sentiment': None,
+                        'eventRisk': None, 'topCatalyst': None,
+                        'reason': 'no_news_last_7d',
+                    }
+                    _sentiment_source = 'AI_NO_RECENT_NEWS'
+                    print(f'[Scanner] {symbol}: no news in 7d, AI informed')
+
 
 
                 # AI analysis
                 ai_result = None
                 if _ai_can_call:
                     try:
-                        print(f'[Scanner AI] 调用AI分析 {symbol}')
+                        _news_log = 'yes' if _ai_used_news else ('no reason=%s' % _sentiment_source)
+                        print(f'[Scanner AI] 调用AI分析 {symbol} (news=%s newsItems=%d)' % (_news_log, _ai_news_count))
                         _scanner_cache_payload = {
                             'provider': _ai_provider,
                             'model': _ai_model,
@@ -10752,10 +10901,14 @@ def ai_market_scanner():
                             'changePercent': round(float(stock_data.get('changePercent') or 0), 4),
                             'volume': int(float(stock_data.get('volume') or 0)),
                             'dataSource': stock_data.get('dataSource'),
+                            'newsHash': 'news_%d' % _ai_news_count if _ai_used_news else 'none',
                         }
                         ai_result = _pipeline_ai_cache_get('market_scanner_ai', _scanner_cache_payload)
                         if ai_result is None:
-                            ai_result = analyze_trend_with_deepseek(symbol, stock_data, None, None)
+                            ai_result = analyze_trend_with_deepseek(symbol, stock_data, _news_data_for_ai, _profile_data_for_ai,
+                                                                      risk_profile=_scanner_risk_profile,
+                                                                      time_horizon=_scanner_time_horizon,
+                                                                      trade_mode=_scanner_trade_mode)
                             _pipeline_ai_cache_set('market_scanner_ai', _scanner_cache_payload, ai_result)
                         else:
                             print(f'[Scanner AI] cache hit {symbol}')
@@ -10773,6 +10926,14 @@ def ai_market_scanner():
                 trend_confidence = None
                 ai_reasoning = None
                 scanner_reason = None
+                # Dimensional scores
+                momentum_score = None
+                volume_score = None
+                volatility_score = None
+                structure_score = None
+                sentiment_score = None
+                volume_status = None
+                event_risk = None
 
                 # Detect AI success from multiple fields for robustness
                 ai_success = bool(
@@ -10788,6 +10949,14 @@ def ai_market_scanner():
                     trend_confidence = ai_result.get('confidence') or ai_result.get('trendConfidence')
                     ai_reasoning = ai_result.get('aiReasoning') or ai_result.get('detailedReasoning')
                     scanner_reason = ai_result.get('scannerReason') or ai_result.get('conciseReasoning')
+                    # Extract dimensional scores from AI response
+                    momentum_score = ai_result.get('momentumScore')
+                    volume_score = ai_result.get('volumeScore')
+                    volatility_score = ai_result.get('volatilityScore')
+                    structure_score = ai_result.get('structureScore')
+                    sentiment_score = ai_result.get('newsScore') or ai_result.get('sentimentScore')
+                    volume_status = ai_result.get('volumeStatus')
+                    event_risk = ai_result.get('eventRisk')
                 elif ai_result:
                     ai_error = ai_result.get('error', 'AI analysis failed')
                     scanner_reason = ai_error
@@ -10797,11 +10966,28 @@ def ai_market_scanner():
 
 
 
+                # Build data quality reasons
+                _dq_reasons = []
+                if price is None: _dq_reasons.append('missing_alpaca_bar')
+                if change_pct is None: _dq_reasons.append('missing_prev_close')
+                if stock_data.get('dayHigh') is None and stock_data.get('high') is None: _dq_reasons.append('missing_day_range')
+                if volume is None or volume == 0: _dq_reasons.append('missing_volume')
+                if not sector: _dq_reasons.append('missing_company_profile')
+                # news reason added post-loop (layer 4): news_fetched / no_news_last_7d / etc.
+                if not _ai_can_call: _dq_reasons.append('ai_not_configured')
+                elif ai_error: _dq_reasons.append('ai_score_missing_field')
+                if momentum_score is None: _dq_reasons.append('ai_missing_momentum')
+                if volume_score is None: _dq_reasons.append('ai_missing_volume_score')
+                if volatility_score is None: _dq_reasons.append('ai_missing_volatility')
+                if structure_score is None: _dq_reasons.append('ai_missing_structure')
+                if sentiment_score is None: _dq_reasons.append('ai_missing_sentiment')
+
+
                 result_obj = {
 
                     'symbol': symbol,
 
-                    'companyName': stock_data.get('name') or None,
+                    'companyName': company_name or f'{symbol} Inc.',
 
                     'price': price,
 
@@ -10811,17 +10997,25 @@ def ai_market_scanner():
 
                     'volume': volume,
 
+                    'dayHigh': stock_data.get('dayHigh') or stock_data.get('high'),
+
+                    'dayLow': stock_data.get('dayLow') or stock_data.get('low'),
+
                     'hasValidVolume': bool(volume and volume > 0),
 
                     'dataSource': stock_data.get('dataSource', 'unknown'),
 
                     'dataQuality': 'PARTIAL' if not (price and volume) else ('need_data' if symbol in need_data_symbols else 'ok'),
 
-                    'sector': stock_data.get('sector') or None,
+                    'dataQualityReasons': _dq_reasons,
+
+                    'sector': sector,
+
+                    'industry': industry,
 
                     'newsSentiment': None,
 
-                    'eventRisk': None,
+                    'eventRisk': event_risk or None,
 
                     'topCatalyst': None,
 
@@ -10833,7 +11027,23 @@ def ai_market_scanner():
 
                     'trendScore': trend_score,
 
+                    'trendScoreDetail': trend_score,
+
                     'trendConfidence': trend_confidence,
+
+                    'momentumScore': momentum_score,
+
+                    'volumeScore': volume_score,
+
+                    'volatilityScore': volatility_score,
+
+                    'structureScore': structure_score,
+
+                    'sentimentScore': sentiment_score,
+
+                    'newsScore': sentiment_score,
+
+                    'volumeStatus': volume_status,
 
                     'overallScore': trend_score,  # Standardized score field
 
@@ -10857,15 +11067,51 @@ def ai_market_scanner():
 
                     'aiReasoning': ai_reasoning,
 
+                    'aiUsedNews': _ai_used_news,
+
+                    'aiNewsItemCount': _ai_news_count,
+
+                    'aiNewsWindow': _ai_news_window,
+
+                    'sentimentScoreSource': _sentiment_source,
+
                     'dataSources': {
 
                         'marketData': stock_data.get('dataSource', 'unknown'),
 
-                        'companyInfo': 'Not fetched',
+                        'companyInfo': 'Finnhub' if profile_fetched else 'Not fetched',
 
-                        'news': 'Not fetched',
+                        'news': 'pending (post-loop fetch)',
 
                         'aiData': ai_source
+
+                    },
+
+                    'analysisSource': 'ai' if _ai_can_call and ai_success else ('local_fallback' if not _ai_can_call else 'unavailable'),
+
+                    'scoreSource': 'ai' if (ai_success and trend_score is not None) else ('local_rule' if not _ai_can_call else 'unavailable'),
+
+                    'reasoningSource': 'ai' if (ai_success and ai_reasoning) else ('local_rule' if not _ai_can_call else 'unavailable'),
+
+                    'userContextUsed': True,
+
+                    'riskProfileUsed': _scanner_risk_profile,
+
+                    'timeHorizonUsed': _scanner_time_horizon,
+
+                    'tradeModeUsed': _scanner_trade_mode,
+
+                    'provenance': {
+
+                        'marketData': stock_data.get('dataSource', 'unknown'),
+
+                        'companyInfo': 'Finnhub' if profile_fetched else 'Not fetched',
+
+                        'news': 'pending (post-loop fetch)',
+
+                        'aiData': ai_source,
+
+                        'userContext': 'Risk: %s | Horizon: %s | Mode: %s' % (_scanner_risk_profile, _scanner_time_horizon, _scanner_trade_mode),
 
                     },
 
@@ -10878,6 +11124,35 @@ def ai_market_scanner():
                 results.append(result_obj)
 
                 print(f'[Scanner AI] {symbol} AI分析完成: success={ai_success} score={trend_score} trend={trend_label}')
+
+                # Per-symbol progress update for frontend polling
+                if _scanner_uid:
+                    try:
+                        _progress_pct = round((i + 1) / len(shortlist) * 100) if shortlist else 0
+                        _pa_update_active_run(_scanner_uid,
+                            steps={'market_scanner': {
+                                'status': 'running',
+                                'processed': i + 1,
+                                'total': len(shortlist),
+                                'processedSymbols': i + 1,
+                                'totalSymbols': len(shortlist),
+                                'progressPct': _progress_pct,
+                                'currentSymbol': symbol,
+                                'validated': len(results),
+                                'aiSuccessCount': sum(1 for r in results if r.get('aiSuccess')),
+                                'dataQuality': {
+                                    'ok': sum(1 for r in results if r.get('dataQuality') == 'ok'),
+                                    'need_data': sum(1 for r in results if r.get('dataQuality') == 'need_data'),
+                                    'partial': sum(1 for r in results if r.get('dataQuality') == 'PARTIAL'),
+                                    'failed': sum(1 for r in results if r.get('dataQuality') not in ('ok', 'need_data', 'PARTIAL')),
+                                }
+                            }},
+                            progressPct=_progress_pct,
+                            message=f'Scanning {i+1}/{len(shortlist)}: {symbol}'
+                        )
+                        print(f'[ManualPipelineProgress] uid={_scanner_uid[:8]} step=market_scanner processed={i+1}/{len(shortlist)} pct={_progress_pct}% current={symbol}')
+                    except Exception as _prog_e:
+                        print(f'[Scanner] progress update error: {_prog_e}')
 
 
 
@@ -10893,7 +11168,7 @@ def ai_market_scanner():
 
                     'symbol': symbol,
 
-                    'companyName': symbol,
+                    'companyName': f'{symbol} Inc.',
 
                     'price': None,
 
@@ -10903,11 +11178,21 @@ def ai_market_scanner():
 
                     'volume': None,
 
+                    'dayHigh': None,
+
+                    'dayLow': None,
+
                     'hasValidVolume': False,
 
                     'dataSource': 'Error',
 
+                    'dataQuality': 'failed',
+
+                    'dataQualityReasons': [f'scan_exception: {str(e)[:100]}'],
+
                     'sector': None,
+
+                    'industry': None,
 
                     'newsSentiment': None,
 
@@ -10923,7 +11208,23 @@ def ai_market_scanner():
 
                     'trendScore': None,
 
+                    'trendScoreDetail': None,
+
                     'trendConfidence': None,
+
+                    'momentumScore': None,
+
+                    'volumeScore': None,
+
+                    'volatilityScore': None,
+
+                    'structureScore': None,
+
+                    'sentimentScore': None,
+
+                    'newsScore': None,
+
+                    'volumeStatus': None,
 
                     'scannerReason': f'Analysis failed: {str(e)[:50]}',
 
@@ -10939,6 +11240,38 @@ def ai_market_scanner():
 
                     'analysisStatus': 'failed',
 
+                    'aiUsedNews': False,
+
+                    'aiNewsItemCount': 0,
+
+                    'aiNewsWindow': '7d',
+
+                    'sentimentScoreSource': 'LOCAL_FALLBACK',
+
+                    'provenance': {
+
+                        'marketData': 'Error',
+
+                        'companyInfo': 'Not fetched',
+
+                        'news': 'Not fetched',
+
+                        'aiData': 'unavailable'
+
+                    },
+
+                    'dataSources': {
+
+                        'marketData': 'Error',
+
+                        'companyInfo': 'Not fetched',
+
+                        'news': 'Not fetched',
+
+                        'aiData': 'unavailable'
+
+                    },
+
                     'timestamp': int(time.time()),
 
                     'error': True
@@ -10946,6 +11279,93 @@ def ai_market_scanner():
                 })
 
 
+
+        # ── Post-processing: apply pre-fetched news data to ALL results ──
+        print('=== 应用新闻数据到结果 ===')
+        _apply_start = time.time()
+
+        if _fh_configured:
+            for r in results:
+                sym = r.get('symbol')
+                _items, _err = news_cache.get(sym, (None, 'not_in_cache'))
+                if _err and ('rate_limit' in str(_err).lower() or '429' in str(_err)):
+                    r['topNews'] = None
+                    r['hasNews'] = False
+                    r['newsCount'] = 0
+                    r['newsSentiment'] = None
+                    r['newsSource'] = 'Finnhub: rate limited'
+                    r['newsFetchReason'] = 'finnhub_rate_limited'
+                    r['dataSources']['news'] = 'Finnhub: rate limited'
+                    r['provenance']['news'] = 'Finnhub: rate limited'
+                    _dq = r.setdefault('dataQualityReasons', [])
+                    _dq.append('finnhub_rate_limited')
+                elif _err:
+                    r['topNews'] = None
+                    r['hasNews'] = False
+                    r['newsCount'] = 0
+                    r['newsSentiment'] = None
+                    r['newsSource'] = 'Finnhub error: %s' % str(_err)[:80]
+                    r['newsFetchReason'] = 'finnhub_news_api_failed: %s' % str(_err)[:100]
+                    r['dataSources']['news'] = 'Finnhub error'
+                    r['provenance']['news'] = 'Finnhub error'
+                    _dq = r.setdefault('dataQualityReasons', [])
+                    _dq.append('finnhub_news_api_failed')
+                elif _items and len(_items) > 0:
+                    top_sorted = sorted(_items, key=lambda n: n.get('datetime', 0) or 0, reverse=True)
+                    best = top_sorted[0]
+                    r['topNews'] = {
+                        'title': best.get('headline', ''),
+                        'source': best.get('source', 'Unknown'),
+                        'publisher': best.get('source', 'Unknown'),
+                        'published': best.get('datetime', 0),
+                        'url': best.get('url', ''),
+                        'summary': (best.get('summary') or '')[:300],
+                        'sentiment': best.get('sentiment_score'),
+                    }
+                    r['allNews'] = [{
+                        'title': n.get('headline', ''),
+                        'source': n.get('source', 'Unknown'),
+                        'published': n.get('datetime', 0),
+                        'url': n.get('url', ''),
+                        'summary': (n.get('summary') or '')[:300],
+                        'sentiment': n.get('sentiment_score'),
+                    } for n in top_sorted[:5]]
+                    r['hasNews'] = True
+                    r['newsCount'] = len(_items)
+                    _scores = [n.get('sentiment_score') for n in _items if n.get('sentiment_score') is not None]
+                    r['newsSentiment'] = round(sum(_scores) / len(_scores), 3) if _scores else None
+                    r['newsSource'] = 'Finnhub'
+                    r['newsFetchReason'] = 'fetched: %d articles in 7d' % len(_items)
+                    r['dataSources']['news'] = 'Finnhub'
+                    r['provenance']['news'] = 'Finnhub'
+                    _dq = r.setdefault('dataQualityReasons', [])
+                    _dq.append('news_fetched')
+                else:
+                    r['topNews'] = None
+                    r['hasNews'] = False
+                    r['newsCount'] = 0
+                    r['newsSentiment'] = None
+                    r['newsSource'] = 'Finnhub: no news in 7d'
+                    r['newsFetchReason'] = 'no_news_last_7d'
+                    r['dataSources']['news'] = 'Finnhub: no news in 7d'
+                    r['provenance']['news'] = 'Finnhub: no news in 7d'
+                    _dq = r.setdefault('dataQualityReasons', [])
+                    _dq.append('no_news_last_7d')
+        else:
+            for r in results:
+                r['topNews'] = None
+                r['hasNews'] = False
+                r['newsCount'] = 0
+                r['newsSentiment'] = None
+                r['newsSource'] = 'Finnhub not configured'
+                r['newsFetchReason'] = 'finnhub_not_configured'
+                r['dataSources']['news'] = 'Finnhub not configured'
+                r['provenance']['news'] = 'Finnhub not configured'
+                _dq = r.setdefault('dataQualityReasons', [])
+                _dq.append('finnhub_not_configured')
+
+        _apply_time = time.time() - _apply_start
+        print(f'新闻数据应用完成，耗时: {_apply_time:.2f}秒')
 
         total_time = time.time() - start_time
 
@@ -11741,11 +12161,12 @@ def analyze_news_for_stock(symbol):
             'newsSummary': f'Error analyzing news: {str(e)[:100]}'
         }
 
-def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
+def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data,
+                                 risk_profile='medium', time_horizon='mid', trade_mode='paper'):
 
     """使用DeepSeek分析股票趋势"""
 
-    print(f'[DeepSeek分析] 函数被调用，参数: symbol={symbol}, stock_data type={type(stock_data)}, news_data type={type(news_data)}, profile_data type={type(profile_data)}')
+    print(f'[DeepSeek分析] 函数被调用，参数: symbol={symbol}, stock_data type={type(stock_data)}, news_data type={type(news_data)}, profile_data type={type(profile_data)}, risk={risk_profile}, horizon={time_horizon}, trade={trade_mode}')
 
 
 
@@ -11758,6 +12179,8 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
         print(f'[DeepSeek分析] 新闻数据: {news_data is not None}')
 
         print(f'[DeepSeek分析] 公司资料: {profile_data is not None}')
+
+        print(f'[DeepSeek分析] 用户上下文: risk={risk_profile} horizon={time_horizon} trade={trade_mode}')
 
 
 
@@ -11837,7 +12260,13 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
             'topCatalyst': news_data.get('topCatalyst') or None,
 
-            'newsCount': news_data.get('newsCount', 0)
+            'newsCount': news_data.get('newsCount', 0),
+
+            'riskProfile': risk_profile,
+
+            'timeHorizon': time_horizon,
+
+            'tradeMode': trade_mode,
 
         }
 
@@ -11897,6 +12326,26 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         volume_str = f"{analysis_context['volume']:,.0f}" if analysis_context['volume'] is not None else "数据缺失"
 
+        # Build news headlines section for the prompt
+        _news_items = (news_data or {}).get('items') or []
+        _news_section = ''
+        if _news_items:
+            _lines = ['Recent Finnhub News Headlines (last 7 days):']
+            for _ni in _news_items[:5]:
+                _title = _ni.get('headline', '') or ''
+                _src = _ni.get('source', 'Unknown')
+                _summ = (_ni.get('summary', '') or '')[:150]
+                _sent = _ni.get('sentiment_score')
+                _sent_str = 'sent=%.2f' % _sent if _sent is not None else 'sent=N/A'
+                if _title:
+                    _lines.append('- [%s] %s: %s (%s)' % (_src, _title, _summ, _sent_str))
+            _news_section = '\n'.join(_lines)
+        elif (news_data or {}).get('newsCount', 0) == 0 and news_data is not None:
+            _news_section = 'No Finnhub company news found in the last 7 days for this symbol.'
+        else:
+            _news_section = 'News data unavailable for this symbol (not in top-candidate news fetch).'
+        _news_headlines_section = _news_section
+
 
 
         prompt = f"""作为专业的量化分析师，请分析以下股票并给出完整的趋势分析：
@@ -11910,6 +12359,18 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 成交量: {volume_str}
 
 板块: {analysis_context['sector']}
+
+
+
+用户投资上下文:
+
+- 风险偏好: {risk_profile} (low=conservative, medium=balanced, high=aggressive)
+
+- 时间周期: {time_horizon} (short=swing/day trade, mid=2-8 weeks, long=position trade)
+
+- 交易模式: {trade_mode} (paper=simulation, real=live)
+
+请结合用户的风险偏好和时间周期调整你的分析。高风险偏好+短期可以接受更高的波动和更激进的入场，低风险偏好+长期应更关注趋势稳定性和基本面支撑。
 
 
 
@@ -11928,6 +12389,8 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data):
 - 主要催化剂: {analysis_context['topCatalyst']}
 
 - 新闻数量: {analysis_context['newsCount']}
+
+{_news_headlines_section}
 
 
 
@@ -25069,13 +25532,16 @@ def _generate_final_decision(verdict, metrics, stability, opt_results, strategy)
     return decision
 
 
-def _generate_risk_gate(verdict, metrics, stability, strategy, recent_vs_long=None):
-    """Generate a conservative risk gate assessment for DV result. Rule-based only."""
+def _generate_risk_gate(verdict, metrics, stability, strategy, recent_vs_long=None,
+                         risk_profile='medium', time_horizon='mid', event_risk=None, data_quality=None):
+    """Generate a conservative risk gate assessment for DV result. Rule-based, context-aware."""
     risk_gate = {
         'status': 'PASS',
         'checks': [],
         'reason': 'All checks passed',
-        'source': 'Rule-based'
+        'source': 'Rule-based',
+        'riskProfileUsed': risk_profile,
+        'timeHorizonUsed': time_horizon,
     }
 
     try:
@@ -25148,6 +25614,28 @@ def _generate_risk_gate(verdict, metrics, stability, strategy, recent_vs_long=No
             elif recent_vs_long == 'Divergent':
                 warnings.append('Recent vs long-term divergent')
 
+        # Context-aware adjustments
+        if risk_profile == 'low':
+            if max_dd is not None and max_dd > 15:
+                warnings.append(f'Low risk: drawdown {max_dd:.1f}% exceeds 15% threshold')
+            if sharpe is not None and sharpe < 0.8:
+                warnings.append(f'Low risk: Sharpe {sharpe:.2f} below 0.8')
+            if event_risk and str(event_risk).upper() == 'HIGH':
+                failures.append('Low risk: high event risk blocks entry')
+        elif risk_profile == 'high':
+            if max_dd is not None and max_dd > 35 and sharpe is not None and sharpe > 0.5:
+                pass  # tolerate higher drawdown if Sharpe compensates
+
+        if time_horizon == 'short':
+            if recent_vs_long == 'Weakening':
+                warnings.append('Short horizon: weakening trend flagged')
+        elif time_horizon == 'long':
+            if recent_vs_long == 'Improving' and stability and stability.get('score', 0) >= 40:
+                pass  # long horizon can benefit from improving trend
+
+        if data_quality and str(data_quality).upper() in ('NEED_DATA', 'PARTIAL', 'FAILED'):
+            failures.append('Insufficient data quality')
+
         # --- Final status ---
         if failures:
             risk_gate['status'] = 'BLOCK'
@@ -25168,6 +25656,203 @@ def _generate_risk_gate(verdict, metrics, stability, strategy, recent_vs_long=No
     return risk_gate
 
 
+# In-memory cache for AI overlay (keyed on symbol + metrics + context)
+_DV_AI_OVERLAY_CACHE = {}
+_DV_AI_OVERLAY_CACHE_TTL_SECONDS = 1800
+
+
+def _build_ai_overlay_cache_key(dv_result):
+    """Build cache key from stable fields — avoid re-calling AI for same scenario."""
+    parts = [
+        dv_result.get('symbol', '?'),
+        dv_result.get('validationStrategy', '?'),
+        str(round(float(dv_result.get('totalReturn') or 0), 0)),
+        str(round(float(dv_result.get('sharpeRatio') or 0), 1)),
+        str(round(float(dv_result.get('maxDrawdown') or 0), 0)),
+        str(round(float(dv_result.get('profitFactor') or 0), 1)),
+        dv_result.get('verdict', '?'),
+        dv_result.get('riskProfileUsed', '?'),
+        dv_result.get('timeHorizonUsed', '?'),
+        str(dv_result.get('eventRisk') or ''),
+        str(dv_result.get('newsSentiment') or ''),
+        str(dv_result.get('dataQuality') or ''),
+    ]
+    return '|'.join(parts)
+
+
+def _ai_deeper_validation_overlay_safe(dv_result, timeout_sec=20):
+    """Safe wrapper: timeout, cache, exception handling. Returns updated dv_result."""
+    import time as _time
+    _start = _time.time()
+
+    # Check cache
+    _cache_key = _build_ai_overlay_cache_key(dv_result)
+    _cached = _DV_AI_OVERLAY_CACHE.get(_cache_key)
+    if _cached:
+        _age = _time.time() - _cached['ts']
+        if _age < _DV_AI_OVERLAY_CACHE_TTL_SECONDS:
+            for _k, _v in _cached['fields'].items():
+                dv_result[_k] = _v
+            dv_result['aiValidationCacheHit'] = True
+            dv_result['aiValidationElapsedMs'] = int((_time.time() - _start) * 1000)
+            return dv_result
+        else:
+            del _DV_AI_OVERLAY_CACHE[_cache_key]
+
+    dv_result['aiValidationCacheHit'] = False
+
+    try:
+        dv_result = _ai_deeper_validation_overlay(dv_result)
+        _elapsed = int((_time.time() - _start) * 1000)
+        dv_result['aiValidationElapsedMs'] = _elapsed
+        dv_result['aiValidationTimeout'] = False
+
+        # Cache successful results
+        if dv_result.get('aiValidationUsed'):
+            _DV_AI_OVERLAY_CACHE[_cache_key] = {
+                'ts': _time.time(),
+                'fields': {k: dv_result[k] for k in [
+                    'aiValidationUsed', 'aiValidationVerdict', 'aiValidationConfidence',
+                    'aiValidationReason', 'aiRiskNotes', 'aiCatalystNotes', 'aiContextAdjustment',
+                    'localVerdictBeforeAI', 'finalVerdict', 'finalVerdictSource',
+                ] if k in dv_result},
+            }
+        return dv_result
+    except Exception as _safe_e:
+        dv_result['aiValidationUsed'] = False
+        dv_result['aiValidationFallbackReason'] = str(_safe_e)[:120]
+        dv_result['aiValidationTimeout'] = 'timeout' in str(_safe_e).lower()
+        dv_result['aiValidationElapsedMs'] = int((_time.time() - _start) * 1000)
+        dv_result['finalVerdictSource'] = 'local_rules_ai_fallback'
+        dv_result['localVerdictBeforeAI'] = dv_result.get('verdict', 'Watch')
+        dv_result['finalVerdict'] = dv_result.get('verdict', 'Watch')
+        return dv_result
+
+
+def _ai_deeper_validation_overlay(dv_result):
+    """AI overlay: review DV result with market/news/FineScan/user context.
+    Returns updated dv_result with aiValidation* fields and finalVerdict.
+    AI can downgrade but cannot override hard BLOCK or upgrade bad metrics to Confirmed.
+    """
+    try:
+        # Only call AI for non-trivial cases
+        local_verdict = dv_result.get('verdict', 'Watch')
+        risk_gate_status = (dv_result.get('riskGate') or {}).get('status', 'PASS')
+
+        # Check AI config
+        _ai_cfg, _ai_src = resolve_ai_config(require_user_config=True)
+        _api_key = _ai_cfg.get('apiKey', '')
+        if not _api_key or not _api_key.strip():
+            dv_result['aiValidationUsed'] = False
+            dv_result['aiValidationFallbackReason'] = 'AI not configured'
+            dv_result['finalVerdictSource'] = 'local_rules'
+            dv_result['localVerdictBeforeAI'] = local_verdict
+            dv_result['finalVerdict'] = local_verdict
+            return dv_result
+
+        # Build concise payload
+        symbol = dv_result.get('symbol', '?')
+        sharpe = dv_result.get('sharpeRatio', 0)
+        total_ret = dv_result.get('totalReturn', 0)
+        max_dd = dv_result.get('maxDrawdown', 0)
+        pf = dv_result.get('profitFactor', 0)
+        news_sent = dv_result.get('newsSentiment')
+        event_risk = dv_result.get('eventRisk')
+        regime = dv_result.get('fineScanRegimeUsed')
+
+        prompt = f"""Review this Deeper Validation result and provide a brief assessment:
+
+Symbol: {symbol}
+Risk Profile: {dv_result.get('riskProfileUsed', 'medium')}
+Time Horizon: {dv_result.get('timeHorizonUsed', 'mid')}
+Trend: {dv_result.get('fineScanRegimeUsed', 'N/A')}
+Scanner Score: {dv_result.get('fineScanMatchConfidence', 'N/A')}
+Fine Scan Decision: {dv_result.get('fineScanDecision', 'N/A')}
+Fine Scan Grade: {dv_result.get('fineScanGrade', 'N/A')}
+News Sentiment: {news_sent or 'N/A'}
+Event Risk: {event_risk or 'N/A'}
+News Count: {dv_result.get('newsCount', 0)}
+1Y Backtest: Return={total_ret:.1f}% Sharpe={sharpe:.2f} MaxDD={max_dd:.1f}% ProfitFactor={pf:.2f}
+Stability: {dv_result.get('stabilityScore', 'N/A')}
+Recent vs Long: {dv_result.get('recentVsLongTerm', 'N/A')}
+Local Verdict: {local_verdict}
+Risk Gate: {risk_gate_status}
+
+Based on this data, return a JSON with:
+- aiVerdict: "Confirmed", "Watch", or "Reject"
+- aiConfidence: 0.0-1.0
+- aiReason: one sentence explaining your verdict (max 120 chars)
+- aiRiskNotes: brief risk observation (max 80 chars)
+- aiCatalystNotes: any catalyst from news/sentiment (max 80 chars, or "none")
+- aiContextAdjustment: whether user risk/horizon affects verdict (max 80 chars, or "none")
+
+Rules: Do NOT upgrade to Confirmed if RiskGate is BLOCK, or Sharpe<0, or TotalReturn<0, or ProfitFactor<1.
+You may downgrade Confirmed→Watch/Reject if event risk is High, news is negative, or low risk profile.
+Return ONLY valid JSON, no markdown."""
+
+        headers = {'Authorization': f'Bearer {_api_key}', 'Content-Type': 'application/json'}
+        base_url = _ai_cfg.get('baseURL', 'https://api.deepseek.com')
+        if not base_url.startswith('http'):
+            base_url = 'https://' + base_url
+        payload = {
+            'model': _ai_cfg.get('model', 'deepseek-chat'),
+            'messages': [{'role': 'user', 'content': prompt}],
+            'max_tokens': 200, 'temperature': 0.2,
+            'response_format': {'type': 'json_object'},
+        }
+        resp = ai_chat_request(f'{base_url}/chat/completions', headers=headers, json_data=payload, provider=_ai_cfg.get('provider'))
+        if resp.status_code != 200:
+            raise Exception('AI HTTP %d' % resp.status_code)
+
+        import json as _json
+        ai_data = _json.loads(resp.json()['choices'][0]['message']['content'])
+
+        ai_verdict = str(ai_data.get('aiVerdict', 'Watch'))
+        # Normalize
+        if 'confirm' in ai_verdict.lower(): ai_verdict = 'Confirmed'
+        elif 'reject' in ai_verdict.lower(): ai_verdict = 'Reject'
+        else: ai_verdict = 'Watch'
+
+        dv_result['aiValidationUsed'] = True
+        dv_result['aiValidationVerdict'] = ai_verdict
+        dv_result['aiValidationConfidence'] = float(ai_data.get('aiConfidence', 0.5))
+        dv_result['aiValidationReason'] = str(ai_data.get('aiReason', ''))[:200]
+        dv_result['aiRiskNotes'] = str(ai_data.get('aiRiskNotes', ''))[:120]
+        dv_result['aiCatalystNotes'] = str(ai_data.get('aiCatalystNotes', ''))[:120]
+        dv_result['aiContextAdjustment'] = str(ai_data.get('aiContextAdjustment', ''))[:120]
+        dv_result['localVerdictBeforeAI'] = local_verdict
+
+        # Final verdict merge
+        if risk_gate_status == 'BLOCK' or local_verdict == 'Rejected':
+            dv_result['finalVerdict'] = local_verdict
+            dv_result['finalVerdictSource'] = 'local_rules'
+        elif sharpe < 0 or total_ret < 0 or pf < 1:
+            dv_result['finalVerdict'] = max([local_verdict, ai_verdict], key=lambda v: {'Confirmed': 3, 'Watch': 2, 'Reject': 1}.get(v, 0))
+            dv_result['finalVerdictSource'] = 'local_rules_plus_ai'
+        elif ai_verdict == 'Reject' and local_verdict == 'Confirmed':
+            dv_result['finalVerdict'] = 'Watch'
+            dv_result['finalVerdictSource'] = 'local_rules_ai_downgrade'
+        elif ai_verdict == 'Reject' or (ai_verdict == 'Watch' and local_verdict == 'Confirmed'):
+            dv_result['finalVerdict'] = ai_verdict
+            dv_result['finalVerdictSource'] = 'local_rules_ai_downgrade'
+        else:
+            dv_result['finalVerdict'] = local_verdict
+            dv_result['finalVerdictSource'] = 'local_rules_plus_ai'
+
+    except Exception as _ai_e:
+        dv_result['aiValidationUsed'] = False
+        dv_result['aiValidationFallbackReason'] = str(_ai_e)[:150]
+        dv_result['finalVerdictSource'] = 'local_rules_ai_fallback'
+        dv_result['localVerdictBeforeAI'] = dv_result.get('verdict', 'Watch')
+        dv_result['finalVerdict'] = dv_result.get('verdict', 'Watch')
+
+    # Sync finalVerdict into verdict for downstream consumers (Entry Plan, summary, frontend)
+    if dv_result.get('finalVerdict'):
+        dv_result['verdict'] = dv_result['finalVerdict']
+
+    return dv_result
+
+
 @app.route('/api/ai/deeper-validation', methods=['POST'])
 @app.route('/ai/deeper-validation', methods=['POST'])
 def deeper_validation():
@@ -25178,6 +25863,12 @@ def deeper_validation():
         period = data.get('period', '1y')
         initial_capital = data.get('initialCapital', 100000)
 
+        # User context for thresholds and AI overlay
+        _dv_risk_profile = data.get('riskProfile') or data.get('risk_profile') or 'medium'
+        _dv_time_horizon = data.get('timeHorizon') or data.get('time_horizon') or 'mid'
+        _dv_pipeline_mode = data.get('pipelineMode') or data.get('mode') or 'hybrid'
+        _dv_trade_mode = data.get('tradeMode') or data.get('trade_mode') or 'paper'
+
         if not raw_candidates:
             return jsonify({'success': False, 'message': 'No candidates provided'}), 400
 
@@ -25186,7 +25877,7 @@ def deeper_validation():
 
         all_data_cache = {}
 
-        print(f'[DV] Request: {len(raw_candidates)} candidates, period={period}, capital={initial_capital}')
+        print(f'[DV] Request: {len(raw_candidates)} candidates, period={period}, capital={initial_capital}, risk={_dv_risk_profile}, horizon={_dv_time_horizon}')
 
         for idx, cand in enumerate(raw_candidates):
             symbol = cand.get('symbol', '').upper().strip()
@@ -25195,9 +25886,13 @@ def deeper_validation():
                 continue
 
             try:
-                strategy = cand.get('strategy', '')
+                # Strategy: prefer Fine Scan bestStrategy, fallback to matchedStrategies[0], then moving_average
+                strategy = cand.get('bestStrategy') or cand.get('strategy') or ''
                 if not strategy or strategy == 'unknown':
-                    strategy = cand.get('bestStrategy', '')
+                    _ms = cand.get('matchedStrategies') or []
+                    strategy = _ms[0] if _ms else 'moving_average'
+                _strategy_source = 'fine_scan_best_strategy' if strategy == cand.get('bestStrategy') else (
+                    'fine_scan_matched_strategy' if cand.get('matchedStrategies') else 'fallback_default')
 
                 # Map fine-scan labels to supported strategy keys
                 fallback_reason = ''
@@ -25315,11 +26010,35 @@ def deeper_validation():
                 # Step 7: Verdict
                 verdict, reason_str = _compute_verdict(metrics, stability, recent_vs_long, opt_results, valid_count)
 
+                # Context-aware verdict adjustment
+                _ctx_parts = []
+                if _dv_risk_profile == 'low':
+                    if verdict == 'Confirmed' and (metrics.get('maxDrawdown', 0) < -20 or metrics.get('sharpeRatio', 0) < 0.5):
+                        verdict = 'Watch'
+                        _ctx_parts.append('Downgraded: low risk profile requires lower drawdown/better Sharpe')
+                elif _dv_risk_profile == 'high':
+                    if verdict == 'Reject' and stability['score'] >= 3 and (metrics.get('sharpeRatio', 0) > 0.3):
+                        verdict = 'Watch'
+                        _ctx_parts.append('Upgraded: high risk profile tolerates higher volatility')
+
+                if _dv_time_horizon == 'short':
+                    if recent_vs_long == 'Weakening' and verdict == 'Confirmed':
+                        verdict = 'Watch'
+                        _ctx_parts.append('Downgraded: short-term horizon penalizes weakening trend')
+                elif _dv_time_horizon == 'long':
+                    if recent_vs_long == 'Improving' and verdict == 'Reject':
+                        verdict = 'Watch'
+                        _ctx_parts.append('Upgraded: long-term horizon benefits from improving trend')
+
+                _ctx_reason = '; '.join(_ctx_parts) if _ctx_parts else ''
+
                 # Build reason
                 reason_parts = []
                 if fallback_reason:
                     reason_parts.append(fallback_reason)
                 reason_parts.append(reason_str)
+                if _ctx_reason:
+                    reason_parts.append(_ctx_reason)
 
                 result_entry = {
                     'symbol': symbol,
@@ -25365,8 +26084,49 @@ def deeper_validation():
                     'setupType': _map_strategy_to_setup(strategy),
                     'entryPlan': _generate_entry_plan_summary(symbol, strategy, metrics, data_source),
                     'finalDecision': _generate_final_decision(verdict, metrics, stability, opt_results, strategy),
-                    'riskGate': _generate_risk_gate(verdict, metrics, stability, strategy, recent_vs_long),
+                    'riskGate': _generate_risk_gate(verdict, metrics, stability, strategy, recent_vs_long,
+                                                       risk_profile=_dv_risk_profile, time_horizon=_dv_time_horizon,
+                                                       event_risk=cand.get('eventRisk'), data_quality=cand.get('dataQuality')),
                     'dataSource': data_source,
+                    # Fine Scan context
+                    'validationStrategy': strategy,
+                    'validationStrategySource': _strategy_source,
+                    'fineScanRegimeUsed': cand.get('regime'),
+                    'fineScanBestStrategyUsed': cand.get('bestStrategy'),
+                    'fineScanDecision': cand.get('decision'),
+                    'fineScanGrade': cand.get('grade'),
+                    'fineScanMatchConfidence': cand.get('matchConfidence'),
+                    'fineScanLowConfidenceFlag': cand.get('lowConfidenceFlag', False),
+                    'fineScanEntryQuality': cand.get('entryQuality'),
+                    'fineScanLiquidityGrade': cand.get('liquidityGrade'),
+                    'fineScanNewsGrade': cand.get('newsGrade'),
+                    'fineScanRiskGrade': cand.get('riskGrade'),
+                    'fineScanBacktestSummary': {
+                        'status': cand.get('backtestStatus'),
+                        'performance': cand.get('backtestPerformance'),
+                        'perStrategyCount': len(cand.get('backtestPerStrategy') or []),
+                        'bestStrategyBacktest': cand.get('bestStrategy'),
+                    },
+                    # News/Sentiment/Risk from scanner
+                    'newsSentiment': cand.get('newsSentiment'),
+                    'newsCount': cand.get('newsCount', 0),
+                    'hasNews': cand.get('hasNews', False),
+                    'eventRisk': cand.get('eventRisk'),
+                    'dataQuality': cand.get('dataQuality'),
+                    # User context
+                    'riskProfileUsed': _dv_risk_profile,
+                    'timeHorizonUsed': _dv_time_horizon,
+                    'pipelineModeUsed': _dv_pipeline_mode,
+                    'tradeModeUsed': _dv_trade_mode,
+                    # AI overlay placeholder (populated below if AI called)
+                    'aiValidationUsed': False,
+                    'aiValidationVerdict': None,
+                    'aiValidationConfidence': None,
+                    'aiValidationReason': None,
+                    'aiRiskNotes': None,
+                    'aiCatalystNotes': None,
+                    'aiContextAdjustment': None,
+                    'finalVerdictSource': 'local_rules',
                 }
                 results.append(result_entry)
 
@@ -25387,6 +26147,42 @@ def deeper_validation():
                     'stabilityScore': 0, 'stabilityReason': 'Error during validation',
                     'recentVsLongTerm': 'N/A',
                 })
+
+        # ── AI Validation Overlay (parallel, with cache and timeout) ──
+        _ai_overlay_start = time.time()
+        _ai_overlay_success = 0
+        _ai_overlay_fallback = 0
+        _ai_overlay_cache_hits = 0
+        _indexed = {r.get('symbol', str(i)): r for i, r in enumerate(results)}
+        with ThreadPoolExecutor(max_workers=3) as _ai_exec:
+            _futures = {
+                _ai_exec.submit(_ai_deeper_validation_overlay_safe, r): r.get('symbol', str(i))
+                for i, r in enumerate(results) if not r.get('error')
+            }
+            for _fut in as_completed(_futures):
+                _sym = _futures[_fut]
+                try:
+                    _updated = _fut.result(timeout=30)
+                    if _updated.get('aiValidationUsed'):
+                        _ai_overlay_success += 1
+                    else:
+                        _ai_overlay_fallback += 1
+                    if _updated.get('aiValidationCacheHit'):
+                        _ai_overlay_cache_hits += 1
+                    _indexed[_sym] = _updated
+                except Exception:
+                    _ai_overlay_fallback += 1
+                    _orig = _indexed.get(_sym, {})
+                    _orig['aiValidationUsed'] = False
+                    _orig['aiValidationFallbackReason'] = 'timeout_or_thread_exception'
+                    _orig['aiValidationTimeout'] = True
+                    _orig['finalVerdictSource'] = 'local_rules_ai_fallback'
+                    _orig['localVerdictBeforeAI'] = _orig.get('verdict', 'Watch')
+                    _orig['finalVerdict'] = _orig.get('verdict', 'Watch')
+                    _indexed[_sym] = _orig
+        results = [_indexed[r.get('symbol', str(i))] for i, r in enumerate(results)]
+        _ai_overlay_elapsed = int((time.time() - _ai_overlay_start) * 1000)
+        print(f'[DV] AI overlay: success={_ai_overlay_success} fallback={_ai_overlay_fallback} cacheHits={_ai_overlay_cache_hits} elapsed={_ai_overlay_elapsed}ms')
 
         # Sort: Confirmed first, then Watch, Reject, Needs Manual Review
         verdict_order = {'Confirmed': 0, 'Watch': 1, 'Reject': 2, 'Needs Manual Review': 3}
@@ -25709,6 +26505,8 @@ def ai_entry_plan():
             risk_profile = 'medium'
         if time_horizon not in ('short', 'mid', 'long'):
             time_horizon = 'mid'
+
+        is_manual = (execution_mode == 'Recommend Only')
 
         # ── Fetch real Alpaca account data for the selected mode ──
         account_data_fetched = False
@@ -26074,6 +26872,9 @@ def ai_entry_plan():
             _candidate_dq = str(candidate.get('dataQuality', '')).lower()
             if _candidate_dq in ('need_data', 'partial'):
                 _dq_block_reason = 'Market data incomplete: missing previous close/change percent (scanner dataQuality=%s)' % _candidate_dq
+                _dq_action = 'NEED_DATA' if is_manual else 'BLOCKED_BY_RISK'
+                _dq_readiness = 'NEED_DATA' if is_manual else 'BLOCKED'
+                _dq_gate_status = 'REVIEW' if is_manual else 'BLOCK'
                 plans.append({
                     'symbol': symbol,
                     'underlyingSymbol': symbol,
@@ -26108,11 +26909,16 @@ def ai_entry_plan():
                     'existingOpenOrder': False,
                     'existingPosition': symbol in (existing_positions if existing_positions else []),
                     'aiDecision': 'SKIP', 'confidence': 0, 'bestStrategy': strategy,
-                    'finalAction': 'BLOCKED_BY_RISK', 'tradeReadiness': 'BLOCKED', 'entryTriggerMet': False,
+                    'aiDecisionUsed': False,
+                    'localOverrideApplied': True,
+                    'localOverrideCategory': 'data_quality',
+                    'localOverrideReason': _dq_block_reason,
+                    'finalAction': _dq_action, 'tradeReadiness': _dq_readiness, 'entryTriggerMet': False,
                     'hardRiskGate': {
-                        'status': 'BLOCK', 'passed': False,
-                        'blockers': [_dq_block_reason],
-                        'warnings': [], 'reasons': [_dq_block_reason]
+                        'status': _dq_gate_status, 'passed': is_manual,
+                        'blockers': [] if is_manual else [_dq_block_reason],
+                        'warnings': [_dq_block_reason] if is_manual else [],
+                        'reasons': [_dq_block_reason]
                     },
                     'riskGateReasons': {
                         'blockers': [_dq_block_reason],
@@ -26522,8 +27328,12 @@ def ai_entry_plan():
                 # 9b. Risk ≤ 1% per trade (as % of portfolio value)
                 risk_as_pct_of_account = round(risk_dollars_actual / account_size * 100, 2) if account_size > 0 else 0
                 if risk_as_pct_of_account > 1.0 and account_size > 0:
-                    risk_gate_blockers.append(f'Risk ${risk_dollars_actual:.0f} is {risk_as_pct_of_account:.2f}% of portfolio value, exceeds 1% limit')
-                    risk_gate_passed = False
+                    _risk_msg = f'Risk ${risk_dollars_actual:.0f} is {risk_as_pct_of_account:.2f}% of portfolio value, exceeds 1% recommended limit'
+                    if is_manual:
+                        risk_gate_warnings.append(_risk_msg + ' (advisory only)')
+                    else:
+                        risk_gate_blockers.append(_risk_msg)
+                        risk_gate_passed = False
             else:
                 risk_gate_blockers.append('Invalid risk/price calculation - cannot determine position size')
                 risk_gate_passed = False
@@ -26541,11 +27351,16 @@ def ai_entry_plan():
                 risk_gate_blockers.append(f'Insufficient buying power (${live_buying_power:.2f}) or risk budget for {symbol} at ${current_price:.2f}. Minimum fractional order requires $1.00 notional.')
                 risk_gate_passed = False
 
-            # B12: Account fetch failure — block all executable BUYs
+            # B12: Account fetch failure — block auto, warn manual
             if _position_sizing_blocked:
-                risk_gate_blockers.append('Account buying power unavailable — cannot size positions reliably. Please ensure Alpaca account is connected in Settings.')
-                risk_gate_passed = False
-                final_action = 'BLOCKED_BY_RISK'
+                _acct_reason = 'Account buying power unavailable.'
+                if is_manual:
+                    risk_gate_warnings.append(_acct_reason + ' Using estimated sizing for recommendation only.')
+                    final_action = 'READY_REVIEW' if final_action == 'BUY_ALLOWED' else final_action
+                else:
+                    risk_gate_blockers.append(_acct_reason + ' Cannot size positions reliably. Please ensure Alpaca account is connected.')
+                    risk_gate_passed = False
+                    final_action = 'BLOCKED_BY_RISK'
 
             # B2: Budget-aware allocation — cap per-trade and total budget
             _bp_before = _safe_bp - _total_allocated
@@ -26570,12 +27385,17 @@ def ai_entry_plan():
             if pos_dollars > 0 and not _position_sizing_blocked:
                 _remaining = _max_total_allocation - _total_allocated
                 if pos_dollars > _remaining and _remaining <= 0:
-                    risk_gate_blockers.append(
+                    _alloc_msg = (
                         f'Total allocation ${_total_allocated:.0f} already exceeds max ${_max_total_allocation:.0f} '
                         f'({_rules["label"]} cap: {_rules["max_total_bp_pct"]*100:.0f}% of ${_safe_bp:.0f} buying power). '
-                        f'{symbol} blocked — insufficient buying power after higher priority allocations.')
-                    risk_gate_passed = False
-                    final_action = 'BLOCKED_BY_RISK'
+                        f'{symbol} would exceed recommended allocation budget.')
+                    if is_manual:
+                        risk_gate_warnings.append(_alloc_msg + ' (advisory only)')
+                        final_action = 'READY_REVIEW' if final_action == 'BUY_ALLOWED' else final_action
+                    else:
+                        risk_gate_blockers.append(_alloc_msg)
+                        risk_gate_passed = False
+                        final_action = 'BLOCKED_BY_RISK'
                 elif pos_dollars > _remaining:
                     # Try to fit remaining budget
                     _fit_shares = round(_remaining / current_price, 4) if current_price > 0 else 0
@@ -26951,8 +27771,13 @@ def ai_entry_plan():
                 'isLeveraged': False,
                 'leverageReason': None,
                 'aiDecision': ai_decision,
+                'aiDecisionUsed': ai_called,
+                'aiDecisionReason': decision_reason,
                 'confidence': confidence,
                 'bestStrategy': best_strategy,
+                'localOverrideApplied': (final_action != ai_decision) if ai_called else False,
+                'localOverrideCategory': 'risk_gate' if (final_action != ai_decision and ai_called) else '',
+                'localOverrideReason': '; '.join(risk_gate_blockers[:2]) if risk_gate_blockers else '',
                 'finalAction': final_action,
                 'tradeReadiness': trade_readiness,
                 'entryTriggerMet': entry_trigger_met,
@@ -28190,7 +29015,7 @@ def _pa_has_unclaimed_pending(uid):
 
 def _pa_discord_source_prefix(trigger):
     """Return a Discord-friendly source label based on pipeline trigger."""
-    if trigger in ('market_auto_run', 'headless_market_auto_run', 'toggle_on', 'auto_manual_now'):
+    if trigger in ('market_auto_run', 'headless_market_auto_run', 'toggle_on', 'auto_run_now'):
         return 'Auto Background'
     if trigger == 'manual':
         return 'Manual'
@@ -28398,6 +29223,23 @@ def _pa_get_config(uid):
     except Exception as e:
         _pa_log_error('File fallback read failed: %s' % e)
     return {}
+
+
+def _pa_resolve_auto_run_context(uid, cfg):
+    """Resolve mode/risk/horizon/trade from saved config (single source of truth).
+    Used by both scheduler and run-now endpoint to guarantee identical context.
+    Returns dict with all fields needed by _pa_execute_and_save.
+    """
+    return {
+        'mode': cfg.get('mode') or 'hybrid',
+        'interval': cfg.get('interval_minutes') or 15,
+        'risk_profile': cfg.get('risk_profile') or cfg.get('riskProfile') or 'medium',
+        'time_horizon': cfg.get('time_horizon') or cfg.get('timeHorizon') or 'mid',
+        'trade_mode': cfg.get('trade_mode') or cfg.get('tradeMode') or 'paper',
+        'enabled': cfg.get('enabled', False),
+        'contextSource': 'saved_config' if (cfg.get('risk_profile') or cfg.get('time_horizon') or cfg.get('trade_mode')) else 'default_fallback',
+    }
+
 
 def _pa_save_config(uid, config):
     try:
@@ -28672,101 +29514,225 @@ def _pa_default_symbols_for_user(uid):
     return symbols, _source
 
 
-def _pa_continue_scan_headless(scanner_results):
-    eligible = []
+def _pa_continue_scan_headless(scanner_results,
+                                 risk_profile='medium', time_horizon='mid',
+                                 pipeline_mode='ai', trade_mode='paper'):
+    """Shared Continue Scan — single source of truth for ALL pipeline paths.
+
+    Used by: Run Manual Pipeline, Test Scheduled Run, Scheduled Auto Run.
+    Rules match the frontend processContinueScan() for consistency.
+    """
+    # ── Candidate pool: collect ALL base-quality, then tier-select ──
+    TARGET_MIN = 10
+    TARGET_MAX = 20
+    base_pool = []  # all non-bearish, non-bad-data, fully-scored candidates
     ai_unavailable_count = 0
-    filtered_no_price = 0
+    filtered_preflight = 0
     filtered_bearish = 0
-    filtered_low_score = 0
-    for r in scanner_results or []:
-        symbol = r.get('symbol', '?')
-        # Check if AI was unavailable for this result
-        ai_available = not r.get('aiError') and r.get('analysisSource') != 'unavailable'
+    filtered_no_price = 0
+    filtered_bad_data = 0
 
-        if not r.get('price') or r.get('price') <= 0:
-            filtered_no_price += 1
+    # Field name fallback helpers
+    def _get_trend(r):
+        return r.get('trendLabel') or r.get('trend') or None
+    def _get_score(r):
+        return r.get('overallScore') or r.get('trendScore') or r.get('score') or None
+    def _get_risk(r):
+        return r.get('eventRisk') or r.get('risk') or r.get('riskLevel') or 'Medium'
+    def _get_news(r):
+        return r.get('newsSentiment') or r.get('sentiment') or r.get('sentimentLabel') or 'Neutral'
+    def _get_vol(r):
+        return r.get('volumeStatus') or r.get('liquidityStatus') or 'Normal'
+    def _get_change(r):
+        return r.get('changePct') or r.get('changePercent') or 0
+    def _get_dq(r):
+        return str(r.get('dataQuality') or '').lower()
+
+    def _is_bad_data(r):
+        if r.get('analysisStatus') == 'failed': return True
+        if _get_trend(r) == 'Need Data': return True
+        if not r.get('price') or r.get('price', 0) <= 0: return True
+        if _get_score(r) is None: return True
+        return False
+
+    def _compute_priority(r, trend, score, risk):
+        news = _get_news(r)
+        change = _get_change(r)
+        vs = _get_vol(r)
+        tc = 35 if trend == 'Strong Bullish' else 25 if trend == 'Bullish' else 15
+        sc = round(score * 0.5)
+        rc = 12 if risk == 'Low' else 6 if risk == 'Medium' else 0
+        nc = 10 if news == 'Positive' else 4 if news == 'Neutral' else -8 if news == 'Negative' else 0
+        cc = 8 if change >= 3 else 5 if change >= 1 else 2 if change > 0 else -6
+        vc = 8 if vs == 'High' else 4 if vs == 'Normal' else 0
+        return max(0, min(100, tc + sc + rc + nc + cc + vc))
+
+    def _build_item(r, trend, score, priority, tier='primary'):
+        ai_avail = not r.get('aiError') and r.get('analysisSource') != 'unavailable'
+        item = dict(r)
+        item.update({
+            'includeInContinueScan': True,
+            'priorityScore': priority,
+            'priorityBreakdown': {
+                'trend': 35 if trend == 'Strong Bullish' else 25 if trend == 'Bullish' else 15,
+                'score': round(score * 0.5),
+                'risk': 12 if _get_risk(r) == 'Low' else 6 if _get_risk(r) == 'Medium' else 0,
+                'news': 10 if _get_news(r) == 'Positive' else 4 if _get_news(r) == 'Neutral' else -8 if _get_news(r) == 'Negative' else 0,
+                'price': 8 if _get_change(r) >= 3 else 5 if _get_change(r) >= 1 else 2 if _get_change(r) > 0 else -6,
+                'volume': 8 if _get_vol(r) == 'High' else 4 if _get_vol(r) == 'Normal' else 0,
+            },
+            'continueScanStatus': 'completed',
+            'reasonSource': 'Backend Local Rules (AI unavailable)' if not ai_avail else 'Backend Local Rules',
+            'selectedBy': 'Backend Local Rules',
+            'continueDecisionSource': 'auto_headless',
+            'continueContextUsed': True,
+            'selectionTier': tier,
+            'riskProfileUsed': risk_profile,
+            'timeHorizonUsed': time_horizon,
+            'pipelineModeUsed': pipeline_mode,
+            'confidenceUsed': False,
+            'generatedAt': datetime.utcnow().isoformat() + 'Z',
+        })
+        return item
+
+    # Thresholds (primary / secondary / fallback)
+    _pri_bull = {'low': 65, 'medium': 60, 'high': 55}.get(risk_profile, 60)
+    _pri_cons = {'low': 70, 'medium': 62, 'high': 58}.get(risk_profile, 62)
+    _pri_neut = {'low': 80, 'medium': 72, 'high': 68}.get(risk_profile, 72)
+    _pri_floor = {'low': 52, 'medium': 48, 'high': 45}.get(risk_profile, 48)
+
+    _sec_bull = {'low': 58, 'medium': 52, 'high': 48}.get(risk_profile, 52)
+    _sec_cons = {'low': 62, 'medium': 55, 'high': 50}.get(risk_profile, 55)
+    _sec_neut = {'low': 72, 'medium': 62, 'high': 58}.get(risk_profile, 62)
+    _sec_floor = {'low': 42, 'medium': 38, 'high': 35}.get(risk_profile, 38)
+
+    # ── Single pass: collect base pool ──
+    for r in (scanner_results or []):
+        if _is_bad_data(r):
+            filtered_bad_data += 1
+            if not r.get('price') or r.get('price', 0) <= 0: filtered_no_price += 1
+            if r.get('analysisStatus') == 'failed' or _get_trend(r) == 'Need Data' or _get_score(r) is None:
+                filtered_preflight += 1
             continue
 
-        trend = r.get('trendLabel')
-        score = r.get('overallScore') or r.get('trendScore')
-        risk = r.get('eventRisk') or 'Medium'
+        ai_avail = not r.get('aiError') and r.get('analysisSource') != 'unavailable'
+        trend = _get_trend(r)
+        score = _get_score(r)
+        risk = _get_risk(r)
 
-        # When AI is unavailable, fall back to price/change heuristics
-        if not ai_available or trend is None or score is None:
+        if not ai_avail or trend is None or score is None:
             ai_unavailable_count += 1
-            change = r.get('changePct') or r.get('changePercent') or 0
-            # Derive trend from price change
-            if change > 2:
-                trend = 'Bullish'
-                score = min(95, 55 + abs(change) * 2)
-            elif change > 0.5:
-                trend = 'Constructive'
-                score = min(85, 45 + abs(change) * 3)
-            elif change > -0.5:
-                trend = 'Neutral'
-                score = 40 + abs(change) * 3
-            elif change > -2:
-                trend = 'Bearish'
-                score = 30
-            else:
-                trend = 'Bearish'
-                score = 15
-            # Boost score for high volume
+            change = _get_change(r)
+            if change > 2:      trend = 'Bullish'; score = min(95, 55 + abs(change) * 2)
+            elif change > 0.5:  trend = 'Constructive'; score = min(85, 45 + abs(change) * 3)
+            elif change > -0.5: trend = 'Neutral'; score = 40 + abs(change) * 3
+            elif change > -2:   trend = 'Bearish'; score = 30
+            else:               trend = 'Bearish'; score = 15
             vol = r.get('volume') or 0
-            if vol > 5000000:
-                score = min(100, score + 10)
-            elif vol > 1000000:
-                score = min(100, score + 5)
-            if ai_available:
-                r['trendLabel'] = trend  # persist derived trend back
+            if vol > 5000000: score = min(100, score + 10)
+            elif vol > 1000000: score = min(100, score + 5)
+            if ai_avail: r['trendLabel'] = trend
 
+        if trend in ('Bearish', 'Strong Bearish'):
+            filtered_bearish += 1; continue
+
+        priority = _compute_priority(r, trend, score, risk)
         is_bullish = trend in ('Bullish', 'Strong Bullish')
-        is_constructive = trend in ('Constructive', 'Neutral')
-        if not is_bullish and not is_constructive:
-            filtered_bearish += 1
-            continue
-        if is_bullish and score < 70:
-            filtered_low_score += 1
-            continue
-        if is_constructive and score < 80:
-            filtered_low_score += 1
-            continue
-        if risk == 'High':
-            continue
+        is_neutral = trend == 'Neutral'
 
-        news = r.get('newsSentiment') or 'Neutral'
-        change = r.get('changePct') or r.get('changePercent') or 0
-        volume_status = r.get('volumeStatus') or 'Normal'
-        priority = 0
-        priority += 35 if trend == 'Strong Bullish' else 25 if trend == 'Bullish' else 15
-        priority += round(score * 0.5)
-        priority += 12 if risk == 'Low' else 6 if risk == 'Medium' else 0
-        priority += 10 if news == 'Positive' else 4 if news == 'Neutral' else -8 if news == 'Negative' else 0
-        priority += 8 if change >= 3 else 5 if change >= 1 else 2 if change > 0 else -6
-        priority += 8 if volume_status == 'High' else 4 if volume_status == 'Normal' else 0
-        priority = max(0, min(100, priority))
-        if priority >= 50:  # Lowered from 60 to allow AI-unavailable candidates
-            item = dict(r)
-            item.update({
-                'includeInContinueScan': True,
-                'priorityScore': priority,
-                'continueScanStatus': 'completed',
-                'reasonSource': 'Backend Local Rules (AI unavailable)' if not ai_available else 'Backend Local Rules',
-                'selectedBy': 'Backend Local Rules',
-                'generatedAt': datetime.utcnow().isoformat() + 'Z',
-            })
-            eligible.append(item)
-    eligible.sort(key=lambda x: x.get('priorityScore', 0), reverse=True)
-    _pa_log('[PipelineAuto] continue_scan headless: input=%d ai_unavailable=%d no_price=%d bearish=%d low_score=%d eligible=%d' % (
-        len(scanner_results or []), ai_unavailable_count, filtered_no_price, filtered_bearish, filtered_low_score, len(eligible)))
+        base_pool.append({
+            'r': r, 'trend': trend, 'score': score, 'risk': risk, 'priority': priority,
+            'is_bullish': is_bullish, 'is_neutral': is_neutral,
+        })
+
+    # ── Tier selection ──
+    primary = []
+    secondary_candidates = []
+    for c in base_pool:
+        if c['risk'] == 'High':
+            continue  # High eventRisk always excluded
+        if c['is_bullish'] and c['score'] >= _pri_bull:
+            if c['priority'] >= _pri_floor: primary.append(c)
+            else: secondary_candidates.append(c)
+        elif c['is_neutral'] and c['score'] >= _pri_neut:
+            if c['priority'] >= _pri_floor: primary.append(c)
+            else: secondary_candidates.append(c)
+        elif not c['is_bullish'] and not c['is_neutral'] and c['score'] >= _pri_cons:
+            if c['priority'] >= _pri_floor: primary.append(c)
+            else: secondary_candidates.append(c)
+        else:
+            secondary_candidates.append(c)
+
+    # ── Secondary expansion ──
+    secondary = []
+    if len(primary) < TARGET_MIN:
+        for c in secondary_candidates:
+            if c['risk'] == 'High': continue
+            if c['is_bullish'] and c['score'] >= _sec_bull and c['priority'] >= _sec_floor:
+                secondary.append(c)
+            elif c['is_neutral'] and c['score'] >= _sec_neut and c['priority'] >= _sec_floor:
+                secondary.append(c)
+            elif not c['is_bullish'] and not c['is_neutral'] and c['score'] >= _sec_cons and c['priority'] >= _sec_floor:
+                secondary.append(c)
+
+    # ── Fallback fill if still below TARGET_MIN ──
+    fallback = []
+    if len(primary) + len(secondary) < TARGET_MIN:
+        remaining = [c for c in secondary_candidates if c not in secondary and c['risk'] != 'High']
+        remaining.sort(key=lambda c: -c['priority'])
+        needed = TARGET_MIN - len(primary) - len(secondary)
+        fallback = remaining[:needed]
+
+    # ── Build output ──
+    eligible = []
+    for c in primary:
+        eligible.append(_build_item(c['r'], c['trend'], c['score'], c['priority'], 'primary'))
+    for c in secondary:
+        it = _build_item(c['r'], c['trend'], c['score'], c['priority'], 'secondary')
+        it['whyMatched'] = 'Expanded candidate pool for Fine Scan review.'
+        eligible.append(it)
+    for c in fallback:
+        it = _build_item(c['r'], c['trend'], c['score'], c['priority'], 'fallback_review')
+        it['whyMatched'] = 'Fallback review candidate: not a buy signal; added for Fine Scan completeness.'
+        eligible.append(it)
+
+    eligible.sort(key=lambda x: (0 if x.get('selectionTier') == 'primary' else 1 if x.get('selectionTier') == 'secondary' else 2, -x.get('priorityScore', 0)))
+    eligible = eligible[:TARGET_MAX]
+
+    primary_count = sum(1 for e in eligible if e.get('selectionTier') == 'primary')
+    secondary_count = sum(1 for e in eligible if e.get('selectionTier') == 'secondary')
+    fallback_count = sum(1 for e in eligible if e.get('selectionTier') == 'fallback_review')
+
+    _pa_log('[ContinueScanDebug] risk=%s thresholds=bull=%d/%d cons=%d/%d neut=%d/%d floor=%d/%d input=%d base=%d bearish=%d bad_data=%d ai_unavail=%d eligible=%d primary=%d secondary=%d fallback=%d' % (
+        risk_profile,
+        _pri_bull, _sec_bull, _pri_cons, _sec_cons, _pri_neut, _sec_neut, _pri_floor, _sec_floor,
+        len(scanner_results or []), len(base_pool), filtered_bearish,
+        filtered_bad_data, ai_unavailable_count, len(eligible),
+        primary_count, secondary_count, fallback_count))
+
     stats = {
-        'ai_unavailable': ai_unavailable_count,
-        'no_price': filtered_no_price,
+        'input_count': len(scanner_results or []),
+        'base_pool_count': len(base_pool),
         'bearish': filtered_bearish,
-        'low_score': filtered_low_score,
+        'bad_data': filtered_bad_data,
+        'ai_unavailable': ai_unavailable_count,
         'eligible': len(eligible),
+        'primary_selected': primary_count,
+        'secondary_selected': secondary_count,
+        'fallback_selected': fallback_count,
+        'target_min': TARGET_MIN,
+        'thresholds': {
+            'score_bullish_primary': _pri_bull,
+            'score_bullish_secondary': _sec_bull,
+            'score_constructive_primary': _pri_cons,
+            'score_constructive_secondary': _sec_cons,
+            'score_neutral_primary': _pri_neut,
+            'score_neutral_secondary': _sec_neut,
+            'priority_floor_primary': _pri_floor,
+            'priority_floor_secondary': _sec_floor,
+        },
     }
-    return eligible[:20], stats
+    return eligible, stats
 
 
 def _pa_backtest_snapshot(symbol, strategy='moving_average'):
@@ -28793,7 +29759,123 @@ def _pa_backtest_snapshot(symbol, strategy='moving_average'):
         return {}, str(e)[:120]
 
 
-def _pa_fine_scan_headless(uid, candidates):
+def _pa_detect_fine_scan_regime(cand):
+    """Regime detection + strategy matching — mirrors frontend _runFineScanLoop logic.
+    Returns (regime, match_confidence, matched_strategies, match_reason, signals)."""
+    trend = str(cand.get('trendLabel') or cand.get('trend') or 'Neutral')
+    score = float(cand.get('overallScore') or cand.get('trendScore') or cand.get('priorityScore') or 0)
+    risk = str(cand.get('eventRisk') or cand.get('risk') or 'Medium')
+    vol_status = str(cand.get('volumeStatus') or 'Normal')
+    news = str(cand.get('newsSentiment') or 'Neutral')
+    price_change = float(cand.get('changePct') or cand.get('changePercent') or 0)
+    volume = float(cand.get('volume') or 0)
+    structure_label = str(cand.get('structureLabel') or '')
+    momentum_label = str(cand.get('momentumLabel') or '')
+
+    is_bull_trend = trend in ('Bullish', 'Strong Bullish')
+    has_high_score = score >= 65
+    has_high_vol = vol_status == 'High'
+    has_low_vol = vol_status == 'Low'
+    has_pos_news = news == 'Positive'
+    has_large_move = abs(price_change) > 5
+    has_moderate_move = abs(price_change) > 2
+    is_low_risk = risk == 'Low'
+    is_high_risk = risk == 'High'
+    is_pos_move = price_change > 0
+    is_neg_move = price_change < 0
+    has_breakout_potential = (has_high_vol) and has_moderate_move and (is_bull_trend or is_pos_move)
+    has_conflicting = (is_bull_trend and is_neg_move) or (is_bull_trend and has_low_vol)
+    is_consistent_range = not is_bull_trend and not is_neg_move and not has_large_move
+
+    # Breakout indicators
+    bo_count = sum([
+        structure_label == 'breakout',
+        is_bull_trend and has_high_vol and has_moderate_move,
+        is_bull_trend and has_pos_news and has_high_vol,
+        has_high_score and has_high_vol and has_moderate_move,
+        has_high_vol and has_large_move,
+        is_bull_trend and is_low_risk and (has_high_vol or has_moderate_move),
+    ])
+    # Range-bound indicators
+    rb_count = sum([
+        structure_label == 'sideways',
+        is_consistent_range,
+        has_low_vol and not has_large_move and not is_bull_trend,
+        is_high_risk and not has_large_move,
+        has_conflicting,
+        not has_high_score and not has_large_move,
+    ])
+    # Trending indicators
+    tr_count = sum([
+        structure_label == 'uptrend',
+        is_bull_trend and has_high_score and is_pos_move,
+        is_bull_trend and is_pos_move and has_high_vol,
+        is_bull_trend and is_low_risk and is_pos_move,
+        momentum_label == 'strengthening',
+        has_high_score and is_pos_move and not has_low_vol,
+    ])
+    tr_penalty = -2 if has_conflicting else 0
+
+    signals = []
+    if structure_label == 'uptrend': signals.append('EMA aligned')
+    if structure_label == 'sideways': signals.append('Range-bound')
+    if structure_label == 'breakout': signals.append('Breakout structure')
+    if is_bull_trend: signals.append('Bullish trend')
+    if has_high_score: signals.append('Score: %d' % int(score))
+    if has_high_vol: signals.append('High volume')
+    if has_pos_news: signals.append('Positive catalyst')
+    if is_low_risk: signals.append('Low risk profile')
+    signals = list(dict.fromkeys(signals))[:6]
+
+    regime = 'unclear'
+    matched = ['moving_average']
+    match_conf = max(20, min(35, int(score * 0.3)))
+    reason = 'Unclear regime — insufficient structure indicators for confident classification.'
+
+    if bo_count >= 3:
+        regime = 'breakout_ready'
+        matched = ['breakout', 'volume_confirmation', 'momentum_continuation']
+        match_conf = min(85, 50 + bo_count * 8 + (10 if has_high_vol else 0))
+        reason = 'Breakout-ready: strong volume expansion with directional price action indicating breakout potential.'
+    elif rb_count >= 2:
+        regime = 'range_bound'
+        matched = ['rsi', 'mean_reversion'] if not has_high_vol else ['rsi', 'mean_reversion', 'bollinger_band']
+        match_conf = min(70, 40 + rb_count * 6)
+        reason = 'Range-bound: limited directional conviction with conflicting signals suggesting mean reversion opportunities.'
+    elif tr_count >= 2 and tr_count + tr_penalty >= 2:
+        regime = 'trending'
+        is_strong = tr_count >= 4
+        matched = ['moving_average', 'macd'] if not is_strong else ['moving_average', 'macd', 'breakout']
+        match_conf = min(85, 50 + tr_count * 8) if is_strong else min(70, 40 + tr_count * 8)
+        if has_high_vol and is_pos_move and len(matched) < 3:
+            matched.append('momentum_continuation')
+        reason = 'Trending: clear trend confirmation with supporting momentum and volume.'
+    elif has_conflicting:
+        regime = 'unclear'
+        matched = ['moving_average']
+        match_conf = max(20, min(35, int(score * 0.3)))
+        reason = 'Unclear regime — conflicting signals between trend direction and price/volume.'
+
+    match_conf = max(15, min(95, match_conf))
+    return regime, match_conf, matched, reason, signals
+
+
+# Fine Scan strategy name → backtest engine strategy key mapping
+_FS_BT_STRATEGY_MAP = {
+    'moving_average': 'moving_average',
+    'macd': 'macd',
+    'rsi': 'rsi',
+    'mean_reversion': 'mean_reversion',
+    'bollinger_band': 'bollinger',
+    'momentum_continuation': 'momentum',
+    'breakout': 'momentum',          # breakout → momentum as closest backtest match
+    'volume_confirmation': 'momentum',
+}
+
+
+def _pa_fine_scan_headless(uid, candidates,
+                            risk_profile='medium', time_horizon='mid',
+                            pipeline_mode='ai', trade_mode='paper'):
     results = []
     for idx, cand in enumerate(candidates or []):
         symbol = (cand.get('symbol') or '').upper().strip()
@@ -28803,26 +29885,101 @@ def _pa_fine_scan_headless(uid, candidates):
             rec = dict(cand)
             rec['symbol'] = symbol
             rec['scanStatus'] = 'running'
-            strategy = 'moving_average'
-            bt, bt_err = _pa_backtest_snapshot(symbol, strategy)
+
+            # ── Gate 1: dataQuality ──
+            dq = str(rec.get('dataQuality') or '')
+            if dq in ('need_data', 'PARTIAL', 'failed'):
+                rec.update({'scanStatus': 'completed', 'decision': 'NeedMoreData',
+                            'decisionReason': 'Insufficient market data quality',
+                            'decisionSource': 'data_quality_gate',
+                            'fineScanSource': 'backend_unified'})
+                results.append(rec)
+                _pa_log('fine_scan gate=%s symbol=%s reason=data_quality=%s' % ('blocked', symbol, dq))
+                continue
+
+            # ── Regime detection + strategy matching ──
+            regime, match_conf, matched_strategies, match_reason, regime_signals = \
+                _pa_detect_fine_scan_regime(rec)
+
+            rec.update({
+                'regime': regime,
+                'matchedStrategies': matched_strategies,
+                'matchReason': match_reason,
+                'regimeSignals': regime_signals,
+                'matchConfidence': match_conf,
+            })
+
+            # ── Confidence assessment (penalty, NOT a skip gate) ──
+            _conf_threshold = 25 if risk_profile == 'high' else 35 if risk_profile == 'low' else 30
+            _low_conf = match_conf < _conf_threshold
+            rec.update({
+                'lowConfidenceFlag': _low_conf,
+                'confidenceUsed': True,
+                'confidenceThreshold': _conf_threshold,
+                'confidencePenaltyApplied': _low_conf,
+                'confidencePenaltyReason': 'Low regime confidence (%d < %d)' % (match_conf, _conf_threshold) if _low_conf else '',
+            })
+
+            # ── Multi-strategy backtest ──
+            best_strategy = matched_strategies[0]
+            best_sharpe = -999
+            best_total_return = -999
+            per_strategy_results = []
+            bt_overall_status = 'skipped'
+
+            for s_name in matched_strategies[:3]:  # max 3 strategies
+                bt_key = _FS_BT_STRATEGY_MAP.get(s_name, 'moving_average')
+                bt, bt_err = _pa_backtest_snapshot(symbol, bt_key)
+                bt_item = {
+                    'strategy': s_name,
+                    'mappedKey': bt_key,
+                    'status': bt.get('status', 'skipped'),
+                    'totalReturn': bt.get('totalReturn'),
+                    'sharpe': (bt.get('metrics') or {}).get('sharpe') if bt else None,
+                    'maxDrawdown': (bt.get('metrics') or {}).get('maxDrawdown') if bt else None,
+                    'error': bt_err,
+                }
+                per_strategy_results.append(bt_item)
+                if bt.get('status') == 'pass' and bt.get('totalReturn') is not None:
+                    bt_overall_status = 'pass'
+                    _sharpe = float((bt.get('metrics') or {}).get('sharpe') or 0)
+                    _tr = float(bt.get('totalReturn') or 0)
+                    if _sharpe > best_sharpe or (_sharpe == best_sharpe and _tr > best_total_return):
+                        best_sharpe = _sharpe
+                        best_total_return = _tr
+                        best_strategy = s_name
+
+            # Use the best backtest for entry quality context
+            _best_bt = per_strategy_results[0] if per_strategy_results else {}
+            _best_bt_raw = (per_strategy_results[0] if per_strategy_results else {})
+            # ── AI: entry quality ──
             entry_resp, _ = _pa_call_endpoint(uid, '/api/ai/entry-quality', ai_entry_quality, {'symbol': symbol})
             entry_details = (entry_resp or {}).get('details') or {}
             entry_details['entry_quality'] = (entry_resp or {}).get('entry_quality', '')
+
+            # ── AI: advanced scan (liquidity, news, risk grades) ──
             adv_resp, _ = _pa_call_endpoint(uid, '/api/ai/fine-scan-advanced', ai_fine_scan_advanced, {
                 'symbol': symbol,
                 'entryDetails': entry_details,
+                'regime': regime,
+                'strategies': matched_strategies[:3],
+                'newsContext': {
+                    'newsSentiment': rec.get('newsSentiment'),
+                    'newsCount': rec.get('newsCount', 0),
+                    'hasNews': rec.get('hasNews', False),
+                    'eventRisk': rec.get('eventRisk'),
+                    'newsSource': rec.get('newsSource'),
+                    'newsFetchReason': rec.get('newsFetchReason'),
+                },
             })
+            rec['fineScanNewsContextUsed'] = True
             rec.update({
-                'bestStrategy': strategy,
-                'strategy': strategy,
-                'matchedStrategy': strategy,
-                'matchedStrategies': [strategy],
-                'matchConfidence': min(100, max(0, int(rec.get('priorityScore') or rec.get('trendScore') or 50))),
+                'bestStrategy': best_strategy,
                 'scanScore': min(100, max(0, int(rec.get('priorityScore') or rec.get('trendScore') or 50))),
-                'backtestStatus': bt.get('status', 'skipped'),
-                'backtestPerformance': bt.get('performance', 'N/A'),
-                'backtestPerStrategy': [bt] if bt else [],
-                'backtestError': bt_err,
+                'backtestStatus': bt_overall_status,
+                'backtestPerformance': 'positive' if best_total_return >= 0 else 'negative',
+                'backtestPerStrategy': per_strategy_results,
+                'backtestError': None,
                 'entryQuality': (entry_resp or {}).get('entry_quality', ''),
                 'entryReason': (entry_resp or {}).get('entry_reason', ''),
                 'entryScore': (entry_resp or {}).get('entry_score', 0),
@@ -28835,16 +29992,25 @@ def _pa_fine_scan_headless(uid, candidates):
                 'riskReason': ((adv_resp or {}).get('risk') or {}).get('reason', ''),
                 'riskScore': (((adv_resp or {}).get('risk') or {}).get('details') or {}).get('risk_score') or 0,
                 'scanStatus': 'completed',
+                'fineScanSource': 'backend_unified',
+                'fallbackUsed': False,
+                'riskProfileUsed': risk_profile,
+                'timeHorizonUsed': time_horizon,
+                'pipelineModeUsed': pipeline_mode,
+                'tradeModeUsed': trade_mode,
             })
+
+            # ── AI: fine scan decision ──
             decision_payload = {
                 'symbol': symbol,
                 'trendLabel': rec.get('trendLabel') or rec.get('trend') or 'Neutral',
                 'trendScore': rec.get('scanScore') or 50,
                 'matchedStrategies': rec.get('matchedStrategies') or [],
                 'matchConfidence': rec.get('matchConfidence') or 0,
+                'lowConfidenceFlag': _low_conf,
                 'backtestStatus': rec.get('backtestStatus') or '',
                 'backtestPerformance': rec.get('backtestPerformance') or '',
-                'backtestTotalReturn': bt.get('totalReturn') if bt else None,
+                'backtestTotalReturn': best_total_return if best_total_return != -999 else None,
                 'entryQuality': {
                     'grade': rec.get('entryQuality') or '',
                     'score': rec.get('entryScore') or 0,
@@ -29164,17 +30330,17 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
     # Send scan_started Discord notification at start (once per run)
     # Manual pipeline: no Discord notifications at all
     is_manual = (trigger == 'manual')
-    if not is_manual and trigger == 'auto_manual_now':
+    if not is_manual and trigger == 'auto_run_now':
         _pa_discord_send_once(uid, _run_id, 'auto_scan_started', {
-            'event_id': f'auto-manual-now-{int(started)}',
-            'trigger': 'Auto Manual Now',
+            'event_id': f'auto-run-now-{int(started)}',
+            'trigger': 'Auto Run Now',
             'mode': mode,
             'riskProfile': risk_profile,
             'timeHorizon': time_horizon,
             'tradingMode': trade_mode,
             'timeEt': _now_et.strftime('%H:%M ET'),
-            'source': 'Auto Background',
-            'description': 'Auto pipeline scan triggered manually from Auto Run panel.',
+            'source': 'Market Auto Run',
+            'description': 'Scheduled auto pipeline test run triggered from Auto Run panel.',
         })
     elif not is_manual:
         _next_et = _now_et + timedelta(minutes=interval)
@@ -29206,12 +30372,16 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         _pa_log('[AutoPipeline] stage=market_scanner start symbols=%d' % len(symbols))
         _pa_active_run_step(uid, 'market_scanner', 1, 6, 'running',
                             message='Scanning %d symbols...' % len(symbols),
-                            step_data={'total': len(symbols), 'processed': 0})
+                            step_data={'total': len(symbols), 'processed': 0, 'processedSymbols': 0, 'totalSymbols': len(symbols), 'progressPct': 0})
+        _pa_log('[ManualPipelineProgress] uid=%s step=market_scanner processed=0/%d pct=0 initializing' % (uid[:8], len(symbols)))
         _check_timeout('market_scanner')
         scan_resp, scan_status = _pa_call_endpoint(uid, '/api/ai/market/scanner', ai_market_scanner, {
             'symbols': symbols,
             'maxSymbols': min(len(symbols), 50),
             'mode': mode,
+            'riskProfile': risk_profile,
+            'timeHorizon': time_horizon,
+            'tradeMode': trade_mode,
         })
         _check_stopped()
         _check_timeout('market_scanner')
@@ -29244,11 +30414,20 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                                              'overallScore': r.get('overallScore'), 'trendScore': r.get('trendScore'),
                                              'price': r.get('price'), 'changePct': r.get('changePct'),
                                              'volume': r.get('volume'), 'volumeStatus': r.get('volumeStatus'),
+                                             'dayHigh': r.get('dayHigh'), 'dayLow': r.get('dayLow'),
+                                             'companyName': r.get('companyName'),
+                                             'sector': r.get('sector'), 'industry': r.get('industry'),
+                                             'momentumScore': r.get('momentumScore'),
+                                             'volumeScore': r.get('volumeScore'),
+                                             'volatilityScore': r.get('volatilityScore'),
+                                             'structureScore': r.get('structureScore'),
+                                             'sentimentScore': r.get('sentimentScore'),
                                              'newsSentiment': r.get('newsSentiment'), 'eventRisk': r.get('eventRisk'),
                                              'analysisStatus': r.get('analysisStatus'),
                                              'aiSuccess': r.get('aiSuccess'),
                                              'dataQuality': r.get('dataQuality', ''),
-                                             'reasoning': r.get('reasoning', '')[:200] if r.get('reasoning') else ''}
+                                             'dataQualityReasons': (r.get('dataQualityReasons') or [])[:10],
+                                             'reasoning': (r.get('aiReasoning') or r.get('reasoning') or '')[:200]}
                                             for r in (scanner_results or [])[:50]],
                             })
 
@@ -29259,7 +30438,11 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         _pa_active_run_step(uid, 'continue_scan', 2, 6, 'running',
                             message='Continue Scan processing...',
                             step_data={'total': len(scanner_results), 'processed': 0})
-        _cs_raw = _pa_continue_scan_headless(scanner_results) if scanner_results else ([], {})
+        _cs_raw = _pa_continue_scan_headless(scanner_results,
+                                                risk_profile=risk_profile,
+                                                time_horizon=time_horizon,
+                                                pipeline_mode=mode,
+                                                trade_mode=trade_mode) if scanner_results else ([], {})
         continue_results, _cs_stats = _cs_raw if isinstance(_cs_raw, tuple) else (_cs_raw or [], {})
         continue_results = continue_results or []
         run_context['continue_candidates'] = continue_results
@@ -29332,7 +30515,9 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                                 message='Fine Scan running...',
                                 step_data={'total': len(continue_results), 'processed': 0})
             with headless_user_context(uid):
-                fine_results = _pa_fine_scan_headless(uid, continue_results)
+                fine_results = _pa_fine_scan_headless(uid, continue_results,
+                                                          risk_profile=risk_profile, time_horizon=time_horizon,
+                                                          pipeline_mode=mode, trade_mode=trade_mode)
         else:
             _pa_log('[AutoPipeline] stage=fine_scan skipped reason=no_candidates')
             _pa_active_run_step(uid, 'fine_scan', 3, 6, 'completed',
@@ -29370,6 +30555,10 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                 'candidates': fine_candidates,
                 'period': '1y',
                 'initialCapital': 100000,
+                'riskProfile': risk_profile,
+                'timeHorizon': time_horizon,
+                'pipelineMode': mode,
+                'tradeMode': trade_mode,
             })
             _check_stopped()
             if dv_status < 400 and dv_resp.get('success'):
@@ -29441,7 +30630,20 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                         pass
         except Exception as _pa_acct_err:
             _pa_log('[PipelineAuto] account fetch failed: %s' % str(_pa_acct_err)[:100])
-        ep_candidates = [r for r in dv_results if r.get('verdict') in ('Confirmed', 'Watch', 'Review', 'Pass')]
+        # Read finalVerdict first (AI overlay), fallback to verdict (local rules)
+        def _get_dv_eligible_verdict(r):
+            v = r.get('finalVerdict') or r.get('verdict') or r.get('aiValidationVerdict') or r.get('localVerdictBeforeAI') or ''
+            return str(v).strip()
+        ep_candidates = [r for r in dv_results if _get_dv_eligible_verdict(r) in ('Confirmed', 'Watch', 'Review', 'Pass')]
+        # Log input for debugging
+        _ep_verdict_counts = {}
+        for r in dv_results:
+            _v = _get_dv_eligible_verdict(r)
+            _ep_verdict_counts[_v] = _ep_verdict_counts.get(_v, 0) + 1
+        _pa_log('[EntryPlanInputDebug] dv_total=%d verdict_counts=%s qualified_count=%d qualified=%s excluded=%s' % (
+            len(dv_results), str(_ep_verdict_counts), len(ep_candidates),
+            [r.get('symbol') for r in ep_candidates],
+            [r.get('symbol') for r in dv_results if _get_dv_eligible_verdict(r) not in ('Confirmed', 'Watch', 'Review', 'Pass')]))
         entry_plans = []
         # Derive riskPerTradePct from riskProfile: Low→0.5, Medium→1.0, High→1.5
         _ep_risk_pct = {'low': 0.5, 'medium': 1.0, 'high': 1.5}.get(risk_profile, 1.0)
@@ -29480,19 +30682,29 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                                 step_data={'total': 0, 'processed': 0, 'buy': 0, 'watch': 0, 'skip': 0})
         entry_plans = entry_plans or []
         run_context['entry_plans'] = entry_plans
+        # Comprehensive action counts
         buy_count = sum(1 for p in entry_plans if p.get('finalAction') in ('BUY_READY', 'READY_REVIEW'))
-        watch_count = sum(1 for p in entry_plans if p.get('finalAction') == 'WAIT_FOR_ENTRY' or p.get('aiDecision') == 'WATCH')
+        watch_count = sum(1 for p in entry_plans if p.get('finalAction') in ('WAIT_FOR_ENTRY', 'WATCH'))
         skip_count = sum(1 for p in entry_plans if p.get('finalAction') in ('SKIP', 'BLOCKED_BY_RISK'))
+        need_data_count = sum(1 for p in entry_plans if p.get('finalAction') in ('NEED_DATA', 'DATA_UNAVAILABLE'))
+        _ep_empty_reason = ''
+        if len(entry_plans) == 0:
+            _ep_empty_reason = 'No candidates passed Deeper Validation into Entry Plan. DV verdicts: %s' % str(_ep_verdict_counts)
+            _pa_log('[AutoPipeline] stage=entry_plan EMPTY reason=%s' % _ep_empty_reason)
         summary['entry_plan_count'] = len(entry_plans)
         summary['watch_count'] = watch_count
         summary['skip_count'] = skip_count
-        summary['steps'].append({'step': 'entry_plan', 'status': 'completed', 'count': len(entry_plans), 'buy': buy_count, 'watch': watch_count, 'skip': skip_count})
-        _pa_log('[AutoPipeline] stage=entry_plan done buy=%d watch=%d skip=%d' % (buy_count, watch_count, skip_count))
+        summary['need_data_count'] = need_data_count
+        summary['steps'].append({'step': 'entry_plan', 'status': 'completed' if entry_plans else 'completed_no_candidates',
+                                 'count': len(entry_plans), 'buy': buy_count, 'watch': watch_count, 'skip': skip_count,
+                                 'need_data': need_data_count, 'empty_reason': _ep_empty_reason})
+        _pa_log('[AutoPipeline] stage=entry_plan done buy=%d watch=%d skip=%d need_data=%d total=%d' % (buy_count, watch_count, skip_count, need_data_count, len(entry_plans)))
         _pa_active_run_step(uid, 'entry_plan', 5, 6, 'completed',
-                            message='Entry Plan: %d plans (buy=%d watch=%d skip=%d)' % (len(entry_plans), buy_count, watch_count, skip_count),
+                            message='Entry Plan: %d plans (buy=%d watch=%d skip=%d need_data=%d)' % (len(entry_plans), buy_count, watch_count, skip_count, need_data_count),
                             step_data={
                                 'processed': len(entry_plans), 'total': len(entry_plans),
-                                'buy': buy_count, 'watch': watch_count, 'skip': skip_count,
+                                'buy': buy_count, 'watch': watch_count, 'skip': skip_count, 'need_data': need_data_count,
+                                'empty_reason': _ep_empty_reason,
                                 'plans': [{'symbol': p.get('symbol'), 'finalAction': p.get('finalAction'),
                                            'entryZone': str(p.get('entryZone') or p.get('entryZoneDesc', ''))[:60],
                                            'stopLoss': str(p.get('stopLoss', ''))[:60],
@@ -29770,12 +30982,12 @@ def _pa_execute_and_save(uid, config, interval, mode, trigger,
                                   message='Auto disabled during run',
                                   finishedAt=datetime.utcnow().isoformat())
             _pa_log('stopped because auto disabled user=%s trigger=%s after current run' % (uid[:8], trigger))
-        elif is_manual or trigger == 'auto_manual_now':
+        elif is_manual or trigger == 'auto_run_now':
             # Manual run or one-shot auto run: do NOT update next_run_at, interval, or enabled
             if is_manual:
                 config['last_decision'] = 'manual_pipeline_success' if success else 'manual_pipeline_failed'
             else:
-                config['last_decision'] = 'auto_manual_now_success' if success else 'auto_manual_now_failed'
+                config['last_decision'] = 'auto_run_now_success' if success else 'auto_run_now_failed'
         else:
             _next_dt = _run_completed_at + timedelta(minutes=interval)
             # Cap at 16:00 ET for market hours — if next run would be after close,
@@ -29857,8 +31069,12 @@ def _pa_scheduler_loop():
                             _PA_PER_USER_LAST_CHECK[uid] = {'time': now_iso, 'decision': 'disabled'}
                         continue
 
-                    interval = config.get('interval_minutes', 60)
-                    mode = config.get('mode', 'hybrid')
+                    _ctx = _pa_resolve_auto_run_context(uid, config)
+                    interval = _ctx['interval']
+                    mode = _ctx['mode']
+                    _sched_risk = _ctx['risk_profile']
+                    _sched_horizon = _ctx['time_horizon']
+                    _sched_trade = _ctx['trade_mode']
 
                     with _PA_RUNNING_USERS_LOCK:
                         if uid in _PA_RUNNING_USERS:
@@ -29943,10 +31159,11 @@ def _pa_scheduler_loop():
                             _PA_PER_USER_LAST_CHECK[uid] = {'time': now_iso, 'decision': decision}
                         _pa_log('due user=%s reason=%s interval=%d — executing headless' % (uid[:8], run_reason, interval))
 
-                        def _scheduler_run(_uid, _cfg, _interval, _mode, _mkt_status, _mkt_source, _now_iso):
+                        def _scheduler_run(_uid, _cfg, _interval, _mode, _mkt_status, _mkt_source, _now_iso, _risk, _horizon, _trade):
                             summary = None
                             try:
-                                summary = _pa_execute_and_save(_uid, _cfg, _interval, _mode, trigger='market_auto_run')
+                                summary = _pa_execute_and_save(_uid, _cfg, _interval, _mode, trigger='market_auto_run',
+                                                                risk_profile=_risk, time_horizon=_horizon, trade_mode=_trade)
                                 _pa_log('[PipelineAuto] backend scan completed user=%s status=%s' % (
                                     _uid[:8], _cfg.get('last_backend_scan_status', 'unknown')))
                                 _pa_add_run_history(_uid, {
@@ -29973,7 +31190,8 @@ def _pa_scheduler_loop():
                                     _PA_PER_USER_LAST_CHECK[_uid]['decision'] = 'pipeline_success' if summary and summary.get('errors', 0) == 0 else 'pipeline_failed'
 
                         threading.Thread(target=_scheduler_run, args=(
-                            uid, dict(config), interval, mode, mkt_status, mkt_source, now_iso
+                            uid, dict(config), interval, mode, mkt_status, mkt_source, now_iso,
+                            _sched_risk, _sched_horizon, _sched_trade
                         ), daemon=True).start()
                     else:
                         # Skipped this tick — save decision and next_run_at for frontend visibility
@@ -30299,6 +31517,10 @@ def pipeline_auto_status():
         'browserOpenRequiredForFullPipeline': False,
         'discordEnabled': discord_enabled,
         'discordLastSentAt': _discord_last_sent_at.get(uid, ''),
+        'riskProfile': config.get('risk_profile') or config.get('riskProfile') or 'medium',
+        'timeHorizon': config.get('time_horizon') or config.get('timeHorizon') or 'mid',
+        'tradeMode': config.get('trade_mode') or config.get('tradeMode') or 'paper',
+        'contextSource': _pa_resolve_auto_run_context(uid, config)['contextSource'],
         'lastBackendRunAt': last_run_at,
         'lastBackendRunStatus': 'success' if last_decision == 'pipeline_success' else
                                 'failed' if last_decision == 'pipeline_failed' else
@@ -30366,7 +31588,7 @@ def pipeline_run():
         if uid in _PA_RUNNING_USERS:
             # Check if it's a background auto-run vs manual run
             active_run = _pa_get_active_run(uid)
-            is_auto = active_run and active_run.get('trigger', '') in ('market_auto_run', 'headless_market_auto_run', 'toggle_on', 'auto_manual_now')
+            is_auto = active_run and active_run.get('trigger', '') in ('market_auto_run', 'headless_market_auto_run', 'toggle_on', 'auto_run_now')
             msg = 'Background auto-run is active. Please wait for it to complete or stop it first.' if is_auto else 'Pipeline already running'
             return jsonify({'success': False, 'message': msg, 'status': 'already_running'}), 409
         _PA_RUNNING_USERS.add(uid)
@@ -30423,6 +31645,194 @@ def pipeline_stop():
     return jsonify({'success': False, 'message': 'No active pipeline to stop'}), 404
 
 
+@app.route('/api/ai-agent/continue-scan', methods=['POST'])
+def continue_scan_shared():
+    """Shared Continue Scan endpoint — single source of truth for ALL pipeline paths.
+    Called by: frontend Continue Scan button, Run Manual Pipeline, Test Scheduled Run, Scheduled Auto Run.
+    Delegates to _pa_continue_scan_headless for identical rules.
+    """
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    uid = user['id']
+    data = request.get_json(silent=True) or {}
+    scanner_results = data.get('scannerResults') or data.get('results') or []
+    risk_profile = data.get('riskProfile') or data.get('risk_profile') or 'medium'
+    time_horizon = data.get('timeHorizon') or data.get('time_horizon') or 'mid'
+    pipeline_mode = data.get('pipelineMode') or data.get('mode') or 'hybrid'
+    trade_mode = data.get('tradeMode') or data.get('trade_mode') or 'paper'
+
+    if not scanner_results:
+        return jsonify({'success': True, 'results': [], 'summary': {'eligible': 0}, 'message': 'No scanner results provided'})
+
+    try:
+        candidates, stats = _pa_continue_scan_headless(
+            scanner_results,
+            risk_profile=risk_profile,
+            time_horizon=time_horizon,
+            pipeline_mode=pipeline_mode,
+            trade_mode=trade_mode
+        )
+        return jsonify({
+            'success': True,
+            'results': candidates,
+            'summary': stats,
+            'contextUsed': {
+                'riskProfile': risk_profile,
+                'timeHorizon': time_horizon,
+                'pipelineMode': pipeline_mode,
+                'tradeMode': trade_mode,
+            }
+        })
+    except Exception as e:
+        _pa_log_error('[ContinueScanShared] error: %s' % e)
+        return jsonify({'success': False, 'message': str(e)[:200]}), 500
+
+
+@app.route('/api/ai-agent/fine-scan', methods=['POST'])
+def fine_scan_shared():
+    """Shared Fine Scan endpoint — single source of truth for ALL pipeline paths.
+    Delegates to _pa_fine_scan_headless for regime detection, strategy matching,
+    multi-strategy backtest, AI entry quality, advanced scan, and decision.
+    """
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    uid = user['id']
+    data = request.get_json(silent=True) or {}
+    candidates = data.get('candidates') or []
+    risk_profile = data.get('riskProfile') or data.get('risk_profile') or 'medium'
+    time_horizon = data.get('timeHorizon') or data.get('time_horizon') or 'mid'
+    pipeline_mode = data.get('pipelineMode') or data.get('mode') or 'hybrid'
+    trade_mode = data.get('tradeMode') or data.get('trade_mode') or 'paper'
+
+    if not candidates:
+        return jsonify({'success': True, 'results': [], 'summary': {'scanned': 0}, 'message': 'No candidates provided'})
+
+    try:
+        results = _pa_fine_scan_headless(uid, candidates,
+                                          risk_profile=risk_profile, time_horizon=time_horizon,
+                                          pipeline_mode=pipeline_mode, trade_mode=trade_mode)
+        decisions = {'Continue': 0, 'Watch': 0, 'Reject': 0, 'NeedMoreData': 0, 'Skip': 0}
+        for r in results:
+            d = r.get('decision', '')
+            if d in decisions: decisions[d] += 1
+        return jsonify({
+            'success': True,
+            'results': results,
+            'summary': {'scanned': len(results), 'decisions': decisions},
+            'contextUsed': {'riskProfile': risk_profile, 'timeHorizon': time_horizon, 'pipelineMode': pipeline_mode, 'tradeMode': trade_mode},
+        })
+    except Exception as e:
+        _pa_log_error('[FineScanShared] error: %s' % e)
+        return jsonify({'success': False, 'message': str(e)[:200]}), 500
+
+
+@app.route('/api/ai-agent/scanner-news/<symbol>', methods=['GET'])
+def scanner_news_lazy(symbol):
+    """Lazy-fetch Finnhub news for a single symbol (on-demand when user expands detail).
+    Used when the symbol was outside the scanner's top-10 bulk news fetch.
+    Returns same topNews/newsSource/newsFetchReason shape as the scanner result.
+    """
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    uid = user['id']
+    symbol = (symbol or '').strip().upper()
+    if not symbol:
+        return jsonify({'success': False, 'message': 'Symbol is required'}), 400
+
+    # Resolve Finnhub config
+    fh_cfg, fh_src = resolve_finnhub_config(require_user_config=True)
+    api_key = fh_cfg.get('api_key', '')
+    if not api_key or not api_key.strip():
+        return jsonify({
+            'success': True,
+            'symbol': symbol,
+            'topNews': None,
+            'newsCount': 0,
+            'hasNews': False,
+            'newsSource': 'Finnhub not configured',
+            'newsFetchReason': 'finnhub_not_configured',
+            'dataSources': {'news': 'Finnhub not configured'},
+            'provenance': {'news': 'Finnhub not configured'},
+        })
+
+    try:
+        news_items, err = fetch_finnhub_company_news(symbol, days_back=7, finnhub_cfg=fh_cfg)
+        if err:
+            _pa_log('[ScannerNews] lazy fetch %s FAILED: %s' % (symbol, err))
+            return jsonify({
+                'success': True,
+                'symbol': symbol,
+                'topNews': None,
+                'newsCount': 0,
+                'hasNews': False,
+                'newsSource': 'Finnhub error: %s' % str(err)[:80],
+                'newsFetchReason': 'finnhub_news_api_failed: %s' % str(err)[:100],
+                'dataSources': {'news': 'Finnhub error'},
+                'provenance': {'news': 'Finnhub error'},
+            })
+        if news_items and len(news_items) > 0:
+            top_sorted = sorted(news_items, key=lambda n: n.get('datetime', 0) or 0, reverse=True)
+            best = top_sorted[0]
+            _scores = [n.get('sentiment_score') for n in news_items if n.get('sentiment_score') is not None]
+            return jsonify({
+                'success': True,
+                'symbol': symbol,
+                'topNews': {
+                    'title': best.get('headline', ''),
+                    'source': best.get('source', 'Unknown'),
+                    'publisher': best.get('source', 'Unknown'),
+                    'published': best.get('datetime', 0),
+                    'url': best.get('url', ''),
+                    'summary': (best.get('summary') or '')[:300],
+                    'sentiment': best.get('sentiment_score'),
+                },
+                'allNews': [{
+                    'title': n.get('headline', ''),
+                    'source': n.get('source', 'Unknown'),
+                    'published': n.get('datetime', 0),
+                    'url': n.get('url', ''),
+                    'summary': (n.get('summary') or '')[:300],
+                    'sentiment': n.get('sentiment_score'),
+                } for n in top_sorted[:5]],
+                'newsCount': len(news_items),
+                'hasNews': True,
+                'newsSentiment': round(sum(_scores) / len(_scores), 3) if _scores else None,
+                'newsSource': 'Finnhub',
+                'newsFetchReason': 'fetched: %d articles in 7d (lazy)' % len(news_items),
+                'dataSources': {'news': 'Finnhub'},
+                'provenance': {'news': 'Finnhub'},
+            })
+        else:
+            _pa_log('[ScannerNews] lazy fetch %s: no news in 7d' % symbol)
+            return jsonify({
+                'success': True,
+                'symbol': symbol,
+                'topNews': None,
+                'newsCount': 0,
+                'hasNews': False,
+                'newsSource': 'Finnhub: no news in 7d',
+                'newsFetchReason': 'no_news_last_7d',
+                'dataSources': {'news': 'Finnhub: no news in 7d'},
+                'provenance': {'news': 'Finnhub: no news in 7d'},
+            })
+    except Exception as e:
+        _pa_log('[ScannerNews] lazy fetch %s exception: %s' % (symbol, e))
+        return jsonify({
+            'success': True,
+            'symbol': symbol,
+            'topNews': None,
+            'newsCount': 0,
+            'hasNews': False,
+            'newsSource': 'Finnhub error: %s' % str(e)[:80],
+            'newsFetchReason': 'finnhub_news_api_failed: %s' % str(e)[:100],
+            'dataSources': {'news': 'Finnhub error'},
+            'provenance': {'news': 'Finnhub error'},
+        })
+
+
 @app.route('/api/ai-agent/pipeline-auto/run-headless-test', methods=['POST'])
 def pipeline_auto_run_headless_test():
     user = require_auth()
@@ -30467,7 +31877,7 @@ def pipeline_auto_run_headless_test():
 def pipeline_auto_run_now():
     """Run one background auto pipeline immediately without enabling scheduler.
 
-    Trigger = auto_manual_now. Source = Auto Background.
+    Trigger = auto_run_now. Source = Auto Background.
     Does NOT modify enabled, intervalMinutes, or next_run_at.
     Caller: frontend "Run Auto Pipeline Now" button.
     """
@@ -30475,17 +31885,12 @@ def pipeline_auto_run_now():
     if not user:
         return jsonify({'success': False, 'message': 'Authentication required'}), 401
     uid = user['id']
-    data = request.get_json(silent=True) or {}
-    mode = data.get('mode', 'hybrid')
-    risk_profile = data.get('riskProfile', 'medium')
-    time_horizon = data.get('timeHorizon', 'mid')
-    trade_mode = data.get('tradeMode', 'paper')
-    trigger = 'auto_manual_now'
+    trigger = 'auto_run_now'
 
     with _PA_RUNNING_USERS_LOCK:
         if uid in _PA_RUNNING_USERS:
             active_run = _pa_get_active_run(uid)
-            is_auto = active_run and active_run.get('trigger', '') in ('market_auto_run', 'headless_market_auto_run', 'toggle_on', 'auto_manual_now')
+            is_auto = active_run and active_run.get('trigger', '') in ('market_auto_run', 'headless_market_auto_run', 'toggle_on', 'auto_run_now')
             if is_auto:
                 return jsonify({'success': False, 'error': 'auto_run_already_running',
                                 'message': 'An auto pipeline is already running.'}), 409
@@ -30495,11 +31900,16 @@ def pipeline_auto_run_now():
         _PA_RUNNING_USERS.add(uid)
 
     config = _pa_get_config(uid) or {}
-    interval = config.get('interval_minutes') or 15
+    _ctx = _pa_resolve_auto_run_context(uid, config)
+    mode = _ctx['mode']
+    interval = _ctx['interval']
+    risk_profile = _ctx['risk_profile']
+    time_horizon = _ctx['time_horizon']
+    trade_mode = _ctx['trade_mode']
 
     run_id = 'auto-now-%d' % int(time.time())
-    _pa_log('[ManualPipeline] auto-run-now requested user=%s mode=%s risk=%s horizon=%s tradeMode=%s runId=%s' % (
-        uid[:8], mode, risk_profile, time_horizon, trade_mode, run_id))
+    _pa_log('[AutoRunNow] endpoint user=%s mode=%s risk=%s horizon=%s trade=%s context=%s runId=%s' % (
+        uid[:8], mode, risk_profile, time_horizon, trade_mode, _ctx['contextSource'], run_id))
 
     def _background_auto_now():
         try:
@@ -30511,11 +31921,11 @@ def pipeline_auto_run_now():
             _pa_add_run_history(uid, {
                 'trigger_type': trigger,
                 'status': 'success' if (summary and summary.get('errors', 0) == 0) else 'failed',
-                'reason': 'Auto pipeline triggered manually from Run Auto Pipeline Now button.',
-                'source': 'frontend_run_now_button',
+                'reason': 'Manual test of scheduled auto run (user clicked Run Auto Pipeline Now).',
+                'source': 'Market Auto Run',
                 'market_open': None,
                 'market_status': 'manual_trigger',
-                'market_status_source': 'frontend_button',
+                'market_status_source': 'auto_run_now_button',
                 'started_at': summary.get('startedAt') if summary else None,
                 'finished_at': summary.get('finishedAt') if summary else None,
                 'duration_seconds': summary.get('durationSeconds', 0) if summary else 0,
@@ -30557,6 +31967,10 @@ def pipeline_auto_config():
     config['enabled'] = enabled
     config['interval_minutes'] = interval_minutes
     config['mode'] = mode
+    # Persist user context so scheduled runs use the same risk/horizon/trade as the UI
+    config['risk_profile'] = data.get('riskProfile') or data.get('risk_profile') or config.get('risk_profile') or 'medium'
+    config['time_horizon'] = data.get('timeHorizon') or data.get('time_horizon') or config.get('time_horizon') or 'mid'
+    config['trade_mode'] = data.get('tradeMode') or data.get('trade_mode') or config.get('trade_mode') or 'paper'
     config['updated_at'] = datetime.utcnow().isoformat()
     if not enabled:
         config['next_run_at'] = ''
@@ -30603,15 +32017,18 @@ def pipeline_auto_config():
             if _immed_is_open:
                 # Execute headless immediately — no claim window, no frontend involvement
                 _pa_log('[PipelineAutoConfig] toggle-on immediate headless run start')
-                def _toggle_run(_uid, _cfg, _interval, _mode):
+                _toggle_ctx = _pa_resolve_auto_run_context(uid, config)
+                def _toggle_run(_uid, _cfg, _interval, _mode, _risk, _horizon, _trade):
                     try:
                         cfg_copy = _pa_get_config(_uid) or {}
-                        _pa_execute_and_save(_uid, cfg_copy, _interval, _mode, trigger='toggle_on')
+                        _pa_execute_and_save(_uid, cfg_copy, _interval, _mode, trigger='toggle_on',
+                                              risk_profile=_risk, time_horizon=_horizon, trade_mode=_trade)
                     except Exception:
                         import traceback
                         _pa_log_error('[ToggleOn] headless run error: %s' % traceback.format_exc())
                 threading.Thread(target=_toggle_run, args=(
-                    uid, dict(config), interval_minutes, mode
+                    uid, dict(config), _toggle_ctx['interval'], _toggle_ctx['mode'],
+                    _toggle_ctx['risk_profile'], _toggle_ctx['time_horizon'], _toggle_ctx['trade_mode']
                 ), daemon=True).start()
                 return jsonify({
                     'success': True,
