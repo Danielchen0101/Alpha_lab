@@ -30490,7 +30490,7 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
         # Submit orders in AI mode (matches frontend runExitScan auto-submit logic)
         if decision in ('sell_now', 'place_target_limit', 'hold') and mode == 'ai' and not dry_run:
             sell_qty = qty
-            _exit_cid = 'alphalab-%s-%s-sell' % (_run_id[:20], symbol) if _run_id else 'alphalab-exit-%s-sell' % symbol
+            _exit_cid = 'alphalab-%s-%s-sell' % (run_id[:20], symbol) if run_id else 'alphalab-exit-%s-sell' % symbol
             if decision == 'sell_now':
                 # Market sell
                 order_payload = {
