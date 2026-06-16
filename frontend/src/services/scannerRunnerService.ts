@@ -723,12 +723,28 @@ async function processSingleSymbol(symbol: string, retryCount: number = 0): Prom
       console.log(`[MarketScanner] normalized result symbol=${symbol} price=${normalized.price} changePercent=${normalized.changePercent} volume=${normalized.volume} prevClose=${normalized.previousClose}`);
     }
 
-    // Build result object
-    const result = {
+    // Build data quality reason list (mirrors backend ai_market_scanner _dq_reasons)
+    const _dqReasons: string[] = [];
+    if (normalized.price == null || normalized.price <= 0) _dqReasons.push('missing_price');
+    if (normalized.changePercent == null) _dqReasons.push('missing_prev_close');
+    if (normalized.dayHigh == null && normalized.dayHigh == null) _dqReasons.push('missing_day_range');
+    if (normalized.volume == null || normalized.volume === 0) _dqReasons.push('missing_volume');
+    if (!stockData.sector && !trendAnalysis.sector) _dqReasons.push('missing_company_profile');
+    if (trendAnalysis.aiError) _dqReasons.push('ai_score_missing_field');
+
+    const _hasPrice = normalized.price != null && normalized.price > 0;
+    const _hasVolume = normalized.volume != null && normalized.volume > 0;
+    const _hasChange = normalized.changePercent != null;
+    const _dq: string = (!_hasPrice || !_hasVolume) ? 'PARTIAL'
+      : (!_hasChange ? 'need_data' : 'ok');
+
+    // Build result object (schema mirrors backend ai_market_scanner result)
+    const result: Record<string, any> = {
       symbol,
       companyName: trendAnalysis.companyName || companyName,
       trendLabel: trendAnalysis.trendLabel,
       trendScore: trendAnalysis.trendScore != null ? trendAnalysis.trendScore : (trendAnalysis.overallScore != null ? trendAnalysis.overallScore : null),
+      overallScore: trendAnalysis.overallScore != null ? trendAnalysis.overallScore : (trendAnalysis.trendScore != null ? trendAnalysis.trendScore : null),
       trendConfidence: trendAnalysis.trendConfidence != null ? trendAnalysis.trendConfidence : (trendAnalysis.confidence != null ? trendAnalysis.confidence : null),
       price: normalized.price,
       changePct: normalized.changePercent,
@@ -738,9 +754,12 @@ async function processSingleSymbol(symbol: string, retryCount: number = 0): Prom
       dayHigh: normalized.dayHigh,
       dayLow: normalized.dayLow,
       previousClose: normalized.previousClose,
+      hasValidVolume: _hasVolume,
       newsSentiment: trendAnalysis.newsSentiment || newsData.sentiment,
       eventRisk: trendAnalysis.eventRisk || newsData.eventRisk,
       topNews: trendAnalysis.topNews || newsData.topNews,
+      hasNews: !!(trendAnalysis.topNews || newsData.topNews),
+      newsCount: (trendAnalysis.topNews || newsData.topNews) ? 1 : 0,
       sector: stockData.sector || trendAnalysis.sector,
       scannerReason: trendAnalysis.scannerReason,
       trendScoreDetail: trendAnalysis.trendScoreDetail,
@@ -749,6 +768,7 @@ async function processSingleSymbol(symbol: string, retryCount: number = 0): Prom
       volatilityScore: trendAnalysis.volatilityScore,
       structureScore: trendAnalysis.structureScore,
       newsScore: trendAnalysis.newsScore,
+      sentimentScore: trendAnalysis.newsScore,
       aiReasoning: trendAnalysis.aiReasoning,
       detailedReasoning: trendAnalysis.detailedReasoning,
       conciseReasoning: trendAnalysis.conciseReasoning,
@@ -762,7 +782,18 @@ async function processSingleSymbol(symbol: string, retryCount: number = 0): Prom
                    trendAnalysis.analysisSource === 'rule_based' ? 'Local Rules' : 'Unknown'
       },
       dataSource: stockData.dataSource || normalized.source || 'Unknown',
-      analysisStatus: trendAnalysis.trendLabel ? 'success' as 'success' : 'partial' as 'partial',
+      dataSources: {
+        marketData: stockData.dataSource || normalized.source || 'Unknown',
+        news: newsData?.source || 'Unknown',
+        aiAnalysis: trendAnalysis.analysisSource === 'deepseek' ? 'DeepSeek' :
+                    trendAnalysis.analysisSource === 'unavailable' ? 'unavailable' :
+                    trendAnalysis.analysisSource === 'rule_based' ? 'Local Rules' : 'Unknown',
+      },
+      dataQuality: _dq,
+      dataQualityReasons: _dqReasons,
+      analysisStatus: trendAnalysis.trendLabel ? 'completed' : ('failed' as 'completed' | 'failed' | 'unavailable'),
+      analysisSource: trendAnalysis.aiCalled ? 'ai' : 'unavailable',
+      aiSuccess: !!(trendAnalysis.trendLabel && !trendAnalysis.aiError),
       analysisError: trendAnalysis.aiError || null,
       aiCalled: trendAnalysis.aiCalled !== undefined ? trendAnalysis.aiCalled : (trendAnalysis.analysisSource === 'deepseek'),
       aiSource: trendAnalysis.aiSource || (trendAnalysis.analysisSource === 'deepseek' ? 'DeepSeek' :

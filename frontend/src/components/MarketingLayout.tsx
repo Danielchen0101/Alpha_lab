@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from 'antd';
-import { GlobalOutlined, SafetyOutlined } from '@ant-design/icons';
+import { GlobalOutlined, SafetyOutlined, MenuOutlined, CloseOutlined } from '@ant-design/icons';
 import { useLanguage } from '../contexts/LanguageContext';
 import SystemStatusIndicator from './SystemStatusIndicator';
 
@@ -13,6 +13,7 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const [scrolled, setScrolled] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const { language, t, setLanguage } = useLanguage();
 
   useEffect(() => {
@@ -101,6 +102,12 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
         }
         @media (max-width: 900px) {
           .nav-links { display: none; }
+          .nav-actions .btn-sign-in-desktop { display: none; }
+          .nav-actions .btn-get-started-desktop { display: none; }
+          .lang-text { display: none; }
+        }
+        @media (min-width: 901px) {
+          .nav-hamburger { display: none; }
         }
         .nav-item {
           color: #94a3b8;
@@ -143,6 +150,37 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
         @media (max-width: 480px) {
           .nav-header { padding: 0 12px !important; }
           .nav-actions { gap: 4px !important; }
+        }
+
+        /* Mobile menu overlay */
+        .mobile-menu-overlay {
+          position: fixed; inset: 0; z-index: 2000;
+          background: rgba(2,6,17,0.97);
+          display: flex; flex-direction: column;
+          padding: 24px;
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+        }
+        .mobile-menu-header {
+          display: flex; justify-content: space-between; align-items: center;
+          margin-bottom: 32px;
+        }
+        .mobile-menu-nav {
+          display: flex; flex-direction: column; gap: 4px; flex: 1;
+        }
+        .mobile-menu-nav-item {
+          color: #94a3b8; font-size: 1.05rem; font-weight: 600;
+          padding: 14px 16px; cursor: pointer;
+          border-radius: 10px;
+          transition: background 0.2s ease, color 0.2s ease;
+        }
+        .mobile-menu-nav-item:hover, .mobile-menu-nav-item.mobile-active {
+          color: #f1f5f9; background: rgba(255,255,255,0.04);
+        }
+        .mobile-menu-actions {
+          display: flex; flex-direction: column; gap: 10px;
+          padding-top: 24px; border-top: 1px solid rgba(255,255,255,0.06);
+          margin-top: 16px;
         }
 
         /* Buttons */
@@ -205,10 +243,82 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
 
         /* Footer */
         .footer {
-          padding: clamp(40px, 8vw, 60px) clamp(16px, 4vw, 24px) 40px;
+          padding: clamp(48px, 8vw, 72px) clamp(16px, 4vw, 24px) 32px;
           text-align: center;
-          border-top: 1px solid rgba(255,255,255,0.05);
-          background: #020611;
+          border-top: 1px solid rgba(255,255,255,0.06);
+          background: linear-gradient(to bottom, #020611, #01040d);
+        }
+        .footer-grid {
+          display: grid;
+          grid-template-columns: 1.5fr 1fr 1fr 1fr;
+          gap: clamp(24px, 4vw, 48px);
+          max-width: 1100px;
+          margin: 0 auto 48px;
+          text-align: left;
+        }
+        .footer-col-title {
+          color: #e2e8f0;
+          font-weight: 700;
+          margin-bottom: 16px;
+          font-size: 0.82rem;
+          letter-spacing: 0.03em;
+          text-transform: uppercase;
+        }
+        .footer-link {
+          color: #94a3b8;
+          font-size: 0.83rem;
+          cursor: pointer;
+          text-decoration: none;
+          display: block;
+          padding: 3px 0;
+          transition: color 0.2s ease;
+        }
+        .footer-link:hover { color: #cbd5e1; }
+        .footer-brand-tagline {
+          color: #64748b;
+          font-size: 0.82rem;
+          line-height: 1.6;
+          margin-top: 12px;
+        }
+        .footer-divider {
+          border-top: 1px solid rgba(255,255,255,0.04);
+          padding-top: 24px;
+          max-width: 1100px;
+          margin: 0 auto;
+        }
+        .footer-disclaimer {
+          color: #64748b;
+          font-size: 0.78rem;
+          line-height: 1.7;
+          margin-bottom: 16px;
+          text-align: left;
+        }
+        .footer-bottom-row {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          flex-wrap: wrap;
+          gap: 12px;
+        }
+        .footer-copyright {
+          color: #64748b;
+          font-size: 0.78rem;
+          font-weight: 500;
+        }
+        .footer-trust-badge {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          color: #60a5fa;
+          font-size: 0.73rem;
+          font-weight: 600;
+        }
+        @media (max-width: 900px) {
+          .footer-grid { grid-template-columns: 1fr 1fr; }
+        }
+        @media (max-width: 600px) {
+          .footer-grid { grid-template-columns: 1fr; gap: 28px; }
+          .footer-bottom-row { flex-direction: column; align-items: flex-start; }
         }
         
         .page-hero {
@@ -303,10 +413,51 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
         </div>
         <div className="nav-actions">
           <Button type="text" onClick={toggleLanguage} style={{ color: '#94a3b8', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'clamp(12px, 1vw, 13px)', padding: '4px 8px' }} aria-label={t.landing.ariaLabelSwitchLang}><GlobalOutlined aria-hidden="true" style={{ fontSize: 'clamp(12px, 1vw, 14px)' }} /> <span className="lang-text">{language === 'zh-CN' ? '中文' : 'EN'}</span></Button>
-          <Button type="text" style={{ color: '#fff', fontWeight: 600, fontSize: 'clamp(13px, 1vw, 14px)', padding: '4px 8px' }} onClick={() => navigate('/signin')} aria-label={t.landing.ariaLabelSignIn}>{t.landing.signIn}</Button>
-          <Button type="primary" className="btn-get-started" style={{ background: '#1890ff', borderColor: '#1890ff', fontWeight: 600, boxShadow: '0 4px 12px rgba(24,144,255,0.3)' }} onClick={() => navigate('/signup')} aria-label={t.landing.ariaLabelGetStarted}>{t.landing.getStarted}</Button>
+          <Button type="text" className="btn-sign-in-desktop" style={{ color: '#fff', fontWeight: 600, fontSize: 'clamp(13px, 1vw, 14px)', padding: '4px 8px' }} onClick={() => navigate('/signin')} aria-label={t.landing.ariaLabelSignIn}>{t.landing.signIn}</Button>
+          <Button type="primary" className="btn-get-started btn-get-started-desktop" style={{ background: '#1890ff', borderColor: '#1890ff', fontWeight: 600, boxShadow: '0 4px 12px rgba(24,144,255,0.3)' }} onClick={() => navigate('/signup')} aria-label={t.landing.ariaLabelGetStarted}>{t.landing.getStarted}</Button>
+          <Button type="text" className="nav-hamburger" onClick={() => setMobileMenuOpen(true)} style={{ color: '#fff', fontSize: 20, padding: '4px 8px' }} aria-label="Open menu"><MenuOutlined /></Button>
         </div>
       </nav>
+
+      {/* Mobile Menu Overlay */}
+      {mobileMenuOpen && (
+        <div className="mobile-menu-overlay">
+          <div className="mobile-menu-header">
+            <div className="nav-logo" style={{ cursor: 'pointer', fontSize: 'clamp(1.1rem, 1.8vw, 1.35rem)' }} onClick={() => { handleNavClick('/'); setMobileMenuOpen(false); }}>
+              Alpha<span>Lab</span>
+            </div>
+            <Button type="text" onClick={() => setMobileMenuOpen(false)} style={{ color: '#94a3b8', fontSize: 20, padding: '4px 8px' }} aria-label="Close menu"><CloseOutlined /></Button>
+          </div>
+          <div className="mobile-menu-nav">
+            {[
+              { path: '/', label: t.landing.navHome },
+              { path: '/platform', label: t.landing.navPlatform },
+              { path: '/workflow', label: t.landing.navWorkflow },
+              { path: '/features', label: t.landing.navFeatures },
+              { path: '/technology', label: t.landing.navTechnology },
+            ].map(item => (
+              <div
+                key={item.path}
+                className={`mobile-menu-nav-item ${location.pathname === item.path ? 'mobile-active' : ''}`}
+                onClick={() => { handleNavClick(item.path); setMobileMenuOpen(false); }}
+              >
+                {item.label}
+              </div>
+            ))}
+          </div>
+          <div className="mobile-menu-actions">
+            <Button type="text" onClick={toggleLanguage} style={{ color: '#94a3b8', fontWeight: 600, fontSize: '1rem', padding: '12px 16px', width: '100%', textAlign: 'left' }}>
+              <GlobalOutlined style={{ marginRight: 8 }} /> {language === 'zh-CN' ? '中文' : 'EN'} — {t.landing.ariaLabelSwitchLang}
+            </Button>
+            <Button onClick={() => { navigate('/signin'); setMobileMenuOpen(false); }} style={{ height: 48, width: '100%', color: '#f1f5f9', fontWeight: 600, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10 }}>
+              {t.landing.signIn}
+            </Button>
+            <Button type="primary" onClick={() => { navigate('/signup'); setMobileMenuOpen(false); }} style={{ height: 48, width: '100%', fontWeight: 600, background: '#2563eb', border: 'none', borderRadius: 10 }}>
+              {t.landing.getStarted}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Main Content */}
       <div style={{ position: 'relative', zIndex: 1 }}>
@@ -315,61 +466,61 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
 
       {/* Footer */}
       <footer className="footer">
-        <div style={{ maxWidth: 1100, margin: '0 auto', textAlign: 'left' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 40, marginBottom: 48 }}>
-            {/* Brand Column */}
-            <div>
-              <div className="nav-logo" style={{ marginBottom: 16, cursor: 'default' }}>
-                Alpha<span>Lab</span>
-              </div>
-              <div style={{ color: '#64748b', fontSize: '0.85rem', lineHeight: 1.6 }}>
-                {t.landing.heroBadge}
-              </div>
+        <div className="footer-grid" style={{
+          display: 'grid',
+          gridTemplateColumns: '1.5fr 1fr 1fr 1fr',
+          gap: 'clamp(24px, 4vw, 48px)',
+          maxWidth: '1100px',
+          margin: '0 auto 48px',
+          textAlign: 'left',
+        }}>
+          {/* Brand */}
+          <div>
+            <div className="nav-logo" style={{ marginBottom: 8, cursor: 'default', fontSize: 'clamp(1.1rem, 1.8vw, 1.35rem)' }}>
+              Alpha<span>Lab</span>
             </div>
-            
-            {/* Product Column */}
-            <div>
-              <h4 style={{ color: '#fff', fontWeight: 700, marginBottom: 16, fontSize: '0.9rem' }}>{t.landing.footerProduct}</h4>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <span onClick={() => handleNavClick('/platform')} style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>{t.landing.navPlatform}</span>
-                <span onClick={() => handleNavClick('/workflow')} style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>{t.landing.navWorkflow}</span>
-                <span onClick={() => handleNavClick('/features')} style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>{t.landing.navFeatures}</span>
-                <span onClick={() => handleNavClick('/technology')} style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>{t.landing.navTechnology}</span>
-              </div>
-            </div>
-
-            {/* Trust Column */}
-            <div>
-              <h4 style={{ color: '#fff', fontWeight: 700, marginBottom: 16, fontSize: '0.9rem' }}>{t.landing.footerTrust}</h4>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <span onClick={() => { navigate('/security'); window.scrollTo(0, 0); }} style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>{t.landing.navSecurity || 'Security'}</span>
-                <span style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>{t.landing.footerPrivacyPolicy}</span>
-                <span style={{ color: '#94a3b8', fontSize: '0.85rem', cursor: 'pointer' }}>{t.landing.footerTermsOfService}</span>
-              </div>
-            </div>
-
-            {/* Resources Column */}
-            <div>
-              <h4 style={{ color: '#fff', fontWeight: 700, marginBottom: 16, fontSize: '0.9rem' }}>{t.landing.footerResources}</h4>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <a href="https://github.com/Danielchen0101/quant_platform" target="_blank" rel="noopener noreferrer" style={{ color: '#94a3b8', fontSize: '0.85rem', textDecoration: 'none' }}>{t.landing.footerGithub}</a>
-                <SystemStatusIndicator />
-              </div>
+            <div className="footer-brand-tagline" style={{ color: '#64748b', fontSize: '0.82rem', lineHeight: 1.6, marginTop: 12 }}>
+              {t.landing.footerTagline || 'Research-first quant automation for market scanning, signal validation, and risk-aware planning.'}
             </div>
           </div>
 
-          <div style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: 32 }}>
-            <div style={{ color: '#475569', fontSize: '0.7rem', marginBottom: 16, lineHeight: 1.6 }}>
-              {t.landing.footerDisclaimer}
+          {/* Product */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div className="footer-col-title" style={{ color: '#e2e8f0', fontWeight: 700, marginBottom: 14, fontSize: '0.82rem', letterSpacing: '0.03em', textTransform: 'uppercase' }}>{t.landing.footerProduct}</div>
+            <span className="footer-link" style={{ color: '#94a3b8', fontSize: '0.83rem', cursor: 'pointer', display: 'block', padding: '3px 0' }} onClick={() => handleNavClick('/platform')}>{t.landing.navPlatform}</span>
+            <span className="footer-link" style={{ color: '#94a3b8', fontSize: '0.83rem', cursor: 'pointer', display: 'block', padding: '3px 0' }} onClick={() => handleNavClick('/workflow')}>{t.landing.navWorkflow}</span>
+            <span className="footer-link" style={{ color: '#94a3b8', fontSize: '0.83rem', cursor: 'pointer', display: 'block', padding: '3px 0' }} onClick={() => handleNavClick('/features')}>{t.landing.navFeatures}</span>
+            <span className="footer-link" style={{ color: '#94a3b8', fontSize: '0.83rem', cursor: 'pointer', display: 'block', padding: '3px 0' }} onClick={() => handleNavClick('/technology')}>{t.landing.navTechnology}</span>
+          </div>
+
+          {/* Trust */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div className="footer-col-title" style={{ color: '#e2e8f0', fontWeight: 700, marginBottom: 14, fontSize: '0.82rem', letterSpacing: '0.03em', textTransform: 'uppercase' }}>{t.landing.footerTrust}</div>
+            <span className="footer-link" style={{ color: '#94a3b8', fontSize: '0.83rem', cursor: 'pointer', display: 'block', padding: '3px 0' }} onClick={() => { navigate('/security'); window.scrollTo(0, 0); }}>{t.landing.navSecurity || 'Security'}</span>
+            <span className="footer-link" style={{ color: '#94a3b8', fontSize: '0.83rem', cursor: 'pointer', display: 'block', padding: '3px 0' }}>{t.landing.footerPrivacyPolicy}</span>
+            <span className="footer-link" style={{ color: '#94a3b8', fontSize: '0.83rem', cursor: 'pointer', display: 'block', padding: '3px 0' }}>{t.landing.footerTermsOfService}</span>
+          </div>
+
+          {/* Resources */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div className="footer-col-title" style={{ color: '#e2e8f0', fontWeight: 700, marginBottom: 14, fontSize: '0.82rem', letterSpacing: '0.03em', textTransform: 'uppercase' }}>{t.landing.footerResources}</div>
+            <a className="footer-link" style={{ color: '#94a3b8', fontSize: '0.83rem', cursor: 'pointer', display: 'block', padding: '3px 0', textDecoration: 'none' }} href="https://github.com/Danielchen0101/quant_platform" target="_blank" rel="noopener noreferrer">{t.landing.footerGithub}</a>
+            <SystemStatusIndicator />
+          </div>
+        </div>
+
+        {/* Disclaimer + Bottom */}
+        <div className="footer-divider" style={{ borderTop: '1px solid rgba(255,255,255,0.04)', paddingTop: 24, maxWidth: '1100px', margin: '0 auto' }}>
+          <div className="footer-disclaimer" style={{ color: '#64748b', fontSize: '0.78rem', lineHeight: 1.7, marginBottom: 16, textAlign: 'left' }}>
+            {t.landing.footerDisclaimer}
+          </div>
+          <div className="footer-bottom-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+            <div className="footer-copyright" style={{ color: '#64748b', fontSize: '0.78rem', fontWeight: 500 }}>
+              {t.landing.footerCopyright.replace('{year}', String(new Date().getFullYear()))}
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
-              <div style={{ color: '#475569', fontSize: '0.8rem', fontWeight: 600 }}>
-                {t.landing.footerCopyright.replace('{year}', String(new Date().getFullYear()))}
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#60a5fa', fontSize: 11 }}>
-                <SafetyOutlined aria-hidden="true" style={{ fontSize: 11 }} />
-                <span>{t.landing.footerSecureEnv}</span>
-              </div>
+            <div className="footer-trust-badge" style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#60a5fa', fontSize: '0.73rem', fontWeight: 600 }}>
+              <SafetyOutlined aria-hidden="true" style={{ fontSize: 11 }} />
+              <span>{t.landing.footerSecureEnv}</span>
             </div>
           </div>
         </div>

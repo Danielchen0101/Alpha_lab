@@ -49,9 +49,9 @@ const Landing: React.FC = () => {
           display: flex;
           align-items: center;
           justify-content: center;
-          padding: 52px 24px 60px;
+          padding: 44px 24px 48px;
           overflow: hidden;
-          background: radial-gradient(ellipse at 50% 30%, #07111f 0%, #040914 50%, #020611 100%);
+          background: radial-gradient(ellipse at 50% 30%, #0a1424 0%, #050c18 50%, #020611 100%);
           -webkit-font-smoothing: antialiased;
           text-rendering: optimizeLegibility;
         }
@@ -62,7 +62,7 @@ const Landing: React.FC = () => {
           bottom: 0;
           left: 0;
           right: 0;
-          height: 150px;
+          height: 100px;
           background: linear-gradient(to bottom, transparent, #020611);
           z-index: 1;
           pointer-events: none;
@@ -192,14 +192,14 @@ const Landing: React.FC = () => {
         .content-relative {
           position: relative;
           z-index: 5;
-          max-width: min(100%, 1460px);
+          max-width: min(100%, 1440px);
           margin: 0 auto;
           width: 100%;
           display: grid;
-          grid-template-columns: minmax(min(100%, 380px), 0.5fr) minmax(auto, 0.85fr);
+          grid-template-columns: minmax(420px, 0.85fr) minmax(560px, 1.15fr);
           align-items: center;
-          gap: clamp(28px, 3.5vw, 52px);
-          padding: 0 clamp(16px, 2vw, 40px);
+          gap: clamp(32px, 4vw, 56px);
+          padding: 0 clamp(16px, 2vw, 32px);
           box-sizing: border-box;
         }
 
@@ -215,16 +215,25 @@ const Landing: React.FC = () => {
 
         .hero-badge {
           display: inline-flex;
+          align-items: center;
+          gap: 8px;
           margin-bottom: 24px;
-          padding: 6px 16px;
+          padding: 6px 18px;
           border-radius: 20px;
-          background: rgba(24,144,255,0.05);
-          border: 1px solid rgba(24,144,255,0.1);
-          color: #60a5fa;
+          background: rgba(59,130,246,0.06);
+          border: 1px solid rgba(59,130,246,0.1);
+          color: #93c5fd;
           font-size: clamp(0.75rem, 0.9vw, 0.85rem);
           font-weight: 600;
-          letter-spacing: 0.5px;
+          letter-spacing: 0.03em;
           animation: fadeUp 0.6s ease-out forwards;
+        }
+        .hero-badge-dot {
+          width: 6px; height: 6px;
+          border-radius: 50%;
+          background: #f59e0b;
+          box-shadow: 0 0 6px rgba(245,158,11,0.5);
+          animation: pulse 2s infinite;
         }
 
         .premium-title {
@@ -259,7 +268,7 @@ const Landing: React.FC = () => {
           display: flex;
           flex-wrap: wrap;
           gap: 10px;
-          margin-bottom: 40px;
+          margin-bottom: 36px;
           animation: fadeUp 0.8s ease-out 0.25s forwards;
           opacity: 0;
         }
@@ -268,13 +277,14 @@ const Landing: React.FC = () => {
           display: inline-flex;
           align-items: center;
           gap: 6px;
-          padding: 6px 12px;
+          padding: 6px 14px;
           background: rgba(255,255,255,0.02);
-          border: 1px solid rgba(255,255,255,0.06);
-          border-radius: 6px;
+          border: 1px solid rgba(255,255,255,0.05);
+          border-radius: 8px;
           color: rgba(148,163,184,0.9);
-          font-size: clamp(0.8rem, 0.9vw, 0.9rem);
+          font-size: clamp(0.78rem, 0.9vw, 0.85rem);
           font-weight: 500;
+          letter-spacing: 0.01em;
         }
 
         .hero-actions {
@@ -340,7 +350,7 @@ const Landing: React.FC = () => {
           box-shadow: 0 30px 80px -20px rgba(0,0,0,0.6), 0 0 20px rgba(24,144,255,0.04);
           position: relative;
           border: 1px solid rgba(255,255,255,0.06);
-          max-height: calc(100vh - 130px);
+          max-height: calc(100vh - 120px);
           overflow: hidden;
           /* Removed scale and complex transforms for sharp text */
           transform: translateY(0);
@@ -488,33 +498,32 @@ const Landing: React.FC = () => {
         }
 
         @media (max-width: 1440px) {
-          .premium-title { font-size: clamp(2.2rem, 3.5vw, 3.2rem); }
-          .hero-visual-wrapper { padding-top: clamp(12px, 1.5vh, 24px); }
+          .premium-title { font-size: clamp(2.2rem, 3.5vw, 3rem); }
         }
 
         @media (max-width: 1280px) {
-          .content-relative { grid-template-columns: minmax(min(100%, 320px), 0.5fr) minmax(auto, 0.9fr); gap: clamp(16px, 2.5vw, 24px); }
-          .hero-section { padding: 32px 20px 48px; }
-          .premium-title { font-size: clamp(2rem, 3vw, 2.8rem); }
-          .premium-subtitle { font-size: clamp(0.9rem, 1vw, 1rem); }
-          .hero-actions .btn-primary, .hero-actions .btn-secondary { height: 40px !important; padding: 0 18px !important; font-size: 0.85rem !important; }
+          .content-relative { grid-template-columns: minmax(360px, 0.8fr) minmax(460px, 1fr); gap: clamp(20px, 2.5vw, 28px); }
+          .hero-section { padding: 32px 20px 40px; }
+          .premium-title { font-size: clamp(1.9rem, 2.8vw, 2.4rem); }
+          .premium-subtitle { font-size: clamp(0.85rem, 0.95vw, 0.95rem); }
+          .hero-actions .btn-primary, .hero-actions .btn-secondary { height: 40px !important; padding: 0 20px !important; font-size: 0.85rem !important; }
           .hero-badge { font-size: clamp(0.65rem, 0.8vw, 0.75rem); }
-          .hero-visual-wrapper { padding-top: clamp(8px, 1.5vh, 20px); }
         }
 
-        @media (max-width: 1024px) {
-          .content-relative { grid-template-columns: 1fr; text-align: center; }
-          .hero-text-area { padding-right: 0; margin-bottom: 60px; max-width: 600px; margin-left: auto; margin-right: auto; }
+        @media (max-width: 1100px) {
+          .content-relative { grid-template-columns: 1fr; text-align: center; max-width: 640px; }
+          .hero-text-area { padding-right: 0; margin-bottom: 48px; max-width: 100%; margin-left: auto; margin-right: auto; }
           .hero-badge { margin: 0 auto 24px; }
           .feature-chips { justify-content: center; }
           .hero-actions { justify-content: center; }
-          .hero-visual-wrapper { width: 100%; left: 0; }
+          .hero-visual-wrapper { width: 100%; }
         }
-        
+
         @media (max-width: 768px) {
-          .premium-title { font-size: clamp(1.8rem, 7vw, 2.2rem); }
+          .premium-title { font-size: clamp(1.7rem, 6vw, 2rem); }
           .hero-section { padding: 40px 16px 32px; min-height: auto; }
           .bg-data-overlay { display: none; }
+          .hero-perspective-lines { display: none; }
           .feature-chips { gap: 6px; margin-bottom: 20px; }
           .feature-chip { padding: 3px 8px; font-size: 10px; }
           .feature-chip:nth-child(n+3) { display: none; }
@@ -639,20 +648,21 @@ const Landing: React.FC = () => {
         <div className="content-relative">
           <div className="hero-text-area">
             <div className="hero-badge">
-              {t.landing.heroBadge || "Systematic Intelligence. Flawless Execution."}
+              <span className="hero-badge-dot"></span>
+              {t.landing.heroBadge || "Research-First Quant Automation"}
             </div>
             <h1 className="premium-title">
-              {t.landing.heroTitle1 || "Smarter AI Trading."}<br/> 
-              <span>{t.landing.heroTitle2 || "Stronger Tomorrow."}</span>
+              {t.landing.heroTitle1 || "AI-Powered Quant Research."}<br/>
+              <span>{t.landing.heroTitle2 || "Systematic Validation."}</span>
             </h1>
             <p className="premium-subtitle">
-              {t.landing.heroSubtitle || "AlphaLab combines AI intelligence, real-time market data, and advanced analytics to help you trade with clarity and confidence."}
+              {t.landing.heroSubtitle || "AlphaLab scans global markets, validates signals with multi-model AI, runs backtests, and generates risk-aware entry plans — a research-first workflow where you stay in control of every decision."}
             </p>
             <div className="feature-chips">
-              <span className="feature-chip"><AimOutlined style={{ color: '#60a5fa' }} /> {t.landing.chipScanning}</span>
-              <span className="feature-chip"><RobotOutlined style={{ color: '#60a5fa' }} /> {t.landing.chipAI}</span>
-              <span className="feature-chip"><CheckCircleOutlined style={{ color: '#60a5fa' }} /> {t.landing.chipRisk}</span>
-              <span className="feature-chip"><ExperimentOutlined style={{ color: '#60a5fa' }} /> {t.landing.chipBacktest}</span>
+              <span className="feature-chip"><SearchOutlined style={{ color: '#93c5fd' }} /> {t.landing.chipScanning}</span>
+              <span className="feature-chip"><RobotOutlined style={{ color: '#93c5fd' }} /> {t.landing.chipAI}</span>
+              <span className="feature-chip"><SafetyCertificateOutlined style={{ color: '#93c5fd' }} /> {t.landing.chipRisk}</span>
+              <span className="feature-chip"><ExperimentOutlined style={{ color: '#93c5fd' }} /> {t.landing.chipBacktest}</span>
             </div>
             <Space size="large" className="hero-actions">
               <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} aria-label={t.landing.ariaLabelGetStarted}>
@@ -895,17 +905,44 @@ const Landing: React.FC = () => {
       </section>
 
       {/* Final CTA */}
-      <section className="section-container" style={{ textAlign: 'center', padding: '100px 24px' }}>
+      <section className="section-container" style={{ textAlign: 'center', padding: '80px 24px 60px' }}>
         <RevealSection>
-          <div style={{ background: 'linear-gradient(145deg, rgba(24,144,255,0.05) 0%, rgba(114,46,209,0.05) 100%)', padding: '60px', borderRadius: '32px', border: '1px solid rgba(255,255,255,0.05)' }}>
-            <h2 className="section-title" style={{ fontSize: '2.8rem', fontWeight: 800, color: '#fff', marginBottom: 24 }}>{t.landing.ctaTitle}</h2>
-            <p style={{ color: '#94a3b8', fontSize: '1.2rem', marginBottom: 40, maxWidth: 700, margin: '0 auto 40px' }}>
+          <div style={{
+            background: 'linear-gradient(160deg, rgba(37,99,235,0.05) 0%, rgba(16,185,129,0.03) 100%)',
+            padding: '56px clamp(24px, 5vw, 64px)',
+            borderRadius: '24px',
+            border: '1px solid rgba(255,255,255,0.05)',
+            maxWidth: 720,
+            margin: '0 auto',
+          }}>
+            <h2 style={{
+              fontSize: 'clamp(1.7rem, 3vw, 2.3rem)',
+              fontWeight: 800,
+              color: '#f1f5f9',
+              marginBottom: 16,
+              letterSpacing: '-0.02em',
+            }}>{t.landing.ctaTitle}</h2>
+            <p style={{
+              color: '#94a3b8',
+              fontSize: 'clamp(0.9rem, 1.1vw, 1rem)',
+              maxWidth: 500,
+              margin: '0 auto 32px',
+              lineHeight: 1.6,
+            }}>
               {t.landing.ctaDesc}
             </p>
             <Space size="large" className="hero-actions">
-              <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} style={{ height: 56, padding: '0 40px' }} aria-label={t.landing.ariaLabelGetStarted}>{t.landing.ctaGetStarted}</Button>
-              <Button className="btn-secondary" onClick={() => navigate('/signin')} style={{ height: 56, padding: '0 40px' }} aria-label={t.landing.ariaLabelSignIn}>{t.landing.ctaSignIn}</Button>
+              <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} style={{ height: 52, padding: '0 36px' }} aria-label={t.landing.ariaLabelGetStarted}>
+                {t.landing.ctaGetStarted} <ArrowRightOutlined />
+              </Button>
+              <Button className="btn-secondary" onClick={() => navigate('/signin')} style={{ height: 52, padding: '0 32px' }} aria-label={t.landing.ariaLabelSignIn}>
+                {t.landing.ctaSignIn}
+              </Button>
             </Space>
+            <p style={{ color: '#64748b', fontSize: '0.78rem', marginTop: 20 }}>
+              <LockOutlined style={{ fontSize: 11, marginRight: 4 }} />
+              No credit card required · Paper trading included
+            </p>
           </div>
         </RevealSection>
       </section>

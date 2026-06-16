@@ -31,10 +31,9 @@ const Platform: React.FC = () => {
           height: 100%;
         }
         .who-it-is-for-card:hover {
-          background: rgba(255, 255, 255, 0.05);
-          border-color: rgba(24, 144, 255, 0.3);
-          transform: translateY(-5px);
-          box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+          background: rgba(255, 255, 255, 0.04);
+          border-color: rgba(59, 130, 246, 0.2);
+          box-shadow: 0 8px 24px rgba(0,0,0,0.2);
         }
         .platform-feature-card {
           background: rgba(17, 25, 40, 0.4);
@@ -46,8 +45,8 @@ const Platform: React.FC = () => {
           transition: all 0.4s ease;
         }
         .platform-feature-card:hover {
-          border-color: rgba(24, 144, 255, 0.3);
-          box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+          border-color: rgba(59, 130, 246, 0.2);
+          box-shadow: 0 12px 32px rgba(0,0,0,0.3);
         }
         .step-num {
           font-size: 0.85rem;

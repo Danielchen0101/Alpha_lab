@@ -154,6 +154,9 @@ export const entryPlanAPI = {
     executionMode: string;
     liveConfirm?: boolean;
     confirmText?: string;
+    clientOrderId?: string;
+    client_order_id?: string;
+    isAutoExecute?: boolean;
   }) => {
     return api.post('/entry-plan/execute', data);
   },
@@ -395,7 +398,7 @@ export interface TradingPosition {
 // Pipeline Auto API (market-hours auto pipeline scheduler)
 export const pipelineAutoAPI = {
   getStatus: () => api.get('/ai-agent/pipeline-auto/status'),
-  saveConfig: (data: { enabled: boolean; intervalMinutes?: number | null; mode: string; lastRunAt?: string; riskProfile?: string; timeHorizon?: string; tradeMode?: string }) =>
+  saveConfig: (data: { enabled: boolean; intervalMinutes?: number | null; mode: string; lastRunAt?: string; riskProfile?: string; timeHorizon?: string; tradeMode?: string; liveAutoTradingEnabled?: boolean }) =>
     api.post('/ai-agent/pipeline-auto/config', data),
   getHistory: (limit = 5) =>
     api.get<{ success: boolean; history: any[]; count: number }>(`/ai-agent/pipeline-auto/history?limit=${limit}`),

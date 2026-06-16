@@ -88,14 +88,8 @@ const ForgotPassword: React.FC = () => {
           .forgot-password-card .auth-input { height: 40px !important; font-size: 0.85rem !important; }
           .forgot-password-card .auth-btn { height: 40px !important; }
         }
-        .forgot-password-card .cf-turnstile { transform-origin: left center; }
-        @media (max-width: 400px) {
-          .forgot-password-card .cf-turnstile { transform: scale(0.85); }
-          .forgot-password-card .cf-turnstile iframe { width: 300px !important; }
-        }
-        @media (max-width: 340px) {
-          .forgot-password-card .cf-turnstile { transform: scale(0.75); }
-        }
+        .forgot-password-card .cf-turnstile { max-width: 100%; overflow: hidden; }
+        .forgot-password-card .cf-turnstile iframe { max-width: 100% !important; }
       `;
       document.head.appendChild(style);
     }
@@ -136,7 +130,7 @@ const ForgotPassword: React.FC = () => {
       setCaptchaToken('');
       turnstileRef.current?.reset();
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Failed to send reset email';
+      const msg = e instanceof Error ? e.message : (t.auth.resetFailed || 'Failed to send reset email');
       setError(msg);
       setCaptchaToken('');
       turnstileRef.current?.reset();
@@ -144,7 +138,7 @@ const ForgotPassword: React.FC = () => {
     setSubmitting(false);
   };
 
-  const sendingLabel = isCN ? '发送中...' : 'Sending...';
+  const sendingLabel = t.auth.sending || 'Sending...';
 
   return (
     <div

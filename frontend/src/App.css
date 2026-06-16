@@ -113,7 +113,12 @@ code {
   .app-main-layout {
     margin-left: 0 !important;
   }
-  
+
+  /* Show mobile nav hamburger */
+  .mobile-nav-trigger {
+    display: inline-flex !important;
+  }
+
   .ant-layout-content {
     margin-left: 0 !important;
     margin: 12px !important;
@@ -125,10 +130,27 @@ code {
   .ant-layout-content > div {
     padding: 16px !important;
   }
-  
+
   .ant-card {
     margin: 8px;
   }
+}
+
+@media (min-width: 769px) {
+  .mobile-nav-trigger {
+    display: none !important;
+  }
+}
+
+/* Mobile nav drawer theme support */
+.mobile-nav-drawer .ant-drawer-content {
+  background: var(--app-bg, #020611);
+}
+.mobile-nav-drawer .ant-drawer-header {
+  background: var(--app-header-bg, rgba(2,6,17,0.95));
+}
+.mobile-nav-drawer .ant-menu-item-selected {
+  background: rgba(24,144,255,0.1) !important;
 }
 
 /* Animation */

@@ -3,7 +3,7 @@ import { Tooltip } from 'antd';
 import { CheckCircleFilled, WarningFilled, LoadingOutlined } from '@ant-design/icons';
 import { useLanguage } from '../contexts/LanguageContext';
 
-type SystemStatus = 'checking' | 'online' | 'degraded';
+type SystemStatus = 'checking' | 'online' | 'unavailable';
 
 const SystemStatusIndicator: React.FC = () => {
   const { t } = useLanguage();
@@ -25,10 +25,10 @@ const SystemStatusIndicator: React.FC = () => {
         setStatus('online');
         setLastOk(new Date());
       } else {
-        setStatus('degraded');
+        setStatus('unavailable');
       }
     } catch {
-      if (mountedRef.current) setStatus('degraded');
+      if (mountedRef.current) setStatus('unavailable');
     }
   }, []);
 
@@ -44,7 +44,7 @@ const SystemStatusIndicator: React.FC = () => {
 
   const icon = status === 'online' ? (
     <CheckCircleFilled style={{ color: '#10b981', fontSize: 12 }} />
-  ) : status === 'degraded' ? (
+  ) : status === 'unavailable' ? (
     <WarningFilled style={{ color: '#f59e0b', fontSize: 12 }} />
   ) : (
     <LoadingOutlined style={{ color: '#64748b', fontSize: 12 }} />
@@ -53,15 +53,15 @@ const SystemStatusIndicator: React.FC = () => {
   const label =
     status === 'online'
       ? t.systemStatus.online
-      : status === 'degraded'
-      ? t.systemStatus.degraded
+      : status === 'unavailable'
+      ? t.systemStatus.unavailable
       : t.systemStatus.checking;
 
   const tooltipTitle =
     status === 'online'
       ? `${t.systemStatus.apiHealthy} | ${t.systemStatus.lastChecked}: ${lastOk?.toLocaleTimeString() ?? '–'}`
-      : status === 'degraded'
-      ? t.systemStatus.apiUnreachable
+      : status === 'unavailable'
+      ? t.systemStatus.unavailableDesc
       : t.systemStatus.checking;
 
   return (
@@ -72,7 +72,7 @@ const SystemStatusIndicator: React.FC = () => {
           alignItems: 'center',
           gap: 6,
           fontSize: 11,
-          color: status === 'online' ? '#6ee7b7' : status === 'degraded' ? '#fbbf24' : '#64748b',
+          color: status === 'online' ? '#6ee7b7' : status === 'unavailable' ? '#fbbf24' : '#64748b',
           cursor: 'default',
           whiteSpace: 'nowrap',
         }}

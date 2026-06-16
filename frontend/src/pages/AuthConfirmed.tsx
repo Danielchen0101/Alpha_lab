@@ -71,7 +71,7 @@ const AuthConfirmed: React.FC = () => {
           backdropFilter: 'blur(24px)',
           boxShadow:
             '0 30px 60px -12px rgba(0,0,0,0.8), 0 0 40px rgba(24,144,255,0.05)',
-          padding: '56px 48px',
+          padding: 'clamp(32px, 6vh, 56px) clamp(20px, 5vw, 48px)',
           textAlign: 'center',
         }}
       >

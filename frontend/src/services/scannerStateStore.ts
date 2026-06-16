@@ -160,6 +160,7 @@ export interface ScannerStoreState {
   entryPlan: EntryPlanState;
   exitScan: ExitScanState;
   aiExecutionCandidates: AiExecutionCandidate[];
+  removedExecutionSymbols: string[]; // persisted Remove markers — survive page refresh
   pipelineSchedule: {
     intervalKey: string; // 'off' | '15m' | '30m' | '1h' | '2h'
     nextRunAt: string | null;
@@ -249,6 +250,7 @@ const DEFAULT_STATE: ScannerStoreState = {
     lastUpdated: null,
   },
   aiExecutionCandidates: [],
+  removedExecutionSymbols: [],
   pipelineSchedule: {
     intervalKey: 'off',
     nextRunAt: null,
@@ -285,6 +287,7 @@ class ScannerStateStore {
             entryPlan: { ...DEFAULT_STATE.entryPlan, ...parsed.entryPlan },
             exitScan: { ...DEFAULT_STATE.exitScan, ...parsed.exitScan },
             aiExecutionCandidates: Array.isArray(parsed.aiExecutionCandidates) ? parsed.aiExecutionCandidates : [],
+            removedExecutionSymbols: Array.isArray(parsed.removedExecutionSymbols) ? parsed.removedExecutionSymbols : [],
             pipelineSchedule: { ...DEFAULT_STATE.pipelineSchedule, ...parsed.pipelineSchedule },
           };
         }
@@ -523,6 +526,45 @@ class ScannerStateStore {
     this.notify();
   }
 
+  // ── Removed Execution Symbols (persisted markers) ──
+
+  getRemovedExecutionSymbols(): string[] {
+    return [...(this.state.removedExecutionSymbols || [])];
+  }
+
+  addRemovedExecutionSymbol(symbol: string): void {
+    if (!this.state.removedExecutionSymbols) this.state.removedExecutionSymbols = [];
+    const upper = symbol.toUpperCase();
+    if (!this.state.removedExecutionSymbols.includes(upper)) {
+      this.state.removedExecutionSymbols.push(upper);
+    }
+    this.scheduleSave();
+    this.notify();
+  }
+
+  removeRemovedExecutionSymbol(symbol: string): void {
+    if (!this.state.removedExecutionSymbols) return;
+    const upper = symbol.toUpperCase();
+    this.state.removedExecutionSymbols = this.state.removedExecutionSymbols.filter(s => s !== upper);
+    this.scheduleSave();
+    this.notify();
+  }
+
+  clearRemovedExecutionSymbols(): void {
+    this.state.removedExecutionSymbols = [];
+    this.scheduleSave();
+    this.notify();
+  }
+
+  // Force synchronous save — call before page unload to prevent data loss
+  flushPendingSave(): void {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    this.saveToStorage();
+  }
+
   // ── Pipeline Schedule ──
 
   updatePipelineSchedule(partial: Partial<ScannerStoreState['pipelineSchedule']>): void {
@@ -540,6 +582,7 @@ class ScannerStateStore {
   resetAll(): void {
     this.state = { ...DEFAULT_STATE };
     this.state.aiExecutionCandidates = [];
+    this.state.removedExecutionSymbols = [];
     this.state.pipelineSchedule = { ...DEFAULT_STATE.pipelineSchedule };
     this.saveToStorage();
     this.notify();

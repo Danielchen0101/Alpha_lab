@@ -80,14 +80,8 @@ const ResetPassword: React.FC = () => {
           .reset-password-card .auth-input { height: 40px !important; font-size: 0.85rem !important; }
           .reset-password-card .auth-btn { height: 40px !important; }
         }
-        .reset-password-card .cf-turnstile { transform-origin: left center; }
-        @media (max-width: 400px) {
-          .reset-password-card .cf-turnstile { transform: scale(0.85); }
-          .reset-password-card .cf-turnstile iframe { width: 300px !important; }
-        }
-        @media (max-width: 340px) {
-          .reset-password-card .cf-turnstile { transform: scale(0.75); }
-        }
+        .reset-password-card .cf-turnstile { max-width: 100%; overflow: hidden; }
+        .reset-password-card .cf-turnstile iframe { max-width: 100% !important; }
 
         .invalid-state-icon {
           font-size: 48px;
@@ -106,7 +100,7 @@ const ResetPassword: React.FC = () => {
 
     if (hashErr || searchErr) {
       setLinkInvalid(true);
-      setError(t.auth.resetLinkInvalid || 'Reset link invalid');
+      setError(t.auth.resetLinkInvalid || 'Reset link is invalid or expired');
       return;
     }
 
@@ -118,7 +112,7 @@ const ResetPassword: React.FC = () => {
         const type = hashParams.get('type');
         if (type !== 'recovery') {
           setLinkInvalid(true);
-          setError(t.auth.resetLinkInvalid || 'Reset link invalid');
+          setError(t.auth.resetLinkInvalid || 'Reset link is invalid or expired');
         }
       }
     });
@@ -156,7 +150,7 @@ const ResetPassword: React.FC = () => {
       }
       setUpdated(true);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Password update failed';
+      const msg = e instanceof Error ? e.message : (t.auth.passwordUpdateFailed || 'Password update failed');
       setError(msg);
     }
     setSubmitting(false);
@@ -356,7 +350,7 @@ const ResetPassword: React.FC = () => {
                     boxShadow: '0 8px 20px rgba(24,144,255,0.3)',
                   }}
                 >
-                  {submitting ? (isCN ? '更新中...' : 'Updating...') : t.auth.updatePassword}
+                  {submitting ? (t.auth.updating || 'Updating...') : t.auth.updatePassword}
                 </Button>
               </Form.Item>
 

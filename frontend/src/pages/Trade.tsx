@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Card, Typography, Button, Divider, Table, Tag, Row, Col, Statistic,
   Select, message, Tooltip, Empty, Modal, Alert, Spin
@@ -44,12 +44,6 @@ const Trade: React.FC = () => {
     return n < 1e12 ? n * 1000 : n;
   };
 
-  // 处理投资组合时间范围变化 — 只切换 range，由 refreshAllAlpacaData 统一拉取数据
-  const handlePortfolioRangeChange = (range: string) => {
-    setPortfolioRange(range);
-    setPortfolioError(null);
-  };
-
   // 加载状态
   const [loadingData, setLoadingData] = useState({
     account: false,
@@ -69,10 +63,42 @@ const Trade: React.FC = () => {
     takeProfitPrice?: number;
     stopLossPrice?: number;
   }>({});
-  // Refresh data when trade mode changes
-  useEffect(() => {
-    refreshAllAlpacaData(tradeMode);
-  }, [tradeMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-refresh state
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
+  const isRefreshingRef = useRef(false);
+  const lastPortfolioRefreshRef = useRef(0);
+  const autoRefreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const mountedRef = useRef(true);
+
+  const handlePortfolioRangeChange = useCallback((range: string) => {
+    setPortfolioRange(range);
+    setPortfolioError(null);
+    // Refresh portfolio history immediately with new range
+    const now = Date.now();
+    lastPortfolioRefreshRef.current = now;
+    tradingAccountAPI.getPortfolioHistory(tradeMode as 'paper' | 'real', range).then(res => {
+      if (!mountedRef.current) return;
+      const resBody = res?.data;
+      if (resBody && typeof resBody === 'object' && resBody.success) {
+        const raw = resBody.data || [];
+        const normalized = raw
+          .map((item: any) => {
+            let ts = item.timestamp;
+            if (typeof ts === 'number' && ts < 1e12) ts = ts * 1000;
+            return { timestamp: ts, equity: Number(item.equity || 0) };
+          })
+          .filter((item: any) => item.timestamp && Number.isFinite(item.equity));
+        setPortfolioHistory(normalized);
+        if (normalized.length >= 2) {
+          const first = normalized[0].equity;
+          const last = normalized[normalized.length - 1].equity;
+          setPortfolioChange({ value: last - first, percent: first !== 0 ? ((last - first) / first) * 100 : 0 });
+        }
+      }
+    }).catch(() => {});
+  }, [tradeMode]);
 
   // AI Entry Watchlist 状态
   const [watchlistItems, setWatchlistItems] = useState<any[]>([]);
@@ -120,7 +146,7 @@ const Trade: React.FC = () => {
           const res = await tradingAccountAPI.cancelOrder(orderId, tradeMode);
           if (res.data.success) {
             message.success(t.trade.orderCancelled);
-            await refreshAllAlpacaData();
+            await refreshAllAlpacaData(tradeMode, true, true);
           } else {
             message.error(res.data.error || t.trade.cancelFailed);
           }
@@ -132,19 +158,26 @@ const Trade: React.FC = () => {
   };
 
   // 统一刷新所有 Alpaca 数据（按当前 tradeMode）
-  const refreshAllAlpacaData = useCallback(async (mode?: string) => {
+  const refreshAllAlpacaData = useCallback(async (mode?: string, includePortfolio: boolean = true, force: boolean = false) => {
+    if (isRefreshingRef.current && !force) return;
+    isRefreshingRef.current = true;
     const m = mode || tradeMode;
     try {
-      setLoadingData({ account: true, positions: true, orders: true, history: true, portfolio: true });
-      setPortfolioError(null);
+      setLoadingData(prev => ({ ...prev, account: true, positions: true, orders: true, history: true, ...(includePortfolio ? { portfolio: true } : {}) }));
+      if (includePortfolio) setPortfolioError(null);
 
-      const [accountRes, positionsRes, ordersRes, historyRes, portfolioRes] = await Promise.allSettled([
+      const apiCalls: Promise<any>[] = [
         tradingAccountAPI.getAccount(m as 'paper' | 'real'),
         tradingAccountAPI.getPositions(m as 'paper' | 'real'),
         tradingAccountAPI.getOrders(m as 'paper' | 'real', 'open'),
         tradingAccountAPI.getOrders(m as 'paper' | 'real', 'all'),
-        tradingAccountAPI.getPortfolioHistory(m as 'paper' | 'real', portfolioRange),
-      ]);
+      ];
+      if (includePortfolio) {
+        apiCalls.push(tradingAccountAPI.getPortfolioHistory(m as 'paper' | 'real', portfolioRange));
+      }
+
+      const results = await Promise.allSettled(apiCalls);
+      const [accountRes, positionsRes, ordersRes, historyRes, portfolioRes] = results;
 
       // Account — flat response, no .data wrapper
       if (accountRes.status === 'fulfilled' && accountRes.value.data.success) {
@@ -199,8 +232,8 @@ const Trade: React.FC = () => {
         setAlpacaOrdersHistory([]);
       }
 
-      // Portfolio History
-      if (portfolioRes.status === 'fulfilled') {
+      // Portfolio History (only when included)
+      if (includePortfolio && portfolioRes && portfolioRes.status === 'fulfilled') {
         const resBody = portfolioRes.value?.data;
         if (resBody && typeof resBody === 'object' && resBody.success) {
           const raw = resBody.data || [];
@@ -231,25 +264,69 @@ const Trade: React.FC = () => {
             setPortfolioError(errMsg);
           }
         }
-      } else {
-        // HTTP-level failure (network error, timeout, etc.)
+      } else if (includePortfolio && portfolioRes && portfolioRes.status === 'rejected') {
+        // HTTP-level failure (network error, timeout, 429 rate limit, etc.)
         const reason = portfolioRes.reason;
         setPortfolioHistory([]);
         setPortfolioChange({ value: 0, percent: 0 });
-        setPortfolioError(reason?.message || 'Failed to reach portfolio history endpoint');
+        // Try to extract backend error message from Axios error response
+        const axiosErrData = reason?.response?.data;
+        const backendMsg = axiosErrData?.message || axiosErrData?.reason;
+        if (reason?.response?.status === 429 || axiosErrData?.reason === 'alpaca_rate_limited') {
+          setPortfolioError(backendMsg || 'Alpaca rate limit reached. Portfolio history will refresh later.');
+        } else {
+          setPortfolioError(backendMsg || reason?.message || 'Failed to reach portfolio history endpoint');
+        }
       }
     } catch (error) {
       console.error('Failed to refresh Alpaca data:', error);
       message.error(t.trade.refreshFailed);
     } finally {
+      isRefreshingRef.current = false;
+      setLastUpdated(new Date());
       setLoadingData({ account: false, positions: false, orders: false, history: false, portfolio: false });
     }
   }, [tradeMode, portfolioRange, t.trade.credentialsNotConfigured, t.trade.liveLabel, t.trade.paperLabel, t.trade.refreshFailed]);
 
+  // Unified mount + tradeMode change + auto-refresh effect
   useEffect(() => {
-    refreshAllAlpacaData();
+    mountedRef.current = true;
+    // Initial load — always fetch everything on mount / tradeMode change
+    refreshAllAlpacaData(tradeMode);
     loadWatchlist();
-  }, [refreshAllAlpacaData]);
+
+    // Auto-refresh: 30s interval for core data, portfolio history every 5 min
+    const startAutoRefresh = () => {
+      if (autoRefreshTimerRef.current) clearInterval(autoRefreshTimerRef.current);
+      autoRefreshTimerRef.current = setInterval(() => {
+        if (!mountedRef.current || isRefreshingRef.current || !autoRefreshEnabled) return;
+        const now = Date.now();
+        const includePortfolio = (now - lastPortfolioRefreshRef.current) >= 300000;
+        if (includePortfolio) lastPortfolioRefreshRef.current = now;
+        refreshAllAlpacaData(tradeMode, includePortfolio);
+      }, 30000);
+    };
+
+    if (!document.hidden) {
+      startAutoRefresh();
+    }
+
+    const handleVisibility = () => {
+      if (document.hidden) {
+        if (autoRefreshTimerRef.current) { clearInterval(autoRefreshTimerRef.current); autoRefreshTimerRef.current = null; }
+      } else if (mountedRef.current) {
+        startAutoRefresh();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      mountedRef.current = false;
+      if (autoRefreshTimerRef.current) { clearInterval(autoRefreshTimerRef.current); autoRefreshTimerRef.current = null; }
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tradeMode]);
 
   // Order Modal helpers
   const openOrderModal = (preset?: typeof orderModalPreset) => {
@@ -259,7 +336,7 @@ const Trade: React.FC = () => {
 
   const handleOrderSuccess = async () => {
     message.success(t.trade.orderPlaced);
-    await refreshAllAlpacaData();
+    await refreshAllAlpacaData(tradeMode, true, true);
   };
 
   // 持仓表格列定义 - 与Alpaca页面一致
@@ -460,18 +537,33 @@ const Trade: React.FC = () => {
             }}>
               {tradeMode === 'paper' ? t.trade.paperTrading : t.trade.liveTrading}
             </Tag>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Tag
+                color={autoRefreshEnabled ? 'green' : 'default'}
+                bordered={false}
+                style={{ fontSize: 9, fontWeight: 700, borderRadius: 4, cursor: 'pointer' }}
+                onClick={() => setAutoRefreshEnabled(prev => !prev)}
+              >
+                {autoRefreshEnabled ? 'AUTO REFRESH: ON' : 'AUTO REFRESH: OFF'}
+              </Tag>
+              {lastUpdated && (
+                <span style={{ fontSize: 10, color: 'var(--app-text-muted)', fontWeight: 500 }}>
+                  Updated: {lastUpdated.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
+                </span>
+              )}
+            </div>
             <Button
               size="middle"
               icon={<ReloadOutlined />}
-              onClick={() => refreshAllAlpacaData()}
+              onClick={() => refreshAllAlpacaData(tradeMode, true)}
               loading={loadingData.account || loadingData.positions || loadingData.orders || loadingData.portfolio}
-              style={{ 
-                borderRadius: 8, 
-                height: 34, 
-                fontWeight: 600, 
-                color: 'var(--app-text)', 
+              style={{
+                borderRadius: 8,
+                height: 34,
+                fontWeight: 600,
+                color: 'var(--app-text)',
                 background: 'var(--app-card-bg-soft)',
-                border: '1px solid var(--app-border)' 
+                border: '1px solid var(--app-border)'
               }}
             >
               {t.trade.refreshData}

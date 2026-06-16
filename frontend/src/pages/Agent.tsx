@@ -243,9 +243,191 @@ const CollapsibleStageSection: React.FC<CollapsibleStageSectionProps> = ({
 // AI分析结果类型定义 - V3格式
 // 趋势分析结果类型
 
+// Entry Plan API uses stable machine values; keep display compatible with older cached plans.
+const getEntryPlanAction = (plan: any): string => {
+  const raw = String(plan?.finalAction || '').trim();
+  const normalized = raw.toUpperCase().replace(/\s+/g, '_');
+  const aliases: Record<string, string> = {
+    'BUY_READY': 'BUY_READY',
+    'BUY_ALLOWED': 'BUY_READY',
+    'READY_FOR_REVIEW': 'READY_REVIEW',
+    'READY_REVIEW': 'READY_REVIEW',
+    'WAIT_FOR_ENTRY': 'WAIT_FOR_ENTRY',
+    'WATCH': 'WAIT_FOR_ENTRY',
+    'WATCH_ONLY': 'WAIT_FOR_ENTRY',
+    'NEED_DATA': 'NEED_DATA',
+    'DATA_UNAVAILABLE': 'NEED_DATA',
+    'BLOCKED_BY_RISK': 'BLOCKED_BY_RISK',
+    'SKIP': 'SKIP',
+  };
+  return aliases[normalized] || normalized;
+};
+
+const toEntryPlanNumber = (value: any): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value.replace(/[$,%\s]/g, ''));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+const getEntryPlanZone = (plan: any): { low: number | null; high: number | null } => {
+  const low = plan?.entryZone?.low ?? plan?.entryZoneLow ?? plan?.entryLow ?? null;
+  const high = plan?.entryZone?.high ?? plan?.entryZoneHigh ?? plan?.entryHigh ?? null;
+  const lowNum = toEntryPlanNumber(low);
+  const highNum = toEntryPlanNumber(high);
+  return {
+    low: lowNum != null && lowNum > 0 ? lowNum : null,
+    high: highNum != null && highNum > 0 ? highNum : null,
+  };
+};
+
+const getEntryPlanCurrentPrice = (plan: any): number | null => {
+  const value = plan?.currentPrice ?? plan?.price ?? null;
+  const num = toEntryPlanNumber(value);
+  return num != null && num > 0 ? num : null;
+};
+
+const hasEntryPlanExitLevels = (plan: any): boolean => {
+  const stop = toEntryPlanNumber(plan?.stopLoss ?? plan?.stop ?? plan?.entryPlanStop);
+  const target = toEntryPlanNumber(plan?.takeProfit1 ?? plan?.takeProfit ?? plan?.target ?? plan?.entryPlanTarget);
+  return !!(stop && stop > 0 && target && target > 0);
+};
+
+const isEntryPlanInZone = (plan: any): boolean => {
+  const current = getEntryPlanCurrentPrice(plan);
+  const { low, high } = getEntryPlanZone(plan);
+  return current != null && low != null && high != null && current >= low && current <= high;
+};
+
+const isAllocationCapReason = (reason: any): boolean => {
+  const text = String(reason || '').toLowerCase();
+  return (
+    text.includes('max allocation') ||
+    text.includes('position would be') ||
+    text.includes('exceeds max') ||
+    text.includes('position capped') ||
+    text.includes('capped by position limit')
+  ) && !text.includes('below minimum');
+};
+
+const hasExecutableCappedAllocation = (plan: any): boolean => {
+  const shares = toEntryPlanNumber(plan?.executableShares ?? plan?.finalShares ?? plan?.positionSizeShares ?? plan?.shares);
+  return !!(plan?.cappedByAllocation || plan?.positionCapped) && shares != null && shares >= 1;
+};
+
+const getEntryPlanFilteredBlockers = (plan: any): string[] => {
+  const rg = plan?.riskGate || plan?.hardRiskGate || {};
+  const raw = [
+    ...(Array.isArray(plan?.blockers) ? plan.blockers : []),
+    ...(Array.isArray(rg?.blockers) ? rg.blockers : []),
+    ...(Array.isArray(plan?.riskGateReasons?.blockers) ? plan.riskGateReasons.blockers : []),
+    plan?.localOverrideReason,
+  ].filter(Boolean).map((v: any) => String(v));
+  const unique = Array.from(new Set(raw));
+  if (!hasExecutableCappedAllocation(plan)) return unique;
+  return unique.filter(reason => !isAllocationCapReason(reason));
+};
+
+const hasEntryPlanHardBlock = (plan: any): boolean => {
+  const rg = plan?.riskGate || plan?.hardRiskGate || {};
+  const blockers = getEntryPlanFilteredBlockers(plan);
+  if (blockers.length > 0) return true;
+  return rg?.status === 'BLOCK' && !hasExecutableCappedAllocation(plan);
+};
+
+const getEntryPlanEffectiveAction = (plan: any): string => {
+  const action = getEntryPlanAction(plan);
+  if (action === 'SKIP' || action === 'NEED_DATA') return action;
+
+  const current = getEntryPlanCurrentPrice(plan);
+  const { low, high } = getEntryPlanZone(plan);
+  if (current == null || low == null || high == null || !hasEntryPlanExitLevels(plan)) {
+    return 'NEED_DATA';
+  }
+
+  if (action === 'BLOCKED_BY_RISK') {
+    if (hasEntryPlanHardBlock(plan)) return action;
+    if (!isEntryPlanInZone(plan)) return 'WAIT_FOR_ENTRY';
+    const aiDecision = String(plan?.aiDecision || '').toUpperCase();
+    const rg = plan?.riskGate || plan?.hardRiskGate || {};
+    return aiDecision === 'WATCH' || rg?.status === 'REVIEW' ? 'READY_REVIEW' : 'BUY_READY';
+  }
+
+  if ((action === 'BUY_READY' || action === 'READY_REVIEW') && !isEntryPlanInZone(plan)) {
+    return 'WAIT_FOR_ENTRY';
+  }
+  return action;
+};
+
+const getEntryPlanUnavailableReason = (plan: any): string => {
+  const current = getEntryPlanCurrentPrice(plan);
+  const { low, high } = getEntryPlanZone(plan);
+  if (low == null || high == null) return 'Entry zone unavailable. Refresh market data.';
+  if (current == null) return 'Current price unavailable. Refresh market data.';
+  if (!hasEntryPlanExitLevels(plan)) return 'Stop/target unavailable. Refresh market data.';
+  return '';
+};
+
+const getEntryPlanCapNote = (plan: any): string => {
+  if (!hasExecutableCappedAllocation(plan)) return '';
+  const pct = toEntryPlanNumber(plan?.maxAllocationPct) ?? 10;
+  return plan?.positionCapReason || `Original size exceeded max allocation, capped to ${pct}%.`;
+};
+
+const getEntryPlanSanitizedText = (plan: any, text: any): string => {
+  const value = String(text || '');
+  if (hasExecutableCappedAllocation(plan) && isAllocationCapReason(value)) {
+    return getEntryPlanCapNote(plan);
+  }
+  return value;
+};
+
+const getEntryPlanActionTooltip = (plan: any): string => {
+  const action = getEntryPlanEffectiveAction(plan);
+  const capNote = getEntryPlanCapNote(plan);
+  if (action === 'NEED_DATA') return getEntryPlanUnavailableReason(plan) || 'Entry plan data unavailable.';
+  if (action === 'WAIT_FOR_ENTRY') {
+    const current = getEntryPlanCurrentPrice(plan);
+    const { low, high } = getEntryPlanZone(plan);
+    if (current != null && low != null && high != null) {
+      if (current > high) return `Waiting for price to return to entry zone. Current price is above entry zone; limit entry recommended.${capNote ? ` ${capNote}` : ''}`;
+      if (current < low) return `Waiting for price to return to entry zone. Current price is below entry zone.${capNote ? ` ${capNote}` : ''}`;
+    }
+    return `Waiting for price to return to entry zone.${capNote ? ` ${capNote}` : ''}`;
+  }
+  if (action === 'READY_REVIEW') {
+    return getEntryPlanSanitizedText(plan, plan?.readyReviewReason || getEntryPlanFilteredBlockers(plan).join('; ') || plan?.riskComment || plan?.decisionReason) || `Review required before execution.${capNote ? ` ${capNote}` : ''}`;
+  }
+  if (action === 'BLOCKED_BY_RISK') {
+    return getEntryPlanSanitizedText(plan, getEntryPlanFilteredBlockers(plan).join('; ') || plan?.riskComment || plan?.decisionReason) || 'Review risk gate and data quality.';
+  }
+  if (action === 'BUY_READY') return capNote || 'Executable entry plan.';
+  return plan?.decisionReason || capNote || 'Review entry plan.';
+};
+
+const getEntryPlanExecutionSnapshot = (plan: any): any => {
+  const action = getEntryPlanEffectiveAction(plan);
+  const rg = plan?.riskGate || plan?.hardRiskGate || {};
+  const blockers = getEntryPlanFilteredBlockers(plan);
+  const status = blockers.length > 0 ? 'BLOCK' : (rg?.status === 'REVIEW' && action === 'READY_REVIEW' ? 'REVIEW' : 'PASS');
+  const shares = plan?.executableShares ?? plan?.finalShares ?? plan?.positionSizeShares ?? plan?.shares;
+  return {
+    ...plan,
+    finalAction: action,
+    tradeReadiness: action === 'BUY_READY' || action === 'READY_REVIEW' ? 'READY' : action === 'WAIT_FOR_ENTRY' ? 'WAIT' : 'BLOCKED',
+    riskGate: { ...rg, status, blockers },
+    hardRiskGate: { ...(plan?.hardRiskGate || rg), status, blockers },
+    shares,
+    positionSizeShares: shares,
+  };
+};
+
 // Helper for Entry Zone Display
 const formatEntryZoneDisplay = (plan: any) => {
-  if (!plan || !plan.entryZone || plan.entryZone.low == null || plan.entryZone.high == null) {
+  const { low, high } = getEntryPlanZone(plan);
+  if (low == null || high == null) {
     return {
       statusLabel: 'Need Data',
       primaryText: 'Entry zone unavailable',
@@ -254,9 +436,7 @@ const formatEntryZoneDisplay = (plan: any) => {
     };
   }
   
-  const current = plan.currentPrice;
-  const low = plan.entryZone.low;
-  const high = plan.entryZone.high;
+  const current = getEntryPlanCurrentPrice(plan);
   
   if (current == null) {
     return {
@@ -597,7 +777,17 @@ const Agent: React.FC = (): React.ReactElement => {
 
   const [aiExecutionList, setAiExecutionList] = useState<any[]>(() => {
     try {
-      return scannerStateStore.getAiExecutionCandidates();
+      const restored = scannerStateStore.getAiExecutionCandidates();
+      const removedSet = new Set(scannerStateStore.getRemovedExecutionSymbols());
+      return restored
+        .filter((item: any) => !removedSet.has(String(item.symbol || '').toUpperCase()))
+        .map((item: any) => {
+          // Convert stale auto_executing to failed — the promise is gone after refresh
+          if (item.executionStatus === 'auto_executing') {
+            return { ...item, executionStatus: 'failed', executionError: 'Execution interrupted by page refresh' };
+          }
+          return item;
+        });
     } catch { return []; }
   });
   const [pipelineMode, setPipelineMode] = useState<'ai' | 'hybrid' | 'manual'>(() => {
@@ -615,6 +805,7 @@ const Agent: React.FC = (): React.ReactElement => {
   const initialAutoSyncRef = useRef(true);
 
   // Pipeline Auto (market-hours scheduler) state
+  // Live Auto Trading — removed; AI mode auto-executes based on tradeMode directly
   const [pipelineAutoStatus, setPipelineAutoStatus] = useState<any>(null);
   const pipelineAutoStatusRef = useRef<any>(null);
   useEffect(() => { pipelineAutoStatusRef.current = pipelineAutoStatus; }, [pipelineAutoStatus]);
@@ -623,6 +814,7 @@ const Agent: React.FC = (): React.ReactElement => {
   const [autoRunStep, setAutoRunStep] = useState('');
   const [autoRunProgress, setAutoRunProgress] = useState(0);
   const [pipelineAutoLoading, setPipelineAutoLoading] = useState(false);
+  const runAutoNowInFlightRef = useRef(false);
   const [pipelineAutoHistory, setPipelineAutoHistory] = useState<any[]>([]);
   const [pipelineAutoHistoryExpanded, setPipelineAutoHistoryExpanded] = useState(false);
   const [pipelineAutoSchedule, setPipelineAutoSchedule] = useState<any[] | null>(null);
@@ -810,7 +1002,7 @@ const Agent: React.FC = (): React.ReactElement => {
 
   // Track background auto-run status from activeRun (display only, never touches scannerStateStore)
   // Only auto triggers (not manual) affect autoRunActive state
-  const AUTO_TRIGGERS = new Set(['market_auto_run', 'headless_market_auto_run', 'toggle_on', 'auto_manual_now']);
+  const AUTO_TRIGGERS = new Set(['market_auto_run', 'headless_market_auto_run', 'toggle_on', 'auto_run_now']);
   useEffect(() => {
     const activeRun = pipelineAutoStatus?.activeRun;
     if (!activeRun || activeRun.status !== 'running' || !AUTO_TRIGGERS.has(activeRun.trigger || '')) {
@@ -1113,68 +1305,34 @@ const Agent: React.FC = (): React.ReactElement => {
       setContinueScanProgress(30);
 
       let finalList: any[] = [];
-      let usedLocalFallback = false;
       try {
         const res = await pipelineAutoAPI.runContinueScan({ scannerResults: msResults, riskProfile, timeHorizon, pipelineMode, tradeMode });
         if (res?.data?.success) { finalList = res.data.results || []; }
         else { throw new Error(res?.data?.message || 'Backend returned non-success'); }
       } catch (apiErr: any) {
-        console.warn('[ContinueScan] backend endpoint unavailable, using local fallback:', apiErr);
-        usedLocalFallback = true;
-        finalList = _localContinueScanFallback(msResults);
+        // Do NOT fall back to local rules with different thresholds.
+        // The backend _pa_continue_scan_headless is the single source of truth.
+        // If unavailable, display the error clearly so the user knows why.
+        console.error('[ContinueScan] backend shared selector failed:', apiErr?.message || apiErr);
+        message.error('Continue Scan failed: ' + (apiErr?.message || 'Backend unavailable. Please try again.'));
+        setContinueScanStatus('error');
+        return [];
       }
 
       setContinueScanProgress(90);
-      setContinueScanDetails((prev: any) => ({ ...prev, currentStage: usedLocalFallback ? 'Local fallback completed' : 'Backend selection completed', estimatedTimeRemaining: 0 }));
+      setContinueScanDetails((prev: any) => ({ ...prev, currentStage: 'Backend shared selector completed', estimatedTimeRemaining: 0 }));
 
       setPreferredContinueScanList(finalList);
       setContinueScanStatus('completed');
       setContinueScanProgress(100);
 
-      if (usedLocalFallback) { message.warning('Backend Continue Scan unavailable, using local fallback.'); }
-      console.log(`[ContinueScan] completed — ${finalList.length} candidates, source=${usedLocalFallback ? 'local_fallback' : 'backend_shared'}`);
+      console.log(`[ContinueScan] completed — ${finalList.length} candidates, source=backend_shared`);
       return finalList;
     } catch (error) {
       console.error('[ContinueScan] processing failed:', error);
       setContinueScanStatus('error'); setContinueScanProgress(0);
       return [];
     }
-  };
-
-  // Local fallback if backend continue-scan endpoint is unavailable
-  const _localContinueScanFallback = (msResults: any[]): any[] => {
-    const results: any[] = [];
-    for (const r of msResults) {
-      if (r.analysisStatus === 'failed' || r.trendLabel === 'Need Data') continue;
-      if (!r.price || r.price <= 0) continue;
-      const trend = r.trendLabel; const score = r.overallScore || r.trendScore;
-      if (trend == null || score == null) continue;
-      if (!['Bullish', 'Strong Bullish', 'Constructive', 'Neutral'].includes(trend)) continue;
-      const isBullish = trend === 'Bullish' || trend === 'Strong Bullish';
-      if (isBullish && score < 70) continue;
-      if (!isBullish && score < 80) continue;
-      if (r.eventRisk === 'High') continue;
-      const tc = trend === 'Strong Bullish' ? 35 : trend === 'Bullish' ? 25 : 15;
-      const sc = Math.round(score * 0.5);
-      const rc = r.eventRisk === 'Low' ? 12 : r.eventRisk === 'Medium' ? 6 : 0;
-      const n = r.newsSentiment || 'Neutral';
-      const nc = n === 'Positive' ? 10 : n === 'Neutral' ? 4 : n === 'Negative' ? -8 : 0;
-      const chg = r.changePct || r.changePercent || 0;
-      const cc = chg >= 3 ? 8 : chg >= 1 ? 5 : chg > 0 ? 2 : -6;
-      const vs = r.volumeStatus || 'Normal';
-      const vc = vs === 'High' ? 8 : vs === 'Normal' ? 4 : 0;
-      const p = Math.max(0, Math.min(100, tc + sc + rc + nc + cc + vc));
-      if (p >= 60) {
-        results.push({ ...r, includeInContinueScan: true, priorityScore: p,
-          priorityBreakdown: { trend: tc, score: sc, risk: rc, news: nc, price: cc, volume: vc },
-          selectionReason: `[LOCAL FALLBACK] ${trend} trend, score ${score}`,
-          continueScanStatus: 'completed', reasonSource: 'local_fallback',
-          selectedBy: 'Local Fallback', continueDecisionSource: 'local_fallback',
-          continueContextUsed: false, generatedAt: new Date().toISOString() });
-      }
-    }
-    results.sort((a, b) => b.priorityScore - a.priorityScore);
-    return results.slice(0, 20);
   };
 
   // AI生成selection reason的函数
@@ -2406,6 +2564,36 @@ const Agent: React.FC = (): React.ReactElement => {
         const price           = msPrice ?? 0;
         const volume          = ms?.volume || 0;
         const companyName     = ms?.companyName || c.companyName || '';
+        const msDataQuality   = ms?.dataQuality || c.dataQuality || '';
+        const dq = String(msDataQuality).toLowerCase();
+
+        // ===== DATA QUALITY GATE (mirrors backend _pa_fine_scan_headless Gate 1) =====
+        // Symbols with insufficient market data skip AI analysis entirely.
+        if (dq === 'unavailable' || dq === 'need_data' || dq === 'failed' || dq === 'partial') {
+          console.log('[FINE SCAN] dataQuality gate blocked symbol=%s dq=%s', symbol, dq);
+          const blockedResult = {
+            symbol,
+            companyName: companyName || (symbol + ' Inc.'),
+            scanStatus: 'completed',
+            decision: 'NeedMoreData',
+            decisionReason: 'Insufficient market data quality (' + dq + ')',
+            decisionSource: 'data_quality_gate',
+            fineScanSource: 'frontend_manual',
+            dataQuality: msDataQuality,
+            trendLabel: trendLabel || 'Need Data',
+            overallScore: score,
+            price,
+            volume,
+            changePct: priceChange,
+            sector,
+            risk,
+            newsSentiment,
+            volumeStatus,
+          };
+          results.push(blockedResult);
+          setFineScanMessage(`[${i+1}/${candidateCount}] ${symbol}: Blocked — data quality ${dq}`);
+          return;
+        }
 
         // ===== DEBUG LOG: first 3 candidates =====
         if (i < 3) {
@@ -3499,6 +3687,13 @@ const Agent: React.FC = (): React.ReactElement => {
   const entryPlanRiskPerTrade = riskProfile === 'low' ? 0.5 : riskProfile === 'high' ? 1.5 : 1.0;
   // Derived from pipelineMode + tradeMode
   const entryPlanExecutionMode = pipelineMode === 'ai'
+    ? (tradeMode === 'paper' ? 'AI Auto Paper' : 'AI Auto Live')
+    : tradeMode === 'real'
+      ? 'Real Trade if Triggered'
+      : 'Paper Trade if Triggered';
+  // Unified execution mode derivation — matches backend _pa_run_pipeline
+  // Manual → Recommend Only; all other modes: paper → Paper Trade, real → Real Trade
+  const entryPlanApiExecutionMode = pipelineMode === 'manual'
     ? 'Recommend Only'
     : tradeMode === 'real'
       ? 'Real Trade if Triggered'
@@ -3509,6 +3704,14 @@ const Agent: React.FC = (): React.ReactElement => {
   const [executeTarget, setExecuteTarget] = useState<any>(null);
   const [executeLoading, setExecuteLoading] = useState(false);
   const [liveConfirmText, setLiveConfirmText] = useState('');
+  const autoEntryPlanExecuteKeysRef = useRef<Set<string>>(new Set());
+  // Track symbols the user explicitly removed — prevents useEffect from re-adding in the same pipeline run
+  const removedSymbolsRef = useRef<Set<string>>(new Set());
+  // Ref mirror of aiExecutionList for reading latest state inside callbacks without stale closure
+  const aiExecutionListRef = useRef<any[]>([]);
+  // Incremented on each new Entry Plan run; compared against the generation when Clear was last pressed
+  const entryPlanGenerationRef = useRef<number>(0);
+  const clearedAtGenerationRef = useRef<number>(-1);
 
   // ===== AI Execution Order State =====
   const [executionLog, setExecutionLog] = useState<any[]>([]);
@@ -3539,6 +3742,14 @@ const Agent: React.FC = (): React.ReactElement => {
   useEffect(() => {
     scannerStateStore.setAiExecutionCandidates(aiExecutionList);
   }, [aiExecutionList]);
+  // Flush pending saves before page unload to prevent data loss from debounce
+  useEffect(() => {
+    const handleBeforeUnload = () => { scannerStateStore.flushPendingSave(); };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, []);
+  // Keep ref mirror in sync during render (before effects) so callbacks always read latest state
+  aiExecutionListRef.current = aiExecutionList;
 
   // ===== Collapsible Stage Sections Expanded State =====
   const [scannerExpanded, setScannerExpanded] = useState(false);
@@ -3551,14 +3762,15 @@ const Agent: React.FC = (): React.ReactElement => {
   const [exitScanExpanded, setExitScanExpanded] = useState(false);
 
   const handleEntryPlanAction = (plan: any) => {
-    const fa = plan.finalAction;
+    const action = getEntryPlanEffectiveAction(plan);
     const aiDecision = plan.aiDecision;
-    const rg = plan.riskGate || plan.hardRiskGate || {};
     const dq = plan.dataQuality;
     const tr = plan.tradeReadiness;
 
-    if (fa === 'Blocked by Risk' || rg.status === 'BLOCK' || dq === 'POOR') {
-      const blockers = plan.blockers || rg.blockers || ['Unknown blocker'];
+    if (action === 'BLOCKED_BY_RISK' || action === 'NEED_DATA' || hasEntryPlanHardBlock(plan) || dq === 'POOR') {
+      const blockers = action === 'NEED_DATA'
+        ? [getEntryPlanUnavailableReason(plan) || 'Entry plan data unavailable']
+        : [getEntryPlanActionTooltip(plan) || 'Unknown blocker'];
       Modal.warning({
         title: 'Blocked',
         content: `Cannot execute: ${blockers.slice(0, 3).join('; ')}`,
@@ -3566,19 +3778,19 @@ const Agent: React.FC = (): React.ReactElement => {
       return;
     }
 
-    if (fa === 'SKIP' || aiDecision === 'SKIP') {
+    if (action === 'SKIP' || aiDecision === 'SKIP') {
       message.info('Skipped — no action needed');
       return;
     }
 
-    if (fa === 'Wait for Entry' || tr === 'WAIT') {
+    if (action === 'WAIT_FOR_ENTRY' || tr === 'WAIT') {
       // Add to watchlist
       addToWatchlist(plan);
       return;
     }
 
-    if (fa === 'Buy Ready' || fa === 'Ready for Review') {
-      if (fa === 'Ready for Review') {
+    if (action === 'BUY_READY' || action === 'READY_REVIEW') {
+      if (action === 'READY_REVIEW') {
         // AI mode: Ready for Review auto-executes via pipeline — skip confirmation modal
         if (pipelineMode === 'ai') {
           setExecuteTarget(plan);
@@ -3604,13 +3816,6 @@ const Agent: React.FC = (): React.ReactElement => {
         });
         return;
       }
-      if (entryPlanExecutionMode === 'Recommend Only') {
-        Modal.info({
-          title: 'Recommend Only Mode',
-          content: 'Order preview only — no order will be submitted. Switch to Paper Trading or Live Trading to execute.',
-        });
-        return;
-      }
       // Open confirmation modal
       setExecuteTarget(plan);
       setLiveConfirmText('');
@@ -3625,8 +3830,8 @@ const Agent: React.FC = (): React.ReactElement => {
         setupType: plan.setup,
         aiDecision: plan.aiDecision,
         confidence: plan.confidence,
-        entryZoneLow: plan.entryZoneLow,
-        entryZoneHigh: plan.entryZoneHigh,
+        entryZoneLow: getEntryPlanZone(plan).low,
+        entryZoneHigh: getEntryPlanZone(plan).high,
         trigger: plan.triggerCondition || '',
         stopLoss: plan.stopLoss,
         takeProfit1: plan.takeProfit1,
@@ -3899,9 +4104,11 @@ const Agent: React.FC = (): React.ReactElement => {
 
   // Run Exit Scan
   const [exitScanRunning, setExitScanRunning] = useState(false);
+  const exitScanInFlightRef = useRef(false);
 
-  const runExitScan = useCallback(async (options?: { autoSubmit?: boolean; mode?: 'paper' | 'real'; holdingsOverride?: any[] }) => {
-    if (exitScanRunning) return [];
+  const runExitScan = useCallback(async (options?: { autoSubmit?: boolean; mode?: 'paper' | 'real'; holdingsOverride?: any[]; suppressDiscord?: boolean }) => {
+    if (exitScanInFlightRef.current || exitScanRunning) return [];
+    exitScanInFlightRef.current = true;
     // Use holdingsOverride if provided, then ref (always fresh), then closure variable as fallback
     const holdingsToScan = options?.holdingsOverride || holdingsRef.current || holdings;
     const exitScanMode = options?.mode || tradeMode;
@@ -3914,9 +4121,11 @@ const Agent: React.FC = (): React.ReactElement => {
     if (holdingsToScan.length === 0) {
       console.log('[ExitScan] skip reason=no_current_holdings');
       setExitScanStatus('skipped');
+      exitScanInFlightRef.current = false;
       return [];
     }
-    const shouldAutoSubmit = options?.autoSubmit !== false; // default true
+    // Only auto-submit sell orders in AI mode; Hybrid/Manual are review-only
+    const shouldAutoSubmit = options?.autoSubmit !== false && pipelineMode === 'ai';
 
     // Check for already-submitted exit orders to prevent duplicates
     const existingExitOrderSymbols = new Set([
@@ -3983,57 +4192,133 @@ const Agent: React.FC = (): React.ReactElement => {
           continue;
         }
 
-        // Auto-submit for non-user-marked positions (ai_managed, unknown, manual)
-        if (shouldAutoSubmit && (evalResult.decision === 'sell_now' || evalResult.decision === 'place_target_limit')) {
+        // Auto-submit for non-user-marked positions (paper and real both auto-submit in AI mode)
+        if (shouldAutoSubmit &&
+            (evalResult.decision === 'sell_now' || evalResult.decision === 'place_target_limit' || evalResult.decision === 'hold')) {
           try {
-            // Validate sellable quantity (fractional shares supported)
             const sellQty = Number(position.qty) || 0;
             if (sellQty <= 0) {
               result.status = 'failed';
               result.error = `Invalid sell quantity: ${position.qty}`;
-              message.error(`Exit order skipped for ${symbol}: ${result.error}`);
               results.push(result);
               continue;
             }
 
-            const orderPayload: any = {
-              mode: exitScanMode,
-              symbol,
-              side: 'sell',
-              qty: sellQty,
-              type: evalResult.orderType || 'market',
-              time_in_force: 'gtc',
-              confirmed: pipelineMode === 'ai',
-            };
+            const tpPrice = evalResult.targetPrice || result.entryPlanTarget;
+            const slPrice = evalResult.stopPrice || result.entryPlanStop;
 
-            // Simple limit/market sell — bracket orders are for buy-side only on Alpaca
-            if (evalResult.orderType === 'limit' && evalResult.exitPrice) {
-              orderPayload.limit_price = Math.round(Number(evalResult.exitPrice) * 100) / 100;
-            }
-
-            const res = await tradingAccountAPI.placeOrder(orderPayload);
-            if (res.data.success) {
-              result.status = 'submitted';
-              result.alpacaOrderId = res.data.order?.id;
-              scannerStateStore.addSubmittedExitOrder({
-                symbol,
-                orderId: res.data.order?.id || '',
-                orderType: evalResult.orderType || 'market',
-                exitPrice: evalResult.exitPrice,
-                submittedAt: new Date().toISOString(),
-              });
-              message.success(`Exit order submitted: ${symbol} ${evalResult.orderType} sell ${sellQty} shares`);
-            } else if (res.data.status === 'confirmation_required') {
-              // Real trading requires confirmation — mark as pending confirmation
-              result.status = 'pending_confirm';
-              result.reason = res.data.message || 'Real trading requires confirmation';
-              message.warning(`Exit order for ${symbol} requires confirmation. Please review in Execution panel.`);
+            if (evalResult.decision === 'sell_now') {
+              // Immediate market sell — price below stop
+              const orderPayload: any = {
+                mode: exitScanMode, symbol, side: 'sell', qty: sellQty,
+                type: 'market', time_in_force: 'day', confirmed: true,
+              };
+              const res = await tradingAccountAPI.placeOrder(orderPayload);
+              if (res.data.success) {
+                result.status = 'submitted';
+                result.alpacaOrderId = res.data.order?.id;
+                result.orderType = 'market';
+                scannerStateStore.addSubmittedExitOrder({ symbol, orderId: res.data.order?.id || '', orderType: 'market', submittedAt: new Date().toISOString() });
+                message.success(`Exit order submitted: ${symbol} market sell ${sellQty} shares`);
+              } else {
+                result.status = 'failed';
+                result.error = res.data.message || res.data.error || 'Market sell failed';
+              }
+            } else if (evalResult.decision === 'place_target_limit' && tpPrice && tpPrice > 0) {
+              // Take-profit limit sell
+              const orderPayload: any = {
+                mode: exitScanMode, symbol, side: 'sell', qty: sellQty,
+                type: 'limit', limit_price: Math.round(Number(tpPrice) * 100) / 100,
+                time_in_force: 'day', confirmed: true,
+              };
+              const res = await tradingAccountAPI.placeOrder(orderPayload);
+              if (res.data.success) {
+                result.status = 'submitted';
+                result.alpacaOrderId = res.data.order?.id;
+                result.orderType = 'limit';
+                result.exitPrice = tpPrice;
+                result.reason = `Take-profit limit sell at $${tpPrice.toFixed(2)}`;
+                scannerStateStore.addSubmittedExitOrder({ symbol, orderId: res.data.order?.id || '', orderType: 'limit', exitPrice: tpPrice, submittedAt: new Date().toISOString() });
+                message.success(`Exit: ${symbol} take-profit limit sell ${sellQty} @ $${tpPrice.toFixed(2)}`);
+              } else {
+                result.status = 'failed';
+                result.error = res.data.message || res.data.error || 'Limit sell failed';
+              }
+            } else if (evalResult.decision === 'hold' && tpPrice && tpPrice > 0 && slPrice && slPrice > 0) {
+              // Position between stop and target — place OCO exit: take-profit limit + stop-loss stop
+              const tpLimit = Math.round(Number(tpPrice) * 100) / 100;
+              const slStop = Math.round(Number(slPrice) * 100) / 100;
+              const orderPayload: any = {
+                mode: exitScanMode, symbol, side: 'sell', qty: sellQty,
+                type: 'limit', limit_price: tpLimit,
+                time_in_force: 'day', confirmed: true,
+                order_class: 'oco',
+                take_profit: { limit_price: tpLimit },
+                stop_loss: { stop_price: slStop },
+              };
+              try {
+                const res = await tradingAccountAPI.placeOrder(orderPayload);
+                if (res.data.success) {
+                  result.status = 'submitted';
+                  result.alpacaOrderId = res.data.order?.id;
+                  result.orderType = 'oco';
+                  result.exitPrice = tpLimit;
+                  result.stopPrice = slStop;
+                  result.reason = `OCO exit: TP limit $${tpLimit.toFixed(2)} / SL stop $${slStop.toFixed(2)}`;
+                  scannerStateStore.addSubmittedExitOrder({ symbol, orderId: res.data.order?.id || '', orderType: 'oco', exitPrice: tpLimit, submittedAt: new Date().toISOString() });
+                  message.success(`Exit: ${symbol} OCO TP $${tpLimit.toFixed(2)} / SL $${slStop.toFixed(2)}`);
+                } else if (res.data.status === 'confirmation_required') {
+                  result.status = 'pending_confirm';
+                  result.reason = res.data.message || 'Real trading requires confirmation';
+                } else {
+                  // OCO rejected — fall back to simple limit sell
+                  const errDetail = res.data.message || res.data.error || 'OCO rejected';
+                  console.warn(`[ExitScan] ${symbol} OCO rejected, falling back to limit sell: ${errDetail}`);
+                  const fbRes = await tradingAccountAPI.placeOrder({
+                    mode: exitScanMode, symbol, side: 'sell', qty: sellQty,
+                    type: 'limit', limit_price: tpLimit, time_in_force: 'day', confirmed: true,
+                  });
+                  if (fbRes.data.success) {
+                    result.status = 'submitted';
+                    result.alpacaOrderId = fbRes.data.order?.id;
+                    result.orderType = 'limit';
+                    result.exitPrice = tpLimit;
+                    result.reason = `Take-profit limit sell at $${tpLimit.toFixed(2)} (OCO unavailable: ${errDetail})`;
+                    scannerStateStore.addSubmittedExitOrder({ symbol, orderId: fbRes.data.order?.id || '', orderType: 'limit', exitPrice: tpLimit, submittedAt: new Date().toISOString() });
+                    message.success(`Exit: ${symbol} limit sell ${sellQty} @ $${tpLimit.toFixed(2)} (OCO fallback)`);
+                  } else {
+                    result.status = 'failed';
+                    result.error = `OCO and limit fallback both failed: ${errDetail}`;
+                  }
+                }
+              } catch (ocoErr: any) {
+                // OCO threw — try fallback limit sell
+                console.warn(`[ExitScan] ${symbol} OCO exception, falling back to limit sell:`, ocoErr.message);
+                try {
+                  const fbRes = await tradingAccountAPI.placeOrder({
+                    mode: exitScanMode, symbol, side: 'sell', qty: sellQty,
+                    type: 'limit', limit_price: tpLimit, time_in_force: 'day', confirmed: true,
+                  });
+                  if (fbRes.data.success) {
+                    result.status = 'submitted';
+                    result.alpacaOrderId = fbRes.data.order?.id;
+                    result.orderType = 'limit';
+                    result.exitPrice = tpLimit;
+                    result.reason = `Take-profit limit sell (OCO fallback)`;
+                    message.success(`Exit: ${symbol} limit sell (OCO fallback)`);
+                  } else {
+                    result.status = 'failed';
+                    result.error = fbRes.data.message || 'OCO and limit fallback failed';
+                  }
+                } catch (fbErr: any) {
+                  result.status = 'failed';
+                  result.error = fbErr?.message || 'OCO and fallback both failed';
+                }
+              }
             } else {
-              const errDetail = res.data.message || res.data.error || 'Order failed';
-              result.status = 'failed';
-              result.error = errDetail;
-              console.error(`[ExitScan] ${symbol} order rejected:`, JSON.stringify(res.data, null, 2));
-              message.error(`Exit order failed for ${symbol}: ${errDetail}`, 8);
+              // hold with incomplete stop/target — monitoring only
+              result.status = 'monitoring';
+              result.reason = `Monitoring only — ${!tpPrice || tpPrice <= 0 ? 'target unavailable' : ''}${(!tpPrice || tpPrice <= 0) && (!slPrice || slPrice <= 0) ? ', ' : ''}${!slPrice || slPrice <= 0 ? 'stop unavailable' : ''}`;
             }
           } catch (e: any) {
             const errBody = e?.response?.data;
@@ -4043,10 +4328,6 @@ const Agent: React.FC = (): React.ReactElement => {
             console.error(`[ExitScan] ${symbol} order error:`, errBody || e);
             message.error(`Exit order error for ${symbol}: ${errDetail}`, 8);
           }
-        } else if (!shouldAutoSubmit && (evalResult.decision === 'sell_now' || evalResult.decision === 'place_target_limit')) {
-          // Hybrid/pipeline mode — generate plan but don't submit
-          result.status = 'pending';
-          result.reason = `${evalResult.reason} — awaiting manual confirmation`;
         } else if (evalResult.decision === 'hold') {
           result.status = 'no_order';
         } else if (evalResult.decision === 'manual_review') {
@@ -4062,42 +4343,47 @@ const Agent: React.FC = (): React.ReactElement => {
       setExitScanStatus('completed');
       message.success(`Exit Scan completed: ${results.length} positions scanned`);
       const actionableExitSignals = results.filter(r => r.exitDecision === 'sell_now' || r.exitDecision === 'place_target_limit');
-      notificationAPI.sendDiscordEvent('exit_scan', {
-        event_id: `exit-scan-${Date.now()}-${results.length}`,
-        mode: exitScanMode,
-        holdingsScanned: results.length,
-        sellCount: results.filter(r => r.exitDecision === 'sell_now').length,
-        reduceCount: results.filter(r => r.exitDecision === 'place_target_limit').length,
-        holdCount: results.filter(r => r.exitDecision === 'hold' || r.status === 'no_order').length,
-        signals: actionableExitSignals.slice(0, 8).map(r => ({
-          symbol: r.symbol,
-          action: r.exitDecision === 'sell_now' ? 'SELL' : 'REDUCE',
-          reason: r.reason,
-          currentPrice: r.currentPrice,
-          target: r.entryPlanTarget,
-          stop: r.entryPlanStop,
-        })),
-      }).catch(() => {});
+      if (!options?.suppressDiscord) {
+        notificationAPI.sendDiscordEvent('exit_scan', {
+          event_id: `exit-scan-${Date.now()}-${results.length}`,
+          mode: exitScanMode,
+          holdingsScanned: results.length,
+          sellCount: results.filter(r => r.exitDecision === 'sell_now').length,
+          reduceCount: results.filter(r => r.exitDecision === 'place_target_limit').length,
+          holdCount: results.filter(r => r.exitDecision === 'hold' || r.status === 'no_order').length,
+          signals: actionableExitSignals.slice(0, 8).map(r => ({
+            symbol: r.symbol,
+            action: r.exitDecision === 'sell_now' ? 'SELL' : 'REDUCE',
+            reason: r.reason,
+            currentPrice: r.currentPrice,
+            target: r.entryPlanTarget,
+            stop: r.entryPlanStop,
+          })),
+        }).catch(() => {});
+      }
       return [...results];
     } catch (e: any) {
       setExitScanStatus('failed');
       message.error(`Exit Scan failed: ${e?.message || 'Unknown error'}`);
-      notificationAPI.sendDiscordEvent('error', {
-        event_id: `exit-scan-error-${Date.now()}`,
-        step: 'Exit Scan',
-        status: 'failed',
-        reason: e?.message || 'Unknown error',
-        action: 'Review holdings, Alpaca configuration, and exit scan inputs.',
-      }).catch(() => {});
+      if (!options?.suppressDiscord) {
+        notificationAPI.sendDiscordEvent('error', {
+          event_id: `exit-scan-error-${Date.now()}`,
+          step: 'Exit Scan',
+          status: 'failed',
+          reason: e?.message || 'Unknown error',
+          action: 'Review holdings, Alpaca configuration, and exit scan inputs.',
+        }).catch(() => {});
+      }
       return [];
     } finally {
+      exitScanInFlightRef.current = false;
       setExitScanRunning(false);
       // Refresh holdings if any orders were submitted
       if (results.some(r => r.status === 'submitted')) {
         setTimeout(() => fetchHoldings(), 2000);
       }
     }
-  }, [exitScanRunning, holdings, submittedExitOrders, openSellOrders, tradeMode, entryPlanResultsBySymbol, getPositionSource, evaluateExitPlan, setExitScanStatus, setExitScanResults, fetchHoldings]);
+  }, [exitScanRunning, holdings, submittedExitOrders, openSellOrders, tradeMode, pipelineMode, entryPlanResultsBySymbol, getPositionSource, evaluateExitPlan, setExitScanStatus, setExitScanResults, fetchHoldings]);
 
   // ===== AI Watchlist Functions =====
   const fetchAiWatchlist = async () => {
@@ -4195,19 +4481,21 @@ const Agent: React.FC = (): React.ReactElement => {
 
     const ep = entryPlanResultsBySymbol[symbol] || normalizeWatchlistToEntryPlan(item);
     const recommendedShares = ep.positionSizeShares || item.shares || item.positionSizeShares || 0;
-    const entryPrice = ep.entryZoneHigh || ep.entryZoneLow || item.entryZoneHigh || item.entryZoneLow || item.currentPrice || 0;
+    const { low: entryLow, high: entryHigh } = getEntryPlanZone(ep);
+    const entryPrice = entryHigh || entryLow || getEntryPlanCurrentPrice(ep) || getEntryPlanCurrentPrice(item) || 0;
 
     const executionItem = {
       symbol,
       // Entry plan data
       setup: ep.setup || item.setup || item.setupType,
-      entryZoneLow: ep.entryZoneLow || item.entryZoneLow,
-      entryZoneHigh: ep.entryZoneHigh || item.entryZoneHigh,
+      entryZoneLow: entryLow,
+      entryZoneHigh: entryHigh,
       stopLoss: ep.stopLoss || item.stopLoss,
       takeProfit1: ep.takeProfit1 || item.takeProfit1,
       riskReward1: ep.riskReward1 || item.riskReward1 || item.riskReward,
       confidence: ep.confidence || item.confidence,
       aiDecision: ep.aiDecision || item.aiDecision,
+      riskGate: ep.riskGate || item.riskGate || undefined,
       riskGateStatus: (ep.riskGate || {}).status || ep.riskGateStatus || item.riskGateStatus,
       dataQuality: ep.dataQuality || item.dataQuality,
       positionSizeShares: recommendedShares,
@@ -4242,9 +4530,9 @@ const Agent: React.FC = (): React.ReactElement => {
   const getWatchlistReadiness = (item: any): string => {
     const rg = (item.riskGateStatus || '').toUpperCase();
     const ai = (item.aiDecision || '').toUpperCase();
-    const fa = (item.finalAction || '').toUpperCase();
+    const action = getEntryPlanEffectiveAction(item);
 
-    if (rg === 'BLOCK' || fa === 'Blocked by Risk') return 'Blocked';
+    if (rg === 'BLOCK' || action === 'BLOCKED_BY_RISK') return 'Blocked';
     if (rg === 'FAIL') return 'Blocked';
 
     // Watch-to-Validate source: only Ready if gate PASS
@@ -4254,27 +4542,21 @@ const Agent: React.FC = (): React.ReactElement => {
 
     if (ai === 'SKIP') return 'Blocked';
 
-    // Ready for Review or Buy Ready with in-zone = Ready
-    if (fa === 'Ready for Review' || fa === 'Buy Ready') {
-      const price = item.currentPrice;
-      const lo = item.entryZoneLow;
-      const hi = item.entryZoneHigh;
-      if (price && lo && hi && price >= lo && price <= hi) return 'Ready';
-      return 'Waiting Entry';
-    }
+    if (action === 'NEED_DATA') return 'Stale';
+    if (action === 'BUY_READY' || action === 'READY_REVIEW') return isEntryPlanInZone(item) ? 'Ready' : 'Waiting Entry';
+    if (action === 'WAIT_FOR_ENTRY') return 'Waiting Entry';
 
     if (ai === 'WATCH' || ai === 'WAIT') return 'Waiting Entry';
 
     if (ai === 'BUY' && rg === 'PASS') {
-      const price = item.currentPrice;
-      const lo = item.entryZoneLow;
-      const hi = item.entryZoneHigh;
+      const price = getEntryPlanCurrentPrice(item);
+      const { low: lo, high: hi } = getEntryPlanZone(item);
       if (price && lo && hi && price >= lo && price <= hi) return 'Ready';
       if (price && lo && hi) return 'Waiting Entry'; // price outside zone
       return 'Waiting Entry'; // missing price data
     }
 
-    if (!item.currentPrice && !item.entryZoneLow) return 'Stale';
+    if (!getEntryPlanCurrentPrice(item) && getEntryPlanZone(item).low == null) return 'Stale';
     return 'Waiting Entry';
   };
 
@@ -4358,12 +4640,11 @@ const Agent: React.FC = (): React.ReactElement => {
 
     setExecuteLoading(true);
     try {
+      const normalizedPlan = getEntryPlanExecutionSnapshot(plan);
       const res = await entryPlanAPI.execute({
         symbol: plan.symbol,
         planSnapshot: {
-          ...plan,
-          riskGate: plan.riskGate || plan.hardRiskGate,
-          shares: plan.positionSizeShares || plan.shares,
+          ...normalizedPlan,
           orderPreview: orderPreview,
         },
         executionMode: isLive ? 'live' : 'paper',
@@ -4386,6 +4667,271 @@ const Agent: React.FC = (): React.ReactElement => {
       setExecuteLoading(false);
     }
   };
+
+  const getEntryPlanAutoExecuteKey = useCallback((plan: any): string => {
+    const symbol = String(plan?.symbol || '').toUpperCase();
+    const { low, high } = getEntryPlanZone(plan);
+    const current = getEntryPlanCurrentPrice(plan);
+    const stop = toEntryPlanNumber(plan?.stopLoss ?? plan?.stop);
+    const target = toEntryPlanNumber(plan?.takeProfit1 ?? plan?.takeProfit ?? plan?.target);
+    const shares = toEntryPlanNumber(plan?.positionSizeShares ?? plan?.shares);
+    return [symbol, current, low, high, stop, target, shares, getEntryPlanEffectiveAction(plan)]
+      .map(v => v == null ? 'na' : String(v))
+      .join('|');
+  }, []);
+
+  const getEntryPlanClientOrderId = useCallback((plan: any, key: string, retryCount?: number): string => {
+    const symbol = String(plan?.symbol || 'UNKNOWN').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8) || 'UNKNOWN';
+    let hash = 0;
+    for (let i = 0; i < key.length; i += 1) {
+      hash = ((hash * 31) + key.charCodeAt(i)) >>> 0;
+    }
+    const suffix = retryCount && retryCount > 0 ? `-r${retryCount}` : '';
+    return `alphalab-ui-${symbol}-${hash.toString(36)}${suffix}`.slice(0, 48);
+  }, []);
+
+  const upsertAutoExecutionItem = useCallback((plan: any, patch: any) => {
+    const symbol = String(plan?.symbol || '').toUpperCase();
+    if (!symbol) return;
+    setAiExecutionList(prev => {
+      const existingIndex = prev.findIndex(item => String(item.symbol || '').toUpperCase() === symbol && item.source === 'entry-plan-auto');
+      const zone = getEntryPlanZone(plan);
+      const _stop = toEntryPlanNumber(plan?.stopLoss ?? plan?.stop);
+      const _target = toEntryPlanNumber(plan?.takeProfit1 ?? plan?.takeProfit ?? plan?.target);
+      const _entry = toEntryPlanNumber(plan?.entryZoneLow ?? plan?.entryLow ?? plan?.entryZone?.low) ?? toEntryPlanNumber(plan?.entryZoneHigh ?? plan?.entryHigh ?? plan?.entryZone?.high);
+      const _rr = plan.riskReward1 ?? (_stop && _target && _entry && _stop > 0 && _target > 0 && _entry > 0 ? Math.abs(_target - _entry) / Math.abs(_entry - _stop) : null);
+      const _rg = plan.riskGate || plan.hardRiskGate || {};
+      const _rgStatus = _rg.status || plan.riskGateStatus || undefined;
+      const baseItem = {
+        id: `entry-auto-${symbol}`,
+        symbol,
+        setupType: plan.setup,
+        aiDecision: plan.aiDecision,
+        confidence: plan.confidence,
+        currentPrice: getEntryPlanCurrentPrice(plan),
+        entryZoneLow: zone.low,
+        entryZoneHigh: zone.high,
+        stopLoss: plan.stopLoss,
+        takeProfit1: plan.takeProfit1,
+        riskReward1: _rr != null && Number.isFinite(_rr) ? _rr : undefined,
+        riskGate: _rgStatus ? { ..._rg, status: _rgStatus } : undefined,
+        riskGateStatus: _rgStatus,
+        shares: plan.positionSizeShares || plan.shares || 0,
+        positionSizeShares: plan.positionSizeShares || plan.shares || 0,
+        allocationDollars: plan.allocationDollars || plan.positionValue || plan.positionSizeDollars || 0,
+        orderType: plan.orderType || plan.executionDetails?.orderPreview?.orderType || plan.orderPreview?.orderType || 'market',
+        timeInForce: plan.timeInForce || plan.executionDetails?.orderPreview?.timeInForce || plan.orderPreview?.timeInForce || 'day',
+        finalAction: plan.finalAction,
+        source: 'entry-plan-auto',
+        entryPlan: plan,
+      };
+      if (existingIndex >= 0) {
+        return prev.map((item, idx) => idx === existingIndex ? { ...item, ...baseItem, ...patch } : item);
+      }
+      return [...prev, { ...baseItem, ...patch }];
+    });
+  }, []);
+
+  const autoExecuteEntryPlan = useCallback(async (plan: any, key: string) => {
+    const symbol = String(plan?.symbol || '').toUpperCase();
+    if (!symbol) return;
+    const orderPreview = plan.executionDetails?.orderPreview || plan.orderPreview || {};
+    // Use retryCount to generate a unique clientOrderId on each retry attempt
+    // Read from state directly to avoid stale closure after Retry increments retryCount
+    const existingItem = aiExecutionListRef.current.find((item: any) => String(item.symbol || '').toUpperCase() === symbol);
+    const retryCount = (existingItem?.retryCount || 0);
+    const clientOrderId = getEntryPlanClientOrderId(plan, key, retryCount);
+    const normalizedPlan = getEntryPlanExecutionSnapshot(plan);
+    autoEntryPlanExecuteKeysRef.current.add(key);
+    upsertAutoExecutionItem(plan, {
+      executionStatus: 'auto_executing',
+      executionError: undefined,
+      autoEntryPlanKey: key,
+      clientOrderId,
+    });
+    // 30-second timeout to prevent indefinite "Auto Executing" stuck state
+    const TIMEOUT_MS = 30000;
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('TIMEOUT: Auto execute request timed out after 30s')), TIMEOUT_MS)
+    );
+    try {
+      const res = await Promise.race([
+        entryPlanAPI.execute({
+          symbol,
+          planSnapshot: {
+            ...normalizedPlan,
+            orderPreview,
+          },
+          executionMode: tradeMode === 'real' ? 'live' : 'paper',
+          liveConfirm: false,
+          confirmText: '',
+          clientOrderId,
+          isAutoExecute: true,
+        }),
+        timeoutPromise,
+      ]);
+      const d = res.data || {};
+      if (d.success && d.action === 'ORDER_SUBMITTED') {
+        const order = d.order || d.orderData || {};
+        upsertAutoExecutionItem(plan, {
+          executionStatus: 'submitted',
+          alpacaOrderId: d.orderId || order.id,
+          alpacaOrderStatus: d.orderStatus || order.status,
+          executionError: undefined,
+          autoEntryPlanKey: key,
+          clientOrderId,
+        });
+        setExecutionLog(prev => [{
+          id: d.orderId || order.id || clientOrderId,
+          symbol,
+          side: 'buy',
+          qty: plan.positionSizeShares || plan.shares || 0,
+          mode: tradeMode === 'real' ? 'live' : 'paper',
+          orderId: d.orderId || order.id,
+          orderStatus: d.orderStatus || order.status || 'submitted',
+          submittedAt: new Date().toISOString(),
+          message: d.message || `${tradeMode === 'real' ? 'Live' : 'Paper'} order placed by AI Entry Plan.`,
+        }, ...prev]);
+        message.success(`${symbol}: ${tradeMode === 'real' ? 'Live' : 'Paper'} order placed by AI mode.`);
+        setTimeout(() => fetchHoldings(tradeMode), 2000);
+      } else {
+        // Classify the blocker for appropriate UI status
+        const failReason = d.reason || (d.blockers || []).join('; ') || 'Auto execute blocked';
+        const blockerCode = d.code || '';
+        // Permanent blockers: keep key, show informational status (not red "Failed")
+        if (blockerCode === 'existing_position') {
+          upsertAutoExecutionItem(plan, {
+            executionStatus: 'holding',
+            executionError: 'Already holding — managed by Exit Scan',
+            autoEntryPlanKey: key,
+            clientOrderId,
+          });
+        } else if (blockerCode === 'open_buy_order') {
+          upsertAutoExecutionItem(plan, {
+            executionStatus: 'order_pending',
+            executionError: 'Open buy order exists — waiting for fill',
+            autoEntryPlanKey: key,
+            clientOrderId,
+          });
+        } else if (blockerCode === 'price_outside_zone') {
+          // Transient: remove key so next run can retry
+          autoEntryPlanExecuteKeysRef.current.delete(key);
+          upsertAutoExecutionItem(plan, {
+            executionStatus: 'zone_wait',
+            executionError: 'Price left entry zone — watching',
+            autoEntryPlanKey: key,
+            clientOrderId,
+          });
+        } else if (blockerCode === 'duplicate_client_order_id') {
+          // Duplicate client_order_id — remove key so Retry generates a new ID
+          autoEntryPlanExecuteKeysRef.current.delete(key);
+          upsertAutoExecutionItem(plan, {
+            executionStatus: 'blocked',
+            executionError: 'Duplicate order ID — use Retry to submit with a new ID',
+            autoEntryPlanKey: key,
+            clientOrderId,
+          });
+        } else {
+          // Other blockers (safety gate, config, etc.) — keep key, show as blocked
+          upsertAutoExecutionItem(plan, {
+            executionStatus: 'blocked',
+            executionError: failReason,
+            autoEntryPlanKey: key,
+            clientOrderId,
+          });
+        }
+        console.log('[AutoExecute] symbol=%s code=%s reason=%s', symbol, blockerCode, failReason);
+      }
+    } catch (e: any) {
+      const errData = e?.response?.data;
+      const errCode = errData?.code || '';
+      const errMsg = errData?.reason || e?.message || 'Auto execute failed';
+      // Transient errors: remove key so next run can retry
+      autoEntryPlanExecuteKeysRef.current.delete(key);
+      // Detect duplicate client_order_id — show specific message and don't auto-retry
+      const isDuplicateCid = errCode === 'duplicate_client_order_id' || /client_order_id must be unique/i.test(errMsg);
+      upsertAutoExecutionItem(plan, {
+        executionStatus: isDuplicateCid ? 'blocked' : 'failed',
+        executionError: isDuplicateCid ? 'Duplicate order ID — use Retry to submit with a new ID' : errMsg,
+        autoEntryPlanKey: key,
+        clientOrderId,
+      });
+      console.log('[AutoExecute] symbol=%s error reason=%s duplicateCid=%s', symbol, errMsg, isDuplicateCid);
+    }
+  }, [fetchHoldings, getEntryPlanClientOrderId, upsertAutoExecutionItem, tradeMode]);
+
+  useEffect(() => {
+    if (pipelineMode !== 'ai' || entryPlanStatus !== 'completed') return;
+    if (!Array.isArray(entryPlanResults) || entryPlanResults.length === 0) return;
+    // If the user clicked Clear during this Entry Plan generation, skip auto-add
+    if (clearedAtGenerationRef.current === entryPlanGenerationRef.current) return;
+    // Helpers: build orderPreview when plan lacks one (e.g. leveraged alternatives)
+    const _hasCompleteOrderPreview = (p: any) => {
+      const op = p?.executionDetails?.orderPreview || p?.orderPreview;
+      return !!(op && op.orderType && op.limitPrice > 0);
+    };
+    const _buildOrderPreview = (p: any) => {
+      const _n = (v: any) => { const n = parseFloat(v); return Number.isFinite(n) && n > 0 ? n : undefined; };
+      const lo = _n(p?.entryZoneLow ?? p?.entryLow ?? p?.entryZone?.low);
+      const hi = _n(p?.entryZoneHigh ?? p?.entryHigh ?? p?.entryZone?.high);
+      const cur = _n(p?.currentPrice ?? p?.price);
+      const limit = (cur != null && hi != null) ? Math.min(cur, hi) : (cur ?? hi ?? 0);
+      return { orderType: 'limit', limitPrice: limit, timeInForce: 'day', entryZoneLow: lo, entryZoneHigh: hi };
+    };
+    const _hasCriticalFields = (p: any) => {
+      const _n = (v: any) => { const n = parseFloat(v); return Number.isFinite(n) && n > 0; };
+      return _n(p?.entryZoneLow ?? p?.entryLow ?? p?.entryZone?.low)
+        && _n(p?.entryZoneHigh ?? p?.entryHigh ?? p?.entryZone?.high)
+        && _n(p?.currentPrice ?? p?.price)
+        && _n(p?.stopLoss ?? p?.stop)
+        && _n(p?.takeProfit1 ?? p?.takeProfit ?? p?.target)
+        && _n(p?.positionSizeShares ?? p?.shares);
+    };
+    // Also check persisted removed symbols (survives page refresh)
+    const persistedRemoved = new Set(scannerStateStore.getRemovedExecutionSymbols());
+    for (const plan of entryPlanResults) {
+      const symbol = String(plan?.symbol || '').toUpperCase();
+      // Skip symbols the user explicitly removed in this run or persisted from before refresh
+      if (removedSymbolsRef.current.has(symbol)) { console.log('[AutoExecPipeline] skip symbol=%s reason=user_removed', symbol); continue; }
+      if (persistedRemoved.has(symbol)) { console.log('[AutoExecPipeline] skip symbol=%s reason=persisted_removed', symbol); continue; }
+      const _rawAction = getEntryPlanEffectiveAction(plan);
+      const _isLev = plan?.isLeveraged || plan?.isLeveragedAlternative;
+      // Leveraged ETF promotion: in AI mode, allow auto-execution when gates pass
+      // Patch finalAction so downstream helpers (getEntryPlanExecutionSnapshot, API execute) see BUY_READY
+      const _effPlan = (_isLev && _rawAction === 'READY_REVIEW')
+        ? { ...plan, finalAction: 'BUY_READY' }
+        : plan;
+      if (!symbol || getEntryPlanEffectiveAction(_effPlan) !== 'BUY_READY') { console.log('[AutoExecPipeline] skip symbol=%s reason=not_BUY_READY action=%s', symbol, _rawAction); continue; }
+      const key = getEntryPlanAutoExecuteKey(_effPlan);
+      if (autoEntryPlanExecuteKeysRef.current.has(key)) { console.log('[AutoExecPipeline] skip symbol=%s reason=already_processed_key', symbol); continue; }
+      if (hasEntryPlanHardBlock(_effPlan)) { console.log('[AutoExecPipeline] skip symbol=%s reason=hard_block', symbol); continue; }
+      const normalizedPlan = getEntryPlanExecutionSnapshot(_effPlan);
+      // Allow PARTIAL data quality when all critical trading fields are present
+      const dq = normalizedPlan.dataQuality;
+      if (dq !== 'GOOD' && !(dq === 'PARTIAL' && _hasCriticalFields(_effPlan))) {
+        console.log('[AutoExecPipeline] skip symbol=%s reason=data_quality=%s', symbol, dq);
+        continue;
+      }
+      if (normalizedPlan.tradeReadiness !== 'READY') {
+        console.log('[AutoExecPipeline] skip symbol=%s reason=trade_readiness=%s', symbol, normalizedPlan.tradeReadiness);
+        continue;
+      }
+      const shares = toEntryPlanNumber(_effPlan.positionSizeShares ?? _effPlan.shares);
+      const allocation = toEntryPlanNumber(_effPlan.allocationDollars ?? _effPlan.positionValue ?? _effPlan.positionSizeDollars);
+      const buyingPower = toEntryPlanNumber(tradingAccountData?.buyingPower);
+      const hasPosition = (holdingsRef.current || holdings || []).some((p: any) => String(p.symbol || '').toUpperCase() === symbol);
+      const hasActiveExecution = aiExecutionList.some((item: any) => (
+        String(item.symbol || '').toUpperCase() === symbol &&
+        ['auto_executing', 'submitted', 'pending', 'filled'].includes(item.executionStatus || '')
+      ));
+      if (!shares || shares <= 0) { console.log('[AutoExecPipeline] skip symbol=%s reason=shares_invalid=%s', symbol, shares); continue; }
+      if (buyingPower != null && allocation != null && allocation > buyingPower) { console.log('[AutoExecPipeline] skip symbol=%s reason=insufficient_bp allocation=%s bp=%s', symbol, allocation, buyingPower); continue; }
+      if (hasPosition || hasActiveExecution) { console.log('[AutoExecPipeline] skip symbol=%s reason=duplicate hasPosition=%s hasActiveExecution=%s', symbol, hasPosition, hasActiveExecution); continue; }
+      // Ensure plan has orderPreview (leveraged alternatives may lack it)
+      const _planForExec = _hasCompleteOrderPreview(_effPlan) ? _effPlan : { ..._effPlan, executionDetails: { ...(_effPlan.executionDetails || {}), orderPreview: _buildOrderPreview(_effPlan) } };
+      autoExecuteEntryPlan(_planForExec, key);
+    }
+  }, [aiExecutionList, autoExecuteEntryPlan, entryPlanResults, entryPlanStatus, getEntryPlanAutoExecuteKey, holdings, pipelineMode, tradeMode, tradingAccountData]);
 
   // ===== AI Execution Order Handler =====
   const getAutomationMode = (): string => {
@@ -4685,6 +5231,9 @@ const Agent: React.FC = (): React.ReactElement => {
   const _getEntryPlanCandidatesFromStore = (): any[] => {
     const results = scannerStateStore.getState().deeperValidation.results;
     if (!results || results.length === 0) return [];
+    // Exclude symbols that already have existing positions or open buy orders
+    const _holdSyms = new Set((holdingsRef.current || holdings || []).map((p: any) => String(p.symbol || '').toUpperCase()));
+    const _excludedHolds: string[] = [];
     const _normalize = (v: any) => String(v || '').trim();
     const eligible = new Set(['confirmed', 'pass', 'watch', 'review', 'needs manual review', 'manual review', 'readyreview', 'ready_review']);
     const ineligible = new Set(['blocked', 'reject', 'rejected', 'avoid', 'needdata', 'need_data', 'error']);
@@ -4694,12 +5243,21 @@ const Agent: React.FC = (): React.ReactElement => {
       const rawV = _normalize(r.finalVerdict || r.verdict || r.aiValidationVerdict || r.localVerdictBeforeAI || r.decision || '');
       const v = rawV.toLowerCase();
       if (ineligible.has(v)) continue;
+      const sym = String(r.symbol || '').toUpperCase();
+      if (_holdSyms.has(sym)) {
+        _excludedHolds.push(sym);
+        console.log('[EntryPlanCandidates] excluded symbol=%s reason=existing_position', sym);
+        continue;
+      }
       if (eligible.has(v)) {
         const note = v === 'watch' ? 'Conservative / Watch Only'
           : v === 'review' || v.includes('review') ? 'Review Required'
           : v === 'pass' || v === 'confirmed' ? '' : '';
         candidates.push({ ...r, _planNote: note || undefined });
       }
+    }
+    if (_excludedHolds.length > 0) {
+      console.log('[EntryPlanCandidates] excluded positions: %s', _excludedHolds.join(', '));
     }
     return candidates.slice(0, 8);
   };
@@ -4715,10 +5273,16 @@ const Agent: React.FC = (): React.ReactElement => {
     const epPromise = _runEntryPlanLoop(candidates);
     registerEntryPlanRun(epPromise);
     await epPromise;
-  }, [getEntryPlanCandidates, entryPlanAccountSize, entryPlanRiskPerTrade, entryPlanExecutionMode, tradeMode, tradingAccountData]);
+  }, [getEntryPlanCandidates, entryPlanAccountSize, entryPlanRiskPerTrade, entryPlanApiExecutionMode, tradeMode, tradingAccountData]);
 
-  const _runEntryPlanLoop = async (candidates: any[]): Promise<any[]> => {
+  const _runEntryPlanLoop = async (candidates: any[], options?: { suppressDiscord?: boolean }): Promise<any[]> => {
     let _epResult: any[] = [];
+    // New Entry Plan run: reset all execution guards so candidates can be freshly generated
+    entryPlanGenerationRef.current += 1;
+    clearedAtGenerationRef.current = -1;
+    removedSymbolsRef.current.clear();
+    autoEntryPlanExecuteKeysRef.current.clear();
+    scannerStateStore.clearRemovedExecutionSymbols();
     setEntryPlanStatus('loading');
     setEntryPlanResults(null);
 
@@ -4788,17 +5352,25 @@ const Agent: React.FC = (): React.ReactElement => {
         fineScanNews: c.fineScanNews || '',
         entryQualityDetail: c.entryQualityDetail || '',
       }));
-      const existingPositions: string[] = [];
+      // Pass actual holdings so backend can filter existing positions and open orders
+      const existingPositions: string[] = (holdingsRef.current || holdings || []).map((p: any) => String(p.symbol || '').toUpperCase());
       const dailyLoss = 0;
       // Use real account data: buyingPower > equity > portfolioValue > fallback
       const realAccountSize = tradingAccountData?.success
         ? (tradingAccountData.portfolioValue ?? tradingAccountData.equity ?? tradingAccountData.buyingPower ?? entryPlanAccountSize)
         : entryPlanAccountSize;
-      const res = await entryPlanAPI.generate(
-        candidateData, realAccountSize, entryPlanRiskPerTrade, 10,
-        existingPositions, dailyLoss, existingPositions, entryPlanExecutionMode, tradeMode,
-        riskProfile, timeHorizon
-      );
+      const res = options?.suppressDiscord
+        ? await api.post('/ai/entry-plan', {
+            candidates: candidateData, accountSize: realAccountSize, riskPerTradePct: entryPlanRiskPerTrade,
+            maxPositionPct: 10, existingPositions, dailyLoss, holdingSymbols: existingPositions,
+            executionMode: entryPlanApiExecutionMode, accountMode: tradeMode, riskProfile, timeHorizon,
+            suppressDiscord: true,
+          })
+        : await entryPlanAPI.generate(
+            candidateData, realAccountSize, entryPlanRiskPerTrade, 10,
+            existingPositions, dailyLoss, existingPositions, entryPlanApiExecutionMode, tradeMode,
+            riskProfile, timeHorizon
+          );
       if (res.data?.success && res.data?.plans) {
         // Propagate isDevTest flag from DV candidates to Entry Plan results
         const devTestSymbols = new Set(candidates.filter((c: any) => c.isDevTest).map((c: any) => c.symbol));
@@ -4854,11 +5426,18 @@ const Agent: React.FC = (): React.ReactElement => {
           const realAccountSize = tradingAccountData?.success
             ? (tradingAccountData.portfolioValue ?? tradingAccountData.equity ?? tradingAccountData.buyingPower ?? entryPlanAccountSize)
             : entryPlanAccountSize;
-          const res = await entryPlanAPI.generate(
-            candidateData, realAccountSize, entryPlanRiskPerTrade, 10,
-            [], 0, [], entryPlanExecutionMode, tradeMode,
-            riskProfile, timeHorizon
-          );
+          const res = options?.suppressDiscord
+            ? await api.post('/ai/entry-plan', {
+                candidates: candidateData, accountSize: realAccountSize, riskPerTradePct: entryPlanRiskPerTrade,
+                maxPositionPct: 10, existingPositions: [], dailyLoss: 0, holdingSymbols: [],
+                executionMode: entryPlanApiExecutionMode, accountMode: tradeMode, riskProfile, timeHorizon,
+                suppressDiscord: true,
+              })
+            : await entryPlanAPI.generate(
+                candidateData, realAccountSize, entryPlanRiskPerTrade, 10,
+                [], 0, [], entryPlanApiExecutionMode, tradeMode,
+                riskProfile, timeHorizon
+              );
           if (res.data?.success && res.data?.plans) {
             const devTestSymbols = new Set(candidates.filter((c: any) => c.isDevTest).map((c: any) => c.symbol));
             const enrichedPlans = res.data.plans.map((p: any) => ({
@@ -4971,6 +5550,17 @@ const Agent: React.FC = (): React.ReactElement => {
     const dq = ep.dataQuality || 'N/A';
     const dqColor = dq === 'GOOD' ? '#52c41a' : dq === 'FAIR' ? '#faad14' : '#ff4d4f';
     const rgColor = rg.status === 'PASS' ? '#52c41a' : rg.status === 'REVIEW' ? '#faad14' : '#ff4d4f';
+    const action = getEntryPlanEffectiveAction(ep);
+    const zone = getEntryPlanZone(ep);
+    const actionLabelMap: Record<string, string> = {
+      BUY_READY: 'BUY READY',
+      READY_REVIEW: 'READY REVIEW',
+      WAIT_FOR_ENTRY: 'WAIT ENTRY',
+      BLOCKED_BY_RISK: 'BLOCKED',
+      NEED_DATA: 'NEED DATA',
+      SKIP: 'SKIP',
+    };
+    const actionColor = action === 'BUY_READY' ? '#52c41a' : action === 'READY_REVIEW' ? '#1890ff' : action === 'WAIT_FOR_ENTRY' || action === 'NEED_DATA' ? '#faad14' : '#ff4d4f';
     
     const Section = ({ title, icon, children, last }: { title: string; icon?: React.ReactNode; children: React.ReactNode; last?: boolean }) => (
       <div style={{ 
@@ -5054,7 +5644,7 @@ const Agent: React.FC = (): React.ReactElement => {
         {/* Content Sections */}
         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
           <Section title={t.agent.epDecisionSetup} icon={<CheckCircleOutlined style={{ fontSize: 14 }} />}>
-            <DetailItem label={t.agent.finalAction} value={ep.finalAction === 'Blocked by Risk' ? 'Blocked by Risk' : ep.finalAction === 'BUY' ? 'Buy' : ep.finalAction === 'WAIT' ? 'Wait' : ep.finalAction} color={ep.finalAction === 'Buy Ready' ? '#52c41a' : ep.finalAction === 'Wait for Entry' ? '#1890ff' : '#ff4d4f'} boldValue />
+            <DetailItem label={t.agent.finalAction} value={actionLabelMap[action] || action || 'N/A'} color={actionColor} boldValue />
             <DetailItem label={t.agent.aiDecision} value={ep.aiDecision === 'SKIP' ? 'Skip' : ep.aiDecision === 'BUY' ? 'Buy' : ep.aiDecision === 'WATCH' ? 'Watch' : ep.aiDecision} color={ep.aiDecision === 'BUY' ? '#52c41a' : '#faad14'} />
             <DetailItem label={t.agent.confidence} value={ep.confidence ? `${ep.confidence}%` : 'N/A'} color={ep.confidence >= 80 ? '#52c41a' : '#1890ff'} />
             <DetailItem label={t.agent.readiness} value={ep.tradeReadiness === 'BLOCKED' ? 'Blocked' : ep.tradeReadiness === 'READY' ? 'Ready' : ep.tradeReadiness === 'WAITING' ? 'Waiting' : ep.tradeReadiness} color={readinessColor} />
@@ -5063,7 +5653,7 @@ const Agent: React.FC = (): React.ReactElement => {
           </Section>
 
           <Section title={t.agent.epEntryExitLevels} icon={<LineChartOutlined style={{ fontSize: 14 }} />}>
-            <DetailItem label={t.agent.entryZone} value={ep.entryZoneLow && ep.entryZoneHigh ? `$${ep.entryZoneLow.toFixed(2)} – $${ep.entryZoneHigh.toFixed(2)}` : 'N/A'} boldValue />
+            <DetailItem label={t.agent.entryZone} value={zone.low != null && zone.high != null ? `$${zone.low.toFixed(2)} - $${zone.high.toFixed(2)}` : 'N/A'} boldValue />
             <DetailItem label={t.agent.trigger} value={ep.triggerCondition} info="Conditions to trigger execution" />
             <DetailItem label={t.agent.stopLoss} value={ep.stopLoss ? `$${ep.stopLoss.toFixed(2)}` : 'N/A'} color="#ff4d4f" boldValue />
             <DetailItem label={t.agent.takeProfit1} value={ep.takeProfit1 ? `$${ep.takeProfit1.toFixed(2)}` : 'N/A'} color="#52c41a" />
@@ -5128,7 +5718,7 @@ const Agent: React.FC = (): React.ReactElement => {
         )}
 
         {/* Leveraged ETF Alternative Suggestion (High Risk + Soft Blockers) */}
-        {riskProfile === 'high' && (ep.finalAction === 'SKIP' || ep.finalAction === 'Blocked by Risk') && !ep.isLeveragedAlternative && (
+        {riskProfile === 'high' && (action === 'SKIP' || action === 'BLOCKED_BY_RISK') && !ep.isLeveragedAlternative && (
           <LeveragedETFSuggestion symbol={ep.symbol} currentPrice={ep.currentPrice} plan={ep} />
         )}
 
@@ -5231,8 +5821,8 @@ const Agent: React.FC = (): React.ReactElement => {
     setup: item.setup || item.setupType,
     nextStep: item.nextStep,
     // Entry / Exit levels
-    entryZoneLow: item.entryZoneLow,
-    entryZoneHigh: item.entryZoneHigh,
+    entryZoneLow: getEntryPlanZone(item).low,
+    entryZoneHigh: getEntryPlanZone(item).high,
     triggerCondition: item.triggerCondition || item.trigger,
     invalidationCondition: item.invalidationCondition || item.invalidationComment,
     stopLoss: item.stopLoss,
@@ -5275,6 +5865,10 @@ const Agent: React.FC = (): React.ReactElement => {
 
   // ── Run Auto Pipeline Now (background auto-run, does NOT touch manual state) ──
   const handleRunAutoNow = async () => {
+    if (runAutoNowInFlightRef.current || pipelineAutoLoading) {
+      message.warning('Auto pipeline request is already in progress.');
+      return;
+    }
     if (pipelineRunning) {
       message.warning('Manual pipeline is running. Please wait for it to complete.');
       return;
@@ -5283,11 +5877,23 @@ const Agent: React.FC = (): React.ReactElement => {
       message.warning('Auto pipeline is already running.');
       return;
     }
+    runAutoNowInFlightRef.current = true;
     setPipelineAutoLoading(true);
     try {
-      // Save current config first so backend uses same settings as scheduler
+      // Save current context so scheduled runs use the same settings as the UI.
+      // Ensures riskProfile / timeHorizon / pipelineMode / tradeMode are persisted
+      // before the auto pipeline reads them via _pa_resolve_auto_run_context.
       const intervalMap: Record<string, number> = { '15m': 15, '30m': 30, '1h': 60, '2h': 120 };
-      await pipelineAutoAPI.saveConfig({ enabled: true, intervalMinutes: intervalMap[pipelineSchedule] || 15, mode: pipelineMode, riskProfile, timeHorizon, tradeMode });
+      const scheduleEnabled = pipelineSchedule !== 'off';
+      await pipelineAutoAPI.saveConfig({
+        enabled: scheduleEnabled,
+        intervalMinutes: scheduleEnabled ? intervalMap[pipelineSchedule] || 15 : null,
+        mode: pipelineMode,
+        riskProfile,
+        timeHorizon,
+        tradeMode,
+      });
+      console.log('[AutoPipelineNow] saved config mode=%s risk=%s horizon=%s trade=%s', pipelineMode, riskProfile, timeHorizon, tradeMode);
       const res = await pipelineAutoAPI.runNow({});
       if (!res?.data?.success) {
         throw new Error(res?.data?.message || res?.data?.error || 'Failed to start auto pipeline');
@@ -5299,6 +5905,7 @@ const Agent: React.FC = (): React.ReactElement => {
       console.log('[AutoPipelineNow] failed: %s', e.message);
       message.error(e.message || 'Failed to start auto pipeline');
     } finally {
+      runAutoNowInFlightRef.current = false;
       setPipelineAutoLoading(false);
     }
   };
@@ -5412,7 +6019,7 @@ const Agent: React.FC = (): React.ReactElement => {
         console.log('[ManualPipeline] step=entry_plan candidates=%d', epCandidates.length);
         setPipelineStage('Entry Plan');
         try {
-          await _runEntryPlanLoop(epCandidates);
+          await _runEntryPlanLoop(epCandidates, { suppressDiscord: true });
           if (pipelineStopRequestedRef.current) { scannerStateStore.updateEntryPlan({ status: 'stopped' }); throw new Error('STOPPED'); }
           console.log('[ManualPipeline] entry_plan completed');
         } catch (epErr: any) {
@@ -5423,7 +6030,7 @@ const Agent: React.FC = (): React.ReactElement => {
       // Step 6: Exit Scan
       console.log('[ManualPipeline] step=exit_scan frontend');
       setPipelineStage('Exit Scan');
-      await runExitScan({ autoSubmit: false }); // Manual Pipeline: preview-only, never submit orders
+      await runExitScan({ autoSubmit: false, suppressDiscord: true }); // Manual Pipeline: preview-only, never submit orders or Discord notifications
       if (pipelineStopRequestedRef.current) { scannerStateStore.updateExitScan({ status: 'stopped' }); throw new Error('STOPPED'); }
       console.log('[ManualPipeline] exit_scan completed');
 
@@ -6983,7 +7590,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                       Modal.confirm({
                         title: t.agent.clearWatchlist,
                         content: t.agent.clearWatchlistConfirm,
-                        onOk: () => { setAiExecutionList([]); scannerStateStore.clearAiExecutionCandidates(); }
+                        onOk: () => { clearedAtGenerationRef.current = entryPlanGenerationRef.current; autoEntryPlanExecuteKeysRef.current.clear(); aiExecutionList.forEach((item: any) => { const sym = String(item.symbol || '').toUpperCase(); if (sym) { removedSymbolsRef.current.add(sym); scannerStateStore.addRemovedExecutionSymbol(sym); } }); setAiExecutionList([]); scannerStateStore.clearAiExecutionCandidates(); scannerStateStore.flushPendingSave(); }
                       });
                     }} 
                     style={{ fontWeight: 600, fontSize: 13, background: 'rgba(255, 77, 79, 0.1)', border: '1px solid rgba(255, 77, 79, 0.2)', borderRadius: 8, height: 32 }}
@@ -7027,20 +7634,32 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           ) : (
             <div className="execution-table-container" style={{ width: '100%', overflowX: 'auto' }}>
               <style>{`
-                .execution-table .ant-table-thead > tr > th { 
-                  background: var(--app-card-bg-soft) !important; 
-                  padding: 12px 16px !important; 
+                .execution-table .ant-table-thead > tr > th {
+                  background: var(--app-card-bg-soft) !important;
+                  padding: 10px 12px !important;
                   color: var(--app-text-muted) !important;
                   font-weight: 700 !important;
-                  font-size: 11px !important;
+                  font-size: 10px !important;
                   letter-spacing: 0.5px !important;
                   border-bottom: 1px solid var(--app-border-soft) !important;
+                  white-space: nowrap !important;
                 }
-                .execution-table .ant-table-tbody > tr > td { padding: 12px 16px !important; border-bottom: 1px solid var(--app-border-soft) !important; }
+                .execution-table .ant-table-tbody > tr > td {
+                  padding: 10px 12px !important;
+                  border-bottom: 1px solid var(--app-border-soft) !important;
+                  vertical-align: top !important;
+                  overflow: hidden !important;
+                }
                 .execution-row:hover > td { background-color: rgba(82, 196, 26, 0.1) !important; }
                 .execution-row-expanded > td { background-color: var(--app-card-bg-soft) !important; }
                 .execution-log-row > td { padding: 8px 12px !important; border-bottom: 1px solid var(--app-border-soft) !important; }
-                .ant-table-fixed-right { background: var(--app-card-bg) !important; }
+                .execution-table .ant-table-fixed-right {
+                  background: var(--app-card-bg) !important;
+                  box-shadow: -6px 0 12px -4px rgba(0,0,0,0.08) !important;
+                }
+                .execution-table .ant-table-cell-fix-right-first::after {
+                  box-shadow: none !important;
+                }
               `}</style>
               <Table
                 className="execution-table"
@@ -7048,7 +7667,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 rowKey={(r: any) => r.symbol + (r.addedAt || '')}
                 size="middle"
                 pagination={false}
-                scroll={{ x: 1600 }}
+                scroll={{ x: 1960 }}
                 style={{ fontSize: '12px' }}
               rowClassName={(record) => record.id === expandedRows[0] ? 'execution-row execution-row-expanded' : 'execution-row'}
               expandable={{
@@ -7062,7 +7681,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.colSymbol}</span>,
                   dataIndex: 'symbol',
                   key: 'symbol',
-                  width: 90,
+                  width: 120,
                   fixed: 'left' as const,
                   render: (text: string) => (
                     <span style={{ fontWeight: 800, fontSize: 15, color: 'var(--app-text-strong)', letterSpacing: '-0.2px' }}>{text}</span>
@@ -7071,20 +7690,20 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 {
                   title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.setup}</span>,
                   key: 'setup',
-                  width: 120,
+                  width: 220,
+                  ellipsis: true,
                   render: (r: any) => {
                     const s = r.setup || r.setupType || 'N/A';
                     const color = s.includes('Pullback') ? 'gold' : s.includes('Breakout') ? 'purple' : s.includes('Range') ? 'green' : 'blue';
-                    return <Tag color={color} style={{ fontSize: 9, fontWeight: 700, borderRadius: 4 }}>{s.toUpperCase()}</Tag>;
+                    return <Tag color={color} style={{ fontSize: 9, fontWeight: 700, borderRadius: 4, maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={s.toUpperCase()}>{s.toUpperCase()}</Tag>;
                   },
                 },
                 {
                   title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.entryZone}</span>,
                   key: 'entryZone',
-                  width: 140,
+                  width: 180,
                   render: (r: any) => {
-                    const lo = r.entryZoneLow;
-                    const hi = r.entryZoneHigh;
+                    const { low: lo, high: hi } = getEntryPlanZone(r);
                     if (!lo && !hi) return <span style={{ color: '#d1d5db' }}>—</span>;
                     return <span style={{ fontSize: 12, color: 'var(--app-text-strong)', fontWeight: 600 }}>${(lo || 0).toFixed(2)} – ${(hi || 0).toFixed(2)}</span>;
                   },
@@ -7092,7 +7711,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 {
                   title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.colStop} / {t.agent.colTargets}</span>,
                   key: 'levels',
-                  width: 130,
+                  width: 170,
                   render: (r: any) => (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                       <span style={{ color: 'rgba(239, 68, 68, 0.8)', fontSize: 11, fontWeight: 700 }}>S: ${(r.stopLoss || 0).toFixed(2)}</span>
@@ -7102,24 +7721,38 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 },
                 {
                   title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.riskReward}</span>,
-                  dataIndex: 'riskReward1',
                   key: 'riskReward1',
-                  width: 65,
-                  render: (v: number | null) => v ? <span style={{ fontWeight: 700, color: v >= 2 ? '#10b981' : 'var(--app-text-muted)', fontSize: 12 }}>{v.toFixed(1)}x</span> : <span style={{ color: '#d1d5db' }}>—</span>,
+                  width: 140,
+                  render: (r: any) => {
+                    const v = r.riskReward1 || (() => {
+                      const stop = toEntryPlanNumber(r.stopLoss ?? r.entryPlan?.stopLoss);
+                      const target = toEntryPlanNumber(r.takeProfit1 ?? r.entryPlan?.takeProfit1);
+                      const entry = toEntryPlanNumber(r.entryZoneLow ?? r.entryZoneHigh ?? r.entryPlan?.entryZoneLow ?? r.entryPlan?.entryZoneHigh);
+                      if (stop && target && entry && stop > 0 && target > 0 && entry > 0 && entry !== stop) {
+                        return Math.abs(target - entry) / Math.abs(entry - stop);
+                      }
+                      return null;
+                    })();
+                    return v ? <span style={{ fontWeight: 700, color: v >= 2 ? '#10b981' : 'var(--app-text-muted)', fontSize: 12 }}>{v.toFixed(1)}x</span> : <span style={{ color: '#d1d5db' }} title="Stop/target/entry data needed">N/A</span>;
+                  },
                 },
                 {
                   title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.colAIDecision} / {t.agent.colGate}</span>,
                   key: 'aiGate',
-                  width: 140,
+                  width: 220,
                   render: (r: any) => {
                     const d = r.aiDecision || 'WATCH';
-                    const s = (r.riskGate || r.hardRiskGate || {}).status || r.riskGateStatus || 'N/A';
+                    const s = (r.riskGate || r.hardRiskGate || {}).status || r.riskGateStatus || '';
                     const dCol = d === 'BUY' ? 'green' : d === 'WATCH' ? 'gold' : 'red';
-                    const sCol = s === 'PASS' ? 'green' : s === 'REVIEW' ? 'gold' : 'red';
+                    const sCol = s === 'PASS' ? 'green' : s === 'REVIEW' ? 'gold' : s ? 'red' : 'default';
                     return (
-                      <div style={{ display: 'flex', gap: 4 }}>
-                        <Tag color={dCol} bordered={false} style={{ fontSize: 9, margin: 0, fontWeight: 800, borderRadius: 4, width: 45, textAlign: 'center' }}>{translateStatus(d)}</Tag>
-                        <Tag color={sCol} bordered={false} style={{ fontSize: 9, margin: 0, fontWeight: 800, borderRadius: 4, width: 60, textAlign: 'center' }}>{t.agent.riskGate}:{translateStatus(s)}</Tag>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
+                        <Tag color={dCol} bordered={false} style={{ fontSize: 9, margin: 0, fontWeight: 800, borderRadius: 4, width: 'fit-content', maxWidth: 80, textAlign: 'center' }}>{translateStatus(d)}</Tag>
+                        {s ? (
+                          <Tag color={sCol} bordered={false} style={{ fontSize: 9, margin: 0, fontWeight: 800, borderRadius: 4, width: 'fit-content', maxWidth: 120, textAlign: 'center' }}>{t.agent.riskGate}: {translateStatus(s)}</Tag>
+                        ) : (
+                          <Tag bordered={false} style={{ fontSize: 9, margin: 0, fontWeight: 600, borderRadius: 4, width: 'fit-content', maxWidth: 120, textAlign: 'center', color: '#9ca3af', background: 'var(--app-card-bg-soft)' }}>Risk Gate: Pending</Tag>
+                        )}
                       </div>
                     );
                   },
@@ -7127,7 +7760,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 {
                   title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.recommendation}</span>,
                   key: 'recommendedShares',
-                  width: 70,
+                  width: 170,
                   render: (r: any) => {
                     const rec = r.positionSizeShares || r.entryPlan?.positionSizeShares || 0;
                     return rec > 0
@@ -7327,22 +7960,28 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 {
                   title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.orderStatus}</span>,
                   key: 'executionStatus',
-                  width: 110,
+                  width: 120,
                   render: (r: any) => {
                     const status = r.executionStatus || 'draft';
                     const statusMap: Record<string, { color: string; label: string }> = {
                       draft: { color: 'orange', label: t.agent.draft },
                       pending: { color: 'processing', label: t.agent.pending },
                       submitted: { color: 'success', label: t.agent.submitted },
+                      auto_executing: { color: 'processing', label: 'Auto Executing' },
                       filled: { color: 'green', label: t.agent.filled },
                       failed: { color: 'error', label: t.agent.failed },
                       canceled: { color: 'default', label: t.agent.canceled },
+                      holding: { color: 'blue', label: 'Holding' },
+                      order_pending: { color: 'processing', label: 'Order Pending' },
+                      zone_wait: { color: 'warning', label: 'Zone Wait' },
+                      blocked: { color: 'orange', label: 'Blocked' },
                     };
                     const s = statusMap[status] || statusMap.draft;
+                    const isInfoStatus = ['holding', 'order_pending', 'zone_wait', 'blocked'].includes(status);
                     return (
                       <div style={{ display: 'flex', flexDirection: 'column' }}>
                         <Tag color={s.color} bordered={false} style={{ fontSize: 9, margin: 0, padding: '0 8px', fontWeight: 800, borderRadius: 4, width: 'fit-content' }}>{s.label}</Tag>
-                        {r.executionError && <div style={{ fontSize: 9, color: '#ff4d4f', marginTop: 4, maxWidth: 100, fontWeight: 500 }} title={r.executionError}>{r.executionError}</div>}
+                        {r.executionError && <div style={{ fontSize: 9, color: isInfoStatus ? '#9ca3af' : '#ff4d4f', marginTop: 4, maxWidth: 120, fontWeight: 500 }} title={r.executionError}>{r.executionError}</div>}
                         {r.alpacaOrderId && <div style={{ fontSize: 9, color: '#9ca3af', marginTop: 2, fontFamily: 'monospace' }}>{r.alpacaOrderId.slice(0, 10)}</div>}
                       </div>
                     );
@@ -7351,18 +7990,26 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 {
                   title: '',
                   key: 'action',
-                  width: 140,
+                  width: 170,
                   fixed: 'right' as const,
                   render: (r: any) => {
                     const autoMode = getAutomationMode();
                     const isExecuting = executingSymbol === r.symbol;
                     const status = r.executionStatus || 'draft';
                     const handleRemove = () => {
+                      removedSymbolsRef.current.add(r.symbol.toUpperCase());
+                      autoEntryPlanExecuteKeysRef.current.delete(r.autoEntryPlanKey || '');
                       setAiExecutionList(prev => prev.filter(e => e.symbol !== r.symbol));
                       scannerStateStore.removeAiExecutionCandidate(r.symbol);
+                      scannerStateStore.addRemovedExecutionSymbol(r.symbol);
+                      scannerStateStore.flushPendingSave();
                     };
 
                     // Active order — show Cancel + note
+                    if (status === 'auto_executing') {
+                      return <Tag color="processing" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 700 }}>Auto Executing</Tag>;
+                    }
+
                     if (status === 'submitted' || status === 'pending') {
                       return (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -7393,8 +8040,11 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                             loading={isExecuting}
                             style={{ borderRadius: 6, height: 26, fontSize: 11, fontWeight: 600, width: '100%' }}
                             onClick={() => {
+                              autoEntryPlanExecuteKeysRef.current.delete(r.autoEntryPlanKey || '');
+                              removedSymbolsRef.current.delete(r.symbol.toUpperCase());
+                              scannerStateStore.removeRemovedExecutionSymbol(r.symbol);
                               setAiExecutionList(prev => prev.map(item =>
-                                item.symbol === r.symbol ? { ...item, executionStatus: 'draft', executionError: undefined } : item
+                                item.symbol === r.symbol ? { ...item, executionStatus: 'draft', executionError: undefined, retryCount: (item.retryCount || 0) + 1 } : item
                               ));
                             }}
                           >
@@ -7423,6 +8073,60 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                         >
                           Remove
                         </Button>
+                      );
+                    }
+
+                    // Holding — managed by Exit Scan, remove only
+                    if (status === 'holding') {
+                      return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center' }}>
+                          <Tag color="blue" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 700, fontSize: 10 }}>Managed by Exit Scan</Tag>
+                          <Button size="small" icon={<DeleteOutlined />} style={{ borderRadius: 6, height: 24, fontSize: 10, fontWeight: 600, width: '100%' }} onClick={handleRemove}>Remove</Button>
+                        </div>
+                      );
+                    }
+
+                    // Order Pending — waiting for fill, remove only
+                    if (status === 'order_pending') {
+                      return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center' }}>
+                          <Tag color="processing" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 700, fontSize: 10 }}>Waiting for Fill</Tag>
+                          <Button size="small" icon={<DeleteOutlined />} style={{ borderRadius: 6, height: 24, fontSize: 10, fontWeight: 600, width: '100%' }} onClick={handleRemove}>Remove</Button>
+                        </div>
+                      );
+                    }
+
+                    // Zone Wait — price left entry zone, can retry
+                    if (status === 'zone_wait') {
+                      return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          <Tag color="warning" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 700, fontSize: 10 }}>Watching</Tag>
+                          <Button size="small" icon={<DeleteOutlined />} style={{ borderRadius: 6, height: 24, fontSize: 10, fontWeight: 600, width: '100%' }} onClick={handleRemove}>Remove</Button>
+                        </div>
+                      );
+                    }
+
+                    // Blocked — safety gate failed, can retry
+                    if (status === 'blocked') {
+                      return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          <Button
+                            size="small"
+                            loading={isExecuting}
+                            style={{ borderRadius: 6, height: 26, fontSize: 11, fontWeight: 600, width: '100%' }}
+                            onClick={() => {
+                              autoEntryPlanExecuteKeysRef.current.delete(r.autoEntryPlanKey || '');
+                              removedSymbolsRef.current.delete(r.symbol.toUpperCase());
+                              scannerStateStore.removeRemovedExecutionSymbol(r.symbol);
+                              setAiExecutionList(prev => prev.map(item =>
+                                item.symbol === r.symbol ? { ...item, executionStatus: 'draft', executionError: undefined, retryCount: (item.retryCount || 0) + 1 } : item
+                              ));
+                            }}
+                          >
+                            Retry
+                          </Button>
+                          <Button size="small" icon={<DeleteOutlined />} style={{ borderRadius: 6, height: 24, fontSize: 10, fontWeight: 600, width: '100%' }} onClick={handleRemove}>Remove</Button>
+                        </div>
                       );
                     }
 
@@ -7526,7 +8230,8 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           const ep = entryPlanResultsBySymbol[r.symbol] || normalizeWatchlistToEntryPlan(r);
           const isReal = tradeMode === 'real';
           const recShares = r.positionSizeShares || ep.positionSizeShares || 0;
-          const entryPrice = modalLimitPrice || modalStopPrice || ep.entryZoneHigh || ep.entryZoneLow || 0;
+          const { low: confirmEntryLow, high: confirmEntryHigh } = getEntryPlanZone(ep);
+          const entryPrice = modalLimitPrice || modalStopPrice || confirmEntryHigh || confirmEntryLow || 0;
 
           // Estimated cost from modal state
           const estShares = modalQtyMode === 'dollars' ? 0 : (modalUserQty || recShares || 1);
@@ -7932,8 +8637,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     key: 'entryZone',
                     width: 150,
                     render: (record: any) => {
-                      const lo = record.entryZoneLow;
-                      const hi = record.entryZoneHigh;
+                      const { low: lo, high: hi } = getEntryPlanZone(record);
                       if (!lo && !hi) return <span style={{ color: '#d1d5db', fontSize: 12 }}>—</span>;
                       return <span style={{ fontSize: 13, color: 'var(--app-text-strong)', fontWeight: 600, fontFamily: 'Inter' }}>${(lo || 0).toFixed(2)} – ${(hi || 0).toFixed(2)}</span>;
                     },
@@ -7995,7 +8699,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                                 e.stopPropagation();
                                 openBuyModal(record.symbol, {
                                   qty: ep.positionSizeShares || record.positionSizeShares || record.shares,
-                                  limitPrice: ep.entryZoneHigh || ep.entryZoneLow || record.entryZoneHigh || record.entryZoneLow || record.currentPrice,
+                                  limitPrice: getEntryPlanZone(ep).high || getEntryPlanZone(ep).low || getEntryPlanZone(record).high || getEntryPlanZone(record).low || getEntryPlanCurrentPrice(record) || undefined,
                                   takeProfitPrice: ep.takeProfit1 || record.takeProfit1,
                                   stopLossPrice: ep.stopLoss || record.stopLoss,
                                 });
@@ -8550,14 +9254,33 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                       else if (_isSkipped) { line1Label = 'Open to fetch'; line1Color = 'var(--app-text-muted)'; }
                       else { line1Label = 'Unknown'; line1Color = 'var(--app-text-muted)'; }
 
-                      const sentimentMap: Record<string, string> = { 'Positive': 'Positive', 'Negative': 'Negative', 'Mixed': 'Mixed' };
+                      // sentiment label display – handles string labels and numeric scores (defense in depth)
+                      const _rawSent: any = sentiment;
+                      const _sentLabel: string = (() => {
+                        if (_rawSent == null) return '';
+                        if (typeof _rawSent === 'string' && _rawSent) {
+                          const s = _rawSent.charAt(0).toUpperCase() + _rawSent.slice(1).toLowerCase();
+                          if (s === 'Positive' || s === 'Negative' || s === 'Neutral' || s === 'Mixed') return s;
+                        }
+                        if (typeof _rawSent === 'number' && !isNaN(_rawSent)) {
+                          if (_rawSent > 0.2) return 'Positive';
+                          if (_rawSent < -0.2) return 'Negative';
+                          return 'Neutral';
+                        }
+                        return '';
+                      })();
+                      const _sentColorMap: Record<string, string> = {
+                        'Positive': '#4ade80',
+                        'Negative': '#ef4444',
+                        'Neutral': '#94a3b8',
+                        'Mixed': '#fbbf24',
+                      };
                       let line2Label: string, line2Color: string;
-                      const _sentLabel = sentimentMap[sentiment] || '';
-                      if (_sentLabel) { line2Label = _sentLabel; line2Color = _sentLabel === 'Positive' ? '#4ade80' : _sentLabel === 'Negative' ? '#ef4444' : '#fbbf24'; }
-                      else if (_hasNews || _isSkipped) { line2Label = 'Sent. pending'; line2Color = 'var(--app-text-muted)'; }
+                      if (_sentLabel) { line2Label = _sentLabel; line2Color = _sentColorMap[_sentLabel] || '#94a3b8'; }
+                      else if (_hasNews || _isSkipped) { line2Label = 'Sentiment pending'; line2Color = 'var(--app-text-muted)'; }
                       else if (_isRateLimited || _isNoNews || _isError) { line2Label = 'Technical only'; line2Color = 'var(--app-text-muted)'; }
                       else if (_isNotConfigured) { line2Label = 'No data'; line2Color = 'var(--app-text-muted)'; }
-                      else { line2Label = 'Sent. N/A'; line2Color = 'var(--app-text-muted)'; }
+                      else { line2Label = 'No sentiment'; line2Color = 'var(--app-text-muted)'; }
 
                       return (
                         <div>
@@ -10096,11 +10819,11 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
         }
         summaryChips={entryPlanResults && entryPlanResults.length > 0 ? [
           { label: t.agent.entryPlan, value: entryPlanResults.length },
-          { label: t.agent.buyLabel, value: entryPlanResults.filter((p: any) => p.finalAction === 'Buy Ready').length, color: '#52c41a' },
-          { label: 'Review', value: entryPlanResults.filter((p: any) => p.finalAction === 'Ready for Review').length, color: '#1890ff' },
-          { label: 'Wait', value: entryPlanResults.filter((p: any) => p.finalAction === 'Wait for Entry' || p.finalAction === 'WATCH').length, color: '#faad14' },
-          { label: 'Need Data', value: entryPlanResults.filter((p: any) => p.finalAction === 'Need Data' || p.finalAction === 'DATA_UNAVAILABLE').length, color: '#ff7a45' },
-          ...(entryPlanResults.filter((p: any) => p.finalAction === 'Blocked by Risk' || p.finalAction === 'SKIP').length > 0 ? [{ label: 'Blocked' as string, value: entryPlanResults.filter((p: any) => p.finalAction === 'Blocked by Risk' || p.finalAction === 'SKIP').length, color: '#ff4d4f' }] : []),
+          { label: t.agent.buyLabel, value: entryPlanResults.filter((p: any) => getEntryPlanEffectiveAction(p) === 'BUY_READY').length, color: '#52c41a' },
+          { label: 'Review', value: entryPlanResults.filter((p: any) => getEntryPlanEffectiveAction(p) === 'READY_REVIEW').length, color: '#1890ff' },
+          { label: 'Wait', value: entryPlanResults.filter((p: any) => getEntryPlanEffectiveAction(p) === 'WAIT_FOR_ENTRY').length, color: '#faad14' },
+          { label: 'Need Data', value: entryPlanResults.filter((p: any) => getEntryPlanEffectiveAction(p) === 'NEED_DATA').length, color: '#ff7a45' },
+          ...(entryPlanResults.filter((p: any) => ['BLOCKED_BY_RISK', 'SKIP'].includes(getEntryPlanEffectiveAction(p))).length > 0 ? [{ label: 'Blocked' as string, value: entryPlanResults.filter((p: any) => ['BLOCKED_BY_RISK', 'SKIP'].includes(getEntryPlanEffectiveAction(p))).length, color: '#ff4d4f' }] : []),
         ] : (entryPlanStatus === 'completed' ? [{ label: t.agent.entryPlan, value: 0 }, { label: 'Empty', value: 'No candidates passed DV' as string }] : undefined)}
         actionButton={
           <Tooltip title={pipelineRunning ? t.agent.pipelineDisabled : !getEntryPlanCandidates().length ? t.agent.noConfirmedOrWatch : ''}>
@@ -10200,19 +10923,19 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   <div style={{ display: 'flex', gap: '16px', alignItems: 'baseline' }}>
                     <div>
                       <div style={{ fontSize: '20px', fontWeight: 600, color: '#52c41a', fontFamily: "'Inter', sans-serif", lineHeight: '1.2' }}>
-                        {entryPlanResults.filter(p => p.hardRiskGate?.status === 'PASS').length}
+                        {entryPlanResults.filter(p => (p.riskGate || p.hardRiskGate)?.status === 'PASS').length}
                       </div>
                       <div style={{ fontSize: '10px', color: 'var(--app-text-muted)' }}>{t.agent.passed}</div>
                     </div>
                     <div>
                       <div style={{ fontSize: '20px', fontWeight: 600, color: '#fa8c16', fontFamily: "'Inter', sans-serif", lineHeight: '1.2' }}>
-                        {entryPlanResults.filter(p => p.hardRiskGate?.status === 'REVIEW').length}
+                        {entryPlanResults.filter(p => (p.riskGate || p.hardRiskGate)?.status === 'REVIEW').length}
                       </div>
                       <div style={{ fontSize: '10px', color: 'var(--app-text-muted)' }}>{t.agent.review}</div>
                     </div>
                     <div>
                       <div style={{ fontSize: '20px', fontWeight: 600, color: '#ff4d4f', fontFamily: "'Inter', sans-serif", lineHeight: '1.2' }}>
-                        {entryPlanResults.filter(p => p.hardRiskGate?.status === 'BLOCK').length}
+                        {entryPlanResults.filter(p => (p.riskGate || p.hardRiskGate)?.status === 'BLOCK').length}
                       </div>
                       <div style={{ fontSize: '10px', color: 'var(--app-text-muted)' }}>{t.agent.blocked}</div>
                     </div>
@@ -10225,19 +10948,19 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   <div style={{ display: 'flex', gap: '16px', alignItems: 'baseline' }}>
                     <div>
                       <div style={{ fontSize: '20px', fontWeight: 600, color: '#52c41a', fontFamily: "'Inter', sans-serif", lineHeight: '1.2' }}>
-                        {entryPlanResults.filter(p => p.tradeReadiness === 'READY').length}
+                        {entryPlanResults.filter(p => ['BUY_READY', 'READY_REVIEW'].includes(getEntryPlanEffectiveAction(p))).length}
                       </div>
                       <div style={{ fontSize: '10px', color: 'var(--app-text-muted)' }}>{t.agent.ready}</div>
                     </div>
                     <div>
                       <div style={{ fontSize: '20px', fontWeight: 600, color: '#fa8c16', fontFamily: "'Inter', sans-serif", lineHeight: '1.2' }}>
-                        {entryPlanResults.filter(p => p.tradeReadiness === 'WAIT').length}
+                        {entryPlanResults.filter(p => getEntryPlanEffectiveAction(p) === 'WAIT_FOR_ENTRY').length}
                       </div>
                       <div style={{ fontSize: '10px', color: 'var(--app-text-muted)' }}>{t.agent.waitLabel}</div>
                     </div>
                     <div>
                       <div style={{ fontSize: '20px', fontWeight: 600, color: '#ff4d4f', fontFamily: "'Inter', sans-serif", lineHeight: '1.2' }}>
-                        {entryPlanResults.filter(p => p.tradeReadiness === 'BLOCKED').length}
+                        {entryPlanResults.filter(p => ['BLOCKED_BY_RISK', 'NEED_DATA', 'SKIP'].includes(getEntryPlanEffectiveAction(p))).length}
                       </div>
                       <div style={{ fontSize: '10px', color: 'var(--app-text-muted)' }}>{t.agent.blockedLabel}</div>
                     </div>
@@ -10259,7 +10982,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     <span style={{ color: 'var(--app-text-muted)' }}>Risk/Trade:</span>
                     <span style={{ fontWeight: 600, color: 'var(--app-text-muted)' }}>{entryPlanRiskPerTrade}%</span>
                     <span style={{ color: 'var(--app-text-muted)' }}>Execution:</span>
-                    <span style={{ fontWeight: 600, color: entryPlanExecutionMode.includes('Real') ? '#e84749' : 'var(--app-text-muted)', fontSize: '10px' }}>{entryPlanExecutionMode}</span>
+                    <span style={{ fontWeight: 600, color: entryPlanExecutionMode.includes('Real') || entryPlanExecutionMode.includes('Live') ? '#e84749' : 'var(--app-text-muted)', fontSize: '10px' }}>{entryPlanExecutionMode}</span>
                   </div>
                 </div>
               </div>
@@ -10268,7 +10991,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
               {tradingAccountData?.buyingPower > 0 && (() => {
                 const bp = tradingAccountData.buyingPower || 0;
                 const totalAllocated = entryPlanResults
-                  .filter((p: any) => p.finalAction === 'Buy Ready' || p.finalAction === 'Ready for Review')
+                  .filter((p: any) => ['BUY_READY', 'READY_REVIEW'].includes(getEntryPlanEffectiveAction(p)))
                   .reduce((sum: number, p: any) => sum + (p.allocationDollars || p.positionSizeDollars || 0), 0);
                 const remaining = Math.max(0, bp * 0.9 - totalAllocated);
                 return (
@@ -10361,18 +11084,27 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                       const confidence = ep.confidence || ep.aiConfidence || '—';
                       const tradeReadiness = ep.tradeReadiness || '—';
 
+                      const rawCanonical = getEntryPlanEffectiveAction(ep);
+                      const _isLevCanon = ep.isLeveraged || ep.isLeveragedAlternative;
+                      // Leveraged ETF promotion in AI mode: show as BUY_READY
+                      const canonicalAction = (_isLevCanon && rawCanonical === 'READY_REVIEW' && pipelineMode === 'ai')
+                        ? 'BUY_READY' : rawCanonical;
+                      const activeAutoExecution = aiExecutionList.find((item: any) => (
+                        String(item.symbol || '').toUpperCase() === String(ep.symbol || '').toUpperCase() &&
+                        item.source === 'entry-plan-auto' &&
+                        ['auto_executing', 'submitted', 'pending', 'filled', 'failed'].includes(item.executionStatus || '')
+                      ));
                       const aiColor = (v: string) => v === 'BUY' ? '#52c41a' : v === 'WATCH' ? '#d48806' : v === 'SKIP' ? '#e84749' : undefined;
                       const dqColor = dq === 'GOOD' ? '#52c41a' : dq === 'PARTIAL' ? '#fa8c16' : '#ff4d4f';
                       const trColor = tradeReadiness === 'READY' ? '#52c41a' : tradeReadiness === 'WAIT' ? '#fa8c16' : '#ff4d4f';
                       const rgColor = rg.status === 'PASS' ? '#52c41a' : rg.status === 'REVIEW' ? '#fa8c16' : '#ff4d4f';
-                      const faColor = finalAction === 'Buy Ready' ? '#52c41a' : finalAction === 'Wait for Entry' ? '#fa8c16' : '#ff4d4f';
+                      const faColor = canonicalAction === 'BUY_READY' ? '#52c41a' : canonicalAction === 'READY_REVIEW' ? '#1890ff' : canonicalAction === 'WAIT_FOR_ENTRY' || canonicalAction === 'NEED_DATA' ? '#fa8c16' : '#ff4d4f';
 
-                      const curPrice = ep.currentPrice || ep.price;
-                      const loPrice = ep.entryLow || ep.entryZoneLow;
-                      const hiPrice = ep.entryHigh || ep.entryZoneHigh;
+                      const curPrice = getEntryPlanCurrentPrice(ep);
+                      const { low: loPrice, high: hiPrice } = getEntryPlanZone(ep);
                       let distText = '—';
                       let distColor = 'var(--app-text-muted)';
-                      if (curPrice && loPrice && hiPrice) {
+                      if (curPrice != null && loPrice != null && hiPrice != null) {
                         if (curPrice < loPrice) {
                           const diff = loPrice - curPrice;
                           const pct = (diff / curPrice) * 100;
@@ -10470,25 +11202,44 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                               <div style={{ display: 'flex', gap: '6px', marginRight: '8px' }}>
                                 <ActionBadge label={`Data: ${dq}`} color={dqColor} />
                                 <ActionBadge label={`Gate: ${rg.status || 'N/A'}`} color={rgColor} />
-                                <ActionBadge label={finalAction} color={faColor} />
+                                <ActionBadge label={canonicalAction || finalAction} color={faColor} />
                               </div>
                               <Space size={8}>
-                                <Button
-                                  size="middle"
-                                  type={finalAction === 'Buy Ready' ? 'primary' : finalAction === 'Ready for Review' ? 'primary' : 'default'}
-                                  ghost={finalAction === 'Ready for Review' && pipelineMode !== 'ai'}
-                                  danger={finalAction === 'Blocked by Risk'}
-                                  disabled={finalAction === 'SKIP' || finalAction === 'Blocked by Risk' || dq === 'POOR'}
-                                  onClick={() => handleEntryPlanAction(ep)}
-                                  style={{
-                                    fontSize: '12px',
-                                    fontWeight: 600,
-                                    borderRadius: '6px',
-                                    height: '32px'
-                                  }}
-                                >
-                                  {finalAction === 'Buy Ready' ? t.agent.epExecuteTrade : finalAction === 'Ready for Review' ? t.agent.reviewAndExecute : finalAction === 'Wait for Entry' ? t.agent.epMonitorEntry : finalAction === 'SKIP' ? t.agent.planSkipped : t.agent.epRiskBlocked}
-                                </Button>
+                                {pipelineMode === 'ai' && canonicalAction === 'BUY_READY' ? (
+                                  <Tooltip title={activeAutoExecution?.executionError || activeAutoExecution?.alpacaOrderId || `All AI ${tradeMode} auto execution is enabled for BUY_READY plans.`}>
+                                    <Button
+                                      size="middle"
+                                      type={activeAutoExecution?.executionStatus === 'failed' ? 'default' : 'primary'}
+                                      danger={activeAutoExecution?.executionStatus === 'failed'}
+                                      disabled
+                                      loading={activeAutoExecution?.executionStatus === 'auto_executing' || !activeAutoExecution}
+                                      style={{ fontSize: '12px', fontWeight: 600, borderRadius: '6px', height: '32px' }}
+                                    >
+                                      {activeAutoExecution?.executionStatus === 'submitted' || activeAutoExecution?.executionStatus === 'pending' || activeAutoExecution?.executionStatus === 'filled'
+                                        ? 'Submitted'
+                                        : activeAutoExecution?.executionStatus === 'failed'
+                                          ? 'Auto Failed'
+                                          : 'Auto Executing'}
+                                    </Button>
+                                  </Tooltip>
+                                ) : (
+                                  <Button
+                                    size="middle"
+                                    type={canonicalAction === 'BUY_READY' || canonicalAction === 'READY_REVIEW' ? 'primary' : 'default'}
+                                    ghost={canonicalAction === 'READY_REVIEW' && pipelineMode !== 'ai'}
+                                    danger={canonicalAction === 'BLOCKED_BY_RISK'}
+                                    disabled={canonicalAction === 'SKIP' || canonicalAction === 'BLOCKED_BY_RISK' || canonicalAction === 'NEED_DATA' || dq === 'POOR'}
+                                    onClick={() => handleEntryPlanAction(ep)}
+                                    style={{
+                                      fontSize: '12px',
+                                      fontWeight: 600,
+                                      borderRadius: '6px',
+                                      height: '32px'
+                                    }}
+                                  >
+                                    {canonicalAction === 'BUY_READY' ? t.agent.epExecuteTrade : canonicalAction === 'READY_REVIEW' ? t.agent.reviewAndExecute : canonicalAction === 'WAIT_FOR_ENTRY' ? t.agent.epMonitorEntry : canonicalAction === 'SKIP' ? t.agent.planSkipped : t.agent.epRiskBlocked}
+                                  </Button>
+                                )}
                                 <Button
                                   size="middle"
                                   icon={isInWatchlist(ep.symbol) ? <CheckOutlined /> : <PlusOutlined />}
@@ -10518,7 +11269,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                               <div style={{ display: 'grid', gridTemplateColumns: '95px 1fr', gap: '8px 12px', alignItems: 'baseline' }}>
                                 <Label text={t.agent.epCurrentPrice} /><Value v={curPrice != null ? `$${curPrice.toFixed(2)}` : '—'} bold color="var(--app-text-strong)" />
                                 <Label text={t.agent.distance} /><Value v={distText} color={distColor} bold />
-                                <Label text={t.agent.entryZone} /><Value v={loPrice != null ? `$${loPrice.toFixed(2)} – $${(hiPrice ?? 0).toFixed(2)}` : '—'} bold color="var(--app-text-strong)" />
+                                <Label text={t.agent.entryZone} /><Value v={loPrice != null && hiPrice != null ? `$${loPrice.toFixed(2)} - $${hiPrice.toFixed(2)}` : '—'} bold color="var(--app-text-strong)" />
                                 <Label text={t.agent.epTrigger} /><Value v={ep.triggerCondition || '—'} color="#4b5563" />
                                 <Label text={t.agent.stopLoss} /><Value v={fmtPrice(ep.stopLoss)} bold color="#dc2626" subText={`${ep.stopLossPct != null ? fmtPct(ep.stopLossPct) : 'N/A'} ${t.agent.fromEntry} ${ep.stopSource || 'entry'}`} />
                                 <Label text={t.agent.epTargets} />
@@ -10568,7 +11319,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                                 <Label text={t.agent.epAIDecision} /><Value v={ep.aiDecision || '—'} color={aiColor(ep.aiDecision)} bold />
                                 <Label text={t.agent.epConfidence} /><Value v={`${confidence}%`} bold />
                                 <Label text={t.agent.epRiskGate} /><Value v={rg.status || 'N/A'} color={rgColor} bold />
-                                <Label text={t.agent.finalAction} /><Value v={finalAction} color={faColor} bold />
+                                <Label text={t.agent.finalAction} /><Value v={canonicalAction || finalAction} color={faColor} bold />
                                 <Label text={t.agent.tradeReadinessLabel} /><Value v={tradeReadiness} color={trColor} bold />
                                 <Label text={t.agent.entryTrigger} /><Value v={ep.entryTriggerMet ? t.agent.readyOrWaiting : t.agent.waiting} color={ep.entryTriggerMet ? '#16a34a' : '#d97706'} bold />
                                 <Label text={t.agent.bestStrategy} /><Value v={ep.bestStrategy || '—'} />
@@ -10606,7 +11357,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                                   {t.agent.decisionReason} {ep.aiCalled ? '(AI)' : `(${t.agent.epLocalRules})`}
                                 </div>
                                 <div style={{ fontSize: '13px', color: 'var(--app-text-strong)', lineHeight: '1.6', background: 'var(--app-card-bg)', padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--app-card-bg-soft)' }}>
-                                  {ep.decisionReason || ep.reason || t.agent.noDetailedReasoning}
+                                  {getEntryPlanSanitizedText(ep, ep.decisionReason || ep.reason) || t.agent.noDetailedReasoning}
                                 </div>
                               </div>
                               <div>
@@ -10629,7 +11380,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                                 <div style={{ fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '6px' }}>{t.agent.riskAssessment}</div>
                                 <div style={{ background: 'var(--app-card-bg)', padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--app-card-bg-soft)', minHeight: '60px' }}>
                                   {(() => {
-                                    const warnings = rg.warnings || [];
+                                    const warnings = (rg.warnings || []).map((r: string) => getEntryPlanSanitizedText(ep, r)).filter(Boolean);
                                     if (warnings.length === 0) return <div style={{ color: '#9ca3af', fontStyle: 'italic', fontSize: '12px' }}>{t.agent.noRiskWarnings}</div>;
                                     return warnings.slice(0, 4).map((r: string, i: number) => (
                                       <div key={i} style={{ marginBottom: '3px', color: '#4b5563', fontSize: '12px', display: 'flex', gap: '6px' }}>
@@ -10640,11 +11391,11 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                                 </div>
                               </div>
                               
-                              {(ep.blockers || rg.blockers || []).length > 0 && (
+                              {getEntryPlanFilteredBlockers(ep).length > 0 && (
                                 <div style={{ background: 'rgba(239, 68, 68, 0.1)', padding: '8px 12px', borderRadius: '6px', border: '1px solid rgba(239, 68, 68, 0.2)' }}>
                                   <div style={{ fontSize: '10px', fontWeight: 700, color: 'var(--app-text-strong)', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '6px' }}>{t.agent.criticalBlockers}</div>
                                   {(() => {
-                                    const blockers = ep.blockers || rg.blockers || [];
+                                    const blockers = getEntryPlanFilteredBlockers(ep);
                                     return blockers.slice(0, 4).map((r: string, i: number) => (
                                       <div key={i} style={{ marginBottom: '2px', color: '#991b1b', fontSize: '12px', fontWeight: 500, display: 'flex', gap: '6px' }}>
                                         <span>✕</span> <span>{r}</span>
@@ -10713,14 +11464,13 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                       key: 'currentPrice',
                       width: 120,
                       render: (record) => {
-                        const p = record.currentPrice || record.price;
-                        const lo = record.entryLow || record.entryZoneLow;
-                        const hi = record.entryHigh || record.entryZoneHigh;
+                        const p = getEntryPlanCurrentPrice(record);
+                        const { low: lo, high: hi } = getEntryPlanZone(record);
                         if (!p) return <span style={{ fontSize: '11px', color: '#bbb' }}>N/A</span>;
                         
                         let distShort = '';
                         let distColor = '#aaa';
-                        if (lo && hi) {
+                        if (lo != null && hi != null) {
                           if (p < lo) {
                             const pct = ((lo - p) / p) * 100;
                             distShort = `▼ ${pct.toFixed(1)}%`;
@@ -10746,9 +11496,17 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     {
                       title: t.agent.colEntryZone,
                       key: 'entryZone',
-                      width: 160,
+                      width: 210,
                       render: (record) => {
                         const display = formatEntryZoneDisplay(record);
+                        const zone = getEntryPlanZone(record);
+                        const zoneText = zone.low != null && zone.high != null
+                          ? `$${zone.low.toFixed(2)}-$${zone.high.toFixed(2)}`
+                          : display.primaryText;
+                        const distanceText = display.secondaryText
+                          .replace(/^Above zone by\s*/i, '+')
+                          .replace(/^Below zone by\s*/i, '-')
+                          .replace(/\s*\(([-+]?\d+(?:\.\d+)?)%\)/, ' / $1%');
                         const colorMap: Record<string, string> = {
                           success: '#52c41a',
                           warning: '#faad14',
@@ -10762,17 +11520,17 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                           neutral: 'var(--app-card-bg-soft)'
                         };
                         return (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <div style={{ display: 'flex', alignItems: 'center' }}>
+                          <div className="entry-zone-cell">
+                            <div className="entry-zone-cell__status">
                                <span style={{ fontSize: '10px', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', backgroundColor: bgMap[display.tone] || bgMap.neutral, color: colorMap[display.tone] || colorMap.neutral, whiteSpace: 'nowrap' }}>
                                  {display.statusLabel}
                                </span>
-                            </div>
-                            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--app-text-strong)', whiteSpace: 'nowrap' }}>
-                              {display.primaryText}
+                             </div>
+                            <span className="entry-zone-cell__range">
+                              {zoneText}
                             </span>
-                            <span style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 500, whiteSpace: 'nowrap' }}>
-                              {display.secondaryText}
+                            <span className="entry-zone-cell__distance" style={{ color: colorMap[display.tone] || 'var(--app-text-muted)' }}>
+                              {distanceText}
                             </span>
                           </div>
                         );
@@ -10815,16 +11573,26 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                       key: 'position',
                       width: 130,
                       render: (record) => {
+                        const action = getEntryPlanEffectiveAction(record);
+                        const isSuggestedOnly = ['BLOCKED_BY_RISK', 'NEED_DATA', 'SKIP', 'WAIT_FOR_ENTRY'].includes(action);
                         const sh = record.shares || record.positionSize || record.positionSizeShares || 0;
                         const alloc = record.allocationDollars || record.positionValue || record.positionSizeDollars || 0;
                         const bpBefore = record.buyingPowerBefore;
                         const bpAfter = record.buyingPowerAfter;
+                        const capped = !!(record.cappedByAllocation || record.positionCapped);
+                        const capPct = record.maxAllocationPct || 10;
+                        const capReason = record.positionCapReason || record.positionCapStatus || `Original position exceeded ${capPct}% max allocation, capped to allowed size.`;
                         if (sh === 0 && alloc === 0) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
                         return (
                           <div style={{ lineHeight: '1.4' }}>
                             <div style={{ fontSize: '13px', fontWeight: 700, color: '#3b82f6' }}>{typeof sh === 'number' ? Number(sh).toLocaleString(undefined, {maximumFractionDigits: 3}) : sh} sh</div>
-                            <div style={{ fontSize: '11px', color: 'var(--app-text-muted)', fontWeight: 500 }}>${alloc.toLocaleString()} alloc</div>
-                            {bpBefore != null && bpAfter != null && (
+                            <div style={{ fontSize: '11px', color: 'var(--app-text-muted)', fontWeight: 500 }}>${alloc.toLocaleString()} {isSuggestedOnly ? 'suggested' : 'alloc'}</div>
+                            {capped && (
+                              <Tooltip title={capReason}>
+                                <div style={{ fontSize: '10px', color: '#d97706', fontWeight: 700 }}>capped to {capPct}% max</div>
+                              </Tooltip>
+                            )}
+                            {!isSuggestedOnly && bpBefore != null && bpAfter != null && (
                               <div style={{ fontSize: '10px', color: 'var(--app-text-muted)', fontWeight: 500 }}>
                                 BP ${typeof bpBefore === 'number' ? bpBefore.toFixed(0) : bpBefore} → ${typeof bpAfter === 'number' ? bpAfter.toFixed(0) : bpAfter}
                               </div>
@@ -10838,14 +11606,15 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                       key: 'orderPlan',
                       width: 120,
                       render: (record: any) => {
+                        const action = getEntryPlanEffectiveAction(record);
                         const ot = record.orderType || record.executionDetails?.orderPreview?.orderType || '';
                         const tif = record.timeInForce || record.executionDetails?.orderPreview?.timeInForce || '';
                         const isLev = record.isLeveraged || record.isLeveragedAlternative;
                         if (!ot || ot === 'N/A') {
-                          const fa = record.finalAction || '';
-                          if (fa === 'Wait for Entry') return <Tag color="orange" style={{ fontSize: '10px', margin: 0 }}>WATCH</Tag>;
-                          if (fa === 'Blocked by Risk') return <Tag color="red" style={{ fontSize: '10px', margin: 0 }}>BLOCKED</Tag>;
-                          if (fa === 'SKIP') return <Tag color="default" style={{ fontSize: '10px', margin: 0 }}>SKIP</Tag>;
+                          if (action === 'WAIT_FOR_ENTRY') return <Tag color="orange" style={{ fontSize: '10px', margin: 0 }}>WATCH</Tag>;
+                          if (action === 'NEED_DATA') return <Tag color="gold" style={{ fontSize: '10px', margin: 0 }}>NEED DATA</Tag>;
+                          if (action === 'BLOCKED_BY_RISK') return <Tag color="red" style={{ fontSize: '10px', margin: 0 }}>BLOCKED</Tag>;
+                          if (action === 'SKIP') return <Tag color="default" style={{ fontSize: '10px', margin: 0 }}>SKIP</Tag>;
                           return <span style={{ fontSize: '10px', color: '#bbb' }}>-</span>;
                         }
                         const label = ot === 'market' ? `Market Buy ${tif}` : ot === 'limit' ? `Limit Buy ${tif}` : ot === 'stop_limit' ? `Stop-Limit ${tif}` : ot;
@@ -10890,11 +11659,14 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                       width: 110,
                       render: (record) => {
                         const rg = record.riskGate || record.hardRiskGate;
-                        const status = rg?.status;
+                        const status = hasEntryPlanHardBlock(record)
+                          ? 'BLOCK'
+                          : (rg?.status === 'BLOCK' && hasExecutableCappedAllocation(record) ? 'PASS' : rg?.status);
                         if (!status) return <span style={{ fontSize: '11px', color: '#ccc' }}>N/A</span>;
                         const tagColor = status === 'PASS' ? 'success' : status === 'REVIEW' ? 'warning' : 'error';
+                        const tooltip = getEntryPlanFilteredBlockers(record).join('; ') || (rg?.warnings || []).map((r: string) => getEntryPlanSanitizedText(record, r)).filter(Boolean).join('; ') || getEntryPlanCapNote(record) || status;
                         return (
-                          <Tooltip title={rg.warnings?.join('; ') || status}>
+                          <Tooltip title={tooltip}>
                             <Tag color={tagColor} bordered={false} style={{ fontSize: '10.5px', fontWeight: 800, padding: '0 8px', lineHeight: '22px', borderRadius: '6px', margin: 0, textAlign: 'center', width: '60px' }}>{status}</Tag>
                           </Tooltip>
                         );
@@ -10905,19 +11677,21 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                       key: 'finalAction',
                       width: 130,
                       render: (record) => {
-                        const a = record.finalAction;
+                        const rawA = getEntryPlanEffectiveAction(record);
+                        const _isLevFA = record.isLeveraged || record.isLeveragedAlternative;
+                        // Promote leveraged READY_REVIEW → BUY_READY for display in AI mode
+                        const a = (_isLevFA && rawA === 'READY_REVIEW' && pipelineMode === 'ai')
+                          ? 'BUY_READY' : rawA;
                         if (!a) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
                         const displayText: Record<string, string> = {
-                          'Buy Ready': 'BUY READY',
-                          'BUY_ALLOWED': 'BUY',
-                          'Ready for Review': 'READY REVIEW',
-                          'Wait for Entry': 'WAIT ENTRY',
-                          'WATCH_ONLY': 'WATCH',
+                          'BUY_READY': 'BUY READY',
+                          'READY_REVIEW': 'READY REVIEW',
+                          'WAIT_FOR_ENTRY': 'WAIT ENTRY',
+                          'NEED_DATA': 'NEED DATA',
                           'SKIP': 'SKIP',
-                          'Blocked by Risk': 'BLOCKED',
-                          'NEEDS_REVIEW': 'REVIEW',
+                          'BLOCKED_BY_RISK': 'BLOCKED',
                         };
-                        const tagColor = a.includes('BUY') ? 'success' : a === 'Ready for Review' ? 'processing' : a.includes('WAIT') || a === 'WATCH_ONLY' ? 'warning' : 'error';
+                        const tagColor = a === 'BUY_READY' ? 'success' : a === 'READY_REVIEW' ? 'processing' : a === 'WAIT_FOR_ENTRY' || a === 'NEED_DATA' ? 'warning' : 'error';
                         return <Tag color={tagColor} bordered={false} style={{ fontSize: '10.5px', fontWeight: 800, padding: '0 8px', lineHeight: '22px', borderRadius: '6px', margin: 0 }}>{displayText[a] || a}</Tag>;
                       },
                     },
@@ -10927,7 +11701,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                       key: 'reason',
                       width: 180,
                       render: (text, record) => {
-                        const fullText = record.decisionReason || text || '';
+                        const fullText = getEntryPlanSanitizedText(record, record.decisionReason || text || '');
                         return (
                           <Tooltip title={fullText} overlayClassName="heatmap-professional-tooltip">
                             <div style={{ fontSize: '12px', color: 'var(--app-text-muted)', lineHeight: 1.5, WebkitLineClamp: 2, display: '-webkit-box', WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
@@ -10940,25 +11714,60 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     {
                       title: t.agent.actions,
                       key: 'action',
-                      width: 160,
+                      width: 118,
                       fixed: 'right' as const,
                       render: (record) => {
-                        const fa = record.finalAction;
+                        const rawAct = getEntryPlanEffectiveAction(record);
+                        const _isLevAct = record.isLeveraged || record.isLeveragedAlternative;
+                        // Leveraged ETF promotion: in AI mode, treat READY_REVIEW as BUY_READY
+                        const action = (_isLevAct && rawAct === 'READY_REVIEW' && pipelineMode === 'ai')
+                          ? 'BUY_READY' : rawAct;
                         const aiDec = record.aiDecision;
                         const dq = record.dataQuality;
-                        const rg = record.riskGate || record.hardRiskGate || {};
+                        const actionTooltip = getEntryPlanActionTooltip(record);
+                        const hasHardBlock = hasEntryPlanHardBlock(record);
+                        const activeAutoExecution = aiExecutionList.find((item: any) => (
+                          String(item.symbol || '').toUpperCase() === String(record.symbol || '').toUpperCase() &&
+                          item.source === 'entry-plan-auto' &&
+                          ['auto_executing', 'submitted', 'pending', 'filled', 'failed'].includes(item.executionStatus || '')
+                        ));
 
-                        if (fa === 'Blocked by Risk' || rg.status === 'BLOCK' || dq === 'POOR') {
-                          return <Button size="small" danger disabled style={{ height: 32, borderRadius: 8, fontSize: 11, fontWeight: 700, width: '100%' }}>{t.agent.blocked}</Button>;
+                        if (action === 'BLOCKED_BY_RISK' || action === 'NEED_DATA' || hasHardBlock || dq === 'POOR') {
+                          return <Tooltip title={actionTooltip}><Button size="small" danger disabled style={{ height: 28, borderRadius: 6, fontSize: 10, fontWeight: 700, width: '100%' }}>{action === 'NEED_DATA' ? 'NEED DATA' : t.agent.blocked}</Button></Tooltip>;
                         }
-                        if (fa === 'SKIP' || aiDec === 'SKIP') {
-                          return <Button size="small" disabled style={{ height: 32, borderRadius: 8, fontSize: 11, fontWeight: 700, width: '100%' }}>{t.agent.skipped}</Button>;
+                        if (action === 'SKIP' || aiDec === 'SKIP') {
+                          return <Tooltip title={actionTooltip}><Button size="small" disabled style={{ height: 28, borderRadius: 6, fontSize: 10, fontWeight: 700, width: '100%' }}>{t.agent.skipped}</Button></Tooltip>;
                         }
-                        if (fa === 'Buy Ready') {
+                        if (action === 'BUY_READY') {
+                          if (pipelineMode === 'ai' && tradeMode === 'paper') {
+                            if (activeAutoExecution?.executionStatus === 'submitted' || activeAutoExecution?.executionStatus === 'pending' || activeAutoExecution?.executionStatus === 'filled') {
+                              return <Tooltip title={activeAutoExecution.alpacaOrderId || `Paper order placed. ${actionTooltip}`}><Tag color="success" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 800, margin: 0 }}>Submitted</Tag></Tooltip>;
+                            }
+                            if (activeAutoExecution?.executionStatus === 'failed') {
+                              return <Tooltip title={activeAutoExecution.executionError || 'Auto execute failed'}><Tag color="error" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 800, margin: 0 }}>Failed</Tag></Tooltip>;
+                            }
+                            return <Tag color="processing" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 800, margin: 0 }}>Auto Executing</Tag>;
+                          }
+                          if (pipelineMode === 'ai' && tradeMode === 'real') {
+                            if (activeAutoExecution?.executionStatus === 'submitted' || activeAutoExecution?.executionStatus === 'pending' || activeAutoExecution?.executionStatus === 'filled') {
+                              return <Tooltip title={activeAutoExecution.alpacaOrderId || 'Live order placed.'}><Tag color="success" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 800, margin: 0 }}>Submitted</Tag></Tooltip>;
+                            }
+                            if (activeAutoExecution?.executionStatus === 'failed') {
+                              return <Tooltip title={activeAutoExecution.executionError || 'Auto execute failed'}><Tag color="error" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 800, margin: 0 }}>Failed</Tag></Tooltip>;
+                            }
+                            return <Tag color="processing" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 800, margin: 0 }}>Auto Executing</Tag>;
+                          }
                           return <Button size="small" type="primary" onClick={() => handleEntryPlanAction(record)} style={{ height: 32, borderRadius: 8, fontSize: 11, fontWeight: 700, width: '100%', background: '#10b981', borderColor: '#10b981' }}>{t.agent.execute}</Button>;
                         }
-                        if (fa === 'Ready for Review') {
+                        if (action === 'READY_REVIEW') {
                           const inWl = isInWatchlist(record.symbol);
+                          const _isLev = record.isLeveraged || record.isLeveragedAlternative;
+                          if (pipelineMode === 'ai') {
+                            const reviewReason = _isLev
+                              ? (actionTooltip || `Leveraged ${record.symbol} has unresolved gate issues — auto-execution blocked. Check risk gate, entry zone, and data quality.`)
+                              : (actionTooltip || 'AI decision or risk context requires review; auto execution only submits BUY_READY plans.');
+                            return <Tooltip title={reviewReason}><Button size="small" type="default" onClick={() => handleEntryPlanAction(record)} style={{ height: 28, borderRadius: 6, fontSize: 10, fontWeight: 700, width: '100%' }}>Review Required</Button></Tooltip>;
+                          }
                           return (
                             <Space size={6}>
                               <Button size="small" type="primary" ghost onClick={() => handleEntryPlanAction(record)} style={{ height: 32, borderRadius: 8, fontSize: 11, fontWeight: 700 }}>{t.agent.review}</Button>
@@ -10966,15 +11775,15 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                             </Space>
                           );
                         }
-                        if (fa === 'Wait for Entry' || aiDec === 'WATCH') {
+                        if (action === 'WAIT_FOR_ENTRY' || aiDec === 'WATCH') {
                           const inWl = isInWatchlist(record.symbol);
-                          return <Button size="small" icon={inWl ? <CheckOutlined /> : <PlusOutlined />} onClick={() => addToWatchlist(record)} style={{ height: 32, borderRadius: 8, fontSize: 11, fontWeight: 700, width: '100%', color: inWl ? '#10b981' : '#3b82f6', borderColor: inWl ? '#10b981' : '#3b82f6' }}>{inWl ? t.agent.update : t.agent.plusWatchlist}</Button>;
+                          return <Tooltip title={actionTooltip}><Button size="small" icon={inWl ? <CheckOutlined /> : <PlusOutlined />} onClick={() => addToWatchlist(record)} style={{ height: 32, borderRadius: 8, fontSize: 11, fontWeight: 700, width: '100%', color: inWl ? '#10b981' : '#3b82f6', borderColor: inWl ? '#10b981' : '#3b82f6' }}>{inWl ? t.agent.update : t.agent.plusWatchlist}</Button></Tooltip>;
                         }
                         return <span style={{ fontSize: '10px', color: '#bbb' }}>—</span>;
                       },
                     },
                   ]}
-                  scroll={{ x: 1600 }}
+                  scroll={{ x: 1700 }}
                   style={{ fontSize: '12px', marginTop: '16px' }}
                 />
               </div>
@@ -10983,10 +11792,42 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   height: 72px !important;
                 }
                 .ep-table-row > td {
-                  padding: 10px 12px !important;
+                  padding: 10px 10px !important;
                   vertical-align: middle;
                   font-size: 13.5px !important;
                   background: var(--app-card-bg);
+                }
+                .entry-zone-cell {
+                  display: flex;
+                  flex-direction: column;
+                  align-items: flex-start;
+                  gap: 3px;
+                  min-width: 0;
+                  max-width: 188px;
+                  line-height: 1.25;
+                }
+                .entry-zone-cell__status {
+                  display: flex;
+                  max-width: 100%;
+                }
+                .entry-zone-cell__range {
+                  display: block;
+                  max-width: 100%;
+                  font-size: 12.5px;
+                  font-weight: 800;
+                  color: var(--app-text-strong);
+                  white-space: nowrap;
+                  overflow: hidden;
+                  text-overflow: ellipsis;
+                }
+                .entry-zone-cell__distance {
+                  display: block;
+                  max-width: 100%;
+                  font-size: 10.5px;
+                  font-weight: 700;
+                  white-space: nowrap;
+                  overflow: hidden;
+                  text-overflow: ellipsis;
                 }
                 .entry-plan-table-wrapper .ant-table-thead > tr > th {
                   font-weight: 800 !important;
@@ -11006,6 +11847,22 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 }
                 .ant-table-fixed-right {
                   background: var(--app-card-bg) !important;
+                }
+                .entry-plan-table-wrapper .ant-table-cell-fix-right,
+                .entry-plan-table-wrapper .ant-table-cell-fix-right-first {
+                  background: var(--app-card-bg) !important;
+                  box-shadow: none !important;
+                  padding-left: 8px !important;
+                  padding-right: 8px !important;
+                }
+                .entry-plan-table-wrapper .ant-table-cell-fix-right-first::after,
+                .entry-plan-table-wrapper .ant-table-cell-fix-right-last::after {
+                  box-shadow: none !important;
+                  display: none !important;
+                }
+                .entry-plan-table-wrapper {
+                  max-width: 100%;
+                  overflow: hidden;
                 }
               `}</style>
             </>
@@ -11274,8 +12131,14 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
             <div><strong>{t.agent.setupLabel}:</strong> {executeTarget.setup}</div>
             <div><strong>{t.agent.orderTypeLabel}:</strong> {(executeTarget.executionDetails || {}).orderTypeSuggestion || 'N/A'}</div>
             <div><strong>{t.agent.sharesLabel}:</strong> {executeTarget.positionSizeShares || executeTarget.shares || 0}</div>
-            <div><strong>{t.agent.entryZoneLabel}:</strong> ${executeTarget.entryZoneLow?.toFixed(2)} – ${executeTarget.entryZoneHigh?.toFixed(2)}</div>
-            <div><strong>{t.agent.estimatedValue}:</strong> ${((executeTarget.positionSizeShares || 0) * (executeTarget.entryZoneLow || 0)).toFixed(0)}</div>
+            <div><strong>{t.agent.entryZoneLabel}:</strong> {(() => {
+              const { low, high } = getEntryPlanZone(executeTarget);
+              return low != null && high != null ? `$${low.toFixed(2)} - $${high.toFixed(2)}` : 'N/A';
+            })()}</div>
+            <div><strong>{t.agent.estimatedValue}:</strong> {(() => {
+              const { low } = getEntryPlanZone(executeTarget);
+              return `$${((executeTarget.positionSizeShares || executeTarget.shares || 0) * (low || 0)).toFixed(0)}`;
+            })()}</div>
             <div><strong>{t.agent.maxRisk}:</strong> ${executeTarget.riskDollars?.toFixed(0) || '0'}</div>
             <div><strong>{t.agent.stopLossLabel}:</strong> ${executeTarget.stopLoss?.toFixed(2)}</div>
             <div><strong>{t.agent.takeProfitLabel}:</strong> ${executeTarget.takeProfit1?.toFixed(2)}</div>

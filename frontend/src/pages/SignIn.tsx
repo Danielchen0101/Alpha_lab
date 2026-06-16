@@ -97,7 +97,7 @@ const SignIn: React.FC = () => {
         setOauthLoading(null);
       }
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'OAuth login failed';
+      const msg = e instanceof Error ? e.message : (t.auth.oauthFailed || 'OAuth login failed');
       setError(msg);
       setOauthLoading(null);
     }
@@ -198,6 +198,10 @@ const SignIn: React.FC = () => {
                       onExpire={() => setCaptchaToken('')}
                       theme="dark"
                     />
+                  ) : isDev ? (
+                    <div style={{ padding: '10px 14px', background: 'rgba(255,193,7,0.12)', border: '1px solid rgba(255,193,7,0.3)', borderRadius: 8, color: '#fbbf24', fontSize: 12, textAlign: 'center' }}>
+                      {t.auth.captchaNotConfigured} — {t.auth.captchaBypassDev || 'Bypassed in development'}
+                    </div>
                   ) : (
                     <div className="auth-captcha-placeholder error">{t.auth.captchaNotConfigured}</div>
                   )}

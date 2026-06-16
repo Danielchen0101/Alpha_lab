@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons';
 import { tradingAccountAPI } from '../services/api';
 import { useTradeMode } from '../contexts/TradeModeContext';
+import { useLanguage } from '../contexts/LanguageContext';
 
 const { Text } = Typography;
 const { Option } = Select;
@@ -77,6 +78,7 @@ const OrderModal: React.FC<OrderModalProps> = ({
   visible, onClose, onSuccess, preset,
 }) => {
   const { tradeMode } = useTradeMode();
+  const { t } = useLanguage();
   const [form] = Form.useForm<OrderFormValues>();
   const [submitting, setSubmitting] = useState(false);
   const [confirmStep, setConfirmStep] = useState(false);
@@ -268,7 +270,7 @@ const OrderModal: React.FC<OrderModalProps> = ({
       title={
         <Space>
           <span style={{ fontWeight: 700, fontSize: 16, color: 'var(--app-text-strong)' }}>
-            {realFinalConfirm ? 'Final Confirmation' : confirmStep ? 'Review Order' : 'New Order'}
+            {realFinalConfirm ? (t.trade?.finalConfirmation || 'Final Confirmation') : confirmStep ? (t.trade?.reviewOrder || 'Review Order') : (t.trade?.newOrder || 'New Order')}
           </span>
           <span style={{
             fontSize: 11,
@@ -279,18 +281,60 @@ const OrderModal: React.FC<OrderModalProps> = ({
             color: tradeMode === 'real' ? '#ef4444' : '#60a5fa',
             border: `1px solid ${tradeMode === 'real' ? 'rgba(239, 68, 68, 0.25)' : 'rgba(59, 130, 246, 0.25)'}`,
           }}>
-            {tradeMode === 'real' ? 'REAL TRADING' : 'PAPER TRADING'}
+            {tradeMode === 'real' ? (t.trade?.realTradingLabel || 'REAL TRADING') : (t.trade?.paperTradingLabel || 'PAPER TRADING')}
           </span>
         </Space>
       }
       open={visible}
       onCancel={handleCancel}
-      width={680}
+      width="min(100vw, 680px)"
       footer={null}
       destroyOnClose
       maskClosable={false}
       className="dark-modal"
     >
+      <style>{`
+        .order-modal-form-grid-3 {
+          display: grid;
+          grid-template-columns: 1fr 1fr 1fr;
+          gap: 12px;
+        }
+        .order-modal-form-grid-2 {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 12px;
+        }
+        @media (max-width: 520px) {
+          .order-modal-form-grid-3,
+          .order-modal-form-grid-2 {
+            grid-template-columns: 1fr;
+          }
+          .order-modal-bracket-row .ant-col {
+            flex: 0 0 100%;
+            max-width: 100%;
+          }
+          .order-modal-actions {
+            flex-direction: column;
+          }
+          .order-modal-actions button {
+            width: 100%;
+            min-width: unset !important;
+          }
+          .dark-modal .ant-descriptions-view table {
+            display: block;
+          }
+          .dark-modal .ant-descriptions-view table tbody {
+            display: block;
+          }
+          .dark-modal .ant-descriptions-view table tbody tr {
+            display: flex;
+            flex-direction: column;
+          }
+          .dark-modal .ant-descriptions-item {
+            padding-bottom: 8px;
+          }
+        }
+      `}</style>
       {tradeMode === 'real' && (
         <Alert
           message="Real Trading Mode - Orders will be sent to api.alpaca.markets"
@@ -431,9 +475,9 @@ const OrderModal: React.FC<OrderModalProps> = ({
             )}
           </Descriptions>
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div className="order-modal-actions" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <Button onClick={handleCancel} disabled={submitting} size="large" style={{ borderRadius: 8, background: 'var(--app-card-bg-soft)', color: 'var(--app-text)', borderColor: 'var(--app-border)' }}>
-              {realFinalConfirm ? 'Cancel' : 'Back'}
+              {realFinalConfirm ? (t.trade?.cancel || 'Cancel') : 'Back'}
             </Button>
             <Button
               type="primary"
@@ -451,8 +495,8 @@ const OrderModal: React.FC<OrderModalProps> = ({
               }}
             >
               {tradeMode === 'real'
-                ? (realFinalConfirm ? 'Place Real Order' : 'Confirm & Place Real Order')
-                : 'Place Paper Order'
+                ? (realFinalConfirm ? (t.trade?.placeRealOrder || 'Place Real Order') : (t.trade?.confirmPlaceReal || 'Confirm & Place Real Order'))
+                : (t.trade?.placePaperOrder || 'Place Paper Order')
               }
             </Button>
           </div>
@@ -480,7 +524,7 @@ const OrderModal: React.FC<OrderModalProps> = ({
                 Basic Order
               </Text>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+            <div className="order-modal-form-grid-3">
               <Form.Item name="symbol" label={<span style={{ color: 'var(--app-text)' }}>Symbol</span>} rules={[{ required: true, message: 'Symbol is required' }]}>
                 <Input placeholder="AAPL" style={{ textTransform: 'uppercase', background: 'var(--app-input-bg)', color: 'var(--app-text)', borderColor: 'var(--app-border)' }} />
               </Form.Item>
@@ -575,7 +619,7 @@ const OrderModal: React.FC<OrderModalProps> = ({
             <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--app-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
               Advanced Options
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div className="order-modal-form-grid-2">
               <Form.Item name="extended_hours" label={<span style={{ fontSize: 12, fontWeight: 600, color: 'var(--app-text)' }}>Extended Hours</span>} valuePropName="checked">
                 <Switch />
               </Form.Item>
@@ -598,20 +642,20 @@ const OrderModal: React.FC<OrderModalProps> = ({
 
             {orderClass !== 'simple' && (
               <div style={{ background: 'var(--app-card-bg-soft)', padding: '16px', borderRadius: 8, marginTop: 8, border: '1px solid var(--app-border-soft)' }}>
-                <Row gutter={16}>
-                  <Col span={12}>
+                <Row gutter={16} className="order-modal-bracket-row">
+                  <Col xs={24} sm={12}>
                     <Form.Item name="take_profit_limit_price" label={<span style={{ fontSize: 11, fontWeight: 600, color: '#4ade80' }}>Take Profit Limit <span style={{ color: '#ff4d4f' }}>*</span></span>} rules={[{ required: true }]} style={{ marginBottom: 12 }}>
                       <InputNumber prefix="$" style={{ width: '100%', height: 36, background: 'var(--app-input-bg)', color: 'var(--app-text)', borderColor: 'var(--app-border)' }} min={0.01} step={0.01} />
                     </Form.Item>
                   </Col>
                 </Row>
-                <Row gutter={16}>
-                  <Col span={12}>
+                <Row gutter={16} className="order-modal-bracket-row">
+                  <Col xs={24} sm={12}>
                     <Form.Item name="stop_loss_stop_price" label={<span style={{ fontSize: 11, fontWeight: 600, color: '#ef4444' }}>Stop Loss Price <span style={{ color: '#ff4d4f' }}>*</span></span>} rules={[{ required: true }]} style={{ marginBottom: 0 }}>
                       <InputNumber prefix="$" style={{ width: '100%', height: 36, background: 'var(--app-input-bg)', color: 'var(--app-text)', borderColor: 'var(--app-border)' }} min={0.01} step={0.01} />
                     </Form.Item>
                   </Col>
-                  <Col span={12}>
+                  <Col xs={24} sm={12}>
                     <Form.Item name="stop_loss_limit_price" label={<span style={{ fontSize: 11, fontWeight: 600, color: 'var(--app-text-muted)' }}>Stop Limit (Optional)</span>} style={{ marginBottom: 0 }}>
                       <Tooltip title="Optional: if not set, stop loss triggers a market order">
                         <InputNumber prefix="$" style={{ width: '100%', height: 36, background: 'var(--app-input-bg)', color: 'var(--app-text)', borderColor: 'var(--app-border)' }} min={0.01} step={0.01} />
@@ -625,9 +669,9 @@ const OrderModal: React.FC<OrderModalProps> = ({
 
           {/* Form footer buttons */}
           <Divider style={{ margin: '16px 0', borderColor: 'var(--app-border-soft)' }} />
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <div className="order-modal-actions" style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
             <Button onClick={onClose} disabled={submitting} style={{ borderRadius: 8, fontWeight: 600, background: 'var(--app-card-bg-soft)', color: 'var(--app-text)', borderColor: 'var(--app-border)' }}>
-              Cancel
+              {t.trade?.cancel || 'Cancel'}
             </Button>
             <Button
               type="primary"

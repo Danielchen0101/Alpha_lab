@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   Alert,
   Button,
@@ -106,6 +106,9 @@ const formatQty = (value: any): string => {
 
 const extractApiError = (error: any, fallback: string): string => {
   const data = error?.response?.data;
+  if (error?.response?.status === 429 || data?.reason === 'alpaca_rate_limited') {
+    return data?.message || 'Alpaca rate limit reached. Portfolio history will refresh later.';
+  }
   return data?.error || data?.message || error?.message || fallback;
 };
 
@@ -224,6 +227,14 @@ const Portfolio: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [usingFallback, setUsingFallback] = useState(false);
 
+  // Auto-refresh state
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
+  const isRefreshingRef = useRef(false);
+  const lastPortfolioRefreshRef = useRef(0);
+  const autoRefreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const mountedRef = useRef(true);
+  const lastAutoRefreshAtRef = useRef(0);
+
   const localeName = language === 'zh-CN' ? 'zh-CN' : 'en-US';
 
   const formatDateTime = (value?: string): string => {
@@ -238,23 +249,26 @@ const Portfolio: React.FC = () => {
     }).format(date);
   };
 
-  const loadData = async (mode: 'paper' | 'real' = tradeMode, range: string = portfolioRange) => {
+  const loadData = async (mode: 'paper' | 'real' = tradeMode, range: string = portfolioRange, includeHistory: boolean = true, force: boolean = false) => {
+    if (isRefreshingRef.current && !force) return;
+    isRefreshingRef.current = true;
     setLoading(true);
-    setError(null);
-    setAccount(null);
-    setPositions([]);
-    setPortfolioHistory([]);
-    setPortfolioChange({ value: 0, percent: 0 });
-    setSource(undefined);
-    setLastUpdated('');
-    setUsingFallback(false);
+    if (includeHistory) {
+      setError(null);
+      setUsingFallback(false);
+    }
 
     try {
-      const [accountRes, positionsRes, historyRes] = await Promise.allSettled([
+      const apiCalls: Promise<any>[] = [
         tradingAccountAPI.getAccount(mode),
         tradingAccountAPI.getPositions(mode),
-        tradingAccountAPI.getPortfolioHistory(mode, range),
-      ]);
+      ];
+      if (includeHistory) {
+        apiCalls.push(tradingAccountAPI.getPortfolioHistory(mode, range));
+      }
+
+      const results = await Promise.allSettled(apiCalls);
+      const [accountRes, positionsRes, historyRes] = results;
 
       let nextError: string | null = null;
       let nextUpdatedAt = '';
@@ -289,7 +303,7 @@ const Portfolio: React.FC = () => {
         nextError = extractApiError(positionsRes.reason, t.portfolio.dataUnavailable);
       }
 
-      if (historyRes.status === 'fulfilled') {
+      if (includeHistory && historyRes && historyRes.status === 'fulfilled') {
         const data = historyRes.value.data;
         if (data.success) {
           const normalized = normalizeHistory(data.data || []);
@@ -314,7 +328,7 @@ const Portfolio: React.FC = () => {
         } else if (!nextError) {
           nextError = data.error || data.message || t.portfolio.dataUnavailable;
         }
-      } else if (!nextError) {
+      } else if (includeHistory && historyRes && historyRes.status === 'rejected' && !nextError) {
         nextError = extractApiError(historyRes.reason, t.portfolio.dataUnavailable);
       }
 
@@ -336,18 +350,54 @@ const Portfolio: React.FC = () => {
       setLastUpdated(nextUpdatedAt);
       setError(nextError);
     } finally {
+      isRefreshingRef.current = false;
+      lastAutoRefreshAtRef.current = Date.now();
       setLoading(false);
     }
   };
 
+  // Unified mount + tradeMode change + auto-refresh effect
   useEffect(() => {
-    loadData(tradeMode, portfolioRange);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    mountedRef.current = true;
+    loadData(tradeMode, portfolioRange, true);
+
+    // Auto-refresh: 30s interval for core data, portfolio history every 5 min
+    const startAutoRefresh = () => {
+      if (autoRefreshTimerRef.current) clearInterval(autoRefreshTimerRef.current);
+      autoRefreshTimerRef.current = setInterval(() => {
+        if (!mountedRef.current || isRefreshingRef.current || !autoRefreshEnabled) return;
+        const now = Date.now();
+        const includeHistory = (now - lastPortfolioRefreshRef.current) >= 300000;
+        if (includeHistory) lastPortfolioRefreshRef.current = now;
+        loadData(tradeMode, portfolioRange, includeHistory);
+      }, 30000);
+    };
+
+    if (!document.hidden) {
+      startAutoRefresh();
+    }
+
+    const handleVisibility = () => {
+      if (document.hidden) {
+        if (autoRefreshTimerRef.current) { clearInterval(autoRefreshTimerRef.current); autoRefreshTimerRef.current = null; }
+      } else if (mountedRef.current) {
+        startAutoRefresh();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      mountedRef.current = false;
+      if (autoRefreshTimerRef.current) { clearInterval(autoRefreshTimerRef.current); autoRefreshTimerRef.current = null; }
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tradeMode]);
 
   const handlePortfolioRangeChange = (range: string) => {
     setPortfolioRange(range);
-    loadData(tradeMode, range);
+    lastPortfolioRefreshRef.current = Date.now();
+    loadData(tradeMode, range, true, true);
   };
 
   const totalUnrealizedPL = useMemo(
@@ -552,9 +602,17 @@ const Portfolio: React.FC = () => {
               Updated: {formatDateTime(lastUpdated)}
             </span>
           )}
-          <Button 
-            icon={<ReloadOutlined />} 
-            onClick={() => loadData()} 
+          <Tag
+            color={autoRefreshEnabled ? 'green' : 'default'}
+            bordered={false}
+            style={{ fontSize: 9, fontWeight: 700, borderRadius: 4, cursor: 'pointer' }}
+            onClick={() => setAutoRefreshEnabled(prev => !prev)}
+          >
+            {autoRefreshEnabled ? 'AUTO: ON' : 'AUTO: OFF'}
+          </Tag>
+          <Button
+            icon={<ReloadOutlined />}
+            onClick={() => loadData(tradeMode, portfolioRange, true, true)}
             loading={loading}
             style={{ 
               borderRadius: 8, 

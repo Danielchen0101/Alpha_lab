@@ -1,6 +1,7 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Outlet, Navigate } from 'react-router-dom';
-import { Layout, ConfigProvider, theme, Alert, Space } from 'antd';
+import { Layout, ConfigProvider, theme, Space, Button, Drawer, Menu } from 'antd';
+import { MenuOutlined, DashboardOutlined, LineChartOutlined, BarChartOutlined, TrophyOutlined, UnorderedListOutlined, SwapOutlined, RocketOutlined, PieChartOutlined, RobotOutlined, SettingOutlined } from '@ant-design/icons';
 import { AuthProvider } from './contexts/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import Landing from './pages/Landing';
@@ -40,7 +41,7 @@ import ThemeSwitcher from './components/ThemeSwitcher';
 import NavigationMenu from './components/NavigationMenu';
 import { LanguageProvider } from './contexts/LanguageContext';
 import { useLanguage } from './contexts/LanguageContext';
-import { TradeModeProvider, useTradeMode } from './contexts/TradeModeContext';
+import { TradeModeProvider } from './contexts/TradeModeContext';
 import { ThemeProvider, useTheme } from './contexts/ThemeContext';
 import './App.css';
 
@@ -48,9 +49,39 @@ const { Header, Content, Sider } = Layout;
 
 const AppLayout: React.FC = () => {
   const [collapsed, setCollapsed] = React.useState(false);
-  const { tradeMode } = useTradeMode();
+  const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
+
   const { t } = useLanguage();
-  const isRealMode = tradeMode === 'real';
+
+
+  // Mobile nav items — mirrors desktop sidebar structure
+  const mobileNavItems = [
+    { key: 'research-group', type: 'group' as const, label: t.navigation.researchGroup, children: [
+      { key: '/dashboard', icon: <DashboardOutlined />, label: t.navigation.dashboard },
+      { key: '/market', icon: <LineChartOutlined />, label: t.navigation.market },
+      { key: '/watchlist', icon: <UnorderedListOutlined />, label: t.navigation.watchlist },
+    ]},
+    { key: 'strategy-group', type: 'group' as const, label: t.navigation.strategyGroup, children: [
+      { key: '/backtest', icon: <BarChartOutlined />, label: t.navigation.backtest },
+      { key: '/optimize', icon: <RocketOutlined />, label: t.navigation.parameterOptimization },
+      { key: '/compare', icon: <SwapOutlined />, label: t.navigation.strategyComparison },
+      { key: '/ranking', icon: <TrophyOutlined />, label: t.navigation.strategyRanking },
+    ]},
+    { key: 'trading-group', type: 'group' as const, label: t.navigation.tradingGroup, children: [
+      { key: '/agent', icon: <RobotOutlined />, label: t.navigation.agent },
+      { key: '/trade', icon: <SwapOutlined />, label: t.navigation.trade },
+      { key: '/portfolio', icon: <PieChartOutlined />, label: t.navigation.portfolio },
+    ]},
+    { key: 'system-group', type: 'group' as const, label: t.navigation.systemGroup, children: [
+      { key: '/settings', icon: <SettingOutlined />, label: t.navigation.settings },
+    ]},
+  ];
+
+  const handleMobileNavClick = (path: string) => {
+    setMobileMenuOpen(false);
+    // Use window.location for simplicity; React Router navigation would require useNavigate
+    window.location.href = path;
+  };
 
   return (
     <Layout style={{ minHeight: '100vh', background: 'var(--app-bg)' }}>
@@ -102,28 +133,21 @@ const AppLayout: React.FC = () => {
           padding: '0 24px',
           background: 'var(--app-header-bg)',
           display: 'flex',
-          justifyContent: 'flex-end',
+          justifyContent: 'space-between',
           alignItems: 'center',
           boxShadow: 'var(--app-header-shadow)',
           zIndex: 99
         }}>
-          {isRealMode && (
-            <Alert
-              message={t.navigation.realTradingBanner}
-              type="error"
-              banner
-              showIcon={false}
-              style={{
-                flex: 1,
-                marginRight: 16,
-                borderRadius: 0,
-                padding: '2px 12px',
-                fontSize: 12,
-                fontWeight: 700,
-                textAlign: 'center',
-              }}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Button
+              type="text"
+              className="mobile-nav-trigger"
+              icon={<MenuOutlined style={{ fontSize: 18 }} />}
+              onClick={() => setMobileMenuOpen(true)}
+              aria-label="Open navigation menu"
+              style={{ color: 'var(--app-text)', display: 'none' }}
             />
-          )}
+          </div>
           <Space size={8}>
             <ThemeSwitcher />
             <LanguageSwitcher />
@@ -149,6 +173,34 @@ const AppLayout: React.FC = () => {
           </div>
         </Content>
       </Layout>
+
+      {/* Mobile Navigation Drawer */}
+      <Drawer
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <img src="/brand/alphalab-icon.png" alt="AlphaLab" style={{ height: 24, width: 24, objectFit: 'contain' }} />
+            <span style={{ fontWeight: 800, fontSize: '1.05rem' }}>AlphaLab</span>
+          </div>
+        }
+        placement="left"
+        onClose={() => setMobileMenuOpen(false)}
+        open={mobileMenuOpen}
+        width={280}
+        className="mobile-nav-drawer"
+        styles={{
+          body: { padding: '8px 0' },
+          header: { borderBottom: '1px solid rgba(255,255,255,0.06)' },
+        }}
+      >
+        <Menu
+          mode="inline"
+          selectedKeys={[window.location.pathname]}
+          defaultOpenKeys={['research-group', 'strategy-group', 'trading-group', 'system-group']}
+          items={mobileNavItems}
+          onClick={({ key }) => handleMobileNavClick(key)}
+          style={{ background: 'transparent', border: 'none' }}
+        />
+      </Drawer>
     </Layout>
   );
 };

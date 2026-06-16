@@ -1,6 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { CheckCircleOutlined, LoadingOutlined, ArrowUpOutlined, ArrowDownOutlined, ThunderboltOutlined, LineChartOutlined, BarChartOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
+import {
+  ArrowUpOutlined, ArrowDownOutlined,
+  LineChartOutlined, BarChartOutlined, SafetyCertificateOutlined,
+  SearchOutlined,
+} from '@ant-design/icons';
 import { useLanguage } from '../../contexts/LanguageContext';
 
 const tickers = [
@@ -11,60 +15,69 @@ const tickers = [
   { sym: 'AMD', p: '164.21', c: '+2.14%', up: true, path: 'M0 16 Q10 8 20 10 T40 2' },
 ];
 
+/* ── Research signal row ── */
+const ResearchSignalRow = ({ sym, typeLabel, confidence, status, statusColor, buyLabel, watchLabel }: any) => (
+  <div style={{
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    padding: '9px 0', borderBottom: '1px solid rgba(255,255,255,0.03)',
+  }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <span style={{ fontWeight: 800, color: '#f1f5f9', fontSize: 12, width: 44 }}>{sym}</span>
+      <span style={{ fontSize: 11, color: '#64748b' }}>{typeLabel}</span>
+    </div>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+      <span style={{
+        fontSize: 11, fontWeight: 700,
+        color: statusColor || '#10b981',
+        background: `${statusColor || '#10b981'}15`,
+        padding: '3px 10px', borderRadius: 8,
+        border: `1px solid ${statusColor || '#10b981'}25`,
+      }}>
+        {status}
+      </span>
+      <span style={{ fontSize: 12, color: '#e2e8f0', background: 'rgba(255,255,255,0.05)', padding: '2px 8px', borderRadius: 4, fontWeight: 600 }}>
+        {confidence}%
+      </span>
+    </div>
+  </div>
+);
+
+/* ── Research feed row ── */
+const ResearchFeedRow = ({ sym, signal, time, status }: any) => (
+  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 0' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <span style={{ fontWeight: 700, color: '#f1f5f9', fontSize: 11 }}>{sym}</span>
+      <span style={{ fontSize: 10, color: '#64748b' }}>{signal}</span>
+    </div>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <span style={{ fontSize: 9, color: '#4ade80', fontWeight: 700, background: 'rgba(16,185,129,0.1)', padding: '2px 8px', borderRadius: 8, border: '1px solid rgba(16,185,129,0.15)' }}>
+        {status}
+      </span>
+      <span style={{ fontSize: 10, color: '#475569', width: 44, textAlign: 'right' }}>{time}</span>
+    </div>
+  </div>
+);
+
 const TopTickerCard = ({ symbol, price, change, up, delay, path }: any) => (
   <motion.div
-    initial={{ opacity: 0, y: 15 }}
+    initial={{ opacity: 0, y: 10 }}
     animate={{ opacity: 1, y: 0 }}
-    transition={{ duration: 0.5, delay, ease: "easeOut" }}
+    transition={{ duration: 0.4, delay, ease: "easeOut" }}
     className="top-ticker-card"
   >
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
-      <span style={{ fontWeight: 800, color: '#f8fafc', fontSize: '11px' }}>{symbol}</span>
-      <span style={{ color: up ? '#10b981' : '#ef4444', fontSize: '10px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 2 }}>
+      <span style={{ fontWeight: 800, color: '#f1f5f9', fontSize: 11, letterSpacing: '0.02em' }}>{symbol}</span>
+      <span style={{ color: up ? '#10b981' : '#ef4444', fontSize: 10, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 2 }}>
         {up ? <ArrowUpOutlined /> : <ArrowDownOutlined />} {change}
       </span>
     </div>
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-      <span style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>{price}</span>
-      <svg width="30" height="12" viewBox="0 0 40 16">
+      <span style={{ fontSize: 14, fontWeight: 700, color: '#e2e8f0' }}>{price}</span>
+      <svg width="28" height="10" viewBox="0 0 40 16">
         <path d={path} fill="none" stroke={up ? '#10b981' : '#ef4444'} strokeWidth="1.5" />
       </svg>
     </div>
   </motion.div>
-);
-
-const SignalRow = ({ sym, signal, score, typeLabel, buyLabel, watchLabel }: any) => (
-  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      <span style={{ fontWeight: 700, color: '#f8fafc', fontSize: 12, width: 44 }}>{sym}</span>
-      <span style={{ fontSize: 11, color: '#94a3b8' }}>{typeLabel}</span>
-    </div>
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-      <span style={{ fontSize: 12, fontWeight: 700, color: signal === 'BUY' ? '#10b981' : signal === 'WATCH' ? '#f59e0b' : '#ef4444' }}>{signal === 'BUY' ? buyLabel : signal === 'WATCH' ? watchLabel : signal}</span>
-      <span style={{ fontSize: 12, color: '#e2e8f0', background: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: 4, whiteSpace: 'nowrap' }}>{score}</span>
-    </div>
-  </div>
-);
-
-const SectorRow = ({ name, perf, up }: any) => (
-  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-    <span style={{ fontSize: 12, color: '#94a3b8', fontWeight: 600 }}>{name}</span>
-    <span style={{ fontSize: 12, fontWeight: 700, color: up ? '#10b981' : '#ef4444' }}>{perf}</span>
-  </div>
-);
-
-const TradeRow = ({ sym, side, size, price, time }: any) => (
-  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-      <span style={{ fontSize: 11, fontWeight: 700, color: side === 'BUY' ? '#10b981' : '#ef4444', background: side === 'BUY' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)', padding: '2px 6px', borderRadius: 4 }}>{side}</span>
-      <span style={{ fontWeight: 700, color: '#f8fafc', fontSize: 13 }}>{sym}</span>
-    </div>
-    <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-      <span style={{ fontSize: 12, color: '#cbd5e1' }}>{size}</span>
-      <span style={{ fontSize: 12, fontWeight: 600, color: '#e2e8f0', width: 60, textAlign: 'right' }}>{price}</span>
-      <span style={{ fontSize: 11, color: '#64748b' }}>{time}</span>
-    </div>
-  </div>
 );
 
 const StockMarketHeroVisual: React.FC = () => {
@@ -73,317 +86,196 @@ const StockMarketHeroVisual: React.FC = () => {
   useEffect(() => setMounted(true), []);
 
   return (
-    <div className="stock-visual-container" style={{ position: 'relative', width: '100%', height: '100%', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+    <div className="stock-visual-container" style={{ position: 'relative', width: '100%', height: '100%', display: 'flex', flexDirection: 'column', gap: 8 }}>
       <style>{`
         .stock-visual-container {
           max-height: calc(100vh - 150px);
           overflow: hidden;
         }
         .glass-panel {
-          background: rgba(15, 23, 42, 0.75);
-          border: 1px solid rgba(148, 163, 184, 0.1);
-          border-radius: 16px;
-          padding: 14px;
-          transition: transform 220ms ease, border-color 220ms ease, box-shadow 220ms ease;
+          background: rgba(12, 20, 38, 0.7);
+          border: 1px solid rgba(148, 163, 184, 0.07);
+          border-radius: 14px;
+          padding: 12px 14px;
+          transition: border-color 200ms ease;
         }
-        .glass-panel:hover {
-          border-color: rgba(24, 144, 255, 0.3);
-          box-shadow: 0 4px 20px rgba(0,0,0,0.3), 0 0 10px rgba(24, 144, 255, 0.1);
-          transform: translateY(-2px);
-        }
-        
+        .glass-panel:hover { border-color: rgba(148, 163, 184, 0.15); }
+
         .top-ticker-card {
           flex: 1;
-          background: rgba(255, 255, 255, 0.02);
-          border: 1px solid rgba(255, 255, 255, 0.04);
-          border-radius: 12px;
+          background: rgba(255,255,255,0.02);
+          border: 1px solid rgba(255,255,255,0.04);
+          border-radius: 10px;
           padding: 6px 10px;
-          transition: transform 220ms ease, border-color 220ms ease, background 220ms ease;
+          transition: border-color 200ms ease, background 200ms ease;
         }
         .top-ticker-card:hover {
-          background: rgba(24, 144, 255, 0.04);
-          border-color: rgba(24, 144, 255, 0.2);
-          transform: translateY(-2px);
+          background: rgba(24,144,255,0.04);
+          border-color: rgba(24,144,255,0.15);
         }
 
-        .workflow-step {
-          background: rgba(255, 255, 255, 0.02);
-          border: 1px solid rgba(255, 255, 255, 0.04);
-          border-radius: 10px;
-          padding: 8px 10px;
-          margin-bottom: 6px;
-          transition: border-color 220ms ease, background 220ms ease;
-        }
-        .workflow-step:hover {
-          background: rgba(24, 144, 255, 0.04);
-          border-color: rgba(24, 144, 255, 0.15);
-        }
         .status-chip {
-          display: inline-flex;
-          align-items: center;
-          gap: 4px;
-          padding: 2px 8px;
-          border-radius: 12px;
-          font-size: 0.7rem;
-          font-weight: 600;
-          background: rgba(24, 144, 255, 0.1);
-          color: #1890ff;
-          border: 1px solid rgba(24, 144, 255, 0.15);
+          display: inline-flex; align-items: center; gap: 4px;
+          padding: 2px 8px; border-radius: 10px;
+          font-size: 0.65rem; font-weight: 600;
+          background: rgba(24,144,255,0.08);
+          color: #60a5fa;
+          border: 1px solid rgba(24,144,255,0.1);
         }
         .status-chip.success {
-          background: rgba(34, 197, 94, 0.1);
+          background: rgba(34,197,94,0.08);
           color: #4ade80;
-          border-color: rgba(34, 197, 94, 0.15);
-        }
-        .svg-chart-path {
-          stroke-dasharray: 1000;
-          stroke-dashoffset: 1000;
-          animation: drawChart 2.5s ease-out forwards;
-        }
-        @keyframes drawChart {
-          to { stroke-dashoffset: 0; }
-        }
-        
-        .ticker-tape-container {
-          width: 100%;
-          overflow: hidden;
-          background: rgba(2, 6, 17, 0.3);
-          border-radius: 12px;
-          border: 1px solid rgba(255, 255, 255, 0.03);
-          padding: 6px 0;
-          display: flex;
-          white-space: nowrap;
-          position: relative;
-          contain: strict;
-        }
-        .ticker-tape {
-          display: flex;
-          gap: 40px;
-          animation: slideTicker 60s linear infinite;
-          will-change: transform;
-        }
-        .ticker-tape:hover {
-          animation-play-state: paused;
-        }
-        @keyframes slideTicker {
-          0% { transform: translate3d(0, 0, 0); }
-          100% { transform: translate3d(-50%, 0, 0); }
+          border-color: rgba(34,197,94,0.1);
         }
 
-        @media (prefers-reduced-motion: reduce) {
-          .ticker-tape { animation: none; transform: none; }
-          .svg-chart-path { animation: none; stroke-dashoffset: 0; }
-          .pulse-indicator { animation: none !important; opacity: 1; }
+        .svg-chart-path {
+          stroke-dasharray: 1000; stroke-dashoffset: 1000;
+          animation: riDrawChart 2.5s ease-out forwards;
         }
+        @keyframes riDrawChart { to { stroke-dashoffset: 0; } }
 
         @media (max-width: 768px) {
-          .stock-visual-container {
-            padding: 4px;
-            gap: 4px;
-          }
-          /* Hide non-essential panels to keep it ultra compact */
-          .glass-panel:nth-child(n+3) {
-            display: none !important;
-          }
-          /* Hide secondary tickers */
-          .top-ticker-card:nth-child(n+2) {
-            display: none !important;
-          }
-          /* Make remaining card fit */
-          .top-ticker-card {
-            width: 100%;
-          }
-          .ticker-row {
-            gap: 4px;
-          }
-          .main-chart-area {
-            height: 120px;
-          }
-          /* Hide the execution feed on mobile */
-          .glass-panel.live-executions {
-            display: none !important;
-          }
-          /* Hide bottom ticker tape on mobile */
-          .ticker-tape-container {
-            display: none !important;
-          }
+          .stock-visual-container { padding: 4px; gap: 4px; }
+          .glass-panel { padding: 8px 10px; }
+          .top-ticker-card:nth-child(n+3) { display: none; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .svg-chart-path { animation: none; stroke-dashoffset: 0; }
         }
       `}</style>
-      
-      {/* Top Status Bar — inside dashboard frame */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 4 }}>
+
+      {/* ── Top Status Bar ── */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div className="pulse-indicator" aria-hidden="true" style={{ width: 6, height: 6 }}></div>
-          <span style={{ fontSize: 10, color: '#4ade80', fontWeight: 600, letterSpacing: 0.3 }}>{t.landing.dashPreviewStatus?.toUpperCase() || 'AI PIPELINE ACTIVE'}</span>
-          <span style={{ fontSize: 10, color: '#64748b' }}>|</span>
-          <span style={{ fontSize: 10, color: '#94a3b8' }}>{t.landing.dashPreviewRisk} · 42ms</span>
+          <div className="pulse-indicator" style={{
+            width: 6, height: 6, borderRadius: '50%',
+            background: '#10b981', boxShadow: '0 0 8px rgba(16,185,129,0.6)',
+          }}></div>
+          <span style={{ fontSize: 10, color: '#4ade80', fontWeight: 700, letterSpacing: '0.05em' }}>
+            {t.landing.dashPreviewStatus || 'Research Engine Online'}
+          </span>
+          <span style={{ color: 'rgba(148,163,184,0.2)', fontSize: 10 }}>|</span>
+          <span style={{ fontSize: 9, color: '#64748b', fontWeight: 600 }}>Model: Alpha-V4</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <ThunderboltOutlined aria-hidden="true" style={{ color: '#4ade80', fontSize: 11 }} />
-          <span style={{ fontSize: 10, color: '#4ade80', fontWeight: 700 }}>NVDA</span>
-          <span style={{ fontSize: 10, color: '#4ade80', fontWeight: 800, background: 'rgba(16,185,129,0.1)', padding: '2px 6px', borderRadius: 4 }}>{t.landing.dashPreviewBuy}</span>
-          <span style={{ fontSize: 10, color: '#94a3b8' }}>92.4%</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <span style={{ fontSize: 9, color: '#64748b' }}>
+            {t.landing.dashPreviewProcessed || 'Coverage: 8,421 equities'}
+          </span>
+          <span style={{ fontSize: 9, color: '#60a5fa', fontWeight: 700, background: 'rgba(96,165,250,0.08)', padding: '2px 8px', borderRadius: 8, border: '1px solid rgba(96,165,250,0.12)' }}>
+            <SafetyCertificateOutlined style={{ fontSize: 8, marginRight: 3 }} />
+            {t.landing.dashPreviewRisk || 'Risk Layer Active'}
+          </span>
         </div>
       </div>
 
-      {/* Top Ticker Row */}
-      <div style={{ display: 'flex', gap: '12px' }}>
-        {tickers.slice(0, 5).map((t, i) => (
-          <TopTickerCard key={i} symbol={t.sym} price={t.p} change={t.c} up={t.up} delay={i * 0.1} path={t.path} />
+      {/* ── Ticker Row ── */}
+      <div style={{ display: 'flex', gap: 8 }}>
+        {tickers.map((t, i) => (
+          <TopTickerCard key={i} symbol={t.sym} price={t.p} change={t.c} up={t.up} delay={i * 0.08} path={t.path} />
         ))}
       </div>
 
-      <div style={{ display: 'flex', gap: '10px', flex: 1 }}>
-        {/* Left: AI Orchestrator & Top Signals */}
-        <div style={{ flex: 0.9, display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          <div className="glass-panel" style={{ padding: 10 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-              <span style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase' }}><ThunderboltOutlined aria-hidden="true" /> {t.landing.dashPreviewAiOrchestrator}</span>
+      {/* ── Main Grid: Signal Queue | Equity Curve ── */}
+      <div style={{ display: 'flex', gap: 10, flex: 1, minHeight: 0 }}>
+        {/* Left: Signal Research Queue */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          <div className="glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ fontSize: 9, color: '#64748b', letterSpacing: '1.5px', fontWeight: 700, textTransform: 'uppercase', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 5 }}>
+              <BarChartOutlined style={{ fontSize: 10 }} /> {t.landing.dashPreviewTopSignals || 'Signal Research Queue'}
             </div>
-            
-            <div className="workflow-step">
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                <span style={{ color: '#e2e8f0', fontWeight: 600, fontSize: 13 }}>{t.landing.dashPreviewGlobalScan}</span>
-                <span className="status-chip success"><CheckCircleOutlined aria-hidden="true" /> {t.landing.dashPreviewDone}</span>
-              </div>
-              <div style={{ fontSize: 11, color: '#64748b' }}>{t.landing.dashPreviewProcessed}</div>
-            </div>
-            
-            <div className="workflow-step">
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                <span style={{ color: '#e2e8f0', fontWeight: 600, fontSize: 13 }}>{t.landing.dashPreviewSignal}</span>
-                <span className="status-chip"><LoadingOutlined aria-hidden="true" style={{ marginRight: 4 }}/> {t.landing.dashPreviewActive}</span>
-              </div>
-              <div style={{ height: 3, background: 'rgba(255,255,255,0.05)', borderRadius: 2, overflow: 'hidden', marginTop: 8 }}>
-                <motion.div 
-                  initial={{ width: 0 }} animate={{ width: mounted ? '65%' : 0 }} transition={{ duration: 1.5, ease: "easeOut" }}
-                  style={{ height: '100%', background: 'linear-gradient(90deg, #1890ff, #60a5fa)', borderRadius: 2 }} 
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="glass-panel" style={{ flex: 1, padding: 10, display: 'flex', flexDirection: 'column' }}>
-            <div style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 12 }}><BarChartOutlined aria-hidden="true" /> {t.landing.dashPreviewTopSignals}</div>
-            <SignalRow sym="NVDA" typeLabel={t.landing.dashPreviewMomentum} signal="BUY" buyLabel={t.landing.dashPreviewBuy} watchLabel={t.landing.dashPreviewWatch} score="92" />
-            <SignalRow sym="TSLA" typeLabel={t.landing.dashPreviewMeanReversion} signal="WATCH" buyLabel={t.landing.dashPreviewBuy} watchLabel={t.landing.dashPreviewWatch} score="64" />
-            <SignalRow sym="AAPL" typeLabel={t.landing.dashPreviewTrendContinuation} signal="BUY" buyLabel={t.landing.dashPreviewBuy} watchLabel={t.landing.dashPreviewWatch} score="85" />
-            <SignalRow sym="MSFT" typeLabel={t.landing.dashPreviewEarningsMomentum} signal="WATCH" buyLabel={t.landing.dashPreviewBuy} watchLabel={t.landing.dashPreviewWatch} score="72" />
+            <ResearchSignalRow
+              sym="NVDA" typeLabel={t.landing.dashPreviewMomentum} confidence="92"
+              status={t.landing.dashPreviewStatus2 || 'Backtest Passed'} statusColor="#10b981"
+            />
+            <ResearchSignalRow
+              sym="AAPL" typeLabel={t.landing.dashPreviewTrendContinuation} confidence="85"
+              status={t.landing.dashPreviewBuy || 'Validated'} statusColor="#60a5fa"
+            />
+            <ResearchSignalRow
+              sym="MSFT" typeLabel={t.landing.dashPreviewEarningsMomentum} confidence="78"
+              status={t.landing.dashPreviewStatus3 || 'Risk Check OK'} statusColor="#10b981"
+            />
+            <ResearchSignalRow
+              sym="TSLA" typeLabel={t.landing.dashPreviewMeanReversion} confidence="64"
+              status={t.landing.dashPreviewWatch || 'Watch'} statusColor="#f59e0b"
+            />
           </div>
         </div>
 
-        {/* Middle: Chart & Portfolio Grid */}
-        <div style={{ flex: 1.6, display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          <div className="glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '10px 14px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
+        {/* Right: Equity Curve + Risk Framework */}
+        <div style={{ flex: 1.3, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div className="glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <div>
-                <div style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 4 }}><LineChartOutlined aria-hidden="true" /> {t.landing.dashPreviewEquityCurve}</div>
-                <div style={{ color: '#f8fafc', fontSize: 22, fontWeight: 800 }}>$1.24M <span style={{ fontSize: 13, color: '#10b981', fontWeight: 600, marginLeft: 8 }}>+28.4% YTD</span></div>
+                <div style={{ fontSize: 9, color: '#64748b', letterSpacing: '1.5px', fontWeight: 700, textTransform: 'uppercase', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <LineChartOutlined style={{ fontSize: 10 }} /> {t.landing.dashPreviewEquityCurve || 'Equity Curve'}
+                </div>
+                <div style={{ color: '#f8fafc', fontSize: 20, fontWeight: 800, letterSpacing: '-0.01em' }}>
+                  $1.24M <span style={{ fontSize: 12, color: '#10b981', fontWeight: 700, marginLeft: 4 }}>+28.4%</span>
+                </div>
               </div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <span style={{ fontSize: 11, fontWeight: 600, background: 'rgba(24,144,255,0.15)', color: '#60a5fa', padding: '4px 10px', borderRadius: 4 }}>{t.landing.dashPreviewYTD}</span>
-                <span style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8', padding: '4px 10px', borderRadius: 4 }}>{t.landing.dashPreview1M}</span>
-                <span style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8', padding: '4px 10px', borderRadius: 4 }}>{t.landing.dashPreview1W}</span>
+              <div style={{ display: 'flex', gap: 4 }}>
+                {['YTD', '1M', '1W'].map((p, i) => (
+                  <span key={p} style={{
+                    fontSize: 9, fontWeight: i === 0 ? 700 : 600,
+                    background: i === 0 ? 'rgba(24,144,255,0.12)' : 'transparent',
+                    color: i === 0 ? '#60a5fa' : '#64748b',
+                    padding: '3px 7px', borderRadius: 4,
+                  }}>{p}</span>
+                ))}
               </div>
             </div>
-
-            <div className="equity-chart-area" style={{ flex: 1, position: 'relative', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', marginTop: 6, minHeight: 90 }}>
-              <svg width="100%" height="100%" viewBox="0 0 500 160" preserveAspectRatio="none">
+            <div style={{ flex: 1, position: 'relative', minHeight: 70, marginTop: 4 }}>
+              <svg width="100%" height="100%" viewBox="0 0 500 140" preserveAspectRatio="none">
                 <defs>
-                  <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#1890ff" stopOpacity="0.25" />
-                    <stop offset="100%" stopColor="#1890ff" stopOpacity="0" />
+                  <linearGradient id="eqGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.15" />
+                    <stop offset="100%" stopColor="#3b82f6" stopOpacity="0" />
                   </linearGradient>
                 </defs>
                 {mounted && (
                   <>
-                    <path d="M 0 130 C 100 130, 150 80, 250 100 C 350 120, 400 40, 500 20 L 500 160 L 0 160 Z" fill="url(#chartGrad)" />
-                    <path className="svg-chart-path" d="M 0 130 C 100 130, 150 80, 250 100 C 350 120, 400 40, 500 20" fill="none" stroke="#1890ff" strokeWidth="2.5" />
+                    <path d="M 0 110 C 100 110, 150 60, 250 80 C 350 100, 400 30, 500 15 L 500 140 L 0 140 Z" fill="url(#eqGrad)" />
+                    <path className="svg-chart-path" d="M 0 110 C 100 110, 150 60, 250 80 C 350 100, 400 30, 500 15" fill="none" stroke="#3b82f6" strokeWidth="2" />
                   </>
                 )}
               </svg>
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '8px' }}>
-             <div className="glass-panel" style={{ padding: '6px 8px' }}>
-               <div style={{ color: '#64748b', fontSize: 9, textTransform: 'uppercase', marginBottom: 2, fontWeight: 600 }}>{t.landing.dashPreviewWinRate}</div>
-               <div style={{ color: '#f8fafc', fontSize: 14, fontWeight: 800 }}>68.2%</div>
-             </div>
-             <div className="glass-panel" style={{ padding: '6px 8px' }}>
-               <div style={{ color: '#64748b', fontSize: 9, textTransform: 'uppercase', marginBottom: 2, fontWeight: 600 }}>{t.landing.dashPreviewMaxDD}</div>
-               <div style={{ color: '#ef4444', fontSize: 14, fontWeight: 800 }}>-4.1%</div>
-             </div>
-             <div className="glass-panel" style={{ padding: '6px 8px' }}>
-               <div style={{ color: '#64748b', fontSize: 9, textTransform: 'uppercase', marginBottom: 2, fontWeight: 600 }}>{t.landing.dashPreviewRiskExp}</div>
-               <div style={{ color: '#f8fafc', fontSize: 14, fontWeight: 800 }}>{t.landing.dashPreviewRiskLow}</div>
-             </div>
-             <div className="glass-panel" style={{ padding: '6px 8px' }}>
-               <div style={{ color: '#64748b', fontSize: 9, textTransform: 'uppercase', marginBottom: 2, fontWeight: 600 }}>{t.landing.dashPreviewSharpe}</div>
-               <div style={{ color: '#10b981', fontSize: 14, fontWeight: 800 }}>2.45</div>
-             </div>
-          </div>
-        </div>
-
-        {/* Right: Market Pulse & Sector */}
-        <div style={{ flex: 1.2, display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          <div className="glass-panel" style={{ padding: 12 }}>
-             <div style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 12 }}><LineChartOutlined aria-hidden="true" /> {t.landing.dashPreviewMarketPulse}</div>
-             <div style={{ marginBottom: 12 }}>
-               <div style={{ color: '#e2e8f0', fontSize: 13, fontWeight: 700, marginBottom: 2 }}>S&P 500</div>
-               <div style={{ color: '#10b981', fontSize: 15, fontWeight: 800 }}>5,286.10 <span style={{ fontSize: 11, fontWeight: 600 }}>+0.63%</span></div>
-             </div>
-             <div style={{ marginBottom: 12 }}>
-               <div style={{ color: '#e2e8f0', fontSize: 13, fontWeight: 700, marginBottom: 2 }}>Nasdaq 100</div>
-               <div style={{ color: '#10b981', fontSize: 15, fontWeight: 800 }}>18,342.50 <span style={{ fontSize: 11, fontWeight: 600 }}>+1.12%</span></div>
-             </div>
-             <div>
-               <div style={{ color: '#e2e8f0', fontSize: 13, fontWeight: 700, marginBottom: 2 }}>VIX</div>
-               <div style={{ color: '#ef4444', fontSize: 15, fontWeight: 800 }}>13.42 <span style={{ fontSize: 11, fontWeight: 600 }}>-2.1%</span></div>
-             </div>
-          </div>
-
-          <div className="glass-panel" style={{ flex: 1, padding: 10 }}>
-             <div style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 12 }}><SafetyCertificateOutlined aria-hidden="true" /> {t.landing.dashPreviewSectorPerf}</div>
-             <SectorRow name="Technology" perf="+2.1%" up={true} />
-             <SectorRow name="Communications" perf="+1.4%" up={true} />
-             <SectorRow name="Healthcare" perf="-0.8%" up={false} />
-             <SectorRow name="Energy" perf="-1.2%" up={false} />
-          </div>
-        </div>
-      </div>
-      
-      {/* Bottom Wide Panel: Live Executions */}
-      <div
-        className="glass-panel live-executions"
-        style={{ padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 4 }}
-      >
-         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
-           <span style={{ fontSize: '11px', color: '#94a3b8', letterSpacing: '1px', fontWeight: 600, textTransform: 'uppercase' }}>{t.landing.dashPreviewLiveFeed}</span>
-           <span className="status-chip success"><CheckCircleOutlined aria-hidden="true" /> {t.landing.dashPreviewAutoRouting}</span>
-         </div>
-         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' }}>
-            <TradeRow sym="NVDA" side="BUY" size="140 shares" price="$1,037.89" time="12ms ago" />
-            <TradeRow sym="TSLA" side="SELL" size="500 shares" price="$172.34" time="1s ago" />
-            <TradeRow sym="AMD" side="BUY" size="350 shares" price="$164.21" time="2.4s ago" />
-         </div>
-      </div>
-
-      {/* Bottom Ticker Tape */}
-      <div>
-        <div className="ticker-tape-container">
-           <div className="ticker-tape">
-              {[...tickers, ...tickers, ...tickers].map((t, i) => (
-                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ color: '#94a3b8', fontWeight: 600, fontSize: 11 }}>{t.sym}</span>
-                  <span style={{ color: '#f8fafc', fontWeight: 700, fontSize: 11 }}>{t.p}</span>
-                  <span style={{ color: t.up ? '#10b981' : '#ef4444', fontWeight: 700, fontSize: 11 }}>{t.c}</span>
+          {/* ── Risk Framework mini-panel ── */}
+          <div className="glass-panel" style={{ padding: '10px 14px' }}>
+            <div style={{ fontSize: 9, color: '#f59e0b', letterSpacing: '1.5px', fontWeight: 700, textTransform: 'uppercase', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 5 }}>
+              <SafetyCertificateOutlined style={{ fontSize: 10 }} /> Risk Framework
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 8 }}>
+              {[
+                { label: 'Per-Trade Limit', val: '1.0%', color: '#4ade80' },
+                { label: 'Max Drawdown', val: '-4.1%', color: '#ef4444' },
+                { label: 'Sharpe Ratio', val: '2.45', color: '#10b981' },
+                { label: 'Approval', val: 'Required', color: '#f59e0b' },
+              ].map(m => (
+                <div key={m.label} style={{ textAlign: 'center' }}>
+                  <div style={{ color: '#64748b', fontSize: 8, textTransform: 'uppercase', marginBottom: 4, fontWeight: 700, letterSpacing: '0.05em' }}>{m.label}</div>
+                  <div style={{ color: m.color, fontSize: 13, fontWeight: 800 }}>{m.val}</div>
                 </div>
               ))}
-           </div>
+            </div>
+          </div>
         </div>
       </div>
 
+      {/* ── Bottom: Research Feed ── */}
+      <div className="glass-panel" style={{ padding: '8px 14px' }}>
+        <div style={{ fontSize: 9, color: '#64748b', letterSpacing: '1.5px', fontWeight: 700, textTransform: 'uppercase', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 5 }}>
+          <SearchOutlined style={{ fontSize: 9 }} /> {t.landing.dashPreviewLiveFeed || 'Recent Validations'}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+          <ResearchFeedRow sym="NVDA" signal="Momentum Breakout" status="Backtest OK" time="12s ago" />
+          <ResearchFeedRow sym="AAPL" signal="Trend Continuation" status="Validated" time="28s ago" />
+          <ResearchFeedRow sym="MSFT" signal="Earnings Momentum" status="Risk OK" time="45s ago" />
+        </div>
+      </div>
     </div>
   );
 };

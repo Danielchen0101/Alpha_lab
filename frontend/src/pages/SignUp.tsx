@@ -25,6 +25,7 @@ const SignUp: React.FC = () => {
   const turnstileRef = useRef<BoundTurnstileObject | null>(null);
 
   const turnstileSiteKey = process.env.REACT_APP_TURNSTILE_SITE_KEY;
+  const isDev = process.env.NODE_ENV === 'development';
   const captchaConfigured = !!turnstileSiteKey;
 
   useEffect(() => {
@@ -91,7 +92,7 @@ const SignUp: React.FC = () => {
         setOauthLoading(null);
       }
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'OAuth login failed';
+      const msg = e instanceof Error ? e.message : (t.auth.oauthFailed || 'OAuth login failed');
       setError(msg);
       setOauthLoading(null);
     }
@@ -99,7 +100,7 @@ const SignUp: React.FC = () => {
 
   const getButtonTip = () => {
     if (captchaConfigured && !captchaToken && !termsAccepted) {
-      return "Complete verification and accept terms to continue";
+      return t.auth.signUpHelperAll || 'Complete verification and accept terms to continue';
     }
     if (captchaConfigured && !captchaToken) {
       return t.auth.signUpHelperCaptcha;
@@ -155,8 +156,9 @@ const SignUp: React.FC = () => {
                     const vals = form.getFieldsValue();
                     const passwordsMatch = vals.password === vals.confirmPassword;
                     setTermsAccepted(!!vals.terms);
+                    const captchaOk = captchaConfigured ? !!captchaToken : isDev;
                     setFormValid(
-                      !!vals.fullName && !!vals.email && !!vals.password && !!vals.confirmPassword && passwordsMatch && !!vals.terms && !!captchaToken
+                      !!vals.fullName && !!vals.email && !!vals.password && !!vals.confirmPassword && passwordsMatch && !!vals.terms && captchaOk
                     );
                   }}
                   autoComplete="off"
@@ -226,6 +228,10 @@ const SignUp: React.FC = () => {
                         onExpire={() => setCaptchaToken('')}
                         theme="dark"
                       />
+                    ) : isDev ? (
+                      <div style={{ padding: '10px 14px', background: 'rgba(255,193,7,0.12)', border: '1px solid rgba(255,193,7,0.3)', borderRadius: 8, color: '#fbbf24', fontSize: 12, textAlign: 'center' }}>
+                        {t.auth.captchaNotConfigured} — {t.auth.captchaBypassDev || 'Bypassed in development'}
+                      </div>
                     ) : (
                       <div className="auth-captcha-placeholder error">{t.auth.captchaNotConfigured}</div>
                     )}
