@@ -4,7 +4,7 @@
 
 ### Quantitative Trading Platform
 
-![Version](https://img.shields.io/badge/version-2.6.3-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-2.9.2-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![React](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?style=flat-square&logo=typescript)

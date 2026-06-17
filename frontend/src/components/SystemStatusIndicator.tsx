@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Tooltip } from 'antd';
 import { CheckCircleFilled, WarningFilled, LoadingOutlined } from '@ant-design/icons';
 import { useLanguage } from '../contexts/LanguageContext';
+import { API_BASE_URL } from '../services/api';
 
 type SystemStatus = 'checking' | 'online' | 'unavailable';
 
@@ -16,7 +17,7 @@ const SystemStatusIndicator: React.FC = () => {
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 5000);
-      const res = await fetch('https://api.alphalabquant.com/api/health', {
+      const res = await fetch(`${API_BASE_URL}/health`, {
         signal: controller.signal,
       });
       clearTimeout(timeout);

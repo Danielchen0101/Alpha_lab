@@ -21,7 +21,7 @@ import {
   WalletOutlined, FundOutlined, SwapOutlined, WarningOutlined
 } from '@ant-design/icons';
 import aiTradingService from '../services/aiTradingService';
-import { backtraderAPI, entryQualityAPI, fineScanAdvancedAPI, deeperValidationAPI, entryPlanAPI, fineScanExplainAPI, fineScanDecisionAPI, tradingAccountAPI, aiAgentWatchlistAPI, aiExecutionAPI, pipelineAutoAPI, notificationAPI } from '../services/api';
+import { backtraderAPI, entryQualityAPI, fineScanAdvancedAPI, deeperValidationAPI, entryPlanAPI, fineScanExplainAPI, fineScanDecisionAPI, tradingAccountAPI, aiAgentWatchlistAPI, aiExecutionAPI, pipelineAutoAPI, notificationAPI, loadConfigStatus } from '../services/api';
 import api from '../services/api';
 import OrderModal from '../components/OrderModal';
 import marketDataService from '../services/marketDataService';
@@ -1217,10 +1217,12 @@ const Agent: React.FC = (): React.ReactElement => {
     });
 
     try {
-      const statusResp = await api.get('/config/status');
-      if (!statusResp.data?.success) return fail('Failed to load configuration status.');
+      const statusResult = await loadConfigStatus({ timeoutMs: 10000 });
+      if (!statusResult.ok || !statusResult.data?.success) {
+        return fail(statusResult.message || 'Failed to load configuration status.');
+      }
 
-      const s = statusResp.data;
+      const s = statusResult.data;
 
       // Session check
       if (!s.user?.userResolved) {
@@ -1467,16 +1469,20 @@ const Agent: React.FC = (): React.ReactElement => {
 
   const fetchConfigStatus = async () => {
     try {
-      const resp = await api.get('/config/status');
-      if (resp.data?.success) {
+      const statusResult = await loadConfigStatus({ timeoutMs: 10000 });
+      if (statusResult.ok && statusResult.data?.success) {
+        const data = statusResult.data;
         setConfigStatus({
-          ai: resp.data.ai?.configured || false,
-          aiTestStatus: resp.data.ai?.testStatus || 'not_tested',
-          aiLastTestError: resp.data.ai?.lastTestError || null,
-          alpaca: resp.data.alpaca?.paperConfigured || false,
-          finnhub: resp.data.finnhub?.configured || false,
+          ai: data.ai?.configured || false,
+          aiTestStatus: data.ai?.testStatus || 'not_tested',
+          aiLastTestError: data.ai?.lastTestError || null,
+          alpaca: data.alpaca?.paperConfigured || false,
+          finnhub: data.finnhub?.configured || false,
           loaded: true,
         });
+      } else {
+        console.warn('Failed to fetch config status:', statusResult.message);
+        setConfigStatus(prev => ({ ...prev, loaded: true }));
       }
     } catch (e) {
       console.warn('Failed to fetch config status:', e);

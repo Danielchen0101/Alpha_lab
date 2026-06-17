@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.9.2] - 2026-06-16
+
+### Fixed
+- Stabilized production Settings connection status checks with shared config status loading, timeout, short cache, in-flight guard, and one bounded backend wake retry.
+- Hardened backend `/api/config/status` with structured backend/Supabase/auth/provider status fields and bounded Supabase auth/config reads.
+- Updated Cloudflare CSP and backend CORS defaults for production backend connectivity.
+
+### Changed
+- Settings and Agent now share the same `/api/config/status` status source instead of separate status request paths.
+
 ## [2.7.7] - 2026-05-26\
 \
 ### Changed\

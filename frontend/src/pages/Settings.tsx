@@ -10,86 +10,68 @@ import {
   CloudServerOutlined,
   ThunderboltOutlined,
   RobotOutlined,
+  ReloadOutlined,
   BgColorsOutlined
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTheme } from '../contexts/ThemeContext';
-import axios from 'axios';
-import { supabase } from '../lib/supabaseClient';
+import { clearConfigStatusCache, ConfigStatusLoadResult, loadConfigStatus } from '../services/api';
 
 const { Title, Text, Paragraph } = Typography;
-
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '/api';
-const userApi = axios.create({ baseURL: API_BASE_URL, timeout: 15000 });
-userApi.interceptors.request.use(async (config) => {
-  let { data: { session } } = await supabase.auth.getSession();
-  if (session?.access_token) {
-    try {
-      const payload = JSON.parse(atob(session.access_token.split('.')[1]));
-      if (!payload.exp || Date.now() >= (payload.exp * 1000 - 60000)) {
-        const { data: refreshed } = await supabase.auth.refreshSession();
-        if (refreshed.session) session = refreshed.session;
-      }
-    } catch { /* use existing token */ }
-  }
-  if (session?.access_token) {
-    config.headers.Authorization = `Bearer ${session.access_token}`;
-  }
-  return config;
-});
-userApi.interceptors.response.use(
-  (response) => response,
-  async (error) => {
-    const hadAuthHeader = !!error.config?.headers?.Authorization;
-    if (error.response?.status === 401 && hadAuthHeader) {
-      await supabase.auth.signOut();
-      window.location.href = '/signin';
-    }
-    return Promise.reject(error);
-  }
-);
 
 type ServiceStatus =
   | 'loading'
   | 'connected'
   | 'not_configured'
   | 'backend_waking'
+  | 'backend_timeout'
   | 'session_unavailable'
+  | 'restoring_session'
   | 'unauthorized'
   | 'backend_unreachable'
+  | 'api_base_url_missing'
+  | 'connection_check_failed'
   | 'service_error'
   | 'schema_migration';
 
-const STATUS_RETRY_DELAYS = [800, 1500];
+type ProviderStatus = 'alpaca' | 'ai' | 'finnhub';
 
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const allStatuses = (status: ServiceStatus): Record<ProviderStatus, ServiceStatus> => ({
+  alpaca: status,
+  ai: status,
+  finnhub: status
+});
 
-const getWithRetry = async (url: string) => {
-  let lastError: any;
-  for (let attempt = 0; attempt <= STATUS_RETRY_DELAYS.length; attempt += 1) {
-    try {
-      return await userApi.get(url);
-    } catch (error: any) {
-      lastError = error;
-      const status = error.response?.status;
-      if (status === 401 || status === 403) throw error;
-      if (attempt < STATUS_RETRY_DELAYS.length) {
-        await sleep(STATUS_RETRY_DELAYS[attempt]);
-      }
-    }
-  }
-  throw lastError;
+const providerStatusToServiceStatus = (status?: string): ServiceStatus => {
+  if (status === 'connected') return 'connected';
+  if (status === 'not_configured') return 'not_configured';
+  if (status === 'checking') return 'backend_waking';
+  if (status === 'error') return 'connection_check_failed';
+  return 'service_error';
 };
 
-const resolveStatusError = (error: any): ServiceStatus => {
-  if (!error.response) return 'backend_unreachable';
-  if (error.response.status === 401 || error.response.status === 403) return 'unauthorized';
-  const code = error.response.data?.code || '';
-  const msg = `${error.response.data?.message || ''} ${error.response.data?.error || ''}`;
-  if (code.includes('config_type') || msg.toLowerCase().includes('migration')) return 'schema_migration';
-  return 'service_error';
+const resultToServiceStatus = (result: ConfigStatusLoadResult): ServiceStatus => {
+  switch (result.errorCode) {
+    case 'api_base_url_missing':
+      return 'api_base_url_missing';
+    case 'supabase_auth_unavailable':
+      return 'session_unavailable';
+    case 'backend_waking':
+      return 'backend_waking';
+    case 'backend_timeout':
+      return 'backend_timeout';
+    case 'backend_unreachable':
+      return 'backend_unreachable';
+    case 'unauthorized':
+    case 'auth_required':
+      return 'unauthorized';
+    case 'schema_migration':
+      return 'schema_migration';
+    default:
+      return 'connection_check_failed';
+  }
 };
 
 const Settings: React.FC = () => {
@@ -99,7 +81,9 @@ const Settings: React.FC = () => {
   const { themeMode, setThemeMode } = useTheme();
   const requestIdRef = useRef(0);
   const [securityModalVisible, setSecurityModalVisible] = useState(false);
-  const [statuses, setStatuses] = useState<Record<'alpaca' | 'ai' | 'finnhub', ServiceStatus>>({
+  const [statusRefreshKey, setStatusRefreshKey] = useState(0);
+  const [statusMessage, setStatusMessage] = useState('');
+  const [statuses, setStatuses] = useState<Record<ProviderStatus, ServiceStatus>>({
     alpaca: 'loading',
     ai: 'loading',
     finnhub: 'loading'
@@ -112,93 +96,78 @@ const Settings: React.FC = () => {
     const isCurrentRequest = () => mounted && requestIdRef.current === requestId;
 
     const checkStatuses = async () => {
-      if (loading) return;
+      if (loading) {
+        if (isCurrentRequest()) {
+          setStatuses(allStatuses('restoring_session'));
+          setStatusMessage('Restoring session...');
+        }
+        return;
+      }
+
       if (isCurrentRequest()) {
-        setStatuses({
-          alpaca: 'loading',
-          ai: 'loading',
-          finnhub: 'loading'
-        });
+        setStatuses(allStatuses('loading'));
+        setStatusMessage('');
       }
+
       if (!user || !session?.access_token) {
-        const { data: { session: currentSession } } = await supabase.auth.getSession();
-        if (!currentSession?.access_token) {
-          if (isCurrentRequest()) setStatuses({
-            alpaca: 'session_unavailable',
-            ai: 'session_unavailable',
-            finnhub: 'session_unavailable'
-          });
-          return;
+        if (isCurrentRequest()) {
+          setStatuses(allStatuses('unauthorized'));
+          setStatusMessage('Please sign in again');
         }
+        return;
       }
 
-      try {
-        try {
-          await getWithRetry('/health');
-        } catch (healthError) {
-          if (isCurrentRequest()) setStatuses({
-            alpaca: 'backend_unreachable',
-            ai: 'backend_unreachable',
-            finnhub: 'backend_unreachable'
-          });
-          return;
+      const result = await loadConfigStatus({
+        force: statusRefreshKey > 0,
+        timeoutMs: 10000,
+        onRetry: (retryResult) => {
+          if (isCurrentRequest()) {
+            setStatuses(allStatuses('backend_waking'));
+            setStatusMessage(retryResult.message);
+          }
         }
+      });
 
-        const [alpacaRes, aiRes, finnhubRes] = await Promise.all([
-          getWithRetry('/settings/broker-config').then(
-            res => ({ status: 'fulfilled' as const, value: res }),
-            reason => ({ status: 'rejected' as const, reason })
-          ),
-          getWithRetry('/settings/ai-config').then(
-            res => ({ status: 'fulfilled' as const, value: res }),
-            reason => ({ status: 'rejected' as const, reason })
-          ),
-          getWithRetry('/settings/finnhub-config').then(
-            res => ({ status: 'fulfilled' as const, value: res }),
-            reason => ({ status: 'rejected' as const, reason })
-          )
-        ]);
+      if (!isCurrentRequest()) return;
 
-        const alpacaConfig = alpacaRes.status === 'fulfilled' ? alpacaRes.value.data?.config : null;
-        if (!isCurrentRequest()) return;
-        setStatuses({
-          alpaca: alpacaRes.status === 'rejected'
-            ? resolveStatusError(alpacaRes.reason)
-            : (alpacaConfig?.paper_api_key || alpacaConfig?.paper_api_key_masked || alpacaConfig?.live_api_key || alpacaConfig?.live_api_key_masked)
-              ? 'connected'
-              : 'not_configured',
-          ai: aiRes.status === 'rejected' ? resolveStatusError(aiRes.reason) : aiRes.value.data?.hasUserKey ? 'connected' : 'not_configured',
-          finnhub: finnhubRes.status === 'rejected'
-            ? resolveStatusError(finnhubRes.reason)
-            : (finnhubRes.value.data?.config?.api_key || finnhubRes.value.data?.config?.api_key_masked)
-              ? 'connected'
-              : 'not_configured'
-        });
-      } catch (e) {
-        console.error('Failed to fetch statuses', e);
-        if (isCurrentRequest()) setStatuses({
-          alpaca: resolveStatusError(e),
-          ai: resolveStatusError(e),
-          finnhub: resolveStatusError(e)
-        });
+      if (!result.ok || !result.data?.success) {
+        setStatuses(allStatuses(resultToServiceStatus(result)));
+        setStatusMessage(result.message);
+        return;
       }
+
+      setStatuses({
+        alpaca: providerStatusToServiceStatus(result.data.alpaca?.status),
+        ai: providerStatusToServiceStatus(result.data.aiProvider?.status),
+        finnhub: providerStatusToServiceStatus(result.data.finnhub?.status)
+      });
+      setStatusMessage(result.data.message || '');
     };
     checkStatuses();
     return () => {
       mounted = false;
     };
-  }, [loading, user, session]);
+  }, [loading, user, session, statusRefreshKey]);
 
   const StatusTag = ({ status }: { status: ServiceStatus }) => {
     if (status === 'loading') return <Badge status="processing" text={t.settings.checking} />;
     if (status === 'backend_waking') return <Badge status="processing" text="Backend waking up..." />;
     if (status === 'connected') return <Tag color="success">{t.settings.configured}</Tag>;
-    if (status === 'session_unavailable') return <Tag color="warning">Session unavailable</Tag>;
-    if (status === 'unauthorized') return <Tag color="error">Sign in again</Tag>;
+    if (status === 'restoring_session') return <Badge status="processing" text="Restoring session..." />;
+    if (status === 'session_unavailable') return <Tag color="warning">Supabase auth unavailable</Tag>;
+    if (status === 'unauthorized') return <Tag color="error">Please sign in again</Tag>;
     if (status === 'backend_unreachable') return <Tag color="error">Backend unreachable</Tag>;
+    if (status === 'backend_timeout') return <Tag color="error">Backend timeout</Tag>;
+    if (status === 'api_base_url_missing') return <Tag color="error">Backend URL missing</Tag>;
+    if (status === 'connection_check_failed') return <Tag color="error">Connection check failed</Tag>;
     if (status === 'schema_migration') return <Tag color="warning">Schema migration needed</Tag>;
     if (status === 'service_error') return <Tag color="error">Configuration service error</Tag>;
     return <Tag color="default">{t.settings.notConfigured}</Tag>;
+  };
+
+  const retryStatuses = () => {
+    clearConfigStatusCache();
+    setStatusRefreshKey(key => key + 1);
   };
 
   return (
@@ -211,6 +180,16 @@ const Settings: React.FC = () => {
         <Text style={{ fontSize: 16, color: 'var(--app-text-muted)', fontWeight: 500 }}>
           {t.settings.subtitle}
         </Text>
+        <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <Button icon={<ReloadOutlined />} onClick={retryStatuses} style={{ borderRadius: 8, fontWeight: 600 }}>
+            Verify connections
+          </Button>
+          {statusMessage && (
+            <Text style={{ fontSize: 12, color: 'var(--app-text-muted)' }}>
+              {statusMessage}
+            </Text>
+          )}
+        </div>
       </div>
 
       <Row gutter={[24, 24]} style={{ marginBottom: 40 }}>

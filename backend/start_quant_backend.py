@@ -92,7 +92,7 @@ import sys
 import threading
 from contextlib import contextmanager
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout, as_completed
 
 import dateutil.parser
 
@@ -183,15 +183,23 @@ class AlpacaAPIError(Exception):
 
 app = Flask(__name__)
 
-raw_allowed_origins = os.getenv("CORS_ORIGINS") or os.getenv("FRONTEND_ORIGIN", "*")
+DEFAULT_CORS_ORIGINS = (
+    "http://localhost:3000,"
+    "http://127.0.0.1:3000,"
+    "https://alphalabquant.com,"
+    "https://www.alphalabquant.com,"
+    "https://quant-platform.pages.dev"
+)
+raw_allowed_origins = os.getenv("CORS_ORIGINS") or os.getenv("FRONTEND_ORIGIN") or DEFAULT_CORS_ORIGINS
 allowed_origins = "*" if raw_allowed_origins == "*" else [
     origin.strip() for origin in raw_allowed_origins.split(",") if origin.strip()
 ]
+cors_supports_credentials = allowed_origins != "*"
 
 CORS(
     app,
     resources={r"/api/*": {"origins": allowed_origins}},
-    supports_credentials=True
+    supports_credentials=cors_supports_credentials
 )
 
 # ==================== Security Headers ====================
@@ -351,6 +359,8 @@ _config_cache = {}  # (user_id, config_type) -> (config_dict, timestamp)
 _pipeline_ai_result_cache = {}
 _cache_lock = threading.Lock()
 _headless_auth_context = threading.local()
+_config_status_executor = ThreadPoolExecutor(max_workers=4)
+CONFIG_STATUS_TIMEOUT_SECONDS = 8
 
 
 @contextmanager
@@ -394,6 +404,31 @@ def _hash_token(token):
     return hashlib.sha256(token.encode()).hexdigest()[:16]
 
 
+def get_supabase_user_from_token(token):
+    """Verify a Supabase access token without relying on Flask request context."""
+    if not supabase_admin:
+        safe_print('[Auth] supabase_admin is None - cannot verify token')
+        return None
+    if not token:
+        return None
+
+    token_hash = _hash_token(token)
+    cached_user = _cache_get(_auth_cache, token_hash, SUPABASE_AUTH_CACHE_TTL_SECONDS)
+    if cached_user is not None:
+        return cached_user
+
+    try:
+        resp = supabase_admin.auth.get_user(token)
+        if resp and resp.user:
+            user = {'id': resp.user.id, 'email': resp.user.email}
+            _cache_set(_auth_cache, token_hash, user)
+            return user
+    except Exception as e:
+        safe_print(f'[Auth] Supabase token verification failed: {type(e).__name__}: {e}')
+        _cache_invalidate(_auth_cache, token_hash)
+    return None
+
+
 def _pipeline_ai_cache_key(namespace, payload):
     try:
         raw = json.dumps(payload, sort_keys=True, default=str, separators=(',', ':'))
@@ -431,24 +466,7 @@ def get_supabase_user():
     if not has_token:
         return None
     token = auth_header[7:]  # Strip 'Bearer '
-
-    # Check auth cache first
-    token_hash = _hash_token(token)
-    cached_user = _cache_get(_auth_cache, token_hash, SUPABASE_AUTH_CACHE_TTL_SECONDS)
-    if cached_user is not None:
-        return cached_user
-
-    try:
-        resp = supabase_admin.auth.get_user(token)
-        if resp and resp.user:
-            user = {'id': resp.user.id, 'email': resp.user.email}
-            _cache_set(_auth_cache, token_hash, user)
-            return user
-    except Exception as e:
-        safe_print(f'[Auth] Supabase token verification failed: {type(e).__name__}: {e}')
-        # Invalidate any cached entry for this token
-        _cache_invalidate(_auth_cache, token_hash)
-    return None
+    return get_supabase_user_from_token(token)
 
 
 def require_auth():
@@ -8675,10 +8693,82 @@ def discord_notification_event():
 @app.route('/api/config/status', methods=['GET'])
 def config_status():
     """Return true config state for all services. Used by frontend status bar and scanner pre-flight."""
-    user = require_auth()
+    if not supabase_admin:
+        return jsonify({
+            'success': False,
+            'backend': 'ok',
+            'supabase': 'error',
+            'auth': 'error',
+            'errorCode': 'supabase_not_configured',
+            'message': 'Supabase is not configured on server',
+        }), 503
+
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return jsonify({
+            'success': False,
+            'backend': 'ok',
+            'supabase': 'ok',
+            'auth': 'error',
+            'errorCode': 'auth_required',
+            'message': 'Authentication required',
+        }), 401
+
+    token = auth_header[7:]
+    auth_future = _config_status_executor.submit(get_supabase_user_from_token, token)
+    try:
+        user = auth_future.result(timeout=CONFIG_STATUS_TIMEOUT_SECONDS)
+    except FutureTimeout:
+        safe_print('[config/status] Supabase auth verification timed out')
+        return jsonify({
+            'success': False,
+            'backend': 'ok',
+            'supabase': 'error',
+            'auth': 'error',
+            'errorCode': 'supabase_auth_timeout',
+            'message': 'Supabase auth timeout',
+        }), 504
+    except Exception as e:
+        safe_print(f'[config/status] Supabase auth verification failed: {type(e).__name__}')
+        return jsonify({
+            'success': False,
+            'backend': 'ok',
+            'supabase': 'error',
+            'auth': 'error',
+            'errorCode': 'supabase_auth_error',
+            'message': 'Supabase auth unavailable',
+        }), 503
+
     if not user:
-        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+        return jsonify({
+            'success': False,
+            'backend': 'ok',
+            'supabase': 'ok',
+            'auth': 'error',
+            'errorCode': 'unauthorized',
+            'message': 'Please sign in again',
+        }), 401
+
     user_id = user['id']
+
+    config_futures = {
+        'ai_provider': _config_status_executor.submit(get_user_config, user_id, 'ai_provider'),
+        'alpaca': _config_status_executor.submit(get_user_config, user_id, 'alpaca'),
+        'finnhub': _config_status_executor.submit(get_user_config, user_id, 'finnhub'),
+    }
+    configs = {}
+    config_errors = {}
+    deadline = time.time() + CONFIG_STATUS_TIMEOUT_SECONDS
+    for config_type, future in config_futures.items():
+        try:
+            remaining = max(0.1, deadline - time.time())
+            configs[config_type] = future.result(timeout=remaining)
+        except FutureTimeout:
+            config_errors[config_type] = 'timeout'
+            safe_print(f'[config/status] Supabase config read timeout type={config_type} user={user_id[:8]}...')
+        except Exception as e:
+            config_errors[config_type] = type(e).__name__
+            safe_print(f'[config/status] Supabase config read failed type={config_type} err={type(e).__name__}')
 
     # AI Provider — read from Supabase user config only
     ai_has_key = False
@@ -8690,42 +8780,62 @@ def config_status():
     ai_last_test_error = None
 
     ai_key_is_masked = False
-    if user:
-        user_cfg = get_user_config(user['id'], 'ai_provider')
-        if user_cfg:
-            api_key = user_cfg.get('apiKey', '')
-            has_key = bool(api_key and api_key.strip())
-            key_is_masked = '****' in api_key if api_key else False
-            ai_key_is_masked = key_is_masked
-            safe_print(f'[config/status] user={user["id"][:8]}... hasKey={has_key} keyIsMasked={key_is_masked} keyLen={len(api_key) if api_key else 0} testStatus={user_cfg.get("aiTestStatus","")}')
-            if has_key and not key_is_masked:
-                ai_has_key = True
-                ai_source = 'user_config/supabase'
-            elif key_is_masked:
-                ai_test_status = 'invalid_key_saved'
-                ai_last_test_error = 'Stored AI key is masked. Re-enter the real API key in Settings.'
-            ai_provider = user_cfg.get('provider', '')
-            ai_model = user_cfg.get('model', '')
-            if not key_is_masked:
-                ai_test_status = user_cfg.get('aiTestStatus', 'not_tested')
-            ai_last_tested_at = user_cfg.get('lastTestedAt')
-            if not key_is_masked:
-                ai_last_test_error = user_cfg.get('lastTestError')
+    user_cfg = configs.get('ai_provider')
+    if user_cfg:
+        api_key = user_cfg.get('apiKey', '')
+        has_key = bool(api_key and api_key.strip())
+        key_is_masked = '****' in api_key if api_key else False
+        ai_key_is_masked = key_is_masked
+        safe_print(f'[config/status] user={user["id"][:8]}... hasKey={has_key} keyIsMasked={key_is_masked} keyLen={len(api_key) if api_key else 0} testStatus={user_cfg.get("aiTestStatus","")}')
+        if has_key and not key_is_masked:
+            ai_has_key = True
+            ai_source = 'user_config/supabase'
+        elif key_is_masked:
+            ai_test_status = 'invalid_key_saved'
+            ai_last_test_error = 'Stored AI key is masked. Re-enter the real API key in Settings.'
+        ai_provider = user_cfg.get('provider', '')
+        ai_model = user_cfg.get('model', '')
+        if not key_is_masked:
+            ai_test_status = user_cfg.get('aiTestStatus', 'not_tested')
+        ai_last_tested_at = user_cfg.get('lastTestedAt')
+        if not key_is_masked:
+            ai_last_test_error = user_cfg.get('lastTestError')
 
     # Alpaca — strict user config only (no global/env fallback)
-    alpaca_paper, alpaca_paper_source = resolve_alpaca_config('paper', require_user_config=True)
-    alpaca_live, alpaca_live_source = resolve_alpaca_config('live', require_user_config=True)
-    alpaca_md, alpaca_md_source = resolve_alpaca_config('market_data', require_user_config=True)
-    alpaca_has_paper = bool(alpaca_paper.get('api_key') and alpaca_paper.get('api_secret'))
-    alpaca_has_live = bool(alpaca_live.get('api_key') and alpaca_live.get('api_secret'))
-    alpaca_has_md = bool(alpaca_md.get('api_key') and alpaca_md.get('api_secret'))
+    alpaca_cfg = configs.get('alpaca') or {}
+    paper_key = alpaca_cfg.get('paper_api_key') or ''
+    paper_secret = alpaca_cfg.get('paper_api_secret') or ''
+    live_key = alpaca_cfg.get('live_api_key') or ''
+    live_secret = alpaca_cfg.get('live_api_secret') or ''
+    md_key = alpaca_cfg.get('market_data_api_key') or paper_key or live_key
+    md_secret = alpaca_cfg.get('market_data_api_secret') or paper_secret or live_secret
+    alpaca_has_paper = bool(paper_key and paper_secret and not ('****' in paper_key or '****' in paper_secret))
+    alpaca_has_live = bool(live_key and live_secret and not ('****' in live_key or '****' in live_secret))
+    alpaca_has_md = bool(md_key and md_secret and not ('****' in md_key or '****' in md_secret))
+    alpaca_paper_source = 'user_config/supabase' if alpaca_has_paper else 'missing'
+    alpaca_live_source = 'user_config/supabase' if alpaca_has_live else 'missing'
+    alpaca_md_source = 'user_config/supabase' if alpaca_has_md else 'missing'
 
     # Finnhub — strict user config only (no global/env fallback)
-    finnhub_cfg, finnhub_source = resolve_finnhub_config(require_user_config=True)
-    finnhub_has_key = bool(finnhub_cfg.get('api_key') and finnhub_cfg['api_key'].strip())
+    finnhub_cfg = configs.get('finnhub') or {}
+    finnhub_key = finnhub_cfg.get('api_key') or ''
+    finnhub_has_key = bool(finnhub_key.strip()) and '****' not in finnhub_key
+    finnhub_source = 'user_config/supabase' if finnhub_has_key else 'missing'
+
+    ai_status = 'error' if 'ai_provider' in config_errors else ('connected' if ai_has_key else 'not_configured')
+    alpaca_status = 'error' if 'alpaca' in config_errors else ('connected' if (alpaca_has_paper or alpaca_has_live) else 'not_configured')
+    finnhub_status = 'error' if 'finnhub' in config_errors else ('connected' if finnhub_has_key else 'not_configured')
+    supabase_status = 'error' if config_errors else 'ok'
+    error_code = 'supabase_config_timeout' if any(v == 'timeout' for v in config_errors.values()) else ('supabase_config_error' if config_errors else None)
+    message = 'Configuration status partially unavailable' if config_errors else 'OK'
 
     return jsonify({
         'success': True,
+        'backend': 'ok',
+        'supabase': supabase_status,
+        'auth': 'ok',
+        'errorCode': error_code,
+        'message': message,
         'authPresent': bool(user),
         'userResolved': bool(user),
         'authSource': 'supabase' if user else 'none',
@@ -8744,23 +8854,32 @@ def config_status():
             'lastTestedAt': ai_last_tested_at,
             'lastTestError': ai_last_test_error,
         },
+        'aiProvider': {
+            'status': ai_status,
+            'configured': ai_has_key,
+            'message': 'Connection check failed' if ai_status == 'error' else None,
+        },
         'alpaca': {
+            'status': alpaca_status,
             'paperConfigured': alpaca_has_paper,
             'liveConfigured': alpaca_has_live,
             'paperKeySource': alpaca_paper_source,
             'liveKeySource': alpaca_live_source,
+            'message': 'Connection check failed' if alpaca_status == 'error' else None,
         },
         'alpacaMarketData': {
             'configured': alpaca_has_md,
             'baseUrl': 'https://data.alpaca.markets',
             'keySource': alpaca_md_source,
             'credentialSource': 'real_trading' if alpaca_has_md else 'none',
-            'maskedApiKey': mask_key(alpaca_md.get('api_key', '')) if alpaca_has_md else None,
-            'maskedSecretKey': mask_key(alpaca_md.get('api_secret', '')) if alpaca_has_md else None,
+            'maskedApiKey': mask_key(md_key) if alpaca_has_md else None,
+            'maskedSecretKey': mask_key(md_secret) if alpaca_has_md else None,
         },
         'finnhub': {
+            'status': finnhub_status,
             'configured': finnhub_has_key,
             'keySource': finnhub_source,
+            'message': 'Connection check failed' if finnhub_status == 'error' else None,
         },
     })
 

@@ -1,7 +1,27 @@
 import axios from 'axios';
-import { supabase } from '../lib/supabaseClient';
+import { supabase, supabaseConfigError } from '../lib/supabaseClient';
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '/api';
+const rawApiBaseUrl = process.env.REACT_APP_API_BASE_URL || '';
+
+const normalizeApiBaseUrl = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) return '/api';
+
+  let normalized = trimmed.replace(/\/+$/, '');
+  normalized = normalized.replace(/(\/api)+$/i, '/api');
+
+  if (/^https?:\/\/[^/]+$/i.test(normalized)) {
+    return `${normalized}/api`;
+  }
+
+  return normalized || '/api';
+};
+
+export const API_BASE_URL = normalizeApiBaseUrl(rawApiBaseUrl || '/api');
+export const apiBaseUrlConfigError =
+  process.env.NODE_ENV === 'production' && !rawApiBaseUrl
+    ? 'REACT_APP_API_BASE_URL is not set'
+    : '';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -14,6 +34,14 @@ const api = axios.create({
 // 为scanner AI分析创建专用实例，没有timeout限制
 const scannerApi = axios.create({
   baseURL: API_BASE_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+const statusApi = axios.create({
+  baseURL: API_BASE_URL,
+  timeout: 10000,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -50,6 +78,7 @@ const attachSupabaseToken = async (config: any) => {
 };
 
 scannerApi.interceptors.request.use(attachSupabaseToken);
+statusApi.interceptors.request.use(attachSupabaseToken);
 
 // Attach Supabase token to all requests
 api.interceptors.request.use(attachSupabaseToken);
@@ -68,6 +97,198 @@ const handle401 = async (error: any) => {
 
 api.interceptors.response.use((response) => response, handle401);
 scannerApi.interceptors.response.use((response) => response, handle401);
+
+export interface ConfigStatusResponse {
+  success?: boolean;
+  backend?: 'ok' | 'error';
+  supabase?: 'ok' | 'error';
+  auth?: 'ok' | 'error';
+  errorCode?: string | null;
+  message?: string;
+  user?: {
+    authenticated?: boolean;
+    userResolved?: boolean;
+    userId?: string | null;
+  };
+  ai?: {
+    configured?: boolean;
+    keyIsMasked?: boolean;
+    testStatus?: string;
+    lastTestError?: string | null;
+  };
+  aiProvider?: {
+    status?: 'connected' | 'not_configured' | 'error' | 'checking';
+    message?: string;
+  };
+  alpaca?: {
+    status?: 'connected' | 'not_configured' | 'error' | 'checking';
+    paperConfigured?: boolean;
+    liveConfigured?: boolean;
+    message?: string;
+  };
+  alpacaMarketData?: {
+    configured?: boolean;
+  };
+  finnhub?: {
+    status?: 'connected' | 'not_configured' | 'error' | 'checking';
+    configured?: boolean;
+    message?: string;
+  };
+}
+
+export interface ConfigStatusLoadResult {
+  ok: boolean;
+  data?: ConfigStatusResponse;
+  errorCode?: string;
+  message: string;
+  httpStatus?: number;
+  timedOut?: boolean;
+  backendWaking?: boolean;
+}
+
+const CONFIG_STATUS_CACHE_MS = 30000;
+const CONFIG_STATUS_RETRY_DELAY_MS = 2000;
+const DEFAULT_CONFIG_STATUS_TIMEOUT_MS = 10000;
+
+let configStatusCache: { fetchedAt: number; result: ConfigStatusLoadResult } | null = null;
+let configStatusInflight: Promise<ConfigStatusLoadResult> | null = null;
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+const isRetryableStatusError = (error: any): boolean => {
+  const status = error?.response?.status;
+  return !error?.response || error?.code === 'ECONNABORTED' || status === 408 || status === 429 || status >= 500;
+};
+
+const statusErrorResult = (error: any, backendWaking = false): ConfigStatusLoadResult => {
+  const responseData = error?.response?.data || {};
+  const status = error?.response?.status;
+
+  if (error?.code === 'ECONNABORTED') {
+    return {
+      ok: false,
+      errorCode: 'backend_timeout',
+      message: 'Backend timeout',
+      httpStatus: status,
+      timedOut: true,
+      backendWaking,
+    };
+  }
+
+  if (!error?.response) {
+    return {
+      ok: false,
+      errorCode: 'backend_unreachable',
+      message: 'Backend unreachable',
+      backendWaking,
+    };
+  }
+
+  if (status === 401 || status === 403) {
+    return {
+      ok: false,
+      errorCode: responseData.errorCode || 'unauthorized',
+      message: responseData.message || 'Please sign in again',
+      httpStatus: status,
+    };
+  }
+
+  return {
+    ok: false,
+    errorCode: responseData.errorCode || responseData.code || 'connection_check_failed',
+    message: responseData.message || responseData.error || 'Connection check failed',
+    httpStatus: status,
+    backendWaking,
+  };
+};
+
+export const clearConfigStatusCache = () => {
+  configStatusCache = null;
+};
+
+export const loadConfigStatus = async (options: {
+  force?: boolean;
+  timeoutMs?: number;
+  onRetry?: (result: ConfigStatusLoadResult) => void;
+} = {}): Promise<ConfigStatusLoadResult> => {
+  const now = Date.now();
+  if (!options.force && configStatusCache && now - configStatusCache.fetchedAt < CONFIG_STATUS_CACHE_MS) {
+    return configStatusCache.result;
+  }
+
+  if (configStatusInflight) return configStatusInflight;
+
+  configStatusInflight = (async () => {
+    if (apiBaseUrlConfigError) {
+      const result = {
+        ok: false,
+        errorCode: 'api_base_url_missing',
+        message: apiBaseUrlConfigError,
+      };
+      configStatusCache = { fetchedAt: Date.now(), result };
+      return result;
+    }
+
+    if (supabaseConfigError) {
+      const result = {
+        ok: false,
+        errorCode: 'supabase_auth_unavailable',
+        message: supabaseConfigError,
+      };
+      configStatusCache = { fetchedAt: Date.now(), result };
+      return result;
+    }
+
+    const timeout = options.timeoutMs || DEFAULT_CONFIG_STATUS_TIMEOUT_MS;
+
+    try {
+      const response = await statusApi.get<ConfigStatusResponse>('/config/status', { timeout });
+      const result = {
+        ok: !!response.data?.success,
+        data: response.data,
+        errorCode: response.data?.errorCode || undefined,
+        message: response.data?.message || 'OK',
+      };
+      configStatusCache = { fetchedAt: Date.now(), result };
+      return result;
+    } catch (error: any) {
+      const firstFailure = statusErrorResult(error);
+      if (isRetryableStatusError(error)) {
+        const wakingResult = {
+          ...firstFailure,
+          errorCode: firstFailure.errorCode === 'backend_timeout' ? 'backend_waking' : firstFailure.errorCode,
+          message: 'Backend is waking up, retrying...',
+          backendWaking: true,
+        };
+        options.onRetry?.(wakingResult);
+        await sleep(CONFIG_STATUS_RETRY_DELAY_MS);
+
+        try {
+          const retryResponse = await statusApi.get<ConfigStatusResponse>('/config/status', { timeout });
+          const retryResult = {
+            ok: !!retryResponse.data?.success,
+            data: retryResponse.data,
+            errorCode: retryResponse.data?.errorCode || undefined,
+            message: retryResponse.data?.message || 'OK',
+          };
+          configStatusCache = { fetchedAt: Date.now(), result: retryResult };
+          return retryResult;
+        } catch (retryError: any) {
+          const result = statusErrorResult(retryError, true);
+          configStatusCache = { fetchedAt: Date.now(), result };
+          return result;
+        }
+      }
+
+      configStatusCache = { fetchedAt: Date.now(), result: firstFailure };
+      return firstFailure;
+    }
+  })().finally(() => {
+    configStatusInflight = null;
+  });
+
+  return configStatusInflight;
+};
 
 // Auth API
 export const authAPI = {
