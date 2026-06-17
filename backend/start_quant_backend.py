@@ -8693,16 +8693,6 @@ def discord_notification_event():
 @app.route('/api/config/status', methods=['GET'])
 def config_status():
     """Return true config state for all services. Used by frontend status bar and scanner pre-flight."""
-    if not supabase_admin:
-        return jsonify({
-            'success': False,
-            'backend': 'ok',
-            'supabase': 'error',
-            'auth': 'error',
-            'errorCode': 'supabase_not_configured',
-            'message': 'Supabase is not configured on server',
-        }), 503
-
     auth_header = request.headers.get('Authorization', '')
     if not auth_header or not auth_header.startswith('Bearer '):
         return jsonify({
@@ -8711,6 +8701,16 @@ def config_status():
             'supabase': 'ok',
             'auth': 'error',
             'errorCode': 'auth_required',
+            'message': 'Authentication required',
+        }), 401
+
+    if not supabase_admin:
+        return jsonify({
+            'success': False,
+            'backend': 'ok',
+            'supabase': 'error',
+            'auth': 'error',
+            'errorCode': 'unauthorized',
             'message': 'Authentication required',
         }), 401
 
