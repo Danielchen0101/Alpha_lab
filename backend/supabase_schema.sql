@@ -20,13 +20,20 @@ CREATE TABLE IF NOT EXISTS user_api_configs (
 ALTER TABLE user_api_configs ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Users can view own configs" ON user_api_configs
-  FOR SELECT USING (auth.uid() = user_id);
+  FOR SELECT TO authenticated
+  USING ((SELECT auth.uid()) = user_id);
 
 CREATE POLICY "Users can insert own configs" ON user_api_configs
-  FOR INSERT WITH CHECK (auth.uid() = user_id);
+  FOR INSERT TO authenticated
+  WITH CHECK ((SELECT auth.uid()) = user_id);
 
 CREATE POLICY "Users can update own configs" ON user_api_configs
-  FOR UPDATE USING (auth.uid() = user_id);
+  FOR UPDATE TO authenticated
+  USING ((SELECT auth.uid()) = user_id)
+  WITH CHECK ((SELECT auth.uid()) = user_id);
+
+GRANT SELECT, INSERT, UPDATE ON TABLE user_api_configs TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE user_api_configs TO service_role;
 
 -- Pipeline Auto Configs (one row per user)
 CREATE TABLE IF NOT EXISTS user_pipeline_auto_configs (
@@ -49,13 +56,20 @@ CREATE TABLE IF NOT EXISTS user_pipeline_auto_configs (
 ALTER TABLE user_pipeline_auto_configs ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Users can view own pipeline auto config" ON user_pipeline_auto_configs
-  FOR SELECT USING (auth.uid() = user_id);
+  FOR SELECT TO authenticated
+  USING ((SELECT auth.uid()) = user_id);
 
 CREATE POLICY "Users can insert own pipeline auto config" ON user_pipeline_auto_configs
-  FOR INSERT WITH CHECK (auth.uid() = user_id);
+  FOR INSERT TO authenticated
+  WITH CHECK ((SELECT auth.uid()) = user_id);
 
 CREATE POLICY "Users can update own pipeline auto config" ON user_pipeline_auto_configs
-  FOR UPDATE USING (auth.uid() = user_id);
+  FOR UPDATE TO authenticated
+  USING ((SELECT auth.uid()) = user_id)
+  WITH CHECK ((SELECT auth.uid()) = user_id);
+
+GRANT SELECT, INSERT, UPDATE ON TABLE user_pipeline_auto_configs TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE user_pipeline_auto_configs TO service_role;
 
 -- Pipeline Auto Run History
 CREATE TABLE IF NOT EXISTS user_pipeline_auto_runs (
@@ -80,8 +94,12 @@ CREATE TABLE IF NOT EXISTS user_pipeline_auto_runs (
 ALTER TABLE user_pipeline_auto_runs ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Users can view own pipeline auto runs" ON user_pipeline_auto_runs
-  FOR SELECT USING (auth.uid() = user_id);
+  FOR SELECT TO authenticated
+  USING ((SELECT auth.uid()) = user_id);
 
 CREATE POLICY "Users can insert own pipeline auto runs" ON user_pipeline_auto_runs
-  FOR INSERT WITH CHECK (auth.uid() = user_id);
+  FOR INSERT TO authenticated
+  WITH CHECK ((SELECT auth.uid()) = user_id);
 
+GRANT SELECT, INSERT ON TABLE user_pipeline_auto_runs TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE user_pipeline_auto_runs TO service_role;

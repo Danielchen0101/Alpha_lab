@@ -1,18 +1,32 @@
-# Multi-stage Dockerfile for Professional Quantitative Trading Platform
+# AlphaLab v3 multi-stage production image
 
 # Stage 1: Build frontend
-FROM node:18-alpine AS frontend-builder
+FROM node:20-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 
 # Copy package files
 COPY frontend/package*.json ./
 
-# Install dependencies
-RUN npm ci --only=production
+# Install the complete build toolchain in the disposable builder stage.
+# Frontend node_modules are not copied into the final runtime image.
+RUN npm ci
 
 # Copy source code
 COPY frontend/ ./
+
+# React environment values are public build-time configuration. Pass them with
+# --build-arg; never copy backend secrets or local .env files into the image.
+ARG REACT_APP_API_BASE_URL=/api
+ARG REACT_APP_SUPABASE_URL
+ARG REACT_APP_SUPABASE_ANON_KEY
+ARG REACT_APP_TURNSTILE_SITE_KEY
+ARG REACT_APP_ENV=production
+ENV REACT_APP_API_BASE_URL=$REACT_APP_API_BASE_URL
+ENV REACT_APP_SUPABASE_URL=$REACT_APP_SUPABASE_URL
+ENV REACT_APP_SUPABASE_ANON_KEY=$REACT_APP_SUPABASE_ANON_KEY
+ENV REACT_APP_TURNSTILE_SITE_KEY=$REACT_APP_TURNSTILE_SITE_KEY
+ENV REACT_APP_ENV=$REACT_APP_ENV
 
 # Build frontend
 RUN npm run build
@@ -55,6 +69,7 @@ COPY --from=frontend-builder /app/frontend/build ./frontend/build
 # Copy backend from stage 2
 COPY --from=backend-builder /app/backend ./backend
 COPY --from=backend-builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=backend-builder /usr/local/bin /usr/local/bin
 
 # Copy nginx configuration
 COPY docker/nginx.conf /etc/nginx/nginx.conf
@@ -78,7 +93,7 @@ EXPOSE 8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/api/system/status || exit 1
+    CMD curl -f http://127.0.0.1:8080/api/health || exit 1
 
 # Start application
 CMD ["./start.sh"]

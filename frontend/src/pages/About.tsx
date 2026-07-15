@@ -1,83 +1,13 @@
-import React from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Button, Typography, Divider, Space } from 'antd';
-import { ArrowLeftOutlined } from '@ant-design/icons';
+import React, { useEffect } from 'react';
+import MarketingLayout from '../components/MarketingLayout';
+import { PublicCta, SectionHeading } from '../components/public/PublicPrimitives';
 import { useLanguage } from '../contexts/LanguageContext';
-
-const { Title, Paragraph, Text } = Typography;
+import './PublicSite.css';
 
 const About: React.FC = () => {
-  const navigate = useNavigate();
-  const { t } = useLanguage();
-
-  return (
-    <div style={{ minHeight: '100vh', background: 'var(--app-bg)', color: 'var(--app-text)' }}>
-      <div style={{ maxWidth: 800, margin: '0 auto', padding: '40px 24px' }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')} style={{ marginBottom: 24 }}>{t.about.backToHome}</Button>
-
-        <Title>{t.about.title}</Title>
-        <Paragraph>{t.about.intro}</Paragraph>
-
-        <Divider />
-
-        <Title level={2}>{t.about.workflowTitle}</Title>
-        <div style={{ background: 'var(--app-card-bg)', padding: 24, borderRadius: 8, marginBottom: 24 }}>
-          <Paragraph>
-            <Text strong>{t.about.workflowScannerTitle}</Text> — {t.about.workflowScannerDesc}
-          </Paragraph>
-          <Paragraph>
-            <Text strong>{t.about.workflowContinueTitle}</Text> — {t.about.workflowContinueDesc}
-          </Paragraph>
-          <Paragraph>
-            <Text strong>{t.about.workflowFineTitle}</Text> — {t.about.workflowFineDesc}
-          </Paragraph>
-          <Paragraph>
-            <Text strong>{t.about.workflowValidationTitle}</Text> — {t.about.workflowValidationDesc}
-          </Paragraph>
-          <Paragraph>
-            <Text strong>{t.about.workflowEntryTitle}</Text> — {t.about.workflowEntryDesc}
-          </Paragraph>
-          <Paragraph>
-            <Text strong>{t.about.workflowWatchlistTitle}</Text> — {t.about.workflowWatchlistDesc}
-          </Paragraph>
-        </div>
-
-        <Divider />
-
-        <Title level={2}>{t.about.tradingModesTitle}</Title>
-        <Paragraph>{t.about.tradingModesDesc}</Paragraph>
-
-        <Divider />
-
-        <Title level={2}>{t.about.apiTitle}</Title>
-        <Paragraph>{t.about.apiDesc}</Paragraph>
-
-        <Divider />
-
-        <Title level={2}>{t.about.riskTitle}</Title>
-        <Paragraph>{t.about.riskDesc}</Paragraph>
-        <ul style={{ lineHeight: 2 }}>
-          <li>{t.about.riskPositionSizing}</li>
-          <li>{t.about.riskConcentration}</li>
-          <li>{t.about.riskDailyLoss}</li>
-          <li>{t.about.riskAiAssessment}</li>
-          <li>{t.about.riskBacktest}</li>
-        </ul>
-
-        <Divider />
-
-        <Title level={2}>{t.about.disclaimerTitle}</Title>
-        <Paragraph type="warning">{t.about.disclaimerDesc}</Paragraph>
-
-        <div style={{ textAlign: 'center', marginTop: 40 }}>
-          <Space>
-            <Button type="primary" onClick={() => navigate('/signup')}>{t.about.getStarted}</Button>
-            <Button onClick={() => navigate('/')}>{t.about.backToHome}</Button>
-          </Space>
-        </div>
-      </div>
-    </div>
-  );
+  const { language, t } = useLanguage();
+  const isZh = language === 'zh-CN';
+  useEffect(() => { window.scrollTo(0, 0); }, []);
+  return <MarketingLayout tone="paper"><main className={`public-page ${isZh ? 'is-zh' : 'is-en'}`}><section className="public-section" style={{ paddingTop: 'clamp(130px,15vw,190px)' }}><SectionHeading eyebrow={isZh ? '关于 AlphaLab' : 'ABOUT ALPHALAB'} title={t.about.title} description={t.about.intro} level={1} /><div className="public-card-grid">{[[t.about.workflowTitle, t.about.workflowScannerDesc], [t.about.tradingModesTitle, t.about.tradingModesDesc], [t.about.apiTitle, t.about.apiDesc], [t.about.riskTitle, t.about.riskDesc], [isZh ? '研究优先' : 'Research first', isZh ? '我们把证据、局限和风险边界放在自动化之前。' : 'We place evidence, limitations, and risk bounds before automation.'], [t.about.disclaimerTitle, t.about.disclaimerDesc]].map(([title, desc], index) => <article className="public-card" key={title}><span>0{index + 1}</span><h3>{title}</h3><p>{desc}</p></article>)}</div></section><PublicCta eyebrow={isZh ? 'ALPHALAB · 研究优先' : 'ALPHALAB · RESEARCH FIRST'} title={isZh ? '从一份可以解释的研究开始。' : 'Start with research you can explain.'} description={isZh ? '在模拟环境中检查数据、验证和风险计划。' : 'Inspect data, validation, and risk plans in a paper environment.'} primary={t.about.getStarted} secondary={isZh ? '返回主页' : 'Back to home'} secondaryPath="/" /></main></MarketingLayout>;
 };
-
 export default About;

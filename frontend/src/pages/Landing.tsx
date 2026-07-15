@@ -1,953 +1,572 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Button, Row, Col, Space } from 'antd';
 import {
-  RobotOutlined, ArrowRightOutlined,
-  ThunderboltOutlined, GithubOutlined,
-  GlobalOutlined, SearchOutlined, FilterOutlined, AimOutlined,
-  ExperimentOutlined, DeploymentUnitOutlined, EyeOutlined, CheckCircleOutlined,
-  SafetyCertificateOutlined, MailOutlined, LockOutlined, SafetyOutlined
-} from '@ant-design/icons';
+  AnimatePresence,
+  motion,
+  useMotionValueEvent,
+  useReducedMotion,
+  useScroll,
+} from 'framer-motion';
 import MarketingLayout from '../components/MarketingLayout';
-import RevealSection from '../components/RevealSection';
-import { useLanguage } from '../contexts/LanguageContext';
-import StockMarketHeroVisual from '../components/home/StockMarketHeroVisual';
+import SignalEstuaryVisual from '../components/home/SignalEstuaryVisual';
+import ResearchExamplesExplorer from '../components/public/ResearchExamplesExplorer';
+import { Translation, useLanguage } from '../contexts/LanguageContext';
+import './Landing.css';
+
+type StageIndex = 0 | 1 | 2 | 3;
+type MarketFieldCopy = Translation['landing']['marketField'];
+
+interface StagePanelProps {
+  copy: MarketFieldCopy;
+  isZh: boolean;
+}
+
+interface StageDefinition {
+  id: 'observe' | 'filter' | 'test' | 'plan';
+  label: string;
+  short: string;
+  title: string;
+  description: string;
+}
+
+interface StageRailProps {
+  stages: StageDefinition[];
+  active: StageIndex;
+  onSelect?: (index: StageIndex) => void;
+  ariaLabel: string;
+}
+
+const StageGlyph: React.FC<{ stage: StageIndex }> = ({ stage }) => (
+  <span className={`market-stage-glyph market-stage-glyph--${stage}`} aria-hidden="true">
+    <i />
+    <i />
+    <i />
+  </span>
+);
+
+const StageRail: React.FC<StageRailProps> = ({ stages, active, onSelect, ariaLabel }) => (
+  <ol className="market-stage-rail" aria-label={ariaLabel}>
+    {stages.map((stage, index) => {
+      const stageIndex = index as StageIndex;
+      return (
+        <li key={stage.id} className={active === stageIndex ? 'is-active' : ''}>
+          <button
+            type="button"
+            onClick={() => onSelect?.(stageIndex)}
+            aria-current={active === stageIndex ? 'step' : undefined}
+          >
+            <StageGlyph stage={stageIndex} />
+            <span className="market-stage-number">0{index + 1}</span>
+            <span className="market-stage-name">{stage.label}</span>
+            <span className="market-stage-short">{stage.short}</span>
+          </button>
+        </li>
+      );
+    })}
+  </ol>
+);
+
+const EquityChart: React.FC<{ copy: MarketFieldCopy; compact?: boolean; isZh: boolean }> = ({ copy, compact = false, isZh }) => {
+  const chartId = React.useId().replace(/:/g, '');
+  const titleId = `equity-title-${chartId}`;
+  const descId = `equity-desc-${chartId}`;
+  const gradientId = `equity-area-${chartId}`;
+  return (
+  <svg className={`market-equity-chart ${compact ? 'is-compact' : ''}`} viewBox="0 0 720 250" role="img" aria-labelledby={`${titleId} ${descId}`}>
+    <title id={titleId}>{copy.equityWalkForward} · SPY</title>
+    <desc id={descId}>{`${copy.walkForward}: 5/5. ${copy.sharpe}: 2.45. ${copy.maxDrawdown}: -4.1%.`}</desc>
+    <defs>
+      <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stopColor="#2b5fae" stopOpacity=".17" />
+        <stop offset="100%" stopColor="#2b5fae" stopOpacity="0" />
+      </linearGradient>
+    </defs>
+    <g className="market-equity-grid" aria-hidden="true">
+      {[45, 90, 135, 180, 225].map((y) => <line key={y} x1="20" y1={y} x2="704" y2={y} />)}
+      {[120, 244, 368, 492, 616].map((x, index) => (
+        <React.Fragment key={x}>
+          <rect x={x - 100} y="24" width="100" height="202" className={index % 2 ? 'fold-alt' : ''} />
+          <text x={x - 89} y="42">{isZh ? `窗口 ${index + 1}` : `FOLD ${index + 1}`}</text>
+        </React.Fragment>
+      ))}
+    </g>
+    <path
+      className="market-benchmark-line"
+      d="M20 206 C80 198 112 190 151 184 C204 175 245 174 291 158 C340 143 383 150 432 140 C485 129 532 123 579 111 C630 99 668 102 704 86"
+      fill="none"
+    />
+    <path className="market-equity-area" d="M20 207 C48 201 68 190 93 181 C119 171 132 149 160 156 C190 164 202 126 229 135 C259 144 275 116 301 121 C330 126 345 92 376 106 C407 121 425 98 448 92 C472 87 489 138 519 120 C546 104 562 79 590 86 C615 93 635 65 656 73 C677 80 687 52 704 43 L704 225 L20 225 Z" fill={`url(#${gradientId})`} aria-hidden="true" />
+    <path
+      className="market-equity-line"
+      d="M20 207 C48 201 68 190 93 181 C119 171 132 149 160 156 C190 164 202 126 229 135 C259 144 275 116 301 121 C330 126 345 92 376 106 C407 121 425 98 448 92 C472 87 489 138 519 120 C546 104 562 79 590 86 C615 93 635 65 656 73 C677 80 687 52 704 43"
+      fill="none"
+    />
+    {[160, 301, 448, 590, 704].map((x, index) => (
+      <circle key={x} cx={x} cy={[156, 121, 92, 86, 43][index]} r="3" className="market-equity-point" />
+    ))}
+    <circle cx="704" cy="43" r="8" className="market-equity-halo" aria-hidden="true" />
+  </svg>
+  );
+};
+
+const ObserveStage: React.FC<StagePanelProps> = ({ copy, isZh }) => {
+  const streams = useMemo(
+    () => Array.from({ length: 16 }, (_, index) => ({
+      y: 24 + index * 18,
+      bend: (index % 5) * 5 - 8,
+      color: index === 11 ? '#2b5fae' : index % 4 === 0 ? '#6f8564' : '#7693a0',
+    })),
+    [],
+  );
+
+  return (
+    <div className="specimen-observe">
+      <div className="specimen-observe-map">
+        <svg viewBox="0 0 700 325" aria-hidden="true">
+          <g className="observe-guide-lines">
+            {[62, 132, 202, 272].map(y => <line key={y} x1="20" y1={y} x2="680" y2={y} />)}
+          </g>
+          {streams.map((stream, index) => (
+            <path
+              key={stream.y}
+              d={`M20 ${stream.y} C190 ${stream.y + stream.bend}, 340 ${174 - stream.bend}, 680 ${162 + (index - 8) * 4}`}
+              fill="none"
+              stroke={stream.color}
+              strokeOpacity={index === 11 ? 0.95 : 0.28}
+              strokeWidth={index === 11 ? 2 : 1}
+            />
+          ))}
+          <circle cx="680" cy="174" r="5" fill="#2b5fae" />
+          <text x="625" y="158" className="observe-nvda-label">NVDA</text>
+        </svg>
+        <div className="observe-axis-note">{isZh ? '价格 · 成交量 · 波动率 · 市场环境' : 'PRICE · VOLUME · VOLATILITY · REGIME'}</div>
+      </div>
+      <aside className="specimen-observe-notes">
+        <span className="specimen-kicker">{isZh ? '标的池概览' : 'UNIVERSE MAP'}</span>
+        <strong>8,421</strong>
+        <span>{copy.observed}</span>
+        <dl>
+          <div><dt>{isZh ? '美股' : 'US EQUITIES'}</dt><dd>6,840</dd></div>
+          <div><dt>ETFs</dt><dd>1,172</dd></div>
+          <div><dt>{isZh ? '今日流动性达标' : 'LIQUID TODAY'}</dt><dd>409</dd></div>
+        </dl>
+      </aside>
+    </div>
+  );
+};
+
+const FilterStage: React.FC<StagePanelProps> = ({ copy, isZh }) => {
+  const candidates = [
+    { symbol: 'NVDA', setup: isZh ? '动量' : 'Momentum', score: '92', status: copy.passed, selected: true },
+    { symbol: 'AAPL', setup: isZh ? '趋势延续' : 'Continuation', score: '85', status: copy.passed },
+    { symbol: 'MSFT', setup: isZh ? '趋势' : 'Trend', score: '78', status: copy.review },
+    { symbol: 'AMD', setup: isZh ? '动量' : 'Momentum', score: '71', status: copy.review },
+    { symbol: 'TSLA', setup: isZh ? '均值回归' : 'Reversion', score: '54', status: copy.blocked },
+  ];
+  const gates = [copy.liquidityGate, copy.structureGate, copy.evidenceGate];
+
+  return (
+    <div className="specimen-filter">
+      <div className="filter-candidates">
+        <div className="filter-heading"><span>{copy.candidates}</span><strong>{copy.candidateCount}</strong></div>
+        {candidates.map(candidate => (
+          <div className={`filter-row ${candidate.selected ? 'is-selected' : ''}`} key={candidate.symbol}>
+            <strong>{candidate.symbol}</strong>
+            <span>{candidate.setup}</span>
+            <span className="filter-score">{candidate.score}</span>
+            <span className={`filter-status is-${candidate.status === copy.passed ? 'passed' : candidate.status === copy.blocked ? 'blocked' : 'review'}`}>
+              {candidate.status}
+            </span>
+          </div>
+        ))}
+      </div>
+      <aside className="filter-gates">
+        <span className="specimen-kicker">{isZh ? '确定性门槛' : 'DETERMINISTIC GATES'}</span>
+        <strong>NVDA</strong>
+        <span className="filter-validation-count">{copy.validationCount}</span>
+        {gates.map((gate, index) => (
+          <div className="filter-gate" key={gate}>
+            <span>{gate}</span>
+            <i style={{ '--gate-fill': `${92 - index * 8}%` } as React.CSSProperties} />
+            <b>{copy.passed}</b>
+          </div>
+        ))}
+      </aside>
+    </div>
+  );
+};
+
+const TestStage: React.FC<StagePanelProps> = ({ copy, isZh }) => (
+  <div className="specimen-test">
+    <div className="test-chart-panel">
+      <div className="chart-legend">
+        <span className="is-equity">{copy.equityWalkForward}</span>
+        <span className="is-benchmark">{copy.benchmark}</span>
+      </div>
+      <EquityChart copy={copy} isZh={isZh} />
+    </div>
+    <dl className="test-metrics">
+      <div><dt>{copy.walkForward}</dt><dd>5/5</dd></div>
+      <div><dt>{copy.sharpe}</dt><dd>2.45</dd></div>
+      <div><dt>{copy.maxDrawdown}</dt><dd className="is-risk">-4.1%</dd></div>
+      <div><dt>{copy.hardGatesPassed}</dt><dd className="is-pass">✓</dd></div>
+      <div><dt>{copy.riskBudget}</dt><dd>1%</dd></div>
+      <div><dt>{copy.manualApproval}</dt><dd className="is-pending">○</dd></div>
+    </dl>
+    <div className="test-plan-evidence">
+      <div className="trade-plan-mini">
+        <span className="specimen-kicker">{copy.tradePlan}</span>
+        <div><span className="entry-line">{copy.entry}</span><b>$925.30</b></div>
+        <div><span className="stop-line">{copy.stop}</span><b>$887.40</b></div>
+        <div><span className="target-line">{copy.target}</span><b>$1,050.00</b></div>
+      </div>
+      <div className="evidence-mini">
+        <span className="specimen-kicker">{copy.evidence}</span>
+        {[copy.evidenceMomentum, copy.evidenceEarnings, copy.evidenceFlow, copy.evidenceVolatility, copy.evidenceTechnical].map((label, index) => (
+          <div key={label}><span>{label}</span><b>{index === 2 ? '○' : '+'}</b></div>
+        ))}
+      </div>
+    </div>
+  </div>
+);
+
+const PlanStage: React.FC<StagePanelProps> = ({ copy, isZh }) => (
+  <div className="specimen-plan">
+    <div className="plan-price-map">
+      <div className="plan-map-header">
+        <span className="specimen-kicker">{isZh ? 'NVDA · 模拟交易计划' : 'NVDA · PAPER TRADE PLAN'}</span>
+        <strong>{copy.paperReady}</strong>
+      </div>
+      <div className="plan-chart-area">
+        <svg viewBox="0 0 720 260" aria-hidden="true">
+          <line x1="30" y1="58" x2="690" y2="58" className="plan-target" />
+          <line x1="30" y1="126" x2="690" y2="126" className="plan-entry" />
+          <line x1="30" y1="211" x2="690" y2="211" className="plan-stop" />
+          <path d="M30 202 C88 191 126 176 172 181 C220 186 263 145 307 153 C354 161 390 122 438 130 C486 138 532 95 576 108 C620 120 653 82 690 74" fill="none" className="plan-price-path" />
+          <text x="605" y="48">{isZh ? '目标 $1,050' : 'TARGET $1,050'}</text>
+          <text x="617" y="116">{isZh ? '入场 $925' : 'ENTRY $925'}</text>
+          <text x="620" y="201">{isZh ? '止损 $887' : 'STOP $887'}</text>
+        </svg>
+        <dl className="market-visually-hidden">
+          <div><dt>{copy.target}</dt><dd>$1,050</dd></div>
+          <div><dt>{copy.entry}</dt><dd>$925</dd></div>
+          <div><dt>{copy.stop}</dt><dd>$887</dd></div>
+        </dl>
+      </div>
+    </div>
+    <aside className="plan-order-sheet">
+      <span className="specimen-kicker">{isZh ? '风险边界' : 'RISK ENVELOPE'}</span>
+      <div className="risk-ring"><span>1%</span><small>{copy.riskBudget}</small></div>
+      <dl>
+        <div><dt>{isZh ? '仓位' : 'POSITION'}</dt><dd>{isZh ? '18 股' : '18 shares'}</dd></div>
+        <div><dt>R:R</dt><dd>3.28</dd></div>
+        <div><dt>{isZh ? '模式' : 'MODE'}</dt><dd>{isZh ? '模拟' : 'PAPER'}</dd></div>
+      </dl>
+      <div className="approval-state">
+        <i />
+        <span>{copy.awaitingApproval}</span>
+      </div>
+    </aside>
+  </div>
+);
+
+interface ResearchSpecimenProps {
+  stage: StageIndex;
+  copy: MarketFieldCopy;
+  isZh: boolean;
+  showPeek?: boolean;
+}
+
+const ResearchSpecimen: React.FC<ResearchSpecimenProps> = ({ stage, copy, isZh, showPeek = false }) => {
+  const shouldReduceMotion = useReducedMotion();
+  const panels = [ObserveStage, FilterStage, TestStage, PlanStage] as const;
+  const Panel = panels[stage];
+
+  return (
+    <div className={`research-specimen-shell ${showPeek ? 'has-peek' : ''}`}>
+      <article className="research-specimen" aria-live="polite">
+        <header className="research-specimen-header">
+          <div>
+            <strong>NVDA · {copy.momentum}</strong>
+            <span>{copy.walkForwardAnalysis}</span>
+          </div>
+          <span className="specimen-mode-badge">{copy.sampleMode}</span>
+        </header>
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            className="research-specimen-body"
+            key={stage}
+            initial={shouldReduceMotion ? false : { opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={shouldReduceMotion ? undefined : { opacity: 0, y: -8 }}
+            transition={{ duration: shouldReduceMotion ? 0 : 0.38, ease: [0.16, 1, 0.3, 1] }}
+          >
+            <Panel copy={copy} isZh={isZh} />
+          </motion.div>
+        </AnimatePresence>
+      </article>
+      {showPeek && (
+        <aside className="specimen-next-peek" aria-hidden="true">
+          <span>{isZh ? '投资组合' : 'PORTFOLIO'}</span>
+          <small>{isZh ? '风险分配' : 'RISK ALLOCATION'}</small>
+          <div className="peek-ring" />
+          <i />
+          <i />
+          <i />
+          <i />
+        </aside>
+      )}
+    </div>
+  );
+};
 
 const Landing: React.FC = () => {
   const navigate = useNavigate();
-  const { t } = useLanguage();
+  const { language, t } = useLanguage();
+  const isZh = language === 'zh-CN';
+  const copy = t.landing.marketField;
+  const shouldReduceMotion = useReducedMotion();
+  const storyRef = useRef<HTMLElement>(null);
+  const mobileTrackRef = useRef<HTMLDivElement>(null);
+  const [activeStage, setActiveStage] = useState<StageIndex>(0);
+  const [mobileStage, setMobileStage] = useState<StageIndex>(0);
+
+  const stages = useMemo<StageDefinition[]>(() => [
+    { id: 'observe', label: copy.stageObserve, short: copy.stageObserveShort, title: copy.stageObserveTitle, description: copy.stageObserveDesc },
+    { id: 'filter', label: copy.stageFilter, short: copy.stageFilterShort, title: copy.stageFilterTitle, description: copy.stageFilterDesc },
+    { id: 'test', label: copy.stageTest, short: copy.stageTestShort, title: copy.stageTestTitle, description: copy.stageTestDesc },
+    { id: 'plan', label: copy.stagePlan, short: copy.stagePlanShort, title: copy.stagePlanTitle, description: copy.stagePlanDesc },
+  ], [copy]);
+
+  const { scrollYProgress } = useScroll({
+    target: storyRef,
+    offset: ['start start', 'end end'],
+  });
+
+  useMotionValueEvent(scrollYProgress, 'change', latest => {
+    const nextStage = Math.min(3, Math.floor(Math.max(0, latest) * 4)) as StageIndex;
+    setActiveStage(current => current === nextStage ? current : nextStage);
+  });
 
   useEffect(() => {
     window.scrollTo(0, 0);
   }, []);
 
-  const techStack = [
-    'React', 'TypeScript', 'Python / Flask', 'Alpaca API',
-    'AI Providers: OpenAI / DeepSeek / Anthropic',
-    'Backtesting Engine', 'Market Data Integration'
-  ];
+  const scrollToStage = (stage: StageIndex) => {
+    const story = storyRef.current;
+    if (!story) return;
+    const storyTop = story.getBoundingClientRect().top + window.scrollY;
+    const availableDistance = Math.max(0, story.offsetHeight - window.innerHeight);
+    window.scrollTo({
+      top: storyTop + (availableDistance * stage) / 3,
+      behavior: shouldReduceMotion ? 'auto' : 'smooth',
+    });
+  };
 
-  const capabilities = [
-    { icon: <GlobalOutlined />, title: t.landing.capMarketScanning, desc: t.landing.capMarketScanningDesc },
-    { icon: <RobotOutlined />, title: t.landing.capAIValidation, desc: t.landing.capAIValidationDesc },
-    { icon: <ExperimentOutlined />, title: t.landing.capBacktesting, desc: t.landing.capBacktestingDesc },
-    { icon: <AimOutlined />, title: t.landing.capEntryPlanning, desc: t.landing.capEntryPlanningDesc },
-    { icon: <SafetyCertificateOutlined />, title: t.landing.capRiskControls, desc: t.landing.capRiskControlsDesc },
-    { icon: <DeploymentUnitOutlined />, title: t.landing.capExecution, desc: t.landing.capExecutionDesc },
-  ];
+  const scrollMobileStage = (stage: StageIndex) => {
+    const track = mobileTrackRef.current;
+    const slide = track?.children.item(stage) as HTMLElement | null;
+    if (!track || !slide) return;
+    track.scrollTo({
+      left: slide.offsetLeft - track.offsetLeft,
+      behavior: shouldReduceMotion ? 'auto' : 'smooth',
+    });
+    setMobileStage(stage);
+  };
+
+  const handleMobileScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    const track = event.currentTarget;
+    const slides = Array.from(track.children) as HTMLElement[];
+    if (!slides.length) return;
+    const nearest = slides.reduce((best, slide, index) => {
+      const distance = Math.abs(slide.offsetLeft - track.offsetLeft - track.scrollLeft);
+      return distance < best.distance ? { index, distance } : best;
+    }, { index: 0, distance: Number.POSITIVE_INFINITY });
+    const next = Math.min(3, Math.max(0, nearest.index)) as StageIndex;
+    setMobileStage(current => current === next ? current : next);
+  };
 
   return (
-    <MarketingLayout>
-      <style>{`
-        .nav-item {
-          letter-spacing: 0.01em;
-        }
-
-        .hero-section {
-          position: relative;
-          min-height: calc(100vh - 72px);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          padding: 44px 24px 48px;
-          overflow: hidden;
-          background: radial-gradient(ellipse at 50% 30%, #0a1424 0%, #050c18 50%, #020611 100%);
-          -webkit-font-smoothing: antialiased;
-          text-rendering: optimizeLegibility;
-        }
-        
-        .hero-section::after {
-          content: '';
-          position: absolute;
-          bottom: 0;
-          left: 0;
-          right: 0;
-          height: 100px;
-          background: linear-gradient(to bottom, transparent, #020611);
-          z-index: 1;
-          pointer-events: none;
-        }
-        
-        .hero-bg-orb-1 {
-          position: absolute;
-          top: -10%;
-          left: -10%;
-          width: 70vw;
-          height: 70vw;
-          background: radial-gradient(circle, rgba(24,144,255,0.15) 0%, transparent 60%);
-          z-index: 0;
-          pointer-events: none;
-        }
-        .hero-bg-orb-2 {
-          position: absolute;
-          bottom: -20%;
-          right: -10%;
-          width: 70vw;
-          height: 70vw;
-          background: radial-gradient(circle, rgba(139,92,246,0.12) 0%, transparent 60%);
-          z-index: 0;
-          pointer-events: none;
-        }
-        .hero-bg-orb-3 {
-          position: absolute;
-          top: 30%;
-          right: 15%;
-          width: 50vw;
-          height: 50vw;
-          background: radial-gradient(circle, rgba(16,185,129,0.1) 0%, transparent 60%);
-          z-index: 0;
-          pointer-events: none;
-        }
-        .hero-bg-orb-4 {
-          position: absolute;
-          top: 20%;
-          right: 0%;
-          width: 50vw;
-          height: 60vw;
-          background: radial-gradient(ellipse at center, rgba(34,211,238,0.1) 0%, transparent 70%);
-          z-index: 0;
-          pointer-events: none;
-        }
-
-        .hero-grid {
-          position: absolute;
-          inset: 0;
-          background-size: 100px 100px;
-          background-image: 
-            linear-gradient(to right, rgba(255,255,255,0.08) 1px, transparent 1px),
-            linear-gradient(to bottom, rgba(255,255,255,0.08) 1px, transparent 1px);
-          mask-image: radial-gradient(circle at 50% 50%, black 20%, transparent 90%);
-          -webkit-mask-image: radial-gradient(circle at 50% 50%, black 20%, transparent 90%);
-          z-index: 0;
-          pointer-events: none;
-        }
-
-        .hero-perspective-lines {
-          position: absolute;
-          inset: 0;
-          z-index: 0;
-          pointer-events: none;
-          opacity: 0.5;
-          background-image: repeating-linear-gradient(45deg, rgba(24,144,255,0.1) 0px, rgba(24,144,255,0.1) 1px, transparent 1px, transparent 100px);
-          mask-image: radial-gradient(circle at 100% 0%, black, transparent 70%);
-          -webkit-mask-image: radial-gradient(circle at 100% 0%, black, transparent 70%);
-        }
-
-        .bg-dot-matrix {
-          position: absolute;
-          top: 10%;
-          left: 2%;
-          width: 300px;
-          height: 400px;
-          background-image: radial-gradient(rgba(255,255,255,0.15) 1.5px, transparent 1.5px);
-          background-size: 24px 24px;
-          mask-image: linear-gradient(to bottom right, black, transparent);
-          -webkit-mask-image: linear-gradient(to bottom right, black, transparent);
-          z-index: 0;
-          pointer-events: none;
-        }
-
-        .bg-signal-lines {
-          position: absolute;
-          top: 15%;
-          right: 5%;
-          width: 400px;
-          height: 400px;
-          z-index: 0;
-          pointer-events: none;
-          opacity: 0.2;
-        }
-
-        /* Subtle background data signals */
-        .bg-data-overlay {
-          position: absolute;
-          inset: 0;
-          pointer-events: none;
-          z-index: 0;
-        }
-        .bg-data-item {
-          position: absolute;
-          font-family: 'SFMono-Regular', Consolas, monospace;
-          color: rgba(148,163,184,0.25);
-          font-size: 12px;
-          letter-spacing: 0.15em;
-          white-space: pre;
-          text-transform: uppercase;
-          line-height: 1.8;
-        }
-        .bg-data-left { left: 4%; top: 20%; }
-        .bg-data-right { right: 4%; top: 25%; text-align: right; }
-        
-        .bg-faint-chart {
-          position: absolute;
-          bottom: 0;
-          left: 0;
-          width: 100%;
-          height: 300px;
-          opacity: 0.2;
-          pointer-events: none;
-          z-index: 0;
-        }
-        
-        .content-relative {
-          position: relative;
-          z-index: 5;
-          max-width: min(100%, 1440px);
-          margin: 0 auto;
-          width: 100%;
-          display: grid;
-          grid-template-columns: minmax(420px, 0.85fr) minmax(560px, 1.15fr);
-          align-items: center;
-          gap: clamp(32px, 4vw, 56px);
-          padding: 0 clamp(16px, 2vw, 32px);
-          box-sizing: border-box;
-        }
-
-        .hero-text-area {
-          text-align: left;
-          background: transparent;
-          padding: 0;
-          border: none;
-          box-shadow: none;
-          backdrop-filter: none;
-          -webkit-backdrop-filter: none;
-        }
-
-        .hero-badge {
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          margin-bottom: 24px;
-          padding: 6px 18px;
-          border-radius: 20px;
-          background: rgba(59,130,246,0.06);
-          border: 1px solid rgba(59,130,246,0.1);
-          color: #93c5fd;
-          font-size: clamp(0.75rem, 0.9vw, 0.85rem);
-          font-weight: 600;
-          letter-spacing: 0.03em;
-          animation: fadeUp 0.6s ease-out forwards;
-        }
-        .hero-badge-dot {
-          width: 6px; height: 6px;
-          border-radius: 50%;
-          background: #f59e0b;
-          box-shadow: 0 0 6px rgba(245,158,11,0.5);
-          animation: pulse 2s infinite;
-        }
-
-        .premium-title {
-          font-size: clamp(34px, 10vw, 46px);
-          font-weight: 800;
-          line-height: 1.0;
-          background: linear-gradient(180deg, #ffffff 0%, #cbd5e1 100%);
-          -webkit-background-clip: text;
-          -webkit-text-fill-color: transparent;
-          margin-bottom: 20px;
-          letter-spacing: -0.01em;
-          animation: fadeUp 0.8s ease-out forwards;
-        }
-        .premium-title span {
-          background: linear-gradient(135deg, rgba(96,165,250,0.95) 0%, rgba(59,130,246,0.9) 100%);
-          -webkit-background-clip: text;
-          -webkit-text-fill-color: transparent;
-        }
-
-        .premium-subtitle {
-          font-size: clamp(15px, 2.5vw, 1.1rem);
-          color: rgba(203,213,225,0.8);
-          margin-bottom: 32px;
-          line-height: 1.6;
-          font-weight: 400;
-          max-width: 100%;
-          animation: fadeUp 0.8s ease-out 0.2s forwards;
-          opacity: 0;
-        }
-
-        .feature-chips {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 10px;
-          margin-bottom: 36px;
-          animation: fadeUp 0.8s ease-out 0.25s forwards;
-          opacity: 0;
-        }
-
-        .feature-chip {
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          padding: 6px 14px;
-          background: rgba(255,255,255,0.02);
-          border: 1px solid rgba(255,255,255,0.05);
-          border-radius: 8px;
-          color: rgba(148,163,184,0.9);
-          font-size: clamp(0.78rem, 0.9vw, 0.85rem);
-          font-weight: 500;
-          letter-spacing: 0.01em;
-        }
-
-        .hero-actions {
-          animation: fadeUp 0.8s ease-out 0.3s forwards;
-          opacity: 0;
-        }
-
-        .hero-actions .btn-primary,
-        .hero-actions .btn-secondary {
-          height: clamp(44px, 3.5vw, 50px) !important;
-          border-radius: 12px !important;
-          padding: 0 clamp(20px, 2.5vw, 32px) !important;
-          font-size: clamp(0.9rem, 1vw, 1rem) !important;
-          font-weight: 600 !important;
-          transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1) !important;
-        }
-
-        .hero-actions .btn-primary {
-          background: linear-gradient(135deg, rgba(24,144,255,0.9) 0%, rgba(37,99,235,0.9) 100%) !important;
-          border: 1px solid rgba(255,255,255,0.1) !important;
-          box-shadow: 0 8px 20px rgba(24,144,255,0.15) !important;
-          color: #ffffff !important;
-        }
-        .hero-actions .btn-primary:hover {
-          background: linear-gradient(135deg, rgba(64,169,255,1) 0%, rgba(59,130,246,1) 100%) !important;
-          box-shadow: 0 12px 28px rgba(24,144,255,0.25) !important;
-          transform: translateY(-2px);
-        }
-
-        .hero-actions .btn-secondary {
-          background: rgba(255,255,255,0.02) !important;
-          border: 1px solid rgba(255,255,255,0.1) !important;
-          color: #f8fafc !important;
-          backdrop-filter: blur(8px);
-        }
-        .hero-actions .btn-secondary:hover {
-          background: rgba(255,255,255,0.06) !important;
-          border-color: rgba(24,144,255,0.3) !important;
-          color: #60a5fa !important;
-          box-shadow: 0 8px 20px rgba(0,0,0,0.1);
-          transform: translateY(-2px);
-        }
-        
-        @keyframes fadeUp {
-          from { opacity: 0; transform: translateY(20px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-
-        .hero-visual-wrapper {
-          position: relative;
-          width: 100%;
-          padding-top: clamp(16px, 2vh, 32px);
-          animation: fadeUp 0.8s ease-out 0.4s forwards;
-          opacity: 0;
-        }
-
-        .hero-visual {
-          border-radius: 20px;
-          background: rgba(11, 17, 32, 0.5);
-          backdrop-filter: blur(12px);
-          -webkit-backdrop-filter: blur(12px);
-          padding: 0;
-          box-shadow: 0 30px 80px -20px rgba(0,0,0,0.6), 0 0 20px rgba(24,144,255,0.04);
-          position: relative;
-          border: 1px solid rgba(255,255,255,0.06);
-          max-height: calc(100vh - 120px);
-          overflow: hidden;
-          /* Removed scale and complex transforms for sharp text */
-          transform: translateY(0);
-          transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s ease, box-shadow 0.3s ease;
-        }
-        
-        .hero-visual:hover {
-          border-color: rgba(24,144,255,0.2);
-          box-shadow: 0 40px 100px -20px rgba(0,0,0,0.7), 0 0 30px rgba(24,144,255,0.1);
-          transform: translateY(-4px);
-        }
-
-        .pulse-indicator {
-          width: 8px; height: 8px;
-          border-radius: 50%;
-          background: #10b981;
-          box-shadow: 0 0 10px #10b981;
-          animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-          0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
-          70% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
-          100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-        }
-
-        /* Floating dashboard animation */
-        .hero-visual-float {
-          animation: floatSoft 7s ease-in-out 1.5s infinite;
-        }
-        @keyframes floatSoft {
-          0%, 100% { transform: translateY(0); }
-          50% { transform: translateY(-5px); }
-        }
-
-        /* Hero background spotlight */
-        .hero-spotlight {
-          position: absolute;
-          top: 35%;
-          left: 50%;
-          transform: translate(-50%, -50%);
-          width: 70vw;
-          height: 50vw;
-          max-width: 1000px;
-          max-height: 700px;
-          background: radial-gradient(ellipse at center, rgba(56,189,248,0.05) 0%, transparent 60%);
-          z-index: 0;
-          pointer-events: none;
-          animation: spotlightBreathe 6s ease-in-out infinite;
-        }
-        @keyframes spotlightBreathe {
-          0%, 100% { opacity: 0.4; transform: translate(-50%, -50%) scale(1); }
-          50% { opacity: 0.8; transform: translate(-50%, -50%) scale(1.05); }
-        }
-
-        /* Dashboard scanning sweep line */
-        .hero-visual::after {
-          content: '';
-          position: absolute;
-          top: 0;
-          left: -100%;
-          width: 60%;
-          height: 100%;
-          background: linear-gradient(90deg,
-            transparent 0%,
-            rgba(56,189,248,0.03) 40%,
-            rgba(56,189,248,0.06) 50%,
-            rgba(56,189,248,0.03) 60%,
-            transparent 100%
-          );
-          pointer-events: none;
-          z-index: 2;
-          animation: scanSweep 7s ease-in-out infinite;
-        }
-        @keyframes scanSweep {
-          0% { left: -100%; }
-          100% { left: 200%; }
-        }
-
-        .reveal-on-scroll {
-          opacity: 0;
-          transform: translateY(30px);
-          transition: opacity 0.8s ease-out, transform 0.8s ease-out;
-        }
-        .reveal-on-scroll.visible {
-          opacity: 1;
-          transform: translateY(0);
-        }
-
-        /* Highlight feature grid classes */
-        .tech-tag {
-          background: rgba(24, 144, 255, 0.05);
-          border: 1px solid rgba(24, 144, 255, 0.2);
-          color: #1890ff;
-          padding: 6px 16px;
-          border-radius: 8px;
-          font-weight: 500;
-          margin: 4px;
-          display: inline-block;
-        }
-
-        .cap-card {
-          background: rgba(255, 255, 255, 0.02);
-          border: 1px solid rgba(255, 255, 255, 0.05);
-          border-radius: 16px;
-          padding: 24px;
-          transition: all 0.3s ease;
-          height: 100%;
-        }
-        .cap-card:hover {
-          background: rgba(255, 255, 255, 0.04);
-          border-color: rgba(24, 144, 255, 0.3);
-          transform: translateY(-4px);
-          box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-        }
-        .cap-icon {
-          font-size: 24px;
-          color: #1890ff;
-          margin-bottom: 16px;
-        }
-        .cap-title {
-          color: #fff;
-          font-weight: 700;
-          margin-bottom: 8px;
-          font-size: 1.1rem;
-        }
-        .cap-desc {
-          color: #64748b;
-          font-size: 0.9rem;
-          line-height: 1.5;
-        }
-
-        .github-section {
-          background: linear-gradient(145deg, rgba(17,25,40,0.6) 0%, rgba(11,21,41,0.4) 100%);
-          border: 1px solid rgba(255,255,255,0.08);
-          border-radius: 24px;
-          padding: 40px;
-          margin-top: 80px;
-          text-align: center;
-          position: relative;
-          overflow: hidden;
-        }
-        .github-section:hover {
-          border-color: rgba(255,255,255,0.2);
-        }
-
-        @media (max-width: 1440px) {
-          .premium-title { font-size: clamp(2.2rem, 3.5vw, 3rem); }
-        }
-
-        @media (max-width: 1280px) {
-          .content-relative { grid-template-columns: minmax(360px, 0.8fr) minmax(460px, 1fr); gap: clamp(20px, 2.5vw, 28px); }
-          .hero-section { padding: 32px 20px 40px; }
-          .premium-title { font-size: clamp(1.9rem, 2.8vw, 2.4rem); }
-          .premium-subtitle { font-size: clamp(0.85rem, 0.95vw, 0.95rem); }
-          .hero-actions .btn-primary, .hero-actions .btn-secondary { height: 40px !important; padding: 0 20px !important; font-size: 0.85rem !important; }
-          .hero-badge { font-size: clamp(0.65rem, 0.8vw, 0.75rem); }
-        }
-
-        @media (max-width: 1100px) {
-          .content-relative { grid-template-columns: 1fr; text-align: center; max-width: 640px; }
-          .hero-text-area { padding-right: 0; margin-bottom: 48px; max-width: 100%; margin-left: auto; margin-right: auto; }
-          .hero-badge { margin: 0 auto 24px; }
-          .feature-chips { justify-content: center; }
-          .hero-actions { justify-content: center; }
-          .hero-visual-wrapper { width: 100%; }
-        }
-
-        @media (max-width: 768px) {
-          .premium-title { font-size: clamp(1.7rem, 6vw, 2rem); }
-          .hero-section { padding: 40px 16px 32px; min-height: auto; }
-          .bg-data-overlay { display: none; }
-          .hero-perspective-lines { display: none; }
-          .feature-chips { gap: 6px; margin-bottom: 20px; }
-          .feature-chip { padding: 3px 8px; font-size: 10px; }
-          .feature-chip:nth-child(n+3) { display: none; }
-          .hero-badge { margin-bottom: 12px; font-size: 0.7rem; padding: 4px 10px; }
-          .premium-subtitle { font-size: 0.85rem; margin-bottom: 16px; }
-          .hero-actions { flex-direction: column; width: 100%; gap: 10px !important; }
-          .hero-actions .ant-btn { width: 100%; height: 48px !important; font-size: 0.9rem !important; }
-        }
-
-        @media (max-width: 480px) {
-          .hero-section { padding: 32px 12px 24px; }
-          .premium-title { font-size: clamp(1.5rem, 6vw, 1.8rem); margin-bottom: 12px; }
-          .premium-subtitle { font-size: 0.8rem; margin-bottom: 12px; }
-          .feature-chips { margin-bottom: 16px; gap: 4px; }
-          .feature-chip { font-size: 9px; padding: 2px 6px; }
-          .hero-badge { font-size: 0.65rem; padding: 3px 8px; }
-          .hero-visual-wrapper { display: none; }
-          .compact-proof-card { display: flex; }
-        }
-
-        .compact-proof-card {
-          display: none;
-          flex-direction: column;
-          align-items: center;
-          text-align: center;
-          gap: 8px;
-          padding: 16px;
-          margin: 0 auto;
-          max-width: 320px;
-          background: rgba(17,25,40,0.6);
-          border: 1px solid rgba(255,255,255,0.06);
-          border-radius: 16px;
-          backdrop-filter: blur(12px);
-        }
-        .compact-proof-badge {
-          font-size: 10px;
-          color: #60a5fa;
-          font-weight: 700;
-          letter-spacing: 0.5px;
-        }
-        .compact-proof-value {
-          font-size: 12px;
-          color: #94a3b8;
-          line-height: 1.5;
-        }
-
-        @media (min-width: 769px) and (max-width: 1024px) {
-          .hero-section { padding: 40px 24px 48px; }
-          .premium-title { font-size: clamp(2rem, 3.5vw, 2.8rem); }
-          .hero-visual-wrapper { max-width: 60%; margin: 0 auto; }
-        }
-
-        @media (max-height: 800px) {
-          .hero-section { min-height: auto; padding: 16px 24px 40px; }
-          .premium-title { font-size: clamp(1.6rem, 2.5vw, 2.2rem); margin-bottom: 12px; }
-          .premium-subtitle { margin-bottom: 16px; font-size: clamp(0.8rem, 0.9vw, 0.95rem); }
-          .feature-chips { margin-bottom: 20px; gap: 6px; }
-          .feature-chip { padding: 4px 8px; font-size: clamp(0.7rem, 0.8vw, 0.8rem); }
-          .hero-badge { margin-bottom: 12px; padding: 4px 12px; }
-          .hero-actions .btn-primary, .hero-actions .btn-secondary { height: 36px !important; padding: 0 16px !important; font-size: 0.8rem !important; }
-          .hero-visual-wrapper { padding-top: 16px; }
-          .hero-grid { background-size: 60px 60px; }
-        }
-
-        @media (prefers-reduced-motion: reduce) {
-          *, *::before, *::after {
-            animation-duration: 0.001ms !important;
-            animation-iteration-count: 1 !important;
-            transition-duration: 0.001ms !important;
-            scroll-behavior: auto !important;
-          }
-        }
-      `}</style>
-
-      {/* Hero Section */}
-      <section className="hero-section">
-        <div className="hero-bg-orb-1"></div>
-        <div className="hero-bg-orb-2"></div>
-        <div className="hero-bg-orb-3"></div>
-        <div className="hero-bg-orb-4"></div>
-        <div className="hero-grid"></div>
-        <div className="hero-perspective-lines"></div>
-        <div className="bg-dot-matrix"></div>
-        <div className="hero-spotlight"></div>
-        
-        {/* Background Data Streams */}
-        <div className="bg-data-overlay">
-          <svg className="bg-signal-lines" viewBox="0 0 200 200" preserveAspectRatio="none">
-            <path d="M 0 50 Q 50 50 100 100 T 200 150" fill="none" stroke="#60a5fa" strokeWidth="0.5" />
-            <path d="M 50 0 Q 100 50 150 50 T 200 100" fill="none" stroke="#34d399" strokeWidth="0.5" />
-            <path d="M 0 150 Q 100 100 200 50" fill="none" stroke="#818cf8" strokeWidth="0.5" strokeDasharray="2 2" />
-          </svg>
-          
-          <div className="bg-data-item bg-data-left" style={{ transform: 'none' }}>
-            <div>SCAN UNIVERSE: 12,402</div>
-            <div style={{ color: 'rgba(16,185,129,0.7)' }}>+ LIVE FEED ACTIVE</div>
-            <div style={{ marginTop: 16 }}>MODEL: ALPHA-V4</div>
-            <div>LATENCY: 12ms</div>
-            <div style={{ marginTop: 24, fontSize: '10px', opacity: 0.6 }}>
-              NVDA +3.42<br/>
-              SPY +0.63<br/>
-              AAPL +1.27
-            </div>
-          </div>
-          <div className="bg-data-item bg-data-right" style={{ transform: 'none' }}>
-            <div>RISK EXPOSURE: LOW</div>
-            <div style={{ color: 'rgba(96,165,250,0.7)' }}>ENTRY SIGNAL: VALIDATED</div>
-            <div style={{ marginTop: 16 }}>PORTFOLIO DELTA: +0.42</div>
-            <div>SHARPE: 2.1</div>
-            <div style={{ marginTop: 24, fontSize: '10px', opacity: 0.6 }}>
-              AI SIGNAL ACTIVE<br/>
-              RISK MODEL ONLINE
-            </div>
-          </div>
-          <svg className="bg-faint-chart" viewBox="0 0 1000 200" preserveAspectRatio="none">
-            <path d="M0 180 Q 200 150 400 160 T 800 120 T 1000 80" fill="none" stroke="rgba(24,144,255,0.25)" strokeWidth="2" />
-            <path d="M0 160 Q 250 180 500 120 T 900 100 T 1000 40" fill="none" stroke="rgba(139,92,246,0.2)" strokeWidth="1" />
-            <path d="M0 190 Q 300 170 600 190 T 1000 140" fill="none" stroke="rgba(16,185,129,0.15)" strokeWidth="1.5" />
-          </svg>
-        </div>
-        
-        <div className="content-relative">
-          <div className="hero-text-area">
-            <div className="hero-badge">
-              <span className="hero-badge-dot"></span>
-              {t.landing.heroBadge || "Research-First Quant Automation"}
-            </div>
-            <h1 className="premium-title">
-              {t.landing.heroTitle1 || "AI-Powered Quant Research."}<br/>
-              <span>{t.landing.heroTitle2 || "Systematic Validation."}</span>
-            </h1>
-            <p className="premium-subtitle">
-              {t.landing.heroSubtitle || "AlphaLab scans global markets, validates signals with multi-model AI, runs backtests, and generates risk-aware entry plans — a research-first workflow where you stay in control of every decision."}
-            </p>
-            <div className="feature-chips">
-              <span className="feature-chip"><SearchOutlined style={{ color: '#93c5fd' }} /> {t.landing.chipScanning}</span>
-              <span className="feature-chip"><RobotOutlined style={{ color: '#93c5fd' }} /> {t.landing.chipAI}</span>
-              <span className="feature-chip"><SafetyCertificateOutlined style={{ color: '#93c5fd' }} /> {t.landing.chipRisk}</span>
-              <span className="feature-chip"><ExperimentOutlined style={{ color: '#93c5fd' }} /> {t.landing.chipBacktest}</span>
-            </div>
-            <Space size="large" className="hero-actions">
-              <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} aria-label={t.landing.ariaLabelGetStarted}>
-                {t.landing.startBuilding || "Start Free Trial"} <ArrowRightOutlined aria-hidden="true" />
-              </Button>
-              <Button className="btn-secondary" onClick={() => navigate('/platform')}>
-                {t.landing.explorePlatform || "Explore Strategies"}
-              </Button>
-            </Space>
-          </div>
-
-          {/* Dynamic AI Workflow Dashboard Mockup */}
-          <div className="hero-visual-wrapper">
-            <div className="hero-visual-float">
-              <div className="hero-visual" style={{ transform: 'rotateX(0.8deg) rotateY(-0.5deg)' }}>
-                <StockMarketHeroVisual />
+    <MarketingLayout tone="paper">
+      <main className={`market-field-page ${language === 'zh-CN' ? 'is-zh' : 'is-en'}`}>
+        <section className="market-field-hero" aria-labelledby="market-field-title">
+          <span className="paper-register paper-register--left" aria-hidden="true" />
+          <span className="paper-register paper-register--right" aria-hidden="true" />
+          <div className="market-hero-grid">
+            <div className="market-hero-copy">
+              <div className="market-title-meta">
+                <span aria-hidden="true">01</span>
+                <i aria-hidden="true" />
+                <p className="market-eyebrow">{copy.eyebrow}</p>
+              </div>
+              <h1 id="market-field-title">
+                <span>{copy.titleLine1}</span>
+                <span className="market-title-promise">{copy.titleLine2}<i aria-hidden="true" /></span>
+              </h1>
+              <p className="market-hero-subtitle">{copy.subtitle}</p>
+              <div className="market-hero-actions">
+                <button type="button" className="market-primary-action" onClick={() => scrollToStage(0)}>
+                  {copy.exploreWorkflow}
+                </button>
+                <button type="button" className="market-text-action" onClick={() => navigate('/platform')}>
+                  {copy.openPlatform}<span aria-hidden="true">↗</span>
+                </button>
               </div>
             </div>
-          </div>
-          {/* Compact product proof card for very small screens (<=430px) */}
-          <div className="compact-proof-card">
-            <div className="compact-proof-badge">{t.landing.heroBadge}</div>
-            <div className="compact-proof-value">{t.landing.heroSubtitle}</div>
-          </div>
-        </div>
-      </section>
-
-      {/* Project Overview */}
-      <section className="section-container" style={{ paddingTop: 40, textAlign: 'center' }}>
-        <RevealSection>
-          <h2 style={{ fontSize: '2.5rem', fontWeight: 800, color: '#fff', marginBottom: 24 }}>{t.landing.overviewTitle}</h2>
-          <p style={{ color: '#94a3b8', fontSize: '1.2rem', maxWidth: 800, margin: '0 auto 40px', lineHeight: 1.7 }}>
-            {t.landing.overviewDesc}
-          </p>
-        </RevealSection>
-
-        {/* Tech Stack */}
-        <RevealSection delay={0.1}>
-          <div style={{ marginTop: 60 }}>
-            <h3 style={{ color: '#64748b', fontSize: '0.9rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 2, marginBottom: 24 }}>{t.landing.builtWith}</h3>
-            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', maxWidth: 900, margin: '0 auto', gap: 8 }}>
-              {techStack.map((tech, idx) => (
-                <span key={idx} className="tech-tag" style={{ margin: 0 }}>{tech}</span>
-              ))}
+            <div className="market-hero-estuary">
+              <SignalEstuaryVisual
+                locale={language}
+                progress={1}
+                className="signal-estuary--hero"
+              />
+            </div>
+            <div className="market-hero-specimen">
+              <ResearchSpecimen stage={2} copy={copy} isZh={isZh} showPeek />
+            </div>
+            <div className="market-hero-rail">
+              <StageRail stages={stages} active={2} onSelect={scrollToStage} ariaLabel={copy.storyEyebrow} />
+              <button type="button" className="market-scroll-cue" onClick={() => scrollToStage(0)}>
+                {copy.scrollCue}<span aria-hidden="true">↓</span>
+              </button>
             </div>
           </div>
-        </RevealSection>
-      </section>
+        </section>
 
-      {/* Core Capabilities Grid */}
-      <section className="section-container">
-        <RevealSection>
-          <div style={{ textAlign: 'center', marginBottom: 60 }}>
-            <h2 style={{ fontSize: '2.5rem', fontWeight: 800, color: '#fff', marginBottom: 16 }}>{t.landing.capabilitiesTitle}</h2>
-            <p style={{ color: '#94a3b8', fontSize: '1.1rem' }}>{t.landing.capabilitiesSubtitle}</p>
+        <section className="market-story-intro" aria-labelledby="market-story-title">
+          <p className="market-eyebrow">{copy.storyEyebrow}</p>
+          <div>
+            <h2 id="market-story-title">{copy.storyTitle}</h2>
+            <p>{copy.storySubtitle}</p>
           </div>
-        </RevealSection>
-        
-        <Row gutter={[24, 24]}>
-          {capabilities.map((cap, idx) => (
-            <Col xs={24} sm={12} md={8} key={idx}>
-              <RevealSection delay={(idx % 3) * 0.1} style={{ height: '100%' }}>
-                <div className="cap-card">
-                  <div className="cap-icon">{cap.icon}</div>
-                  <h3 className="cap-title">{cap.title}</h3>
-                  <p className="cap-desc">{cap.desc}</p>
-                </div>
-              </RevealSection>
-            </Col>
-          ))}
-        </Row>
-      </section>
+        </section>
 
-      {/* GitHub Repository Link */}
-      <section className="section-container" style={{ paddingBottom: 100 }}>
-        <RevealSection>
-          <div className="github-section">
-            <GithubOutlined aria-hidden="true" style={{ fontSize: 48, color: '#fff', marginBottom: 24 }} />
-            <h2 style={{ fontSize: '2rem', fontWeight: 800, color: '#fff', marginBottom: 16 }}>{t.landing.githubTitle}</h2>
-            <p style={{ color: '#94a3b8', fontSize: '1.1rem', maxWidth: 600, margin: '0 auto 32px' }}>
-              {t.landing.githubDesc}
-            </p>
-            <Button 
-              className="btn-secondary" 
-              style={{ height: 50, padding: '0 32px' }}
-              href="https://github.com/Danielchen0101/quant_platform"
-              target="_blank"
-              rel="noopener noreferrer"
+        {shouldReduceMotion ? (
+          <section className="market-story-reduced" aria-label={copy.storyEyebrow}>
+            {stages.map((stage, index) => (
+              <article key={stage.id}>
+                <div className="market-reduced-copy">
+                  <span>0{index + 1}</span>
+                  <h3>{stage.title}</h3>
+                  <p>{stage.description}</p>
+                </div>
+                <ResearchSpecimen stage={index as StageIndex} copy={copy} isZh={isZh} />
+              </article>
+            ))}
+          </section>
+        ) : (
+          <section className="market-story" ref={storyRef} aria-label={copy.storyEyebrow}>
+            <div className="market-story-sticky">
+              <motion.div className="market-story-progress" style={{ scaleX: scrollYProgress }} />
+              <div className="market-story-copy">
+                <span className="market-story-index">0{activeStage + 1} / 04</span>
+                <AnimatePresence mode="wait" initial={false}>
+                  <motion.div
+                    key={activeStage}
+                    initial={{ opacity: 0, y: 18 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -12 }}
+                    transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+                  >
+                    <p className="market-story-stage-label">{stages[activeStage].label}</p>
+                    <h3>{stages[activeStage].title}</h3>
+                    <p>{stages[activeStage].description}</p>
+                  </motion.div>
+                </AnimatePresence>
+              </div>
+              <div className="market-story-canvas">
+                <ResearchSpecimen stage={activeStage} copy={copy} isZh={isZh} />
+              </div>
+              <div className="market-story-rail">
+                <StageRail stages={stages} active={activeStage} onSelect={scrollToStage} ariaLabel={copy.storyEyebrow} />
+              </div>
+            </div>
+          </section>
+        )}
+
+        <section className="market-story-mobile" aria-label={copy.storyEyebrow}>
+          <div className="market-mobile-track" ref={mobileTrackRef} onScroll={handleMobileScroll}>
+            {stages.map((stage, index) => (
+              <article className="market-mobile-slide" key={stage.id}>
+                <div className="market-mobile-slide-copy">
+                  <span>0{index + 1} / 04 · {stage.label}</span>
+                  <h3>{stage.title}</h3>
+                  <p>{stage.description}</p>
+                </div>
+                <ResearchSpecimen stage={index as StageIndex} copy={copy} isZh={isZh} />
+              </article>
+            ))}
+          </div>
+          <div className="market-mobile-controls">
+            <button
+              type="button"
+              onClick={() => scrollMobileStage(Math.max(0, mobileStage - 1) as StageIndex)}
+              disabled={mobileStage === 0}
+              aria-label={t.common.back}
             >
-              {t.landing.githubButton} <ArrowRightOutlined aria-hidden="true" />
-            </Button>
-          </div>
-        </RevealSection>
-      </section>
-
-      {/* P3 — Product Demo Walkthrough */}
-      <section className="section-container">
-        <RevealSection>
-          <div style={{ textAlign: 'center', marginBottom: 60 }}>
-            <h2 className="section-title">{t.walkthrough.title}</h2>
-            <p className="section-subtitle">{t.walkthrough.subtitle}</p>
-          </div>
-        </RevealSection>
-        <div style={{ position: 'relative', maxWidth: 900, margin: '0 auto' }}>
-          {/* Progress line */}
-          <div style={{
-            position: 'absolute', left: 32, top: 0, bottom: 0, width: 2,
-            background: 'linear-gradient(to bottom, rgba(24,144,255,0.4), rgba(24,144,255,0.1))',
-          }} />
-          {[
-            { icon: '🔗', title: t.walkthrough.step1Title, desc: t.walkthrough.step1Desc },
-            { icon: '🔍', title: t.walkthrough.step2Title, desc: t.walkthrough.step2Desc },
-            { icon: '✅', title: t.walkthrough.step3Title, desc: t.walkthrough.step3Desc },
-            { icon: '📋', title: t.walkthrough.step4Title, desc: t.walkthrough.step4Desc },
-            { icon: '🚀', title: t.walkthrough.step5Title, desc: t.walkthrough.step5Desc },
-          ].map((step, idx) => (
-            <RevealSection key={idx} delay={idx * 0.1}>
-              <div style={{
-                display: 'flex', gap: 20, marginBottom: idx < 4 ? 36 : 0,
-                paddingLeft: 12, position: 'relative',
-              }}>
-                <div style={{
-                  width: 52, height: 52, borderRadius: '50%', flexShrink: 0,
-                  background: 'linear-gradient(135deg, rgba(24,144,255,0.15), rgba(24,144,255,0.05))',
-                  border: '1px solid rgba(24,144,255,0.25)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 20, position: 'relative', zIndex: 1, backdropFilter: 'blur(8px)',
-                }}>
-                  <span aria-hidden="true">{step.icon}</span>
-                </div>
-                <div style={{ flex: 1, paddingTop: 6 }}>
-                  <h3 style={{ color: '#fff', fontSize: '1.1rem', fontWeight: 700, marginBottom: 6 }}>{step.title}</h3>
-                  <p style={{ color: '#94a3b8', fontSize: '0.9rem', lineHeight: 1.6, margin: 0 }}>{step.desc}</p>
-                </div>
-              </div>
-            </RevealSection>
-          ))}
-        </div>
-      </section>
-
-      {/* Example Output */}
-      <section className="section-container" style={{ paddingTop: 0 }}>
-        <RevealSection>
-          <div style={{ textAlign: 'center', marginBottom: 40 }}>
-            <h2 className="section-title">{t.landing.exampleOutputTitle}</h2>
-            <p className="section-subtitle" style={{ color: '#94a3b8', maxWidth: 600, margin: '0 auto' }}>{t.landing.exampleOutputSubtitle}</p>
-          </div>
-        </RevealSection>
-        <RevealSection delay={0.1}>
-          <div style={{ maxWidth: 600, margin: '0 auto', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 20, padding: 24 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 20 }}>
-              <div>
-                <div style={{ fontSize: '0.8rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Symbol</div>
-                <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#fff' }}>NVDA</div>
-              </div>
-              <div style={{ textAlign: 'right' }}>
-                <div style={{ fontSize: '0.8rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Signal</div>
-                <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#60a5fa' }}>Momentum Breakout</div>
-              </div>
+              ←
+            </button>
+            <div aria-live="polite" aria-atomic="true">
+              <span>{stages[mobileStage].label}</span>
+              <b>{mobileStage + 1} / 4</b>
             </div>
-            
-            <div style={{ background: 'rgba(16,185,129,0.05)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: 12, padding: 16, marginBottom: 20 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ color: '#34d399', fontWeight: 600 }}>AI Verdict</span>
-                <span style={{ background: '#10b981', color: '#fff', padding: '4px 12px', borderRadius: 20, fontSize: '0.85rem', fontWeight: 700 }}>BUY</span>
-              </div>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16, marginBottom: 20 }}>
-              <div style={{ background: 'rgba(255,255,255,0.03)', padding: 16, borderRadius: 12 }}>
-                <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: 4 }}>Win Rate</div>
-                <div style={{ fontSize: '1.1rem', color: '#fff', fontWeight: 700 }}>68.2%</div>
-              </div>
-              <div style={{ background: 'rgba(255,255,255,0.03)', padding: 16, borderRadius: 12 }}>
-                <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: 4 }}>Max Drawdown</div>
-                <div style={{ fontSize: '1.1rem', color: '#ef4444', fontWeight: 700 }}>-4.1%</div>
-              </div>
-              <div style={{ background: 'rgba(255,255,255,0.03)', padding: 16, borderRadius: 12 }}>
-                <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: 4 }}>Sharpe</div>
-                <div style={{ fontSize: '1.1rem', color: '#fff', fontWeight: 700 }}>2.45</div>
-              </div>
-            </div>
-
-            <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 20 }}>
-              <div style={{ fontSize: '0.9rem', color: '#fff', fontWeight: 600, marginBottom: 12 }}>Risk Plan</div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: '#94a3b8', marginBottom: 8 }}>
-                <span>Entry Target</span>
-                <span style={{ color: '#fff' }}>$1,037.89</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: '#94a3b8', marginBottom: 8 }}>
-                <span>Stop Loss</span>
-                <span style={{ color: '#ef4444' }}>$998.50 (-3.8%)</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: '#94a3b8' }}>
-                <span>Position Size</span>
-                <span style={{ color: '#fff' }}>140 Shares (1% Risk)</span>
-              </div>
-            </div>
+            <button
+              type="button"
+              onClick={() => scrollMobileStage(Math.min(3, mobileStage + 1) as StageIndex)}
+              disabled={mobileStage === 3}
+              aria-label={t.common.next}
+            >
+              →
+            </button>
           </div>
-        </RevealSection>
-      </section>
+        </section>
 
-      {/* P3 — FAQ / Trust Section */}
-      <section className="section-container">
-        <RevealSection>
-          <div style={{ textAlign: 'center', marginBottom: 60 }}>
-            <h2 className="section-title">{t.faq.title}</h2>
-            <p className="section-subtitle">{t.faq.subtitle}</p>
+        <section className="market-examples" aria-labelledby="market-examples-title">
+          <header className="market-examples-heading">
+            <p className="market-eyebrow">{language === 'zh-CN' ? '交互式研究案例' : 'INTERACTIVE RESEARCH EXAMPLES'}</p>
+            <div>
+              <h2 id="market-examples-title">{language === 'zh-CN' ? '先检查结果是怎么得出的。' : 'Inspect how the result was produced.'}</h2>
+              <p>{language === 'zh-CN' ? '切换研究假设和时间范围，比较样本外收益、回撤、换手率与证据摘要。全部数字均为模拟界面样例。' : 'Switch research hypotheses and ranges to compare out-of-sample return, drawdown, turnover, and the attached evidence summary. All figures are simulated interface examples.'}</p>
+            </div>
+          </header>
+          <ResearchExamplesExplorer locale={language} />
+          <div className="market-examples-footer">
+            <span>{language === 'zh-CN' ? '3 份公开研究样本 · 15 个样本外窗口' : '3 PUBLIC RESEARCH NOTES · 15 OUT-OF-SAMPLE FOLDS'}</span>
+            <button type="button" className="market-text-action" onClick={() => navigate('/examples')}>
+              {language === 'zh-CN' ? '浏览全部案例' : 'Browse all examples'}<span aria-hidden="true">↗</span>
+            </button>
           </div>
-        </RevealSection>
-        <div style={{ maxWidth: 800, margin: '0 auto' }}>
-          {[
-            { q: t.faq.q1, a: t.faq.a1 },
-            { q: t.faq.q2, a: t.faq.a2 },
-            { q: t.faq.q3, a: t.faq.a3 },
-            { q: t.faq.q4, a: t.faq.a4 },
-            { q: t.faq.q5, a: t.faq.a5 },
-            { q: t.faq.q6, a: t.faq.a6 },
-          ].map((item, idx) => (
-            <RevealSection key={idx} delay={idx * 0.1}>
-              <div style={{
-                background: 'rgba(255,255,255,0.02)',
-                border: '1px solid rgba(255,255,255,0.06)',
-                borderRadius: 16, padding: '24px 28px', marginBottom: 16,
-                transition: 'border-color 0.3s ease',
-              }}
-                onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'rgba(24,144,255,0.3)'; }}
-                onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.06)'; }}
-              >
-                <h3 style={{ color: '#fff', fontSize: '1rem', fontWeight: 700, marginBottom: 10 }}>
-                  {item.q}
-                </h3>
-                <p style={{ color: '#94a3b8', fontSize: '0.9rem', lineHeight: 1.7, margin: 0 }}>
-                  {item.a}
-                </p>
-              </div>
-            </RevealSection>
-          ))}
-        </div>
-      </section>
+        </section>
 
-      {/* Final CTA */}
-      <section className="section-container" style={{ textAlign: 'center', padding: '80px 24px 60px' }}>
-        <RevealSection>
-          <div style={{
-            background: 'linear-gradient(160deg, rgba(37,99,235,0.05) 0%, rgba(16,185,129,0.03) 100%)',
-            padding: '56px clamp(24px, 5vw, 64px)',
-            borderRadius: '24px',
-            border: '1px solid rgba(255,255,255,0.05)',
-            maxWidth: 720,
-            margin: '0 auto',
-          }}>
-            <h2 style={{
-              fontSize: 'clamp(1.7rem, 3vw, 2.3rem)',
-              fontWeight: 800,
-              color: '#f1f5f9',
-              marginBottom: 16,
-              letterSpacing: '-0.02em',
-            }}>{t.landing.ctaTitle}</h2>
-            <p style={{
-              color: '#94a3b8',
-              fontSize: 'clamp(0.9rem, 1.1vw, 1rem)',
-              maxWidth: 500,
-              margin: '0 auto 32px',
-              lineHeight: 1.6,
-            }}>
-              {t.landing.ctaDesc}
-            </p>
-            <Space size="large" className="hero-actions">
-              <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} style={{ height: 52, padding: '0 36px' }} aria-label={t.landing.ariaLabelGetStarted}>
-                {t.landing.ctaGetStarted} <ArrowRightOutlined />
-              </Button>
-              <Button className="btn-secondary" onClick={() => navigate('/signin')} style={{ height: 52, padding: '0 32px' }} aria-label={t.landing.ariaLabelSignIn}>
-                {t.landing.ctaSignIn}
-              </Button>
-            </Space>
-            <p style={{ color: '#64748b', fontSize: '0.78rem', marginTop: 20 }}>
-              <LockOutlined style={{ fontSize: 11, marginRight: 4 }} />
-              No credit card required · Paper trading included
-            </p>
+        <section className="market-proof" aria-labelledby="market-proof-title">
+          <div className="market-proof-copy">
+            <p className="market-eyebrow">{copy.researchProof}</p>
+            <h2 id="market-proof-title">{copy.researchProofTitle}</h2>
+            <p>{copy.researchProofDesc}</p>
           </div>
-        </RevealSection>
-      </section>
+          <dl className="market-proof-metrics">
+            <div><dt><span aria-hidden="true">01</span>{copy.observed}</dt><dd>8,421</dd></div>
+            <div><dt><span aria-hidden="true">02</span>{copy.shortlisted}</dt><dd>24</dd></div>
+            <div><dt><span aria-hidden="true">03</span>{copy.validated}</dt><dd>3</dd></div>
+            <div><dt><span aria-hidden="true">04</span>{copy.riskPlan}</dt><dd>1</dd></div>
+          </dl>
+        </section>
+
+        <section className="market-final-cta">
+          <p className="market-eyebrow">{isZh ? 'ALPHALAB · 模拟优先' : 'ALPHALAB · PAPER FIRST'}</p>
+          <h2>{copy.ctaTitle}</h2>
+          <p>{copy.ctaDesc}</p>
+          <div>
+            <button type="button" className="market-primary-action" onClick={() => navigate('/signup')}>
+              {copy.ctaPrimary}
+            </button>
+            <button type="button" className="market-text-action" onClick={() => navigate('/workflow')}>
+              {copy.ctaSecondary}<span aria-hidden="true">↗</span>
+            </button>
+          </div>
+        </section>
+      </main>
     </MarketingLayout>
   );
 };
 
-export default Landing;;
+export default Landing;

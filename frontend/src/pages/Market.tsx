@@ -1,1308 +1,1374 @@
-import React, { useState, useEffect } from 'react';
-import { Table, Tag, Input, Select, Button, Space, Alert, message, Empty, Spin, Skeleton, Typography } from 'antd';
-import { SearchOutlined, LineChartOutlined, PlayCircleOutlined, BarChartOutlined, ReloadOutlined, EyeOutlined, StarOutlined, PlusOutlined, DeleteOutlined, ClockCircleOutlined } from '@ant-design/icons';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  Alert,
+  Button,
+  Empty,
+  InputNumber,
+  Progress,
+  Table,
+  Tag,
+  Tooltip,
+  message,
+} from 'antd';
+import type { ColumnsType } from 'antd/es/table';
+import {
+  ArrowRightOutlined,
+  BarChartOutlined,
+  ExperimentOutlined,
+  LineChartOutlined,
+  ReloadOutlined,
+  SearchOutlined,
+} from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import marketDataService, { StockData, searchStockData, safeNumber, safeToFixed, getUserMarketSymbols, addUserMarketSymbols, deleteUserMarketSymbol } from '../services/marketDataService';
-import { sharedDataService } from '../services/sharedDataService';
-import { formatMarketCap } from '../utils/format';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTradeMode } from '../contexts/TradeModeContext';
+import { scannerApi } from '../services/api';
+import { scannerStateStore } from '../services/scannerStateStore';
+import {
+  backtestForSymbolPath,
+  marketSymbolPath,
+  rememberMarketSymbol,
+} from '../routes/marketRoutes';
+import './MarketEditorial.css';
 
-const MAX_MARKET_SYMBOLS = 100;
+const SETTINGS_KEY = 'alpha_lab_market_scanner_settings_v4';
+const SESSION_KEY = 'alpha_lab_market_scanner_view_v1';
 
-const { Option } = Select;
-const { Text } = Typography;
+type ScannerUniverse = 'alpaca_market';
+
+interface ScannerFilters {
+  minPrice: number;
+  minMarketCap: number;
+  minDollarVolume: number;
+  minHistoryDays: number;
+  maxAtrPercent: number;
+  maxRealizedVol20: number;
+}
+
+interface ScannerSettings {
+  universe: ScannerUniverse;
+  maxSymbols: number;
+  maxResults: number;
+  aiReviewTopN: number;
+  historyPeriod: string;
+  filters: ScannerFilters;
+}
+
+interface ScannerResult {
+  symbol: string;
+  companyName?: string;
+  sector?: string;
+  industry?: string;
+  exchange?: string;
+  exchangeName?: string;
+  universe?: string;
+  selectionScore?: number;
+  selectionLabel?: string;
+  scoreReliability?: number;
+  factorAgreementPct?: number;
+  factorCoveragePct?: number;
+  directionScore?: number;
+  trendLabel?: string;
+  trendScore?: number;
+  trendConfidence?: number;
+  price?: number;
+  changePct?: number;
+  volume?: number;
+  previousClose?: number;
+  dayOpen?: number;
+  dayHigh?: number;
+  dayLow?: number;
+  dayVWAP?: number;
+  bidPrice?: number;
+  askPrice?: number;
+  bidAskSpreadPct?: number;
+  avgDollarVolume20?: number;
+  volumeRatio?: number;
+  marketCap?: number;
+  tradable?: boolean;
+  marginable?: boolean;
+  shortable?: boolean;
+  easyToBorrow?: boolean;
+  fractionable?: boolean;
+  momentum1m?: number;
+  momentum3m?: number;
+  momentum6m?: number;
+  momentum12m?: number;
+  relativeStrength3m?: number;
+  relativeStrength6m?: number;
+  marketBeta?: number;
+  marketCorrelation?: number;
+  sectorBenchmarkSymbol?: string;
+  sectorRelativeStrength3m?: number;
+  sectorRank?: number;
+  sectorCount?: number;
+  closeVs50dma?: number;
+  closeVs200dma?: number;
+  realizedVol20?: number;
+  atrPercent?: number;
+  maxDrawdown126?: number;
+  spreadBps?: number;
+  estimatedRoundTripCostBps?: number;
+  capacityScore?: number;
+  liquidityTier?: string;
+  participation10pctDollar?: number;
+  trailingPE?: number;
+  forwardPE?: number;
+  priceToBook?: number;
+  epsGrowthForward?: number;
+  beta?: number;
+  dividendYield?: number;
+  analystRating?: string;
+  nextEarningsDate?: string;
+  daysToEarnings?: number;
+  earningsHour?: string;
+  shortVolumeRatio?: number;
+  shortVolumeDate?: string;
+  crowdingRisk?: string;
+  optionContractsSampled?: number;
+  avgCallIV?: number;
+  avgPutIV?: number;
+  optionIvSkew?: number;
+  newsCount?: number;
+  newsSentiment?: string;
+  eventRisk?: string;
+  eventTags?: string[];
+  topNewsHeadline?: string;
+  topNewsSource?: string;
+  topNewsUrl?: string;
+  latestNewsTime?: string;
+  scannerReason?: string;
+  ruleScannerReason?: string;
+  aiCalled?: boolean;
+  aiSuccess?: boolean;
+  aiTraderDecision?: 'Advance' | 'Watch' | 'Avoid' | string;
+  aiTraderConfidence?: number;
+  aiTraderRationale?: string;
+  aiRiskFlags?: string[];
+  aiContradictions?: string[];
+  aiMissingChecks?: string[];
+  aiNextStep?: string;
+  factorScores?: {
+    momentum?: number;
+    trend?: number;
+    relative?: number;
+    liquidity?: number;
+    risk?: number;
+  };
+}
+
+interface ScannerSummary {
+  universe?: string;
+  universeSource?: string;
+  rawUniverseCount?: number;
+  universeScanned?: number;
+  passedInvestability?: number;
+  filteredOut?: number;
+  failedData?: number;
+  resultsCount?: number;
+  bullishCount?: number;
+  bearishCount?: number;
+  neutralCount?: number;
+  strongTrendCount?: number;
+  priorityACount?: number;
+  reliableCount?: number;
+  factorConflictCount?: number;
+  lastScanTime?: number;
+  filteredReasons?: Record<string, number>;
+  weights?: Record<string, number>;
+  dataSource?: string;
+  finnhubStatus?: string;
+  finnhubEnrichment?: {
+    configured?: boolean;
+    profileEnriched?: number;
+    metricsEnriched?: number;
+    ratingsEnriched?: number;
+    preflightStatus?: string;
+  };
+  benchmarkEnrichment?: {
+    symbolsAvailable?: number;
+    benchmarkTrend?: string;
+  };
+  sectorEnrichment?: {
+    symbolsWithSectorBenchmark?: number;
+    symbolsWithSectorRank?: number;
+  };
+  newsEnrichment?: {
+    source?: string;
+    symbolsWithNews?: number;
+    articlesFetched?: number;
+  };
+  earningsEnrichment?: {
+    symbolsWithEarnings?: number;
+  };
+  shortVolumeEnrichment?: {
+    symbolsWithShortVolume?: number;
+  };
+  optionsEnrichment?: {
+    symbolsWithOptions?: number;
+    maxSymbols?: number;
+  };
+  aiReview?: {
+    configured?: boolean;
+    used?: boolean;
+    status?: string;
+    provider?: string;
+    model?: string;
+    requestedSymbols?: number;
+    reviewedSymbols?: number;
+    error?: string;
+  };
+}
+
+interface PersistedScannerView {
+  results: ScannerResult[];
+  summary: ScannerSummary | null;
+  lastDuration: number | null;
+}
+
+type ScannerErrorCategory = 'session' | 'configuration' | 'rateLimit' | 'timeout' | 'network' | 'generic';
+
+const scannerErrorDetail = (value: unknown): string => {
+  if (typeof value === 'string') return value.trim();
+  if (!value || typeof value !== 'object') return '';
+  const record = value as Record<string, any>;
+  return scannerErrorDetail(
+    record.response?.data?.detail
+    ?? record.response?.data?.error
+    ?? record.response?.data?.message
+    ?? record.detail
+    ?? record.error
+    ?? record.message,
+  );
+};
+
+const scannerErrorCategory = (value: unknown): ScannerErrorCategory => {
+  const record = value && typeof value === 'object' ? value as Record<string, any> : {};
+  const status = Number(record.response?.status ?? record.statusCode ?? record.status);
+  const detail = scannerErrorDetail(value).toLowerCase();
+  if (status === 401 || status === 403 || /session|unauthori[sz]ed|forbidden|auth(?:entication)?|token|sign[ -]?in|login/.test(detail)) return 'session';
+  if (status === 429 || /rate.?limit|too many requests|quota/.test(detail)) return 'rateLimit';
+  if (status === 408 || /timeout|timed out|deadline|aborted/.test(detail)) return 'timeout';
+  if (/network|offline|connection (?:refused|reset)|econn|fetch failed|failed to fetch|dns/.test(detail)) return 'network';
+  if (status === 400 || status === 404 || status === 409 || status === 422 || /config|credential|api.?key|not configured|missing|required|invalid|parameter/.test(detail)) return 'configuration';
+  return 'generic';
+};
+
+const defaultSettings: ScannerSettings = {
+  universe: 'alpaca_market',
+  maxSymbols: 1500,
+  maxResults: 100,
+  aiReviewTopN: 100,
+  historyPeriod: '18mo',
+  filters: {
+    minPrice: 5,
+    minMarketCap: 0,
+    minDollarVolume: 10_000_000,
+    minHistoryDays: 252,
+    maxAtrPercent: 12,
+    maxRealizedVol20: 120,
+  },
+};
+
+const defaultWeights = {
+  momentum: 0.3,
+  trend: 0.2,
+  relative: 0.2,
+  liquidity: 0.15,
+  risk: 0.15,
+};
+
+const copy = {
+  en: {
+    kicker: 'Cross-sectional research desk',
+    title: 'Market scanner',
+    subtitle: 'Rank the liquid US equity universe with deterministic factors, investability gates, and a separate AI challenge layer.',
+    reset: 'Reset filters',
+    run: 'Run market scan',
+    scanning: 'Scanning market',
+    filterTitle: 'Research mandate',
+    filterNote: 'Changes are saved automatically for your next scan.',
+    universe: 'Universe',
+    scanCap: 'Scan cap',
+    output: 'Output',
+    minPrice: 'Minimum price',
+    history: 'History days',
+    minAdv: 'Minimum ADV20',
+    minMarketCap: 'Minimum market cap',
+    maxAtr: 'Maximum ATR',
+    maxVol: 'Maximum Vol20',
+    aiReview: 'AI review',
+    universeValue: 'Alpaca US equities',
+    rawUniverse: 'Raw universe',
+    scanned: 'Scanned',
+    investable: 'Investable',
+    candidates: 'Candidates',
+    bullish: 'Bullish',
+    runtime: 'Runtime',
+    liveAnalysis: 'Scan intelligence',
+    awaitingRun: 'Awaiting first scan',
+    completed: 'Last completed',
+    dailyBreadth: 'Daily breadth',
+    advancing: 'Advancing',
+    declining: 'Declining',
+    validMoves: 'valid moves',
+    scoreDistribution: 'Score distribution',
+    noScores: 'No score data yet',
+    factorMandate: 'Factor mandate',
+    sectorParticipation: 'Sector participation',
+    noSector: 'No sector coverage yet',
+    resultKicker: 'Ranked research universe',
+    resultTitle: 'Candidate ledger',
+    resultNote: 'Core decision fields stay visible. Open a row for provenance, overlays, and execution context.',
+    symbol: 'Candidate',
+    score: 'Research score',
+    signal: 'Directional signal',
+    liquidity: 'Liquidity',
+    risk: 'Risk / event',
+    ai: 'AI challenge',
+    actions: 'Actions',
+    analyze: 'Analyze',
+    backtest: 'Backtest',
+    emptyTitle: 'No ranked candidates yet',
+    emptyBody: 'Run the market scanner to build a real, investability-filtered shortlist.',
+    snapshot: 'Market snapshot',
+    factors: 'Factor evidence',
+    relative: 'Relative structure',
+    friction: 'Risk and trading friction',
+    rationale: 'Research rationale',
+    aiReviewTitle: 'AI challenge record',
+    news: 'Event and news context',
+    source: 'Data coverage',
+    filtered: 'filtered',
+    failed: 'data failures',
+    notReviewed: 'Rules only',
+    noData: 'Not available',
+    scannerComplete: 'Market scan completed',
+    scannerFailed: 'Market scan failed',
+    errorSession: 'Your session is no longer valid. Sign in again, then rerun the scan.',
+    errorConfiguration: 'The scanner configuration or market-data setup is incomplete or invalid.',
+    errorRateLimit: 'The market-data service is rate limiting requests. Wait a moment, then retry.',
+    errorTimeout: 'The market scan timed out. Reduce the scan size or try again shortly.',
+    errorNetwork: 'The scanner service could not be reached. Check the network and backend status.',
+    errorGeneric: 'The market scan could not be completed. Try again shortly.',
+    errorDetail: 'Detail',
+    lastSession: 'Restored from this session',
+    progressTitle: 'Market scan in progress',
+    progressEstimated: 'Estimated progress',
+    progressElapsed: 'Elapsed',
+    progressNote: 'Stage and percentage are estimated from elapsed time; results appear only after the server completes the scan.',
+    tradable: 'Tradable',
+    shortable: 'Shortable',
+    fractionable: 'Fractional shares',
+    easyBorrow: 'Easy to borrow',
+    price: 'Price',
+    dayMove: 'Day move',
+    dayRange: 'Day range',
+    bidAsk: 'Bid / ask',
+    marketCap: 'Market cap',
+    exchange: 'Exchange',
+    reliability: 'Reliability',
+    agreement: 'Agreement',
+    coverage: 'Coverage',
+    momentum13: 'Momentum 1M / 3M',
+    momentum612: 'Momentum 6M / 12M',
+    spyRelative: 'SPY relative 3M',
+    movingAverages: '50DMA / 200DMA',
+    betaCorrelation: 'Market beta / corr',
+    sectorRank: 'Sector rank',
+    spreadRoundTrip: 'Spread / round trip',
+    drawdown126: '126D drawdown',
+    capacity10: '10% ADV capacity',
+    nextEarnings: 'Next earnings',
+    shortFlow: 'FINRA short flow',
+    ivSkew: 'Options IV skew',
+    newsItems: 'news',
+    riskWord: 'risk',
+    reliable: 'reliable',
+    confidence: 'confidence',
+    volume: 'Vol',
+    tierUnavailable: 'Tier —',
+    noEvent: 'No event signal',
+    eventWord: 'event',
+    earningsIn: 'Earnings {days}d',
+    noNearEarnings: 'No near earnings',
+    usEquity: 'US Equity',
+    collapseDetail: 'Collapse detail',
+    expandDetail: 'Expand detail',
+    scannerSummary: 'Market scanner summary',
+    filtersSection: 'Filters',
+    analysisSection: 'Analysis',
+    modePaper: 'Paper mode',
+    modeReal: 'Live mode',
+    top: 'Top',
+    strong: 'strong',
+    benchmarkCoverage: 'Benchmarks',
+    newsCoverage: 'News',
+    finraCoverage: 'FINRA short volume',
+    optionsCoverage: 'Options',
+    aiCoverage: 'AI reviewed',
+    progressStages: [
+      'Loading the Alpaca universe',
+      'Ranking liquidity and loading price history',
+      'Applying investability gates and factor scores',
+      'Adding market, event, and risk context',
+      'Ranking candidates and completing AI review',
+    ],
+  },
+  zh: {
+    kicker: '横截面研究工作台',
+    title: '市场扫描器',
+    subtitle: '以确定性因子、可投资性门槛和独立 AI 复核层，对美股流动性标的进行专业排序。',
+    reset: '重置筛选',
+    run: '运行市场扫描',
+    scanning: '正在扫描市场',
+    filterTitle: '研究条件',
+    filterNote: '所有改动都会自动保存，供下一次扫描使用。',
+    universe: '标的范围',
+    scanCap: '扫描上限',
+    output: '结果数量',
+    minPrice: '最低价格',
+    history: '历史天数',
+    minAdv: '最低 ADV20',
+    minMarketCap: '最低市值',
+    maxAtr: '最高 ATR',
+    maxVol: '最高 Vol20',
+    aiReview: 'AI 复核数量',
+    universeValue: 'Alpaca 美国股票',
+    rawUniverse: '原始标的',
+    scanned: '已扫描',
+    investable: '通过筛选',
+    candidates: '候选标的',
+    bullish: '看涨标的',
+    runtime: '运行时间',
+    liveAnalysis: '扫描洞察',
+    awaitingRun: '等待首次扫描',
+    completed: '最近完成',
+    dailyBreadth: '当日市场宽度',
+    advancing: '上涨',
+    declining: '下跌',
+    validMoves: '有效涨跌',
+    scoreDistribution: '评分分布',
+    noScores: '暂无评分数据',
+    factorMandate: '因子权重',
+    sectorParticipation: '行业分布',
+    noSector: '暂无行业覆盖',
+    resultKicker: '研究候选排序',
+    resultTitle: '候选标的清单',
+    resultNote: '核心决策字段保持可见；展开任意行可查看数据来源、覆盖信息和交易执行背景。',
+    symbol: '候选标的',
+    score: '研究评分',
+    signal: '方向信号',
+    liquidity: '流动性',
+    risk: '风险 / 事件',
+    ai: 'AI 复核',
+    actions: '操作',
+    analyze: '分析',
+    backtest: '回测',
+    emptyTitle: '暂无排序候选标的',
+    emptyBody: '运行市场扫描，生成基于真实数据和可投资性筛选的候选清单。',
+    snapshot: '市场快照',
+    factors: '因子证据',
+    relative: '相对结构',
+    friction: '风险与交易摩擦',
+    rationale: '研究依据',
+    aiReviewTitle: 'AI 复核记录',
+    news: '事件与新闻背景',
+    source: '数据覆盖',
+    filtered: '个被筛除',
+    failed: '个数据失败',
+    notReviewed: '仅规则判断',
+    noData: '暂无数据',
+    scannerComplete: '市场扫描已完成',
+    scannerFailed: '市场扫描失败',
+    errorSession: '登录会话已失效，请重新登录后再运行扫描。',
+    errorConfiguration: '扫描条件或行情数据配置不完整，请检查设置。',
+    errorRateLimit: '行情服务请求过于频繁，请稍等片刻后重试。',
+    errorTimeout: '市场扫描等待超时，请缩小扫描范围或稍后重试。',
+    errorNetwork: '暂时无法连接扫描服务，请检查网络和后台状态。',
+    errorGeneric: '市场扫描暂时无法完成，请稍后重试。',
+    errorDetail: '详情',
+    lastSession: '已恢复本次会话数据',
+    progressTitle: '市场扫描进行中',
+    progressEstimated: '估算进度',
+    progressElapsed: '已用时间',
+    progressNote: '阶段和百分比根据已用时间估算；服务器完成扫描后才会显示最终结果。',
+    tradable: '可交易',
+    shortable: '可卖空',
+    fractionable: '支持碎股',
+    easyBorrow: '易借券',
+    price: '价格',
+    dayMove: '当日涨跌',
+    dayRange: '当日区间',
+    bidAsk: '买价 / 卖价',
+    marketCap: '市值',
+    exchange: '交易所',
+    reliability: '可靠度',
+    agreement: '因子一致度',
+    coverage: '数据覆盖',
+    momentum13: '1 个月 / 3 个月动量',
+    momentum612: '6 个月 / 12 个月动量',
+    spyRelative: '相对 SPY 三个月表现',
+    movingAverages: '相对 50 / 200 日均线',
+    betaCorrelation: '市场 Beta / 相关性',
+    sectorRank: '行业排名',
+    spreadRoundTrip: '价差 / 往返成本',
+    drawdown126: '126 日回撤',
+    capacity10: '10% ADV 容量',
+    nextEarnings: '下次财报',
+    shortFlow: 'FINRA 做空流量',
+    ivSkew: '期权隐波偏斜',
+    newsItems: '条新闻',
+    riskWord: '风险',
+    reliable: '可靠度',
+    confidence: '置信度',
+    volume: '成交量',
+    tierUnavailable: '等级 —',
+    noEvent: '暂无事件信号',
+    eventWord: '事件',
+    earningsIn: '财报还有 {days} 天',
+    noNearEarnings: '近期无财报',
+    usEquity: '美国股票',
+    collapseDetail: '收起详情',
+    expandDetail: '展开详情',
+    scannerSummary: '市场扫描摘要',
+    filtersSection: '筛选条件',
+    analysisSection: '扫描分析',
+    modePaper: '模拟模式',
+    modeReal: '实盘模式',
+    top: '前',
+    strong: '个强趋势',
+    benchmarkCoverage: '基准数据',
+    newsCoverage: '新闻',
+    finraCoverage: 'FINRA 做空流量',
+    optionsCoverage: '期权',
+    aiCoverage: 'AI 已审核',
+    progressStages: [
+      '正在载入 Alpaca 标的范围',
+      '正在进行流动性排序并载入价格历史',
+      '正在应用可投资性门槛与因子评分',
+      '正在补充市场、事件与风险信息',
+      '正在排序候选标的并完成 AI 复核',
+    ],
+  },
+} as const;
+
+const factorLabels = {
+  momentum: { en: 'Momentum', zh: '动量' },
+  trend: { en: 'Trend', zh: '趋势' },
+  relative: { en: 'Relative', zh: '相对强度' },
+  liquidity: { en: 'Liquidity', zh: '流动性' },
+  risk: { en: 'Risk', zh: '风险' },
+};
+
+const loadSettings = (): ScannerSettings => {
+  try {
+    const raw = window.localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return defaultSettings;
+    const parsed = JSON.parse(raw);
+    return {
+      ...defaultSettings,
+      ...parsed,
+      filters: { ...defaultSettings.filters, ...(parsed.filters || {}) },
+    };
+  } catch {
+    return defaultSettings;
+  }
+};
+
+const saveSettings = (settings: ScannerSettings) => {
+  try {
+    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  } catch {
+    // The scanner remains usable when storage is unavailable.
+  }
+};
+
+const loadPersistedView = (): PersistedScannerView => {
+  try {
+    const raw = window.sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return { results: [], summary: null, lastDuration: null };
+    const parsed = JSON.parse(raw);
+    return {
+      results: Array.isArray(parsed.results) ? parsed.results : [],
+      summary: parsed.summary && typeof parsed.summary === 'object' ? parsed.summary : null,
+      lastDuration: Number.isFinite(parsed.lastDuration) ? parsed.lastDuration : null,
+    };
+  } catch {
+    return { results: [], summary: null, lastDuration: null };
+  }
+};
+
+const hasNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
+
+const formatElapsed = (seconds: number) => {
+  const safeSeconds = Math.max(0, Math.floor(seconds));
+  const minutes = Math.floor(safeSeconds / 60);
+  const remainder = safeSeconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`;
+};
+
+const formatRuntime = (seconds: number) => {
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const rounded = Math.round(seconds);
+  const minutes = Math.floor(rounded / 60);
+  const remainder = rounded % 60;
+  return `${minutes}m ${String(remainder).padStart(2, '0')}s`;
+};
+
+const compactMoney = (value?: number | null): string => {
+  if (!hasNumber(value)) return '—';
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000_000_000) return `$${(value / 1_000_000_000_000).toFixed(2)}T`;
+  if (abs >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(2)}B`;
+  if (abs >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `$${(value / 1_000).toFixed(1)}K`;
+  return `$${value.toFixed(0)}`;
+};
+
+const parseCompactMoney = (value?: string): number => {
+  const raw = String(value || '').replace(/[$,\s]/g, '').toUpperCase();
+  if (!raw) return 0;
+  const suffix = raw.slice(-1);
+  const multiplier = suffix === 'T' ? 1e12 : suffix === 'B' ? 1e9 : suffix === 'M' ? 1e6 : suffix === 'K' ? 1e3 : 1;
+  const numeric = Number(raw.replace(/[TBMK]$/, ''));
+  return Number.isFinite(numeric) ? numeric * multiplier : 0;
+};
+
+const compactNumber = (value?: number | null): string => {
+  if (!hasNumber(value)) return '—';
+  const abs = Math.abs(value);
+  if (abs >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
+  if (abs >= 1e3) return `${(value / 1e3).toFixed(1)}K`;
+  return value.toLocaleString();
+};
+
+const signedPct = (value?: number | null, digits = 1): string => {
+  if (!hasNumber(value)) return '—';
+  return `${value >= 0 ? '+' : ''}${value.toFixed(digits)}%`;
+};
+
+const plainPct = (value?: number | null, digits = 1): string => {
+  if (!hasNumber(value)) return '—';
+  return `${value.toFixed(digits)}%`;
+};
+
+const shortDate = (value?: string | null): string => {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+};
+
+const scoreFor = (record: ScannerResult): number | null => {
+  if (hasNumber(record.selectionScore)) return record.selectionScore;
+  if (hasNumber(record.trendScore)) return record.trendScore;
+  return null;
+};
+
+const scoreTone = (score?: number | null): string => {
+  if (!hasNumber(score)) return 'muted';
+  if (score >= 80) return 'strong';
+  if (score >= 65) return 'positive';
+  if (score >= 50) return 'watch';
+  return 'risk';
+};
+
+const trendColor = (label?: string): string => {
+  if (!label) return 'default';
+  if (/strong bullish/i.test(label)) return 'success';
+  if (/bullish/i.test(label)) return 'green';
+  if (/bearish/i.test(label)) return 'error';
+  return 'gold';
+};
+
+const aiColor = (decision?: string): string => {
+  if (decision === 'Advance') return 'success';
+  if (decision === 'Avoid') return 'error';
+  if (decision === 'Watch') return 'warning';
+  return 'default';
+};
 
 const Market: React.FC = () => {
-  const { t, translateSector } = useLanguage();
-  const { tradeMode } = useTradeMode();
-  const [stocks, setStocks] = useState<StockData[]>([]);
-  const [filteredStocks, setFilteredStocks] = useState<StockData[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string>('');
-  const [searchText, setSearchText] = useState('');
-  const [selectedSector, setSelectedSector] = useState<string>('all');
-  const [sortField, setSortField] = useState<string>('symbol');
-  const [sortOrder, setSortOrder] = useState<'ascend' | 'descend'>('ascend');
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const [, setLastFetched] = useState<number | null>(null);
-  const [isFetching, setIsFetching] = useState(false);
-  const [searching, setSearching] = useState(false);
-  const [watchlist, setWatchlist] = useState<any[]>([]);
-  const [userSymbols, setUserSymbols] = useState<string[]>([]);
-  const [addingSymbol, setAddingSymbol] = useState(false);
   const navigate = useNavigate();
+  const { language, translateSector } = useLanguage();
+  const { tradeMode } = useTradeMode();
+  const isZh = language === 'zh-CN';
+  const c = isZh ? copy.zh : copy.en;
+  const formatScannerError = (value: unknown): string => {
+    const detail = scannerErrorDetail(value);
+    const category = scannerErrorCategory(value);
+    const friendly = {
+      session: c.errorSession,
+      configuration: c.errorConfiguration,
+      rateLimit: c.errorRateLimit,
+      timeout: c.errorTimeout,
+      network: c.errorNetwork,
+      generic: c.errorGeneric,
+    }[category];
+    if (isZh || !detail || detail === friendly) return friendly;
+    return `${friendly} ${c.errorDetail}: ${detail}`;
+  };
+  const localizeEventRisk = (value?: string) => {
+    if (!value) return '—';
+    if (value === 'Unknown') return isZh ? '未知' : value;
+    if (!isZh) return value;
+    return ({ High: '高', Medium: '中', Low: '低' } as Record<string, string>)[value] || value;
+  };
+  const localizeAiDecision = (value?: string) => {
+    if (!value || !isZh) return value;
+    return ({ Advance: '进入下一步', Watch: '继续观察', Avoid: '回避' } as Record<string, string>)[value] || value;
+  };
+  const localizeTrend = (value?: string) => {
+    if (!value || !isZh) return value;
+    return ({
+      'Strong Bullish': '强势看涨',
+      Bullish: '看涨',
+      Neutral: '中性',
+      Bearish: '看跌',
+      'Strong Bearish': '强势看跌',
+    } as Record<string, string>)[value] || value;
+  };
+  const [initialView] = useState<PersistedScannerView>(() => loadPersistedView());
+  const [settings, setSettings] = useState<ScannerSettings>(() => loadSettings());
+  const [results, setResults] = useState<ScannerResult[]>(initialView.results);
+  const [summary, setSummary] = useState<ScannerSummary | null>(initialView.summary);
+  const [lastDuration, setLastDuration] = useState<number | null>(initialView.lastDuration);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [scanStartedAt, setScanStartedAt] = useState<number | null>(null);
+  const [scanElapsed, setScanElapsed] = useState(0);
 
-  const STORAGE_KEY = "quant_watchlist";
-
-  // 默认股票列表（与后端保持一致，优先主流科技股）
-  const DEFAULT_SYMBOLS = ['AAPL', 'TSLA', 'AMD', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NFLX', 'INTC'];
-
-  // 初始化加载数据
   useEffect(() => {
-    // 延迟加载数据，让用户先看到页面框架
-    const loadTimer = setTimeout(() => {
-      initializeMarket();
-    }, 100); // 100ms延迟，足够渲染初始界面
-
-    // 从localStorage加载watchlist
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          setWatchlist(parsed);
-        }
-      } catch (err) {
-        console.error('Failed to parse watchlist from localStorage:', err);
-      }
+    try {
+      window.sessionStorage.setItem(SESSION_KEY, JSON.stringify({ results, summary, lastDuration }));
+    } catch {
+      // Session persistence is an enhancement, not a scanning requirement.
     }
+  }, [lastDuration, results, summary]);
 
-    // 清理定时器
-    return () => {
-      clearTimeout(loadTimer);
-    };
-  }, []);
-
-  // 过滤和排序股票（依赖searchText实现实时过滤）
   useEffect(() => {
-    filterAndSortStocks();
-  }, [stocks, selectedSector, sortField, sortOrder, searchText]);
-
-  // 监听localStorage变化，实现页面间watchlist同步
-  useEffect(() => {
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEY) {
-        if (e.newValue) {
-          try {
-            const parsed = JSON.parse(e.newValue);
-            if (Array.isArray(parsed)) {
-              setWatchlist(parsed);
-            }
-          } catch (err) {
-            console.error('Failed to parse watchlist from storage event:', err);
-          }
-        } else {
-          setWatchlist([]);
-        }
-      }
-    };
-
-    window.addEventListener('storage', handleStorageChange);
-    return () => {
-      window.removeEventListener('storage', handleStorageChange);
-    };
-  }, []);
-
-  const filterAndSortStocks = () => {
-    let result = [...stocks];
-
-    // 按搜索文本过滤 (local filter by symbol or name)
-    if (searchText.trim()) {
-      const q = searchText.trim().toUpperCase();
-      result = result.filter(stock =>
-        stock.symbol.toUpperCase().includes(q) ||
-        (stock.name && stock.name.toUpperCase().includes(q))
-      );
-    }
-
-    // 按行业过滤
-    if (selectedSector !== 'all') {
-      result = result.filter(stock => stock.sector === selectedSector);
-    }
-
-    // 排序
-    result.sort((a, b) => {
-      const aValue = a[sortField as keyof StockData];
-      const bValue = b[sortField as keyof StockData];
-
-      // 处理 null 值 - null 始终排在最后
-      const aIsNull = aValue === null || aValue === undefined;
-      const bIsNull = bValue === null || bValue === undefined;
-      
-      if (aIsNull && bIsNull) return 0; // 两个都是 null，保持顺序
-      if (aIsNull) return 1; // a 是 null，排在后面
-      if (bIsNull) return -1; // b 是 null，a 排前面
-
-      // 数字排序
-      if (typeof aValue === 'number' && typeof bValue === 'number') {
-        return sortOrder === 'ascend' ? aValue - bValue : bValue - aValue;
-      }
-
-      // 字符串排序
-      if (typeof aValue === 'string' && typeof bValue === 'string') {
-        return sortOrder === 'ascend'
-          ? aValue.localeCompare(bValue)
-          : bValue.localeCompare(aValue);
-      }
-
-      return 0;
+    if (!initialView.results.length) return;
+    const stored = scannerStateStore.getState().marketScanner;
+    if (stored.results.length) return;
+    const restoredAt = new Date().toISOString();
+    scannerStateStore.updateMarketScanner({
+      status: 'completed',
+      lastScanTime: restoredAt,
+      progress: 100,
+      totalSymbols: initialView.summary?.rawUniverseCount || initialView.results.length,
+      scannedSymbols: initialView.summary?.universeScanned || initialView.results.length,
+      results: initialView.results,
+      currentStatus: c.lastSession,
+      detailedScanStatus: {
+        ...stored.detailedScanStatus,
+        currentStatus: 'completed',
+        processedCount: initialView.summary?.universeScanned || initialView.results.length,
+        totalCount: initialView.summary?.rawUniverseCount || initialView.results.length,
+        validatedCount: initialView.results.length,
+        percent: 100,
+        lastScanAt: restoredAt,
+        statusMessage: c.lastSession,
+      },
     });
+  }, [c.lastSession, initialView]);
 
-    setFilteredStocks(result);
+  useEffect(() => {
+    if (!loading || scanStartedAt === null) return undefined;
+    const updateElapsed = () => setScanElapsed((Date.now() - scanStartedAt) / 1000);
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(timer);
+  }, [loading, scanStartedAt]);
+
+  const updateSetting = (patch: Partial<ScannerSettings>) => {
+    setSettings((current) => {
+      const next = { ...current, ...patch };
+      saveSettings(next);
+      return next;
+    });
   };
 
-  const initializeMarket = async () => {
-    try {
-      setLoading(true);
-      setError('');
-
-      // Step 1: Load user's saved symbols from backend
-      console.log('[Market] Loading user symbols...');
-      const { symbols: savedSymbols, status } = await getUserMarketSymbols();
-
-      let symbolsToLoad: string[];
-      if (status === 'ok' && savedSymbols.length > 0) {
-        symbolsToLoad = savedSymbols;
-        setUserSymbols(savedSymbols);
-        console.log('[Market] Loaded user symbols:', savedSymbols);
-      } else {
-        // No saved symbols, use defaults
-        symbolsToLoad = DEFAULT_SYMBOLS;
-        setUserSymbols(DEFAULT_SYMBOLS);
-        console.log('[Market] Using default symbols:', DEFAULT_SYMBOLS);
-      }
-
-      // Step 2: Fetch market data for these symbols
-      await fetchMarketData(symbolsToLoad);
-    } catch (err: any) {
-      console.error('[Market] Initialization failed:', err);
-      setError(`Initialization failed: ${err.message}`);
-      // Fallback to defaults
-      await fetchMarketData(DEFAULT_SYMBOLS);
-    }
+  const updateFilter = (key: keyof ScannerFilters, value: number | null) => {
+    setSettings((current) => {
+      const next = {
+        ...current,
+        filters: { ...current.filters, [key]: value ?? defaultSettings.filters[key] },
+      };
+      saveSettings(next);
+      return next;
+    });
   };
 
-  const fetchMarketData = async (symbols?: string[]) => {
-    // 如果已经在请求中，直接返回
-    if (isFetching) {
-      console.log('[Market优化] 请求已在进行中，跳过重复请求');
-      return;
-    }
+  const resetFilters = () => {
+    setSettings(defaultSettings);
+    saveSettings(defaultSettings);
+  };
 
+  const runScanner = async () => {
+    const started = performance.now();
     try {
-      setIsFetching(true);
       setLoading(true);
+      setScanStartedAt(Date.now());
+      setScanElapsed(0);
       setError('');
+      saveSettings(settings);
+      const currentScanner = scannerStateStore.getState().marketScanner;
+      scannerStateStore.updateMarketScanner({
+        status: 'running',
+        progress: 0,
+        currentStatus: c.scanning,
+        detailedScanStatus: {
+          ...currentScanner.detailedScanStatus,
+          currentStatus: 'scanning',
+          currentStage: 'market_scanner',
+          stageLabel: c.scanning,
+          stageDetail: c.progressNote,
+          startedAt: Date.now(),
+          processedCount: 0,
+          totalCount: settings.maxSymbols,
+          percent: 0,
+          statusMessage: c.scanning,
+        },
+      });
+      const response = await scannerApi.post('/market/scanner', {
+        ...settings,
+        alpacaMode: tradeMode,
+      });
+      const payload = response.data || {};
+      if (!payload.success) throw new Error(payload.message || payload.error || c.scannerFailed);
 
-      console.log('[Market优化] 正在获取市场数据...');
-
-      let stockData: StockData[];
-      if (symbols && symbols.length > 0) {
-        // Fetch data for specific symbols
-        stockData = await marketDataService.getStocks(symbols);
-      } else {
-        // Fallback to shared data service (uses default symbols)
-        stockData = await sharedDataService.getStocks();
-      }
-
-      if (stockData.length > 0) {
-        console.log('[Market优化] 市场数据加载成功');
-        console.log('[Market优化] 数据来源:', stockData[0]?.dataSource || 'Alpaca');
-        console.log('[Market优化] 股票数量:', stockData.length);
-
-        // 过滤掉有错误的股票
-        const validStocks = stockData.filter(stock => !stock.error);
-
-        if (validStocks.length === 0) {
-          setError(t.market.noValidStockData);
-          message.warning(t.market.noValidStockData);
-        } else {
-          setStocks(validStocks);
-          setLastUpdated(new Date());
-          setLastFetched(Date.now());
-          message.success(`${t.market.dataSource}: ${stockData[0]?.dataSource || 'Alpaca'} (${validStocks.length})`);
-        }
-      } else {
-        setError(t.market.invalidDataFormat);
-        message.error(t.market.invalidDataFormat);
-      }
-    } catch (err: any) {
-      console.error('[Market优化] 获取市场数据失败:', err);
-      const errorMessage = err.message || t.common.unknown;
-      setError(`${t.market.failedToLoadMarketData}: ${errorMessage}`);
-      message.error(t.market.failedToLoadMarketData);
+      const incoming = Array.isArray(payload.results) ? payload.results.filter((row: ScannerResult) => Boolean(row?.symbol)) : [];
+      setResults(incoming);
+      setSummary(payload.summary || null);
+      setLastDuration((performance.now() - started) / 1000);
+      const completedAt = new Date().toISOString();
+      const completedScanner = scannerStateStore.getState().marketScanner;
+      scannerStateStore.updateMarketScanner({
+        status: 'completed',
+        lastScanTime: completedAt,
+        progress: 100,
+        totalSymbols: payload.summary?.rawUniverseCount || incoming.length,
+        scannedSymbols: payload.summary?.universeScanned || incoming.length,
+        results: incoming,
+        currentStatus: c.scannerComplete,
+        detailedScanStatus: {
+          ...completedScanner.detailedScanStatus,
+          currentStatus: 'completed',
+          currentStage: 'finalize',
+          stageLabel: c.scannerComplete,
+          stageDetail: payload.message || c.scannerComplete,
+          processedCount: payload.summary?.universeScanned || incoming.length,
+          totalCount: payload.summary?.rawUniverseCount || incoming.length,
+          validatedCount: incoming.length,
+          percent: 100,
+          lastScanAt: completedAt,
+          statusMessage: payload.message || c.scannerComplete,
+        },
+      });
+      message.success(`${c.scannerComplete}: ${incoming.length}`);
+    } catch (scanError: any) {
+      const detail = formatScannerError(scanError);
+      setError(detail);
+      const failedScanner = scannerStateStore.getState().marketScanner;
+      scannerStateStore.updateMarketScanner({
+        status: 'failed',
+        currentStatus: detail,
+        detailedScanStatus: {
+          ...failedScanner.detailedScanStatus,
+          currentStatus: 'error',
+          stageLabel: c.scannerFailed,
+          stageDetail: detail,
+          lastFailureReason: detail,
+          statusMessage: detail,
+        },
+      });
+      message.error(detail);
     } finally {
-      setIsFetching(false);
       setLoading(false);
+      setScanStartedAt(null);
     }
   };
 
-  const searchStockBySymbol = async (query: string) => {
-    const q = query.trim();
-    if (!q) return false;
+  const displayResults = useMemo(() => results.filter((row) => Boolean(row.symbol)), [results]);
 
-    // Check if already in stocks list (case-insensitive symbol match)
-    const qUpper = q.toUpperCase();
-    const existingStock = stocks.find(s => s.symbol.toUpperCase() === qUpper);
-    if (existingStock) {
-      message.info(`${qUpper} ${t.market.alreadyInListShort}`);
-      return true;
-    }
+  const breadth = useMemo(() => {
+    const moves = displayResults.filter((row) => hasNumber(row.changePct));
+    return {
+      valid: moves.length,
+      advancing: moves.filter((row) => Number(row.changePct) > 0).length,
+      declining: moves.filter((row) => Number(row.changePct) < 0).length,
+      unchanged: moves.filter((row) => Number(row.changePct) === 0).length,
+    };
+  }, [displayResults]);
 
-    try {
-      setSearching(true);
-      console.log(`[Market] Searching: "${q}"`);
+  const bullishCount = useMemo(
+    () => displayResults.filter((row) => /bullish/i.test(row.trendLabel || '')).length,
+    [displayResults],
+  );
 
-      // Use the new search endpoint — backend handles symbol detection + company name search
-      const { stocks: results, status, message: msg } = await searchStockData(q);
+  const scoreDistribution = useMemo(() => {
+    const buckets = [
+      { label: '<50', min: -Infinity, max: 50, count: 0 },
+      { label: '50–64', min: 50, max: 65, count: 0 },
+      { label: '65–74', min: 65, max: 75, count: 0 },
+      { label: '75–84', min: 75, max: 85, count: 0 },
+      { label: '85+', min: 85, max: Infinity, count: 0 },
+    ];
+    displayResults.forEach((row) => {
+      const score = scoreFor(row);
+      if (!hasNumber(score)) return;
+      const bucket = buckets.find((item) => score >= item.min && score < item.max);
+      if (bucket) bucket.count += 1;
+    });
+    return buckets;
+  }, [displayResults]);
 
-      if (status === 'not_found' || results.length === 0) {
-        message.warning(msg || t.market.noMatchFound);
-        return false;
-      }
+  const sectorParticipation = useMemo(() => {
+    const groups = new Map<string, number>();
+    displayResults.forEach((row) => {
+      const sector = String(row.sector || '').trim();
+      if (sector) groups.set(sector, (groups.get(sector) || 0) + 1);
+    });
+    return Array.from(groups.entries())
+      .map(([label, count]) => ({ label: translateSector(label), count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 6);
+  }, [displayResults, translateSector]);
 
-      // Filter out duplicates already in the list
-      const existingSymbols = new Set(stocks.map(s => s.symbol.toUpperCase()));
-      const newStocks = results.filter(s => !existingSymbols.has(s.symbol.toUpperCase()));
+  const normalizedWeights = useMemo(() => Object.entries(summary?.weights || defaultWeights).map(([key, raw]) => {
+    const numeric = Number(raw);
+    return {
+      key,
+      label: factorLabels[key as keyof typeof factorLabels]?.[isZh ? 'zh' : 'en'] || key,
+      value: Number.isFinite(numeric) ? (numeric <= 1 ? numeric * 100 : numeric) : 0,
+    };
+  }), [isZh, summary?.weights]);
 
-      if (newStocks.length === 0) {
-        message.info(`${results.map(s => s.symbol).join(', ')} ${t.market.alreadyInListShort}`);
-        return true;
-      }
-
-      // Add new stocks to the list
-      setStocks(prev => [...prev, ...newStocks]);
-      const addedNames = newStocks.map(s => s.symbol).join(', ');
-      message.success(`${t.market.addedSymbol.replace('{symbol}', addedNames)} (${newStocks[0]?.dataSource || 'Alpaca'})`);
-      return true;
-    } catch (error: any) {
-      console.error(`[Market] Search failed for "${q}":`, error);
-      const errorCode = error.code || '';
-      if (errorCode === 'AUTH_REQUIRED') {
-        message.error(t.market.authRequired);
-      } else if (errorCode === 'CONFIG_REQUIRED') {
-        message.error(t.market.apiKeysNotConfigured);
-      } else {
-        message.error(`${t.market.searchFailed}: ${error.message || t.common.unknown}`);
-      }
-      return false;
-    } finally {
-      setSearching(false);
-    }
-  };
-
-  const handleSearch = async () => {
-    const q = searchText.trim();
-    if (!q) {
-      // Empty search — show all
-      return;
-    }
-    // Check if symbol exists in current stocks (case-insensitive)
-    const qUpper = q.toUpperCase();
-    const existsLocally = stocks.some(s => s.symbol.toUpperCase() === qUpper);
-    if (existsLocally) {
-      // Already filtered by searchText in real-time; just keep it filtered
-      return;
-    }
-    // Symbol not in current list — try external search to add it
-    await searchStockBySymbol(q);
-  };
-
-  const addSymbolToUserList = async (symbol: string) => {
-    if (addingSymbol) return;
-
-    // Check limit
-    if (userSymbols.length >= MAX_MARKET_SYMBOLS) {
-      message.warning(t.market.maxSymbolsWarning.replace('{max}', String(MAX_MARKET_SYMBOLS)));
-      return;
-    }
-
-    // Check if already in user list
-    if (userSymbols.includes(symbol.toUpperCase())) {
-      message.info(t.market.alreadyInList.replace('{symbol}', symbol));
-      return;
-    }
-
-    try {
-      setAddingSymbol(true);
-      const result = await addUserMarketSymbols([symbol]);
-
-      if (result.status === 'limit_reached') {
-        message.warning(result.error || t.market.maxSymbolsWarning.replace('{max}', String(MAX_MARKET_SYMBOLS)));
-        return;
-      }
-
-      if (result.status === 'ok') {
-        setUserSymbols(result.symbols);
-        message.success(t.market.addedToList.replace('{symbol}', symbol));
-
-        // If the stock data is not in the current list, fetch it
-        if (!stocks.find(s => s.symbol.toUpperCase() === symbol.toUpperCase())) {
-          const stockData = await marketDataService.getStocks([symbol]);
-          if (stockData.length > 0) {
-            setStocks(prev => [...prev, ...stockData]);
-          }
-        }
-      } else {
-        message.error(`${t.market.failedToAdd.replace('{symbol}', symbol)}: ${result.error || t.common.unknown}`);
-      }
-    } catch (err: any) {
-      message.error(`${t.market.failedToAdd.replace('{symbol}', symbol)}: ${err.message}`);
-    } finally {
-      setAddingSymbol(false);
-    }
-  };
-
-  const removeSymbolFromUserList = async (symbol: string) => {
-    try {
-      const result = await deleteUserMarketSymbol(symbol);
-
-      if (result.status === 'ok') {
-        setUserSymbols(result.symbols);
-        // Remove from displayed stocks
-        setStocks(prev => prev.filter(s => s.symbol.toUpperCase() !== symbol.toUpperCase()));
-        message.success(t.market.removedFromList.replace('{symbol}', symbol));
-      } else {
-        message.error(t.market.failedToRemove.replace('{symbol}', symbol));
-      }
-    } catch (err: any) {
-      message.error(`${t.market.failedToRemove.replace('{symbol}', symbol)}: ${err.message}`);
-    }
-  };
+  const lastScanLabel = useMemo(() => {
+    if (!summary?.lastScanTime) return c.awaitingRun;
+    return new Intl.DateTimeFormat(isZh ? 'zh-CN' : 'en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: 'America/New_York',
+    }).format(new Date(summary.lastScanTime * 1000));
+  }, [c.awaitingRun, isZh, summary?.lastScanTime]);
 
   const handleAnalyze = (symbol: string) => {
-    navigate(`/analysis/${symbol}`);
+    rememberMarketSymbol(symbol);
+    navigate(marketSymbolPath(symbol));
   };
 
   const handleBacktest = (symbol: string) => {
-    navigate('/backtest', { state: { presetSymbol: symbol } });
+    navigate(backtestForSymbolPath(symbol), { state: { presetSymbol: symbol } });
   };
 
-  const toggleWatchlist = (symbol: string) => {
-    setWatchlist(prev => {
-      const exists = prev.some(item => item.symbol === symbol);
-      let newWatchlist;
-      
-      if (exists) {
-        message.success(`${t.market.removedSymbol.replace('{symbol}', symbol)}`);
-        newWatchlist = prev.filter(item => item.symbol !== symbol);
-      } else {
-        // 从当前stocks数据中查找完整股票信息
-        const stock = stocks.find(s => s.symbol === symbol);
-        if (stock) {
-          // 创建完整的watchlist item
-          const watchlistItem = {
-            symbol: stock.symbol,
-            name: stock.name || `${symbol} Inc.`,
-            price: stock.price || 0,
-            change: stock.change || 0,
-            changePercent: stock.changePercent || 0,
-            volume: stock.volume || 0,
-            marketCap: stock.marketCap || 0,
-            sector: stock.sector || 'Unknown',
-            addedAt: new Date().toISOString()
-          };
-          message.success(`${t.market.addedSymbol.replace('{symbol}', symbol)}`);
-          newWatchlist = [...prev, watchlistItem];
-        } else {
-          // 如果没有找到完整信息，至少保存symbol
-          message.warning(`${t.market.addedSymbol.replace('{symbol}', symbol)}`);
-          newWatchlist = [...prev, { 
-            symbol, 
-            name: `${symbol} Inc.`,
-            price: 0,
-            change: 0,
-            changePercent: 0,
-            volume: 0,
-            marketCap: 0,
-            sector: 'Unknown',
-            addedAt: new Date().toISOString() 
-          }];
-        }
-      }
-      
-      // 保存到localStorage
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(newWatchlist));
-      return newWatchlist;
-    });
-  };
+  const renderExpandedRow = (record: ScannerResult) => {
+    const factors = record.factorScores || {};
+    const factorEntries = Object.entries(factors).filter(([, value]) => hasNumber(value));
+    const flags = [
+      record.tradable ? c.tradable : '',
+      record.shortable ? c.shortable : '',
+      record.fractionable ? c.fractionable : '',
+      record.easyToBorrow ? c.easyBorrow : '',
+    ].filter(Boolean);
 
-  const isInWatchlist = (symbol: string): boolean => {
-    return watchlist.some(item => item.symbol === symbol);
-  };
+    return (
+      <div className="market-detail">
+        <section>
+          <h4>{c.snapshot}</h4>
+          <dl>
+            <div><dt>{c.price}</dt><dd>{hasNumber(record.price) ? `$${record.price.toFixed(2)}` : '—'}</dd></div>
+            <div><dt>{c.dayMove}</dt><dd className={Number(record.changePct) >= 0 ? 'is-positive' : 'is-negative'}>{signedPct(record.changePct, 2)}</dd></div>
+            <div><dt>{c.dayRange}</dt><dd>{hasNumber(record.dayLow) && hasNumber(record.dayHigh) ? `$${record.dayLow.toFixed(2)} – $${record.dayHigh.toFixed(2)}` : '—'}</dd></div>
+            <div><dt>{c.bidAsk}</dt><dd>{hasNumber(record.bidPrice) && hasNumber(record.askPrice) ? `$${record.bidPrice.toFixed(2)} / $${record.askPrice.toFixed(2)}` : '—'}</dd></div>
+            <div><dt>{c.marketCap}</dt><dd>{compactMoney(record.marketCap)}</dd></div>
+            <div><dt>{c.exchange}</dt><dd>{record.exchangeName || record.exchange || '—'}</dd></div>
+          </dl>
+          {flags.length > 0 && <div className="market-detail__tags">{flags.map((flag) => <Tag key={flag}>{flag}</Tag>)}</div>}
+        </section>
 
-  // 获取所有行业 - 对Alpaca数据友好
-  const getAllSectors = () => {
-    const sectors = new Set<string>();
-    stocks.forEach(stock => {
-      if (stock.sector && stock.sector !== 'N/A' && stock.sector !== '--') {
-        sectors.add(stock.sector);
-      }
-    });
-    
-    // 如果没有sector数据，返回空数组
-    if (sectors.size === 0) {
-      return [];
-    }
-    
-    return Array.from(sectors).sort();
-  };
-
-  // 计算市场统计
-  const marketStats = {
-    totalStocks: stocks.length,
-    gainers: stocks.filter(s => safeNumber(s.changePercent) > 0).length,
-    losers: stocks.filter(s => safeNumber(s.changePercent) < 0).length,
-    unchanged: stocks.filter(s => safeNumber(s.changePercent) === 0).length,
-    avgChange: stocks.length > 0 
-      ? stocks.reduce((sum, s) => sum + safeNumber(s.changePercent), 0) / stocks.length 
-      : 0,
-    totalMarketCap: stocks.reduce((sum, s) => sum + safeNumber(s.marketCap), 0),
-  };
-
-  // 表格列定义
-  const columns = [
-    {
-      title: t.market.symbol,
-      dataIndex: 'symbol',
-      key: 'symbol',
-      width: 120,
-      sorter: true,
-      render: (symbol: string, record: StockData) => (
-        <div>
-          <div style={{ fontWeight: '700', fontSize: '16px', letterSpacing: '-0.2px' }}>{symbol}</div>
-          <div style={{ fontSize: '12px', color: "var(--app-text-muted)", fontWeight: 400, marginTop: '2px', lineHeight: 1.3 }}>
-            {record.name || symbol}
+        <section>
+          <h4>{c.factors}</h4>
+          {factorEntries.length > 0 ? (
+            <div className="market-detail__factor-list">
+              {factorEntries.map(([key, value]) => (
+                <div key={key}>
+                  <span>{factorLabels[key as keyof typeof factorLabels]?.[isZh ? 'zh' : 'en'] || key}</span>
+                  <b>{Math.round(Number(value))}</b>
+                  <Progress percent={Number(value)} showInfo={false} size="small" />
+                </div>
+              ))}
+            </div>
+          ) : <p>{c.noData}</p>}
+          <div className="market-detail__micro-grid">
+            <span>{c.reliability} <b>{hasNumber(record.scoreReliability) ? `${Math.round(record.scoreReliability)}%` : '—'}</b></span>
+            <span>{c.agreement} <b>{hasNumber(record.factorAgreementPct) ? `${Math.round(record.factorAgreementPct)}%` : '—'}</b></span>
+            <span>{c.coverage} <b>{hasNumber(record.factorCoveragePct) ? `${Math.round(record.factorCoveragePct)}%` : '—'}</b></span>
           </div>
+        </section>
+
+        <section>
+          <h4>{c.relative}</h4>
+          <dl>
+            <div><dt>{c.momentum13}</dt><dd>{signedPct(record.momentum1m)} / {signedPct(record.momentum3m)}</dd></div>
+            <div><dt>{c.momentum612}</dt><dd>{signedPct(record.momentum6m)} / {signedPct(record.momentum12m)}</dd></div>
+            <div><dt>{c.spyRelative}</dt><dd>{signedPct(record.relativeStrength3m)}</dd></div>
+            <div><dt>{c.movingAverages}</dt><dd>{signedPct(record.closeVs50dma)} / {signedPct(record.closeVs200dma)}</dd></div>
+            <div><dt>{c.betaCorrelation}</dt><dd>{hasNumber(record.marketBeta) ? record.marketBeta.toFixed(2) : '—'} / {hasNumber(record.marketCorrelation) ? record.marketCorrelation.toFixed(2) : '—'}</dd></div>
+            <div><dt>{c.sectorRank}</dt><dd>{hasNumber(record.sectorRank) ? `#${record.sectorRank}/${record.sectorCount || '—'}` : '—'}</dd></div>
+          </dl>
+        </section>
+
+        <section>
+          <h4>{c.friction}</h4>
+          <dl>
+            <div><dt>ADV20</dt><dd>{compactMoney(record.avgDollarVolume20)}</dd></div>
+            <div><dt>{c.spreadRoundTrip}</dt><dd>{hasNumber(record.spreadBps) ? `${record.spreadBps.toFixed(1)} bps` : '—'} / {hasNumber(record.estimatedRoundTripCostBps) ? `${record.estimatedRoundTripCostBps.toFixed(1)} bps` : '—'}</dd></div>
+            <div><dt>ATR / Vol20</dt><dd>{plainPct(record.atrPercent)} / {plainPct(record.realizedVol20)}</dd></div>
+            <div><dt>{c.drawdown126}</dt><dd>{hasNumber(record.maxDrawdown126) ? `-${Math.abs(record.maxDrawdown126).toFixed(1)}%` : '—'}</dd></div>
+            <div><dt>{c.capacity10}</dt><dd>{compactMoney(record.participation10pctDollar)}</dd></div>
+            <div><dt>{c.nextEarnings}</dt><dd>{shortDate(record.nextEarningsDate)}{hasNumber(record.daysToEarnings) ? ` · ${record.daysToEarnings}${isZh ? '天' : 'd'}` : ''}</dd></div>
+            <div><dt>{c.shortFlow}</dt><dd>{plainPct(record.shortVolumeRatio)}</dd></div>
+            <div><dt>{c.ivSkew}</dt><dd>{plainPct(record.optionIvSkew)}</dd></div>
+          </dl>
+        </section>
+
+        <section className="market-detail__narrative">
+          <h4>{c.rationale}</h4>
+          <p>{record.scannerReason || record.ruleScannerReason || c.noData}</p>
+          {(record.aiTraderDecision || record.aiTraderRationale) && (
+            <div className="market-detail__ai">
+              <div><strong>{c.aiReviewTitle}</strong><Tag color={aiColor(record.aiTraderDecision)}>{localizeAiDecision(record.aiTraderDecision) || c.notReviewed}</Tag>{hasNumber(record.aiTraderConfidence) && <span>{Math.round(record.aiTraderConfidence)}%</span>}</div>
+              <p>{record.aiTraderRationale || c.noData}</p>
+              {record.aiNextStep && <small>{record.aiNextStep}</small>}
+              {record.aiRiskFlags && record.aiRiskFlags.length > 0 && <div className="market-detail__tags">{record.aiRiskFlags.map((flag) => <Tag key={flag}>{flag}</Tag>)}</div>}
+            </div>
+          )}
+          {(record.topNewsHeadline || hasNumber(record.newsCount)) && (
+            <div className="market-detail__news">
+              <strong>{c.news}</strong>
+              <span>{record.newsCount ?? 0} {c.newsItems} · {record.newsSentiment || '—'} · {localizeEventRisk(record.eventRisk)} {c.riskWord}</span>
+              {record.topNewsHeadline && (record.topNewsUrl
+                ? <a href={record.topNewsUrl} target="_blank" rel="noreferrer">{record.topNewsHeadline}</a>
+                : <span>{record.topNewsHeadline}</span>)}
+            </div>
+          )}
+        </section>
+      </div>
+    );
+  };
+
+  const columns: ColumnsType<ScannerResult> = useMemo(() => [
+    {
+      title: c.symbol,
+      dataIndex: 'symbol',
+      width: 200,
+      sorter: (a, b) => a.symbol.localeCompare(b.symbol),
+      render: (_value, record) => (
+        <div className="market-candidate">
+          <div>
+            <strong>{record.symbol}</strong>
+            {record.selectionLabel && <span>{record.selectionLabel}</span>}
+          </div>
+          <p>{record.companyName || record.symbol}</p>
+          <small>{record.sector ? translateSector(record.sector) : record.industry || record.exchangeName || c.usEquity}</small>
         </div>
       ),
     },
     {
-      title: t.market.price,
-      dataIndex: 'price',
-      key: 'price',
-      width: 105,
-      sorter: true,
-      render: (price: number | null) => {
+      title: c.score,
+      key: 'score',
+      width: 150,
+      align: 'right',
+      sorter: (a, b) => Number(scoreFor(a) || 0) - Number(scoreFor(b) || 0),
+      defaultSortOrder: 'descend',
+      render: (_value, record) => {
+        const score = scoreFor(record);
         return (
-          <div style={{ 
-            fontWeight: '800', 
-            fontSize: '17px', 
-            fontFeatureSettings: '"tnum"',
-            textAlign: 'center',
-            lineHeight: '40px',
-            color: "var(--app-text)",
-            letterSpacing: '-0.2px'
-          }}>
-            {price !== null ? `$${safeToFixed(price, 2)}` : '--'}
+          <div className={`market-score market-score--${scoreTone(score)}`}>
+            <div><strong>{hasNumber(score) ? Math.round(score) : '—'}</strong><span>/100</span></div>
+            <Progress percent={score || 0} showInfo={false} size="small" />
+            <small>{hasNumber(record.scoreReliability) ? `${Math.round(record.scoreReliability)}% ${c.reliable}` : hasNumber(record.trendConfidence) ? `${Math.round(record.trendConfidence * 100)}% ${c.confidence}` : c.noData}</small>
           </div>
         );
       },
     },
     {
-      title: t.market.priceHigh,
-      dataIndex: 'dayHigh',
-      key: 'dayHigh',
-      width: 95,
-      sorter: true,
-      render: (dayHigh: number | null) => {
-        // 只读取dayHigh字段，如果没有真实数据就显示--
-        if (dayHigh === null || dayHigh === 0) return <div style={{ fontSize: '13px', fontWeight: 500, color: "var(--app-text-muted)", textAlign: 'center', lineHeight: '40px' }}>--</div>;
-        return <div style={{ fontSize: '14px', fontWeight: 600, color: "var(--app-text)", fontFeatureSettings: '"tnum"', textAlign: 'center', lineHeight: '40px' }}>${safeToFixed(dayHigh, 2)}</div>;
-      },
+      title: c.signal,
+      key: 'signal',
+      width: 175,
+      render: (_value, record) => (
+        <div className="market-signal">
+          <Tag color={trendColor(record.trendLabel)}>{localizeTrend(record.trendLabel) || c.noData}</Tag>
+          <span>1M {signedPct(record.momentum1m)} · 3M {signedPct(record.momentum3m)}</span>
+          <small>SPY 3M {signedPct(record.relativeStrength3m)}</small>
+        </div>
+      ),
     },
     {
-      title: t.market.priceLow,
-      dataIndex: 'dayLow',
-      key: 'dayLow',
-      width: 95,
-      sorter: true,
-      render: (dayLow: number | null) => {
-        // 只读取dayLow字段，如果没有真实数据就显示--
-        if (dayLow === null || dayLow === 0) return <div style={{ fontSize: '13px', fontWeight: 500, color: "var(--app-text-muted)", textAlign: 'center', lineHeight: '40px' }}>--</div>;
-        return <div style={{ fontSize: '14px', fontWeight: 600, color: "var(--app-text)", fontFeatureSettings: '"tnum"', textAlign: 'center', lineHeight: '40px' }}>${safeToFixed(dayLow, 2)}</div>;
-      },
-    },
-
-
-    {
-      title: t.market.change,
-      dataIndex: 'change',
-      key: 'change',
-      width: 90,
-      sorter: true,
-      render: (change: number | null) => {
-        if (change === null || change === undefined) {
-          return (
-            <div style={{ 
-              fontSize: '16px', 
-              fontWeight: 700, 
-              color: "var(--app-text-muted)",
-              fontFeatureSettings: '"tnum"',
-              textAlign: 'center',
-              lineHeight: '40px'
-            }}>
-              --
-            </div>
-          );
-        }
-        
-        const isPositive = change > 0;
-        const isNegative = change < 0;
-        
-        return (
-          <div style={{ 
-            fontSize: '16px', 
-            fontWeight: 700, 
-            color: isPositive ? '#52c41a' : isNegative ? '#ff4d4f' : '#666',
-            fontFeatureSettings: '"tnum"',
-            textAlign: 'center',
-            lineHeight: '40px'
-          }}>
-            {change !== 0 ? `${change > 0 ? '+' : '-'}$${safeToFixed(Math.abs(change), 2)}` : '$0.00'}
-          </div>
-        );
-      },
+      title: c.liquidity,
+      key: 'liquidity',
+      width: 165,
+      align: 'right',
+      sorter: (a, b) => Number(a.avgDollarVolume20 || 0) - Number(b.avgDollarVolume20 || 0),
+      render: (_value, record) => (
+        <div className="market-liquidity">
+          <strong>{compactMoney(record.avgDollarVolume20)} ADV</strong>
+          <span>{c.volume} {compactNumber(record.volume)}{hasNumber(record.volumeRatio) ? ` · ${record.volumeRatio.toFixed(2)}x` : ''}</span>
+          <small>{record.liquidityTier || c.tierUnavailable}{hasNumber(record.estimatedRoundTripCostBps) ? ` · ${record.estimatedRoundTripCostBps.toFixed(1)} bps` : ''}</small>
+        </div>
+      ),
     },
     {
-      title: t.market.changePercent,
-      dataIndex: 'changePercent',
-      key: 'changePercent',
-      width: 90,
-      sorter: true,
-      render: (changePercent: number | null) => {
-        if (changePercent === null || changePercent === undefined) {
-          return (
-            <div style={{ 
-              display: 'flex', 
-              justifyContent: 'center', 
-              alignItems: 'center',
-              height: '40px'
-            }}>
-              <Tag 
-                color="default"
-                style={{ 
-                  margin: 0,
-                  fontSize: '12px',
-                  padding: '4px 10px',
-                  fontWeight: 700,
-                  borderRadius: '8px',
-                  textAlign: 'center',
-                  display: 'inline-block',
-                  lineHeight: '16px',
-                  minWidth: '65px',
-                  border: 'none'
-                }}
-              >
-                --
-              </Tag>
-            </div>
-          );
-        }
-        
-        const isPositive = changePercent > 0;
-        const isNegative = changePercent < 0;
-        
-        return (
-          <div style={{ 
-            display: 'flex', 
-            justifyContent: 'center', 
-            alignItems: 'center',
-            height: '40px'
-          }}>
-            <Tag 
-              color={isPositive ? 'green' : isNegative ? 'red' : 'default'}
-              style={{ 
-                margin: 0,
-                fontSize: '12px',
-                padding: '4px 10px',
-                fontWeight: 700,
-                borderRadius: '8px',
-                textAlign: 'center',
-                display: 'inline-block',
-                lineHeight: '16px',
-                minWidth: '65px',
-                border: 'none'
-              }}
-            >
-              {changePercent !== 0 ? `${changePercent > 0 ? '+' : '-'}${safeToFixed(Math.abs(changePercent), 2)}%` : '0.00%'}
-            </Tag>
-          </div>
-        );
-      },
+      title: c.risk,
+      key: 'risk',
+      width: 165,
+      render: (_value, record) => (
+        <div className="market-risk">
+          <Tag color={record.eventRisk === 'High' ? 'error' : record.eventRisk === 'Medium' ? 'warning' : 'default'}>{record.eventRisk && record.eventRisk !== 'Unknown' ? `${localizeEventRisk(record.eventRisk)} ${c.eventWord}` : c.noEvent}</Tag>
+          <span>ATR {plainPct(record.atrPercent)} · Vol {plainPct(record.realizedVol20)}</span>
+          <small>{hasNumber(record.daysToEarnings) && record.daysToEarnings >= 0 ? c.earningsIn.replace('{days}', String(record.daysToEarnings)) : c.noNearEarnings}</small>
+        </div>
+      ),
     },
     {
-      title: t.market.marketCap,
-      dataIndex: 'marketCap',
-      key: 'marketCap',
-      width: 105,
-      sorter: true,
-      align: 'center' as const,
-      className: 'market-cap-column',
-      render: (marketCap: number | null) => {
-        const formatted = formatMarketCap(marketCap);
-        return <div style={{ fontSize: '13px', fontWeight: 600, color: "var(--app-text)", fontFeatureSettings: '"tnum"', lineHeight: '40px', textAlign: 'center' }}>{formatted}</div>;
-      },
+      title: c.ai,
+      key: 'ai',
+      width: 230,
+      render: (_value, record) => (
+        <div className="market-ai-cell">
+          <div><Tag color={aiColor(record.aiTraderDecision)}>{record.aiTraderDecision ? `AI ${localizeAiDecision(record.aiTraderDecision)}` : c.notReviewed}</Tag>{hasNumber(record.aiTraderConfidence) && <span>{Math.round(record.aiTraderConfidence)}%</span>}</div>
+          <Tooltip title={record.aiTraderRationale || record.scannerReason}>
+            <p>{record.aiTraderRationale || record.scannerReason || c.noData}</p>
+          </Tooltip>
+        </div>
+      ),
     },
     {
-      title: t.market.volume,
-      dataIndex: 'volume',
-      key: 'volume',
-      width: 100,
-      sorter: true,
-      render: (volume: number | null) => {
-        if (volume === null || volume === undefined || volume === 0) return <div style={{ fontSize: '13px', fontWeight: 500, color: "var(--app-text-muted)", textAlign: 'center', lineHeight: '40px' }}>--</div>;
-        const num = Number(volume);
-        if (isNaN(num) || num === 0) return <div style={{ fontSize: '13px', fontWeight: 500, color: "var(--app-text-muted)", textAlign: 'center', lineHeight: '40px' }}>--</div>;
-        if (num >= 1000000) return <div style={{ fontSize: '13px', fontWeight: 600, color: "var(--app-text)", fontFeatureSettings: '"tnum"', lineHeight: '40px', textAlign: 'center' }}>${(num / 1000000).toFixed(1)}M</div>;
-        if (num >= 1000) return <div style={{ fontSize: '13px', fontWeight: 600, color: "var(--app-text)", fontFeatureSettings: '"tnum"', lineHeight: '40px', textAlign: 'center' }}>${(num / 1000).toFixed(1)}K</div>;
-        return <div style={{ fontSize: '13px', fontWeight: 600, color: "var(--app-text)", fontFeatureSettings: '"tnum"', lineHeight: '40px', textAlign: 'center' }}>${num.toFixed(0)}</div>;
-      },
-    },
-
-    {
-      title: t.market.sector,
-      dataIndex: 'sector',
-      key: 'sector',
-      width: 95,
-      sorter: true,
-      render: (sector: string | null) => {
-        // Alpaca可能不提供sector数据，安全处理
-        const displaySector = sector ? translateSector(sector) : '--';
-        return (
-          <Tag 
-            color="default" 
-            style={{ 
-              margin: 0,
-              fontSize: '10px',
-              padding: '2px 5px',
-              fontWeight: 500,
-              borderRadius: '6px',
-              backgroundColor: '#f5f5f5',
-              color: "var(--app-text)",
-              border: '1px solid #e8e8e8',
-              display: 'inline-block',
-              lineHeight: '14px'
-            }}
-          >
-            {displaySector}
-          </Tag>
-        );
-      },
-    },
-
-
-
-
-    {
-      title: t.market.actions,
+      title: c.actions,
       key: 'actions',
-      width: 180,
-      render: (_: any, record: StockData) => {
-        const isInList = userSymbols.includes(record.symbol.toUpperCase());
-        return (
-          <Space size={2} style={{ justifyContent: 'center', width: '100%' }}>
-            <Button
-              type="primary"
-              size="small"
-              icon={<LineChartOutlined />}
-              onClick={() => handleAnalyze(record.symbol)}
-              style={{ fontSize: '14px', fontWeight: 500, padding: '0 12px', height: '32px', minWidth: '78px' }}
-            >
-              {t.market.analyze}
-            </Button>
-            <Button
-              size="small"
-              icon={<PlayCircleOutlined />}
-              onClick={() => handleBacktest(record.symbol)}
-              style={{ fontSize: '14px', fontWeight: 500, padding: '0 12px', height: '32px', minWidth: '78px' }}
-            >
-              {t.market.backtest}
-            </Button>
-            {isInList ? (
-              <Button
-                size="small"
-                danger
-                icon={<DeleteOutlined />}
-                onClick={() => removeSymbolFromUserList(record.symbol)}
-                style={{ minWidth: '32px', width: '32px', height: '32px', padding: '0' }}
-                title={t.market.removeFromList}
-              />
-            ) : (
-              <Button
-                size="small"
-                type="default"
-                icon={<PlusOutlined />}
-                onClick={() => addSymbolToUserList(record.symbol)}
-                disabled={userSymbols.length >= MAX_MARKET_SYMBOLS}
-                style={{ minWidth: '32px', width: '32px', height: '32px', padding: '0' }}
-                title={userSymbols.length >= MAX_MARKET_SYMBOLS ? t.market.maxSymbolsReached.replace('{max}', String(MAX_MARKET_SYMBOLS)) : t.market.addToList}
-              />
-            )}
-            <Button
-              size="small"
-              type={isInWatchlist(record.symbol) ? 'primary' : 'default'}
-              icon={<StarOutlined />}
-              onClick={() => toggleWatchlist(record.symbol)}
-              style={{ minWidth: '32px', width: '32px', height: '32px', padding: '0' }}
-            />
-          </Space>
-        );
-      },
+      width: 175,
+      align: 'center',
+      render: (_value, record) => (
+        <div className="market-row-actions">
+          <Button icon={<LineChartOutlined />} onClick={(event) => { event.stopPropagation(); handleAnalyze(record.symbol); }}>{c.analyze}</Button>
+          <Button icon={<ExperimentOutlined />} onClick={(event) => { event.stopPropagation(); handleBacktest(record.symbol); }}>{c.backtest}</Button>
+        </div>
+      ),
     },
+  ], [c, isZh, navigate]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const scoreMax = Math.max(0, ...scoreDistribution.map((item) => item.count));
+  const sectorMax = Math.max(0, ...sectorParticipation.map((item) => item.count));
+  const hasSessionData = initialView.results.length > 0;
+  const countFormatter = useMemo(
+    () => new Intl.NumberFormat(isZh ? 'zh-CN' : 'en-US', { maximumFractionDigits: 0 }),
+    [isZh],
+  );
+  const formatCount = (value: unknown) => hasNumber(value) ? countFormatter.format(value) : undefined;
+  const expectedScanSeconds = Math.min(600, Math.max(120, lastDuration || 240));
+  const scanProgress = loading
+    ? Math.min(94, Math.max(3, Math.round(3 + (scanElapsed / expectedScanSeconds) * 91)))
+    : 0;
+  const scanStageIndex = Math.min(c.progressStages.length - 1, Math.floor(scanProgress / 20));
+  const scanStage = c.progressStages[scanStageIndex];
+  const universeSource = summary?.universeSource || c.universeValue;
+  const universeSourceShort = universeSource.replace(/\s*\([^)]*\)\s*$/, '');
+
+  const ledger = [
+    { label: c.rawUniverse, value: formatCount(summary?.rawUniverseCount), note: universeSourceShort, fullNote: universeSource },
+    { label: c.scanned, value: formatCount(summary?.universeScanned), note: `${countFormatter.format(summary?.failedData ?? 0)} ${c.failed}` },
+    { label: c.investable, value: formatCount(summary?.passedInvestability), note: `${countFormatter.format(summary?.filteredOut ?? 0)} ${c.filtered}` },
+    { label: c.candidates, value: displayResults.length ? countFormatter.format(displayResults.length) : undefined, note: isZh ? `${c.top} ${countFormatter.format(settings.maxResults)}` : `${c.top} ${countFormatter.format(settings.maxResults)}` },
+    { label: c.bullish, value: formatCount(summary?.bullishCount) ?? (displayResults.length ? countFormatter.format(bullishCount) : undefined), note: isZh ? `${countFormatter.format(summary?.strongTrendCount ?? 0)} ${c.strong}` : `${countFormatter.format(summary?.strongTrendCount ?? 0)} ${c.strong}` },
+    { label: c.runtime, value: hasNumber(lastDuration) ? formatRuntime(lastDuration) : undefined, note: lastScanLabel },
   ];
 
-  // 处理表格排序
-  const handleTableChange = (pagination: any, filters: any, sorter: any) => {
-    if (sorter.field) {
-      setSortField(sorter.field);
-      setSortOrder(sorter.order || 'ascend');
-    }
-  };
-
-  // Market Cap列专用样式
-  const marketPageStyles = `
-    .market-page-shell {
-      width: 100%;
-      max-width: 1380px;
-      margin: 0 auto;
-      padding: clamp(16px, 1.8vw, 28px);
-      animation: fadeIn 0.5s ease-out;
-    }
-    
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(10px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    .premium-card {
-      border-radius: 16px !important;
-      border: 1px solid var(--app-border-soft) !important;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02) !important;
-      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
-      background: var(--app-card-bg) !important;
-      overflow: hidden;
-    }
-    
-    .premium-card:hover {
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.04) !important;
-      transform: translateY(-1px) !important;
-      border-color: rgba(24, 144, 255, 0.15) !important;
-    }
-
-    .market-header {
-      margin-bottom: 24px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 16px;
-    }
-    
-    .market-title {
-      font-size: clamp(22px, 2vw, 26px);
-      font-weight: 800;
-      color: var(--app-text-strong);
-      margin: 0;
-      letter-spacing: -0.02em;
-    }
-    
-    .market-subtitle {
-      font-size: 14px;
-      color: var(--app-text-muted);
-    }
-
-    .count-badge {
-      background: rgba(24, 144, 255, 0.06);
-      color: #1890ff;
-      padding: 1px 8px;
-      border-radius: 6px;
-      font-size: 11px;
-      font-weight: 700;
-      margin-left: 10px;
-    }
-    
-    .metrics-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 14px;
-      margin-bottom: 24px;
-    }
-
-    .metric-card-content {
-      padding: 18px 20px;
-      display: flex;
-      flex-direction: column;
-      position: relative;
-    }
-
-    .metric-label {
-      font-size: 10.5px;
-      text-transform: uppercase;
-      letter-spacing: 0.8px;
-      color: var(--app-text-muted);
-      font-weight: 700;
-      margin-bottom: 8px;
-    }
-
-    .metric-value {
-      font-size: 24px;
-      font-weight: 800;
-      color: var(--app-text-strong);
-      line-height: 1.1;
-    }
-
-    .metric-icon-bg {
-      position: absolute;
-      right: 16px;
-      top: 18px;
-      font-size: 22px;
-      opacity: 0.1;
-      color: #1890ff;
-    }
-    
-    .toolbar-card {
-      background: var(--app-card-bg);
-      padding: 14px 18px;
-      border-radius: 16px;
-      border: 1px solid var(--app-border-soft);
-      margin-bottom: 20px;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
-    }
-
-    .toolbar-grid {
-      display: grid;
-      grid-template-columns: 1fr 220px auto;
-      gap: 12px;
-      align-items: center;
-    }
-
-    @media (max-width: 900px) {
-      .toolbar-grid {
-        grid-template-columns: 1fr;
-      }
-    }
-    
-    .market-search-input {
-      background: var(--app-input-bg) !important;
-      border: 1px solid var(--app-border-soft) !important;
-      border-radius: 10px !important;
-      height: 40px !important;
-      color: var(--app-text-strong) !important;
-    }
-    
-    .sector-select .ant-select-selector {
-      border-radius: 10px !important;
-      height: 40px !important;
-      border-color: var(--app-border-soft) !important;
-      display: flex !important;
-      align-items: center !important;
-      background: var(--app-input-bg) !important;
-      color: var(--app-text-strong) !important;
-    }
-
-    .market-table-container {
-      background: var(--app-card-bg);
-      border-radius: 16px;
-      border: 1px solid var(--app-border-soft);
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
-      overflow: hidden;
-    }
-
-    .market-table .ant-table-thead > tr > th {
-      background: var(--app-table-header-bg) !important;
-      color: var(--app-text-muted) !important;
-      font-weight: 700 !important;
-      font-size: 10.5px !important;
-      text-transform: uppercase !important;
-      letter-spacing: 0.5px !important;
-      padding: 14px !important;
-      border-bottom: 1px solid var(--app-border-soft) !important;
-    }
-    .market-table .ant-table-column-sorter {
-      color: var(--app-text-muted) !important;
-    }
-    .market-table .ant-select-selection-item {
-      color: var(--app-text-strong) !important;
-    }
-    
-    .market-table .ant-table-tbody > tr > td {
-      padding: 12px 14px !important;
-      border-bottom: 1px solid var(--app-border-soft) !important;
-    }
-    
-    .market-table .ant-table-tbody > tr:hover > td {
-      background: var(--app-table-row-hover-bg, rgba(59, 130, 246, 0.08)) !important;
-    }
-    
-    .symbol-tag {
-      font-weight: 800;
-      color: var(--app-text-strong);
-      font-size: 15px;
-    }
-    
-    .company-name {
-      font-size: 11px;
-      color: var(--app-text-muted);
-      font-weight: 500;
-    }
-    
-    .price-text {
-      font-weight: 800;
-      font-size: 15px;
-      color: var(--app-text-strong);
-    }
-    
-    .action-btn-compact {
-      border-radius: 8px !important;
-      font-weight: 700 !important;
-      height: 32px !important;
-      padding: 0 10px !important;
-      font-size: 13px !important;
-    }
-    .action-btn-compact.ant-btn-default {
-      background: transparent !important;
-      border-color: var(--app-border) !important;
-      color: var(--app-text) !important;
-    }
-    .action-btn-compact.ant-btn-default:hover {
-      border-color: #3b82f6 !important;
-      color: #3b82f6 !important;
-    }
-    
-    .status-pill {
-      display: inline-flex;
-      align-items: center;
-      padding: 5px 12px;
-      border-radius: 10px;
-      background: var(--app-card-bg-soft);
-      color: var(--app-text-muted);
-      font-size: 11px;
-      font-weight: 600;
-      border: 1px solid var(--app-border-soft);
-    }
-    
-    .status-dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: #10b981;
-      margin-right: 7px;
-    }
-  `;
-
   return (
-    <div className="market-page-shell">
-      <style>{marketPageStyles}</style>
-      
-      {/* Header Area */}
-      <div className="market-header">
+    <div className="market-editorial">
+      <header className="market-hero">
         <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 2 }}>
-            <div style={{ 
-              width: 38, height: 38, borderRadius: '10px', background: 'linear-gradient(135deg, #1890ff 0%, #003a8c 100%)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 18,
-              boxShadow: '0 4px 10px rgba(24, 144, 255, 0.2)'
-            }}>
-              <LineChartOutlined />
+          <span className="market-kicker"><BarChartOutlined /> {c.kicker}</span>
+          <h1>{c.title}</h1>
+          <p>{c.subtitle}</p>
+          <div className="market-hero__meta">
+            <span><i className={tradeMode === 'real' ? 'is-real' : ''} />{tradeMode === 'real' ? c.modeReal : c.modePaper}</span>
+            <span>{loading ? c.scanning : summary ? `${c.completed}: ${lastScanLabel}` : hasSessionData ? c.lastSession : c.awaitingRun}</span>
+          </div>
+        </div>
+        <div className="market-hero__actions">
+          <Button icon={<ReloadOutlined />} disabled={loading} onClick={resetFilters}>{c.reset}</Button>
+          <Button type="primary" icon={<SearchOutlined />} loading={loading} onClick={() => void runScanner()}>{loading ? c.scanning : c.run}</Button>
+        </div>
+      </header>
+
+      {loading && (
+        <section className="market-scan-progress" role="status" aria-live="polite">
+          <div className="market-scan-progress__header">
+            <div>
+              <span><i />{c.progressTitle}</span>
+              <strong>{scanStage}</strong>
             </div>
-            <h1 className="market-title">{t.market.title}</h1>
-            <span className="count-badge">
-              {userSymbols.length}/{MAX_MARKET_SYMBOLS}
-            </span>
-          </div>
-          <div className="market-subtitle" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-            <span>{t.market.subtitle}</span>
-            <Tag color={tradeMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ fontSize: 10, fontWeight: 700, borderRadius: 4, margin: 0 }}>
-              {tradeMode === 'paper' ? 'PAPER MODE' : 'REAL MODE'}
-            </Tag>
-            {stocks.length > 0 && (
-              <Tag color="green" bordered={false} style={{ fontSize: 10, fontWeight: 700, borderRadius: 4, margin: 0 }}>
-                Data: {stocks[0]?.dataSource || 'Alpaca'}
-              </Tag>
-            )}
-            {stocks.length > 0 && stocks[0]?.dataSource?.toLowerCase().includes('fallback') && (
-              <Tag color="warning" bordered={false} style={{ fontSize: 10, fontWeight: 700, borderRadius: 4, margin: 0 }}>
-                MOCK DATA
-              </Tag>
-            )}
-            {lastUpdated && (
-              <span style={{ fontSize: 11, color: "var(--app-text-muted)", fontWeight: 500 }}>
-                Updated: {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </span>
-            )}
-          </div>
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          {stocks.length > 0 && (
-            <div className="status-pill">
-              <div className="status-dot"></div>
-              {stocks[0]?.dataSource || 'Alpaca Markets'}
+            <div className="market-scan-progress__metric">
+              <strong>{scanProgress}<small>%</small></strong>
+              <span>{c.progressEstimated}</span>
             </div>
-          )}
-          <Button
-            type="primary"
-            icon={<ReloadOutlined spin={loading} />}
-            onClick={() => initializeMarket()}
-            loading={loading}
-            style={{ borderRadius: '8px', height: 40, fontWeight: 700, padding: '0 20px', boxShadow: '0 2px 6px rgba(24, 144, 255, 0.15)' }}
+          </div>
+          <div
+            className="market-scan-progress__track"
+            role="progressbar"
+            aria-label={c.progressEstimated}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={scanProgress}
           >
-            {t.market.refreshData}
-          </Button>
-        </div>
-      </div>
-
-      {/* Summary Metrics */}
-      <div className="metrics-grid">
-        <div className="premium-card">
-          <div className="metric-card-content">
-            <span className="metric-label">{t.market.totalStocks}</span>
-            <span className="metric-value">{marketStats.totalStocks}</span>
-            <EyeOutlined className="metric-icon-bg" style={{ color: '#3b82f6' }} />
+            <i style={{ width: `${scanProgress}%` }} />
           </div>
-        </div>
-        <div className="premium-card">
-          <div className="metric-card-content">
-            <span className="metric-label">{t.market.marketGainers}</span>
-            <span className="metric-value" style={{ color: '#10b981' }}>{marketStats.gainers}</span>
-            <BarChartOutlined className="metric-icon-bg" style={{ color: '#10b981' }} />
+          <div className="market-scan-progress__footer">
+            <span>{c.progressElapsed} <strong>{formatElapsed(scanElapsed)}</strong></span>
+            <small>{c.progressNote}</small>
           </div>
-        </div>
-        <div className="premium-card">
-          <div className="metric-card-content">
-            <span className="metric-label">{t.market.marketLosers}</span>
-            <span className="metric-value" style={{ color: '#ef4444' }}>{marketStats.losers}</span>
-            <BarChartOutlined className="metric-icon-bg" style={{ color: '#ef4444' }} rotate={180} />
-          </div>
-        </div>
-        <div className="premium-card">
-          <div className="metric-card-content">
-            <span className="metric-label">{t.market.avgChange}</span>
-            <span className="metric-value" style={{ color: marketStats.avgChange >= 0 ? '#10b981' : '#ef4444' }}>
-              {marketStats.avgChange >= 0 ? '+' : ''}{marketStats.avgChange.toFixed(2)}%
-            </span>
-            <LineChartOutlined className="metric-icon-bg" style={{ color: marketStats.avgChange >= 0 ? '#10b981' : '#ef4444' }} />
-          </div>
-        </div>
-      </div>
-
-      <div className="toolbar-card">
-        <div className="toolbar-grid">
-          <Input
-            placeholder={t.market.searchPlaceholder}
-            prefix={<SearchOutlined style={{ color: "var(--app-text-muted)" }} />}
-            value={searchText}
-            onChange={(e) => setSearchText(e.target.value)}
-            onPressEnter={handleSearch}
-            className="market-search-input"
-            allowClear
-            suffix={searching ? <Spin size="small" /> : null}
-          />
-          <Select
-            className="sector-select"
-            placeholder={t.market.allSectors}
-            value={selectedSector}
-            onChange={setSelectedSector}
-            dropdownStyle={{ borderRadius: '10px' }}
-          >
-            <Option value="all">{t.market.allSectors}</Option>
-            {getAllSectors().map(sector => (
-              <Option key={sector} value={sector}>{translateSector(sector)}</Option>
-            ))}
-          </Select>
-          <Button 
-            type="primary" 
-            icon={<SearchOutlined />} 
-            onClick={handleSearch}
-            loading={searching}
-            style={{ height: 40, borderRadius: '10px', fontWeight: 700, padding: '0 24px' }}
-          >
-            {t.market.search}
-          </Button>
-        </div>
-      </div>
-
-      {error && (
-        <div style={{ marginBottom: 20 }}>
-          <Alert
-            message={<Text strong style={{ fontSize: 13 }}>{t.market.dataSyncError}</Text>}
-            description={error}
-            type="error"
-            showIcon
-            style={{ borderRadius: 12 }}
-            action={<Button size="small" type="primary" onClick={() => initializeMarket()} style={{ borderRadius: 6 }}>{t.market.retry}</Button>}
-          />
-        </div>
+        </section>
       )}
 
-      <div className="market-table-container">
-        {loading ? (
-          <div style={{ padding: '40px 30px' }}>
-            <Skeleton active paragraph={{ rows: 10 }} />
-          </div>
-        ) : filteredStocks.length === 0 && stocks.length > 0 ? (
-          <div style={{ padding: '80px 0' }}>
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={
-                <div>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: "var(--app-text)", marginBottom: 4 }}>
-                    No matching symbols for "{searchText || selectedSector}"
-                  </div>
-                  <div style={{ fontSize: 12, color: "var(--app-text-muted)" }}>
-                    Try adjusting your search or filters, or add a new symbol to analyze.
-                  </div>
-                </div>
-              }
-            >
-              <Space>
-                <Button type="link" onClick={() => { setSearchText(''); setSelectedSector('all'); }}>
-                  Clear Filters
-                </Button>
-                {searchText.trim() && (
-                  <Button type="primary" size="small" icon={<SearchOutlined />} onClick={() => searchStockBySymbol(searchText.trim())}>
-                    Search & Add "{searchText.trim().toUpperCase()}"
-                  </Button>
-                )}
-              </Space>
-            </Empty>
-          </div>
-        ) : filteredStocks.length === 0 && stocks.length === 0 ? (
-          <div style={{ padding: '80px 0' }}>
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={<span style={{ color: "var(--app-text-muted)", fontSize: '14px', fontWeight: 500 }}>{t.market.noResults}</span>}
-            >
-              <Button type="link" onClick={() => { setSearchText(''); setSelectedSector('all'); initializeMarket(); }}>
-                Clear Filters
-              </Button>
-            </Empty>
-          </div>
-        ) : (
-          <Table
-            className="market-table"
-            columns={columns.map(col => {
-              if (col.key === 'symbol') {
-                return {
-                  ...col,
-                  width: 170,
-                  render: (symbol: string, record: StockData) => (
-                    <Space size={12}>
-                      <div style={{ width: 34, height: 34, borderRadius: 8, background: 'var(--app-card-bg-soft)', border: "1px solid var(--app-border-soft)", display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, color: "var(--app-text-strong)", fontSize: 14 }}>
-                        {symbol[0]}
-                      </div>
-                      <Space direction="vertical" size={0}>
-                        <span className="symbol-tag">{symbol}</span>
-                        <span className="company-name">{record.name || symbol}</span>
-                      </Space>
-                    </Space>
-                  )
-                };
-              }
-              if (col.key === 'price') {
-                return {
-                  ...col,
-                  width: 110,
-                  render: (price: number | null) => (
-                    <span className="price-text">
-                      {price !== null ? `$${safeToFixed(price, 2)}` : '--'}
-                    </span>
-                  )
-                };
-              }
-              if (col.key === 'changePercent') {
-                return {
-                  ...col,
-                  width: 110,
-                  render: (val: number | null) => {
-                    if (val === null) return '--';
-                    const isUp = val > 0;
-                    const isDown = val < 0;
-                    return (
-                      <div style={{ 
-                        background: isUp ? 'rgba(16, 185, 129, 0.08)' : isDown ? 'rgba(239, 68, 68, 0.08)' : '#f1f5f9',
-                        color: isUp ? '#10b981' : isDown ? '#ef4444' : '#64748b',
-                        padding: '3px 8px', 
-                        borderRadius: 6, 
-                        fontSize: 12.5, 
-                        fontWeight: 800, 
-                        display: 'inline-block',
-                        minWidth: '68px',
-                        textAlign: 'center'
-                      }}>
-                        {val > 0 ? '+' : ''}{safeToFixed(val, 2)}%
-                      </div>
-                    );
-                  }
-                };
-              }
-              if (col.key === 'sector') {
-                return {
-                  ...col,
-                  render: (sector: string) => (
-                    <Tag color="blue" style={{ borderRadius: 6, fontWeight: 600, padding: '1px 8px', border: "1px solid var(--app-blue-border, transparent)", background: "var(--app-blue-bg, #eff6ff)", color: "var(--app-blue-text, #3b82f6)", fontSize: 11 }}>
-                      {translateSector(sector) || 'N/A'}
-                    </Tag>
-                  )
-                };
-              }
-              if (col.key === 'actions') {
-                return {
-                  ...col,
-                  width: 190,
-                  render: (_: any, record: StockData) => (
-                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                      <Button
-                        type="primary"
-                        size="small"
-                        className="action-btn-compact"
-                        icon={<LineChartOutlined />}
-                        onClick={() => handleAnalyze(record.symbol)}
-                        style={{ background: '#3b82f6', borderColor: '#3b82f6' }}
-                      >
-                        {t.market.analyze}
-                      </Button>
-                      <Button
-                        size="small"
-                        className="action-btn-compact"
-                        icon={<PlayCircleOutlined />}
-                        onClick={() => handleBacktest(record.symbol)}
-                      >
-                        {t.market.backtest}
-                      </Button>
-                      <Button
-                        size="small"
-                        type={isInWatchlist(record.symbol) ? 'primary' : 'default'}
-                        icon={isInWatchlist(record.symbol) ? <StarOutlined style={{ color: '#fff' }} /> : <StarOutlined />}
-                        onClick={() => toggleWatchlist(record.symbol)}
-                        className="action-btn-compact"
-                        style={isInWatchlist(record.symbol) ? { background: '#f59e0b', borderColor: '#f59e0b', color: '#fff' } : {}}
-                      />
-                    </div>
-                  )
-                };
-              }
-              return col;
-            })}
-            dataSource={filteredStocks}
-            rowKey="symbol"
-            size="middle"
-            onChange={handleTableChange}
-            pagination={{
-              pageSize: 15,
-              showSizeChanger: true,
-              showTotal: (total, range) => (
-                <span style={{ color: "var(--app-text-muted)", fontSize: '12.5px', fontWeight: 500 }}>
-                  {range[0]}-{range[1]} {t.market.of} {total}
-                </span>
-              ),
-              position: ['bottomRight']
-            }}
-            scroll={{ x: 'max-content' }}
-          />
-        )}
-      </div>
+      <section className="market-filter-panel" aria-labelledby="market-filter-title">
+        <div className="market-section-head">
+          <div><span>01 / {c.filtersSection}</span><h2 id="market-filter-title">{c.filterTitle}</h2></div>
+          <p>{c.filterNote}</p>
+        </div>
+        <div className="market-filter-grid">
+          <label className="market-field market-field--universe">
+            <span>{c.universe}</span>
+            <div><BarChartOutlined /> <strong>{c.universeValue}</strong></div>
+          </label>
+          <label className="market-field"><span>{c.scanCap}</span><InputNumber min={25} max={3000} value={settings.maxSymbols} onChange={(value) => updateSetting({ maxSymbols: Number(value || 1500) })} /></label>
+          <label className="market-field"><span>{c.output}</span><InputNumber min={5} max={300} value={settings.maxResults} onChange={(value) => updateSetting({ maxResults: Number(value || 100) })} /></label>
+          <label className="market-field"><span>{c.minPrice}</span><InputNumber min={1} max={1000} prefix="$" value={settings.filters.minPrice} onChange={(value) => updateFilter('minPrice', Number(value || 5))} /></label>
+          <label className="market-field"><span>{c.history}</span><InputNumber min={60} max={252} value={settings.filters.minHistoryDays} onChange={(value) => updateFilter('minHistoryDays', Number(value || 252))} /></label>
+          <label className="market-field market-field--wide"><span>{c.minAdv}</span><InputNumber min={0} step={1_000_000} value={settings.filters.minDollarVolume} formatter={(value) => compactMoney(Number(value || 0))} parser={(value) => parseCompactMoney(value)} onChange={(value) => updateFilter('minDollarVolume', Number(value || 0))} /></label>
+          <label className="market-field market-field--wide"><span>{c.minMarketCap}</span><InputNumber min={0} step={100_000_000} value={settings.filters.minMarketCap} formatter={(value) => compactMoney(Number(value || 0))} parser={(value) => parseCompactMoney(value)} onChange={(value) => updateFilter('minMarketCap', Number(value || 0))} /></label>
+          <label className="market-field"><span>{c.maxAtr}</span><InputNumber min={1} max={100} suffix="%" value={settings.filters.maxAtrPercent} onChange={(value) => updateFilter('maxAtrPercent', Number(value || 12))} /></label>
+          <label className="market-field"><span>{c.maxVol}</span><InputNumber min={5} max={300} suffix="%" value={settings.filters.maxRealizedVol20} onChange={(value) => updateFilter('maxRealizedVol20', Number(value || 120))} /></label>
+          <label className="market-field"><span>{c.aiReview}</span><InputNumber min={0} max={100} value={settings.aiReviewTopN} onChange={(value) => updateSetting({ aiReviewTopN: Number(value ?? 100) })} /></label>
+        </div>
+      </section>
 
-      <div style={{ marginTop: 20, display: 'flex', justifyContent: 'flex-end' }}>
-        {lastUpdated && (
-          <div style={{ fontSize: '11px', color: "var(--app-text-muted)", fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-            <ClockCircleOutlined style={{ marginRight: 5 }} />
-            {t.market.lastSynchronized}: {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+      {error && <Alert className="market-error" type="error" showIcon message={c.scannerFailed} description={error} closable onClose={() => setError('')} />}
+
+      <section className="market-ledger" aria-label={c.scannerSummary}>
+        {ledger.map((item, index) => (
+          <div key={item.label}>
+            <span>{String(index + 1).padStart(2, '0')} / {item.label}</span>
+            <strong>{item.value ?? '—'}</strong>
+            <small title={item.fullNote || item.note}>{item.note}</small>
           </div>
-        )}
-      </div>
+        ))}
+      </section>
+
+      <section className="market-intelligence" aria-labelledby="market-intelligence-title">
+        <div className="market-intelligence__head">
+          <div><span>02 / {c.analysisSection}</span><h2 id="market-intelligence-title">{c.liveAnalysis}</h2></div>
+          <p>{summary?.dataSource || lastScanLabel}</p>
+        </div>
+
+        <div className="market-intelligence__grid">
+          <article className="market-breadth">
+            <div className="market-dark-label"><span>{c.dailyBreadth}</span><small>{breadth.valid} {c.validMoves}</small></div>
+            <div className="market-breadth__ratio">
+              <strong>{breadth.valid ? breadth.advancing : '—'}</strong><i>/</i><strong>{breadth.valid ? breadth.declining : '—'}</strong>
+            </div>
+            <div className="market-breadth__labels"><span>{c.advancing}</span><span>{c.declining}</span></div>
+            <div className="market-breadth__bar">
+              {breadth.valid ? <><i style={{ width: `${(breadth.advancing / breadth.valid) * 100}%` }} /><b style={{ width: `${(breadth.declining / breadth.valid) * 100}%` }} /></> : <em />}
+            </div>
+          </article>
+
+          <article className="market-score-chart">
+            <div className="market-dark-label"><span>{c.scoreDistribution}</span><small>{displayResults.length} {c.candidates.toLowerCase()}</small></div>
+            {scoreMax > 0 ? (
+              <div className="market-score-chart__bars">
+                {scoreDistribution.map((bucket) => (
+                  <div key={bucket.label}>
+                    <span>{bucket.count}</span>
+                    <i><b style={{ height: `${bucket.count === 0 ? 0 : Math.max(4, (bucket.count / scoreMax) * 100)}%` }} /></i>
+                    <small>{bucket.label}</small>
+                  </div>
+                ))}
+              </div>
+            ) : <div className="market-dark-empty">{c.noScores}</div>}
+          </article>
+
+          <article className="market-weights">
+            <div className="market-dark-label"><span>{c.factorMandate}</span><small>100%</small></div>
+            <div className="market-horizontal-bars">
+              {normalizedWeights.map((item) => (
+                <div key={item.key}><span>{item.label}</span><i><b style={{ width: `${item.value}%` }} /></i><strong>{Math.round(item.value)}</strong></div>
+              ))}
+            </div>
+          </article>
+
+          <article className="market-sectors">
+            <div className="market-dark-label"><span>{c.sectorParticipation}</span><small>{sectorParticipation.length}</small></div>
+            {sectorMax > 0 ? (
+              <div className="market-horizontal-bars market-horizontal-bars--sector">
+                {sectorParticipation.map((item) => (
+                  <div key={item.label}><span title={translateSector(item.label)}>{translateSector(item.label)}</span><i><b style={{ width: `${(item.count / sectorMax) * 100}%` }} /></i><strong>{item.count}</strong></div>
+                ))}
+              </div>
+            ) : <div className="market-dark-empty">{c.noSector}</div>}
+          </article>
+        </div>
+      </section>
+
+      <section className="market-results" aria-labelledby="market-result-title">
+        <div className="market-section-head market-section-head--results">
+          <div><span>03 / {c.resultKicker}</span><h2 id="market-result-title">{c.resultTitle}</h2></div>
+          <p>{c.resultNote}</p>
+        </div>
+
+        <div className="market-table-wrap">
+          <Table<ScannerResult>
+            className="market-table"
+            rowKey="symbol"
+            loading={loading}
+            columns={columns}
+            dataSource={displayResults}
+            size="middle"
+            pagination={{ pageSize: 15, showSizeChanger: true, pageSizeOptions: [15, 30, 60], showTotal: (total) => `${total} ${c.candidates.toLowerCase()}` }}
+            scroll={{ x: 1310 }}
+            locale={{
+              emptyText: (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<div className="market-empty"><strong>{c.emptyTitle}</strong><span>{c.emptyBody}</span></div>} />
+              ),
+            }}
+            expandable={{
+              expandedRowRender: renderExpandedRow,
+              expandRowByClick: false,
+              expandIcon: ({ expanded, onExpand, record }) => (
+                <button className={`market-expand ${expanded ? 'is-open' : ''}`} type="button" aria-label={expanded ? c.collapseDetail : c.expandDetail} onClick={(event) => onExpand(record, event)}><ArrowRightOutlined /></button>
+              ),
+            }}
+          />
+        </div>
+      </section>
+
+      {summary && (
+        <footer className="market-source-line">
+          <span>{c.source}</span>
+          <p>{[
+            summary.dataSource,
+            `${c.benchmarkCoverage} ${summary.benchmarkEnrichment?.symbolsAvailable ?? 0}`,
+            `${c.newsCoverage} ${summary.newsEnrichment?.symbolsWithNews ?? 0}`,
+            `${c.finraCoverage} ${summary.shortVolumeEnrichment?.symbolsWithShortVolume ?? 0}`,
+            `${c.optionsCoverage} ${summary.optionsEnrichment?.symbolsWithOptions ?? 0}`,
+            `${c.aiCoverage} ${summary.aiReview?.reviewedSymbols ?? 0}`,
+          ].filter(Boolean).join(' · ')}</p>
+        </footer>
+      )}
     </div>
   );
 };

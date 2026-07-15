@@ -1,0 +1,336 @@
+/* Shared motion and centered topic axis. Page-specific scenes begin below. */
+.public-scroll-progress {
+  position: fixed;
+  top: clamp(60px, 8vh, 80px);
+  right: 0;
+  left: 0;
+  z-index: 999;
+  height: 2px;
+  pointer-events: none;
+  transform: scaleX(0);
+  transform-origin: left center;
+  background: #3569c8;
+}
+
+.public-page .public-section .public-section-heading {
+  display: block;
+  width: min(100%, 1000px);
+  margin: 0 auto clamp(50px, 6vw, 82px);
+  text-align: center;
+}
+.public-page .public-section .public-section-heading > p {
+  display: inline-grid;
+  grid-template-columns: 30px auto 30px;
+  gap: 12px;
+  align-items: center;
+  max-width: none;
+  margin: 0 0 20px;
+}
+.public-page .public-section .public-section-heading > p::before,
+.public-page .public-section .public-section-heading > p::after {
+  height: 1px;
+  background: currentColor;
+  opacity: .34;
+  content: '';
+}
+.public-page .public-section .public-section-heading > div { display: block; }
+.public-page .public-section .public-section-heading h2 {
+  max-width: 19ch;
+  margin-right: auto;
+  margin-left: auto;
+  text-wrap: balance;
+}
+.public-page.is-en .public-section:not(.public-topic-section) .public-section-heading h2 {
+  font-size: clamp(2.7rem, 3.8vw, 4.4rem);
+  font-weight: 610;
+  letter-spacing: -.052em;
+  line-height: .98;
+}
+.public-page .public-section .public-section-heading span {
+  max-width: 700px;
+  margin: 22px auto 0;
+}
+.public-page.is-zh .public-section .public-section-heading h2 {
+  max-width: 14em;
+  font-size: clamp(2.35rem, 3.4vw, 3.9rem);
+  font-weight: 560;
+  line-height: 1.12;
+}
+
+.public-reveal {
+  opacity: 0;
+  transform: translate3d(0, 24px, 0);
+  transition:
+    opacity .68s cubic-bezier(.2,.72,.2,1) var(--public-reveal-delay, 0ms),
+    transform .68s cubic-bezier(.2,.72,.2,1) var(--public-reveal-delay, 0ms);
+}
+.public-reveal.is-visible { opacity: 1; transform: translate3d(0,0,0); }
+.public-panel-swap { animation: public-panel-enter .44s cubic-bezier(.2,.72,.2,1) both; }
+@keyframes public-panel-enter {
+  from { opacity: 0; transform: translate3d(18px,0,0); }
+  to { opacity: 1; transform: translate3d(0,0,0); }
+}
+
+/* Platform — command deck with a vertical module rail. */
+.public-platform-page .public-hero .public-instrument { box-shadow: 0 28px 80px rgba(74,66,48,.09); }
+.public-platform-page .platform-module-stage { padding-top: clamp(88px,9vw,126px); }
+.platform-module-layout {
+  display: grid;
+  grid-template-columns: minmax(190px,.28fr) minmax(0,1fr);
+  gap: clamp(22px,3vw,42px);
+  align-items: stretch;
+}
+.platform-module-rail {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--public-rule);
+}
+.platform-module-rail button {
+  position: relative;
+  min-height: 76px;
+  padding: 14px 18px 14px 42px;
+  color: var(--public-muted);
+  border: 0;
+  border-bottom: 1px solid var(--public-rule);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: color .22s ease, background .22s ease;
+}
+.platform-module-rail button:focus-visible,
+.research-ledger-tabs button:focus-visible,
+.workflow-step-rail button:focus-visible,
+.data-lineage-rail button:focus-visible,
+.security-control-button:focus-visible {
+  z-index: 3;
+  outline: 2px solid var(--public-blue);
+  outline-offset: -2px;
+}
+.platform-module-rail button::before {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  width: 16px;
+  height: 1px;
+  background: var(--public-rule);
+  content: '';
+  transition: width .22s ease, background .22s ease;
+}
+.platform-module-rail button.is-active { color: var(--public-ink); background: rgba(43,95,174,.055); }
+.platform-module-rail button.is-active::before { width: 22px; background: var(--public-blue); }
+.platform-module-panel { min-height: 360px; box-shadow: 0 18px 55px rgba(74,66,48,.055); }
+.public-platform-page .public-topic-section .public-card-grid {
+  grid-template-columns: repeat(6,minmax(170px,1fr));
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+}
+.public-platform-page .public-topic-section .public-card { min-width: 190px; scroll-snap-align: start; }
+
+/* Research — dossier tabs read like folio markers, not product tabs. */
+.public-research-page .public-hero-visual { position:relative; }
+.public-research-page .public-hero-visual::before { position:absolute; inset:14px -14px -14px 14px; z-index:-1; border:1px solid var(--public-rule); content:''; }
+.public-research-page .public-hero .public-instrument { transform:rotate(-.45deg); transform-origin:center; }
+.public-research-page .research-ledger-section { position: relative; }
+.research-ledger-frame {
+  display: grid;
+  grid-template-columns: 180px minmax(0,1fr);
+  gap: 0;
+  border: 1px solid var(--public-rule);
+  background: rgba(250,248,242,.7);
+  box-shadow: 0 24px 70px rgba(74,66,48,.06);
+}
+.research-ledger-tabs { display: flex; flex-direction: column; border-right: 1px solid var(--public-rule); }
+.research-ledger-tabs button {
+  min-height: 84px;
+  padding: 18px;
+  color: var(--public-muted);
+  border: 0;
+  border-bottom: 1px solid var(--public-rule);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font: 650 .72rem ui-monospace, monospace;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.research-ledger-tabs button.is-active { color: var(--public-blue); background: var(--public-paper-bright); box-shadow: inset 3px 0 0 var(--public-blue); }
+.research-ledger-panel { border: 0; }
+.public-research-page .public-method-boundaries .public-card-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+.public-research-page .public-method-boundaries .public-card { min-height: 220px; }
+.public-research-page .research-question-ledger .public-feature-row { grid-template-columns: 82px minmax(0,1fr) 110px; }
+
+/* Workflow — a horizontal stage rail with scroll snap and a changing artifact. */
+.public-workflow-page .public-hero .public-instrument { border-left:4px solid var(--public-blue); }
+.public-workflow-page .public-hero .public-instrument-header { background:rgba(43,95,174,.045); }
+.public-workflow-page .workflow-story-section { position: relative; }
+.workflow-step-rail {
+  position: sticky;
+  top: clamp(72px,9vh,94px);
+  z-index: 4;
+  display: flex;
+  overflow-x: auto;
+  margin-bottom: 24px;
+  border: 1px solid var(--public-rule);
+  background: rgba(242,239,231,.94);
+  scroll-snap-type: x mandatory;
+  scrollbar-color: var(--public-blue) transparent;
+  scrollbar-width: thin;
+}
+.workflow-step-rail button {
+  position: relative;
+  min-width: 190px;
+  min-height: 66px;
+  flex: 1 0 auto;
+  padding: 12px 18px;
+  color: var(--public-muted);
+  border: 0;
+  border-right: 1px solid var(--public-rule);
+  background: transparent;
+  cursor: pointer;
+  scroll-snap-align: start;
+  font: 650 .7rem ui-monospace, monospace;
+  letter-spacing: .05em;
+  text-align: left;
+}
+.workflow-step-rail button::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 3px;
+  background: transparent;
+  content: '';
+}
+.workflow-step-rail button.is-active { color: var(--public-ink); background: var(--public-paper-bright); }
+.workflow-step-rail button.is-active::after { background: var(--public-blue); }
+.workflow-stage-shell { border-left: 3px solid var(--public-blue); }
+.workflow-stage-briefs { gap: 10px; margin-top: 18px !important; border: 0; }
+.workflow-stage-briefs .public-card { min-height: 210px; border: 1px solid var(--public-rule); }
+.workflow-run-log .public-feature-list { position: relative; padding-left: 28px; }
+.workflow-run-log .public-feature-list::before { position:absolute; top:0; bottom:0; left:4px; width:1px; background:rgba(245,241,232,.18); content:''; }
+.workflow-run-log .public-feature-row::before { position:absolute; left:-29px; width:9px; height:9px; border:2px solid #8fa9cf; border-radius:50%; background:#1c221e; content:''; }
+
+/* Examples — specimen archive with horizontal strategy cards and panel crossfades. */
+.public-examples-page .public-hero .public-instrument { box-shadow:12px 12px 0 var(--public-paper-deep); }
+.public-examples-page .public-hero .public-instrument-header strong { letter-spacing:.12em; }
+.public-examples-page .examples-browser-section { padding-right: max(24px,calc((100vw - 1440px)/2)); padding-left: max(24px,calc((100vw - 1440px)/2)); }
+.public-examples-page .research-explorer-toolbar > [role="tablist"] {
+  display: grid;
+  grid-auto-columns: minmax(250px,1fr);
+  grid-auto-flow: column;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+}
+.public-examples-page .research-explorer-toolbar > [role="tablist"] button { scroll-snap-align: center; }
+.public-examples-page .research-explorer-grid { min-height: 360px; }
+.examples-reading-strip .public-card-grid {
+  display: flex;
+  overflow-x: auto;
+  border-left: 0;
+  scroll-snap-type: x mandatory;
+}
+.examples-reading-strip .public-card { min-width: min(360px,82vw); border-left: 1px solid rgba(255,255,255,.13); scroll-snap-align: start; }
+
+/* Data — connected lineage nodes feeding a provenance receipt. */
+.public-data-page .public-hero .public-instrument-body {
+  background-image:linear-gradient(90deg,rgba(43,95,174,.08) 1px,transparent 1px),linear-gradient(rgba(43,95,174,.08) 1px,transparent 1px);
+  background-size:32px 32px;
+}
+.data-lineage-rail {
+  display: grid;
+  grid-template-columns: repeat(4,minmax(0,1fr));
+  margin-bottom: 26px;
+}
+.data-lineage-rail button {
+  position: relative;
+  min-height: 92px;
+  padding: 44px 14px 12px;
+  color: var(--public-muted);
+  border: 0;
+  border-top: 1px solid var(--public-rule);
+  background: transparent;
+  cursor: pointer;
+  font: 650 .7rem ui-monospace, monospace;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.data-lineage-rail button::before { position:absolute; top:-7px; left:50%; width:13px; height:13px; border:1px solid var(--public-blue); border-radius:50%; background:var(--public-paper); content:''; transform:translateX(-50%); }
+.data-lineage-rail button:not(:last-child)::after { position:absolute; top:-1px; left:50%; width:100%; height:1px; background:var(--public-rule); content:''; }
+.data-lineage-rail button.is-active { color:var(--public-blue); }
+.data-lineage-rail button.is-active::before { background:var(--public-blue); box-shadow:0 0 0 5px rgba(43,95,174,.12); }
+.data-lineage-panel { border-width: 1px 1px 1px 4px; border-left-color: var(--public-blue); }
+.data-disclosure-section .public-card-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+.data-disclosure-section .public-card { min-height: 200px; }
+
+/* Security — a control boundary map and an explicit dossier. */
+.public-security-page .public-hero .public-instrument { box-shadow:inset 0 0 0 6px rgba(104,123,91,.055); }
+.public-security-page .public-hero .public-instrument-body { background:radial-gradient(circle at center,rgba(104,123,91,.13),transparent 58%); }
+.security-control-layout { display:grid; grid-template-columns:minmax(0,1.15fr) minmax(280px,.55fr); border:1px solid var(--public-rule); background:rgba(250,248,242,.64); }
+.security-control-map {
+  position:relative;
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  grid-template-rows:repeat(3,minmax(100px,auto));
+  gap:1px;
+  padding:1px;
+  background:var(--public-rule);
+}
+.security-control-map::before { position:absolute; inset:18% 14%; border:1px dashed rgba(43,95,174,.23); border-radius:50%; content:''; pointer-events:none; }
+.security-control-button { position:relative; z-index:1; padding:18px; color:var(--public-muted); border:0; background:var(--public-paper-bright); cursor:pointer; text-align:left; }
+.security-control-button span { display:block; color:var(--public-blue); font:.68rem ui-monospace,monospace; letter-spacing:.08em; }
+.security-control-button b { display:block; margin-top:10px; color:var(--public-ink); font-size:.9rem; font-weight:600; }
+.security-control-button.is-active { background:rgba(43,95,174,.08); box-shadow:inset 0 0 0 1px var(--public-blue); }
+.security-control-button:nth-of-type(1){grid-area:1/1}.security-control-button:nth-of-type(2){grid-area:1/2}.security-control-button:nth-of-type(3){grid-area:1/3}
+.security-control-button:nth-of-type(4){grid-area:3/1}.security-control-button:nth-of-type(5){grid-area:3/2}.security-control-button:nth-of-type(6){grid-area:3/3}
+.security-control-core { z-index:2; display:grid; grid-area:2/2; place-items:center; padding:16px; color:#f5f1e8; background:#1c221e; text-align:center; white-space:pre-line; font:650 .68rem ui-monospace,monospace; letter-spacing:.08em; line-height:1.5; }
+.security-control-dossier { padding:clamp(28px,3vw,42px); border-left:1px solid var(--public-rule); }
+.security-control-dossier > span { color:var(--public-moss); font:650 .7rem ui-monospace,monospace; letter-spacing:.09em; }
+.security-control-dossier h3 { margin:44px 0 14px; font-size:clamp(1.55rem,2vw,2.1rem); font-weight:560; letter-spacing:-.035em; }
+.security-control-dossier p { color:var(--public-muted); line-height:1.7; }
+.security-boundary-section .public-feature-row { position:relative; padding-left:26px; }
+.security-boundary-section .public-feature-row::before { position:absolute; top:50%; left:0; width:10px; height:10px; border:1px solid #9caf91; content:''; transform:translateY(-50%) rotate(45deg); }
+.security-revoke-section .public-card-grid { gap:12px; border:0; }
+.security-revoke-section .public-card { border:1px solid var(--public-rule); }
+
+@media (max-width: 1020px) {
+  .platform-module-layout, .research-ledger-frame, .security-control-layout { grid-template-columns:1fr; }
+  .platform-module-rail, .research-ledger-tabs { flex-direction:row; overflow-x:auto; border-right:0; }
+  .platform-module-rail button, .research-ledger-tabs button { min-width:180px; }
+  .security-control-dossier { border-top:1px solid var(--public-rule); border-left:0; }
+  .public-platform-page .public-topic-section .public-card-grid { grid-template-columns:repeat(6,minmax(190px,1fr)); }
+}
+
+@media (max-width: 760px) {
+  .public-page .public-section .public-section-heading { text-align:center; }
+  .public-page .public-section .public-section-heading > p { grid-template-columns:22px auto 22px; }
+  .workflow-step-rail { position:static; }
+  .workflow-stage-shell { border-left-width:2px; }
+  .research-ledger-frame { border:0; background:transparent; box-shadow:none; }
+  .research-ledger-tabs { border:1px solid var(--public-rule); }
+  .public-research-page .public-method-boundaries .public-card-grid,
+  .data-disclosure-section .public-card-grid { grid-template-columns:1fr; }
+  .data-lineage-rail { grid-template-columns:1fr; padding-left:20px; }
+  .data-lineage-rail button { min-height:62px; padding:16px 16px 16px 34px; border-top:0; border-left:1px solid var(--public-rule); text-align:left; }
+  .data-lineage-rail button::before { top:50%; left:-7px; transform:translateY(-50%); }
+  .data-lineage-rail button:not(:last-child)::after { top:50%; bottom:-50%; left:-1px; width:1px; height:auto; }
+  .security-control-map { grid-template-columns:repeat(2,minmax(0,1fr)); grid-template-rows:auto; }
+  .security-control-button:nth-of-type(n) { grid-area:auto; min-height:116px; }
+  .security-control-core { grid-area:auto / 1 / auto / -1; min-height:86px; }
+  .security-control-map::before { display:none; }
+}
+
+@media (max-width: 390px) {
+  .platform-module-rail button,
+  .research-ledger-tabs button { min-width: 154px; }
+  .workflow-step-rail button { min-width: 164px; }
+  .security-control-button { min-height: 106px !important; padding: 14px; }
+  .security-control-button b { font-size: .84rem; }
+  .security-control-dossier { padding: 24px 20px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .public-page *, .public-page *::before, .public-page *::after { animation-duration:.001ms!important; animation-iteration-count:1!important; scroll-behavior:auto!important; transition-duration:.001ms!important; }
+  .public-reveal, .public-reveal.is-visible, .public-panel-swap { opacity:1!important; transform:none!important; animation:none!important; transition:none!important; }
+  .public-research-page .public-hero .public-instrument { transform:none!important; }
+  .workflow-step-rail { position:static; }
+}

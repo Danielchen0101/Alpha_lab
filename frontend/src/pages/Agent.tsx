@@ -5,25 +5,27 @@ import { useTradeMode } from '../contexts/TradeModeContext';
 
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend as RechartsLegend, ResponsiveContainer } from 'recharts'; // eslint-disable-line @typescript-eslint/no-unused-vars
 import {
-  Card, Typography, Space, Statistic, Row, Col,
-  Button, Divider, Table, Tag, Form, Input, Empty,
-  message, Progress, Badge, Alert, Tooltip, Spin, Modal, Pagination, Steps, Select, Segmented, Switch
+  Card, Typography, Space, Row, Col,
+  Button, Divider, Table, Tag, Input, Empty,
+  message, Progress, Alert, Tooltip, Spin, Modal, Steps, Select, Segmented, Switch, Checkbox
 } from 'antd';
 import {
   LineChartOutlined, BarChartOutlined,
   SettingOutlined, PauseCircleOutlined, SearchOutlined,
-  ThunderboltOutlined, CheckCircleOutlined, ClockCircleOutlined, CheckCircleFilled,
+  ThunderboltOutlined, CheckCircleOutlined, ClockCircleOutlined,
   RobotOutlined, CloseCircleOutlined, ExclamationCircleOutlined, SyncOutlined, LoadingOutlined, SafetyCertificateOutlined,
-  ArrowUpOutlined, ArrowDownOutlined, ArrowRightOutlined, MinusOutlined,
   InfoCircleOutlined,
   CaretDownOutlined, CaretRightOutlined,
   DeleteOutlined, ReloadOutlined, PlusOutlined, CheckOutlined, EyeOutlined,
   WalletOutlined, FundOutlined, SwapOutlined, WarningOutlined
 } from '@ant-design/icons';
 import aiTradingService from '../services/aiTradingService';
-import { backtraderAPI, entryQualityAPI, fineScanAdvancedAPI, deeperValidationAPI, entryPlanAPI, fineScanExplainAPI, fineScanDecisionAPI, tradingAccountAPI, aiAgentWatchlistAPI, aiExecutionAPI, pipelineAutoAPI, notificationAPI, loadConfigStatus } from '../services/api';
+import { deeperValidationAPI, entryPlanAPI, tradingAccountAPI, aiAgentWatchlistAPI, aiExecutionAPI, pipelineAutoAPI, notificationAPI, loadConfigStatus } from '../services/api';
 import api from '../services/api';
 import OrderModal from '../components/OrderModal';
+import MarketScannerWorkbench from '../components/MarketScannerWorkbench';
+import FineScanWorkbench from '../components/FineScanWorkbench';
+import DeeperValidationWorkbench from '../components/DeeperValidationWorkbench';
 import marketDataService from '../services/marketDataService';
 import { scannerStateStore } from '../services/scannerStateStore';
 import {
@@ -32,6 +34,7 @@ import {
   registerDeeperValidationRun, unregisterDeeperValidationRun, isDeeperValidationRunning,
   registerEntryPlanRun, unregisterEntryPlanRun, isEntryPlanRunning,
 } from '../services/scannerRunnerService';
+import './AgentEditorial.css';
 
 const { Option } = Select;
 
@@ -47,20 +50,84 @@ const AI_AGENT_PRIMARY_BTN_STYLE: React.CSSProperties = {
   justifyContent: 'center',
 };
 
-const AI_AGENT_COMPACT_BTN_STYLE: React.CSSProperties = {
-  borderRadius: '4px',
-  fontWeight: 600,
-  height: '24px',
-  fontSize: '11px',
-  display: 'inline-flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  padding: '0 8px'
+const AUTO_PIPELINE_TRIGGERS = new Set(['market_auto_run', 'headless_market_auto_run', 'toggle_on', 'auto_run_now']);
+const AUTO_PIPELINE_STAGE_FALLBACK = [
+  { key: 'market_scanner', label: 'Market Scanner' },
+  { key: 'fine_scan', label: 'Fine Scan' },
+  { key: 'deeper_validation', label: 'Deeper Validation' },
+  { key: 'admission', label: 'Portfolio Admission' },
+  { key: 'entry_plan', label: 'Entry Plan' },
+  { key: 'execution', label: 'Execution' },
+  { key: 'exit_scan', label: 'Position & Exit' },
+];
+
+const ExitMetric: React.FC<{ label: string; value: React.ReactNode; tone?: 'default' | 'good' | 'warn' | 'risk' }> = ({ label, value, tone = 'default' }) => (
+  <div className={`exit-plan-metric is-${tone}`}>
+    <span>{label}</span>
+    <strong>{value ?? '—'}</strong>
+  </div>
+);
+
+const exitFinite = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.abs(parsed) < 0.0000005 ? 0 : parsed;
+};
+
+const exitPrice = (value: unknown, digits = 2): string => {
+  const parsed = exitFinite(value);
+  return parsed == null ? '—' : `$${parsed.toFixed(digits)}`;
+};
+
+const exitMoney = (value: unknown): string => {
+  const parsed = exitFinite(value);
+  if (parsed == null) return '—';
+  const absolute = Math.abs(parsed);
+  if (absolute >= 1_000_000) return `${parsed < 0 ? '-' : ''}$${(absolute / 1_000_000).toFixed(1)}M`;
+  if (absolute >= 1_000) return `${parsed < 0 ? '-' : ''}$${(absolute / 1_000).toFixed(1)}K`;
+  return `${parsed < 0 ? '-' : ''}$${absolute.toFixed(2)}`;
+};
+
+const exitPercent = (value: unknown, signed = false): string => {
+  const parsed = exitFinite(value);
+  if (parsed == null) return '—';
+  return `${signed && parsed > 0 ? '+' : ''}${parsed.toFixed(2)}%`;
+};
+
+const exitSignedMoney = (value: unknown): string => {
+  const parsed = exitFinite(value);
+  if (parsed == null) return '—';
+  const formatted = exitMoney(parsed);
+  return parsed > 0 ? `+${formatted}` : formatted;
+};
+
+const exitRatioPercent = (value: unknown): string => {
+  const parsed = exitFinite(value);
+  return parsed == null ? '—' : exitPercent(parsed * 100, true);
+};
+
+const exitValueTone = (value: unknown): string => {
+  const parsed = exitFinite(value);
+  if (parsed == null || parsed === 0) return 'var(--app-text-muted)';
+  return parsed > 0 ? '#3d7a47' : '#b64a38';
+};
+
+const exitQuoteAge = (value: unknown): string => {
+  const seconds = exitFinite(value);
+  if (seconds == null) return '—';
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  return `${(seconds / 3600).toFixed(1)}h`;
 };
 
 // Small inline tag used in Entry Quality detail panel
 // Collapsible Stage Section Component
 interface CollapsibleStageSectionProps {
+  stageNumber?: string;
+  stageLabel?: string;
+  expandLabel?: string;
+  collapseLabel?: string;
   title: string;
   icon: React.ReactNode;
   statusText?: string;
@@ -76,167 +143,104 @@ interface CollapsibleStageSectionProps {
 }
 
 const CollapsibleStageSection: React.FC<CollapsibleStageSectionProps> = ({
+  stageNumber, stageLabel = 'Stage', expandLabel = 'Expand', collapseLabel = 'Collapse',
   title, icon, statusText, statusColor, progressValue, progressText,
   summaryChips, actionButton, isRunning, expanded, onToggle, children
 }) => {
   const statusTagColor = statusColor || (isRunning ? 'processing' : 'default');
-  
-  // Custom styles for different status colors to match professional palette
-  const getStatusStyle = () => {
-    if (isRunning) return { background: 'rgba(24, 144, 255, 0.05)', border: '1px solid rgba(24, 144, 255, 0.2)' };
-    if (statusColor === 'success') return { background: 'rgba(82, 196, 26, 0.03)', border: '1px solid #eaff8f' };
-    if (statusColor === 'error') return { background: 'rgba(255, 77, 79, 0.03)', border: '1px solid #ffd8bf' };
-    return { background: 'var(--app-card-bg)', border: '1px solid var(--app-border-soft)' };
-  };
-
-  const sectionStyle = getStatusStyle();
+  const statusKey = isRunning ? 'running' : statusColor || 'default';
 
   return (
-    <div style={{ 
-      marginBottom: 20, 
-      borderRadius: 12, 
-      overflow: 'hidden',
-      boxShadow: expanded ? '0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.05)' : '0 2px 8px rgba(0, 0, 0, 0.03)',
-      transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-      border: sectionStyle.border
-    }}>
+    <section className={`agent-stage-section is-${statusKey}${expanded ? ' is-expanded' : ''}`}>
       <div
+        className="agent-stage-header"
         onClick={onToggle}
-        style={{
-          display: 'flex', 
-          alignItems: 'center', 
-          height: 60,
-          padding: '0 20px', 
-          background: sectionStyle.background,
-          cursor: 'pointer', 
-          transition: 'all 0.2s',
-          userSelect: 'none',
-          borderBottom: expanded ? sectionStyle.border : 'none'
-        }}
       >
-        {/* Expand icon */}
-        <span style={{ 
-          marginRight: 12, 
-          fontSize: 10, 
-          color: expanded ? '#1890ff' : 'var(--app-text-muted)', 
-          flexShrink: 0,
-          transition: 'transform 0.3s'
-        }}>
+        <button
+          type="button"
+          className="agent-stage-toggle"
+          aria-label={`${expanded ? collapseLabel : expandLabel} ${title}`}
+          aria-expanded={expanded}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggle();
+          }}
+        >
           {expanded ? <CaretDownOutlined /> : <CaretRightOutlined />}
-        </span>
+        </button>
 
-        {/* Title + Icon */}
-        <span style={{ 
-          fontSize: 16, 
-          fontWeight: 700, 
-          color: 'var(--app-text-strong)', 
-          marginRight: 16, 
-          flexShrink: 0, 
-          display: 'flex', 
-          alignItems: 'center', 
-          gap: 10 
-        }}>
-          <span style={{ 
-            display: 'flex', 
-            alignItems: 'center', 
-            justifyContent: 'center',
-            width: 32,
-            height: 32,
-            borderRadius: 8,
-            background: isRunning ? '#1890ff15' : 'var(--app-card-bg-soft)',
-            color: isRunning ? 'var(--app-blue-text)' : 'var(--app-text-muted)',
-            fontSize: 18
-          }}>
+        <div className="agent-stage-identity">
+          <span className="agent-stage-icon">
             {icon}
           </span>
-          {title}
-        </span>
+          <span className="agent-stage-title-block">
+            {stageNumber && <small>{stageLabel} {stageNumber}</small>}
+            <strong>{title}</strong>
+          </span>
+        </div>
 
-        {/* Status badge */}
         {statusText && (
           <Tag 
             color={statusTagColor} 
-            style={{ 
-              margin: 0, 
-              fontSize: 11, 
-              fontWeight: 700,
-              letterSpacing: '0.03em',
-              lineHeight: '22px', 
-              padding: '0 12px', 
-              marginRight: 16,
-              borderRadius: 20,
-              textTransform: 'uppercase',
-              border: 'none',
-              boxShadow: isRunning ? '0 0 0 2px rgba(24, 144, 255, 0.1)' : 'none'
-            }}
+            bordered={false}
+            className="agent-stage-status"
           >
             {isRunning && <SyncOutlined spin style={{ marginRight: 6 }} />}
             {statusText}
           </Tag>
         )}
 
-        {/* Progress bar (compact 6px) */}
         {progressValue !== null && progressValue !== undefined && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginRight: 16, minWidth: 150, flexShrink: 0 }}>
-            <div style={{ flex: 1, height: 8, background: 'var(--app-table-header-bg)', borderRadius: 10, overflow: 'hidden' }}>
+          <div className="agent-stage-progress">
+            <div className="agent-stage-progress-track">
               <div 
+                className="agent-stage-progress-value"
                 style={{ 
                   width: `${Math.min(100, Math.max(0, progressValue))}%`, 
-                  height: '100%', 
-                  background: isRunning ? 'linear-gradient(90deg, #1890ff, #69b1ff)' : '#52c41a', 
-                  borderRadius: 10, 
-                  transition: 'width 0.8s cubic-bezier(0.4, 0, 0.2, 1)' 
                 }} 
               />
             </div>
-            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--app-text-muted)', minWidth: 38, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+            <b>
               {Math.round(progressValue)}%
-            </span>
+            </b>
+            {progressText && (
+              <span>
+                {progressText}
+              </span>
+            )}
           </div>
         )}
         
         {progressText && (progressValue === null || progressValue === undefined) && (
-          <span style={{ fontSize: 13, color: 'var(--app-text-muted)', marginRight: 16, fontStyle: 'italic' }}>{progressText}</span>
+          <span className="agent-stage-progress-text">{progressText}</span>
         )}
 
-        {/* Summary chips */}
         {summaryChips && summaryChips.length > 0 && (
-          <div style={{ display: 'flex', gap: 10, marginRight: 16, flexWrap: 'wrap' }}>
+          <div className="agent-stage-summary">
             {summaryChips.map((chip, i) => (
-              <span key={i} style={{ 
-                fontSize: 12, 
-                fontWeight: 600,
-                color: 'var(--app-text)', 
-                background: 'var(--app-card-bg-soft)', 
-                borderRadius: 6, 
-                padding: '3px 10px', 
-                lineHeight: '20px',
-                border: '1px solid var(--app-border)'
-              }}>
-                <span style={{ color: 'var(--app-text-muted)' }}>{chip.label}:</span> <span style={{ color: chip.color || 'var(--app-text-strong)', fontWeight: 800 }}>{chip.value}</span>
+              <span key={i}>
+                <small>{chip.label}</small>
+                <b style={{ color: chip.color || 'var(--app-text-strong)' }}>{chip.value}</b>
               </span>
             ))}
           </div>
         )}
 
-        {/* Spacer */}
-        <div style={{ flex: 1 }} />
+        <div className="agent-stage-spacer" />
 
-        {/* Action button */}
         {actionButton && (
-          <div onClick={(e) => e.stopPropagation()} style={{ marginLeft: 16 }}>
+          <div className="agent-stage-action" onClick={(e) => e.stopPropagation()}>
             {actionButton}
           </div>
         )}
       </div>
 
-      {/* Expanded content */}
       {expanded && (
-        <div style={{ padding: '24px', background: 'var(--app-card-bg)' }}>
+        <div className="agent-stage-content">
           {children}
         </div>
       )}
-    </div>
+    </section>
   );
 };
 
@@ -289,6 +293,10 @@ const getEntryPlanCurrentPrice = (plan: any): number | null => {
   return num != null && num > 0 ? num : null;
 };
 
+const getEntryPlanExecutablePrice = (plan: any): number | null => (
+  toEntryPlanNumber(plan?.executableAsk ?? plan?.latestAsk) ?? getEntryPlanCurrentPrice(plan)
+);
+
 const hasEntryPlanExitLevels = (plan: any): boolean => {
   const stop = toEntryPlanNumber(plan?.stopLoss ?? plan?.stop ?? plan?.entryPlanStop);
   const target = toEntryPlanNumber(plan?.takeProfit1 ?? plan?.takeProfit ?? plan?.target ?? plan?.entryPlanTarget);
@@ -296,7 +304,7 @@ const hasEntryPlanExitLevels = (plan: any): boolean => {
 };
 
 const isEntryPlanInZone = (plan: any): boolean => {
-  const current = getEntryPlanCurrentPrice(plan);
+  const current = getEntryPlanExecutablePrice(plan);
   const { low, high } = getEntryPlanZone(plan);
   return current != null && low != null && high != null && current >= low && current <= high;
 };
@@ -341,18 +349,30 @@ const getEntryPlanEffectiveAction = (plan: any): string => {
   const action = getEntryPlanAction(plan);
   if (action === 'SKIP' || action === 'NEED_DATA') return action;
 
-  const current = getEntryPlanCurrentPrice(plan);
+  if (plan?.dataQuality && plan.dataQuality !== 'GOOD') return 'NEED_DATA';
+  if (plan?.marketIsOpen === false) return action === 'BLOCKED_BY_RISK' ? action : 'WAIT_FOR_ENTRY';
+  const quoteAge = toEntryPlanNumber(plan?.quoteAgeSeconds);
+  if (plan?.marketIsOpen === true && (quoteAge == null || quoteAge > 90)) return 'NEED_DATA';
+
+  const current = getEntryPlanExecutablePrice(plan);
   const { low, high } = getEntryPlanZone(plan);
   if (current == null || low == null || high == null || !hasEntryPlanExitLevels(plan)) {
     return 'NEED_DATA';
   }
 
   if (action === 'BLOCKED_BY_RISK') {
-    if (hasEntryPlanHardBlock(plan)) return action;
-    if (!isEntryPlanInZone(plan)) return 'WAIT_FOR_ENTRY';
-    const aiDecision = String(plan?.aiDecision || '').toUpperCase();
-    const rg = plan?.riskGate || plan?.hardRiskGate || {};
-    return aiDecision === 'WATCH' || rg?.status === 'REVIEW' ? 'READY_REVIEW' : 'BUY_READY';
+    return action;
+  }
+
+  const triggerStatus = String(plan?.entryTriggerStatus || plan?.institutionalEntryPlan?.entry?.triggerStatus || '').toUpperCase();
+  const triggerMet = plan?.entryTriggerMet ?? plan?.institutionalEntryPlan?.entry?.triggerMet;
+  const setupAutoEligible = plan?.setupAutoEligible ?? plan?.institutionalEntryPlan?.entry?.setupAutoEligible;
+  if (triggerStatus === 'NOT_ELIGIBLE' || setupAutoEligible === false) return 'SKIP';
+  if (triggerStatus === 'NEED_DATA') return 'NEED_DATA';
+  if ((action === 'BUY_READY' || action === 'READY_REVIEW') && (
+    (triggerStatus && triggerStatus !== 'CONFIRMED') || triggerMet === false
+  )) {
+    return 'WAIT_FOR_ENTRY';
   }
 
   if ((action === 'BUY_READY' || action === 'READY_REVIEW') && !isEntryPlanInZone(plan)) {
@@ -362,10 +382,15 @@ const getEntryPlanEffectiveAction = (plan: any): string => {
 };
 
 const getEntryPlanUnavailableReason = (plan: any): string => {
-  const current = getEntryPlanCurrentPrice(plan);
+  const triggerStatus = String(plan?.entryTriggerStatus || '').toUpperCase();
+  if (triggerStatus === 'NEED_DATA') {
+    const missing = Array.isArray(plan?.entryTriggerMissing) ? plan.entryTriggerMissing.join(', ') : '';
+    return missing ? `Trigger data missing: ${missing}.` : 'Setup-trigger evidence is unavailable. Rerun Entry Plan.';
+  }
+  const current = getEntryPlanExecutablePrice(plan);
   const { low, high } = getEntryPlanZone(plan);
   if (low == null || high == null) return 'Entry zone unavailable. Refresh market data.';
-  if (current == null) return 'Current price unavailable. Refresh market data.';
+  if (current == null) return 'Executable ask unavailable. Refresh market data.';
   if (!hasEntryPlanExitLevels(plan)) return 'Stop/target unavailable. Refresh market data.';
   return '';
 };
@@ -389,11 +414,18 @@ const getEntryPlanActionTooltip = (plan: any): string => {
   const capNote = getEntryPlanCapNote(plan);
   if (action === 'NEED_DATA') return getEntryPlanUnavailableReason(plan) || 'Entry plan data unavailable.';
   if (action === 'WAIT_FOR_ENTRY') {
-    const current = getEntryPlanCurrentPrice(plan);
+    const triggerStatus = String(plan?.entryTriggerStatus || '').toUpperCase();
+    if (triggerStatus === 'WAIT_TRIGGER') {
+      return plan?.entryTriggerReasons?.join('; ') || `Price is in the zone, but the ${String(plan?.entryTriggerKind || 'setup').replace(/_/g, ' ')} confirmation is still pending.`;
+    }
+    if (triggerStatus === 'NEED_DATA') {
+      return plan?.entryTriggerReasons?.join('; ') || 'Required setup-trigger evidence is missing.';
+    }
+    const current = getEntryPlanExecutablePrice(plan);
     const { low, high } = getEntryPlanZone(plan);
     if (current != null && low != null && high != null) {
-      if (current > high) return `Waiting for price to return to entry zone. Current price is above entry zone; limit entry recommended.${capNote ? ` ${capNote}` : ''}`;
-      if (current < low) return `Waiting for price to return to entry zone. Current price is below entry zone.${capNote ? ` ${capNote}` : ''}`;
+      if (current > high) return `Waiting for price to return to entry zone. Executable ask is above the approved zone.${capNote ? ` ${capNote}` : ''}`;
+      if (current < low) return `Waiting for price to return to entry zone. Executable ask is below the approved zone.${capNote ? ` ${capNote}` : ''}`;
     }
     return `Waiting for price to return to entry zone.${capNote ? ` ${capNote}` : ''}`;
   }
@@ -411,12 +443,12 @@ const getEntryPlanExecutionSnapshot = (plan: any): any => {
   const action = getEntryPlanEffectiveAction(plan);
   const rg = plan?.riskGate || plan?.hardRiskGate || {};
   const blockers = getEntryPlanFilteredBlockers(plan);
-  const status = blockers.length > 0 ? 'BLOCK' : (rg?.status === 'REVIEW' && action === 'READY_REVIEW' ? 'REVIEW' : 'PASS');
+  const status = blockers.length > 0 ? 'BLOCK' : (rg?.status || 'PASS');
   const shares = plan?.executableShares ?? plan?.finalShares ?? plan?.positionSizeShares ?? plan?.shares;
   return {
     ...plan,
     finalAction: action,
-    tradeReadiness: action === 'BUY_READY' || action === 'READY_REVIEW' ? 'READY' : action === 'WAIT_FOR_ENTRY' ? 'WAIT' : 'BLOCKED',
+    tradeReadiness: action === 'BUY_READY' ? 'READY' : action === 'READY_REVIEW' || action === 'WAIT_FOR_ENTRY' ? 'WAIT' : 'BLOCKED',
     riskGate: { ...rg, status, blockers },
     hardRiskGate: { ...(plan?.hardRiskGate || rg), status, blockers },
     shares,
@@ -424,59 +456,534 @@ const getEntryPlanExecutionSnapshot = (plan: any): any => {
   };
 };
 
-// Helper for Entry Zone Display
-const formatEntryZoneDisplay = (plan: any) => {
-  const { low, high } = getEntryPlanZone(plan);
-  if (low == null || high == null) {
-    return {
-      statusLabel: 'Need Data',
-      primaryText: 'Entry zone unavailable',
-      secondaryText: 'Refresh market data',
-      tone: 'neutral'
-    };
-  }
-  
-  const current = getEntryPlanCurrentPrice(plan);
-  
-  if (current == null) {
-    return {
-      statusLabel: 'Need Data',
-      primaryText: 'Price unavailable',
-      secondaryText: `${low.toFixed(2)} – ${high.toFixed(2)} zone`,
-      tone: 'neutral'
-    };
-  }
-
-  if (current < low) {
-    return {
-      statusLabel: 'Wait for breakout',
-      primaryText: `Entry above ${low.toFixed(2)}`,
-      secondaryText: `${low.toFixed(2)} – ${high.toFixed(2)} zone`,
-      tone: 'warning'
-    };
-  } else if (current > high) {
-    const diff = current - high;
-    const diffPct = (diff / current) * 100;
-    return {
-      statusLabel: 'Wait for pullback',
-      primaryText: `Target zone ${low.toFixed(2)} – ${high.toFixed(2)}`,
-      secondaryText: `Above zone by ${diff.toFixed(2)} / ${diffPct.toFixed(1)}%`,
-      tone: 'info'
-    };
-  } else {
-    return {
-      statusLabel: 'In entry zone',
-      primaryText: `${low.toFixed(2)} – ${high.toFixed(2)}`,
-      secondaryText: 'Ready for risk review',
-      tone: 'success'
-    };
-  }
-};
-
 const Agent: React.FC = (): React.ReactElement => {
-  console.log('Portfolio component rendering');
   const navigate = useNavigate();
   const { t, language, translateSector } = useLanguage();
+  const isZh = language === 'zh-CN';
+  const agentText = useCallback(
+    (english: string, chinese: string): string => (isZh ? chinese : english),
+    [isZh],
+  );
+  const agentErrorText = useCallback((
+    raw: unknown,
+    englishFallback: string,
+    chineseFallback: string,
+  ): string => {
+    const detail = String(raw ?? '').trim();
+    if (!detail) return isZh ? chineseFallback : englishFallback;
+    if (!isZh) return detail;
+
+    const normalized = detail.toLowerCase();
+    if (/session|token|sign.?in|unauthor|\b401\b/.test(normalized)) return '登录状态已过期，请重新登录。';
+    if (/rate.?limit|throttl|\b429\b/.test(normalized)) return '请求频率过高，系统稍后会自动重试。';
+    if (/timeout|timed out|monitoring window/.test(normalized)) return '本次操作等待超时，请稍后重试。';
+    if (/not configured|configuration|credential|api.?key|provider|forbidden|\b403\b/.test(normalized)) {
+      return '当前服务连接或凭据不可用，请在设置中检查配置。';
+    }
+    if (/network|failed to fetch|failed to reach|connection/.test(normalized)) return '暂时无法连接服务，请稍后重试。';
+    return chineseFallback;
+  }, [isZh]);
+  const agentEnumLabel = useCallback((value: unknown): string => {
+    const raw = String(value ?? '').trim();
+    if (!raw) return '—';
+    const normalized = raw.toUpperCase().replace(/[\s-]+/g, '_');
+    if (!isZh) return raw.replace(/_/g, ' ');
+    const labels: Record<string, string> = {
+      ADVANCE: '推进', AVOID: '回避', WATCH: '观察', BUY: '买入', SELL: '卖出', SKIP: '跳过',
+      PRIORITY_A: '优先级 A', PRIORITY_B: '优先级 B', PRIORITY_C: '优先级 C',
+      POSITIVE: '正面', NEGATIVE: '负面', NEUTRAL: '中性',
+      READY: '就绪', REVIEW: '待审核', WAIT: '等待', ELIGIBLE: '符合条件', RESEARCH_ONLY: '仅研究',
+      OPEN: '开市', CLOSED: '已收市', MONITORING: '监控中', TRAILING: '追踪止损', BREAKEVEN: '保本',
+      PENDING: '待处理', SUBMITTED: '已提交', FILLED: '已成交', FAILED: '失败', HOLDING: '持有中',
+      ZONE_WAIT: '等待入场区间', ORDER_PENDING: '订单待处理', AUTO_EXECUTING: '自动执行中',
+      GOOD: '良好', PARTIAL: '部分数据', POOR: '较差', HIGH: '高', MEDIUM: '中', LOW: '低', UNKNOWN: '未知',
+      DATA: '数据', DAY: '当日有效', GTC: '撤销前有效', IOC: '立即成交或取消', FOK: '全部成交或取消',
+      SIMPLE: '普通订单', BRACKET: '保护性组合订单', OCO: '二选一订单', OTO: '触发式订单',
+      STRONG_BULLISH: '强势看多', BULLISH: '看多', BEARISH: '看空', STRONG_BEARISH: '强势看空',
+      UPTREND: '上升趋势', DOWNTREND: '下降趋势', RANGE: '区间震荡', RISK_ON: '偏风险', RISK_OFF: '偏防御',
+      NONE: '无', ADMIT: '准入', HOLD: '暂缓', BLOCK: '阻断', CHECKING: '检查中', COMPLETED: '已完成',
+      BUY_READY: '可买入', READY_REVIEW: '待审核', WAIT_FOR_ENTRY: '等待入场', NEED_DATA: '需要数据',
+      BLOCKED_BY_RISK: '风险阻断', PASS_DV: '验证通过', REJECT: '已拒绝',
+      EMERGENCY_EXIT: '紧急退出', EMERGENCY_EXIT_SUBMITTED: '紧急退出已提交', MANUAL_INTERVENTION: '人工介入',
+      PROTECTION_REQUIRED: '需要保护单', REVIEW_OPEN_ORDERS: '检查未成交订单', PROTECTED_REVIEW: '保护单复核',
+      TIME_EXIT_REVIEW: '持有时间复核', THESIS_REVIEW: '交易逻辑复核', EVENT_REVIEW: '事件风险复核',
+      CONCENTRATION_REVIEW: '集中度复核', RATCHET_STOP: '上调止损', TARGET_REACHED: '已达目标',
+      MONITOR: '继续监控', PROTECTED: '已保护', UNPROTECTED: '未保护', BLOCKED: '已阻断',
+    };
+    return labels[normalized] || raw.replace(/_/g, ' ');
+  }, [isZh]);
+  const liveAutoCopy = language === 'zh-CN'
+    ? {
+        eyebrow: '实盘自动化授权',
+        title: '授权无人值守实盘订单？',
+        description: '你将授予后台引擎实盘下单权限。该引擎可在本页面关闭后继续运行，但不会绕过任何既有风控。',
+        status: '当前权限',
+        locked: '未授权',
+        environment: '交易环境',
+        liveConnected: '实盘 · Alpaca 已连接',
+        liveConnectionRequired: '实盘 · 需要连接 Alpaca',
+        schedule: '运行范围',
+        scheduleOff: '定时关闭 · 仅手动触发完整周期',
+        scheduleEvery: (interval: string) => `每 ${interval} · 仅纽约市场时段`,
+        orders: '订单范围',
+        orderScope: '符合条件的限价买单、保护性 OCO 与风险退出单',
+        risk: '风控边界',
+        riskScope: '硬风控、账户限额、熔断器与持仓保护仍然有效',
+        boundariesTitle: '本次授权允许什么',
+        backgroundBoundary: '后台周期可在页面关闭后继续完成，并使用已保存的账户与风险配置。',
+        modeBoundary: '只有 Full AI 模式可以自动提交订单；Hybrid 和 Manual 仍需人工审核。',
+        gateBoundary: '市场时段检查、确定性硬门槛、熔断器和券商限制始终具有最终约束力。',
+        note: '授权操作本身不会立即创建订单。权限仅在“实盘 + Full AI”条件下生效，并可随时通过此开关关闭。',
+        acceptance: '我理解这会允许后台引擎在无需逐单确认的情况下，使用真实资金提交符合条件的实盘订单。',
+        cancel: '保持关闭',
+        confirm: '授权实盘自动运行',
+        switchLabel: '授权无人值守实盘订单',
+      }
+    : {
+        eyebrow: 'LIVE AUTOMATION AUTHORIZATION',
+        title: 'Authorize unattended live orders?',
+        description: 'You are granting the background engine live order authority. It can continue after this page closes, but it cannot bypass existing risk controls.',
+        status: 'Current authority',
+        locked: 'Locked',
+        environment: 'Environment',
+        liveConnected: 'Live · Alpaca connected',
+        liveConnectionRequired: 'Live · Alpaca connection required',
+        schedule: 'Run scope',
+        scheduleOff: 'Schedule off · manually triggered full cycles only',
+        scheduleEvery: (interval: string) => `Every ${interval} · New York market hours only`,
+        orders: 'Order scope',
+        orderScope: 'Eligible buy limits, protective OCO, and risk-exit orders',
+        risk: 'Risk boundary',
+        riskScope: 'Hard gates, account limits, circuit breakers, and position protection remain binding',
+        boundariesTitle: 'What this authorization allows',
+        backgroundBoundary: 'A background cycle may finish after this page closes, using the saved account and risk context.',
+        modeBoundary: 'Only Full AI mode can submit orders automatically; Hybrid and Manual remain review-only.',
+        gateBoundary: 'Market-hour checks, deterministic hard gates, circuit breakers, and broker controls always have final authority.',
+        note: 'This authorization does not place an order now. It is effective only while Real + Full AI are active and can be revoked with this switch at any time.',
+        acceptance: 'I understand this permits the background engine to submit eligible real-money orders without confirming each order individually.',
+        cancel: 'Keep disabled',
+        confirm: 'Authorize live automation',
+        switchLabel: 'Authorize unattended live orders',
+      };
+  const agentConsoleCopy = language === 'zh-CN'
+    ? {
+        consoleKicker: '研究与执行控制台',
+        engineOnline: '后台引擎在线',
+        engineChecking: '正在检查引擎',
+        controlPlaneAria: '自动化控制面板',
+        scheduler: '调度器',
+        online: '在线',
+        checking: '检查中',
+        manualOnly: '仅手动运行',
+        every: (interval: string) => `每 ${interval} 运行`,
+        market: '市场',
+        open: '开市',
+        holiday: '休市日',
+        closed: '已收市',
+        newYorkSession: '纽约交易时段',
+        orderAuthority: '下单权限',
+        paperAuto: '模拟自动交易',
+        liveAuthorized: '实盘已授权',
+        liveLocked: '实盘未授权',
+        fullAiMode: '全自动 AI 模式',
+        reviewRequired: '需要人工审核',
+        noAutoOrders: '不会自动下单',
+        notifications: '通知',
+        discordOn: 'Discord 已开启',
+        discordOff: 'Discord 已关闭',
+        notificationScope: '交易 · 重要风险 · 单次运行摘要',
+        riskControls: '风险控制',
+        circuitOpen: '熔断器已触发',
+        hardGatesActive: '硬风控已启用',
+        checkingPositions: '正在检查持仓',
+        positionGuard: (seconds: number) => `每 ${seconds} 秒检查持仓`,
+        operations: '运行管理',
+        automationControl: '自动化控制',
+        paperEnvironment: '模拟环境',
+        liveAuthorizedEnvironment: '实盘已授权',
+        liveLockedEnvironment: '实盘未授权',
+        pipeline: '自动化流程',
+        inProgress: '进行中',
+        stoppedHere: '在此阶段停止',
+        interrupted: '已中断',
+        noCandidates: '无候选标的',
+        partial: '部分完成',
+        partialResult: '部分结果',
+        complete: '完成',
+        queued: '等待执行',
+        stageProgress: (progress: number) => `本阶段 ${progress}%`,
+        allStagesCompleted: (count: number) => `${count}/${count} 个阶段已完成`,
+        stagesBeforeFailure: (count: number) => `失败前已完成 ${count} 个阶段`,
+        stagesBeforeStop: (count: number) => `停止前已完成 ${count} 个阶段`,
+        stagesReady: '七个确定性阶段均已就绪',
+        disabled: '已关闭',
+        cycleRunning: '流程运行中',
+        armed: '已就绪',
+        premarketArmed: '盘前已就绪',
+        waitingForMarket: '等待开市',
+        pending: '等待中',
+        runFullCycle: '运行完整自动化流程',
+        startingPipeline: '正在启动流程',
+        cycleCompleted: '流程已完成',
+        pipelineFailed: (stage: string) => `${stage}失败`,
+        cycleInterrupted: '流程已中断',
+        ready: '就绪',
+        running: '运行中',
+        completed: '已完成',
+        failed: '失败',
+        stopped: '已停止',
+        idle: '空闲',
+        preparingPipeline: '正在准备七阶段后台流程。',
+        cycleStoppedEarly: '流程在完成前停止。',
+        allStagesFinished: '全部七个阶段均已完成。',
+        readyForBackgroundRun: '可随时运行一次完整后台流程。',
+        overall: '总进度',
+        currentStage: '当前阶段',
+        elapsed: '已用时间',
+        progressAria: (progress: number) => `完整自动化流程已完成 ${progress}%`,
+        completedCount: (completed: number, total: number) => `${completed}/${total} 已完成`,
+        backgroundSchedule: '后台调度',
+        off: '关闭',
+        scheduleHelper: '仅在交易时段运行，且同一时间只会执行一个后台流程。',
+        paperAutomation: '模拟自动交易',
+        liveOrdersAuthorized: '实盘订单已授权',
+        liveOrdersLocked: '实盘订单未授权',
+        paper: '模拟',
+        paperCode: '模拟',
+        eligibleOrders: '通过全部硬风控后，系统可提交符合条件的限价单。',
+        fullAiRequired: '只有全自动 AI 模式可以自动提交订单。',
+        runTooltip: '在后台完整运行一次七阶段流程。这不是试运行，也不会开启周期调度。',
+        fullCycleRunning: '完整流程运行中',
+        sevenStagesTitle: '一次后台运行完成七个真实阶段。',
+        sevenStagesDescription: '扫描、精筛、深度验证、组合准入、入场计划、符合条件的限价单执行与持仓保护，共用同一套已保存的账户和风控配置。',
+        automation: '自动化',
+        newYorkSessionOpen: '纽约交易时段已开市',
+        marketHoursGateActive: '交易时段限制已启用',
+        lastCompleted: '上次完成',
+        noCompletedRun: '暂无已完成流程',
+        awaitingFirstCycle: '等待首次完整流程',
+        nextEligibleRun: '下次可运行时间',
+        enableSchedule: '开启调度后自动待命',
+        authoritativeSchedule: '以后端调度时间为准',
+        runsToday: '今日运行次数',
+        schedulerOnline: '后台调度器在线',
+        schedulerPending: '正在确认调度器状态',
+        savedContext: '已保存配置',
+        real: '实盘',
+        riskHorizon: (risk: string, horizon: string) => `${risk}风险 / ${horizon}周期`,
+        discordPolicy: 'Discord 通知策略',
+        quietAlertsOn: '精简通知已开启',
+        trades: '交易',
+        risk: '风险',
+        digest: '摘要',
+        materialEventsOnly: '仅重要事件',
+        noWebhook: '不发送 Webhook 通知',
+        lastCycle: '上次流程',
+        scanner: '市场扫描',
+        aiReviewed: 'AI 已审核',
+        entryPlans: '入场计划',
+        positionsChecked: '已检查持仓',
+        marketCalendar: '市场日历',
+        scheduleOff: '调度已关闭',
+        next15Days: '未来 15 天',
+        runHistory: '运行记录',
+        loaded: (count: number) => `已载入 ${count} 条`,
+        auditTrail: '审计记录',
+        earlyClose: '提前收市',
+        unknown: '未知',
+        scheduled: '已安排',
+        noRun: '不运行',
+        alpacaCalendar: 'Alpaca 日历',
+        fallbackCalendar: '备用交易时段',
+        source: '来源',
+        loadingCalendar: '正在载入市场日历…',
+        noCalendarData: '暂无市场日历数据。',
+        automatic: '自动运行',
+        timeUnavailable: '时间不可用',
+        completedWithoutException: '运行完成，未发现异常。',
+        noStoredCycles: '尚未保存任何已完成的自动化流程。',
+        completedFallback: '已完成',
+        pipelineModeSuffix: ' · 模式',
+        calendarRowAlpaca: 'Alpaca 日历',
+        calendarRowFallback: '备用日历',
+        paperTradingStatus: '模拟交易',
+        liveTradingStatus: '实盘',
+        clear: '清空',
+        paperAiModeDescription: '模拟 AI 模式：通过审核的买入计划可以自动提交；被拦截的计划仍需人工审核。',
+        liveAiModeDescription: '实盘 AI 模式：通过审核的买入计划可以自动提交；被拦截的计划仍需人工审核。',
+        noExecutionCandidates: '暂无执行候选',
+        executionCandidatesHint: '符合条件的入场计划会显示在这里，供你审核或提交。',
+        waitingForEntryPlan: '等待入场计划',
+        riskGateRequired: '必须通过风险门槛',
+        autoSubmitProtected: '自动提交受风控保护',
+        openSell: '待成交卖单',
+        cancel: '取消',
+        on: '开启',
+        tradingDesk: '交易工作台',
+        portfolioOperations: '持仓操作',
+        assetClass: '资产类别',
+        costBasis: '成本基础',
+        exchange: '交易所',
+        stageLabels: {
+          market_scanner: '市场扫描',
+          fine_scan: '精细筛选',
+          deeper_validation: '深度验证',
+          admission: '组合准入',
+          entry_plan: '入场计划',
+          execution: '订单执行',
+          exit_scan: '持仓与退出',
+        } as Record<string, string>,
+        autoExecuting: '自动执行中',
+        holding: '持仓管理中',
+        orderPending: '订单待成交',
+        zoneWait: '等待价格区间',
+        blocked: '已拦截',
+        managedByExitScan: '由退出扫描管理',
+        waitingForFill: '等待成交',
+        watching: '持续观察',
+        remove: '移除',
+        retry: '重试',
+        runStatusLabels: {
+          success: '成功',
+          completed: '已完成',
+          failed: '失败',
+          blocked: '已拦截',
+          running: '运行中',
+          stopped: '已停止',
+          interrupted: '已中断',
+          pending: '等待中',
+          unknown: '未知',
+        } as Record<string, string>,
+        calendarStatusLabels: {
+          open: '开市',
+          early_close: '提前收市',
+          holiday: '休市日',
+          closed: '已收市',
+        } as Record<string, string>,
+        riskLabels: { low: '低', medium: '中等', high: '高' } as Record<string, string>,
+        horizonLabels: { short: '短期', mid: '中期', medium: '中期', long: '长期' } as Record<string, string>,
+      }
+    : {
+        consoleKicker: 'Research and execution console',
+        engineOnline: 'Headless Engine Online',
+        engineChecking: 'Engine Checking',
+        controlPlaneAria: 'Automation control plane',
+        scheduler: 'Scheduler',
+        online: 'Online',
+        checking: 'Checking',
+        manualOnly: 'Manual only',
+        every: (interval: string) => `Every ${interval}`,
+        market: 'Market',
+        open: 'Open',
+        holiday: 'Holiday',
+        closed: 'Closed',
+        newYorkSession: 'New York session',
+        orderAuthority: 'Order Authority',
+        paperAuto: 'Paper Auto',
+        liveAuthorized: 'Live Authorized',
+        liveLocked: 'Live Locked',
+        fullAiMode: 'Full AI mode',
+        reviewRequired: 'Review required',
+        noAutoOrders: 'No auto orders',
+        notifications: 'Notifications',
+        discordOn: 'Discord On',
+        discordOff: 'Discord Off',
+        notificationScope: 'Trades · material risk · one cycle digest',
+        riskControls: 'Risk Controls',
+        circuitOpen: 'Circuit Open',
+        hardGatesActive: 'Hard Gates Active',
+        checkingPositions: 'Checking positions now',
+        positionGuard: (seconds: number) => `${seconds}s position guard`,
+        operations: 'Operations',
+        automationControl: 'Automation Control',
+        paperEnvironment: 'Paper environment',
+        liveAuthorizedEnvironment: 'Live authorized',
+        liveLockedEnvironment: 'Live locked',
+        pipeline: 'Pipeline',
+        inProgress: 'In progress',
+        stoppedHere: 'Stopped here',
+        interrupted: 'Interrupted',
+        noCandidates: 'No candidates',
+        partial: 'Partial',
+        partialResult: 'Partial result',
+        complete: 'Complete',
+        queued: 'Queued',
+        stageProgress: (progress: number) => `${progress}% of stage`,
+        allStagesCompleted: (count: number) => `${count} of ${count} stages completed`,
+        stagesBeforeFailure: (count: number) => `${count} stages completed before the failure`,
+        stagesBeforeStop: (count: number) => `${count} stages completed before the stop`,
+        stagesReady: 'Seven deterministic stages are ready',
+        disabled: 'Disabled',
+        cycleRunning: 'Cycle running',
+        armed: 'Armed',
+        premarketArmed: 'Premarket armed',
+        waitingForMarket: 'Waiting for market',
+        pending: 'Pending',
+        runFullCycle: 'Run Full Auto Cycle',
+        startingPipeline: 'Starting pipeline',
+        cycleCompleted: 'Cycle completed',
+        pipelineFailed: (stage: string) => `${stage} failed`,
+        cycleInterrupted: 'Cycle interrupted',
+        ready: 'Ready',
+        running: 'Running',
+        completed: 'Completed',
+        failed: 'Failed',
+        stopped: 'Stopped',
+        idle: 'Idle',
+        preparingPipeline: 'Preparing the seven-stage backend pipeline.',
+        cycleStoppedEarly: 'The cycle stopped before completion.',
+        allStagesFinished: 'All seven stages finished.',
+        readyForBackgroundRun: 'Ready for one complete background run.',
+        overall: 'Overall',
+        currentStage: 'Current stage',
+        elapsed: 'Elapsed',
+        progressAria: (progress: number) => `Full auto cycle ${progress}% complete`,
+        completedCount: (completed: number, total: number) => `${completed}/${total} complete`,
+        backgroundSchedule: 'Background schedule',
+        off: 'Off',
+        scheduleHelper: 'Market hours only. One background cycle runs at a time.',
+        paperAutomation: 'Paper automation',
+        liveOrdersAuthorized: 'Live orders authorized',
+        liveOrdersLocked: 'Live orders locked',
+        paper: 'Paper',
+        paperCode: 'PAPER',
+        eligibleOrders: 'Eligible limit orders may be submitted after every hard gate passes.',
+        fullAiRequired: 'Automatic order submission requires Full AI mode.',
+        runTooltip: 'Runs the complete seven-stage chain once in the background. This is not a dry run and does not enable the recurring schedule.',
+        fullCycleRunning: 'Full Cycle Running',
+        sevenStagesTitle: 'Seven real stages in one backend run.',
+        sevenStagesDescription: 'Scanner, Fine Scan, DV, admission, entry planning, eligible limit-order execution, and position protection use the same saved account and risk context.',
+        automation: 'Automation',
+        newYorkSessionOpen: 'New York session open',
+        marketHoursGateActive: 'Market-hours gate active',
+        lastCompleted: 'Last completed',
+        noCompletedRun: 'No completed run',
+        awaitingFirstCycle: 'Awaiting first completed cycle',
+        nextEligibleRun: 'Next eligible run',
+        enableSchedule: 'Enable a schedule to arm',
+        authoritativeSchedule: 'Authoritative backend schedule',
+        runsToday: 'Runs today',
+        schedulerOnline: 'Headless scheduler online',
+        schedulerPending: 'Scheduler status pending',
+        savedContext: 'Saved context',
+        real: 'REAL',
+        riskHorizon: (risk: string, horizon: string) => `${risk} risk / ${horizon} horizon`,
+        discordPolicy: 'Discord policy',
+        quietAlertsOn: 'Quiet alerts on',
+        trades: 'trades',
+        risk: 'risk',
+        digest: 'digest',
+        materialEventsOnly: 'material events only',
+        noWebhook: 'No webhook delivery',
+        lastCycle: 'Last cycle',
+        scanner: 'Scanner',
+        aiReviewed: 'AI reviewed',
+        entryPlans: 'Entry plans',
+        positionsChecked: 'Positions checked',
+        marketCalendar: 'Market calendar',
+        scheduleOff: 'Schedule off',
+        next15Days: 'Next 15 days',
+        runHistory: 'Run history',
+        loaded: (count: number) => `${count} loaded`,
+        auditTrail: 'Audit trail',
+        earlyClose: 'Early close',
+        unknown: 'Unknown',
+        scheduled: 'Scheduled',
+        noRun: 'No run',
+        alpacaCalendar: 'Alpaca Calendar',
+        fallbackCalendar: 'Fallback basic hours',
+        source: 'Source',
+        loadingCalendar: 'Loading market calendar...',
+        noCalendarData: 'No market calendar data available.',
+        automatic: 'automatic',
+        timeUnavailable: 'Time unavailable',
+        completedWithoutException: 'Completed without an exception.',
+        noStoredCycles: 'No completed auto cycles are stored yet.',
+        completedFallback: 'completed',
+        pipelineModeSuffix: ' Mode',
+        calendarRowAlpaca: 'Alpaca calendar',
+        calendarRowFallback: 'Fallback calendar',
+        paperTradingStatus: 'PAPER TRADING',
+        liveTradingStatus: 'LIVE',
+        clear: 'Clear',
+        paperAiModeDescription: 'Paper AI mode: approved BUY plans may be submitted automatically. Blocked plans require review.',
+        liveAiModeDescription: 'Live AI mode: approved BUY plans may be submitted automatically. Blocked plans require review.',
+        noExecutionCandidates: 'No execution candidates',
+        executionCandidatesHint: 'Qualified Entry Plan results will appear here for review or submission.',
+        waitingForEntryPlan: 'Waiting for Entry Plan',
+        riskGateRequired: 'Risk gate required',
+        autoSubmitProtected: 'Auto-submit protected',
+        openSell: 'Open sell',
+        cancel: 'Cancel',
+        on: 'On',
+        tradingDesk: 'Trading desk',
+        portfolioOperations: 'Portfolio Operations',
+        assetClass: 'Asset Class',
+        costBasis: 'Cost Basis',
+        exchange: 'Exchange',
+        stageLabels: {} as Record<string, string>,
+        autoExecuting: 'Auto Executing',
+        holding: 'Holding',
+        orderPending: 'Order Pending',
+        zoneWait: 'Zone Wait',
+        blocked: 'Blocked',
+        managedByExitScan: 'Managed by Exit Scan',
+        waitingForFill: 'Waiting for Fill',
+        watching: 'Watching',
+        remove: 'Remove',
+        retry: 'Retry',
+        runStatusLabels: {} as Record<string, string>,
+        calendarStatusLabels: {} as Record<string, string>,
+        riskLabels: {} as Record<string, string>,
+        horizonLabels: {} as Record<string, string>,
+      };
+  const agentModalCopy = language === 'zh-CN'
+    ? {
+        reviewEyebrow: '订单核对',
+        executionEyebrow: '计划执行',
+        cancelEyebrow: '撤单确认',
+        buyOrder: '买入订单',
+        liveAccount: '实盘账户',
+        paperAccount: '模拟账户',
+        recommended: '入场计划建议',
+        orderParameters: '订单参数',
+        estimateAndRisk: '金额与风控',
+        cancellationDetails: '待撤订单',
+        cancelDescription: '请确认以下订单仍应撤销。撤单不会平掉已经成交的持仓。',
+        planSummary: '执行计划摘要',
+        liveFundsNotice: '该操作将使用真实资金；提交前请再次核对代码、数量、价格和风控边界。',
+        liveAcceptance: '我已核对标的、数量、价格和保护性退出，并确认使用实盘账户提交该订单。',
+        acceptanceRequired: '请先确认已核对实盘订单。',
+        mode: '交易环境',
+        setup: '交易结构',
+        entryZone: '入场区间',
+        expectedValue: '预计金额',
+        riskBudget: '最大风险',
+        protectiveExit: '保护性退出',
+      }
+    : {
+        reviewEyebrow: 'ORDER REVIEW',
+        executionEyebrow: 'PLAN EXECUTION',
+        cancelEyebrow: 'CANCEL REVIEW',
+        buyOrder: 'Buy order',
+        liveAccount: 'Live account',
+        paperAccount: 'Paper account',
+        recommended: 'Entry-plan recommendation',
+        orderParameters: 'Order parameters',
+        estimateAndRisk: 'Value & risk',
+        cancellationDetails: 'Order to cancel',
+        cancelDescription: 'Confirm that this order should still be canceled. Canceling does not close any quantity that has already filled.',
+        planSummary: 'Execution-plan summary',
+        liveFundsNotice: 'This action uses real funds. Recheck the symbol, size, prices, and risk boundaries before submitting.',
+        liveAcceptance: 'I reviewed the symbol, size, prices, and protective exits and authorize this order for the live account.',
+        acceptanceRequired: 'Review and accept the live-order confirmation before submitting.',
+        mode: 'Environment',
+        setup: 'Setup',
+        entryZone: 'Entry zone',
+        expectedValue: 'Estimated value',
+        riskBudget: 'Maximum risk',
+        protectiveExit: 'Protective exits',
+      };
   // AI Agent 状态 - Step 2: 只做 UI，不接真实逻辑
   const [aiConfig, setAiConfig] = useState({
     apiKey: '',
@@ -495,8 +1002,6 @@ const Agent: React.FC = (): React.ReactElement => {
     loaded: boolean;
   }>({ ai: false, aiTestStatus: 'not_tested', aiLastTestError: null, alpaca: false, finnhub: false, loaded: false });
 
-  const [aiConfigForm] = Form.useForm();
-
   // ── Persistent Scanner State (from scannerStateStore) ──
   const [scannerSnapshot, setScannerSnapshot] = useState(() => scannerStateStore.getState());
 
@@ -507,7 +1012,7 @@ const Agent: React.FC = (): React.ReactElement => {
     return unsubscribe;
   }, []);
 
-  // Lazy news fetch: on-demand Finnhub news for symbols where backend fetch was limited
+  // Lazy news fetch: on-demand Alpaca News for expanded scanner symbols.
   const [lazyNewsCache, setLazyNewsCache] = useState<Record<string, any>>({});
   const lazyNewsLoadingSetRef = useRef<Set<string>>(new Set());
   const lazyNewsQueueRef = useRef<string[]>([]);
@@ -524,11 +1029,17 @@ const Agent: React.FC = (): React.ReactElement => {
         const queue = [...lazyNewsQueueRef.current];
         lazyNewsQueueRef.current = [];
         lazyNewsTimerRef.current = null;
-        for (const sym of queue) {
+        for (let i = 0; i < queue.length; i += 1) {
+          const sym = queue[i];
+          let pauseMs = 350;
           try {
             const res = await pipelineAutoAPI.fetchScannerNews(sym);
             const data = res.data;
             setLazyNewsCache(prev => ({ ...prev, [sym]: data ?? { _error: true } }));
+            const retryAfterSeconds = Number(data?.retryAfterSeconds || 0);
+            if (retryAfterSeconds > 0) {
+              pauseMs = Math.min(Math.max(retryAfterSeconds * 1000, 1000), 70000);
+            }
             if (data && !data._error) {
               const currentResults = scannerStateStore.getState().marketScanner.results;
               const idx = currentResults.findIndex((r: any) => r.symbol === sym);
@@ -538,6 +1049,10 @@ const Agent: React.FC = (): React.ReactElement => {
                   topNews: data.topNews || null, allNews: data.allNews || [],
                   newsCount: data.newsCount || 0, hasNews: data.hasNews || false,
                   newsSentiment: data.newsSentiment ?? updated[idx].newsSentiment,
+                  newsScore: data.newsScore ?? updated[idx].newsScore,
+                  sentimentScore: data.sentimentScore ?? updated[idx].sentimentScore,
+                  eventRisk: data.eventRisk ?? updated[idx].eventRisk,
+                  eventTags: data.eventTags ?? updated[idx].eventTags,
                   newsSource: data.newsSource || updated[idx].newsSource,
                   newsFetchReason: data.newsFetchReason || updated[idx].newsFetchReason,
                   dataSources: { ...updated[idx].dataSources, news: data.dataSources?.news || updated[idx].dataSources?.news },
@@ -548,6 +1063,9 @@ const Agent: React.FC = (): React.ReactElement => {
             }
           } catch { setLazyNewsCache(prev => ({ ...prev, [sym]: { _error: true } })); }
           finally { lazyNewsLoadingSetRef.current.delete(sym); }
+          if (i < queue.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, pauseMs));
+          }
         }
       }, 150);
     }
@@ -558,17 +1076,19 @@ const Agent: React.FC = (): React.ReactElement => {
     const reason = record.newsFetchReason || '';
     const source = record.newsSource || '';
     const dsNews = record.dataSources?.news || '';
-    if (reason === 'no_news_last_7d') return 'No Finnhub company news found in the last 7 days.';
-    if (reason === 'finnhub_not_configured') return 'Finnhub news is not configured for this account.';
-    if (reason === 'finnhub_news_api_failed') return 'Finnhub news request failed. Check API key, quota, or backend logs.';
-    if (reason === 'news_fetch_skipped_top_n_limit') return 'News fetch skipped — this symbol was outside the top 10 scanner candidates.';
-    if (reason === 'news_fetched') return 'News metadata was fetched, but no displayable headline was available.';
+    if (reason === 'no_news_last_7d') return agentText('No Alpaca news found in the last 7 days.', '最近 7 天没有可用的 Alpaca 新闻。');
+    if (reason === 'alpaca_news_not_configured' || reason === 'finnhub_not_configured') return agentText('Alpaca market data keys are not configured for news.', '尚未配置用于新闻服务的 Alpaca 市场数据密钥。');
+    if (reason.includes('alpaca_news_rate_limited') || reason.includes('alpaca_news_http_429') || reason === 'finnhub_rate_limited') return agentText('Alpaca News is rate limited. The scanner waits about 60 seconds before retrying.', 'Alpaca 新闻服务已触发频率限制，扫描器将在约 60 秒后重试。');
+    if (reason.includes('alpaca_news') || reason === 'finnhub_news_api_failed') return agentText('Alpaca News request failed. Check API key, quota, or backend logs.', 'Alpaca 新闻请求失败，请检查 API 密钥、额度或后台日志。');
+    if (reason === 'news_fetch_skipped_top_n_limit') return agentText('News fetch queued for this symbol. Open the row to fetch Alpaca News.', '该标的已进入新闻获取队列，展开此行即可加载新闻。');
+    if (reason === 'news_fetched') return agentText('News metadata was fetched, but no displayable headline was available.', '新闻元数据已获取，但暂时没有可显示的标题。');
     const combo = [source, dsNews].join(' ').toLowerCase();
-    if (combo.includes('no news in 7d')) return 'No Finnhub company news found in the last 7 days.';
-    if (combo.includes('not configured')) return 'Finnhub news is not configured for this account.';
-    if (combo.includes('error')) return 'Finnhub news request failed. Check API key, quota, or backend logs.';
-    if (combo.includes('below top candidate')) return 'News fetch skipped — this symbol was outside the top 10 scanner candidates.';
-    return 'No market news available for this symbol.';
+    if (combo.includes('no news in 7d')) return agentText('No Alpaca news found in the last 7 days.', '最近 7 天没有可用的 Alpaca 新闻。');
+    if (combo.includes('rate limit') || combo.includes('429')) return agentText('Alpaca News is rate limited. The scanner waits about 60 seconds before retrying.', 'Alpaca 新闻服务已触发频率限制，扫描器将在约 60 秒后重试。');
+    if (combo.includes('not configured')) return agentText('Alpaca market data keys are not configured for news.', '尚未配置用于新闻服务的 Alpaca 市场数据密钥。');
+    if (combo.includes('error')) return agentText('Alpaca News request failed. Check API key, quota, or backend logs.', 'Alpaca 新闻请求失败，请检查 API 密钥、额度或后台日志。');
+    if (combo.includes('below top candidate')) return agentText('News fetch queued for this symbol. Open the row to fetch Alpaca News.', '该标的已进入新闻获取队列，展开此行即可加载新闻。');
+    return agentText('No market news available for this symbol.', '该标的暂无可用的市场新闻。');
   };
 
   // Hydrate from store on mount — use module-level checks to detect page refresh vs route change
@@ -581,10 +1101,6 @@ const Agent: React.FC = (): React.ReactElement => {
         status: 'stopped', currentStatus: 'idle',
         detailedScanStatus: { ...state.marketScanner.detailedScanStatus, currentStatus: 'stopped', statusMessage: 'Scan interrupted by page refresh. Results preserved.' },
       });
-    }
-    // Continue Scan: only reset if status says processing but no module-level loop exists
-    if (state.continueScan.status === 'processing' && !isScanRunning()) {
-      scannerStateStore.updateContinueScan({ status: 'idle' });
     }
     // Fine Scan: only reset if status says running but no module-level loop exists
     if (state.fineScan.status === 'running' && !isFineScanRunning()) {
@@ -604,19 +1120,19 @@ const Agent: React.FC = (): React.ReactElement => {
   // Derived state from store (backward-compatible names)
   const marketScannerStatus = scannerSnapshot.marketScanner;
   const marketScannerResults = scannerSnapshot.marketScanner.results;
-  const continueScanStatus = scannerSnapshot.continueScan.status;
-  const continueScanProgress = scannerSnapshot.continueScan.progress;
-  const preferredContinueScanList = scannerSnapshot.continueScan.results;
-  const continueScanDetails = scannerSnapshot.continueScan.details;
   const fineScanStatus = scannerSnapshot.fineScan.status;
   const fineScanResults = scannerSnapshot.fineScan.results;
   const fineScanProgress = scannerSnapshot.fineScan.progress;
   const fineScanMessage = scannerSnapshot.fineScan.message;
+  const fineScanCurrentStep = scannerSnapshot.fineScan.currentStep;
   const fineScanExpandedRows = scannerSnapshot.fineScan.expandedRows;
 
   // Deeper Validation and Entry Plan from store
   const deeperValidationStatus = scannerSnapshot.deeperValidation.status;
   const deeperValidationResults = scannerSnapshot.deeperValidation.results;
+  const admissionStatus = scannerSnapshot.admission.status;
+  const admissionResults = scannerSnapshot.admission.results;
+  const admissionSummary = scannerSnapshot.admission.summary;
   const entryPlanStatus = scannerSnapshot.entryPlan.status;
   const entryPlanResults = scannerSnapshot.entryPlan.results;
 
@@ -624,27 +1140,9 @@ const Agent: React.FC = (): React.ReactElement => {
   const exitScanStatus = scannerSnapshot.exitScan.status;
   const exitScanResults = scannerSnapshot.exitScan.results;
   const submittedExitOrders = scannerSnapshot.exitScan.submittedExitOrders;
+  const exitScanSummary = scannerSnapshot.exitScan.summary || {};
 
   // Setter wrappers that update the store
-  const setContinueScanStatus = useCallback((status: any) => {
-    scannerStateStore.updateContinueScan({ status });
-  }, []);
-
-  const setContinueScanProgress = useCallback((progress: number) => {
-    scannerStateStore.updateContinueScan({ progress });
-  }, []);
-
-  const setPreferredContinueScanList = useCallback((results: any) => {
-    const next = typeof results === 'function' ? results(scannerStateStore.getState().continueScan.results) : results;
-    scannerStateStore.setContinueScanResults(next);
-  }, []);
-
-  const setContinueScanDetails = useCallback((updater: any) => {
-    const current = scannerStateStore.getState().continueScan.details;
-    const next = typeof updater === 'function' ? updater(current) : updater;
-    scannerStateStore.updateContinueScan({ details: next });
-  }, []);
-
   const setFineScanStatus = useCallback((status: any) => {
     scannerStateStore.updateFineScan({ status });
   }, []);
@@ -705,8 +1203,6 @@ const Agent: React.FC = (): React.ReactElement => {
     scannerStateStore.setExitScanResults(next);
   }, []);
 
-  const [preferredContinuePage, setPreferredContinuePage] = useState(1);
-
   // Trading Account Mode (global context)
   const { tradeMode } = useTradeMode();
   const [tradingAccountData, setTradingAccountData] = useState<any>(null);
@@ -758,6 +1254,7 @@ const Agent: React.FC = (): React.ReactElement => {
 
   // AI Watchlist state
   const [aiWatchlistItems, setAiWatchlistItems] = useState<any[]>([]);
+  const aiWatchlistItemsRef = useRef<any[]>([]);
   const [aiWatchlistLoading, setAiWatchlistLoading] = useState(false);
   const [aiWatchlistAutoRefresh, _setAiWatchlistAutoRefresh] = useState(false); // eslint-disable-line @typescript-eslint/no-unused-vars
   const [_aiWatchlistCountdown, setAiWatchlistCountdown] = useState(60); // eslint-disable-line @typescript-eslint/no-unused-vars
@@ -795,8 +1292,6 @@ const Agent: React.FC = (): React.ReactElement => {
     return saved === 'ai' || saved === 'hybrid' || saved === 'manual' ? saved : 'hybrid';
   });
 
-  // AI mode auto-confirms orders for both paper and real trading
-  const shouldAutoConfirmOrder = pipelineMode === 'ai';
   const [pipelineSchedule, setPipelineSchedule] = useState<'off' | '15m' | '30m' | '1h' | '2h'>(() => {
     const saved = localStorage.getItem('pipelineSchedule');
     return saved === '15m' || saved === '30m' || saved === '1h' || saved === '2h' ? saved : 'off';
@@ -805,7 +1300,14 @@ const Agent: React.FC = (): React.ReactElement => {
   const initialAutoSyncRef = useRef(true);
 
   // Pipeline Auto (market-hours scheduler) state
-  // Live Auto Trading — removed; AI mode auto-executes based on tradeMode directly
+  // Unattended live orders require a separate explicit authorization. Paper
+  // automation remains available without this switch.
+  const [liveAutoTradingEnabled, setLiveAutoTradingEnabled] = useState(false);
+  const [liveAutoConfirmOpen, setLiveAutoConfirmOpen] = useState(false);
+  const [liveAutoRiskAccepted, setLiveAutoRiskAccepted] = useState(false);
+  const shouldAutoConfirmOrder = pipelineMode === 'ai' && (
+    tradeMode === 'paper' || liveAutoTradingEnabled
+  );
   const [pipelineAutoStatus, setPipelineAutoStatus] = useState<any>(null);
   const pipelineAutoStatusRef = useRef<any>(null);
   useEffect(() => { pipelineAutoStatusRef.current = pipelineAutoStatus; }, [pipelineAutoStatus]);
@@ -813,6 +1315,8 @@ const Agent: React.FC = (): React.ReactElement => {
   const [autoRunActive, setAutoRunActive] = useState(false);
   const [autoRunStep, setAutoRunStep] = useState('');
   const [autoRunProgress, setAutoRunProgress] = useState(0);
+  const [autoRunRequestedId, setAutoRunRequestedId] = useState('');
+  const [autoRunClock, setAutoRunClock] = useState(Date.now());
   const [pipelineAutoLoading, setPipelineAutoLoading] = useState(false);
   const runAutoNowInFlightRef = useRef(false);
   const [pipelineAutoHistory, setPipelineAutoHistory] = useState<any[]>([]);
@@ -856,18 +1360,32 @@ const Agent: React.FC = (): React.ReactElement => {
       if (res.data.success) {
         setPipelineAutoSchedule(res.data.days || []);
         setPipelineAutoScheduleSource(res.data.source || '');
-        setPipelineAutoScheduleWarning(res.data.warning || '');
+        setPipelineAutoScheduleWarning(res.data.warning
+          ? agentErrorText(
+              res.data.warning,
+              res.data.warning,
+              '市场日程正在使用备用来源，显示时间可能稍有延迟。',
+            )
+          : '');
       } else {
         setPipelineAutoSchedule([]);
-        setPipelineAutoScheduleError((res.data as any).message || 'API returned error');
+        setPipelineAutoScheduleError(agentErrorText(
+          (res.data as any).message || (res.data as any).error,
+          'The market schedule could not be loaded.',
+          '暂时无法读取市场日程。',
+        ));
       }
     } catch (err: any) {
       setPipelineAutoSchedule([]);
-      setPipelineAutoScheduleError(err?.message || 'Failed to fetch market schedule');
+      setPipelineAutoScheduleError(agentErrorText(
+        err?.response?.data?.message || err?.message,
+        'The market schedule could not be loaded.',
+        '暂时无法读取市场日程。',
+      ));
     } finally {
       setPipelineAutoScheduleLoading(false);
     }
-  }, []);
+  }, [agentErrorText]);
 
   // Fetch schedule when expanded
   useEffect(() => {
@@ -877,7 +1395,7 @@ const Agent: React.FC = (): React.ReactElement => {
   }, [pipelineAutoScheduleExpanded, fetchPipelineAutoSchedule]);
 
   // Save pipeline-auto config when schedule changes
-  const savePipelineAutoConfig = useCallback(async (schedule: 'off' | '15m' | '30m' | '1h' | '2h') => {
+  const savePipelineAutoConfig = useCallback(async (schedule: 'off' | '15m' | '30m' | '1h' | '2h', liveOverride?: boolean) => {
     setPipelineAutoLoading(true);
     // Mark user as having interacted — initial sync effect should not overwrite this
     initialAutoSyncRef.current = false;
@@ -892,6 +1410,7 @@ const Agent: React.FC = (): React.ReactElement => {
         riskProfile,
         timeHorizon,
         tradeMode,
+        liveAutoTradingEnabled: liveOverride ?? liveAutoTradingEnabled,
       });
       if (!res?.data?.success) {
         const reason = res?.data?.reason || res?.data?.message || 'Unknown error';
@@ -951,7 +1470,45 @@ const Agent: React.FC = (): React.ReactElement => {
     } finally {
       setPipelineAutoLoading(false);
     }
-  }, [pipelineMode, fetchPipelineAutoStatus, pipelineSchedule]);
+  }, [pipelineMode, fetchPipelineAutoStatus, pipelineSchedule, riskProfile, timeHorizon, tradeMode, liveAutoTradingEnabled]);
+
+  const persistLiveAutoTrading = useCallback(async (nextValue: boolean) => {
+    setLiveAutoTradingEnabled(nextValue);
+    await savePipelineAutoConfig(pipelineSchedule, nextValue);
+    const status = await fetchPipelineAutoStatus();
+    if (status) setLiveAutoTradingEnabled(status.liveAutoTradingEnabled === true);
+  }, [fetchPipelineAutoStatus, pipelineSchedule, savePipelineAutoConfig]);
+
+  const closeLiveAutoConfirmation = () => {
+    if (pipelineAutoLoading) return;
+    setLiveAutoConfirmOpen(false);
+    setLiveAutoRiskAccepted(false);
+  };
+
+  const confirmLiveAutoTrading = async () => {
+    if (!liveAutoRiskAccepted) return;
+    await persistLiveAutoTrading(true);
+    setLiveAutoConfirmOpen(false);
+    setLiveAutoRiskAccepted(false);
+  };
+
+  const handleLiveAutoTradingToggle = (checked: boolean) => {
+    if (!checked) {
+      setLiveAutoConfirmOpen(false);
+      setLiveAutoRiskAccepted(false);
+      void persistLiveAutoTrading(false);
+      return;
+    }
+    setLiveAutoRiskAccepted(false);
+    setLiveAutoConfirmOpen(true);
+  };
+
+  useEffect(() => {
+    if (!liveAutoTradingEnabled) return;
+    if (pipelineMode === 'ai' && tradeMode === 'real') return;
+    setLiveAutoTradingEnabled(false);
+    savePipelineAutoConfig(pipelineSchedule, false);
+  }, [liveAutoTradingEnabled, pipelineMode, tradeMode, pipelineSchedule, savePipelineAutoConfig]);
 
   // Auto-save config when mode/risk/horizon/trade changes and schedule is enabled
   const autoSaveTimerRef = useRef<any>(null);
@@ -966,12 +1523,12 @@ const Agent: React.FC = (): React.ReactElement => {
     autoSaveTimerRef.current = setTimeout(async () => {
       try {
         const intervalMap: Record<string, number> = { '15m': 15, '30m': 30, '1h': 60, '2h': 120 };
-        const res = await pipelineAutoAPI.saveConfig({ enabled: true, intervalMinutes: intervalMap[pipelineSchedule] || 15, mode: pipelineMode, riskProfile, timeHorizon, tradeMode });
-        if (!res?.data?.success) { message.warning('Auto config sync failed. Scheduler may use stale settings.'); }
-      } catch { message.warning('Auto config sync failed. Scheduler may use stale settings.'); }
+        const res = await pipelineAutoAPI.saveConfig({ enabled: true, intervalMinutes: intervalMap[pipelineSchedule] || 15, mode: pipelineMode, riskProfile, timeHorizon, tradeMode, liveAutoTradingEnabled });
+        if (!res?.data?.success) { message.warning(agentText('Automation settings could not be synced. The scheduler may still have the previous settings.', '自动化设置同步失败，调度器可能仍在使用上一次的设置。')); }
+      } catch { message.warning(agentText('Automation settings could not be synced. The scheduler may still have the previous settings.', '自动化设置同步失败，调度器可能仍在使用上一次的设置。')); }
     }, 600);
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
-  }, [pipelineMode, riskProfile, timeHorizon, tradeMode, pipelineSchedule]);
+  }, [agentText, pipelineMode, riskProfile, timeHorizon, tradeMode, pipelineSchedule, liveAutoTradingEnabled]);
 
   // Initial fetch: always fetch pipeline-auto status on mount to correct stale localStorage
   useEffect(() => {
@@ -987,34 +1544,53 @@ const Agent: React.FC = (): React.ReactElement => {
     const key = backendEnabled && pipelineAutoStatus.intervalMinutes ? intervalToKey[pipelineAutoStatus.intervalMinutes] : null;
     const newSchedule = key || 'off';
     setPipelineSchedule(newSchedule);
+    setLiveAutoTradingEnabled(pipelineAutoStatus.liveAutoTradingEnabled === true);
     localStorage.setItem('pipelineSchedule', newSchedule);
     console.log('[PipelineAutoConfig] initial sync from backend: enabled=%s interval=%s schedule=%s',
       backendEnabled, pipelineAutoStatus.intervalMinutes, newSchedule);
   }, [pipelineAutoStatus]);
 
-  // Poll pipeline-auto status (only when schedule is active)
+  // Poll slowly while scheduled and quickly during a one-shot/background run.
   useEffect(() => {
-    if (pipelineSchedule === 'off') return;
+    if (pipelineSchedule === 'off' && !autoRunActive && !autoRunRequestedId) return;
     fetchPipelineAutoStatus();
-    const id = setInterval(fetchPipelineAutoStatus, 15000);
+    const id = setInterval(fetchPipelineAutoStatus, autoRunActive || autoRunRequestedId ? 1500 : 15000);
     return () => clearInterval(id);
-  }, [pipelineSchedule, fetchPipelineAutoStatus]);
+  }, [pipelineSchedule, autoRunActive, autoRunRequestedId, fetchPipelineAutoStatus]);
 
   // Track background auto-run status from activeRun (display only, never touches scannerStateStore)
   // Only auto triggers (not manual) affect autoRunActive state
-  const AUTO_TRIGGERS = new Set(['market_auto_run', 'headless_market_auto_run', 'toggle_on', 'auto_run_now']);
   useEffect(() => {
     const activeRun = pipelineAutoStatus?.activeRun;
-    if (!activeRun || activeRun.status !== 'running' || !AUTO_TRIGGERS.has(activeRun.trigger || '')) {
+    const isMatchingRequestedRun = Boolean(autoRunRequestedId && activeRun?.runId === autoRunRequestedId);
+    const isAutoRun = Boolean(activeRun && AUTO_PIPELINE_TRIGGERS.has(activeRun.trigger || ''));
+    if (activeRun?.status === 'running' && isAutoRun) {
+      setAutoRunActive(true);
+      setAutoRunStep(activeRun.currentStep || 'market_scanner');
+      setAutoRunProgress(activeRun.progressPct || 0);
+      return;
+    }
+    if (isMatchingRequestedRun && ['completed', 'failed', 'stopped', 'interrupted'].includes(activeRun?.status)) {
+      setAutoRunActive(false);
+      setAutoRunStep(activeRun.currentStep || '');
+      setAutoRunProgress(activeRun.status === 'completed' ? 100 : activeRun.progressPct || 0);
+      setAutoRunRequestedId('');
+      fetchPipelineAutoHistory();
+      return;
+    }
+    if (!autoRunRequestedId) {
       setAutoRunActive(false);
       setAutoRunStep('');
       setAutoRunProgress(0);
-      return;
     }
-    setAutoRunActive(true);
-    setAutoRunStep(activeRun.currentStep || '');
-    setAutoRunProgress(activeRun.progressPct || 0);
-  }, [pipelineAutoStatus?.activeRun]);
+  }, [pipelineAutoStatus?.activeRun, autoRunRequestedId, fetchPipelineAutoHistory]);
+
+  useEffect(() => {
+    if (!autoRunActive) return;
+    setAutoRunClock(Date.now());
+    const id = setInterval(() => setAutoRunClock(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [autoRunActive]);
 
   // Fetch history when expanded
   useEffect(() => {
@@ -1044,9 +1620,16 @@ const Agent: React.FC = (): React.ReactElement => {
       if (posRes.status === 'fulfilled' && posRes.value.data.success) {
         positions = posRes.value.data.positions || [];
       } else if (posRes.status === 'fulfilled') {
-        setHoldingsError(posRes.value.data.error || 'Configure Alpaca API in Settings to load positions.');
+        setHoldingsError(agentErrorText(
+          posRes.value.data.error,
+          'Configure Alpaca API in Settings to load positions.',
+          '暂时无法读取持仓，请在设置中检查 Alpaca 连接。',
+        ));
       } else {
-        setHoldingsError('Configure Alpaca API in Settings to load positions.');
+        setHoldingsError(agentText(
+          'Configure Alpaca API in Settings to load positions.',
+          '暂时无法读取持仓，请在设置中检查 Alpaca 连接。',
+        ));
       }
 
       // Collect open sell orders
@@ -1074,7 +1657,11 @@ const Agent: React.FC = (): React.ReactElement => {
       setOpenSellOrders(activeSellOrders);
       console.log(`[ExitScan] holdings fetched: mode=${m}, count=${positions.length}, symbols=[${positions.map((p: any) => p.symbol).join(',')}]`);
     } catch (e: any) {
-      setHoldingsError(e?.response?.data?.error || e?.message || 'Configure Alpaca API in Settings to load positions.');
+      setHoldingsError(agentErrorText(
+        e?.response?.data?.error || e?.response?.data?.message || e?.message,
+        'Configure Alpaca API in Settings to load positions.',
+        '暂时无法读取持仓，请在设置中检查 Alpaca 连接。',
+      ));
       setHoldings([]);
       holdingsRef.current = [];
       setOpenSellOrders([]);
@@ -1082,7 +1669,7 @@ const Agent: React.FC = (): React.ReactElement => {
     } finally {
       setHoldingsLoading(false);
     }
-  }, [tradeMode]);
+  }, [agentErrorText, agentText, tradeMode]);
 
   // Fetch holdings when trading account mode changes
   useEffect(() => { fetchHoldings(); }, [fetchHoldings]);
@@ -1096,17 +1683,23 @@ const Agent: React.FC = (): React.ReactElement => {
     try {
       const res = await tradingAccountAPI.cancelOrder(orderId, tradeMode);
       if (res.data.success) {
-        message.success(`Sell order canceled for ${symbol}`);
+        message.success(agentText(`Sell order canceled for ${symbol}.`, `${symbol} 的卖出订单已取消。`));
         setOpenSellOrders(prev => prev.filter(o => o.id !== orderId));
       } else {
-        message.error(`Failed to cancel order: ${res.data.error || 'Unknown error'}`);
+        const detail = agentErrorText(res.data.error, 'Unknown order error.', '订单服务返回错误，请稍后重试。');
+        message.error(agentText(`Could not cancel the order: ${detail}`, `无法取消订单：${detail}`));
       }
     } catch (e: any) {
-      message.error(`Cancel failed: ${e?.response?.data?.error || e?.message || 'Unknown error'}`);
+      const detail = agentErrorText(
+        e?.response?.data?.error || e?.response?.data?.message || e?.message,
+        'Unknown order error.',
+        '订单服务返回错误，请稍后重试。',
+      );
+      message.error(agentText(`Could not cancel the order: ${detail}`, `无法取消订单：${detail}`));
     } finally {
       setCancelingOrderId(null);
     }
-  }, [tradeMode]);
+  }, [agentErrorText, agentText, tradeMode]);
 
   // Entry Plan results by symbol map (for Watchlist/Execution detail lookup)
   const entryPlanResultsBySymbol = React.useMemo(() => {
@@ -1120,11 +1713,7 @@ const Agent: React.FC = (): React.ReactElement => {
   }, [entryPlanResults]);
 
   // Unified busy guard: true when any scan/pipeline is running
-  const isAnyScanRunning = pipelineRunning || isScanRunning() || isFineScanRunning() || isDeeperValidationRunning() || isEntryPlanRunning() || continueScanStatus === 'processing';
-
-  // AI调用互斥控制
-  const [aiCallInProgress, setAiCallInProgress] = useState(false);
-  const aiCallInProgressRef = useRef(false);
+  const isAnyScanRunning = pipelineRunning || isScanRunning() || isFineScanRunning() || isDeeperValidationRunning() || isEntryPlanRunning();
 
   // Scanner stop controls are in scannerRunnerService.ts (module-level)
 
@@ -1198,7 +1787,7 @@ const Agent: React.FC = (): React.ReactElement => {
     setOrderModalVisible(true);
   };
 
-  // ── Preflight config check (shared by Continue Scan, Fine Scan, Deeper Validation, Entry Plan) ──
+  // ── Preflight config check shared by the active research and execution stages ──
   interface PreflightResult {
     ok: boolean;
     sessionValid: boolean;
@@ -1253,140 +1842,15 @@ const Agent: React.FC = (): React.ReactElement => {
     }
   }
 
-  // 手动启动Continue Scan的函数
-  const handleStartContinueScan = () => {
-    if (pipelineRunning) {
-      message.warning('Disabled while AI Pipeline is running.');
-      return;
-    }
-
-    if (marketScannerResults.length === 0) {
-      message.warning(t.agent.noMarketScanResultsAvailable);
-      return;
-    }
-
-    if (continueScanStatus === 'processing') {
-      message.warning('Continue scan is already running');
-      return;
-    }
-
-    console.log('Starting continue scan...');
-
-    // 重置状态
-    setContinueScanStatus('processing');
-    setContinueScanProgress(0);
-    setPreferredContinueScanList([]);
-    setContinueScanDetails({
-      currentStage: 'Initializing...',
-      startTime: Date.now(),
-      estimatedTimeRemaining: null,
-      processedCount: 0,
-      totalCount: (scannerStateStore.getState().marketScanner.results || []).length
-    });
-
-    // 开始处理
-    processContinueScan();
-  };
-
-  // Continue Scan处理函数 - 重构为纯rule-based continue scan
-  const processContinueScan = async (): Promise<any[]> => {
-    try {
-      const msResults = scannerStateStore.getState().marketScanner.results || [];
-      console.log(`[ContinueScan] backend shared selector — ${msResults.length} market scan results`);
-
-      setContinueScanProgress(0);
-      setContinueScanDetails((prev: any) => ({ ...prev, currentStage: 'Calling backend shared Continue Scan selector...', processedCount: 0, totalCount: msResults.length, estimatedTimeRemaining: null }));
-
-      if (msResults.length === 0) {
-        setPreferredContinueScanList([]);
-        setContinueScanStatus('completed');
-        setContinueScanProgress(100);
-        return [];
-      }
-
-      setContinueScanProgress(30);
-
-      let finalList: any[] = [];
-      try {
-        const res = await pipelineAutoAPI.runContinueScan({ scannerResults: msResults, riskProfile, timeHorizon, pipelineMode, tradeMode });
-        if (res?.data?.success) { finalList = res.data.results || []; }
-        else { throw new Error(res?.data?.message || 'Backend returned non-success'); }
-      } catch (apiErr: any) {
-        // Do NOT fall back to local rules with different thresholds.
-        // The backend _pa_continue_scan_headless is the single source of truth.
-        // If unavailable, display the error clearly so the user knows why.
-        console.error('[ContinueScan] backend shared selector failed:', apiErr?.message || apiErr);
-        message.error('Continue Scan failed: ' + (apiErr?.message || 'Backend unavailable. Please try again.'));
-        setContinueScanStatus('error');
-        return [];
-      }
-
-      setContinueScanProgress(90);
-      setContinueScanDetails((prev: any) => ({ ...prev, currentStage: 'Backend shared selector completed', estimatedTimeRemaining: 0 }));
-
-      setPreferredContinueScanList(finalList);
-      setContinueScanStatus('completed');
-      setContinueScanProgress(100);
-
-      console.log(`[ContinueScan] completed — ${finalList.length} candidates, source=backend_shared`);
-      return finalList;
-    } catch (error) {
-      console.error('[ContinueScan] processing failed:', error);
-      setContinueScanStatus('error'); setContinueScanProgress(0);
-      return [];
-    }
-  };
-
-  // AI生成selection reason的函数
-  // Fallback reason生成函数
-  // Continue Scan专用的AI评估函数
-  // Rule-based selection reason生成函数 — 使用真实scanner字段，具体不模板
-  const generateRuleBasedReason = (candidate: any): string => {
-    const trend = candidate.trend || '';
-    const score = candidate.score || 0;
-    const risk = candidate.risk || 'Medium';
-    const sector = candidate.sector || 'Unknown';
-    const priceChange = candidate.priceChange || 0;
-    const volumeStatus = candidate.volumeStatus || 'Normal';
-    const newsSentiment = candidate.newsSentiment || 'Neutral';
-    const companyName = candidate.companyName || candidate.originalData?.companyName || '';
-
-    const nameOrSymbol = companyName || candidate.originalData?.symbol || '';
-    const trendDesc = trend === 'Strong Bullish' ? `strong bullish trend (score ${score})` :
-                      trend === 'Bullish' ? `bullish trend (score ${score})` :
-                      `trend score ${score}`;
-    const riskDesc = risk === 'Low' ? 'low' : risk === 'Medium' ? 'moderate' : 'elevated';
-    const newsDesc = newsSentiment === 'Positive' ? 'positive' : newsSentiment === 'Negative' ? 'negative' : 'neutral';
-    const volDesc = volumeStatus === 'High' ? 'above-average' : volumeStatus === 'Low' ? 'below-average' : 'normal';
-    const priceDesc = priceChange >= 3 ? `+${priceChange.toFixed(1)}% momentum` :
-                      priceChange >= 1 ? `+${priceChange.toFixed(1)}% gain` :
-                      priceChange > 0 ? `+${priceChange.toFixed(1)}%` :
-                      `${priceChange.toFixed(1)}%`;
-    const sectorText = sector !== 'Unknown' ? ` in ${sector}` : '';
-
-    return `Selected${sectorText}: ${nameOrSymbol} has ${trendDesc}, ${newsDesc} news sentiment, ${riskDesc} risk, and ${volDesc} volume${priceChange !== 0 ? ` at ${priceDesc}` : ''}. Fine Scan should verify setup quality and backtest alignment before entry planning.`;
-  };
-
   // Fallback priority计算函数（当AI调用失败时使用）
-  const [marketScannerSummary] = useState({
-    universeScanned: 0,
-    bullishCount: 0,
-    bearishCount: 0,
-    neutralCount: 0,
-    strongTrendCount: 0,
-    newsRiskCount: 0,
-    lastScanTime: null as string | null
-  });
   const [marketScannerFilters, setMarketScannerFilters] = useState({
-    trendFilter: 'all' as 'all' | 'bullish' | 'bearish' | 'neutral' | 'strong',
-    sortBy: 'trendScore' as 'trendScore' | 'volume' | 'changePct' | 'newsSentiment',
+    trendFilter: 'all' as 'all' | 'priorityA' | 'advance' | 'watch' | 'event',
+    sortBy: 'selectionScore' as 'selectionScore' | 'volume' | 'changePct' | 'newsSentiment',
     sortOrder: 'desc' as 'asc' | 'desc'
   });
+
   // 展开行状态
   const [expandedRows, setExpandedRows] = useState<string[]>([]);
-
-  // 跟踪是否已经处理过当前批次的market scan results
-  const processedResultsSignatureRef = useRef<string>('');
 
   // 详细扫描状态 (from store)
   const detailedScanStatus = scannerSnapshot.marketScanner.detailedScanStatus;
@@ -1407,65 +1871,6 @@ const Agent: React.FC = (): React.ReactElement => {
   // 组件卸载时清理 — do NOT stop the scan runner
   // The scan loop runs at module level via scannerRunnerService and updates the store.
   // Only user clicking Stop should call stopMarketScannerByUser().
-
-  // 同步 AI 调用状态到 ref
-  useEffect(() => {
-    aiCallInProgressRef.current = aiCallInProgress;
-  }, [aiCallInProgress]);
-
-  // Load AI Watchlist on mount
-  useEffect(() => {
-    fetchAiWatchlist();
-    return () => { stopWatchlistAutoRefresh(); };
-  }, []);
-
-  // Toggle auto-refresh
-  useEffect(() => {
-    if (aiWatchlistAutoRefresh) {
-      startWatchlistAutoRefresh();
-    } else {
-      stopWatchlistAutoRefresh();
-    }
-    return () => { stopWatchlistAutoRefresh(); };
-  }, [aiWatchlistAutoRefresh]);
-
-  // 监控market scan状态，只处理状态重置，不自动触发continue scan
-  useEffect(() => {
-    // 生成当前results的签名（用于检测是否是新批次）
-    const generateResultsSignature = (results: any[]): string => {
-      if (!results || results.length === 0) return '';
-
-      // 使用results长度和最后一个symbol的时间戳作为签名
-      const lastResult = results[results.length - 1];
-      const timestamp = lastResult.scanTime || lastResult.timestamp || Date.now().toString();
-      return `${results.length}_${timestamp}`;
-    };
-
-    const currentSignature = generateResultsSignature(marketScannerResults);
-
-    // 当有新的market scan结果时，更新签名但不自动开始处理
-    if (currentSignature !== '' && currentSignature !== processedResultsSignatureRef.current) {
-      console.log(`New market scan results detected (${marketScannerResults.length} results), ready for manual continue scan`);
-      processedResultsSignatureRef.current = currentSignature;
-    }
-
-    // 如果market scan重新开始，重置continue scan状态
-    // 只有当market scanner真正开始扫描时（不是AI Recommendations扫描）才重置
-    if (detailedScanStatus.currentStatus === 'scanning' &&
-        detailedScanStatus.statusMessage?.includes('Market Scanner')) {
-      console.log('Market scan restarted, resetting continue scan state');
-      setContinueScanStatus('idle');
-      setContinueScanProgress(0);
-      setPreferredContinueScanList([]);
-      processedResultsSignatureRef.current = ''; // 重置签名
-
-      // 如果AI调用正在进行，也重置
-      if (aiCallInProgressRef.current) {
-        console.log('Market scan restarted, aborting AI calls');
-        setAiCallInProgress(false);
-      }
-    }
-  }, [marketScannerResults, continueScanStatus, detailedScanStatus.currentStatus]);
 
   const fetchConfigStatus = async () => {
     try {
@@ -1510,14 +1915,6 @@ const Agent: React.FC = (): React.ReactElement => {
           provider = 'DeepSeek';
           model = 'deepseek-chat';
         }
-
-        // 设置表单值
-        aiConfigForm.setFieldsValue({
-          provider: provider,
-          model: model,
-          apiKey: config.apiKey || '',
-          baseUrl: config.baseUrl || 'https://api.deepseek.com'
-        });
 
         // 更新本地状态
         setAiConfig({
@@ -1596,22 +1993,20 @@ const Agent: React.FC = (): React.ReactElement => {
 
     if (marketScannerFilters.trendFilter !== 'all') {
       switch (marketScannerFilters.trendFilter) {
-        case 'bullish':
-          filteredResults = filteredResults.filter(r =>
-            r.trendLabel === 'Bullish' || r.trendLabel === 'Strong Bullish'
-          );
+        case 'priorityA':
+          filteredResults = filteredResults.filter(r => r.selectionLabel === 'Priority A');
           break;
-        case 'bearish':
-          filteredResults = filteredResults.filter(r =>
-            r.trendLabel === 'Bearish' || r.trendLabel === 'Strong Bearish'
-          );
+        case 'advance':
+          filteredResults = filteredResults.filter(r => r.aiTraderDecision === 'Advance');
           break;
-        case 'neutral':
-          filteredResults = filteredResults.filter(r => r.trendLabel === 'Neutral');
+        case 'watch':
+          filteredResults = filteredResults.filter(r => r.aiTraderDecision === 'Watch' || r.aiTraderDecision === 'Avoid');
           break;
-        case 'strong':
+        case 'event':
           filteredResults = filteredResults.filter(r =>
-            r.trendLabel === 'Strong Bullish' || r.trendLabel === 'Strong Bearish'
+            r.eventRisk === 'High' ||
+            (r.daysToEarnings != null && Number(r.daysToEarnings) >= 0 && Number(r.daysToEarnings) <= 10) ||
+            (r.optionIvSkew != null && Math.abs(Number(r.optionIvSkew)) >= 20)
           );
           break;
       }
@@ -1626,9 +2021,9 @@ const Agent: React.FC = (): React.ReactElement => {
       let bValue = b[sortField];
 
       // 处理特殊字段
-      if (sortField === 'trendScore') {
-        aValue = a.trendScore || a.overallScore || 0;
-        bValue = b.trendScore || b.overallScore || 0;
+      if (sortField === 'selectionScore') {
+        aValue = a.selectionScore ?? a.overallScore ?? a.trendScore ?? 0;
+        bValue = b.selectionScore ?? b.overallScore ?? b.trendScore ?? 0;
       } else if (sortField === 'changePct') {
         aValue = a.changePct || a.changePercent || 0;
         bValue = b.changePct || b.changePercent || 0;
@@ -1665,20 +2060,25 @@ const Agent: React.FC = (): React.ReactElement => {
     return filteredResults;
   };
 
-  // 获取Preferred Continue Scan List
-
-
   // 获取bullish候选数量（用于UI显示）
   const handleToggleMarketScanner = (): void => {
     if (isScanRunning()) {
       // Stop the running scan — only user action can stop
       stopMarketScannerByUser();
-      message.info('Stopping scanner...');
+      message.info(agentText('Stopping the scanner…', '正在停止扫描…'));
     } else {
       if (pipelineRunning) {
-        message.warning('Disabled while AI Pipeline is running.');
+        message.warning(agentText('This action is unavailable while the AI pipeline is running.', 'AI 流水线运行期间无法执行此操作。'));
         return;
       }
+      // A new universe and ranking invalidates every downstream research artifact.
+      scannerStateStore.resetFineScan();
+      scannerStateStore.resetDeeperValidation();
+      scannerStateStore.resetAdmission();
+      scannerStateStore.resetEntryPlan();
+      scannerStateStore.resetExitScan();
+      setDvErrorMessage(null);
+      setDvErrors([]);
       // Start a new scan via module-level service
       startMarketScanner();
     }
@@ -1696,7 +2096,7 @@ const Agent: React.FC = (): React.ReactElement => {
 
   // 格式化新闻日期函数
   const formatNewsDate = (timestamp: any): string => {
-    if (!timestamp) return 'Time unavailable';
+    if (!timestamp) return agentText('Time unavailable', '时间不可用');
 
     try {
       // 检查是否是数字（Unix时间戳）
@@ -1708,10 +2108,10 @@ const Agent: React.FC = (): React.ReactElement => {
 
         // 检查日期是否有效（不是1970年）
         if (date.getFullYear() < 1971) {
-          return 'Time unavailable';
+          return agentText('Time unavailable', '时间不可用');
         }
 
-        return date.toLocaleDateString('en-US', {
+        return date.toLocaleDateString(isZh ? 'zh-CN' : 'en-US', {
           year: 'numeric',
           month: 'short',
           day: 'numeric'
@@ -1721,639 +2121,302 @@ const Agent: React.FC = (): React.ReactElement => {
       // 如果不是数字，尝试直接解析
       const date = new Date(timestamp);
       if (isNaN(date.getTime()) || date.getFullYear() < 1971) {
-        return 'Time unavailable';
+        return agentText('Time unavailable', '时间不可用');
       }
 
-      return date.toLocaleDateString('en-US', {
+      return date.toLocaleDateString(isZh ? 'zh-CN' : 'en-US', {
         year: 'numeric',
         month: 'short',
         day: 'numeric'
       });
     } catch (error) {
       console.error('Error formatting news date:', error, timestamp);
-      return 'Time unavailable';
+      return agentText('Time unavailable', '时间不可用');
     }
   };
 
-  function FineScanDetailTag({ label, value, color }: { label: string; value: string; color?: string }) {
-    return React.createElement('span', { style: { fontSize: '11px', color: 'var(--app-text-muted)', marginRight: '10px' } },
-      label + ': ',
-      React.createElement('span', { style: { color: color || 'var(--app-text-strong)', fontWeight: 600 } }, value)
-    );
-  }
-
-  const renderFineScanDetailPanel = (record: any) => {
-    const fullReason = record.matchReason || '';
-    const signals = record.keySignals || [];
-    const aiUsed = record.aiUsed === true;
-    const aiExplained = record.aiExplained === true;
-    const decisionSource = record.decisionSource === 'ai' ? 'DeepSeek AI' : t.agent.localRulesLabel;
-    const dq = (record.provenance && record.provenance.dataQuality) || (record.entryQuality && record.entryQuality !== 'Error / No Data' ? 'GOOD' : 'PARTIAL');
-    const decision = record.decision || 'Watch';
-    const bestStrat = (record.matchedStrategies || [])[0] || 'N/A';
-    const perStrategy = record.backtestPerStrategy || [];
-    const optResults = record.quickOptResults || [];
-    const eq = record.entryQuality;
-    const eqD = record.entryDetails;
-    const lg = record.liquidityGrade;
-    const ld = record.liquidityDetails;
-    const ng = record.newsGrade;
-    const nd = record.newsDetails;
-    const rg = record.riskGrade;
-    const rd = record.riskDetails;
-
-    return React.createElement('div', { style: { padding: '20px 24px', backgroundColor: 'var(--app-card-bg-soft)', borderRadius: 12, border: '1px solid var(--app-border)', margin: '8px 12px 16px 12px', fontSize: '13px', lineHeight: '1.6' } },
-
-      // Professional Header Row
-      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', paddingBottom: '12px', borderBottom: '1px solid var(--app-border)', marginBottom: '16px' } },
-        React.createElement('span', { style: { fontWeight: 800, fontSize: '18px', color: 'var(--app-text-strong)', letterSpacing: '-0.5px' } }, record.symbol),
-        React.createElement(Tag, { color: decision === 'Continue' ? 'success' : decision === 'Watch' ? 'warning' : decision === 'NeedMoreData' ? 'orange' : 'error', style: { fontSize: '12px', fontWeight: 700, margin: 0, padding: '0 10px', height: '24px', lineHeight: '24px', borderRadius: '4px' } }, (language === 'zh-CN' ? ({'Continue': '继续', 'Watch': '观察', 'NeedMoreData': '需数据', 'Reject': '拒绝', 'Skip': '跳过'} as any)[decision] || decision : decision.toUpperCase())),
-        React.createElement('span', { style: { color: 'var(--app-text-muted)', fontSize: '12px', fontWeight: 500 } }, t.agent.scorePrefix, React.createElement('span', { style: { fontWeight: 700, color: '#1890ff' } }, record.matchConfidence || 0)),
-        React.createElement('span', { style: { color: 'var(--app-text-muted)', fontSize: '14px' } }, '|'),
-        React.createElement('span', { style: { color: 'var(--app-text-muted)', fontSize: '13px', fontWeight: 500 } }, (record.matchedStrategies || []).slice(0, 2).join(' · ') || bestStrat),
-
-        // Warnings inline - emphasized
-        (record.decisionWarnings || []).concat((record.decisionBlockers || []).map(function(b: string) { return t.agent.blockPrefix + b; })).slice(0, 2).map(function(w: string, i: number) {
-          var isBlocker = w.indexOf(t.agent.blockPrefix) === 0;
-          return React.createElement('span', { key: 'hw' + i, style: { padding: '2px 8px', borderRadius: 4, background: isBlocker ? 'rgba(255, 77, 79, 0.1)' : 'rgba(250, 173, 20, 0.1)', color: isBlocker ? '#ff4d4f' : '#d48806', fontSize: '11px', fontWeight: 600, border: '1px solid ' + (isBlocker ? 'rgba(255, 77, 79, 0.2)' : 'rgba(250, 173, 20, 0.2)'), whiteSpace: 'nowrap' } }, (isBlocker ? '✕ ' : '⚠ ') + (isBlocker ? w.slice(t.agent.blockPrefix.length) : w));
-        }),
-
-        React.createElement('span', { style: { marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' } },
-          React.createElement(Tag, { color: dq === 'GOOD' ? 'success' : dq === 'PARTIAL' ? 'warning' : 'error', style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '0 6px', lineHeight: '18px' } }, t.agent.dataPrefix + dq),
-          perStrategy.some(function(ps: any) { return (ps.tradeCount || 0) < 3; }) ? React.createElement(Tag, { color: 'warning', style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '0 6px', lineHeight: '18px' } }, t.agent.limitedSampleTag) : null,
-          React.createElement(Tag, { color: aiUsed ? 'cyan' : 'default', style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '0 6px', lineHeight: '18px' } }, aiUsed ? t.agent.deepseekTag : t.agent.localRulesTag)
-        )
-      ),
-
-      // Provenance Chips - cleaner look
-      React.createElement('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' } },
-        (function() {
-          var p = record.provenance || {};
-          var chips: Array<{key: string; label: string; isAI: boolean; title: string}> = [
-            {key: 'Mkt', label: t.agent.provenanceMkt, isAI: false, title: p.marketSource || 'Scanner'},
-            {key: 'BT', label: t.agent.provenanceBt, isAI: false, title: p.backtestSource || 'Backtest'},
-            {key: 'Opt', label: t.agent.provenanceOpt, isAI: false, title: p.optimizationSource || 'Optimization'},
-            {key: 'Entry', label: t.agent.provenanceEntry, isAI: false, title: p.entrySource || 'Entry Quality'},
-            {key: 'News', label: t.agent.provenanceNews, isAI: false, title: p.newsSource || 'News'},
-            {key: 'Dec', label: t.agent.provenanceDecision + (record.decisionSource === 'ai' ? t.agent.provenanceAI : t.agent.provenanceRules), isAI: record.decisionSource === 'ai', title: decisionSource},
-          ];
-          return chips.map(function(c) {
-            return React.createElement('span', { key: c.key, title: c.title, style: { padding: '2px 8px', borderRadius: '4px', background: c.isAI ? 'rgba(19, 194, 194, 0.1)' : 'var(--app-border-soft)', color: c.isAI ? '#13c2c2' : 'var(--app-text-muted)', fontSize: '10px', fontWeight: 700, border: '1px solid ' + (c.isAI ? 'rgba(19, 194, 194, 0.2)' : 'var(--app-border)'), whiteSpace: 'nowrap', cursor: 'default' } }, c.label);
-          });
-        })()
-      ),
-
-      // Body: 2-column grid with better balance
-      React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1.2fr 0.8fr', gap: '16px' } },
-
-        // LEFT COLUMN
-        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '12px' } },
-
-          // Match Summary
-          React.createElement('div', { style: { background: 'var(--app-card-bg)', borderRadius: 8, border: '1px solid var(--app-border)', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
-            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: 'var(--app-text-muted)', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, t.agent.matchSummary),
-            fullReason ? React.createElement('div', { style: { fontSize: '13px', color: 'var(--app-text-strong)', lineHeight: 1.6, marginBottom: '10px' }, title: fullReason }, fullReason) : null,
-            React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
-              React.createElement(Tag, { color: record.regime === 'Trending' ? 'blue' : record.regime === 'Breakout-ready' ? 'purple' : record.regime === 'Range-bound' ? 'green' : 'default', style: { fontSize: '11px', fontWeight: 600, margin: 0, padding: '0 8px', lineHeight: '20px' } }, language === 'zh-CN' ? ({'Trending': t.agent.regimeTrending, 'Breakout-ready': t.agent.regimeBreakout, 'Range-bound': t.agent.regimeRange} as any)[record.regime] || t.agent.regimeUnclear : (record.regime || 'Unclear')),
-              React.createElement('span', { style: { fontSize: '12px', color: 'var(--app-text-muted)', fontWeight: 500 } }, t.agent.confidenceLevel + ': ' + (record.matchConfidence || 0) + '% | ' + t.agent.colScore + ': ' + (record.scanScore || 'N/A'))
-            )
-          ),
-
-          // Backtest
-          React.createElement('div', { style: { background: 'var(--app-card-bg)', borderRadius: 8, border: '1px solid var(--app-border)', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
-            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: 'var(--app-text-muted)', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, t.agent.strategyBacktest),
-            perStrategy.length > 0 ? (
-              React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '12px' } },
-                React.createElement('thead', null,
-                  React.createElement('tr', { style: { color: 'var(--app-text-muted)', borderBottom: '1px solid var(--app-border-soft)' } },
-                    React.createElement('th', { style: { textAlign: 'left', padding: '6px 4px', fontWeight: 600 } }, t.agent.btColStrategy),
-                    React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, t.agent.btColReturn),
-                    React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, t.agent.btColSharpe),
-                    React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, t.agent.btColMaxDD),
-                    React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, t.agent.btColWinPct),
-                    React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, t.agent.btColTrades),
-                    React.createElement('th', { style: { textAlign: 'center', padding: '6px 4px', fontWeight: 600 } }, t.agent.btColStatus)
-                  )
-                ),
-                React.createElement('tbody', null,
-                  perStrategy.map(function(ps: any, i: number) {
-                    return React.createElement('tr', { key: i, style: { borderBottom: '1px solid var(--app-card-bg-soft)' } },
-                      React.createElement('td', { style: { padding: '8px 4px', fontWeight: 600, color: 'var(--app-text-strong)' } }, ps.strategy),
-                      React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', fontWeight: 700, color: (ps.totalReturn || 0) >= 0 ? '#52c41a' : '#ff4d4f' } }, ps.totalReturn != null ? (ps.totalReturn >= 0 ? '+' : '') + Number(ps.totalReturn).toFixed(1) + '%' : '--'),
-                      React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', fontWeight: 500, color: (ps.sharpe || 0) >= 1.0 ? '#1890ff' : (ps.sharpe || 0) >= 0.5 ? 'var(--app-text-strong)' : '#ff4d4f' } }, ps.sharpe != null ? Number(ps.sharpe).toFixed(2) : '--'),
-                      React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', color: Math.abs(ps.maxDrawdown || 0) < 15 ? 'var(--app-text-strong)' : Math.abs(ps.maxDrawdown || 0) < 25 ? '#faad14' : '#ff4d4f' } }, ps.maxDrawdown != null ? Number(ps.maxDrawdown).toFixed(1) + '%' : '--'),
-                      React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', fontWeight: 500 } }, ps.winRate != null ? Number(ps.winRate).toFixed(1) + '%' : '--'),
-                      React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', fontStyle: (ps.tradeCount || 0) < 3 ? 'italic' : 'normal', color: (ps.tradeCount || 0) < 3 ? '#fa8c16' : 'var(--app-text-muted)' }, title: (ps.tradeCount || 0) < 3 ? t.agent.limitedSample : undefined }, ps.tradeCount != null ? String(ps.tradeCount) : '--'),
-                      React.createElement('td', { style: { padding: '8px 4px', textAlign: 'center' } },
-                        React.createElement(Tag, { color: ps.status === 'passed' ? 'success' : ps.status === 'caution' ? 'warning' : 'error', style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '0 6px', lineHeight: '18px' } },
-                          ps.status === 'passed' ? t.agent.statusPass : ps.status === 'caution' ? t.agent.statusCaution : ps.status === 'completed_losing' ? t.agent.statusFail : '--')
-                      )
-                    );
-                  })
-                )
-              )
-            ) : React.createElement('div', { style: { fontSize: '13px', color: 'var(--app-text-muted)', fontStyle: 'italic', padding: '10px 0' } }, t.agent.backtestNotAvailable),
-            record.backtestPeriod ? React.createElement('div', { style: { fontSize: '11px', color: 'var(--app-text-muted)', marginTop: '8px', borderTop: '1px solid var(--app-border-soft)', paddingTop: '6px' } }, t.agent.evaluationPeriod + ': ' + record.backtestPeriod) : null
-          ),
-
-          // Optimization
-          React.createElement('div', { style: { background: 'var(--app-card-bg)', borderRadius: 8, border: '1px solid var(--app-border)', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
-            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: 'var(--app-text-muted)', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, t.agent.quickOptimization),
-            optResults.length > 0 ? (
-              React.createElement('div', null,
-                React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '12px' } },
-                  React.createElement('thead', null,
-                    React.createElement('tr', { style: { color: 'var(--app-text-muted)', borderBottom: '1px solid var(--app-border-soft)' } },
-                      React.createElement('th', { style: { textAlign: 'left', padding: '6px 4px', fontWeight: 600 } }, t.agent.optColStrategy),
-                      React.createElement('th', { style: { textAlign: 'center', padding: '6px 4px', fontWeight: 600 } }, t.agent.optColStability),
-                      React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, t.agent.optColAvgReturn),
-                      React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, t.agent.optColPosRatio),
-                      React.createElement('th', { style: { textAlign: 'right', padding: '6px 4px', fontWeight: 600 } }, t.agent.optColSpread)
-                    )
-                  ),
-                  React.createElement('tbody', null,
-                    optResults.map(function(opt: any, oi: number) {
-                      return React.createElement('tr', { key: oi, style: { borderBottom: '1px solid var(--app-card-bg-soft)' } },
-                        React.createElement('td', { style: { padding: '8px 4px', fontWeight: 600, color: 'var(--app-text-strong)' } }, opt.strategy),
-                        React.createElement('td', { style: { padding: '8px 4px', textAlign: 'center' } },
-                          React.createElement(Tag, { color: opt.stability === 'Stable' ? 'success' : opt.stability === 'Weak' ? 'warning' : 'error', style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '0 6px', lineHeight: '18px' } },
-                            opt.stability === 'Stable' ? t.agent.statusStable : opt.stability === 'Weak' ? t.agent.statusWeak : t.agent.statusOverfit)
-                        ),
-                        React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', fontWeight: 700, color: opt.avgReturn >= 0 ? '#52c41a' : '#ff4d4f' } }, (opt.avgReturn >= 0 ? '+' : '') + opt.avgReturn + '%'),
-                        React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', fontWeight: 500 } }, opt.positiveRatio + '%'),
-                        React.createElement('td', { style: { padding: '8px 4px', textAlign: 'right', color: 'var(--app-text-muted)' } }, (opt.stdReturn || 0).toFixed(1) + '%')
-                      );
-                    })
-                  )
-                ),
-                record.quickOptSummary ? React.createElement('div', { style: { fontSize: '11px', color: 'var(--app-text-muted)', marginTop: '8px', borderTop: '1px solid var(--app-border-soft)', paddingTop: '6px' } }, record.quickOptSummary) : null
-              )
-            ) : React.createElement('div', { style: { fontSize: '13px', color: 'var(--app-text-muted)', fontStyle: 'italic', padding: '10px 0' } }, t.agent.optimizationNotAvailable),
-            record.quickOptStatus === 'running' ? React.createElement('div', { style: { fontSize: '12px', color: '#fa8c16', fontWeight: 600, marginTop: '8px' } }, '⚡ ' + t.agent.optimizationInProgress) : null
-          ),
-
-          // Entry Quality
-          React.createElement('div', { style: { background: 'var(--app-card-bg)', borderRadius: 8, border: '1px solid var(--app-border)', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
-            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: 'var(--app-text-muted)', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, t.agent.surgicalEntry),
-            eq && eq !== 'Error / No Data' ? (
-              React.createElement('div', null,
-                React.createElement('div', { style: { marginBottom: '10px', display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center' } },
-                  React.createElement('span', { style: { fontSize: '15px', fontWeight: 800, color: eq === 'Good' || eq === 'Excellent' ? '#52c41a' : eq === 'Wait for Pullback' ? '#faad14' : '#ff4d4f' } }, eq),
-                  React.createElement('span', { style: { fontSize: '13px', color: 'var(--app-text-muted)', fontWeight: 500 } }, t.agent.setupScore + ': ' + (record.entryScore || '--') + '/100'),
-                  eqD && eqD.reward_risk_ratio != null && eqD.reward_risk_ratio < 1.5 && (eq === 'Good' || eq === 'Excellent') ? React.createElement('span', { style: { padding: '2px 8px', borderRadius: 4, background: 'rgba(250, 173, 20, 0.1)', color: '#d48806', fontSize: '11px', fontWeight: 600, border: '1px solid rgba(250, 173, 20, 0.2)' } }, '⚠ ' + t.agent.rrCapped + eqD.reward_risk_ratio + ':1') : null
-                ),
-                eqD ? React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px 20px', fontSize: '12px', backgroundColor: 'var(--app-card-bg-soft)', padding: '10px', borderRadius: '6px' } },
-                  eqD.current_price != null ? React.createElement(FineScanDetailTag, { label: t.agent.tagPrice, value: '$' + eqD.current_price }) : null,
-                  eqD.atr != null ? React.createElement(FineScanDetailTag, { label: t.agent.tagAtr, value: '$' + eqD.atr + ' (' + eqD.atr_pct + '%)' }) : null,
-                  eqD.support != null ? React.createElement(FineScanDetailTag, { label: t.agent.tagSupport, value: '$' + eqD.support }) : null,
-                  eqD.resistance != null ? React.createElement(FineScanDetailTag, { label: t.agent.tagResistance, value: '$' + eqD.resistance }) : null,
-                  eqD.entry_zone_low != null ? React.createElement(FineScanDetailTag, { label: t.agent.tagZone, value: '$' + eqD.entry_zone_low + '–$' + eqD.entry_zone_high }) : null,
-                  eqD.stop_distance_pct != null ? React.createElement(FineScanDetailTag, { label: t.agent.tagStop, value: eqD.stop_distance_pct + '%', color: eqD.stop_distance_pct > 5 ? '#fa8c16' : undefined }) : null,
-                  eqD.reward_risk_ratio != null ? React.createElement(FineScanDetailTag, { label: t.agent.tagRR, value: eqD.reward_risk_ratio + ':1', color: eqD.reward_risk_ratio < 1.5 ? '#ff4d4f' : eqD.reward_risk_ratio < 2 ? '#faad14' : '#52c41a' }) : null
-                ) : null,
-                record.entryReason ? React.createElement('div', { style: { fontSize: '12px', color: 'var(--app-text-muted)', marginTop: '10px', lineHeight: '1.5', fontStyle: 'italic' } }, '”' + record.entryReason + '”') : null
-              )
-            ) : React.createElement('div', { style: { padding: '10px 0', color: 'var(--app-text-muted)', fontStyle: 'italic', fontSize: '13px' } }, t.agent.entryQualityUnavailable)
-          )
-        ),
-
-        // RIGHT COLUMN
-        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '12px' } },
-
-          // Key Signals
-          React.createElement('div', { style: { background: 'var(--app-card-bg)', borderRadius: 8, border: '1px solid var(--app-border)', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
-            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: 'var(--app-text-muted)', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, t.agent.highConvictionSignals),
-            signals.length > 0 ? (
-              React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px' } },
-                signals.slice(0, 8).map(function(sig: string, i: number) {
-                  return React.createElement('span', { key: i, style: { padding: '3px 10px', borderRadius: 4, backgroundColor: 'rgba(47, 84, 235, 0.1)', color: '#1890ff', fontSize: '12px', fontWeight: 600, border: '1px solid rgba(47, 84, 235, 0.2)' } }, sig);
-                }),
-                signals.length > 8 ? React.createElement('span', { style: { fontSize: '12px', color: 'var(--app-text-muted)', fontWeight: 500, alignSelf: 'center' } }, '+' + (signals.length - 8) + ' ' + (language === 'zh-CN' ? '更多' : 'more')) : null
-              )
-            ) : React.createElement('div', { style: { padding: '5px 0', color: 'var(--app-text-muted)', fontSize: '13px' } }, '--')
-          ),
-
-          // Liquidity & Risk
-          React.createElement('div', { style: { background: 'var(--app-card-bg)', borderRadius: 8, border: '1px solid var(--app-border)', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
-            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: 'var(--app-text-muted)', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, t.agent.liquidityRiskProfile),
-            React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', fontSize: '12px' } },
-              React.createElement('div', { style: { backgroundColor: 'var(--app-card-bg-soft)', padding: '10px', borderRadius: '6px' } },
-                React.createElement('div', { style: { fontWeight: 700, color: 'var(--app-text-muted)', marginBottom: '6px', fontSize: '11px', textTransform: 'uppercase' } }, t.agent.liquiditySubLabel),
-                lg && lg !== 'Error' ? React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
-                  React.createElement(FineScanDetailTag, { label: t.agent.tagGrade, value: lg, color: lg === 'Good' ? '#52c41a' : lg === 'Caution' ? '#faad14' : '#ff4d4f' }),
-                  ld ? React.createElement(React.Fragment, null,
-                    ld.rvol != null ? React.createElement(FineScanDetailTag, { label: t.agent.tagRvol, value: ld.rvol + 'x', color: ld.rvol >= 1.5 ? '#52c41a' : ld.rvol < 0.7 ? '#ff4d4f' : undefined }) : null,
-                    ld.spread_pct != null ? React.createElement(FineScanDetailTag, { label: t.agent.tagSpread, value: ld.spread_pct + '%', color: ld.spread_pct > 1 ? '#ff4d4f' : ld.spread_pct > 0.2 ? '#faad14' : undefined }) : null
-                  ) : null
-                ) : React.createElement('span', { style: { color: 'var(--app-text-muted)', fontStyle: 'italic' } }, t.agent.noDataLabel)
-              ),
-              React.createElement('div', { style: { backgroundColor: 'var(--app-card-bg-soft)', padding: '10px', borderRadius: '6px' } },
-                React.createElement('div', { style: { fontWeight: 700, color: 'var(--app-text-muted)', marginBottom: '6px', fontSize: '11px', textTransform: 'uppercase' } }, t.agent.riskPrefix),
-                rg && rg !== 'SKIP' ? React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
-                  React.createElement(FineScanDetailTag, { label: t.agent.tagGrade, value: language === 'zh-CN' ? ({'LOW': t.agent.low, 'MEDIUM': t.agent.medium, 'HIGH': t.agent.high} as any)[rg] || rg : (rg === 'LOW' ? 'Low' : rg === 'MEDIUM' ? 'Medium' : rg === 'HIGH' ? 'High' : rg), color: rg === 'LOW' ? '#52c41a' : rg === 'MEDIUM' ? '#faad14' : '#ff4d4f' }),
-                  rd ? React.createElement(React.Fragment, null,
-                    React.createElement(FineScanDetailTag, { label: t.agent.tagScore, value: (rd.risk_score || '--') + '/100', color: rd.risk_score >= 65 ? '#ff4d4f' : rd.risk_score >= 35 ? '#faad14' : '#52c41a' }),
-                    rd.atr_pct != null ? React.createElement(FineScanDetailTag, { label: t.agent.tagAtr, value: rd.atr_pct + '%', color: rd.atr_pct > 5 ? '#ff4d4f' : undefined }) : null
-                  ) : null
-                ) : React.createElement('span', { style: { color: 'var(--app-text-muted)', fontStyle: 'italic' } }, t.agent.noDataLabel)
-              )
-            )
-          ),
-
-          // News & Catalyst
-          React.createElement('div', { style: { background: 'var(--app-card-bg)', borderRadius: 8, border: '1px solid var(--app-border)', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' } },
-            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: 'var(--app-text-muted)', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, t.agent.newsAndCatalyst),
-            ng && ng !== 'Error' ? React.createElement('div', null,
-              React.createElement('div', { style: { marginBottom: '8px', display: 'flex', gap: '12px' } },
-                React.createElement(FineScanDetailTag, { label: t.agent.tagSentiment, value: language === 'zh-CN' ? ({'Catalyst': '催化剂', 'Caution': '谨慎', 'High Event Risk': '高事件风险'} as any)[ng] || ng : ng, color: ng === 'Catalyst' ? '#1890ff' : ng === 'Caution' ? '#faad14' : ng === 'High Event Risk' ? '#ff4d4f' : undefined }),
-                nd ? React.createElement(React.Fragment, null,
-                  React.createElement(FineScanDetailTag, { label: t.agent.tagHeadlines, value: String(nd.headline_count || 0) }),
-                  React.createElement(FineScanDetailTag, { label: t.agent.tagEarnings, value: nd.earnings_soon ? t.agent.earningsUpcoming : t.agent.earningsClear, color: nd.earnings_soon ? '#faad14' : undefined })
-                ) : null
-              ),
-              nd && nd.top_headlines && nd.top_headlines.length > 0 ? React.createElement('div', { style: { fontSize: '12px', color: 'var(--app-text-muted)', lineHeight: '1.6', backgroundColor: 'var(--app-card-bg-soft)', padding: '8px', borderRadius: '4px', borderLeft: '3px solid var(--app-border)' } },
-                nd.top_headlines.slice(0, 2).map(function(h: string, i: number) {
-                  return React.createElement('div', { key: i, style: { display: '-webkit-box', WebkitLineClamp: '1', WebkitBoxOrient: 'vertical', overflow: 'hidden', marginBottom: '4px' }, title: h }, '• ' + h);
-                }),
-                nd.top_headlines.length > 2 ? React.createElement('div', { style: { color: 'var(--app-text-muted)', fontSize: '11px', marginTop: '4px' } }, t.agent.viewMoreHeadlines.replace('{count}', String(nd.top_headlines.length - 2))) : null
-              ) : React.createElement('div', { style: { color: 'var(--app-text-muted)', fontSize: '12px', fontStyle: 'italic' } }, t.agent.noSignificantNews)
-            ) : React.createElement('div', { style: { color: 'var(--app-text-muted)', fontSize: '13px' } }, t.agent.newsSentimentUnavailable)
-          ),
-
-          // AI Explanation / Strategic Reasoning
-          React.createElement('div', { style: { background: 'var(--app-card-bg)', borderRadius: 8, border: '1px solid var(--app-border)', padding: '12px 16px', boxShadow: '0 2px 4px rgba(24, 144, 255, 0.05)' } },
-            React.createElement('div', { style: { fontWeight: 700, fontSize: '11px', color: '#1890ff', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' } }, t.agent.strategicReasoning),
-            React.createElement('div', { style: { marginBottom: '10px', display: 'flex', gap: '12px' } },
-              React.createElement(FineScanDetailTag, { label: t.agent.tagSource, value: aiExplained ? 'DEEPSEEK-V3' : t.agent.localRulesLabel, color: aiExplained ? '#13c2c2' : '#fa8c16' }),
-              aiExplained ? React.createElement(FineScanDetailTag, { label: t.agent.tagTokens, value: t.agent.tokensOptimized }) : null
-            ),
-            record.finalReason ? React.createElement('div', { style: { fontSize: '13px', color: 'var(--app-text-strong)', lineHeight: '1.6', marginBottom: '12px', padding: '10px', backgroundColor: 'var(--app-blue-bg)', borderRadius: '6px', border: '1px solid var(--app-blue-border)' }, title: record.finalReason }, record.finalReason) : null,
-            record.nextStep ? React.createElement('div', { style: { borderTop: '1px solid var(--app-border-soft)', paddingTop: '10px' } },
-              React.createElement('div', { style: { fontSize: '11px', fontWeight: 700, color: '#1890ff', textTransform: 'uppercase', marginBottom: '4px' } }, t.agent.recommendedNextStep + ':'),
-              React.createElement('div', { style: { fontSize: '13px', color: '#1890ff', fontWeight: 600, lineHeight: '1.5' }, title: record.nextStep }, record.nextStep)
-            ) : null,
-            !aiExplained && !record.finalReason ? React.createElement('div', { style: { color: 'var(--app-text-muted)', fontSize: '13px', fontStyle: 'italic' } }, t.agent.compilingReasoning) : null
-          )
-        )
-      ),
-      // Footer spacer
-      React.createElement('div', { style: { height: '8px' } })
-    );
-  };  const renderDetailPanel = (record: any) => {
-    // Merge lazy-fetched news into display record
+  const renderDetailPanel = (record: any) => {
     const lazyNews = lazyNewsCache[record.symbol];
-    const displayRecord = (lazyNews && !lazyNews._error && lazyNews.topNews)
-      ? { ...record, ...lazyNews, topNews: lazyNews.topNews, newsSource: lazyNews.newsSource, newsFetchReason: lazyNews.newsFetchReason, dataSources: { ...record.dataSources, news: lazyNews.dataSources?.news }, provenance: { ...record.provenance, news: lazyNews.provenance?.news }, newsCount: lazyNews.newsCount, hasNews: lazyNews.hasNews }
+    const displayRecord = lazyNews && !lazyNews._error
+      ? {
+        ...record,
+        ...lazyNews,
+        dataSources: { ...(record.dataSources || {}), ...(lazyNews.dataSources || {}) },
+        provenance: { ...(record.provenance || {}), ...(lazyNews.provenance || {}) },
+      }
       : record;
-    // Trigger lazy refresh for rate-limited/failed/skipped symbols
-    const _reason = record.newsFetchReason || '';
-    const _src = (record.newsSource || '').toLowerCase();
-    const needsLazyRefresh = !record.topNews && (
-      _reason === 'news_fetch_skipped_top_n_limit' || _src.includes('below top candidate')
-      || _reason === 'finnhub_rate_limited' || _src.includes('rate limit')
-      || _reason === 'finnhub_news_api_failed' || _src.includes('finnhub error')
+
+    const reason = displayRecord.newsFetchReason || record.newsFetchReason || '';
+    const source = String(displayRecord.newsSource || record.newsSource || '').toLowerCase();
+    const needsLazyRefresh = !displayRecord.topNews && (
+      reason === 'news_fetch_skipped_top_n_limit' ||
+      source.includes('below top candidate') ||
+      source.includes('finnhub') ||
+      reason.includes('finnhub') ||
+      reason.includes('alpaca_news_rate_limited') ||
+      reason.includes('alpaca_news_http_429') ||
+      reason.includes('alpaca_news_timeout') ||
+      source.includes('rate limit') ||
+      source.includes('error')
     );
     if (needsLazyRefresh) { scheduleLazyNews(record.symbol); }
 
-    const score = displayRecord.trendScore || displayRecord.overallScore || 0;
-    const scoreColor = score >= 70 ? '#52c41a' : score >= 40 ? '#faad14' : '#ff4d4f';
-    const conf = record.trendConfidence ? (record.trendConfidence * (record.trendConfidence <= 1 ? 100 : 1)).toFixed(0) : 'N/A';
+    const score = Number(displayRecord.selectionScore ?? displayRecord.overallScore ?? displayRecord.trendScore ?? 0);
+    const scoreColor = score >= 80 ? '#16a34a' : score >= 65 ? '#2563eb' : score >= 50 ? '#d97706' : '#dc2626';
+    const confidenceValue = displayRecord.scoreReliability != null
+      ? Number(displayRecord.scoreReliability).toFixed(0)
+      : displayRecord.trendConfidence
+        ? (displayRecord.trendConfidence * (displayRecord.trendConfidence <= 1 ? 100 : 1)).toFixed(0)
+        : 'N/A';
+    const changePct = displayRecord.changePct != null ? displayRecord.changePct : (displayRecord.changePercent != null ? displayRecord.changePercent : null);
+    const trendLabel = displayRecord.trendLabel || agentText('Need Data', '需要数据');
+    const provenance = displayRecord.provenance || {};
+    const newsItems = Array.isArray(displayRecord.allNews) ? displayRecord.allNews.slice(0, 3) : (displayRecord.topNews ? [displayRecord.topNews] : []);
+    const isNewsLoading = needsLazyRefresh && !lazyNewsCache[record.symbol];
+
+    const fmtMoney = (value: any, digits = 2) => {
+      const num = Number(value);
+      return Number.isFinite(num) && num > 0 ? `$${num.toFixed(digits)}` : null;
+    };
+    const fmtPct = (value: any, digits = 1) => {
+      const num = exitFinite(value);
+      return num == null ? null : `${num > 0 ? '+' : ''}${num.toFixed(digits)}%`;
+    };
+    const fmtCompactMoney = (value: any) => {
+      const num = Number(value);
+      if (!Number.isFinite(num) || num <= 0) return null;
+      if (num >= 1_000_000_000_000) return `$${(num / 1_000_000_000_000).toFixed(2)}T`;
+      if (num >= 1_000_000_000) return `$${(num / 1_000_000_000).toFixed(1)}B`;
+      if (num >= 1_000_000) return `$${(num / 1_000_000).toFixed(1)}M`;
+      return `$${num.toFixed(0)}`;
+    };
+    const fmtVolume = (value: any) => {
+      const num = Number(value);
+      return Number.isFinite(num) && num > 0 ? marketDataService.formatVolume(num) : null;
+    };
+    const sourceDisplay = (value: any) => {
+      const text = String(value || '');
+      if (!text) return '';
+      if (text.includes('cdn.finra.org')) return agentText('FINRA CNMS daily file', 'FINRA CNMS 每日文件');
+      if (text.includes('/v1beta1/options')) return agentText('Alpaca options snapshot', 'Alpaca 期权快照');
+      if (text.includes('/v1beta1/news')) return agentText('Alpaca news', 'Alpaca 新闻');
+      if (text.includes('/v2/stocks/bars')) return text.includes('benchmark') || text.includes('ETF') ? agentText('Alpaca benchmark bars', 'Alpaca 基准行情') : agentText('Alpaca stock bars', 'Alpaca 个股行情');
+      if (text.includes('/v2/assets')) return agentText('Alpaca assets + profile', 'Alpaca 资产与资料');
+      if (text.includes('/stock/metric')) return agentText('Finnhub metrics', 'Finnhub 指标');
+      if (text.toLowerCase().includes('earnings')) return agentText('Finnhub earnings calendar', 'Finnhub 财报日历');
+      if (text.toLowerCase().includes('deepseek')) return agentText('AI trader review', 'AI 交易审核');
+      return text.length > 34 ? `${text.slice(0, 34)}...` : text;
+    };
+
+    const metricRows = [
+      { label: agentText('Price', '价格'), value: fmtMoney(displayRecord.price) },
+      { label: agentText('Change', '涨跌'), value: fmtPct(changePct, 2), tone: changePct != null ? (changePct >= 0 ? 'positive' : 'negative') : undefined },
+      { label: agentText('Volume', '成交量'), value: fmtVolume(displayRecord.volume) },
+      { label: 'ADV20', value: fmtCompactMoney(displayRecord.avgDollarVolume20) },
+      { label: agentText('Day Range', '日内区间'), value: (fmtMoney(displayRecord.dayLow) && fmtMoney(displayRecord.dayHigh)) ? `${fmtMoney(displayRecord.dayLow)} - ${fmtMoney(displayRecord.dayHigh)}` : null },
+      { label: agentText('Market Cap', '总市值'), value: fmtCompactMoney(displayRecord.marketCap) },
+      { label: agentText('Sector', '板块'), value: translateSector(displayRecord.sector) },
+      { label: agentText('Industry', '行业'), value: translateSector(displayRecord.industry || displayRecord.sector) },
+      { label: agentText('Direction', '方向评分'), value: displayRecord.directionScore != null ? String(Math.round(Number(displayRecord.directionScore))) + '/100' : null },
+      { label: agentText('Agreement', '因子一致度'), value: displayRecord.factorAgreementPct != null ? String(Math.round(Number(displayRecord.factorAgreementPct))) + '%' : null },
+      { label: agentText('Core Coverage', '核心覆盖率'), value: displayRecord.factorCoveragePct != null ? String(Math.round(Number(displayRecord.factorCoveragePct))) + '%' : null },
+    ].filter(item => item.value);
+
+    const executionRows = [
+      { label: agentText('SPY Rel 3M', '相对 SPY（3 个月）'), value: fmtPct(displayRecord.relativeStrength3m) },
+      { label: agentText('Market Beta', '市场 Beta'), value: displayRecord.marketBeta != null ? Number(displayRecord.marketBeta).toFixed(2) : null },
+      { label: agentText('Trade Cost', '交易成本'), value: displayRecord.estimatedRoundTripCostBps != null ? `${Number(displayRecord.estimatedRoundTripCostBps).toFixed(1)} bps` : null },
+      { label: '10% ADV', value: fmtCompactMoney(displayRecord.participation10pctDollar) },
+      { label: agentText('Sector Rank', '板块排名'), value: displayRecord.sectorRank != null ? `#${displayRecord.sectorRank}/${displayRecord.sectorCount || '-'}` : null },
+      { label: agentText('Liquidity Tier', '流动性等级'), value: displayRecord.liquidityTier ? agentEnumLabel(displayRecord.liquidityTier) : null },
+      { label: agentText('Capacity', '资金容量'), value: displayRecord.capacityScore != null ? String(Math.round(Number(displayRecord.capacityScore))) + '/100' : null },
+    ].filter(item => item.value);
+
+    const factorRows = [
+      { label: agentText('Momentum', '动量'), value: displayRecord.factorScores?.momentum ?? displayRecord.momentumScore },
+      { label: agentText('Trend', '趋势'), value: displayRecord.factorScores?.trend ?? displayRecord.trendScoreDetail ?? displayRecord.trendScore },
+      { label: agentText('Relative', '相对强度'), value: displayRecord.factorScores?.relative ?? displayRecord.relativeScore },
+      { label: agentText('Liquidity', '流动性'), value: displayRecord.factorScores?.liquidity ?? displayRecord.volumeScore },
+      { label: agentText('Risk', '风险'), value: displayRecord.factorScores?.risk ?? displayRecord.volatilityScore },
+      { label: agentText('Sentiment', '市场情绪'), value: displayRecord.newsScore ?? displayRecord.sentimentScore },
+    ].filter(item => item.value != null);
+
+    const riskTags = [
+      displayRecord.eventRisk ? `${agentText('Event risk', '事件风险')}: ${agentEnumLabel(displayRecord.eventRisk)}` : null,
+      displayRecord.nextEarningsDate ? `${agentText('Earnings', '下一财报')}: ${displayRecord.nextEarningsDate}${displayRecord.daysToEarnings != null ? ` (${displayRecord.daysToEarnings}${agentText('d', '天')})` : ''}` : null,
+      displayRecord.shortVolumeRatio != null ? `${agentText('Short vol', '空头成交占比')}: ${Number(displayRecord.shortVolumeRatio).toFixed(1)}%` : null,
+      displayRecord.optionIvSkew != null ? `${agentText('IV skew', '隐含波动率偏斜')}: ${Number(displayRecord.optionIvSkew).toFixed(1)}%` : null,
+      displayRecord.realizedVol20 != null ? `Vol20: ${Number(displayRecord.realizedVol20).toFixed(1)}%` : null,
+      displayRecord.atrPercent != null ? `ATR: ${Number(displayRecord.atrPercent).toFixed(1)}%` : null,
+    ].filter((tag): tag is string => Boolean(tag));
+
+    const sourceRows = [
+      { label: agentText('Market', '市场行情'), value: provenance.marketData },
+      { label: agentText('Benchmark', '基准'), value: provenance.benchmarks },
+      { label: agentText('Cost', '成本'), value: provenance.tradingCost },
+      { label: agentText('Company', '公司资料'), value: provenance.companyInfo },
+      { label: agentText('Fundamentals', '基本面'), value: provenance.fundamentals },
+      { label: agentText('News', '新闻'), value: provenance.news },
+      { label: agentText('Events', '事件'), value: provenance.events },
+      { label: agentText('Short Volume', '空头成交量'), value: provenance.shortVolume },
+      { label: agentText('Options', '期权'), value: provenance.options },
+      { label: 'AI', value: provenance.aiData },
+    ].filter(item => item.value);
 
     return (
       <div className="scanner-detail-container">
-        {/* Detail Header */}
         <div className="scanner-detail-header">
           <div>
             <div className="scanner-detail-title-group">
-              <span className="scanner-detail-symbol">{record.symbol}</span>
-              <span className="scanner-detail-company">{record.companyName || record.name || t.agent.unknownCompany}</span>
+              <span className="scanner-detail-symbol">{displayRecord.symbol}</span>
+              <span className="scanner-detail-company">{displayRecord.companyName || displayRecord.name || t.agent.unknownCompany}</span>
             </div>
             <div className="scanner-detail-meta">
-              {t.agent.lastAnalysis}: {record.timestamp ? new Date(record.timestamp).toLocaleString() : 'N/A'} •
-              ID: {record.symbol}-{record.timestamp || 'NEW'}
+              {agentText('Updated', '更新时间')} {displayRecord.timestamp ? new Date(displayRecord.timestamp).toLocaleString(isZh ? 'zh-CN' : 'en-US') : '—'}
             </div>
           </div>
-          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-            <div style={{ textAlign: 'right' }}>
-              <div className="scanner-detail-label" style={{ marginBottom: 2 }}>{t.agent.analysisSource}</div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <Tag color={record.aiCalled ? 'green' : 'orange'} style={{ margin: 0, fontWeight: 700 }}>
-                  {record.aiCalled ? (record.aiSource || 'AI Agent') : t.agent.localRulesLabel}
-                </Tag>
-                {record.dataSource && (
-                  <Tag color="blue" style={{ margin: 0, fontWeight: 700 }}>{record.dataSource}</Tag>
-                )}
-              </div>
-            </div>
-            <Divider type="vertical" style={{ height: 40, margin: '0 8px' }} />
-            <div style={{ textAlign: 'center', minWidth: 80 }}>
-              <div className="scanner-detail-label" style={{ marginBottom: 2 }}>{t.agent.trendLabel}</div>
-              {renderTrendBadge(record.trendLabel)}
-            </div>
+          <div className="scanner-detail-header-actions">
+            <Tag color={displayRecord.selectionLabel === 'Priority A' ? 'success' : displayRecord.selectionLabel === 'Priority B' ? 'blue' : 'gold'} style={{ margin: 0, fontWeight: 700 }}>
+              {displayRecord.selectionLabel ? agentEnumLabel(displayRecord.selectionLabel) : agentText('Research Priority', '研究优先级')}
+            </Tag>
+            <Tag color={displayRecord.aiTraderDecision === 'Advance' ? 'success' : displayRecord.aiTraderDecision === 'Avoid' ? 'error' : displayRecord.aiTraderDecision === 'Watch' ? 'warning' : 'default'} style={{ margin: 0, fontWeight: 700 }}>
+              {displayRecord.aiTraderDecision ? `AI ${agentEnumLabel(displayRecord.aiTraderDecision)}` : agentText('Rules only', '仅规则判断')}
+            </Tag>
+            {renderTrendBadge(trendLabel)}
           </div>
         </div>
 
-        <Row gutter={[20, 20]}>
-          {/* Column 1: Market Data & Basic Info */}
-          <Col span={8}>
-            <Card title={`📊 ${t.agent.marketBasicInfo}`} className="scanner-detail-card" bodyStyle={{ padding: '20px' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
-                {/* Primary Price Info */}
-                <div style={{ 
-                  display: 'flex', 
-                  justifyContent: 'space-between', 
-                  alignItems: 'center',
-                  backgroundColor: 'var(--app-card-bg-soft)',
-                  padding: '12px',
-                  borderRadius: '8px',
-                  border: '1px solid var(--app-border-soft)'
-                }}>
-                  <div>
-                    <div className="scanner-detail-label" style={{ marginBottom: 4 }}>{t.agent.currentPrice}</div>
-                    <div className="scanner-detail-value" style={{ fontSize: '22px', color: 'var(--app-text-strong)' }}>
-                      ${(record.price != null && record.price > 0) ? record.price.toFixed(2) : '—'}
-                    </div>
-                  </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <div className="scanner-detail-label" style={{ marginBottom: 4 }}>{t.agent.change24h}</div>
-                    {(() => {
-                      const cp = record.changePct != null ? record.changePct : (record.changePercent != null ? record.changePercent : null);
-                      if (cp == null) {
-                        return (
-                          <div style={{
-                            fontSize: '16px', fontWeight: 800, padding: '2px 8px',
-                            borderRadius: '4px', backgroundColor: 'var(--app-card-bg-soft)',
-                            color: 'var(--app-text-muted)', display: 'inline-block'
-                          }}>—</div>
-                        );
-                      }
-                      return (
-                        <div style={{
-                          fontSize: '16px', fontWeight: 800, padding: '2px 8px',
-                          borderRadius: '4px',
-                          backgroundColor: cp >= 0 ? 'rgba(82, 196, 26, 0.1)' : 'rgba(255, 77, 79, 0.1)',
-                          color: cp >= 0 ? '#52c41a' : '#ff4d4f',
-                          display: 'inline-block'
-                        }}>
-                          {cp >= 0 ? '▲' : '▼'}
-                          {Math.abs(cp).toFixed(2)}%
-                        </div>
-                      );
-                    })()}
-                  </div>
-                </div>
-
-                {/* Day Range Info - SWAPPED: Low on Left, High on Right */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', padding: '0 4px' }}>
-                  <div>
-                    <div className="scanner-detail-label">{t.agent.dayLow}</div>
-                    <div className="scanner-detail-value" style={{ color: 'var(--app-text-muted)' }}>{record.dayLow != null ? `$${record.dayLow.toFixed(2)}` : '—'}</div>
-                  </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <div className="scanner-detail-label">{t.agent.dayHigh}</div>
-                    <div className="scanner-detail-value" style={{ color: 'var(--app-text-muted)' }}>{record.dayHigh != null ? `$${record.dayHigh.toFixed(2)}` : '—'}</div>
-                  </div>
-                </div>
-
-                <Divider style={{ margin: '4px 0' }} />
-
-                {/* Volume & Liquidity */}
-                <div style={{ padding: '0 4px' }}>
-                  <div className="scanner-detail-label">{t.agent.volumeLiquidity}</div>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
-                    <span className="scanner-detail-value" style={{ fontSize: '16px' }}>{(record.volume != null && record.volume > 0) ? marketDataService.formatVolume(record.volume) : '—'}</span>
-                    {(() => {
-                      const vs = (record.volumeStatus != null && record.analysisStatus !== 'failed') ? record.volumeStatus : null;
-                      if (!vs) {
-                        return <Tag color="default" style={{ fontSize: '10px', fontWeight: 800, borderRadius: '4px', margin: 0 }}>N/A</Tag>;
-                      }
-                      const vsColor = vs === 'High' ? 'red' : vs === 'Low' ? 'green' : 'gold';
-                      const vsMap: Record<string, string> = { 'High': t.agent.volumeHigh, 'Normal': t.agent.volumeNormal, 'Low': t.agent.volumeLow };
-                      return (
-                        <Tag color={vsColor} style={{ fontSize: '10px', fontWeight: 800, borderRadius: '4px', margin: 0 }}>
-                          {vsMap[vs] || vs}
-                        </Tag>
-                      );
-                    })()}
-                  </div>
-                </div>
-
-                {/* Sector & Industry */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', padding: '0 4px' }}>
-                  <div>
-                    <div className="scanner-detail-label">{t.agent.sectorLabel}</div>
-                    <div className="scanner-detail-value" style={{ fontSize: '13px', color: 'var(--app-text)' }}>{translateSector(record.sector) || 'N/A'}</div>
-                  </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <div className="scanner-detail-label">{t.agent.industryLabel}</div>
-                    <div className="scanner-detail-value" style={{ fontSize: '13px', color: 'var(--app-text)' }}>{translateSector(record.industry || record.sector) || 'N/A'}</div>
-                  </div>
-                </div>
-
-                {/* Data Provenances */}
-                <div style={{ 
-                  marginTop: '4px',
-                  padding: '10px',
-                  backgroundColor: 'var(--app-card-bg-soft)',
-                  borderRadius: '6px',
-                  border: '1px dashed var(--app-border)'
-                }}>
-                  <div className="scanner-detail-label" style={{ marginBottom: 8 }}>{t.agent.dataProvenances}</div>
-                  <div style={{ fontSize: '11px', color: 'var(--app-text-muted)', lineHeight: '1.8' }}>
-                    {record.provenance ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                          <span>{t.agent.marketDataLabel}:</span>
-                          <span style={{ fontWeight: 600, color: 'var(--app-text-muted)' }}>{record.provenance.marketData || 'Real-time'}</span>
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                          <span>{t.agent.fundamentalsLabel}:</span>
-                          <span style={{ fontWeight: 600, color: 'var(--app-text-muted)' }}>{record.provenance.companyInfo || 'Finnhub'}</span>
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                          <span>{t.agent.sentimentLabel}:</span>
-                          <span style={{ fontWeight: 600, color: 'var(--app-text-muted)' }}>{record.provenance.news || 'Market News'}</span>
-                        </div>
-                      </div>
-                    ) : (
-                      <span style={{ fontStyle: 'italic', color: 'var(--app-text-muted)' }}>{t.agent.detailedSourceUnavailable}</span>
-                    )}
-                  </div>
-                </div>
+        <div className="scanner-detail-grid">
+          <section className="scanner-detail-panel">
+            <div className="scanner-detail-section-title">{agentText('Priority & Evidence', '优先级与证据')}</div>
+            <div className="scanner-detail-score-strip">
+              <div>
+                <div className="scanner-detail-label">{agentText('Research Priority', '研究优先级')}</div>
+                <div className="scanner-detail-score" style={{ color: scoreColor }}>{score.toFixed(0)}<span>/100</span></div>
               </div>
-            </Card>
-          </Col>
+              <Progress percent={score} strokeColor={scoreColor} showInfo={false} size={['100%', 8]} />
+              <div className="scanner-detail-meta">{agentText('Evidence reliability', '证据可靠度')} {confidenceValue}% · {displayRecord.scoreVersion || agentText('legacy score', '旧版评分')}</div>
+            </div>
+            <div className="scanner-metric-grid">
+              {metricRows.map(item => (
+                <div key={item.label} className="scanner-metric">
+                  <div className="scanner-detail-label">{item.label}</div>
+                  <div className={`scanner-detail-value ${item.tone === 'positive' ? 'scanner-positive' : item.tone === 'negative' ? 'scanner-negative' : ''}`}>{item.value}</div>
+                </div>
+              ))}
+            </div>
+          </section>
 
-          {/* Column 2: Trend & Scores */}
-          <Col span={8}>
-            <Card title={`📈 ${t.agent.analysisScores}`} className="scanner-detail-card" bodyStyle={{ padding: '20px' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 10 }}>
-                    <div className="scanner-detail-label" style={{ margin: 0 }}>{t.agent.overallTrendScore}</div>
-                    <div style={{ textAlign: 'right' }}>
-                      <span style={{ fontSize: '26px', fontWeight: 800, color: scoreColor }}>{score.toFixed(0)}</span>
-                      <span style={{ fontSize: '14px', color: 'var(--app-text-muted)', marginLeft: 4 }}>/100</span>
+          <section className="scanner-detail-panel">
+            <div className="scanner-detail-section-title">{agentText('Factor Model & Investability', '因子模型与可投资性')}</div>
+            <div className="scanner-factor-list">
+              {factorRows.map(item => {
+                const value = Number(item.value);
+                const color = value >= 70 ? '#52c41a' : value >= 40 ? '#faad14' : '#ff4d4f';
+                return (
+                  <div key={item.label} className="scanner-factor-row">
+                    <div className="scanner-factor-head">
+                      <span>{item.label}</span>
+                      <b>{Number.isFinite(value) ? value.toFixed(0) : '--'}</b>
                     </div>
+                    <Progress percent={Number.isFinite(value) ? value : 0} strokeColor={color} showInfo={false} size={['100%', 6]} />
                   </div>
-                  <Progress 
-                    percent={score} 
-                    strokeColor={scoreColor} 
-                    showInfo={false} 
-                    strokeWidth={12}
-                    style={{ marginBottom: 6 }}
-                  />
-                  <div style={{ fontSize: '12px', color: 'var(--app-text-muted)', textAlign: 'right', fontWeight: 600 }}>
-                    {t.agent.confidenceLevel}: <span style={{ color: scoreColor }}>{conf}%</span>
-                  </div>
-                </div>
-
-                <Divider style={{ margin: '8px 0' }} />
-
-                <div>
-                  <div className="scanner-detail-label" style={{ marginBottom: 12 }}>{t.agent.dimensionalBreakdown}</div>
-                  <div className="scanner-detail-dimension-grid">
-                    {[
-                      { label: t.agent.dimTrend, value: record.trendScoreDetail || record.trendScore },
-                      { label: t.agent.dimMomentum, value: record.momentumScore },
-                      { label: t.agent.dimVolume, value: record.volumeScore },
-                      { label: t.agent.dimVolatility, value: record.volatilityScore },
-                      { label: t.agent.dimStructure, value: record.structureScore },
-                      { label: t.agent.dimSentiment, value: record.newsScore || record.sentimentScore }
-                    ].map((item, idx) => (
-                      <div key={idx} className="scanner-detail-dimension-item" style={{ padding: '12px' }}>
-                        <span className="scanner-detail-label" style={{ margin: 0, fontSize: '10px', color: 'var(--app-text-muted)' }}>{item.label}</span>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
-                          <span className="scanner-detail-value" style={{ fontSize: '16px' }}>
-                            {item.value != null ? item.value.toFixed(0) : '--'}
-                          </span>
-                          <div style={{ 
-                            width: 36, 
-                            height: 5, 
-                            borderRadius: 2, 
-                            backgroundColor: 'var(--app-table-header-bg)',
-                            overflow: 'hidden' 
-                          }}>
-                            <div style={{ 
-                              width: `${item.value || 0}%`, 
-                              height: '100%', 
-                              backgroundColor: (item.value || 0) >= 70 ? '#52c41a' : (item.value || 0) >= 40 ? '#faad14' : '#ff4d4f' 
-                            }} />
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div style={{ marginTop: 'auto' }}>
-                  <div className="scanner-detail-label" style={{ marginBottom: 8 }}>{t.agent.riskProfile}</div>
-                  <div style={{ display: 'flex', gap: 10 }}>
-                    <Tag color={record.eventRisk === 'High' ? 'red' : record.eventRisk === 'Medium' ? 'gold' : 'green'} 
-                         style={{ fontWeight: 700, padding: '4px 10px', borderRadius: '6px', margin: 0 }}>
-                      {t.agent.riskPrefix}: {(() => { const rl = (record.eventRisk || 'LOW').toUpperCase(); const rlMap: Record<string, string> = { 'HIGH': t.agent.riskHigh, 'MEDIUM': t.agent.riskMedium, 'LOW': t.agent.riskLow }; return rlMap[rl] || record.eventRisk || t.agent.riskLow; })()}
-                    </Tag>
-                    <Tag color={record.volatilityScore > 70 ? 'orange' : 'blue'} 
-                         style={{ fontWeight: 700, padding: '4px 10px', borderRadius: '6px', margin: 0 }}>
-                      {t.agent.volPrefix}: {record.volatilityScore > 70 ? t.agent.volHigh : t.agent.volStable}
-                    </Tag>
-                  </div>
-                </div>
+                );
+              })}
+            </div>
+            {riskTags.length > 0 && (
+              <div className="scanner-detail-tag-row">
+                {riskTags.map(tag => <Tag key={tag} color={/High|高/i.test(String(tag)) ? 'red' : /Medium|中/i.test(String(tag)) ? 'gold' : 'blue'} style={{ margin: 0 }}>{tag}</Tag>)}
               </div>
-            </Card>
-          </Col>
-
-          {/* Column 3: AI Reasoning & News */}
-          <Col span={8}>
-            <Card title={`🧠 ${t.agent.aiAgentReasoning}`} className="scanner-detail-card" bodyStyle={{ padding: '20px' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%' }}>
-                <div>
-                  <div className="scanner-detail-label" style={{ marginBottom: 10 }}>{t.agent.detailedAnalysis}</div>
-                  <div className="scanner-detail-reasoning-box" style={{ 
-                    backgroundColor: 'var(--app-card-bg-soft)', border: '1px solid rgba(82, 196, 26, 0.3)',
-                    borderRadius: '8px',
-                    padding: '16px',
-                    fontSize: '13px',
-                    lineHeight: '1.6',
-                    color: 'var(--app-text-strong)',
-                    maxHeight: '180px',
-                    overflowY: 'auto'
-                  }}>
-                    {record.detailedReasoning || record.aiReasoning || record.scannerReason || t.agent.noDetailedAnalysis}
-                  </div>
-                </div>
-
-                <div style={{ flex: 1 }}>
-                  <div className="scanner-detail-label" style={{ marginBottom: 10 }}>{t.agent.latestMarketNews}</div>
-                  <div className="scanner-detail-news-box" style={{ 
-                    padding: '14px',
-                    backgroundColor: 'var(--app-card-bg)',
-                    border: '1px solid var(--app-border-soft)',
-                    borderRadius: '8px',
-                    boxShadow: '0 2px 6px rgba(0,0,0,0.02)'
-                  }}>
-                    {displayRecord.topNews ? (() => {
-                      const tn = displayRecord.topNews;
-                      const title = tn.title || 'Untitled news';
-                      const source = tn.source || tn.publisher || 'Finnhub';
-                      const published = tn.published || tn.publishedAt;
-                      const summary = tn.summary || 'No summary available';
-                      const url = tn.url || '';
-                      return (
-                      <div>
-                        {url ? (
-                          <a href={url} target="_blank" rel="noopener noreferrer" style={{ fontSize: '14px', fontWeight: 700, color: '#1890ff', marginBottom: '8px', display: 'block', lineHeight: '1.4', textDecoration: 'none' }}>{title}</a>
-                        ) : (
-                          <span style={{ fontSize: '14px', fontWeight: 700, color: '#1890ff', marginBottom: '8px', display: 'block', lineHeight: '1.4' }}>{title}</span>
-                        )}
-                        <div style={{ fontSize: '11px', color: 'var(--app-text-muted)', marginBottom: 10, display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--app-border-soft)', paddingTop: '6px' }}>
-                          <span style={{ fontWeight: 600, color: 'var(--app-text-muted)' }}>{source}</span>
-                          <span>{published ? formatNewsDate(published) : 'Time unavailable'}</span>
-                        </div>
-                        <div style={{ fontSize: '12px', color: 'var(--app-text-muted)', lineHeight: '1.5' }}>
-                          {summary.length > 140 ? summary.substring(0, 140) + '...' : summary}
-                        </div>
-                      </div>
-                      );
-                    })() : (
-                      <div style={{ textAlign: 'center', padding: '20px 0', color: 'var(--app-text-muted)' }}>
-                        {needsLazyRefresh && !lazyNewsCache[record.symbol] ? (
-                          <>
-                            <LoadingOutlined style={{ fontSize: '20px', marginBottom: 8, display: 'block' }} />
-                            <span style={{ fontSize: '12px' }}>Fetching Finnhub news...</span>
-                          </>
-                        ) : (
-                          <>
-                            <InfoCircleOutlined style={{ fontSize: '24px', marginBottom: 8, display: 'block', opacity: 0.5 }} />
-                            <span style={{ fontSize: '12px' }}>{getNewsEmptyReason(displayRecord)}</span>
-                          </>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {record.nextStep && (
-                  <div style={{ 
-                    marginTop: 'auto', 
-                    padding: '14px', 
-                    backgroundColor: 'var(--app-blue-bg)', 
-                    borderRadius: '8px',
-                    border: '1px solid rgba(24, 144, 255, 0.2)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '4px'
-                  }}>
-                    <div className="scanner-detail-label" style={{ color: '#0050b3', margin: 0 }}>{t.agent.agentRecommendation}</div>
-                    <div style={{ fontSize: '13px', color: '#003a8c', fontWeight: 700 }}>
-                      {record.nextStep}
+            )}
+            {executionRows.length > 0 && (
+              <>
+                <div className="scanner-detail-section-title scanner-detail-section-title-spaced">{agentText('Execution Context', '执行条件')}</div>
+                <div className="scanner-execution-grid">
+                  {executionRows.map(item => (
+                    <div key={item.label} className="scanner-execution-metric">
+                      <span>{item.label}</span>
+                      <b>{item.value}</b>
                     </div>
-                  </div>
-                )}
+                  ))}
+                </div>
+              </>
+            )}
+          </section>
+
+          <section className="scanner-detail-panel">
+            <div className="scanner-detail-section-title">{agentText('Catalysts & AI Challenge', '催化因素与 AI 质询')}</div>
+            <div className="scanner-news-status-row">
+              <Tag color={displayRecord.hasNews ? 'blue' : isNewsLoading ? 'processing' : 'default'} style={{ margin: 0 }}>
+                {displayRecord.hasNews
+                  ? `${agentText('Alpaca News', 'Alpaca 新闻')} ${displayRecord.newsCount || newsItems.length}`
+                  : isNewsLoading ? agentText('Fetching Alpaca News', '正在获取 Alpaca 新闻') : agentText('No News', '暂无新闻')}
+              </Tag>
+              {displayRecord.newsSentiment && <Tag color={displayRecord.newsSentiment === 'Negative' ? 'red' : displayRecord.newsSentiment === 'Positive' ? 'green' : 'default'} style={{ margin: 0 }}>{agentEnumLabel(displayRecord.newsSentiment)}</Tag>}
+            </div>
+            <div className="scanner-detail-news-box">
+              {isNewsLoading ? (
+                <div className="scanner-news-empty">
+                  <LoadingOutlined />
+                  <span>{agentText('Fetching Alpaca News...', '正在获取 Alpaca 新闻…')}</span>
+                </div>
+              ) : newsItems.length > 0 ? (
+                newsItems.map((item: any, index: number) => {
+                  const title = item.title || item.headline || agentText('Untitled news', '未命名新闻');
+                  const sourceLabel = item.source || item.publisher || agentText('Alpaca News', 'Alpaca 新闻');
+                  const published = item.published || item.publishedAt || item.createdAt || item.updatedAt;
+                  const summary = item.summary || '';
+                  const url = item.url || '';
+                  return (
+                    <div key={`${title}-${index}`} className="scanner-news-item">
+                      {url ? (
+                        <a href={url} target="_blank" rel="noopener noreferrer" className="scanner-detail-news-title">{title}</a>
+                      ) : (
+                        <span className="scanner-detail-news-title">{title}</span>
+                      )}
+                      <div className="scanner-news-meta">{sourceLabel} · {published ? formatNewsDate(published) : agentText('Time unavailable', '时间不可用')}</div>
+                      {summary && <div className="scanner-detail-news-summary">{summary.length > 150 ? `${summary.substring(0, 150)}...` : summary}</div>}
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="scanner-news-empty">
+                  <InfoCircleOutlined />
+                  <span>{getNewsEmptyReason(displayRecord)}</span>
+                </div>
+              )}
+            </div>
+            <div className="scanner-detail-section-title scanner-detail-section-title-spaced">{agentText('AI Challenge Review', 'AI 质询审核')}</div>
+            <div className="scanner-detail-reasoning-box scanner-detail-reasoning-box-right">
+              {displayRecord.aiTraderRationale || displayRecord.detailedReasoning || displayRecord.aiReasoning || displayRecord.scannerReason || t.agent.noDetailedAnalysis}
+            </div>
+            {(displayRecord.aiRiskFlags?.length > 0 || displayRecord.aiContradictions?.length > 0 || displayRecord.aiMissingChecks?.length > 0) && (
+              <div className="scanner-detail-tag-row">
+                {(displayRecord.aiRiskFlags || []).slice(0, 3).map((item: string) => <Tag key={'risk-' + item} color="warning">{item}</Tag>)}
+                {(displayRecord.aiContradictions || []).slice(0, 3).map((item: string) => <Tag key={'conflict-' + item} color="error">{item}</Tag>)}
+                {(displayRecord.aiMissingChecks || []).slice(0, 3).map((item: string) => <Tag key={'check-' + item} color="blue">{item}</Tag>)}
               </div>
-            </Card>
-          </Col>
-        </Row>
+            )}
+            {(displayRecord.aiNextStep || displayRecord.nextStep) && (
+              <div className="scanner-next-step">
+                <span>{agentText('Next Step', '下一步')}</span>
+                <b>{displayRecord.aiNextStep || displayRecord.nextStep}</b>
+              </div>
+            )}
+            {sourceRows.length > 0 && (
+              <div className="scanner-source-list scanner-source-list-right">
+                {sourceRows.map(item => (
+                  <div key={item.label}>
+                    <span>{item.label}</span>
+                    <Tooltip title={String(item.value)}>
+                      <b>{sourceDisplay(item.value)}</b>
+                    </Tooltip>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
       </div>
     );
   };
@@ -2418,11 +2481,11 @@ const Agent: React.FC = (): React.ReactElement => {
   // Process one symbol fully (both steps) before moving to the next
   const handleRunFineScan = async () => {
     if (pipelineRunning) {
-      message.warning('Disabled while AI Pipeline is running.');
+      message.warning(agentText('This action is unavailable while the AI pipeline is running.', 'AI 流水线运行期间无法执行此操作。'));
       return;
     }
-    if (preferredContinueScanList.length === 0) {
-      message.warning('No continue list candidates available. Run Continue Scan first.');
+    if (marketScannerResults.length === 0) {
+      message.warning(agentText('No scanner candidates are available. Run the market scanner first.', '暂无市场扫描候选标的，请先运行市场扫描。'));
       return;
     }
 
@@ -2442,1243 +2505,167 @@ const Agent: React.FC = (): React.ReactElement => {
     // Clear downstream stale results when Fine Scan re-runs
     setDeeperValidationStatus('idle');
     setDeeperValidationResults(null);
+    scannerStateStore.resetAdmission();
     setEntryPlanStatus('idle');
     setEntryPlanResults(null);
+    setExitScanStatus('idle');
+    setExitScanResults([]);
 
     // Preflight: check session, Alpaca, and AI config
     const preflight = await preflightConfigCheck();
     if (!preflight.ok || !preflight.sessionValid) {
       setFineScanStatus('failed');
-      setFineScanMessage(preflight.error || 'Session expired');
+      setFineScanMessage(agentErrorText(
+        preflight.error,
+        'Your session has expired.',
+        '登录状态已过期，请重新登录。',
+      ));
       unregisterFineScanRun();
-      message.error(preflight.error || 'Session expired');
+      message.error(agentErrorText(
+        preflight.error,
+        'Your session has expired.',
+        '登录状态已过期，请重新登录。',
+      ));
       return [];
     }
     if (!preflight.alpacaConfigured) {
       setFineScanStatus('failed');
-      setFineScanMessage('Alpaca Market Data API is not configured. Configure in Settings.');
+      setFineScanMessage(agentText(
+        'Alpaca Market Data API is not configured. Configure it in Settings.',
+        '尚未配置 Alpaca 行情数据，请前往设置完成连接。',
+      ));
       unregisterFineScanRun();
-      message.error('Alpaca Market Data API is not configured.');
+      message.error(agentText('Alpaca market data is not configured.', '尚未配置 Alpaca 行情数据。'));
       return [];
     }
     if (!preflight.aiAvailable) {
-      const reason = preflight.aiKeyIsMasked ? 'AI key is invalid (masked). Re-enter in Settings.' :
-                     !preflight.aiConfigured ? 'AI Provider not configured. Configure in Settings.' :
-                     preflight.aiTestStatus !== 'connected' ? `AI Provider not tested (${preflight.aiTestStatus}). Click Test AI Connection in Settings.` :
-                     'AI unavailable';
-      setFineScanStatus('failed');
-      setFineScanMessage(reason);
+      setFineScanMessage(agentText(
+        'AI overlay unavailable; running the deterministic rule scan.',
+        'AI 复核暂不可用；正在运行确定性规则扫描。',
+      ));
+    }
+
+    const fineScanCandidateLimit = 30;
+    const candidateSource = (scannerStateStore.getState().marketScanner.results || [])
+      .filter((row: any) => row?.symbol)
+      .sort((a: any, b: any) => ((b.overallScore ?? b.trendScore ?? 0) - (a.overallScore ?? a.trendScore ?? 0)))
+      .slice(0, fineScanCandidateLimit);
+
+    if (candidateSource.length === 0) {
+      setFineScanStatus('completed');
+      setFineScanProgress(100);
+      setFineScanMessage(agentText(
+        'No Market Scanner candidates are available for Fine Scan.',
+        '市场扫描暂未生成可进入精细扫描的候选标的。',
+      ));
       unregisterFineScanRun();
-      message.error(reason);
       return [];
     }
 
+    setFineScanCurrentStep(agentText('Candidate intake', '候选接收'));
+    setFineScanStepProgress(10);
+    setFineScanProgress(8);
+    setFineScanMessage(agentText(
+      `Preparing ${candidateSource.length} Market Scanner candidates for Fine Scan...`,
+      `正在准备 ${candidateSource.length} 个市场扫描候选标的...`,
+    ));
+
+    let progress = 8;
+    let progressTimer: ReturnType<typeof setInterval> | null = null;
     try {
-      const results: any[] = [];
-      // Read from store directly to avoid stale React closure after processContinueScan
-      const csResults = scannerStateStore.getState().continueScan.results;
-      const candidates = csResults.length > 0 ? csResults : preferredContinueScanList;
-      const candidateCount = candidates.length;
-
-      // Build a lookup map from market scanner results (store direct for freshness)
-      const msResults = scannerStateStore.getState().marketScanner.results || [];
-      const scannerMap = new Map<string, any>();
-      for (const s of msResults.length > 0 ? msResults : marketScannerResults) {
-        if (s.symbol) scannerMap.set(s.symbol.toUpperCase(), s);
-      }
-
-
-      // Retry helper for API calls that hit 429 rate limits
-      const _fetchWithRetry = async <T extends unknown>(
-        label: string,
-        fn: () => Promise<T>,
-        maxRetries = 3
-      ): Promise<{ data: T | null; rateLimited: boolean; error: string | null }> => {
-        for (let attempt = 0; attempt <= maxRetries; attempt++) {
-          try {
-            const result = await fn();
-            return { data: result, rateLimited: false, error: null };
-          } catch (e: any) {
-            const status = e?.response?.status || e?.status;
-            if (status === 429 && attempt < maxRetries) {
-              const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
-              console.warn(`[FineScan] ${label} rate limited (429), retry ${attempt + 1}/${maxRetries} after ${delay}ms`);
-              await new Promise(r => setTimeout(r, delay));
-              continue;
-            }
-            // Non-retryable or out of retries
-            const errMsg = status === 429
-              ? 'Rate limited — API throttled'
-              : status === 401 || status === 403
-                ? 'Config/Auth required'
-                : status >= 500
-                  ? `Server error (${status})`
-                  : e.message || 'Request failed';
-            return { data: null, rateLimited: status === 429, error: errMsg };
-          }
-        }
-        return { data: null, rateLimited: true, error: 'Rate limited — max retries exceeded' };
-      };
-
-      // --- Fine Scan helper: process one symbol ---
-      const _processOneFineScanSymbol = async (
-        i: number,
-        c: any,
-        candidateCount: number,
-        results: any[],
-        scannerMap: Map<string, any>
-      ) => {
-        // i, c, candidateCount, results, scannerMap come from function params
-        const progress = Math.min(100, Math.round(((i + 1) / candidateCount) * 100));
-        setFineScanProgress(progress);
-        setFineScanStepProgress(14);
-        setFineScanCurrentStep('Strategy Matching');
-        setFineScanMessage(`[${i+1}/${candidateCount}] ${c.symbol}: Strategy matching...`);
-
-        const symbol = c.symbol || 'N/A';
-        const symbolUpper = symbol.toUpperCase();
-
-        // PRIMARY data source: matching market scanner result
-        const ms = scannerMap.get(symbolUpper);
-
-        // ===== FIELD NORMALIZATION: ms (scanner) first, c (continue list) fallback =====
-        // Core fields - market scanner always has these when data is valid
-        const msTrendLabel = ms?.trendLabel || ms?.trend || null;
-        const msScore = ms?.overallScore !== null && ms?.overallScore !== undefined ? ms.overallScore : (ms?.trendScore || null);
-        const msPrice = ms?.price || ms?.lastPrice || null;
-        const msChangePct = ms?.changePct || ms?.changePercent || ms?.priceChangePct || null;
-        const msVolumeStatus = ms?.volumeStatus || null;
-        const msSector = ms?.sector || null;
-        const msNewsSentiment = ms?.newsSentiment || ms?.newsLabel || null;
-        const msEventRisk = ms?.eventRisk || ms?.riskLevel || null;
-        const msAiReasoning = ms?.aiReasoning || ms?.conciseReasoning || ms?.reason || ms?.scannerReason || null;
-
-        // Now read: ms first, then c, then default
-        const trendLabel      = msTrendLabel   || c.trendLabel || c.trend || 'Neutral';
-        const score           = msScore        ?? (c.overallScore || c.trendScore || 0);
-        const risk            = msEventRisk    || c.eventRisk || c.riskLevel || 'Medium';
-        const sector          = msSector       || c.sector || 'Unknown';
-        const priceChange     = msChangePct    ?? (c.priceChangePct || c.changePct || 0);
-        const volumeStatus    = msVolumeStatus || c.volumeStatus || 'Normal';
-        const newsSentiment   = msNewsSentiment || c.newsSentiment || c.newsLabel || 'Neutral';
-        const aiReasoning     = msAiReasoning  || c.aiReasoning || c.conciseReasoning || '';
-        const structureLabel  = ms?.structureLabel || c.structureLabel || '';
-        const momentumLabel   = ms?.momentumLabel || c.momentumLabel || '';
-        const volatilityLabel = ms?.volatilityLabel || c.volatilityLabel || '';
-        const confidence      = ms?.trendConfidence || ms?.confidence || c.confidence || 0;
-        const relativeVolume  = ms?.relativeVolume || c.relativeVolume || 0;
-        const price           = msPrice ?? 0;
-        const volume          = ms?.volume || 0;
-        const companyName     = ms?.companyName || c.companyName || '';
-        const msDataQuality   = ms?.dataQuality || c.dataQuality || '';
-        const dq = String(msDataQuality).toLowerCase();
-
-        // ===== DATA QUALITY GATE (mirrors backend _pa_fine_scan_headless Gate 1) =====
-        // Symbols with insufficient market data skip AI analysis entirely.
-        if (dq === 'unavailable' || dq === 'need_data' || dq === 'failed' || dq === 'partial') {
-          console.log('[FINE SCAN] dataQuality gate blocked symbol=%s dq=%s', symbol, dq);
-          const blockedResult = {
-            symbol,
-            companyName: companyName || (symbol + ' Inc.'),
-            scanStatus: 'completed',
-            decision: 'NeedMoreData',
-            decisionReason: 'Insufficient market data quality (' + dq + ')',
-            decisionSource: 'data_quality_gate',
-            fineScanSource: 'frontend_manual',
-            dataQuality: msDataQuality,
-            trendLabel: trendLabel || 'Need Data',
-            overallScore: score,
-            price,
-            volume,
-            changePct: priceChange,
-            sector,
-            risk,
-            newsSentiment,
-            volumeStatus,
-          };
-          results.push(blockedResult);
-          setFineScanMessage(`[${i+1}/${candidateCount}] ${symbol}: Blocked — data quality ${dq}`);
-          return;
-        }
-
-        // ===== DEBUG LOG: first 3 candidates =====
-        if (i < 3) {
-          console.log('[FINE SCAN DEBUG] Candidate ' + (i+1) + '/' + candidateCount + ': ' + symbol, {
-            dataSource: ms ? 'market_scan' : 'continue_list_only',
-            scannerSymbolFound: !!ms,
-            trendLabel: trendLabel,
-            score: score,
-            price: price,
-            changePct: priceChange,
-            volumeStatus: volumeStatus,
-            volume: volume,
-            newsSentiment: newsSentiment,
-            sector: sector,
-            risk: risk,
-            structureLabel: structureLabel,
-            momentumLabel: momentumLabel,
-            aiReasoningLength: aiReasoning ? aiReasoning.length : 0,
-          });
-        }
-
-        const contextPayload = {
-          task: 'strategy_matching',
-          symbol,
-          dataSource: ms ? 'market_scan' : 'continue_list_only',
-          data: {
-            trend: trendLabel,
-            score,
-            confidence,
-            risk,
-            sector,
-            price,
-            priceChange,
-            volume,
-            volumeStatus,
-            newsSentiment,
-            structureLabel,
-            momentumLabel,
-            volatilityLabel,
-            aiReasoning,
-            companyName,
-            trendScore: ms?.trendScore ?? c.trendScore ?? 0,
-            momentumScore: ms?.momentumScore ?? c.momentumScore ?? 0,
-            volumeScore: ms?.volumeScore ?? c.volumeScore ?? 0,
-            volatilityScore: ms?.volatilityScore ?? c.volatilityScore ?? 0,
-            structureScore: ms?.structureScore ?? c.structureScore ?? 0,
-            newsScore: ms?.newsScore ?? c.newsScore ?? 0,
-            volumeLabel: ms?.volumeLabel || c.volumeLabel || '',
-            newsLabel: ms?.newsLabel || c.newsLabel || '',
-            riskLevel: ms?.riskLevel || c.riskLevel || '',
-            conciseReason: ms?.conciseReason || c.conciseReason || '',
-            overallScore: ms?.overallScore ?? c.overallScore ?? score,
-            priorityScore: c.priorityScore || 0,
-            priceChangePct: priceChange,
-            relativeVolume,
-            selectionReason: c.selectionReason || '',
-          }
-        };
-
-        // === REGIME DETECTION (field-driven, not AI fallback) ===
-        // Classify regime based on available market scan data BEFORE AI call
-        // This ensures regime is data-driven, not dependent on AI trading endpoint
-
-        // Build technical signal profile from available fields
-        const isBullTrend = trendLabel === 'Bullish' || trendLabel === 'Strong Bullish';
-        const isBearTrend = trendLabel === 'Bearish' || trendLabel === 'Strong Bearish';
-        const hasHighScore = score >= 65;
-        const hasHighVolume = volumeStatus === 'High' || (relativeVolume > 1.5);
-        const hasLowVolume = volumeStatus === 'Low' || (volume > 0 && volume < 100000 && relativeVolume < 0.5);
-        const hasPositiveNews = newsSentiment === 'Positive';
-        const hasLargeMove = Math.abs(priceChange) > 5;
-        const hasModerateMove = Math.abs(priceChange) > 2;
-        const isLowRisk = risk === 'Low';
-        const isHighRisk = risk === 'High';
-        // ===== REGIME CLASSIFICATION (rule-based, using available fields) =====
-        // This is a proxy-based regime matching using market scan proxy fields.
-        // Without full EMA/RSI/Bollinger/HH-HL, we estimate structure from
-        // trendLabel, score, volumeStatus, priceChange, newsSentiment, risk.
-        // The result is an approximation, not a complete technical structure analysis.
-
-        // === INDICATOR FUNCTIONS (reusable) ===
-        const isPositiveMove = priceChange > 0;
-        const isNegativeMove = priceChange < 0;
-        const hasPositiveVol = hasHighVolume && !hasLowVolume;
-        const hasNeutralVol = !hasHighVolume && !hasLowVolume && volumeStatus !== 'Unknown';
-        const isConsistentRange = !isBullTrend && !isBearTrend && !hasLargeMove;
-        const hasStrongTrendBias = isBullTrend && hasHighScore && isPositiveMove && hasPositiveVol;
-        const hasConflictingSignals = (isBullTrend && isNegativeMove) || (isBullTrend && hasLowVolume);
-        const hasBreakoutPotential = (hasPositiveVol || hasHighVolume) && hasModerateMove && (isBullTrend || isPositiveMove);
-        const breakoutIndicators = [
-          structureLabel === 'breakout',
-          isBullTrend && hasHighVolume && hasModerateMove,
-          isBullTrend && hasPositiveNews && hasHighVolume,
-          hasHighScore && hasHighVolume && hasModerateMove,
-          hasHighVolume && hasLargeMove,
-          isBullTrend && isLowRisk && (hasHighVolume || hasModerateMove),
-        ];
-
-        // === BUILD SIGNAL LIST ===
-        const allSignals: string[] = [];
-        if (structureLabel === 'uptrend') allSignals.push('EMA aligned');
-        if (structureLabel === 'sideways') allSignals.push('Range-bound');
-        if (structureLabel === 'breakout') allSignals.push('Breakout structure');
-        if (momentumLabel === 'strengthening') allSignals.push('MACD strengthening');
-        if (volatilityLabel === 'low') allSignals.push('Low volatility');
-        if (isBullTrend) allSignals.push('Bullish trend');
-        if (isBearTrend) allSignals.push('Bearish trend');
-        if (hasHighScore) allSignals.push('Score: ' + score);
-        if (hasHighVolume) allSignals.push(volumeStatus === 'High' ? 'High volume' : 'Above avg volume');
-        if (hasLowVolume) allSignals.push('Low volume');
-        if (newsSentiment === 'Positive') allSignals.push('Positive catalyst');
-        if (newsSentiment === 'Negative') allSignals.push('Negative news');
-        if (price > 0) allSignals.push('Price: $' + Number(price).toFixed(2));
-        if (hasLargeMove) allSignals.push('Big move: ' + (priceChange > 0 ? '+' : '') + Number(priceChange).toFixed(1) + '%');
-        else if (hasModerateMove) allSignals.push('Moderate move: ' + (priceChange > 0 ? '+' : '') + Number(priceChange).toFixed(1) + '%');
-        if (isLowRisk) allSignals.push('Low risk profile');
-        if (isHighRisk) allSignals.push('Elevated risk');
-
-        let keySignals: string[] = Array.from(new Set(allSignals)).slice(0, 6);
-
-        let regime = 'Unclear';
-        let matchReason = '';
-        let matchedStrategies: string[] = [];
-        let matchConfidence = 22;
-
-        // ===== THREE-REGIME SCORING =====
-        // Each regime gets a score. The highest score that clears its threshold wins.
-        // If no regime clears threshold, output remains Unclear.
-
-        // --- Breakout-ready scoring (needs at least 2 breakout-specific indicators) ---
-        const bOut = breakoutIndicators.filter(Boolean).length;
-        const bExtra = (hasBreakoutPotential ? 1 : 0) + (hasHighVolume && isPositiveMove ? 1 : 0);
-        const breakoutScore2 = bOut + bExtra;
-
-        // --- Range-bound scoring (needs at least 2 range-specific indicators) ---
-        const rangeIndicators2 = [
-          structureLabel === 'sideways',
-          isConsistentRange,
-          volatilityLabel === 'low' && hasModerateMove,
-          hasLowVolume && !hasLargeMove,
-          !isBullTrend && !isBearTrend,
-          isHighRisk && !hasLargeMove,
-          hasConflictingSignals,
-          !hasHighScore && !hasLargeMove && hasNeutralVol,
-        ];
-        const rangeScore2 = rangeIndicators2.filter(Boolean).length;
-
-        // --- Trending scoring (needs at least 2 trend-indicators, no conflicting) ---
-        const trendIndicators2 = [
-          structureLabel === 'uptrend',
-          isBullTrend && hasHighScore && isPositiveMove,
-          isBullTrend && isPositiveMove && hasPositiveVol,
-          isBullTrend && isLowRisk && isPositiveMove,
-          momentumLabel === 'strengthening',
-          hasStrongTrendBias,
-          hasHighScore && isPositiveMove && !hasLowVolume,
-        ];
-        const trendScore3 = trendIndicators2.filter(Boolean).length;
-        const trendPenalized = hasConflictingSignals ? -2 : 0;
-
-        // === FINAL CLASSIFICATION WITH EXPLICIT BOUNDARY HANDLING ===
-
-        // 1) Breakout-ready: needs clear volume + move + bias, not just ordinary bullish
-        if (breakoutScore2 >= 3) {
-          regime = 'Breakout-ready';
-          matchedStrategies = ['Breakout', 'Volume Confirmation', 'Momentum Continuation'];
-          matchConfidence = Math.min(85, 50 + breakoutScore2 * 8 + (hasHighVolume ? 10 : 0));
-
-          const volDetail = hasHighVolume ? 'strong volume expansion' : 'elevated volume with price action';
-          const direction = isPositiveMove || isBullTrend ? 'bullish direction' : 'directional expansion';
-          matchReason = `${companyName || symbol}: Breakout-ready - ${volDetail} in ${direction}. Not fitting mean-reversion or range setups because momentum and volume support directional continuation. Breakout, volume confirmation, and momentum continuation are the natural fit.`;
-        }
-
-        // 2) Range-bound: limited move, mixed signals, no clear break or trend
-        else if (rangeScore2 >= 2) {
-          regime = 'Range-bound';
-          if (hasHighVolume) {
-            matchedStrategies = ['RSI', 'Mean Reversion', 'Bollinger Band'];
-          } else {
-            matchedStrategies = ['RSI', 'Mean Reversion'];
-          }
-          matchConfidence = Math.min(70, 40 + rangeScore2 * 6);
-
-          const rangeType = structureLabel === 'sideways' ? 'clear sideways channel' : 'proxy-based bounded structure';
-          const conflictNote = hasConflictingSignals ? 'with conflicting trend signals, making trend-following unreliable' : 'with limited directional conviction';
-          matchReason = `${companyName || symbol}: Range-bound regime in ${rangeType} ${conflictNote}. RSI bounces and mean reversion are preferred over breakouts or trend-following because the price is oscillating within a defined zone without clear expansion.`;
-        }
-
-        // 3) Trending: needs clear trend confirmation, no negative/conflicting signals
-        else if (trendScore3 >= 2 && trendScore3 + trendPenalized >= 2) {
-          const isStrongTrend = trendScore3 >= 4;
-
-          regime = 'Trending';
-
-          if (isStrongTrend) {
-            matchedStrategies = ['Moving Average', 'MACD', 'Breakout Follow-through'];
-            matchConfidence = Math.min(85, 50 + trendScore3 * 8);
-          } else {
-            matchedStrategies = ['Moving Average', 'MACD'];
-            matchConfidence = Math.min(70, 40 + trendScore3 * 8);
-          }
-          // Add Momentum Continuation if volume is strong
-          if (matchedStrategies.length < 3 && hasHighVolume && isPositiveMove) {
-            matchedStrategies.push('Momentum Continuation');
-          }
-
-          const strength = isStrongTrend ? 'strong trend continuation pattern' : 'moderate trend confirmation';
-          const trendType = momentumLabel === 'strengthening' ? 'with strengthening momentum confirming the uptrend' : 'supported by consistent bullish readings';
-          const conflictNote = hasConflictingSignals ? ' despite conflicting volume/price signals' : '';
-          matchReason = `${companyName || symbol}: Trending regime - ${strength}${conflictNote} ${trendType}. Price is not range-bound (no sideways structure) and not breakout-ready (insufficient volume expansion). Moving average and MACD suit the established direction.${!isStrongTrend ? ' For stronger trend confirmation and breakout follow-through, additional signals are needed.' : ''}`;
-        }
-
-        // 4) CONFLICTING / MIXED SIGNALS (Unclear)
-        else if (hasConflictingSignals) {
-          regime = 'Unclear';
-          matchedStrategies = ['Moving Average'];
-          matchConfidence = Math.max(20, Math.min(35, score ? Math.round(score * 0.3) : 20));
-
-          const signal2 = isNegativeMove ? 'negative price action' : 'low volume';
-          matchReason = `${companyName || symbol}: Unclear regime - conflicting signals: trend label is '${trendLabel}' but ${signal2}. Trend continuation is not reliable because price/volume contradicts the trend label. Range-bound criteria not met due to insufficient bounded structure evidence. Conservative single-strategy fallback used. Needs more data.`;
-        }
-
-        // 5) INSUFFICIENT STRUCTURE (Unclear)
-        else {
-          regime = 'Unclear';
-          matchedStrategies = ['Moving Average'];
-
-          const hasAnyData = price > 0 || score > 0 || volume > 0 || (trendLabel && trendLabel !== 'Neutral');
-          if (hasAnyData) {
-            matchConfidence = Math.max(20, Math.min(35, score ? Math.round(score * 0.3) : 20));
-            matchReason = `${companyName || symbol}: Unclear regime - insufficient structure indicators for confident classification. Score ${score > 0 ? score + ' is' : 'is'} below classification thresholds. Trend not clearly trending, range-bound, or breakout-ready. Single conservative strategy applied.`;
-          } else {
-            matchConfidence = 15;
-            matchReason = `${companyName || symbol}: Unclear regime - insufficient market data for any structure classification. Conservative fallback as Moving Average only.`;
-          }
-        }
-
-        // Clamp confidence
-        matchConfidence = Math.max(15, Math.min(95, matchConfidence));
-
-        // === AI VALIDATION (optional, refines but doesn't override field-driven regime) ===
-        // Call AI for additional insight (best-effort, results not required)
-        let aiSucceeded = false;
-        try {
-          const aiResponse = await aiTradingService.previewTradeWithContext(symbol, contextPayload);
-
-          if (aiResponse.success && aiResponse.decision) {
-            const strategyMode = aiResponse.decision.strategyMode;
-            const aiReason = aiResponse.decision.reason || '';
-
-            // AI can only UPGRADE confidence if it confirms our regime
-            if (strategyMode?.marketRegime) {
-              const r = strategyMode.marketRegime.toLowerCase();
-              let aiRegime = '';
-              if (r.includes('trend') || r.includes('momentum')) aiRegime = 'Trending';
-              else if (r.includes('range') || r.includes('mean') || r.includes('sideways') || r.includes('bound')) aiRegime = 'Range-bound';
-              else if (r.includes('break') || r.includes('volatility') || r.includes('expansion')) aiRegime = 'Breakout-ready';
-
-              if (aiRegime === regime || !aiRegime) {
-                // AI confirms our regime - boost confidence
-                if (aiResponse.decision.confidence && aiResponse.decision.confidence > 0.5) {
-                  matchConfidence = Math.min(95, matchConfidence + Math.round(aiResponse.decision.confidence * 15));
-                }
-              }
-            }
-
-            // AI reasoning can supplement matchReason with fresh insight
-            if (aiReason && aiReason.length > 10) {
-              const hasStale = ['No market data', 'backtest', 'optimization', 'price is $0', 'Insufficient data']
-                .some(p => aiReason.toLowerCase().includes(p.toLowerCase()));
-              if (!hasStale) {
-                // AI provided useful reasoning - incorporate it
-                const firstSentence = aiReason.split('.')[0];
-                if (firstSentence.length > 15 && !firstSentence.includes('insufficient') && !firstSentence.includes('no market')) {
-                  matchReason = matchReason.split('.')[0] + '. AI confirms: ' + firstSentence.substring(0, 80) + '.';
-                }
-              }
-            }
-
-            aiSucceeded = true;
-          }
-        } catch (aiError) {
-          console.warn('[FINE SCAN] AI validation skipped for ' + symbol + ': ' + (aiError as any).message);
-        }
-
-        // (MTF multi-timeframe confirmation removed per user request — no 1D/4H/1H/30m/15m fetching)
-
-        // Priority lookup from marketScannerResults
-        const scanData = marketScannerResults && marketScannerResults.length > 0
-          ? marketScannerResults.find((r: any) => r.symbol === symbol)
-          : undefined;
-
-        results.push({
-          symbol,
-          __rateLimited: false, // tracks 429 rate limit for fallback decisions
-          regime,
-          matchedStrategies,
-          matchReason,
-          keySignals,
-          matchConfidence,
-          priority: 0,
-          aiUsed: aiSucceeded,
-          isDevTest: c.isDevTest || false,
-          // Step 3: Quick Backtest Validation
-          backtestStatus: 'pending',
-          backtestSummary: '',
-          backtestPerStrategy: [],
-          // Inherited from market scan
-          scanTrend: scanData?.trendLabel || scanData?.trend || 'N/A',
-          scanScore: scanData?.overallScore ?? scanData?.trendScore ?? null,
-          scanVolume: scanData?.volumeRatio || scanData?.volume || null,
-          // Dynamic provenance tracking
-          provenance: {
-            marketSource: ms ? 'Market Scanner (Alpaca/Finnhub)' : 'Continue Scan List',
-            scannerSource: ms ? 'Alpaca Snapshot + Finnhub Profile' : 'Continue List Fallback',
-            backtestSource: 'pending',
-            optimizationSource: 'pending',
-            entrySource: 'pending',
-            liquiditySource: 'pending',
-            newsSource: 'pending',
-            decisionSource: 'pending',
-            explanationSource: 'pending',
-            aiCalled: ms?.aiCalled || false,
-            aiSource: ms?.aiSource || 'Local Rules',
-            aiModel: ms?.aiModel || null,
-            aiError: ms?.aiError || null,
-            dataQuality: ms?.dataQuality || (ms?.price && ms?.volume ? 'GOOD' : 'PARTIAL'),
-            missingFields: [] as string[],
-            fallbackUsed: !ms,
-          },
-        });
-
-        // --- Step 3: Quick Backtest Validation ---
-        // Map FineScan strategy names -> Backtest page strategy names
-        const btStrategyMap: Record<string, string> = {
-          'Moving Average': 'moving_average',
-          'Moving Average Crossover': 'moving_average',
-          'MACD': 'macd',
-          'MACD Strategy': 'macd',
-          'RSI': 'rsi',
-          'RSI Strategy': 'rsi',
-          'Mean Reversion': 'mean_reversion',
-          'Bollinger Band': 'bollinger',
-          'Bollinger Bands': 'bollinger',
-          'Range-bound': 'bollinger',
-          'Range Bound': 'bollinger',
-          'Range-Bound': 'bollinger',
-          'Momentum': 'momentum',
-          'Momentum Strategy': 'momentum',
-          'Momentum Continuation': 'momentum',
-        };
-        const supportedStrategies = new Set(['moving_average', 'macd', 'rsi', 'bollinger', 'momentum', 'mean_reversion']);
-
-        let perStrategyResults: any[] = [];
-        let execStatus = 'pending';
-        let perfStatus: string | null = null;
-        let overallSummary = '';
-
-        const rec = results[results.length - 1];
-
-        if (matchedStrategies && matchedStrategies.length > 0) {
-          for (let si = 0; si < matchedStrategies.length; si++) {
-            const stratName = matchedStrategies[si];
-            const mappedName = btStrategyMap[stratName];
-
-            if (!mappedName || !supportedStrategies.has(mappedName)) {
-              perStrategyResults.push({ strategy: stratName, status: 'skipped', reason: 'Strategy not supported by local Backtest', totalReturn: null, sharpe: null, maxDrawdown: null, winRate: null, profitFactor: null, tradeCount: null, window: null });
-              continue;
-            }
-
-            // Try 3M, fallback 6M, fallback 1Y
-            let windowLabel = '';
-            let btSuccess = false;
-            let btData = null;
-            let btParams = {};
-
-            for (const win of ['3M', '6M', '1Y']) {
-              const daysBack = win === '3M' ? 90 : (win === '6M' ? 180 : 365);
-              const sd = new Date(Date.now() - daysBack * 86400000).toISOString().split('T')[0];
-              const ed = new Date().toISOString().split('T')[0];
-              windowLabel = win;
-
-        setFineScanStepProgress(28);
-        setFineScanCurrentStep('Backtest');
-        setFineScanMessage(`[${i+1}/${candidateCount}] ${symbol}: ${stratName} testing on ${win}...`);
-
-              const payload = {
-                strategy: mappedName, symbol, startDate: sd, endDate: ed,
-                initialCapital: 100000, dataMode: 'real', parameters: {},
-              };
-              btParams = payload;
-              const { data: btResp, rateLimited: btLimited, error: btErr } = await _fetchWithRetry(
-                `Backtest ${symbol} ${stratName} ${win}`,
-                () => backtraderAPI.runBacktest(payload) as any,
-                2 // 1s, 2s retries
-              );
-              if (btResp) {
-                const btResult = (btResp as any)?.data?.result;
-                if (btResult?.results) {
-                  btData = btResult.results;
-                  btSuccess = true;
-                  break;
-                }
-              }
-              // Track rate limit for fallback decision
-              if (btLimited) rec.__rateLimited = true;
-            }
-
-            if (!btSuccess || !btData) {
-              const reason = rec.__rateLimited ? 'Backtest rate limited — API throttled' : 'Backtest failed for all time windows';
-              perStrategyResults.push({ strategy: stratName, status: 'error', reason, totalReturn: null, sharpe: null, maxDrawdown: null, winRate: null, profitFactor: null, tradeCount: null, window: null, _params: btParams });
-              continue;
-            }
-
-            const tr = btData.totalReturn ?? 0;
-            const shrp = btData.sharpeRatio ?? 0;
-            const mdd = btData.maxDrawdown ?? 0;
-            const wr = btData.winRate ?? 0;
-            const pf = btData.profitFactor ?? 0;
-            const tcnt = btData.trades ?? 0;
-
-            let sStatus = 'completed_losing';
-            if (tr > 0 && pf > 1 && tcnt >= 3 && mdd < 30) { sStatus = 'passed'; }
-            else if (tr > -10 && tcnt >= 2 && mdd < 40) { sStatus = 'caution'; }
-
-            perStrategyResults.push({
-              strategy: stratName, status: sStatus, reason: '',
-              totalReturn: tr, sharpe: shrp, maxDrawdown: mdd,
-              winRate: wr, profitFactor: pf, tradeCount: tcnt, window: windowLabel, _params: btParams,
-            });
-
-            if (si < matchedStrategies.length - 1) await new Promise(r => setTimeout(r, 300));
-          }
-
-          // Compute overall — split execution + performance
-          const passed = perStrategyResults.filter(r => r.status === 'passed').length;
-          const caution = perStrategyResults.filter(r => r.status === 'caution').length;
-          const losing = perStrategyResults.filter(r => r.status === 'completed_losing').length;
-          const err = perStrategyResults.filter(r => r.status === 'error').length;
-
-          execStatus = 'pass';
-          perfStatus = null;
-
-          if (passed >= 1) {
-            execStatus = 'pass';
-            perfStatus = 'positive';
-            const best = perStrategyResults.find(r => r.status === 'passed' && r.totalReturn > -999);
-            const retStr = best ? (best.totalReturn >= 0 ? '+' : '') + Number(best.totalReturn).toFixed(1) + '%' : '';
-            const pfStr = best && best.profitFactor > 0 ? 'PF ' + Number(best.profitFactor).toFixed(1) : '';
-            overallSummary = 'Pass | Positive: ' + (best?.strategy || '') + (retStr ? ' ' + retStr : '') + (pfStr ? ', ' + pfStr : '');
-          } else if (caution >= 1) {
-            execStatus = 'pass';
-            perfStatus = 'caution';
-            const c = perStrategyResults.find(r => r.status === 'caution');
-            const retStr = c ? (c.totalReturn >= 0 ? '+' : '') + Number(c.totalReturn).toFixed(1) + '%' : '';
-            overallSummary = 'Pass | Caution: ' + (c?.strategy || '') + (retStr ? ' ' + retStr : '');
-          } else if (losing >= 1) {
-            execStatus = 'pass';
-            perfStatus = 'negative';
-            const l = perStrategyResults.find(r => r.status === 'completed_losing');
-            overallSummary = 'Pass | Negative: ' + (l?.strategy || '') + ', return ' + (l?.totalReturn ?? 0).toFixed(1) + '%';
-          } else if (err >= 1) {
-            execStatus = 'fail';
-            perfStatus = null;
-            overallSummary = 'Fail: No usable metrics from backtest';
-          } else {
-            execStatus = 'fail';
-            perfStatus = null;
-            overallSummary = perStrategyResults.length === 0 ? 'No strategy tested' : 'Tests failed';
-          }
+      progressTimer = setInterval(() => {
+        progress = Math.min(94, progress + (progress < 20 ? 4 : progress < 58 ? 3 : 2));
+        if (progress < 20) {
+          setFineScanCurrentStep(agentText('Candidate intake', '候选接收'));
+          setFineScanMessage(agentText(
+            `Normalizing ${candidateSource.length} scanner candidates...`,
+            `正在标准化 ${candidateSource.length} 个候选标的...`,
+          ));
+        } else if (progress < 38) {
+          setFineScanCurrentStep(agentText('Alpaca snapshot refresh', '刷新 Alpaca 行情快照'));
+          setFineScanMessage(agentText(
+            'Refreshing price, quote, VWAP, day range, spread, and quote age...',
+            '正在刷新价格、报价、VWAP、日内区间、点差与报价时效...',
+          ));
+        } else if (progress < 60) {
+          setFineScanCurrentStep(agentText('Setup and entry geometry', '形态与入场结构'));
+          setFineScanMessage(agentText(
+            'Classifying setups and validating zones, stops, targets, and reward/risk...',
+            '正在识别形态并验证入场区间、止损、目标与盈亏比...',
+          ));
+        } else if (progress < 78) {
+          setFineScanCurrentStep(agentText('Execution and risk gates', '执行与风险闸门'));
+          setFineScanMessage(agentText(
+            'Checking spread, cost, capacity, quote freshness, events, and required evidence...',
+            '正在检查点差、成本、容量、报价时效、事件风险与必需证据...',
+          ));
+        } else if (progress < 92) {
+          setFineScanCurrentStep(preflight.aiAvailable
+            ? agentText('Batched AI challenge', '批量 AI 质疑')
+            : agentText('Deterministic finalization', '确定性结果汇总'));
+          setFineScanMessage(preflight.aiAvailable
+            ? agentText('AI is challenging the deterministic evidence packets in batches...', 'AI 正在批量质疑确定性证据包...')
+            : agentText('Finalizing deterministic Fine Scan routes...', '正在汇总确定性精细扫描路线...'));
         } else {
-          execStatus = 'skipped';
-          perfStatus = null;
-          overallSummary = 'No strategy to test';
+          setFineScanCurrentStep(agentText('Finalizing routes', '汇总验证路线'));
+          setFineScanMessage(agentText(
+            'Merging binding gates, AI challenges, and final validation routes...',
+            '正在合并强制闸门、AI 质疑与最终验证路线...',
+          ));
         }
+        setFineScanStepProgress(progress);
+        setFineScanProgress(progress);
+      }, 700);
 
-        // Update last result record (rec already declared above)
-        if (rec && rec.symbol === symbol) {
-          rec.backtestStatus = execStatus;
-          rec.backtestPerformance = perfStatus;
-          rec.backtestSummary = overallSummary;
-          rec.backtestPerStrategy = perStrategyResults;
-          // Update provenance
-          if (rec.provenance) {
-            rec.provenance.backtestSource = execStatus === 'pass' ? 'Internal Backtest Engine' : (execStatus === 'fail' ? 'Backtest Failed' : 'Skipped');
-            rec.provenance.optimizationSource = 'pending';
-          }
+      const response = await pipelineAutoAPI.runFineScan({
+        candidates: candidateSource,
+        riskProfile,
+        timeHorizon,
+        pipelineMode,
+        tradeMode,
+        maxSymbols: fineScanCandidateLimit,
+      } as any);
 
-          // Quick Optimization: lightweight parameter stability check
-          // Run for any symbol with a successful backtest execution regardless of sign
-          const canOptimize = (execStatus === 'pass') && perStrategyResults.some(
-            (r: any) => r.status === 'passed' || r.status === 'caution' || r.status === 'completed_losing'
-          );
-          rec.quickOptStatus = 'skipped';
-          rec.quickOptResults = [];
-          rec.quickOptSummary = null;
-
-          if (canOptimize) {
-            rec.quickOptStatus = 'running';
-            // Update progress to show optimization phase
-        setFineScanStepProgress(42);
-        setFineScanCurrentStep('Optimization');
-        setFineScanMessage(`[${i+1}/${candidateCount}] ${symbol}: Quick Optimization...`);
-
-            const optStartTime = Date.now();
-            const optResults: any[] = [];
-
-            // Get strategies that had usable backtest data
-            const optimizableStrategies = perStrategyResults.filter(
-              (ps: any) => ps.status === 'passed' || ps.status === 'caution' || ps.status === 'completed_losing'
-            );
-
-            // Define lightweight parameter grids: {paramKey: [values]}
-            const paramGrid: Record<string, any[]> = {
-              'moving_average': [
-                { shortMaRange: {start:9,end:9,step:1}, longMaRange: {start:21,end:21,step:1}, label: '9/21' },
-                { shortMaRange: {start:10,end:10,step:1}, longMaRange: {start:20,end:20,step:1}, label: '10/20' },
-                { shortMaRange: {start:12,end:12,step:1}, longMaRange: {start:26,end:26,step:1}, label: '12/26' },
-              ],
-              'rsi': [
-                { rsiPeriodRange: {start:14,end:14,step:1}, overboughtRange: {start:70,end:70,step:1}, oversoldRange: {start:30,end:30,step:1}, label: '70/30' },
-                { rsiPeriodRange: {start:14,end:14,step:1}, overboughtRange: {start:75,end:75,step:1}, oversoldRange: {start:25,end:25,step:1}, label: '75/25' },
-                { rsiPeriodRange: {start:14,end:14,step:1}, overboughtRange: {start:65,end:65,step:1}, oversoldRange: {start:35,end:35,step:1}, label: '65/35' },
-              ],
-              'macd': [
-                { fastRange: {start:12,end:12,step:1}, slowRange: {start:26,end:26,step:1}, signalRange: {start:9,end:9,step:1}, label: '12/26/9' },
-                { fastRange: {start:10,end:10,step:1}, slowRange: {start:24,end:24,step:1}, signalRange: {start:9,end:9,step:1}, label: '10/24/9' },
-                { fastRange: {start:8,end:8,step:1}, slowRange: {start:21,end:21,step:1}, signalRange: {start:5,end:5,step:1}, label: '8/21/5' },
-              ],
-              'bollinger': [
-                { periodRange: {start:20,end:20,step:1}, stdDevRange: {start:2.0,end:2.0,step:0.5}, label: '20/2.0' },
-                { periodRange: {start:18,end:18,step:1}, stdDevRange: {start:2.5,end:2.5,step:0.5}, label: '18/2.5' },
-                { periodRange: {start:22,end:22,step:1}, stdDevRange: {start:1.5,end:1.5,step:0.5}, label: '22/1.5' },
-              ],
-              'momentum': [
-                { momentumPeriodRange: {start:10,end:10,step:1}, label: '10' },
-                { momentumPeriodRange: {start:14,end:14,step:1}, label: '14' },
-                { momentumPeriodRange: {start:20,end:20,step:1}, label: '20' },
-              ],
-              'mean_reversion': [
-                { lookbackRange: {start:20,end:20,step:1}, entryZScoreRange: {start:-2.0,end:-2.0,step:0.5}, exitZScoreRange: {start:0.0,end:0.0,step:0.5}, label: '20/-2.0/0.0' },
-                { lookbackRange: {start:25,end:25,step:1}, entryZScoreRange: {start:-1.5,end:-1.5,step:0.5}, exitZScoreRange: {start:0.0,end:0.0,step:0.5}, label: '25/-1.5/0.0' },
-                { lookbackRange: {start:15,end:15,step:1}, entryZScoreRange: {start:-2.5,end:-2.5,step:0.5}, exitZScoreRange: {start:-0.5,end:-0.5,step:0.5}, label: '15/-2.5/-0.5' },
-              ],
-            };
-
-            // Map FineScan strategy name to backend strategy key
-            const fsToBackend: Record<string, string> = {
-              'Moving Average': 'moving_average',
-              'Moving Average Crossover': 'moving_average',
-              'MACD': 'macd',
-              'MACD Strategy': 'macd',
-              'RSI': 'rsi',
-              'RSI Strategy': 'rsi',
-              'Mean Reversion': 'mean_reversion',
-              'Bollinger Band': 'bollinger',
-              'Bollinger Bands': 'bollinger',
-              'Range-bound': 'bollinger',
-              'Momentum': 'momentum',
-              'Momentum Continuation': 'momentum',
-            };
-
-            for (let oi = 0; oi < optimizableStrategies.length; oi++) {
-              const ps = optimizableStrategies[oi];
-              const backendKey = fsToBackend[ps.strategy];
-              if (!backendKey || !paramGrid[backendKey]) continue;
-
-              const paramPoints = paramGrid[backendKey];
-              const btWindow = ps.window || '3M';
-              const daysBack = btWindow === '3M' ? 90 : (btWindow === '6M' ? 180 : 365);
-              const sd = new Date(Date.now() - daysBack * 86400000).toISOString().split('T')[0];
-              const ed = new Date().toISOString().split('T')[0];
-
-              const strategyOptResults: any[] = [];
-
-              for (let pi = 0; pi < paramPoints.length; pi++) {
-                const pp = paramPoints[pi];
-                const optPayload: any = {
-                  symbol, strategy: backendKey,
-                  startDate: sd, endDate: ed,
-                  initialCapital: 100000,
-                  ...pp,
-                };
-                delete optPayload.label;
-
-                try {
-                  const optResp = await backtraderAPI.runParameterOptimization(optPayload);
-                  const optData = (optResp as any)?.data?.result;
-                  if (optData?.results && optData.results.length > 0) {
-                    // Use the first (best) result or aggregate
-                    const best = optData.results[0];
-                    strategyOptResults.push({
-                      label: paramPoints[pi].label || `idx${pi}`,
-                      totalReturn: best.totalReturn ?? 0,
-                      sharpe: best.sharpeRatio ?? 0,
-                      maxDrawdown: best.maxDrawdown ?? 0,
-                      winRate: best.winRate ?? 0,
-                      profitFactor: best.profitFactor ?? 0,
-                      tradeCount: best.trades ?? 0,
-                      params: paramPoints[pi],
-                    });
-                  } else {
-                    strategyOptResults.push({
-                      label: paramPoints[pi].label || `idx${pi}`,
-                      totalReturn: 0,
-                      sharpe: 0,
-                      maxDrawdown: 0,
-                      error: 'No results returned',
-                      params: paramPoints[pi],
-                    });
-                  }
-                } catch (optErr) {
-                  strategyOptResults.push({
-                    label: paramPoints[pi].label || `idx${pi}`,
-                    totalReturn: 0,
-                    sharpe: 0,
-                    maxDrawdown: 0,
-                    error: (optErr as any).message || 'Request failed',
-                    params: paramPoints[pi],
-                  });
-                }
-              }
-
-              if (strategyOptResults.length > 0) {
-                // Compute stability
-                const returns = strategyOptResults.map(r => r.totalReturn).filter((v: number) => !isNaN(v));
-                const positiveCount = returns.filter((v: number) => v > 0).length;
-                const avgReturn = returns.length > 0 ? returns.reduce((a: number, b: number) => a + b, 0) / returns.length : 0;
-                const stdReturn = returns.length > 1
-                  ? Math.sqrt(returns.reduce((sum: number, v: number) => sum + Math.pow(v - avgReturn, 2), 0) / returns.length)
-                  : 0;
-
-                let stability: string;
-                if (returns.length === 0) {
-                  stability = 'N/A';
-                } else if (positiveCount / returns.length >= 0.7 && stdReturn < 10) {
-                  stability = 'Stable';
-                } else if (positiveCount / returns.length >= 0.4 || stdReturn < 20) {
-                  stability = 'Weak';
-                } else {
-                  stability = 'Overfit Risk';
-                }
-
-                // Check overfit: only 1 param point with >10% return, all others <2%
-                const highReturners = returns.filter((v: number) => v > 10);
-                const lowReturners = returns.filter((v: number) => v < 2);
-                if (highReturners.length === 1 && lowReturners.length >= returns.length - 1 && returns.length > 1) {
-                  stability = 'Overfit Risk';
-                }
-
-                optResults.push({
-                  strategy: ps.strategy,
-                  backendKey,
-                  paramCount: paramPoints.length,
-                  results: strategyOptResults,
-                  returns,
-                  avgReturn: Number(avgReturn.toFixed(2)),
-                  stdReturn: Number(stdReturn.toFixed(2)),
-                  positiveRatio: returns.length > 0 ? Number((positiveCount / returns.length * 100).toFixed(0)) : 0,
-                  stability,
-                });
-              }
-
-              // Small delay between strategy optimizations
-              if (oi < optimizableStrategies.length - 1) await new Promise(r => setTimeout(r, 200));
-            }
-
-            const optElapsed = Date.now() - optStartTime;
-            rec.quickOptResults = optResults;
-            // Update provenance
-            if (rec.provenance) {
-              rec.provenance.optimizationSource = optResults.length > 0 ? 'Internal Optimization Engine' : 'Optimization Skipped';
-            }
-
-            // Compute overall optimization status
-            if (optResults.length === 0) {
-              rec.quickOptStatus = 'skipped';
-              rec.quickOptSummary = null;
-            } else {
-              rec.quickOptStatus = 'completed';
-              const stableCount = optResults.filter((r: any) => r.stability === 'Stable').length;
-              const weakCount = optResults.filter((r: any) => r.stability === 'Weak').length;
-              const overfitCount = optResults.filter((r: any) => r.stability === 'Overfit Risk').length;
-
-              if (stableCount >= optResults.length * 0.7) {
-                rec.quickOptSummary = `Stable (${stableCount}/${optResults.length} strategies) - in ${(optElapsed / 1000).toFixed(0)}s`;
-              } else if (weakCount > overfitCount) {
-                rec.quickOptSummary = `Weak (${weakCount}/${optResults.length} mixed) - in ${(optElapsed / 1000).toFixed(0)}s`;
-              } else {
-                rec.quickOptSummary = `Overfit Risk (${overfitCount}/${optResults.length} unstable) - in ${(optElapsed / 1000).toFixed(0)}s`;
-              }
-            }
-          }
-        }
-        // --- End Step 3 (Quick Backtest + Optimization) ---
-
-        // --- Step 4: Entry Quality Scan (Alpaca-based) ---
-        setFineScanStepProgress(57);
-        setFineScanCurrentStep('Entry Quality');
-        setFineScanMessage(`[${i + 1}/${candidateCount}] ${symbol}: assessing entry quality...`);
-        {
-          const { data: eqResp, rateLimited: eqRL, error: eqErr } = await _fetchWithRetry(
-            `EntryQuality ${symbol}`,
-            () => entryQualityAPI.assessEntry(symbol) as any,
-          );
-          if (eqResp) {
-            const ed = (eqResp as any).data;
-            if (ed?.success) {
-              rec.entryQuality = ed.entry_quality;
-              rec.entryReason = ed.entry_reason || '';
-              rec.entryScore = ed.entry_score || 0;
-              rec.entryDetails = ed.details || null;
-              if (rec.provenance) rec.provenance.entrySource = 'Entry Quality API (Alpaca)';
-            } else {
-              rec.entryQuality = 'Error / No Data';
-              rec.entryReason = ed?.message || 'API returned no valid data';
-              rec.entryDetails = null;
-              if (rec.provenance) { rec.provenance.entrySource = 'Entry Quality Failed'; rec.provenance.dataQuality = 'PARTIAL'; }
-            }
-          } else {
-            rec.entryQuality = eqRL ? 'Rate Limited' : 'Error / No Data';
-            rec.entryReason = eqErr || 'Alpaca request failed';
-            rec.entryDetails = null;
-            rec.__rateLimited = eqRL || rec.__rateLimited;
-            if (rec.provenance) { rec.provenance.entrySource = `Entry Quality ${eqRL ? 'Rate Limited' : 'Failed'}`; rec.provenance.dataQuality = 'PARTIAL'; }
-            if (eqRL) console.warn(`[EntryQuality] ${symbol} rate limited after retries`);
-          }
-        }
-        // --- End Step 4: Entry Quality ---
-
-        // --- Step 5: Liquidity / Volume Scan (Step 6) ---
-        setFineScanStepProgress(71);
-        setFineScanCurrentStep('Liquidity / Volume Check');
-        setFineScanMessage(`[${i + 1}/${candidateCount}] ${symbol}: liquidity/volume check...`);
-        {
-          const { data: advResp, rateLimited: advRL, error: advErr } = await _fetchWithRetry(
-            `FineScanAdvanced ${symbol}`,
-            () => fineScanAdvancedAPI.scan(symbol, rec.entryDetails) as any,
-          );
-          if (advResp) {
-            const ad = (advResp as any).data;
-            if (ad?.success) {
-              rec.liquidityGrade = ad.liquidity?.grade || 'Error';
-              rec.liquidityReason = ad.liquidity?.reason || '';
-              rec.liquidityDetails = ad.liquidity?.details || null;
-              rec.newsGrade = ad.news?.grade || 'Error';
-              rec.newsReason = ad.news?.reason || '';
-              rec.newsDetails = ad.news?.details || null;
-              rec.riskGrade = ad.risk?.grade || 'MEDIUM';
-              rec.riskReason = ad.risk?.reason || '';
-              rec.riskDetails = ad.risk?.details || null;
-              if (rec.provenance) {
-                rec.provenance.liquiditySource = 'Fine Scan Advanced API';
-                rec.provenance.newsSource = 'Fine Scan Advanced API (Finnhub/Alpaca)';
-              }
-            } else {
-              rec.liquidityGrade = 'Error';
-              rec.newsGrade = 'Error';
-              rec.riskGrade = 'SKIP';
-              rec.riskReason = 'API returned no valid data';
-              if (rec.provenance) { rec.provenance.liquiditySource = 'Failed'; rec.provenance.newsSource = 'Failed'; rec.provenance.dataQuality = 'PARTIAL'; }
-            }
-          } else {
-            rec.liquidityGrade = advRL ? 'Rate Limited' : 'Error';
-            rec.newsGrade = advRL ? 'Rate Limited' : 'Error';
-            rec.riskGrade = advRL ? 'Unknown' : 'SKIP';
-            rec.riskReason = advErr || 'advanced scan failed';
-            rec.__rateLimited = advRL || rec.__rateLimited;
-            if (rec.provenance) {
-              rec.provenance.liquiditySource = advRL ? 'Rate Limited' : 'Failed';
-              rec.provenance.newsSource = advRL ? 'Rate Limited' : 'Failed';
-              rec.provenance.dataQuality = 'PARTIAL';
-            }
-            if (advRL) console.warn(`[FineScanAdvanced] ${symbol} rate limited after retries`);
-          }
-        }
-        // --- End Steps 5-6-7: Liquidity, News, Risk ---
-
-        // Compute Decision: Continue / Watch / Skip — try AI first, fallback to local rules
-        rec.decision = 'Watch'; // default
-        rec.decisionSource = 'pending';
-        rec.fineScanGrade = 'MEDIUM';
-        rec.decisionConfidence = 0;
-        {
-          const { data: decisionResp, rateLimited: decRL, error: decErr } = await _fetchWithRetry(
-            `FineScanDecision ${symbol}`,
-            () => fineScanDecisionAPI.decide({
-              symbol: rec.symbol,
-              trendLabel: rec.trendLabel || rec.trend || 'Neutral',
-              trendScore: rec.scanScore || 50,
-              matchedStrategies: rec.matchedStrategies || [],
-              matchConfidence: rec.matchConfidence || 0,
-              backtestStatus: rec.backtestStatus || '',
-              backtestPerformance: rec.backtestPerformance || '',
-              backtestTotalReturn: rec.backtestPerStrategy?.[0]?.totalReturn,
-              entryQuality: {
-                grade: rec.entryQuality || '',
-                score: rec.entryScore || 0,
-                zone: rec.entryDetails?.zone || '',
-              },
-              liquidityGrade: rec.liquidityGrade || '',
-              newsGrade: rec.newsGrade || '',
-              riskGrade: rec.riskGrade || '',
-              riskScore: rec.riskScore || 0,
-              entryScore: rec.entryScore || 0,
-            }) as any,
-          );
-          if (decisionResp) {
-            const dd = (decisionResp as any).data;
-            if (dd && dd.success) {
-              const rawDecision = (dd.decision || '').toUpperCase();
-              rec.rawAiVerdict = rawDecision;
-              if (rawDecision === 'CONTINUE') rec.decision = 'Continue';
-              else if (rawDecision === 'REJECT') rec.decision = 'Reject';
-              else if (rawDecision === 'NEED_MORE_DATA') rec.decision = 'NeedMoreData';
-              else if (rawDecision === 'WATCH') rec.decision = 'Watch';
-              else if (rawDecision === 'SKIP') rec.decision = 'Skip';
-              else rec.decision = 'Watch';
-              rec.fineScanGrade = dd.grade;
-              rec.decisionConfidence = dd.confidence;
-              rec.decisionSource = dd.source;
-              rec.decisionReason = dd.reason;
-              if (dd.decisionDetail) {
-                rec.decisionStrengths = dd.decisionDetail.strengths || [];
-                rec.decisionWarnings = dd.decisionDetail.warnings || [];
-                rec.decisionBlockers = dd.decisionDetail.blockers || [];
-              }
-              if (!rec.decisionBlockers) rec.decisionBlockers = [];
-              if (!rec.decisionWarnings) rec.decisionWarnings = [];
-              if (rec.provenance) {
-                rec.provenance.decisionSource = dd.source === 'ai' ? 'DeepSeek AI' : 'Local Rules';
-                rec.provenance.aiCalled = dd.source === 'ai';
-              }
-              console.log(`[FineScanDecision] ${symbol}: AI raw=${rawDecision} → final=${rec.decision} reason=${rec.decisionReason}`);
-            } else {
-              console.warn(`[FineScanDecision] ${symbol} API returned no data, using local rules`);
-              // fall through to local rules below
-            }
-          }
-          if (!decisionResp || !((decisionResp as any)?.data?.success)) {
-            // 429 / error: log and use local rules
-            if (decRL) {
-              rec.__rateLimited = true;
-              rec.decision = 'NeedMoreData';
-              rec.fineScanGrade = 'LOW';
-              rec.decisionReason = 'Rate limited — API throttled. Will retry next interval.';
-              rec.decisionBlockers = ['Rate limited — retry later'];
-              rec.decisionSource = 'rate_limit';
-              if (rec.provenance) rec.provenance.decisionSource = 'Rate Limited';
-              console.warn(`[FineScanDecision] ${symbol} rate limited, marking as NeedMoreData`);
-            } else {
-              // Non-rate-limit error: use local rules
-              console.warn(`[FineScanDecision] ${symbol} error: ${decErr}, using local rules`);
-              const btOk = rec.backtestStatus === 'pass' && (rec.backtestPerformance === 'positive' || rec.backtestPerformance === 'caution');
-              const btMissing = !rec.backtestStatus || rec.backtestStatus === 'pending' || rec.backtestStatus === 'skipped';
-              const btFail = rec.backtestStatus === 'fail' || rec.backtestPerformance === 'negative';
-              const eqOk = rec.entryQuality === 'Excellent' || rec.entryQuality === 'Good' || rec.entryQuality === 'Wait for Pullback' || rec.entryQuality === 'Breakout Setup';
-              const eqBad = rec.entryQuality === 'Avoid / Downtrend' || rec.entryQuality === 'Chasing / Extended';
-              const eqAcceptable = eqOk || rec.entryQuality === 'Acceptable' || rec.entryQuality === 'Fair';
-              const riskOk = rec.riskGrade === 'LOW' || rec.riskGrade === 'MEDIUM';
-              const riskHigh = rec.riskGrade === 'HIGH';
-              const riskSkip = rec.riskGrade === 'SKIP';
-              const riskUnknown = !rec.riskGrade || rec.riskGrade === '' || rec.riskGrade === 'Unknown';
-              const liqPoor = rec.liquidityGrade === 'Poor';
-              const liqUnknown = !rec.liquidityGrade || rec.liquidityGrade === '' || rec.liquidityGrade === 'Data Unavailable' || rec.liquidityGrade === 'Unknown';
-              const score = rec.matchConfidence || 0;
-              const trendBullish = rec.trendLabel === 'Strong Bullish' || rec.trendLabel === 'Bullish';
-              const trendBearish = rec.trendLabel === 'Strong Bearish' || rec.trendLabel === 'Bearish';
-              const hasPrice = rec.price > 0;
-              const hasVolume = rec.volume > 0;
-
-              const blockers: string[] = [];
-              const warnings: string[] = [];
-
-              if (!hasPrice) blockers.push('price missing');
-              if (!hasVolume) warnings.push('volume missing or zero');
-              if (btFail) blockers.push('backtest negative');
-              if (eqBad) blockers.push(`entry quality: ${rec.entryQuality}`);
-              if (riskSkip) blockers.push('risk SKIP (critical data missing)');
-              if (trendBearish) warnings.push('bearish trend');
-              if (riskHigh) warnings.push('risk HIGH');
-              if (liqPoor) warnings.push('liquidity Poor');
-              if (liqUnknown) warnings.push('liquidity data unavailable');
-              if (btMissing) warnings.push('backtest not run');
-              if (rec.liquidityGrade === 'Error') warnings.push('liquidity check failed');
-
-              if (!hasPrice) {
-                rec.decision = 'NeedMoreData';
-                rec.fineScanGrade = 'LOW';
-                rec.decisionReason = 'Price data missing — cannot assess';
-              }
-              // REJECT: only truly critical blockers
-              else if (riskSkip) {
-                rec.decision = 'Reject';
-                rec.fineScanGrade = 'LOW';
-                rec.decisionReason = `Risk SKIP: ${rec.riskReason || 'critical data missing'}`;
-              }
-              else if (eqBad && trendBearish) {
-                rec.decision = 'Reject';
-                rec.fineScanGrade = 'LOW';
-                rec.decisionReason = `Entry ${rec.entryQuality} + bearish trend`;
-              }
-              // CONTINUE: strong signals — riskOk preferred but riskHigh alone does NOT block
-              else if (score >= 55 && trendBullish && !eqBad && (riskOk || riskUnknown)) {
-                rec.decision = 'Continue';
-                rec.fineScanGrade = btOk ? 'HIGH' : 'MEDIUM';
-                rec.decisionReason = `Score ${score}, ${rec.trendLabel}, entry ${rec.entryQuality || 'N/A'}, risk ${rec.riskGrade || 'N/A'}`;
-              }
-              // CONTINUE: strong signals + riskHigh → still Continue but flag warning
-              else if (score >= 60 && trendBullish && !eqBad && riskHigh) {
-                rec.decision = 'Continue';
-                rec.fineScanGrade = 'MEDIUM';
-                rec.decisionReason = `Score ${score}, trend bullish, but risk HIGH — proceed with caution`;
-              }
-              // CONTINUE: good backtest + decent score
-              else if (btOk && score >= 40 && !eqBad) {
-                rec.decision = 'Continue';
-                rec.fineScanGrade = 'MEDIUM';
-                rec.decisionReason = `Backtest OK, score ${score}`;
-              }
-              // CONTINUE: backtest missing but trend/entry/risk acceptable
-              else if (btMissing && score >= 45 && trendBullish && (riskOk || riskUnknown) && eqAcceptable) {
-                rec.decision = 'Continue';
-                rec.fineScanGrade = 'MEDIUM';
-                rec.decisionReason = `Score ${score}, trend bullish, backtest N/A (not blocking)`;
-              }
-              // CONTINUE: score decent + entry OK + not bearish, regardless of risk (risk is advisory at Fine Scan)
-              else if (score >= 50 && !eqBad && !trendBearish && (riskOk || riskHigh || riskUnknown)) {
-                rec.decision = 'Continue';
-                rec.fineScanGrade = 'MEDIUM';
-                rec.decisionReason = `Score ${score}, entry OK, risk ${rec.riskGrade || 'N/A'} (advisory)`;
-              }
-              // WATCH: mixed signals
-              else if (score >= 30 && hasPrice) {
-                rec.decision = 'Watch';
-                rec.fineScanGrade = 'MEDIUM';
-                rec.decisionReason = `Score ${score}, mixed signals. Blockers: ${blockers.length > 0 ? blockers.join('; ') : 'none'}. Warnings: ${warnings.join('; ') || 'none'}`;
-              }
-              // NeedMoreData: score too low and no backtest
-              else if (score < 30 && btMissing) {
-                rec.decision = 'NeedMoreData';
-                rec.fineScanGrade = 'LOW';
-                rec.decisionReason = `Low score (${score}), backtest missing`;
-              }
-              // Default Watch
-              else {
-                rec.decision = 'Watch';
-                rec.fineScanGrade = 'MEDIUM';
-                rec.decisionReason = `Default Watch — score ${score}, blockers: ${blockers.join('; ') || 'none'}`;
-              }
-              rec.decisionSource = 'local-rule';
-              rec.decisionConfidence = score;
-              rec.decisionBlockers = blockers;
-              rec.decisionWarnings = warnings;
-            }
-          }
-        }
-
-        // Dev Test override: if this is a test candidate and didn't get Continue, force it
-        // so the test candidate can flow through the full pipeline
-        if (rec.isDevTest && rec.decision !== 'Continue') {
-          console.log(`[FineScanDecision] ${symbol}: DEV TEST override — ${rec.decision} → Continue`);
-          rec.decision = 'Continue';
-          rec.fineScanGrade = 'MEDIUM';
-          rec.decisionReason = '[TEST OVERRIDE] Dev test candidate forced Continue for pipeline testing';
-          rec.decisionSource = 'dev-test-override';
-          rec.decisionBlockers = [];
-          rec.decisionWarnings = ['This is a TEST candidate — decision was overridden'];
-        }
-
-        rec.scanStatus = 'completed';
-
-        // ===== AI EXPLANATION (per-symbol, inline) =====
-        // Call AI explain RIGHT NOW for this symbol, before moving to the next
-        if (matchConfidence >= 15) {
-          setFineScanStepProgress(85);
-          setFineScanCurrentStep('AI Reasoning');
-          setFineScanMessage(`[${i+1}/${candidateCount}] ${symbol}: AI reasoning...`);
-
-          { // rate-limited fetch for Explain
-            const explainData: import('../services/api').FineScanExplainRequest = {
-              symbol: rec.symbol,
-              trendLabel: rec.trendLabel || rec.trend || 'Neutral',
-              trendScore: rec.scanScore ?? null,
-              matchedStrategies: rec.matchedStrategies || [],
-              backtestMetrics: {
-                totalReturn: rec.backtestPerStrategy?.[0]?.totalReturn,
-                sharpe: rec.backtestPerStrategy?.[0]?.sharpe,
-                winRate: rec.backtestPerStrategy?.[0]?.winRate,
-                profitFactor: rec.backtestPerStrategy?.[0]?.profitFactor,
-                maxDrawdown: rec.backtestPerStrategy?.[0]?.maxDrawdown,
-                tradeCount: rec.backtestPerStrategy?.[0]?.tradeCount,
-              },
-              optimizationMetrics: {
-                stability: rec.quickOptSummary?.stability,
-                avgReturn: rec.quickOptSummary?.avgReturn,
-                positiveRatio: rec.quickOptSummary?.positiveRatio,
-              },
-              entryQuality: {
-                grade: rec.entryQuality,
-                score: rec.entryScore,
-                atr: rec.entryDetails?.atr,
-                zone: rec.entryDetails?.zone,
-              },
-              liquidity: {
-                grade: rec.liquidityGrade,
-                score: rec.liquidityScore,
-              },
-              newsSummary: {
-                grade: rec.newsGrade,
-                headlineCount: rec.newsDetails?.headlines?.length,
-              },
-              riskAssessment: {
-                grade: rec.riskGrade,
-                score: rec.riskScore,
-                reason: rec.riskReason,
-              },
-            };
-
-            const { data: explainResp, rateLimited: expRL } = await _fetchWithRetry(
-              `FineScanExplain ${symbol}`,
-              () => fineScanExplainAPI.explain(explainData) as any,
-              2
-            );
-            if (explainResp) {
-              const resp = (explainResp as any).data;
-              if (resp.success) {
-                if (resp.whyMatched) rec.matchReason = resp.whyMatched;
-                if (resp.keySignalExplanation) rec.keySignalExplanation = resp.keySignalExplanation;
-                if (resp.finalReason) rec.finalReason = resp.finalReason;
-                if (resp.nextStep) rec.nextStep = resp.nextStep;
-                rec.aiExplained = true;
-                if (rec.provenance) {
-                  rec.provenance.explanationSource = 'DeepSeek AI';
-                  rec.provenance.aiCalled = true;
-                  rec.provenance.aiSource = 'DeepSeek';
-                  rec.provenance.aiModel = 'deepseek-chat';
-                }
-              } else {
-                if (rec.provenance) rec.provenance.explanationSource = 'Explain API failed';
-              }
-            } else {
-              if (expRL) {
-                rec.__rateLimited = true;
-                if (rec.provenance) rec.provenance.explanationSource = 'Rate Limited';
-              } else {
-                if (rec.provenance) rec.provenance.explanationSource = 'Explain API error';
-              }
-            }
-          }
-        }
-
-        // Update message for this symbol (UI results updated after batch completes)
-        setFineScanMessage(`[${i+1}/${candidateCount}] ${symbol}: Completed`);
-      };
-      // --- Fine Scan sequential execution: one symbol at a time ---
-      for (let i = 0; i < candidateCount; i++) {
-        if (scannerStateStore.getState().fineScan.stopRequested) break;
-        await _processOneFineScanSymbol(i, candidates[i], candidateCount, results, scannerMap);
-        // Update UI after each symbol completes
-        setFineScanResults([...results]);
-        // Small delay between symbols to avoid overwhelming rate limit
-        if (i < candidateCount - 1) {
-          await new Promise(r => setTimeout(r, 400 + Math.random() * 400)); // 400-800ms jitter
-        }
+      const payload = response?.data || {};
+      if (!payload.success) {
+        throw new Error(payload.message || 'Backend Fine Scan returned non-success');
       }
-      setFineScanProgress(100);
-      setFineScanStatus('completed');
-      unregisterFineScanRun();
 
-      message.success(`Fine Scan complete: ${results.length} candidates analyzed`);
-      return results;
-    } catch (error) {
+      const finalResults = Array.isArray(payload.results) ? payload.results : [];
+      setFineScanCurrentStep(agentText('Completed', '已完成'));
+      setFineScanStepProgress(100);
+      setFineScanProgress(100);
+      setFineScanResults(finalResults);
+      setFineScanStatus('completed');
+      const summary = payload.summary || {};
+      const decisions = summary.decisions || {};
+      const aiSummary = summary.ai || {};
+      setFineScanMessage(agentText(
+        `Fine Scan complete: ${finalResults.length} scanned, ${decisions.Continue || 0} continue, ${decisions.Watch || 0} watch, ${decisions.Reject || 0} reject, ${decisions.NeedMoreData || 0} need data; AI ${aiSummary.reviewed || 0}/${aiSummary.requested || 0}.`,
+        `精细扫描完成：共 ${finalResults.length} 个，继续 ${decisions.Continue || 0} 个，观察 ${decisions.Watch || 0} 个，拒绝 ${decisions.Reject || 0} 个，需补数据 ${decisions.NeedMoreData || 0} 个；AI 已复核 ${aiSummary.reviewed || 0}/${aiSummary.requested || 0}。`,
+      ));
+      unregisterFineScanRun();
+      message.success(agentText(`Fine scan complete. ${finalResults.length} candidates analyzed.`, `精细扫描完成，已分析 ${finalResults.length} 个候选标的。`));
+      return finalResults;
+    } catch (error: any) {
       console.error('Fine scan error:', error);
       setFineScanStatus('error');
+      setFineScanMessage(agentErrorText(
+        error?.response?.data?.message || error?.message,
+        'Fine Scan failed.',
+        '精细扫描失败，请稍后重试。',
+      ));
       unregisterFineScanRun();
-      message.error('Fine scan failed: ' + (error as any).message);
+      message.error(agentErrorText(
+        error?.response?.data?.message || error?.message,
+        'Fine Scan failed.',
+        '精细扫描失败，请稍后重试。',
+      ));
       return [];
+    } finally {
+      if (progressTimer) clearInterval(progressTimer);
     }
+
   };
 
 
@@ -3689,8 +2676,8 @@ const Agent: React.FC = (): React.ReactElement => {
   // entryPlanStatus and entryPlanResults are read from store snapshot above
   const [expandedEntryPlanSymbol, setExpandedEntryPlanSymbol] = useState<string | null>(null);
   const [entryPlanAccountSize] = useState<number>(100000);
-  // Derived from global riskProfile: Low→0.5%, Medium→1.0%, High→1.5%
-  const entryPlanRiskPerTrade = riskProfile === 'low' ? 0.5 : riskProfile === 'high' ? 1.5 : 1.0;
+  // Portfolio loss budget per entry; gross allocation is capped separately.
+  const entryPlanRiskPerTrade = riskProfile === 'low' ? 0.35 : riskProfile === 'high' ? 0.75 : 0.5;
   // Derived from pipelineMode + tradeMode
   const entryPlanExecutionMode = pipelineMode === 'ai'
     ? (tradeMode === 'paper' ? 'AI Auto Paper' : 'AI Auto Live')
@@ -3709,7 +2696,7 @@ const Agent: React.FC = (): React.ReactElement => {
   const [executeModalVisible, setExecuteModalVisible] = useState(false);
   const [executeTarget, setExecuteTarget] = useState<any>(null);
   const [executeLoading, setExecuteLoading] = useState(false);
-  const [liveConfirmText, setLiveConfirmText] = useState('');
+  const [liveOrderAccepted, setLiveOrderAccepted] = useState(false);
   const autoEntryPlanExecuteKeysRef = useRef<Set<string>>(new Set());
   // Track symbols the user explicitly removed — prevents useEffect from re-adding in the same pipeline run
   const removedSymbolsRef = useRef<Set<string>>(new Set());
@@ -3724,7 +2711,7 @@ const Agent: React.FC = (): React.ReactElement => {
   const [executingSymbol, setExecutingSymbol] = useState<string | null>(null);
   const [orderConfirmVisible, setOrderConfirmVisible] = useState(false);
   const [orderConfirmTarget, setOrderConfirmTarget] = useState<any>(null);
-  const [orderConfirmText, setOrderConfirmText] = useState('');
+  const [orderRiskAccepted, setOrderRiskAccepted] = useState(false);
   const [executionLogExpanded, setExecutionLogExpanded] = useState(false);
   // Modal editing state — initialized when modal opens, used for final order params
   const [modalQtyMode, setModalQtyMode] = useState<'shares' | 'dollars'>('shares');
@@ -3759,11 +2746,12 @@ const Agent: React.FC = (): React.ReactElement => {
 
   // ===== Collapsible Stage Sections Expanded State =====
   const [scannerExpanded, setScannerExpanded] = useState(false);
-  const [continueScanExpanded, setContinueScanExpanded] = useState(false);
   const [fineScanExpanded, setFineScanExpanded] = useState(false);
   const [dvExpanded, setDvExpanded] = useState(false);
   const [dvErrorMessage, setDvErrorMessage] = useState<string | null>(null);
   const [dvErrors, setDvErrors] = useState<any[]>([]);
+  const [dvProgress, setDvProgress] = useState(0);
+  const [dvProgressStage, setDvProgressStage] = useState(agentText('Ready', '就绪'));
   const [entryPlanExpanded, setEntryPlanExpanded] = useState(false);
   const [exitScanExpanded, setExitScanExpanded] = useState(false);
 
@@ -3775,17 +2763,23 @@ const Agent: React.FC = (): React.ReactElement => {
 
     if (action === 'BLOCKED_BY_RISK' || action === 'NEED_DATA' || hasEntryPlanHardBlock(plan) || dq === 'POOR') {
       const blockers = action === 'NEED_DATA'
-        ? [getEntryPlanUnavailableReason(plan) || 'Entry plan data unavailable']
-        : [getEntryPlanActionTooltip(plan) || 'Unknown blocker'];
+        ? [isZh ? '缺少生成可执行计划所需的行情或保护价位数据。' : (getEntryPlanUnavailableReason(plan) || 'Entry plan data unavailable.')]
+        : [isZh ? '当前计划未通过风险门控，暂时不能执行。' : (getEntryPlanActionTooltip(plan) || 'Unknown blocker.')];
       Modal.warning({
-        title: 'Blocked',
-        content: `Cannot execute: ${blockers.slice(0, 3).join('; ')}`,
+        title: agentText('Order blocked', '订单已阻断'),
+        content: agentText(
+          `This plan cannot be executed: ${blockers.slice(0, 3).join('; ')}`,
+          `该计划当前无法执行：${blockers.slice(0, 3).join('；')}`,
+        ),
+        okText: agentText('Close', '关闭'),
+        className: 'agent-confirm-dialog',
+        rootClassName: 'agent-confirm-modal',
       });
       return;
     }
 
     if (action === 'SKIP' || aiDecision === 'SKIP') {
-      message.info('Skipped — no action needed');
+      message.info(agentText('No action is needed for this plan.', '此计划当前无需操作。'));
       return;
     }
 
@@ -3795,36 +2789,16 @@ const Agent: React.FC = (): React.ReactElement => {
       return;
     }
 
-    if (action === 'BUY_READY' || action === 'READY_REVIEW') {
-      if (action === 'READY_REVIEW') {
-        // AI mode: Ready for Review auto-executes via pipeline — skip confirmation modal
-        if (pipelineMode === 'ai') {
-          setExecuteTarget(plan);
-          setLiveConfirmText('');
-          setExecuteModalVisible(true);
-          return;
-        }
-        const reviewReason = plan.readyReviewReason || 'AI decision is WATCH — needs manual review';
-        const inZone = plan.isInEntryZone ? 'Price is IN entry zone. ' : '';
-        Modal.confirm({
-          title: `${plan.symbol} — Ready for Review`,
-          content: `${inZone}${reviewReason}\n\nR/R: ${plan.riskReward1?.toFixed(1)}x | Stop: $${plan.stopLoss?.toFixed(2)} | Target: $${plan.takeProfit1?.toFixed(2)}\n\nProceed to execute?`,
-          okText: 'Execute',
-          cancelText: 'Add to Watchlist',
-          onOk: () => {
-            setExecuteTarget(plan);
-            setLiveConfirmText('');
-            setExecuteModalVisible(true);
-          },
-          onCancel: () => {
-            addToWatchlist(plan);
-          },
-        });
-        return;
-      }
+    if (action === 'READY_REVIEW') {
+      message.info(agentText(`${plan.symbol}: review candidates stay under observation and cannot submit an order.`, `${plan.symbol}：复核中的候选只会继续监控，不能提交订单。`));
+      addToWatchlist(plan);
+      return;
+    }
+
+    if (action === 'BUY_READY') {
       // Open confirmation modal
       setExecuteTarget(plan);
-      setLiveConfirmText('');
+      setLiveOrderAccepted(false);
       setExecuteModalVisible(true);
     }
   };
@@ -3856,12 +2830,19 @@ const Agent: React.FC = (): React.ReactElement => {
       };
       const res = await aiAgentWatchlistAPI.add(item);
       if (res.data.success) {
-        const action = res.data.action === 'UPDATED' ? 'Updated in watchlist' : 'Added to AI Entry Watchlist';
+        const action = res.data.action === 'UPDATED'
+          ? agentText('Watchlist entry updated.', '已更新观察列表中的记录。')
+          : agentText('Added to the entry watchlist.', '已加入入场观察列表。');
         message.success(`${plan.symbol}: ${action}`);
         fetchAiWatchlist();
       }
     } catch (e: any) {
-      message.error(`Failed to add to watchlist: ${e?.response?.data?.message || e?.message || 'Unknown error'}`);
+      const detail = agentErrorText(
+        e?.response?.data?.message || e?.message,
+        'Unknown watchlist error.',
+        '观察列表服务暂不可用，请稍后重试。',
+      );
+      message.error(agentText(`Could not add the symbol to the watchlist: ${detail}`, `无法加入观察列表：${detail}`));
     }
   };
 
@@ -3932,9 +2913,12 @@ const Agent: React.FC = (): React.ReactElement => {
     return {
       stopPrice: Math.round(stopPrice * 100) / 100,
       targetPrice: Math.round(targetPrice * 100) / 100,
-      reason: `Generated from avg entry $${baseline.toFixed(2)}: stop $${(baseline * stopPct).toFixed(2)} (-${((1 - stopPct) * 100).toFixed(0)}%), target $${(baseline * targetPct).toFixed(2)} (+${((targetPct - 1) * 100).toFixed(0)}%) [${riskProfile}/${timeHorizon}]`,
+      reason: agentText(
+        `Generated from avg entry $${baseline.toFixed(2)}: stop $${(baseline * stopPct).toFixed(2)} (-${((1 - stopPct) * 100).toFixed(0)}%), target $${(baseline * targetPct).toFixed(2)} (+${((targetPct - 1) * 100).toFixed(0)}%) [${riskProfile}/${timeHorizon}]`,
+        `根据平均成本 $${baseline.toFixed(2)} 生成：止损 $${(baseline * stopPct).toFixed(2)}（-${((1 - stopPct) * 100).toFixed(0)}%），目标 $${(baseline * targetPct).toFixed(2)}（+${((targetPct - 1) * 100).toFixed(0)}%）`,
+      ),
     };
-  }, [riskProfile, timeHorizon]);
+  }, [agentText, riskProfile, timeHorizon]);
 
   // Evaluate exit plan for a position
   const evaluateExitPlan = useCallback((position: any, entryPlan: any): {
@@ -3965,7 +2949,10 @@ const Agent: React.FC = (): React.ReactElement => {
           orderType: 'market',
           stopPrice: fallback.stopPrice,
           targetPrice: fallback.targetPrice,
-          reason: `Severe loss ${plPct.toFixed(1)}% — immediate exit recommended`,
+          reason: agentText(
+            `Severe loss ${plPct.toFixed(1)}% — immediate exit recommended`,
+            `当前亏损 ${plPct.toFixed(1)}%，建议立即退出`,
+          ),
           confidence: 85,
           source: 'generated',
         };
@@ -3978,7 +2965,10 @@ const Agent: React.FC = (): React.ReactElement => {
           orderType: 'market',
           stopPrice: fallback.stopPrice,
           targetPrice: fallback.targetPrice,
-          reason: `Price $${currentPrice.toFixed(2)} below stop $${fallback.stopPrice.toFixed(2)} — immediate exit`,
+          reason: agentText(
+            `Price $${currentPrice.toFixed(2)} is below stop $${fallback.stopPrice.toFixed(2)} — immediate exit`,
+            `当前价 $${currentPrice.toFixed(2)} 已低于止损 $${fallback.stopPrice.toFixed(2)}，建议立即退出`,
+          ),
           confidence: 80,
           source: 'generated',
         };
@@ -3992,7 +2982,10 @@ const Agent: React.FC = (): React.ReactElement => {
           exitPrice: fallback.targetPrice,
           stopPrice: fallback.stopPrice,
           targetPrice: fallback.targetPrice,
-          reason: `Price near generated target $${fallback.targetPrice.toFixed(2)} — place limit sell`,
+          reason: agentText(
+            `Price is near generated target $${fallback.targetPrice.toFixed(2)} — place limit sell`,
+            `价格接近目标 $${fallback.targetPrice.toFixed(2)}，建议提交限价卖单`,
+          ),
           confidence: 65,
           source: 'generated',
         };
@@ -4024,7 +3017,10 @@ const Agent: React.FC = (): React.ReactElement => {
         orderType: 'market',
         stopPrice: stopLoss,
         targetPrice: takeProfit,
-        reason: `Risk gate ${riskGate} — immediate exit recommended`,
+        reason: agentText(
+          `Risk gate ${riskGate} — immediate exit recommended`,
+          `风险闸门状态为 ${riskGate === 'PASS' ? '通过' : riskGate === 'REVIEW' ? '待复核' : '阻断'}，建议立即退出`,
+        ),
         confidence: 80,
         source: 'entry_plan',
       };
@@ -4037,7 +3033,10 @@ const Agent: React.FC = (): React.ReactElement => {
         orderType: 'market',
         stopPrice: stopLoss,
         targetPrice: takeProfit,
-        reason: `Price $${currentPrice.toFixed(2)} at/below stop loss $${stopLoss.toFixed(2)}`,
+        reason: agentText(
+          `Price $${currentPrice.toFixed(2)} is at or below stop $${stopLoss.toFixed(2)}`,
+          `当前价 $${currentPrice.toFixed(2)} 已触及或跌破止损 $${stopLoss.toFixed(2)}`,
+        ),
         confidence: 90,
         source: 'entry_plan',
       };
@@ -4050,7 +3049,10 @@ const Agent: React.FC = (): React.ReactElement => {
         orderType: 'market',
         stopPrice: stopLoss,
         targetPrice: takeProfit,
-        reason: `Severe loss ${plPct.toFixed(1)}% — immediate exit recommended`,
+        reason: agentText(
+          `Severe loss ${plPct.toFixed(1)}% — immediate exit recommended`,
+          `当前亏损 ${plPct.toFixed(1)}%，建议立即退出`,
+        ),
         confidence: 85,
         source: 'entry_plan',
       };
@@ -4063,7 +3065,7 @@ const Agent: React.FC = (): React.ReactElement => {
         orderType: 'market',
         stopPrice: stopLoss,
         targetPrice: takeProfit,
-        reason: `AI decision: ${aiDecision}`,
+        reason: agentText(`AI decision: ${aiDecision}`, `AI 决策：${agentEnumLabel(aiDecision)}`),
         confidence: 75,
         source: 'entry_plan',
       };
@@ -4077,7 +3079,10 @@ const Agent: React.FC = (): React.ReactElement => {
         exitPrice: takeProfit,
         stopPrice: stopLoss,
         targetPrice: takeProfit,
-        reason: `Price near/at target $${takeProfit.toFixed(2)} — place limit sell`,
+        reason: agentText(
+          `Price is near or at target $${takeProfit.toFixed(2)} — place limit sell`,
+          `价格接近或已达到目标 $${takeProfit.toFixed(2)}，建议提交限价卖单`,
+        ),
         confidence: 70,
         source: 'entry_plan',
       };
@@ -4091,7 +3096,10 @@ const Agent: React.FC = (): React.ReactElement => {
         exitPrice: takeProfit,
         stopPrice: stopLoss,
         targetPrice: takeProfit,
-        reason: `Target $${takeProfit.toFixed(2)} — place limit sell at target`,
+        reason: agentText(
+          `Target $${takeProfit.toFixed(2)} — place limit sell at target`,
+          `目标价 $${takeProfit.toFixed(2)}，建议在目标价提交限价卖单`,
+        ),
         confidence: 60,
         source: 'entry_plan',
       };
@@ -4102,17 +3110,17 @@ const Agent: React.FC = (): React.ReactElement => {
       decision: 'hold',
       stopPrice: stopLoss,
       targetPrice: takeProfit,
-      reason: 'No exit trigger — hold position',
+      reason: agentText('No exit trigger — hold position', '尚未触发退出条件，继续持有'),
       confidence: 50,
       source: 'entry_plan',
     };
-  }, [generateExitPlanFallback, riskProfile]);
+  }, [agentEnumLabel, agentText, generateExitPlanFallback, riskProfile]);
 
   // Run Exit Scan
   const [exitScanRunning, setExitScanRunning] = useState(false);
   const exitScanInFlightRef = useRef(false);
 
-  const runExitScan = useCallback(async (options?: { autoSubmit?: boolean; mode?: 'paper' | 'real'; holdingsOverride?: any[]; suppressDiscord?: boolean }) => {
+  const runExitScanLegacy = useCallback(async (options?: { autoSubmit?: boolean; mode?: 'paper' | 'real'; holdingsOverride?: any[]; suppressDiscord?: boolean }) => {
     if (exitScanInFlightRef.current || exitScanRunning) return [];
     exitScanInFlightRef.current = true;
     // Use holdingsOverride if provided, then ref (always fresh), then closure variable as fallback
@@ -4152,7 +3160,7 @@ const Agent: React.FC = (): React.ReactElement => {
           const existingSellOrder = openSellOrders.find(o => o.symbol === symbol);
           const orderInfo = existingSellOrder
             ? `${(existingSellOrder.type || 'market').toUpperCase()}${existingSellOrder.limit_price ? ` $${Number(existingSellOrder.limit_price).toFixed(2)}` : ''}`
-            : 'submitted';
+            : agentText('submitted', '已提交');
           results.push({
             symbol,
             qty: position.qty,
@@ -4162,7 +3170,7 @@ const Agent: React.FC = (): React.ReactElement => {
             plPct: position.unrealizedPLPercent,
             positionSource: getPositionSource(symbol),
             exitDecision: 'blocked',
-            reason: `Active sell order exists (${orderInfo})`,
+            reason: agentText(`Active sell order exists (${orderInfo})`, `已有生效中的卖出订单（${orderInfo}）`),
             status: 'blocked',
           });
           continue;
@@ -4193,7 +3201,7 @@ const Agent: React.FC = (): React.ReactElement => {
         // Only user_marked positions get manual_review — all others can auto-submit
         if (source === 'user_marked') {
           result.status = 'manual_review';
-          result.reason = 'User-marked position — no automatic exit order';
+          result.reason = agentText('User-marked position — no automatic exit order', '用户手动标记的持仓，不自动提交退出订单');
           results.push(result);
           continue;
         }
@@ -4205,7 +3213,7 @@ const Agent: React.FC = (): React.ReactElement => {
             const sellQty = Number(position.qty) || 0;
             if (sellQty <= 0) {
               result.status = 'failed';
-              result.error = `Invalid sell quantity: ${position.qty}`;
+              result.error = agentText(`Invalid sell quantity: ${position.qty}`, `卖出数量无效：${position.qty}`);
               results.push(result);
               continue;
             }
@@ -4225,10 +3233,14 @@ const Agent: React.FC = (): React.ReactElement => {
                 result.alpacaOrderId = res.data.order?.id;
                 result.orderType = 'market';
                 scannerStateStore.addSubmittedExitOrder({ symbol, orderId: res.data.order?.id || '', orderType: 'market', submittedAt: new Date().toISOString() });
-                message.success(`Exit order submitted: ${symbol} market sell ${sellQty} shares`);
+                message.success(agentText(`Exit order submitted: sell ${sellQty} ${symbol} shares at market.`, `退出订单已提交：按市价卖出 ${sellQty} 股 ${symbol}。`));
               } else {
                 result.status = 'failed';
-                result.error = res.data.message || res.data.error || 'Market sell failed';
+                result.error = agentErrorText(
+                  res.data.message || res.data.error,
+                  'Market sell failed.',
+                  '市价卖出订单提交失败。',
+                );
               }
             } else if (evalResult.decision === 'place_target_limit' && tpPrice && tpPrice > 0) {
               // Take-profit limit sell
@@ -4243,12 +3255,19 @@ const Agent: React.FC = (): React.ReactElement => {
                 result.alpacaOrderId = res.data.order?.id;
                 result.orderType = 'limit';
                 result.exitPrice = tpPrice;
-                result.reason = `Take-profit limit sell at $${tpPrice.toFixed(2)}`;
+                result.reason = agentText(
+                  `Take-profit limit sell at $${tpPrice.toFixed(2)}`,
+                  `在 $${tpPrice.toFixed(2)} 提交止盈限价卖单`,
+                );
                 scannerStateStore.addSubmittedExitOrder({ symbol, orderId: res.data.order?.id || '', orderType: 'limit', exitPrice: tpPrice, submittedAt: new Date().toISOString() });
-                message.success(`Exit: ${symbol} take-profit limit sell ${sellQty} @ $${tpPrice.toFixed(2)}`);
+                message.success(agentText(`Take-profit order submitted: sell ${sellQty} ${symbol} shares at $${tpPrice.toFixed(2)}.`, `止盈订单已提交：以 $${tpPrice.toFixed(2)} 卖出 ${sellQty} 股 ${symbol}。`));
               } else {
                 result.status = 'failed';
-                result.error = res.data.message || res.data.error || 'Limit sell failed';
+                result.error = agentErrorText(
+                  res.data.message || res.data.error,
+                  'Limit sell failed.',
+                  '限价卖出订单提交失败。',
+                );
               }
             } else if (evalResult.decision === 'hold' && tpPrice && tpPrice > 0 && slPrice && slPrice > 0) {
               // Position between stop and target — place OCO exit: take-profit limit + stop-loss stop
@@ -4270,15 +3289,25 @@ const Agent: React.FC = (): React.ReactElement => {
                   result.orderType = 'oco';
                   result.exitPrice = tpLimit;
                   result.stopPrice = slStop;
-                  result.reason = `OCO exit: TP limit $${tpLimit.toFixed(2)} / SL stop $${slStop.toFixed(2)}`;
+                  result.reason = agentText(
+                    `OCO exit: take profit $${tpLimit.toFixed(2)} / stop $${slStop.toFixed(2)}`,
+                    `OCO 退出：止盈 $${tpLimit.toFixed(2)} / 止损 $${slStop.toFixed(2)}`,
+                  );
                   scannerStateStore.addSubmittedExitOrder({ symbol, orderId: res.data.order?.id || '', orderType: 'oco', exitPrice: tpLimit, submittedAt: new Date().toISOString() });
-                  message.success(`Exit: ${symbol} OCO TP $${tpLimit.toFixed(2)} / SL $${slStop.toFixed(2)}`);
+                  message.success(agentText(`${symbol} OCO exit submitted. Take profit: $${tpLimit.toFixed(2)}. Stop: $${slStop.toFixed(2)}.`, `${symbol} 的 OCO 退出订单已提交。止盈：$${tpLimit.toFixed(2)}，止损：$${slStop.toFixed(2)}。`));
                 } else if (res.data.status === 'confirmation_required') {
                   result.status = 'pending_confirm';
-                  result.reason = res.data.message || 'Real trading requires confirmation';
+                  result.reason = agentText(
+                    res.data.message || 'Live trading requires confirmation.',
+                    '实盘订单需要人工确认。',
+                  );
                 } else {
                   // OCO rejected — fall back to simple limit sell
-                  const errDetail = res.data.message || res.data.error || 'OCO rejected';
+                  const errDetail = agentErrorText(
+                    res.data.message || res.data.error,
+                    'OCO order was rejected.',
+                    'OCO 订单未被接受。',
+                  );
                   console.warn(`[ExitScan] ${symbol} OCO rejected, falling back to limit sell: ${errDetail}`);
                   const fbRes = await tradingAccountAPI.placeOrder({
                     mode: exitScanMode, symbol, side: 'sell', qty: sellQty,
@@ -4289,12 +3318,18 @@ const Agent: React.FC = (): React.ReactElement => {
                     result.alpacaOrderId = fbRes.data.order?.id;
                     result.orderType = 'limit';
                     result.exitPrice = tpLimit;
-                    result.reason = `Take-profit limit sell at $${tpLimit.toFixed(2)} (OCO unavailable: ${errDetail})`;
+                    result.reason = agentText(
+                      `Take-profit limit sell at $${tpLimit.toFixed(2)} (OCO unavailable: ${errDetail})`,
+                      `OCO 不可用，已改为在 $${tpLimit.toFixed(2)} 提交止盈限价卖单`,
+                    );
                     scannerStateStore.addSubmittedExitOrder({ symbol, orderId: fbRes.data.order?.id || '', orderType: 'limit', exitPrice: tpLimit, submittedAt: new Date().toISOString() });
-                    message.success(`Exit: ${symbol} limit sell ${sellQty} @ $${tpLimit.toFixed(2)} (OCO fallback)`);
+                    message.success(agentText(`Fallback limit exit submitted: sell ${sellQty} ${symbol} shares at $${tpLimit.toFixed(2)}.`, `备用限价退出订单已提交：以 $${tpLimit.toFixed(2)} 卖出 ${sellQty} 股 ${symbol}。`));
                   } else {
                     result.status = 'failed';
-                    result.error = `OCO and limit fallback both failed: ${errDetail}`;
+                    result.error = agentText(
+                      `OCO and limit fallback both failed: ${errDetail}`,
+                      `OCO 与备用限价订单均提交失败：${errDetail}`,
+                    );
                   }
                 }
               } catch (ocoErr: any) {
@@ -4310,29 +3345,44 @@ const Agent: React.FC = (): React.ReactElement => {
                     result.alpacaOrderId = fbRes.data.order?.id;
                     result.orderType = 'limit';
                     result.exitPrice = tpLimit;
-                    result.reason = `Take-profit limit sell (OCO fallback)`;
-                    message.success(`Exit: ${symbol} limit sell (OCO fallback)`);
+                    result.reason = agentText('Take-profit limit sell (OCO fallback)', '已改用止盈限价卖单');
+                    message.success(agentText(`${symbol} fallback limit exit submitted.`, `${symbol} 的备用限价退出订单已提交。`));
                   } else {
                     result.status = 'failed';
-                    result.error = fbRes.data.message || 'OCO and limit fallback failed';
+                    result.error = agentErrorText(
+                      fbRes.data.message || fbRes.data.error,
+                      'OCO and limit fallback failed.',
+                      'OCO 与备用限价订单均提交失败。',
+                    );
                   }
                 } catch (fbErr: any) {
                   result.status = 'failed';
-                  result.error = fbErr?.message || 'OCO and fallback both failed';
+                  result.error = agentErrorText(
+                    fbErr?.response?.data?.message || fbErr?.message,
+                    'OCO and limit fallback both failed.',
+                    'OCO 与备用限价订单均提交失败。',
+                  );
                 }
               }
             } else {
               // hold with incomplete stop/target — monitoring only
               result.status = 'monitoring';
-              result.reason = `Monitoring only — ${!tpPrice || tpPrice <= 0 ? 'target unavailable' : ''}${(!tpPrice || tpPrice <= 0) && (!slPrice || slPrice <= 0) ? ', ' : ''}${!slPrice || slPrice <= 0 ? 'stop unavailable' : ''}`;
+              result.reason = agentText(
+                `Monitoring only — ${!tpPrice || tpPrice <= 0 ? 'target unavailable' : ''}${(!tpPrice || tpPrice <= 0) && (!slPrice || slPrice <= 0) ? ', ' : ''}${!slPrice || slPrice <= 0 ? 'stop unavailable' : ''}`,
+                `仅监控 — ${!tpPrice || tpPrice <= 0 ? '缺少目标价' : ''}${(!tpPrice || tpPrice <= 0) && (!slPrice || slPrice <= 0) ? '，' : ''}${!slPrice || slPrice <= 0 ? '缺少止损价' : ''}`,
+              );
             }
           } catch (e: any) {
             const errBody = e?.response?.data;
-            const errDetail = errBody?.message || errBody?.error || e?.message || 'Order request failed';
+            const errDetail = agentErrorText(
+              errBody?.message || errBody?.error || e?.message,
+              'Order request failed.',
+              '订单请求失败，请稍后重试。',
+            );
             result.status = 'failed';
             result.error = errDetail;
             console.error(`[ExitScan] ${symbol} order error:`, errBody || e);
-            message.error(`Exit order error for ${symbol}: ${errDetail}`, 8);
+            message.error(agentText(`Exit order failed for ${symbol}: ${errDetail}`, `${symbol} 的退出订单失败：${errDetail}`), 8);
           }
         } else if (evalResult.decision === 'hold') {
           result.status = 'no_order';
@@ -4347,7 +3397,7 @@ const Agent: React.FC = (): React.ReactElement => {
 
       setExitScanResults(results);
       setExitScanStatus('completed');
-      message.success(`Exit Scan completed: ${results.length} positions scanned`);
+      message.success(agentText(`Exit scan complete. ${results.length} positions checked.`, `退出扫描完成，已检查 ${results.length} 个持仓。`));
       const actionableExitSignals = results.filter(r => r.exitDecision === 'sell_now' || r.exitDecision === 'place_target_limit');
       if (!options?.suppressDiscord) {
         notificationAPI.sendDiscordEvent('exit_scan', {
@@ -4370,7 +3420,11 @@ const Agent: React.FC = (): React.ReactElement => {
       return [...results];
     } catch (e: any) {
       setExitScanStatus('failed');
-      message.error(`Exit Scan failed: ${e?.message || 'Unknown error'}`);
+      message.error(agentErrorText(
+        e?.response?.data?.message || e?.message,
+        'Exit scan failed.',
+        '退出扫描失败，请稍后重试。',
+      ));
       if (!options?.suppressDiscord) {
         notificationAPI.sendDiscordEvent('error', {
           event_id: `exit-scan-error-${Date.now()}`,
@@ -4389,27 +3443,82 @@ const Agent: React.FC = (): React.ReactElement => {
         setTimeout(() => fetchHoldings(), 2000);
       }
     }
-  }, [exitScanRunning, holdings, submittedExitOrders, openSellOrders, tradeMode, pipelineMode, entryPlanResultsBySymbol, getPositionSource, evaluateExitPlan, setExitScanStatus, setExitScanResults, fetchHoldings]);
+  }, [agentErrorText, agentText, exitScanRunning, holdings, submittedExitOrders, openSellOrders, tradeMode, pipelineMode, entryPlanResultsBySymbol, getPositionSource, evaluateExitPlan, setExitScanStatus, setExitScanResults, fetchHoldings]);
+
+  // The browser no longer owns exit decisions or broker order construction.
+  // Keep the legacy closure temporarily for persisted sessions while all new
+  // scans use the same backend engine as the unattended Position Guard.
+  void runExitScanLegacy;
+  const runExitScan = useCallback(async (options?: { autoSubmit?: boolean; mode?: 'paper' | 'real'; holdingsOverride?: any[]; suppressDiscord?: boolean }) => {
+    if (exitScanInFlightRef.current || exitScanRunning) return [];
+    exitScanInFlightRef.current = true;
+    setExitScanRunning(true);
+    setExitScanStatus('scanning');
+    const exitMode = options?.mode || tradeMode;
+    try {
+      const response = await pipelineAutoAPI.runExitScan({
+        entryPlans: Array.isArray(entryPlanResults) ? entryPlanResults : [],
+        riskProfile,
+        timeHorizon,
+        pipelineMode,
+        tradeMode: exitMode,
+        autoSubmit: options?.autoSubmit ?? pipelineMode === 'ai',
+        aiReview: true,
+        suppressDiscord: options?.suppressDiscord ?? false,
+      });
+      const payload = response.data || {};
+      const rows = Array.isArray(payload.signals) ? payload.signals : [];
+      scannerStateStore.updateExitScan({
+        status: payload.success === false ? 'failed' : (rows.length ? 'completed' : 'skipped'),
+        results: rows,
+        runId: payload.runId || null,
+        lastUpdated: payload.evaluatedAt || new Date().toISOString(),
+        summary: payload,
+      });
+      rows
+        .filter((row: any) => row.orderId && String(row.status || '').toLowerCase() === 'submitted')
+        .forEach((row: any) => scannerStateStore.addSubmittedExitOrder({
+          symbol: row.symbol,
+          orderId: row.orderId,
+          orderType: row.exitOrderType || 'sell',
+          exitPrice: row.exitPrice,
+          submittedAt: new Date().toISOString(),
+        }));
+      if (payload.success === false) {
+        message.error(agentErrorText(
+          payload.message || payload.error,
+          'Exit scan failed.',
+          '退出扫描失败，请稍后重试。',
+        ));
+      } else if (rows.length === 0) {
+        message.info(t.agent.noActiveHoldings);
+      } else {
+        message.success(agentText(`Position guard checked ${rows.length} holding${rows.length === 1 ? '' : 's'}.`, `持仓保护已检查 ${rows.length} 个持仓。`));
+      }
+      return rows;
+    } catch (error: any) {
+      const detail = agentErrorText(
+        error?.response?.data?.message || error?.response?.data?.error || error?.message,
+        'Exit scan failed.',
+        '退出扫描失败，请稍后重试。',
+      );
+      setExitScanStatus('failed');
+      message.error(agentText(`Exit scan failed: ${detail}`, `退出扫描失败：${detail}`));
+      return [];
+    } finally {
+      exitScanInFlightRef.current = false;
+      setExitScanRunning(false);
+      window.setTimeout(() => fetchHoldings(exitMode), 1200);
+    }
+  }, [agentErrorText, agentText, entryPlanResults, exitScanRunning, fetchHoldings, pipelineMode, riskProfile, setExitScanStatus, timeHorizon, tradeMode, t.agent.noActiveHoldings]);
 
   // ===== AI Watchlist Functions =====
-  const fetchAiWatchlist = async () => {
-    try {
-      const res = await aiAgentWatchlistAPI.list();
-      if (res.data.success) {
-        const items = res.data.items || [];
-        setAiWatchlistItems(items);
-        // Refresh prices for items that have symbols
-        if (items.length > 0) {
-          refreshWatchlistPrices(items);
-        }
-      }
-    } catch (e) {
-      console.error('Failed to fetch AI watchlist:', e);
-    }
-  };
+  useEffect(() => {
+    aiWatchlistItemsRef.current = aiWatchlistItems;
+  }, [aiWatchlistItems]);
 
-  const refreshWatchlistPrices = async (items?: any[]) => {
-    const currentItems = items || aiWatchlistItems;
+  const refreshWatchlistPrices = useCallback(async (items?: any[]) => {
+    const currentItems = items || aiWatchlistItemsRef.current;
     if (currentItems.length === 0) return;
     const symbols = currentItems.map((i: any) => i.symbol).filter(Boolean);
     if (symbols.length === 0) return;
@@ -4442,34 +3551,56 @@ const Agent: React.FC = (): React.ReactElement => {
     } catch (e) {
       console.error('Failed to refresh watchlist prices:', e);
     }
-  };
+  }, []);
+
+  const fetchAiWatchlist = useCallback(async () => {
+    try {
+      const res = await aiAgentWatchlistAPI.list();
+      if (res.data.success) {
+        const items = res.data.items || [];
+        setAiWatchlistItems(items);
+        if (items.length > 0) {
+          refreshWatchlistPrices(items);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to fetch AI watchlist:', e);
+    }
+  }, [refreshWatchlistPrices]);
 
   const removeFromWatchlist = async (id: string, symbol: string) => {
     try {
       await aiAgentWatchlistAPI.remove(id);
       setAiWatchlistItems(prev => prev.filter(i => i.id !== id));
-      message.success(`${symbol} removed from watchlist`);
+      message.success(agentText(`${symbol} removed from the watchlist.`, `${symbol} 已从观察列表移除。`));
     } catch (e: any) {
-      message.error(`Failed to remove: ${e?.message || 'Unknown error'}`);
+      const detail = agentErrorText(e?.response?.data?.message || e?.message, 'Unknown watchlist error.', '观察列表服务暂不可用，请稍后重试。');
+      message.error(agentText(`Could not remove ${symbol}: ${detail}`, `无法移除 ${symbol}：${detail}`));
     }
   };
 
   const clearAllWatchlist = () => {
     Modal.confirm({
-      title: 'Clear AI Watchlist',
-      content: `Remove all ${aiWatchlistItems.length} items from the watchlist? This cannot be undone.`,
-      okText: 'Clear All',
+      title: agentText('Clear the AI watchlist?', '清空 AI 观察列表？'),
+      content: agentText(
+        `This removes all ${aiWatchlistItems.length} symbols from the watchlist. You cannot undo this action.`,
+        `这会从观察列表移除全部 ${aiWatchlistItems.length} 个标的，且无法撤销。`,
+      ),
+      okText: agentText('Clear watchlist', '清空观察列表'),
       okType: 'danger',
-      cancelText: 'Cancel',
+      cancelText: agentText('Cancel', '取消'),
+      className: 'agent-confirm-dialog',
+      rootClassName: 'agent-confirm-modal',
       onOk: async () => {
         try {
           for (const item of aiWatchlistItems) {
             await aiAgentWatchlistAPI.remove(item.id);
           }
           setAiWatchlistItems([]);
-          message.success('Watchlist cleared');
+          message.success(agentText('The watchlist is now empty.', '观察列表已清空。'));
         } catch (e: any) {
-          message.error(`Failed to clear: ${e?.message || 'Unknown error'}`);
+          const detail = agentErrorText(e?.response?.data?.message || e?.message, 'Unknown watchlist error.', '观察列表服务暂不可用，请稍后重试。');
+          message.error(agentText(`Could not clear the watchlist: ${detail}`, `无法清空观察列表：${detail}`));
           fetchAiWatchlist();
         }
       },
@@ -4479,11 +3610,11 @@ const Agent: React.FC = (): React.ReactElement => {
   // Add a watchlist item (or entry plan) to AI Execution list
   const addToExecution = (item: any) => {
     const symbol = (item.symbol || '').toUpperCase();
-    if (!symbol) { message.warning('No symbol.'); return; }
+    if (!symbol) { message.warning(agentText('Select a symbol first.', '请先选择一个标的。')); return; }
 
     // Duplicate check
     const exists = aiExecutionList.some(e => e.symbol === symbol && e.executionStatus !== 'failed' && e.executionStatus !== 'canceled');
-    if (exists) { message.info(`${symbol} is already in the execution list.`); return; }
+    if (exists) { message.info(agentText(`${symbol} is already in the execution list.`, `${symbol} 已在执行列表中。`)); return; }
 
     const ep = entryPlanResultsBySymbol[symbol] || normalizeWatchlistToEntryPlan(item);
     const recommendedShares = ep.positionSizeShares || item.shares || item.positionSizeShares || 0;
@@ -4510,7 +3641,7 @@ const Agent: React.FC = (): React.ReactElement => {
       qtyMode: 'shares' as const,
       userQty: recommendedShares > 0 ? recommendedShares : 1,
       dollarAmount: recommendedShares > 0 && entryPrice > 0 ? Math.round(recommendedShares * entryPrice) : 0,
-      orderType: entryPrice > 0 ? 'limit' as const : 'market' as const,
+      orderType: 'limit' as const,
       limitPrice: entryPrice > 0 ? entryPrice : undefined,
       stopPrice: ep.stopLoss || undefined,
       trailPrice: undefined,
@@ -4525,7 +3656,7 @@ const Agent: React.FC = (): React.ReactElement => {
     };
 
     setAiExecutionList(prev => [...prev, executionItem]);
-    message.success(`${symbol} added to AI Execution.`);
+    message.success(agentText(`${symbol} added to the execution list.`, `${symbol} 已加入执行列表。`));
   };
 
   // Check if a symbol is already in the execution list
@@ -4549,7 +3680,8 @@ const Agent: React.FC = (): React.ReactElement => {
     if (ai === 'SKIP') return 'Blocked';
 
     if (action === 'NEED_DATA') return 'Stale';
-    if (action === 'BUY_READY' || action === 'READY_REVIEW') return isEntryPlanInZone(item) ? 'Ready' : 'Waiting Entry';
+    if (action === 'BUY_READY') return isEntryPlanInZone(item) ? 'Ready' : 'Waiting Entry';
+    if (action === 'READY_REVIEW') return 'Watch-only';
     if (action === 'WAIT_FOR_ENTRY') return 'Waiting Entry';
 
     if (ai === 'WATCH' || ai === 'WAIT') return 'Waiting Entry';
@@ -4619,7 +3751,7 @@ const Agent: React.FC = (): React.ReactElement => {
         return prev - 1;
       });
     }, 1000);
-  }, []);
+  }, [refreshWatchlistPrices]);
 
   const stopWatchlistAutoRefresh = useCallback(() => {
     if (aiWatchlistTimerRef.current) {
@@ -4628,18 +3760,33 @@ const Agent: React.FC = (): React.ReactElement => {
     }
   }, []);
 
+  useEffect(() => {
+    fetchAiWatchlist();
+    return stopWatchlistAutoRefresh;
+  }, [fetchAiWatchlist, stopWatchlistAutoRefresh]);
+
+  useEffect(() => {
+    if (aiWatchlistAutoRefresh) {
+      startWatchlistAutoRefresh();
+    } else {
+      stopWatchlistAutoRefresh();
+    }
+    return stopWatchlistAutoRefresh;
+  }, [aiWatchlistAutoRefresh, startWatchlistAutoRefresh, stopWatchlistAutoRefresh]);
+
   const confirmExecutePlan = async () => {
     if (!executeTarget) return;
     const plan = executeTarget;
     const ed = plan.executionDetails || {};
     const orderPreview = ed.orderPreview || plan.orderPreview || {};
 
-    // Live trading requires confirmation text match
+    // Live trading keeps the backend confirmation contract, while the UI uses
+    // a clear acknowledgement instead of asking people to type a magic phrase.
     const isLive = entryPlanExecutionMode.toLowerCase().includes('live');
+    const expectedConfirm = `CONFIRM LIVE BUY ${plan.symbol}`;
     if (isLive) {
-      const expected = `CONFIRM LIVE BUY ${plan.symbol}`;
-      if (liveConfirmText.trim().toUpperCase() !== expected.toUpperCase()) {
-        message.error(`Type "${expected}" to confirm live trading`);
+      if (!liveOrderAccepted) {
+        message.error(agentModalCopy.acceptanceRequired);
         return;
       }
     }
@@ -4655,20 +3802,33 @@ const Agent: React.FC = (): React.ReactElement => {
         },
         executionMode: isLive ? 'live' : 'paper',
         liveConfirm: isLive,
-        confirmText: isLive ? liveConfirmText : undefined,
+        confirmText: isLive ? expectedConfirm : undefined,
       });
 
       const d = res.data;
       if (d.success && d.action === 'ORDER_SUBMITTED') {
-        message.success(`${plan.symbol}: ${d.message} (ID: ${d.orderId?.slice(0, 8)}...)`);
+        message.success(agentText(
+          `${plan.symbol}: order submitted (ID: ${d.orderId?.slice(0, 8)}...).`,
+          `${plan.symbol}：订单已提交（ID：${d.orderId?.slice(0, 8)}...）。`,
+        ));
         setExecuteModalVisible(false);
         setExecuteTarget(null);
+        setLiveOrderAccepted(false);
       } else {
-        message.error(`${plan.symbol}: ${d.reason || 'Blocked'} — ${(d.blockers || []).join('; ')}`);
+        const detail = agentErrorText(
+          [d.reason, ...(d.blockers || [])].filter(Boolean).join('; '),
+          'The order was blocked by the execution gate.',
+          '订单已被当前执行或风险闸门阻断。',
+        );
+        message.error(agentText(`${plan.symbol}: ${detail}`, `${plan.symbol}：${detail}`));
       }
     } catch (e: any) {
       const errData = e?.response?.data;
-      message.error(`Execution failed: ${errData?.reason || e?.message || 'Unknown error'}`);
+      message.error(agentErrorText(
+        errData?.reason || errData?.message || e?.message,
+        'Execution failed.',
+        '执行失败，请检查订单条件与连接后重试。',
+      ));
     } finally {
       setExecuteLoading(false);
     }
@@ -4677,11 +3837,12 @@ const Agent: React.FC = (): React.ReactElement => {
   const getEntryPlanAutoExecuteKey = useCallback((plan: any): string => {
     const symbol = String(plan?.symbol || '').toUpperCase();
     const { low, high } = getEntryPlanZone(plan);
-    const current = getEntryPlanCurrentPrice(plan);
+    const executableAsk = toEntryPlanNumber(plan?.executableAsk ?? plan?.latestAsk) ?? getEntryPlanCurrentPrice(plan);
+    const quoteTimestamp = plan?.quoteTimestamp ?? plan?.institutionalEntryPlan?.entry?.quoteTimestamp ?? 'no-quote-time';
     const stop = toEntryPlanNumber(plan?.stopLoss ?? plan?.stop);
     const target = toEntryPlanNumber(plan?.takeProfit1 ?? plan?.takeProfit ?? plan?.target);
     const shares = toEntryPlanNumber(plan?.positionSizeShares ?? plan?.shares);
-    return [symbol, current, low, high, stop, target, shares, getEntryPlanEffectiveAction(plan)]
+    return [symbol, executableAsk, quoteTimestamp, low, high, stop, target, shares, getEntryPlanEffectiveAction(plan)]
       .map(v => v == null ? 'na' : String(v))
       .join('|');
   }, []);
@@ -4725,7 +3886,7 @@ const Agent: React.FC = (): React.ReactElement => {
         shares: plan.positionSizeShares || plan.shares || 0,
         positionSizeShares: plan.positionSizeShares || plan.shares || 0,
         allocationDollars: plan.allocationDollars || plan.positionValue || plan.positionSizeDollars || 0,
-        orderType: plan.orderType || plan.executionDetails?.orderPreview?.orderType || plan.orderPreview?.orderType || 'market',
+        orderType: 'limit',
         timeInForce: plan.timeInForce || plan.executionDetails?.orderPreview?.timeInForce || plan.orderPreview?.timeInForce || 'day',
         finalAction: plan.finalAction,
         source: 'entry-plan-auto',
@@ -4783,6 +3944,14 @@ const Agent: React.FC = (): React.ReactElement => {
           executionStatus: 'submitted',
           alpacaOrderId: d.orderId || order.id,
           alpacaOrderStatus: d.orderStatus || order.status,
+          submittedLimitPrice: d.limitPrice,
+          submittedShares: d.submittedShares,
+          submittedNotional: d.submittedNotional,
+          orderClass: d.orderClass,
+          protectionMode: d.protectionMode,
+          marketableLimit: d.marketableLimit,
+          executionPreflight: d.preflight,
+          quoteAgeSeconds: d.quoteAgeSeconds,
           executionError: undefined,
           autoEntryPlanKey: key,
           clientOrderId,
@@ -4798,7 +3967,10 @@ const Agent: React.FC = (): React.ReactElement => {
           submittedAt: new Date().toISOString(),
           message: d.message || `${tradeMode === 'real' ? 'Live' : 'Paper'} order placed by AI Entry Plan.`,
         }, ...prev]);
-        message.success(`${symbol}: ${tradeMode === 'real' ? 'Live' : 'Paper'} order placed by AI mode.`);
+        message.success(agentText(
+          `${symbol}: ${tradeMode === 'real' ? 'Live' : 'Paper'} order submitted by AI mode.`,
+          `${symbol}：AI 模式已提交${tradeMode === 'real' ? '实盘' : '模拟'}订单。`,
+        ));
         setTimeout(() => fetchHoldings(tradeMode), 2000);
       } else {
         // Classify the blocker for appropriate UI status
@@ -4819,18 +3991,21 @@ const Agent: React.FC = (): React.ReactElement => {
             autoEntryPlanKey: key,
             clientOrderId,
           });
-        } else if (blockerCode === 'price_outside_zone') {
-          // Transient: remove key so next run can retry
-          autoEntryPlanExecuteKeysRef.current.delete(key);
+        } else if (blockerCode === 'price_outside_zone' || blockerCode === 'market_closed' || blockerCode === 'stale_quote' || blockerCode === 'quote_unavailable') {
+          // The same quote is attempted once. A fresh scan/quote produces a new
+          // execution key; the explicit Retry control can also clear this key.
           upsertAutoExecutionItem(plan, {
             executionStatus: 'zone_wait',
-            executionError: 'Price left entry zone — watching',
+            executionError: blockerCode === 'market_closed'
+              ? 'Market closed — automatic entry waits for the next regular session'
+              : blockerCode === 'stale_quote' || blockerCode === 'quote_unavailable'
+                ? 'Fresh executable quote unavailable — watching'
+                : 'Executable ask left the entry zone — watching',
             autoEntryPlanKey: key,
             clientOrderId,
           });
         } else if (blockerCode === 'duplicate_client_order_id') {
-          // Duplicate client_order_id — remove key so Retry generates a new ID
-          autoEntryPlanExecuteKeysRef.current.delete(key);
+          // Keep the key until the explicit Retry control increments retryCount.
           upsertAutoExecutionItem(plan, {
             executionStatus: 'blocked',
             executionError: 'Duplicate order ID — use Retry to submit with a new ID',
@@ -4852,8 +4027,8 @@ const Agent: React.FC = (): React.ReactElement => {
       const errData = e?.response?.data;
       const errCode = errData?.code || '';
       const errMsg = errData?.reason || e?.message || 'Auto execute failed';
-      // Transient errors: remove key so next run can retry
-      autoEntryPlanExecuteKeysRef.current.delete(key);
+      // Do not spin on timeouts or network failures. The next fresh quote or an
+      // explicit Retry action is the next permitted attempt.
       // Detect duplicate client_order_id — show specific message and don't auto-retry
       const isDuplicateCid = errCode === 'duplicate_client_order_id' || /client_order_id must be unique/i.test(errMsg);
       upsertAutoExecutionItem(plan, {
@@ -4864,17 +4039,18 @@ const Agent: React.FC = (): React.ReactElement => {
       });
       console.log('[AutoExecute] symbol=%s error reason=%s duplicateCid=%s', symbol, errMsg, isDuplicateCid);
     }
-  }, [fetchHoldings, getEntryPlanClientOrderId, upsertAutoExecutionItem, tradeMode]);
+  }, [agentText, fetchHoldings, getEntryPlanClientOrderId, upsertAutoExecutionItem, tradeMode]);
 
   useEffect(() => {
     if (pipelineMode !== 'ai' || entryPlanStatus !== 'completed') return;
+    if (tradeMode === 'real' && !liveAutoTradingEnabled) return;
     if (!Array.isArray(entryPlanResults) || entryPlanResults.length === 0) return;
     // If the user clicked Clear during this Entry Plan generation, skip auto-add
     if (clearedAtGenerationRef.current === entryPlanGenerationRef.current) return;
     // Helpers: build orderPreview when plan lacks one (e.g. leveraged alternatives)
     const _hasCompleteOrderPreview = (p: any) => {
       const op = p?.executionDetails?.orderPreview || p?.orderPreview;
-      return !!(op && op.orderType && op.limitPrice > 0);
+      return !!(op && op.orderType === 'limit' && op.limitPrice > 0);
     };
     const _buildOrderPreview = (p: any) => {
       const _n = (v: any) => { const n = parseFloat(v); return Number.isFinite(n) && n > 0 ? n : undefined; };
@@ -4884,37 +4060,23 @@ const Agent: React.FC = (): React.ReactElement => {
       const limit = (cur != null && hi != null) ? Math.min(cur, hi) : (cur ?? hi ?? 0);
       return { orderType: 'limit', limitPrice: limit, timeInForce: 'day', entryZoneLow: lo, entryZoneHigh: hi };
     };
-    const _hasCriticalFields = (p: any) => {
-      const _n = (v: any) => { const n = parseFloat(v); return Number.isFinite(n) && n > 0; };
-      return _n(p?.entryZoneLow ?? p?.entryLow ?? p?.entryZone?.low)
-        && _n(p?.entryZoneHigh ?? p?.entryHigh ?? p?.entryZone?.high)
-        && _n(p?.currentPrice ?? p?.price)
-        && _n(p?.stopLoss ?? p?.stop)
-        && _n(p?.takeProfit1 ?? p?.takeProfit ?? p?.target)
-        && _n(p?.positionSizeShares ?? p?.shares);
-    };
     // Also check persisted removed symbols (survives page refresh)
     const persistedRemoved = new Set(scannerStateStore.getRemovedExecutionSymbols());
     for (const plan of entryPlanResults) {
       const symbol = String(plan?.symbol || '').toUpperCase();
+      if (plan?.executionHandledByBackend) { console.log('[AutoExecPipeline] skip symbol=%s reason=backend_execution_owner', symbol); continue; }
       // Skip symbols the user explicitly removed in this run or persisted from before refresh
       if (removedSymbolsRef.current.has(symbol)) { console.log('[AutoExecPipeline] skip symbol=%s reason=user_removed', symbol); continue; }
       if (persistedRemoved.has(symbol)) { console.log('[AutoExecPipeline] skip symbol=%s reason=persisted_removed', symbol); continue; }
       const _rawAction = getEntryPlanEffectiveAction(plan);
-      const _isLev = plan?.isLeveraged || plan?.isLeveragedAlternative;
-      // Leveraged ETF promotion: in AI mode, allow auto-execution when gates pass
-      // Patch finalAction so downstream helpers (getEntryPlanExecutionSnapshot, API execute) see BUY_READY
-      const _effPlan = (_isLev && _rawAction === 'READY_REVIEW')
-        ? { ...plan, finalAction: 'BUY_READY' }
-        : plan;
+      const _effPlan = plan;
       if (!symbol || getEntryPlanEffectiveAction(_effPlan) !== 'BUY_READY') { console.log('[AutoExecPipeline] skip symbol=%s reason=not_BUY_READY action=%s', symbol, _rawAction); continue; }
       const key = getEntryPlanAutoExecuteKey(_effPlan);
       if (autoEntryPlanExecuteKeysRef.current.has(key)) { console.log('[AutoExecPipeline] skip symbol=%s reason=already_processed_key', symbol); continue; }
       if (hasEntryPlanHardBlock(_effPlan)) { console.log('[AutoExecPipeline] skip symbol=%s reason=hard_block', symbol); continue; }
       const normalizedPlan = getEntryPlanExecutionSnapshot(_effPlan);
-      // Allow PARTIAL data quality when all critical trading fields are present
       const dq = normalizedPlan.dataQuality;
-      if (dq !== 'GOOD' && !(dq === 'PARTIAL' && _hasCriticalFields(_effPlan))) {
+      if (dq !== 'GOOD') {
         console.log('[AutoExecPipeline] skip symbol=%s reason=data_quality=%s', symbol, dq);
         continue;
       }
@@ -4937,7 +4099,7 @@ const Agent: React.FC = (): React.ReactElement => {
       const _planForExec = _hasCompleteOrderPreview(_effPlan) ? _effPlan : { ..._effPlan, executionDetails: { ...(_effPlan.executionDetails || {}), orderPreview: _buildOrderPreview(_effPlan) } };
       autoExecuteEntryPlan(_planForExec, key);
     }
-  }, [aiExecutionList, autoExecuteEntryPlan, entryPlanResults, entryPlanStatus, getEntryPlanAutoExecuteKey, holdings, pipelineMode, tradeMode, tradingAccountData]);
+  }, [aiExecutionList, autoExecuteEntryPlan, entryPlanResults, entryPlanStatus, getEntryPlanAutoExecuteKey, holdings, liveAutoTradingEnabled, pipelineMode, tradeMode, tradingAccountData]);
 
   // ===== AI Execution Order Handler =====
   const getAutomationMode = (): string => {
@@ -4952,7 +4114,7 @@ const Agent: React.FC = (): React.ReactElement => {
 
     // Manual mode — should not reach here (button hidden), but guard anyway
     if (automationMode === 'manual') {
-      message.info('Manual mode — review only. No orders will be placed.');
+      message.info(agentText('Manual mode is review only. It will not place an order.', '手动模式仅供审核，不会提交订单。'));
       return;
     }
 
@@ -5014,51 +4176,64 @@ const Agent: React.FC = (): React.ReactElement => {
           orderId: d.order?.id,
           orderStatus: d.order?.status,
           submittedAt: new Date().toISOString(),
-          message: d.message,
+          message: agentText(d.message || 'Order submitted.', '订单已提交。'),
         };
         setExecutionLog(prev => [logEntry, ...prev]);
-        message.success(`${record.symbol}: ${d.message}`);
+        message.success(agentText(`${record.symbol}: order submitted.`, `${record.symbol}：订单已提交。`));
         // Refresh holdings after successful order
         fetchHoldings();
       } else if (d.status === 'confirmation_required') {
         // Show confirmation modal
         setOrderConfirmTarget({ record, preview: d.orderPreview || {} });
         setOrderConfirmVisible(true);
-        setOrderConfirmText('');
+        setOrderRiskAccepted(false);
       } else if (d.status === 'config_required') {
         setAiExecutionList(prev => prev.map(e =>
-          e.symbol === record.symbol ? { ...e, executionStatus: 'failed', executionError: d.message } : e
+          e.symbol === record.symbol ? { ...e, executionStatus: 'failed', executionError: agentText('Trading connection required.', '需要配置交易连接。') } : e
         ));
         Modal.warning({
-          title: 'API Keys Not Configured',
-          content: d.message,
-          okText: 'Go to Settings',
+          title: agentText('Trading connection required', '需要配置交易连接'),
+          content: agentText(
+            'Add the required Alpaca credentials before submitting this order.',
+            '提交订单前，请先补充所需的 Alpaca 凭证。',
+          ),
+          okText: agentText('Open settings', '打开设置'),
+          cancelText: agentText('Cancel', '取消'),
+          className: 'agent-confirm-dialog',
+          rootClassName: 'agent-confirm-modal',
           onOk: () => navigate('/settings/configuration'),
         });
       } else if (d.status === 'risk_blocked') {
         setAiExecutionList(prev => prev.map(e =>
-          e.symbol === record.symbol ? { ...e, executionStatus: 'failed', executionError: d.message } : e
+          e.symbol === record.symbol ? { ...e, executionStatus: 'failed', executionError: agentText('Blocked by current risk limits.', '已被当前风险限制阻断。') } : e
         ));
-        message.warning(`${record.symbol}: ${d.message}`);
+        message.warning(agentText(`${record.symbol}: blocked by the current risk limits.`, `${record.symbol}：已被当前风险限制阻断。`));
       } else if (d.status === 'auth_required') {
-        message.error(d.message);
+        message.error(agentText('Your session has expired. Sign in again to continue.', '登录状态已过期，请重新登录后继续。'));
       } else {
+        const detail = agentErrorText(
+          d.message || d.error,
+          'Order failed.',
+          '订单提交失败，请检查订单参数与风险限制。',
+        );
         setAiExecutionList(prev => prev.map(e =>
-          e.symbol === record.symbol ? { ...e, executionStatus: 'failed', executionError: d.message || 'Order failed' } : e
+          e.symbol === record.symbol ? { ...e, executionStatus: 'failed', executionError: detail } : e
         ));
-        message.error(`${record.symbol}: ${d.message || 'Order failed'}`);
+        message.error(agentText(`${record.symbol}: ${detail}`, `${record.symbol}：${detail}`));
       }
     } catch (e: any) {
-      let errMsg = 'Unknown error';
-      if (e?.response?.data?.message) errMsg = e.response.data.message;
-      else if (e?.response?.data?.error) errMsg = e.response.data.error;
-      else if (e?.response) errMsg = `Server error (${e.response.status})`;
-      else if (e?.request && !e?.response) errMsg = 'Backend unreachable — check if server is running';
-      else errMsg = e?.message || 'Unknown error';
+      const rawError = e?.response?.data?.message
+        || e?.response?.data?.error
+        || (e?.response ? `Server error (${e.response.status})` : e?.message);
+      const errMsg = agentErrorText(
+        rawError,
+        'The order service is unavailable.',
+        '订单服务暂时不可用，请稍后重试。',
+      );
       setAiExecutionList(prev => prev.map(e2 =>
         e2.symbol === record.symbol ? { ...e2, executionStatus: 'failed', executionError: errMsg } : e2
       ));
-      message.error(`${record.symbol}: ${errMsg}`);
+      message.error(agentText(`${record.symbol}: ${errMsg}`, `${record.symbol}：${errMsg}`));
     } finally {
       setExecutingSymbol(null);
     }
@@ -5077,7 +4252,7 @@ const Agent: React.FC = (): React.ReactElement => {
     setModalTrailPercent(r.trailPercent || 0);
     setModalTimeInForce(r.timeInForce || 'day');
     setOrderConfirmVisible(true);
-    setOrderConfirmText('');
+    setOrderRiskAccepted(false);
   };
 
   const handleConfirmOrder = async () => {
@@ -5085,12 +4260,9 @@ const Agent: React.FC = (): React.ReactElement => {
     const { record } = orderConfirmTarget;
     const isReal = tradeMode === 'real';
 
-    if (isReal) {
-      const expected = `CONFIRM REAL ORDER ${record.symbol}`;
-      if (orderConfirmText.trim().toUpperCase() !== expected.toUpperCase()) {
-        message.error(`Type "${expected}" to confirm`);
-        return;
-      }
+    if (isReal && !orderRiskAccepted) {
+      message.error(agentModalCopy.acceptanceRequired);
+      return;
     }
 
     // Sync modal edits back to the execution list before submitting
@@ -5113,7 +4285,7 @@ const Agent: React.FC = (): React.ReactElement => {
     setOrderConfirmVisible(false);
     await handleExecuteOrder(updatedRecord, true);
     setOrderConfirmTarget(null);
-    setOrderConfirmText('');
+    setOrderRiskAccepted(false);
   };
 
   // ===== Cancel Order Handler =====
@@ -5121,7 +4293,7 @@ const Agent: React.FC = (): React.ReactElement => {
     if (!cancelTarget) return;
     const { record } = cancelTarget;
     const orderId = record.alpacaOrderId;
-    if (!orderId) { message.error('No order ID found.'); return; }
+    if (!orderId) { message.error(agentText('The order ID is missing.', '未找到订单 ID。')); return; }
 
     setCancelLoading(true);
     try {
@@ -5139,31 +4311,26 @@ const Agent: React.FC = (): React.ReactElement => {
           orderId: orderId,
           orderStatus: 'canceled',
           submittedAt: new Date().toISOString(),
-          message: 'Order canceled by user',
+          message: agentText('Order canceled by user.', '用户已取消订单。'),
         };
         setExecutionLog(prev => [logEntry, ...prev]);
-        message.success(`${record.symbol}: Order canceled.`);
+        message.success(agentText(`${record.symbol}: order canceled.`, `${record.symbol}：订单已取消。`));
         fetchHoldings();
       } else if (d.errorType === 'order_filled') {
         // Order already filled — remove from execution, refresh holdings
         setAiExecutionList(prev => prev.filter(e => e.symbol !== record.symbol));
         fetchHoldings();
-        message.info(`${record.symbol}: Order already filled. Position moved to Current Holdings.`);
+        message.info(agentText(`${record.symbol}: the order is already filled. The position now appears under current holdings.`, `${record.symbol}：订单已经成交，持仓已移至当前持仓。`));
       } else {
-        message.error(`${record.symbol}: Cancel failed — ${d.error || 'Unknown error'}`);
+        const detail = agentErrorText(d.error, 'Cancel failed.', '撤单失败，请稍后重试。');
+        message.error(agentText(`${record.symbol}: ${detail}`, `${record.symbol}：${detail}`));
       }
     } catch (e: any) {
-      let errMsg = 'Unknown error';
-      if (e?.response?.data?.error) {
-        errMsg = e.response.data.error;
-      } else if (e?.response) {
-        errMsg = `Server error (${e.response.status})`;
-      } else if (e?.request && !e?.response) {
-        errMsg = 'Backend unreachable — check if server is running';
-      } else {
-        errMsg = e?.message || 'Unknown error';
-      }
-      message.error(`${record.symbol}: Cancel failed — ${errMsg}`);
+      const rawError = e?.response?.data?.error
+        || e?.response?.data?.message
+        || (e?.response ? `Server error (${e.response.status})` : e?.message);
+      const errMsg = agentErrorText(rawError, 'Cancel failed.', '撤单失败，请稍后重试。');
+      message.error(agentText(`${record.symbol}: ${errMsg}`, `${record.symbol}：${errMsg}`));
     } finally {
       setCancelLoading(false);
       setCancelConfirmVisible(false);
@@ -5216,70 +4383,145 @@ const Agent: React.FC = (): React.ReactElement => {
     return () => clearInterval(interval);
   }, [syncExecutionOrders]);
 
+  const isConfirmedForEntryPlan = useCallback((record: any) => {
+    const gate = record.institutionalGate || record.riskGate || {};
+    const gateStatus = String(gate.status || '').toUpperCase();
+    if (gateStatus === 'BLOCK') return false;
+
+    const decision = String(record.dvDecision || '').toUpperCase();
+    if (decision === 'PASS_DV') return true;
+
+    const verdict = String(
+      record.finalVerdict ||
+      record.verdict ||
+      record.aiValidationVerdict ||
+      record.localVerdictBeforeAI ||
+      record.decision ||
+      ''
+    ).trim().toLowerCase();
+    return ['confirmed', 'pass', 'pass_dv'].includes(verdict);
+  }, []);
+
   const getEntryPlanCandidates = useCallback(() => {
     if (!deeperValidationResults || deeperValidationResults.length === 0) return [];
-    // Include Confirmed, Watch, and Needs Manual Review. Do NOT exclude risk-gate BLOCK here —
-    // BLOCK only blocks order execution, not plan generation.
-    const confirmed: any[] = [];
-    const watch: any[] = [];
-    const manualReview: any[] = [];
-    for (const r of deeperValidationResults) {
-      if (r.verdict === 'Confirmed' || r.verdict === 'Pass') confirmed.push(r);
-      else if (r.verdict === 'Watch') watch.push({ ...r, planNote: 'Conservative / Watch Only' });
-      else if (r.verdict === 'Needs Manual Review' || r.verdict === 'Manual Review') manualReview.push({ ...r, planNote: 'Review Required' });
-    }
-    const all = [...confirmed, ...watch, ...manualReview];
-    // Limit to total of 8
-    return all.slice(0, 8);
-  }, [deeperValidationResults]);
+    const holdingSymbols = new Set((holdingsRef.current || holdings || []).map((p: any) => String(p.symbol || '').toUpperCase()));
+    return deeperValidationResults
+      .filter((record: any) => isConfirmedForEntryPlan(record))
+      .filter((record: any) => !holdingSymbols.has(String(record.symbol || '').toUpperCase()))
+      .sort((a: any, b: any) => Number(b.validationScore || 0) - Number(a.validationScore || 0))
+      .slice(0, 8)
+      .map((record: any) => ({
+        ...record,
+        entryPlanInput: 'DV_CONFIRMED',
+      }));
+  }, [deeperValidationResults, holdings, isConfirmedForEntryPlan]);
 
-  // Store-based version for auto pipeline (avoids stale React snapshot)
-  const _getEntryPlanCandidatesFromStore = (): any[] => {
-    const results = scannerStateStore.getState().deeperValidation.results;
-    if (!results || results.length === 0) return [];
-    // Exclude symbols that already have existing positions or open buy orders
-    const _holdSyms = new Set((holdingsRef.current || holdings || []).map((p: any) => String(p.symbol || '').toUpperCase()));
-    const _excludedHolds: string[] = [];
-    const _normalize = (v: any) => String(v || '').trim();
-    const eligible = new Set(['confirmed', 'pass', 'watch', 'review', 'needs manual review', 'manual review', 'readyreview', 'ready_review']);
-    const ineligible = new Set(['blocked', 'reject', 'rejected', 'avoid', 'needdata', 'need_data', 'error']);
-    const candidates: any[] = [];
-    for (const r of results) {
-      // Read finalVerdict first (AI overlay), fallback to verdict (local), then other fields
-      const rawV = _normalize(r.finalVerdict || r.verdict || r.aiValidationVerdict || r.localVerdictBeforeAI || r.decision || '');
-      const v = rawV.toLowerCase();
-      if (ineligible.has(v)) continue;
-      const sym = String(r.symbol || '').toUpperCase();
-      if (_holdSyms.has(sym)) {
-        _excludedHolds.push(sym);
-        console.log('[EntryPlanCandidates] excluded symbol=%s reason=existing_position', sym);
-        continue;
-      }
-      if (eligible.has(v)) {
-        const note = v === 'watch' ? 'Conservative / Watch Only'
-          : v === 'review' || v.includes('review') ? 'Review Required'
-          : v === 'pass' || v === 'confirmed' ? '' : '';
-        candidates.push({ ...r, _planNote: note || undefined });
-      }
-    }
-    if (_excludedHolds.length > 0) {
-      console.log('[EntryPlanCandidates] excluded positions: %s', _excludedHolds.join(', '));
-    }
-    return candidates.slice(0, 8);
-  };
-
-  const handleRunEntryPlan = useCallback(async () => {
+  const handleRunEntryPlan = async () => {
     if (pipelineRunning) {
-      message.warning('Disabled while AI Pipeline is running.');
+      message.warning(agentText('This action is unavailable while the AI pipeline is running.', 'AI 流水线运行期间无法执行此操作。'));
       return;
     }
     const candidates = getEntryPlanCandidates();
     if (!candidates.length) return;
-    // Register with runner service so isEntryPlanRunning() returns true during route changes
-    const epPromise = _runEntryPlanLoop(candidates);
-    registerEntryPlanRun(epPromise);
-    await epPromise;
-  }, [getEntryPlanCandidates, entryPlanAccountSize, entryPlanRiskPerTrade, entryPlanApiExecutionMode, tradeMode, tradingAccountData]);
+
+    scannerStateStore.updateAdmission({
+      status: 'loading',
+      results: null,
+      summary: null,
+      lastUpdated: new Date().toISOString(),
+    });
+
+    let admittedCandidates: any[] = [];
+    try {
+      const holdingSymbols = (holdingsRef.current || holdings || [])
+        .map((position: any) => String(position?.symbol || '').toUpperCase())
+        .filter(Boolean);
+      const openBuySymbols = aiExecutionList
+        .filter((order: any) => {
+          const status = String(order?.alpacaOrderStatus || order?.executionStatus || '').toLowerCase();
+          return ['pending', 'submitted', 'accepted', 'new', 'partially_filled'].includes(status);
+        })
+        .map((order: any) => String(order?.symbol || '').toUpperCase())
+        .filter(Boolean);
+      const accountStatus = String(tradingAccountData?.status || '').toUpperCase();
+      const accountBlocked = Boolean(
+        tradingAccountData?.accountBlocked ||
+        tradingAccountData?.tradingBlocked ||
+        (tradingAccountData?.success && accountStatus && accountStatus !== 'ACTIVE')
+      );
+
+      const admissionResponse = await pipelineAutoAPI.runAdmission({
+        candidates,
+        fineResults: fineScanResults || [],
+        marketResults: marketScannerResults || [],
+        accountState: {
+          holdingSymbols,
+          openBuySymbols,
+          positionCount: holdingSymbols.length,
+          buyingPower: tradingAccountData?.buyingPower,
+          accountBlocked,
+        },
+        riskProfile,
+        timeHorizon,
+        pipelineMode,
+        aiEnabled: pipelineMode !== 'manual',
+      });
+      const admissionRows = admissionResponse.data?.results || [];
+      const admissionRunSummary = admissionResponse.data?.summary || null;
+      scannerStateStore.updateAdmission({
+        status: 'completed',
+        results: admissionRows,
+        summary: admissionRunSummary,
+        lastUpdated: new Date().toISOString(),
+      });
+
+      admittedCandidates = admissionRows
+        .filter((row: any) => row?.admissionDecision === 'ADMIT')
+        .map((row: any) => ({
+          ...(row.sourceCandidate || {}),
+          admission: row,
+          admissionDecision: row.admissionDecision,
+          admissionScore: row.admissionScore,
+          admissionWarnings: row.warnings || [],
+          admissionAiReview: row.aiAdmissionReview || null,
+          signalSnapshot: row.signalSnapshot,
+        }));
+
+      if (!admittedCandidates.length) {
+        setEntryPlanStatus('completed');
+        setEntryPlanResults([]);
+        const holdCount = admissionRunSummary?.counts?.HOLD || 0;
+        const blockCount = admissionRunSummary?.counts?.BLOCK || 0;
+        message.warning(agentText(
+          `Portfolio admission held this batch: ${holdCount} on hold and ${blockCount} blocked.`,
+          `本批次未通过组合准入：${holdCount} 个暂缓，${blockCount} 个阻断。`,
+        ));
+        return;
+      }
+
+    } catch (error: any) {
+      scannerStateStore.updateAdmission({
+        status: 'error',
+        lastUpdated: new Date().toISOString(),
+      });
+      message.error(agentErrorText(
+        error?.response?.data?.message || error?.message,
+        'Portfolio admission failed.',
+        '组合准入失败，请检查数据连接后重试。',
+      ));
+      return;
+    }
+
+    // Entry Plan has its own error state; a downstream failure must not rewrite
+    // a successfully completed Portfolio Admission as failed.
+    try {
+      const epPromise = _runEntryPlanLoop(admittedCandidates);
+      registerEntryPlanRun(epPromise);
+      await epPromise;
+    } catch {
+      // _runEntryPlanLoop already records and displays the precise failure.
+    }
+  };
 
   const _runEntryPlanLoop = async (candidates: any[], options?: { suppressDiscord?: boolean }): Promise<any[]> => {
     let _epResult: any[] = [];
@@ -5297,15 +4539,22 @@ const Agent: React.FC = (): React.ReactElement => {
     if (!preflight.ok || !preflight.sessionValid) {
       setEntryPlanStatus('error');
       unregisterEntryPlanRun();
-      const errMsg = preflight.error || 'Session expired. Please sign in again.';
+      const errMsg = agentErrorText(
+        preflight.error,
+        'Your session has expired. Please sign in again.',
+        '登录状态已过期，请重新登录。',
+      );
       message.error(errMsg);
       throw new Error(errMsg);
     }
     if (!preflight.aiAvailable) {
-      const reason = preflight.aiKeyIsMasked ? 'AI key is invalid (masked). Re-enter in Settings.' :
-                     !preflight.aiConfigured ? 'AI Provider not configured. Configure in Settings.' :
-                     preflight.aiTestStatus !== 'connected' ? `AI Provider not tested (${preflight.aiTestStatus}). Click Test AI Connection in Settings.` :
-                     'AI unavailable';
+      const reason = preflight.aiKeyIsMasked
+        ? agentText('The AI key is invalid. Re-enter it in Settings.', 'AI 密钥无效，请在设置中重新填写。')
+        : !preflight.aiConfigured
+          ? agentText('The AI provider is not configured. Configure it in Settings.', '尚未配置 AI 服务，请前往设置完成配置。')
+          : preflight.aiTestStatus !== 'connected'
+            ? agentText(`The AI provider connection is not ready (${preflight.aiTestStatus}). Test it in Settings.`, 'AI 服务连接尚未就绪，请在设置中测试连接。')
+            : agentText('The AI provider is unavailable.', 'AI 服务暂不可用。');
       setEntryPlanStatus('error');
       unregisterEntryPlanRun();
       message.error(reason);
@@ -5328,6 +4577,7 @@ const Agent: React.FC = (): React.ReactElement => {
     try {
       const candidateData = candidates.map((c: any) => ({
         symbol: c.symbol,
+        companyName: c.companyName || c.name,
         strategy: c.strategy || c.strategyType || '',
         verdict: c.verdict || '',
         totalReturn: c.totalReturn ?? c.aggregateReturn,
@@ -5357,6 +4607,19 @@ const Agent: React.FC = (): React.ReactElement => {
         fineScanRisk: c.fineScanRisk || '',
         fineScanNews: c.fineScanNews || '',
         entryQualityDetail: c.entryQualityDetail || '',
+        entryPlan: c.entryPlan || c.entryValidation || c.institutionalPacket?.entryValidation || {},
+        entryPlanSource: c.entryPlanSource || c.entryPlan?.entryPlanSource || 'deeper_validation',
+        avgDollarVolume20: c.avgDollarVolume20 ?? c.costCapacity?.adv20 ?? c.institutionalPacket?.costCapacity?.adv20,
+        estimatedRoundTripCostBps: c.estimatedRoundTripCostBps ?? c.costCapacity?.roundTripCostBps ?? c.institutionalPacket?.costCapacity?.roundTripCostBps,
+        quotedSpreadBps: c.quotedSpreadBps ?? c.spreadBps ?? c.costCapacity?.spreadBps ?? c.institutionalPacket?.costCapacity?.spreadBps,
+        eventRisk: c.eventRisk,
+        dataQuality: c.dataQuality,
+        sector: c.sector || c.companySector,
+        admissionDecision: c.admissionDecision || c.admission?.admissionDecision,
+        admissionScore: c.admissionScore ?? c.admission?.admissionScore,
+        admissionSnapshot: c.signalSnapshot || c.admission?.signalSnapshot,
+        admissionWarnings: c.admissionWarnings || c.admission?.warnings || [],
+        admissionAiReview: c.admissionAiReview || c.admission?.aiAdmissionReview || null,
       }));
       // Pass actual holdings so backend can filter existing positions and open orders
       const existingPositions: string[] = (holdingsRef.current || holdings || []).map((p: any) => String(p.symbol || '').toUpperCase());
@@ -5390,17 +4653,21 @@ const Agent: React.FC = (): React.ReactElement => {
         const epErrors = res.data.errors || [];
         if (epStatus === 'partial' && epErrors.length > 0) {
           const failSymbols = epErrors.map((e: any) => e.symbol).join(', ');
-          message.warning(`Entry Plan partial: some symbols had errors (${failSymbols})`);
+          message.warning(agentText(`Entry plans completed with errors for: ${failSymbols}.`, `入场计划部分完成，以下标的出现错误：${failSymbols}。`));
         }
         setEntryPlanStatus('completed');
         unregisterEntryPlanRun();
       } else {
-        const errMsg = res.data?.message || 'Entry Plan returned no results';
+        const errMsg = agentErrorText(
+          res.data?.message || res.data?.error,
+          'Entry Plan returned no valid results.',
+          '入场计划未返回有效结果。',
+        );
         setEntryPlanStatus('completed');
         setEntryPlanResults([]);
         unregisterEntryPlanRun();
         console.warn('[EntryPlan] backend returned non-success:', errMsg);
-        message.warning('Entry Plan completed with no plans: ' + errMsg);
+        message.warning(agentText(`Entry planning completed without a valid plan: ${errMsg}`, `入场计划已完成，但没有生成有效计划：${errMsg}`));
         return [];
       }
     } catch (err: any) {
@@ -5415,7 +4682,7 @@ const Agent: React.FC = (): React.ReactElement => {
         await new Promise(resolve => setTimeout(resolve, 5000));
         try {
           const candidateData = candidates.map((c: any) => ({
-            symbol: c.symbol, strategy: c.strategy || c.strategyType || '', verdict: c.verdict || '',
+            symbol: c.symbol, companyName: c.companyName || c.name, strategy: c.strategy || c.strategyType || '', verdict: c.verdict || '',
             totalReturn: c.totalReturn ?? c.aggregateReturn, sharpeRatio: c.sharpeRatio ?? c.sharpe,
             maxDrawdown: c.maxDrawdown, winRate: c.winRate, profitFactor: c.profitFactor,
             tradeCount: c.tradeCount ?? c.trades, stabilityScore: c.stabilityScore,
@@ -5428,6 +4695,17 @@ const Agent: React.FC = (): React.ReactElement => {
             fineScanScore: c.fineScanScore || 50, fineScanStrategy: c.fineScanStrategy || '',
             fineScanRisk: c.fineScanRisk || '', fineScanNews: c.fineScanNews || '',
             entryQualityDetail: c.entryQualityDetail || '',
+            entryPlan: c.entryPlan || c.entryValidation || c.institutionalPacket?.entryValidation || {},
+            entryPlanSource: c.entryPlanSource || c.entryPlan?.entryPlanSource || 'deeper_validation',
+            avgDollarVolume20: c.avgDollarVolume20 ?? c.costCapacity?.adv20 ?? c.institutionalPacket?.costCapacity?.adv20,
+            estimatedRoundTripCostBps: c.estimatedRoundTripCostBps ?? c.costCapacity?.roundTripCostBps ?? c.institutionalPacket?.costCapacity?.roundTripCostBps,
+            quotedSpreadBps: c.quotedSpreadBps ?? c.spreadBps ?? c.costCapacity?.spreadBps ?? c.institutionalPacket?.costCapacity?.spreadBps,
+            eventRisk: c.eventRisk, dataQuality: c.dataQuality, sector: c.sector || c.companySector,
+            admissionDecision: c.admissionDecision || c.admission?.admissionDecision,
+            admissionScore: c.admissionScore ?? c.admission?.admissionScore,
+            admissionSnapshot: c.signalSnapshot || c.admission?.signalSnapshot,
+            admissionWarnings: c.admissionWarnings || c.admission?.warnings || [],
+            admissionAiReview: c.admissionAiReview || c.admission?.aiAdmissionReview || null,
           }));
           const realAccountSize = tradingAccountData?.success
             ? (tradingAccountData.portfolioValue ?? tradingAccountData.equity ?? tradingAccountData.buyingPower ?? entryPlanAccountSize)
@@ -5460,11 +4738,20 @@ const Agent: React.FC = (): React.ReactElement => {
         }
       }
 
-      const errMsg = isConfigError
-        ? (err.response?.data?.error || 'Configuration error. Check AI Provider settings.')
-        : isRateLimit
-          ? 'Rate limited by AI service. Please wait and try again.'
-          : (err.response?.data?.message || err.message || 'Entry plan failed');
+      const rawError = err.response?.data?.error || err.response?.data?.message || err.message;
+      const errMsg = agentErrorText(
+        rawError,
+        isConfigError
+          ? 'Configuration error. Check the AI provider settings.'
+          : isRateLimit
+            ? 'The AI service rate limit was reached. Please wait and try again.'
+            : 'Entry planning failed.',
+        isConfigError
+          ? '入场计划服务配置不可用，请在设置中检查 AI 连接。'
+          : isRateLimit
+            ? 'AI 服务请求频率受限，请稍后重试。'
+            : '入场计划生成失败，请稍后重试。',
+      );
       console.error('Entry plan error:', err);
       setEntryPlanStatus('error');
       unregisterEntryPlanRun();
@@ -5538,8 +4825,14 @@ const Agent: React.FC = (): React.ReactElement => {
             originalSymbol: symbol,
             alternativeSymbol: alt,
             direction,
-            reason: `High-risk mode: ${symbol} exceeds buying power. Leveraged alternative ${alt} found.`,
-            riskWarning: `${alt} is a leveraged product with amplified volatility and loss risk. Suitable only for high-risk tolerance.`,
+            reason: agentText(
+              `High-risk mode: ${symbol} exceeds buying power. Leveraged alternative ${alt} found.`,
+              `高风险模式下，${symbol} 超出当前购买力；已找到杠杆替代标的 ${alt}。`,
+            ),
+            riskWarning: agentText(
+              `${alt} is a leveraged product with amplified volatility and loss risk. Suitable only for high-risk tolerance.`,
+              `${alt} 属于杠杆产品，波动与亏损风险会被放大，仅适合高风险承受能力。`,
+            ),
             tradable: true,
             fractionable: res.data.fractionable,
           };
@@ -5552,231 +4845,220 @@ const Agent: React.FC = (): React.ReactElement => {
   };
 
   const renderEntryPlanDetail = (ep: any) => {
+    const packet = ep.institutionalEntryPlan || {};
+    const entry = packet.entry || {};
+    const exits = packet.exits || {};
+    const sizing = packet.sizing || {};
+    const execution = packet.execution || {};
+    const controls = packet.controls || {};
+    const market = packet.marketContext || {};
+    const ai = packet.aiReview || {};
+    const provenance = packet.provenance || {};
     const rg = ep.riskGate || ep.hardRiskGate || {};
-    const dq = ep.dataQuality || 'N/A';
-    const dqColor = dq === 'GOOD' ? '#52c41a' : dq === 'FAIR' ? '#faad14' : '#ff4d4f';
-    const rgColor = rg.status === 'PASS' ? '#52c41a' : rg.status === 'REVIEW' ? '#faad14' : '#ff4d4f';
     const action = getEntryPlanEffectiveAction(ep);
     const zone = getEntryPlanZone(ep);
-    const actionLabelMap: Record<string, string> = {
-      BUY_READY: 'BUY READY',
-      READY_REVIEW: 'READY REVIEW',
-      WAIT_FOR_ENTRY: 'WAIT ENTRY',
-      BLOCKED_BY_RISK: 'BLOCKED',
-      NEED_DATA: 'NEED DATA',
-      SKIP: 'SKIP',
-    };
-    const actionColor = action === 'BUY_READY' ? '#52c41a' : action === 'READY_REVIEW' ? '#1890ff' : action === 'WAIT_FOR_ENTRY' || action === 'NEED_DATA' ? '#faad14' : '#ff4d4f';
-    
-    const Section = ({ title, icon, children, last }: { title: string; icon?: React.ReactNode; children: React.ReactNode; last?: boolean }) => (
-      <div style={{ 
-        flex: 1, 
-        minWidth: 280,
-        padding: '16px', 
-        background: 'var(--app-card-bg)', 
-        borderRadius: 12, 
-        border: '1px solid var(--app-border-soft)',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.02)',
-        marginBottom: last ? 0 : 0
-      }}>
-        <div style={{ 
-          fontSize: 12, 
-          fontWeight: 700, 
-          color: '#1890ff', 
-          textTransform: 'uppercase', 
-          letterSpacing: 0.8, 
-          marginBottom: 16, 
-          display: 'flex', 
-          alignItems: 'center', 
-          gap: 8 
-        }}>
-          {icon}
-          {title}
-        </div>
-        {children}
+    const gateStatus = controls.gateStatus || rg.status || 'N/A';
+    const blockers = controls.blockers || ep.blockers || [];
+    const warnings = controls.warnings || rg.warnings || [];
+    const triggerChecks = entry.triggerChecks || ep.entryTriggerChecks || [];
+    const triggerStatus = String(entry.triggerStatus || ep.entryTriggerStatus || 'NOT EVALUATED').toUpperCase();
+    const triggerMet = entry.triggerMet ?? ep.entryTriggerMet ?? false;
+    const setupAutoEligible = entry.setupAutoEligible ?? ep.setupAutoEligible ?? false;
+    const autoExecution = aiExecutionList.find((item: any) => (
+      String(item.symbol || '').toUpperCase() === String(ep.symbol || '').toUpperCase() && item.source === 'entry-plan-auto'
+    ));
+    const fmtNum = (v: any, digits = 2) => Number.isFinite(Number(v)) ? Number(v).toFixed(digits) : '--';
+    const fmtPrice = (v: any) => Number.isFinite(Number(v)) && Number(v) > 0 ? `$${Number(v).toFixed(2)}` : '--';
+    const fmtMoney = (v: any) => Number.isFinite(Number(v)) ? `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '--';
+    const fmtPct = (v: any, digits = 1) => Number.isFinite(Number(v)) ? `${Number(v).toFixed(digits)}%` : '--';
+    const fmtBps = (v: any) => Number.isFinite(Number(v)) ? `${Number(v).toFixed(1)} bps` : '--';
+    const actionTone = action === 'BUY_READY' ? 'ready' : action === 'READY_REVIEW' ? 'review' : action === 'WAIT_FOR_ENTRY' ? 'wait' : 'block';
+
+    const Metric = ({ label, value, tone }: { label: string; value: React.ReactNode; tone?: string }) => (
+      <div className="epv2-metric">
+        <span>{label}</span>
+        <b className={tone ? `epv2-tone-${tone}` : ''}>{value}</b>
       </div>
     );
 
-    const DetailItem = ({ label, value, color, boldValue, info }: { label: string; value: any; color?: string; boldValue?: boolean; info?: string }) => (
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '6px 0', borderBottom: '1px solid var(--app-card-bg-soft)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <span style={{ color: 'var(--app-text-muted)', fontSize: 12 }}>{label}</span>
-          {info && <Tooltip title={info}><InfoCircleOutlined style={{ fontSize: 10, color: 'var(--app-text-muted)' }} /></Tooltip>}
-        </div>
-        <span style={{ 
-          fontWeight: boldValue ? 700 : 600, 
-          color: color || 'var(--app-text-strong)', 
-          fontSize: 12, 
-          textAlign: 'right',
-          maxWidth: '65%',
-          wordBreak: 'break-word'
-        }}>
-          {safeRender(value)}
-        </span>
+    const DataLine = ({ label, value }: { label: string; value: React.ReactNode }) => (
+      <div className="epv2-data-line">
+        <span>{label}</span>
+        <b>{value}</b>
       </div>
     );
-
-    const readiness = ep.tradeReadiness || 'Unknown';
-    const readinessColor = readiness.includes('Ready') || readiness.includes('Now') ? '#52c41a' : readiness.includes('Wait') ? '#faad14' : 'var(--app-text-muted)';
 
     return (
-      <div style={{ padding: '20px', background: 'var(--app-card-bg-soft)', borderRadius: 16, margin: '8px 0' }}>
-        {/* Detail Header */}
-        <div style={{ 
-          display: 'flex', 
-          justifyContent: 'space-between', 
-          alignItems: 'center', 
-          marginBottom: 20, 
-          padding: '0 8px' 
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
-              <span style={{ fontSize: 20, fontWeight: 800, color: 'var(--app-text-strong)', lineHeight: 1 }}>{ep.symbol}</span>
-              <span style={{ fontSize: 10, color: 'var(--app-text-muted)', fontWeight: 600, marginTop: 4, textTransform: 'uppercase' }}>{t.agent.symbolAnalysis}</span>
+      <div className="epv2-detail">
+        <div className="epv2-detail-head">
+          <div>
+            <div className="epv2-symbol-line">
+              <b>{ep.symbol}</b>
+              <span>{packet.setupClass || ep.setup || agentText('Entry setup', '入场结构')}</span>
             </div>
-            <Divider type="vertical" style={{ height: 32, borderColor: 'var(--app-border)' }} />
-            <Space size={8}>
-              <Tag color="blue" bordered={false} style={{ fontWeight: 700, borderRadius: 4 }}>{ep.aiDecision || 'WATCH'}</Tag>
-              <Tag color={rgColor} bordered={false} style={{ fontWeight: 700, borderRadius: 4 }}>{t.agent.riskGate}: {rg.status || 'N/A'}</Tag>
-              <Tag color={readinessColor} bordered={false} style={{ fontWeight: 700, borderRadius: 4 }}>{readiness.toUpperCase()}</Tag>
-            </Space>
+            <div className="epv2-subline">
+              {packet.validatedStrategy || ep.strategy || agentText('validated strategy', '已验证策略')} · {packet.method || ep.executionPlanVersion || agentText('pretrade plan', '交易前计划')}
+            </div>
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <Tag icon={<SyncOutlined spin={ep.isRefreshing} />} color="default" style={{ margin: 0, borderRadius: 4, fontSize: 10 }}>{ep.aiModel || 'DEEPSEEK'}</Tag>
-            <Tag color="cyan" style={{ margin: 0, borderRadius: 4, fontSize: 10 }}>{ep.aiSource === 'DeepSeek' ? 'DEEPSEEK-V3' : ep.aiSource || 'AI'}</Tag>
-          </div>
+          <Space size={8} wrap>
+            <Tag className={`epv2-chip epv2-chip-${actionTone}`} bordered={false}>{agentEnumLabel(packet.planState || ep.planState || action)}</Tag>
+            <Tag className={`epv2-chip epv2-chip-${String(gateStatus).toLowerCase()}`} bordered={false}>{agentText('Gate', '风控门槛')} {agentEnumLabel(gateStatus)}</Tag>
+            <Tag className="epv2-chip epv2-chip-neutral" bordered={false}>{agentEnumLabel(ep.dataQuality || controls.dataQuality || 'DATA')}</Tag>
+          </Space>
         </div>
 
-        {/* Content Sections */}
-        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-          <Section title={t.agent.epDecisionSetup} icon={<CheckCircleOutlined style={{ fontSize: 14 }} />}>
-            <DetailItem label={t.agent.finalAction} value={actionLabelMap[action] || action || 'N/A'} color={actionColor} boldValue />
-            <DetailItem label={t.agent.aiDecision} value={ep.aiDecision === 'SKIP' ? 'Skip' : ep.aiDecision === 'BUY' ? 'Buy' : ep.aiDecision === 'WATCH' ? 'Watch' : ep.aiDecision} color={ep.aiDecision === 'BUY' ? '#52c41a' : '#faad14'} />
-            <DetailItem label={t.agent.confidence} value={ep.confidence ? `${ep.confidence}%` : 'N/A'} color={ep.confidence >= 80 ? '#52c41a' : '#1890ff'} />
-            <DetailItem label={t.agent.readiness} value={ep.tradeReadiness === 'BLOCKED' ? 'Blocked' : ep.tradeReadiness === 'READY' ? 'Ready' : ep.tradeReadiness === 'WAITING' ? 'Waiting' : ep.tradeReadiness} color={readinessColor} />
-            <DetailItem label={t.agent.setupType} value={ep.setup || ep.setupType} />
-            <DetailItem label={t.agent.nextTacticalStep} value={ep.nextStep} color="#1890ff" />
-          </Section>
-
-          <Section title={t.agent.epEntryExitLevels} icon={<LineChartOutlined style={{ fontSize: 14 }} />}>
-            <DetailItem label={t.agent.entryZone} value={zone.low != null && zone.high != null ? `$${zone.low.toFixed(2)} - $${zone.high.toFixed(2)}` : 'N/A'} boldValue />
-            <DetailItem label={t.agent.trigger} value={ep.triggerCondition} info="Conditions to trigger execution" />
-            <DetailItem label={t.agent.stopLoss} value={ep.stopLoss ? `$${ep.stopLoss.toFixed(2)}` : 'N/A'} color="#ff4d4f" boldValue />
-            <DetailItem label={t.agent.takeProfit1} value={ep.takeProfit1 ? `$${ep.takeProfit1.toFixed(2)}` : 'N/A'} color="#52c41a" />
-            <DetailItem label={t.agent.takeProfit2} value={ep.takeProfit2 ? `$${ep.takeProfit2.toFixed(2)}` : 'N/A'} color="#52c41a" />
-            <DetailItem label={t.agent.riskReward1} value={ep.riskReward1 ? `${ep.riskReward1.toFixed(1)}:1` : 'N/A'} color={ep.riskReward1 >= 2 ? '#52c41a' : '#faad14'} />
-            <DetailItem label={t.agent.riskReward2} value={ep.riskReward2 ? `${ep.riskReward2.toFixed(1)}:1` : 'N/A'} color={ep.riskReward2 >= 3 ? '#52c41a' : '#faad14'} />
-          </Section>
-
-          <Section title={t.agent.epRiskData} icon={<SafetyCertificateOutlined style={{ fontSize: 14 }} />}>
-            <DetailItem label={t.agent.positionSize} value={ep.positionSizeShares ? `${ep.positionSizeShares} shares` : ep.positionSizeDollars ? `$${ep.positionSizeDollars.toLocaleString()}` : 'N/A'} boldValue />
-            <DetailItem label={t.agent.portfolioRisk} value={ep.positionPct ? `${ep.positionPct.toFixed(1)}%` : 'N/A'} info="Percent of account equity at risk" />
-            <Divider style={{ margin: '12px 0' }} />
-            <DetailItem label={t.agent.riskGate} value={rg.status || 'N/A'} color={rgColor} boldValue />
-            <DetailItem label={t.agent.dataQuality} value={dq} color={dqColor} />
-            <DetailItem label={t.agent.technicalScore} value={ep.technicalScore != null ? ep.technicalScore : 'N/A'} />
-            <DetailItem label={t.agent.regimeFilter} value={ep.marketRegime || 'N/A'} />
-          </Section>
-        </div>
-
-        {/* Reason and Warnings Panel */}
-        {(ep.decisionReason || ep.riskNotes || (ep.blockers && ep.blockers.length > 0)) && (
-          <div style={{
-            marginTop: 16,
-            padding: '16px',
-            background: 'var(--app-card-bg)',
-            borderRadius: 12,
-            border: '1px solid var(--app-border-soft)',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.02)'
-          }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--app-text-muted)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 12 }}>{t.agent.epAnalysisWarnings}</div>
-            <Row gutter={24}>
-              {ep.decisionReason && (
-                <Col span={ep.riskNotes || (ep.blockers && ep.blockers.length > 0) ? 14 : 24}>
-                  <div style={{ fontSize: 13, color: 'var(--app-text)', lineHeight: 1.6 }}>
-                    <Text strong style={{ fontSize: 11, color: 'var(--app-text-muted)', display: 'block', marginBottom: 4 }}>{t.agent.reasoning}</Text>
-                    {safeRender(ep.decisionReason)}
-                  </div>
-                </Col>
-              )}
-              {(ep.riskNotes || (ep.blockers && ep.blockers.length > 0)) && (
-                <Col span={ep.decisionReason ? 10 : 24}>
-                  {ep.riskNotes && (
-                    <div style={{ marginBottom: 12 }}>
-                      <Text strong style={{ fontSize: 11, color: '#faad14', display: 'block', marginBottom: 4 }}>{t.agent.riskNotes}</Text>
-                      <div style={{ fontSize: 12, color: '#d48806', background: 'rgba(250, 173, 20, 0.1)', padding: '8px 12px', borderRadius: 6, border: '1px solid rgba(250, 173, 20, 0.2)' }}>
-                        {safeRender(ep.riskNotes)}
-                      </div>
-                    </div>
-                  )}
-                  {ep.blockers && ep.blockers.length > 0 && (
-                    <div>
-                      <Text strong style={{ fontSize: 11, color: '#ff4d4f', display: 'block', marginBottom: 4 }}>{t.agent.blockers}</Text>
-                      <div style={{ fontSize: 12, color: '#cf1322', background: 'rgba(255, 77, 79, 0.1)', padding: '8px 12px', borderRadius: 6, border: '1px solid rgba(255, 77, 79, 0.2)' }}>
-                        {ep.blockers.map((b: any) => safeRender(b)).join('; ')}
-                      </div>
-                    </div>
-                  )}
-                </Col>
-              )}
-            </Row>
+        {autoExecution && (
+          <div className={`epv2-order-audit epv2-order-audit-${autoExecution.executionStatus || 'pending'}`}>
+            <div><span>{agentText('Automation', '自动执行')}</span><b>{agentEnumLabel(autoExecution.executionStatus || 'pending')}</b></div>
+            <div><span>{agentText('Submitted Limit', '已提交限价')}</span><b>{fmtPrice(autoExecution.submittedLimitPrice)}</b></div>
+            <div><span>{agentText('Order Class', '订单组合')}</span><b>{agentEnumLabel(autoExecution.orderClass || '--')}</b></div>
+            <div><span>{agentText('Protection', '保护方式')}</span><b>{agentEnumLabel(autoExecution.protectionMode || '--')}</b></div>
+            <div><span>{agentText('Broker Order', '券商订单')}</span><b>{autoExecution.alpacaOrderId ? String(autoExecution.alpacaOrderId).slice(0, 12) : '--'}</b></div>
           </div>
         )}
 
-        {/* Leveraged ETF Alternative Suggestion (High Risk + Soft Blockers) */}
-        {riskProfile === 'high' && (action === 'SKIP' || action === 'BLOCKED_BY_RISK') && !ep.isLeveragedAlternative && (
-          <LeveragedETFSuggestion symbol={ep.symbol} currentPrice={ep.currentPrice} plan={ep} />
-        )}
-
-        {/* Leveraged Alternative Plan Header */}
-        {ep.isLeveragedAlternative && (
-          <div style={{
-            marginTop: 8, padding: '8px 12px',
-            background: 'linear-gradient(135deg, rgba(250, 173, 20, 0.1), rgba(255, 77, 79, 0.1))',
-            borderRadius: 8, border: '1px solid #fed7aa',
-            display: 'flex', alignItems: 'center', gap: 8
-          }}>
-            <ThunderboltOutlined style={{ color: '#fa8c16', fontSize: 14 }} />
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: '#9a3412' }}>
-                {language === 'zh-CN' ? '高风险杠杆替代标的' : 'High-Risk Leveraged Alternative'}
-              </div>
-              <div style={{ fontSize: 11, color: 'var(--app-text-muted)' }}>
-                {language === 'zh-CN'
-                  ? `原始标的：${ep.originalSymbol} → 替代标的：${ep.symbol}（${ep.alternativeDirection === 'bull' ? '做多' : '做空'}）`
-                  : `Original: ${ep.originalSymbol} → Alternative: ${ep.symbol} (${ep.alternativeDirection?.toUpperCase()})`}
-              </div>
-              {ep.alternativeFailed ? (
-                <div style={{ fontSize: 11, color: '#ff4d4f', fontWeight: 600, marginTop: 4 }}>
-                  {language === 'zh-CN' ? '替代失败：' : 'Alternative failed: '}{ep.alternativeFailReason}
-                </div>
-              ) : (
-                <div style={{ fontSize: 11, color: '#d46b08', marginTop: 4 }}>
-                  <ExclamationCircleOutlined style={{ marginRight: 4 }} />
-                  {ep.alternativeRiskWarning || ep.reason}
-                </div>
-              )}
+        <div className="epv2-detail-grid">
+          <section className="epv2-panel epv2-panel-primary">
+            <div className="epv2-panel-title">{agentText('Entry & Trigger', '入场与触发')}</div>
+            <div className="epv2-metric-grid">
+              <Metric label={agentText('Last Trade', '最新成交价')} value={fmtPrice(entry.currentPrice ?? ep.currentPrice)} />
+              <Metric label={agentText('Executable Ask', '可执行卖价')} value={fmtPrice(entry.executableAsk ?? entry.latestAsk ?? ep.executableAsk ?? ep.latestAsk)} tone={ep.isInEntryZone ? 'ready' : 'wait'} />
+              <Metric label={agentText('Best Bid', '最佳买价')} value={fmtPrice(entry.latestBid ?? ep.latestBid)} />
+              <Metric label={agentText('Entry Zone', '入场区间')} value={`${fmtPrice(entry.zoneLow ?? zone.low)} - ${fmtPrice(entry.zoneHigh ?? zone.high)}`} />
+              <Metric label={agentText('Quote Age', '报价延迟')} value={(entry.quoteAgeSeconds ?? ep.quoteAgeSeconds) != null ? `${Number(entry.quoteAgeSeconds ?? ep.quoteAgeSeconds).toFixed(0)}s` : '--'} />
+              <Metric label={agentText('Session', '交易时段')} value={(entry.marketIsOpen ?? ep.marketIsOpen) === true ? agentText('Open', '开市') : (entry.marketIsOpen ?? ep.marketIsOpen) === false ? agentText('Closed', '已收市') : '--'} />
+              <Metric label={agentText('Trigger Status', '触发状态')} value={agentEnumLabel(triggerStatus)} tone={triggerMet ? 'ready' : triggerStatus === 'NEED_DATA' ? 'block' : 'wait'} />
+              <Metric label={agentText('Auto Eligibility', '自动执行资格')} value={setupAutoEligible ? agentText('Eligible', '符合条件') : agentText('Research only', '仅研究')} tone={setupAutoEligible ? 'ready' : 'wait'} />
             </div>
-            {!ep.alternativeFailed && (
-              <Tag color="orange" bordered={false} style={{ fontWeight: 700, borderRadius: 4, fontSize: 10 }}>
-                {ep.alternativeDirection?.toUpperCase()}
-              </Tag>
+            <div className="epv2-callout">
+              <span>{agentText('Trigger', '触发条件')}</span>
+              <p>{entry.trigger || ep.triggerCondition || '--'}</p>
+            </div>
+            {triggerChecks.length > 0 && (
+              <div className="epv2-trigger-checks" aria-label={agentText('Entry trigger checks', '入场触发检查')}>
+                {triggerChecks.map((check: any, idx: number) => {
+                  const state = check.passed === true ? 'pass' : check.passed === false ? 'fail' : 'missing';
+                  const Icon = state === 'pass' ? CheckCircleOutlined : state === 'fail' ? ClockCircleOutlined : ExclamationCircleOutlined;
+                  return (
+                    <div key={`${check.name || 'check'}-${idx}`} className={`epv2-trigger-check epv2-trigger-check-${state}`}>
+                      <Icon />
+                      <div>
+                        <b>{check.name || agentText('Trigger check', '触发检查')}{check.required === false ? agentText(' · context', ' · 参考项') : ''}</b>
+                        <span>{check.observed || check.requirement || '--'}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             )}
-          </div>
+          </section>
+
+          <section className="epv2-panel">
+            <div className="epv2-panel-title">{agentText('Exit Geometry', '退出价位')}</div>
+            <div className="epv2-metric-grid">
+              <Metric label={agentText('Stop', '止损')} value={fmtPrice(exits.stopLoss ?? ep.stopLoss)} tone="block" />
+              <Metric label={agentText('Target 1', '目标 1')} value={fmtPrice(exits.target1 ?? ep.takeProfit1)} tone="ready" />
+              <Metric label={agentText('Target 2', '目标 2')} value={fmtPrice(exits.target2 ?? ep.takeProfit2)} tone="ready" />
+              <Metric label="R/R 1" value={`${fmtNum(exits.riskReward1 ?? ep.riskReward1, 2)}x`} tone={(exits.riskReward1 ?? ep.riskReward1) >= 1.5 ? 'ready' : 'wait'} />
+              <Metric label={agentText('Target Source', '目标依据')} value={agentEnumLabel(exits.targetSource || ep.targetSource || '--')} />
+            </div>
+            <div className="epv2-callout">
+              <span>{agentText('Invalidation', '失效条件')}</span>
+              <p>{exits.invalidation || ep.invalidationCondition || ep.invalidationComment || '--'}</p>
+            </div>
+          </section>
+
+          <section className="epv2-panel">
+            <div className="epv2-panel-title">{agentText('Sizing', '仓位规模')}</div>
+            <div className="epv2-metric-grid">
+              <Metric label={agentText('Shares', '股数')} value={Number(sizing.shares ?? ep.shares ?? 0).toLocaleString(undefined, { maximumFractionDigits: 4 })} />
+              <Metric label={agentText('Notional', '名义金额')} value={fmtMoney(sizing.notional ?? ep.allocationDollars)} />
+              <Metric label={agentText('Risk Used', '已用风险额度')} value={fmtPct(sizing.riskUsedPct ?? ep.riskUsedPct)} />
+              <Metric label={agentText('Risk Budget', '风险预算')} value={fmtMoney(sizing.riskBudget ?? ep.riskBudget)} />
+              <Metric label={agentText('Cash Capacity', '可用现金')} value={fmtMoney(ep.accountSpendablePower ?? tradingAccountData?.cash)} />
+              <Metric label={agentText('Allocation Cap', '配置上限')} value={fmtMoney(ep.maxAllocationDollars)} />
+            </div>
+            <div className="epv2-footnote">{sizing.capStatus || ep.positionCapStatus || agentText('Within allocation limits', '未超过配置上限')}</div>
+          </section>
+
+          <section className="epv2-panel">
+            <div className="epv2-panel-title">{agentText('Execution Controls', '执行控制')}</div>
+            <div className="epv2-metric-grid">
+              <Metric label={agentText('Order', '订单')} value={agentText('Limit only', '仅限价单')} />
+              <Metric label={agentText('Limit', '限价')} value={fmtPrice(execution.limitPrice ?? ep.limitPrice)} />
+              <Metric label={agentText('TIF / Session', '有效期 / 时段')} value={`${agentEnumLabel(execution.timeInForce || ep.timeInForce || 'day')} / ${agentText('Regular', '常规')}`} />
+              <Metric label={agentText('Slippage Cap', '滑点上限')} value={fmtBps(execution.slippageCapBps ?? ep.slippageCapBps)} />
+              <Metric label={agentText('Protection', '保护方式')} value={execution.protectionMode ? agentEnumLabel(execution.protectionMode) : agentText('Whole-share bracket required', '整股自动执行需使用保护性组合订单')} />
+              <Metric label={agentText('Extended Hours', '盘前盘后')} value={agentText('Off', '关闭')} />
+            </div>
+            <div className="epv2-footnote">{execution.reason || ep.executionDetails?.orderTypeReason || '--'}</div>
+          </section>
+        </div>
+
+        <div className="epv2-lower-grid">
+          <section className="epv2-panel">
+            <div className="epv2-panel-title">{agentText('Risk Gate', '风险门控')}</div>
+            <div className="epv2-tag-row">
+              <Tag className={`epv2-chip epv2-chip-${String(gateStatus).toLowerCase()}`} bordered={false}>{gateStatus}</Tag>
+              <Tag bordered={false}>{controls.accountConnected ? agentText('Broker connected', '券商已连接') : agentText('Broker review', '需要检查券商连接')}</Tag>
+              <Tag bordered={false}>{entry.zoneStatus || ep.zoneStatus ? agentEnumLabel(entry.zoneStatus || ep.zoneStatus) : agentText('Zone —', '区间 —')}</Tag>
+            </div>
+            <div className="epv2-risk-list">
+              {[...blockers, ...warnings].slice(0, 5).map((item: any, idx: number) => (
+                <div key={idx} className={idx < blockers.length ? 'epv2-risk-block' : 'epv2-risk-warn'}>
+                  {safeRender(item)}
+                </div>
+              ))}
+              {blockers.length === 0 && warnings.length === 0 && <div className="epv2-risk-clean">{agentText('No active blockers.', '当前没有生效中的阻断项。')}</div>}
+            </div>
+          </section>
+
+          <section className="epv2-panel">
+            <div className="epv2-panel-title">{agentText('AI Trader Review', 'AI 交易审核')}</div>
+            <p className="epv2-ai-text">{ai.reason || ep.decisionReason || ep.reason || '--'}</p>
+            <div className="epv2-tag-row">
+              <Tag color={ai.decision === 'BUY' ? 'success' : ai.decision === 'SKIP' ? 'error' : 'warning'} bordered={false}>{agentEnumLabel(ai.decision || ep.aiDecision || 'WATCH')}</Tag>
+              <Tag bordered={false}>{ai.confidence ?? ep.confidence ?? '--'}% {agentText('confidence', '置信度')}</Tag>
+              <Tag bordered={false}>{ai.source || ep.aiSource || agentText('Local Rules', '本地规则')}</Tag>
+            </div>
+            <div className="epv2-footnote">{ai.nextStep || ep.nextStep || '--'}</div>
+          </section>
+
+          <section className="epv2-panel">
+            <div className="epv2-panel-title">{agentText('Market & Sources', '市场与数据来源')}</div>
+            <DataLine label="ADV20" value={fmtMoney(market.avgDollarVolume20 ?? ep.avgDollarVolume20)} />
+            <DataLine label={agentText('Spread / Cost', '价差 / 成本')} value={`${fmtBps(market.spreadBps ?? ep.quotedSpreadBps)} / ${fmtBps(market.roundTripCostBps ?? ep.estimatedRoundTripCostBps)}`} />
+            <DataLine label="ATR / EMA20" value={`${fmtPct(market.atrPct ?? ep.atrPct)} / ${fmtPrice(market.ema20 ?? ep.ema20)}`} />
+            <DataLine label={agentText('Market', '市场数据')} value={provenance.marketData || ep.dataSources?.marketData || '--'} />
+            <DataLine label={agentText('Account', '账户数据')} value={provenance.accountData || ep.dataSources?.accountData || '--'} />
+          </section>
+        </div>
+
+        {riskProfile === 'high' && (action === 'SKIP' || action === 'BLOCKED_BY_RISK') && !ep.isLeveragedAlternative && (
+          <LeveragedETFSuggestion
+            symbol={ep.symbol}
+            currentPrice={ep.currentPrice}
+            plan={ep}
+            buyingPower={tradingAccountData?.buyingPower || 0}
+          />
         )}
       </div>
     );
   };
 
   // Leveraged ETF suggestion component (async lookup — tries bull then bear)
-  const LeveragedETFSuggestion: React.FC<{ symbol: string; currentPrice: number; plan?: any }> = ({ symbol, currentPrice, plan }) => {
+  const LeveragedETFSuggestion: React.FC<{
+    symbol: string;
+    currentPrice: number;
+    plan?: any;
+    buyingPower: number;
+  }> = ({ symbol, currentPrice, plan, buyingPower }) => {
     const [suggestion, setSuggestion] = React.useState<LeveragedAlternative | null>(null);
     const [loading, setLoading] = React.useState(true);
 
     React.useEffect(() => {
       const lookup = async () => {
         setLoading(true);
-        const buyingPower = tradingAccountData?.buyingPower || 0;
         // Try bull first, then bear
         let result = await findLeveragedAlternative(symbol, 'bull', buyingPower, currentPrice);
         if (!result) {
@@ -5786,7 +5068,7 @@ const Agent: React.FC = (): React.ReactElement => {
         setLoading(false);
       };
       lookup();
-    }, [symbol, currentPrice, tradingAccountData]);
+    }, [symbol, currentPrice, buyingPower]);
 
     if (loading) return <Spin size="small" style={{ marginTop: 8 }} />;
     if (!suggestion) return null;
@@ -5830,6 +5112,13 @@ const Agent: React.FC = (): React.ReactElement => {
     entryZoneLow: getEntryPlanZone(item).low,
     entryZoneHigh: getEntryPlanZone(item).high,
     triggerCondition: item.triggerCondition || item.trigger,
+    entryTriggerStatus: item.entryTriggerStatus,
+    entryTriggerMet: item.entryTriggerMet,
+    entryTriggerChecks: item.entryTriggerChecks,
+    entryTriggerMissing: item.entryTriggerMissing,
+    entryTriggerReasons: item.entryTriggerReasons,
+    setupAutoEligible: item.setupAutoEligible,
+    triggerEvaluatedAt: item.triggerEvaluatedAt,
     invalidationCondition: item.invalidationCondition || item.invalidationComment,
     stopLoss: item.stopLoss,
     takeProfit1: item.takeProfit1,
@@ -5854,17 +5143,321 @@ const Agent: React.FC = (): React.ReactElement => {
     blockers: item.blockers,
   });
 
-  const PIPELINE_STAGES = ['Market Scanner', 'Continue Scan', 'Fine Scan', 'Deeper Validation', 'Entry Plan', 'Exit Scan'] as const;
+  const renderEntryPlanWorkbench = () => {
+    if (!entryPlanResults || entryPlanResults.length === 0) return null;
+
+    const plans = entryPlanResults as any[];
+    const fmtPrice = (v: any) => Number.isFinite(Number(v)) && Number(v) > 0 ? `$${Number(v).toFixed(2)}` : '--';
+    const fmtMoney = (v: any) => Number.isFinite(Number(v)) ? `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '--';
+    const fmtPct = (v: any, digits = 1) => Number.isFinite(Number(v)) ? `${Number(v).toFixed(digits)}%` : '--';
+    const fmtShares = (v: any) => Number.isFinite(Number(v)) ? Number(v).toLocaleString(undefined, { maximumFractionDigits: 4 }) : '--';
+    const getPacket = (p: any) => p?.institutionalEntryPlan || {};
+    const getTone = (p: any) => {
+      const action = getEntryPlanEffectiveAction(p);
+      if (action === 'BUY_READY') return 'ready';
+      if (action === 'READY_REVIEW') return 'review';
+      if (action === 'WAIT_FOR_ENTRY') return 'wait';
+      return 'block';
+    };
+    const labelAction = (action: string) => ({
+      BUY_READY: agentText('BUY READY', '可买入'),
+      READY_REVIEW: agentText('REVIEW', '待审核'),
+      WAIT_FOR_ENTRY: agentText('WAIT', '等待入场'),
+      NEED_DATA: agentText('NEED DATA', '需要数据'),
+      BLOCKED_BY_RISK: agentText('BLOCKED', '风险阻断'),
+      SKIP: agentText('SKIP', '跳过'),
+    }[action] || action || '--');
+
+    const readyCount = plans.filter((p) => getEntryPlanEffectiveAction(p) === 'BUY_READY').length;
+    const reviewCount = plans.filter((p) => getEntryPlanEffectiveAction(p) === 'READY_REVIEW').length;
+    const waitCount = plans.filter((p) => getEntryPlanEffectiveAction(p) === 'WAIT_FOR_ENTRY').length;
+    const blockedCount = plans.filter((p) => ['BLOCKED_BY_RISK', 'SKIP', 'NEED_DATA'].includes(getEntryPlanEffectiveAction(p))).length;
+    const totalRisk = plans
+      .filter((p) => getEntryPlanEffectiveAction(p) === 'BUY_READY')
+      .reduce((sum, p) => sum + Number(p.riskDollars || p.institutionalEntryPlan?.sizing?.riskDollars || 0), 0);
+    const totalNotional = plans
+      .filter((p) => getEntryPlanEffectiveAction(p) === 'BUY_READY')
+      .reduce((sum, p) => sum + Number(p.allocationDollars || p.positionSizeDollars || p.institutionalEntryPlan?.sizing?.notional || 0), 0);
+    const submittedCount = aiExecutionList.filter((item: any) => (
+      ['entry-plan-auto', 'backend-pipeline'].includes(item.source) &&
+      ['submitted', 'pending', 'filled', 'order_pending'].includes(item.executionStatus || '')
+    )).length;
+    const accountEquity = tradingAccountData?.portfolioValue ?? tradingAccountData?.equity;
+    const accountBuyingPower = tradingAccountData?.buyingPower;
+    const accountCash = tradingAccountData?.cash;
+    const accountSpendable = Number.isFinite(Number(accountBuyingPower)) && Number.isFinite(Number(accountCash))
+      ? Math.max(0, Math.min(Number(accountBuyingPower), Number(accountCash)))
+      : accountCash ?? accountBuyingPower;
+
+    const renderActionButton = (record: any) => {
+      const action = getEntryPlanEffectiveAction(record);
+      const tooltip = isZh
+        ? action === 'NEED_DATA'
+          ? '缺少生成可执行计划所需的数据，请刷新行情后重新运行入场计划。'
+          : action === 'WAIT_FOR_ENTRY'
+            ? '当前价格或触发条件尚未进入获批区间，系统将继续观察。'
+            : action === 'READY_REVIEW'
+              ? '执行前需要人工核对风险门控、价格与保护性退出。'
+              : action === 'BLOCKED_BY_RISK' || action === 'SKIP'
+                ? '当前计划未通过风险门控，不能提交订单。'
+                : '该入场计划已经具备执行条件。'
+        : getEntryPlanActionTooltip(record);
+      const dq = record.dataQuality;
+      const hasHardBlock = hasEntryPlanHardBlock(record);
+      const activeAutoExecution = aiExecutionList.find((item: any) => (
+        String(item.symbol || '').toUpperCase() === String(record.symbol || '').toUpperCase() &&
+        ['entry-plan-auto', 'backend-pipeline'].includes(item.source) &&
+        ['auto_executing', 'submitted', 'pending', 'filled', 'failed', 'zone_wait', 'blocked', 'holding', 'order_pending'].includes(item.executionStatus || '')
+      ));
+
+      if (action === 'BLOCKED_BY_RISK' || action === 'NEED_DATA' || action === 'SKIP' || hasHardBlock || dq === 'POOR') {
+        return <Tooltip title={tooltip}><Button size="small" disabled danger className="epv2-action-btn">{action === 'NEED_DATA' ? agentText('Need Data', '需要数据') : agentText('Blocked', '已阻断')}</Button></Tooltip>;
+      }
+      if (action === 'BUY_READY') {
+        if (activeAutoExecution?.executionStatus === 'submitted' || activeAutoExecution?.executionStatus === 'pending' || activeAutoExecution?.executionStatus === 'filled') {
+          return <Tag color="success" bordered={false} className="epv2-action-tag">{agentText('Submitted', '已提交')}</Tag>;
+        }
+        if (activeAutoExecution?.executionStatus === 'failed') {
+          return <Tooltip title={activeAutoExecution.executionError || agentText('Auto execution failed', '自动执行失败')}><Tag color="error" bordered={false} className="epv2-action-tag">{agentText('Failed', '失败')}</Tag></Tooltip>;
+        }
+        if (activeAutoExecution?.executionStatus === 'zone_wait') {
+          return <Tooltip title={activeAutoExecution.executionError}><Tag color="warning" bordered={false} className="epv2-action-tag">{agentText('Waiting', '等待中')}</Tag></Tooltip>;
+        }
+        if (activeAutoExecution?.executionStatus === 'holding' || activeAutoExecution?.executionStatus === 'order_pending') {
+          return <Tooltip title={activeAutoExecution.executionError}><Tag color="default" bordered={false} className="epv2-action-tag">{agentText('Protected', '已保护')}</Tag></Tooltip>;
+        }
+        if (pipelineMode === 'ai') {
+          return <Tag color="processing" bordered={false} className="epv2-action-tag">{agentText('Auto Limit', '自动限价')}</Tag>;
+        }
+        return <Button size="small" type="primary" className="epv2-action-btn epv2-action-execute" onClick={() => handleEntryPlanAction(record)}>{agentText('Execute', '执行')}</Button>;
+      }
+      if (action === 'READY_REVIEW') {
+        return <Button size="small" className="epv2-action-btn" onClick={() => handleEntryPlanAction(record)}>{agentText('Review', '审核')}</Button>;
+      }
+      if (action === 'WAIT_FOR_ENTRY') {
+        const inWl = isInWatchlist(record.symbol);
+        return (
+          <Tooltip title={tooltip}>
+            <Button size="small" icon={inWl ? <CheckOutlined /> : <PlusOutlined />} className="epv2-action-btn" onClick={() => addToWatchlist(record)}>
+              {inWl ? agentText('Watching', '观察中') : agentText('Watch', '加入观察')}
+            </Button>
+          </Tooltip>
+        );
+      }
+      return <span className="epv2-muted">--</span>;
+    };
+
+    return (
+      <div className="entry-plan-v2">
+        <div className="epv2-summary">
+          <div className="epv2-summary-item">
+            <span>{agentText('DV Qualified', '深度验证通过')}</span>
+            <b>{plans.length}</b>
+            <small>{agentText('validated candidates', '已验证候选')}</small>
+          </div>
+          <div className="epv2-summary-item">
+            <span>{agentText('Auto Eligible', '可自动执行')}</span>
+            <b className="epv2-tone-ready">{readyCount}</b>
+            <small>{agentText('ask in zone · clean gate', '卖价在区间内 · 风控通过')}</small>
+          </div>
+          <div className="epv2-summary-item">
+            <span>{agentText('Review / Wait', '审核 / 等待')}</span>
+            <b><span className="epv2-tone-review">{reviewCount}</span> / <span className="epv2-tone-wait">{waitCount}</span></b>
+            <small>{blockedCount} {agentText('blocked', '个已阻断')}</small>
+          </div>
+          <div className="epv2-summary-item">
+            <span>{agentText('Approved Exposure', '已批准风险敞口')}</span>
+            <b>{fmtMoney(totalRisk)}</b>
+            <small>{fmtMoney(totalNotional)} {agentText('notional', '名义金额')}</small>
+          </div>
+          <div className="epv2-summary-item">
+            <span>{agentText('Cash Capacity', '可用现金')}</span>
+            <b>{fmtMoney(accountSpendable)}</b>
+            <small>{fmtMoney(accountEquity)} {agentText('equity · no margin', '账户权益 · 不使用保证金')}</small>
+          </div>
+          <div className="epv2-summary-item">
+            <span>{agentText('Orders Submitted', '已提交订单')}</span>
+            <b>{submittedCount}</b>
+            <small>{pipelineMode === 'ai' ? `${tradeMode === 'real' ? agentText('LIVE', '实盘') : agentText('PAPER', '模拟')} ${agentText('auto', '自动')}` : agentText('review workflow', '人工审核流程')}</small>
+          </div>
+        </div>
+
+        <div className="epv2-policy" role="status" aria-label={agentText('Entry execution policy', '入场执行规则')}>
+          <div><span>{agentText('Automation', '自动执行')}</span><b>{pipelineMode === 'ai' ? agentText('Enabled', '已启用') : agentText('Review', '需审核')}</b></div>
+          <div><span>{agentText('Trigger', '触发条件')}</span><b>{agentText('Zone + setup confirmation', '进入区间 + 形态确认')}</b></div>
+          <div><span>{agentText('Entry Order', '入场订单')}</span><b>{agentText('Limit only · DAY', '仅限价 · 当日有效')}</b></div>
+          <div><span>{agentText('Session', '交易时段')}</span><b>{agentText('Regular hours', '常规交易时段')}</b></div>
+          <div><span>{agentText('Protection', '保护机制')}</span><b>{agentText('Whole-share bracket for auto', '整股自动执行使用保护性组合订单')}</b></div>
+        </div>
+
+        {tradingAccountData && tradingAccountData.success !== true && (
+          <Alert
+            message={agentText(
+              'Trading account is not connected. Entry Plan can still calculate levels, but execution stays blocked until Alpaca is connected.',
+              '交易账户尚未连接。系统仍可计算入场价位，但在连接 Alpaca 之前不会执行订单。',
+            )}
+            type="warning"
+            showIcon
+            className="epv2-alert"
+          />
+        )}
+
+        <Table
+          className="entry-plan-v2-table"
+          dataSource={plans}
+          rowKey="symbol"
+          size="middle"
+          pagination={plans.length > 12 ? { pageSize: 12, size: 'small' } : false}
+          onRow={(record) => ({
+            onClick: (event) => {
+              if ((event.target as HTMLElement).closest('button') || (event.target as HTMLElement).closest('a')) return;
+              setExpandedEntryPlanSymbol(expandedEntryPlanSymbol === record.symbol ? null : record.symbol);
+            },
+          })}
+          rowClassName={(record) => `epv2-row epv2-row-${getTone(record)}`}
+          expandable={{
+            expandedRowKeys: expandedEntryPlanSymbol ? [expandedEntryPlanSymbol] : [],
+            expandIcon: () => null,
+            onExpand: (expanded, record) => setExpandedEntryPlanSymbol(expanded ? record.symbol : null),
+            expandedRowRender: (record) => renderEntryPlanDetail(record),
+          }}
+          columns={[
+            {
+              title: agentText('Candidate', '候选标的'),
+              key: 'candidate',
+              width: 170,
+              render: (record: any) => (
+                <div className="epv2-candidate">
+                  <b>{record.symbol}</b>
+                  <span>{record.companyName || record.name || record.underlyingSymbol || record.strategy || '--'}</span>
+                </div>
+              ),
+            },
+            {
+              title: agentText('State', '状态'),
+              key: 'state',
+              width: 130,
+              render: (record: any) => {
+                const action = getEntryPlanEffectiveAction(record);
+                return (
+                  <div className="epv2-state">
+                    <Tag bordered={false} className={`epv2-chip epv2-chip-${getTone(record)}`}>{labelAction(action)}</Tag>
+                    <span>{agentEnumLabel(record.aiDecision || 'WATCH')} · {record.confidence ?? '--'}%</span>
+                  </div>
+                );
+              },
+            },
+            {
+              title: agentText('Entry', '入场'),
+              key: 'entry',
+              width: 210,
+              render: (record: any) => {
+                const packet = getPacket(record);
+                const entry = packet.entry || {};
+                const zone = getEntryPlanZone(record);
+                const ask = entry.executableAsk ?? entry.latestAsk ?? record.executableAsk ?? record.latestAsk;
+                const bid = entry.latestBid ?? record.latestBid;
+                const quoteAge = entry.quoteAgeSeconds ?? record.quoteAgeSeconds;
+                const triggerStatus = String(entry.triggerStatus || record.entryTriggerStatus || 'not evaluated').replace(/_/g, ' ');
+                return (
+                  <div className="epv2-stack">
+                    <b>{agentText('Ask', '卖价')} {fmtPrice(ask)}</b>
+                    <span>{fmtPrice(entry.zoneLow ?? zone.low)} - {fmtPrice(entry.zoneHigh ?? zone.high)}</span>
+                    <small>{agentText('Bid', '买价')} {fmtPrice(bid)} · {quoteAge != null ? `${Number(quoteAge).toFixed(0)}s` : '--'}</small>
+                    <small>{agentText('Trigger', '触发')} {agentEnumLabel(triggerStatus)}</small>
+                  </div>
+                );
+              },
+            },
+            {
+              title: agentText('Stop / Targets', '止损 / 目标'),
+              key: 'exit',
+              width: 180,
+              render: (record: any) => {
+                const packet = getPacket(record);
+                const exits = packet.exits || {};
+                return (
+                  <div className="epv2-stack">
+                    <b className="epv2-tone-block">S {fmtPrice(exits.stopLoss ?? record.stopLoss)}</b>
+                    <span>T1 {fmtPrice(exits.target1 ?? record.takeProfit1)}</span>
+                    <small>R/R {Number(exits.riskReward1 ?? record.riskReward1 ?? 0).toFixed(2)}x</small>
+                  </div>
+                );
+              },
+            },
+            {
+              title: agentText('Sizing', '仓位'),
+              key: 'sizing',
+              width: 170,
+              render: (record: any) => {
+                const sizing = getPacket(record).sizing || {};
+                return (
+                  <div className="epv2-stack">
+                    <b>{fmtShares(sizing.shares ?? record.shares ?? record.positionSizeShares)} {agentText('sh', '股')}</b>
+                    <span>{fmtMoney(sizing.notional ?? record.allocationDollars ?? record.positionSizeDollars)}</span>
+                    <small>{agentText('risk', '风险')} {fmtMoney(sizing.riskDollars ?? record.riskDollars)} · {fmtPct(sizing.riskUsedPct ?? record.riskUsedPct)}</small>
+                  </div>
+                );
+              },
+            },
+            {
+              title: agentText('Execution', '执行'),
+              key: 'execution',
+              width: 190,
+              render: (record: any) => {
+                const execution = getPacket(record).execution || {};
+                const protection = execution.protectionMode || record.executionDetails?.orderPreview?.protectionMode || agentText('Whole-share bracket required', '整股自动执行需使用保护性组合订单');
+                return (
+                  <div className="epv2-stack">
+                    <b>{agentText('Limit', '限价')} {fmtPrice(execution.limitPrice ?? record.limitPrice)}</b>
+                    <span>{agentEnumLabel(execution.timeInForce || record.timeInForce || 'day')} · {agentText('regular session', '常规交易时段')}</span>
+                    <small>{agentEnumLabel(protection)}</small>
+                  </div>
+                );
+              },
+            },
+            {
+              title: agentText('Controls', '风控'),
+              key: 'controls',
+              width: 170,
+              render: (record: any) => {
+                const controls = getPacket(record).controls || {};
+                const gate = controls.gateStatus || record.hardRiskGate?.status || '--';
+                const issueCount = (controls.blockers?.length || record.blockers?.length || 0) + (controls.warnings?.length || record.hardRiskGate?.warnings?.length || 0);
+                const marketOpen = record.marketIsOpen ?? getPacket(record).entry?.marketIsOpen;
+                return (
+                  <div className="epv2-stack">
+                    <b>{agentText('Gate', '门控')} {agentEnumLabel(gate)}</b>
+                    <span>{marketOpen === true ? agentText('Market open', '市场开市') : marketOpen === false ? agentText('Market closed', '市场已收市') : agentText('Session —', '时段 —')}</span>
+                    <small>{issueCount} {agentText(issueCount === 1 ? 'issue' : 'issues', '个问题')}</small>
+                  </div>
+                );
+              },
+            },
+            {
+              title: '',
+              key: 'action',
+              width: 112,
+              render: renderActionButton,
+            },
+          ]}
+        />
+      </div>
+    );
+  };
+
+  const PIPELINE_STAGES = ['Market Scanner', 'Fine Scan', 'Deeper Validation', 'Portfolio Admission', 'Entry Plan', 'Execution', 'Position & Exit'] as const;
 
   // Translate pipeline stage name for display (internal keys stay English)
   const getPipelineStageLabel = (name: string): string => {
     const map: Record<string, string> = {
       'Market Scanner': t.agent.pipelineStageMarketScanner,
-      'Continue Scan': t.agent.pipelineStageContinueScan,
       'Fine Scan': t.agent.pipelineStageFineScan,
       'Deeper Validation': t.agent.pipelineStageDeeperValidation,
+      'Portfolio Admission': agentText('Portfolio Admission', '组合准入'),
       'Entry Plan': t.agent.pipelineStageEntryPlan,
-      'Exit Scan': t.agent.pipelineStageExitScan,
+      'Execution': agentText('Execution', '订单执行'),
+      'Position & Exit': t.agent.pipelineStageExitScan,
     };
     return map[name] || name;
   };
@@ -5872,15 +5465,15 @@ const Agent: React.FC = (): React.ReactElement => {
   // ── Run Auto Pipeline Now (background auto-run, does NOT touch manual state) ──
   const handleRunAutoNow = async () => {
     if (runAutoNowInFlightRef.current || pipelineAutoLoading) {
-      message.warning('Auto pipeline request is already in progress.');
+      message.warning(agentText('Auto pipeline request is already in progress.', '自动化流程请求正在处理中。'));
       return;
     }
     if (pipelineRunning) {
-      message.warning('Manual pipeline is running. Please wait for it to complete.');
+      message.warning(agentText('Manual pipeline is running. Please wait for it to complete.', '手动流程正在运行，请等待其完成。'));
       return;
     }
     if (autoRunActive) {
-      message.warning('Auto pipeline is already running.');
+      message.warning(agentText('Auto pipeline is already running.', '自动化流程已经在运行。'));
       return;
     }
     runAutoNowInFlightRef.current = true;
@@ -5898,6 +5491,7 @@ const Agent: React.FC = (): React.ReactElement => {
         riskProfile,
         timeHorizon,
         tradeMode,
+        liveAutoTradingEnabled,
       });
       console.log('[AutoPipelineNow] saved config mode=%s risk=%s horizon=%s trade=%s', pipelineMode, riskProfile, timeHorizon, tradeMode);
       const res = await pipelineAutoAPI.runNow({});
@@ -5905,21 +5499,57 @@ const Agent: React.FC = (): React.ReactElement => {
         throw new Error(res?.data?.message || res?.data?.error || 'Failed to start auto pipeline');
       }
       console.log('[AutoPipelineNow] started runId=%s using saved config', res.data.runId);
-      message.success('Auto pipeline started in background using saved config.');
+      setAutoRunRequestedId(res.data.runId || 'starting');
+      setAutoRunActive(true);
+      setAutoRunStep('market_scanner');
+      setAutoRunProgress(1);
+      setAutoRunClock(Date.now());
+      message.success(agentText('The seven-stage cycle is running in the background.', '七阶段流程已在后台运行。'));
       fetchPipelineAutoStatus();
     } catch (e: any) {
       console.log('[AutoPipelineNow] failed: %s', e.message);
-      message.error(e.message || 'Failed to start auto pipeline');
+      message.error(agentErrorText(
+        e?.response?.data?.message || e?.message,
+        'Could not start the automated pipeline.',
+        '无法启动自动化流水线，请检查连接后重试。',
+      ));
     } finally {
       runAutoNowInFlightRef.current = false;
       setPipelineAutoLoading(false);
     }
   };
 
+  const confirmRunAutoNow = () => {
+    const canSubmitOrders = pipelineMode === 'ai' && (
+      tradeMode === 'paper' || (tradeMode === 'real' && liveAutoTradingEnabled)
+    );
+    Modal.confirm({
+      title: agentText('Run one complete cycle?', '运行一次完整流程？'),
+      content: (
+        <div className="agent-confirm-content">
+          <div>{agentText('All seven stages will run once in the background. This uses the active account and saved settings.', '系统会使用当前账户和已保存设置，在后台依次运行全部七个阶段。')}</div>
+          <div className={canSubmitOrders ? (tradeMode === 'real' ? 'is-risk' : 'is-paper') : 'is-review'}>
+            {canSubmitOrders
+              ? tradeMode === 'real'
+                ? agentText('Full AI and live authorization are active. Eligible live limit orders may be submitted.', '完整 AI 与实盘授权已启用，符合条件的实盘限价单可能会被提交。')
+                : agentText('Full AI is active. Eligible paper limit orders may be submitted.', '完整 AI 已启用，符合条件的模拟限价单可能会被提交。')
+              : agentText('The current mode will not submit orders automatically.', '当前模式不会自动提交订单。')}
+          </div>
+        </div>
+      ),
+      okText: canSubmitOrders ? agentText('Run complete cycle', '运行完整流程') : agentText('Run research cycle', '运行研究流程'),
+      cancelText: agentText('Cancel', '取消'),
+      okButtonProps: { type: 'primary' },
+      className: 'agent-confirm-dialog',
+      rootClassName: 'agent-confirm-modal',
+      onOk: handleRunAutoNow,
+    });
+  };
+
   const runAIPipeline = async (opts?: { trigger?: string }) => {
     if (autoRunActive) {
       console.log('[PipelineUI] early return reason=background_auto_run_active');
-      message.warning('Background auto-run is active. Please wait for it to complete or stop it first.');
+      message.warning(agentText('A background cycle is already running. Wait for it to finish or stop it first.', '后台流程正在运行，请等待完成或先停止它。'));
       return;
     }
     if (isAnyScanRunning) {
@@ -5929,37 +5559,25 @@ const Agent: React.FC = (): React.ReactElement => {
     }
 
     const runTrigger = opts?.trigger || 'manual';
-    console.log('[ManualPipeline] start trigger=%s mode=%s risk=%s horizon=%s tradeMode=%s',
-      runTrigger, pipelineMode, riskProfile, timeHorizon, tradeMode);
-
-    // Clear all old pipeline result states for a fresh run
     setPipelineRunning(true);
     setPipelineError(null);
-    setPipelineStage('Market Scanner');
-    setFineScanResults([]);
-    setDeeperValidationStatus('idle');
-    setDeeperValidationResults(null);
-    setEntryPlanResults(null);
+    setPipelineStage(agentText('Market Scanner', '市场扫描'));
     pipelineStopRequestedRef.current = false;
-
-    // Reset all scanner state store sections — clears old STOPPED states, results, progress
     scannerStateStore.resetMarketScanner();
-    scannerStateStore.resetContinueScan();
     scannerStateStore.resetFineScan();
     scannerStateStore.resetDeeperValidation();
+    scannerStateStore.resetAdmission();
     scannerStateStore.resetEntryPlan();
     scannerStateStore.resetExitScan();
-
-    const DEFAULT_SCAN_TOTAL = 50;
     scannerStateStore.updateMarketScanner({
       status: 'running' as const,
       progress: 0,
-      totalSymbols: DEFAULT_SCAN_TOTAL,
+      totalSymbols: 0,
       scannedSymbols: 0,
       detailedScanStatus: {
         currentStatus: 'scanning' as const,
         processedCount: 0,
-        totalCount: DEFAULT_SCAN_TOTAL,
+        totalCount: 0,
         percent: 0,
         activeSymbols: [],
         retryCount: 0,
@@ -5968,89 +5586,173 @@ const Agent: React.FC = (): React.ReactElement => {
         lastFailureReason: '',
         lastScanAt: null,
         nextScanAt: null,
-        statusMessage: 'Pipeline scanning in progress...',
+        statusMessage: 'Starting unified backend pipeline...',
       },
     });
-    console.log('[ManualPipeline] reset complete marketScanner=scanning');
 
     try {
-      // ── Manual Sequential Pipeline: frontend buttons in order ──
+      const startResponse = await pipelineAutoAPI.runPipeline({
+        trigger: runTrigger,
+        mode: pipelineMode,
+        intervalMinutes: 0,
+        riskProfile,
+        timeHorizon,
+        tradeMode,
+      });
+      if (!startResponse?.data?.success || !startResponse.data.runId) {
+        throw new Error(startResponse?.data?.message || 'Unable to start the unified pipeline');
+      }
+      const runId = startResponse.data.runId;
+      const stageLabels: Record<string, string> = {
+        market_scanner: agentText('Market Scanner', '市场扫描'),
+        fine_scan: agentText('Fine Scan', '精细扫描'),
+        deeper_validation: agentText('Deeper Validation', '深度验证'),
+        admission: agentText('Portfolio Admission', '组合准入'),
+        entry_plan: agentText('Entry Plan', '入场计划'),
+        execution: agentText('Execution', '订单执行'),
+        exit_scan: agentText('Position & Exit', '持仓与退出'),
+      };
+      const startedAt = Date.now();
+      let terminalStatus = '';
+      let terminalError = '';
 
-      // Step 1: Market Scanner
-      console.log('[ManualPipeline] step=market_scanner frontend');
-      setPipelineStage('Market Scanner');
-      if (pipelineStopRequestedRef.current) throw new Error('STOPPED');
-      await startMarketScanner();
-      if (pipelineStopRequestedRef.current) { scannerStateStore.updateMarketScanner({ status: 'stopped' }); throw new Error('STOPPED'); }
-      console.log('[ManualPipeline] market_scanner completed');
+      while (!terminalStatus) {
+        if (Date.now() - startedAt > 35 * 60 * 1000) {
+          throw new Error('Pipeline exceeded the 35 minute client monitoring window');
+        }
+        const statusResponse = await pipelineAutoAPI.getStatus();
+        const active = statusResponse?.data?.activeRun;
+        if (active?.runId === runId) {
+          const key = active.currentStep || 'market_scanner';
+          const step = active.steps?.[key] || {};
+          const stageLabel = stageLabels[key] || key;
+          setPipelineStage(stageLabel);
 
-      // Step 2: Continue Scan
-      console.log('[ManualPipeline] step=continue_scan frontend');
-      setPipelineStage('Continue Scan');
-      const continueResults = await processContinueScan();
-      if (pipelineStopRequestedRef.current) { scannerStateStore.updateContinueScan({ status: 'idle' }); throw new Error('STOPPED'); }
-      console.log('[ManualPipeline] continue_scan completed candidates=%d', continueResults.length);
+          if (key === 'market_scanner') {
+            const processed = Number(step.processedSymbols ?? step.processed ?? 0);
+            const total = Number(step.totalSymbols ?? step.total ?? 0);
+            const percent = Number(step.progressPct ?? (total > 0 ? Math.round(processed / total * 100) : 0));
+            const current = scannerStateStore.getState().marketScanner.detailedScanStatus;
+            scannerStateStore.updateMarketScanner({
+              status: active.status === 'running' ? 'running' : active.status === 'completed' ? 'completed' : 'failed',
+              progress: percent,
+              totalSymbols: total,
+              scannedSymbols: processed,
+              detailedScanStatus: {
+                ...current,
+                currentStatus: active.status === 'running' ? 'scanning' : active.status === 'completed' ? 'completed' : 'error',
+                currentStage: key,
+                stageLabel,
+                stageIndex: active.stepIndex,
+                stageCount: active.totalSteps,
+                processedCount: processed,
+                totalCount: total,
+                percent,
+                statusMessage: isZh
+                  ? `${stageLabel}进行中`
+                  : active.message || 'Market scan running',
+              },
+            });
+          } else if (key === 'fine_scan') {
+            scannerStateStore.updateFineScan({ status: active.status === 'running' ? 'running' : 'completed', progress: Number(active.progressPct || 0), message: active.message || '' });
+          } else if (key === 'deeper_validation') {
+            scannerStateStore.updateDeeperValidation({ status: active.status === 'running' ? 'loading' : 'completed', runId });
+          } else if (key === 'admission') {
+            scannerStateStore.updateAdmission({ status: active.status === 'running' ? 'loading' : 'completed', runId });
+          } else if (key === 'entry_plan') {
+            scannerStateStore.updateEntryPlan({ status: active.status === 'running' ? 'loading' : 'completed', runId });
+          } else if (key === 'exit_scan') {
+            scannerStateStore.updateExitScan({ status: active.status === 'running' ? 'scanning' : 'completed', runId });
+          }
 
-      // Step 3: Fine Scan
-      if (continueResults.length === 0) {
-        console.log('[ManualPipeline] step=fine_scan skipped reason=no_continue_candidates');
-        scannerStateStore.updateFineScan({ status: 'idle', message: 'No candidates from Continue Scan' });
-      } else {
-        console.log('[ManualPipeline] step=fine_scan frontend');
-        setPipelineStage('Fine Scan');
-        await _runFineScanLoop();
-        if (pipelineStopRequestedRef.current) { scannerStateStore.updateFineScan({ status: 'stopped', message: 'Stopped by user' }); throw new Error('STOPPED'); }
-        console.log('[ManualPipeline] fine_scan completed');
+          if (['completed', 'failed', 'stopped', 'interrupted'].includes(active.status)) {
+            terminalStatus = active.status;
+            terminalError = active.lastError || active.message || '';
+            break;
+          }
+        }
+        await new Promise(resolve => window.setTimeout(resolve, 1500));
       }
 
-      // Step 4: Deeper Validation
-      const dvCandidates = _getValidationCandidatesFromStore();
-      if (dvCandidates.length === 0) {
-        console.log('[ManualPipeline] step=deeper_validation skipped reason=no_candidates');
-        scannerStateStore.updateDeeperValidation({ status: 'idle' });
-      } else {
-        console.log('[ManualPipeline] step=deeper_validation candidates=%d', dvCandidates.length);
-        setPipelineStage('Deeper Validation');
-        await _runDeeperValidationLoop(dvCandidates);
-        if (pipelineStopRequestedRef.current) { scannerStateStore.updateDeeperValidation({ status: 'stopped' }); throw new Error('STOPPED'); }
-        console.log('[ManualPipeline] deeper_validation completed');
+      if (terminalStatus !== 'completed') {
+        throw new Error(terminalStatus === 'stopped' ? 'STOPPED' : terminalError || `Pipeline ${terminalStatus}`);
       }
 
-      // Step 5: Entry Plan
-      const epCandidates = _getEntryPlanCandidatesFromStore();
-      if (epCandidates.length === 0) {
-        console.log('[ManualPipeline] step=entry_plan skipped reason=no_candidates');
-        scannerStateStore.updateEntryPlan({ status: 'idle' });
-      } else {
-        console.log('[ManualPipeline] step=entry_plan candidates=%d', epCandidates.length);
-        setPipelineStage('Entry Plan');
+      let pipelineResult: any = null;
+      for (let attempt = 0; attempt < 8 && !pipelineResult; attempt += 1) {
         try {
-          await _runEntryPlanLoop(epCandidates, { suppressDiscord: true });
-          if (pipelineStopRequestedRef.current) { scannerStateStore.updateEntryPlan({ status: 'stopped' }); throw new Error('STOPPED'); }
-          console.log('[ManualPipeline] entry_plan completed');
-        } catch (epErr: any) {
-          console.log('[ManualPipeline] entry_plan failed error=%s', epErr.message);
+          const resultResponse = await pipelineAutoAPI.getPipelineResult(runId, 'manual');
+          pipelineResult = resultResponse?.data?.result;
+        } catch {
+          await new Promise(resolve => window.setTimeout(resolve, 500));
         }
       }
+      if (!pipelineResult) throw new Error('Pipeline completed but its result snapshot is unavailable');
 
-      // Step 6: Exit Scan
-      console.log('[ManualPipeline] step=exit_scan frontend');
-      setPipelineStage('Exit Scan');
-      await runExitScan({ autoSubmit: false, suppressDiscord: true }); // Manual Pipeline: preview-only, never submit orders or Discord notifications
-      if (pipelineStopRequestedRef.current) { scannerStateStore.updateExitScan({ status: 'stopped' }); throw new Error('STOPPED'); }
-      console.log('[ManualPipeline] exit_scan completed');
-
+      const marketRows = pipelineResult.market_scanner?.results || [];
+      const fineRows = pipelineResult.fine_scan?.results || [];
+      const dvRows = pipelineResult.deeper_validation?.results || [];
+      const admissionRows = pipelineResult.admission?.results || [];
+      const entryRows = pipelineResult.entry_plan?.results || [];
+      const executionRows = pipelineResult.execution?.results || [];
+      const exitRows = pipelineResult.exit_scan?.results || [];
+      const completedAt = new Date().toISOString();
+      scannerStateStore.updateMarketScanner({
+        status: 'completed', progress: 100, results: marketRows,
+        scannedSymbols: pipelineResult.market_scanner?.processed || marketRows.length,
+        totalSymbols: pipelineResult.market_scanner?.processed || marketRows.length,
+        lastScanTime: completedAt,
+        detailedScanStatus: {
+          ...scannerStateStore.getState().marketScanner.detailedScanStatus,
+          currentStatus: 'completed', processedCount: marketRows.length,
+          totalCount: pipelineResult.market_scanner?.processed || marketRows.length,
+          percent: 100, validatedCount: marketRows.length,
+          statusMessage: agentText('Unified pipeline market scan completed', '统一流水线的市场扫描已完成'),
+        },
+      });
+      scannerStateStore.updateFineScan({ status: 'completed', progress: 100, stepProgress: 100, results: fineRows, runId, lastUpdated: completedAt });
+      scannerStateStore.updateDeeperValidation({ status: 'completed', results: dvRows, runId, lastUpdated: completedAt });
+      scannerStateStore.updateAdmission({ status: 'completed', results: admissionRows, summary: pipelineResult.summary?.admission_stats || null, runId, lastUpdated: completedAt });
+      scannerStateStore.updateEntryPlan({ status: 'completed', results: entryRows, runId, lastUpdated: completedAt });
+      scannerStateStore.updateExitScan({ status: 'completed', results: exitRows, runId, lastUpdated: completedAt });
+      if (executionRows.length > 0) {
+        setAiExecutionList((previous) => {
+          const bySymbol = new Map(previous.map((item: any) => [String(item.symbol || '').toUpperCase(), item]));
+          for (const row of executionRows) {
+            const symbol = String(row?.symbol || '').toUpperCase();
+            if (!symbol) continue;
+            const submitted = row?.action === 'ORDER_SUBMITTED';
+            const existing = bySymbol.get(symbol) || {};
+            bySymbol.set(symbol, {
+              ...existing,
+              symbol,
+              source: 'backend-pipeline',
+              executionStatus: submitted ? 'submitted' : row?.status === 'dry_run' ? 'dry_run' : 'blocked',
+              executionError: submitted ? null : agentErrorText(
+                row?.reason || row?.message,
+                'The execution gate did not submit an order.',
+                '执行闸门未提交订单，请检查风控与订单条件。',
+              ),
+              alpacaOrderId: row?.orderId || row?.order?.id,
+              alpacaOrderStatus: row?.orderStatus || row?.order?.status,
+              pipelineRunId: runId,
+            });
+          }
+          return Array.from(bySymbol.values());
+        });
+      }
       setPipelineStage('idle');
-      console.log('[ManualPipeline] completed trigger=manual (frontend sequential)');
-      message.success('Pipeline complete!');
+      message.success(agentText('The research pipeline is complete.', '研究流水线已完成。'));
     } catch (e: any) {
       if (e.message === 'STOPPED') {
         setPipelineStage('idle');
-        console.log('[ManualPipeline] stopped by user');
-        message.info('Pipeline stopped by user');
+        message.info(agentText('The pipeline was stopped.', '流水线已停止。'));
       } else {
-        const msg = e.message || 'Pipeline failed';
-        console.log('[ManualPipeline] failed error=%s', msg);
+        const msg = agentErrorText(
+          e?.response?.data?.message || e?.message,
+          'The research pipeline failed.',
+          '研究流水线运行失败，请检查连接后重试。',
+        );
         setPipelineError(msg);
         setPipelineStage('failed');
         message.error(msg);
@@ -6092,38 +5794,13 @@ const Agent: React.FC = (): React.ReactElement => {
         }
       }
     }
-    // Sort: Continue first, then by score descending, limit to 8
+    // Sort: Continue first, then by score descending, limit to a compact DV basket.
     qualified.sort((a: any, b: any) => {
       if (a.selectedBy !== b.selectedBy) return a.selectedBy === 'Continue' ? -1 : 1;
       return (b.matchConfidence || 0) - (a.matchConfidence || 0);
     });
-    return qualified.slice(0, 8);
+    return qualified.slice(0, 12);
   }, [fineScanResults]);
-
-  // Store-based version for auto pipeline (avoids stale React snapshot)
-  const _getValidationCandidatesFromStore = (): any[] => {
-    const results = scannerStateStore.getState().fineScan.results;
-    if (!results || results.length === 0) return [];
-    const qualified: any[] = [];
-    for (const r of results) {
-      if (r.scanStatus !== 'completed') continue;
-      if (r.decision === 'Continue') {
-        qualified.push({ ...r, selectedBy: 'Continue' });
-      } else if (r.decision === 'Watch') {
-        const hasCriticalBlocker = (r.decisionBlockers || []).some((b: string) =>
-          /bankruptcy|delisted|halted|fraud/i.test(b)
-        );
-        if (!hasCriticalBlocker && (r.matchConfidence || 0) >= 50) {
-          qualified.push({ ...r, selectedBy: 'Watch-to-Validate' });
-        }
-      }
-    }
-    qualified.sort((a: any, b: any) => {
-      if (a.selectedBy !== b.selectedBy) return a.selectedBy === 'Continue' ? -1 : 1;
-      return (b.matchConfidence || 0) - (a.matchConfidence || 0);
-    });
-    return qualified.slice(0, 8);
-  };
 
   // Breakdown counts for display
   const validationCandidateBreakdown = useCallback(() => {
@@ -6135,7 +5812,7 @@ const Agent: React.FC = (): React.ReactElement => {
 
   const handleDeeperValidation = async () => {
     if (pipelineRunning) {
-      message.warning('Disabled while AI Pipeline is running.');
+      message.warning(agentText('This action is unavailable while the AI pipeline is running.', 'AI 流水线运行期间无法执行此操作。'));
       return;
     }
     const selected = selectValidationCandidates();
@@ -6151,49 +5828,66 @@ const Agent: React.FC = (): React.ReactElement => {
 
   const _runDeeperValidationLoop = async (selected: any[]): Promise<any[]> => {
     let _result: any[] = [];
+    let dvProgressTimer: number | undefined;
     setDeeperValidationStatus('loading');
     setDeeperValidationResults(null);
+    scannerStateStore.resetAdmission();
+    setEntryPlanStatus('idle');
+    setEntryPlanResults(null);
+    setExitScanStatus('idle');
+    setExitScanResults([]);
     setDvErrorMessage(null);
+    setDvProgress(5);
+    setDvProgressStage(agentText('Preflight', '运行前检查'));
 
-    // Preflight: check session and AI config
+    // Preflight: check session and optional provider availability.
+    // DV can still run on institutional local rules when AI/config status is unavailable.
     const preflight = await preflightConfigCheck();
     if (!preflight.ok || !preflight.sessionValid) {
       setDeeperValidationStatus('error');
+      setDvErrorMessage(agentErrorText(
+        preflight.error,
+        'Your session has expired.',
+        '登录状态已过期，请重新登录。',
+      ));
       unregisterDeeperValidationRun();
-      message.error(preflight.error || 'Session expired');
+      message.error(agentErrorText(
+        preflight.error,
+        'Your session has expired.',
+        '登录状态已过期，请重新登录。',
+      ));
       return _result;
     }
-    if (!preflight.aiAvailable) {
-      const reason = preflight.aiKeyIsMasked ? 'AI key is invalid (masked). Re-enter in Settings.' :
-                     !preflight.aiConfigured ? 'AI Provider not configured. Configure in Settings.' :
-                     preflight.aiTestStatus !== 'connected' ? `AI Provider not tested (${preflight.aiTestStatus}). Click Test AI Connection in Settings.` :
-                     'AI unavailable';
-      setDeeperValidationStatus('error');
-      unregisterDeeperValidationRun();
-      message.error(reason);
-      return _result;
+    const aiOverlayEnabled = !!(preflight.aiConfigured && !preflight.aiKeyIsMasked);
+    if (!preflight.alpacaConfigured) {
+      setDvProgressStage(agentText('Configuration warning; trying backend market data', '配置提示：正在尝试后端行情数据'));
+    } else if (!aiOverlayEnabled) {
+      setDvProgressStage(agentText('Local rules mode', '本地规则模式'));
+    } else if (!preflight.aiAvailable) {
+      setDvProgressStage(agentText('AI configured; verifying provider', 'AI 已配置，正在验证服务连接'));
     }
 
     try {
+      setDvProgress(18);
+      setDvProgressStage(aiOverlayEnabled
+        ? agentText('Building evidence packet', '正在构建证据包')
+        : agentText('Building evidence packet (local rules)', '正在使用本地规则构建证据包'));
       const candidates = selected.map((r: any) => {
         // Map strategies to backend-friendly names
         const strats = r.matchedStrategies || [];
-        let strategy = 'momentum';
-        for (const s of strats) {
-          const sl = s.toLowerCase();
-          if (sl.includes('momentum') || sl.includes('continuation') || sl.includes('breakout') || sl.includes('trend following')) { strategy = 'momentum'; break; }
-          if (sl.includes('mean reversion')) { strategy = 'mean_reversion'; break; }
-          if (sl.includes('rsi') || sl.includes('reversal')) { strategy = 'rsi'; break; }
-          if (sl.includes('moving average') || sl.includes('ma crossover') || sl.includes('ema')) { strategy = 'moving_average'; break; }
-          if (sl.includes('macd')) { strategy = 'macd'; break; }
-          if (sl.includes('bollinger') || sl.includes('range') || sl.includes('bb')) { strategy = 'bollinger'; break; }
-        }
+        const stack = Array.isArray(r.strategyStack) && r.strategyStack.length > 0
+          ? r.strategyStack
+          : (r.bestStrategy ? [r.bestStrategy] : []);
+        const strategy = r.bestStrategy || stack[0] || 'moving_average';
         return {
+          ...r,
           symbol: r.symbol,
           decision: r.decision,
           selectedBy: r.selectedBy || 'Continue',
           score: r.matchConfidence || 0,
           strategy: strategy,
+          bestStrategy: r.bestStrategy || strategy,
+          strategyStack: stack,
           matchedStrategies: strats,
           backtestStatus: r.backtestStatus || '',
           optimizationStatus: r.quickOptStatus || '',
@@ -6204,7 +5898,34 @@ const Agent: React.FC = (): React.ReactElement => {
           decisionReason: r.decisionReason || r.finalReason || '',
         };
       });
-      const resp = (await deeperValidationAPI.validate(candidates, '1y', 100000)).data;
+      setDvProgress(35);
+      setDvProgressStage(agentText('Loading two-year evidence', '正在加载两年期证据'));
+      let estimatedProgress = 35;
+      dvProgressTimer = window.setInterval(() => {
+        estimatedProgress = Math.min(82, estimatedProgress + (estimatedProgress < 60 ? 3 : 2));
+        setDvProgress(estimatedProgress);
+        if (estimatedProgress < 46) setDvProgressStage(agentText('Loading two-year evidence', '正在加载两年期证据'));
+        else if (estimatedProgress < 57) setDvProgressStage(agentText('Testing strategy routes', '正在测试策略路线'));
+        else if (estimatedProgress < 68) setDvProgressStage(agentText('Checking parameter robustness', '正在检查参数稳健性'));
+        else if (estimatedProgress < 77) setDvProgressStage(agentText('Running anchored walk-forward', '正在运行锚定式滚动验证'));
+        else setDvProgressStage(aiOverlayEnabled
+          ? agentText('Applying cost gates and AI challenge', '正在应用成本闸门与 AI 质疑')
+          : agentText('Applying cost and risk gates', '正在应用成本与风险闸门'));
+      }, 3000);
+      const resp = (await deeperValidationAPI.validate(candidates, '2y', 100000, {
+        riskProfile,
+        timeHorizon,
+        pipelineMode,
+        tradeMode,
+        validateAllStrategies: false,
+        strategySelectionMode: 'trend_aware',
+        maxStrategiesPerSymbol: 6,
+        skipAiOverlay: !aiOverlayEnabled,
+        aiOptional: true,
+      })).data;
+      if (dvProgressTimer !== undefined) window.clearInterval(dvProgressTimer);
+      setDvProgress(88);
+      setDvProgressStage(agentText('Ranking results', '正在排列验证结果'));
       if (resp.success && Array.isArray(resp.results)) {
         // Propagate isDevTest flag and selectedBy from Fine Scan results to DV results
         const devTestSymbols = new Set(selected.filter((r: any) => r.isDevTest).map((r: any) => r.symbol));
@@ -6224,26 +5945,44 @@ const Agent: React.FC = (): React.ReactElement => {
         if (dvStatus === 'failed') {
           setDeeperValidationStatus('error');
           const failReasons = (resp.errors || []).map((e: any) => `${e.symbol}: ${e.message}`).join('; ');
-          setDvErrorMessage(`All ${resp.results.length} symbols failed. ${failReasons || 'Check Alpaca Market Data configuration.'}`);
-          message.error('All validation symbols failed');
+          setDvErrorMessage(agentText(
+            `All ${resp.results.length} symbols failed. ${failReasons || 'Check Alpaca Market Data configuration.'}`,
+            `全部 ${resp.results.length} 个标的均未通过验证，请检查行情连接与数据完整性。`,
+          ));
+          message.error(agentText('Validation failed for every symbol.', '所有标的验证失败。'));
         } else if (dvStatus === 'partial') {
           setDeeperValidationStatus('completed');
           setDvErrorMessage(null);
-          message.warning(`Validation partial: ${resp.results.length - failedCount} succeeded, ${failedCount} failed`);
+          message.warning(agentText(
+            `Validation finished with mixed results: ${resp.results.length - failedCount} succeeded and ${failedCount} failed.`,
+            `验证部分完成：${resp.results.length - failedCount} 个成功，${failedCount} 个失败。`,
+          ));
         } else {
           setDeeperValidationStatus('completed');
           setDvErrorMessage(null);
-          message.success(`Deeper validation completed for ${resp.results.length} results`);
+          message.success(agentText(`Deeper validation completed for ${resp.results.length} results.`, `深度验证完成，共 ${resp.results.length} 条结果。`));
         }
+        setDvProgress(100);
+        setDvProgressStage(agentText('Completed', '已完成'));
         unregisterDeeperValidationRun();
       } else {
         setDeeperValidationStatus('error');
-        setDvErrorMessage(resp.message || 'Validation returned no results');
+        setDvErrorMessage(agentErrorText(
+          resp.message,
+          'Validation returned no results.',
+          '验证未返回有效结果，请检查数据后重试。',
+        ));
         setDvErrors([]);
+        setDvProgressStage(agentText('Error', '发生错误'));
         unregisterDeeperValidationRun();
-        message.error(resp.message || 'Validation returned no results');
+        message.error(agentErrorText(
+          resp.message,
+          'Validation returned no results.',
+          '验证未返回有效结果，请检查数据后重试。',
+        ));
       }
     } catch (err: any) {
+      if (dvProgressTimer !== undefined) window.clearInterval(dvProgressTimer);
       const httpStatus = err.response?.status;
       const backendSkipRetry = err.response?.data?.skipRetry;
       const isConfigError = backendSkipRetry || httpStatus === 401 || httpStatus === 403;
@@ -6252,17 +5991,32 @@ const Agent: React.FC = (): React.ReactElement => {
       if (isRateLimit) {
         // 429: retry once with backoff
         console.warn('[DeeperValidation] Rate limited (429), retrying after delay...');
+        setDvProgress(42);
+        setDvProgressStage(agentText('Rate limited; retrying', '请求频率受限，正在重试'));
         await new Promise(resolve => setTimeout(resolve, 5000));
         try {
           const resp = (await deeperValidationAPI.validate(
             selected.map((r: any) => ({
-              symbol: r.symbol, decision: r.decision, selectedBy: r.selectedBy || 'Continue',
-              score: r.matchConfidence || 0, strategy: 'momentum', matchedStrategies: r.matchedStrategies || [],
+              ...r, symbol: r.symbol, decision: r.decision, selectedBy: r.selectedBy || 'Continue',
+              score: r.matchConfidence || 0, strategy: r.bestStrategy || (r.strategyStack || [])[0] || 'moving_average',
+              bestStrategy: r.bestStrategy || (r.strategyStack || [])[0] || 'moving_average',
+              strategyStack: r.strategyStack || [],
+              matchedStrategies: r.matchedStrategies || [],
               backtestStatus: r.backtestStatus || '', optimizationStatus: r.quickOptStatus || '',
               entryQuality: r.entryQuality || '', liquidityGrade: r.liquidityGrade || '',
               riskGrade: r.riskGrade || '', whyMatched: r.matchReason || '',
               decisionReason: r.decisionReason || r.finalReason || '',
-            })), '1y', 100000
+            })), '2y', 100000, {
+              riskProfile,
+              timeHorizon,
+              pipelineMode,
+              tradeMode,
+              validateAllStrategies: false,
+              strategySelectionMode: 'trend_aware',
+              maxStrategiesPerSymbol: 6,
+              skipAiOverlay: !aiOverlayEnabled,
+              aiOptional: true,
+            }
           )).data;
           if (resp.success && Array.isArray(resp.results)) {
             const devTestSymbols = new Set(selected.filter((r: any) => r.isDevTest).map((r: any) => r.symbol));
@@ -6281,17 +6035,25 @@ const Agent: React.FC = (): React.ReactElement => {
             if (dvStatus === 'failed') {
               setDeeperValidationStatus('error');
               const failReasons = (resp.errors || []).map((e: any) => `${e.symbol}: ${e.message}`).join('; ');
-              setDvErrorMessage(`All ${resp.results.length} symbols failed. ${failReasons || 'Check Alpaca Market Data configuration.'}`);
-              message.error('All validation symbols failed');
+              setDvErrorMessage(agentText(
+                `All ${resp.results.length} symbols failed. ${failReasons || 'Check Alpaca Market Data configuration.'}`,
+                `全部 ${resp.results.length} 个标的均未通过验证，请检查行情连接与数据完整性。`,
+              ));
+              message.error(agentText('Validation failed for every symbol.', '所有标的验证失败。'));
             } else if (dvStatus === 'partial') {
               setDeeperValidationStatus('completed');
               setDvErrorMessage(null);
-              message.warning(`Validation partial: ${resp.results.length - failedCount} succeeded, ${failedCount} failed`);
+              message.warning(agentText(
+                `Validation finished with mixed results: ${resp.results.length - failedCount} succeeded and ${failedCount} failed.`,
+                `验证部分完成：${resp.results.length - failedCount} 个成功，${failedCount} 个失败。`,
+              ));
             } else {
               setDeeperValidationStatus('completed');
               setDvErrorMessage(null);
-              message.success(`Deeper validation completed for ${resp.results.length} results`);
+              message.success(agentText(`Deeper validation completed for ${resp.results.length} results.`, `深度验证完成，共 ${resp.results.length} 条结果。`));
             }
+            setDvProgress(100);
+            setDvProgressStage(agentText('Completed', '已完成'));
             unregisterDeeperValidationRun();
             return _result;
           }
@@ -6308,16 +6070,25 @@ const Agent: React.FC = (): React.ReactElement => {
       const errDetail = backendErrors.length > 0
         ? backendErrors.slice(0, 3).map((e: any) => `${e.symbol||''}: ${e.message||e}`).join('; ') + (backendErrors.length > 3 ? ` (+${backendErrors.length - 3} more)` : '')
         : '';
-      const errMsg = isConfigError
+      const englishError = isConfigError
         ? `Config error (HTTP ${dvHttpStatus || '?'}): ${backendMsg || 'Check AI Provider settings.'}`
         : isRateLimit
           ? `Rate Limited (429)${errDetail ? ` — ${errDetail}` : ''}. Backend API throttled. Retry will happen next interval.`
           : isTimeout
             ? `Timed out${errDetail ? ` — ${errDetail}` : ''}. Try fewer symbols or retry.`
             : `HTTP ${dvHttpStatus || '?'}: ${backendMsg || err.message || 'Unknown error'}${errDetail ? ` — ${errDetail}` : ''} [${errSymbols.slice(0, 5).join(', ')}${errSymbols.length > 5 ? '...' : ''}]`;
+      const chineseError = isConfigError
+        ? '验证服务配置不可用，请在设置中检查连接。'
+        : isRateLimit
+          ? '请求频率受限，系统稍后会自动重试。'
+          : isTimeout
+            ? '深度验证超时，请减少候选数量或稍后重试。'
+            : `深度验证失败，涉及 ${errSymbols.length} 个候选标的。请检查数据连接后重试。`;
+      const errMsg = agentErrorText(backendMsg || err.message, englishError, chineseError);
       setDeeperValidationStatus('error');
       setDvErrorMessage(errMsg);
       setDvErrors(backendErrors);
+      setDvProgressStage(agentText('Error', '发生错误'));
       unregisterDeeperValidationRun();
       message.error(errMsg);
     }
@@ -6326,287 +6097,158 @@ const Agent: React.FC = (): React.ReactElement => {
 
 
 // ===== Deeper Validation Detail Panel =====
-function renderDVDetailPanel(record: any, t: any, language: string) {
-  var tc = record.tradeCount != null ? record.tradeCount : record.trades;
-  
-  // Verdict colors
-  var v = record.verdict;
-  var vColor = '#52c41a';
-  if (v === 'Watch' || v === 'Caution') vColor = '#faad14';
-  else if (v === 'Avoid' || v === 'Reject' || v === 'Rejected') vColor = '#ff4d4f';
-  else if (v === 'Needs Manual Review') vColor = '#722ed1';
-  var vNameRaw = v === 'Needs Manual Review' ? 'Review' : v === 'Reject' || v === 'Rejected' || v === 'Avoid' ? 'Rejected' : v === 'Caution' ? 'Watch' : v;
-  var verdictMap: Record<string, string> = { 'Confirmed': t.agent.dvVerdictConfirmed, 'Pass': t.agent.dvVerdictPass, 'Rejected': t.agent.dvVerdictRejected, 'Review': t.agent.dvVerdictReview, 'Watch': t.agent.dvVerdictWatch };
-  var vName = verdictMap[vNameRaw] || vNameRaw;
-  if (vNameRaw === 'Review') v = vNameRaw;
-  else if (v === 'Reject' || v === 'Rejected' || v === 'Avoid') v = 'Rejected';
-  else if (v === 'Caution') v = 'Watch';
-  
-  // Reason parts
-  var reasonParts = (record.reason || '').split(' | ');
-  
-  // Helper: translate DV reason text (dictionary replacement for zh-CN)
-  function translateDVReason(text: string): string {
-    if (!text || language !== 'zh-CN') return text || '';
-    var r = text;
-    r = r.replace(/\bConfirmed\b/g, t.agent.dvReasonConfirmed);
-    r = r.replace(/\bWatch\b/g, t.agent.dvReasonWatch);
-    r = r.replace(/\bReject\b/g, t.agent.dvReasonReject);
-    r = r.replace(/\bWeakening\b/g, t.agent.dvTrendWeakening);
-    r = r.replace(/\brecent Weakening\b/g, t.agent.dvReasonRecentWeakening);
-    r = r.replace(/\bparameter sets profitable\b/g, t.agent.dvReasonParamProfitable);
-    r = r.replace(/\bmedian return\b/g, t.agent.dvReasonMedianReturn);
-    r = r.replace(/\bmedian sharpe\b/g, t.agent.dvReasonMedianSharpe);
-    r = r.replace(/\bprofit factor\b/gi, t.agent.dvReasonProfitFactor);
-    r = r.replace(/\bsharpe\b/gi, t.agent.dvReasonSharpe);
-    r = r.replace(/\breturn\b/gi, t.agent.dvReasonReturn);
-    r = r.replace(/\bdrawdown\b/gi, t.agent.dvReasonDrawdown);
-    r = r.replace(/\bwin rate\b/gi, t.agent.dvReasonWinRate);
-    r = r.replace(/\btrades\b/gi, t.agent.dvReasonTrades);
-    r = r.replace(/\bSample Limited\b/gi, t.agent.dvReasonSampleLimited);
-    r = r.replace(/\bStable\b/g, t.agent.stableLabel);
-    r = r.replace(/\bWeak\b/g, t.agent.weakLabel);
-    r = r.replace(/\bModerate\b/g, t.agent.moderateLabel);
-    r = r.replace(/\bcombinations tested\b/g, t.agent.testedCombos);
-    return r;
-  }
 
-  // Helper: render a metric row
-  function metricRow(label: any, value: any, color?: any) {
-    return React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '3px 0', borderBottom: '1px solid var(--app-border-soft)', fontSize: '11px' } },
-      React.createElement('span', { style: { color: 'var(--app-text-muted)' } }, label),
-      React.createElement('span', { style: { fontWeight: 600, color: color || 'var(--app-text-strong)' } }, value != null ? String(value) : t.agent.naLabel)
-    );
-  }
-  
-  // Helper: parameter chips
-  function paramChips(params: any) {
-    if (!params || Object.keys(params).length === 0) return null;
-    return React.createElement('div', { style: { display: 'flex', gap: 3, flexWrap: 'wrap', justifyContent: 'flex-end' } },
-      Object.entries(params).map(function(kv: any) {
-        return React.createElement(Tag, { key: kv[0], style: { fontSize: '9px', margin: 0, padding: '0 4px', background: 'var(--app-table-header-bg)', border: 'none' } }, kv[0] + ': ' + String(kv[1]));
-      })
-    );
-  }
-  
-  // Helper: card wrapper
-  function cardBlock(title: any, children: any, accentColor: any, extra?: any) {
-    return React.createElement('div', { style: { background: 'var(--app-card-bg)', border: '1px solid var(--app-border)', borderRadius: 10, padding: 14, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' } },
-      React.createElement('div', { style: { fontWeight: 700, fontSize: '12px', marginBottom: 8, color: accentColor || 'var(--app-text-strong)', borderBottom: '2px solid ' + (accentColor || 'var(--app-border)'), paddingBottom: 6 } }, title),
-      extra ? React.createElement('div', { style: { fontSize: '10px', color: '#999', marginBottom: 6 } }, extra) : null,
-      children
-    );
-  }
-  
-  // Profit factor text
-  function pfText(): string {
-    var pf = record.profitFactor;
-    if (pf == null) {
-      if (tc != null && tc > 0 && record.totalReturn != null && record.totalReturn > 0) return String.fromCharCode(8734) + ` (${t.agent.noLosses})`;
-      return t.agent.naLabel;
-    }
-    return pf.toFixed(2);
-  }
-  function pfColor(): string {
-    var pf = record.profitFactor;
-    if (pf == null) return (tc != null && tc > 0 && record.totalReturn != null && record.totalReturn > 0) ? '#52c41a' : '#bbb';
-    if (pf >= 1.5) return '#52c41a';
-    if (pf >= 1.0) return '#faad14';
-    return '#ff4d4f';
-  }
-  
-  // Sharpe color
-  function shColor(s: any): string {
-    if (s == null) return '#bbb';
-    if (s >= 1.0) return '#52c41a';
-    if (s >= 0.5) return '#faad14';
-    return '#ff4d4f';
-  }
-  
-  // Return color
-  function retColor(r: any): string {
-    if (r == null) return '#bbb';
-    return r > 0 ? '#52c41a' : '#ff4d4f';
-  }
-  
-  // DD color
-  function ddColor(d: any): string {
-    if (d == null) return '#bbb';
-    var absD = Math.abs(d);
-    if (absD <= 15) return '#52c41a';
-    if (absD <= 25) return '#faad14';
-    return '#ff4d4f';
-  }
-  
-  // Stability
-  var isLimitedSample = (tc != null && tc < 3) || (record.validCombinationCount != null && record.validCombinationCount < 3);
-  var stScore = record.stabilityScore;
-  var stLabel = stScore != null ? (stScore >= 70 ? t.agent.stableLabel : stScore >= 50 ? t.agent.moderateLabel : t.agent.weakLabel) : t.agent.naLabel;
-  var stColor = stScore != null ? (stScore >= 70 ? '#52c41a' : stScore >= 50 ? '#faad14' : '#ff4d4f') : '#bbb';
-  
-  // Trend color
-  function trendColor(t: any): string {
-    if (!t) return '#bbb';
-    if (t === 'Weakening') return '#faad14';
-    if (t === 'Divergent') return '#ff4d4f';
-    if (t === 'Consistent') return '#1890ff';
-    return '#52c41a';
-  }
-  
-  return React.createElement('div', { style: { background: 'var(--app-card-bg-soft)', padding: '16px', borderRadius: '10px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '14px', maxWidth: '100%' } },
-    
-    // Card 1: 1Y Backtest
-    cardBlock(t.agent.oneYearBacktest,
-      React.createElement(React.Fragment, null,
-        metricRow(t.agent.strategy, record.strategy),
-        metricRow(t.agent.totalReturn, record.totalReturn != null ? (record.totalReturn > 0 ? '+' : '') + record.totalReturn.toFixed(1) + '%' : 'N/A', retColor(record.totalReturn)),
-        metricRow(t.agent.sharpeRatio, record.sharpeRatio != null ? record.sharpeRatio.toFixed(2) : 'N/A', shColor(record.sharpeRatio)),
-        metricRow(t.agent.maxDrawdown, record.maxDrawdown != null ? '-' + Math.abs(record.maxDrawdown).toFixed(1) + '%' : 'N/A', ddColor(record.maxDrawdown)),
-        metricRow(t.agent.winRate, record.winRate != null ? record.winRate + '%' : 'N/A'),
-        metricRow(t.agent.profitFactor, pfText(), pfColor()),
-        record.parameters && Object.keys(record.parameters).length > 0 ?
-          React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '3px 0', borderBottom: '1px solid var(--app-border-soft)', fontSize: '11px' } },
-            React.createElement('span', { style: { color: 'var(--app-text-muted)' } }, t.agent.colParams),
-            paramChips(record.parameters)
-          ) : null,
-        metricRow(t.agent.colTrades, tc != null ? (tc < 3 ? t.agent.limitedSample + ' (' + tc + ')' : String(tc)) : 'N/A', tc != null ? (tc >= 10 ? undefined : tc >= 3 ? '#faad14' : '#ff4d4f') : undefined),
-      ),
-      '#1890ff',
-      t.agent.sourceInternalBacktest
-    ),
-    
-    // Card 2: Light Optimization
-    cardBlock(t.agent.lightOptimization,
-      React.createElement(React.Fragment, null,
-        metricRow(t.agent.testedCombos, (record.testedCombinationCount ?? record.optimizationResults?.length ?? record.validCombinationCount ?? 0) > 0 ? String(record.testedCombinationCount ?? record.optimizationResults?.length ?? record.validCombinationCount ?? 0) : 'N/A'),
-        metricRow(t.agent.validCombos, record.validCombinationCount != null ? String(record.validCombinationCount) : 'N/A'),
-        metricRow(t.agent.bestReturn, record.optimizedReturn != null ? (record.optimizedReturn > 0 ? '+' : '') + record.optimizedReturn.toFixed(1) + '%' : 'N/A', retColor(record.optimizedReturn)),
-        metricRow(t.agent.bestSharpe, record.optimizedSharpe != null ? record.optimizedSharpe.toFixed(2) : 'N/A', shColor(record.optimizedSharpe)),
-        metricRow(t.agent.avgReturn, record.avgReturn != null ? record.avgReturn + '%' : 'N/A', retColor(record.avgReturn)),
-        metricRow(t.agent.medianReturn, record.medianReturn != null ? record.medianReturn + '%' : 'N/A'),
-        metricRow(t.agent.positiveRatio, record.profitableRatio != null ? Math.round(record.profitableRatio * 100) + '%' : 'N/A'),
-        metricRow(t.agent.returnSpread, record.returnSpread != null ? record.returnSpread + '%' : 'N/A'),
-        // Top 3 results
-        record.top3Results && record.top3Results.length > 0 ?
-          React.createElement('div', { style: { marginTop: 8 } },
-            React.createElement('div', { style: { fontSize: '10px', color: 'var(--app-text-muted)', marginBottom: 4 } }, t.agent.topResults + ':'),
-            record.top3Results.map(function(r: any, i: number) {
-              return React.createElement('div', { key: i, style: { fontSize: '10px', padding: '2px 0', borderBottom: i < record.top3Results.length - 1 ? '1px solid var(--app-border-soft)' : 'none' } },
-                React.createElement('span', { style: { color: '#666' } }, '#' + (i+1) + ': '),
-                React.createElement('span', { style: { color: r.ret > 0 ? '#52c41a' : '#ff4d4f', fontWeight: 600 } }, t.agent.paramRet + '=' + r.ret + '%'),
-                React.createElement('span', { style: { color: '#999' } }, ' ' + t.agent.paramSharpe + '=' + r.sharp + ' '),
-                r.params && typeof r.params === 'object' ? 
-                  React.createElement('span', { style: { color: '#999' } }, Object.entries(r.params).map(function(kv: any) { return kv[0] + '=' + String(kv[1]); }).join(', ')) : null
-              );
-            })
-          ) : null
-      ),
-      '#722ed1',
-      t.agent.sourceInternalOptimization
-    ),
-    
-    // Card 3: Parameter Stability
-    cardBlock(t.agent.parameterStability,
-      React.createElement(React.Fragment, null,
-        isLimitedSample ?
-          React.createElement('div', { style: { padding: '6px 8px', background: 'rgba(250, 173, 20, 0.1)', borderRadius: 6, marginBottom: 8, fontSize: '10px', color: '#856404' } },
-            String.fromCharCode(9888) + ' ' + t.agent.limitedSampleWarn.replace('{trades}', String(tc)).replace('{combos}', String(record.validCombinationCount || 0))
-          ) : null,
-        metricRow(t.agent.colScore, stScore != null ? stScore + '/100' : 'N/A', stColor),
-        metricRow(t.agent.colLabel, stLabel, stColor),
-        metricRow(t.agent.profitableRatio, record.profitableRatio != null ? Math.round(record.profitableRatio * 100) + '%' : 'N/A'),
-        metricRow(t.agent.medianReturn, record.medianReturn != null ? record.medianReturn + '%' : 'N/A'),
-        metricRow(t.agent.bestReturn, record.bestReturn != null ? record.bestReturn + '%' : 'N/A', retColor(record.bestReturn)),
-        metricRow(t.agent.returnSpread, record.returnSpread != null ? record.returnSpread + '%' : 'N/A'),
-        metricRow(t.agent.stableParams, record.stableParameterCount != null ? String(record.stableParameterCount) : 'N/A'),
-        record.stabilityReason ?
-          React.createElement('div', { style: { marginTop: 6, fontSize: '10px', color: '#666', fontStyle: 'italic' } }, translateDVReason(record.stabilityReason)) : null
-      ),
-      '#fa8c16'
-    ),
-    
-    // Card 4: Recent vs Long-Term
-    cardBlock(t.agent.recentVsLongTermLabel,
-      React.createElement(React.Fragment, null,
-        metricRow(t.agent.longReturn, record.longTermReturn != null ? (record.longTermReturn > 0 ? '+' : '') + record.longTermReturn.toFixed(1) + '%' : 'N/A', retColor(record.longTermReturn)),
-        metricRow(t.agent.recentReturn, record.recentReturn != null ? (record.recentReturn > 0 ? '+' : '') + record.recentReturn.toFixed(1) + '%' : 'N/A', retColor(record.recentReturn)),
-        metricRow(t.agent.longSharpe, record.longTermSharpe != null ? record.longTermSharpe.toFixed(2) : 'N/A', shColor(record.longTermSharpe)),
-        metricRow(t.agent.recentSharpe, record.recentSharpe != null ? record.recentSharpe.toFixed(2) : 'N/A', shColor(record.recentSharpe)),
-        metricRow(t.agent.longDD, record.longTermMaxDrawdown != null ? '-' + Math.abs(record.longTermMaxDrawdown).toFixed(1) + '%' : 'N/A', ddColor(record.longTermMaxDrawdown)),
-        metricRow(t.agent.recentDD, record.recentMaxDrawdown != null ? '-' + Math.abs(record.recentMaxDrawdown).toFixed(1) + '%' : 'N/A', ddColor(record.recentMaxDrawdown)),
-        record.recentVsLongTerm ?
-          React.createElement('div', { style: { marginTop: 8, textAlign: 'center' } },
-            React.createElement(Tag, { color: trendColor(record.recentVsLongTerm), style: { fontSize: '10px', fontWeight: 700, margin: 0, padding: '2px 10px', borderRadius: '8px' } }, ({'Improving': t.agent.dvTrendImproving, 'Consistent': t.agent.dvTrendConsistent, 'Weakening': t.agent.dvTrendWeakening, 'Divergent': t.agent.dvTrendDivergent} as any)[record.recentVsLongTerm] || record.recentVsLongTerm)
-          ) : null
-      ),
-      '#13c2c2'
-    ),
 
-    // Data Provenance strip — compact chips
-    (function() {
-      var aiExplained = record.aiExplained === true;
-      var explanationSource = aiExplained ? 'DeepSeek' : t.agent.ruleBasedLabel;
-      var rgStatus = (record.riskGate || {}).status || t.agent.naLabel;
-      var fdSourceRaw = (record.finalDecision || {}).source || 'Rule-based';
-      var fdSource = fdSourceRaw === 'Rule-based' ? t.agent.ruleBasedLabel : fdSourceRaw;
-      var chips = [
-        {label: t.agent.marketDataLabel + ': ' + (record.dataSource === 'alpaca' ? 'Alpaca' : record.dataSource || t.agent.naLabel), isAI: false, title: 'Alpaca Market Data API'},
-        {label: t.agent.backtestLabel, isAI: false, title: 'Internal Backtest Engine'},
-        {label: t.agent.optLabel, isAI: false, title: 'Internal Optimization Engine'},
-        {label: t.agent.verdictLabel, isAI: false, title: 'Deterministic Rules'},
-        {label: t.agent.riskGateLabel + rgStatus, isAI: false, title: t.agent.riskGateLabel + ((record.riskGate || {}).reason || t.agent.naLabel)},
-        {label: t.agent.decisionLabel + ': ' + fdSource, isAI: fdSourceRaw !== 'Rule-based', title: fdSourceRaw !== 'Rule-based' ? 'AI Final Decision' : 'Rule-based decision (no AI call)'},
-        {label: t.agent.explainLabel + ': ' + explanationSource, isAI: aiExplained, title: aiExplained ? 'DeepSeek AI' : 'Rule-based explanation'},
-      ];
-      return React.createElement('div', { style: { gridColumn: '1 / -1', display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center', fontSize: '8px', color: 'var(--app-text-muted)' } },
-        chips.map(function(c: any) {
-          return React.createElement('span', { key: c.label, title: c.title, style: { padding: '1px 6px', borderRadius: '3px', background: c.isAI ? 'rgba(19, 194, 194, 0.1)' : 'var(--app-border-soft)', color: c.isAI ? '#13c2c2' : 'var(--app-text-muted)', border: '1px solid ' + (c.isAI ? 'rgba(19, 194, 194, 0.2)' : '#e0e0e0'), whiteSpace: 'nowrap', cursor: 'default' } }, c.label);
-        }),
-        isLimitedSample ?
-          React.createElement(Tag, { color: 'warning', style: { fontSize: '8px', margin: 0, marginLeft: 'auto', padding: '0 4px', lineHeight: '16px' } }, t.agent.limitedSample) : null
-      );
-    })(),
-
-    // Summary Footer - Compact Status Row
-    React.createElement('div', { style: { gridColumn: '1 / -1', background: 'var(--app-card-bg)', border: '1px solid var(--app-border)', borderRadius: 10, padding: '12px 16px', boxShadow: '0 1px 3px rgba(0,0,0,0.04)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '20px' } },
-      React.createElement('div', { style: { flex: 1, minWidth: 0 } },
-        reasonParts.length > 0 ?
-          React.createElement('div', { style: { display: 'flex', gap: '12px', alignItems: 'center' } },
-            React.createElement('span', { style: { fontSize: '10px', color: 'var(--app-text-muted)', fontWeight: 700, textTransform: 'uppercase', flexShrink: 0 } }, t.agent.verdictReasons + ':'),
-            React.createElement('div', { style: { fontSize: '12px', color: 'var(--app-text)', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, title: reasonParts.map(translateDVReason).join(' | ') },
-              reasonParts.map(translateDVReason).join(' · ')
-            )
-          ) :
-          React.createElement('div', { style: { fontSize: '12px', color: 'var(--app-text-muted)', fontStyle: 'italic' } },
-            translateDVReason(record.verdictReason || record.decisionSummary) || t.agent.finalValidationComplete
-          )
-      ),
-      React.createElement('div', { style: { display: 'flex', gap: 10, alignItems: 'center', flexShrink: 0 } },
-        // Risk Gate badge
-        (function() {
-          var rg = record.riskGate || {};
-          var rgStatus = rg.status || 'N/A';
-          var rgColor = rgStatus === 'PASS' ? 'green' : rgStatus === 'REVIEW' ? 'gold' : rgStatus === 'BLOCK' ? 'red' : 'default';
-          var rgLabel = rgStatus === 'BLOCK' ? t.agent.gateBlocked : rgStatus === 'N/A' ? t.agent.naLabel : rgStatus;
-          return React.createElement(Tooltip, { title: rg.reason || t.agent.noRiskGateData },
-            React.createElement(Tag, { color: rgColor, style: { fontSize: '10px', margin: 0, padding: '0 8px', fontWeight: 700, borderRadius: '4px' } }, t.agent.gatePrefix + ': ' + rgLabel)
-          );
-        })(),
-        // Final Verdict badge
-        React.createElement(Tag, { color: vColor, style: { fontSize: '12px', fontWeight: 800, margin: 0, padding: '2px 14px', borderRadius: '6px', textTransform: 'uppercase' } }, vName)
-      )
-    )
+  const displayedMarketScannerResults = getFilteredAndSortedResults();
+  
+  
+  
+  
+  
+  
+  
+  
+  const scannerProgressSteps = [
+    { key: 'preflight', label: 'Preflight' },
+    { key: 'universe', label: 'Universe' },
+    { key: 'snapshots', label: 'Snapshots' },
+    { key: 'history', label: 'History' },
+    { key: 'factors', label: 'Factors' },
+    { key: 'fundamentals', label: 'Fundamentals' },
+    { key: 'events', label: 'Events' },
+    { key: 'ai_review', label: 'AI Review' },
+    { key: 'finalize', label: 'Finalize' },
+  ];
+  const scannerProgressPercent = Math.max(0, Math.min(100, Number(detailedScanStatus.percent || 0)));
+  const scannerStageIndex = Math.max(0, Number(detailedScanStatus.stageIndex || 0));
+  const scannerStageCount = Number(detailedScanStatus.stageCount || scannerProgressSteps.length);
+  const scannerStageLabel = detailedScanStatus.stageLabel || (
+    detailedScanStatus.currentStatus === 'completed' ? 'Complete' :
+    detailedScanStatus.currentStatus === 'error' ? 'Error' :
+    detailedScanStatus.currentStatus === 'stopped' ? 'Stopped' : 'Ready'
   );
-}
-
+  const scannerStageDetail = detailedScanStatus.stageDetail || detailedScanStatus.statusMessage || 'Ready to scan Alpaca whole-market universe';
+  const scannerEtaLabel = detailedScanStatus.estimatedSecondsRemaining != null
+    ? `${Math.ceil(Number(detailedScanStatus.estimatedSecondsRemaining) / 60)}m est.`
+    : (detailedScanStatus.currentStatus === 'scanning' ? 'Waiting on providers' : '');
+  const rawAutoRunRecord = pipelineAutoStatus?.activeRun;
+  const autoRunRecord = rawAutoRunRecord
+    && AUTO_PIPELINE_TRIGGERS.has(rawAutoRunRecord.trigger || '')
+    && (!autoRunRequestedId || rawAutoRunRecord.runId === autoRunRequestedId)
+      ? rawAutoRunRecord
+      : null;
+  const autoRunStages = Array.isArray(pipelineAutoStatus?.pipelineStages) && pipelineAutoStatus.pipelineStages.length
+    ? pipelineAutoStatus.pipelineStages
+    : AUTO_PIPELINE_STAGE_FALLBACK;
+  const getAutoRunStageLabel = (stage: any): string => (
+    agentConsoleCopy.stageLabels[String(stage?.key || '')] || String(stage?.label || agentConsoleCopy.pipeline)
+  );
+  const autoRunDisplayStatus = autoRunActive ? 'running' : (autoRunRecord?.status || 'idle');
+  const autoRunStepStates = autoRunRecord?.steps || {};
+  const autoRunCompletedStages = autoRunStages.filter((stage: any) => (
+    ['completed', 'completed_no_candidates'].includes(autoRunStepStates?.[stage.key]?.status)
+  )).length;
+  const autoRunFailedStage = autoRunStages.find((stage: any) => autoRunStepStates?.[stage.key]?.status === 'failed')
+    || (autoRunDisplayStatus === 'failed'
+      ? [...autoRunStages].reverse().find((stage: any) => autoRunStepStates?.[stage.key]?.status === 'running')
+        || autoRunStages[Math.max(0, Number(autoRunRecord?.stepIndex || 1) - 1)]
+      : null);
+  const autoRunComputedProgress = autoRunDisplayStatus === 'completed'
+    ? 100
+    : autoRunDisplayStatus === 'failed'
+      ? Math.max(Number(autoRunRecord?.progressPct || 0), Math.round((autoRunCompletedStages / autoRunStages.length) * 100))
+      : Math.max(0, Math.min(99, Number(autoRunRecord?.progressPct ?? autoRunProgress ?? 0)));
+  const autoRunCurrentStepKey = autoRunFailedStage?.key || autoRunRecord?.currentStep || autoRunStep || (autoRunActive ? 'market_scanner' : '');
+  const autoRunCurrentStage = autoRunStages.find((stage: any) => stage.key === autoRunCurrentStepKey);
+  const autoRunCurrentStageIndex = autoRunStages.findIndex((stage: any) => stage.key === autoRunCurrentStepKey);
+  const autoRunCurrentStepState = autoRunCurrentStepKey ? (autoRunStepStates?.[autoRunCurrentStepKey] || {}) : {};
+  const autoRunCurrentStageProgress = Math.max(0, Math.min(100, Number(autoRunCurrentStepState?.progressPct || 0)));
+  const autoRunStartedAtMs = autoRunRecord?.startedAt ? Date.parse(autoRunRecord.startedAt) : NaN;
+  const autoRunFinishedAtMs = autoRunRecord?.finishedAt ? Date.parse(autoRunRecord.finishedAt) : NaN;
+  const autoRunElapsedSeconds = Number.isFinite(autoRunStartedAtMs)
+    ? Math.max(0, Math.floor(((autoRunActive ? autoRunClock : (Number.isFinite(autoRunFinishedAtMs) ? autoRunFinishedAtMs : autoRunClock)) - autoRunStartedAtMs) / 1000))
+    : 0;
+  const formatAutoRunDuration = (seconds: number): string => {
+    const safeSeconds = Math.max(0, Math.round(Number(seconds || 0)));
+    if (language === 'zh-CN') {
+      if (safeSeconds >= 3600) return `${Math.floor(safeSeconds / 3600)} 小时 ${Math.floor((safeSeconds % 3600) / 60)} 分钟`;
+      if (safeSeconds >= 60) return `${Math.floor(safeSeconds / 60)} 分 ${safeSeconds % 60} 秒`;
+      return `${safeSeconds} 秒`;
+    }
+    if (safeSeconds >= 3600) return `${Math.floor(safeSeconds / 3600)}h ${Math.floor((safeSeconds % 3600) / 60)}m`;
+    if (safeSeconds >= 60) return `${Math.floor(safeSeconds / 60)}m ${safeSeconds % 60}s`;
+    return `${safeSeconds}s`;
+  };
+  const autoRunElapsedLabel = formatAutoRunDuration(autoRunElapsedSeconds);
+  const getAutoRunStageDetail = (stageState: any, status: string): string => {
+    const processed = Number(stageState?.processedSymbols ?? stageState?.processed ?? 0);
+    const total = Number(stageState?.totalSymbols ?? stageState?.total ?? 0);
+    const duration = Number(stageState?.durationSeconds || 0);
+    if (status === 'running') {
+      if (total > 0) return `${processed}/${total} · ${Math.max(0, Math.min(100, Number(stageState?.progressPct || 0)))}%`;
+      return agentConsoleCopy.inProgress;
+    }
+    if (status === 'failed') return agentConsoleCopy.stoppedHere;
+    if (status === 'stopped' || status === 'interrupted') return agentConsoleCopy.interrupted;
+    if (status === 'completed_no_candidates') return duration > 0 ? `${agentConsoleCopy.noCandidates} · ${formatAutoRunDuration(duration)}` : agentConsoleCopy.noCandidates;
+    if (status === 'partial') return duration > 0 ? `${agentConsoleCopy.partial} · ${formatAutoRunDuration(duration)}` : agentConsoleCopy.partialResult;
+    if (status === 'completed') {
+      if (duration > 0) return formatAutoRunDuration(duration);
+      if (total > 0) return `${processed}/${total}`;
+      return agentConsoleCopy.complete;
+    }
+    return agentConsoleCopy.queued;
+  };
+  const autoRunCurrentDetail = autoRunDisplayStatus === 'running'
+    ? autoRunCurrentStepState?.currentSymbol
+      ? `${getAutoRunStageLabel(autoRunCurrentStage)} · ${autoRunCurrentStepState.currentSymbol}`
+      : autoRunCurrentStageProgress > 0
+        ? `${getAutoRunStageLabel(autoRunCurrentStage)} · ${agentConsoleCopy.stageProgress(autoRunCurrentStageProgress)}`
+        : language === 'zh-CN'
+          ? `${getAutoRunStageLabel(autoRunCurrentStage)}正在初始化`
+          : `${getAutoRunStageLabel(autoRunCurrentStage)} is initializing`
+    : autoRunDisplayStatus === 'completed'
+      ? agentConsoleCopy.allStagesCompleted(autoRunStages.length)
+      : autoRunDisplayStatus === 'failed'
+        ? agentConsoleCopy.stagesBeforeFailure(autoRunCompletedStages)
+        : autoRunDisplayStatus === 'stopped' || autoRunDisplayStatus === 'interrupted'
+          ? agentConsoleCopy.stagesBeforeStop(autoRunCompletedStages)
+          : agentConsoleCopy.stagesReady;
+  const autoRunLastSummary = pipelineAutoStatus?.lastAutoSummary || {};
+  const autoRunLastCompletedAt = autoRunLastSummary?.completedAt || pipelineAutoStatus?.lastRunAt || null;
+  const autoRunStatusLabel = pipelineSchedule === 'off'
+    ? agentConsoleCopy.disabled
+    : pipelineAutoStatus?.circuitBreakerOpen
+      ? agentConsoleCopy.circuitOpen
+      : autoRunActive
+        ? agentConsoleCopy.cycleRunning
+        : pipelineAutoStatus?.marketOpen
+          ? agentConsoleCopy.armed
+          : pipelineAutoStatus?.marketStage === 'premarket'
+            ? agentConsoleCopy.premarketArmed
+            : agentConsoleCopy.waitingForMarket;
+  const autoRunNextLabel = pipelineSchedule === 'off'
+    ? agentConsoleCopy.disabled
+    : pipelineAutoStatus?.nextAutoRunAt
+      ? new Date(pipelineAutoStatus.nextAutoRunAt).toLocaleString(
+          language === 'zh-CN' ? 'zh-CN' : 'en-US',
+          { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York' }
+        )
+      : pipelineAutoStatus?.nextMarketOpenAt
+        ? new Date(pipelineAutoStatus.nextMarketOpenAt).toLocaleString(
+            language === 'zh-CN' ? 'zh-CN' : 'en-US',
+            { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York' }
+          )
+        : pipelineAutoStatus?.nextAutoRunDisplay || pipelineAutoStatus?.nextMarketOpenDisplay || agentConsoleCopy.pending;
+  const discordPolicy = pipelineAutoStatus?.discordPolicy || {};
   return (
-    <div className="ai-agent-page-container" style={{ padding: '0 8px 40px 8px' }}>
+    <div className="ai-agent-page-container agent-workspace" id="ai-research-workspace">
       <style>{`
-        .ai-agent-page-container { animation: fadeIn 0.5s ease-out; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .premium-card { border-radius: 12px !important; border: 1px solid var(--app-border-soft) !important; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03) !important; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important; }
-        .premium-card:hover { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06) !important; transform: translateY(-2px) !important; }
-        .status-strip { background: var(--app-card-bg); border-radius: 10px; padding: 12px 20px; border: 1px solid var(--app-border-soft); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+        .ai-agent-page-container { animation: fadeIn 0.25s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .premium-card { border-radius: 8px !important; border: 1px solid var(--app-border-soft) !important; box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04) !important; transition: box-shadow 0.2s ease !important; }
+        .premium-card:hover { box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06) !important; }
+        .status-strip { background: var(--app-card-bg); border-radius: 8px; padding: 12px 20px; border: 1px solid var(--app-border-soft); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
         .stat-box { display: flex; flex-direction: column; gap: 4px; }
         .stat-label { font-size: 11px; color: var(--app-text-muted); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
         .stat-value { font-size: 14px; font-weight: 700; color: var(--app-text-strong); }
@@ -6614,27 +6256,69 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
       `}</style>
 
       {/* ── Page Header ── */}
-      <div style={{ marginBottom: 20, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <div style={{ width: 48, height: 48, borderRadius: '12px', background: 'var(--app-blue-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#1890ff', fontSize: 24, border: '1px solid rgba(24, 144, 255, 0.2)', boxShadow: '0 2px 8px rgba(24, 144, 255, 0.1)' }}>
+      <header className="agent-command-header">
+        <div className="agent-command-title">
+          <div className="agent-command-icon">
             <RobotOutlined />
           </div>
           <div>
-            <Title level={1} style={{ margin: 0, fontSize: 24, fontWeight: 800, letterSpacing: '-0.5px', color: 'var(--app-text-strong)', lineHeight: 1.2 }}>{t.agent.pageTitle}</Title>
-            <Text type="secondary" style={{ fontSize: 14, fontWeight: 500 }}>{t.agent.pageSubtitle}</Text>
+            <span className="agent-command-kicker">{agentConsoleCopy.consoleKicker}</span>
+            <Title level={1}>{t.agent.pageTitle}</Title>
+            <Text type="secondary">{t.agent.pageSubtitle}</Text>
           </div>
         </div>
-        <div>
-          <Tag color="success" style={{ margin: 0, padding: '4px 12px', borderRadius: '16px', fontWeight: 700, fontSize: 12, border: '1px solid rgba(82, 196, 26, 0.2)', background: 'rgba(82, 196, 26, 0.1)', color: '#52c41a', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#52c41a', boxShadow: '0 0 4px #52c41a' }} />
-            {t.agent.systemOnline}
+        <div className="agent-command-engine">
+          <Tag
+            color={pipelineAutoStatus?.schedulerRunning ? 'success' : 'warning'}
+            bordered={false}
+          >
+            <span className="agent-engine-dot" />
+            {pipelineAutoStatus?.schedulerRunning ? agentConsoleCopy.engineOnline : agentConsoleCopy.engineChecking}
           </Tag>
+        </div>
+      </header>
+
+      <div className="agent-control-plane" role="status" aria-label={agentConsoleCopy.controlPlaneAria}>
+        <div className="agent-control-plane-item">
+          <span>{agentConsoleCopy.scheduler}</span>
+          <b className={pipelineAutoStatus?.schedulerRunning ? 'is-ok' : 'is-warn'}>
+            {pipelineAutoStatus?.schedulerRunning ? agentConsoleCopy.online : agentConsoleCopy.checking}
+          </b>
+          <small>{pipelineSchedule === 'off' ? agentConsoleCopy.manualOnly : agentConsoleCopy.every(pipelineSchedule)}</small>
+        </div>
+        <div className="agent-control-plane-item">
+          <span>{agentConsoleCopy.market}</span>
+          <b className={pipelineAutoStatus?.marketOpen ? 'is-ok' : 'is-neutral'}>
+            {pipelineAutoStatus?.marketOpen ? agentConsoleCopy.open : (pipelineAutoStatus?.marketStatusRaw === 'holiday' ? agentConsoleCopy.holiday : agentConsoleCopy.closed)}
+          </b>
+          <small>{agentConsoleCopy.newYorkSession}</small>
+        </div>
+        <div className="agent-control-plane-item">
+          <span>{agentConsoleCopy.orderAuthority}</span>
+          <b className={tradeMode === 'real' && !liveAutoTradingEnabled ? 'is-warn' : 'is-ok'}>
+            {tradeMode === 'paper' ? agentConsoleCopy.paperAuto : liveAutoTradingEnabled ? agentConsoleCopy.liveAuthorized : agentConsoleCopy.liveLocked}
+          </b>
+          <small>{pipelineMode === 'ai' ? agentConsoleCopy.fullAiMode : pipelineMode === 'hybrid' ? agentConsoleCopy.reviewRequired : agentConsoleCopy.noAutoOrders}</small>
+        </div>
+        <div className="agent-control-plane-item">
+          <span>{agentConsoleCopy.notifications}</span>
+          <b className={pipelineAutoStatus?.discordEnabled ? 'is-ok' : 'is-neutral'}>
+            {pipelineAutoStatus?.discordEnabled ? agentConsoleCopy.discordOn : agentConsoleCopy.discordOff}
+          </b>
+          <small>{agentConsoleCopy.notificationScope}</small>
+        </div>
+        <div className="agent-control-plane-item">
+          <span>{agentConsoleCopy.riskControls}</span>
+          <b className={pipelineAutoStatus?.circuitBreakerOpen ? 'is-block' : 'is-ok'}>
+            {pipelineAutoStatus?.circuitBreakerOpen ? agentConsoleCopy.circuitOpen : agentConsoleCopy.hardGatesActive}
+          </b>
+          <small>{pipelineAutoStatus?.positionGuard?.running ? agentConsoleCopy.checkingPositions : agentConsoleCopy.positionGuard(pipelineAutoStatus?.positionGuard?.intervalSeconds || 60)}</small>
         </div>
       </div>
 
       {/* 1. System Configuration & Status */}
-      <div style={{ marginBottom: 20, background: 'var(--app-card-bg)', borderRadius: 12, border: '1px solid var(--app-border-soft)', padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 2px 8px rgba(0, 0, 0, 0.02)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 32, flexWrap: 'wrap' }}>
+      <div className="agent-config-strip">
+        <div className="agent-config-items" style={{ display: 'flex', alignItems: 'center', gap: 32, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>{t.agent.aiProvider}</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -6671,24 +6355,40 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>{t.agent.trading}</span>
             <div>
-              {configStatus.loaded ? (configStatus.alpaca ? <Tag color="processing" style={{ margin: 0, borderRadius: 10, fontWeight: 700, fontSize: 10 }}>{t.agent.paper}</Tag> : <Tag color="default" style={{ margin: 0, borderRadius: 10, fontWeight: 700, fontSize: 10 }}>{t.agent.notLinked}</Tag>) : <Spin size="small" />}
+              {configStatus.loaded ? (
+                configStatus.alpaca ? (
+                  <Tag color={tradeMode === 'real' ? 'error' : 'processing'} style={{ margin: 0, borderRadius: 10, fontWeight: 700, fontSize: 10 }}>
+                    {tradeMode === 'real' ? t.agent.realTrading : t.agent.paperTrading}
+                  </Tag>
+                ) : (
+                  <Tag color="default" style={{ margin: 0, borderRadius: 10, fontWeight: 700, fontSize: 10 }}>{t.agent.notLinked}</Tag>
+                )
+              ) : <Spin size="small" />}
             </div>
           </div>
         </div>
-        <Button type="text" icon={<SettingOutlined />} onClick={() => navigate('/settings/configuration')} style={{ color: 'var(--app-text-muted)', fontWeight: 600, fontSize: 13, background: 'var(--app-card-bg-soft)', border: '1px solid var(--app-border)', borderRadius: 6, height: 32 }}>
+        <Button type="text" icon={<SettingOutlined />} onClick={() => navigate('/settings/configuration', { state: { returnTo: window.location.pathname } })} style={{ color: 'var(--app-text-muted)', fontWeight: 600, fontSize: 13, background: 'var(--app-card-bg-soft)', border: '1px solid var(--app-border)', borderRadius: 6, height: 32 }}>
           {t.agent.manageSettings}
         </Button>
       </div>
 
+      <div className="agent-section-heading agent-operations-heading">
+        <div>
+          <span>{agentConsoleCopy.operations}</span>
+          <h2>{agentConsoleCopy.automationControl}</h2>
+        </div>
+        <b>{tradeMode === 'paper' ? agentConsoleCopy.paperEnvironment : liveAutoTradingEnabled ? agentConsoleCopy.liveAuthorizedEnvironment : agentConsoleCopy.liveLockedEnvironment}</b>
+      </div>
+
       {/* 1.5 Trading Account Mode */}
-      <div style={{ marginBottom: 20 }}>
+      <div className="agent-account-panel" id="research-account">
         <Card
           className="premium-card"
-          bodyStyle={{ padding: '20px 24px' }}
+          styles={{ body: { padding: '20px 24px' } }}
           title={null}
         >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div className="agent-account-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <div className="agent-account-heading" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <span style={{ fontSize: 16, fontWeight: 800, color: 'var(--app-text-strong)', display: 'flex', alignItems: 'center', gap: 8 }}>
                 <WalletOutlined style={{ color: '#1890ff', fontSize: 18 }} />
                 {t.agent.tradingAccountMode}
@@ -6709,15 +6409,15 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
             </div>
           </div>
           
-          <div style={{ background: 'var(--app-card-bg-soft)', borderRadius: 10, padding: '16px', border: '1px solid var(--app-border-soft)' }}>
+          <div style={{ background: 'var(--app-card-bg-soft)', borderRadius: 8, padding: '16px', border: '1px solid var(--app-border-soft)' }}>
             {tradingAccountLoading ? (
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'var(--app-text-muted)', height: 48 }}>
                 <Spin indicator={<LoadingOutlined style={{ fontSize: 18 }} spin />} />
                 <span style={{ fontWeight: 500 }}>{t.agent.syncAccountData}</span>
               </div>
             ) : tradingAccountData?.success ? (
-              <Row gutter={16}>
-                <Col span={6}>
+              <Row gutter={[16, 16]}>
+                <Col xs={24} sm={12} xl={6}>
                   <div style={{ padding: '12px 16px', background: 'var(--app-card-bg)', borderRadius: 8, border: '1px solid var(--app-border)', display: 'flex', flexDirection: 'column', gap: 4 }}>
                     <span style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>{t.agent.status}</span>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -6728,26 +6428,26 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     </div>
                   </div>
                 </Col>
-                <Col span={6}>
+                <Col xs={24} sm={12} xl={6}>
                   <div style={{ padding: '12px 16px', background: 'var(--app-card-bg)', borderRadius: 8, border: '1px solid var(--app-border)', display: 'flex', flexDirection: 'column', gap: 4 }}>
                     <span style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>{t.agent.portfolioValue}</span>
-                    <span style={{ fontWeight: 800, fontSize: 18, color: '#1890ff', fontFamily: "'Inter', sans-serif", letterSpacing: '-0.5px' }}>
+                    <span style={{ fontWeight: 800, fontSize: 18, color: '#1890ff', fontFamily: "'Inter', sans-serif", letterSpacing: 0 }}>
                       ${(tradingAccountData.portfolioValue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                   </div>
                 </Col>
-                <Col span={6}>
+                <Col xs={24} sm={12} xl={6}>
                   <div style={{ padding: '12px 16px', background: 'var(--app-card-bg)', borderRadius: 8, border: '1px solid var(--app-border)', display: 'flex', flexDirection: 'column', gap: 4 }}>
                     <span style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>{t.agent.cash}</span>
-                    <span style={{ fontWeight: 800, fontSize: 18, color: 'var(--app-text-strong)', fontFamily: "'Inter', sans-serif", letterSpacing: '-0.5px' }}>
+                    <span style={{ fontWeight: 800, fontSize: 18, color: 'var(--app-text-strong)', fontFamily: "'Inter', sans-serif", letterSpacing: 0 }}>
                       ${(tradingAccountData.cash ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                   </div>
                 </Col>
-                <Col span={6}>
+                <Col xs={24} sm={12} xl={6}>
                   <div style={{ padding: '12px 16px', background: 'var(--app-card-bg)', borderRadius: 8, border: '1px solid var(--app-border)', display: 'flex', flexDirection: 'column', gap: 4 }}>
                     <span style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>{t.agent.buyingPower}</span>
-                    <span style={{ fontWeight: 800, fontSize: 18, color: 'var(--app-text-strong)', fontFamily: "'Inter', sans-serif", letterSpacing: '-0.5px' }}>
+                    <span style={{ fontWeight: 800, fontSize: 18, color: 'var(--app-text-strong)', fontFamily: "'Inter', sans-serif", letterSpacing: 0 }}>
                       ${(tradingAccountData.buyingPower ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                   </div>
@@ -6768,23 +6468,24 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
       </div>
 
       {/* Market Auto Run — standalone background auto pipeline card */}
-      <div style={{ marginBottom: 24 }}>
+      <div className="agent-auto-panel" id="research-automation">
         <Card
           className="premium-card"
-          bodyStyle={{ padding: 0 }}
+          styles={{ body: { padding: 0 } }}
           title={
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 20px', borderBottom: '1px solid var(--app-border-soft)' }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ width: 36, height: 36, borderRadius: 10, background: 'var(--app-blue-bg)', color: '#1890ff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, border: '1px solid rgba(24, 144, 255, 0.2)' }}>
+            <div className="agent-auto-card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 20px', borderBottom: '1px solid var(--app-border-soft)' }}>
+              <span className="agent-auto-card-heading" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div style={{ width: 36, height: 36, borderRadius: 8, background: 'var(--app-blue-bg)', color: '#1890ff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, border: '1px solid rgba(24, 144, 255, 0.2)' }}>
                   <SyncOutlined />
                 </div>
-                <span style={{ fontWeight: 800, fontSize: 18, color: 'var(--app-text-strong)', letterSpacing: '-0.3px' }}>{t.agent.marketAutoRun}</span>
+                <span style={{ fontWeight: 800, fontSize: 18, color: 'var(--app-text-strong)', letterSpacing: 0 }}>{t.agent.marketAutoRun}</span>
                 <Tag color={pipelineSchedule !== 'off' ? 'green' : 'default'} bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, margin: 0, padding: '2px 8px' }}>
-                  {pipelineSchedule !== 'off' ? 'On' : 'Off'}
+                  {pipelineSchedule !== 'off' ? agentConsoleCopy.on : agentConsoleCopy.off}
                 </Tag>
               </span>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <Switch
+                  aria-label={agentText('Enable background market automation', '启用后台市场自动化')}
                   checked={pipelineSchedule !== 'off'}
                   loading={pipelineAutoLoading}
                   onChange={(checked) => {
@@ -6810,367 +6511,389 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
             </div>
           </div>
 
-          <div style={{ background: 'var(--app-card-bg-soft)', padding: '16px 20px' }}>
-            <Row gutter={32}>
-              {/* Left Column: Control */}
-              <Col span={8}>
-                <div style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>Control</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <ThunderboltOutlined style={{ color: pipelineSchedule !== 'off' ? '#52c41a' : 'var(--app-text-muted)', fontSize: 14 }} />
-                    <span style={{ fontSize: 12, color: 'var(--app-text-muted)', fontWeight: 500 }}>
-                      {pipelineSchedule === 'off' ? (
-                        'Automation is disabled.'
-                      ) : pipelineAutoStatus && !pipelineAutoStatus.marketOpen ? (
-                        pipelineAutoStatus.marketStage === 'premarket' ? (
-                          <span style={{ color: '#1890ff' }}>Premarket — armed, next run at 09:30 ET.</span>
-                        ) : (
-                          <span style={{ color: '#faad14' }}>Market closed — armed, waiting for open.</span>
-                        )
-                      ) : (
-                        <span style={{ color: '#52c41a' }}>Active — monitoring during market hours.</span>
-                      )}
-                    </span>
-                  </div>
-                  <Tooltip title="Runs one background auto scan without enabling the scheduler. Does not affect manual pipeline sections.">
-                    <Button
-                      type="primary"
-                      ghost
-                      icon={<ThunderboltOutlined />}
-                      onClick={handleRunAutoNow}
-                      disabled={pipelineRunning || autoRunActive || pipelineAutoLoading}
-                      loading={pipelineAutoLoading}
-                      block
-                      style={{
-                        borderRadius: 8,
-                        height: 36,
-                        fontSize: 12,
-                        fontWeight: 700,
-                        borderColor: pipelineRunning || autoRunActive ? 'var(--app-border)' : '#1890ff',
-                        color: pipelineRunning || autoRunActive ? 'var(--app-text-muted)' : '#1890ff',
-                      }}
-                    >
-                      {autoRunActive ? 'Auto Running...' : t.agent.runAutoPipelineNow}
-                    </Button>
-                  </Tooltip>
-                  <div style={{ fontSize: 10, color: 'var(--app-text-muted)', textAlign: 'center' }}>
-                    {pipelineSchedule === 'off'
-                      ? 'Run once without enabling schedule'
-                      : 'Trigger an immediate background scan'}
-                  </div>
-                </div>
-              </Col>
-
-              {/* Middle Column: Schedule */}
-              <Col span={8}>
-                <div style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>{t.agent.backgroundSchedule}</div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
-                  {(['off', '15m', '30m', '1h', '2h'] as const).map((s) => (
-                    <Button key={s}
-                      type={pipelineSchedule === s ? 'primary' : 'default'}
-                      onClick={() => savePipelineAutoConfig(s)}
-                      disabled={pipelineAutoLoading}
-                      style={{
-                        borderRadius: 8,
-                        height: 36,
-                        fontSize: 12,
-                        fontWeight: pipelineSchedule === s ? 700 : 500,
-                        gridColumn: s === 'off' ? '1 / -1' : undefined,
-                        background: pipelineSchedule === s ? '#1890ff' : 'var(--app-card-bg)',
-                        color: pipelineSchedule === s ? 'var(--app-card-bg)' : 'var(--app-text-muted)',
-                        borderColor: pipelineSchedule === s ? '#1890ff' : 'var(--app-border)',
-                        boxShadow: pipelineSchedule === s ? '0 2px 6px rgba(24, 144, 255, 0.2)' : 'none'
-                      }}
-                    >
-                      {s === 'off' ? t.agent.scheduleOff : s === '15m' ? t.agent.schedule15m : s === '30m' ? t.agent.schedule30m : s === '1h' ? t.agent.schedule1h : t.agent.schedule2h}
-                    </Button>
-                  ))}
-                </div>
-                <div style={{ fontSize: 10, color: 'var(--app-text-muted)', textAlign: 'center', marginTop: 8 }}>
-                  {t.agent.scheduleHelperText}
-                </div>
-                {pipelineSchedule !== 'off' && (
-                  <div style={{
-                    marginTop: 10, padding: '8px 10px', borderRadius: 6, border: '1px solid',
-                    display: 'flex', alignItems: 'center', gap: 8,
-                    ...(pipelineAutoStatus?.marketOpen
-                      ? { background: 'rgba(82, 196, 26, 0.1)', borderColor: 'rgba(82, 196, 26, 0.2)' }
-                      : { background: 'rgba(250, 173, 20, 0.1)', borderColor: 'rgba(250, 173, 20, 0.2)' }
-                    )
-                  }}>
-                    <SyncOutlined spin={autoRunActive} style={{ color: pipelineAutoStatus?.marketOpen ? '#52c41a' : '#faad14', fontSize: 13 }} />
-                    <span style={{ fontSize: 11, fontWeight: 600, color: pipelineAutoStatus?.marketOpen ? '#237804' : '#8c6d00' }}>
-                      {autoRunActive
-                        ? `Background auto scan running (${autoRunProgress}%)`
-                        : `Scheduled: Every ${pipelineSchedule}${pipelineAutoStatus?.marketOpen ? '' : ' (during market hours only)'}`
-                      }
-                    </span>
-                  </div>
-                )}
-              </Col>
-
-              {/* Right Column: Status Summary */}
-              <Col span={8}>
-                <div style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>Status Summary</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, background: 'var(--app-card-bg)', padding: 14, borderRadius: 10, border: '1px solid var(--app-border-soft)', height: '100%' }}>
-
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 500 }}>{t.agent.autoStatus}</span>
-                    {pipelineAutoStatus ? (
-                      pipelineAutoStatus.autoStatus === 'Off' ? (
-                        <Tag color="default" bordered={false} style={{ margin: 0, fontWeight: 700, fontSize: 10 }}>Off</Tag>
-                      ) : pipelineAutoStatus.autoStatus === 'Running' ? (
-                        <Tag color="processing" bordered={false} style={{ margin: 0, fontWeight: 700, fontSize: 10 }}>Running</Tag>
-                      ) : !pipelineAutoStatus.marketOpen ? (
-                        <Tag color={pipelineAutoStatus.marketStage === 'premarket' ? 'blue' : pipelineAutoStatus.marketStatusRaw === 'holiday' ? 'red' : 'orange'} bordered={false} style={{ margin: 0, fontWeight: 700, fontSize: 10 }}>
-                          {pipelineAutoStatus.marketStage === 'premarket' ? 'Premarket' : pipelineAutoStatus.marketStatusRaw === 'holiday' ? 'Holiday Closed' : 'Market Closed'}
-                        </Tag>
-                      ) : (
-                        <Tag color="green" bordered={false} style={{ margin: 0, fontWeight: 700, fontSize: 10 }}>Armed</Tag>
-                      )
-                    ) : (
-                      <span style={{ fontSize: 11, color: 'var(--app-text-muted)' }}>—</span>
-                    )}
-                  </div>
-
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 500 }}>{t.agent.lastAutoScan}</span>
-                    {pipelineAutoStatus?.lastRunAt ? (
-                      <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--app-text-strong)' }}>{new Date(pipelineAutoStatus.lastRunAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                    ) : (
-                      <span style={{ fontSize: 11, color: 'var(--app-text-muted)', fontStyle: 'italic' }}>—</span>
-                    )}
-                  </div>
-
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 500 }}>{t.agent.nextAutoScan}</span>
-                    {pipelineSchedule === 'off' ? (
-                      <span style={{ fontSize: 11, color: 'var(--app-text-muted)', fontStyle: 'italic' }}>{t.agent.disabled}</span>
-                    ) : pipelineAutoStatus?.nextAutoRunAt ? (
-                      <span style={{ fontSize: 12, fontWeight: 700, color: '#1890ff' }}>{new Date(pipelineAutoStatus.nextAutoRunAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                    ) : pipelineAutoStatus?.nextAutoRunDisplay ? (
-                      <span style={{ fontSize: 11, fontWeight: 600, color: '#52c41a' }}>{pipelineAutoStatus.nextAutoRunDisplay}</span>
-                    ) : (
-                      <span style={{ fontSize: 11, color: 'var(--app-text-muted)', fontStyle: 'italic' }}>—</span>
-                    )}
-                  </div>
-
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 500 }}>{t.agent.runsToday}</span>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--app-text-strong)' }}>{pipelineAutoStatus?.runCountToday || 0}</span>
-                  </div>
-
-                  <Divider style={{ margin: '2px 0', opacity: 0.4 }} />
-
-                  {/* Saved auto-run config (from backend status) */}
-                  {pipelineAutoStatus && pipelineSchedule !== 'off' && (
-                    <div style={{ background: 'var(--app-card-bg-soft)', borderRadius: 6, padding: '4px 6px', border: '1px solid var(--app-border)', marginBottom: 4 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 1 }}>
-                        <span style={{ fontSize: 9, fontWeight: 600, color: 'var(--app-text-muted)', textTransform: 'uppercase' }}>{t.agent.savedConfig}</span>
-                        <span style={{ fontSize: 8, color: pipelineAutoStatus.contextSource === 'saved_config' ? '#52c41a' : '#faad14' }}>
-                          {pipelineAutoStatus.contextSource === 'saved_config' ? t.agent.customConfig : t.agent.defaultConfig}
-                        </span>
-                      </div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 6px', fontSize: 10 }}>
-                        <span>{(pipelineAutoStatus.mode || 'hybrid').toUpperCase()}</span>
-                        <span>·</span>
-                        <span style={{ color: pipelineAutoStatus.riskProfile === 'high' ? '#ff4d4f' : pipelineAutoStatus.riskProfile === 'low' ? '#52c41a' : '#faad14' }}>
-                          {pipelineAutoStatus.riskProfile === 'high' ? 'High' : pipelineAutoStatus.riskProfile === 'low' ? 'Low' : 'Med'} risk
-                        </span>
-                        <span>·</span>
-                        <span style={{ color: '#1890ff' }}>{pipelineAutoStatus.timeHorizon === 'short' ? 'Short' : pipelineAutoStatus.timeHorizon === 'long' ? 'Long' : 'Mid'} term</span>
-                        <span>·</span>
-                        <span style={{ color: pipelineAutoStatus.tradeMode === 'real' ? '#ff4d4f' : 'var(--app-text-muted)' }}>{pipelineAutoStatus.tradeMode === 'real' ? 'Real' : 'Paper'}</span>
-                      </div>
-                      {pipelineAutoStatus.tradeMode && pipelineAutoStatus.tradeMode !== tradeMode && (
-                        <div style={{ fontSize: 8, color: '#ff4d4f', marginTop: 2 }}>
-                          {t.agent.savedModeDiffers}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Background auto-run progress */}
-                  {autoRunActive && (
-                    <div style={{ background: 'rgba(24, 144, 255, 0.1)', border: '1px solid rgba(24, 144, 255, 0.2)', borderRadius: 6, padding: '6px 8px' }}>
-                      <div style={{ fontSize: 10, fontWeight: 600, color: '#0050b3', marginBottom: 3 }}>
-                        <SyncOutlined spin style={{ marginRight: 4 }} />
-                        {t.agent.backgroundAutoRun}
-                      </div>
-                      <div style={{ fontSize: 10, color: '#003a8c' }}>
-                        {t.agent.stepLabel}: {autoRunStep.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
-                      </div>
-                      <div style={{ fontSize: 10, color: '#003a8c' }}>
-                        {t.agent.progressLabel}: {autoRunProgress}%
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Recent auto-run summary */}
-                  {!autoRunActive && pipelineAutoStatus?.lastAutoSummary?.completedAt && (
-                    <div style={{ background: 'var(--app-card-bg-soft)', borderRadius: 6, padding: '6px 8px' }}>
-                      <div style={{ fontSize: 9, fontWeight: 600, color: 'var(--app-text-muted)', marginBottom: 3, textTransform: 'uppercase' }}>{t.agent.lastBackgroundScan}</div>
-                      <div style={{ fontSize: 10, color: 'var(--app-text-strong)', lineHeight: 1.5 }}>
-                        {pipelineAutoStatus.lastAutoSummary.scanned > 0 && (
-                          <div>{pipelineAutoStatus.lastAutoSummary.scanned} {t.agent.scannedLabel}, {pipelineAutoStatus.lastAutoSummary.aiSuccess} AI, {(pipelineAutoStatus.lastAutoSummary.scanned || 0) - (pipelineAutoStatus.lastAutoSummary.aiSuccess || 0)} {t.agent.filteredLabel}</div>
-                        )}
-                        {pipelineAutoStatus.lastAutoSummary.entryPlanCount > 0 && (
-                          <div>{t.agent.entryPlan}: {pipelineAutoStatus.lastAutoSummary.entryPlanCount} {t.agent.candidates}</div>
-                        )}
-                        {pipelineAutoStatus.lastAutoSummary.exitScanCount > 0 && (
-                          <div>{t.agent.exitScan}: {pipelineAutoStatus.lastAutoSummary.exitScanCount} {t.agent.positions}</div>
-                        )}
-                        <div style={{ fontSize: 9, color: 'var(--app-text-muted)', marginTop: 2 }}>
-                          {new Date(pipelineAutoStatus.lastAutoSummary.completedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                          {' · '}{pipelineAutoStatus.lastAutoSummary.durationSeconds || 0}s
-                          {' · '}{pipelineAutoStatus.lastAutoSummary.trigger || 'auto'}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </Col>
-            </Row>
-
-            {/* Bottom: Next auto run info */}
-            {pipelineSchedule !== 'off' && pipelineAutoStatus && (
-              <div style={{ marginTop: 16, background: 'var(--app-card-bg)', border: '1px solid var(--app-border)', borderRadius: 8, padding: '8px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-                <div style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 500 }}>
-                  {!pipelineAutoStatus.marketOpen ? (
-                    <>
-                      {pipelineAutoStatus.nextMarketOpenAt ? (
-                        <>{t.agent.nextAutoRun}: <span style={{ fontWeight: 700, color: '#1890ff' }}>{new Date(pipelineAutoStatus.nextMarketOpenAt).toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York' })} ET</span></>
-                      ) : pipelineAutoStatus.nextMarketOpenDisplay ? (
-                        <span style={{ fontWeight: 700, color: '#faad14' }}>{pipelineAutoStatus.nextMarketOpenDisplay}</span>
-                      ) : (
-                        <span style={{ color: 'var(--app-text-muted)' }}>{t.agent.waitingForNextMarketOpen}</span>
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      {pipelineAutoStatus.nextAutoRunDisplay === 'Ready' ? (
-                        <>{t.agent.nextAutoRun}: <span style={{ fontWeight: 700, color: '#52c41a' }}>{t.agent.ready}</span></>
-                      ) : pipelineAutoStatus.nextAutoRunAt ? (
-                        <>{t.agent.nextAutoRun}: <span style={{ fontWeight: 700, color: '#1890ff' }}>{new Date(pipelineAutoStatus.nextAutoRunAt).toLocaleTimeString(language === 'zh-CN' ? 'zh-CN' : 'en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York' })}</span></>
-                      ) : null}
-                    </>
-                  )}
-                  {pipelineAutoStatus.stoppedForToday && !pipelineAutoStatus.blockedForDay && (
-                    <span style={{ display: 'block', fontSize: 10, color: 'var(--app-text-muted)', marginTop: 2 }}>{t.agent.stoppedForToday}</span>
-                  )}
-                  {pipelineAutoStatus.blockedForDay && (
-                    <span style={{ display: 'block', fontSize: 10, color: 'var(--app-text-muted)', marginTop: 2 }}>{t.agent.noTradingToday}</span>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Next 15 Days Market Schedule — expandable */}
-            {pipelineSchedule !== 'off' && (
-              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed var(--app-border)' }}>
-                <div
-                  onClick={() => setPipelineAutoScheduleExpanded(!pipelineAutoScheduleExpanded)}
-                  style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--app-text-muted)', userSelect: 'none' }}
-                >
-                  <span style={{ fontSize: 10 }}>{pipelineAutoScheduleExpanded ? '▼' : '▶'}</span>
-                  <span style={{ fontWeight: 600 }}>{t.agent.nextMarketSchedule}</span>
-                  {pipelineAutoScheduleLoading && <Spin size="small" style={{ marginLeft: 4 }} />}
-                </div>
-                {pipelineAutoScheduleExpanded && (
-                  <div style={{ marginTop: 8, maxHeight: 320, overflowY: 'auto' }}>
-                    {pipelineAutoScheduleError ? (
-                      <div style={{ fontSize: 10, color: '#ff4d4f', padding: '8px' }}>
-                        {pipelineAutoScheduleError}
-                      </div>
-                    ) : pipelineAutoSchedule && pipelineAutoSchedule.length > 0 ? (
-                      <>
-                        {pipelineAutoSchedule.map((day: any, i: number) => {
-                          const statusColor = day.status === 'open' ? '#52c41a' :
-                                              day.status === 'early_close' ? '#faad14' :
-                                              day.status === 'holiday' ? '#ff4d4f' :
-                                              day.status === 'weekend' ? 'var(--app-text-muted)' : 'var(--app-text-muted)';
-                          const bgColor = i % 2 === 0 ? 'var(--app-card-bg-soft)' : 'transparent';
-                          const autoRunText = day.autoRun ? 'Will run' : 'Will not run';
-                          const autoRunColor = day.autoRun ? '#52c41a' : 'var(--app-text-muted)';
-                          const hours = day.openTime && day.closeTime ? `${day.openTime}–${day.closeTime}` : '—';
-                          return (
-                            <div key={day.date} style={{
-                              display: 'flex', alignItems: 'center', gap: 6,
-                              padding: '5px 8px', fontSize: 10, lineHeight: '16px',
-                              background: bgColor, borderRadius: 4, marginBottom: 2
-                            }}>
-                              <span style={{ minWidth: 80, fontWeight: 600, color: 'var(--app-text-strong)' }}>
-                                {day.weekday?.slice(0, 3)} {day.date?.slice(5)}
-                              </span>
-                              <Tag bordered={false} style={{ fontSize: 9, margin: 0, lineHeight: '16px', borderRadius: 3, minWidth: 48, textAlign: 'center', background: statusColor + '18', color: statusColor, fontWeight: 700 }}>
-                                {day.status === 'early_close' ? 'Early Cls' : day.status === 'open' ? 'Open' : day.status === 'holiday' ? 'Holiday' : day.status === 'weekend' ? 'Weekend' : day.status || '—'}
-                              </Tag>
-                              <span style={{ color: 'var(--app-text-muted)', minWidth: 58, fontSize: 9 }}>{hours}</span>
-                              <span style={{ color: autoRunColor, fontWeight: 600, minWidth: 50, fontSize: 9 }}>{autoRunText}</span>
-                              <span style={{ color: 'var(--app-text-muted)', fontSize: 8, minWidth: 40 }}>
-                                {day.source === 'alpaca_calendar' ? 'Alpaca' : day.source === 'fallback_basic_hours' ? 'Fallbk' : ''}
-                              </span>
-                              {day.reason && (
-                                <span style={{ color: 'var(--app-text-muted)', fontSize: 9, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                                  {day.reason}
-                                </span>
-                              )}
-                            </div>
-                          );
-                        })}
-                        <div style={{ fontSize: 9, color: 'var(--app-text-muted)', marginTop: 4, paddingLeft: 8 }}>
-                          Source: {pipelineAutoScheduleSource === 'alpaca_calendar' ? 'Alpaca Calendar' : 'Fallback basic hours'} / {pipelineAutoScheduleWarning && <span style={{ color: '#faad14' }}>{pipelineAutoScheduleWarning}</span>}
-                        </div>
-                      </>
-                    ) : (
-                      <div style={{ fontSize: 10, color: 'var(--app-text-muted)', fontStyle: 'italic', padding: '8px' }}>
-                        {pipelineAutoScheduleLoading ? t.agent.loading : t.agent.noScheduleData}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Auto Run History — expandable */}
-            {pipelineAutoStatus && pipelineAutoHistory.length > 0 && (
-              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed var(--app-border)' }}>
-                <div
-                  onClick={() => setPipelineAutoHistoryExpanded(!pipelineAutoHistoryExpanded)}
-                  style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--app-text-muted)', userSelect: 'none' }}
-                >
-                  <span style={{ fontSize: 10 }}>{pipelineAutoHistoryExpanded ? '▼' : '▶'}</span>
-                  <span style={{ fontWeight: 600 }}>{t.agent.recentAutoRuns}</span>
-                  <Tag bordered={false} style={{ fontSize: 9, margin: 0, lineHeight: '16px', borderRadius: 4, background: '#f0f2f5', color: 'var(--app-text-muted)' }}>
-                    {pipelineAutoHistory.length}
+          <section className={`agent-full-cycle-progress is-${autoRunDisplayStatus}`} aria-label={agentConsoleCopy.runFullCycle}>
+            <div className="agent-full-cycle-head">
+              <div>
+                <span className="agent-full-cycle-kicker">{agentConsoleCopy.runFullCycle}</span>
+                <div className="agent-full-cycle-operation">
+                  <strong>
+                    {autoRunDisplayStatus === 'running'
+                      ? (autoRunCurrentStage ? getAutoRunStageLabel(autoRunCurrentStage) : agentConsoleCopy.startingPipeline)
+                      : autoRunDisplayStatus === 'completed'
+                        ? agentConsoleCopy.cycleCompleted
+                        : autoRunDisplayStatus === 'failed'
+                          ? agentConsoleCopy.pipelineFailed(getAutoRunStageLabel(autoRunFailedStage))
+                          : autoRunDisplayStatus === 'stopped' || autoRunDisplayStatus === 'interrupted'
+                            ? agentConsoleCopy.cycleInterrupted
+                            : agentConsoleCopy.ready}
+                  </strong>
+                  <Tag
+                    bordered={false}
+                    color={
+                      autoRunDisplayStatus === 'running' ? 'processing' :
+                      autoRunDisplayStatus === 'completed' ? 'success' :
+                      autoRunDisplayStatus === 'failed' ? 'error' :
+                      autoRunDisplayStatus === 'stopped' || autoRunDisplayStatus === 'interrupted' ? 'warning' : 'default'
+                    }
+                  >
+                    {autoRunDisplayStatus === 'running' ? agentConsoleCopy.running :
+                     autoRunDisplayStatus === 'completed' ? agentConsoleCopy.completed :
+                     autoRunDisplayStatus === 'failed' ? agentConsoleCopy.failed :
+                     autoRunDisplayStatus === 'stopped' || autoRunDisplayStatus === 'interrupted' ? agentConsoleCopy.stopped : agentConsoleCopy.idle}
                   </Tag>
                 </div>
-                {pipelineAutoHistoryExpanded && (
-                  <div style={{ marginTop: 8 }}>
-                    {pipelineAutoHistory.map((entry: any, i: number) => (
-                      <div key={i} style={{
-                        display: 'flex', alignItems: 'center', gap: 8,
-                        padding: '4px 8px', fontSize: 10, lineHeight: '18px',
-                        background: i % 2 === 0 ? 'var(--app-card-bg-soft)' : 'transparent',
-                        borderRadius: 4, marginBottom: 2
-                      }}>
-                        <Tag bordered={false} style={{ fontSize: 9, margin: 0, lineHeight: '16px', borderRadius: 3, minWidth: 36, textAlign: 'center' }}
-                          color={entry.status === 'success' ? 'green' : entry.status === 'failed' ? 'red' : entry.status === 'blocked' ? 'orange' : entry.status === 'skipped' ? 'default' : 'orange'}>
-                          {entry.status || '—'}
+                <span className="agent-full-cycle-message">
+                  {autoRunDisplayStatus === 'running'
+                    ? autoRunRecord?.message || agentConsoleCopy.preparingPipeline
+                    : autoRunDisplayStatus === 'failed'
+                      ? autoRunRecord?.lastError || autoRunRecord?.message || agentConsoleCopy.cycleStoppedEarly
+                      : autoRunDisplayStatus === 'completed'
+                        ? autoRunRecord?.message || agentConsoleCopy.allStagesFinished
+                        : agentConsoleCopy.readyForBackgroundRun}
+                </span>
+              </div>
+              <div className="agent-full-cycle-metrics">
+                <div className="agent-full-cycle-overall"><span>{agentConsoleCopy.overall}</span><b>{autoRunComputedProgress}%</b></div>
+                <div><span>{agentConsoleCopy.currentStage}</span><b>{autoRunDisplayStatus === 'idle' ? '0' : Math.min(autoRunStages.length, Math.max(1, autoRunCurrentStageIndex + 1 || Number(autoRunRecord?.stepIndex || 1)))}/{autoRunStages.length}</b></div>
+                <div><span>{agentConsoleCopy.elapsed}</span><b>{autoRunDisplayStatus === 'idle' ? '--' : autoRunElapsedLabel}</b></div>
+              </div>
+            </div>
+
+            <div className="agent-full-cycle-rail-wrap">
+              <div
+                className="agent-full-cycle-rail"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={autoRunComputedProgress}
+                aria-label={agentConsoleCopy.progressAria(autoRunComputedProgress)}
+              >
+                <span className="agent-full-cycle-rail-fill" style={{ width: `${autoRunComputedProgress}%` }} />
+                {autoRunDisplayStatus === 'running' && autoRunComputedProgress > 0 && (
+                  <i className="agent-full-cycle-rail-pulse" style={{ left: `${autoRunComputedProgress}%` }} aria-hidden="true" />
+                )}
+                <div className="agent-full-cycle-rail-markers" aria-hidden="true">
+                  {autoRunStages.slice(1).map((stage: any, index: number) => (
+                    <i key={stage.key} style={{ left: `${((index + 1) / autoRunStages.length) * 100}%` }} />
+                  ))}
+                </div>
+              </div>
+              <div className="agent-full-cycle-rail-meta">
+                <span>{autoRunCurrentDetail}</span>
+                <b>{agentConsoleCopy.completedCount(autoRunCompletedStages, autoRunStages.length)}</b>
+              </div>
+            </div>
+
+            <div className="agent-full-cycle-stages">
+              {autoRunStages.map((stage: any, index: number) => {
+                const stageState = autoRunStepStates?.[stage.key] || {};
+                const recordedStatus = autoRunFailedStage?.key === stage.key
+                  ? 'failed'
+                  : stageState?.status || 'pending';
+                const stageStatus = autoRunActive && !autoRunRecord && index === 0 ? 'running' : recordedStatus;
+                const completed = ['completed', 'completed_no_candidates'].includes(stageStatus);
+                const partial = stageStatus === 'partial';
+                const failed = stageStatus === 'failed';
+                const running = stageStatus === 'running';
+                const stopped = stageStatus === 'stopped' || stageStatus === 'interrupted';
+                const stageProgress = completed || partial
+                  ? 100
+                  : Math.max(0, Math.min(100, Number(stageState?.progressPct || 0)));
+                const visualStatus = failed ? 'failed' : stopped ? 'stopped' : partial ? 'partial' : completed ? 'completed' : running ? 'running' : 'pending';
+                return (
+                  <div
+                    key={stage.key}
+                    className={`agent-full-cycle-stage is-${visualStatus}`}
+                    aria-current={running ? 'step' : undefined}
+                  >
+                    <span className="agent-full-cycle-stage-index">
+                      {completed ? <CheckOutlined /> : failed ? <CloseCircleOutlined /> : stopped ? <PauseCircleOutlined /> : running ? <SyncOutlined spin /> : index + 1}
+                    </span>
+                    <span className="agent-full-cycle-stage-copy">
+                      <strong>{getAutoRunStageLabel(stage)}</strong>
+                      <small>{getAutoRunStageDetail(stageState, stageStatus)}</small>
+                    </span>
+                    <span className="agent-full-cycle-stage-bar" aria-hidden="true">
+                      <i style={{ width: `${stageProgress}%` }} />
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+
+          <div className="agent-auto-console">
+            <div className="agent-auto-command">
+              <div className="agent-auto-command-block agent-auto-schedule-control">
+                <span className="agent-auto-command-label">{agentConsoleCopy.backgroundSchedule}</span>
+                <Segmented
+                  className="agent-auto-schedule-options"
+                  value={pipelineSchedule}
+                  disabled={pipelineAutoLoading}
+                  onChange={(value) => savePipelineAutoConfig(value as 'off' | '15m' | '30m' | '1h' | '2h')}
+                  options={[
+                    { label: agentConsoleCopy.off, value: 'off' },
+                    { label: '15m', value: '15m' },
+                    { label: '30m', value: '30m' },
+                    { label: '1h', value: '1h' },
+                    { label: '2h', value: '2h' },
+                  ]}
+                />
+                <small>{agentConsoleCopy.scheduleHelper}</small>
+              </div>
+
+              <div className="agent-auto-command-block agent-auto-authority">
+                <span className="agent-auto-command-label">{agentConsoleCopy.orderAuthority}</span>
+                <div>
+                  <strong>
+                    {tradeMode === 'paper'
+                      ? agentConsoleCopy.paperAutomation
+                      : liveAutoTradingEnabled
+                        ? agentConsoleCopy.liveOrdersAuthorized
+                        : agentConsoleCopy.liveOrdersLocked}
+                  </strong>
+                  {tradeMode === 'real' ? (
+                    <Switch
+                      aria-label={liveAutoCopy.switchLabel}
+                      size="small"
+                      checked={liveAutoTradingEnabled}
+                      loading={pipelineAutoLoading}
+                      onChange={handleLiveAutoTradingToggle}
+                    />
+                  ) : (
+                    <Tag bordered={false} color="blue">{agentConsoleCopy.paper}</Tag>
+                  )}
+                </div>
+                <small>
+                  {pipelineMode === 'ai'
+                    ? agentConsoleCopy.eligibleOrders
+                    : agentConsoleCopy.fullAiRequired}
+                </small>
+              </div>
+
+              <Tooltip title={agentConsoleCopy.runTooltip}>
+                <Button
+                  className="agent-auto-run-button"
+                  type="primary"
+                  icon={<ThunderboltOutlined />}
+                  onClick={confirmRunAutoNow}
+                  disabled={pipelineRunning || autoRunActive || pipelineAutoLoading}
+                  loading={pipelineAutoLoading}
+                >
+                  {autoRunActive ? agentConsoleCopy.fullCycleRunning : agentConsoleCopy.runFullCycle}
+                </Button>
+              </Tooltip>
+            </div>
+
+            <div className="agent-auto-disclosure">
+              <InfoCircleOutlined />
+              <span>
+                <strong>{agentConsoleCopy.sevenStagesTitle}</strong>
+                {agentConsoleCopy.sevenStagesDescription}
+              </span>
+            </div>
+
+            <div className="agent-auto-facts">
+              <div className="agent-auto-fact">
+                <span>{agentConsoleCopy.automation}</span>
+                <strong className={pipelineAutoStatus?.circuitBreakerOpen ? 'is-block' : pipelineSchedule === 'off' ? 'is-muted' : 'is-ok'}>
+                  {autoRunStatusLabel}
+                </strong>
+                <small>{pipelineAutoStatus?.marketOpen ? agentConsoleCopy.newYorkSessionOpen : agentConsoleCopy.marketHoursGateActive}</small>
+              </div>
+              <div className="agent-auto-fact">
+                <span>{agentConsoleCopy.lastCompleted}</span>
+                <strong>
+                  {autoRunLastCompletedAt
+                    ? new Date(autoRunLastCompletedAt).toLocaleString(
+                        language === 'zh-CN' ? 'zh-CN' : 'en-US',
+                        { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }
+                      )
+                    : agentConsoleCopy.noCompletedRun}
+                </strong>
+                <small>
+                  {autoRunLastSummary?.durationSeconds
+                    ? formatAutoRunDuration(Number(autoRunLastSummary.durationSeconds))
+                    : agentConsoleCopy.awaitingFirstCycle}
+                </small>
+              </div>
+              <div className="agent-auto-fact">
+                <span>{agentConsoleCopy.nextEligibleRun}</span>
+                <strong>{autoRunNextLabel}</strong>
+                <small>{pipelineSchedule === 'off' ? agentConsoleCopy.enableSchedule : agentConsoleCopy.authoritativeSchedule}</small>
+              </div>
+              <div className="agent-auto-fact">
+                <span>{agentConsoleCopy.runsToday}</span>
+                <strong>{pipelineAutoStatus?.runCountToday || 0}</strong>
+                <small>{pipelineAutoStatus?.schedulerRunning ? agentConsoleCopy.schedulerOnline : agentConsoleCopy.schedulerPending}</small>
+              </div>
+              <div className="agent-auto-fact">
+                <span>{agentConsoleCopy.savedContext}</span>
+                <strong>
+                  {(pipelineAutoStatus?.mode || pipelineMode || 'hybrid').toUpperCase()}
+                  {' / '}
+                  {pipelineAutoStatus?.tradeMode === 'real' ? agentConsoleCopy.real : agentConsoleCopy.paperCode}
+                </strong>
+                <small>
+                  {agentConsoleCopy.riskHorizon(
+                    agentConsoleCopy.riskLabels[pipelineAutoStatus?.riskProfile || riskProfile || 'medium'] || pipelineAutoStatus?.riskProfile || riskProfile || 'medium',
+                    agentConsoleCopy.horizonLabels[pipelineAutoStatus?.timeHorizon || timeHorizon || 'medium'] || pipelineAutoStatus?.timeHorizon || timeHorizon || 'medium'
+                  )}
+                </small>
+              </div>
+              <div className="agent-auto-fact">
+                <span>{agentConsoleCopy.discordPolicy}</span>
+                <strong className={pipelineAutoStatus?.discordEnabled ? 'is-ok' : 'is-muted'}>
+                  {pipelineAutoStatus?.discordEnabled ? agentConsoleCopy.quietAlertsOn : agentConsoleCopy.off}
+                </strong>
+                <small>
+                  {pipelineAutoStatus?.discordEnabled
+                    ? [
+                        discordPolicy.tradeActivity ? agentConsoleCopy.trades : null,
+                        discordPolicy.riskAlerts ? agentConsoleCopy.risk : null,
+                        discordPolicy.cycleDigest ? agentConsoleCopy.digest : null,
+                      ].filter(Boolean).join(' / ') || agentConsoleCopy.materialEventsOnly
+                    : agentConsoleCopy.noWebhook}
+                </small>
+              </div>
+            </div>
+
+            {!autoRunActive && autoRunLastCompletedAt && (
+              <div className="agent-auto-last-run">
+                <div>
+                  <span>{agentConsoleCopy.lastCycle}</span>
+                  <strong>{
+                    agentConsoleCopy.runStatusLabels[autoRunLastSummary?.status || pipelineAutoStatus?.lastBackendRunStatus || 'completed']
+                    || autoRunLastSummary?.status
+                    || pipelineAutoStatus?.lastBackendRunStatus
+                    || agentConsoleCopy.completedFallback
+                  }</strong>
+                </div>
+                <div>
+                  <span>{agentConsoleCopy.scanner}</span>
+                  <strong>{autoRunLastSummary?.scanned || 0}</strong>
+                </div>
+                <div>
+                  <span>{agentConsoleCopy.aiReviewed}</span>
+                  <strong>{autoRunLastSummary?.aiSuccess || 0}</strong>
+                </div>
+                <div>
+                  <span>{agentConsoleCopy.entryPlans}</span>
+                  <strong>{autoRunLastSummary?.entryPlanCount || 0}</strong>
+                </div>
+                <div>
+                  <span>{agentConsoleCopy.positionsChecked}</span>
+                  <strong>{autoRunLastSummary?.exitScanCount || 0}</strong>
+                </div>
+              </div>
+            )}
+
+            {(pipelineAutoStatus?.stoppedForToday || pipelineAutoStatus?.blockedForDay) && (
+              <div className="agent-auto-notice">
+                <WarningOutlined />
+                <span>
+                  {pipelineAutoStatus?.blockedForDay
+                    ? t.agent.noTradingToday
+                    : t.agent.stoppedForToday}
+                </span>
+              </div>
+            )}
+
+            <div className="agent-auto-expanders">
+              <button
+                type="button"
+                className="agent-auto-expander"
+                aria-expanded={pipelineAutoScheduleExpanded}
+                onClick={() => setPipelineAutoScheduleExpanded(!pipelineAutoScheduleExpanded)}
+                disabled={pipelineSchedule === 'off'}
+              >
+                {pipelineAutoScheduleExpanded ? <CaretDownOutlined /> : <CaretRightOutlined />}
+                <span>{agentConsoleCopy.marketCalendar}</span>
+                <small>{pipelineSchedule === 'off' ? agentConsoleCopy.scheduleOff : agentConsoleCopy.next15Days}</small>
+                {pipelineAutoScheduleLoading && <Spin size="small" />}
+              </button>
+              <button
+                type="button"
+                className="agent-auto-expander"
+                aria-expanded={pipelineAutoHistoryExpanded}
+                onClick={() => setPipelineAutoHistoryExpanded(!pipelineAutoHistoryExpanded)}
+              >
+                {pipelineAutoHistoryExpanded ? <CaretDownOutlined /> : <CaretRightOutlined />}
+                <span>{agentConsoleCopy.runHistory}</span>
+                <small>{pipelineAutoHistory.length ? agentConsoleCopy.loaded(pipelineAutoHistory.length) : agentConsoleCopy.auditTrail}</small>
+              </button>
+            </div>
+
+            {pipelineSchedule !== 'off' && pipelineAutoScheduleExpanded && (
+              <div className="agent-auto-drawer" aria-label={agentConsoleCopy.marketCalendar}>
+                {pipelineAutoScheduleError ? (
+                  <div className="agent-auto-empty is-error">{pipelineAutoScheduleError}</div>
+                ) : pipelineAutoSchedule?.length ? (
+                  <>
+                    <div className="agent-auto-list agent-auto-calendar-list">
+                      {pipelineAutoSchedule.map((day: any) => {
+                        const dayColor = day.status === 'open'
+                          ? 'green'
+                          : day.status === 'early_close'
+                            ? 'gold'
+                            : day.status === 'holiday'
+                              ? 'red'
+                              : 'default';
+                        return (
+                          <div className="agent-auto-list-row" key={day.date}>
+                            <strong>{day.weekday?.slice(0, 3)} {day.date?.slice(5)}</strong>
+                            <Tag bordered={false} color={dayColor}>
+                              {agentConsoleCopy.calendarStatusLabels[day.status] || day.status || agentConsoleCopy.unknown}
+                            </Tag>
+                            <span>{day.openTime && day.closeTime ? day.openTime + '-' + day.closeTime : agentConsoleCopy.closed}</span>
+                            <span className={day.autoRun ? 'is-ok' : 'is-muted'}>{day.autoRun ? agentConsoleCopy.scheduled : agentConsoleCopy.noRun}</span>
+                            <small>{day.reason || (day.source === 'alpaca_calendar' ? agentConsoleCopy.calendarRowAlpaca : agentConsoleCopy.calendarRowFallback)}</small>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="agent-auto-source-note">
+                      {agentConsoleCopy.source}: {pipelineAutoScheduleSource === 'alpaca_calendar' ? agentConsoleCopy.alpacaCalendar : agentConsoleCopy.fallbackCalendar}
+                      {pipelineAutoScheduleWarning ? ' / ' + pipelineAutoScheduleWarning : ''}
+                    </div>
+                  </>
+                ) : (
+                  <div className="agent-auto-empty">
+                    {pipelineAutoScheduleLoading ? agentConsoleCopy.loadingCalendar : agentConsoleCopy.noCalendarData}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {pipelineAutoHistoryExpanded && (
+              <div className="agent-auto-drawer" aria-label={agentConsoleCopy.runHistory}>
+                {pipelineAutoHistory.length ? (
+                  <div className="agent-auto-list agent-auto-history-list">
+                    {pipelineAutoHistory.map((entry: any, index: number) => (
+                      <div className="agent-auto-list-row" key={entry.run_id || entry.id || index}>
+                        <Tag
+                          bordered={false}
+                          color={
+                            entry.status === 'success' ? 'green' :
+                            entry.status === 'failed' ? 'red' :
+                            entry.status === 'blocked' ? 'orange' : 'default'
+                          }
+                        >
+                          {agentConsoleCopy.runStatusLabels[entry.status] || entry.status || agentConsoleCopy.unknown}
                         </Tag>
-                        <span style={{ color: 'var(--app-text-muted)', minWidth: 50 }}>{entry.trigger_type || '—'}</span>
-                        <span style={{ color: 'var(--app-text-muted)' }}>
-                          {entry.started_at ? new Date(entry.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
+                        <strong>{entry.trigger_type || agentConsoleCopy.automatic}</strong>
+                        <span>
+                          {entry.started_at
+                            ? new Date(entry.started_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                            : agentConsoleCopy.timeUnavailable}
                         </span>
-                        <span style={{ color: 'var(--app-text-muted)' }}>
-                          {entry.duration_seconds ? `${entry.duration_seconds}s` : '—'}
-                        </span>
-                        <span style={{ color: 'var(--app-text-muted)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {entry.reason || entry.error || ''}
-                        </span>
+                        <span>{entry.duration_seconds ? entry.duration_seconds + 's' : '--'}</span>
+                        <small>{entry.reason || entry.error || agentConsoleCopy.completedWithoutException}</small>
                       </div>
                     ))}
                   </div>
+                ) : (
+                  <div className="agent-auto-empty">{agentConsoleCopy.noStoredCycles}</div>
                 )}
               </div>
             )}
@@ -7179,10 +6902,10 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
       </div>
 
       {/* 1.52 Trading Preferences */}
-      <div style={{ marginBottom: 24 }}>
-        <Row gutter={20}>
-          <Col span={12}>
-            <div style={{ background: 'var(--app-card-bg)', borderRadius: 12, border: '1px solid var(--app-border-soft)', padding: '20px', boxShadow: '0 2px 8px rgba(0, 0, 0, 0.02)', height: '100%' }}>
+      <div className="agent-preferences-panel">
+        <Row gutter={[20, 20]}>
+          <Col xs={24} lg={12}>
+            <div style={{ background: 'var(--app-card-bg)', borderRadius: 8, border: '1px solid var(--app-border-soft)', padding: '20px', boxShadow: '0 2px 8px rgba(0, 0, 0, 0.02)', height: '100%' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
                 <FundOutlined style={{ color: '#722ed1', fontSize: 18 }} />
                 <span style={{ fontSize: 15, fontWeight: 800, color: 'var(--app-text-strong)' }}>{t.agent.riskProfile}</span>
@@ -7203,8 +6926,8 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
               />
             </div>
           </Col>
-          <Col span={12}>
-            <div style={{ background: 'var(--app-card-bg)', borderRadius: 12, border: '1px solid var(--app-border-soft)', padding: '20px', boxShadow: '0 2px 8px rgba(0, 0, 0, 0.02)', height: '100%' }}>
+          <Col xs={24} lg={12}>
+            <div style={{ background: 'var(--app-card-bg)', borderRadius: 8, border: '1px solid var(--app-border-soft)', padding: '20px', boxShadow: '0 2px 8px rgba(0, 0, 0, 0.02)', height: '100%' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
                 <ClockCircleOutlined style={{ color: '#1890ff', fontSize: 18 }} />
                 <span style={{ fontSize: 15, fontWeight: 800, color: 'var(--app-text-strong)' }}>{t.agent.timeHorizon}</span>
@@ -7229,18 +6952,18 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
       </div>
 
       {/* 1.55 AI Auto Pipeline */}
-      <div style={{ marginBottom: 24 }}>
+      <div className="agent-interactive-pipeline" id="research-pipeline-control">
         <Card
           className="premium-card"
-          bodyStyle={{ padding: 0 }}
+          styles={{ body: { padding: 0 } }}
           title={
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid var(--app-border-soft)' }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ width: 36, height: 36, borderRadius: 10, background: 'rgba(114, 46, 209, 0.1)', color: '#722ed1', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, border: '1px solid rgba(114, 46, 209, 0.2)' }}>
+                <div style={{ width: 34, height: 34, borderRadius: 6, background: 'var(--app-blue-bg)', color: '#1677ff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17, border: '1px solid rgba(22, 119, 255, 0.2)' }}>
                   <RobotOutlined />
                 </div>
-                <span style={{ fontWeight: 800, fontSize: 18, color: 'var(--app-text-strong)', letterSpacing: '-0.3px' }}>{t.agent.aiPipeline}</span>
-                <Tag color={pipelineMode === 'ai' ? 'purple' : pipelineMode === 'hybrid' ? 'blue' : 'default'} bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, margin: 0, padding: '2px 8px' }}>
+                <span style={{ fontWeight: 800, fontSize: 18, color: 'var(--app-text-strong)', letterSpacing: 0 }}>{t.agent.aiPipeline}</span>
+                <Tag color={pipelineMode === 'ai' ? 'processing' : pipelineMode === 'hybrid' ? 'blue' : 'default'} bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, margin: 0, padding: '2px 8px' }}>
                   {pipelineMode === 'ai' ? t.agent.buyAction : pipelineMode === 'hybrid' ? t.agent.modeHybrid : t.agent.skipAction}
                 </Tag>
               </span>
@@ -7262,14 +6985,14 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     onClick={() => runAIPipeline({ trigger: 'manual' })}
                     disabled={autoRunActive || (pipelineMode === 'manual' ? false : isAnyScanRunning)}
                     style={{ 
-                      background: 'linear-gradient(135deg, #722ed1 0%, #531dab 100%)', 
-                      borderColor: '#722ed1', 
+                      background: '#1677ff',
+                      borderColor: '#1677ff',
                       color: 'var(--app-card-bg)',
                       height: 36,
-                      borderRadius: 8,
+                      borderRadius: 6,
                       fontWeight: 700,
                       fontSize: 13,
-                      boxShadow: '0 4px 12px rgba(114, 46, 209, 0.2)'
+                      boxShadow: '0 2px 6px rgba(22, 119, 255, 0.18)'
                     }}
                   >
                     {t.agent.runPipeline}
@@ -7293,36 +7016,20 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
             </div>
           </div>
 
-          <div style={{ background: 'var(--app-card-bg-soft)', padding: '16px 20px', borderRadius: 12, border: '1px solid var(--app-border-soft)' }}>
+          <div style={{ background: 'var(--app-card-bg-soft)', padding: '16px 20px', borderRadius: 0, borderBottom: '1px solid var(--app-border-soft)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-              <div style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, whiteSpace: 'nowrap' }}>{t.agent.aiPipeline} Mode</div>
-              <div style={{ display: 'flex', gap: 8, flex: 1 }}>
-                {(['ai', 'hybrid', 'manual'] as const).map(m => (
-                  <div
-                    key={m}
-                    onClick={() => { setPipelineMode(m); }}
-                    style={{
-                      flex: 1,
-                      padding: '10px 16px',
-                      borderRadius: 10,
-                      cursor: 'pointer',
-                      border: pipelineMode === m ? (m === 'ai' ? '2px solid #722ed1' : m === 'hybrid' ? '2px solid #1890ff' : '2px solid var(--app-border)') : '1px solid var(--app-border-soft)',
-                      background: pipelineMode === m ? (m === 'ai' ? 'var(--app-risk-reward-bg)' : m === 'hybrid' ? 'var(--app-blue-bg)' : 'var(--app-card-bg-soft)') : 'var(--app-card-bg)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: 6,
-                      transition: 'all 0.2s',
-                      boxShadow: pipelineMode === m ? '0 2px 8px rgba(0,0,0,0.05)' : 'none'
-                    }}
-                  >
-                    <span style={{ fontWeight: 700, fontSize: 14, color: pipelineMode === m ? (m === 'ai' ? '#531dab' : m === 'hybrid' ? '#096dd9' : 'var(--app-text-muted)') : 'var(--app-text-muted)' }}>
-                      {m === 'ai' ? t.agent.modeAI : m === 'hybrid' ? t.agent.modeHybrid : t.agent.modeManual}
-                    </span>
-                    {pipelineMode === m && <CheckCircleFilled style={{ color: m === 'ai' ? '#722ed1' : m === 'hybrid' ? '#1890ff' : 'var(--app-text-muted)', fontSize: 14 }} />}
-                  </div>
-                ))}
-              </div>
+              <div style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, whiteSpace: 'nowrap' }}>{t.agent.aiPipeline}{agentConsoleCopy.pipelineModeSuffix}</div>
+              <Segmented
+                block
+                value={pipelineMode}
+                onChange={(value) => setPipelineMode(value as 'ai' | 'hybrid' | 'manual')}
+                options={[
+                  { label: t.agent.modeAI, value: 'ai', icon: <RobotOutlined /> },
+                  { label: t.agent.modeHybrid, value: 'hybrid', icon: <SafetyCertificateOutlined /> },
+                  { label: t.agent.modeManual, value: 'manual', icon: <EyeOutlined /> },
+                ]}
+                style={{ flex: 1, borderRadius: 6, padding: 3, background: 'var(--app-table-header-bg)' }}
+              />
             </div>
 
             {pipelineStage !== 'idle' && (
@@ -7359,17 +7066,28 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
         </Card>
       </div>
 
+      <div className="agent-section-heading agent-portfolio-heading">
+        <div>
+          <span>{agentConsoleCopy.tradingDesk}</span>
+          <h2>{agentConsoleCopy.portfolioOperations}</h2>
+        </div>
+        <b>{agentText(
+          `${holdings.length} open · ${aiExecutionList.length} queued · ${aiWatchlistItems.length} monitored`,
+          `${holdings.length} 个持仓 · ${aiExecutionList.length} 个待执行 · ${aiWatchlistItems.length} 个监控中`,
+        )}</b>
+      </div>
+
       {/* 1.58 Current Holdings */}
-      <div style={{ marginBottom: 24 }}>
+      <div className="agent-portfolio-panel" id="research-portfolio">
         <Card
           className="premium-card"
-          bodyStyle={{ padding: 0 }}
+          styles={{ body: { padding: 0 } }}
           title={
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid var(--app-border-soft)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <div style={{
-                  width: 36, height: 36, borderRadius: 10,
-                  background: 'linear-gradient(135deg, rgba(82, 196, 26, 0.1) 0%, #d9f7be 100%)',
+                  width: 36, height: 36, borderRadius: 8,
+                  background: 'rgba(82, 196, 26, 0.1)',
                   color: '#52c41a', display: 'flex', alignItems: 'center',
                   justifyContent: 'center', fontSize: 18,
                   border: '1px solid rgba(82, 196, 26, 0.2)'
@@ -7378,7 +7096,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 18, fontWeight: 800, color: 'var(--app-text-strong)', letterSpacing: '-0.3px' }}>{t.agent.positions}</span>
+                    <span style={{ fontSize: 18, fontWeight: 800, color: 'var(--app-text-strong)', letterSpacing: 0 }}>{t.agent.positions}</span>
                     <Tag color="success" bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, margin: 0, padding: '0 8px' }}>
                       {holdings.length}
                     </Tag>
@@ -7387,8 +7105,8 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <Tag color={tradeMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, margin: 0, padding: '4px 8px' }}>
-                  {tradeMode?.toUpperCase()} TRADING
+                <Tag color={tradeMode === 'paper' ? 'blue' : 'default'} bordered={false} className="agent-environment-tag" style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, margin: 0, padding: '4px 8px' }}>
+                  {tradeMode === 'paper' ? agentConsoleCopy.paperTradingStatus : agentConsoleCopy.liveTradingStatus}
                 </Tag>
                 <Divider type="vertical" style={{ height: 24, margin: 0, opacity: 0.5 }} />
                 <Button
@@ -7446,7 +7164,6 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 style={{ fontSize: 13 }}
                 rowClassName={(record) => record.id === expandedRows[0] ? 'holdings-row holdings-row-expanded' : 'holdings-row'}
                 expandable={{
-                  expandIconColumnIndex: 0,
                   expandedRowRender: (h: any) => (
                     <div style={{ padding: '16px 24px', background: 'var(--app-card-bg-soft)', borderRadius: 8, margin: '8px 16px', border: '1px solid var(--app-border)', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.02)' }}>
                       <div style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 16 }}>{t.agent.colPosition} {t.agent.details}</div>
@@ -7455,16 +7172,16 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                           { label: t.agent.symbol, value: <span style={{ fontWeight: 800 }}>{h.symbol}</span> },
                           { label: t.agent.side, value: <Tag color={h.side === 'short' ? 'red' : 'green'} bordered={false} style={{ margin: 0, fontWeight: 700 }}>{h.side?.toUpperCase() || t.agent.longSide}</Tag> },
                           { label: t.agent.qty, value: h.qty },
-                          { label: 'Asset Class', value: h.assetClass || 'us_equity' },
-                          { label: t.agent.avgEntry, value: `$${(h.avgEntryPrice || 0).toFixed(2)}` },
-                          { label: t.agent.currentPrice, value: `$${(h.currentPrice || 0).toFixed(2)}` },
-                          { label: t.agent.marketValue, value: `$${(h.marketValue || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}` },
-                          { label: 'Cost Basis', value: `$${(h.costBasis || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}` },
-                          { label: t.agent.plDollar, value: <span style={{ color: (h.unrealizedPL || 0) >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 700 }}>${(h.unrealizedPL || 0).toFixed(2)}</span> },
-                          { label: t.agent.plPercent, value: <span style={{ color: (h.unrealizedPLPercent || 0) >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 700 }}>{((h.unrealizedPLPercent || 0) * 100).toFixed(2)}%</span> },
-                          { label: 'Exchange', value: h.exchange || 'N/A' },
+                          { label: agentConsoleCopy.assetClass, value: h.assetClass || 'us_equity' },
+                          { label: t.agent.avgEntry, value: exitPrice(h.avgEntryPrice) },
+                          { label: t.agent.currentPrice, value: exitPrice(h.currentPrice) },
+                          { label: t.agent.marketValue, value: exitMoney(h.marketValue) },
+                          { label: agentConsoleCopy.costBasis, value: exitMoney(h.costBasis) },
+                          { label: t.agent.plDollar, value: <span style={{ color: exitValueTone(h.unrealizedPL), fontWeight: 700 }}>{exitSignedMoney(h.unrealizedPL)}</span> },
+                          { label: t.agent.plPercent, value: <span style={{ color: exitValueTone(h.unrealizedPLPercent), fontWeight: 700 }}>{exitRatioPercent(h.unrealizedPLPercent)}</span> },
+                          { label: agentConsoleCopy.exchange, value: h.exchange || 'N/A' },
                         ].map((item, idx) => (
-                          <Col span={6} key={idx}>
+                          <Col xs={12} md={6} key={idx}>
                             <div style={{ fontSize: 11, color: 'var(--app-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>{item.label}</div>
                             <div style={{ fontSize: 14, color: 'var(--app-text-strong)', fontWeight: 600 }}>{item.value}</div>
                           </Col>
@@ -7477,7 +7194,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   { 
                     title: t.agent.symbol.toUpperCase(),
                     dataIndex: 'symbol', key: 'symbol', width: 90, fixed: 'left' as const,
-                    render: (t: string) => <span style={{ fontWeight: 800, fontSize: 15, color: 'var(--app-text-strong)', letterSpacing: '-0.3px' }}>{t}</span>
+                    render: (t: string) => <span style={{ fontWeight: 800, fontSize: 15, color: 'var(--app-text-strong)', letterSpacing: 0 }}>{t}</span>
                   },
                   {
                     title: t.agent.qty.toUpperCase(),
@@ -7487,61 +7204,65 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   {
                     title: t.agent.avgEntry.toUpperCase(),
                     dataIndex: 'avgEntryPrice', key: 'avgEntry', width: 90, align: 'right' as const,
-                    render: (v: number) => <span style={{ fontSize: 13, color: 'var(--app-text-muted)', fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>${(v || 0).toFixed(2)}</span>
+                    render: (v: number) => <span style={{ fontSize: 13, color: 'var(--app-text-muted)', fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>{exitPrice(v)}</span>
                   },
                   {
                     title: t.agent.colCurrent.toUpperCase(),
                     dataIndex: 'currentPrice', key: 'current', width: 90, align: 'right' as const,
-                    render: (v: number) => <span style={{ fontSize: 13, color: 'var(--app-text-muted)', fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>${(v || 0).toFixed(2)}</span>
+                    render: (v: number) => <span style={{ fontSize: 13, color: 'var(--app-text-muted)', fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>{exitPrice(v)}</span>
                   },
                   {
                     title: t.agent.marketValue.toUpperCase(),
                     dataIndex: 'marketValue', key: 'mktVal', width: 110, align: 'right' as const,
-                    render: (v: number) => <span style={{ fontSize: 14, color: 'var(--app-text-strong)', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>${(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                    render: (v: number) => <span style={{ fontSize: 14, color: 'var(--app-text-strong)', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{exitMoney(v)}</span>
                   },
                   {
                     title: t.agent.plDollar.toUpperCase(),
                     dataIndex: 'unrealizedPL', key: 'pl', width: 110, align: 'right' as const,
-                    render: (v: number) => <span style={{ color: (v || 0) >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 700, fontSize: 15, fontVariantNumeric: 'tabular-nums' }}>{(v || 0) >= 0 ? '+' : ''}${(v || 0).toFixed(2)}</span>
+                    render: (v: number) => <span style={{ color: exitValueTone(v), fontWeight: 700, fontSize: 15, fontVariantNumeric: 'tabular-nums' }}>{exitSignedMoney(v)}</span>
                   },
                   {
                     title: t.agent.plPercent.toUpperCase(),
                     dataIndex: 'unrealizedPLPercent', key: 'plpct', width: 100, align: 'right' as const,
-                    render: (v: number) => <Tag color={(v || 0) >= 0 ? 'success' : 'error'} bordered={false} style={{ fontWeight: 700, fontSize: 13, margin: 0, padding: '2px 8px', borderRadius: 6, fontVariantNumeric: 'tabular-nums' }}>{(v || 0) >= 0 ? '+' : ''}{((v || 0) * 100).toFixed(2)}%</Tag>
+                    render: (v: number) => {
+                      const normalized = exitFinite(v) ?? 0;
+                      return <Tag color={normalized > 0 ? 'success' : normalized < 0 ? 'error' : 'default'} bordered={false} style={{ fontWeight: 700, fontSize: 13, margin: 0, padding: '2px 8px', borderRadius: 6, fontVariantNumeric: 'tabular-nums' }}>{exitRatioPercent(normalized)}</Tag>;
+                    }
                   },
                   {
                     title: t.agent.sell.toUpperCase(),
                     key: 'sell',
-                    width: 120,
+                    width: 188,
                     fixed: 'right' as const,
-                    align: 'center' as const,
+                    align: 'left' as const,
                     render: (_: any, record: any) => {
                       const sellOrder = openSellOrders.find(o => o.symbol === record.symbol);
                       if (sellOrder) {
                         const orderType = (sellOrder.type || 'market').toUpperCase();
                         const priceStr = sellOrder.limit_price ? ` $${Number(sellOrder.limit_price).toFixed(2)}` : sellOrder.stop_price ? ` $${Number(sellOrder.stop_price).toFixed(2)}` : '';
                         return (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center' }}>
-                            <Tag color="warning" bordered={false} style={{ fontSize: 10, fontWeight: 700, borderRadius: 4, margin: 0 }}>
-                              {orderType}{priceStr}
-                            </Tag>
+                          <div className="agent-holding-actions">
+                            <div className="agent-holding-order-summary">
+                              <span>{agentConsoleCopy.openSell}</span>
+                              <strong>{orderType}{priceStr}</strong>
+                            </div>
                             <Button
+                              className="agent-holding-cancel"
                               size="small"
                               danger
                               loading={cancelingOrderId === sellOrder.id}
-                              style={{ borderRadius: 6, fontSize: 11, fontWeight: 700, height: 26, padding: '0 8px' }}
                               onClick={() => handleCancelSellOrder(sellOrder.id, record.symbol)}
                             >
-                              Cancel
+                              {agentConsoleCopy.cancel}
                             </Button>
                           </div>
                         );
                       }
                       return (
                         <Button
+                          className="agent-holding-sell-button"
                           size="small"
                           danger
-                          style={{ borderRadius: 6, height: 28, fontSize: 12, fontWeight: 600, border: '1px solid #ff4d4f', color: '#ff4d4f', background: 'transparent' }}
                           onClick={() => openSellModal(record.symbol, record.qty)}
                         >
                           {t.agent.sell}
@@ -7556,10 +7277,10 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
         </Card>
       </div>
       {/* 1.7 AI Execution Candidates */}
-      <div style={{ marginBottom: 24 }}>
+      <div className="agent-execution-panel" id="research-execution">
         <Card
           className="premium-card"
-          bodyStyle={{ padding: 0 }}
+          styles={{ body: { padding: 0 } }}
           title={
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid var(--app-border-soft)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -7574,7 +7295,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 18, fontWeight: 800, color: 'var(--app-text-strong)', letterSpacing: '-0.3px' }}>{t.agent.executionCandidates}</span>
+                    <span style={{ fontSize: 18, fontWeight: 800, color: 'var(--app-text-strong)', letterSpacing: 0 }}>{t.agent.executionCandidates}</span>
                     <Tag color="warning" bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, margin: 0, padding: '0 8px' }}>
                       {aiExecutionList.length}
                     </Tag>
@@ -7583,8 +7304,8 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <Tag color={tradeMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, margin: 0, padding: '4px 8px' }}>
-                  {tradeMode?.toUpperCase()} TRADING
+                <Tag color={tradeMode === 'paper' ? 'blue' : 'default'} bordered={false} className="agent-environment-tag" style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, margin: 0, padding: '4px 8px' }}>
+                  {tradeMode === 'paper' ? agentConsoleCopy.paperTradingStatus : agentConsoleCopy.liveTradingStatus}
                 </Tag>
                 <Divider type="vertical" style={{ height: 24, margin: 0, opacity: 0.5 }} />
                 {aiExecutionList.length > 0 ? (
@@ -7596,15 +7317,20 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                       Modal.confirm({
                         title: t.agent.clearWatchlist,
                         content: t.agent.clearWatchlistConfirm,
+                        okText: agentText('Clear list', '清空列表'),
+                        cancelText: agentText('Cancel', '取消'),
+                        okType: 'danger',
+                        className: 'agent-confirm-dialog',
+                        rootClassName: 'agent-confirm-modal',
                         onOk: () => { clearedAtGenerationRef.current = entryPlanGenerationRef.current; autoEntryPlanExecuteKeysRef.current.clear(); aiExecutionList.forEach((item: any) => { const sym = String(item.symbol || '').toUpperCase(); if (sym) { removedSymbolsRef.current.add(sym); scannerStateStore.addRemovedExecutionSymbol(sym); } }); setAiExecutionList([]); scannerStateStore.clearAiExecutionCandidates(); scannerStateStore.flushPendingSave(); }
                       });
                     }} 
                     style={{ fontWeight: 600, fontSize: 13, background: 'rgba(255, 77, 79, 0.1)', border: '1px solid rgba(255, 77, 79, 0.2)', borderRadius: 8, height: 32 }}
                   >
-                    Clear
+                    {agentConsoleCopy.clear}
                   </Button>
                 ) : (
-                  <Button type="text" disabled style={{ fontWeight: 600, fontSize: 13, background: 'var(--app-card-bg-soft)', border: '1px solid var(--app-border)', borderRadius: 8, height: 32 }}>Clear</Button>
+                  <Button type="text" disabled style={{ fontWeight: 600, fontSize: 13, background: 'var(--app-card-bg-soft)', border: '1px solid var(--app-border)', borderRadius: 8, height: 32 }}>{agentConsoleCopy.clear}</Button>
                 )}
               </div>
             </div>
@@ -7616,7 +7342,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
               <InfoCircleOutlined style={{ color: pipelineMode === 'ai' ? '#1890ff' : '#faad14', fontSize: 14 }} />
               <span style={{ fontWeight: 500 }}>
                 {pipelineMode === 'ai'
-                  ? (tradeMode === 'paper' ? 'Paper AI mode: approved BUY plans may be submitted automatically. Blocked plans require review.' : 'Live AI mode: approved BUY plans may be submitted automatically. Blocked plans require review.')
+                  ? (tradeMode === 'paper' ? agentConsoleCopy.paperAiModeDescription : agentConsoleCopy.liveAiModeDescription)
                   : pipelineMode === 'hybrid'
                     ? t.agent.hybridModeDesc
                     : t.agent.manualModeDesc}
@@ -7629,12 +7355,12 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
               <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'var(--app-card-bg-soft)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', border: '1px dashed var(--app-border)' }}>
                 <CheckCircleOutlined style={{ fontSize: 20, color: 'var(--app-text-muted)' }} />
               </div>
-              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--app-text-strong)', marginBottom: 4 }}>No execution candidates</div>
-              <div style={{ fontSize: 13, color: 'var(--app-text-muted)', marginBottom: 16 }}>Qualified Entry Plan results will appear here for review or submission.</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--app-text-strong)', marginBottom: 4 }}>{agentConsoleCopy.noExecutionCandidates}</div>
+              <div style={{ fontSize: 13, color: 'var(--app-text-muted)', marginBottom: 16 }}>{agentConsoleCopy.executionCandidatesHint}</div>
               <div style={{ display: 'flex', justifyContent: 'center', gap: 8 }}>
-                <Tag bordered={false} style={{ margin: 0, color: 'var(--app-text-muted)', background: 'var(--app-card-bg-soft)', borderRadius: 4 }}>Waiting for Entry Plan</Tag>
-                <Tag bordered={false} style={{ margin: 0, color: 'var(--app-text-muted)', background: 'var(--app-card-bg-soft)', borderRadius: 4 }}>Risk gate required</Tag>
-                <Tag bordered={false} style={{ margin: 0, color: 'var(--app-text-muted)', background: 'var(--app-card-bg-soft)', borderRadius: 4 }}>Auto-submit protected</Tag>
+                <Tag bordered={false} style={{ margin: 0, color: 'var(--app-text-muted)', background: 'var(--app-card-bg-soft)', borderRadius: 4 }}>{agentConsoleCopy.waitingForEntryPlan}</Tag>
+                <Tag bordered={false} style={{ margin: 0, color: 'var(--app-text-muted)', background: 'var(--app-card-bg-soft)', borderRadius: 4 }}>{agentConsoleCopy.riskGateRequired}</Tag>
+                <Tag bordered={false} style={{ margin: 0, color: 'var(--app-text-muted)', background: 'var(--app-card-bg-soft)', borderRadius: 4 }}>{agentConsoleCopy.autoSubmitProtected}</Tag>
               </div>
             </div>
           ) : (
@@ -7690,7 +7416,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   width: 120,
                   fixed: 'left' as const,
                   render: (text: string) => (
-                    <span style={{ fontWeight: 800, fontSize: 15, color: 'var(--app-text-strong)', letterSpacing: '-0.2px' }}>{text}</span>
+                    <span style={{ fontWeight: 800, fontSize: 15, color: 'var(--app-text-strong)', letterSpacing: 0 }}>{text}</span>
                   ),
                 },
                 {
@@ -7739,7 +7465,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                       }
                       return null;
                     })();
-                    return v ? <span style={{ fontWeight: 700, color: v >= 2 ? '#10b981' : 'var(--app-text-muted)', fontSize: 12 }}>{v.toFixed(1)}x</span> : <span style={{ color: '#d1d5db' }} title="Stop/target/entry data needed">N/A</span>;
+                    return v ? <span style={{ fontWeight: 700, color: v >= 2 ? '#10b981' : 'var(--app-text-muted)', fontSize: 12 }}>{v.toFixed(1)}x</span> : <span style={{ color: '#d1d5db' }} title={agentText('Stop, target, and entry data are required.', '需要止损、目标和入场数据。')}>—</span>;
                   },
                 },
                 {
@@ -7757,7 +7483,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                         {s ? (
                           <Tag color={sCol} bordered={false} style={{ fontSize: 9, margin: 0, fontWeight: 800, borderRadius: 4, width: 'fit-content', maxWidth: 120, textAlign: 'center' }}>{t.agent.riskGate}: {translateStatus(s)}</Tag>
                         ) : (
-                          <Tag bordered={false} style={{ fontSize: 9, margin: 0, fontWeight: 600, borderRadius: 4, width: 'fit-content', maxWidth: 120, textAlign: 'center', color: '#9ca3af', background: 'var(--app-card-bg-soft)' }}>Risk Gate: Pending</Tag>
+                          <Tag bordered={false} style={{ fontSize: 9, margin: 0, fontWeight: 600, borderRadius: 4, width: 'fit-content', maxWidth: 120, textAlign: 'center', color: '#9ca3af', background: 'var(--app-card-bg-soft)' }}>{t.agent.riskGate}: {t.agent.pending}</Tag>
                         )}
                       </div>
                     );
@@ -7772,7 +7498,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     return rec > 0
                       ? <div style={{ display: 'flex', flexDirection: 'column' }}>
                           <span style={{ fontSize: 13, fontWeight: 800, color: '#2563eb' }}>{rec}</span>
-                          <span style={{ fontSize: 9, color: '#9ca3af', fontWeight: 600 }}>SHARES</span>
+                          <span style={{ fontSize: 9, color: '#9ca3af', fontWeight: 600 }}>{t.agent.shares}</span>
                         </div>
                       : <span style={{ color: '#d1d5db' }}>—</span>;
                   },
@@ -7800,8 +7526,8 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                             style={{ width: '100%', fontSize: 10 }}
                             dropdownStyle={{ minWidth: 100 }}
                           >
-                            <Option value="shares">Shares</Option>
-                            <Option value="dollars">Dollars</Option>
+                            <Option value="shares">{t.agent.shares}</Option>
+                            <Option value="dollars">{t.agent.dollarAmount}</Option>
                           </Select>
                           {r.qtyMode === 'dollars' ? (
                             <Input
@@ -7822,7 +7548,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                               style={{ width: '100%', fontSize: 11, borderRadius: 4, height: 26 }}
                               min={0.0001}
                               step={0.01}
-                              placeholder="e.g. 0.5"
+                              placeholder={agentText('e.g. 0.5', '例如 0.5')}
                             />
                           )}
                         </div>
@@ -7884,7 +7610,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   },
                 },
                 {
-                  title: <span style={{ fontWeight: 700, color: '#1890ff', fontSize: 10, textTransform: 'uppercase' }}>Price</span>,
+                  title: <span style={{ fontWeight: 700, color: '#1890ff', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.price}</span>,
                   key: 'priceFields',
                   width: 130,
                   render: (r: any) => {
@@ -7973,14 +7699,14 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                       draft: { color: 'orange', label: t.agent.draft },
                       pending: { color: 'processing', label: t.agent.pending },
                       submitted: { color: 'success', label: t.agent.submitted },
-                      auto_executing: { color: 'processing', label: 'Auto Executing' },
+                      auto_executing: { color: 'processing', label: agentConsoleCopy.autoExecuting },
                       filled: { color: 'green', label: t.agent.filled },
                       failed: { color: 'error', label: t.agent.failed },
                       canceled: { color: 'default', label: t.agent.canceled },
-                      holding: { color: 'blue', label: 'Holding' },
-                      order_pending: { color: 'processing', label: 'Order Pending' },
-                      zone_wait: { color: 'warning', label: 'Zone Wait' },
-                      blocked: { color: 'orange', label: 'Blocked' },
+                      holding: { color: 'blue', label: agentConsoleCopy.holding },
+                      order_pending: { color: 'processing', label: agentConsoleCopy.orderPending },
+                      zone_wait: { color: 'warning', label: agentConsoleCopy.zoneWait },
+                      blocked: { color: 'orange', label: agentConsoleCopy.blocked },
                     };
                     const s = statusMap[status] || statusMap.draft;
                     const isInfoStatus = ['holding', 'order_pending', 'zone_wait', 'blocked'].includes(status);
@@ -8013,7 +7739,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
 
                     // Active order — show Cancel + note
                     if (status === 'auto_executing') {
-                      return <Tag color="processing" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 700 }}>Auto Executing</Tag>;
+                      return <Tag color="processing" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 700 }}>{agentConsoleCopy.autoExecuting}</Tag>;
                     }
 
                     if (status === 'submitted' || status === 'pending') {
@@ -8077,7 +7803,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                           style={{ borderRadius: 6, height: 28, fontSize: 11, fontWeight: 600, width: '100%' }}
                           onClick={handleRemove}
                         >
-                          Remove
+                          {agentConsoleCopy.remove}
                         </Button>
                       );
                     }
@@ -8086,8 +7812,8 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     if (status === 'holding') {
                       return (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center' }}>
-                          <Tag color="blue" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 700, fontSize: 10 }}>Managed by Exit Scan</Tag>
-                          <Button size="small" icon={<DeleteOutlined />} style={{ borderRadius: 6, height: 24, fontSize: 10, fontWeight: 600, width: '100%' }} onClick={handleRemove}>Remove</Button>
+                          <Tag color="blue" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 700, fontSize: 10 }}>{agentConsoleCopy.managedByExitScan}</Tag>
+                          <Button size="small" icon={<DeleteOutlined />} style={{ borderRadius: 6, height: 24, fontSize: 10, fontWeight: 600, width: '100%' }} onClick={handleRemove}>{agentConsoleCopy.remove}</Button>
                         </div>
                       );
                     }
@@ -8096,8 +7822,8 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     if (status === 'order_pending') {
                       return (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center' }}>
-                          <Tag color="processing" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 700, fontSize: 10 }}>Waiting for Fill</Tag>
-                          <Button size="small" icon={<DeleteOutlined />} style={{ borderRadius: 6, height: 24, fontSize: 10, fontWeight: 600, width: '100%' }} onClick={handleRemove}>Remove</Button>
+                          <Tag color="processing" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 700, fontSize: 10 }}>{agentConsoleCopy.waitingForFill}</Tag>
+                          <Button size="small" icon={<DeleteOutlined />} style={{ borderRadius: 6, height: 24, fontSize: 10, fontWeight: 600, width: '100%' }} onClick={handleRemove}>{agentConsoleCopy.remove}</Button>
                         </div>
                       );
                     }
@@ -8106,8 +7832,8 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     if (status === 'zone_wait') {
                       return (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                          <Tag color="warning" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 700, fontSize: 10 }}>Watching</Tag>
-                          <Button size="small" icon={<DeleteOutlined />} style={{ borderRadius: 6, height: 24, fontSize: 10, fontWeight: 600, width: '100%' }} onClick={handleRemove}>Remove</Button>
+                          <Tag color="warning" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 700, fontSize: 10 }}>{agentConsoleCopy.watching}</Tag>
+                          <Button size="small" icon={<DeleteOutlined />} style={{ borderRadius: 6, height: 24, fontSize: 10, fontWeight: 600, width: '100%' }} onClick={handleRemove}>{agentConsoleCopy.remove}</Button>
                         </div>
                       );
                     }
@@ -8129,9 +7855,9 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                               ));
                             }}
                           >
-                            Retry
+                            {agentConsoleCopy.retry}
                           </Button>
-                          <Button size="small" icon={<DeleteOutlined />} style={{ borderRadius: 6, height: 24, fontSize: 10, fontWeight: 600, width: '100%' }} onClick={handleRemove}>Remove</Button>
+                          <Button size="small" icon={<DeleteOutlined />} style={{ borderRadius: 6, height: 24, fontSize: 10, fontWeight: 600, width: '100%' }} onClick={handleRemove}>{agentConsoleCopy.remove}</Button>
                         </div>
                       );
                     }
@@ -8161,7 +7887,6 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                         <Button
                           type={btnType}
-                          danger={tradeMode === 'real'}
                           size="small"
                           loading={isExecuting}
                           style={{
@@ -8213,7 +7938,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                   { title: t.agent.colSymbol, dataIndex: 'symbol', key: 'symbol', width: 70, render: (text: string) => <span style={{ fontWeight: 700 }}>{text}</span> },
                   { title: t.agent.side, dataIndex: 'side', key: 'side', width: 50 },
                   { title: t.agent.qty, dataIndex: 'qty', key: 'qty', width: 50 },
-                  { title: t.agent.mode, dataIndex: 'mode', key: 'mode', width: 60, render: (v: string) => <Tag color={v === 'paper' ? 'blue' : 'red'} style={{ fontSize: 9, margin: 0, padding: '0 4px' }}>{v?.toUpperCase()}</Tag> },
+                  { title: t.agent.mode, dataIndex: 'mode', key: 'mode', width: 60, render: (v: string) => <Tag color={v === 'paper' ? 'blue' : 'default'} className="agent-environment-tag" style={{ fontSize: 9, margin: 0, padding: '0 4px' }}>{v === 'paper' ? agentConsoleCopy.paperCode : agentConsoleCopy.real}</Tag> },
                   { title: t.agent.orderId, dataIndex: 'orderId', key: 'orderId', width: 120, render: (v: string) => <span style={{ fontSize: 10, fontFamily: 'monospace' }}>{v ? v.slice(0, 12) + '...' : 'N/A'}</span> },
                   { title: t.agent.orderStatus, dataIndex: 'orderStatus', key: 'status', width: 80, render: (v: string) => <Tag color={v === 'filled' ? 'green' : v === 'new' ? 'blue' : 'default'} style={{ fontSize: 9, margin: 0, padding: '0 4px' }}>{v || 'N/A'}</Tag> },
                 ]}
@@ -8225,11 +7950,25 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
 
       {/* Order Confirmation Modal — Editable */}
       <Modal
-        title={tradeMode === 'real' ? t.agent.confirmRealOrder : t.agent.confirmPaperOrder}
+        title={(
+          <div className="agent-execution-modal__heading">
+            <div>
+              <span>{agentModalCopy.reviewEyebrow}</span>
+              <strong>{tradeMode === 'real' ? t.agent.confirmRealOrder : t.agent.confirmPaperOrder}</strong>
+            </div>
+            <em className={tradeMode === 'real' ? 'is-live' : 'is-paper'}>
+              <i />{tradeMode === 'real' ? agentModalCopy.liveAccount : agentModalCopy.paperAccount}
+            </em>
+          </div>
+        )}
         open={orderConfirmVisible}
-        onCancel={() => { setOrderConfirmVisible(false); setOrderConfirmTarget(null); setOrderConfirmText(''); }}
+        onCancel={() => { setOrderConfirmVisible(false); setOrderConfirmTarget(null); setOrderRiskAccepted(false); }}
         footer={null}
-        width={520}
+        width={600}
+        centered
+        maskClosable={false}
+        destroyOnHidden
+        className="agent-execution-modal agent-edit-order-modal"
       >
         {orderConfirmTarget && (() => {
           const r = orderConfirmTarget.record;
@@ -8242,187 +7981,180 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           // Estimated cost from modal state
           const estShares = modalQtyMode === 'dollars' ? 0 : (modalUserQty || recShares || 1);
           const estCost = modalQtyMode === 'dollars' ? (modalDollarAmount || 0) : (estShares * entryPrice);
-
-          const labelStyle: React.CSSProperties = { color: 'var(--app-text-muted)', fontSize: 12, marginBottom: 2 };
-          const rowStyle: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 };
           const RO = ({ label, value, color }: { label: string; value: any; color?: string }) => (
-            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', fontSize: 12 }}>
-              <span style={{ color: 'var(--app-text-muted)' }}>{label}</span>
-              <span style={{ fontWeight: 600, color: color || 'var(--app-text-strong)' }}>{safeRender(value)}</span>
+            <div className="agent-execution-modal__summary-row">
+              <dt>{label}</dt>
+              <dd style={color ? { color } : undefined}>{safeRender(value)}</dd>
             </div>
           );
 
           return (
-            <div>
-              {/* Read-only info */}
-              <div style={{ background: 'rgba(82, 196, 26, 0.1)', borderRadius: 8, padding: '8px 12px', marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontWeight: 700, fontSize: 16 }}>{r.symbol}</span>
-                <Space size={8}>
-                  <Tag color="blue" style={{ margin: 0 }}>BUY</Tag>
-                  <Tag color={isReal ? 'red' : 'blue'} style={{ margin: 0 }}>{isReal ? 'LIVE' : 'PAPER'}</Tag>
-                </Space>
+            <div className="agent-execution-modal__content">
+              <div className="agent-execution-modal__instrument">
+                <div>
+                  <span>{agentModalCopy.buyOrder}</span>
+                  <strong>{r.symbol}</strong>
+                </div>
+                <Tag color="green" bordered={false}>{t.agent.buy}</Tag>
               </div>
 
               {recShares > 0 && (
-                <div style={{ background: 'rgba(24, 144, 255, 0.1)', borderRadius: 6, padding: '4px 10px', marginBottom: 12, fontSize: 11, color: '#1890ff' }}>
-                  {t.agent.entryPlanRecommends} <strong>{recShares} {t.agent.shares}</strong>
+                <div className="agent-execution-modal__recommendation">
+                  <InfoCircleOutlined />
+                  <span>{agentModalCopy.recommended}: <strong>{recShares} {t.agent.shares}</strong></span>
                 </div>
               )}
 
-              {/* Editable order params */}
-              <div style={{ background: 'var(--app-card-bg-soft)', borderRadius: 8, padding: 16, marginBottom: 12 }}>
-                {/* Choose how to buy: Shares / Dollars */}
-                <div style={rowStyle}>
-                  <span style={labelStyle}>{t.agent.buyBy}</span>
-                  <select
-                    value={modalQtyMode}
-                    onChange={e => setModalQtyMode(e.target.value as 'shares' | 'dollars')}
-                    style={{ fontSize: 12, height: 28, border: '1px solid var(--app-border)', borderRadius: 4, padding: '0 8px', background: 'var(--app-card-bg)', width: 150 }}
-                  >
-                    <option value="shares">{t.agent.shares}</option>
-                    <option value="dollars">{t.agent.dollarAmount}</option>
-                  </select>
-                </div>
+              <section className="agent-execution-modal__section">
+                <div className="agent-execution-modal__section-title"><span>01</span><h3>{agentModalCopy.orderParameters}</h3></div>
+                <div className="agent-execution-modal__form-grid">
+                  <label>
+                    <span>{t.agent.buyBy}</span>
+                    <Select
+                      value={modalQtyMode}
+                      onChange={(value) => setModalQtyMode(value as 'shares' | 'dollars')}
+                      options={[
+                        { value: 'shares', label: t.agent.shares },
+                        { value: 'dollars', label: t.agent.dollarAmount },
+                      ]}
+                    />
+                  </label>
+                  <label>
+                    <span>{modalQtyMode === 'dollars' ? t.agent.dollarAmount : t.agent.shares}</span>
+                    <Input
+                      type="number"
+                      prefix={modalQtyMode === 'dollars' ? '$' : undefined}
+                      suffix={modalQtyMode === 'shares' ? t.agent.shares : undefined}
+                      value={modalQtyMode === 'dollars' ? modalDollarAmount : modalUserQty}
+                      onChange={e => {
+                        const v = parseFloat(e.target.value) || 0;
+                        if (modalQtyMode === 'dollars') setModalDollarAmount(v);
+                        else setModalUserQty(v);
+                      }}
+                      min={modalQtyMode === 'shares' ? 0.0001 : 0}
+                      step={modalQtyMode === 'shares' ? 0.01 : 1}
+                      placeholder={modalQtyMode === 'shares' ? '0.5' : '0.00'}
+                    />
+                  </label>
+                  <label>
+                    <span>{t.agent.orderType}</span>
+                    <Select
+                      value={modalOrderType}
+                      onChange={setModalOrderType}
+                      options={[
+                        { value: 'market', label: t.agent.market },
+                        { value: 'limit', label: t.agent.limit },
+                        { value: 'stop', label: t.agent.stopOrder },
+                        { value: 'stop_limit', label: t.agent.stopLimit },
+                        { value: 'trailing_stop', label: t.agent.trailingStop },
+                      ]}
+                    />
+                  </label>
+                  <label>
+                    <span>{t.agent.timeInForce}</span>
+                    <Select
+                      value={modalTimeInForce}
+                      onChange={setModalTimeInForce}
+                      options={[
+                        { value: 'day', label: t.agent.day },
+                        { value: 'gtc', label: t.agent.gtcLabel },
+                        { value: 'ioc', label: t.agent.iocLabel },
+                        { value: 'fok', label: t.agent.fokLabel },
+                      ]}
+                    />
+                  </label>
 
-                {/* Quantity / Dollar Amount */}
-                <div style={rowStyle}>
-                  <span style={labelStyle}>{modalQtyMode === 'dollars' ? t.agent.dollarAmount : t.agent.shares}</span>
-                  <Input
-                    type="number"
-                    prefix={modalQtyMode === 'dollars' ? '$' : undefined}
-                    suffix={modalQtyMode === 'shares' ? 'shares' : undefined}
-                    value={modalQtyMode === 'dollars' ? modalDollarAmount : modalUserQty}
-                    onChange={e => {
-                      const v = parseFloat(e.target.value) || 0;
-                      if (modalQtyMode === 'dollars') setModalDollarAmount(v);
-                      else setModalUserQty(v);
-                    }}
-                    style={{ width: 150, fontSize: 12 }}
-                    min={modalQtyMode === 'shares' ? 0.0001 : 0}
-                    step={modalQtyMode === 'shares' ? 0.01 : 1}
-                    placeholder={modalQtyMode === 'shares' ? 'e.g. 0.5' : '0.00'}
-                  />
-                </div>
-
-                {/* Order Type */}
-                <div style={rowStyle}>
-                  <span style={labelStyle}>{t.agent.orderType}</span>
-                  <select
-                    value={modalOrderType}
-                    onChange={e => setModalOrderType(e.target.value)}
-                    style={{ fontSize: 12, height: 28, border: '1px solid var(--app-border)', borderRadius: 4, padding: '0 8px', background: 'var(--app-card-bg)', width: 150 }}
-                  >
-                    <option value="market">{t.agent.market}</option>
-                    <option value="limit">{t.agent.limit}</option>
-                    <option value="stop">{t.agent.stopOrder}</option>
-                    <option value="stop_limit">{t.agent.stopLimit}</option>
-                    <option value="trailing_stop">{t.agent.trailingStop}</option>
-                  </select>
-                </div>
-
-                {/* Price fields — conditional on order type */}
                 {(modalOrderType === 'limit' || modalOrderType === 'stop_limit') && (
-                  <div style={rowStyle}>
-                    <span style={labelStyle}>{t.agent.limitPrice}</span>
+                  <label>
+                    <span>{t.agent.limitPrice}</span>
                     <Input
                       type="number"
                       prefix="$"
                       value={modalLimitPrice || ''}
                       onChange={e => setModalLimitPrice(parseFloat(e.target.value) || 0)}
-                      style={{ width: 150, fontSize: 12 }}
                       min={0}
                       step={0.01}
                       placeholder="0.00"
                     />
-                  </div>
+                  </label>
                 )}
                 {(modalOrderType === 'stop' || modalOrderType === 'stop_limit') && (
-                  <div style={rowStyle}>
-                    <span style={labelStyle}>{t.agent.stopPrice}</span>
+                  <label>
+                    <span>{t.agent.stopPrice}</span>
                     <Input
                       type="number"
                       prefix="$"
                       value={modalStopPrice || ''}
                       onChange={e => setModalStopPrice(parseFloat(e.target.value) || 0)}
-                      style={{ width: 150, fontSize: 12 }}
                       min={0}
                       step={0.01}
                       placeholder="0.00"
                     />
-                  </div>
+                  </label>
                 )}
                 {modalOrderType === 'trailing_stop' && (
                   <>
-                    <div style={rowStyle}>
-                      <span style={labelStyle}>{t.agent.trailPrice}</span>
+                    <label>
+                      <span>{t.agent.trailPrice}</span>
                       <Input
                         type="number"
                         prefix="$"
                         value={modalTrailPrice || ''}
                         onChange={e => { setModalTrailPrice(parseFloat(e.target.value) || 0); setModalTrailPercent(0); }}
-                        style={{ width: 150, fontSize: 12 }}
                         min={0}
                         step={0.01}
                         placeholder="0.00"
                       />
-                    </div>
-                    <div style={rowStyle}>
-                      <span style={labelStyle}>{t.agent.trailPercent}</span>
+                    </label>
+                    <label>
+                      <span>{t.agent.trailPercent}</span>
                       <Input
                         type="number"
                         suffix="%"
                         value={modalTrailPercent || ''}
                         onChange={e => { setModalTrailPercent(parseFloat(e.target.value) || 0); setModalTrailPrice(0); }}
-                        style={{ width: 150, fontSize: 12 }}
                         min={0}
                         step={0.1}
                         placeholder="0.0"
                       />
-                    </div>
+                    </label>
                   </>
                 )}
-
-                {/* Time in Force */}
-                <div style={rowStyle}>
-                  <span style={labelStyle}>{t.agent.timeInForce}</span>
-                  <select
-                    value={modalTimeInForce}
-                    onChange={e => setModalTimeInForce(e.target.value)}
-                    style={{ fontSize: 12, height: 28, border: '1px solid var(--app-border)', borderRadius: 4, padding: '0 8px', background: 'var(--app-card-bg)', width: 150 }}
-                  >
-                    <option value="day">{t.agent.day}</option>
-                    <option value="gtc">{t.agent.gtcLabel}</option>
-                    <option value="ioc">{t.agent.iocLabel}</option>
-                    <option value="fok">{t.agent.fokLabel}</option>
-                  </select>
                 </div>
-              </div>
+              </section>
 
-              {/* Summary */}
-              <div style={{ background: 'var(--app-card-bg-soft)', borderRadius: 8, padding: 12, marginBottom: 12, fontSize: 12 }}>
+              <section className="agent-execution-modal__section agent-execution-modal__section--summary">
+                <div className="agent-execution-modal__section-title"><span>02</span><h3>{agentModalCopy.estimateAndRisk}</h3></div>
+                <dl className="agent-execution-modal__summary">
                 <RO label={t.agent.estCost} value={estCost > 0 ? `$${estCost.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'N/A'} />
                 <RO label={t.agent.riskGate} value={(r.riskGate || r.hardRiskGate || {}).status || r.riskGateStatus || 'N/A'} />
                 <RO label="R/R" value={ep.riskReward1 ? `${ep.riskReward1.toFixed(1)}:1` : 'N/A'} />
-              </div>
+                </dl>
+              </section>
 
               {isReal && (
-                <div style={{ marginBottom: 12 }}>
-                  <Alert type="warning" showIcon message={t.agent.realTradingWarning} style={{ marginBottom: 8 }} />
-                  <Input
-                    placeholder={t.agent.confirmRealOrderPlaceholder.replace('{symbol}', r.symbol)}
-                    value={orderConfirmText}
-                    onChange={e => setOrderConfirmText(e.target.value)}
-                    style={{ fontSize: 12 }}
-                  />
+                <div className="agent-execution-modal__live-confirm">
+                  <SafetyCertificateOutlined />
+                  <div>
+                    <strong>{t.agent.realTradingWarning}</strong>
+                    <span>{agentModalCopy.liveFundsNotice}</span>
+                    <label className={`agent-execution-modal__acceptance${orderRiskAccepted ? ' is-accepted' : ''}`}>
+                      <Checkbox
+                        checked={orderRiskAccepted}
+                        onChange={(event) => setOrderRiskAccepted(event.target.checked)}
+                        aria-label={agentModalCopy.liveAcceptance}
+                      />
+                      <span>{agentModalCopy.liveAcceptance}</span>
+                    </label>
+                  </div>
                 </div>
               )}
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-                <Button onClick={() => { setOrderConfirmVisible(false); setOrderConfirmTarget(null); }}>{t.agent.cancel}</Button>
+              <div className="agent-execution-modal__footer">
+                <Button onClick={() => { setOrderConfirmVisible(false); setOrderConfirmTarget(null); setOrderRiskAccepted(false); }}>{t.agent.cancel}</Button>
                 <Button
                   type="primary"
-                  danger={isReal}
                   onClick={handleConfirmOrder}
-                  disabled={isReal && orderConfirmText.trim().toUpperCase() !== `CONFIRM REAL ORDER ${r.symbol}`.toUpperCase()}
+                  disabled={isReal && !orderRiskAccepted}
                 >
                   {isReal ? t.agent.submitRealOrder : t.agent.submitPaperOrder}
                 </Button>
@@ -8434,28 +8166,35 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
 
       {/* Cancel Order Confirmation Modal */}
       <Modal
-        title={t.agent.cancelOrder}
+        title={<div className="agent-execution-modal__simple-title"><span>{agentModalCopy.cancelEyebrow}</span><strong>{t.agent.cancelOrder}</strong></div>}
         open={cancelConfirmVisible}
-        onCancel={() => { setCancelConfirmVisible(false); setCancelTarget(null); }}
+        onCancel={() => { if (cancelLoading) return; setCancelConfirmVisible(false); setCancelTarget(null); }}
         footer={null}
-        width={400}
+        width={440}
+        centered
+        maskClosable={false}
+        closable={!cancelLoading}
+        keyboard={!cancelLoading}
+        destroyOnHidden
+        className="agent-execution-modal agent-cancel-order-modal"
       >
         {cancelTarget && (() => {
           const r = cancelTarget.record;
           return (
-            <div>
-              <div style={{ background: 'rgba(255, 77, 79, 0.1)', borderRadius: 8, padding: 16, marginBottom: 16 }}>
-                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>{t.agent.cancelOrderConfirm}</div>
-                <div style={{ fontSize: 12, color: 'var(--app-text-muted)' }}>
-                  <div><strong>{t.agent.colSymbol}:</strong> {r.symbol}</div>
-                  <div><strong>{t.agent.orderId}:</strong> <span style={{ fontFamily: 'monospace', fontSize: 11 }}>{r.alpacaOrderId || 'N/A'}</span></div>
-                  <div><strong>{t.agent.qty}:</strong> {r.userQty || r.positionSizeShares || 'N/A'}</div>
-                  <div><strong>{t.agent.orderType}:</strong> {r.orderType || 'market'}</div>
-                  <div><strong>{t.agent.mode}:</strong> {tradeMode === 'paper' ? t.agent.paperTrading : t.agent.live}</div>
-                </div>
+            <div className="agent-execution-modal__content">
+              <div className="agent-cancel-order-modal__notice">
+                <WarningOutlined />
+                <div><strong>{t.agent.cancelOrderConfirm}</strong><span>{agentModalCopy.cancelDescription}</span></div>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-                <Button onClick={() => { setCancelConfirmVisible(false); setCancelTarget(null); }}>{t.agent.keepOrder}</Button>
+              <dl className="agent-cancel-order-modal__details">
+                <div><dt>{t.agent.colSymbol}</dt><dd>{r.symbol}</dd></div>
+                <div><dt>{t.agent.orderId}</dt><dd className="is-monospace">{r.alpacaOrderId || 'N/A'}</dd></div>
+                <div><dt>{t.agent.qty}</dt><dd>{r.userQty || r.positionSizeShares || 'N/A'}</dd></div>
+                <div><dt>{t.agent.orderType}</dt><dd>{r.orderType || 'market'}</dd></div>
+                <div><dt>{agentModalCopy.mode}</dt><dd>{tradeMode === 'paper' ? agentModalCopy.paperAccount : agentModalCopy.liveAccount}</dd></div>
+              </dl>
+              <div className="agent-execution-modal__footer">
+                <Button disabled={cancelLoading} onClick={() => { setCancelConfirmVisible(false); setCancelTarget(null); }}>{t.agent.keepOrder}</Button>
                 <Button danger loading={cancelLoading} onClick={handleCancelOrder}>{t.agent.cancelOrder}</Button>
               </div>
             </div>
@@ -8464,10 +8203,10 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
       </Modal>
 
       {/* 1.6 AI Watchlist */}
-      <div style={{ marginBottom: 24 }}>
+      <div className="agent-watchlist-panel" id="research-watchlist">
         <Card
           className="premium-card"
-          bodyStyle={{ padding: 0 }}
+          styles={{ body: { padding: 0 } }}
           title={
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid var(--app-border-soft)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -8482,7 +8221,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 18, fontWeight: 800, color: 'var(--app-text-strong)', letterSpacing: '-0.3px' }}>{t.agent.aiWatchlist}</span>
+                    <span style={{ fontSize: 18, fontWeight: 800, color: 'var(--app-text-strong)', letterSpacing: 0 }}>{t.agent.aiWatchlist}</span>
                     <Tag color="processing" bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, margin: 0, padding: '0 8px' }}>
                       {aiWatchlistItems.length}
                     </Tag>
@@ -8517,7 +8256,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     onClick={clearAllWatchlist}
                     style={{ fontWeight: 600, fontSize: 13, background: 'rgba(255, 77, 79, 0.1)', border: '1px solid rgba(255, 77, 79, 0.2)', borderRadius: 8, height: 32 }}
                   >
-                    Clear
+                    {agentText('Clear', '清空')}
                   </Button>
                 )}
               </div>
@@ -8563,12 +8302,12 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
               <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'var(--app-card-bg-soft)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', border: '1px dashed var(--app-border)' }}>
                 <EyeOutlined style={{ fontSize: 20, color: 'var(--app-text-muted)' }} />
               </div>
-              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--app-text-strong)', marginBottom: 4 }}>No watchlist candidates yet</div>
-              <div style={{ fontSize: 13, color: 'var(--app-text-muted)', marginBottom: 16 }}>Watch candidates from Entry Plan will appear here for automated entry monitoring.</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--app-text-strong)', marginBottom: 4 }}>{agentText('No watchlist candidates yet', '观察列表暂无候选标的')}</div>
+              <div style={{ fontSize: 13, color: 'var(--app-text-muted)', marginBottom: 16 }}>{agentText('Candidates watched from Entry Plan appear here for automated entry monitoring.', '从入场计划加入观察的候选会显示在这里，并持续监控入场条件。')}</div>
               <div style={{ display: 'flex', justifyContent: 'center', gap: 8 }}>
-                <Tag bordered={false} style={{ margin: 0, color: 'var(--app-text-muted)', background: 'var(--app-card-bg-soft)', borderRadius: 4 }}>Waiting for Entry Plan</Tag>
-                <Tag bordered={false} style={{ margin: 0, color: 'var(--app-text-muted)', background: 'var(--app-card-bg-soft)', borderRadius: 4 }}>Entry zone monitoring</Tag>
-                <Tag bordered={false} style={{ margin: 0, color: 'var(--app-text-muted)', background: 'var(--app-card-bg-soft)', borderRadius: 4 }}>Alerts ready</Tag>
+                <Tag bordered={false} style={{ margin: 0, color: 'var(--app-text-muted)', background: 'var(--app-card-bg-soft)', borderRadius: 4 }}>{agentText('Waiting for Entry Plan', '等待入场计划')}</Tag>
+                <Tag bordered={false} style={{ margin: 0, color: 'var(--app-text-muted)', background: 'var(--app-card-bg-soft)', borderRadius: 4 }}>{agentText('Entry-zone monitoring', '监控入场区间')}</Tag>
+                <Tag bordered={false} style={{ margin: 0, color: 'var(--app-text-muted)', background: 'var(--app-card-bg-soft)', borderRadius: 4 }}>{agentText('Alerts ready', '提醒已就绪')}</Tag>
               </div>
             </div>
           ) : (
@@ -8612,7 +8351,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     fixed: 'left' as const,
                     render: (text: string, record: any) => (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <span style={{ fontWeight: 800, fontSize: 15, color: 'var(--app-text-strong)', letterSpacing: '-0.2px' }}>{text}</span>
+                        <span style={{ fontWeight: 800, fontSize: 15, color: 'var(--app-text-strong)', letterSpacing: 0 }}>{text}</span>
                         {record.isDevTest && <Tag style={{ fontSize: 8, padding: '0 4px', lineHeight: '14px', margin: 0, fontWeight: 700 }} color="red">DEV</Tag>}
                       </div>
                     ),
@@ -8632,10 +8371,9 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     key: 'changePercent',
                     width: 90,
                     render: (record: any) => {
-                      const c = record.changePercent;
+                      const c = exitFinite(record.changePercent);
                       if (c == null) return <span style={{ color: '#d1d5db', fontSize: 12 }}>—</span>;
-                      const color = c >= 0 ? '#10b981' : '#ef4444';
-                      return <span style={{ color, fontSize: 13, fontWeight: 800 }}>{c >= 0 ? '+' : ''}{c.toFixed(2)}%</span>;
+                      return <span style={{ color: exitValueTone(c), fontSize: 13, fontWeight: 800 }}>{exitPercent(c, true)}</span>;
                     },
                   },
                   {
@@ -8645,7 +8383,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     render: (record: any) => {
                       const { low: lo, high: hi } = getEntryPlanZone(record);
                       if (!lo && !hi) return <span style={{ color: '#d1d5db', fontSize: 12 }}>—</span>;
-                      return <span style={{ fontSize: 13, color: 'var(--app-text-strong)', fontWeight: 600, fontFamily: 'Inter' }}>${(lo || 0).toFixed(2)} – ${(hi || 0).toFixed(2)}</span>;
+                      return <span style={{ fontSize: 13, color: 'var(--app-text-strong)', fontWeight: 600, fontFamily: 'Inter' }}>{exitPrice(lo)} – {exitPrice(hi)}</span>;
                     },
                   },
                   {
@@ -8654,8 +8392,8 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     width: 140,
                     render: (record: any) => (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                        <span style={{ color: 'rgba(239, 68, 68, 0.8)', fontSize: 12, fontWeight: 600 }}>S: ${(record.stopLoss || 0).toFixed(2)}</span>
-                        <span style={{ color: '#10b981', fontSize: 12, fontWeight: 600 }}>T: ${(record.takeProfit1 || 0).toFixed(2)}</span>
+                        <span style={{ color: 'rgba(182, 74, 56, 0.88)', fontSize: 12, fontWeight: 600 }}>S: {exitPrice(record.stopLoss)}</span>
+                        <span style={{ color: '#3d7a47', fontSize: 12, fontWeight: 600 }}>T: {exitPrice(record.takeProfit1)}</span>
                       </div>
                     )
                   },
@@ -8682,7 +8420,13 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                     render: (record: any) => {
                       const src = record.selectedBy || record.source || 'Entry Plan';
                       const color = src === 'Continue' ? 'success' : src === 'Watch-to-Validate' ? 'warning' : 'blue';
-                      const label = src === 'Watch-to-Validate' ? 'Watch→Val' : src;
+                      const label = src === 'Watch-to-Validate'
+                        ? agentText('Watch→Val', '观察→验证')
+                        : src === 'Entry Plan'
+                          ? agentText('Entry Plan', '入场计划')
+                          : src === 'Continue'
+                            ? agentText('Continue', '继续')
+                            : src;
                       return <Tag color={color} style={{ fontSize: 9, margin: 0, padding: '0 6px', borderRadius: 4, fontWeight: 700 }}>{label.toUpperCase()}</Tag>;
                     },
                   },
@@ -8752,8 +8496,20 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
         </Card>
       </div>
 
+      <div className="agent-section-heading agent-pipeline-heading" id="research-pipeline">
+        <div>
+          <span>{agentText('Decision engine', '决策引擎')}</span>
+          <h2>{agentText('Research Pipeline', '研究流程')}</h2>
+        </div>
+        <b>{agentText('Deterministic scores · AI challenge · hard risk gates', '确定性评分 · AI 质询 · 硬性风险门控')}</b>
+      </div>
+
       {/* 2. Market Scanner */}
       <CollapsibleStageSection
+        stageNumber="01"
+        stageLabel={agentText('Stage', '阶段')}
+        expandLabel={agentText('Expand', '展开')}
+        collapseLabel={agentText('Collapse', '收起')}
         title={t.agent.marketScanner}
         icon={<LineChartOutlined />}
         statusText={
@@ -8768,12 +8524,13 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           detailedScanStatus.currentStatus === 'completed' ? 'success' :
           detailedScanStatus.currentStatus === 'error' ? 'error' : 'default'
         }
-        progressValue={detailedScanStatus.totalCount > 0 ? Math.round((detailedScanStatus.processedCount / detailedScanStatus.totalCount) * 100) : null}
-        progressText={detailedScanStatus.currentStatus === 'scanning' ? `${detailedScanStatus.processedCount}/${detailedScanStatus.totalCount}` : undefined}
+        progressValue={detailedScanStatus.currentStatus === 'scanning' || detailedScanStatus.currentStatus === 'completed' ? scannerProgressPercent : null}
+        progressText={detailedScanStatus.currentStatus === 'scanning' ? `${scannerStageIndex}/${scannerStageCount} · ${scannerStageLabel}` : undefined}
         summaryChips={marketScannerResults.length > 0 ? [
-          { label: t.agent.completed, value: marketScannerResults.length },
-          { label: t.agent.aiSuccessLabel, value: marketScannerResults.filter((r: any) => r.aiCalled && r.analysisStatus !== 'failed').length, color: '#1890ff' },
-          { label: t.agent.localRules, value: marketScannerResults.filter((r: any) => !r.aiCalled && r.analysisStatus !== 'failed').length },
+          { label: agentText('Ranked', '已排名'), value: marketScannerResults.length },
+          { label: agentText('Priority A', '优先级 A'), value: marketScannerResults.filter((r: any) => r.selectionLabel === 'Priority A').length, color: '#16a34a' },
+          { label: agentText('AI Reviewed', 'AI 已审核'), value: marketScannerResults.filter((r: any) => r.aiCalled && r.aiSuccess !== false).length, color: '#1890ff' },
+          { label: agentText('AI Challenge', 'AI 已质询'), value: marketScannerResults.filter((r: any) => r.aiChallenged || r.aiTraderDecision === 'Watch' || r.aiTraderDecision === 'Avoid').length, color: '#d97706' },
           ...(marketScannerResults.filter((r: any) => r.analysisStatus === 'failed').length > 0
             ? [{ label: t.agent.needDataLabel.replace(':', ''), value: marketScannerResults.filter((r: any) => r.analysisStatus === 'failed').length, color: '#ff4d4f' }]
             : []),
@@ -8799,1141 +8556,33 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
         expanded={scannerExpanded}
         onToggle={() => setScannerExpanded(!scannerExpanded)}
       >
-        <Card>
-          <Row gutter={16} align="middle" style={{ marginBottom: 16 }}>
-            <Col span={24}>
-              <Space size="middle">
-                <Tooltip title={pipelineRunning && detailedScanStatus.currentStatus !== 'scanning' ? t.agent.pipelineDisabled : ''}>
-                  <span>
-                    <Button
-                      type={detailedScanStatus.currentStatus === 'scanning' ? 'default' : 'primary'}
-                      danger={detailedScanStatus.currentStatus === 'scanning'}
-                      icon={detailedScanStatus.currentStatus === 'scanning' ? <PauseCircleOutlined /> : <ThunderboltOutlined />}
-                      onClick={handleToggleMarketScanner}
-                      loading={detailedScanStatus.currentStatus === 'stopping'}
-                      disabled={pipelineRunning && detailedScanStatus.currentStatus !== 'scanning'}
-                      style={AI_AGENT_PRIMARY_BTN_STYLE}
-                    >
-                      {detailedScanStatus.currentStatus === 'scanning' ? t.agent.stop : t.agent.runScanner}
-                    </Button>
-                  </span>
-                </Tooltip>
-                {detailedScanStatus.currentStatus === 'scanning' && (
-                  <Text type="secondary" style={{ fontSize: '12px' }}>{t.agent.scanningInProgress}...</Text>
-                )}
-                {detailedScanStatus.currentStatus === 'stopping' && (
-                  <Text type="warning" style={{ fontSize: '12px' }}>{t.agent.stoppingScanner}...</Text>
-                )}
-                {detailedScanStatus.currentStatus === 'stopped' && (
-                  <Text type="warning" style={{ fontSize: '12px' }}>{t.agent.scanStopped}. {marketScannerResults.length} {t.agent.retained}.</Text>
-                )}
-                {detailedScanStatus.currentStatus === 'completed' && (
-                  <Text type="success" style={{ fontSize: '12px' }}>{t.agent.scanCompleted}: {detailedScanStatus.processedCount} {t.agent.colSymbol.toLowerCase()}</Text>
-                )}
-                {detailedScanStatus.currentStatus === 'error' && (
-                  <Text type="danger" style={{ fontSize: '12px' }}>{detailedScanStatus.statusMessage}</Text>
-                )}
-              </Space>
-            </Col>
-          </Row>
+        <MarketScannerWorkbench
+          results={marketScannerResults}
+          displayedResults={displayedMarketScannerResults}
+          detailedStatus={detailedScanStatus}
+          totalSymbols={detailedScanStatus.totalCount || marketScannerStatus.totalSymbols || 0}
+          progressPercent={scannerProgressPercent}
+          stageIndex={scannerStageIndex}
+          stageCount={scannerStageCount}
+          stageLabel={scannerStageLabel}
+          stageDetail={scannerStageDetail}
+          etaLabel={scannerEtaLabel}
+          progressSteps={scannerProgressSteps}
+          viewFilter={marketScannerFilters.trendFilter}
+          onViewFilterChange={(value) => setMarketScannerFilters(prev => ({ ...prev, trendFilter: value }))}
+          expandedRows={expandedRows}
+          onToggleRow={toggleRowExpand}
+          renderDetail={renderDetailPanel}
+        />
 
-          <Divider style={{ margin: '16px 0' }} />
-
-          {/* Scanner Status Display */}
-          <Row gutter={16} style={{ marginBottom: 16 }}>
-            <Col span={6}>
-              <div style={{ marginBottom: '8px' }}>
-                <Text strong>{t.agent.status}:</Text>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Badge
-                  status={
-                    detailedScanStatus.currentStatus === 'scanning' ? 'processing' :
-                    detailedScanStatus.currentStatus === 'completed' ? 'success' :
-                    detailedScanStatus.currentStatus === 'error' ? 'error' :
-                    detailedScanStatus.currentStatus === 'stopped' || detailedScanStatus.currentStatus === 'stopping' ? 'warning' : 'default'
-                  }
-                />
-                <Text strong style={{
-                  color: detailedScanStatus.currentStatus === 'scanning' ? '#52c41a' :
-                         detailedScanStatus.currentStatus === 'completed' ? '#1890ff' :
-                         detailedScanStatus.currentStatus === 'error' ? '#ff4d4f' :
-                         detailedScanStatus.currentStatus === 'stopped' || detailedScanStatus.currentStatus === 'stopping' ? '#faad14' : 'var(--app-text-muted)'
-                }}>
-                  {detailedScanStatus.currentStatus === 'scanning' ? t.agent.statusScanning :
-                   detailedScanStatus.currentStatus === 'completed' ? t.agent.statusCompleted :
-                   detailedScanStatus.currentStatus === 'error' ? t.agent.statusError :
-                   detailedScanStatus.currentStatus === 'stopping' ? t.agent.statusStopping :
-                   detailedScanStatus.currentStatus === 'stopped' ? t.agent.statusStopped2 : t.agent.statusIdle}
-                </Text>
-              </div>
-            </Col>
-
-            <Col span={6}>
-              <div style={{ marginBottom: '8px' }}>
-                <Text strong>{t.agent.progress}:</Text>
-              </div>
-              <Text type="secondary" style={{ fontSize: '13px' }}>
-                {detailedScanStatus.currentStatus === 'scanning'
-                  ? `${detailedScanStatus.processedCount}/${detailedScanStatus.totalCount} ${t.agent.progressSymbols}`
-                  : detailedScanStatus.currentStatus === 'completed' ? `${t.agent.progressCompletedPrefix} ${detailedScanStatus.totalCount}/${detailedScanStatus.totalCount}` :
-                    detailedScanStatus.currentStatus === 'stopped' ? `${t.agent.progressStoppedAtPrefix} ${detailedScanStatus.processedCount}/${detailedScanStatus.totalCount}` : t.agent.progressIdleText}
-              </Text>
-            </Col>
-
-            <Col span={6}>
-              <div style={{ marginBottom: '8px' }}>
-                <Text strong>{t.agent.dataQuality}:</Text>
-              </div>
-              <Text type="secondary" style={{ fontSize: '13px' }}>
-                {marketScannerResults.length > 0
-                  ? `${marketScannerResults.filter((r: any) => r.price != null && r.volume > 0).length} ${t.agent.goodData} / ${marketScannerResults.filter((r: any) => (r.price != null || r.volume > 0) && !(r.price != null && r.volume > 0)).length} ${t.agent.partialData}`
-                  : !configStatus.alpaca ? t.agent.notConfigured :
-                    detailedScanStatus.currentStatus === 'scanning' ? t.agent.collecting : t.agent.noDataYet}
-              </Text>
-            </Col>
-
-            <Col span={6}>
-              <div style={{ marginBottom: '8px' }}>
-                <Text strong>{t.agent.aiStatus}:</Text>
-              </div>
-              <Text type="secondary" style={{ fontSize: '13px' }}>
-                {marketScannerResults.length > 0
-                  ? `${marketScannerResults.filter((r: any) => r.aiCalled && r.analysisStatus !== 'failed').length} AI · ${marketScannerResults.filter((r: any) => !r.aiCalled && r.analysisStatus !== 'failed').length} ${t.agent.localRules}${marketScannerResults.filter((r: any) => r.analysisStatus === 'failed').length > 0 ? ` · ${marketScannerResults.filter((r: any) => r.analysisStatus === 'failed').length} ${t.agent.needDataLabel.replace(':', '')}` : ''}`
-                  : configStatus.aiTestStatus === 'connected' ? t.agent.connected :
-                    configStatus.aiTestStatus === 'saved' ? t.agent.notTested :
-                    configStatus.aiTestStatus === 'error' ? t.agent.error :
-                    configStatus.ai ? t.agent.notTested : t.agent.ruleBasedOnly}
-              </Text>
-            </Col>
-          </Row>
-
-          {(marketScannerStatus.status === 'running' || detailedScanStatus.currentStatus === 'scanning') && (
-            <div style={{ 
-              marginBottom: 24, 
-              padding: '16px 20px', 
-              background: 'var(--app-card-bg-soft)', 
-              borderRadius: 8, 
-              border: '1px solid var(--app-border-soft)' 
-            }}>
-              <div style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'flex-end',
-                marginBottom: 12
-              }}>
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--app-text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>
-                    {detailedScanStatus.currentStatus === 'scanning' ? t.agent.scanningInProgress :
-                     detailedScanStatus.currentStatus === 'stopped' ? t.agent.scanStopped :
-                     detailedScanStatus.currentStatus === 'completed' ? t.agent.scanCompleted :
-                     detailedScanStatus.currentStatus === 'error' ? t.agent.scanError : t.agent.waitingForNextScan}
-                  </div>
-                  <div style={{ fontSize: 24, fontWeight: 600, color: 'var(--app-text-strong)', lineHeight: 1.2 }}>
-                    {detailedScanStatus.percent}% <span style={{ fontSize: 14, fontWeight: 400, color: 'var(--app-text-muted)' }}>{t.agent.complete}</span>
-                  </div>
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: 13, color: 'var(--app-text-muted)', marginBottom: 4 }}>
-                    <span style={{ fontWeight: 600 }}>{detailedScanStatus.processedCount}</span> / {detailedScanStatus.totalCount} {t.agent.symbolsProcessed}
-                  </div>
-                  <div style={{ fontSize: 12, color: 'var(--app-text-muted)' }}>
-                    {detailedScanStatus.validatedCount} {t.agent.validated} • {detailedScanStatus.failedCount > 0 && `${detailedScanStatus.failedCount} ${t.agent.failed} • `}{detailedScanStatus.retryCount} {t.agent.retries}
-                    {detailedScanStatus.lastFailureReason && <div style={{ fontSize: 11, color: '#ff4d4f', marginTop: 2 }}>{t.agent.lastFailure}: {detailedScanStatus.lastFailureReason}</div>}
-                  </div>
-                </div>
-              </div>
-
-              <Progress
-                percent={detailedScanStatus.percent}
-                showInfo={false}
-                size={["100%", 8]}
-                status={detailedScanStatus.currentStatus === 'scanning' ? 'active' :
-                       detailedScanStatus.currentStatus === 'stopped' ? 'exception' :
-                       detailedScanStatus.currentStatus === 'completed' ? 'success' : 'normal'}
-                strokeColor={
-                  detailedScanStatus.currentStatus === 'scanning' ? '#1890ff' :
-                  detailedScanStatus.currentStatus === 'completed' ? '#52c41a' :
-                  detailedScanStatus.currentStatus === 'error' ? '#ff4d4f' : '#faad14'
-                }
-                style={{ marginBottom: 16 }}
-              />
-
-              {detailedScanStatus.activeSymbols.length > 0 && (
-                <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  fontSize: 12,
-                  color: 'var(--app-text-muted)'
-                }}>
-                  <div style={{ display: 'flex', gap: 4 }}>
-                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#1890ff', margin: 'auto' }} />
-                  </div>
-                  <Text strong style={{ color: 'var(--app-text-strong)' }}>{t.agent.currentlyScanning}:</Text>
-                  {detailedScanStatus.activeSymbols.map(sym => (
-                    <Tag key={sym} color="blue" bordered={false} style={{ margin: 0 }}>{sym}</Tag>
-                  ))}
-                  {detailedScanStatus.statusMessage && (
-                    <span style={{ color: 'var(--app-text-muted)', marginLeft: 'auto' }}>{detailedScanStatus.statusMessage}</span>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Scanner Summary */}
-          {marketScannerSummary.universeScanned > 0 && (
-            <Card
-              size="small"
-              style={{
-                marginBottom: 16,
-                border: '1px solid var(--app-border-soft)',
-                boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)'
-              }}
-              bodyStyle={{ padding: '16px' }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                <div>
-                  <Text strong style={{ fontSize: '16px' }}>{t.agent.marketScanSummary}</Text>
-                  <div style={{ fontSize: '12px', color: '#666', marginTop: 2 }}>
-                    {marketScannerSummary.lastScanTime
-                      ? new Date(marketScannerSummary.lastScanTime).toLocaleString()
-                      : t.agent.notScanned}
-                  </div>
-                </div>
-                <Tag color="blue">{t.agent.fullMarketScan}</Tag>
-              </div>
-
-              <Divider style={{ margin: '12px 0' }} />
-
-              <Row gutter={[16, 16]}>
-                <Col span={4}>
-                  <Statistic
-                    title={t.agent.universeScanned}
-                    value={marketScannerSummary.universeScanned}
-                    valueStyle={{ color: '#1890ff', fontSize: '20px', fontWeight: 'bold' }}
-                    prefix={<BarChartOutlined />}
-                  />
-                </Col>
-                <Col span={4}>
-                  <Statistic
-                    title={t.agent.bullish}
-                    value={marketScannerSummary.bullishCount}
-                    valueStyle={{ color: '#52c41a', fontSize: '20px', fontWeight: 'bold' }}
-                    prefix={<ArrowUpOutlined />}
-                  />
-                </Col>
-                <Col span={4}>
-                  <Statistic
-                    title={t.agent.bearish}
-                    value={marketScannerSummary.bearishCount}
-                    valueStyle={{ color: '#ff4d4f', fontSize: '20px', fontWeight: 'bold' }}
-                    prefix={<ArrowDownOutlined />}
-                  />
-                </Col>
-                <Col span={4}>
-                  <Statistic
-                    title={t.agent.neutral}
-                    value={marketScannerSummary.neutralCount}
-                    valueStyle={{ color: '#faad14', fontSize: '20px', fontWeight: 'bold' }}
-                    prefix={<MinusOutlined />}
-                  />
-                </Col>
-                <Col span={4}>
-                  <Statistic
-                    title={t.agent.strongTrend}
-                    value={marketScannerSummary.strongTrendCount}
-                    valueStyle={{ color: '#722ed1', fontSize: '20px', fontWeight: 'bold' }}
-                    prefix={<ThunderboltOutlined />}
-                  />
-                </Col>
-                <Col span={4}>
-                  <Statistic
-                    title={t.agent.newsRisk}
-                    value={marketScannerSummary.newsRiskCount}
-                    valueStyle={{ color: '#fa8c16', fontSize: '20px', fontWeight: 'bold' }}
-                    prefix={<ExclamationCircleOutlined />}
-                  />
-                </Col>
-              </Row>
-            </Card>
-          )}
-
-          {/* Scanner Results Table */}
-          {marketScannerResults.length > 0 && (
-            <div style={{ marginTop: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, paddingBottom: 12, borderBottom: '1px solid var(--app-border-soft)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                  <Text strong style={{ fontSize: '15px' }}>{t.agent.topMarketTrends} <span style={{ color: 'var(--app-text-muted)', fontWeight: 'normal', fontSize: '13px' }}>({getFilteredAndSortedResults().length})</span></Text>
-                  
-                  <div className="agent-trend-tabs-container">
-                    {[
-                      { value: 'all', label: t.agent.all },
-                      { value: 'strong', label: t.agent.strong },
-                      { value: 'bullish', label: t.agent.bullish },
-                      { value: 'neutral', label: t.agent.neutral },
-                      { value: 'bearish', label: t.agent.bearish }
-                    ].map(tab => {
-                      const isActive = marketScannerFilters.trendFilter === tab.value;
-                      return (
-                        <div
-                          key={tab.value}
-                          onClick={() => setMarketScannerFilters(prev => ({ ...prev, trendFilter: tab.value as any }))}
-                          className={`agent-trend-tab ${isActive ? 'agent-trend-tab-active' : 'agent-trend-tab-inactive'}`}
-                        >
-                          {tab.label}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-
-            <div className="scanner-table-container">
-              <Table
-                columns={[
-                  {
-                    title: t.agent.colSymbol,
-                    dataIndex: 'symbol',
-                    key: 'symbol',
-                    fixed: 'left',
-                    width: 150,
-                    render: (text: string, record: any) => (
-                      <div style={{ display: 'flex', flexDirection: 'column' }}>
-                        <span className="scanner-symbol-text">{text}</span>
-                        <span className="scanner-company-text">{record.companyName || record.name || t.agent.unknown}</span>
-                      </div>
-                    ),
-                  },
-                  {
-                    title: t.agent.trend,
-                    dataIndex: 'trendLabel',
-                    key: 'trendLabel',
-                    width: 120,
-                    render: (label: string) => renderTrendBadge(label)
-                  },
-                  {
-                    title: t.agent.colScore,
-                    dataIndex: 'trendScore',
-                    key: 'trendScore',
-                    width: 140,
-                    render: (score: number, record: any) => {
-                      const hasScore = score != null || record.overallScore != null;
-                      if (!hasScore) {
-                        return (
-                          <div style={{ width: '100%' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                              <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--app-text-muted)' }}>—</span>
-                              <span style={{ fontSize: '10px', color: 'var(--app-text-muted)' }}>{t.agent.confidence}: —</span>
-                            </div>
-                            <Progress percent={0} size="small" strokeColor="var(--app-border)" showInfo={false} style={{ margin: 0 }} />
-                          </div>
-                        );
-                      }
-                      const displayScore = score || record.overallScore || 0;
-                      const conf = record.trendConfidence ? (record.trendConfidence * (record.trendConfidence <= 1 ? 100 : 1)).toFixed(0) : '0';
-                      const scoreColor = displayScore >= 70 ? '#52c41a' : displayScore >= 40 ? '#faad14' : '#ff4d4f';
-                      return (
-                        <div style={{ width: '100%' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                            <span style={{ fontSize: '12px', fontWeight: 700, color: scoreColor }}>{displayScore.toFixed(0)}</span>
-                            <span style={{ fontSize: '10px', color: 'var(--app-text-muted)' }}>{t.agent.confidence}: {conf}%</span>
-                          </div>
-                          <Progress
-                            percent={displayScore}
-                            size="small"
-                            strokeColor={scoreColor}
-                            showInfo={false}
-                            style={{ margin: 0 }}
-                          />
-                        </div>
-                      );
-                    }
-                  },
-                  {
-                    title: t.agent.colPrice,
-                    dataIndex: 'price',
-                    key: 'price',
-                    width: 120,
-                    render: (price: number, record: any) => {
-                      const hasPrice = price != null && price > 0;
-                      const changePct = (record.changePct != null) ? record.changePct : (record.changePercent != null ? record.changePercent : null);
-                      const changeColor = changePct != null ? (changePct >= 0 ? '#52c41a' : '#ff4d4f') : 'var(--app-text-muted)';
-                      return (
-                        <div>
-                          <div className="scanner-price-text">{hasPrice ? `$${price.toFixed(2)}` : '—'}</div>
-                          <div style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 4,
-                            fontSize: '11px',
-                            color: changeColor,
-                            fontWeight: 600,
-                            padding: '2px 6px',
-                            backgroundColor: changePct != null ? `${changeColor}10` : 'var(--app-card-bg-soft)',
-                            borderRadius: '4px',
-                            marginTop: 4
-                          }}>
-                            {changePct != null ? (
-                              <>
-                                <span>{changePct >= 0 ? '▲' : '▼'}</span>
-                                <span>{changePct >= 0 ? '+' : ''}{changePct.toFixed(2)}%</span>
-                              </>
-                            ) : (
-                              <span>—</span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    }
-                  },
-                  {
-                    title: t.agent.volume,
-                    dataIndex: 'volume',
-                    key: 'volume',
-                    width: 130,
-                    render: (volume: number, record: any) => {
-                      const hasVolume = volume != null && volume > 0;
-                      const status = (record.volumeStatus != null && record.analysisStatus !== 'failed') ? record.volumeStatus : null;
-                      const statusColor = status === 'High' ? '#ff4d4f' : status === 'Low' ? '#52c41a' : '#faad14';
-                      const volumeStatusMap: Record<string, string> = { 'High': t.agent.volumeHigh, 'Normal': t.agent.volumeNormal, 'Low': t.agent.volumeLow };
-                      return (
-                        <div>
-                          <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--app-text-strong)' }}>
-                            {hasVolume ? marketDataService.formatVolume(volume) : '—'}
-                          </div>
-                          <div style={{ marginTop: 4 }}>
-                            {status ? (
-                              <span style={{
-                                fontSize: '10px',
-                                color: statusColor,
-                                fontWeight: 700,
-                                textTransform: 'uppercase',
-                                padding: '1px 6px',
-                                borderRadius: '4px',
-                                backgroundColor: `${statusColor}10`,
-                                border: `1px solid ${statusColor}30`
-                              }}>
-                                {volumeStatusMap[status] || status}
-                              </span>
-                            ) : (
-                              <span style={{
-                                fontSize: '10px',
-                                color: 'var(--app-text-muted)',
-                                fontWeight: 700,
-                                textTransform: 'uppercase',
-                                padding: '1px 6px',
-                                borderRadius: '4px',
-                                backgroundColor: 'var(--app-card-bg-soft)',
-                                border: '1px solid var(--app-border)'
-                              }}>N/A</span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    }
-                  },
-                  {
-                    title: t.agent.colNews,
-                    dataIndex: 'newsSentiment',
-                    key: 'newsSentiment',
-                    width: 140,
-                    render: (sentiment: string, record: any) => {
-                      const _hasNews = record.hasNews || (record.newsCount > 0) || !!record.topNews;
-                      const _src = record.newsSource || (record.dataSources?.news) || '';
-                      const _reason = record.newsFetchReason || '';
-                      const _isNoNews = _reason === 'no_news_last_7d' || _src.toLowerCase().includes('no news in 7d');
-                      const _isError = _reason === 'finnhub_news_api_failed' || _src.toLowerCase().includes('error') && !_src.toLowerCase().includes('no news');
-                      const _isRateLimited = _reason === 'finnhub_rate_limited' || _src.toLowerCase().includes('rate limit');
-                      const _isNotConfigured = _reason === 'finnhub_not_configured' || _src.toLowerCase().includes('not configured');
-                      const _isSkipped = _reason === 'news_fetch_skipped_top_n_limit' || _src.toLowerCase().includes('below top candidate');
-                      const _visibleCount = Array.isArray(record.allNews) ? Math.min(record.allNews.length, 5) : record.topNews ? 1 : (record.newsCount > 0 && record.newsCount <= 5) ? record.newsCount : 0;
-                      const _countLabel = _visibleCount > 0 ? ` · ${_visibleCount}` : '';
-
-                      let line1Label: string, line1Color: string;
-                      if (_hasNews) { line1Label = `Finnhub${_countLabel}`; line1Color = '#3b82f6'; }
-                      else if (_isRateLimited) { line1Label = 'News limited'; line1Color = '#fbbf24'; }
-                      else if (_isNoNews) { line1Label = 'No news'; line1Color = 'var(--app-text-muted)'; }
-                      else if (_isError) { line1Label = 'News error'; line1Color = '#ff4d4f'; }
-                      else if (_isNotConfigured) { line1Label = 'No key'; line1Color = 'var(--app-text-muted)'; }
-                      else if (_isSkipped) { line1Label = 'Open to fetch'; line1Color = 'var(--app-text-muted)'; }
-                      else { line1Label = 'Unknown'; line1Color = 'var(--app-text-muted)'; }
-
-                      // sentiment label display – handles string labels and numeric scores (defense in depth)
-                      const _rawSent: any = sentiment;
-                      const _sentLabel: string = (() => {
-                        if (_rawSent == null) return '';
-                        if (typeof _rawSent === 'string' && _rawSent) {
-                          const s = _rawSent.charAt(0).toUpperCase() + _rawSent.slice(1).toLowerCase();
-                          if (s === 'Positive' || s === 'Negative' || s === 'Neutral' || s === 'Mixed') return s;
-                        }
-                        if (typeof _rawSent === 'number' && !isNaN(_rawSent)) {
-                          if (_rawSent > 0.2) return 'Positive';
-                          if (_rawSent < -0.2) return 'Negative';
-                          return 'Neutral';
-                        }
-                        return '';
-                      })();
-                      const _sentColorMap: Record<string, string> = {
-                        'Positive': '#4ade80',
-                        'Negative': '#ef4444',
-                        'Neutral': '#94a3b8',
-                        'Mixed': '#fbbf24',
-                      };
-                      let line2Label: string, line2Color: string;
-                      if (_sentLabel) { line2Label = _sentLabel; line2Color = _sentColorMap[_sentLabel] || '#94a3b8'; }
-                      else if (_hasNews || _isSkipped) { line2Label = 'Sentiment pending'; line2Color = 'var(--app-text-muted)'; }
-                      else if (_isRateLimited || _isNoNews || _isError) { line2Label = 'Technical only'; line2Color = 'var(--app-text-muted)'; }
-                      else if (_isNotConfigured) { line2Label = 'No data'; line2Color = 'var(--app-text-muted)'; }
-                      else { line2Label = 'No sentiment'; line2Color = 'var(--app-text-muted)'; }
-
-                      return (
-                        <div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                            <span style={{ fontSize: '11px', fontWeight: 600, color: line1Color }}>{line1Label}</span>
-                          </div>
-                          <div style={{ fontSize: '10px', color: line2Color, marginTop: 2, fontWeight: 500 }}>{line2Label}</div>
-                        </div>
-                      );
-                    }
-                  },
-                  {
-                    title: t.agent.colDataQual,
-                    key: 'dataQuality',
-                    width: 110,
-                    render: (record: any) => {
-                      const isFailed = record.analysisStatus === 'failed';
-                      const hasPrice = record.price != null && record.price > 0;
-                      const hasVolume = record.volume != null && record.volume > 0;
-                      const hasTrend = record.trendLabel != null && record.trendLabel !== 'Need Data';
-                      const dqOk = hasPrice && hasVolume && hasTrend && !isFailed;
-                      let dq: string;
-                      let dqColor: string;
-                      if (isFailed) {
-                        dq = 'Failed';
-                        dqColor = '#ff4d4f';
-                      } else if (dqOk) {
-                        dq = t.agent.goodData;
-                        dqColor = '#52c41a';
-                      } else {
-                        dq = t.agent.partialData;
-                        dqColor = '#faad14';
-                      }
-                      const sourceLabel = isFailed ? (record.aiSource === 'Failed' ? 'Local fallback' : record.aiSource || 'Failed')
-                        : record.aiCalled ? record.aiSource : t.agent.localLabel;
-                      return (
-                        <div>
-                          <div style={{
-                            fontSize: '10px',
-                            fontWeight: 700,
-                            color: dqColor,
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 4
-                          }}>
-                            <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: dqColor }} />
-                            {dq}
-                          </div>
-                          <div style={{ fontSize: '10px', color: 'var(--app-text-muted)', marginTop: 2 }}>
-                            {sourceLabel}
-                          </div>
-                        </div>
-                      );
-                    },
-                  },
-                  {
-                    title: t.agent.aiReasoning,
-                    dataIndex: 'conciseReasoning',
-                    key: 'conciseReasoning',
-                    width: 250,
-                    ellipsis: { showTitle: false },
-                    render: (reason: string, record: any) => {
-                      const rawReason = reason || record.scannerReason || record.aiReasoning || t.agent.noAnalysisAvailable;
-                      const displayReason = rawReason;
-                      return (
-                        <Tooltip title={displayReason}>
-                          <div className="scanner-reasoning-text">
-                            {displayReason}
-                          </div>
-                        </Tooltip>
-                      );
-                    }
-                  }
-                ]}
-                dataSource={getFilteredAndSortedResults()}
-                rowKey="symbol"
-                size="middle"
-                pagination={{ pageSize: 10, size: 'default', showSizeChanger: false }}
-                scroll={{ x: 1200 }}
-                onRow={(record) => ({
-                  className: expandedRows.includes(record.symbol) ? 'scanner-row-expanded' : '',
-                  onClick: () => toggleRowExpand(record.symbol)
-                })}
-                expandable={{
-                  expandedRowRender: (record: any) => renderDetailPanel(record),
-                  rowExpandable: () => true,
-                  expandedRowKeys: expandedRows,
-                  showExpandColumn: true,
-                  expandRowByClick: false,
-                  expandIcon: ({ expanded, onExpand, record }) => (
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={expanded ? <ArrowDownOutlined /> : <ArrowRightOutlined />}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onExpand(record, e);
-                      }}
-                      style={{ padding: 0, width: 24, height: 24, color: 'var(--app-text-muted)' }}
-                    />
-                  )
-                }}
-              />
-            </div>
-            </div>
-          )}
-
-          {marketScannerResults.length === 0 && marketScannerStatus.status !== 'running' && (
-            <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
-              <LineChartOutlined style={{ fontSize: '48px', marginBottom: 16 }} />
-              <div style={{ fontSize: '14px' }}>
-                {marketScannerStatus.status === 'completed'
-                  ? 'No qualified candidates / all filtered'
-                  : t.agent.noMarketScanResults}
-              </div>
-              <div style={{ fontSize: '12px', marginTop: 8 }}>
-                {marketScannerStatus.status === 'completed'
-                  ? `${detailedScanStatus.processedCount} symbols scanned, 0 passed filters`
-                  : t.agent.clickRunScanner}
-              </div>
-            </div>
-          )}
-        </Card>
-      </CollapsibleStageSection>
-
-      {/* 2.5 Preferred Continue Scan List */}
-      <CollapsibleStageSection
-        title={t.agent.preferredContinueScanList}
-        icon={<BarChartOutlined style={{ color: '#1890ff' }} />}
-        statusText={
-          continueScanStatus === 'processing' ? t.agent.statusRunning :
-          continueScanStatus === 'completed' ? t.agent.statusCompleted :
-          continueScanStatus === 'error' ? t.agent.statusError : t.agent.statusReady
-        }
-        statusColor={
-          continueScanStatus === 'processing' ? 'processing' :
-          continueScanStatus === 'completed' ? 'success' :
-          continueScanStatus === 'error' ? 'error' : 'default'
-        }
-        progressValue={continueScanStatus === 'processing' ? continueScanProgress : null}
-        summaryChips={preferredContinueScanList.length > 0 ? [
-          { label: t.agent.candidates, value: preferredContinueScanList.length },
-          { label: 'AI', value: preferredContinueScanList.filter((c: any) => c.reasonSource === 'AI').length, color: '#1890ff' },
-          { label: t.agent.localRules, value: preferredContinueScanList.filter((c: any) => c.reasonSource !== 'AI').length },
-        ] : undefined}
-        actionButton={
-          <Tooltip title={pipelineRunning ? t.agent.pipelineDisabled : ''}>
-            <span>
-              <Button
-                type="primary"
-                onClick={() => handleStartContinueScan()}
-                disabled={marketScannerResults.length === 0 || continueScanStatus === 'processing' || pipelineRunning}
-                loading={continueScanStatus === 'processing'}
-                icon={<ThunderboltOutlined />}
-                style={AI_AGENT_PRIMARY_BTN_STYLE}
-              >
-                {continueScanStatus === 'processing' ? t.agent.processing : t.agent.startSelection}
-              </Button>
-            </span>
-          </Tooltip>
-        }
-        isRunning={continueScanStatus === 'processing'}
-        expanded={continueScanExpanded}
-        onToggle={() => setContinueScanExpanded(!continueScanExpanded)}
-      >
-        <div className="continue-scan-section">
-        {/* 顶部控制面板 */}
-        <Card style={{ marginBottom: 16, borderRadius: '12px', border: '1px solid var(--app-border-soft)' }} bodyStyle={{ padding: '20px' }}>
-          {/* 状态和信息行 */}
-          <div className="continue-scan-header-meta">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span style={{ fontWeight: 600 }}>{t.agent.statusLabel}:</span>
-              <Tag 
-                color={
-                  continueScanStatus === 'processing' ? 'blue' :
-                  continueScanStatus === 'completed' ? 'success' :
-                  continueScanStatus === 'error' ? 'error' : 'default'
-                }
-                className="continue-scan-status-badge"
-              >
-                {continueScanStatus === 'processing' ? t.agent.statusRunning :
-                 continueScanStatus === 'completed' ? t.agent.statusCompleted :
-                 continueScanStatus === 'error' ? t.agent.statusError : t.agent.statusReady}
-              </Tag>
-            </div>
-            <Divider type="vertical" />
-            <span><strong>{t.agent.sourceLabel}:</strong> {t.agent.marketScanner}</span>
-            <Divider type="vertical" />
-            <span>
-              <strong>{t.agent.selectionLabel}:</strong>{' '}
-              {preferredContinueScanList.length > 0 ? (
-                preferredContinueScanList.filter(c => c.reasonSource === 'AI').length > 0 ? (
-                  <Tag color="cyan" style={{ fontSize: '10px', fontWeight: 700 }}>{t.agent.aiRules}</Tag>
-                ) : (
-                  <Tag color="orange" style={{ fontSize: '10px', fontWeight: 700 }}>{t.agent.rulesOnly}</Tag>
-                )
-              ) : '—'}
-            </span>
-            <Divider type="vertical" />
-            <span><strong>{t.agent.poolLabel}:</strong> {marketScannerResults.length} {t.agent.symbolsLabel}</span>
-            {detailedScanStatus.lastScanAt && (
-              <>
-                <Divider type="vertical" />
-                <span>
-                  <strong>{t.agent.lastSync}:</strong> {new Date(detailedScanStatus.lastScanAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </span>
-              </>
-            )}
-          </div>
-
-          {/* AI fallback warning */}
-          {continueScanStatus === 'completed' && preferredContinueScanList.length > 0 &&
-            preferredContinueScanList.filter(c => c.reasonSource === 'AI').length === 0 && (
-            <Alert
-              message={t.agent.rulesOnly + '. ' + t.agent.aiReasoning + ' ' + t.agent.notConfigured + '.'}
-              type="info"
-              showIcon
-              style={{ marginBottom: '16px', borderRadius: '8px' }}
-            />
-          )}
-
-          {/* 统计卡片 - 只在完成时显示 */}
-          {continueScanStatus === 'completed' && preferredContinueScanList.length > 0 && (
-            <div className="continue-scan-stat-grid">
-              <div className="continue-scan-stat-card">
-                <div className="continue-scan-stat-label">{t.agent.candidates}</div>
-                <div className="continue-scan-stat-value">
-                  {preferredContinueScanList.length}
-                  <span className="continue-scan-stat-sub">/ {marketScannerResults.length}</span>
-                </div>
-              </div>
-              <div className="continue-scan-stat-card">
-                <div className="continue-scan-stat-label">{t.agent.avgPriority}</div>
-                <div className="continue-scan-stat-value" style={{ color: '#1890ff' }}>
-                  {preferredContinueScanList.length > 0
-                    ? `${Math.round(preferredContinueScanList.reduce((sum, c) => sum + (c.priorityScore || 0), 0) / preferredContinueScanList.length)}%`
-                    : '—'}
-                </div>
-              </div>
-              <div className="continue-scan-stat-card">
-                <div className="continue-scan-stat-label">{t.agent.riskMix}</div>
-                <div className="continue-scan-stat-value" style={{ fontSize: '16px', paddingTop: '4px' }}>
-                  <span style={{ color: '#52c41a' }}>{preferredContinueScanList.filter(c => (c.eventRisk || 'Medium') === 'Low').length}</span>
-                  <span style={{ color: 'var(--app-text-muted)', margin: '0 4px' }}>/</span>
-                  <span style={{ color: '#faad14' }}>{preferredContinueScanList.filter(c => (c.eventRisk || 'Medium') === 'Medium').length}</span>
-                  <span style={{ color: 'var(--app-text-muted)', margin: '0 4px' }}>/</span>
-                  <span style={{ color: '#ff4d4f' }}>{preferredContinueScanList.filter(c => (c.eventRisk || 'Medium') === 'High').length}</span>
-                </div>
-              </div>
-              <div className="continue-scan-stat-card">
-                <div className="continue-scan-stat-label">{t.agent.avgScore}</div>
-                <div className="continue-scan-stat-value">
-                  {preferredContinueScanList.length > 0
-                    ? Math.round(preferredContinueScanList.reduce((sum, c) => sum + (c.overallScore || c.trendScore || 0), 0) / preferredContinueScanList.length)
-                    : '—'}
-                </div>
-              </div>
-              <div className="continue-scan-stat-card">
-                <div className="continue-scan-stat-label">{t.agent.aiCoverage}</div>
-                <div className="continue-scan-stat-value">
-                  {Math.round((preferredContinueScanList.filter(c => c.reasonSource === 'AI').length / preferredContinueScanList.length) * 100)}%
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* 进度条（处理中时显示） */}
-          {continueScanStatus === 'processing' && (
-            <div style={{ marginTop: '8px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                <Text strong style={{ color: '#1890ff' }}>{continueScanDetails.currentStage || t.agent.processing}</Text>
-                <Text strong>{continueScanProgress}%</Text>
-              </div>
-              <Progress
-                percent={continueScanProgress}
-                status="active"
-                strokeColor={{ '0%': '#1890ff', '100%': '#52c41a' }}
-                strokeWidth={10}
-              />
-              <div style={{ fontSize: '12px', color: 'var(--app-text-muted)', marginTop: '8px' }}>
-                {t.agent.candidatesWord} {t.agent.validated}: <strong>{continueScanDetails.processedCount}</strong> / {continueScanDetails.totalCount}
-              </div>
-            </div>
-          )}
-        </Card>
-
-        <Card bodyStyle={{ padding: 0, border: 'none' }} bordered={false}>
-          {(() => {
-            // 状态1: 没有market scan结果
-            if (marketScannerResults.length === 0) {
-              return (
-                <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
-                  <BarChartOutlined style={{ fontSize: '48px', marginBottom: 16 }} />
-                  <div style={{ fontSize: '14px' }}>{t.agent.noMarketScanResultsAvailable}</div>
-                  <div style={{ fontSize: '12px', marginTop: 8 }}>
-                    {detailedScanStatus.currentStatus === 'scanning'
-                      ? t.agent.marketScanInProgress
-                      : detailedScanStatus.currentStatus === 'stopped'
-                      ? t.agent.scanStoppedBeforeResults
-                      : t.agent.runMarketScannerFirst}
-                  </div>
-                </div>
-              );
-            }
-
-            // 状态2: continue scan处理中
-            if (continueScanStatus === 'processing') {
-              return (
-                <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
-                  <SyncOutlined spin style={{ fontSize: '48px', marginBottom: 16, color: '#1890ff' }} />
-                  <div style={{ fontSize: '14px' }}>{t.agent.ruleBasedScanInProgress}</div>
-                  <div style={{ fontSize: '12px', marginTop: 8 }}>
-                    {t.agent.processingNCandidates.replace('{processed}', String(continueScanDetails.processedCount)).replace('{total}', String(continueScanDetails.totalCount))}
-                  </div>
-                </div>
-              );
-            }
-
-            // 状态3: continue scan完成
-            if (continueScanStatus === 'completed' && preferredContinueScanList.length > 0) {
-              const paginatedData = preferredContinueScanList.slice((preferredContinuePage - 1) * 10, preferredContinuePage * 10);
-              return (
-                <div className="continue-scan-table-container">
-                  <div style={{ 
-                    backgroundColor: 'var(--app-card-bg-soft)', border: '1px solid rgba(82, 196, 26, 0.3)', 
-                    padding: '12px 16px', 
-                    borderRadius: '8px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '12px',
-                    marginBottom: '16px'
-                  }}>
-                    <CheckCircleOutlined style={{ color: '#52c41a', fontSize: '20px' }} />
-                    <div>
-                      <div style={{ fontWeight: 700, color: 'var(--app-text-strong)', fontSize: '14px' }}>
-                        {t.agent.selectionSuccessful}
-                      </div>
-                      <div style={{ color: 'var(--app-text-muted)', fontSize: '12px' }}>
-                        {t.agent.foundTopCandidates.replace('{count}', String(preferredContinueScanList.length))}
-                      </div>
-                    </div>
-                  </div>
-
-                  <Table
-                    dataSource={paginatedData}
-                    pagination={false}
-                    scroll={{ x: 1300 }}
-                    rowKey="symbol"
-                    size="middle"
-                    onRow={(record) => ({
-                      onClick: () => toggleRowExpand(record.symbol),
-                      style: { cursor: 'pointer' }
-                    })}
-                    rowClassName={(record) => expandedRows.includes(record.symbol) ? 'continue-scan-row-expanded' : 'continue-scan-row'}
-                    expandable={{
-                      expandedRowKeys: expandedRows,
-                      expandIcon: () => null,
-                      rowExpandable: () => true,
-                      expandedRowRender: (record: any) => (
-                        <div style={{ padding: '16px 24px', background: 'var(--app-card-bg-soft)', borderRadius: 8, margin: '8px 16px', border: '1px solid var(--app-border)', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.02)' }}>
-                          <Row gutter={[24, 24]}>
-                            <Col span={14}>
-                              <div style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Selection Reason</div>
-                              <div style={{ fontSize: 13, color: 'var(--app-text-strong)', lineHeight: 1.6, background: 'var(--app-card-bg)', padding: 12, borderRadius: 6, border: '1px solid var(--app-border-soft)' }}>
-                                {record.selectionReason || record.scannerReason || record.finalReason || 'No detailed reason provided.'}
-                              </div>
-                              {record.nextStep && (
-                                <div style={{ marginTop: 12 }}>
-                                  <div style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>Next Step Readiness</div>
-                                  <div style={{ fontSize: 13, color: '#1890ff', fontWeight: 600 }}>{record.nextStep}</div>
-                                </div>
-                              )}
-                            </Col>
-                            <Col span={10}>
-                              <div style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Metrics Summary</div>
-                              <div style={{ background: 'var(--app-card-bg)', padding: 12, borderRadius: 6, border: '1px solid var(--app-border-soft)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: 'var(--app-text-muted)', fontSize: 12 }}>Source</span> <Tag color={record.reasonSource === 'AI' ? 'cyan' : 'orange'} style={{ margin: 0, fontWeight: 700 }}>{record.reasonSource === 'AI' ? 'AI Agent' : 'Local Rules'}</Tag></div>
-                                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: 'var(--app-text-muted)', fontSize: 12 }}>Score</span> <span style={{ fontWeight: 700, color: 'var(--app-text-strong)' }}>{record.overallScore || record.trendScore || '—'}</span></div>
-                                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: 'var(--app-text-muted)', fontSize: 12 }}>Trend</span> <span style={{ fontWeight: 700 }}>{record.trendLabel || '—'}</span></div>
-                                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: 'var(--app-text-muted)', fontSize: 12 }}>Risk</span> <span style={{ fontWeight: 700, color: record.eventRisk === 'Low' ? '#52c41a' : record.eventRisk === 'High' ? '#ff4d4f' : '#faad14' }}>{record.eventRisk || 'Medium'}</span></div>
-                              </div>
-                            </Col>
-                          </Row>
-                        </div>
-                      )
-                    }}
-                    columns={[
-                      {
-                        title: '#',
-                        key: 'rank',
-                        width: 50,
-                        render: (_, __, index) => {
-                          const rank = (preferredContinuePage - 1) * 10 + index + 1;
-                          const isTop = rank <= 3;
-                          return (
-                            <div style={{ 
-                              display: 'flex', 
-                              alignItems: 'center', 
-                              justifyContent: 'center',
-                              width: 24,
-                              height: 24,
-                              borderRadius: '50%',
-                              backgroundColor: isTop ? '#1890ff' : 'transparent',
-                              color: isTop ? 'var(--app-card-bg)' : 'var(--app-text-muted)',
-                              fontWeight: 700,
-                              fontSize: '11px'
-                            }}>
-                              {rank}
-                            </div>
-                          );
-                        },
-                      },
-                      {
-                        title: t.agent.colSymbol,
-                        key: 'symbol',
-                        width: 140,
-                        render: (record) => (
-                          <div style={{ display: 'flex', flexDirection: 'column' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                              <span className="scanner-symbol-text">{record.symbol}</span>
-                              {record.isDevTest && <Tag color="red" style={{ fontSize: 9, padding: '0 3px', lineHeight: '14px', margin: 0 }}>DEV TEST</Tag>}
-                            </div>
-                            <span className="scanner-company-text" style={{ maxWidth: 100 }}>
-                              {record.companyName || t.agent.unknown}
-                            </span>
-                          </div>
-                        ),
-                      },
-                      {
-                        title: t.agent.trend,
-                        key: 'trend',
-                        width: 120,
-                        render: (record) => renderTrendBadge(record.trendLabel),
-                      },
-                      {
-                        title: t.agent.colScore,
-                        key: 'score',
-                        width: 80,
-                        render: (record) => {
-                          const score = record.overallScore || record.trendScore || 0;
-                          const color = score >= 70 ? '#52c41a' : score >= 50 ? '#faad14' : '#ff4d4f';
-                          return (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                              <div style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: color }} />
-                              <span style={{ fontSize: '14px', fontWeight: 700, color: 'var(--app-text-strong)' }}>{score > 0 ? score.toFixed(0) : '—'}</span>
-                            </div>
-                          );
-                        },
-                      },
-                      {
-                        title: t.agent.priority,
-                        key: 'priority',
-                        width: 160,
-                        render: (record) => {
-                          const ps = record.priorityScore || 0;
-                          const pb = record.priorityBreakdown || {};
-                          const color = ps >= 80 ? '#52c41a' : ps >= 60 ? '#faad14' : '#ff4d4f';
-                          const breakdownContent = (
-                            <div style={{ padding: '8px', fontSize: '11px' }}>
-                              <div style={{ fontWeight: 700, marginBottom: 4, borderBottom: '1px solid var(--app-border-soft)', paddingBottom: 2 }}>{t.agent.scoreBreakdown}</div>
-                              {Object.entries(pb).map(([key, val]: [string, any]) => (
-                                <div key={key} style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-                                  <span style={{ textTransform: 'capitalize' }}>{key}:</span>
-                                  <span style={{ fontWeight: 700, color: val >= 0 ? '#52c41a' : '#ff4d4f' }}>
-                                    {val >= 0 ? '+' : ''}{val}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          );
-                          return (
-                            <Tooltip title={breakdownContent}>
-                              <div style={{ width: '100%', cursor: 'help' }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontSize: '11px' }}>
-                                  <span style={{ color: 'var(--app-text-muted)', fontWeight: 600 }}>{t.agent.weight}</span>
-                                  <span style={{ color: color, fontWeight: 800 }}>{ps}%</span>
-                                </div>
-                                <div className="continue-scan-priority-bar">
-                                  <div style={{ 
-                                    width: `${ps}%`, 
-                                    height: '100%', 
-                                    backgroundColor: color,
-                                    transition: 'width 0.3s'
-                                  }} />
-                                </div>
-                              </div>
-                            </Tooltip>
-                          );
-                        },
-                      },
-                      {
-                        title: t.agent.colRisk,
-                        key: 'risk',
-                        width: 100,
-                        render: (record) => {
-                          const risk = record.eventRisk || 'Medium';
-                          const color = risk === 'Low' ? '#52c41a' : risk === 'Medium' ? '#faad14' : '#ff4d4f';
-                          return (
-                            <span style={{ 
-                              fontSize: '11px', 
-                              fontWeight: 700, 
-                              color: color,
-                              padding: '2px 8px',
-                              backgroundColor: `${color}15`,
-                              borderRadius: '4px',
-                              textTransform: 'uppercase'
-                            }}>
-                              {risk}
-                            </span>
-                          );
-                        },
-                      },
-                      {
-                        title: t.agent.colPriceChg,
-                        key: 'priceChange',
-                        width: 120,
-                        render: (record) => {
-                          const price = record.price;
-                          const chg = record.priceChangePct || record.changePct || 0;
-                          const color = chg >= 0 ? '#52c41a' : '#ff4d4f';
-                          return (
-                            <div>
-                              <div className="scanner-price-text">{price ? `$${price.toFixed(2)}` : 'N/A'}</div>
-                              <div style={{ fontSize: '11px', color: color, fontWeight: 600, marginTop: 2 }}>
-                                {chg >= 0 ? '▲' : '▼'} {chg >= 0 ? '+' : ''}{chg.toFixed(2)}%
-                              </div>
-                            </div>
-                          );
-                        },
-                      },
-                      {
-                        title: t.agent.colSelectionReason,
-                        key: 'reason',
-                        width: 280,
-                        render: (record) => (
-                          <Tooltip title={record.selectionReason || record.scannerReason}>
-                            <div className="continue-scan-selection-reason">
-                              {record.selectionReason || record.scannerReason || 'N/A'}
-                            </div>
-                          </Tooltip>
-                        ),
-                      },
-                      {
-                        title: t.agent.colSource,
-                        key: 'source',
-                        width: 100,
-                        render: (record) => (
-                          <Tag color={record.reasonSource === 'AI' ? 'cyan' : 'orange'} style={{ fontSize: '10px', fontWeight: 700, margin: 0 }}>
-                            {record.reasonSource === 'AI' ? 'AI Agent' : t.agent.localRules}
-                          </Tag>
-                        ),
-                      },
-                      {
-                        title: t.agent.colData,
-                        key: 'data',
-                        width: 80,
-                        render: (record) => {
-                          const dq = record.dataQuality || 'PARTIAL';
-                          const color = dq === 'GOOD' ? '#52c41a' : '#faad14';
-                          return (
-                            <Tooltip title={`${t.agent.qualityLabel}: ${dq} | ${t.agent.sourceLabel}: ${record.dataSource || 'N/A'}`}>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'help' }}>
-                                <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: color }} />
-                                <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--app-text-muted)' }}>{dq}</span>
-                              </div>
-                            </Tooltip>
-                          );
-                        },
-                      }
-                      ]}
-                      />
-                  <div className="continue-scan-pagination-wrapper">
-                    <Pagination
-                      total={preferredContinueScanList.length}
-                      current={preferredContinuePage}
-                      pageSize={10}
-                      size="default"
-                      showTotal={(total, range) => (
-                        <span style={{ fontSize: '12px', color: 'var(--app-text-muted)' }}>
-                          {t.agent.displaying} <strong>{range[0]}-{range[1]}</strong> {t.agent.of} <strong>{total}</strong> {t.agent.candidatesWord}
-                        </span>
-                      )}
-                      onChange={(page) => setPreferredContinuePage(page)}
-                    />
-                  </div>
-
-                  <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid var(--app-border-soft)' }}>
-                    <Alert
-                      message={t.agent.selectionDisclosure}
-                      type="info"
-                      showIcon
-                      style={{ fontSize: '12px', borderRadius: '8px' }}
-                    />
-                  </div>
-                </div>
-              );
-            }
-
-            // 状态4: continue scan完成但无结果
-            if (continueScanStatus === 'completed' && preferredContinueScanList.length === 0) {
-              return (
-                <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
-                  <ExclamationCircleOutlined style={{ fontSize: '48px', marginBottom: 16 }} />
-                  <div style={{ fontSize: '14px' }}>{t.agent.noSuitableCandidates}</div>
-                  <div style={{ fontSize: '12px', marginTop: 8 }}>
-                    {t.agent.noBullishCandidatesMet}
-                  </div>
-                </div>
-              );
-            }
-
-            // 状态5: continue scan错误
-            if (continueScanStatus === 'error') {
-              return (
-                <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
-                  <CloseCircleOutlined style={{ fontSize: '48px', marginBottom: 16, color: '#ff4d4f' }} />
-                  <div style={{ fontSize: '14px', color: '#ff4d4f' }}>{t.agent.continueScanFailed}</div>
-                  <div style={{ fontSize: '12px', marginTop: 8 }}>
-                    {t.agent.continueScanError}
-                  </div>
-                </div>
-              );
-            }
-
-            // 状态6: market scan完成但continue scan未开始
-            const wasStopped = detailedScanStatus.currentStatus === 'stopped';
-            return (
-              <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
-                <ClockCircleOutlined style={{ fontSize: '48px', marginBottom: 16 }} />
-                <div style={{ fontSize: '14px' }}>{t.agent.readyToStartContinueScan}</div>
-                <div style={{ fontSize: '12px', marginTop: 8 }}>
-                  {wasStopped
-                    ? t.agent.builtFromPartialResults.replace('{processed}', String(detailedScanStatus.processedCount)).replace('{total}', String(detailedScanStatus.totalCount))
-                    : t.agent.marketScanCompletedResults.replace('{count}', String(marketScannerResults.length))}
-                </div>
-                <div style={{ fontSize: '11px', color: '#999', marginTop: 8 }}>
-                  {t.agent.clickStartContinueScan}
-                </div>
-              </div>
-            );
-          })()}
-        </Card>
-        </div>
       </CollapsibleStageSection>
 
       {/* 3. Fine Scan */}
       <CollapsibleStageSection
+        stageNumber="02"
+        stageLabel={agentText('Stage', '阶段')}
+        expandLabel={agentText('Expand', '展开')}
+        collapseLabel={agentText('Collapse', '收起')}
         title={t.agent.fineScan}
         icon={<ThunderboltOutlined />}
         statusText={
@@ -9963,7 +8612,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
                 type="primary"
                 icon={<ThunderboltOutlined />}
                 onClick={handleRunFineScan}
-                disabled={fineScanStatus === 'running' || preferredContinueScanList.length === 0 || pipelineRunning}
+                disabled={fineScanStatus === 'running' || marketScannerResults.length === 0 || pipelineRunning}
                 loading={fineScanStatus === 'running'}
                 style={AI_AGENT_PRIMARY_BTN_STYLE}
               >
@@ -9976,454 +8625,28 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
         expanded={fineScanExpanded}
         onToggle={() => setFineScanExpanded(!fineScanExpanded)}
       >
-        <Card bodyStyle={{ padding: '24px' }} style={{ borderRadius: '12px', border: '1px solid var(--app-border-soft)', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
-          {/* Header Summary Row */}
-          <div className="fine-scan-header-summary" style={{ 
-            display: 'flex', 
-            alignItems: 'center', 
-            gap: '24px', 
-            marginBottom: '24px', 
-            padding: '12px 20px', 
-            backgroundColor: 'var(--app-card-bg-soft)', 
-            borderRadius: '10px',
-            border: '1px solid var(--app-border-soft)'
-          }}>
-            {fineScanResults.length > 0 ? (() => {
-              const total = fineScanResults.length;
-              const contCount = fineScanResults.filter((r: any) => r.decision === 'Continue').length;
-              const watchCount = fineScanResults.filter((r: any) => r.decision === 'Watch').length;
-              const rejectCount = fineScanResults.filter((r: any) => r.decision === 'Reject').length;
-              const needDataCount = fineScanResults.filter((r: any) => r.decision === 'NeedMoreData').length;
-              return (
-                <>
-                  <div className="fine-scan-stat-item" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ color: 'var(--app-text-muted)', fontWeight: 700, fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{t.agent.candidatesLabel}</span>
-                    <span style={{ fontWeight: 800, color: 'var(--app-text-strong)', fontSize: '18px' }}>{total}</span>
-                  </div>
-                  <Divider type="vertical" style={{ height: '24px', backgroundColor: 'var(--app-border)' }} />
-                  <div className="fine-scan-stat-item" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ color: 'var(--app-text-muted)', fontWeight: 700, fontSize: '13px', textTransform: 'uppercase' }}>{t.agent.continueLabel}</span>
-                    <Tag color="success" style={{ fontWeight: 800, margin: 0, fontSize: '14px', padding: '0 10px', borderRadius: '4px', lineHeight: '24px' }}>{contCount}</Tag>
-                  </div>
-                  <Divider type="vertical" style={{ height: '24px' }} />
-                  <div className="fine-scan-stat-item" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ color: 'var(--app-text-muted)', fontWeight: 700, fontSize: '13px', textTransform: 'uppercase' }}>{t.agent.watchLabel}</span>
-                    <Tag color="warning" style={{ fontWeight: 800, margin: 0, fontSize: '14px', padding: '0 10px', borderRadius: '4px', lineHeight: '24px' }}>{watchCount}</Tag>
-                  </div>
-                  <Divider type="vertical" style={{ height: '24px' }} />
-                  <div className="fine-scan-stat-item" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ color: 'var(--app-text-muted)', fontWeight: 700, fontSize: '13px', textTransform: 'uppercase' }}>{t.agent.rejectLabel}</span>
-                    <Tag color="error" style={{ fontWeight: 800, margin: 0, fontSize: '14px', padding: '0 10px', borderRadius: '4px', lineHeight: '24px' }}>{rejectCount}</Tag>
-                  </div>
-                  <Divider type="vertical" style={{ height: '24px' }} />
-                  <div className="fine-scan-stat-item" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ color: 'var(--app-text-muted)', fontWeight: 700, fontSize: '13px', textTransform: 'uppercase' }}>{t.agent.needDataLabel}</span>
-                    <Tag color="orange" style={{ fontWeight: 800, margin: 0, fontSize: '14px', padding: '0 10px', borderRadius: '4px', lineHeight: '24px' }}>{needDataCount}</Tag>
-                  </div>
-                  <Divider type="vertical" style={{ height: '24px' }} />
-                  <div className="fine-scan-stat-item" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: 'auto' }}>
-                    <span style={{ color: 'var(--app-text-muted)', fontWeight: 700, fontSize: '13px', textTransform: 'uppercase' }}>{t.agent.aiAgentLabel}</span>
-                    <Tag color="cyan" style={{ fontWeight: 800, margin: 0, fontSize: '13px', padding: '0 10px', borderRadius: '4px', lineHeight: '24px', letterSpacing: '0.5px' }}>DEEPSEEK V3</Tag>
-                  </div>
-                </>
-              );
-            })() : (
-              <div style={{ color: 'var(--app-text-muted)', fontSize: '14px', display: 'flex', alignItems: 'center', gap: 10, fontWeight: 500 }}>
-                <InfoCircleOutlined style={{ color: '#1890ff' }} />
-                {fineScanStatus === 'idle' ? t.agent.systemReady : t.agent.awaitingInput}
-              </div>
-            )}
-          </div>
+        <Card styles={{ body: { padding: '24px' } }} style={{ borderRadius: '12px', border: '1px solid var(--app-border-soft)', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
+          <FineScanWorkbench
+            results={fineScanResults}
+            status={fineScanStatus}
+            progress={fineScanProgress}
+            currentStep={fineScanCurrentStep}
+            message={fineScanMessage}
+            expandedRows={fineScanExpandedRows}
+            onToggleRow={(symbol: string) => setFineScanExpandedRows((previous: string[]) => (
+              previous.includes(symbol) ? previous.filter(item => item !== symbol) : [...previous, symbol]
+            ))}
+          />
 
-          {/* Progress Panel */}
-          {(fineScanStatus === 'running' || (fineScanStatus === 'stopped' && fineScanProgress > 0)) && (
-            <div className="fine-scan-progress-panel" style={{ 
-              marginBottom: '24px', 
-              padding: '20px 24px', 
-              background: 'var(--app-card-bg-soft)', 
-              borderRadius: '12px', 
-              border: '1px solid var(--app-border-soft)',
-              boxShadow: '0 2px 4px rgba(0,0,0,0.01)'
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                <div>
-                  <div style={{ fontSize: '16px', fontWeight: 800, color: fineScanStatus === 'stopped' ? '#d48806' : '#003a8c', letterSpacing: '-0.2px' }}>
-                    {fineScanStatus === 'stopped' ? t.agent.fineScanInterrupted : t.agent.scanningRegimeStrategies}
-                  </div>
-                  <div style={{ fontSize: '14px', color: fineScanStatus === 'stopped' ? '#d48806' : '#1890ff', marginTop: 4, fontWeight: 500 }}>
-                    {fineScanMessage || t.agent.processingMarketData}
-                  </div>
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: '26px', fontWeight: 900, color: fineScanStatus === 'stopped' ? '#d48806' : '#1890ff', lineHeight: 1, fontFamily: "'Inter', sans-serif" }}>
-                    {fineScanProgress}%
-                  </div>
-                  <div style={{ fontSize: '11px', color: 'var(--app-text-muted)', textTransform: 'uppercase', letterSpacing: 0.8, fontWeight: 700, marginTop: 4 }}>
-                    {fineScanStatus === 'stopped' ? t.agent.retained : t.agent.processProgress}
-                  </div>
-                </div>
-              </div>
-              <Progress
-                percent={fineScanProgress}
-                status={fineScanStatus === 'stopped' ? 'exception' : 'active'}
-                strokeColor={fineScanStatus === 'stopped' ? '#d48806' : { '0%': '#1890ff', '100%': '#52c41a' }}
-                strokeWidth={12}
-                showInfo={false}
-                style={{ borderRadius: '10px' }}
-              />
-            </div>
-          )}
-
-          {fineScanResults.length > 0 && (
-            <>
-            <style>{`
-              .fine-scan-table .ant-table-thead > tr > th {
-                font-size: 13px;
-                font-weight: 700;
-                color: var(--app-text-strong);
-                background: var(--app-card-bg-soft) !important;
-                padding: 14px 16px !important;
-                border-bottom: 2px solid #e1e4e8;
-                text-transform: uppercase;
-                letter-spacing: 0.4px;
-              }
-              .fine-scan-table .ant-table-tbody > tr > td {
-                padding: 12px 16px !important;
-                font-size: 13px;
-                color: var(--app-text-muted);
-              }
-              .fine-scan-table .ant-table-tbody > tr:hover > td {
-                background: var(--app-card-bg-soft) !important;
-              }
-              .fine-scan-table .ant-table-row {
-                height: 52px;
-              }
-              .fine-scan-table .ant-table-expanded-row > td {
-                background: var(--app-card-bg) !important;
-                padding: 0 !important;
-              }
-            `}</style>
-            <Table
-              className="fine-scan-table"
-              dataSource={fineScanResults}
-              rowKey="symbol"
-              pagination={{ pageSize: 10, showSizeChanger: false, showTotal: (total, range) => `${range[0]}-${range[1]} / ${total}`, style: { marginTop: '16px', paddingRight: '16px' } }}
-              size="middle"
-              scroll={{ x: 'max-content' }}
-              expandable={{
-                expandedRowRender: (record: any) => renderFineScanDetailPanel(record),
-                rowExpandable: (record: any) => true,
-                expandedRowKeys: fineScanExpandedRows,
-                expandIcon: () => null,
-                onExpand: (expanded: any, record: any) => {
-                  if (expanded) {
-                    setFineScanExpandedRows((prev: any) => [...prev, record.symbol]);
-                  } else {
-                    setFineScanExpandedRows((prev: any) => prev.filter((s: any) => s !== record.symbol));
-                  }
-                }
-              }}
-              onRow={(record) => ({
-                onClick: (e) => {
-                  if ((e.target as HTMLElement).closest('button') || (e.target as HTMLElement).closest('a')) return;
-                  const isExpanded = fineScanExpandedRows.includes(record.symbol);
-                  if (isExpanded) {
-                    setFineScanExpandedRows((prev: any) => prev.filter((s: any) => s !== record.symbol));
-                  } else {
-                    setFineScanExpandedRows((prev: any) => [...prev, record.symbol]);
-                  }
-                },
-                style: { cursor: 'pointer' }
-              })}
-              rowClassName={(record) => fineScanExpandedRows.includes(record.symbol) ? 'fine-scan-row-expanded' : 'fine-scan-row'}
-              columns={[
-                {
-                  title: t.agent.colSymbol,
-                  key: 'symbol',
-                  width: 90,
-                  fixed: 'left',
-                  render: (record) => (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <Text strong style={{ fontSize: '15px', color: '#1890ff', letterSpacing: '-0.2px' }}>{record.symbol}</Text>
-                      {record.isDevTest && <Tag color="error" style={{ fontSize: 9, padding: '0 4px', lineHeight: '14px', margin: 0, fontWeight: 700 }}>TEST</Tag>}
-                    </div>
-                  ),
-                },
-                // ===== Decision =====
-                {
-                  title: t.agent.colDecision,
-                  key: 'decision',
-                  width: 110,
-                  render: (record) => {
-                    const d = record.decision || '--';
-                    let c = '#999', l = d;
-                    const source = record.decisionSource || 'local-rule';
-                    const sourceLabel = source === 'ai' ? 'AI' : t.agent.localRules;
-                    const decisionMap: Record<string, string> = { 'Continue': t.agent.dvSourceContinue, 'Watch': t.agent.dvVerdictWatch, 'Reject': t.agent.dvVerdictRejected, 'NeedMoreData': t.agent.needDataLabel?.replace(':', '') || 'Need Data', 'Skip': t.agent.skip || 'Skip' };
-                    if (d === 'Continue') { c = '#52c41a'; }
-                    else if (d === 'Watch') { c = '#faad14'; }
-                    else if (d === 'Reject') { c = '#ff4d4f'; }
-                    else if (d === 'NeedMoreData') { c = '#fa8c16'; }
-                    else if (d === 'Skip') { c = '#ff4d4f'; }
-                    l = decisionMap[d] || d;
-                    return (
-                      <Tooltip title={`${t.agent.sourceLabel}: ${source}${record.decisionReason ? ' | ' + record.decisionReason : ''}`}>
-                        <div style={{ display: 'flex', flexDirection: 'column' }}>
-                          <span style={{ color: c, fontSize: '13px', fontWeight: 700 }}>{l}</span>
-                          <span style={{ fontSize: '10px', color: 'var(--app-text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>{sourceLabel}</span>
-                        </div>
-                      </Tooltip>
-                    );
-                  },
-                },
-                // ===== Reason / Blocking =====
-                {
-                  title: t.agent.colWhy,
-                  key: 'blockingReason',
-                  width: 240,
-                  render: (record: any) => {
-                    const d = record.decision || '--';
-                    const reason = record.decisionReason || '';
-                    const blockers = record.decisionBlockers || [];
-                    const warnings = record.decisionWarnings || [];
-                    const parts: string[] = [];
-                    if (d !== 'Continue' && blockers.length > 0) {
-                      parts.push((t.agent.blockLabel || 'Block') + ': ' + blockers.slice(0, 2).join('; '));
-                    }
-                    if (warnings.length > 0) {
-                      parts.push((t.agent.warnLabel || 'Warn') + ': ' + warnings.slice(0, 2).join('; '));
-                    }
-                    if (reason && parts.length === 0) {
-                      parts.push(reason.length > 100 ? reason.slice(0, 100) + '...' : reason);
-                    }
-                    const text = parts.join(' | ') || (d === 'Continue' ? t.agent.pass : '-');
-                    const color = d === 'Continue' ? '#52c41a' : d === 'Reject' ? '#ff4d4f' : 'var(--app-text-muted)';
-                    return (
-                      <Tooltip title={text}>
-                        <span style={{ fontSize: '12px', color, lineHeight: '1.5', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', fontWeight: 500 }}>
-                          {text}
-                        </span>
-                      </Tooltip>
-                    );
-                  },
-                },
-                // ===== Score =====
-                {
-                  title: t.agent.colScore,
-                  key: 'score',
-                  width: 100,
-                  render: (record) => {
-                    const s = record.score ?? record.matchConfidence;
-                    if (s == null) return <Text style={{ fontSize: '13px', color: '#bbb' }}>-</Text>;
-                    let c = '#ff4d4f';
-                    if (s >= 80) c = '#52c41a';
-                    else if (s >= 60) c = '#faad14';
-                    else if (s >= 40) c = '#ff7a45';
-                    const w = Math.min(100, Math.max(2, s));
-                    return (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <span style={{ fontSize: '14px', fontWeight: 800, color: c, minWidth: 28, fontFamily: "'Inter', sans-serif" }}>{s}</span>
-                        <div style={{ width: 48, height: 6, background: 'var(--app-table-header-bg)', borderRadius: 3, overflow: 'hidden' }}>
-                          <div style={{ width: `${w}%`, height: '100%', background: c, borderRadius: 3 }} />
-                        </div>
-                      </div>
-                    );
-                  },
-                },
-                // ===== Strategies =====
-                {
-                  title: t.agent.colStrategies,
-                  key: 'strategies',
-                  width: 220,
-                  render: (record) => {
-                    const strats = record.matchedStrategies || [];
-                    if (strats.length === 0) return <Text style={{ fontSize: '13px', color: '#bbb' }}>-</Text>;
-                    const display = strats.slice(0, 3).join(' · ');
-                    const extra = strats.length > 3 ? ` +${strats.length - 3}` : '';
-                    return (
-                      <Tooltip title={strats.join(', ')}>
-                        <span style={{ fontSize: '12px', color: 'var(--app-text-muted)', lineHeight: '1.5', fontWeight: 600 }}>
-                          {display}{extra}
-                        </span>
-                      </Tooltip>
-                    );
-                  },
-                },
-                // ===== Liquidity =====
-                {
-                  title: t.agent.colLiquidity,
-                  key: 'liquidity',
-                  width: 100,
-                  render: (record) => {
-                    const lg = record.liquidityGrade || '-';
-                    let c = '#bbb', l = '-';
-                    if (lg === 'Good') { c = '#52c41a'; l = t.agent.goodData; }
-                    else if (lg === 'Caution') { c = '#faad14'; l = t.agent.caution; }
-                    else if (lg === 'Poor') { c = '#ff4d4f'; l = t.agent.poorRR; }
-                    else if (lg === 'Error' || lg === 'Data Unavailable' || lg === 'Unknown') { c = '#bbb'; l = 'N/A'; }
-                    else if (lg === 'Partial') { c = '#faad14'; l = t.agent.partialLabel; }
-                    return <span style={{ color: c, fontSize: '13px', fontWeight: 700 }}>{l}</span>;
-                  },
-                },
-                // ===== Entry =====
-                {
-                  title: t.agent.entry,
-                  key: 'entry',
-                  width: 120,
-                  render: (record) => {
-                    const eq = record.entryQuality || '-';
-                    let c = '#999', l = '-';
-                    if (eq === 'Excellent') { c = '#52c41a'; l = t.agent.excellent; }
-                    else if (eq === 'Good') { c = '#73d13d'; l = t.agent.goodData; }
-                    else if (eq === 'Wait for Pullback') { c = '#faad14'; l = t.agent.wait; }
-                    else if (eq === 'Chasing / Extended') { c = '#ff7a45'; l = t.agent.extended; }
-                    else if (eq === 'Near Resistance') { c = '#ff4d4f'; l = t.agent.nearRes; }
-                    else if (eq === 'Poor Reward-Risk') { c = '#ff4d4f'; l = t.agent.poorRR; }
-                    else if (eq === 'Partial') { c = '#b37feb'; l = t.agent.partialLabel; }
-                    else if (eq === 'Data Unavailable' || eq === 'Error / No Data') { c = '#bbb'; l = t.agent.fineScanNoData; }
-                    return <span style={{ color: c, fontSize: '13px', fontWeight: 700 }}>{l}</span>;
-                  },
-                },
-                // ===== Validation =====
-                {
-                  title: t.agent.colValidation,
-                  key: 'validation',
-                  width: 160,
-                  render: (record) => {
-                    const ps = record.backtestPerformance || null;
-                    let pc = '#999', pl = t.agent.pending;
-                    if (ps === 'positive') { pc = '#52c41a'; pl = t.agent.positive; }
-                    else if (ps === 'negative') { pc = '#ff4d4f'; pl = t.agent.negative; }
-                    else if (ps === 'caution') { pc = '#faad14'; pl = t.agent.caution; }
-                    const optStatus = record.quickOptStatus || 'not_run';
-                    let stLabel = 'N/A', stColor = '#999';
-                    if (optStatus === 'completed') {
-                      const qr = record.quickOptResults || [];
-                      if (qr.length > 0) {
-                        const stable = qr.filter(function(r: any) { return r.stability === 'Stable'; }).length;
-                        const weak = qr.filter(function(r: any) { return r.stability === 'Weak'; }).length;
-                        const overfit = qr.filter(function(r: any) { return r.stability === 'Overfit Risk'; }).length;
-                        if (stable >= qr.length * 0.7 || stable >= 2) { stLabel = t.agent.fineScanStable; stColor = '#52c41a'; }
-                        else if (weak > overfit) { stLabel = t.agent.weak; stColor = '#faad14'; }
-                        else if (overfit > 0) { stLabel = t.agent.overfit; stColor = '#ff4d4f'; }
-                      }
-                    }
-                    return (
-                      <div style={{ fontSize: '12px', lineHeight: '1.6' }}>
-                        <div>
-                          <span style={{ color: 'var(--app-text-muted)', fontWeight: 500 }}>{t.agent.backtestLabelShort}</span>
-                          <span style={{ color: pc, fontWeight: 700 }}>{pl}</span>
-                        </div>
-                        <div>
-                          <span style={{ color: 'var(--app-text-muted)', fontWeight: 500 }}>{t.agent.optLabelShort}</span>
-                          <span style={{ color: stColor, fontWeight: 700 }}>{stLabel}</span>
-                        </div>
-                      </div>
-                    );
-                  },
-                },
-                {
-                  title: t.agent.colRisk,
-                  key: 'risk',
-                  width: 90,
-                  render: (record) => {
-                    const rg = record.riskGrade || '-';
-                    let c = '#bbb', l = '-', dot = '';
-                    if (rg === 'LOW') { c = '#52c41a'; l = t.agent.low; dot = '🟢'; }
-                    else if (rg === 'MEDIUM') { c = '#faad14'; l = t.agent.medium; dot = '🟠'; }
-                    else if (rg === 'HIGH') { c = '#ff4d4f'; l = t.agent.high; dot = '🔴'; }
-                    else if (rg === 'SKIP') { c = '#ff4d4f'; l = t.agent.skipAction; dot = '⛔'; }
-                    else { c = '#bbb'; l = 'N/A'; }
-                    const riskReason = record.riskReason || '';
-                    return <Tooltip title={riskReason}><span style={{ color: c, fontSize: '13px', fontWeight: 700 }}>{dot} {l}</span></Tooltip>;
-                  },
-                },
-                // ===== Why Matched =====
-                {
-                  title: t.agent.colWhyMatched,
-                  key: 'whyMatched',
-                  width: 180,
-                  render: (record) => {
-                    const full = record.matchReason || '';
-                    const truncated = full.length > 60 ? full.substring(0, 60) + '...' : full;
-                    return (
-                      <Tooltip title={record.matchAISource === 'ai-explain' ? t.agent.whyMatchedTooltip : t.agent.whyMatchedTemplate}>
-                        <Text style={{ fontSize: '12px', color: 'var(--app-text)', lineHeight: '1.5', fontWeight: 500 }}>
-                          {truncated || '-'}
-                          <span style={{ fontSize: '11px', color: 'var(--app-text-muted)', marginLeft: '4px' }}>
-                            {record.matchAISource === 'ai-explain' ? '🤖' : '⚙️'}
-                          </span>
-                        </Text>
-                      </Tooltip>
-                    );
-                  },
-                },
-                // ===== Grade =====
-                {
-                  title: t.agent.colGrade,
-                  key: 'grade',
-                  width: 80,
-                  render: (record) => {
-                    const g = record.fineScanGrade || null;
-                    const getGrade = () => {
-                      if (g === 'HIGH') return { l: t.agent.high, c: '#52c41a' };
-                      if (g === 'MEDIUM') return { l: t.agent.medium, c: '#faad14' };
-                      if (g === 'LOW') return { l: t.agent.low, c: '#ff4d4f' };
-                      const btOk = record.backtestStatus === 'pass' && (record.backtestPerformance === 'positive' || record.backtestPerformance === 'caution');
-                      const eqOk = record.entryQuality === 'Excellent' || record.entryQuality === 'Good' || record.entryQuality === 'Wait for Pullback';
-                      const riskOk = record.riskGrade === 'LOW' || record.riskGrade === 'MEDIUM';
-                      const scoreOk = (record.matchConfidence || 0) >= 30;
-                      if (btOk && scoreOk && eqOk && riskOk) return { l: t.agent.high, c: '#52c41a' };
-                      if (btOk && (record.matchConfidence || 0) >= 20) return { l: t.agent.medium, c: '#faad14' };
-                      return { l: t.agent.low, c: '#ff4d4f' };
-                    };
-                    const res = getGrade();
-                    return <span style={{ color: res.c, fontSize: '13px', fontWeight: 800, textTransform: 'uppercase' }}>{res.l}</span>;
-                  },
-                },
-                // ===== Rank =====
-                {
-                  title: t.agent.colRank,
-                  key: 'rank',
-                  width: 65,
-                  render: (record) => (
-                    <Text style={{ fontSize: '14px', color: 'var(--app-text-strong)', fontWeight: 800, fontFamily: "'Inter', sans-serif" }}>
-                      {record.priority != null ? (record.priority + 1) : '-'}
-                    </Text>
-                  ),
-                }
-              ]}
-            />
-            </>
-          )}
-
-          {fineScanStatus === 'completed' && fineScanResults.length === 0 && (
-            <div style={{ textAlign: 'center', padding: '24px 0', color: '#999' }}>
-              <Text>{t.agent.noCandidatesToAnalyze}</Text>
-            </div>
-          )}
-
-          {fineScanStatus === 'error' && (
-            <div style={{ textAlign: 'center', padding: '24px 0', color: '#ff4d4f' }}>
-              <CloseCircleOutlined style={{ fontSize: '24px', marginBottom: 8 }} />
-              <div>{t.agent.errorDuringFineScan}</div>
-            </div>
-          )}
-
-          {fineScanStatus === 'idle' && fineScanResults.length === 0 && (
-            <div style={{ textAlign: 'center', padding: '24px 0', color: '#999' }}>
-              <ThunderboltOutlined style={{ fontSize: '36px', marginBottom: 12, opacity: 0.4 }} />
-              <div style={{ fontSize: '13px' }}>{t.agent.runFineScanToMatch}</div>
-              <div style={{ fontSize: '11px', marginTop: 8, color: '#bbb' }}>
-                {t.agent.step1Regime} &nbsp;|&nbsp; {t.agent.step3QuickBacktest}
-              </div>
-            </div>
-          )}
         </Card>
       </CollapsibleStageSection>
 
       {/* ===== Deeper Validation ===== */}
       <CollapsibleStageSection
+        stageNumber="03"
+        stageLabel={agentText('Stage', '阶段')}
+        expandLabel={agentText('Expand', '展开')}
+        collapseLabel={agentText('Collapse', '收起')}
         title={t.agent.deeperValidation}
         icon={<BarChartOutlined />}
         statusText={
@@ -10438,13 +8661,21 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           deeperValidationStatus === 'stopped' ? 'warning' :
           deeperValidationStatus === 'error' ? 'error' : 'default'
         }
+        progressValue={
+          deeperValidationStatus === 'loading' ? dvProgress :
+          deeperValidationStatus === 'completed' ? 100 :
+          null
+        }
+        progressText={deeperValidationStatus === 'loading' ? dvProgressStage : undefined}
         summaryChips={(() => {
           const bd = validationCandidateBreakdown();
           if (deeperValidationResults) {
             return [
-              { label: t.agent.validated, value: deeperValidationResults.length },
-              { label: t.agent.pass, value: deeperValidationResults.filter((r: any) => r.riskGate?.status === 'PASS').length, color: '#52c41a' },
-              { label: t.agent.blocked, value: deeperValidationResults.filter((r: any) => r.riskGate?.status === 'BLOCK').length, color: '#ff4d4f' },
+              { label: agentText('Tested', '已测试'), value: deeperValidationResults.length },
+              { label: agentText('Pass DV', '验证通过'), value: deeperValidationResults.filter((r: any) => r.dvDecision === 'PASS_DV' || r.verdict === 'Confirmed').length, color: '#52c41a' },
+              { label: agentText('Watch', '观察'), value: deeperValidationResults.filter((r: any) => r.dvDecision === 'WATCH' || r.verdict === 'Watch').length, color: '#faad14' },
+              { label: agentText('Rejected', '已拒绝'), value: deeperValidationResults.filter((r: any) => r.dvDecision === 'REJECT' || r.dvDecision === 'NEED_DATA' || r.verdict === 'Rejected' || r.verdict === 'Reject').length, color: '#ff4d4f' },
+              { label: 'AI', value: deeperValidationResults.filter((r: any) => r.aiValidationUsed).length, color: '#13c2c2' },
             ];
           }
           if (bd.total > 0) {
@@ -10484,338 +8715,34 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
         expanded={dvExpanded}
         onToggle={() => setDvExpanded(!dvExpanded)}
       >
-        <div className="validation-section">
-          <Card bodyStyle={{ padding: '20px' }} style={{ borderRadius: '12px', border: '1px solid var(--app-border-soft)' }}>
-            {/* Header Summary Row */}
-            <div className="validation-header-summary">
-              {deeperValidationResults ? (
-                <>
-                  <div className="validation-stat-item">
-                    <span style={{ color: 'var(--app-text-muted)', fontWeight: 600 }}>{t.agent.candidatesLabel.replace(':', '')}:</span>
-                    <span style={{ fontWeight: 800, color: 'var(--app-text-strong)' }}>{deeperValidationResults.length}</span>
-                  </div>
-                  <Divider type="vertical" />
-                  <div className="validation-stat-item">
-                    <span style={{ color: 'var(--app-text-muted)', fontWeight: 600 }}>{t.agent.riskGatePass}:</span>
-                    <Tag color="success" style={{ fontWeight: 800, margin: 0 }}>
-                      {deeperValidationResults.filter((r: any) => r.riskGate?.status === 'PASS').length}
-                    </Tag>
-                  </div>
-                  <Divider type="vertical" />
-                  <div className="validation-stat-item">
-                    <span style={{ color: 'var(--app-text-muted)', fontWeight: 600 }}>{t.agent.confirmed}:</span>
-                    <Tag color="processing" style={{ fontWeight: 800, margin: 0 }}>
-                      {deeperValidationResults.filter((r: any) => r.verdict === 'Confirmed' || r.verdict === 'Pass').length}
-                    </Tag>
-                  </div>
-                  <Divider type="vertical" />
-                  <div className="validation-stat-item">
-                    <span style={{ color: 'var(--app-text-muted)', fontWeight: 600 }}>{t.agent.systemMonteCarlo}:</span>
-                    <Tag color="blue" style={{ fontWeight: 800, margin: 0 }}>{t.agent.monteCarloV2}</Tag>
-                  </div>
-                </>
-              ) : (
-                <div style={{ color: 'var(--app-text-muted)', fontSize: '12px', display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <InfoCircleOutlined />
-                  {deeperValidationStatus === 'idle'
-                    ? `${t.agent.readyForHistorical} ${selectValidationCandidates().length} ${t.agent.candidatesAvailable}`
-                    : t.agent.systemPerformingValidation}
-                </div>
-              )}
-            </div>
+        <DeeperValidationWorkbench
+          results={deeperValidationResults || []}
+          status={deeperValidationStatus}
+          progress={dvProgress}
+          currentStep={dvProgressStage}
+          message={dvErrorMessage || undefined}
+          errors={dvErrors}
+          expandedRows={expandedRows}
+          onToggleRow={(symbol: string) => setExpandedRows(prev => prev.includes(symbol) ? prev.filter(item => item !== symbol) : [...prev, symbol])}
+        />
 
-            {deeperValidationStatus === 'loading' && (
-              <div style={{ textAlign: 'center', padding: '40px 0' }}>
-                <SyncOutlined spin style={{ fontSize: 32, color: '#1890ff', marginBottom: 16 }} />
-                <div style={{ fontSize: '14px', fontWeight: 600, color: '#003a8c' }}>{t.agent.runningDeeperValidation}</div>
-                <div style={{ fontSize: '12px', color: 'var(--app-text-muted)', marginTop: 4 }}>{t.agent.backtestOptStability}</div>
-              </div>
-            )}
-
-            {(deeperValidationStatus === 'completed' || deeperValidationStatus === 'stopped') && deeperValidationResults && (
-              <div className="validation-table-container">
-                <Table
-                  dataSource={deeperValidationResults}
-                  rowKey="symbol"
-                  size="middle"
-                  pagination={false}
-                  scroll={{ x: 1600 }}
-                  expandable={{
-                    expandedRowRender: (record: any) => renderDVDetailPanel(record, t, language),
-                    rowExpandable: () => true,
-                    expandedRowKeys: expandedRows,
-                    expandIcon: () => null,
-                  }}
-                  onRow={(record) => ({
-                    onClick: (e) => {
-                      if ((e.target as HTMLElement).closest('button') || (e.target as HTMLElement).closest('a')) return;
-                      const isExpanded = expandedRows.includes(record.symbol);
-                      if (isExpanded) {
-                        setExpandedRows(prev => prev.filter(s => s !== record.symbol));
-                      } else {
-                        setExpandedRows(prev => [...prev, record.symbol]);
-                      }
-                    },
-                    style: { cursor: 'pointer' }
-                  })}
-                  rowClassName={(record) => expandedRows.includes(record.symbol) ? 'dv-row-expanded' : 'dv-row'}
-                  columns={[
-                    {
-                      title: t.agent.colSymbol,
-                      key: 'symbol',
-                      width: 100,
-                      fixed: 'left',
-                      render: (record: any) => (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span className="scanner-symbol-text" style={{ color: '#1890ff' }}>{record.symbol}</span>
-                          {record.isDevTest && <Tag color="error" style={{ fontSize: '8px', padding: '0 4px', lineHeight: '14px', margin: 0 }}>TEST</Tag>}
-                        </div>
-                      ),
-                    },
-                    {
-                      title: t.agent.colSource,
-                      key: 'selectedBy',
-                      width: 100,
-                      render: (record: any) => {
-                        const src = record.selectedBy || 'Continue';
-                        const isContinue = src === 'Continue';
-                        return (
-                          <Tag color={isContinue ? 'success' : 'warning'} style={{ fontSize: '9px', margin: 0, padding: '0 4px' }}>
-                            {isContinue ? t.agent.dvSourceContinue : t.agent.dvSourceWatch}
-                          </Tag>
-                        );
-                      },
-                    },
-                    {
-                      title: t.agent.colReturn1Y,
-                      key: 'totalReturn',
-                      width: 100,
-                      render: (record: any) => {
-                        const tr = record.totalReturn;
-                        if (tr == null) return <span style={{ color: 'var(--app-text-muted)' }}>N/A</span>;
-                        const color = tr >= 0 ? '#52c41a' : '#ff4d4f';
-                        return <span style={{ color, fontWeight: 800, fontSize: '12px' }}>{tr >= 0 ? '+' : ''}{tr.toFixed(1)}%</span>;
-                      },
-                    },
-                    {
-                      title: t.agent.colSharpe,
-                      key: 'sharpeRatio',
-                      width: 80,
-                      render: (record: any) => {
-                        const s = record.sharpeRatio ?? record.sharpe;
-                        if (s == null) return <span style={{ color: 'var(--app-text-muted)' }}>-</span>;
-                        const color = s >= 1.0 ? '#52c41a' : s >= 0.5 ? '#faad14' : '#ff4d4f';
-                        return <span style={{ color, fontWeight: 700 }}>{s.toFixed(2)}</span>;
-                      },
-                    },
-                    {
-                      title: t.agent.colMaxDD,
-                      key: 'maxDrawdown',
-                      width: 90,
-                      render: (record: any) => {
-                        const mdd = Math.abs(record.maxDrawdown || 0);
-                        const color = mdd <= 15 ? '#52c41a' : mdd <= 25 ? '#faad14' : '#ff4d4f';
-                        return <span style={{ color, fontWeight: 600 }}>-{mdd.toFixed(1)}%</span>;
-                      },
-                    },
-                    {
-                      title: t.agent.colWinRate,
-                      key: 'winRate',
-                      width: 90,
-                      render: (record: any) => {
-                        const wr = record.winRate || 0;
-                        const color = wr >= 55 ? '#52c41a' : wr >= 45 ? '#faad14' : '#ff4d4f';
-                        return <span style={{ color, fontWeight: 700 }}>{wr.toFixed(0)}%</span>;
-                      },
-                    },
-                    {
-                      title: t.agent.colPFactor,
-                      key: 'profitFactor',
-                      width: 90,
-                      render: (record: any) => {
-                        const pf = record.profitFactor;
-                        if (pf == null) return <span style={{ color: 'var(--app-text-muted)' }}>-</span>;
-                        const color = pf >= 1.5 ? '#52c41a' : pf >= 1.0 ? '#faad14' : '#ff4d4f';
-                        return <span style={{ color, fontWeight: 700 }}>{pf.toFixed(2)}</span>;
-                      },
-                    },
-                    {
-                      title: t.agent.colTrades,
-                      key: 'tradeCount',
-                      width: 80,
-                      render: (record: any) => {
-                        const tc = record.tradeCount ?? record.trades ?? 0;
-                        const color = tc < 5 ? '#faad14' : 'var(--app-text-muted)';
-                        return <span style={{ color, fontWeight: 600 }}>{tc}</span>;
-                      },
-                    },
-                    {
-                      title: t.agent.colStability,
-                      key: 'stabilityScore',
-                      width: 120,
-                      render: (record: any) => {
-                        const score = record.stabilityScore || 0;
-                        const color = score >= 70 ? '#52c41a' : score >= 50 ? '#faad14' : '#ff4d4f';
-                        return (
-                          <div style={{ width: '100%' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2, fontSize: '10px' }}>
-                              <span style={{ fontWeight: 700, color }}>{score}</span>
-                            </div>
-                            <div style={{ height: 3, borderRadius: 2, backgroundColor: 'var(--app-table-header-bg)', overflow: 'hidden' }}>
-                              <div style={{ width: `${score}%`, height: '100%', backgroundColor: color }} />
-                            </div>
-                          </div>
-                        );
-                      },
-                    },
-                    {
-                      title: t.agent.colTrend,
-                      key: 'trend',
-                      width: 100,
-                      render: (record: any) => {
-                        const trendVal = record.recentVsLongTerm || 'N/A';
-                        const trendMap: Record<string, string> = { 'Improving': t.agent.dvTrendImproving, 'Consistent': t.agent.dvTrendConsistent, 'Weakening': t.agent.dvTrendWeakening };
-                        const color = trendVal === 'Improving' || trendVal === 'Consistent' ? 'blue' : trendVal === 'Weakening' ? 'warning' : 'error';
-                        return <Tag className="validation-badge" color={color} style={{ margin: 0 }}>{trendMap[trendVal] || trendVal}</Tag>;
-                      },
-                    },
-                    {
-                      title: t.agent.colVerdict,
-                      key: 'verdict',
-                      width: 100,
-                      render: (record: any) => {
-                        const v = record.verdict || 'Review';
-                        const verdictMap: Record<string, string> = { 'Confirmed': t.agent.dvVerdictConfirmed, 'Pass': t.agent.dvVerdictPass, 'Rejected': t.agent.dvVerdictRejected, 'Review': t.agent.dvVerdictReview, 'Watch': t.agent.dvVerdictWatch };
-                        const color = (v === 'Confirmed' || v === 'Pass') ? 'success' : v === 'Rejected' ? 'error' : 'warning';
-                        return <Tag className="validation-badge" color={color} style={{ margin: 0 }}>{verdictMap[v] || v}</Tag>;
-                      },
-                    },
-                    {
-                      title: t.agent.colRiskGate,
-                      key: 'riskGate',
-                      width: 100,
-                      render: (record: any) => {
-                        const rg = record.riskGate?.status || 'N/A';
-                        const color = rg === 'PASS' ? 'success' : rg === 'BLOCK' ? 'error' : 'warning';
-                        const rgDisplay = rg === 'N/A' ? t.agent.naLabel : rg === 'BLOCK' ? t.agent.gateBlocked : rg;
-                        return (
-                          <Tooltip title={record.riskGate?.reason}>
-                            <Tag className="validation-badge" color={color} style={{ margin: 0, cursor: 'help' }}>{rgDisplay}</Tag>
-                          </Tooltip>
-                        );
-                      },
-                    },
-                    {
-                      title: t.agent.colAnalysisReason,
-                      key: 'reason',
-                      width: 250,
-                      render: (record: any) => {
-                        const reasonText = record.reason || '';
-                        const translatedReason = language === 'zh-CN' && reasonText ? reasonText
-                          .replace(/\bConfirmed\b/g, t.agent.dvReasonConfirmed)
-                          .replace(/\bWatch\b/g, t.agent.dvReasonWatch)
-                          .replace(/\bReject\b/g, t.agent.dvReasonReject)
-                          .replace(/\bWeakening\b/g, t.agent.dvTrendWeakening)
-                          .replace(/\brecent Weakening\b/g, t.agent.dvReasonRecentWeakening)
-                          .replace(/\bparameter sets profitable\b/g, t.agent.dvReasonParamProfitable)
-                          .replace(/\bmedian return\b/g, t.agent.dvReasonMedianReturn)
-                          .replace(/\bmedian sharpe\b/g, t.agent.dvReasonMedianSharpe)
-                          .replace(/\bprofit factor\b/gi, t.agent.dvReasonProfitFactor)
-                          .replace(/\bsharpe\b/gi, t.agent.dvReasonSharpe)
-                          .replace(/\breturn\b/gi, t.agent.dvReasonReturn)
-                          .replace(/\bdrawdown\b/gi, t.agent.dvReasonDrawdown)
-                          .replace(/\bwin rate\b/gi, t.agent.dvReasonWinRate)
-                          .replace(/\btrades\b/gi, t.agent.dvReasonTrades)
-                          .replace(/\bSample Limited\b/gi, t.agent.dvReasonSampleLimited)
-                          .replace(/\bStable\b/g, t.agent.stableLabel)
-                          .replace(/\bWeak\b/g, t.agent.weakLabel)
-                          .replace(/\bModerate\b/g, t.agent.moderateLabel)
-                          .replace(/\bcombinations tested\b/g, t.agent.testedCombos)
-                          : reasonText;
-                        return (
-                        <Tooltip title={record.reason}>
-                          <div className="validation-reason">
-                            {translatedReason || t.agent.epNoDetailedAnalysis}
-                          </div>
-                        </Tooltip>
-                        );
-                      },
-                    },
-                    {
-                      title: t.agent.colSrc,
-                      key: 'dataSource',
-                      width: 70,
-                      render: (record: any) => (
-                        <Tag style={{ fontSize: '9px', margin: 0, padding: '0 4px', textTransform: 'uppercase' }}>
-                          {record.dataSource || 'N/A'}
-                        </Tag>
-                      ),
-                    }
-                  ]}
-                />
-              </div>
-            )}
-
-            {deeperValidationStatus === 'error' && (
-              <div style={{ textAlign: 'center', padding: '40px 0', color: '#ff4d4f' }}>
-                <CloseCircleOutlined style={{ fontSize: '32px', marginBottom: 16 }} />
-                <div style={{ fontSize: '14px', fontWeight: 600, marginBottom: 8 }}>{t.agent.validationFailed}</div>
-                <div style={{ fontSize: '12px', color: 'var(--app-text-muted)', maxWidth: 500, margin: '0 auto', lineHeight: 1.6 }}>
-                  {dvErrorMessage || t.agent.checkBackendLogs}
-                </div>
-                {dvErrors.length > 0 && (
-                  <div style={{ marginTop: 16, textAlign: 'left', maxWidth: 500, margin: '16px auto 0' }}>
-                    <div style={{ fontSize: '11px', color: '#666', fontWeight: 600, marginBottom: 4 }}>{t.agent.failedSymbols}</div>
-                    {dvErrors.slice(0, 8).map((e: any, i: number) => (
-                      <div key={i} style={{ fontSize: '11px', color: '#999', padding: '2px 0' }}>
-                        <span style={{ fontWeight: 600, color: '#ff4d4f' }}>{e.symbol}</span>
-                        {e.step && <span style={{ color: '#bbb' }}> [{e.step}]</span>}
-                        {`: ${e.message}`}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {deeperValidationStatus === 'idle' && fineScanStatus === 'completed' && (() => {
-              const bd = validationCandidateBreakdown();
-              return (
-                <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
-                  <ClockCircleOutlined style={{ fontSize: '32px', marginBottom: 16, opacity: 0.5 }} />
-                  <div style={{ fontSize: '14px' }}>
-                    {bd.total} {t.agent.candidatesFromFineScan}
-                    {bd.watchCount > 0 && (
-                      <div style={{ fontSize: '12px', marginTop: 4, color: '#bbb' }}>
-                        {bd.continueCount} {t.agent.continueAction} + {bd.watchCount} {t.agent.watchToValidate} ({t.agent.scoreGe50})
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })()}
-
-            {deeperValidationStatus === 'idle' && fineScanStatus !== 'completed' && (
-              <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--app-text-muted)' }}>
-                <BarChartOutlined style={{ fontSize: '48px', marginBottom: 16, opacity: 0.2 }} />
-                <div style={{ fontSize: '14px' }}>{t.agent.completeFineScanFirst}</div>
-              </div>
-            )}
-          </Card>
-        </div>
       </CollapsibleStageSection>
 
       {/* ▲▲▲ Above: Deeper Validation ▲▲▲ */}
 
       {/* ▲▲▲ Below: Entry Plan ▲▲▲ */}
       <CollapsibleStageSection
+        stageNumber="04"
+        stageLabel={agentText('Stage', '阶段')}
+        expandLabel={agentText('Expand', '展开')}
+        collapseLabel={agentText('Collapse', '收起')}
         title={t.agent.entryPlan}
         icon={<RobotOutlined />}
         statusText={
           entryPlanStatus === 'loading' ? t.agent.generatingLabel :
-          entryPlanStatus === 'completed' ? (entryPlanResults && entryPlanResults.length > 0 ? t.agent.completedLabel : 'Completed — No Candidates') :
+          entryPlanStatus === 'completed' ? (entryPlanResults && entryPlanResults.length > 0 ? t.agent.completedLabel : agentText('Completed — No Candidates', '已完成 — 无候选')) :
           entryPlanStatus === 'stopped' ? t.agent.interruptedLabel2 :
-          entryPlanStatus === 'error' ? t.agent.errorLabel : 'IDLE'
+          entryPlanStatus === 'error' ? t.agent.errorLabel : agentText('IDLE', '空闲')
         }
         statusColor={
           entryPlanStatus === 'loading' ? 'processing' :
@@ -10826,13 +8753,13 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
         summaryChips={entryPlanResults && entryPlanResults.length > 0 ? [
           { label: t.agent.entryPlan, value: entryPlanResults.length },
           { label: t.agent.buyLabel, value: entryPlanResults.filter((p: any) => getEntryPlanEffectiveAction(p) === 'BUY_READY').length, color: '#52c41a' },
-          { label: 'Review', value: entryPlanResults.filter((p: any) => getEntryPlanEffectiveAction(p) === 'READY_REVIEW').length, color: '#1890ff' },
-          { label: 'Wait', value: entryPlanResults.filter((p: any) => getEntryPlanEffectiveAction(p) === 'WAIT_FOR_ENTRY').length, color: '#faad14' },
-          { label: 'Need Data', value: entryPlanResults.filter((p: any) => getEntryPlanEffectiveAction(p) === 'NEED_DATA').length, color: '#ff7a45' },
-          ...(entryPlanResults.filter((p: any) => ['BLOCKED_BY_RISK', 'SKIP'].includes(getEntryPlanEffectiveAction(p))).length > 0 ? [{ label: 'Blocked' as string, value: entryPlanResults.filter((p: any) => ['BLOCKED_BY_RISK', 'SKIP'].includes(getEntryPlanEffectiveAction(p))).length, color: '#ff4d4f' }] : []),
-        ] : (entryPlanStatus === 'completed' ? [{ label: t.agent.entryPlan, value: 0 }, { label: 'Empty', value: 'No candidates passed DV' as string }] : undefined)}
+          { label: agentText('Review', '待审核'), value: entryPlanResults.filter((p: any) => getEntryPlanEffectiveAction(p) === 'READY_REVIEW').length, color: '#1890ff' },
+          { label: agentText('Wait', '等待入场'), value: entryPlanResults.filter((p: any) => getEntryPlanEffectiveAction(p) === 'WAIT_FOR_ENTRY').length, color: '#faad14' },
+          { label: agentText('Need Data', '需要数据'), value: entryPlanResults.filter((p: any) => getEntryPlanEffectiveAction(p) === 'NEED_DATA').length, color: '#ff7a45' },
+          ...(entryPlanResults.filter((p: any) => ['BLOCKED_BY_RISK', 'SKIP'].includes(getEntryPlanEffectiveAction(p))).length > 0 ? [{ label: agentText('Blocked', '已阻断'), value: entryPlanResults.filter((p: any) => ['BLOCKED_BY_RISK', 'SKIP'].includes(getEntryPlanEffectiveAction(p))).length, color: '#ff4d4f' }] : []),
+        ] : (entryPlanStatus === 'completed' ? [{ label: t.agent.entryPlan, value: 0 }, { label: agentText('Empty', '空'), value: agentText('No candidates passed DV', '没有候选通过深度验证') }] : undefined)}
         actionButton={
-          <Tooltip title={pipelineRunning ? t.agent.pipelineDisabled : !getEntryPlanCandidates().length ? t.agent.noConfirmedOrWatch : ''}>
+          <Tooltip title={pipelineRunning ? t.agent.pipelineDisabled : !getEntryPlanCandidates().length ? agentText('No confirmed DV candidates. Only PASS_DV / Confirmed candidates advance to Entry Plan.', '没有已确认的深度验证候选。只有“验证通过 / 已确认”的候选会进入入场计划。') : ''}>
             <span>
               <Button
                 type="primary"
@@ -10851,6 +8778,29 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
         expanded={entryPlanExpanded}
         onToggle={() => setEntryPlanExpanded(!entryPlanExpanded)}
       >
+          {admissionStatus !== 'idle' && (
+            <div className="epv2-admission-band">
+              <div className="epv2-admission-title">
+                <SafetyCertificateOutlined />
+                <span>{agentText('Portfolio Admission', '组合准入')}</span>
+                <Tag bordered={false} className={`epv2-admission-status epv2-admission-status-${admissionStatus}`}>
+                  {admissionStatus === 'loading' ? agentText('Checking', '检查中') : agentEnumLabel(admissionStatus)}
+                </Tag>
+              </div>
+              <div className="epv2-admission-metrics">
+                <div><span>{agentText('DV Eligible', '深度验证合格')}</span><b>{admissionSummary?.eligibleDvCount ?? admissionResults?.length ?? 0}</b></div>
+                <div><span>{agentText('Admit', '准入')}</span><b className="epv2-tone-ready">{admissionSummary?.counts?.ADMIT ?? admissionResults?.filter((row: any) => row.admissionDecision === 'ADMIT').length ?? 0}</b></div>
+                <div><span>{agentText('Hold', '暂缓')}</span><b className="epv2-tone-wait">{admissionSummary?.counts?.HOLD ?? admissionResults?.filter((row: any) => row.admissionDecision === 'HOLD').length ?? 0}</b></div>
+                <div><span>{agentText('Block', '阻断')}</span><b className="epv2-tone-block">{admissionSummary?.counts?.BLOCK ?? admissionResults?.filter((row: any) => row.admissionDecision === 'BLOCK').length ?? 0}</b></div>
+                <div><span>{agentText('AI Challenge', 'AI 质询')}</span><b>{admissionSummary?.ai?.challengedSymbols ?? 0}</b></div>
+                <div><span>{agentText('Capacity', '剩余容量')}</span><b>{admissionSummary?.availablePortfolioSlots ?? '--'} {agentText('slots', '个名额')}</b></div>
+              </div>
+              <div className="epv2-admission-note">
+                {agentText('Only admitted, fresh, strategy-consistent candidates can enter sizing and execution planning.', '只有通过准入、数据新鲜且策略一致的候选，才能进入仓位计算与执行计划。')}
+              </div>
+            </div>
+          )}
+
           {/* No DV candidates yet */}
           {deeperValidationStatus !== 'completed' && deeperValidationStatus !== 'stopped' && (
             <div style={{ textAlign: 'center', padding: '16px 0', color: '#bbb', fontSize: '12px', fontStyle: 'italic' }}>
@@ -10861,31 +8811,28 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           {/* DV done but no confirmed/watch candidates */}
           {(deeperValidationStatus === 'completed' || deeperValidationStatus === 'stopped') && getEntryPlanCandidates().length === 0 && (
             <div style={{ textAlign: 'center', padding: '16px 0', color: '#bbb', fontSize: '12px', fontStyle: 'italic' }}>
-              {t.agent.noConfirmedOrWatch}
+              {agentText('No confirmed DV candidates. Watch names remain in revalidation.', '没有已确认的深度验证候选；观察标的会继续留在复核流程中。')}
             </div>
           )}
 
           {/* DV done, candidates available */}
           {(deeperValidationStatus === 'completed' || deeperValidationStatus === 'stopped') && getEntryPlanCandidates().length > 0 && entryPlanStatus === 'idle' && (
             <div style={{ textAlign: 'center', padding: '16px 0', color: '#999', fontSize: '12px' }}>
-              {getEntryPlanCandidates().length} {t.agent.validatedCandidatesReady} <strong>{t.agent.runEntryPlan}</strong> {t.agent.toGenerateEntryPlans}
+              {agentText(`${getEntryPlanCandidates().length} confirmed DV candidates are ready.`, `${getEntryPlanCandidates().length} 个深度验证候选已就绪。`)} <strong>{t.agent.runEntryPlan}</strong>{agentText(' to generate execution plans.', '即可生成执行计划。')}
             </div>
           )}
 
           {/* Loading */}
           {entryPlanStatus === 'loading' && (
-            <div style={{ textAlign: 'center', padding: '24px 0' }}>
-              <Spin indicator={<LoadingOutlined style={{ fontSize: 24 }} spin />} />
-              <div style={{ marginTop: '8px', color: 'var(--app-text-muted)', fontSize: '12px' }}>
-                {t.agent.computingEntryZones}
+            <div className="epv2-loading">
+              <div className="epv2-loading-head">
+                <Spin indicator={<LoadingOutlined style={{ fontSize: 20 }} spin />} />
+                <div><b>{agentText('Building executable plans', '正在构建可执行计划')}</b><span>{t.agent.computingEntryZones}</span></div>
               </div>
-              <Progress
-                type="line"
-                percent={50}
-                showInfo={false}
-                strokeColor="#1890ff"
-                style={{ maxWidth: '400px', margin: '12px auto 0' }}
-              />
+              <div className="epv2-loading-rail"><span /></div>
+              <div className="epv2-loading-stages">
+                <span>{agentText('Account preflight', '账户预检')}</span><span>{agentText('Fresh quotes', '实时报价')}</span><span>{agentText('Risk sizing', '风险定仓')}</span><span>{agentText('AI challenge', 'AI 质询')}</span>
+              </div>
             </div>
           )}
 
@@ -10898,986 +8845,16 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           )}
 
           {/* Results */}
-          {(entryPlanStatus === 'completed' || entryPlanStatus === 'stopped') && entryPlanResults && entryPlanResults.length > 0 && (
-            <>
-              {/* Summary stat blocks — compact key metrics */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '20px' }}>
-                {/* Block 1: AI Decisions */}
-                <div style={{ background: 'var(--app-card-bg-soft)', borderRadius: '8px', border: '1px solid var(--app-border)', padding: '12px 14px' }}>
-                  <div style={{ fontSize: '10px', color: 'var(--app-text-muted)', textTransform: 'uppercase', letterSpacing: '0.6px', fontWeight: 500, marginBottom: '6px' }}>{t.agent.aiDecisions}</div>
-                  <div style={{ fontSize: '14px', fontWeight: 500, color: 'var(--app-text-strong)', fontFamily: "'Inter', sans-serif", marginBottom: '6px' }}>
-                    <span style={{ color: '#52c41a' }}>{entryPlanResults.filter(p => p.aiDecision === 'BUY').length} {t.agent.buyLabel}</span>
-                    <span style={{ margin: '0 6px', color: '#ccc' }}>/</span>
-                    <span style={{ color: '#fa8c16' }}>{entryPlanResults.filter(p => p.aiDecision === 'WATCH').length} {t.agent.epWatchLabel}</span>
-                    <span style={{ margin: '0 6px', color: '#ccc' }}>/</span>
-                    <span style={{ color: '#ff4d4f' }}>{entryPlanResults.filter(p => p.aiDecision === 'SKIP').length} {t.agent.skipLabel}</span>
-                  </div>
-                  <div style={{ fontSize: '10px', color: '#999', marginTop: '2px' }}>
-                    {entryPlanResults[0]?.aiCalled ? (
-                      <span style={{ color: '#52c41a' }}>{entryPlanResults[0]?.aiSource || 'AI'} / {entryPlanResults[0]?.aiModel || 'LLM'} ✓</span>
-                    ) : (
-                      <Tooltip title={entryPlanResults[0]?.aiError || 'No AI provider configured. Using Local Rules fallback.'}>
-                        <span style={{ color: '#fa8c16', cursor: 'help' }}>{t.agent.localRulesNoAICall}</span>
-                      </Tooltip>
-                    )}
-                  </div>
-                </div>
-
-                {/* Block 2: Risk Gate */}
-                <div style={{ background: 'var(--app-card-bg-soft)', borderRadius: '8px', border: '1px solid var(--app-border)', padding: '12px 14px' }}>
-                  <div style={{ fontSize: '10px', color: 'var(--app-text-muted)', textTransform: 'uppercase', letterSpacing: '0.6px', fontWeight: 500, marginBottom: '6px' }}>{t.agent.riskReview}</div>
-                  <div style={{ display: 'flex', gap: '16px', alignItems: 'baseline' }}>
-                    <div>
-                      <div style={{ fontSize: '20px', fontWeight: 600, color: '#52c41a', fontFamily: "'Inter', sans-serif", lineHeight: '1.2' }}>
-                        {entryPlanResults.filter(p => (p.riskGate || p.hardRiskGate)?.status === 'PASS').length}
-                      </div>
-                      <div style={{ fontSize: '10px', color: 'var(--app-text-muted)' }}>{t.agent.passed}</div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: '20px', fontWeight: 600, color: '#fa8c16', fontFamily: "'Inter', sans-serif", lineHeight: '1.2' }}>
-                        {entryPlanResults.filter(p => (p.riskGate || p.hardRiskGate)?.status === 'REVIEW').length}
-                      </div>
-                      <div style={{ fontSize: '10px', color: 'var(--app-text-muted)' }}>{t.agent.review}</div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: '20px', fontWeight: 600, color: '#ff4d4f', fontFamily: "'Inter', sans-serif", lineHeight: '1.2' }}>
-                        {entryPlanResults.filter(p => (p.riskGate || p.hardRiskGate)?.status === 'BLOCK').length}
-                      </div>
-                      <div style={{ fontSize: '10px', color: 'var(--app-text-muted)' }}>{t.agent.blocked}</div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Block 3: Trade Readiness */}
-                <div style={{ background: 'var(--app-card-bg-soft)', borderRadius: '8px', border: '1px solid var(--app-border)', padding: '12px 14px' }}>
-                  <div style={{ fontSize: '10px', color: 'var(--app-text-muted)', textTransform: 'uppercase', letterSpacing: '0.6px', fontWeight: 500, marginBottom: '6px' }}>{t.agent.tradeReadiness}</div>
-                  <div style={{ display: 'flex', gap: '16px', alignItems: 'baseline' }}>
-                    <div>
-                      <div style={{ fontSize: '20px', fontWeight: 600, color: '#52c41a', fontFamily: "'Inter', sans-serif", lineHeight: '1.2' }}>
-                        {entryPlanResults.filter(p => ['BUY_READY', 'READY_REVIEW'].includes(getEntryPlanEffectiveAction(p))).length}
-                      </div>
-                      <div style={{ fontSize: '10px', color: 'var(--app-text-muted)' }}>{t.agent.ready}</div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: '20px', fontWeight: 600, color: '#fa8c16', fontFamily: "'Inter', sans-serif", lineHeight: '1.2' }}>
-                        {entryPlanResults.filter(p => getEntryPlanEffectiveAction(p) === 'WAIT_FOR_ENTRY').length}
-                      </div>
-                      <div style={{ fontSize: '10px', color: 'var(--app-text-muted)' }}>{t.agent.waitLabel}</div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: '20px', fontWeight: 600, color: '#ff4d4f', fontFamily: "'Inter', sans-serif", lineHeight: '1.2' }}>
-                        {entryPlanResults.filter(p => ['BLOCKED_BY_RISK', 'NEED_DATA', 'SKIP'].includes(getEntryPlanEffectiveAction(p))).length}
-                      </div>
-                      <div style={{ fontSize: '10px', color: 'var(--app-text-muted)' }}>{t.agent.blockedLabel}</div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Block 4: Current Global Settings (read-only) */}
-                <div style={{ background: 'var(--app-card-bg-soft)', borderRadius: '8px', border: '1px solid var(--app-border)', padding: '10px 14px' }}>
-                  <div style={{ fontSize: '10px', color: 'var(--app-text-muted)', textTransform: 'uppercase', letterSpacing: '0.6px', fontWeight: 500, marginBottom: '8px' }}>Global Settings</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 12px', fontSize: '11px' }}>
-                    <span style={{ color: 'var(--app-text-muted)' }}>Risk:</span>
-                    <span style={{ fontWeight: 600, color: riskProfile === 'high' ? '#e84749' : riskProfile === 'low' ? '#52c41a' : '#d48806' }}>{riskProfile === 'low' ? 'Low Risk' : riskProfile === 'high' ? 'High Risk' : 'Medium Risk'}</span>
-                    <span style={{ color: 'var(--app-text-muted)' }}>Horizon:</span>
-                    <span style={{ fontWeight: 600, color: 'var(--app-text-muted)' }}>{timeHorizon === 'short' ? 'Short-term' : timeHorizon === 'long' ? 'Long-term' : 'Mid-term'}</span>
-                    <span style={{ color: 'var(--app-text-muted)' }}>Mode:</span>
-                    <span style={{ fontWeight: 600, color: '#2563eb' }}>{pipelineMode === 'ai' ? 'AI' : pipelineMode === 'hybrid' ? 'Hybrid' : 'Manual'}</span>
-                    <span style={{ color: 'var(--app-text-muted)' }}>Trade:</span>
-                    <span style={{ fontWeight: 600, color: tradeMode === 'real' ? '#e84749' : '#52c41a' }}>{tradeMode === 'real' ? 'Real' : 'Paper'}</span>
-                    <span style={{ color: 'var(--app-text-muted)' }}>Risk/Trade:</span>
-                    <span style={{ fontWeight: 600, color: 'var(--app-text-muted)' }}>{entryPlanRiskPerTrade}%</span>
-                    <span style={{ color: 'var(--app-text-muted)' }}>Execution:</span>
-                    <span style={{ fontWeight: 600, color: entryPlanExecutionMode.includes('Real') || entryPlanExecutionMode.includes('Live') ? '#e84749' : 'var(--app-text-muted)', fontSize: '10px' }}>{entryPlanExecutionMode}</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* F3: Buying Power Summary */}
-              {tradingAccountData?.buyingPower > 0 && (() => {
-                const bp = tradingAccountData.buyingPower || 0;
-                const totalAllocated = entryPlanResults
-                  .filter((p: any) => ['BUY_READY', 'READY_REVIEW'].includes(getEntryPlanEffectiveAction(p)))
-                  .reduce((sum: number, p: any) => sum + (p.allocationDollars || p.positionSizeDollars || 0), 0);
-                const remaining = Math.max(0, bp * 0.9 - totalAllocated);
-                return (
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '20px' }}>
-                    <div style={{ background: 'rgba(34, 197, 94, 0.1)', borderRadius: '8px', border: '1px solid rgba(34, 197, 94, 0.2)', padding: '10px 14px', textAlign: 'center' }}>
-                      <div style={{ fontSize: '10px', color: 'var(--app-text)', textTransform: 'uppercase', letterSpacing: '0.6px', fontWeight: 600 }}>Buying Power</div>
-                      <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--app-text-strong)', fontFamily: "'Inter', sans-serif" }}>${bp.toLocaleString()}</div>
-                    </div>
-                    <div style={{ background: 'var(--app-blue-bg)', borderRadius: '8px', border: '1px solid var(--app-blue-border)', padding: '10px 14px', textAlign: 'center' }}>
-                      <div style={{ fontSize: '10px', color: 'var(--app-text)', textTransform: 'uppercase', letterSpacing: '0.6px', fontWeight: 600 }}>Allocated</div>
-                      <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--app-text-strong)', fontFamily: "'Inter', sans-serif" }}>${totalAllocated.toLocaleString()}</div>
-                    </div>
-                    <div style={{ background: 'rgba(250, 173, 20, 0.1)', borderRadius: '8px', border: '1px solid rgba(250, 173, 20, 0.2)', padding: '10px 14px', textAlign: 'center' }}>
-                      <div style={{ fontSize: '10px', color: 'var(--app-text)', textTransform: 'uppercase', letterSpacing: '0.6px', fontWeight: 600 }}>Remaining (90% BP)</div>
-                      <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--app-text-strong)', fontFamily: "'Inter', sans-serif" }}>${remaining.toLocaleString()}</div>
-                    </div>
-                  </div>
-                );
-              })()}
-
-              {/* F5: Account unavailable warning */}
-              {tradingAccountData && tradingAccountData.success !== true && (
-                <Alert
-                  message="Trading account not connected. Entry Plan will not generate executable BUY orders. Please connect your Alpaca account in Settings."
-                  type="error"
-                  showIcon
-                  style={{ marginBottom: '12px', fontSize: '12px', padding: '8px 16px' }}
-                />
-              )}
-              {/* F5: Account data unavailable (no positions/buying power) */}
-              {(!tradingAccountData || !tradingAccountData.buyingPower || tradingAccountData.buyingPower <= 0) && (
-                <Alert
-                  message="Buying power data unavailable. Position sizing may be unreliable. Ensure Alpaca account is connected in Settings."
-                  type="warning"
-                  showIcon
-                  style={{ marginBottom: '12px', fontSize: '12px', padding: '8px 16px' }}
-                />
-              )}
-
-              {/* Execution mode warning for Real Trading — only in Hybrid/Manual modes */}
-              {pipelineMode !== 'ai' && entryPlanExecutionMode === 'Real Trade if Triggered' && (
-                <Alert
-                  message={t.agent.realTradingRequiresConfirm}
-                  type="warning"
-                  showIcon
-                  style={{ marginBottom: '16px', marginTop: '8px', fontSize: '12px', padding: '8px 16px' }}
-                />
-              )}
-
-              {/* Main table */}
-              <div className="entry-plan-table-wrapper" style={{ width: '100%', overflowX: 'auto', paddingBottom: '12px' }}>
-                <Table
-                  dataSource={entryPlanResults}
-                  rowKey="symbol"
-                  size="small"
-                  pagination={false}
-                  onRow={(record) => ({
-                    onClick: (e) => {
-                      if ((e.target as HTMLElement).closest('button') || (e.target as HTMLElement).closest('a')) return;
-                      const isExpanded = expandedEntryPlanSymbol === record.symbol;
-                      setExpandedEntryPlanSymbol(isExpanded ? null : record.symbol);
-                    },
-                    style: { cursor: 'pointer' }
-                  })}
-                  rowClassName={(record) => expandedEntryPlanSymbol === record.symbol ? 'entry-plan-row-expanded' : 'entry-plan-row'}
-                  expandable={{
-                    expandedRowKeys: expandedEntryPlanSymbol ? [expandedEntryPlanSymbol] : [],
-                    expandIcon: () => null,
-                    onExpand: (expanded, record) => {
-                      setExpandedEntryPlanSymbol(expanded ? record.symbol : null);
-                    },
-                    expandedRowRender: (record) => {
-                      const ep = record;
-                      const rg = ep.hardRiskGate || {};
-                      const dq = ep.dataQuality || 'PARTIAL';
-                      const ds = ep.dataSources || {};
-                      const ed = ep.executionDetails || {};
-                      const fontStk = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
-
-                      const fmtPrice = (v: number | null | undefined) => v != null ? `$${v.toFixed(2)}` : '—';
-                      const fmtPct = (v: number | null | undefined) => v != null ? `${v.toFixed(1)}%` : '—';
-                      const fmtRR = (v: number | null | undefined) => v != null ? `${v.toFixed(1)}:1` : '—';
-                      const fmtDollars = (v: number | null | undefined) => v != null ? `$${v.toFixed(0)}` : '—';
-                      const fmtShares = (v: number | null | undefined) => v != null ? v.toLocaleString() : '—';
-
-                      const sym = record.symbol || '—';
-                      const setupLabel = ep.setup || '—';
-                      const aiDecision = ep.aiDecision || '—';
-                      const finalAction = ep.finalAction || '—';
-                      const confidence = ep.confidence || ep.aiConfidence || '—';
-                      const tradeReadiness = ep.tradeReadiness || '—';
-
-                      const rawCanonical = getEntryPlanEffectiveAction(ep);
-                      const _isLevCanon = ep.isLeveraged || ep.isLeveragedAlternative;
-                      // Leveraged ETF promotion in AI mode: show as BUY_READY
-                      const canonicalAction = (_isLevCanon && rawCanonical === 'READY_REVIEW' && pipelineMode === 'ai')
-                        ? 'BUY_READY' : rawCanonical;
-                      const activeAutoExecution = aiExecutionList.find((item: any) => (
-                        String(item.symbol || '').toUpperCase() === String(ep.symbol || '').toUpperCase() &&
-                        item.source === 'entry-plan-auto' &&
-                        ['auto_executing', 'submitted', 'pending', 'filled', 'failed'].includes(item.executionStatus || '')
-                      ));
-                      const aiColor = (v: string) => v === 'BUY' ? '#52c41a' : v === 'WATCH' ? '#d48806' : v === 'SKIP' ? '#e84749' : undefined;
-                      const dqColor = dq === 'GOOD' ? '#52c41a' : dq === 'PARTIAL' ? '#fa8c16' : '#ff4d4f';
-                      const trColor = tradeReadiness === 'READY' ? '#52c41a' : tradeReadiness === 'WAIT' ? '#fa8c16' : '#ff4d4f';
-                      const rgColor = rg.status === 'PASS' ? '#52c41a' : rg.status === 'REVIEW' ? '#fa8c16' : '#ff4d4f';
-                      const faColor = canonicalAction === 'BUY_READY' ? '#52c41a' : canonicalAction === 'READY_REVIEW' ? '#1890ff' : canonicalAction === 'WAIT_FOR_ENTRY' || canonicalAction === 'NEED_DATA' ? '#fa8c16' : '#ff4d4f';
-
-                      const curPrice = getEntryPlanCurrentPrice(ep);
-                      const { low: loPrice, high: hiPrice } = getEntryPlanZone(ep);
-                      let distText = '—';
-                      let distColor = 'var(--app-text-muted)';
-                      if (curPrice != null && loPrice != null && hiPrice != null) {
-                        if (curPrice < loPrice) {
-                          const diff = loPrice - curPrice;
-                          const pct = (diff / curPrice) * 100;
-                          distText = t.agent.belowEntry.replace('${diff}', `$${diff.toFixed(2)}`).replace('{pct}', pct.toFixed(1)); // eslint-disable-line no-template-curly-in-string
-                          distColor = '#fa8c16';
-                        } else if (curPrice > hiPrice) {
-                          const diff = curPrice - hiPrice;
-                          const pct = (diff / hiPrice) * 100;
-                          distText = t.agent.aboveEntry.replace('${diff}', `$${diff.toFixed(2)}`).replace('{pct}', pct.toFixed(1)); // eslint-disable-line no-template-curly-in-string
-                          distColor = '#fa8c16';
-                        } else {
-                          distText = t.agent.inEntryZone;
-                          distColor = '#52c41a';
-                        }
-                      }
-
-                      const SectionHeader = ({ title, color }: { title: string; color?: string }) => (
-                        <div style={{ 
-                          fontSize: '12px', 
-                          fontWeight: 700, 
-                          color: color || 'var(--app-text-muted)', 
-                          textTransform: 'uppercase', 
-                          letterSpacing: '0.6px', 
-                          marginBottom: '10px', 
-                          paddingBottom: '6px', 
-                          borderBottom: '1px solid #f0f2f5',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '6px'
-                        }}>
-                          {title}
-                        </div>
-                      );
-
-                      const Label = ({ text }: { text: string }) => (
-                        <span style={{ fontSize: '11px', color: 'var(--app-text-muted)', fontWeight: 500 }}>{text}</span>
-                      );
-                      
-                      const Value = ({ v, bold, color, subText }: { v: string; bold?: boolean; color?: string; subText?: string }) => (
-                        <div style={{ display: 'flex', flexDirection: 'column' }}>
-                          <span style={{ fontSize: '12px', fontWeight: bold ? 700 : 500, color: color || 'var(--app-text-strong)' }}>{v}</span>
-                          {subText && <span style={{ fontSize: '10px', color: 'var(--app-text-muted)', marginTop: '1px' }}>{subText}</span>}
-                        </div>
-                      );
-
-                      const ActionBadge = ({ label, color }: { label: string; color: string }) => (
-                        <span style={{ 
-                          backgroundColor: `${color}15`, 
-                          color: color, 
-                          padding: '2px 8px', 
-                          borderRadius: '4px', 
-                          fontSize: '10px', 
-                          fontWeight: 700,
-                          border: `1px solid ${color}30`,
-                          textTransform: 'uppercase'
-                        }}>
-                          {label}
-                        </span>
-                      );
-
-                      return (
-                        <div style={{ 
-                          padding: '16px', 
-                          background: 'var(--app-card-bg-soft)', 
-                          border: '1px solid var(--app-border)', 
-                          borderRadius: '10px', 
-                          fontFamily: fontStk, 
-                          lineHeight: '1.4',
-                          boxShadow: '0 1px 3px rgba(0,0,0,0.02)'
-                        }}>
-                          {/* ── Professional Header ── */}
-                          <div style={{ 
-                            display: 'flex', 
-                            justifyContent: 'space-between', 
-                            alignItems: 'center', 
-                            paddingBottom: '12px', 
-                            borderBottom: '1px solid var(--app-border)', 
-                            marginBottom: '16px' 
-                          }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                              <span style={{ fontSize: '18px', fontWeight: 800, color: 'var(--app-text-strong)', letterSpacing: '-0.2px' }}>{sym}</span>
-                              <Tag color={setupLabel.includes('Pullback') ? 'gold' : setupLabel.includes('Breakout') ? 'purple' : setupLabel.includes('Range') ? 'green' : 'blue'} 
-                                   style={{ fontSize: '11px', fontWeight: 600, borderRadius: '4px', margin: 0 }}>
-                                {setupLabel}
-                              </Tag>
-                              <Tag color={aiDecision === 'BUY' ? 'success' : aiDecision === 'WATCH' ? 'warning' : 'error'} 
-                                   style={{ fontSize: '11px', fontWeight: 700, borderRadius: '4px', margin: 0 }}>
-                                AI: {aiDecision}
-                              </Tag>
-                              <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--app-text-muted)', backgroundColor: 'var(--app-card-bg-soft)', padding: '2px 8px', borderRadius: '4px' }}>
-                                Confidence {confidence}%
-                              </span>
-                            </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                              <div style={{ display: 'flex', gap: '6px', marginRight: '8px' }}>
-                                <ActionBadge label={`Data: ${dq}`} color={dqColor} />
-                                <ActionBadge label={`Gate: ${rg.status || 'N/A'}`} color={rgColor} />
-                                <ActionBadge label={canonicalAction || finalAction} color={faColor} />
-                              </div>
-                              <Space size={8}>
-                                {pipelineMode === 'ai' && canonicalAction === 'BUY_READY' ? (
-                                  <Tooltip title={activeAutoExecution?.executionError || activeAutoExecution?.alpacaOrderId || `All AI ${tradeMode} auto execution is enabled for BUY_READY plans.`}>
-                                    <Button
-                                      size="middle"
-                                      type={activeAutoExecution?.executionStatus === 'failed' ? 'default' : 'primary'}
-                                      danger={activeAutoExecution?.executionStatus === 'failed'}
-                                      disabled
-                                      loading={activeAutoExecution?.executionStatus === 'auto_executing' || !activeAutoExecution}
-                                      style={{ fontSize: '12px', fontWeight: 600, borderRadius: '6px', height: '32px' }}
-                                    >
-                                      {activeAutoExecution?.executionStatus === 'submitted' || activeAutoExecution?.executionStatus === 'pending' || activeAutoExecution?.executionStatus === 'filled'
-                                        ? 'Submitted'
-                                        : activeAutoExecution?.executionStatus === 'failed'
-                                          ? 'Auto Failed'
-                                          : 'Auto Executing'}
-                                    </Button>
-                                  </Tooltip>
-                                ) : (
-                                  <Button
-                                    size="middle"
-                                    type={canonicalAction === 'BUY_READY' || canonicalAction === 'READY_REVIEW' ? 'primary' : 'default'}
-                                    ghost={canonicalAction === 'READY_REVIEW' && pipelineMode !== 'ai'}
-                                    danger={canonicalAction === 'BLOCKED_BY_RISK'}
-                                    disabled={canonicalAction === 'SKIP' || canonicalAction === 'BLOCKED_BY_RISK' || canonicalAction === 'NEED_DATA' || dq === 'POOR'}
-                                    onClick={() => handleEntryPlanAction(ep)}
-                                    style={{
-                                      fontSize: '12px',
-                                      fontWeight: 600,
-                                      borderRadius: '6px',
-                                      height: '32px'
-                                    }}
-                                  >
-                                    {canonicalAction === 'BUY_READY' ? t.agent.epExecuteTrade : canonicalAction === 'READY_REVIEW' ? t.agent.reviewAndExecute : canonicalAction === 'WAIT_FOR_ENTRY' ? t.agent.epMonitorEntry : canonicalAction === 'SKIP' ? t.agent.planSkipped : t.agent.epRiskBlocked}
-                                  </Button>
-                                )}
-                                <Button
-                                  size="middle"
-                                  icon={isInWatchlist(ep.symbol) ? <CheckOutlined /> : <PlusOutlined />}
-                                  onClick={() => addToWatchlist(ep)}
-                                  style={{
-                                    fontSize: '12px', 
-                                    fontWeight: 600,
-                                    borderRadius: '6px',
-                                    height: '32px',
-                                    color: isInWatchlist(ep.symbol) ? '#52c41a' : '#2563eb',
-                                    borderColor: isInWatchlist(ep.symbol) ? '#52c41a' : '#2563eb',
-                                    backgroundColor: isInWatchlist(ep.symbol) ? 'rgba(34, 197, 94, 0.1)' : '#eff6ff'
-                                  }}
-                                >
-                                  {isInWatchlist(ep.symbol) ? t.agent.inWatchlist : t.agent.addToWatchlist}
-                                </Button>
-                              </Space>
-                            </div>
-                          </div>
-
-                          {/* ── 4-Card Balanced Grid ── */}
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
-
-                            {/* A. Execution Plan */}
-                            <div style={{ background: 'var(--app-card-bg)', borderRadius: '8px', border: '1px solid var(--app-border)', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
-                              <SectionHeader title={t.agent.executionPlan} />
-                              <div style={{ display: 'grid', gridTemplateColumns: '95px 1fr', gap: '8px 12px', alignItems: 'baseline' }}>
-                                <Label text={t.agent.epCurrentPrice} /><Value v={curPrice != null ? `$${curPrice.toFixed(2)}` : '—'} bold color="var(--app-text-strong)" />
-                                <Label text={t.agent.distance} /><Value v={distText} color={distColor} bold />
-                                <Label text={t.agent.entryZone} /><Value v={loPrice != null && hiPrice != null ? `$${loPrice.toFixed(2)} - $${hiPrice.toFixed(2)}` : '—'} bold color="var(--app-text-strong)" />
-                                <Label text={t.agent.epTrigger} /><Value v={ep.triggerCondition || '—'} color="#4b5563" />
-                                <Label text={t.agent.stopLoss} /><Value v={fmtPrice(ep.stopLoss)} bold color="#dc2626" subText={`${ep.stopLossPct != null ? fmtPct(ep.stopLossPct) : 'N/A'} ${t.agent.fromEntry} ${ep.stopSource || 'entry'}`} />
-                                <Label text={t.agent.epTargets} />
-                                <div style={{ display: 'flex', gap: '16px' }}>
-                                  <Value v={fmtPrice(ep.takeProfit1)} bold color="#16a34a" subText={`T1 (R/R ${fmtRR(ep.riskReward1)})`} />
-                                  <Value v={fmtPrice(ep.takeProfit2)} color="#16a34a" subText={`T2 (R/R ${fmtRR(ep.riskReward2)})`} />
-                                </div>
-                                <Label text={t.agent.epInvalidation} /><Value v={ep.invalidationCondition || '—'} color="#dc2626" />
-                                <Label text={t.agent.orderTypeSuggestion} /><Value v={ed.orderTypeSuggestion || 'N/A'} bold color={ed.orderTypeSuggestion === 'Not Available' ? '#dc2626' : '#16a34a'} subText={ed.orderTypeReason} />
-                              </div>
-                            </div>
-
-                            {/* B. Position & Risk */}
-                            <div style={{ background: 'var(--app-card-bg)', borderRadius: '8px', border: '1px solid var(--app-border)', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
-                              <SectionHeader title={t.agent.positionRisk} />
-                              <div style={{ display: 'grid', gridTemplateColumns: '95px 1fr', gap: '8px 12px', alignItems: 'baseline' }}>
-                                <Label text={t.agent.epPortfolio} /><Value v={fmtDollars(ep.positionCapital)} bold />
-                                <Label text={t.agent.epBuyingPower} /><Value v={fmtDollars(ep.accountBuyingPower)} />
-                                <Label text={t.agent.riskBudget} /><Value v={fmtDollars(ep.riskBudget)} subText={`${fmtPct(ep.riskPct)} ${t.agent.ofRiskBudget}`} />
-                                <Label text={t.agent.actualRisk} /><Value v={fmtDollars(ep.riskDollars)} bold color="#dc2626" />
-                                <Label text={t.agent.riskUsed} /><Value v={ep.riskUsedPct != null ? `${ep.riskUsedPct.toFixed(1)}%` : (ep.riskBudget > 0 ? `${(ep.riskDollars / ep.riskBudget * 100).toFixed(1)}%` : '—')} bold color={ep.riskUsedPct > 80 ? '#dc2626' : '#d97706'} subText={t.agent.ofRiskBudget} />
-                                <Label text={t.agent.size} />
-                                <div style={{ display: 'flex', gap: '16px' }}>
-                                  <Value v={fmtShares(ep.shares || ep.positionSize || ep.positionSizeShares)} bold subText={t.agent.sharesLabel} />
-                                  <Value v={fmtDollars(ep.allocationDollars || ep.positionValue || ep.positionSizeDollars)} bold subText={t.agent.estValue} />
-                                </div>
-                                <Label text={t.agent.capStatus} /><Value v={ep.positionCapStatus || (ep.positionCapped ? `${t.agent.cappedAt} ${fmtPct(ep.positionPct)}` : `${t.agent.okAt.replace('{pct}', fmtPct(ep.positionPct))}`)} bold color={ep.positionCapped ? '#d97706' : '#16a34a'} />
-                                <Label text="Holding Period" /><Value v={ep.holdingPeriod || '—'} bold color="var(--app-text-muted)" />
-                                <Label text="BP Before/After" />
-                                <Value v={ep.buyingPowerBefore != null ? `${fmtDollars(ep.buyingPowerBefore)} → ${fmtDollars(ep.buyingPowerAfter)}` : '—'} color="var(--app-text-muted)" />
-                                {ep.isLeveraged && (
-                                  <><Label text="Leverage" /><Value v={ep.leverageReason || ep.alternativeReason || 'Leveraged ETF'} bold color="#e84749" /></>
-                                )}
-                                {ep.existingOpenOrder && (
-                                  <><Label text="Open Order" /><Value v="Existing open buy order" color="#e84749" bold /></>
-                                )}
-                                {ep.existingPosition && (
-                                  <><Label text="Position" /><Value v="Already holding" color="#fa8c16" bold /></>
-                                )}
-                              </div>
-                            </div>
-
-                            {/* C. Decision */}
-                            <div style={{ background: 'var(--app-card-bg)', borderRadius: '8px', border: '1px solid var(--app-border)', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
-                              <SectionHeader title={t.agent.decision} />
-                              <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: '8px 12px', alignItems: 'baseline' }}>
-                                <Label text={t.agent.epAIDecision} /><Value v={ep.aiDecision || '—'} color={aiColor(ep.aiDecision)} bold />
-                                <Label text={t.agent.epConfidence} /><Value v={`${confidence}%`} bold />
-                                <Label text={t.agent.epRiskGate} /><Value v={rg.status || 'N/A'} color={rgColor} bold />
-                                <Label text={t.agent.finalAction} /><Value v={canonicalAction || finalAction} color={faColor} bold />
-                                <Label text={t.agent.tradeReadinessLabel} /><Value v={tradeReadiness} color={trColor} bold />
-                                <Label text={t.agent.entryTrigger} /><Value v={ep.entryTriggerMet ? t.agent.readyOrWaiting : t.agent.waiting} color={ep.entryTriggerMet ? '#16a34a' : '#d97706'} bold />
-                                <Label text={t.agent.bestStrategy} /><Value v={ep.bestStrategy || '—'} />
-                              </div>
-                            </div>
-
-                            {/* D. Data Quality */}
-                            <div style={{ background: 'var(--app-card-bg)', borderRadius: '8px', border: '1px solid var(--app-border)', padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
-                              <SectionHeader title={t.agent.dataQualityCard} color={dqColor} />
-                              <div style={{ display: 'grid', gridTemplateColumns: '95px 1fr', gap: '8px 12px', alignItems: 'baseline' }}>
-                                <Label text={t.agent.marketDataLabel} /><Value v={ds.marketData || 'N/A'} bold />
-                                <Label text={t.agent.accountData} /><Value v={ds.accountData || 'N/A'} />
-                                <Label text={t.agent.aiProviderLabel} />
-                                <div style={{ display: 'flex', flexDirection: 'column' }}>
-                                  {ep.aiCalled ? (
-                                    <span style={{ fontSize: '12px', fontWeight: 600, color: '#16a34a' }}>{ep.aiSource || 'AI'} ({ep.aiModel || 'LLM'}) <CheckOutlined style={{ fontSize: '10px' }} /></span>
-                                  ) : (
-                                    <Tooltip title={ep.aiError || t.agent.noAIProviderConfigured}>
-                                      <span style={{ fontSize: '12px', fontWeight: 600, color: '#d97706', cursor: 'help', borderBottom: '1px dotted #d97706' }}>{t.agent.localRulesFallback}</span>
-                                    </Tooltip>
-                                  )}
-                                </div>
-                                <Label text={t.agent.broker} /><Value v={ed.brokerSource || t.agent.notConnected} bold color={ed.brokerConnected ? '#16a34a' : '#dc2626'} />
-                                {ep.aiError && <><Label text={t.agent.aiErrorLabel} /><Value v={ep.aiError} color="#dc2626" /></>}
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* ── Bottom Text Insights ── */}
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', borderTop: '1px solid var(--app-border)', paddingTop: '12px' }}>
-                            {/* Left: Decision Reason + Next Step */}
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                              <div>
-                                <div style={{ fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '6px' }}>
-                                  {t.agent.decisionReason} {ep.aiCalled ? '(AI)' : `(${t.agent.epLocalRules})`}
-                                </div>
-                                <div style={{ fontSize: '13px', color: 'var(--app-text-strong)', lineHeight: '1.6', background: 'var(--app-card-bg)', padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--app-card-bg-soft)' }}>
-                                  {getEntryPlanSanitizedText(ep, ep.decisionReason || ep.reason) || t.agent.noDetailedReasoning}
-                                </div>
-                              </div>
-                              <div>
-                                <div style={{ fontSize: '10px', fontWeight: 700, color: '#2563eb', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '4px' }}>{t.agent.nextStep}</div>
-                                <div style={{ fontSize: '13px', color: '#1d4ed8', lineHeight: '1.5', fontWeight: 600, paddingLeft: '4px' }}>
-                                  → {ep.nextStep || t.agent.waitForFurtherSignals}
-                                </div>
-                              </div>
-                              {ep.riskComment && (
-                                <div style={{ background: 'rgba(250, 173, 20, 0.1)', padding: '8px 12px', borderRadius: '6px', border: '1px solid rgba(250, 173, 20, 0.2)' }}>
-                                  <div style={{ fontSize: '10px', fontWeight: 700, color: '#c2410c', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '4px' }}>{t.agent.riskComment}</div>
-                                  <div style={{ fontSize: '12px', color: '#9a3412', lineHeight: '1.5' }}>{ep.riskComment}</div>
-                                </div>
-                              )}
-                            </div>
-
-                            {/* Right: Risk Notes + Blockers */}
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                              <div>
-                                <div style={{ fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '6px' }}>{t.agent.riskAssessment}</div>
-                                <div style={{ background: 'var(--app-card-bg)', padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--app-card-bg-soft)', minHeight: '60px' }}>
-                                  {(() => {
-                                    const warnings = (rg.warnings || []).map((r: string) => getEntryPlanSanitizedText(ep, r)).filter(Boolean);
-                                    if (warnings.length === 0) return <div style={{ color: '#9ca3af', fontStyle: 'italic', fontSize: '12px' }}>{t.agent.noRiskWarnings}</div>;
-                                    return warnings.slice(0, 4).map((r: string, i: number) => (
-                                      <div key={i} style={{ marginBottom: '3px', color: '#4b5563', fontSize: '12px', display: 'flex', gap: '6px' }}>
-                                        <span style={{ color: '#f59e0b' }}>•</span> <span>{r}</span>
-                                      </div>
-                                    ));
-                                  })()}
-                                </div>
-                              </div>
-                              
-                              {getEntryPlanFilteredBlockers(ep).length > 0 && (
-                                <div style={{ background: 'rgba(239, 68, 68, 0.1)', padding: '8px 12px', borderRadius: '6px', border: '1px solid rgba(239, 68, 68, 0.2)' }}>
-                                  <div style={{ fontSize: '10px', fontWeight: 700, color: 'var(--app-text-strong)', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '6px' }}>{t.agent.criticalBlockers}</div>
-                                  {(() => {
-                                    const blockers = getEntryPlanFilteredBlockers(ep);
-                                    return blockers.slice(0, 4).map((r: string, i: number) => (
-                                      <div key={i} style={{ marginBottom: '2px', color: '#991b1b', fontSize: '12px', fontWeight: 500, display: 'flex', gap: '6px' }}>
-                                        <span>✕</span> <span>{r}</span>
-                                      </div>
-                                    ));
-                                  })()}
-                                </div>
-                              )}
-
-                              {ep.invalidationComment && (
-                                <div style={{ fontSize: '12px', color: 'var(--app-text-strong)', borderLeft: '3px solid rgba(255, 77, 79, 0.2)', paddingLeft: '8px', marginTop: '4px' }}>
-                                  <span style={{ fontWeight: 700 }}>{t.agent.invalidationLabel}</span> {ep.invalidationComment}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    },
-                  }}
-                  columns={[
-                    {
-                      title: t.agent.colSymbol,
-                      dataIndex: 'symbol',
-                      key: 'symbol',
-                      width: 120,
-                      fixed: 'left',
-                      render: (text, record) => (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '1px 0' }}>
-                          <span style={{ fontSize: '15px', fontWeight: 800, color: 'var(--app-text-strong)', letterSpacing: '-0.1px' }}>{text}</span>
-                          <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
-                            {record.isDevTest && <Tag style={{ fontSize: 9, padding: '0 4px', lineHeight: '16px', margin: 0, fontWeight: 800 }} color="error">DEV</Tag>}
-                            {record.dataQuality === 'PARTIAL' && <Tag style={{ fontSize: '9px', padding: '0 4px', lineHeight: '16px', margin: 0, fontWeight: 800 }} color="gold">P</Tag>}
-                            {record.aiCalled === false && (
-                              <Tooltip title="Local Rules — no LLM call.">
-                                <Tag style={{ fontSize: '9px', padding: '0 4px', lineHeight: '16px', margin: 0, fontWeight: 800, cursor: 'help' }} color="default">LR</Tag>
-                              </Tooltip>
-                            )}
-                          </div>
-                        </div>
-                      ),
-                    },
-                    {
-                      title: t.agent.colSetup,
-                      dataIndex: 'setup',
-                      key: 'setup',
-                      width: 160,
-                      render: (text) => {
-                        const colors: Record<string, string> = { 'Pullback Entry': 'gold', 'Breakout Entry': 'purple', 'Range Support Entry': 'green', 'Watch Only': 'blue', 'No Trade': 'red' };
-                        return (
-                          <Tooltip title={text}>
-                            <div style={{
-                              maxWidth: '140px',
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              whiteSpace: 'nowrap'
-                            }}>
-                              <Tag color={colors[text] || 'default'} bordered={false} style={{ fontSize: '10px', fontWeight: 700, padding: '0 8px', lineHeight: '20px', borderRadius: '4px', margin: 0 }}>{text?.toUpperCase() || '-'}</Tag>
-                            </div>
-                          </Tooltip>
-                        );
-                      },
-                    },
-                    {
-                      title: t.agent.colCurrent,
-                      key: 'currentPrice',
-                      width: 120,
-                      render: (record) => {
-                        const p = getEntryPlanCurrentPrice(record);
-                        const { low: lo, high: hi } = getEntryPlanZone(record);
-                        if (!p) return <span style={{ fontSize: '11px', color: '#bbb' }}>N/A</span>;
-                        
-                        let distShort = '';
-                        let distColor = '#aaa';
-                        if (lo != null && hi != null) {
-                          if (p < lo) {
-                            const pct = ((lo - p) / p) * 100;
-                            distShort = `▼ ${pct.toFixed(1)}%`;
-                            distColor = '#f59e0b';
-                          } else if (p > hi) {
-                            const pct = ((p - hi) / hi) * 100;
-                            distShort = `▲ ${pct.toFixed(1)}%`;
-                            distColor = '#f59e0b';
-                          } else {
-                            distShort = t.agent.inZone;
-                            distColor = '#10b981';
-                          }
-                        }
-                        
-                        return (
-                          <div style={{ lineHeight: '1.4' }}>
-                            <div style={{ fontSize: '14px', fontWeight: 800, color: 'var(--app-text-strong)' }}>${p.toFixed(2)}</div>
-                            {distShort && <div style={{ fontSize: '10px', color: distColor, fontWeight: 800, letterSpacing: '0.2px' }}>{distShort}</div>}
-                          </div>
-                        );
-                      },
-                    },
-                    {
-                      title: t.agent.colEntryZone,
-                      key: 'entryZone',
-                      width: 210,
-                      render: (record) => {
-                        const display = formatEntryZoneDisplay(record);
-                        const zone = getEntryPlanZone(record);
-                        const zoneText = zone.low != null && zone.high != null
-                          ? `$${zone.low.toFixed(2)}-$${zone.high.toFixed(2)}`
-                          : display.primaryText;
-                        const distanceText = display.secondaryText
-                          .replace(/^Above zone by\s*/i, '+')
-                          .replace(/^Below zone by\s*/i, '-')
-                          .replace(/\s*\(([-+]?\d+(?:\.\d+)?)%\)/, ' / $1%');
-                        const colorMap: Record<string, string> = {
-                          success: '#52c41a',
-                          warning: '#faad14',
-                          info: '#1890ff',
-                          neutral: 'var(--app-text-muted)'
-                        };
-                        const bgMap: Record<string, string> = {
-                          success: 'rgba(82, 196, 26, 0.1)',
-                          warning: 'rgba(250, 173, 20, 0.1)',
-                          info: 'rgba(24, 144, 255, 0.1)',
-                          neutral: 'var(--app-card-bg-soft)'
-                        };
-                        return (
-                          <div className="entry-zone-cell">
-                            <div className="entry-zone-cell__status">
-                               <span style={{ fontSize: '10px', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', backgroundColor: bgMap[display.tone] || bgMap.neutral, color: colorMap[display.tone] || colorMap.neutral, whiteSpace: 'nowrap' }}>
-                                 {display.statusLabel}
-                               </span>
-                             </div>
-                            <span className="entry-zone-cell__range">
-                              {zoneText}
-                            </span>
-                            <span className="entry-zone-cell__distance" style={{ color: colorMap[display.tone] || 'var(--app-text-muted)' }}>
-                              {distanceText}
-                            </span>
-                          </div>
-                        );
-                      },
-                    },
-                    {
-                      title: t.agent.colStop,
-                      key: 'stopLoss',
-                      width: 130,
-                      render: (record) => {
-                        const v = record.stopLoss;
-                        const pct = record.stopLossPct;
-                        if (v == null || v === 0) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
-                        return (
-                          <div style={{ lineHeight: '1.4' }}>
-                            <div style={{ fontSize: '13px', fontWeight: 800, color: 'rgba(239, 68, 68, 0.8)' }}>${v.toFixed(2)}</div>
-                            {pct != null && pct > 0 && <div style={{ fontSize: '10px', color: 'var(--app-text-muted)', fontWeight: 600 }}>{pct.toFixed(1)}% RISK</div>}
-                          </div>
-                        );
-                      },
-                    },
-                    {
-                      title: t.agent.colTargets,
-                      key: 'targets',
-                      width: 130,
-                      render: (record) => {
-                        const t1 = record.takeProfit1;
-                        const rr1 = record.riskReward1 || 0;
-                        if (t1 == null || t1 === 0) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
-                        return (
-                          <div style={{ lineHeight: '1.4' }}>
-                            <div style={{ fontSize: '13px', fontWeight: 800, color: '#10b981' }}>${t1.toFixed(2)}</div>
-                            <div style={{ fontSize: '10px', color: 'var(--app-text-strong)', fontWeight: 700 }}>R/R {rr1.toFixed(1)}x</div>
-                          </div>
-                        );
-                      },
-                    },
-                    {
-                      title: t.agent.colPosition,
-                      key: 'position',
-                      width: 130,
-                      render: (record) => {
-                        const action = getEntryPlanEffectiveAction(record);
-                        const isSuggestedOnly = ['BLOCKED_BY_RISK', 'NEED_DATA', 'SKIP', 'WAIT_FOR_ENTRY'].includes(action);
-                        const sh = record.shares || record.positionSize || record.positionSizeShares || 0;
-                        const alloc = record.allocationDollars || record.positionValue || record.positionSizeDollars || 0;
-                        const bpBefore = record.buyingPowerBefore;
-                        const bpAfter = record.buyingPowerAfter;
-                        const capped = !!(record.cappedByAllocation || record.positionCapped);
-                        const capPct = record.maxAllocationPct || 10;
-                        const capReason = record.positionCapReason || record.positionCapStatus || `Original position exceeded ${capPct}% max allocation, capped to allowed size.`;
-                        if (sh === 0 && alloc === 0) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
-                        return (
-                          <div style={{ lineHeight: '1.4' }}>
-                            <div style={{ fontSize: '13px', fontWeight: 700, color: '#3b82f6' }}>{typeof sh === 'number' ? Number(sh).toLocaleString(undefined, {maximumFractionDigits: 3}) : sh} sh</div>
-                            <div style={{ fontSize: '11px', color: 'var(--app-text-muted)', fontWeight: 500 }}>${alloc.toLocaleString()} {isSuggestedOnly ? 'suggested' : 'alloc'}</div>
-                            {capped && (
-                              <Tooltip title={capReason}>
-                                <div style={{ fontSize: '10px', color: '#d97706', fontWeight: 700 }}>capped to {capPct}% max</div>
-                              </Tooltip>
-                            )}
-                            {!isSuggestedOnly && bpBefore != null && bpAfter != null && (
-                              <div style={{ fontSize: '10px', color: 'var(--app-text-muted)', fontWeight: 500 }}>
-                                BP ${typeof bpBefore === 'number' ? bpBefore.toFixed(0) : bpBefore} → ${typeof bpAfter === 'number' ? bpAfter.toFixed(0) : bpAfter}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      },
-                    },
-                    {
-                      title: 'Order Plan',
-                      key: 'orderPlan',
-                      width: 120,
-                      render: (record: any) => {
-                        const action = getEntryPlanEffectiveAction(record);
-                        const ot = record.orderType || record.executionDetails?.orderPreview?.orderType || '';
-                        const tif = record.timeInForce || record.executionDetails?.orderPreview?.timeInForce || '';
-                        const isLev = record.isLeveraged || record.isLeveragedAlternative;
-                        if (!ot || ot === 'N/A') {
-                          if (action === 'WAIT_FOR_ENTRY') return <Tag color="orange" style={{ fontSize: '10px', margin: 0 }}>WATCH</Tag>;
-                          if (action === 'NEED_DATA') return <Tag color="gold" style={{ fontSize: '10px', margin: 0 }}>NEED DATA</Tag>;
-                          if (action === 'BLOCKED_BY_RISK') return <Tag color="red" style={{ fontSize: '10px', margin: 0 }}>BLOCKED</Tag>;
-                          if (action === 'SKIP') return <Tag color="default" style={{ fontSize: '10px', margin: 0 }}>SKIP</Tag>;
-                          return <span style={{ fontSize: '10px', color: '#bbb' }}>-</span>;
-                        }
-                        const label = ot === 'market' ? `Market Buy ${tif}` : ot === 'limit' ? `Limit Buy ${tif}` : ot === 'stop_limit' ? `Stop-Limit ${tif}` : ot;
-                        const color = ot === 'market' ? 'blue' : ot === 'limit' ? 'green' : 'purple';
-                        return (
-                          <div style={{ lineHeight: '1.4' }}>
-                            <Tag color={color} style={{ fontSize: '10px', fontWeight: 700, margin: 0 }}>{label}</Tag>
-                            {isLev && <div style={{ fontSize: '9px', color: '#e84749', fontWeight: 700, marginTop: 2 }}>LEV</div>}
-                          </div>
-                        );
-                      },
-                    },
-                    {
-                      title: 'Hold',
-                      key: 'holdingPeriod',
-                      width: 100,
-                      render: (record: any) => {
-                        const hp = record.holdingPeriod;
-                        if (!hp || hp === 'N/A') return <span style={{ fontSize: '10px', color: '#bbb' }}>-</span>;
-                        return <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--app-text-muted)' }}>{hp}</span>;
-                      },
-                    },
-                    {
-                      title: t.agent.colAIDecision,
-                      key: 'aiDecision',
-                      width: 130,
-                      render: (record) => {
-                        const d = record.aiDecision;
-                        if (!d) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
-                        const tagColor = d === 'BUY' ? 'success' : d === 'WATCH' ? 'warning' : 'error';
-                        return (
-                          <div>
-                            <Tag color={tagColor} bordered={false} style={{ fontSize: '10.5px', fontWeight: 800, padding: '0 8px', lineHeight: '22px', borderRadius: '6px', margin: 0 }}>{d}</Tag>
-                            <div style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 700, marginTop: 2 }}>{record.confidence != null ? `${record.confidence}% CONF` : ''}</div>
-                          </div>
-                        );
-                      },
-                    },
-                    {
-                      title: t.agent.colGate,
-                      key: 'riskGate',
-                      width: 110,
-                      render: (record) => {
-                        const rg = record.riskGate || record.hardRiskGate;
-                        const status = hasEntryPlanHardBlock(record)
-                          ? 'BLOCK'
-                          : (rg?.status === 'BLOCK' && hasExecutableCappedAllocation(record) ? 'PASS' : rg?.status);
-                        if (!status) return <span style={{ fontSize: '11px', color: '#ccc' }}>N/A</span>;
-                        const tagColor = status === 'PASS' ? 'success' : status === 'REVIEW' ? 'warning' : 'error';
-                        const tooltip = getEntryPlanFilteredBlockers(record).join('; ') || (rg?.warnings || []).map((r: string) => getEntryPlanSanitizedText(record, r)).filter(Boolean).join('; ') || getEntryPlanCapNote(record) || status;
-                        return (
-                          <Tooltip title={tooltip}>
-                            <Tag color={tagColor} bordered={false} style={{ fontSize: '10.5px', fontWeight: 800, padding: '0 8px', lineHeight: '22px', borderRadius: '6px', margin: 0, textAlign: 'center', width: '60px' }}>{status}</Tag>
-                          </Tooltip>
-                        );
-                      },
-                    },
-                    {
-                      title: t.agent.colFinalAction,
-                      key: 'finalAction',
-                      width: 130,
-                      render: (record) => {
-                        const rawA = getEntryPlanEffectiveAction(record);
-                        const _isLevFA = record.isLeveraged || record.isLeveragedAlternative;
-                        // Promote leveraged READY_REVIEW → BUY_READY for display in AI mode
-                        const a = (_isLevFA && rawA === 'READY_REVIEW' && pipelineMode === 'ai')
-                          ? 'BUY_READY' : rawA;
-                        if (!a) return <span style={{ fontSize: '11px', color: '#bbb' }}>-</span>;
-                        const displayText: Record<string, string> = {
-                          'BUY_READY': 'BUY READY',
-                          'READY_REVIEW': 'READY REVIEW',
-                          'WAIT_FOR_ENTRY': 'WAIT ENTRY',
-                          'NEED_DATA': 'NEED DATA',
-                          'SKIP': 'SKIP',
-                          'BLOCKED_BY_RISK': 'BLOCKED',
-                        };
-                        const tagColor = a === 'BUY_READY' ? 'success' : a === 'READY_REVIEW' ? 'processing' : a === 'WAIT_FOR_ENTRY' || a === 'NEED_DATA' ? 'warning' : 'error';
-                        return <Tag color={tagColor} bordered={false} style={{ fontSize: '10.5px', fontWeight: 800, padding: '0 8px', lineHeight: '22px', borderRadius: '6px', margin: 0 }}>{displayText[a] || a}</Tag>;
-                      },
-                    },
-                    {
-                      title: t.agent.reason,
-                      dataIndex: 'reason',
-                      key: 'reason',
-                      width: 180,
-                      render: (text, record) => {
-                        const fullText = getEntryPlanSanitizedText(record, record.decisionReason || text || '');
-                        return (
-                          <Tooltip title={fullText} overlayClassName="heatmap-professional-tooltip">
-                            <div style={{ fontSize: '12px', color: 'var(--app-text-muted)', lineHeight: 1.5, WebkitLineClamp: 2, display: '-webkit-box', WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                              {fullText || '—'}
-                            </div>
-                          </Tooltip>
-                        );
-                      },
-                    },
-                    {
-                      title: t.agent.actions,
-                      key: 'action',
-                      width: 118,
-                      fixed: 'right' as const,
-                      render: (record) => {
-                        const rawAct = getEntryPlanEffectiveAction(record);
-                        const _isLevAct = record.isLeveraged || record.isLeveragedAlternative;
-                        // Leveraged ETF promotion: in AI mode, treat READY_REVIEW as BUY_READY
-                        const action = (_isLevAct && rawAct === 'READY_REVIEW' && pipelineMode === 'ai')
-                          ? 'BUY_READY' : rawAct;
-                        const aiDec = record.aiDecision;
-                        const dq = record.dataQuality;
-                        const actionTooltip = getEntryPlanActionTooltip(record);
-                        const hasHardBlock = hasEntryPlanHardBlock(record);
-                        const activeAutoExecution = aiExecutionList.find((item: any) => (
-                          String(item.symbol || '').toUpperCase() === String(record.symbol || '').toUpperCase() &&
-                          item.source === 'entry-plan-auto' &&
-                          ['auto_executing', 'submitted', 'pending', 'filled', 'failed'].includes(item.executionStatus || '')
-                        ));
-
-                        if (action === 'BLOCKED_BY_RISK' || action === 'NEED_DATA' || hasHardBlock || dq === 'POOR') {
-                          return <Tooltip title={actionTooltip}><Button size="small" danger disabled style={{ height: 28, borderRadius: 6, fontSize: 10, fontWeight: 700, width: '100%' }}>{action === 'NEED_DATA' ? 'NEED DATA' : t.agent.blocked}</Button></Tooltip>;
-                        }
-                        if (action === 'SKIP' || aiDec === 'SKIP') {
-                          return <Tooltip title={actionTooltip}><Button size="small" disabled style={{ height: 28, borderRadius: 6, fontSize: 10, fontWeight: 700, width: '100%' }}>{t.agent.skipped}</Button></Tooltip>;
-                        }
-                        if (action === 'BUY_READY') {
-                          if (pipelineMode === 'ai' && tradeMode === 'paper') {
-                            if (activeAutoExecution?.executionStatus === 'submitted' || activeAutoExecution?.executionStatus === 'pending' || activeAutoExecution?.executionStatus === 'filled') {
-                              return <Tooltip title={activeAutoExecution.alpacaOrderId || `Paper order placed. ${actionTooltip}`}><Tag color="success" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 800, margin: 0 }}>Submitted</Tag></Tooltip>;
-                            }
-                            if (activeAutoExecution?.executionStatus === 'failed') {
-                              return <Tooltip title={activeAutoExecution.executionError || 'Auto execute failed'}><Tag color="error" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 800, margin: 0 }}>Failed</Tag></Tooltip>;
-                            }
-                            return <Tag color="processing" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 800, margin: 0 }}>Auto Executing</Tag>;
-                          }
-                          if (pipelineMode === 'ai' && tradeMode === 'real') {
-                            if (activeAutoExecution?.executionStatus === 'submitted' || activeAutoExecution?.executionStatus === 'pending' || activeAutoExecution?.executionStatus === 'filled') {
-                              return <Tooltip title={activeAutoExecution.alpacaOrderId || 'Live order placed.'}><Tag color="success" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 800, margin: 0 }}>Submitted</Tag></Tooltip>;
-                            }
-                            if (activeAutoExecution?.executionStatus === 'failed') {
-                              return <Tooltip title={activeAutoExecution.executionError || 'Auto execute failed'}><Tag color="error" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 800, margin: 0 }}>Failed</Tag></Tooltip>;
-                            }
-                            return <Tag color="processing" bordered={false} style={{ width: '100%', textAlign: 'center', fontWeight: 800, margin: 0 }}>Auto Executing</Tag>;
-                          }
-                          return <Button size="small" type="primary" onClick={() => handleEntryPlanAction(record)} style={{ height: 32, borderRadius: 8, fontSize: 11, fontWeight: 700, width: '100%', background: '#10b981', borderColor: '#10b981' }}>{t.agent.execute}</Button>;
-                        }
-                        if (action === 'READY_REVIEW') {
-                          const inWl = isInWatchlist(record.symbol);
-                          const _isLev = record.isLeveraged || record.isLeveragedAlternative;
-                          if (pipelineMode === 'ai') {
-                            const reviewReason = _isLev
-                              ? (actionTooltip || `Leveraged ${record.symbol} has unresolved gate issues — auto-execution blocked. Check risk gate, entry zone, and data quality.`)
-                              : (actionTooltip || 'AI decision or risk context requires review; auto execution only submits BUY_READY plans.');
-                            return <Tooltip title={reviewReason}><Button size="small" type="default" onClick={() => handleEntryPlanAction(record)} style={{ height: 28, borderRadius: 6, fontSize: 10, fontWeight: 700, width: '100%' }}>Review Required</Button></Tooltip>;
-                          }
-                          return (
-                            <Space size={6}>
-                              <Button size="small" type="primary" ghost onClick={() => handleEntryPlanAction(record)} style={{ height: 32, borderRadius: 8, fontSize: 11, fontWeight: 700 }}>{t.agent.review}</Button>
-                              <Button size="small" icon={inWl ? <CheckOutlined /> : <PlusOutlined />} onClick={() => addToWatchlist(record)} style={{ height: 32, width: 32, borderRadius: 8, color: inWl ? '#10b981' : '#3b82f6', borderColor: inWl ? '#10b981' : '#3b82f6' }} />
-                            </Space>
-                          );
-                        }
-                        if (action === 'WAIT_FOR_ENTRY' || aiDec === 'WATCH') {
-                          const inWl = isInWatchlist(record.symbol);
-                          return <Tooltip title={actionTooltip}><Button size="small" icon={inWl ? <CheckOutlined /> : <PlusOutlined />} onClick={() => addToWatchlist(record)} style={{ height: 32, borderRadius: 8, fontSize: 11, fontWeight: 700, width: '100%', color: inWl ? '#10b981' : '#3b82f6', borderColor: inWl ? '#10b981' : '#3b82f6' }}>{inWl ? t.agent.update : t.agent.plusWatchlist}</Button></Tooltip>;
-                        }
-                        return <span style={{ fontSize: '10px', color: '#bbb' }}>—</span>;
-                      },
-                    },
-                  ]}
-                  scroll={{ x: 1700 }}
-                  style={{ fontSize: '12px', marginTop: '16px' }}
-                />
-              </div>
-              <style>{`
-                .ep-table-row {
-                  height: 72px !important;
-                }
-                .ep-table-row > td {
-                  padding: 10px 10px !important;
-                  vertical-align: middle;
-                  font-size: 13.5px !important;
-                  background: var(--app-card-bg);
-                }
-                .entry-zone-cell {
-                  display: flex;
-                  flex-direction: column;
-                  align-items: flex-start;
-                  gap: 3px;
-                  min-width: 0;
-                  max-width: 188px;
-                  line-height: 1.25;
-                }
-                .entry-zone-cell__status {
-                  display: flex;
-                  max-width: 100%;
-                }
-                .entry-zone-cell__range {
-                  display: block;
-                  max-width: 100%;
-                  font-size: 12.5px;
-                  font-weight: 800;
-                  color: var(--app-text-strong);
-                  white-space: nowrap;
-                  overflow: hidden;
-                  text-overflow: ellipsis;
-                }
-                .entry-zone-cell__distance {
-                  display: block;
-                  max-width: 100%;
-                  font-size: 10.5px;
-                  font-weight: 700;
-                  white-space: nowrap;
-                  overflow: hidden;
-                  text-overflow: ellipsis;
-                }
-                .entry-plan-table-wrapper .ant-table-thead > tr > th {
-                  font-weight: 800 !important;
-                  font-size: 10.5px !important;
-                  color: #94a3b8 !important;
-                  background: var(--app-card-bg-soft) !important;
-                  padding: 16px 12px !important;
-                  border-bottom: 1px solid rgba(15, 23, 42, 0.06) !important;
-                  letter-spacing: 0.8px !important;
-                  text-transform: uppercase !important;
-                }
-                .ep-table-row:hover > td {
-                  background: var(--app-card-bg-soft) !important;
-                }
-                .ant-table-thead > tr > th:not(:last-child)::after {
-                  display: none !important;
-                }
-                .ant-table-fixed-right {
-                  background: var(--app-card-bg) !important;
-                }
-                .entry-plan-table-wrapper .ant-table-cell-fix-right,
-                .entry-plan-table-wrapper .ant-table-cell-fix-right-first {
-                  background: var(--app-card-bg) !important;
-                  box-shadow: none !important;
-                  padding-left: 8px !important;
-                  padding-right: 8px !important;
-                }
-                .entry-plan-table-wrapper .ant-table-cell-fix-right-first::after,
-                .entry-plan-table-wrapper .ant-table-cell-fix-right-last::after {
-                  box-shadow: none !important;
-                  display: none !important;
-                }
-                .entry-plan-table-wrapper {
-                  max-width: 100%;
-                  overflow: hidden;
-                }
-              `}</style>
-            </>
-          )}
+          {(entryPlanStatus === 'completed' || entryPlanStatus === 'stopped') && entryPlanResults && entryPlanResults.length > 0 && renderEntryPlanWorkbench()}
       </CollapsibleStageSection>
       {/* End Entry Plan Section */}
 
       {/* ── Exit Scan Section ── */}
       <CollapsibleStageSection
+        stageNumber="05"
+        stageLabel={agentText('Stage', '阶段')}
+        expandLabel={agentText('Expand', '展开')}
+        collapseLabel={agentText('Collapse', '收起')}
         title={t.agent.exitScan}
         icon={<SwapOutlined />}
         statusText={
@@ -11885,7 +8862,7 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           exitScanStatus === 'completed' ? t.agent.completedLabel :
           exitScanStatus === 'skipped' ? `${t.agent.skippedLabel}: ${t.agent.noActiveHoldings}` :
           exitScanStatus === 'failed' ? t.agent.errorLabel :
-          exitScanStatus === 'stopped' ? t.agent.stoppedLabel : 'IDLE'
+          exitScanStatus === 'stopped' ? t.agent.stoppedLabel : agentText('IDLE', '空闲')
         }
         statusColor={
           exitScanStatus === 'scanning' ? 'processing' :
@@ -11944,35 +8921,38 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
           </div>
         }
       >
-        <div style={{ marginBottom: 16 }}>
-          <Text type="secondary" style={{ fontSize: 13, fontWeight: 500 }}>
-            {t.agent.evaluateHoldings}
-          </Text>
+        <div className="exit-plan-intro">
+          <div>
+            <strong>{agentText('Position lifecycle control', '持仓生命周期控制')}</strong>
+            <span>{agentText('Initial risk stays fixed. Stops may only ratchet tighter; structural targets do not drift between scans.', '初始风险保持固定；止损只能向更安全的方向收紧，结构性目标不会在扫描之间漂移。')}</span>
+          </div>
+          <div className="exit-plan-cadence">
+            <SyncOutlined />
+            <span>{agentText(`${pipelineAutoStatus?.positionGuard?.intervalSeconds || 60}s guard`, `每 ${pipelineAutoStatus?.positionGuard?.intervalSeconds || 60} 秒检查`)}</span>
+            <i>{exitScanSummary?.scanPolicy?.engine || 'position_lifecycle_v2'}</i>
+          </div>
         </div>
 
         {/* Summary stats */}
         {exitScanResults.length > 0 && (
-          <div style={{
-            display: 'flex', gap: 12, marginBottom: 16, padding: '12px',
-            background: 'var(--app-card-bg-soft)', borderRadius: 10, border: '1px solid var(--app-card-bg-soft)'
-          }}>
+          <div className="exit-plan-summary">
             {[
               { label: t.agent.scanned, value: exitScanResults.length, color: 'var(--app-text-strong)', icon: <SearchOutlined /> },
-              { label: t.agent.sellNow, value: exitScanResults.filter(r => r.exitDecision === 'sell_now').length, color: 'rgba(239, 68, 68, 0.8)', icon: <ThunderboltOutlined /> },
-              { label: t.agent.targetLimit, value: exitScanResults.filter(r => r.exitDecision === 'place_target_limit').length, color: '#d97706', icon: <ClockCircleOutlined /> },
-              { label: t.agent.hold, value: exitScanResults.filter(r => r.exitDecision === 'hold').length, color: '#10b981', icon: <SafetyCertificateOutlined /> },
-              { label: t.agent.epPending, value: exitScanResults.filter(r => r.status === 'pending').length, color: '#f59e0b', icon: <SyncOutlined /> },
-              { label: t.agent.epSubmitted, value: exitScanResults.filter(r => r.status === 'submitted').length, color: '#3b82f6', icon: <CheckCircleOutlined /> },
+              { label: agentText('Hard exits', '强制退出'), value: exitScanResults.filter((r: any) => r.triggerAction === 'emergency_exit').length, color: '#b42318', icon: <ThunderboltOutlined /> },
+              { label: agentText('Protected', '已保护'), value: exitScanResults.filter((r: any) => r.protection?.hasFullStopCoverage || String(r.status || '').startsWith('protected')).length, color: '#16835d', icon: <SafetyCertificateOutlined /> },
+              { label: agentText('Targets met', '已达目标'), value: exitScanResults.filter((r: any) => r.triggerAction === 'target_reached').length, color: '#a16207', icon: <ClockCircleOutlined /> },
+              { label: agentText('Needs review', '需要复核'), value: exitScanResults.filter((r: any) => String(r.status || '').includes('review') || ['unprotected', 'blocked', 'blocked_external_order'].includes(String(r.status || '')) || r.triggerAction === 'event_review').length, color: '#c2410c', icon: <WarningOutlined /> },
+              { label: agentText('Stop ratchets', '止损已上调'), value: exitScanResults.filter((r: any) => r.action === 'ratchet_stop').length, color: '#2563eb', icon: <CheckCircleOutlined /> },
             ].map((stat, idx) => (
               <React.Fragment key={stat.label}>
-                <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ color: stat.color, fontSize: 14 }}>{stat.icon}</div>
+                <div className="exit-plan-summary-item">
+                  <div style={{ color: stat.color }}>{stat.icon}</div>
                   <div>
-                    <div style={{ fontSize: 9, color: 'var(--app-text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>{stat.label}</div>
-                    <div style={{ fontSize: 15, fontWeight: 800, color: stat.color, lineHeight: 1.1 }}>{stat.value}</div>
+                    <span>{stat.label}</span>
+                    <strong style={{ color: stat.color }}>{stat.value}</strong>
                   </div>
                 </div>
-                {idx < 5 && <Divider type="vertical" style={{ height: 24, margin: 0, borderColor: '#e2e8f0' }} />}
+                {idx < 5 && <Divider type="vertical" />}
               </React.Fragment>
             ))}
           </div>
@@ -11981,105 +8961,240 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
         {/* Results table */}
         {exitScanResults.length > 0 ? (
           <div className="exitscan-table-container">
-            <style>{`
-              .exitscan-table .ant-table-thead > tr > th { background: var(--app-card-bg-soft) !important; padding: 12px 16px !important; border-bottom: 1px solid var(--app-border-soft) !important; }
-              .exitscan-table .ant-table-thead > tr > th:first-child,
-              .exitscan-table .ant-table-tbody > tr > td:first-child { padding-left: 24px !important; }
-              .exitscan-row > td { border-bottom: 1px solid var(--app-border-soft) !important; }
-              .exitscan-row:hover > td { background-color: #f0f7ff !important; }
-            `}</style>
             <Table
               className="exitscan-table"
               dataSource={exitScanResults}
               rowKey="symbol"
               size="middle"
-              pagination={exitScanResults.length > 10 ? { pageSize: 10, size: 'small' } : false}
-              scroll={{ x: 1400 }}
+              pagination={exitScanResults.length > 12 ? { pageSize: 12, size: 'small', showSizeChanger: false } : false}
+              scroll={{ x: 1260 }}
               rowClassName="exitscan-row"
+              expandable={{
+                expandRowByClick: true,
+                expandedRowRender: (record: any) => {
+                  const plan = record.exitPlan || {};
+                  const indicators = record.indicators || {};
+                  const protection = record.protection || {};
+                  const eventContext = record.eventContext || {};
+                  const aiReview = record.aiExitReview || {};
+                  const source = exitScanSummary?.marketData?.source || agentText('Alpaca market data', 'Alpaca 市场数据');
+                  const rMultiple = exitFinite(plan.rMultiple);
+                  const drawdown = exitFinite(plan.drawdownFromHighPct);
+                  const remainingRisk = exitFinite(plan.riskRemainingDollars);
+                  return (
+                    <div className="exit-plan-detail" onClick={(event) => event.stopPropagation()}>
+                      <div className="exit-plan-detail-heading">
+                        <div>
+                          <span>{agentText('Position control record', '持仓控制记录')}</span>
+                          <strong>{record.symbol} / {agentEnumLabel(plan.state || 'MONITORING')}</strong>
+                        </div>
+                        <div className="exit-plan-detail-policy">
+                          <Tag color="blue">{agentText('Stop: ratchet only', '止损：仅可收紧')}</Tag>
+                          <Tag>{agentText('Target: fixed', '目标：固定')}</Tag>
+                          <Tag color={record.dataQuality === 'GOOD' ? 'success' : 'warning'}>{agentEnumLabel(record.dataQuality || 'PARTIAL')} {agentText('data', '数据')}</Tag>
+                        </div>
+                      </div>
+
+                      <div className="exit-plan-detail-grid">
+                        <section className="exit-plan-detail-panel">
+                          <header>
+                            <span>01</span>
+                            <div><strong>{agentText('Risk lifecycle', '风险生命周期')}</strong><small>{agentText('Geometry established at entry', '价位结构在入场时确定')}</small></div>
+                          </header>
+                          <div className="exit-plan-metric-grid">
+                            <ExitMetric label={agentText('Initial stop', '初始止损')} value={exitPrice(plan.initialStop)} />
+                            <ExitMetric label={agentText('Current stop', '当前止损')} value={exitPrice(plan.currentStop)} tone={exitFinite(plan.currentStop) && exitFinite(plan.initialStop) && Number(plan.currentStop) > Number(plan.initialStop) ? 'good' : 'default'} />
+                            <ExitMetric label={agentText('Target 1', '目标 1')} value={exitPrice(plan.target1)} />
+                            <ExitMetric label={agentText('Target 2', '目标 2')} value={exitPrice(plan.target2)} />
+                            <ExitMetric label={agentText('R multiple', 'R 倍数')} value={rMultiple == null ? '—' : `${rMultiple.toFixed(2)}R`} tone={rMultiple != null && rMultiple >= 1 ? 'good' : rMultiple != null && rMultiple < 0 ? 'risk' : 'default'} />
+                            <ExitMetric label="MFE" value={exitFinite(plan.mfeR) == null ? '—' : `${Number(plan.mfeR).toFixed(2)}R`} />
+                            <ExitMetric label={agentText('High-water', '持仓最高价')} value={exitPrice(plan.highWaterMark)} />
+                            <ExitMetric label={agentText('Drawdown from high', '距高点回撤')} value={exitPercent(drawdown)} tone={drawdown != null && drawdown <= -5 ? 'warn' : 'default'} />
+                            <ExitMetric label={agentText('Risk remaining', '剩余风险')} value={exitMoney(remainingRisk)} tone={remainingRisk != null && remainingRisk > 0 ? 'warn' : 'good'} />
+                            <ExitMetric label={agentText('Profit locked', '已锁定利润')} value={exitMoney(plan.lockedProfitDollars)} tone={exitFinite(plan.lockedProfitDollars) && Number(plan.lockedProfitDollars) > 0 ? 'good' : 'default'} />
+                            <ExitMetric label={agentText('Allocation', '配置比例')} value={exitPercent(plan.allocationPct)} />
+                            <ExitMetric label={agentText('Allocation review at', '配置复核阈值')} value={exitPercent(plan.maxPositionReviewPct)} />
+                            <ExitMetric label={agentText('Days held / time stop', '持有天数 / 时间止损')} value={`${plan.daysHeld ?? '—'} / ${plan.timeStopDays ?? '—'}${agentText('d', '天')}`} />
+                          </div>
+                        </section>
+
+                        <section className="exit-plan-detail-panel">
+                          <header>
+                            <span>02</span>
+                            <div><strong>{agentText('Market evidence', '市场证据')}</strong><small>{agentText('Observable inputs, not forecasts', '采用可观察数据，而非预测')}</small></div>
+                          </header>
+                          <div className="exit-plan-metric-grid">
+                            <ExitMetric label="ATR 14" value={exitPrice(indicators.atr14)} />
+                            <ExitMetric label="ATR %" value={exitPercent(indicators.atrPct)} />
+                            <ExitMetric label="EMA 20" value={exitPrice(indicators.ema20)} />
+                            <ExitMetric label="EMA 50" value={exitPrice(indicators.ema50)} />
+                            <ExitMetric label="RSI 14" value={exitFinite(indicators.rsi14)?.toFixed(1) || '—'} />
+                            <ExitMetric label={agentText('Realized vol 20', '20 日实现波动率')} value={exitPercent(indicators.realizedVol20)} />
+                            <ExitMetric label="ADV 20" value={exitMoney(indicators.adv20)} />
+                            <ExitMetric label={agentText('Bid / ask', '买价 / 卖价')} value={`${exitPrice(indicators.bid)} / ${exitPrice(indicators.ask)}`} />
+                            <ExitMetric label={agentText('Spread', '价差')} value={exitPercent(indicators.spreadPct)} tone={exitFinite(indicators.spreadPct) && Number(indicators.spreadPct) > 0.5 ? 'warn' : 'default'} />
+                            <ExitMetric label={agentText('Quote age', '报价延迟')} value={exitQuoteAge(indicators.quoteAgeSeconds)} tone={exitFinite(indicators.quoteAgeSeconds) && Number(indicators.quoteAgeSeconds) > 300 ? 'warn' : 'default'} />
+                            <ExitMetric label={agentText('Position trend', '持仓趋势')} value={agentEnumLabel(indicators.trendState || 'unknown')} />
+                            <ExitMetric label={agentText('SPY regime', 'SPY 市场环境')} value={agentEnumLabel(record.marketRegime || 'unknown')} />
+                            <ExitMetric label={agentText('Event risk', '事件风险')} value={agentEnumLabel(eventContext.eventRisk || 'unknown')} tone={String(eventContext.eventRisk || '').toUpperCase() === 'HIGH' ? 'risk' : String(eventContext.eventRisk || '').toUpperCase() === 'MEDIUM' ? 'warn' : 'default'} />
+                            <ExitMetric label={agentText('Next earnings', '下一财报')} value={eventContext.nextEarningsDate ? `${eventContext.nextEarningsDate}${eventContext.daysToEarnings != null ? ` / ${eventContext.daysToEarnings}${agentText('d', '天')}` : ''}` : '—'} />
+                            <ExitMetric label={agentText('News tone', '新闻情绪')} value={eventContext.newsSentiment ? agentEnumLabel(eventContext.newsSentiment) : '—'} />
+                            <ExitMetric label={agentText('Event tags', '事件标签')} value={(eventContext.eventTags || []).length ? eventContext.eventTags.slice(0, 3).join(', ') : '—'} />
+                          </div>
+                          {eventContext.topNewsHeadline && (
+                            <div className="exit-plan-review-note">
+                              <span>{agentText('Latest event evidence', '最新事件证据')}</span>
+                              <strong>{eventContext.topNewsHeadline}</strong>
+                              <p>{agentText('News and earnings can request review, but cannot loosen a stop or force an automatic sale by themselves.', '新闻与财报事件可以触发复核，但不能自行放宽止损，也不会单独触发自动卖出。')}</p>
+                            </div>
+                          )}
+                        </section>
+
+                        <section className="exit-plan-detail-panel">
+                          <header>
+                            <span>03</span>
+                            <div><strong>{agentText('Broker protection', '券商保护单')}</strong><small>{agentText('Order ownership and review authority', '订单归属与复核权限')}</small></div>
+                          </header>
+                          <div className="exit-plan-metric-grid">
+                            <ExitMetric label={agentText('Protection', '保护状态')} value={agentEnumLabel(protection.protectionStatus || 'none')} tone={protection.hasFullStopCoverage ? 'good' : 'risk'} />
+                            <ExitMetric label={agentText('Open sell orders', '未成交卖单')} value={protection.orderCount ?? 0} />
+                            <ExitMetric label={agentText('Stop coverage', '止损覆盖率')} value={exitPercent(protection.stopCoveragePct)} tone={protection.hasFullStopCoverage ? 'good' : 'risk'} />
+                            <ExitMetric label={agentText('Broker stop', '券商止损价')} value={exitPrice(protection.stopPrice)} />
+                            <ExitMetric label={agentText('Broker target', '券商目标价')} value={exitPrice(protection.targetPrice)} />
+                            <ExitMetric label={agentText('Order owner', '订单归属')} value={protection.hasExternalOrders ? agentText('External / manual', '外部 / 手动') : protection.managedByAlphaLab ? 'AlphaLab' : agentText('None', '无')} tone={protection.hasExternalOrders ? 'warn' : 'default'} />
+                            <ExitMetric label={agentText('AI authority', 'AI 权限')} value={agentText('Soft review only', '仅提供辅助复核')} />
+                          </div>
+                          <div className="exit-plan-review-note">
+                            <span>{agentText('Deterministic decision', '确定性决策')}</span>
+                            <strong>{record.reason || agentText('No lifecycle exception detected.', '未检测到持仓生命周期异常。')}</strong>
+                            {aiReview.decision ? (
+                              <p><b>AI {agentEnumLabel(aiReview.decision)}</b> / {aiReview.confidence ?? 0}%: {aiReview.reason || agentText('No additional challenge.', '没有额外质询。')}</p>
+                            ) : (
+                              <p>{agentText('AI did not change this record. Hard stops and broker protection always remain binding.', 'AI 未修改本次记录；硬性止损与券商保护单始终具有最终约束力。')}</p>
+                            )}
+                            {aiReview.nextCheck && <p>{agentText('Next check', '下一项检查')}: {aiReview.nextCheck}</p>}
+                          </div>
+                        </section>
+                      </div>
+
+                      <div className="exit-plan-detail-footer">
+                        <span>{agentText('Source', '来源')}: {source}</span>
+                        <span>{agentText('Bars as of', 'K 线截至')}: {indicators.barsAsOf || '—'}</span>
+                        <span>{agentText('Evaluated', '评估时间')}: {plan.evaluatedAt ? new Date(plan.evaluatedAt).toLocaleString(isZh ? 'zh-CN' : 'en-US') : '—'}</span>
+                      </div>
+                    </div>
+                  );
+                },
+              }}
               columns={[
-                { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.colSymbol}</span>,
-                  dataIndex: 'symbol', key: 'symbol', width: 80, fixed: 'left' as const,
-                  render: (t: string) => <span style={{ fontWeight: 800, fontSize: 15, color: 'var(--app-text-strong)', letterSpacing: '-0.2px' }}>{t}</span> },
-                { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.colQty}</span>,
-                  dataIndex: 'qty', key: 'qty', width: 60,
-                  render: (v: number) => <span style={{ fontSize: 13, fontWeight: 700 }}>{v}</span> },
-                { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.colAvgEntry}</span>,
-                  dataIndex: 'avgEntry', key: 'avgEntry', width: 90,
-                  render: (v: number) => <span style={{ fontSize: 12, color: 'var(--app-text-strong)', fontWeight: 600 }}>${(v || 0).toFixed(2)}</span> },
-                { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.colCurrent}</span>,
-                  dataIndex: 'currentPrice', key: 'current', width: 90,
-                  render: (v: number) => <span style={{ fontSize: 12, color: 'var(--app-text-strong)', fontWeight: 600 }}>${(v || 0).toFixed(2)}</span> },
-                { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.colPL}</span>,
-                  dataIndex: 'pl', key: 'pl', width: 90,
-                  render: (v: number) => <span style={{ color: (v || 0) >= 0 ? '#10b981' : '#ef4444', fontWeight: 800, fontSize: 13 }}>{(v || 0) >= 0 ? '+' : ''}${(v || 0).toFixed(2)}</span> },
-                { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.colPLPct}</span>,
-                  dataIndex: 'plPct', key: 'plPct', width: 80,
-                  render: (v: number) => <Tag color={(v || 0) >= 0 ? 'success' : 'error'} bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 6, margin: 0, padding: '0 6px' }}>{(v || 0) >= 0 ? '+' : ''}{((v || 0) * 100).toFixed(2)}%</Tag> },
-                { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.colSource}</span>,
-                  dataIndex: 'positionSource', key: 'source', width: 110,
-                  render: (s: string, record: any) => {
-                    if (s === 'user_marked') return <Tag color="default" style={{ fontSize: 9, fontWeight: 700, borderRadius: 4 }}>USER-MARKED</Tag>;
-                    if (s === 'ai_managed') return <Tag color="blue" style={{ fontSize: 9, fontWeight: 700, borderRadius: 4 }}>AI MANAGED</Tag>;
-                    if (record.exitPlanSource === 'generated') return <Tag color="cyan" style={{ fontSize: 9, fontWeight: 700, borderRadius: 4 }}>AI GENERATED</Tag>;
-                    return <Tag color="orange" style={{ fontSize: 9, fontWeight: 700, borderRadius: 4 }}>{s?.toUpperCase()}</Tag>;
-                  }},
-                { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.colTarget}</span>,
-                  dataIndex: 'entryPlanTarget', key: 'target', width: 90,
-                  render: (v?: number) => v != null ? <span style={{ color: '#10b981', fontSize: 12, fontWeight: 700 }}>${v.toFixed(2)}</span> : <span style={{ color: '#d1d5db' }}>—</span> },
-                { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.colStop}</span>,
-                  dataIndex: 'entryPlanStop', key: 'stop', width: 90,
-                  render: (v?: number) => v != null ? <span style={{ color: 'rgba(239, 68, 68, 0.8)', fontSize: 12, fontWeight: 700 }}>${v.toFixed(2)}</span> : <span style={{ color: '#d1d5db' }}>—</span> },
-                { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.colExitDecision}</span>,
-                  dataIndex: 'exitDecision', key: 'decision', width: 130,
-                  render: (d: string) => {
-                    const m: Record<string, { color: string; label: string }> = {
-                      sell_now: { color: 'red', label: t.agent.sellNowLabel },
-                      place_target_limit: { color: 'gold', label: t.agent.targetLimitLabel },
-                      hold: { color: 'green', label: t.agent.holdLabel },
-                      manual_review: { color: 'default', label: t.agent.manualReviewLabel },
-                      blocked: { color: 'default', label: t.agent.blockedLabelExit },
+                {
+                  title: <span className="exit-plan-column-title">{agentText('Position', '持仓')}</span>,
+                  key: 'position', width: 180, fixed: 'left' as const,
+                  render: (_: unknown, record: any) => {
+                    const sourceLabels: Record<string, string> = {
+                      managed_plan: agentText('Managed plan', '受管计划'),
+                      current_entry_plan: agentText('Entry plan', '入场计划'),
+                      broker_reconstructed: agentText('Broker recovered', '券商记录重建'),
                     };
-                    const info = m[d] || { color: 'default', label: d?.toUpperCase() };
-                    return <Tag color={info.color} bordered={false} style={{ fontSize: 10, fontWeight: 800, borderRadius: 6, padding: '0 8px' }}>{info.label}</Tag>;
-                  }},
-                { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.colExitOrder}</span>,
-                  dataIndex: 'exitOrderType', key: 'orderType', width: 100,
-                  render: (orderType?: string, record?: any) => {
-                    if (record?.status === 'submitted' || record?.status === 'filled') {
-                      return <Tag color="blue" style={{ fontSize: 10, fontWeight: 700, borderRadius: 4 }}>{orderType === 'limit' ? t.agent.lmtSell : t.agent.mktSell}</Tag>;
-                    }
-                    if (orderType === 'market') return <Tag color="red" style={{ fontSize: 10, fontWeight: 700, borderRadius: 4 }}>{t.agent.mktSell}</Tag>;
-                    if (orderType === 'limit') return <Tag color="gold" style={{ fontSize: 10, fontWeight: 700, borderRadius: 4 }}>{t.agent.lmtSell}</Tag>;
-                    if (record?.exitDecision === 'hold') return <Tag color="green" style={{ fontSize: 10, fontWeight: 700, borderRadius: 4 }}>{t.agent.holdLabel}</Tag>;
-                    if (record?.exitDecision === 'manual_review') return <Tag style={{ fontSize: 10, fontWeight: 700, borderRadius: 4 }}>{t.agent.reviewLabel}</Tag>;
-                    return <span style={{ color: '#d1d5db' }}>—</span>;
-                  }},
-                { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.exitPrice}</span>,
-                  dataIndex: 'exitPrice', key: 'exitPrice', width: 90,
-                  render: (v?: number, record?: any) => {
-                    if (v != null) return <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--app-text-strong)' }}>${v.toFixed(2)}</span>;
-                    if (record?.exitDecision === 'hold' && record?.entryPlanTarget) return <span style={{ color: '#10b981', fontSize: 12, fontWeight: 600 }}>${record.entryPlanTarget.toFixed(2)}</span>;
-                    return <span style={{ color: '#d1d5db' }}>—</span>;
-                  }},
-                { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.reason}</span>,
-                  dataIndex: 'reason', key: 'reason', width: 200, ellipsis: true,
-                  render: (t: string) => <Tooltip title={t}><span style={{ fontSize: 12, color: '#4b5563', fontWeight: 500 }}>{t}</span></Tooltip> },
-                { title: <span style={{ fontWeight: 700, color: 'var(--app-text-muted)', fontSize: 10, textTransform: 'uppercase' }}>{t.agent.colExitStatus}</span>,
-                  dataIndex: 'status', key: 'status', width: 140,
-                  render: (s: string) => {
-                    const m: Record<string, { label: string; color: string }> = {
-                      submitted: { label: t.agent.epSubmitted, color: 'blue' },
-                      filled: { label: t.agent.filledLabel, color: 'green' },
-                      failed: { label: t.agent.failedLabel, color: 'red' },
-                      hold: { label: t.agent.holdLabel, color: 'green' },
-                      no_order: { label: t.agent.noOrder, color: 'default' },
-                      manual_review: { label: t.agent.reviewLabel, color: 'orange' },
-                      blocked: { label: t.agent.blockedLabelExit, color: 'default' },
-                      pending: { label: t.agent.epPending, color: 'orange' },
-                    };
-                    const entry = m[s] || { label: s?.toUpperCase() || 'UNKNOWN', color: 'default' };
-                    return <Tag color={entry.color} bordered={false} style={{ fontSize: 9, fontWeight: 800, borderRadius: 4 }}>{entry.label}</Tag>;
-                  }},
+                    return (
+                      <div className="exit-plan-position">
+                        <strong>{record.symbol}</strong>
+                        <span>{exitFinite(record.qty)?.toLocaleString(undefined, { maximumFractionDigits: 4 }) || '—'} {agentText('shares', '股')}</span>
+                        <small>{sourceLabels[record.exitPlanSource || record.positionSource] || (record.exitPlanSource || record.positionSource ? agentEnumLabel(record.exitPlanSource || record.positionSource) : agentText('Recovered', '已重建'))}</small>
+                      </div>
+                    );
+                  },
+                },
+                {
+                  title: <span className="exit-plan-column-title">{agentText('Mark / P&L', '现价 / 盈亏')}</span>,
+                  key: 'market', width: 145,
+                  render: (_: unknown, record: any) => {
+                    const gain = Number(record.plPct || 0) >= 0;
+                    return (
+                      <div className="exit-plan-market">
+                        <strong>{exitPrice(record.currentPrice)}</strong>
+                        <span className={gain ? 'is-gain' : 'is-loss'}>{exitPercent(record.plPct, true)} / {exitMoney(record.pl)}</span>
+                        <small>{agentText('Entry', '入场价')} {exitPrice(record.avgEntry)}</small>
+                      </div>
+                    );
+                  },
+                },
+                {
+                  title: <span className="exit-plan-column-title">{agentText('Lifecycle', '生命周期')}</span>,
+                  key: 'lifecycle', width: 170,
+                  render: (_: unknown, record: any) => {
+                    const plan = record.exitPlan || {};
+                    const state = String(plan.state || 'MONITORING');
+                    return (
+                      <div className="exit-plan-lifecycle">
+                        <Tag color={state === 'TRAILING' ? 'success' : state === 'BREAKEVEN' ? 'blue' : 'default'}>{agentEnumLabel(state)}</Tag>
+                        <span>{exitFinite(plan.rMultiple) == null ? '—' : `${Number(plan.rMultiple).toFixed(2)}R`} {agentText('current', '当前')}</span>
+                        <small>{exitPercent(plan.drawdownFromHighPct)} {agentText('from high', '距高点')}</small>
+                      </div>
+                    );
+                  },
+                },
+                {
+                  title: <span className="exit-plan-column-title">{agentText('Stop / target', '止损 / 目标')}</span>,
+                  key: 'geometry', width: 190,
+                  render: (_: unknown, record: any) => {
+                    const plan = record.exitPlan || {};
+                    return (
+                      <div className="exit-plan-price-stack">
+                        <span><i>{agentText('Stop', '止损')}</i><b className="is-stop">{exitPrice(plan.currentStop || record.stopPrice)}</b></span>
+                        <span><i>{agentText('Target', '目标')}</i><b className="is-target">{exitPrice(plan.target1 || record.targetPrice)}</b></span>
+                        <small>{agentText('Initial stop', '初始止损')} {exitPrice(plan.initialStop)}</small>
+                      </div>
+                    );
+                  },
+                },
+                {
+                  title: <span className="exit-plan-column-title">{agentText('Broker protection', '券商保护')}</span>,
+                  key: 'protection', width: 190,
+                  render: (_: unknown, record: any) => {
+                    const protection = record.protection || {};
+                    const protectedPosition = Boolean(protection.hasFullStopCoverage);
+                    return (
+                      <div className="exit-plan-protection">
+                        <Tag color={protectedPosition ? 'success' : protection.hasTarget ? 'warning' : 'error'}>
+                          {agentEnumLabel(protection.protectionStatus || 'none')}
+                        </Tag>
+                        <span>{protection.orderCount || 0} {agentText('orders', '个订单')} / {exitPercent(protection.stopCoveragePct)} {agentText('stop cover', '止损覆盖')}</span>
+                        <small>{protection.hasExternalOrders ? agentText('External order owner', '外部订单持有') : protection.managedByAlphaLab ? agentText('Managed by AlphaLab', '由 AlphaLab 管理') : agentText('No broker protection', '无券商保护单')}</small>
+                      </div>
+                    );
+                  },
+                },
+                {
+                  title: <span className="exit-plan-column-title">{agentText('Decision / next action', '决策 / 下一步')}</span>,
+                  key: 'decision', width: 255,
+                  render: (_: unknown, record: any) => {
+                    const action = String(record.action || record.triggerAction || 'monitor');
+                    const riskActions = new Set(['emergency_exit', 'emergency_exit_submitted', 'manual_intervention']);
+                    const reviewActions = new Set(['protection_required', 'review_open_orders', 'protected_review', 'time_exit_review', 'thesis_review', 'event_review', 'concentration_review']);
+                    const color = riskActions.has(action) ? 'error' : reviewActions.has(action) || String(record.status).includes('review') ? 'warning' : action === 'ratchet_stop' ? 'blue' : 'success';
+                    return (
+                      <div className="exit-plan-decision">
+                        <Tag color={color}>{agentEnumLabel(action)}</Tag>
+                        <Tooltip title={record.reason} placement="topLeft">
+                          <span>{record.reason || agentText('Continue lifecycle monitoring.', '继续监控持仓生命周期。')}</span>
+                        </Tooltip>
+                        <small>{record.aiExitReview?.decision ? `AI ${agentEnumLabel(record.aiExitReview.decision)} / ${record.aiExitReview.confidence || 0}%` : agentText('Deterministic control', '确定性控制')}</small>
+                      </div>
+                    );
+                  },
+                },
+                {
+                  title: <span className="exit-plan-column-title">{agentText('Evidence', '证据')}</span>,
+                  key: 'evidence', width: 130,
+                  render: (_: unknown, record: any) => (
+                    <div className="exit-plan-evidence">
+                      <Tag color={record.dataQuality === 'GOOD' ? 'success' : 'warning'}>{agentEnumLabel(record.dataQuality || 'PARTIAL')}</Tag>
+                      <span>{exitQuoteAge(record.indicators?.quoteAgeSeconds)} {agentText('quote', '报价')}</span>
+                      <small>{agentEnumLabel(record.marketRegime || 'unknown')} / {agentEnumLabel(record.eventContext?.eventRisk || 'unknown')} {agentText('event', '事件')}</small>
+                    </div>
+                  ),
+                },
               ]}
             />
           </div>
@@ -12112,67 +9227,188 @@ function renderDVDetailPanel(record: any, t: any, language: string) {
       </CollapsibleStageSection>
       {/* End Exit Scan Section */}
 
+      {/* ── Unattended Live Automation Authorization ── */}
+      <Modal
+        rootClassName="agent-live-auto-modal"
+        className="agent-live-auto-dialog"
+        title={(
+          <div className="agent-live-auto-heading">
+            <span className="agent-live-auto-heading-icon" aria-hidden="true">
+              <SafetyCertificateOutlined />
+            </span>
+            <div>
+              <span>{liveAutoCopy.eyebrow}</span>
+              <h2>{liveAutoCopy.title}</h2>
+            </div>
+            <span className="agent-live-auto-authority">
+              <small>{liveAutoCopy.status}</small>
+              <b>{liveAutoCopy.locked}</b>
+            </span>
+          </div>
+        )}
+        open={liveAutoConfirmOpen}
+        onCancel={closeLiveAutoConfirmation}
+        onOk={confirmLiveAutoTrading}
+        confirmLoading={pipelineAutoLoading}
+        okText={liveAutoCopy.confirm}
+        cancelText={liveAutoCopy.cancel}
+        okButtonProps={{ type: 'primary', disabled: !liveAutoRiskAccepted }}
+        cancelButtonProps={{ disabled: pipelineAutoLoading }}
+        closable={!pipelineAutoLoading}
+        maskClosable={false}
+        keyboard={!pipelineAutoLoading}
+        width={640}
+        destroyOnClose
+      >
+        <div className="agent-live-auto-content">
+          <p className="agent-live-auto-intro">{liveAutoCopy.description}</p>
+
+          <div className="agent-live-auto-facts">
+            <div className="agent-live-auto-fact">
+              <WalletOutlined aria-hidden="true" />
+              <span>{liveAutoCopy.environment}</span>
+              <strong>{tradingAccountData?.success ? liveAutoCopy.liveConnected : liveAutoCopy.liveConnectionRequired}</strong>
+            </div>
+            <div className="agent-live-auto-fact">
+              <ClockCircleOutlined aria-hidden="true" />
+              <span>{liveAutoCopy.schedule}</span>
+              <strong>
+                {pipelineSchedule === 'off'
+                  ? liveAutoCopy.scheduleOff
+                  : liveAutoCopy.scheduleEvery(pipelineSchedule)}
+              </strong>
+            </div>
+            <div className="agent-live-auto-fact">
+              <SwapOutlined aria-hidden="true" />
+              <span>{liveAutoCopy.orders}</span>
+              <strong>{liveAutoCopy.orderScope}</strong>
+            </div>
+            <div className="agent-live-auto-fact">
+              <SafetyCertificateOutlined aria-hidden="true" />
+              <span>{liveAutoCopy.risk}</span>
+              <strong>{liveAutoCopy.riskScope}</strong>
+            </div>
+          </div>
+
+          <section className="agent-live-auto-boundaries" aria-label={liveAutoCopy.boundariesTitle}>
+            <h3>{liveAutoCopy.boundariesTitle}</h3>
+            <div>
+              <span>01</span>
+              <p>{liveAutoCopy.backgroundBoundary}</p>
+            </div>
+            <div>
+              <span>02</span>
+              <p>{liveAutoCopy.modeBoundary}</p>
+            </div>
+            <div>
+              <span>03</span>
+              <p>{liveAutoCopy.gateBoundary}</p>
+            </div>
+          </section>
+
+          <div className="agent-live-auto-note" role="note">
+            <InfoCircleOutlined aria-hidden="true" />
+            <span>{liveAutoCopy.note}</span>
+          </div>
+
+          <label className={`agent-live-auto-acceptance${liveAutoRiskAccepted ? ' is-accepted' : ''}`}>
+            <Checkbox
+              checked={liveAutoRiskAccepted}
+              onChange={(event) => setLiveAutoRiskAccepted(event.target.checked)}
+              disabled={pipelineAutoLoading}
+            />
+            <span>{liveAutoCopy.acceptance}</span>
+          </label>
+        </div>
+      </Modal>
+
       {/* ── Execution Confirmation Modal ── */}
       <Modal
-        title={entryPlanExecutionMode.toLowerCase().includes('live') ? `⚠ ${t.agent.liveTradingConfirmation}` : t.agent.confirmOrderExecution}
+        title={(
+          <div className="agent-execution-modal__heading">
+            <div>
+              <span>{agentModalCopy.executionEyebrow}</span>
+              <strong>{entryPlanExecutionMode.toLowerCase().includes('live') ? t.agent.liveTradingConfirmation : t.agent.confirmOrderExecution}</strong>
+            </div>
+            <em className={entryPlanExecutionMode.toLowerCase().includes('live') ? 'is-live' : 'is-paper'}>
+              <i />{entryPlanExecutionMode.toLowerCase().includes('live') ? agentModalCopy.liveAccount : agentModalCopy.paperAccount}
+            </em>
+          </div>
+        )}
         open={executeModalVisible}
-        onCancel={() => { setExecuteModalVisible(false); setExecuteTarget(null); setLiveConfirmText(''); }}
+        onCancel={() => { if (executeLoading) return; setExecuteModalVisible(false); setExecuteTarget(null); setLiveOrderAccepted(false); }}
         onOk={confirmExecutePlan}
         confirmLoading={executeLoading}
         okText={entryPlanExecutionMode.toLowerCase().includes('live') ? t.agent.confirmLiveOrder : t.agent.submitOrder}
-        okButtonProps={{ danger: entryPlanExecutionMode.toLowerCase().includes('live') }}
-        width={520}
+        okButtonProps={{
+          disabled: entryPlanExecutionMode.toLowerCase().includes('live')
+            && !liveOrderAccepted,
+        }}
+        cancelText={t.agent.cancel}
+        cancelButtonProps={{ disabled: executeLoading }}
+        width={600}
+        centered
+        maskClosable={false}
+        closable={!executeLoading}
+        keyboard={!executeLoading}
+        destroyOnHidden
+        className="agent-execution-modal agent-plan-execution-modal"
       >
-        {executeTarget && (
-          <div style={{ fontSize: '13px', lineHeight: '1.8' }}>
-            {entryPlanExecutionMode.toLowerCase().includes('live') && (
-              <Alert
-                message={t.agent.liveTradingUsesRealMoney}
-                type="error"
-                showIcon
-                style={{ marginBottom: '12px' }}
-              />
-            )}
-            <div><strong>{t.agent.symbolLabel}:</strong> {executeTarget.symbol}</div>
-            <div><strong>{t.agent.setupLabel}:</strong> {executeTarget.setup}</div>
-            <div><strong>{t.agent.orderTypeLabel}:</strong> {(executeTarget.executionDetails || {}).orderTypeSuggestion || 'N/A'}</div>
-            <div><strong>{t.agent.sharesLabel}:</strong> {executeTarget.positionSizeShares || executeTarget.shares || 0}</div>
-            <div><strong>{t.agent.entryZoneLabel}:</strong> {(() => {
-              const { low, high } = getEntryPlanZone(executeTarget);
-              return low != null && high != null ? `$${low.toFixed(2)} - $${high.toFixed(2)}` : 'N/A';
-            })()}</div>
-            <div><strong>{t.agent.estimatedValue}:</strong> {(() => {
-              const { low } = getEntryPlanZone(executeTarget);
-              return `$${((executeTarget.positionSizeShares || executeTarget.shares || 0) * (low || 0)).toFixed(0)}`;
-            })()}</div>
-            <div><strong>{t.agent.maxRisk}:</strong> ${executeTarget.riskDollars?.toFixed(0) || '0'}</div>
-            <div><strong>{t.agent.stopLossLabel}:</strong> ${executeTarget.stopLoss?.toFixed(2)}</div>
-            <div><strong>{t.agent.takeProfitLabel}:</strong> ${executeTarget.takeProfit1?.toFixed(2)}</div>
-            <div><strong>{t.agent.modeLabel}:</strong> {entryPlanExecutionMode}</div>
-            {entryPlanExecutionMode.toLowerCase().includes('live') && (
-              <div style={{ marginTop: '12px' }}>
-                <div style={{ fontWeight: 600, color: '#ff4d4f', marginBottom: '4px' }}>
-                  {t.agent.confirmLiveBuy.replace('{text}', `CONFIRM LIVE BUY ${executeTarget.symbol}`)}
-                </div>
-                <Input
-                  value={liveConfirmText}
-                  onChange={(e) => setLiveConfirmText(e.target.value)}
-                  placeholder={`CONFIRM LIVE BUY ${executeTarget.symbol}`}
-                  style={{ fontFamily: 'monospace' }}
-                />
+        {executeTarget && (() => {
+          const isLive = entryPlanExecutionMode.toLowerCase().includes('live');
+          const { low, high } = getEntryPlanZone(executeTarget);
+          const shares = Number(executeTarget.positionSizeShares || executeTarget.shares || 0);
+          const estimatedValue = shares * Number(low || 0);
+          return (
+            <div className="agent-execution-modal__content">
+              <div className="agent-execution-modal__instrument">
+                <div><span>{agentModalCopy.planSummary}</span><strong>{executeTarget.symbol}</strong></div>
+                <Tag color="green" bordered={false}>{t.agent.buy}</Tag>
               </div>
-            )}
-          </div>
-        )}
+
+              <dl className="agent-plan-execution-modal__details">
+                <div><dt>{agentModalCopy.setup}</dt><dd>{executeTarget.setup || '—'}</dd></div>
+                <div><dt>{t.agent.orderTypeLabel}</dt><dd>{(executeTarget.executionDetails || {}).orderTypeSuggestion || '—'}</dd></div>
+                <div><dt>{t.agent.sharesLabel}</dt><dd>{shares.toLocaleString(undefined, { maximumFractionDigits: 4 })}</dd></div>
+                <div><dt>{agentModalCopy.entryZone}</dt><dd>{low != null && high != null ? `${exitPrice(low)} – ${exitPrice(high)}` : '—'}</dd></div>
+                <div><dt>{agentModalCopy.expectedValue}</dt><dd>{estimatedValue > 0 ? exitMoney(estimatedValue) : '—'}</dd></div>
+                <div><dt>{agentModalCopy.riskBudget}</dt><dd>{exitMoney(executeTarget.riskDollars)}</dd></div>
+                <div><dt>{agentModalCopy.protectiveExit}</dt><dd>{exitPrice(executeTarget.stopLoss)} / {exitPrice(executeTarget.takeProfit1)}</dd></div>
+                <div><dt>{agentModalCopy.mode}</dt><dd>{isLive ? agentModalCopy.liveAccount : agentModalCopy.paperAccount}</dd></div>
+              </dl>
+
+              {isLive && (
+                <div className="agent-execution-modal__live-confirm">
+                  <SafetyCertificateOutlined />
+                  <div>
+                    <strong>{t.agent.realTradingWarning}</strong>
+                    <span>{agentModalCopy.liveFundsNotice}</span>
+                    <label className={`agent-execution-modal__acceptance${liveOrderAccepted ? ' is-accepted' : ''}`}>
+                      <Checkbox
+                        checked={liveOrderAccepted}
+                        onChange={(event) => setLiveOrderAccepted(event.target.checked)}
+                        disabled={executeLoading}
+                        aria-label={agentModalCopy.liveAcceptance}
+                      />
+                      <span>{agentModalCopy.liveAcceptance}</span>
+                    </label>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </Modal>
 
       {/* Order Modal */}
-      <OrderModal
-        visible={orderModalVisible}
-        onClose={() => { setOrderModalVisible(false); setOrderModalPreset(undefined); }}
-        onSuccess={handleOrderSuccess}
-        preset={orderModalPreset}
-      />
+      {orderModalVisible && (
+        <OrderModal
+          visible
+          onClose={() => { setOrderModalVisible(false); setOrderModalPreset(undefined); }}
+          onSuccess={handleOrderSuccess}
+          preset={orderModalPreset}
+        />
+      )}
 
     </div>
   );

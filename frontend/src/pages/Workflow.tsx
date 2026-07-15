@@ -1,346 +1,111 @@
-import React, { useEffect, useState } from 'react';
-import { Row, Col, Button } from 'antd';
-import { 
-  GlobalOutlined, RobotOutlined, 
-  AimOutlined, ArrowRightOutlined, SafetyOutlined, SearchOutlined,
-  FilterOutlined, DeploymentUnitOutlined
-} from '@ant-design/icons';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import MarketingLayout from '../components/MarketingLayout';
-import RevealSection from '../components/RevealSection';
+import { PublicTabList, publicTabIds, scrollPublicTarget } from '../components/public/PublicExperience';
+import { MetricStrip, MiniSparkline, PublicCta, PublicHero, SectionHeading } from '../components/public/PublicPrimitives';
 import { useLanguage } from '../contexts/LanguageContext';
+import './PublicSite.css';
+import './PublicExperience.css';
 
 const Workflow: React.FC = () => {
-  const navigate = useNavigate();
-  const { t } = useLanguage();
+  const { language, t } = useLanguage();
+  const isZh = language === 'zh-CN';
+  const workflowRef = useRef<HTMLElement>(null);
+  const [activeStep, setActiveStep] = useState(0);
 
-  const workflowSteps = [
-    {
-      id: 'market-scan',
-      num: '01',
-      title: t.workflow.step1Title,
-      status: t.workflow.step1Status,
-      desc: t.workflow.step1Desc,
-      icon: <GlobalOutlined aria-hidden="true" />,
-      details: {
-        purpose: t.workflow.step1Purpose,
-        inputs: t.workflow.step1Inputs,
-        outputs: t.workflow.step1Outputs,
-        risk: t.workflow.step1Risk
-      }
-    },
-    {
-      id: 'continue-scan',
-      num: '02',
-      title: t.workflow.step2Title,
-      status: t.workflow.step2Status,
-      desc: t.workflow.step2Desc,
-      icon: <SearchOutlined aria-hidden="true" />,
-      details: {
-        purpose: t.workflow.step2Purpose,
-        inputs: t.workflow.step2Inputs,
-        outputs: t.workflow.step2Outputs,
-        risk: t.workflow.step2Risk
-      }
-    },
-    {
-      id: 'fine-scan',
-      num: '03',
-      title: t.workflow.step3Title,
-      status: t.workflow.step3Status,
-      desc: t.workflow.step3Desc,
-      icon: <FilterOutlined aria-hidden="true" />,
-      details: {
-        purpose: t.workflow.step3Purpose,
-        inputs: t.workflow.step3Inputs,
-        outputs: t.workflow.step3Outputs,
-        risk: t.workflow.step3Risk
-      }
-    },
-    {
-      id: 'validate',
-      num: '04',
-      title: t.workflow.step4Title,
-      status: t.workflow.step4Status,
-      desc: t.workflow.step4Desc,
-      icon: <RobotOutlined aria-hidden="true" />,
-      details: {
-        purpose: t.workflow.step4Purpose,
-        inputs: t.workflow.step4Inputs,
-        outputs: t.workflow.step4Outputs,
-        risk: t.workflow.step4Risk
-      }
-    },
-    {
-      id: 'plan',
-      num: '05',
-      title: t.workflow.step5Title,
-      status: t.workflow.step5Status,
-      desc: t.workflow.step5Desc,
-      icon: <AimOutlined aria-hidden="true" />,
-      details: {
-        purpose: t.workflow.step5Purpose,
-        inputs: t.workflow.step5Inputs,
-        outputs: t.workflow.step5Outputs,
-        risk: t.workflow.step5Risk
-      }
-    },
-    {
-      id: 'execute',
-      num: '06',
-      title: t.workflow.step6Title,
-      status: t.workflow.step6Status,
-      desc: t.workflow.step6Desc,
-      icon: <DeploymentUnitOutlined aria-hidden="true" />,
-      details: {
-        purpose: t.workflow.step6Purpose,
-        inputs: t.workflow.step6Inputs,
-        outputs: t.workflow.step6Outputs,
-        risk: t.workflow.step6Risk
-      }
-    }
+  useEffect(() => { window.scrollTo(0, 0); }, []);
+
+  const steps = useMemo(() => [
+    [t.workflow.step1Title, t.workflow.step1Status, t.workflow.step1Desc, t.workflow.step1Purpose, t.workflow.step1Inputs, t.workflow.step1Outputs, t.workflow.step1Risk, '8,421'],
+    [t.workflow.step2Title, t.workflow.step2Status, t.workflow.step2Desc, t.workflow.step2Purpose, t.workflow.step2Inputs, t.workflow.step2Outputs, t.workflow.step2Risk, '409'],
+    [t.workflow.step3Title, t.workflow.step3Status, t.workflow.step3Desc, t.workflow.step3Purpose, t.workflow.step3Inputs, t.workflow.step3Outputs, t.workflow.step3Risk, '24'],
+    [t.workflow.step4Title, t.workflow.step4Status, t.workflow.step4Desc, t.workflow.step4Purpose, t.workflow.step4Inputs, t.workflow.step4Outputs, t.workflow.step4Risk, '3'],
+    [t.workflow.step5Title, t.workflow.step5Status, t.workflow.step5Desc, t.workflow.step5Purpose, t.workflow.step5Inputs, t.workflow.step5Outputs, t.workflow.step5Risk, isZh ? '已设置' : 'SET'],
+    [t.workflow.step6Title, t.workflow.step6Status, t.workflow.step6Desc, t.workflow.step6Purpose, t.workflow.step6Inputs, t.workflow.step6Outputs, t.workflow.step6Risk, isZh ? '模拟' : 'PAPER'],
+  ], [isZh, t]);
+  const active = steps[activeStep];
+  const workflowActiveId = String(activeStep);
+  const workflowPanelIds = publicTabIds('workflow-stages', workflowActiveId);
+  const curves = [
+    [48, 46, 49, 51, 47, 54, 57, 53, 61, 63, 68, 70],
+    [28, 31, 30, 34, 33, 38, 41, 40, 45, 48, 51, 54],
+    [22, 25, 29, 27, 35, 39, 44, 43, 50, 56, 60, 64],
+    [18, 24, 29, 27, 38, 42, 48, 46, 57, 63, 61, 72],
+    [72, 69, 65, 62, 59, 55, 51, 48, 43, 38, 34, 30],
+    [33, 36, 40, 42, 46, 49, 52, 56, 60, 62, 65, 68],
   ];
 
-  const [activeWorkflow, setActiveWorkflow] = useState(workflowSteps[0]);
-
-  useEffect(() => {
-    window.scrollTo(0, 0);
-    // When language changes, update the active workflow to use translated strings
-    const currentId = activeWorkflow.id;
-    const updatedStep = workflowSteps.find(s => s.id === currentId);
-    if (updatedStep) setActiveWorkflow(updatedStep);
-  }, [t]); // eslint-disable-line react-hooks/exhaustive-deps
-
   return (
-    <MarketingLayout>
-      <style>{`
-        .workflow-board-card {
-          background: rgba(17,25,40,0.4);
-          border: 1px solid rgba(255,255,255,0.05);
-          border-radius: 16px;
-          padding: clamp(16px, 2vw, 20px);
-          display: flex;
-          align-items: center;
-          gap: clamp(12px, 2vw, 20px);
-          cursor: pointer;
-          transition: transform 220ms ease, background 220ms ease, border-color 220ms ease, box-shadow 220ms ease;
-        }
-        .workflow-board-card:hover, .workflow-board-card.active {
-          background: rgba(24,144,255,0.05);
-          border-color: rgba(24,144,255,0.3);
-          transform: translateX(10px);
-          box-shadow: 0 10px 25px rgba(0,0,0,0.3);
-        }
-        @media (max-width: 768px) {
-          .workflow-board-card:hover, .workflow-board-card.active {
-            transform: translateY(-5px);
-          }
-        }
-        .workflow-board-card.active {
-          border-left: 4px solid #1890ff;
-          background: rgba(24,144,255,0.1);
-        }
-        .wf-card-icon {
-          width: clamp(48px, 6vw, 56px); 
-          height: clamp(48px, 6vw, 56px);
-          border-radius: 14px;
-          background: rgba(2,6,17,0.8);
-          border: 1px solid rgba(255,255,255,0.1);
-          display: flex; justify-content: center; align-items: center;
-          font-size: clamp(20px, 3vw, 24px); color: #94a3b8;
-          transition: all 0.3s ease;
-          flex-shrink: 0;
-        }
-        .workflow-board-card:hover .wf-card-icon, .workflow-board-card.active .wf-card-icon {
-          color: #1890ff;
-          border-color: #1890ff;
-          box-shadow: 0 0 20px rgba(24,144,255,0.3);
-          transform: scale(1.05);
-        }
-        .wf-card-content { flex: 1; text-align: left; }
-        .wf-status-chip {
-          font-size: clamp(0.65rem, 1vw, 0.75rem);
-          padding: 4px 10px;
-          border-radius: 20px;
-          background: rgba(255,255,255,0.05);
-          color: #94a3b8;
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
-          font-weight: 600;
-          transition: all 0.3s ease;
-        }
-        .workflow-board-card.active .wf-status-chip {
-          background: rgba(24,144,255,0.15);
-          color: #1890ff;
-          border: 1px solid rgba(24,144,255,0.3);
-        }
-  
-        .workflow-preview-panel {
-          background: linear-gradient(145deg, rgba(17,25,40,0.6) 0%, rgba(11,21,41,0.4) 100%);
-          border: 1px solid rgba(255,255,255,0.1);
-          border-radius: 24px;
-          padding: clamp(24px, 4vw, 48px);
-          backdrop-filter: blur(16px);
-          box-shadow: 0 20px 40px rgba(0,0,0,0.4);
-          height: 100%;
-          display: flex;
-          flex-direction: column;
-          text-align: left;
-          position: sticky;
-          top: 120px;
-        }
-        .wf-preview-header {
-          display: flex; align-items: center; gap: clamp(12px, 3vw, 24px);
-          margin-bottom: clamp(24px, 4vw, 32px);
-          padding-bottom: clamp(16px, 3vw, 24px);
-          border-bottom: 1px solid rgba(255,255,255,0.05);
-          flex-wrap: wrap;
-        }
-        .wf-preview-icon {
-          width: clamp(60px, 8vw, 80px); 
-          height: clamp(60px, 8vw, 80px);
-          border-radius: 20px;
-          background: rgba(24,144,255,0.1);
-          border: 1px solid rgba(24,144,255,0.3);
-          display: flex; justify-content: center; align-items: center;
-          font-size: clamp(28px, 4vw, 36px); color: #1890ff;
-          box-shadow: 0 0 30px rgba(24,144,255,0.2);
-          flex-shrink: 0;
-        }
-        .wf-detail-group { margin-bottom: 24px; }
-        .wf-detail-label { color: #64748b; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; font-weight: 700; }
-        .wf-detail-text { color: #e2e8f0; font-size: 1.1rem; line-height: 1.6; }
-        
-        .wf-detail-box {
-          background: rgba(0,0,0,0.3);
-          border: 1px solid rgba(255,255,255,0.05);
-          border-radius: 16px;
-          padding: 20px;
-          height: 100%;
-        }
-        .wf-box-label { color: #64748b; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; font-weight: 700; }
-        .wf-box-text { color: #cbd5e1; font-size: 0.95rem; line-height: 1.5; }
-        
-        .wf-risk-box {
-          margin-top: auto;
-          display: flex;
-          align-items: flex-start;
-          gap: 16px;
-          background: rgba(73,170,25,0.05);
-          border: 1px solid rgba(73,170,25,0.2);
-          padding: 24px;
-          border-radius: 16px;
-          margin-top: 32px;
-        }
-      `}</style>
-
-      <div className="page-hero">
-        <RevealSection>
-          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '6px 16px', background: 'rgba(114,46,209,0.1)', borderRadius: 20, border: '1px solid rgba(114,46,209,0.3)', color: '#b37feb', fontSize: '0.85rem', fontWeight: 700, letterSpacing: 1, marginBottom: 16 }}>
-            <DeploymentUnitOutlined aria-hidden="true" /> {t.workflow.coreWorkflow}
+    <MarketingLayout tone="paper">
+      <main className={`public-page public-workflow-page ${isZh ? 'is-zh' : 'is-en'}`}>
+        <PublicHero
+          index="03"
+          eyebrow={isZh ? '从观察到批准' : 'FROM OBSERVATION TO APPROVAL'}
+          title={isZh ? '每个阶段都有输入、产物和门槛。' : 'Every stage has an input, artifact, and gate.'}
+          subtitle={t.workflow.heroSubtitle}
+          primaryLabel={t.workflow.getStarted}
+          secondaryLabel={isZh ? '跟随完整流程' : 'Follow the full workflow'}
+          onSecondary={() => scrollPublicTarget(workflowRef.current)}
+        >
+          <div className="public-instrument">
+            <div className="public-instrument-header"><strong>{isZh ? '模拟运行日志 / NVDA-动量-042' : 'SIMULATED RUN LOG / NVDA-MOM-042'}</strong><span>{isZh ? '运行中 · 模拟模式' : 'RUNNING · PAPER MODE'}</span></div>
+            <div className="public-instrument-body">
+              <div className="public-feature-list">
+                {steps.slice(0, 4).map((step, index) => <div className="public-feature-row" style={{ padding: '14px 0', gridTemplateColumns: '42px 1fr auto' }} key={step[0]}><span>0{index + 1}</span><div className="public-feature-copy"><h3 style={{ fontSize: '1rem' }}>{step[0]}</h3></div><b>{index < 3 ? (isZh ? '完成' : 'PASS') : (isZh ? '审查' : 'REVIEW')}</b></div>)}
+              </div>
+            </div>
+            <MetricStrip metrics={[
+              { label: isZh ? '观察' : 'Observe', value: '8,421', tone: 'blue' },
+              { label: isZh ? '筛选' : 'Filter', value: '24' },
+              { label: isZh ? '验证' : 'Validate', value: '3' },
+              { label: isZh ? '计划' : 'Plan', value: '1', tone: 'moss' },
+            ]} />
           </div>
-        </RevealSection>
-        <RevealSection delay={0.1}>
-          <h1 className="page-title" style={{ fontSize: 'clamp(2.5rem, 5vw, 4rem)', letterSpacing: '-0.02em', lineHeight: 1.1 }} dangerouslySetInnerHTML={{ __html: t.workflow.heroTitle }} />
-        </RevealSection>
-        <RevealSection delay={0.2}>
-          <p className="page-subtitle">
-            {t.workflow.heroSubtitle}
-          </p>
-        </RevealSection>
-      </div>
+        </PublicHero>
 
-      <section className="section-container" style={{ paddingTop: 20, paddingBottom: 100 }}>
-        <RevealSection>
-          <div style={{ textAlign: 'center', marginBottom: 'clamp(40px, 8vw, 60px)' }}>
-            <h2 className="section-title">{t.workflow.sectionTitle}</h2>
-            <p className="section-subtitle">
-              {t.workflow.sectionSubtitle}
-            </p>
+        <section className="public-section workflow-story-section" ref={workflowRef}>
+          <SectionHeading eyebrow={t.workflow.coreWorkflow} title={t.workflow.sectionTitle} description={t.workflow.sectionSubtitle} />
+          <PublicTabList
+            id="workflow-stages"
+            items={steps.map((step, index) => ({ id: String(index), label: <>0{index + 1} · {step[0]}</> }))}
+            activeId={workflowActiveId}
+            onChange={id => setActiveStep(Number(id))}
+            ariaLabel={t.workflow.sectionTitle}
+            className="workflow-step-rail"
+          />
+          <div key={activeStep} className="public-data-grid workflow-stage-shell public-panel-swap" role="tabpanel" id={workflowPanelIds.panelId} aria-labelledby={workflowPanelIds.tabId}>
+            <div className="public-data-main">
+              <div className="public-instrument-header" style={{ padding: '0 0 20px', borderBottom: 0 }}><strong>{active[0]} / {active[1]}</strong><span>{isZh ? '对应研究产物' : 'STAGE ARTIFACT'}</span></div>
+              <MiniSparkline values={curves[activeStep]} color={activeStep === 4 ? 'moss' : activeStep === 5 ? 'copper' : 'blue'} showNodes label={String(active[0])} />
+              <p style={{ margin: '24px 0 0', color: '#626760', lineHeight: 1.65 }}>{active[3]}</p>
+            </div>
+            <aside className="public-data-aside">
+              <p>{active[1]}</p><strong>{active[7]}</strong>
+              <dl>
+                <div><dt>{t.workflow.inputsLabel}</dt><dd>{isZh ? '已记录' : 'LOGGED'}</dd></div>
+                <div><dt>{t.workflow.outputsLabel}</dt><dd>{isZh ? '可审计' : 'AUDITABLE'}</dd></div>
+                <div><dt>{t.workflow.riskCheckLabel}</dt><dd>{activeStep === 5 ? (isZh ? '需批准' : 'APPROVAL') : (isZh ? '通过' : 'PASS')}</dd></div>
+              </dl>
+            </aside>
           </div>
-        </RevealSection>
+          <div className="public-card-grid workflow-stage-briefs" style={{ marginTop: 28 }}>
+            {[[t.workflow.inputsLabel, active[4]], [t.workflow.outputsLabel, active[5]], [t.workflow.riskCheckLabel, active[6]]].map(([label, copy], index) => <article className="public-card" key={label}><span>0{index + 1}</span><h3>{label}</h3><p>{copy}</p></article>)}
+          </div>
+        </section>
 
-        <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-          <Row gutter={[32, 32]}>
-            <Col xs={24} lg={11}>
-              <RevealSection delay={0.1}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-                  {workflowSteps.map(step => (
-                    <div 
-                      key={step.id}
-                      className={`workflow-board-card ${activeWorkflow.id === step.id ? 'active' : ''}`}
-                      onMouseEnter={() => setActiveWorkflow(step)}
-                      onClick={() => setActiveWorkflow(step)}
-                    >
-                      <div className="wf-card-icon">{step.icon}</div>
-                      <div className="wf-card-content">
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                          <h4 style={{ margin: 0, color: '#fff', fontSize: 'clamp(1rem, 1.5vw, 1.2rem)', fontWeight: 700 }}>{step.num}. {step.title}</h4>
-                          <span className="wf-status-chip">{step.status}</span>
-                        </div>
-                        <p style={{ margin: 0, color: '#94a3b8', fontSize: 'clamp(0.85rem, 1.2vw, 1rem)', lineHeight: 1.5 }}>{step.desc}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </RevealSection>
-            </Col>
-            
-            <Col xs={24} lg={13}>
-              <RevealSection delay={0.2} style={{ height: '100%' }}>
-                <div className="workflow-preview-panel">
-                   <div className="wf-preview-header">
-                     <div className="wf-preview-icon">{activeWorkflow.icon}</div>
-                     <div>
-                       <div style={{ color: '#1890ff', fontSize: '0.85rem', fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 }}>{t.workflow.phaseLabel} {activeWorkflow.num}</div>
-                       <h3 style={{ color: '#fff', fontSize: 'clamp(1.4rem, 2.5vw, 1.8rem)', margin: 0, fontWeight: 800 }}>{activeWorkflow.title}</h3>
-                     </div>
-                   </div>
-                   
-                   <div className="wf-preview-body" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-                     <div className="wf-detail-group">
-                       <div className="wf-detail-label">{t.workflow.purposeLabel}</div>
-                       <div className="wf-detail-text">{activeWorkflow.details.purpose}</div>
-                     </div>
-                     
-                     <Row gutter={[16, 16]} style={{ marginTop: 8 }}>
-                       <Col xs={24} sm={12}>
-                         <div className="wf-detail-box">
-                           <div className="wf-box-label">{t.workflow.inputsLabel}</div>
-                           <div className="wf-box-text">{activeWorkflow.details.inputs}</div>
-                         </div>
-                       </Col>
-                       <Col xs={24} sm={12}>
-                         <div className="wf-detail-box">
-                           <div className="wf-box-label">{t.workflow.outputsLabel}</div>
-                           <div className="wf-box-text">{activeWorkflow.details.outputs}</div>
-                         </div>
-                       </Col>
-                     </Row>
-                     
-                     <div className="wf-risk-box">
-                       <SafetyOutlined aria-hidden="true" style={{ color: '#49aa19', fontSize: 24, marginTop: 4 }} />
-                       <div>
-                         <div style={{ color: '#49aa19', fontWeight: 700, fontSize: '0.85rem', textTransform: 'uppercase', marginBottom: 4 }}>{t.workflow.riskCheckLabel}</div>
-                         <div style={{ color: '#e2e8f0', fontSize: '0.95rem', lineHeight: 1.5 }}>{activeWorkflow.details.risk}</div>
-                       </div>
-                     </div>
-                   </div>
-                </div>
-              </RevealSection>
-            </Col>
-          </Row>
-        </div>
-        
-        <RevealSection>
-          <div style={{ textAlign: 'center', marginTop: 'clamp(60px, 10vw, 120px)' }}>
-            <h3 style={{ color: '#fff', fontSize: 'clamp(1.8rem, 4vw, 2.5rem)', fontWeight: 800, marginBottom: 24, letterSpacing: '-0.02em' }}>{t.workflow.readyTitle}</h3>
-            <Button type="primary" className="btn-primary" onClick={() => navigate('/signup')} style={{ height: 56, padding: '0 40px', fontSize: '1.2rem' }}>
-              {t.workflow.getStarted} <ArrowRightOutlined aria-hidden="true" />
-            </Button>
+        <section className="public-section is-dark workflow-run-log">
+          <SectionHeading eyebrow={isZh ? '运行日志' : 'RUN LOG'} title={isZh ? '被淘汰的候选也留下原因。' : 'Rejected candidates keep their reasons too.'} description={isZh ? '流程不是只展示成功结果。每一次门槛失败、数据缺口、模型分歧和人工否决都会进入审计轨迹。' : 'The workflow does not show successes only. Every failed gate, data gap, model disagreement, and manual rejection enters the audit trail.'} />
+          <div className="public-feature-list" style={{ borderColor: 'rgba(255,255,255,.14)' }}>
+            {[
+              ['09:31:04', isZh ? '流动性门槛' : 'Liquidity gate', isZh ? '8,012 个标的被过滤' : '8,012 symbols removed', isZh ? '通过' : 'PASS'],
+              ['09:31:12', isZh ? '结构门槛' : 'Structure gate', isZh ? '331 个候选被过滤' : '331 candidates removed', isZh ? '通过' : 'PASS'],
+              ['09:32:48', isZh ? '证据分歧' : 'Evidence conflict', isZh ? '4 个候选需要复核' : '4 candidates flagged', isZh ? '复核' : 'REVIEW'],
+              ['09:34:05', isZh ? '风险预算' : 'Risk budget', isZh ? '计划已应用账户中配置的风险上限' : 'Plan uses the risk limit configured for this account', isZh ? '受限' : 'BOUND'],
+            ].map(([time, title, desc, status]) => <article className="public-feature-row" key={time} style={{ borderColor: 'rgba(255,255,255,.14)' }}><span style={{ color: '#9eb7dc' }}>{time}</span><div className="public-feature-copy"><h3 style={{ color: '#f5f1e8' }}>{title}</h3><p style={{ color: 'rgba(245,241,232,.62)' }}>{desc}</p></div><b style={{ color: status === 'REVIEW' || status === '复核' ? '#d0a16e' : '#9caf91' }}>{status}</b></article>)}
           </div>
-        </RevealSection>
-      </section>
+        </section>
+
+        <PublicCta eyebrow={isZh ? '观察 · 筛选 · 验证 · 规划' : 'OBSERVE · FILTER · TEST · PLAN'} title={t.workflow.readyTitle} description={isZh ? '从模拟模式开始，亲自检查每个阶段的输入、产物和风险门槛。' : 'Start in paper mode and inspect every stage input, artifact, and risk gate yourself.'} primary={t.workflow.getStarted} secondary={isZh ? '浏览研究案例' : 'Browse examples'} secondaryPath="/examples" />
+      </main>
     </MarketingLayout>
   );
 };

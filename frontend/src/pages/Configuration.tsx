@@ -1,22 +1,35 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
-  Typography, Card, Form, Input, Select, Button, Space, Tag, message, Row, Col, Divider, Alert, Switch, Checkbox,
+  Typography, Card, Form, Input, Select, Button, Tag, message, Row, Col, Alert, Switch, Checkbox,
 } from 'antd';
 import {
   CheckCircleOutlined, CloseCircleOutlined, QuestionCircleOutlined,
   SaveOutlined, ApiOutlined, ExperimentOutlined, BankOutlined, CloudOutlined,
   ArrowLeftOutlined, SafetyCertificateOutlined,
-  InfoCircleOutlined, RobotOutlined, ThunderboltOutlined, BellOutlined,
+  InfoCircleOutlined, RobotOutlined, ThunderboltOutlined, BellOutlined, ReloadOutlined,
 } from '@ant-design/icons';
 import axios from 'axios';
 import { supabase } from '../lib/supabaseClient';
 import { useLanguage } from '../contexts/LanguageContext';
+import './ConfigurationEditorial.css';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 const { Option } = Select;
 
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '/api';
+
+const localizedResultMessage = (candidate: unknown, fallback: string) => {
+  // Backend diagnostics are currently English. Keep Chinese UI states consistent
+  // instead of dropping a raw server sentence into an otherwise translated form.
+  if (/[\u3400-\u9fff]/.test(fallback)) return fallback;
+  return typeof candidate === 'string' && candidate.trim() ? candidate : fallback;
+};
+
+const localizedRequestError = (error: any, fallback: string) => localizedResultMessage(
+  error?.response?.data?.message || error?.message,
+  fallback,
+);
 
 // Per-user API instance with Supabase auth token (with refresh)
 const userApi = axios.create({ baseURL: API_BASE_URL, timeout: 15000 });
@@ -53,53 +66,31 @@ const StatusBadge: React.FC<{ status: string; texts?: { connected?: string; save
   const saved = texts?.saved ?? 'Saved';
   const errorText = texts?.error ?? 'Error';
   const notTested = texts?.notTested ?? 'Not tested';
-  if (status === 'connected') return <Tag icon={<CheckCircleOutlined />} color="success" style={{ borderRadius: 12, padding: '0 10px' }}>{connected}</Tag>;
-  if (status === 'saved') return <Tag icon={<CheckCircleOutlined />} color="blue" style={{ borderRadius: 12, padding: '0 10px' }}>{saved}</Tag>;
-  if (status === 'error') return <Tag icon={<CloseCircleOutlined />} color="error" style={{ borderRadius: 12, padding: '0 10px' }}>{errorText}</Tag>;
-  return <Tag icon={<QuestionCircleOutlined />} color="default" style={{ borderRadius: 12, padding: '0 10px' }}>{notTested}</Tag>;
+  if (status === 'connected') return <span className="config-status config-status--connected"><CheckCircleOutlined />{connected}</span>;
+  if (status === 'saved') return <span className="config-status config-status--saved"><CheckCircleOutlined />{saved}</span>;
+  if (status === 'error') return <span className="config-status config-status--error"><CloseCircleOutlined />{errorText}</span>;
+  return <span className="config-status config-status--idle"><QuestionCircleOutlined />{notTested}</span>;
 };
 
 // --- Section Header ---
 const SectionHeader: React.FC<{ icon: React.ReactNode; title: string; subtitle: string; status?: string; statusTexts?: { connected?: string; saved?: string; error?: string; notTested?: string } }> = ({ icon, title, subtitle, status, statusTexts }) => (
-  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, flexWrap: 'wrap', gap: '12px' }}>
-    <Space size={16} align="start">
-      <div style={{
-        width: 40,
-        height: 40,
-        borderRadius: 10,
-        background: 'var(--app-card-bg-soft)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: 20,
-        color: 'var(--app-blue-text)',
-        border: '1px solid var(--app-border-soft)'
-      }}>
-        {icon}
-      </div>
+  <div className="config-card-header">
+    <div className="config-card-header__identity">
+      <span className="config-card-header__icon">{icon}</span>
       <div>
-        <Title level={4} style={{ margin: 0, color: 'var(--app-text-strong)', fontWeight: 700 }}>{title}</Title>
-        <Text style={{ fontSize: 13, color: 'var(--app-text-muted)', fontWeight: 500 }}>{subtitle}</Text>
+        <h3>{title}</h3>
+        <p>{subtitle}</p>
       </div>
-    </Space>
+    </div>
     {status && <StatusBadge status={status} texts={statusTexts} />}
   </div>
 );
 
 // --- Security Note ---
 const SecurityNote: React.FC<{ text: string }> = ({ text }) => (
-  <div style={{ 
-    marginTop: 16, 
-    display: 'flex', 
-    alignItems: 'center', 
-    gap: 8, 
-    padding: '10px 14px', 
-    background: 'rgba(74, 222, 128, 0.05)', 
-    borderRadius: 8, 
-    border: '1px solid rgba(74, 222, 128, 0.15)' 
-  }}>
-    <SafetyCertificateOutlined style={{ color: '#4ade80' }} />
-    <Text style={{ fontSize: 12, color: 'var(--app-text-muted)', fontWeight: 500 }}>{text}</Text>
+  <div className="config-security-note">
+    <SafetyCertificateOutlined />
+    <span>{text}</span>
   </div>
 );
 
@@ -150,11 +141,11 @@ const AlpacaPaperSection: React.FC<{ t: any }> = ({ t }) => {
           });
         }
       } else {
-        message.error(res.data?.message || t.config.saveFailed);
+        message.error(localizedResultMessage(res.data?.message, t.config.saveFailed));
       }
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error(e.response?.data?.message || e.message || t.config.saveFailed);
+      message.error(localizedRequestError(e, t.config.saveFailed));
     } finally {
       setSaving(false);
     }
@@ -171,11 +162,11 @@ const AlpacaPaperSection: React.FC<{ t: any }> = ({ t }) => {
         message.success(t.config.paperTestOK.replace('{id}', res.data.account_id || 'N/A'));
       } else {
         setStatus('error');
-        message.error(res.data?.message || t.config.connectionFailed);
+        message.error(localizedResultMessage(res.data?.message, t.config.connectionFailed));
       }
     } catch (e: any) {
       setStatus('error');
-      message.error(e.response?.data?.message || t.config.connectionFailed);
+      message.error(localizedRequestError(e, t.config.connectionFailed));
     } finally {
       setTesting(false);
     }
@@ -184,7 +175,7 @@ const AlpacaPaperSection: React.FC<{ t: any }> = ({ t }) => {
   const statusTexts = { connected: t.config.statusConnected, saved: t.config.statusSaved, error: t.config.statusError, notTested: t.config.statusNotTested };
 
   return (
-    <Card bordered={false} style={{ borderRadius: 12, marginBottom: 24 }}>
+    <Card bordered={false} className="config-provider-card config-provider-card--paper">
       <SectionHeader
         icon={<ThunderboltOutlined />}
         title={t.config.paperTitle}
@@ -210,7 +201,7 @@ const AlpacaPaperSection: React.FC<{ t: any }> = ({ t }) => {
             </Form.Item>
           </Col>
         </Row>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
+        <div className="config-card-actions">
           <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>{t.config.testConnection}</Button>
           <Button type="primary" onClick={handleSave} loading={saving} icon={<SaveOutlined />}>{t.config.saveChanges}</Button>
         </div>
@@ -273,11 +264,11 @@ const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string
           });
         }
       } else {
-        message.error(res.data?.message || t.config.saveFailed);
+        message.error(localizedResultMessage(res.data?.message, t.config.saveFailed));
       }
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error(e.response?.data?.message || e.message || t.config.saveFailed);
+      message.error(localizedRequestError(e, t.config.saveFailed));
     } finally {
       setSaving(false);
     }
@@ -294,11 +285,11 @@ const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string
         message.success(t.config.liveTestOK.replace('{id}', res.data.account_id || 'N/A'));
       } else {
         setStatus('error');
-        message.error(res.data?.message || t.config.connectionFailed);
+        message.error(localizedResultMessage(res.data?.message, t.config.connectionFailed));
       }
     } catch (e: any) {
       setStatus('error');
-      message.error(e.response?.data?.message || t.config.connectionFailed);
+      message.error(localizedRequestError(e, t.config.connectionFailed));
     } finally {
       setTesting(false);
     }
@@ -307,9 +298,9 @@ const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string
   const statusTexts = { connected: t.config.statusConnected, saved: t.config.statusSaved, error: t.config.statusError, notTested: t.config.statusNotTested };
 
   return (
-    <Card bordered={false} style={{ borderRadius: 12, marginBottom: 24 }}>
+    <Card bordered={false} className="config-provider-card config-provider-card--live">
       <SectionHeader
-        icon={<BankOutlined style={{ color: '#ef4444' }} />}
+        icon={<BankOutlined />}
         title={t.config.liveTitle}
         subtitle={t.config.liveSubtitle}
         status={status}
@@ -320,7 +311,7 @@ const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string
         description={t.config.securityWarningDesc}
         type="warning"
         showIcon
-        style={{ marginBottom: 20, borderRadius: 8 }}
+        className="config-risk-alert"
       />
       <Form form={form} layout="vertical">
         <Row gutter={16}>
@@ -340,9 +331,9 @@ const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string
             </Form.Item>
           </Col>
         </Row>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
+        <div className="config-card-actions">
           <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>{t.config.testLiveConnection}</Button>
-          <Button type="primary" danger onClick={handleSave} loading={saving} icon={<SaveOutlined />}>{t.config.saveLiveSettings}</Button>
+          <Button type="primary" className="config-save-live" onClick={handleSave} loading={saving} icon={<SaveOutlined />}>{t.config.saveLiveSettings}</Button>
         </div>
       </Form>
     </Card>
@@ -352,13 +343,13 @@ const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string
 // =====================================================================
 // Section C: Alpaca Market Data
 // =====================================================================
-const MarketDataSection: React.FC<{ reloadKey?: number; t: any }> = ({ reloadKey, t }) => {
+const MarketDataSection: React.FC<{ reloadKey?: number; t: any; isZh?: boolean }> = ({ reloadKey, t, isZh }) => {
   const [form] = Form.useForm();
   const [testing, setTesting] = useState(false);
   const [status, setStatus] = useState('not_tested');
   const [credentialSource, setCredentialSource] = useState<string>('none');
 
-  const loadConfig = () => {
+  const loadConfig = useCallback(() => {
     userApi.get('/config/market-data').then(res => {
       if (res.data?.success) {
         const cfg = res.data.config || {};
@@ -371,9 +362,9 @@ const MarketDataSection: React.FC<{ reloadKey?: number; t: any }> = ({ reloadKey
         setCredentialSource(cfg.credentialSource || 'none');
       }
     }).catch(() => {});
-  };
+  }, [form]);
 
-  useEffect(() => { loadConfig(); }, [form, reloadKey]);
+  useEffect(() => { loadConfig(); }, [loadConfig, reloadKey]);
 
   const handleSave = async () => {
     try {
@@ -390,11 +381,11 @@ const MarketDataSection: React.FC<{ reloadKey?: number; t: any }> = ({ reloadKey
         loadConfig();
         setStatus('saved');
       } else {
-        message.error(res.data?.message || t.config.saveFailed);
+        message.error(localizedResultMessage(res.data?.message, t.config.saveFailed));
       }
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error(e.response?.data?.message || e.message || t.config.saveFailed);
+      message.error(localizedRequestError(e, t.config.saveFailed));
     }
   };
 
@@ -407,21 +398,29 @@ const MarketDataSection: React.FC<{ reloadKey?: number; t: any }> = ({ reloadKey
         message.success(t.config.marketDataConnected.replace('{source}', res.data.debug?.keySource || 'N/A'));
       } else {
         setStatus('error');
-        message.error(res.data?.message || t.config.connectionFailed);
+        message.error(localizedResultMessage(res.data?.message, t.config.connectionFailed));
       }
     } catch (e: any) {
       setStatus('error');
-      message.error(e.response?.data?.message || t.config.connectionFailed);
+      message.error(localizedRequestError(e, t.config.connectionFailed));
     } finally {
       setTesting(false);
     }
   };
 
-  const hasKeys = credentialSource === 'real_trading';
+  const hasKeys = credentialSource !== 'none';
+  const inheritsBrokerKeys = credentialSource === 'real_trading' || credentialSource === 'live_trading' || credentialSource === 'paper_trading';
+  const sourceLabel = credentialSource === 'market_data'
+    ? (isZh ? '专用行情凭证' : 'Dedicated market-data credentials')
+    : credentialSource === 'live_trading' || credentialSource === 'real_trading'
+      ? (isZh ? '继承实盘券商凭证' : 'Inherited from the live broker connection')
+      : credentialSource === 'paper_trading'
+        ? (isZh ? '继承模拟盘券商凭证' : 'Inherited from the paper broker connection')
+        : (isZh ? '尚未配置行情凭证' : 'Market-data credentials are not configured');
   const statusTexts = { connected: t.config.statusConnected, saved: t.config.statusSaved, error: t.config.statusError, notTested: t.config.statusNotTested };
 
   return (
-    <Card bordered={false} style={{ borderRadius: 12, marginBottom: 24 }}>
+    <Card bordered={false} className="config-provider-card config-provider-card--market">
       <SectionHeader
         icon={<CloudOutlined />}
         title={t.config.marketDataTitle}
@@ -431,9 +430,9 @@ const MarketDataSection: React.FC<{ reloadKey?: number; t: any }> = ({ reloadKey
       />
       <div style={{ marginBottom: 20 }}>
         {hasKeys ? (
-          <Tag color="success" icon={<CheckCircleOutlined />}>{t.config.keysAutoSynced}</Tag>
+          <Tag color="success" icon={<CheckCircleOutlined />}>{sourceLabel}</Tag>
         ) : (
-          <Tag color="warning" icon={<InfoCircleOutlined />}>{t.config.configureRealFirst}</Tag>
+          <Tag color="warning" icon={<InfoCircleOutlined />}>{sourceLabel}</Tag>
         )}
       </div>
       <Form form={form} layout="vertical">
@@ -455,16 +454,16 @@ const MarketDataSection: React.FC<{ reloadKey?: number; t: any }> = ({ reloadKey
         <Row gutter={16}>
           <Col xs={24} md={12}>
             <Form.Item name="api_key" label={<Text strong style={{ fontSize: 13 }}>{t.config.dataApiKey}</Text>}>
-              <Input.Password disabled={hasKeys} placeholder={hasKeys ? t.config.usingRealKey : t.config.configureRealTrading} />
+              <Input.Password disabled={inheritsBrokerKeys} placeholder={hasKeys ? (isZh ? '已保存凭证' : 'Saved credential') : (isZh ? '输入行情 API Key' : 'Enter a market-data API key')} />
             </Form.Item>
           </Col>
           <Col xs={24} md={12}>
-            <Form.Item name="api_secret" label={<Text strong style={{ fontSize: 13 }}>{t.config.dataApiSecret}</Text>}>
-              <Input.Password disabled={hasKeys} placeholder={hasKeys ? t.config.usingRealSecret : t.config.configureRealTrading} />
+            <Form.Item name="api_secret" label={<Text strong style={{ fontSize: 13 }}>{isZh ? '数据 API Secret' : t.config.dataApiSecret}</Text>}>
+              <Input.Password disabled={inheritsBrokerKeys} placeholder={hasKeys ? (isZh ? '已保存凭证' : 'Saved credential') : (isZh ? '输入行情 API Secret' : 'Enter a market-data API secret')} />
             </Form.Item>
           </Col>
         </Row>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
+        <div className="config-card-actions">
           <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>{t.config.testDataAccess}</Button>
           <Button type="primary" onClick={handleSave} icon={<SaveOutlined />}>{t.config.saveConfiguration}</Button>
         </div>
@@ -570,11 +569,11 @@ const AIProviderSection: React.FC<{ t: any }> = ({ t }) => {
         setHasSaved(true);
         setStatus('saved');
       } else {
-        message.error(res.data?.message || t.config.saveFailed);
+        message.error(localizedResultMessage(res.data?.message, t.config.saveFailed));
       }
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error(e.response?.data?.message || e.message || t.config.saveFailed);
+      message.error(localizedRequestError(e, t.config.saveFailed));
     } finally {
       setSaving(false);
     }
@@ -595,11 +594,11 @@ const AIProviderSection: React.FC<{ t: any }> = ({ t }) => {
         message.success(t.config.aiConnected);
       } else {
         setStatus('error');
-        message.error(res.data?.message || t.config.connectionFailed);
+        message.error(localizedResultMessage(res.data?.message, t.config.connectionFailed));
       }
     } catch (e: any) {
       setStatus('error');
-      message.error(e.response?.data?.message || e.message || t.config.connectionFailed);
+      message.error(localizedRequestError(e, t.config.connectionFailed));
     } finally {
       setTesting(false);
     }
@@ -608,7 +607,7 @@ const AIProviderSection: React.FC<{ t: any }> = ({ t }) => {
   const statusTexts = { connected: t.config.statusConnected, saved: t.config.statusSaved, error: t.config.statusError, notTested: t.config.statusNotTested };
 
   return (
-    <Card bordered={false} style={{ borderRadius: 12, marginBottom: 24 }}>
+    <Card bordered={false} className="config-provider-card config-provider-card--ai">
       <SectionHeader
         icon={<RobotOutlined />}
         title={t.config.aiTitle}
@@ -622,7 +621,7 @@ const AIProviderSection: React.FC<{ t: any }> = ({ t }) => {
           description={t.config.keyMismatchDesc}
           type="error"
           showIcon
-          style={{ marginBottom: 20, borderRadius: 8 }}
+          className="config-key-alert"
         />
       )}
       <Form form={form} layout="vertical">
@@ -658,7 +657,7 @@ const AIProviderSection: React.FC<{ t: any }> = ({ t }) => {
             </Form.Item>
           </Col>
         </Row>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
+        <div className="config-card-actions">
           <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>{t.config.testAiConnection}</Button>
           <Button type="primary" onClick={handleSave} loading={saving} icon={<SaveOutlined />}>{t.config.saveIntelligence}</Button>
         </div>
@@ -704,11 +703,11 @@ const FinnhubSection: React.FC<{ t: any }> = ({ t }) => {
         setHasSaved(true);
         setStatus('saved');
       } else {
-        message.error(res.data?.message || t.config.saveFailed);
+        message.error(localizedResultMessage(res.data?.message, t.config.saveFailed));
       }
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error(e.response?.data?.message || e.message || t.config.saveFailed);
+      message.error(localizedRequestError(e, t.config.saveFailed));
     } finally {
       setSaving(false);
     }
@@ -725,11 +724,11 @@ const FinnhubSection: React.FC<{ t: any }> = ({ t }) => {
         message.success(t.config.finnhubConnected);
       } else {
         setStatus('error');
-        message.error(res.data?.message || t.config.connectionFailed);
+        message.error(localizedResultMessage(res.data?.message, t.config.connectionFailed));
       }
     } catch (e: any) {
       setStatus('error');
-      message.error(e.response?.data?.message || t.config.connectionFailed);
+      message.error(localizedRequestError(e, t.config.connectionFailed));
     } finally {
       setTesting(false);
     }
@@ -738,7 +737,7 @@ const FinnhubSection: React.FC<{ t: any }> = ({ t }) => {
   const statusTexts = { connected: t.config.statusConnected, saved: t.config.statusSaved, error: t.config.statusError, notTested: t.config.statusNotTested };
 
   return (
-    <Card bordered={false} style={{ borderRadius: 12, marginBottom: 24 }}>
+    <Card bordered={false} className="config-provider-card config-provider-card--finnhub">
       <SectionHeader
         icon={<CloudOutlined />}
         title={t.config.finnhubTitle}
@@ -759,7 +758,7 @@ const FinnhubSection: React.FC<{ t: any }> = ({ t }) => {
             </Form.Item>
           </Col>
         </Row>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
+        <div className="config-card-actions">
           <Button onClick={handleTest} loading={testing} icon={<ExperimentOutlined />}>{t.config.testFinnhub}</Button>
           <Button type="primary" onClick={handleSave} loading={saving} icon={<SaveOutlined />}>{t.config.saveChanges}</Button>
         </div>
@@ -771,14 +770,70 @@ const FinnhubSection: React.FC<{ t: any }> = ({ t }) => {
 // =====================================================================
 // Section F: Discord Notifications
 // =====================================================================
-const DiscordNotificationsSection: React.FC<{ t: any }> = ({ t }) => {
+const DiscordNotificationsSection: React.FC<{ t: any; isZh: boolean }> = ({ t, isZh }) => {
   const [form] = Form.useForm();
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState('not_tested');
   const [hasSaved, setHasSaved] = useState(false);
-  const [testingAll, setTestingAll] = useState(false);
   const [configLoaded, setConfigLoaded] = useState(false);
+  const copy = isZh ? {
+    title: 'Discord 通知',
+    subtitle: '只发送交易结果、重要风险和精简的周期摘要。',
+    loading: '正在读取通知设置…',
+    saved: 'Discord 通知设置已保存。',
+    saveError: 'Discord 设置无法保存，请检查后端或 Supabase 配置。',
+    testSent: 'Discord 测试摘要已发送。',
+    testFailed: 'Discord 测试通知发送失败。',
+    quiet: '常规扫描开始和中间阶段不会发送通知；Webhook 保存后只显示遮罩值。',
+    enable: '启用 Discord 通知',
+    webhook: 'Discord Webhook 地址',
+    savedHint: '已保存 Webhook。只有需要替换时才输入新地址。',
+    newHint: '在 Discord 频道的“集成”中创建 Webhook。',
+    savedPlaceholder: 'Webhook 已保存（已遮罩）',
+    webhookPlaceholder: 'https://discord.com/api/webhooks/…',
+    policy: '通知策略',
+    trade: '交易活动',
+    tradeDesc: '券商确认的买卖成交与被拒订单。',
+    risk: '重要风险',
+    riskDesc: '保护缺口、紧急退出与流程失败；重复状态会自动抑制。',
+    digest: '操作摘要',
+    digestDesc: '手动完整周期结束后发送一条摘要；无变化的计划任务保持静默。',
+    test: '发送测试摘要',
+    save: '保存通知设置',
+    connected: '已连接',
+    savedStatus: '已保存',
+    error: '错误',
+    notConfigured: '未配置',
+  } : {
+    title: 'Discord notifications',
+    subtitle: 'Trade outcomes, material risk alerts, and one concise cycle digest.',
+    loading: 'Loading notification settings…',
+    saved: 'Discord notification settings saved.',
+    saveError: 'Discord settings could not be saved. Check the backend or Supabase configuration.',
+    testSent: 'Discord test digest sent.',
+    testFailed: 'Discord test notification failed.',
+    quiet: 'Routine scan starts and intermediate stages are not sent. A saved webhook is shown only as a masked value.',
+    enable: 'Enable Discord notifications',
+    webhook: 'Discord webhook URL',
+    savedHint: 'A webhook is saved. Enter a new URL only when replacing it.',
+    newHint: 'Create a webhook in your Discord channel integrations.',
+    savedPlaceholder: 'Saved webhook URL',
+    webhookPlaceholder: 'https://discord.com/api/webhooks/…',
+    policy: 'Notification policy',
+    trade: 'Trade activity',
+    tradeDesc: 'Broker-confirmed buy and sell fills, plus rejected orders.',
+    risk: 'Material risk alerts',
+    riskDesc: 'Protection gaps, emergency exits, and pipeline failures. Repeated conditions are muted.',
+    digest: 'Action digest',
+    digestDesc: 'One compact summary after a manual full cycle; scheduled cycles stay quiet when nothing changed.',
+    test: 'Send test digest',
+    save: 'Save notification settings',
+    connected: 'Connected',
+    savedStatus: 'Saved',
+    error: 'Error',
+    notConfigured: 'Not configured',
+  };
 
   const loadConfig = useCallback(async () => {
     try {
@@ -788,11 +843,9 @@ const DiscordNotificationsSection: React.FC<{ t: any }> = ({ t }) => {
         form.setFieldsValue({
           enabled: cfg.enabled === true,
           webhookUrl: cfg.webhookUrlMasked || '',
-          notifyScanSummary: cfg.notifyScanSummary !== false,
-          notifyEntryPlan: cfg.notifyEntryPlan !== false,
-          notifyOrders: cfg.notifyOrders !== false,
-          notifyExitScan: cfg.notifyExitScan !== false,
-          notifyErrors: cfg.notifyErrors !== false,
+          notifyTradeActivity: cfg.notifyTradeActivity !== false,
+          notifyRiskAlerts: cfg.notifyRiskAlerts !== false,
+          notifyCycleDigest: cfg.notifyCycleDigest !== false,
         });
         setHasSaved(!!cfg.hasWebhookUrl);
         setStatus(cfg.testStatus === 'connected' ? 'connected' : cfg.hasWebhookUrl ? 'saved' : 'not_tested');
@@ -816,158 +869,132 @@ const DiscordNotificationsSection: React.FC<{ t: any }> = ({ t }) => {
       const values = await form.validateFields();
       const payload: any = {
         enabled: values.enabled === true,
-        notifyScanSummary: values.notifyScanSummary !== false,
-        notifyEntryPlan: values.notifyEntryPlan !== false,
-        notifyOrders: values.notifyOrders !== false,
-        notifyExitScan: values.notifyExitScan !== false,
-        notifyErrors: values.notifyErrors !== false,
+        notifyTradeActivity: values.notifyTradeActivity !== false,
+        notifyRiskAlerts: values.notifyRiskAlerts !== false,
+        notifyCycleDigest: values.notifyCycleDigest !== false,
       };
       if (values.webhookUrl && !values.webhookUrl.includes('****')) {
         payload.webhookUrl = values.webhookUrl.trim();
       }
       const res = await userApi.post('/notifications/discord/config', payload);
       if (res.data?.success) {
-        message.success('Discord notification settings saved.');
+        message.success(copy.saved);
         await loadConfig();
       } else {
         setStatus('error');
         console.error('Discord settings save failed:', res.data);
-        message.error('Discord settings could not be saved. Please check backend/Supabase configuration.');
+        message.error(copy.saveError);
       }
     } catch (e: any) {
       if (e.errorFields) return;
       setStatus('error');
       console.error('Discord settings save failed:', e);
-      message.error('Discord settings could not be saved. Please check backend/Supabase configuration.');
+      message.error(copy.saveError);
     } finally {
       setSaving(false);
     }
   };
 
-  const handleTest = async (testAll?: boolean) => {
+  const handleTest = async () => {
     try {
       const token = await requireSession(t.config.pleaseSignIn);
       if (!token) return;
-      if (testAll) {
-        setTestingAll(true);
-      } else {
-        setTesting(true);
-      }
+      setTesting(true);
       const mode = localStorage.getItem('tradingMode') || localStorage.getItem('tradeMode') || 'paper';
-      const payload: any = { mode };
-      if (testAll) {
-        payload.testAll = true;
-      }
-      const res = await userApi.post('/notifications/discord/test', payload);
+      const res = await userApi.post('/notifications/discord/test', { mode, eventType: 'cycle_digest' });
       if (res.data?.success) {
         setStatus('connected');
-        const typeCount = res.data.results ? Object.keys(res.data.results).length : 1;
-        message.success(testAll
-          ? `All ${typeCount} Discord test notification types sent.`
-          : 'Discord test notification sent.');
+        message.success(copy.testSent);
         await loadConfig();
       } else {
         setStatus('error');
-        message.error(res.data?.message || 'Discord test notification failed.');
+        message.error(localizedResultMessage(res.data?.message, copy.testFailed));
       }
     } catch (e: any) {
       setStatus('error');
-      message.error(e.response?.data?.message || e.message || 'Discord test notification failed.');
+      message.error(localizedRequestError(e, copy.testFailed));
     } finally {
       setTesting(false);
-      setTestingAll(false);
     }
   };
 
   const statusTexts = {
-    connected: 'Connected',
-    saved: 'Saved',
-    error: 'Error',
-    notTested: hasSaved ? 'Saved' : 'Not Configured',
+    connected: copy.connected,
+    saved: copy.savedStatus,
+    error: copy.error,
+    notTested: hasSaved ? copy.savedStatus : copy.notConfigured,
   };
 
   // Only show form after config has been loaded from backend to avoid initialValues flash
   if (!configLoaded) {
     return (
-      <Card bordered={false} style={{ borderRadius: 12, marginBottom: 24 }}>
+      <Card bordered={false} className="config-provider-card config-provider-card--notifications">
         <SectionHeader
           icon={<BellOutlined />}
-          title="Discord Notifications"
-          subtitle="Send scanner, entry plan, order, exit scan, and error events to a Discord channel."
+          title={copy.title}
+          subtitle={copy.subtitle}
           status="not_tested"
-          statusTexts={{ notTested: 'Loading...' }}
+          statusTexts={{ notTested: isZh ? '读取中' : 'Loading' }}
         />
-        <div style={{ textAlign: 'center', padding: '40px 0', color: '#8c8c8c' }}>Loading Discord settings...</div>
+        <div className="config-loading-state"><ReloadOutlined spin />{copy.loading}</div>
       </Card>
     );
   }
 
   return (
-    <Card bordered={false} style={{ borderRadius: 12, marginBottom: 24 }}>
+    <Card bordered={false} className="config-provider-card config-provider-card--notifications">
       <SectionHeader
         icon={<BellOutlined />}
-        title="Discord Notifications"
-        subtitle="Send scanner, entry plan, order, exit scan, and error events to a Discord channel."
+        title={copy.title}
+        subtitle={copy.subtitle}
         status={status}
         statusTexts={statusTexts}
       />
       <Alert
         type="info"
         showIcon
-        style={{ marginBottom: 20 }}
-        message="Webhook URLs are encrypted at rest and are never shown after saving."
+        className="config-info-alert"
+        message={copy.quiet}
       />
       <Form form={form} layout="vertical">
         <Row gutter={16}>
           <Col xs={24} md={10}>
-            <Form.Item name="enabled" label={<Text strong style={{ fontSize: 13 }}>Enable Discord Notifications</Text>} valuePropName="checked">
+            <Form.Item name="enabled" label={<Text strong>{copy.enable}</Text>} valuePropName="checked">
               <Switch />
             </Form.Item>
           </Col>
           <Col xs={24} md={14}>
             <Form.Item
               name="webhookUrl"
-              label={<Text strong style={{ fontSize: 13 }}>Discord Webhook URL</Text>}
-              extra={hasSaved ? 'A webhook is saved. Enter a new URL only if you want to replace it.' : 'Create a webhook in your Discord channel integrations.'}
+              label={<Text strong>{copy.webhook}</Text>}
+              extra={hasSaved ? copy.savedHint : copy.newHint}
             >
-              <Input.Password placeholder={hasSaved ? 'Saved webhook URL' : 'https://discord.com/api/webhooks/...'} autoComplete="off" />
+              <Input.Password placeholder={hasSaved ? copy.savedPlaceholder : copy.webhookPlaceholder} autoComplete="off" />
             </Form.Item>
           </Col>
         </Row>
 
-        <Text strong style={{ display: 'block', marginBottom: 12, fontSize: 13 }}>Notification Types</Text>
-        <Row gutter={[16, 10]}>
-          <Col xs={24} sm={12} md={8}>
-            <Form.Item name="notifyScanSummary" valuePropName="checked" noStyle>
-              <Checkbox>Scan Summary</Checkbox>
-            </Form.Item>
-          </Col>
-          <Col xs={24} sm={12} md={8}>
-            <Form.Item name="notifyEntryPlan" valuePropName="checked" noStyle>
-              <Checkbox>Entry Plan Recommendations</Checkbox>
-            </Form.Item>
-          </Col>
-          <Col xs={24} sm={12} md={8}>
-            <Form.Item name="notifyOrders" valuePropName="checked" noStyle>
-              <Checkbox>Order Submitted / Filled</Checkbox>
-            </Form.Item>
-          </Col>
-          <Col xs={24} sm={12} md={8}>
-            <Form.Item name="notifyExitScan" valuePropName="checked" noStyle>
-              <Checkbox>Exit Scan / Sell Signals</Checkbox>
-            </Form.Item>
-          </Col>
-          <Col xs={24} sm={12} md={8}>
-            <Form.Item name="notifyErrors" valuePropName="checked" noStyle>
-              <Checkbox>Errors / Blocked Actions</Checkbox>
-            </Form.Item>
-          </Col>
+        <Text strong className="config-policy-title">{copy.policy}</Text>
+        <Row gutter={[12, 12]}>
+          {[
+            ['notifyTradeActivity', copy.trade, copy.tradeDesc],
+            ['notifyRiskAlerts', copy.risk, copy.riskDesc],
+            ['notifyCycleDigest', copy.digest, copy.digestDesc],
+          ].map(([name, title, description]) => (
+            <Col xs={24} md={8} key={name}>
+              <div className="config-policy-card">
+                <Form.Item name={name} valuePropName="checked" noStyle>
+                  <Checkbox><Text strong>{title}</Text></Checkbox>
+                </Form.Item>
+                <Text type="secondary">{description}</Text>
+              </div>
+            </Col>
+          ))}
         </Row>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 24 }}>
-          <Button onClick={() => handleTest(false)} loading={testing} disabled={testingAll || !hasSaved} icon={<ExperimentOutlined />}>Test Notification</Button>
-          <Button onClick={() => handleTest(true)} loading={testingAll} disabled={testing || !hasSaved} icon={<ThunderboltOutlined />}>Test All Types</Button>
-          <Button type="primary" onClick={handleSave} loading={saving} icon={<SaveOutlined />}>Save Discord Settings</Button>
+        <div className="config-card-actions">
+          <Button onClick={handleTest} loading={testing} disabled={!hasSaved} icon={<ExperimentOutlined />}>{copy.test}</Button>
+          <Button type="primary" onClick={handleSave} loading={saving} icon={<SaveOutlined />}>{copy.save}</Button>
         </div>
       </Form>
     </Card>
@@ -979,77 +1006,153 @@ const DiscordNotificationsSection: React.FC<{ t: any }> = ({ t }) => {
 // =====================================================================
 const Configuration: React.FC = () => {
   const navigate = useNavigate();
-  const { t } = useLanguage();
+  const location = useLocation();
+  const { t, language } = useLanguage();
   const [marketDataReloadKey, setMarketDataReloadKey] = useState(0);
+  const requestedReturnTo = (location.state as { returnTo?: unknown } | null)?.returnTo;
+  const validReturnTo = typeof requestedReturnTo === 'string' && /^\/(?!\/)/.test(requestedReturnTo)
+    ? requestedReturnTo
+    : '/settings';
+  const returnTo = validReturnTo.startsWith('/settings/configuration') ? '/settings' : validReturnTo;
+  const returnsToStrategyLab = /^\/(backtest(?:\/|$)|backtest-analysis(?:\/|$)|optimize$|compare$|ranking$)/.test(returnTo);
+  const backLabel = returnTo.startsWith('/agent')
+    ? (language === 'zh-CN' ? '返回研究工作区' : 'Back to Research')
+    : returnsToStrategyLab
+      ? (language === 'zh-CN' ? '返回策略实验室' : 'Back to Strategy Lab')
+      : returnTo.startsWith('/trade') || returnTo.startsWith('/portfolio')
+        ? (language === 'zh-CN' ? '返回交易工作区' : 'Back to Trade')
+        : returnTo.startsWith('/market') || returnTo.startsWith('/watchlist')
+          ? (language === 'zh-CN' ? '返回市场工作区' : 'Back to Markets')
+          : returnTo.startsWith('/dashboard') || returnTo.startsWith('/activity') || returnTo.startsWith('/system-health')
+            ? (language === 'zh-CN' ? '返回总览' : 'Back to Overview')
+            : t.config.backToSettings;
+  const isZh = language === 'zh-CN';
+  const copy = isZh ? {
+    eyebrow: '设置 / 连接',
+    title: '连接与服务配置',
+    subtitle: '按照实际工作流配置券商、行情、AI 与通知。保存配置后再测试连接，状态才会反映当前可用性。',
+    guideTitle: '配置原则',
+    guideItems: ['6 个集成点', '密钥仅显示遮罩值', '先保存，再验证'],
+    navTitle: '配置目录',
+    brokerNav: '券商与执行',
+    marketNav: '行情与数据',
+    aiNav: 'AI 智能',
+    notifyNav: '通知',
+    brokerIndex: '01 / 券商',
+    brokerTitle: '券商与执行环境',
+    brokerDesc: '分别管理模拟盘和实盘凭证。建议先完成模拟盘验证，再配置真实资金环境。',
+    marketIndex: '02 / 行情数据',
+    marketTitle: '行情与研究数据',
+    marketDesc: '配置报价、K 线、公司基本面和板块研究所需的数据源。',
+    aiIndex: '03 / 模型服务',
+    aiTitle: 'AI 模型服务',
+    aiDesc: '选择研究审查使用的提供商、模型和兼容 API 地址。',
+    notifyIndex: '04 / 通知',
+    notifyTitle: '通知与提醒',
+    notifyDesc: '只发送需要用户处理的交易、风险和周期摘要。',
+    footer: '已保存密钥不会在页面中完整回显。生产环境请使用 HTTPS，并定期轮换凭证。',
+  } : {
+    eyebrow: 'SETTINGS / CONNECTIONS',
+    title: 'Connections & services',
+    subtitle: 'Configure broker, market data, AI, and notifications in workflow order. Save first, then verify so status reflects the current setup.',
+    guideTitle: 'Configuration rules',
+    guideItems: ['6 integration points', 'Secrets stay masked', 'Save, then verify'],
+    navTitle: 'Configuration map',
+    brokerNav: 'Broker & execution',
+    marketNav: 'Market & data',
+    aiNav: 'AI intelligence',
+    notifyNav: 'Notifications',
+    brokerIndex: '01 / BROKER',
+    brokerTitle: 'Broker & execution environments',
+    brokerDesc: 'Manage paper and live credentials separately. Verify paper trading before enabling a real-money environment.',
+    marketIndex: '02 / MARKET DATA',
+    marketTitle: 'Market & research data',
+    marketDesc: 'Configure sources for quotes, bars, company fundamentals, and sector research.',
+    aiIndex: '03 / INTELLIGENCE',
+    aiTitle: 'AI model service',
+    aiDesc: 'Choose the provider, model, and compatible API endpoint used for research review.',
+    notifyIndex: '04 / NOTIFICATIONS',
+    notifyTitle: 'Notifications & alerts',
+    notifyDesc: 'Send only actionable trade, risk, and cycle-summary events.',
+    footer: 'Saved secrets are never displayed in full. Use HTTPS in production and rotate credentials regularly.',
+  };
+
+  useEffect(() => {
+    const allowedTargets = ['#broker', '#paper', '#live', '#market-data', '#finnhub', '#ai', '#notifications'];
+    if (!allowedTargets.includes(location.hash)) return;
+    const frame = window.requestAnimationFrame(() => {
+      document.querySelector(location.hash)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [location.hash]);
 
   return (
-    <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 16px 60px' }}>
-      <div style={{ marginBottom: 32 }}>
-        <Button 
-          type="text" 
-          icon={<ArrowLeftOutlined />} 
-          onClick={() => navigate('/settings')}
-          style={{ marginLeft: -16, marginBottom: 8, color: 'var(--app-text-muted)' }}
-        >
-          {t.config.backToSettings}
-        </Button>
-        <div>
-          <Title level={2} style={{ margin: 0, color: 'var(--app-text-strong)', fontWeight: 800, letterSpacing: '-0.5px' }}>
-            <ApiOutlined style={{ marginRight: 12, color: 'var(--app-blue-text)' }} />
-            {t.config.title}
-          </Title>
-          <Text style={{ fontSize: 15, color: 'var(--app-text-muted)', fontWeight: 500 }}>
-            {t.config.subtitle}
-          </Text>
+    <div className="configuration-page">
+      <Button className="configuration-back" type="text" icon={<ArrowLeftOutlined />} onClick={() => navigate(returnTo)}>
+        {backLabel}
+      </Button>
+
+      <header className="configuration-hero">
+        <div className="configuration-hero__copy">
+          <span className="configuration-eyebrow"><ApiOutlined />{copy.eyebrow}</span>
+          <h1>{copy.title}</h1>
+          <p>{copy.subtitle}</p>
         </div>
-      </div>
+        <div className="configuration-guide">
+          <span>{copy.guideTitle}</span>
+          <ol>
+            {copy.guideItems.map((item, index) => <li key={item}><b>0{index + 1}</b>{item}</li>)}
+          </ol>
+        </div>
+      </header>
 
-      <Divider style={{ margin: '32px 0', borderColor: 'var(--app-border-soft)' }} />
+      <div className="configuration-layout">
+        <aside className="configuration-nav" aria-label={copy.navTitle}>
+          <span>{copy.navTitle}</span>
+          <a href="#broker"><b>01</b>{copy.brokerNav}</a>
+          <a href="#market-data"><b>02</b>{copy.marketNav}</a>
+          <a href="#ai"><b>03</b>{copy.aiNav}</a>
+          <a href="#notifications"><b>04</b>{copy.notifyNav}</a>
+          <div className="configuration-nav__security"><SafetyCertificateOutlined /><p>{copy.footer}</p></div>
+        </aside>
 
-      <style>{`
-        .ant-card {
-          background: var(--app-card-bg) !important;
-          border: 1px solid var(--app-border-soft) !important;
-          box-shadow: var(--app-shadow-sm) !important;
-        }
-        .ant-input, .ant-input-password, .ant-select-selector {
-          background-color: var(--app-input-bg) !important;
-          color: var(--app-text) !important;
-          border-color: var(--app-border) !important;
-        }
-        .ant-form-item-label label {
-          color: var(--app-text) !important;
-        }
-        .ant-btn-default {
-          background: var(--app-card-bg-soft) !important;
-          color: var(--app-text) !important;
-          border-color: var(--app-border) !important;
-        }
-        .ant-btn-primary {
-          box-shadow: 0 2px 4px rgba(24, 144, 255, 0.2);
-        }
-        .ant-alert-info {
-          background-color: var(--app-blue-bg-soft) !important;
-          border-color: var(--app-blue-border) !important;
-        }
-        .ant-alert-warning {
-          background-color: rgba(251, 191, 36, 0.05) !important;
-          border-color: rgba(251, 191, 36, 0.2) !important;
-        }
-      `}</style>
+        <main className="configuration-content">
+          <section className="configuration-group" id="broker">
+            <header className="configuration-group__header">
+              <span>{copy.brokerIndex}</span>
+              <div><h2>{copy.brokerTitle}</h2><p>{copy.brokerDesc}</p></div>
+            </header>
+            <div className="configuration-anchor" id="paper"><AlpacaPaperSection t={t} /></div>
+            <div className="configuration-anchor" id="live"><AlpacaRealSection onMarketDataSynced={() => setMarketDataReloadKey((key) => key + 1)} t={t} /></div>
+          </section>
 
-      <AlpacaPaperSection t={t} />
-      <AlpacaRealSection onMarketDataSynced={() => setMarketDataReloadKey(k => k + 1)} t={t} />
-      <MarketDataSection reloadKey={marketDataReloadKey} t={t} />
-      <AIProviderSection t={t} />
-      <FinnhubSection t={t} />
-      <DiscordNotificationsSection t={t} />
+          <section className="configuration-group" id="market-data">
+            <header className="configuration-group__header">
+              <span>{copy.marketIndex}</span>
+              <div><h2>{copy.marketTitle}</h2><p>{copy.marketDesc}</p></div>
+            </header>
+            <MarketDataSection reloadKey={marketDataReloadKey} t={t} isZh={isZh} />
+            <div className="configuration-anchor" id="finnhub"><FinnhubSection t={t} /></div>
+          </section>
 
-      <div style={{ marginTop: 40, textAlign: 'center' }}>
-        <Text style={{ fontSize: 13, color: 'var(--app-text-muted)' }}>
-          <SafetyCertificateOutlined style={{ marginRight: 8, color: '#4ade80' }} />
-          {t.config.footerSecurity}
-        </Text>
+          <section className="configuration-group" id="ai">
+            <header className="configuration-group__header">
+              <span>{copy.aiIndex}</span>
+              <div><h2>{copy.aiTitle}</h2><p>{copy.aiDesc}</p></div>
+            </header>
+            <AIProviderSection t={t} />
+          </section>
+
+          <section className="configuration-group" id="notifications">
+            <header className="configuration-group__header">
+              <span>{copy.notifyIndex}</span>
+              <div><h2>{copy.notifyTitle}</h2><p>{copy.notifyDesc}</p></div>
+            </header>
+            <DiscordNotificationsSection t={t} isZh={isZh} />
+          </section>
+
+          <footer className="configuration-footer"><SafetyCertificateOutlined />{copy.footer}</footer>
+        </main>
       </div>
     </div>
   );

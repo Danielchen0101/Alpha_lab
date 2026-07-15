@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from 'antd';
 import { GlobalOutlined, SafetyOutlined, MenuOutlined, CloseOutlined } from '@ant-design/icons';
@@ -7,22 +7,64 @@ import SystemStatusIndicator from './SystemStatusIndicator';
 
 interface MarketingLayoutProps {
   children: React.ReactNode;
+  tone?: 'dark' | 'paper';
 }
 
-const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
+const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children, tone = 'paper' }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const [scrolled, setScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const mobileTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const progressRef = useRef<HTMLDivElement | null>(null);
   const { language, t, setLanguage } = useLanguage();
+  const isPaper = tone === 'paper';
 
   useEffect(() => {
     const handleScroll = () => {
       setScrolled(window.scrollY > 50);
+      const scrollRange = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
+      const progress = Math.min(1, Math.max(0, window.scrollY / scrollRange));
+      if (progressRef.current) progressRef.current.style.transform = `scaleX(${progress})`;
     };
-    window.addEventListener('scroll', handleScroll);
+    handleScroll();
+    window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
+
+  useEffect(() => {
+    if (!isPaper) return undefined;
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const root = document.querySelector('.public-page');
+    if (!root) return undefined;
+    const selector = '.public-section-heading, .public-data-grid, .public-card, .public-feature-row, .research-explorer, .public-cta, .security-control-layout';
+    const targets = Array.from(root.querySelectorAll<HTMLElement>(selector));
+
+    if (reducedMotion || !('IntersectionObserver' in window)) {
+      targets.forEach(target => target.classList.add('public-reveal', 'is-visible'));
+      return undefined;
+    }
+
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting) return;
+        entry.target.classList.add('is-visible');
+        observer.unobserve(entry.target);
+      });
+    }, { threshold: 0.12, rootMargin: '0px 0px -8% 0px' });
+
+    targets.forEach((target, index) => {
+      target.classList.add('public-reveal');
+      target.style.setProperty('--public-reveal-delay', `${Math.min(index % 4, 3) * 55}ms`);
+      observer.observe(target);
+    });
+
+    return () => observer.disconnect();
+  }, [isPaper, location.pathname]);
+
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [location.pathname]);
 
   useEffect(() => {
     // Injecting the common marketing CSS
@@ -50,6 +92,27 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
         .landing-container a {
           word-break: break-word;
           overflow-wrap: anywhere;
+        }
+
+        .public-skip-link {
+          position: fixed;
+          top: 10px;
+          left: 12px;
+          z-index: 3000;
+          padding: 10px 14px;
+          color: #fff;
+          border: 1px solid rgba(255,255,255,.3);
+          background: #171a17;
+          font-size: .78rem;
+          font-weight: 650;
+          text-decoration: none;
+          transform: translateY(-160%);
+          transition: transform .16s ease;
+        }
+        .public-skip-link:focus {
+          outline: 2px solid #3569c8;
+          outline-offset: 2px;
+          transform: translateY(0);
         }
 
         /* Navigation Bar */
@@ -92,21 +155,30 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
           align-items: center;
           gap: 8px;
           letter-spacing: -0.5px;
+          border: 0;
+          padding: 0;
+          background: transparent;
         }
         .nav-logo span {
           color: #1890ff;
+        }
+        .nav-logo:focus-visible,
+        .mobile-menu-nav-item:focus-visible,
+        .footer-link-button:focus-visible {
+          outline: 2px solid #1890ff;
+          outline-offset: 4px;
         }
         .nav-links {
           display: flex;
           gap: clamp(16px, 3vw, 32px);
         }
-        @media (max-width: 900px) {
+        @media (max-width: 1080px) {
           .nav-links { display: none; }
           .nav-actions .btn-sign-in-desktop { display: none; }
           .nav-actions .btn-get-started-desktop { display: none; }
           .lang-text { display: none; }
         }
-        @media (min-width: 901px) {
+        @media (min-width: 1081px) {
           .nav-hamburger { display: none; }
         }
         .nav-item {
@@ -118,6 +190,9 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
           position: relative;
           padding: 8px 0;
           text-decoration: none;
+          border: 0;
+          background: transparent;
+          font-family: inherit;
         }
         .nav-item:hover, .nav-item.active {
           color: #fff;
@@ -157,20 +232,32 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
           position: fixed; inset: 0; z-index: 2000;
           background: rgba(2,6,17,0.97);
           display: flex; flex-direction: column;
-          padding: 24px;
+          box-sizing: border-box;
+          min-height: 100vh;
+          height: 100dvh;
+          padding: 24px 24px max(24px, env(safe-area-inset-bottom));
+          overflow-x: hidden;
+          overflow-y: auto;
+          overscroll-behavior: contain;
+          -webkit-overflow-scrolling: touch;
           backdrop-filter: blur(12px);
           -webkit-backdrop-filter: blur(12px);
         }
         .mobile-menu-header {
           display: flex; justify-content: space-between; align-items: center;
           margin-bottom: 32px;
+          flex: 0 0 auto;
         }
         .mobile-menu-nav {
-          display: flex; flex-direction: column; gap: 4px; flex: 1;
+          display: flex; flex-direction: column; gap: 4px;
+          flex: 1 0 auto;
+          min-height: max-content;
         }
         .mobile-menu-nav-item {
           color: #94a3b8; font-size: 1.05rem; font-weight: 600;
           padding: 14px 16px; cursor: pointer;
+          width: 100%; border: 0; background: transparent; text-align: left;
+          font-family: inherit;
           border-radius: 10px;
           transition: background 0.2s ease, color 0.2s ease;
         }
@@ -181,6 +268,23 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
           display: flex; flex-direction: column; gap: 10px;
           padding-top: 24px; border-top: 1px solid rgba(255,255,255,0.06);
           margin-top: 16px;
+          flex: 0 0 auto;
+        }
+        @media (max-height: 700px) {
+          .mobile-menu-overlay {
+            padding-top: 16px;
+          }
+          .mobile-menu-header {
+            margin-bottom: 12px;
+          }
+          .mobile-menu-nav-item {
+            padding-block: 10px;
+          }
+          .mobile-menu-actions {
+            margin-top: 10px;
+            padding-top: 12px;
+            gap: 8px;
+          }
         }
 
         /* Buttons */
@@ -274,6 +378,13 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
           transition: color 0.2s ease;
         }
         .footer-link:hover { color: #cbd5e1; }
+        .footer-link-button {
+          width: fit-content;
+          border: 0;
+          background: transparent;
+          font: inherit;
+          text-align: left;
+        }
         .footer-brand-tagline {
           color: #64748b;
           font-size: 0.82rem;
@@ -373,10 +484,165 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
             scroll-behavior: auto !important;
           }
         }
+
+        /* Paper tone — used by the Market Field landing page only. */
+        .landing-container.marketing-paper {
+          --paper: #f2efe7;
+          --paper-bright: #faf8f2;
+          --paper-ink: #171a17;
+          --paper-muted: #666b64;
+          --paper-line: rgba(23, 26, 23, 0.18);
+          background: var(--paper);
+          color: var(--paper-ink);
+          overflow-x: clip;
+          overflow-y: visible;
+        }
+        .marketing-paper p,
+        .marketing-paper h1,
+        .marketing-paper h2,
+        .marketing-paper h3,
+        .marketing-paper h4,
+        .marketing-paper span,
+        .marketing-paper a {
+          word-break: normal;
+          overflow-wrap: normal;
+        }
+        .marketing-paper .nav-header:not(.scrolled) {
+          background: rgba(242, 239, 231, 0.9) !important;
+          border-bottom-color: rgba(23, 26, 23, 0.12) !important;
+        }
+        .marketing-paper .nav-header.scrolled {
+          background: rgba(242, 239, 231, 0.96) !important;
+          border-bottom-color: rgba(23, 26, 23, 0.14) !important;
+          box-shadow: 0 8px 30px rgba(45, 43, 35, 0.08) !important;
+        }
+        .marketing-paper .paper-wordmark {
+          color: var(--paper-ink);
+          font-family: Georgia, 'Times New Roman', serif;
+          font-size: clamp(1.45rem, 2vw, 1.85rem);
+          font-weight: 600;
+          letter-spacing: -0.055em;
+          line-height: 1;
+          white-space: nowrap;
+        }
+        .marketing-paper .nav-item {
+          color: #4f544e;
+          font-weight: 500;
+        }
+        .marketing-paper .nav-item:hover,
+        .marketing-paper .nav-item.active {
+          color: var(--paper-ink);
+        }
+        .marketing-paper .nav-item::after {
+          background: #3569c8;
+          box-shadow: none;
+          height: 1px;
+        }
+        .marketing-paper .mobile-menu-overlay {
+          background: rgba(242, 239, 231, 0.98);
+          color: var(--paper-ink);
+        }
+        .marketing-paper .mobile-menu-nav-item {
+          color: #555b54;
+          border-radius: 0;
+          border-bottom: 1px solid var(--paper-line);
+        }
+        .marketing-paper .mobile-menu-nav-item:hover,
+        .marketing-paper .mobile-menu-nav-item.mobile-active {
+          color: var(--paper-ink);
+          background: rgba(53, 105, 200, 0.07);
+        }
+        .marketing-paper .mobile-menu-actions {
+          border-top-color: var(--paper-line);
+        }
+        .marketing-paper .footer {
+          background: #e9e5da !important;
+          border-top-color: var(--paper-line) !important;
+          color: var(--paper-ink) !important;
+        }
+        .marketing-paper .footer-col-title,
+        .marketing-paper .footer .nav-logo,
+        .marketing-paper .footer .nav-logo span {
+          color: var(--paper-ink) !important;
+        }
+        .marketing-paper .footer-link,
+        .marketing-paper .footer-brand-tagline,
+        .marketing-paper .footer-disclaimer,
+        .marketing-paper .footer-copyright {
+          color: #5d625c !important;
+        }
+        .marketing-paper .footer-link:hover {
+          color: #3569c8 !important;
+        }
+        .marketing-paper .footer-divider {
+          border-top-color: var(--paper-line) !important;
+        }
+        .marketing-paper .footer-trust-badge {
+          color: #3569c8 !important;
+        }
+        .marketing-paper .footer-system-status > span {
+          color: #4e644c !important;
+          font-size: 0.75rem !important;
+        }
+        .marketing-paper .nav-logo:focus-visible,
+        .marketing-paper .mobile-menu-nav-item:focus-visible,
+        .marketing-paper .footer-link-button:focus-visible {
+          outline-color: #2b5fae;
+        }
+        @media (max-width: 480px) {
+          .mobile-menu-overlay {
+            padding-top: max(16px, env(safe-area-inset-top));
+          }
+        }
+        @media (forced-colors: active) {
+          .nav-header,
+          .mobile-menu-overlay,
+          .footer {
+            forced-color-adjust: auto;
+            border-color: CanvasText !important;
+            background: Canvas !important;
+          }
+          .nav-item,
+          .mobile-menu-nav-item,
+          .footer-link,
+          .paper-wordmark {
+            color: CanvasText !important;
+          }
+        }
       `;
       document.head.appendChild(style);
     }
+    return () => {
+      document.getElementById(styleId)?.remove();
+    };
   }, []);
+
+  useEffect(() => {
+    if (!mobileMenuOpen) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const trigger = mobileTriggerRef.current;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileMenuOpen(false);
+      if (event.key === 'Tab') {
+        const menu = document.getElementById('marketing-mobile-menu');
+        const focusable = Array.from(menu?.querySelectorAll<HTMLElement>('button, a[href], [tabindex]:not([tabindex="-1"])') || []).filter(node => !node.hasAttribute('disabled'));
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
+    };
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleEscape);
+    window.requestAnimationFrame(() => document.querySelector<HTMLElement>('#marketing-mobile-menu [data-mobile-menu-close]')?.focus());
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleEscape);
+      (previousFocus || trigger)?.focus();
+    };
+  }, [mobileMenuOpen]);
 
   const toggleLanguage = () => {
     setLanguage(language === 'en-US' ? 'zh-CN' : 'en-US');
@@ -387,72 +653,99 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
     window.scrollTo(0, 0);
   };
 
+  const navItems = isPaper
+    ? [
+        { path: '/platform', label: t.landing.navPlatform },
+        { path: '/research', label: t.landing.marketField.navResearch },
+        { path: '/workflow', label: t.landing.navWorkflow },
+        { path: '/examples', label: language === 'zh-CN' ? '案例' : 'Examples' },
+        { path: '/data', label: language === 'zh-CN' ? '数据与方法' : 'Data & Method' },
+        { path: '/security', label: t.landing.navSecurity },
+      ]
+    : [
+        { path: '/', label: t.landing.navHome },
+        { path: '/platform', label: t.landing.navPlatform },
+        { path: '/workflow', label: t.landing.navWorkflow },
+        { path: '/features', label: t.landing.navFeatures },
+        { path: '/technology', label: t.landing.navTechnology, ariaLabel: t.landing.ariaLabelTechPage },
+      ];
+
   return (
-    <div className="landing-container">
+    <div className={`landing-container ${isPaper ? 'marketing-paper' : ''}`}>
+      <a className="public-skip-link" href="#public-main-content">
+        {language === 'zh-CN' ? '跳到主要内容' : 'Skip to main content'}
+      </a>
       {/* Navigation Bar */}
-      <nav className={`nav-header ${scrolled ? 'scrolled' : ''}`}>
-        <div className="nav-logo" onClick={() => handleNavClick('/')} style={{ display: 'flex', alignItems: 'center', background: 'transparent' }}>
-          <img 
-            src="/brand/alphalab-logo.png" 
-            alt="AlphaLab" 
-            style={{ 
-              height: '32px', 
-              width: 'auto', 
-              objectFit: 'contain', 
-              background: 'transparent',
-              display: 'block'
-            }} 
-          />
-        </div>
+      <nav className={`nav-header ${scrolled ? 'scrolled' : ''}`} aria-label={language === 'zh-CN' ? '主要导航' : 'Primary navigation'}>
+        <button type="button" className="nav-logo" onClick={() => handleNavClick('/')} style={{ display: 'flex', alignItems: 'center', background: 'transparent' }} aria-label={language === 'zh-CN' ? 'AlphaLab 首页' : 'AlphaLab home'}>
+          {isPaper ? (
+            <span className="paper-wordmark">AlphaLab</span>
+          ) : (
+            <img
+              src="/brand/alphalab-logo.png"
+              alt="AlphaLab"
+              style={{
+                height: '32px',
+                width: 'auto',
+                objectFit: 'contain',
+                background: 'transparent',
+                display: 'block'
+              }}
+            />
+          )}
+        </button>
         <div className="nav-links">
-          <div className={`nav-item ${location.pathname === '/' ? 'active' : ''}`} onClick={() => handleNavClick('/')} aria-current={location.pathname === '/' ? 'page' : undefined}>{t.landing.navHome}</div>
-          <div className={`nav-item ${location.pathname === '/platform' ? 'active' : ''}`} onClick={() => handleNavClick('/platform')} aria-current={location.pathname === '/platform' ? 'page' : undefined}>{t.landing.navPlatform}</div>
-          <div className={`nav-item ${location.pathname === '/workflow' ? 'active' : ''}`} onClick={() => handleNavClick('/workflow')} aria-current={location.pathname === '/workflow' ? 'page' : undefined}>{t.landing.navWorkflow}</div>
-          <div className={`nav-item ${location.pathname === '/features' ? 'active' : ''}`} onClick={() => handleNavClick('/features')} aria-current={location.pathname === '/features' ? 'page' : undefined}>{t.landing.navFeatures}</div>
-          <div className={`nav-item ${location.pathname === '/technology' ? 'active' : ''}`} onClick={() => handleNavClick('/technology')} aria-current={location.pathname === '/technology' ? 'page' : undefined} aria-label={t.landing.ariaLabelTechPage}>{t.landing.navTechnology}</div>
+          {navItems.map(item => (
+            <button
+              type="button"
+              key={item.path}
+              className={`nav-item ${location.pathname === item.path ? 'active' : ''}`}
+              onClick={() => handleNavClick(item.path)}
+              aria-current={location.pathname === item.path ? 'page' : undefined}
+              aria-label={item.ariaLabel}
+            >
+              {item.label}
+            </button>
+          ))}
         </div>
         <div className="nav-actions">
-          <Button type="text" onClick={toggleLanguage} style={{ color: '#94a3b8', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'clamp(12px, 1vw, 13px)', padding: '4px 8px' }} aria-label={t.landing.ariaLabelSwitchLang}><GlobalOutlined aria-hidden="true" style={{ fontSize: 'clamp(12px, 1vw, 14px)' }} /> <span className="lang-text">{language === 'zh-CN' ? '中文' : 'EN'}</span></Button>
-          <Button type="text" className="btn-sign-in-desktop" style={{ color: '#fff', fontWeight: 600, fontSize: 'clamp(13px, 1vw, 14px)', padding: '4px 8px' }} onClick={() => navigate('/signin')} aria-label={t.landing.ariaLabelSignIn}>{t.landing.signIn}</Button>
-          <Button type="primary" className="btn-get-started btn-get-started-desktop" style={{ background: '#1890ff', borderColor: '#1890ff', fontWeight: 600, boxShadow: '0 4px 12px rgba(24,144,255,0.3)' }} onClick={() => navigate('/signup')} aria-label={t.landing.ariaLabelGetStarted}>{t.landing.getStarted}</Button>
-          <Button type="text" className="nav-hamburger" onClick={() => setMobileMenuOpen(true)} style={{ color: '#fff', fontSize: 20, padding: '4px 8px' }} aria-label="Open menu"><MenuOutlined /></Button>
+          <Button type="text" onClick={toggleLanguage} style={{ color: isPaper ? '#555b54' : '#94a3b8', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'clamp(12px, 1vw, 13px)', padding: '4px 8px' }} aria-label={t.landing.ariaLabelSwitchLang}><GlobalOutlined aria-hidden="true" style={{ fontSize: 'clamp(12px, 1vw, 14px)' }} /> <span className="lang-text">{language === 'zh-CN' ? 'EN' : '中文'}</span></Button>
+          <Button type="text" className="btn-sign-in-desktop" style={{ color: isPaper ? '#171a17' : '#fff', fontWeight: 600, fontSize: 'clamp(13px, 1vw, 14px)', padding: '4px 8px' }} onClick={() => navigate('/signin')} aria-label={t.landing.ariaLabelSignIn}>{t.landing.signIn}</Button>
+          <Button type="primary" className="btn-get-started btn-get-started-desktop" style={{ background: isPaper ? '#171a17' : '#1890ff', borderColor: isPaper ? '#171a17' : '#1890ff', fontWeight: 600, boxShadow: isPaper ? 'none' : '0 4px 12px rgba(24,144,255,0.3)', borderRadius: isPaper ? 0 : undefined }} onClick={() => navigate('/signup')} aria-label={t.landing.ariaLabelGetStarted}>{t.landing.getStarted}</Button>
+          <Button ref={mobileTriggerRef} type="text" className="nav-hamburger" onClick={() => setMobileMenuOpen(true)} style={{ color: isPaper ? '#171a17' : '#fff', fontSize: 20, padding: '4px 8px' }} aria-label={language === 'zh-CN' ? '打开导航菜单' : 'Open menu'} aria-expanded={mobileMenuOpen} aria-controls="marketing-mobile-menu"><MenuOutlined /></Button>
         </div>
       </nav>
+      {isPaper && <div ref={progressRef} className="public-scroll-progress" aria-hidden="true" />}
 
       {/* Mobile Menu Overlay */}
       {mobileMenuOpen && (
-        <div className="mobile-menu-overlay">
+        <div className="mobile-menu-overlay" id="marketing-mobile-menu" role="dialog" aria-modal="true" aria-label={language === 'zh-CN' ? '导航菜单' : 'Navigation menu'}>
           <div className="mobile-menu-header">
-            <div className="nav-logo" style={{ cursor: 'pointer', fontSize: 'clamp(1.1rem, 1.8vw, 1.35rem)' }} onClick={() => { handleNavClick('/'); setMobileMenuOpen(false); }}>
-              Alpha<span>Lab</span>
-            </div>
-            <Button type="text" onClick={() => setMobileMenuOpen(false)} style={{ color: '#94a3b8', fontSize: 20, padding: '4px 8px' }} aria-label="Close menu"><CloseOutlined /></Button>
+            <button type="button" className="nav-logo" style={{ cursor: 'pointer', fontSize: 'clamp(1.1rem, 1.8vw, 1.35rem)' }} onClick={() => { handleNavClick('/'); setMobileMenuOpen(false); }} aria-label={language === 'zh-CN' ? '返回 AlphaLab 首页' : 'Return to AlphaLab home'}>
+              {isPaper ? <span className="paper-wordmark">AlphaLab</span> : <>Alpha<span>Lab</span></>}
+            </button>
+            <Button data-mobile-menu-close type="text" onClick={() => setMobileMenuOpen(false)} style={{ color: isPaper ? '#171a17' : '#94a3b8', fontSize: 20, padding: '4px 8px' }} aria-label={language === 'zh-CN' ? '关闭导航菜单' : 'Close menu'}><CloseOutlined /></Button>
           </div>
           <div className="mobile-menu-nav">
-            {[
-              { path: '/', label: t.landing.navHome },
-              { path: '/platform', label: t.landing.navPlatform },
-              { path: '/workflow', label: t.landing.navWorkflow },
-              { path: '/features', label: t.landing.navFeatures },
-              { path: '/technology', label: t.landing.navTechnology },
-            ].map(item => (
-              <div
+            {navItems.map(item => (
+              <button
+                type="button"
                 key={item.path}
                 className={`mobile-menu-nav-item ${location.pathname === item.path ? 'mobile-active' : ''}`}
                 onClick={() => { handleNavClick(item.path); setMobileMenuOpen(false); }}
               >
                 {item.label}
-              </div>
+              </button>
             ))}
           </div>
           <div className="mobile-menu-actions">
-            <Button type="text" onClick={toggleLanguage} style={{ color: '#94a3b8', fontWeight: 600, fontSize: '1rem', padding: '12px 16px', width: '100%', textAlign: 'left' }}>
-              <GlobalOutlined style={{ marginRight: 8 }} /> {language === 'zh-CN' ? '中文' : 'EN'} — {t.landing.ariaLabelSwitchLang}
+            <Button type="text" onClick={toggleLanguage} style={{ color: isPaper ? '#555b54' : '#94a3b8', fontWeight: 600, fontSize: '1rem', padding: '12px 16px', width: '100%', textAlign: 'left' }}>
+              <GlobalOutlined style={{ marginRight: 8 }} /> {language === 'zh-CN' ? 'English' : '中文'} · {t.landing.ariaLabelSwitchLang}
             </Button>
-            <Button onClick={() => { navigate('/signin'); setMobileMenuOpen(false); }} style={{ height: 48, width: '100%', color: '#f1f5f9', fontWeight: 600, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10 }}>
+            <Button onClick={() => { navigate('/signin'); setMobileMenuOpen(false); }} style={{ height: 48, width: '100%', color: isPaper ? '#171a17' : '#f1f5f9', fontWeight: 600, background: isPaper ? 'transparent' : 'rgba(255,255,255,0.05)', border: isPaper ? '1px solid rgba(23,26,23,0.24)' : '1px solid rgba(255,255,255,0.1)', borderRadius: isPaper ? 0 : 10 }}>
               {t.landing.signIn}
             </Button>
-            <Button type="primary" onClick={() => { navigate('/signup'); setMobileMenuOpen(false); }} style={{ height: 48, width: '100%', fontWeight: 600, background: '#2563eb', border: 'none', borderRadius: 10 }}>
+            <Button type="primary" onClick={() => { navigate('/signup'); setMobileMenuOpen(false); }} style={{ height: 48, width: '100%', fontWeight: 600, background: isPaper ? '#171a17' : '#2563eb', border: 'none', borderRadius: isPaper ? 0 : 10 }}>
               {t.landing.getStarted}
             </Button>
           </div>
@@ -460,7 +753,7 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
       )}
 
       {/* Main Content */}
-      <div style={{ position: 'relative', zIndex: 1 }}>
+      <div id="public-main-content" tabIndex={-1} style={{ position: 'relative', zIndex: 1 }}>
         {children}
       </div>
 
@@ -468,7 +761,6 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
       <footer className="footer">
         <div className="footer-grid" style={{
           display: 'grid',
-          gridTemplateColumns: '1.5fr 1fr 1fr 1fr',
           gap: 'clamp(24px, 4vw, 48px)',
           maxWidth: '1100px',
           margin: '0 auto 48px',
@@ -480,32 +772,35 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children }) => {
               Alpha<span>Lab</span>
             </div>
             <div className="footer-brand-tagline" style={{ color: '#64748b', fontSize: '0.82rem', lineHeight: 1.6, marginTop: 12 }}>
-              {t.landing.footerTagline || 'Research-first quant automation for market scanning, signal validation, and risk-aware planning.'}
+              {t.landing.footerTagline}
             </div>
           </div>
 
           {/* Product */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <div className="footer-col-title" style={{ color: '#e2e8f0', fontWeight: 700, marginBottom: 14, fontSize: '0.82rem', letterSpacing: '0.03em', textTransform: 'uppercase' }}>{t.landing.footerProduct}</div>
-            <span className="footer-link" style={{ color: '#94a3b8', fontSize: '0.83rem', cursor: 'pointer', display: 'block', padding: '3px 0' }} onClick={() => handleNavClick('/platform')}>{t.landing.navPlatform}</span>
-            <span className="footer-link" style={{ color: '#94a3b8', fontSize: '0.83rem', cursor: 'pointer', display: 'block', padding: '3px 0' }} onClick={() => handleNavClick('/workflow')}>{t.landing.navWorkflow}</span>
-            <span className="footer-link" style={{ color: '#94a3b8', fontSize: '0.83rem', cursor: 'pointer', display: 'block', padding: '3px 0' }} onClick={() => handleNavClick('/features')}>{t.landing.navFeatures}</span>
-            <span className="footer-link" style={{ color: '#94a3b8', fontSize: '0.83rem', cursor: 'pointer', display: 'block', padding: '3px 0' }} onClick={() => handleNavClick('/technology')}>{t.landing.navTechnology}</span>
+            <button type="button" className="footer-link footer-link-button" onClick={() => handleNavClick('/platform')}>{t.landing.navPlatform}</button>
+            <button type="button" className="footer-link footer-link-button" onClick={() => handleNavClick('/workflow')}>{t.landing.navWorkflow}</button>
+            <button type="button" className="footer-link footer-link-button" onClick={() => handleNavClick('/research')}>{t.landing.marketField.navResearch}</button>
+            <button type="button" className="footer-link footer-link-button" onClick={() => handleNavClick('/examples')}>{language === 'zh-CN' ? '研究案例' : 'Examples'}</button>
+            <button type="button" className="footer-link footer-link-button" onClick={() => handleNavClick('/data')}>{language === 'zh-CN' ? '数据与方法' : 'Data & Method'}</button>
+            <button type="button" className="footer-link footer-link-button" onClick={() => handleNavClick('/technology')}>{t.landing.navTechnology}</button>
           </div>
 
           {/* Trust */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <div className="footer-col-title" style={{ color: '#e2e8f0', fontWeight: 700, marginBottom: 14, fontSize: '0.82rem', letterSpacing: '0.03em', textTransform: 'uppercase' }}>{t.landing.footerTrust}</div>
-            <span className="footer-link" style={{ color: '#94a3b8', fontSize: '0.83rem', cursor: 'pointer', display: 'block', padding: '3px 0' }} onClick={() => { navigate('/security'); window.scrollTo(0, 0); }}>{t.landing.navSecurity || 'Security'}</span>
-            <span className="footer-link" style={{ color: '#94a3b8', fontSize: '0.83rem', cursor: 'pointer', display: 'block', padding: '3px 0' }}>{t.landing.footerPrivacyPolicy}</span>
-            <span className="footer-link" style={{ color: '#94a3b8', fontSize: '0.83rem', cursor: 'pointer', display: 'block', padding: '3px 0' }}>{t.landing.footerTermsOfService}</span>
+            <button type="button" className="footer-link footer-link-button" onClick={() => handleNavClick('/security')}>{t.landing.navSecurity}</button>
+            <button type="button" className="footer-link footer-link-button" onClick={() => handleNavClick('/privacy')}>{t.landing.footerPrivacyPolicy}</button>
+            <button type="button" className="footer-link footer-link-button" onClick={() => handleNavClick('/terms')}>{t.landing.footerTermsOfService}</button>
+            <button type="button" className="footer-link footer-link-button" onClick={() => handleNavClick('/about')}>{language === 'zh-CN' ? '关于 AlphaLab' : 'About AlphaLab'}</button>
           </div>
 
           {/* Resources */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <div className="footer-col-title" style={{ color: '#e2e8f0', fontWeight: 700, marginBottom: 14, fontSize: '0.82rem', letterSpacing: '0.03em', textTransform: 'uppercase' }}>{t.landing.footerResources}</div>
             <a className="footer-link" style={{ color: '#94a3b8', fontSize: '0.83rem', cursor: 'pointer', display: 'block', padding: '3px 0', textDecoration: 'none' }} href="https://github.com/Danielchen0101/quant_platform" target="_blank" rel="noopener noreferrer">{t.landing.footerGithub}</a>
-            <SystemStatusIndicator />
+            <div className="footer-system-status"><SystemStatusIndicator /></div>
           </div>
         </div>
 

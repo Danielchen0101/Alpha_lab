@@ -1,46 +1,42 @@
-# Pull Request
+## Summary
 
-## Description
-Please include a summary of the change and which issue is fixed. Please also include relevant motivation and context.
+<!-- What changed, and what user or operational problem does it solve? -->
 
-Fixes # (issue number)
+## Scope
 
-## Type of Change
-Please delete options that are not relevant.
+- Area: <!-- frontend / backend / data / deployment / documentation -->
+- Related issue: <!-- Fixes #123, if applicable -->
+- Release impact: <!-- patch / minor / major / none -->
 
-- [ ] Bug fix (non-breaking change which fixes an issue)
-- [ ] New feature (non-breaking change which adds functionality)
-- [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
-- [ ] Documentation update
-- [ ] Code refactoring
-- [ ] Performance improvement
-- [ ] Test coverage improvement
-- [ ] Other (please describe):
+## Behavior and risk
 
-## How Has This Been Tested?
-Please describe the tests that you ran to verify your changes. Provide instructions so we can reproduce.
+<!-- Note changes to APIs, routes, persisted data, credentials, scheduling, risk gates, or order behavior. Write "None" where appropriate. -->
 
-1. Test case 1:
-   - Steps: ...
-   - Expected: ...
-   - Actual: ...
+- Breaking or migration changes:
+- Trading or financial risk:
+- Security or privacy impact:
+- Rollback plan:
 
-2. Test case 2:
-   - ...
+## Validation
 
-## Checklist
-- [ ] My code follows the style guidelines of this project
-- [ ] I have performed a self-review of my own code
-- [ ] I have commented my code, particularly in hard-to-understand areas
-- [ ] I have made corresponding changes to the documentation
-- [ ] My changes generate no new warnings
-- [ ] I have added tests that prove my fix is effective or that my feature works
-- [ ] New and existing unit tests pass locally with my changes
-- [ ] Any dependent changes have been merged and published in downstream modules
+<!-- Include exact checks and meaningful manual scenarios. -->
 
-## Screenshots (if applicable)
-Before: [screenshot]
-After: [screenshot]
+- [ ] Frontend tests
+- [ ] ESLint and TypeScript
+- [ ] Production frontend build
+- [ ] Backend tests
+- [ ] Desktop and mobile review (UI changes)
+- [ ] Paper/live mode boundaries reviewed (trading changes)
 
-## Additional Notes
-Any additional information that would be helpful for reviewers.
+## Visual evidence
+
+<!-- Add before/after screenshots for UI changes, or remove this section. Never include account credentials or private account data. -->
+
+## Final checklist
+
+- [ ] The change is focused and self-reviewed.
+- [ ] Tests cover new or corrected behavior.
+- [ ] Documentation and example configuration are current.
+- [ ] No secret, `.env` file, runtime state, or debug export is included.
+- [ ] English and Simplified Chinese copy remain aligned.
+- [ ] Breaking changes and known limitations are stated explicitly.

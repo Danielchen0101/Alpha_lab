@@ -1,0 +1,9 @@
+# Default review owner
+* @Danielchen0101
+
+# High-risk surfaces
+/backend/ @Danielchen0101
+/backend/supabase_schema.sql @Danielchen0101
+/docker/ @Danielchen0101
+/Dockerfile @Danielchen0101
+/.github/workflows/ @Danielchen0101

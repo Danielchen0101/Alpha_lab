@@ -1,22 +1,25 @@
-import React, { useState } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Scatter, BarChart, Bar, ResponsiveContainer, Cell } from 'recharts';
-import { Checkbox, Space, Row, Col } from 'antd';
+import React, { useMemo, useState } from 'react';
 import {
-  parseDateSafe,
-  formatDateForChart,
-  filterValidDates,
-  sortByDateAsc,
-  getTooltipDate,
-  debugDates
-} from '../utils/dateUtils';
-import { devLog } from '../utils/logger';
+  Area,
+  Bar,
+  CartesianGrid,
+  ComposedChart,
+  Line,
+  ReferenceLine,
+  ResponsiveContainer,
+  Scatter,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
 import { useLanguage } from '../contexts/LanguageContext';
+import './TradingChart.css';
 
 interface ChartDataItem {
   date: string;
   close: number;
-  volume?: number;  // Volume for volume chart (optional)
-  signal: number;   // 1: buy, -1: sell, 0: no signal
+  volume?: number;
+  signal?: number;
   sma20?: number;
   sma50?: number;
 }
@@ -32,1399 +35,226 @@ interface TradingChartProps {
   };
 }
 
-const TradingChart: React.FC<TradingChartProps> = ({ data, height = 500, parameters }) => {
-  const { t } = useLanguage();
-  // 调试：记录组件接收到的数据
-  devLog('🔍 [TradingChart] 组件入口 - 接收数据:', {
-    dataExists: !!data,
-    dataLength: data?.length,
-    dataFirstItem: data?.[0],
-    dataFirstItemKeys: data?.[0] ? Object.keys(data[0]) : null,
-    dataType: typeof data,
-    isArray: Array.isArray(data),
-    parameters: parameters
+type SeriesKey = 'sma20' | 'sma50' | 'signals' | 'volume';
+const CHART_TIME_ZONE = 'America/New_York';
+
+const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
+
+const compactNumber = (value: number, locale: string) => new Intl.NumberFormat(locale, {
+  notation: 'compact',
+  maximumFractionDigits: 1,
+}).format(value);
+
+const parseChartDate = (value: string): Date => {
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+  return new Date(dateOnly ? `${value}T12:00:00Z` : value);
+};
+
+const TradingChart: React.FC<TradingChartProps> = ({ data, height = 320, parameters }) => {
+  const { t, language } = useLanguage();
+  const isZh = language === 'zh-CN';
+  const locale = isZh ? 'zh-CN' : 'en-US';
+  const [visible, setVisible] = useState<Record<SeriesKey, boolean>>({
+    sma20: true,
+    sma50: true,
+    signals: true,
+    volume: true,
   });
 
-  // State for chart controls
-  const [showClosePrice, setShowClosePrice] = useState(true);
-  const [showSMA20, setShowSMA20] = useState(true);
-  const [showSMA50, setShowSMA50] = useState(true);
-  const [showSignals, setShowSignals] = useState(true);
-  const [showVolume, setShowVolume] = useState(true);
+  const chartData = useMemo(() => [...(Array.isArray(data) ? data : [])]
+    .filter(item => item && item.date && finite(Number(item.close)))
+    .sort((left, right) => parseChartDate(left.date).getTime() - parseChartDate(right.date).getTime())
+    .map((item, index, all) => {
+      const close = Number(item.close);
+      const previous = index > 0 ? Number(all[index - 1].close) : close;
+      return {
+        ...item,
+        close,
+        volume: finite(Number(item.volume)) ? Number(item.volume) : 0,
+        buySignal: item.signal === 1 ? close : undefined,
+        sellSignal: item.signal === -1 ? close : undefined,
+        volumeFill: close >= previous ? 'var(--tc-positive)' : 'var(--tc-negative)',
+      };
+    }), [data]);
 
-  if (!data || data.length === 0) {
-    devLog('🔍 [TradingChart] 数据为空，显示空状态:', { 
-      data, 
-      length: data?.length,
-      dataType: typeof data,
-      isArray: Array.isArray(data)
-    });
+  const summary = useMemo(() => {
+    if (!chartData.length) return null;
+    const prices = chartData.map(item => item.close).filter(finite);
+    const first = prices[0];
+    const last = prices[prices.length - 1];
+    const change = first ? ((last - first) / first) * 100 : 0;
+    return {
+      first,
+      last,
+      change,
+      low: Math.min(...prices),
+      high: Math.max(...prices),
+      buys: chartData.filter(item => item.signal === 1).length,
+      sells: chartData.filter(item => item.signal === -1).length,
+      hasSma20: chartData.some(item => finite(item.sma20)),
+      hasSma50: chartData.some(item => finite(item.sma50)),
+      hasVolume: chartData.some(item => finite(item.volume) && item.volume > 0),
+    };
+  }, [chartData]);
+
+  const formatDate = (value: string) => {
+    const date = parseChartDate(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat(locale, {
+      timeZone: CHART_TIME_ZONE,
+      month: 'short',
+      day: 'numeric',
+      year: chartData.length > 260 ? '2-digit' : undefined,
+    }).format(date);
+  };
+
+  const formatTooltipDate = (value: string) => {
+    const date = parseChartDate(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat(locale, {
+      timeZone: CHART_TIME_ZONE,
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    }).format(date);
+  };
+
+  const toggleSeries = (key: SeriesKey) => setVisible(current => ({ ...current, [key]: !current[key] }));
+
+  if (!summary) {
     return (
-      <div style={{ 
-        height, 
-        display: 'flex', 
-        alignItems: 'center', 
-        justifyContent: 'center',
-        border: '1px solid var(--app-border-soft)',
-        borderRadius: '8px',
-        backgroundColor: 'var(--app-card-bg-soft)'
-      }}>
-        <div style={{ color: 'var(--app-text-muted)', fontSize: '16px' }}>No chart data available</div>
+      <div className="trading-chart trading-chart--empty" style={{ minHeight: Math.min(height, 300) }} role="status">
+        <div className="trading-chart__empty-mark" aria-hidden="true">⌁</div>
+        <strong>{isZh ? '暂无价格信号数据' : 'No price-signal data yet'}</strong>
+        <span>{isZh ? '完成回测后将在这里显示价格、均线与交易信号。' : 'Price, moving averages, and trade signals will appear after a completed backtest.'}</span>
       </div>
     );
   }
 
-  // Find min and max for better Y-axis scaling (price chart)
-  // 修复：不过滤Boolean，而是过滤有效的数值，并处理空数组和相等的情况
+  const chartHeight = Math.max(210, Math.min(height, 360));
+  const priceHeight = visible.volume && summary.hasVolume ? Math.round(chartHeight * 0.72) : chartHeight;
+  const volumeHeight = visible.volume && summary.hasVolume ? Math.max(72, chartHeight - priceHeight) : 0;
+  const priceDomain: [number, number] = [
+    summary.low - Math.max((summary.high - summary.low) * 0.12, summary.low * 0.005),
+    summary.high + Math.max((summary.high - summary.low) * 0.12, summary.high * 0.005),
+  ];
 
-  
-  // 验证和过滤数据
-  const validData = filterValidDates(data);
-  const sortedData = sortByDateAsc(validData);
-  
-  // 调试：打印日期信息
-  debugDates(data, 'TradingChart原始数据');
-  debugDates(sortedData, 'TradingChart处理后的数据');
-  
-  // 调试：检查volume字段
-  devLog('=== TradingChart Volume 字段检查 ===');
-  devLog(`原始数据长度: ${data.length}`);
-  devLog(`处理后数据长度: ${sortedData.length}`);
-  
-  // 检查前5个点的volume
-  devLog('前5个点的volume字段:');
-  data.slice(0, 5).forEach((item, index) => {
-    devLog(`  [${index}] date: ${item.date}, volume: ${item.volume}, volume类型: ${typeof item.volume}, volume存在: ${'volume' in item}`);
-  });
-  
-  // 检查后5个点的volume
-  if (data.length > 5) {
-    devLog('后5个点的volume字段:');
-    data.slice(-5).forEach((item, index) => {
-      const actualIndex = data.length - 5 + index;
-      devLog(`  [${actualIndex}] date: ${item.date}, volume: ${item.volume}, volume类型: ${typeof item.volume}, volume存在: ${'volume' in item}`);
-    });
-  }
-  
-  // 统计有volume字段的数据点
-  const hasVolumeCount = data.filter(d => 'volume' in d).length;
-  const hasValidVolumeCount = data.filter(d => d.volume !== undefined && d.volume !== null && d.volume > 0).length;
-  devLog(`有volume字段的数据点: ${hasVolumeCount}/${data.length}`);
-  devLog(`有有效volume值(>0)的数据点: ${hasValidVolumeCount}/${data.length}`);
-  
-  // 创建统一的排序数据，包含所有需要的字段
-  // 1. 先排序原始数据
-  const sortedDataWithVolume = sortByDateAsc(data);
-  
-  // 2. 为排序后的数据添加volumeDisplay字段
-  const unifiedChartData = sortedDataWithVolume.map((item, index) => {
-    // Calculate volume color based on price movement
-    let volumeColor = '#cccccc';
-    if (item.volume !== undefined && item.volume > 0) {
-      if (index === 0) {
-        volumeColor = '#cccccc';
-      } else {
-        const currentClose = item.close;
-        const prevClose = sortedDataWithVolume[index - 1].close;
-        volumeColor = currentClose >= prevClose ? '#95de64' : '#ff7875';
-      }
-    }
-
-    // Enhanced signal data
-    const signalType = item.signal === 1 ? 'BUY' : item.signal === -1 ? 'SELL' : null;
-    const signalColor = item.signal === 1 ? '#52c41a' : '#f5222d';
-
-    return {
-      ...item,
-      buySignal: item.signal === 1 ? item.close : null,
-      sellSignal: item.signal === -1 ? item.close : null,
-      signalType,
-      signalColor,
-      volumeColor,
-      volumeDisplay: item.volume || 0,
-    };
-  });
-  
-  // 使用统一的数据
-  const processedChartData = unifiedChartData;
-  
-  // 重新计算基于处理后的数据
-  const prices = processedChartData.map(d => d.close).filter(price => typeof price === 'number' && !isNaN(price));
-  
-  let minPrice, maxPrice, pricePadding;
-  
-  if (prices.length === 0) {
-    // 如果没有有效数据，使用默认范围
-    minPrice = 0;
-    maxPrice = 100;
-    pricePadding = 10;
-  } else {
-    minPrice = Math.min(...prices);
-    maxPrice = Math.max(...prices);
-    
-    // 如果minPrice和maxPrice相等，添加基于价格的padding
-    if (minPrice === maxPrice) {
-      pricePadding = Math.abs(minPrice) * 0.15; // 使用价格的15%作为padding，让图表更舒展
-    } else {
-      pricePadding = (maxPrice - minPrice) * 0.15; // 15% padding，增加上下空白
-    }
-  }
-
-  // Find min and max for volume Y-axis scaling
-  const volumes = processedChartData.map(d => d.volume || 0).filter(volume => typeof volume === 'number' && !isNaN(volume));
-  const maxVolume = volumes.length > 0 ? Math.max(...volumes) : 0;
-  const volumePadding = maxVolume * 0.1; // 10% padding
-
-  // Check if we have data to decide what to show
-  const hasVolumeData = processedChartData.some(d => d.volume !== undefined && d.volume > 0);
-  const hasSMA20 = processedChartData.some(d => d.sma20 !== undefined);
-  const hasSMA50 = processedChartData.some(d => d.sma50 !== undefined);
-  const hasSignals = processedChartData.some(d => d.signal !== 0);
-  
-  // Debug: Check signal data
-  const buySignals = processedChartData.filter(d => d.signal === 1);
-  const sellSignals = processedChartData.filter(d => d.signal === -1);
-  devLog(`TradingChart Debug: 原始数据点: ${data.length}, 有效数据点: ${processedChartData.length}`);
-  devLog(`TradingChart Debug: Buy signals: ${buySignals.length}`);
-  devLog(`TradingChart Debug: Sell signals: ${sellSignals.length}`);
-  devLog(`TradingChart Debug: Has signals: ${hasSignals}`);
-  
-  // 添加价格计算调试
-  devLog(`TradingChart Debug: Price calculation:`);
-  devLog(`  prices array length: ${prices.length}`);
-  devLog(`  minPrice: ${minPrice}`);
-  devLog(`  maxPrice: ${maxPrice}`);
-  devLog(`  pricePadding: ${pricePadding}`);
-  devLog(`  Y-axis domain: [${minPrice - pricePadding}, ${maxPrice + pricePadding}]`);
-  
-  // 添加volume计算调试
-  devLog(`TradingChart Debug: Volume calculation:`);
-  devLog(`  volumes array length: ${volumes.length}`);
-  devLog(`  maxVolume: ${maxVolume}`);
-  devLog(`  volumePadding: ${volumePadding}`);
-  
-  // 检查前几条数据
-  if (data.length > 0) {
-    devLog(`TradingChart Debug: First data item:`, data[0]);
-    if (data.length > 1) {
-      devLog(`TradingChart Debug: Second data item:`, data[1]);
-    }
-    devLog(`TradingChart Debug: Last data item:`, data[data.length - 1]);
-  }
-
-  // Calculate chart heights with explicit pixel values - 显著增加Volume Chart高度
-  const priceChartHeight = (hasVolumeData && showVolume) ? 350 : 450; // Price Chart稍微减少：350px（有Volume时）或450px（无Volume时）
-  const volumeChartHeight = (hasVolumeData && showVolume) ? 280 : 0; // Volume Chart显著增加：280px，确保真正展开
-
-  // Format date for X-axis - 使用统一的日期格式化函数
-  const formatDate = (dateStr: string) => {
-    return formatDateForChart(dateStr);
-  };
-
-  // 生成每月一个自然代表日的日期刻度，确保2月日期点更自然
-  const generateDateTicks = (data: ChartDataItem[], targetTickCount: number = 13): string[] => {
-    if (data.length === 0) return [];
-    
-    // 如果数据点很少，返回所有日期
-    if (data.length <= 8) {
-      return data.map(item => item.date);
-    }
-    
-    // 按月份分组数据，选择每月最接近15号的日期作为代表
-    const monthMap = new Map<string, Array<{date: string, day: number}>>();
-    
-    data.forEach(item => {
-      const dateObj = parseDateSafe(item.date);
-      if (!dateObj) return;
-      
-      const year = dateObj.getFullYear();
-      const month = dateObj.getMonth(); // 0-11
-      const day = dateObj.getDate();
-      const key = `${year}-${month.toString().padStart(2, '0')}`;
-      
-      if (!monthMap.has(key)) {
-        monthMap.set(key, []);
-      }
-      monthMap.get(key)!.push({date: item.date, day});
-    });
-    
-    // 按时间顺序排序月份
-    const monthKeys = Array.from(monthMap.keys()).sort();
-    
-    const ticks: string[] = [];
-    
-    // 总是包含第一个日期
-    if (data.length > 0) {
-      ticks.push(data[0].date);
-    }
-    
-    // 为每个月份选择一个代表日期（尽量选择月中日期）
-    for (const monthKey of monthKeys) {
-      // 跳过第一个月（已包含第一个日期）
-      if (ticks.length > 0) {
-        const firstDate = parseDateSafe(ticks[0]);
-        if (firstDate) {
-          const firstYear = firstDate.getFullYear();
-          const firstMonth = firstDate.getMonth();
-          const currentDate = parseDateSafe(monthKey + '-01');
-          
-          if (currentDate && firstYear === currentDate.getFullYear() && firstMonth === currentDate.getMonth()) {
-            continue;
-          }
-        }
-      }
-      
-      const monthData = monthMap.get(monthKey)!;
-      
-      // 选择最接近15号的日期作为代表
-      let bestDate = monthData[0].date;
-      let bestDistance = Math.abs(monthData[0].day - 15);
-      
-      for (const item of monthData) {
-        const distance = Math.abs(item.day - 15);
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          bestDate = item.date;
-        }
-      }
-      
-      ticks.push(bestDate);
-    }
-    
-    // 总是包含最后一个日期
-    if (data.length > 0) {
-      const lastDate = data[data.length - 1].date;
-      if (ticks.length === 0 || ticks[ticks.length - 1] !== lastDate) {
-        ticks.push(lastDate);
-      }
-    }
-    
-    // 如果ticks数量太多，进行适当修剪（但确保包含首尾和重要月份）
-    if (ticks.length > targetTickCount) {
-      const importantTicks = new Set<string>();
-      
-      // 总是包含第一个和最后一个
-      importantTicks.add(ticks[0]);
-      importantTicks.add(ticks[ticks.length - 1]);
-      
-      // 特别确保包含2月和5月日期
-      const importantMonths = [1, 4]; // 2月(1)和5月(4)
-      const importantMonthTicks = ticks.filter(date => {
-        try {
-          const dateObj = new Date(date);
-          return importantMonths.includes(dateObj.getMonth());
-        } catch {
-          return false;
-        }
-      });
-      
-      importantMonthTicks.forEach(tick => importantTicks.add(tick));
-      
-      // 均匀选择其他月份的日期
-      const otherTicks = ticks.filter(tick => !importantTicks.has(tick));
-      const otherStep = Math.max(1, Math.floor(otherTicks.length / (targetTickCount - importantTicks.size)));
-      
-      for (let i = 0; i < otherTicks.length; i += otherStep) {
-        importantTicks.add(otherTicks[i]);
-        if (importantTicks.size >= targetTickCount) break;
-      }
-      
-      // 特别检查：如果5月仍然没有包含，强制添加一个5月日期
-      const hasMay = Array.from(importantTicks).some(date => {
-        try {
-          return new Date(date).getMonth() === 4; // 5月
-        } catch {
-          return false;
-        }
-      });
-      
-      if (!hasMay) {
-        // 查找所有5月日期
-        const mayDates: string[] = [];
-        data.forEach(item => {
-          try {
-            const dateObj = new Date(item.date);
-            if (dateObj.getMonth() === 4) { // 5月
-              mayDates.push(item.date);
-            }
-          } catch {
-            // 忽略解析错误
-          }
-        });
-        
-        if (mayDates.length > 0) {
-          // 选择最接近5月15号的日期
-          let bestMayDate = mayDates[0];
-          let bestMayDistance = 31;
-          
-          mayDates.forEach(date => {
-            try {
-              const day = new Date(date).getDate();
-              const distance = Math.abs(day - 15);
-              if (distance < bestMayDistance) {
-                bestMayDistance = distance;
-                bestMayDate = date;
-              }
-            } catch {
-              // 忽略解析错误
-            }
-          });
-          
-          // 找到插入位置（按时间顺序）
-          const insertIndex = Array.from(importantTicks).findIndex(tick => {
-            try {
-              return new Date(tick) > new Date(bestMayDate);
-            } catch {
-              return false;
-            }
-          });
-          
-          if (insertIndex !== -1) {
-            const ticksArray = Array.from(importantTicks);
-            ticksArray.splice(insertIndex, 0, bestMayDate);
-            return ticksArray.sort((a, b) => {
-              try {
-                return new Date(a).getTime() - new Date(b).getTime();
-              } catch {
-                return 0;
-              }
-            });
-          }
-        }
-      }
-      
-      return Array.from(importantTicks).sort((a, b) => {
-        try {
-          return new Date(a).getTime() - new Date(b).getTime();
-        } catch {
-          return 0;
-        }
-      });
-    }
-    
-    // 即使ticks数量不多，也检查5月是否包含
-    const hasMay = ticks.some(date => {
-      try {
-        return new Date(date).getMonth() === 4; // 5月
-      } catch {
-        return false;
-      }
-    });
-    
-    if (!hasMay) {
-      // 查找所有5月日期
-      const mayDates: string[] = [];
-      data.forEach(item => {
-        try {
-          const dateObj = new Date(item.date);
-          if (dateObj.getMonth() === 4) { // 5月
-            mayDates.push(item.date);
-          }
-        } catch {
-          // 忽略解析错误
-        }
-      });
-      
-      if (mayDates.length > 0) {
-        // 选择最接近5月15号的日期
-        let bestMayDate = mayDates[0];
-        let bestMayDistance = 31;
-        
-        mayDates.forEach(date => {
-          try {
-            const day = new Date(date).getDate();
-            const distance = Math.abs(day - 15);
-            if (distance < bestMayDistance) {
-              bestMayDistance = distance;
-              bestMayDate = date;
-            }
-          } catch {
-            // 忽略解析错误
-          }
-        });
-        
-        // 找到插入位置（按时间顺序）
-        const insertIndex = ticks.findIndex(tick => {
-          try {
-            return new Date(tick) > new Date(bestMayDate);
-          } catch {
-            return false;
-          }
-        });
-        
-        if (insertIndex !== -1) {
-          ticks.splice(insertIndex, 0, bestMayDate);
-        } else if (ticks.length < targetTickCount + 2) {
-          // 如果找不到合适位置，添加到倒数第二位置（最后一个日期之前）
-          ticks.splice(ticks.length - 1, 0, bestMayDate);
-        }
-      }
-    }
-    
-    return ticks;
-  };
-
-  // 获取统一的日期刻度
-  const dateTicks = generateDateTicks(processedChartData, 12);
-  
-  // 智能X轴刻度格式化 - 只显示在刻度数组中的日期
-  const smartTickFormatter = (value: string) => {
-    // 如果这个日期在刻度数组中，显示它
-    if (dateTicks.includes(value)) {
-      return formatDate(value);
-    }
-    return '';
-  };
-
-  // 专业交易图表Tooltip
-  const ProfessionalTooltip = ({ active, payload, label }: any) => {
-    if (active && payload && payload.length) {
-      // 使用统一的tooltip日期获取函数
-      const displayDate = getTooltipDate(payload, label);
-      
-      // Find the data point
-      const dataPoint = processedChartData.find(item => item.date === label);
-      if (!dataPoint) return null;
-
-      return (
-        <div style={{
-          backgroundColor: 'var(--app-card-bg)',
-          padding: '14px',
-          border: '1px solid var(--app-border-soft)',
-          borderRadius: '8px',
-          boxShadow: '0 6px 16px rgba(0,0,0,0.12)',
-          backdropFilter: 'blur(8px)',
-          minWidth: '220px',
-          transform: 'translate(-50%, -100%)',
-          marginTop: '-10px',
-          borderTop: '3px solid #1890ff'
-        }}>
-          {/* 标题区域 - 更紧凑 */}
-          <div style={{ 
-            marginBottom: '14px'
-          }}>
-            <div style={{ 
-              fontSize: '14px', // 增大字号
-              fontWeight: '700', 
-              color: 'var(--app-text-strong)',
-              marginBottom: '3px',
-              letterSpacing: '0.4px'
-            }}>
-              {displayDate}
-            </div>
-            <div style={{ 
-              fontSize: '11px', // 增大字号
-              color: 'var(--app-text-muted)',
-              display: 'flex',
-              alignItems: 'center',
-              textTransform: 'uppercase',
-              letterSpacing: '0.6px'
-            }}>
-              <span style={{
-                display: 'inline-block',
-                width: '6px',
-                height: '6px',
-                backgroundColor: '#1890ff',
-                borderRadius: '50%',
-                marginRight: '6px'
-              }}></span>
-              TRADING DATA
-            </div>
-          </div>
-          
-          {/* 价格信息 - 更紧凑专业 */}
-          <div style={{ marginBottom: '12px' }}>
-            <div style={{ 
-              fontSize: '11px', 
-              color: 'var(--app-text-muted)',
-              marginBottom: '6px',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              paddingBottom: '4px',
-              borderBottom: '1px solid var(--app-border-soft)'
-            }}>
-              <span style={{ fontWeight: '600' }}>{t.backtest.price}</span>
-              <span style={{ 
-                fontWeight: '700', 
-                color: '#1890ff',
-                fontSize: '13px'
-              }}>
-                {dataPoint.close !== null && dataPoint.close !== undefined ? 
-                  `$${Number(dataPoint.close).toLocaleString('en-US', {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2
-                  })}` : '--'
-                }
-              </span>
-            </div>
-            
-            {dataPoint.sma20 !== undefined && dataPoint.sma20 !== null && (
-              <div style={{ 
-                fontSize: '10px', 
-                color: 'var(--app-text-muted)',
-                marginBottom: '4px',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center'
-              }}>
-                <span style={{ color: '#52c41a', fontWeight: '500' }}>SMA 20</span>
-                <span style={{ fontWeight: '600', color: 'var(--app-text-strong)' }}>
-                  ${Number(dataPoint.sma20).toLocaleString('en-US', {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2
-                  })}
-                </span>
-              </div>
-            )}
-            
-            {dataPoint.sma50 !== undefined && dataPoint.sma50 !== null && (
-              <div style={{ 
-                fontSize: '10px', 
-                color: 'var(--app-text-muted)',
-                marginBottom: '4px',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center'
-              }}>
-                <span style={{ color: '#fa8c16', fontWeight: '500' }}>SMA 50</span>
-                <span style={{ fontWeight: '600', color: 'var(--app-text-strong)' }}>
-                  ${Number(dataPoint.sma50).toLocaleString('en-US', {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2
-                  })}
-                </span>
-              </div>
-            )}
-          </div>
-          
-          {/* 交易量和信号 - 更紧凑 */}
-          <div>
-            {dataPoint.volume !== undefined && dataPoint.volume > 0 && (
-              <div style={{ 
-                fontSize: '10px', 
-                color: 'var(--app-text-muted)',
-                marginBottom: '8px',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                padding: '6px 8px',
-                backgroundColor: 'var(--app-card-bg-soft)',
-                borderRadius: '4px',
-                border: '1px solid var(--app-border-soft)'
-              }}>
-                <span style={{ fontWeight: '500' }}>{t.backtest.volume}</span>
-                <span style={{ fontWeight: '700', color: 'var(--app-text-strong)' }}>
-                  {formatVolume(dataPoint.volume)}
-                </span>
-              </div>
-            )}
-            
-            {dataPoint.signal !== 0 && (
-              <div style={{ 
-                padding: '8px 10px',
-                backgroundColor: dataPoint.signal === 1 ? 'rgba(82, 196, 26, 0.12)' : 'rgba(245, 34, 45, 0.12)',
-                borderRadius: '6px',
-                border: `2px solid ${dataPoint.signal === 1 ? 'rgba(82, 196, 26, 0.4)' : 'rgba(245, 34, 45, 0.4)'}`,
-                marginTop: '8px'
-              }}>
-                <div style={{ 
-                  fontSize: '11px', 
-                  fontWeight: '700',
-                  color: dataPoint.signal === 1 ? '#52c41a' : '#f5222d',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  letterSpacing: '0.5px'
-                }}>
-                  <span style={{
-                    display: 'inline-block',
-                    width: '8px',
-                    height: '8px',
-                    backgroundColor: dataPoint.signal === 1 ? '#52c41a' : '#f5222d',
-                    borderRadius: '50%',
-                    marginRight: '8px',
-                    boxShadow: `0 0 8px ${dataPoint.signal === 1 ? 'rgba(82, 196, 26, 0.6)' : 'rgba(245, 34, 45, 0.6)'}`
-                  }}></span>
-                  {dataPoint.signal === 1 ? t.backtest.buySignal : t.backtest.sellSignal}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      );
-    }
-    return null;
-  };
-
-  // Format volume for display
-  const formatVolume = (volume: number): string => {
-    if (volume >= 1000000) {
-      return `${(volume / 1000000).toFixed(1)}M`;
-    } else if (volume >= 1000) {
-      return `${(volume / 1000).toFixed(0)}K`;
-    }
-    return volume.toString();
-  };
-
-  // Volume Chart Tooltip - 使用统一的日期格式化
-  const VolumeTooltip = ({ active, payload, label }: any) => {
-    if (active && payload && payload.length) {
-      // 使用统一的tooltip日期获取函数
-      const displayDate = getTooltipDate(payload, label);
-      
-      // Find the data point
-      const dataPoint = processedChartData.find(item => item.date === label);
-      if (!dataPoint) return null;
-
-      const isUp = dataPoint.volumeColor === '#95de64';
-      const directionColor = isUp ? '#52c41a' : '#f5222d';
-
-      return (
-        <div style={{
-          backgroundColor: 'var(--app-card-bg)',
-          padding: '14px',
-          border: '1px solid var(--app-border-soft)',
-          borderRadius: '8px',
-          boxShadow: '0 6px 16px rgba(0,0,0,0.12)',
-          backdropFilter: 'blur(8px)',
-          minWidth: '200px',
-          transform: 'translate(-50%, -100%)',
-          marginTop: '-10px',
-          borderTop: `3px solid ${directionColor}`
-        }}>
-          {/* 标题区域 */}
-          <div style={{ 
-            marginBottom: '14px'
-          }}>
-            <div style={{ 
-              fontSize: '14px',
-              fontWeight: '700', 
-              color: 'var(--app-text-strong)',
-              marginBottom: '3px',
-              letterSpacing: '0.4px'
-            }}>
-              {displayDate}
-            </div>
-            <div style={{ 
-              fontSize: '11px',
-              color: 'var(--app-text-muted)',
-              display: 'flex',
-              alignItems: 'center',
-              textTransform: 'uppercase',
-              letterSpacing: '0.6px'
-            }}>
-              <span style={{
-                display: 'inline-block',
-                width: '6px',
-                height: '6px',
-                backgroundColor: directionColor,
-                borderRadius: '50%',
-                marginRight: '6px'
-              }}></span>
-              {t.backtest.volumeData}
-            </div>
-          </div>
-          
-          {/* 交易量信息 */}
-          <div style={{ 
-            fontSize: '11px', 
-            color: 'var(--app-text-muted)',
-            marginBottom: '6px',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            paddingBottom: '4px',
-            borderBottom: '1px solid var(--app-border-soft)'
-          }}>
-            <span style={{ fontWeight: '600' }}>VOLUME</span>
-            <span style={{ 
-              fontWeight: '700', 
-              color: '#1890ff',
-              fontSize: '13px'
-            }}>
-              {formatVolume(dataPoint.volume || 0)}
-            </span>
-          </div>
-          
-          {/* 价格方向指示器 */}
-          <div style={{ 
-            padding: '8px 10px',
-            backgroundColor: isUp ? 'rgba(82, 196, 26, 0.12)' : 'rgba(245, 34, 45, 0.12)',
-            borderRadius: '6px',
-            border: `2px solid ${isUp ? 'rgba(82, 196, 26, 0.4)' : 'rgba(245, 34, 45, 0.4)'}`,
-            marginTop: '8px'
-          }}>
-            <div style={{ 
-              fontSize: '11px', 
-              fontWeight: '700',
-              color: directionColor,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              letterSpacing: '0.5px'
-                }}>
-                  <span style={{
-                    display: 'inline-block',
-                    width: '8px',
-                    height: '8px',
-                    backgroundColor: directionColor,
-                    borderRadius: '50%',
-                    marginRight: '8px',
-                    boxShadow: `0 0 8px ${isUp ? 'rgba(82, 196, 26, 0.6)' : 'rgba(245, 34, 45, 0.6)'}`
-                  }}></span>
-                  {isUp ? t.backtest.priceUp : t.backtest.priceDown}
-                </div>
-              </div>
-            </div>
-          );
-        }
-        return null;
-      };
-
-  // Format currency
-  const formatCurrency = (amount: number): string => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0
-    }).format(amount);
-  };
-
-  // Custom shape for buy signals - More prominent with larger size and B letter
-  const BuySignalShape = (props: any) => {
-    const { cx, cy } = props;
-    const size = 16; // Increased size
+  const tooltip = ({ active, payload, label }: any) => {
+    if (!active || !payload?.length) return null;
+    const datum = payload[0]?.payload;
     return (
-      <g style={{ pointerEvents: 'all' }}>
-        <circle 
-          cx={cx} 
-          cy={cy} 
-          r={size}
-          fill="#52c41a" 
-          stroke="var(--app-card-bg)" 
-          strokeWidth={3}
-          opacity={1}
-          filter="drop-shadow(0px 3px 6px rgba(82, 196, 26, 0.4))"
-        />
-        {/* Large B letter */}
-        <text
-          x={cx}
-          y={cy}
-          dy={5}
-          textAnchor="middle"
-          fill="white"
-          fontSize={14}
-          fontWeight="bold"
-          style={{ pointerEvents: 'none' }}
-        >
-          B
-        </text>
-        {/* Green glow effect */}
-        <circle 
-          cx={cx} 
-          cy={cy} 
-          r={size + 3}
-          fill="none"
-          stroke="#52c41a"
-          strokeWidth={1}
-          opacity={0.3}
-        />
-      </g>
+      <div className="trading-chart__tooltip">
+        <span>{formatTooltipDate(label)}</span>
+        <strong>${Number(datum?.close || 0).toFixed(2)}</strong>
+        <dl>
+          {finite(datum?.sma20) && <div><dt>SMA 20</dt><dd>${datum.sma20.toFixed(2)}</dd></div>}
+          {finite(datum?.sma50) && <div><dt>SMA 50</dt><dd>${datum.sma50.toFixed(2)}</dd></div>}
+          {datum?.volume > 0 && <div><dt>{t.backtest.volume}</dt><dd>{compactNumber(datum.volume, locale)}</dd></div>}
+        </dl>
+        {datum?.signal === 1 && <em className="is-buy">{t.backtest.buySignal}</em>}
+        {datum?.signal === -1 && <em className="is-sell">{t.backtest.sellSignal}</em>}
+      </div>
     );
   };
 
-  // Custom shape for sell signals - More prominent with larger size and S letter
-  const SellSignalShape = (props: any) => {
-    const { cx, cy } = props;
-    const size = 16; // Increased size
-    return (
-      <g style={{ pointerEvents: 'all' }}>
-        <circle 
-          cx={cx} 
-          cy={cy} 
-          r={size}
-          fill="#f5222d" 
-          stroke="var(--app-card-bg)" 
-          strokeWidth={3}
-          opacity={1}
-          filter="drop-shadow(0px 3px 6px rgba(245, 34, 45, 0.4))"
-        />
-        {/* Large S letter */}
-        <text
-          x={cx}
-          y={cy}
-          dy={5}
-          textAnchor="middle"
-          fill="white"
-          fontSize={14}
-          fontWeight="bold"
-          style={{ pointerEvents: 'none' }}
-        >
-          S
-        </text>
-        {/* Red glow effect */}
-        <circle 
-          cx={cx} 
-          cy={cy} 
-          r={size + 3}
-          fill="none"
-          stroke="#f5222d"
-          strokeWidth={1}
-          opacity={0.3}
-        />
-      </g>
-    );
-  };
+  const controls: Array<{ key: SeriesKey; label: string; color: string; show: boolean }> = [
+    { key: 'sma20', label: 'SMA 20', color: '#83a77a', show: summary.hasSma20 },
+    { key: 'sma50', label: 'SMA 50', color: '#c38a61', show: summary.hasSma50 },
+    { key: 'signals', label: t.backtest.signals, color: '#6f91b8', show: summary.buys + summary.sells > 0 },
+    { key: 'volume', label: t.backtest.volume, color: '#718078', show: summary.hasVolume },
+  ];
 
   return (
-    <div style={{ 
-      border: '1px solid var(--app-border-soft)', 
-      borderRadius: '8px', 
-      padding: '32px', // 进一步增加内边距
-      backgroundColor: 'var(--app-card-bg)',
-      minHeight: Math.max(height, 700), // 显著增加外层容器高度，至少700px
-      display: 'flex',
-      flexDirection: 'column'
-    }}>
-      {/* Header with Chart Controls - Optimized position */}
-      <div style={{ 
-        display: 'flex', 
-        justifyContent: 'space-between', 
-        alignItems: 'center', 
-        marginBottom: '24px', // 增加间距：24px
-        padding: '0 4px' // 减少内边距，让标题更靠近边缘
-      }}>
-        <h4 style={{ margin: 0, color: 'var(--app-text-strong)', fontSize: '18px', fontWeight: '600' }}>{t.backtest.priceChartWithSignals}</h4>
-        
-        {/* Chart Controls - 更紧凑利落的专业交易平台风格 */}
-        <div style={{ 
-          display: 'flex',
-          alignItems: 'center',
-          padding: '6px 14px',
-          backgroundColor: 'var(--app-card-bg-soft)',
-          borderRadius: '8px',
-          border: '1px solid var(--app-border-soft)',
-          fontSize: '11px',
-          boxShadow: 'var(--app-shadow)'
-        }}>
-          <Space direction="horizontal" size={10}>
-            <Checkbox 
-              checked={showClosePrice} 
-              onChange={(e) => setShowClosePrice(e.target.checked)}
-              style={{ fontSize: '11px', marginRight: '0', padding: '0' }}
-            >
-              <span style={{ color: '#1890ff', fontWeight: '700', letterSpacing: '0.5px' }}>{t.backtest.price}</span>
-            </Checkbox>
-            
-            <div style={{ width: '1px', height: '12px', backgroundColor: 'var(--app-border-soft)', margin: '0 2px' }}></div>
-            
-            {hasSMA20 && (
-              <Checkbox 
-                checked={showSMA20} 
-                onChange={(e) => setShowSMA20(e.target.checked)}
-                style={{ fontSize: '9px', marginRight: '0', padding: '0' }}
-              >
-                <span style={{ color: '#52c41a', opacity: 0.9, fontWeight: '500' }}>SMA20</span>
-              </Checkbox>
-            )}
-            
-            {hasSMA50 && (
-              <Checkbox 
-                checked={showSMA50} 
-                onChange={(e) => setShowSMA50(e.target.checked)}
-                style={{ fontSize: '9px', marginRight: '0', padding: '0' }}
-              >
-                <span style={{ color: '#fa8c16', opacity: 0.9, fontWeight: '500' }}>SMA50</span>
-              </Checkbox>
-            )}
-            
-            <div style={{ width: '1px', height: '12px', backgroundColor: 'var(--app-border-soft)', margin: '0 2px' }}></div>
-            
-            {hasSignals && (
-              <Checkbox 
-                checked={showSignals} 
-                onChange={(e) => setShowSignals(e.target.checked)}
-                style={{ fontSize: '9px', marginRight: '0', padding: '0' }}
-              >
-                <span style={{ color: 'var(--app-text-muted)', opacity: 0.9, fontWeight: '500' }}>{t.backtest.signals}</span>
-              </Checkbox>
-            )}
-            
-            {hasVolumeData && (
-              <>
-                <div style={{ width: '1px', height: '12px', backgroundColor: 'var(--app-border-soft)', margin: '0 2px' }}></div>
-                <Checkbox 
-                  checked={showVolume} 
-                  onChange={(e) => setShowVolume(e.target.checked)}
-                  style={{ fontSize: '9px', padding: '0' }}
-                >
-                  <span style={{ color: 'var(--app-text-muted)', opacity: 0.9, fontWeight: '500' }}>{t.backtest.volume}</span>
-                </Checkbox>
-              </>
-            )}
-          </Space>
-        </div>
-      </div>
-      
-      {/* Price Chart */}
-      <div style={{ 
-        height: priceChartHeight, 
-        marginBottom: (hasVolumeData && showVolume) ? '20px' : '0',  // 减少间距：20px，让两个图更紧凑
-        flex: '0 0 auto'  // 固定高度，不自动扩展
-      }}>
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart
-            data={processedChartData}
-            margin={{ top: 10, right: 25, left: 25, bottom: 10 }}
-          >
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--app-border-soft)" vertical={false} />
-            <XAxis 
-              dataKey="date" 
-              tick={{ fontSize: 11, fill: 'var(--app-text-muted)' }} // 增大字号
-              tickFormatter={smartTickFormatter}
-              axisLine={{ stroke: 'var(--app-border-soft)' }}
-              tickLine={{ stroke: 'var(--app-border-soft)' }}
-              height={38}
-              // 使用统一的日期刻度
-              ticks={dateTicks}
-            />
-            <YAxis 
-              domain={[minPrice - pricePadding, maxPrice + pricePadding]}
-              tick={{ fontSize: 11, fill: 'var(--app-text-muted)' }} // 增大字号
-              tickFormatter={(value) => {
-                const val = Number(value);
-                if (isNaN(val)) return '$0.00';
-                // Professional prices format: integer part comma separated, two decimals
-                return `$${val.toLocaleString('en-US', {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2
-                })}`;
-              }}
-              axisLine={{ stroke: 'var(--app-border-soft)' }}
-              tickLine={{ stroke: 'var(--app-border-soft)' }}
-              width={70}
-              // 给价格留出更多空白，看起来更专业
-              padding={{ top: 22, bottom: 22 }}
-            />
-            <Tooltip 
-              content={<ProfessionalTooltip />}
-              offset={12}
-              cursor={{ stroke: 'var(--app-border-soft)', strokeWidth: 1, strokeDasharray: '3 3' }}
-            />
-            <Legend 
-              wrapperStyle={{ 
-                paddingTop: '3px', 
-                paddingBottom: '3px',
-                fontSize: '10px',
-                marginTop: '-4px' // 更靠近图表
-              }}
-              iconSize={8}
-              iconType="plainline"
-            />
-            
-            {/* Price line - 更突出，专业交易图表风格 */}
-            {showClosePrice && (
-              <Line
-                type="monotone"
-                dataKey="close"
-                stroke="#1890ff"
-                strokeWidth={3.5} // 增加线条宽度，更突出
-                dot={false} // 去掉静态点，只在hover时显示
-                name="Price"
-                activeDot={{ 
-                  r: 7, // 增加hover点大小
-                  stroke: '#1890ff', 
-                  strokeWidth: 2, 
-                  fill: 'var(--app-card-bg)',
-                  strokeOpacity: 0.8
-                }}
-                connectNulls={true}
-              />
-            )}
-            
-            {/* SMA20 line - 辅助线，更弱化 */}
-            {showSMA20 && hasSMA20 && (
-              <Line
-                type="monotone"
-                dataKey="sma20"
-                stroke="#52c41a"
-                strokeWidth={1.0} // 减少线条宽度
-                strokeDasharray="3 3"
-                dot={false}
-                name="SMA 20"
-                connectNulls={true}
-                opacity={0.8} // 增加透明度，更弱化
-              />
-            )}
-            
-            {/* SMA50 line - 辅助线，更弱化 */}
-            {showSMA50 && hasSMA50 && (
-              <Line
-                type="monotone"
-                dataKey="sma50"
-                stroke="#fa8c16"
-                strokeWidth={1.0} // 减少线条宽度
-                strokeDasharray="3 3"
-                dot={false}
-                name="SMA 50"
-                connectNulls={true}
-                opacity={0.8} // 增加透明度，更弱化
-              />
-            )}
-            
-            {/* Buy signals - Rendered last to ensure they're on top */}
-            {showSignals && hasSignals && (
-              <Scatter
-                dataKey="buySignal"
-                fill="#52c41a"
-                shape={BuySignalShape}
-                name={t.backtest.buySignal}
-              />
-            )}
-            
-            {/* Sell signals - Rendered last to ensure they're on top */}
-            {showSignals && hasSignals && (
-              <Scatter
-                dataKey="sellSignal"
-                fill="#f5222d"
-                shape={SellSignalShape}
-                name={t.backtest.sellSignal}
-              />
-            )}
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-
-      {/* Volume Chart (only if we have volume data and it's enabled) */}
-      {hasVolumeData && showVolume && (
-        <div style={{ 
-          height: volumeChartHeight,
-          marginTop: '0',  // 去掉顶部间距，因为Price Chart已经有底部间距
-          marginBottom: '20px', // 稍微减少底部间距：20px，让整体更紧凑
-          flex: '0 0 auto'  // 固定高度，不自动扩展
-        }}>
-          <div style={{ 
-            display: 'flex', 
-            justifyContent: 'space-between', 
-            alignItems: 'center',
-            marginBottom: '12px',
-            padding: '8px 14px',
-            backgroundColor: 'var(--app-card-bg-soft)',
-            borderRadius: '8px',
-            border: '1px solid var(--app-border-soft)',
-            boxShadow: 'var(--app-shadow)'
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center' }}>
-              <div style={{
-                width: '14px',
-                height: '14px',
-                backgroundColor: '#95de64',
-                marginRight: '12px',
-                borderRadius: '4px',
-                boxShadow: '0 2px 6px rgba(0,0,0,0.12)'
-              }}></div>
-              <div>
-                <h5 style={{ 
-                  margin: 0, 
-                  color: 'var(--app-text-strong)', 
-                  fontSize: '14px', // 增大字号
-                  fontWeight: '700',
-                  letterSpacing: '0.6px',
-                  textTransform: 'uppercase',
-                  marginBottom: '3px'
-                }}>{t.backtest.volumeChart}</h5>
-                <div style={{ 
-                  fontSize: '11px', // 增大字号
-                  color: 'var(--app-text-muted)',
-                  fontWeight: '500',
-                  letterSpacing: '0.3px'
-                }}>{t.backtest.tradingVolumeGreenRed}</div>
-              </div>
-            </div>
-            <div style={{ 
-              fontSize: '11px', // 增大字号
-              color: 'var(--app-text-strong)',
-              fontWeight: '600',
-              padding: '5px 12px',
-              backgroundColor: 'var(--app-card-bg)',
-              borderRadius: '6px',
-              border: '1px solid var(--app-border-soft)',
-              boxShadow: '0 2px 4px rgba(0,0,0,0.08)'
-            }}>
-              {t.backtest.volume}
-            </div>
-          </div>
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart
-              data={processedChartData}
-              margin={{ top: 8, right: 30, left: 30, bottom: 15 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--app-border-soft)" vertical={false} />
-              <XAxis 
-                dataKey="date" 
-                tick={{ fontSize: 10, fill: 'var(--app-text-muted)' }} // 增大字号
-                tickFormatter={smartTickFormatter}
-                axisLine={{ stroke: 'var(--app-border-soft)' }}
-                tickLine={{ stroke: 'var(--app-border-soft)' }}
-                height={28}
-                // 使用统一的日期刻度
-                ticks={dateTicks}
-              />
-              <YAxis 
-                tick={{ fontSize: 10, fill: 'var(--app-text-muted)' }} // 增大字号
-                tickFormatter={(value) => {
-                  const val = Number(value);
-                  if (isNaN(val)) return '0';
-                  if (val >= 1000000) return `${(val / 1000000).toFixed(1)}M`;
-                  if (val >= 1000) return `${(val / 1000).toFixed(0)}K`;
-                  return val.toFixed(0);
-                }}
-                axisLine={{ stroke: 'var(--app-border-soft)' }}
-                tickLine={{ stroke: 'var(--app-border-soft)' }}
-                width={55} // 增加宽度，避免标签被裁剪
-                // 给Volume Chart的Y轴也留出适当空白
-                padding={{ top: 18, bottom: 18 }} // 增加padding
-              />
-              <Tooltip 
-                content={<VolumeTooltip />}
-                offset={12}
-                cursor={{ 
-                  stroke: '#1890ff', 
-                  strokeWidth: 1, 
-                  strokeDasharray: '3 3',
-                  opacity: 0.6
-                }}
-              />
-              
-              {/* Volume bars with dynamic colors - 更专业明显的柱子 */}
-              <Bar
-                dataKey="volumeDisplay"
-                name="Volume"
-                fill="#999"  // Default color
-                barSize={14} // 减少柱子宽度，避免太挤
-                radius={[3, 3, 0, 0]} // 减少圆角
-              >
-                {processedChartData.map((entry, index) => (
-                  <Cell 
-                    key={`cell-${index}`} 
-                    className="volume-bar-cell"
-                    fill={entry.volumeColor || '#999'}
-                    stroke={entry.volumeColor || '#999'}
-                    strokeWidth={0.8} // 减少边框宽度
-                    style={{
-                      transition: 'all 0.2s ease',
-                      cursor: 'pointer'
-                    }}
-                    onMouseEnter={(e) => {
-                      const target = e.target as HTMLElement;
-                      target.style.opacity = '0.6';
-                      target.style.strokeWidth = '2';
-                      target.style.filter = 'brightness(1.1)';
-                    }}
-                    onMouseLeave={(e) => {
-                      const target = e.target as HTMLElement;
-                      target.style.opacity = '1';
-                      target.style.strokeWidth = '0.8';
-                      target.style.filter = 'brightness(1)';
-                    }}
-                  />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-
-
-      {/* Parameters Section - Professional card layout */}
-      {parameters && (
-        <div style={{ 
-          marginTop: '24px',
-          padding: '20px',
-          backgroundColor: 'var(--app-card-bg-soft)',
-          borderRadius: '8px',
-          border: '1px solid var(--app-border-soft)'
-        }}>
-          <div style={{ 
-            display: 'flex', 
-            justifyContent: 'space-between', 
-            alignItems: 'center',
-            marginBottom: '16px',
-            paddingBottom: '12px',
-            borderBottom: '1px solid var(--app-border-soft)'
-          }}>
-            <h5 style={{ margin: 0, color: 'var(--app-text-strong)', fontSize: '15px', fontWeight: '600' }}>Backtest Parameters</h5>
-            <span style={{ 
-              fontSize: '12px', 
-              color: 'var(--app-text-muted)', 
-              backgroundColor: 'var(--app-card-bg)',
-              padding: '4px 8px',
-              borderRadius: '4px'
-            }}>
-              Configuration
+    <section className="trading-chart" aria-label={t.backtest.priceChartWithSignals}>
+      <header className="trading-chart__header">
+        <div>
+          <span className="trading-chart__eyebrow">{isZh ? '价格与执行信号' : 'PRICE & EXECUTION SIGNALS'}</span>
+          <div className="trading-chart__last-line">
+            <strong>${summary.last.toFixed(2)}</strong>
+            <span className={summary.change >= 0 ? 'is-positive' : 'is-negative'}>
+              {summary.change >= 0 ? '+' : ''}{summary.change.toFixed(2)}%
             </span>
           </div>
-          
-          <Row gutter={[16, 16]}>
-            {parameters.strategy && (
-              <Col xs={24} sm={12} md={6} lg={6}>
-                <div style={{ 
-                  padding: '16px',
-                  backgroundColor: 'var(--app-card-bg)',
-                  borderRadius: '6px',
-                  border: '1px solid var(--app-border-soft)',
-                  boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
-                  transition: 'all 0.2s ease'
-                }}>
-                  <div style={{ 
-                    fontSize: '11px', 
-                    color: 'var(--app-text-muted)', 
-                    marginBottom: '6px',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.5px',
-                    fontWeight: '500'
-                  }}>Strategy</div>
-                  <div style={{ 
-                    fontSize: '15px', 
-                    fontWeight: '600', 
-                    color: 'var(--app-text-strong)',
-                    display: 'flex',
-                    alignItems: 'center'
-                  }}>
-                    <span style={{
-                      display: 'inline-block',
-                      width: '8px',
-                      height: '8px',
-                      backgroundColor: '#1890ff',
-                      borderRadius: '50%',
-                      marginRight: '8px'
-                    }}></span>
-                    {parameters.strategy.replace('_', ' ').toUpperCase()}
-                  </div>
-                </div>
-              </Col>
-            )}
-            {parameters.symbol && (
-              <Col xs={24} sm={12} md={6} lg={6}>
-                <div style={{ 
-                  padding: '16px',
-                  backgroundColor: 'var(--app-card-bg)',
-                  borderRadius: '6px',
-                  border: '1px solid var(--app-border-soft)',
-                  boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
-                  transition: 'all 0.2s ease'
-                }}>
-                  <div style={{ 
-                    fontSize: '11px', 
-                    color: 'var(--app-text-muted)', 
-                    marginBottom: '6px',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.5px',
-                    fontWeight: '500'
-                  }}>Symbol</div>
-                  <div style={{ 
-                    fontSize: '15px', 
-                    fontWeight: '600', 
-                    color: 'var(--app-text-strong)',
-                    display: 'flex',
-                    alignItems: 'center'
-                  }}>
-                    <span style={{
-                      display: 'inline-block',
-                      width: '8px',
-                      height: '8px',
-                      backgroundColor: '#52c41a',
-                      borderRadius: '50%',
-                      marginRight: '8px'
-                    }}></span>
-                    {parameters.symbol}
-                  </div>
-                </div>
-              </Col>
-            )}
-            {parameters.period && (
-              <Col xs={24} sm={12} md={6} lg={6}>
-                <div style={{ 
-                  padding: '16px',
-                  backgroundColor: 'var(--app-card-bg)',
-                  borderRadius: '6px',
-                  border: '1px solid var(--app-border-soft)',
-                  boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
-                  transition: 'all 0.2s ease'
-                }}>
-                  <div style={{ 
-                    fontSize: '11px', 
-                    color: 'var(--app-text-muted)', 
-                    marginBottom: '6px',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.5px',
-                    fontWeight: '500'
-                  }}>Period</div>
-                  <div style={{ 
-                    fontSize: '15px', 
-                    fontWeight: '600', 
-                    color: 'var(--app-text-strong)',
-                    display: 'flex',
-                    alignItems: 'center'
-                  }}>
-                    <span style={{
-                      display: 'inline-block',
-                      width: '8px',
-                      height: '8px',
-                      backgroundColor: '#fa8c16',
-                      borderRadius: '50%',
-                      marginRight: '8px'
-                    }}></span>
-                    {parameters.period}
-                  </div>
-                </div>
-              </Col>
-            )}
-            {parameters.initialCapital && (
-              <Col xs={24} sm={12} md={6} lg={6}>
-                <div style={{ 
-                  padding: '16px',
-                  backgroundColor: 'var(--app-card-bg)',
-                  borderRadius: '6px',
-                  border: '1px solid var(--app-border-soft)',
-                  boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
-                  transition: 'all 0.2s ease'
-                }}>
-                  <div style={{ 
-                    fontSize: '11px', 
-                    color: 'var(--app-text-muted)', 
-                    marginBottom: '6px',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.5px',
-                    fontWeight: '500'
-                  }}>Initial Capital</div>
-                  <div style={{ 
-                    fontSize: '15px', 
-                    fontWeight: '600', 
-                    color: 'var(--app-text-strong)',
-                    display: 'flex',
-                    alignItems: 'center'
-                  }}>
-                    <span style={{
-                      display: 'inline-block',
-                      width: '8px',
-                      height: '8px',
-                      backgroundColor: '#722ed1',
-                      borderRadius: '50%',
-                      marginRight: '8px'
-                    }}></span>
-                    {formatCurrency(parameters.initialCapital)}
-                  </div>
-                </div>
-              </Col>
-            )}
-          </Row>
+          <small>{parameters?.symbol || (isZh ? '回测标的' : 'Backtest instrument')} · {chartData.length.toLocaleString(locale)} {isZh ? '个数据点' : 'observations'}</small>
         </div>
+        <dl className="trading-chart__range">
+          <div><dt>{isZh ? '区间低点' : 'PERIOD LOW'}</dt><dd>${summary.low.toFixed(2)}</dd></div>
+          <div><dt>{isZh ? '区间高点' : 'PERIOD HIGH'}</dt><dd>${summary.high.toFixed(2)}</dd></div>
+          <div><dt>{isZh ? '买 / 卖' : 'BUY / SELL'}</dt><dd>{summary.buys} / {summary.sells}</dd></div>
+        </dl>
+      </header>
+
+      <div className="trading-chart__controls" aria-label={isZh ? '图表图层' : 'Chart layers'}>
+        <span>{isZh ? '图层' : 'LAYERS'}</span>
+        {controls.filter(control => control.show).map(control => (
+          <button
+            type="button"
+            key={control.key}
+            className={visible[control.key] ? 'is-active' : ''}
+            aria-pressed={visible[control.key]}
+            onClick={() => toggleSeries(control.key)}
+          >
+            <i style={{ background: control.color }} aria-hidden="true" />{control.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="trading-chart__canvas" style={{ height: chartHeight }}>
+        <div style={{ height: priceHeight }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={chartData} margin={{ top: 16, right: 18, left: 2, bottom: volumeHeight ? 0 : 8 }}>
+              <defs>
+                <linearGradient id="tcPriceFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#6f91b8" stopOpacity={0.22} />
+                  <stop offset="100%" stopColor="#6f91b8" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid stroke="var(--tc-grid)" strokeDasharray="2 5" vertical={false} />
+              <XAxis dataKey="date" hide={Boolean(volumeHeight)} tickFormatter={formatDate} minTickGap={46} tickLine={false} axisLine={false} tick={{ fill: 'var(--tc-muted)', fontSize: 11 }} />
+              <YAxis orientation="right" domain={priceDomain} tickFormatter={value => `$${Number(value).toFixed(0)}`} width={58} tickLine={false} axisLine={false} tick={{ fill: 'var(--tc-muted)', fontSize: 11 }} />
+              <Tooltip
+                content={tooltip}
+                cursor={{ stroke: 'var(--tc-cursor)', strokeWidth: 1 }}
+                wrapperStyle={{ outline: 'none', zIndex: 8, pointerEvents: 'none' }}
+                allowEscapeViewBox={{ x: true, y: true }}
+              />
+              <ReferenceLine y={summary.first} stroke="var(--tc-baseline)" strokeDasharray="4 5" />
+              <Area type="monotone" dataKey="close" stroke="#77a7e2" strokeWidth={2.2} fill="url(#tcPriceFill)" dot={false} activeDot={{ r: 4, fill: '#77a7e2', stroke: 'var(--tc-panel)', strokeWidth: 2 }} isAnimationActive={false} />
+              {summary.hasSma20 && visible.sma20 && <Line type="monotone" dataKey="sma20" stroke="#9ab990" strokeWidth={1.6} dot={false} connectNulls isAnimationActive={false} />}
+              {summary.hasSma50 && visible.sma50 && <Line type="monotone" dataKey="sma50" stroke="#d09a6d" strokeWidth={1.6} dot={false} connectNulls isAnimationActive={false} />}
+              {visible.signals && <Scatter dataKey="buySignal" fill="#91b987" shape="triangle" />}
+              {visible.signals && <Scatter dataKey="sellSignal" fill="#d37c64" shape="diamond" />}
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+        {Boolean(volumeHeight) && (
+          <div className="trading-chart__volume" style={{ height: volumeHeight }}>
+            <span>{t.backtest.volume}</span>
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={chartData} margin={{ top: 6, right: 76, left: 2, bottom: 4 }}>
+                <XAxis dataKey="date" tickFormatter={formatDate} minTickGap={46} tickLine={false} axisLine={false} tick={{ fill: 'var(--tc-muted)', fontSize: 11 }} />
+                <YAxis hide domain={[0, 'dataMax']} />
+                <Tooltip
+                  content={tooltip}
+                  cursor={{ fill: 'var(--tc-hover)' }}
+                  wrapperStyle={{ outline: 'none', zIndex: 8, pointerEvents: 'none' }}
+                  allowEscapeViewBox={{ x: true, y: true }}
+                />
+                <Bar dataKey="volume" fill="var(--tc-volume)" opacity={0.68} maxBarSize={10} isAnimationActive={false} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </div>
+
+      {parameters && (
+        <footer className="trading-chart__parameters">
+          {parameters.strategy && <span><small>{isZh ? '策略' : 'STRATEGY'}</small><strong>{parameters.strategy}</strong></span>}
+          {parameters.period && <span><small>{isZh ? '周期' : 'PERIOD'}</small><strong>{parameters.period}</strong></span>}
+          {finite(parameters.initialCapital) && <span><small>{isZh ? '初始资金' : 'INITIAL CAPITAL'}</small><strong>${parameters.initialCapital.toLocaleString(locale)}</strong></span>}
+        </footer>
       )}
-    </div>
+    </section>
   );
 };
 

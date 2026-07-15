@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Card, Form, Input, InputNumber, Button, Select, DatePicker, Row, Col, Statistic, Table, Tag, Alert, Space, message, Empty, Spin, Tabs, Checkbox, Modal, Typography, Badge } from 'antd';
 import { PlayCircleOutlined, HistoryOutlined, LineChartOutlined, ReloadOutlined, EyeOutlined, SaveOutlined, FolderOpenOutlined, DeleteOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -16,6 +16,7 @@ import {
   sortByDateAsc
 } from '../utils/dateUtils';
 import { useLanguage } from '../contexts/LanguageContext';
+import './BacktestEditorial.css';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -59,17 +60,17 @@ interface TradeItem {
 
 interface BacktestResult {
   backtestId: string;
-  status: 'running' | 'completed' | 'failed';
+  status: 'running' | 'completed' | 'failed' | 'unknown';
   success?: boolean; // 添加success字段
   results: {
-    totalReturn: number;
-    sharpeRatio: number;
-    maxDrawdown: number;
-    winRate: number;
-    trades: number;
-    annualizedReturn: number;
+    totalReturn?: number;
+    sharpeRatio?: number;
+    maxDrawdown?: number;
+    winRate?: number;
+    trades?: number;
+    annualizedReturn?: number;
     profitLoss?: number;
-    calmarRatio: number;
+    calmarRatio?: number;
     avgReturnPerTrade?: number;
     equityCurve?: Array<{ date: string; equity: number }>;
     volatility?: number;
@@ -122,13 +123,13 @@ interface BacktestResult {
 
 interface BacktestHistoryItem {
   backtestId: string;
-  status: 'running' | 'completed' | 'failed';
+  status: 'running' | 'completed' | 'failed' | 'unknown';
   results?: {
-    totalReturn: number;
-    sharpeRatio: number;
-    maxDrawdown: number;
-    winRate: number;
-    trades: number;
+    totalReturn?: number;
+    sharpeRatio?: number;
+    maxDrawdown?: number;
+    winRate?: number;
+    trades?: number;
     annualizedReturn?: number;
     profitLoss?: number;
     // 图表数据（历史记录可能包含）
@@ -182,106 +183,527 @@ interface BacktestHistoryItem {
   profitLoss?: number;
 }
 
+const strategyDefaults: Record<string, any> = {
+  moving_average: {
+    shortMaPeriod: 20,
+    longMaPeriod: 50,
+  },
+  rsi: {
+    rsiPeriod: 14,
+    rsiOversold: 30,
+    rsiOverbought: 70,
+  },
+  macd: {
+    macdFast: 12,
+    macdSlow: 26,
+    macdSignal: 9,
+  },
+  bollinger: {
+    bollingerPeriod: 20,
+    bollingerStdDev: 2,
+  },
+  momentum: {
+    momentumPeriod: 20,
+  },
+  mean_reversion: {
+    lookbackPeriod: 20,
+    entryZScore: -2.0,
+    exitZScore: 0.0,
+    stopLossPct: 6,
+    takeProfitPct: 8,
+    rsiPeriod: 14,
+    oversoldLevel: 30,
+    enableTrendFilter: true,
+    trendMaPeriod: 100,
+  },
+  buy_hold: {},
+  donchian_breakout: {
+    entryPeriod: 20,
+    exitPeriod: 10,
+    atrPeriod: 20,
+    atrStopMultiple: 2.0,
+  },
+  keltner_breakout: {
+    emaPeriod: 20,
+    atrPeriod: 20,
+    atrMultiplier: 2.0,
+  },
+  supertrend: {
+    atrPeriod: 10,
+    multiplier: 3.0,
+  },
+  stochastic: {
+    kPeriod: 14,
+    dPeriod: 3,
+    oversold: 20,
+    overbought: 80,
+  },
+  adx_trend: {
+    adxPeriod: 14,
+    adxThreshold: 25,
+    fastEmaPeriod: 20,
+    slowEmaPeriod: 50,
+  },
+};
+
+const defaultDateRange = (): [dayjs.Dayjs, dayjs.Dayjs] => {
+  const end = dayjs();
+  const start = dayjs().subtract(1, 'year');
+  return [start, end];
+};
+
+const safeNumber = (value: unknown): number | null => {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const numericStr = value.trim().replace(/[$,%]/g, '').replace(/,/g, '');
+  const parsed = Number(numericStr);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const hasDisplayableBacktestResults = (results?: BacktestResult['results']): boolean => {
+  if (!results) return false;
+  const hasMetric = [
+    results.totalReturn,
+    results.sharpeRatio,
+    results.maxDrawdown,
+    results.winRate,
+    results.trades,
+    results.profitLoss,
+  ].some((value) => safeNumber(value) !== null);
+  return hasMetric
+    || Boolean(results.equityCurve?.length)
+    || Boolean(results.chartData?.length)
+    || Boolean(results.tradesList?.length);
+};
+
+const splitSymbols = (value: unknown): string[] => typeof value === 'string'
+  ? value.split(',').map(symbol => symbol.trim().toUpperCase()).filter(Boolean)
+  : [];
+
+const RESULT_TAB_KEYS = ['results', 'charts', 'trades', 'parameters'] as const;
+
+type BacktestErrorCategory = 'session' | 'configuration' | 'rateLimit' | 'timeout' | 'network' | 'generic';
+
+const backtestErrorDetail = (value: unknown): string => {
+  if (typeof value === 'string') return value.trim();
+  if (!value || typeof value !== 'object') return '';
+  const record = value as Record<string, any>;
+  return backtestErrorDetail(
+    record.response?.data?.detail
+    ?? record.response?.data?.error
+    ?? record.response?.data?.message
+    ?? record.result?.error
+    ?? record.detail
+    ?? record.error
+    ?? record.message,
+  );
+};
+
+const backtestErrorCategory = (value: unknown): BacktestErrorCategory => {
+  const record = value && typeof value === 'object' ? value as Record<string, any> : {};
+  const status = Number(record.response?.status ?? record.statusCode ?? record.status);
+  const detail = backtestErrorDetail(value).toLowerCase();
+  if (status === 401 || status === 403 || /session|unauthori[sz]ed|forbidden|auth(?:entication)?|token|sign[ -]?in|login/.test(detail)) return 'session';
+  if (status === 429 || /rate.?limit|too many requests|quota/.test(detail)) return 'rateLimit';
+  if (status === 408 || /timeout|timed out|deadline|aborted/.test(detail)) return 'timeout';
+  if (/network|offline|connection (?:refused|reset)|econn|fetch failed|failed to fetch|dns/.test(detail)) return 'network';
+  if (status === 400 || status === 404 || status === 409 || status === 422 || /config|credential|api.?key|not configured|missing|required|invalid|parameter|symbol|date range|data window|insufficient data/.test(detail)) return 'configuration';
+  return 'generic';
+};
+
+const formatBacktestError = (
+  value: unknown,
+  language: string,
+  fallback?: string,
+): string => {
+  const isZh = language === 'zh-CN';
+  const copy = isZh ? {
+    session: '登录会话已失效，请重新登录后再运行回测。',
+    configuration: '回测参数、标的或数据窗口无效，请检查研究设定。',
+    rateLimit: '数据服务请求过于频繁，请稍等片刻后重试。',
+    timeout: '回测等待超时，请缩小数据窗口或稍后重试。',
+    network: '暂时无法连接回测服务，请检查网络和后台状态。',
+    generic: fallback || '回测暂时无法完成，请稍后重试。',
+    detail: '详情',
+  } : {
+    session: 'Your session is no longer valid. Sign in again, then rerun the backtest.',
+    configuration: 'The symbol, parameters, or data window is invalid for this backtest.',
+    rateLimit: 'The data service is rate limiting requests. Wait a moment, then retry.',
+    timeout: 'The backtest timed out. Reduce the data window or try again shortly.',
+    network: 'The backtest service could not be reached. Check the network and backend status.',
+    generic: fallback || 'The backtest could not be completed. Try again shortly.',
+    detail: 'Detail',
+  };
+  const friendly = copy[backtestErrorCategory(value)];
+  const detail = backtestErrorDetail(value);
+  if (isZh || !detail || detail === friendly || detail === fallback) return friendly;
+  return `${friendly} ${copy.detail}: ${detail}`;
+};
+
+const saveLocalBacktestHistory = (history: BacktestHistoryItem[]) => {
+  try {
+    const limitedHistory = history.slice(0, 20);
+    localStorage.setItem('quant_backtest_history', JSON.stringify(limitedHistory));
+  } catch (err) {
+    console.error('Failed to save local backtest history:', err);
+  }
+};
+
+const loadLocalBacktestHistory = (): BacktestHistoryItem[] => {
+  try {
+    const saved = localStorage.getItem('quant_backtest_history');
+    if (saved) {
+      const history = JSON.parse(saved);
+
+      const cleanedHistory = history
+        .filter((item: BacktestHistoryItem) => {
+          if (!item.backtestId || item.backtestId.trim() === '') {
+            console.log('Filtered out record without backtestId:', item);
+            return false;
+          }
+          return true;
+        })
+        .map((item: BacktestHistoryItem) => {
+          const normalizedItem: BacktestHistoryItem = { ...item };
+          if (!item.symbol || item.symbol === 'Unknown' || item.symbol.trim() === '') {
+            normalizedItem.symbol = 'N/A';
+          }
+          if (!item.strategy || item.strategy === 'Unknown' || item.strategy.trim() === '') {
+            normalizedItem.strategy = 'N/A';
+          }
+          if (!item.status || !['running', 'completed', 'failed', 'unknown'].includes(item.status)) {
+            normalizedItem.status = 'unknown';
+          }
+          return normalizedItem;
+        });
+
+      if (cleanedHistory.length !== history.length) {
+        console.log(`Cleaned backtest history: removed ${history.length - cleanedHistory.length} invalid records`);
+        saveLocalBacktestHistory(cleanedHistory);
+      }
+
+      return cleanedHistory;
+    }
+  } catch (err) {
+    console.error('Failed to load local backtest history:', err);
+  }
+  return [];
+};
+
 const Backtest: React.FC = () => {
   const { t, language } = useLanguage();
   const [form] = Form.useForm();
   const location = useLocation();
   const navigate = useNavigate();
   const resultsRef = useRef<HTMLDivElement>(null);
+  const localizedCopyRef = useRef({ language, realData: t.backtest.realData });
+  localizedCopyRef.current = { language, realData: t.backtest.realData };
   const [loading, setLoading] = useState(false);
   const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null);
   const [backtestHistory, setBacktestHistory] = useState<BacktestHistoryItem[]>([]);
   const [error, setError] = useState<string>('');
   const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState<string>('');
   const [selectedBacktests, setSelectedBacktests] = useState<string[]>([]);
   const [selectedStrategy, setSelectedStrategy] = useState<string>('moving_average');
   const [savedStrategies, setSavedStrategies] = useState<any[]>([]);
   const [showSavedStrategies, setShowSavedStrategies] = useState(false);
   const [portfolioSymbols, setPortfolioSymbols] = useState<string[]>([]);
-
-  // 策略默认参数配置
-  const strategyDefaults: Record<string, any> = {
-    moving_average: {
-      shortMaPeriod: 20,
-      longMaPeriod: 50,
-    },
-    rsi: {
-      rsiPeriod: 14,
-      rsiOversold: 30,
-      rsiOverbought: 70,
-    },
-    macd: {
-      macdFast: 12,
-      macdSlow: 26,
-      macdSignal: 9,
-    },
-    bollinger: {
-      bollingerPeriod: 20,
-      bollingerStdDev: 2,
-    },
-    momentum: {
-      momentumPeriod: 20,
-    },
-    mean_reversion: {
-      lookbackPeriod: 20,
-      entryZScore: -2.0,
-      exitZScore: 0.0,
-      stopLossPct: 6,
-      takeProfitPct: 8,
-      rsiPeriod: 14,
-      oversoldLevel: 30,
-      enableTrendFilter: true,
-      trendMaPeriod: 100,
-    },
-  };
+  const queryParams = new URLSearchParams(location.search);
+  const symbolFromUrl = queryParams.get('symbol');
+  const requestedResultTab = queryParams.get('tab');
+  const activeResultTab = RESULT_TAB_KEYS.includes(requestedResultTab as typeof RESULT_TAB_KEYS[number])
+    ? requestedResultTab as typeof RESULT_TAB_KEYS[number]
+    : 'results';
+  const navigationState = location.state as any;
+  const navigationSymbol = navigationState?.symbol;
+  const navigationStrategy = navigationState?.strategy;
+  const navigationInitialCapital = navigationState?.initialCapital;
+  const navigationFromOptimization = navigationState?.fromOptimization;
+  const navigationParameters = navigationState?.parameters;
 
   // 请求ID管理，防止竞争条件
   const requestIdRef = useRef<string>('');
 
-  // 设置默认日期范围（最近1年）使用 dayjs
-  const defaultDateRange = () => {
-    const end = dayjs();
-    const start = dayjs().subtract(1, 'year');
-    return [start, end];
-  };
+  const fetchBacktestHistory = useCallback(async () => {
+    try {
+      setHistoryLoading(true);
+      setHistoryError('');
+
+      const localHistory = loadLocalBacktestHistory();
+      let combinedHistory = [...localHistory];
+
+      try {
+        const response = await backtraderAPI.getBacktestHistory();
+        const apiHistory = response.data?.history;
+        if (Array.isArray(apiHistory)) {
+          const apiHistoryData = apiHistory.map((item: any) => {
+            const symbol = item.parameters?.symbols?.[0] || 'Unknown';
+            const strategy = item.parameters?.strategy || 'Unknown';
+            const period = item.parameters?.period || '';
+            const [startDate, endDate] = period.split(' to ') || ['', ''];
+
+            return {
+              backtestId: item.backtestId || '',
+              status: item.status || 'unknown',
+              results: item.results,
+              parameters: item.parameters,
+              createdAt: item.createdAt,
+              symbol,
+              strategy,
+              startDate,
+              endDate,
+              initialCapital: safeNumber(item.parameters?.initialCapital) ?? undefined,
+              totalReturn: safeNumber(item.results?.totalReturn) ?? undefined,
+              sharpeRatio: safeNumber(item.results?.sharpeRatio) ?? undefined,
+              maxDrawdown: safeNumber(item.results?.maxDrawdown) ?? undefined,
+              winRate: safeNumber(item.results?.winRate) ?? undefined,
+              trades: safeNumber(item.results?.trades) ?? undefined,
+              annualizedReturn: safeNumber(item.results?.annualizedReturn) ?? undefined,
+              profitLoss: safeNumber(item.results?.profitLoss) ?? undefined,
+            };
+          });
+
+          const apiHistoryMap = new Map();
+          apiHistoryData.forEach((item: any) => {
+            if (item.backtestId) {
+              apiHistoryMap.set(item.backtestId, item);
+            }
+          });
+
+          localHistory.forEach(item => {
+            if (item.backtestId && !apiHistoryMap.has(item.backtestId)) {
+              apiHistoryMap.set(item.backtestId, item);
+            }
+          });
+
+          combinedHistory = Array.from(apiHistoryMap.values());
+          combinedHistory.sort((a, b) => {
+            const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+            return dateB - dateA;
+          });
+        } else {
+          throw new Error('Invalid backtest history response');
+        }
+      } catch (apiErr) {
+        console.warn('Failed to fetch backtest history from API, using local storage only:', apiErr);
+        if (localHistory.length === 0) {
+          setHistoryError(formatBacktestError(
+            apiErr,
+            localizedCopyRef.current.language,
+            localizedCopyRef.current.language === 'zh-CN'
+              ? '历史会话同步失败，请稍后重试。'
+              : 'Could not synchronize backtest history. Please try again.',
+          ));
+        }
+      }
+
+      setBacktestHistory(combinedHistory);
+    } catch (err) {
+      console.error('Failed to fetch backtest history:', err);
+      setBacktestHistory(loadLocalBacktestHistory());
+      setHistoryError(formatBacktestError(
+        err,
+        localizedCopyRef.current.language,
+        localizedCopyRef.current.language === 'zh-CN'
+          ? '历史会话载入失败，请稍后重试。'
+          : 'Could not load backtest history. Please try again.',
+      ));
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  const loadBacktestResult = useCallback(async (backtestId: string) => {
+    try {
+      const response = await backtraderAPI.getBacktestResults(backtestId);
+      if (response.data) {
+        const responseStatus = response.data.result?.status || response.data.status;
+        const responseSuccess = response.data.success === true
+          ? true
+          : response.data.success === false
+            ? false
+          : responseStatus
+            ? responseStatus === 'completed'
+            : undefined;
+        const mergedResult = {
+          ...response.data.result,
+          success: responseSuccess,
+        };
+        if (responseSuccess === false || responseStatus === 'failed') {
+          setBacktestResult(null);
+          setError(localizedCopyRef.current.language === 'zh-CN'
+            ? '这次回测未成功完成，无法生成验证报告。'
+            : 'This backtest did not complete successfully, so no validation report is available.');
+          message.error(localizedCopyRef.current.language === 'zh-CN' ? '回测未完成' : 'Backtest not completed');
+          return;
+        }
+        if (!hasDisplayableBacktestResults(mergedResult.results)) {
+          setBacktestResult(null);
+          setError(localizedCopyRef.current.language === 'zh-CN'
+            ? '服务返回了回测会话，但没有可展示的绩效、曲线或交易记录。'
+            : 'The service returned a backtest session without displayable metrics, curves, or trades.');
+          return;
+        }
+        setError('');
+        setBacktestResult(mergedResult);
+        setTimeout(() => {
+          resultsRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }, 100);
+        message.success(localizedCopyRef.current.language === 'zh-CN' ? '回测结果已加载' : 'Backtest results loaded');
+      }
+    } catch (err) {
+      console.error('Error loading backtest:', err);
+      setBacktestResult(null);
+      setError(formatBacktestError(
+        err,
+        localizedCopyRef.current.language,
+        localizedCopyRef.current.language === 'zh-CN'
+          ? '无法载入该回测会话，请稍后重试。'
+          : 'The backtest session could not be loaded. Please try again.',
+      ));
+      message.error(localizedCopyRef.current.language === 'zh-CN' ? '加载回测结果失败' : 'Failed to load backtest results');
+    }
+  }, []);
+
+  const handleViewBacktest = useCallback((record: BacktestHistoryItem) => {
+    try {
+      console.log('Viewing backtest:', record.backtestId);
+
+      const currentHistory = loadLocalBacktestHistory();
+      const foundRecord = currentHistory.find(item => item.backtestId === record.backtestId);
+
+      if (foundRecord) {
+        const historyResults = foundRecord.results || {};
+        const result: BacktestResult = {
+          backtestId: foundRecord.backtestId,
+          status: foundRecord.status,
+          success: foundRecord.status === 'completed'
+            ? true
+            : foundRecord.status === 'failed'
+              ? false
+              : undefined,
+          results: {
+            totalReturn: safeNumber((historyResults as any).totalReturn ?? foundRecord.totalReturn) ?? undefined,
+            sharpeRatio: safeNumber((historyResults as any).sharpeRatio ?? foundRecord.sharpeRatio) ?? undefined,
+            maxDrawdown: safeNumber((historyResults as any).maxDrawdown ?? foundRecord.maxDrawdown) ?? undefined,
+            winRate: safeNumber((historyResults as any).winRate ?? foundRecord.winRate) ?? undefined,
+            trades: safeNumber((historyResults as any).trades ?? foundRecord.trades) ?? undefined,
+            annualizedReturn: safeNumber((historyResults as any).annualizedReturn ?? foundRecord.annualizedReturn) ?? undefined,
+            profitLoss: safeNumber((historyResults as any).profitLoss ?? foundRecord.profitLoss) ?? undefined,
+            chartData: (historyResults as any).chartData || [],
+            equityCurve: (historyResults as any).equityCurve || [],
+            tradesList: (historyResults as any).tradesList || [],
+            volatility: safeNumber((historyResults as any).volatility) ?? undefined,
+            sortinoRatio: safeNumber((historyResults as any).sortinoRatio) ?? undefined,
+            profitFactor: safeNumber((historyResults as any).profitFactor) ?? undefined,
+            expectancy: safeNumber((historyResults as any).expectancy) ?? undefined,
+            exposure: safeNumber((historyResults as any).exposure) ?? undefined,
+            calmarRatio: safeNumber((historyResults as any).calmarRatio) ?? undefined,
+            avgReturnPerTrade: safeNumber((historyResults as any).avgReturnPerTrade) ?? undefined,
+            avgWin: safeNumber((historyResults as any).avgWin) ?? undefined,
+            avgLoss: safeNumber((historyResults as any).avgLoss) ?? undefined
+          },
+          parameters: foundRecord.parameters || {
+            strategy: foundRecord.strategy || '',
+            symbols: foundRecord.symbol ? [foundRecord.symbol] : [],
+            period: foundRecord.startDate && foundRecord.endDate ? `${foundRecord.startDate} ${localizedCopyRef.current.language === 'zh-CN' ? '至' : 'to'} ${foundRecord.endDate}` : (localizedCopyRef.current.language === 'zh-CN' ? '未知' : 'Unknown'),
+            initialCapital: safeNumber(foundRecord.initialCapital) ?? Number.NaN,
+            startDate: foundRecord.startDate || '',
+            endDate: foundRecord.endDate || '',
+            dataMode: (foundRecord.parameters as any)?.dataMode || '',
+            dataModeDisplay: (foundRecord.parameters as any)?.dataModeDisplay || '',
+            dataSource: (foundRecord.parameters as any)?.dataSource || '',
+          },
+          createdAt: foundRecord.createdAt
+        };
+
+        if (result.status === 'running') {
+          setBacktestResult(null);
+          setError(localizedCopyRef.current.language === 'zh-CN'
+            ? '该历史会话仍在运行，完成后才会生成验证报告。'
+            : 'This historical session is still running. A validation report will be available after completion.');
+          return;
+        }
+        if (result.success === false) {
+          setBacktestResult(null);
+          setError(localizedCopyRef.current.language === 'zh-CN'
+            ? '该历史会话标记为失败，没有可验证的结果报告。'
+            : 'This historical session is marked as failed and has no verified report.');
+          message.error(localizedCopyRef.current.language === 'zh-CN' ? '该历史回测未完成' : 'Historical backtest not completed');
+          return;
+        }
+        if (!hasDisplayableBacktestResults(result.results)) {
+          setBacktestResult(null);
+          setError(localizedCopyRef.current.language === 'zh-CN'
+            ? '该历史会话没有可展示的绩效、曲线或交易记录。'
+            : 'This historical session has no displayable metrics, curves, or trades.');
+          return;
+        }
+        setError('');
+        setBacktestResult(result);
+        setTimeout(() => {
+          resultsRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }, 100);
+        message.success(localizedCopyRef.current.language === 'zh-CN' ? `已加载回测：${foundRecord.symbol} - ${foundRecord.strategy}` : `Loaded backtest: ${foundRecord.symbol} - ${foundRecord.strategy}`);
+      } else if (record.backtestId && !record.backtestId.startsWith('local_')) {
+        loadBacktestResult(record.backtestId);
+      } else {
+        message.warning(localizedCopyRef.current.language === 'zh-CN' ? '本地存储中未找到回测数据' : 'Backtest data not found in local storage');
+      }
+    } catch (err) {
+      console.error('Error viewing backtest:', err);
+      setBacktestResult(null);
+      setError(formatBacktestError(
+        err,
+        localizedCopyRef.current.language,
+        localizedCopyRef.current.language === 'zh-CN'
+          ? '无法载入该历史会话，请稍后重试。'
+          : 'The historical session could not be loaded. Please try again.',
+      ));
+      message.error(localizedCopyRef.current.language === 'zh-CN' ? '加载回测结果失败' : 'Failed to load backtest results');
+    }
+  }, [loadBacktestResult]);
 
   // 从URL参数或location state获取symbol
   useEffect(() => {
-    const searchParams = new URLSearchParams(location.search);
-    const symbolFromUrl = searchParams.get('symbol');
-
     if (symbolFromUrl) {
+      const normalizedSymbol = symbolFromUrl.toUpperCase();
       form.setFieldsValue({
-        symbol: symbolFromUrl.toUpperCase(),
+        symbol: normalizedSymbol,
         strategy: 'moving_average',
         dateRange: defaultDateRange(),
         initialCapital: 100000,
         ...strategyDefaults.moving_average
       });
       setSelectedStrategy('moving_average');
+      setPortfolioSymbols(splitSymbols(normalizedSymbol));
     }
 
     // 从location state获取symbol（从Market页面跳转时）
-    if (location.state && location.state.symbol) {
-      const strategy = location.state.strategy || 'moving_average';
+    if (navigationSymbol) {
+      const strategy = navigationStrategy || 'moving_average';
+      const normalizedSymbol = String(navigationSymbol).toUpperCase();
       const formValues: any = {
-        symbol: location.state.symbol.toUpperCase(),
+        symbol: normalizedSymbol,
         strategy: strategy,
         dateRange: defaultDateRange(),
-        initialCapital: location.state.initialCapital || 100000,
+        initialCapital: navigationInitialCapital || 100000,
         ...(strategyDefaults[strategy] || {})
       };
       
       // 如果是从Optimization页面跳转，设置最佳参数
-      if (location.state.fromOptimization && location.state.parameters) {
+      if (navigationFromOptimization && navigationParameters) {
         if (strategy === 'moving_average') {
-          formValues.shortMaPeriod = location.state.parameters.shortMaPeriod;
-          formValues.longMaPeriod = location.state.parameters.longMaPeriod;
+          formValues.shortMaPeriod = navigationParameters.shortMaPeriod;
+          formValues.longMaPeriod = navigationParameters.longMaPeriod;
         }
       }
       
       form.setFieldsValue(formValues);
       setSelectedStrategy(strategy);
+      setPortfolioSymbols(splitSymbols(normalizedSymbol));
     } else if (!symbolFromUrl) {
       // 设置默认值
       form.setFieldsValue({
@@ -291,11 +713,13 @@ const Backtest: React.FC = () => {
         ...strategyDefaults.moving_average
       });
       setSelectedStrategy('moving_average');
+      setPortfolioSymbols([]);
     }
+  }, [form, navigationFromOptimization, navigationInitialCapital, navigationParameters, navigationStrategy, navigationSymbol, symbolFromUrl]);
 
-    // 加载回测历史
-    fetchBacktestHistory();
-  }, [location, form]);
+  useEffect(() => {
+    void fetchBacktestHistory();
+  }, [fetchBacktestHistory]);
 
   // 处理从 Strategy Ranking 或其他页面传递过来的 backtestId 或 selectedBacktest
   useEffect(() => {
@@ -329,36 +753,58 @@ const Backtest: React.FC = () => {
       const historyResults = targetBacktest.results || {};
       const backtestResult: BacktestResult = {
         backtestId: targetBacktest.backtestId,
-        status: (targetBacktest.status || 'completed') as any,
-        success: targetBacktest.status === 'completed' || targetBacktest.success === true,
+        status: (targetBacktest.status || 'unknown') as BacktestResult['status'],
+        success: targetBacktest.status === 'failed' || targetBacktest.success === false
+          ? false
+          : targetBacktest.status === 'completed' || targetBacktest.success === true
+            ? true
+            : undefined,
         results: {
-          totalReturn: safeNumber(historyResults.totalReturn || targetBacktest.totalReturn),
-          sharpeRatio: safeNumber(historyResults.sharpeRatio || targetBacktest.sharpeRatio),
-          maxDrawdown: safeNumber(historyResults.maxDrawdown || targetBacktest.maxDrawdown),
-          winRate: safeNumber(historyResults.winRate || targetBacktest.winRate),
-          trades: safeNumber(historyResults.trades || targetBacktest.trades),
-          annualizedReturn: safeNumber(historyResults.annualizedReturn || targetBacktest.annualizedReturn),
-          profitLoss: safeNumber(historyResults.profitLoss || targetBacktest.profitLoss),
+          totalReturn: safeNumber(historyResults.totalReturn ?? targetBacktest.totalReturn) ?? undefined,
+          sharpeRatio: safeNumber(historyResults.sharpeRatio ?? targetBacktest.sharpeRatio) ?? undefined,
+          maxDrawdown: safeNumber(historyResults.maxDrawdown ?? targetBacktest.maxDrawdown) ?? undefined,
+          winRate: safeNumber(historyResults.winRate ?? targetBacktest.winRate) ?? undefined,
+          trades: safeNumber(historyResults.trades ?? targetBacktest.trades) ?? undefined,
+          annualizedReturn: safeNumber(historyResults.annualizedReturn ?? targetBacktest.annualizedReturn) ?? undefined,
+          profitLoss: safeNumber(historyResults.profitLoss ?? targetBacktest.profitLoss) ?? undefined,
           chartData: historyResults.chartData || [],
           equityCurve: historyResults.equityCurve || [],
           tradesList: historyResults.tradesList || [],
-          volatility: historyResults.volatility || 0,
-          sortinoRatio: historyResults.sortinoRatio || 0,
-          profitFactor: historyResults.profitFactor || 0,
-          calmarRatio: historyResults.calmarRatio || 0,
+          volatility: safeNumber(historyResults.volatility) ?? undefined,
+          sortinoRatio: safeNumber(historyResults.sortinoRatio) ?? undefined,
+          profitFactor: safeNumber(historyResults.profitFactor) ?? undefined,
+          calmarRatio: safeNumber(historyResults.calmarRatio) ?? undefined,
         },
         parameters: targetBacktest.parameters || {
-          strategy: targetBacktest.strategy || 'Unknown',
-          symbols: targetBacktest.symbol ? [targetBacktest.symbol] : ['Unknown'],
+          strategy: targetBacktest.strategy || '',
+          symbols: targetBacktest.symbol ? [targetBacktest.symbol] : [],
           period: targetBacktest.period || '',
-          initialCapital: targetBacktest.initialCapital || 100000,
+          initialCapital: safeNumber(targetBacktest.initialCapital) ?? Number.NaN,
           startDate: targetBacktest.startDate || '',
           endDate: targetBacktest.endDate || '',
         },
         createdAt: targetBacktest.createdAt
       };
 
-      setBacktestResult(backtestResult);
+      if (backtestResult.status === 'running') {
+        setBacktestResult(null);
+        setError(localizedCopyRef.current.language === 'zh-CN'
+          ? '该历史会话仍在运行，完成后才会生成验证报告。'
+          : 'This historical session is still running. A validation report will be available after completion.');
+      } else if (backtestResult.success === false) {
+        setBacktestResult(null);
+        setError(localizedCopyRef.current.language === 'zh-CN'
+          ? '该历史会话标记为失败，没有可验证的结果报告。'
+          : 'This historical session is marked as failed and has no verified report.');
+      } else if (!hasDisplayableBacktestResults(backtestResult.results)) {
+        setBacktestResult(null);
+        setError(localizedCopyRef.current.language === 'zh-CN'
+          ? '该历史会话没有可展示的绩效、曲线或交易记录。'
+          : 'This historical session has no displayable metrics, curves, or trades.');
+      } else {
+        setError('');
+        setBacktestResult(backtestResult);
+      }
       
       // 填充表单参数
       const strategy = backtestResult.parameters.strategy || 'moving_average';
@@ -369,11 +815,20 @@ const Backtest: React.FC = () => {
         initialCapital: backtestResult.parameters.initialCapital || 100000,
       });
       setSelectedStrategy(strategy);
+      setPortfolioSymbols(backtestResult.parameters.symbols?.length
+        ? backtestResult.parameters.symbols.map(symbol => String(symbol).toUpperCase())
+        : splitSymbols(backtestResult.parameters.symbol));
 
       // 滚动到结果区域
-      setTimeout(() => {
-        resultsRef.current?.scrollIntoView({ behavior: 'smooth' });
-      }, 300);
+      if (
+        backtestResult.status !== 'running'
+        && backtestResult.success !== false
+        && hasDisplayableBacktestResults(backtestResult.results)
+      ) {
+        setTimeout(() => {
+          resultsRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }, 300);
+      }
     } else if (targetBacktestId) {
       console.log('Received selectedBacktestId from navigation state:', targetBacktestId);
       // 如果只有 ID，尝试加载
@@ -385,7 +840,7 @@ const Backtest: React.FC = () => {
         loadBacktestResult(targetBacktestId);
       }
     }
-  }, [location.state]);
+  }, [form, handleViewBacktest, loadBacktestResult, location.state]);
 
   // 生成唯一的请求ID
   const generateRequestId = () => {
@@ -393,34 +848,22 @@ const Backtest: React.FC = () => {
   };
 
   const safeToFixed = (value: unknown, decimals: number = 2): string => {
-    // 先尝试转换为数字
     const numValue = safeNumber(value);
-    if (!isNaN(numValue)) {
-      return numValue.toFixed(decimals);
-    }
-    return '0.00';
+    return numValue === null ? t.common.na : numValue.toFixed(decimals);
   };
 
-  const safeNumber = (value: unknown): number => {
-    if (typeof value === 'number' && !isNaN(value)) {
-      return value;
-    }
-    if (typeof value === 'string') {
-      // 尝试从字符串中提取数值
-      // 移除货币符号、百分号、逗号等
-      const numericStr = value.replace(/[$,%]/g, '').replace(/,/g, '');
-      const parsed = parseFloat(numericStr);
-      if (!isNaN(parsed)) {
-        return parsed;
-      }
-    }
-    return 0;
+  const formatDrawdown = (value: unknown, decimals: number = 2): string => {
+    const numericValue = safeNumber(value);
+    if (numericValue === null) return t.common.na;
+    const magnitude = Math.abs(numericValue).toFixed(decimals);
+    return numericValue === 0 ? `${magnitude}%` : `-${magnitude}%`;
   };
 
-  const formatCurrency = (value: number): string => {
+  const formatCurrency = (value: unknown): string => {
     const safeValue = safeNumber(value);
+    if (safeValue === null) return t.common.na;
     const absValue = Math.abs(safeValue);
-    const prefix = safeValue >= 0 ? '+$' : '-$';
+    const prefix = safeValue > 0 ? '+$' : safeValue < 0 ? '-$' : '$';
 
     if (absValue >= 1e9) {
       return `${prefix}${safeToFixed(absValue / 1e9, 2)}B`;
@@ -430,75 +873,6 @@ const Backtest: React.FC = () => {
       return `${prefix}${safeToFixed(absValue / 1e3, 2)}K`;
     }
     return `${prefix}${safeToFixed(absValue, 2)}`;
-  };
-
-  // 专门用于格式化金额，统一正负号格式：+$123.45 或 -$123.45
-  const formatMoney = (value: number): string => {
-    const safeValue = safeNumber(value);
-    const absValue = Math.abs(safeValue);
-    const prefix = safeValue >= 0 ? '+$' : '-$';
-    return `${prefix}${safeToFixed(absValue, 2)}`;
-  };
-
-  // 从本地存储加载回测历史，并清理旧脏数据
-  const loadLocalBacktestHistory = (): BacktestHistoryItem[] => {
-    try {
-      const saved = localStorage.getItem('quant_backtest_history');
-      if (saved) {
-        const history = JSON.parse(saved);
-        
-        // 清理旧脏数据：过滤掉无效记录并修复字段
-        const cleanedHistory = history
-          .filter((item: BacktestHistoryItem) => {
-            // 过滤掉没有backtestId的记录
-            if (!item.backtestId || item.backtestId.trim() === '') {
-              console.log('Filtered out record without backtestId:', item);
-              return false;
-            }
-            return true;
-          })
-          .map((item: BacktestHistoryItem) => {
-            // 修复symbol字段：将'Unknown'或空值改为'N/A'
-            if (!item.symbol || item.symbol === 'Unknown' || item.symbol.trim() === '') {
-              return { ...item, symbol: 'N/A' };
-            }
-            
-            // 修复strategy字段：将'Unknown'或空值改为'N/A'
-            if (!item.strategy || item.strategy === 'Unknown' || item.strategy.trim() === '') {
-              return { ...item, strategy: 'N/A' };
-            }
-            
-            // 确保status字段有效
-            if (!item.status || !['running', 'completed', 'failed'].includes(item.status)) {
-              return { ...item, status: 'completed' as const };
-            }
-            
-            return item;
-          });
-        
-        // 如果清理后的历史记录与原始不同，保存清理后的版本
-        if (cleanedHistory.length !== history.length) {
-          console.log(`Cleaned backtest history: removed ${history.length - cleanedHistory.length} invalid records`);
-          saveLocalBacktestHistory(cleanedHistory);
-        }
-        
-        return cleanedHistory;
-      }
-    } catch (err) {
-      console.error('Failed to load local backtest history:', err);
-    }
-    return [];
-  };
-
-  // 保存回测历史到本地存储
-  const saveLocalBacktestHistory = (history: BacktestHistoryItem[]) => {
-    try {
-      // 只保存最近20条记录，避免localStorage过大
-      const limitedHistory = history.slice(0, 20);
-      localStorage.setItem('quant_backtest_history', JSON.stringify(limitedHistory));
-    } catch (err) {
-      console.error('Failed to save local backtest history:', err);
-    }
   };
 
   // 删除本地回测历史记录
@@ -532,14 +906,18 @@ const Backtest: React.FC = () => {
       const currentHistory = loadLocalBacktestHistory();
 
       // 创建历史记录项
-      const symbol = backtestResult.parameters?.symbols?.[0] || 'Unknown';
-      const strategy = backtestResult.parameters?.strategy || 'Unknown';
+      const symbol = backtestResult.parameters?.symbols?.[0] || 'N/A';
+      const strategy = backtestResult.parameters?.strategy || 'N/A';
       const startDate = backtestResult.parameters?.startDate || '';
       const endDate = backtestResult.parameters?.endDate || '';
 
       const historyItem: BacktestHistoryItem = {
         backtestId: backtestResult.backtestId || `local_${Date.now()}`,
-        status: backtestResult.success ? 'completed' : 'failed',
+        status: backtestResult.success === true
+          ? 'completed'
+          : backtestResult.success === false
+            ? 'failed'
+            : backtestResult.status || 'unknown',
         results: backtestResult.results,
         parameters: backtestResult.parameters,
         createdAt: new Date().toISOString(),
@@ -548,14 +926,14 @@ const Backtest: React.FC = () => {
         strategy: strategy,
         startDate: startDate,
         endDate: endDate,
-        initialCapital: safeNumber(backtestResult.parameters?.initialCapital),
-        totalReturn: safeNumber(backtestResult.results?.totalReturn),
-        sharpeRatio: safeNumber(backtestResult.results?.sharpeRatio),
-        maxDrawdown: safeNumber(backtestResult.results?.maxDrawdown),
-        winRate: safeNumber(backtestResult.results?.winRate),
-        trades: safeNumber(backtestResult.results?.trades),
-        annualizedReturn: safeNumber(backtestResult.results?.annualizedReturn),
-        profitLoss: safeNumber(backtestResult.results?.profitLoss),
+        initialCapital: safeNumber(backtestResult.parameters?.initialCapital) ?? undefined,
+        totalReturn: safeNumber(backtestResult.results?.totalReturn) ?? undefined,
+        sharpeRatio: safeNumber(backtestResult.results?.sharpeRatio) ?? undefined,
+        maxDrawdown: safeNumber(backtestResult.results?.maxDrawdown) ?? undefined,
+        winRate: safeNumber(backtestResult.results?.winRate) ?? undefined,
+        trades: safeNumber(backtestResult.results?.trades) ?? undefined,
+        annualizedReturn: safeNumber(backtestResult.results?.annualizedReturn) ?? undefined,
+        profitLoss: safeNumber(backtestResult.results?.profitLoss) ?? undefined,
       };
 
       // 添加到历史记录开头（最新在最前面）
@@ -572,88 +950,6 @@ const Backtest: React.FC = () => {
     } catch (err) {
       console.error('Failed to add backtest to history:', err);
       return null;
-    }
-  };
-
-  const fetchBacktestHistory = async () => {
-    try {
-      setHistoryLoading(true);
-
-      // 首先从本地存储加载历史记录
-      const localHistory = loadLocalBacktestHistory();
-      let combinedHistory = [...localHistory];
-
-      // 然后尝试从后端API获取历史记录
-      try {
-        const response = await backtraderAPI.getBacktestHistory();
-        if (response.data && response.data.history && Array.isArray(response.data.history)) {
-          // 转换后端数据为前端需要的平铺结构
-          const apiHistoryData = response.data.history.map((item: any) => {
-            const symbol = item.parameters?.symbols?.[0] || 'Unknown';
-            const strategy = item.parameters?.strategy || 'Unknown';
-            const period = item.parameters?.period || '';
-            const [startDate, endDate] = period.split(' to ') || ['', ''];
-
-            return {
-              backtestId: item.backtestId || '',
-              status: item.status || 'unknown',
-              results: item.results,
-              parameters: item.parameters,
-              createdAt: item.createdAt,
-              // 平铺字段用于表格显示
-              symbol: symbol,
-              strategy: strategy,
-              startDate: startDate,
-              endDate: endDate,
-              initialCapital: safeNumber(item.parameters?.initialCapital),
-              totalReturn: safeNumber(item.results?.totalReturn),
-              sharpeRatio: safeNumber(item.results?.sharpeRatio),
-              maxDrawdown: safeNumber(item.results?.maxDrawdown),
-              winRate: safeNumber(item.results?.winRate),
-              trades: safeNumber(item.results?.trades),
-              annualizedReturn: safeNumber(item.results?.annualizedReturn),
-              profitLoss: safeNumber(item.results?.profitLoss),
-            };
-          });
-
-          // 合并本地和后端历史记录，去重（基于backtestId）
-          const apiHistoryMap = new Map();
-          apiHistoryData.forEach((item: any) => {
-            if (item.backtestId) {
-              apiHistoryMap.set(item.backtestId, item);
-            }
-          });
-
-          // 添加本地历史记录中不存在的后端记录
-          localHistory.forEach(item => {
-            if (item.backtestId && !apiHistoryMap.has(item.backtestId)) {
-              apiHistoryMap.set(item.backtestId, item);
-            }
-          });
-
-          combinedHistory = Array.from(apiHistoryMap.values());
-
-          // 按创建时间排序（最新的在最前面）
-          combinedHistory.sort((a, b) => {
-            const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-            const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-            return dateB - dateA;
-          });
-        }
-      } catch (apiErr) {
-        console.warn('Failed to fetch backtest history from API, using local storage only:', apiErr);
-        // API失败时只使用本地存储
-      }
-
-      setBacktestHistory(combinedHistory);
-
-    } catch (err) {
-      console.error('Failed to fetch backtest history:', err);
-      // 如果出错，使用本地存储
-      const localHistory = loadLocalBacktestHistory();
-      setBacktestHistory(localHistory);
-    } finally {
-      setHistoryLoading(false);
     }
   };
 
@@ -746,6 +1042,8 @@ const Backtest: React.FC = () => {
           macdSignal: config.macdSignal
         })
       });
+      setSelectedStrategy(config.strategy || 'moving_average');
+      setPortfolioSymbols(splitSymbols(config.symbol));
       message.success(language === 'zh-CN' ? `策略 "${strategy.name}" 加载成功！` : `Strategy "${strategy.name}" loaded successfully!`);
     } catch (err) {
       console.error('Failed to load strategy:', err);
@@ -768,21 +1066,22 @@ const Backtest: React.FC = () => {
 
   // 解析 symbol 并更新 portfolio 状态
   const parseSymbols = (symbolInput: string) => {
-    // 清理输入：去除前后空格，处理空输入
-    const cleanedInput = symbolInput.trim();
-    if (!cleanedInput) {
-      setPortfolioSymbols([]);
-      return [];
-    }
-
-    // 分割多个symbol（支持逗号分隔）
-    const symbols = cleanedInput
-      .split(',')
-      .map((s: string) => s.trim())
-      .filter(Boolean);
-
+    const symbols = splitSymbols(symbolInput);
     setPortfolioSymbols(symbols);
     return symbols;
+  };
+
+  const loadQuickBlueprint = (symbol: string, strategy: 'rsi' | 'momentum') => {
+    form.setFieldsValue({
+      symbol,
+      strategy,
+      initialCapital: 100000,
+      dateRange: defaultDateRange(),
+      ...strategyDefaults[strategy],
+    });
+    setSelectedStrategy(strategy);
+    setPortfolioSymbols([symbol]);
+    message.info(strategy === 'rsi' ? t.backtest.msftLoaded : t.backtest.tslaLoaded);
   };
 
   const handleRunBacktest = async (values: BacktestFormValues) => {
@@ -799,7 +1098,7 @@ const Backtest: React.FC = () => {
       // 清理symbol输入
       const cleanedSymbolInput = values.symbol.trim();
       if (!cleanedSymbolInput) {
-        setError('请输入股票代码或公司名');
+        setError(language === 'zh-CN' ? '请输入股票代码或公司名。' : 'Enter a stock symbol or company name.');
         setLoading(false);
         return;
       }
@@ -811,7 +1110,7 @@ const Backtest: React.FC = () => {
       console.log('Parsed symbols:', symbols);
 
       if (symbols.length === 0) {
-        setError('请输入有效的股票代码或公司名');
+        setError(language === 'zh-CN' ? '请输入有效的股票代码或公司名。' : 'Enter a valid stock symbol or company name.');
         setLoading(false);
         return;
       }
@@ -880,6 +1179,38 @@ const Backtest: React.FC = () => {
           enableTrendFilter: (values as any).enableTrendFilter !== false,
           trendMaPeriod: (values as any).trendMaPeriod || 100,
         };
+      } else if (strategy === 'donchian_breakout') {
+        config.parameters = {
+          entryPeriod: (values as any).entryPeriod || 20,
+          exitPeriod: (values as any).exitPeriod || 10,
+          atrPeriod: (values as any).atrPeriod || 20,
+          atrStopMultiple: (values as any).atrStopMultiple || 2.0,
+        };
+      } else if (strategy === 'keltner_breakout') {
+        config.parameters = {
+          emaPeriod: (values as any).emaPeriod || 20,
+          atrPeriod: (values as any).atrPeriod || 20,
+          atrMultiplier: (values as any).atrMultiplier || 2.0,
+        };
+      } else if (strategy === 'supertrend') {
+        config.parameters = {
+          atrPeriod: (values as any).atrPeriod || 10,
+          multiplier: (values as any).multiplier || 3.0,
+        };
+      } else if (strategy === 'stochastic') {
+        config.parameters = {
+          kPeriod: (values as any).kPeriod || 14,
+          dPeriod: (values as any).dPeriod || 3,
+          oversold: (values as any).oversold || 20,
+          overbought: (values as any).overbought || 80,
+        };
+      } else if (strategy === 'adx_trend') {
+        config.parameters = {
+          adxPeriod: (values as any).adxPeriod || 14,
+          adxThreshold: (values as any).adxThreshold || 25,
+          fastEmaPeriod: (values as any).fastEmaPeriod || 20,
+          slowEmaPeriod: (values as any).slowEmaPeriod || 50,
+        };
       } else {
         // 其他策略暂时不传参数
         config.parameters = {};
@@ -902,11 +1233,34 @@ const Backtest: React.FC = () => {
         if (result.result?.results) {
           // 后端已同步返回完整结果，直接使用
           // 合并result.result和success/status字段
+          const resolvedSuccess = result.success === true
+            ? true
+            : result.success === false
+              ? false
+            : result.status
+              ? result.status === 'completed'
+              : undefined;
           const mergedResult = {
             ...result.result,
-            success: result.success !== undefined ? result.success : (result.status === 'completed')
+            success: resolvedSuccess,
           };
-          setBacktestResult(mergedResult);
+          const runFailed = mergedResult.success === false
+            || result.status === 'failed'
+            || mergedResult.status === 'failed';
+          const hasResults = hasDisplayableBacktestResults(mergedResult.results);
+          if (runFailed || !hasResults) {
+            setBacktestResult(null);
+            const fallback = runFailed
+              ? (language === 'zh-CN'
+                ? '回测失败，请检查参数与数据窗口后重试。'
+                : 'The backtest failed. Review the parameters and data window, then try again.')
+              : (language === 'zh-CN'
+                ? '回测已结束，但没有返回可展示的绩效、曲线或交易记录。'
+                : 'The backtest finished without displayable metrics, curves, or trades.');
+            setError(formatBacktestError(result.result?.error || result.error, language, fallback));
+          } else {
+            setBacktestResult(mergedResult);
+          }
           setLoading(false);
 
           // 如果有status字段，根据状态显示相应消息
@@ -917,13 +1271,15 @@ const Backtest: React.FC = () => {
           } else if (result.status) {
             message.info(language === 'zh-CN' ? `回测状态：${result.status}` : `Backtest status: ${result.status}`);
           } else {
-            message.success(t.backtest.backtestCompleted);
+            message.info(language === 'zh-CN' ? '回测结果已返回，完成状态未提供。' : 'Backtest results returned without a completion status.');
           }
 
           // 滚动到结果区域
-          setTimeout(() => {
-            resultsRef.current?.scrollIntoView({ behavior: 'smooth' });
-          }, 100);
+          if (!runFailed && hasResults) {
+            setTimeout(() => {
+              resultsRef.current?.scrollIntoView({ behavior: 'smooth' });
+            }, 100);
+          }
 
           // 保存到历史记录
           if (mergedResult) {
@@ -958,32 +1314,14 @@ const Backtest: React.FC = () => {
       }
 
       setBacktestResult(null);
-      setError(language === 'zh-CN' ? `回测运行错误：${err.message || '未知错误'}` : `Error running backtest: ${err.message || 'Unknown error'}`);
+      setError(formatBacktestError(
+        err,
+        language,
+        language === 'zh-CN' ? '回测运行失败，请稍后重试。' : 'The backtest run failed. Try again shortly.',
+      ));
       message.error(language === 'zh-CN' ? '回测运行失败' : 'Failed to run backtest');
       console.error('Backtest error:', err);
       setLoading(false);
-    }
-  };
-
-  const loadBacktestResult = async (backtestId: string) => {
-    try {
-      const response = await backtraderAPI.getBacktestResults(backtestId);
-      if (response.data) {
-        // 合并result和success字段
-        const mergedResult = {
-          ...response.data.result,
-          success: response.data.success !== undefined ? response.data.success : true
-        };
-        setBacktestResult(mergedResult);
-        // 滚动到结果区域
-        setTimeout(() => {
-          resultsRef.current?.scrollIntoView({ behavior: 'smooth' });
-        }, 100);
-        message.success(language === 'zh-CN' ? '回测结果已加载' : 'Backtest results loaded');
-      }
-    } catch (err) {
-      console.error('Error loading backtest:', err);
-      message.error(language === 'zh-CN' ? '加载回测结果失败' : 'Failed to load backtest results');
     }
   };
 
@@ -1014,92 +1352,19 @@ const Backtest: React.FC = () => {
     navigate('/compare', { state: { selectedBacktests: backtestsToCompare } });
   };
 
-  const handleViewBacktest = (record: BacktestHistoryItem) => {
-    try {
-      console.log('Viewing backtest:', record.backtestId);
-
-      // 从历史记录中查找完整结果
-      const currentHistory = loadLocalBacktestHistory();
-      const foundRecord = currentHistory.find(item => item.backtestId === record.backtestId);
-
-      if (foundRecord) {
-        // 从历史记录中提取完整的results数据
-        const historyResults = foundRecord.results || {};
-        
-        // 创建完整的BacktestResult对象，使用历史记录中的真实数据
-        const backtestResult: BacktestResult = {
-          backtestId: foundRecord.backtestId,
-          status: foundRecord.status as 'running' | 'completed' | 'failed',
-          success: foundRecord.status === 'completed',
-          results: {
-            // 使用历史记录中的真实数据，而不是硬编码的0
-            totalReturn: (historyResults as any).totalReturn || foundRecord.totalReturn || 0,
-            sharpeRatio: (historyResults as any).sharpeRatio || foundRecord.sharpeRatio || 0,
-            maxDrawdown: (historyResults as any).maxDrawdown || foundRecord.maxDrawdown || 0,
-            winRate: (historyResults as any).winRate || foundRecord.winRate || 0,
-            trades: (historyResults as any).trades || foundRecord.trades || 0,
-            annualizedReturn: (historyResults as any).annualizedReturn || foundRecord.annualizedReturn || 0,
-            profitLoss: (historyResults as any).profitLoss || foundRecord.profitLoss || 0,
-            // 从历史记录中提取完整的图表和交易数据
-            chartData: (historyResults as any).chartData || [],
-            equityCurve: (historyResults as any).equityCurve || [],
-            tradesList: (historyResults as any).tradesList || [],
-            // 其他指标，如果有的话
-            volatility: (historyResults as any).volatility || 0,
-            sortinoRatio: (historyResults as any).sortinoRatio || 0,
-            profitFactor: (historyResults as any).profitFactor || 0,
-            expectancy: (historyResults as any).expectancy || 0,
-            exposure: (historyResults as any).exposure || 0,
-            calmarRatio: (historyResults as any).calmarRatio || 0,
-            avgReturnPerTrade: (historyResults as any).avgReturnPerTrade || 0,
-            avgWin: (historyResults as any).avgWin || 0,
-            avgLoss: (historyResults as any).avgLoss || 0
-          },
-          parameters: foundRecord.parameters || {
-            strategy: foundRecord.strategy || 'Unknown',
-            symbols: foundRecord.symbol ? [foundRecord.symbol] : ['Unknown'],
-            period: foundRecord.startDate && foundRecord.endDate ? `${foundRecord.startDate} ${language === 'zh-CN' ? '至' : 'to'} ${foundRecord.endDate}` : (language === 'zh-CN' ? '未知' : 'Unknown'),
-            initialCapital: foundRecord.initialCapital || 100000,
-            startDate: foundRecord.startDate || '',
-            endDate: foundRecord.endDate || '',
-            // 保留其他参数
-            dataMode: (foundRecord.parameters as any)?.dataMode || 'real',
-            dataModeDisplay: (foundRecord.parameters as any)?.dataModeDisplay || t.backtest.realData,
-            dataSource: (foundRecord.parameters as any)?.dataSource || 'Alpaca'
-          },
-          createdAt: foundRecord.createdAt
-        };
-
-        // 设置回测结果
-        setBacktestResult(backtestResult);
-
-        // 滚动到结果区域
-        setTimeout(() => {
-          resultsRef.current?.scrollIntoView({ behavior: 'smooth' });
-        }, 100);
-
-        message.success(language === 'zh-CN' ? `已加载回测：${foundRecord.symbol} - ${foundRecord.strategy}` : `Loaded backtest: ${foundRecord.symbol} - ${foundRecord.strategy}`);
-      } else {
-        // 如果没有找到，尝试从后端API加载
-        if (record.backtestId && !record.backtestId.startsWith('local_')) {
-          loadBacktestResult(record.backtestId);
-        } else {
-          message.warning(language === 'zh-CN' ? '本地存储中未找到回测数据' : 'Backtest data not found in local storage');
-        }
-      }
-    } catch (err) {
-      console.error('Error viewing backtest:', err);
-      message.error(language === 'zh-CN' ? '加载回测结果失败' : 'Failed to load backtest results');
-    }
-  };
-
   const strategyOptions = [
+    { value: 'buy_hold', label: t.backtest.strategyBuyHold },
     { value: 'moving_average', label: t.backtest.strategyMovingAverage },
     { value: 'rsi', label: t.backtest.strategyRsi },
     { value: 'macd', label: t.backtest.strategyMacd },
     { value: 'bollinger', label: t.backtest.strategyBollinger },
     { value: 'momentum', label: t.backtest.strategyMomentum },
     { value: 'mean_reversion', label: t.backtest.strategyMeanReversion },
+    { value: 'donchian_breakout', label: t.backtest.strategyDonchianBreakout },
+    { value: 'keltner_breakout', label: t.backtest.strategyKeltnerBreakout },
+    { value: 'supertrend', label: t.backtest.strategySupertrend },
+    { value: 'stochastic', label: t.backtest.strategyStochastic },
+    { value: 'adx_trend', label: t.backtest.strategyAdxTrend },
   ];
 
   const resultColumns = [
@@ -1138,20 +1403,23 @@ const Backtest: React.FC = () => {
 
         // For numeric metrics, use safeNumber
         const safeValue = safeNumber(value);
+        if (safeValue === null) {
+          return <span style={{ color: 'var(--app-text-muted)' }}>{t.common.na}</span>;
+        }
 
         if (record.key === 'profitLoss') {
           // Profit/Loss 是金额，使用货币格式
-          const color = safeValue >= 0 ? '#3f8600' : '#cf1322';
+          const color = safeValue > 0 ? '#3f8600' : safeValue < 0 ? '#cf1322' : 'var(--bt-ink)';
           const formatted = formatCurrency(safeValue);
           return <span style={{ color, fontWeight: 'bold' }}>{formatted}</span>;
         } else if (record.key === 'totalReturn' || record.key === 'annualizedReturn') {
           // Return 类指标使用百分比格式
-          const color = safeValue >= 0 ? '#3f8600' : '#cf1322';
-          const prefix = safeValue >= 0 ? '+' : '';
+          const color = safeValue > 0 ? '#3f8600' : safeValue < 0 ? '#cf1322' : 'var(--bt-ink)';
+          const prefix = safeValue > 0 ? '+' : '';
           return <span style={{ color, fontWeight: 'bold' }}>{prefix}{safeToFixed(safeValue, 2)}%</span>;
         } else if (record.key === 'expectancy') {
-          const color = safeValue >= 0 ? '#3f8600' : '#cf1322';
-          const prefix = safeValue >= 0 ? '+$' : '-$';
+          const color = safeValue > 0 ? '#3f8600' : safeValue < 0 ? '#cf1322' : 'var(--bt-ink)';
+          const prefix = safeValue > 0 ? '+$' : safeValue < 0 ? '-$' : '$';
           const absValue = Math.abs(safeValue);
           return <span style={{ color, fontWeight: 'bold' }}>{prefix}{safeToFixed(absValue, 2)}</span>;
         } else if (record.key === 'volatility') {
@@ -1164,7 +1432,7 @@ const Backtest: React.FC = () => {
           const color = safeValue >= 1 ? '#3f8600' : safeValue >= 0 ? '#faad14' : '#cf1322';
           return <span style={{ color, fontWeight: 'bold' }}>{safeToFixed(safeValue, 2)}</span>;
         } else if (record.key === 'maxDrawdown') {
-          return <span style={{ color: '#cf1322', fontWeight: 'bold' }}>{safeToFixed(safeValue, 2)}%</span>;
+          return <span style={{ color: Math.abs(safeValue) > 0 ? '#cf1322' : 'var(--bt-ink)', fontWeight: 'bold' }}>{formatDrawdown(safeValue, 2)}</span>;
         } else if (record.key === 'winRate') {
           const color = safeValue >= 60 ? '#3f8600' : safeValue >= 40 ? '#faad14' : '#cf1322';
           return <span style={{ color, fontWeight: 'bold' }}>{safeToFixed(safeValue, 1)}%</span>;
@@ -1213,12 +1481,18 @@ const Backtest: React.FC = () => {
       width: 130,
       render: (strategy: string) => {
         const strategyNames: Record<string, string> = {
+          'buy_hold': t.backtest.strategyBuyHold,
           'moving_average': t.backtest.strategyMovingAverage,
           'rsi': t.backtest.strategyRsi,
           'macd': t.backtest.strategyMacd,
           'bollinger': t.backtest.strategyBollinger,
           'momentum': t.backtest.strategyMomentum,
-          'mean_reversion': t.backtest.strategyMeanReversion
+          'mean_reversion': t.backtest.strategyMeanReversion,
+          'donchian_breakout': t.backtest.strategyDonchianBreakout,
+          'keltner_breakout': t.backtest.strategyKeltnerBreakout,
+          'supertrend': t.backtest.strategySupertrend,
+          'stochastic': t.backtest.strategyStochastic,
+          'adx_trend': t.backtest.strategyAdxTrend,
         };
         const displayName = strategyNames[strategy] || strategy || 'N/A';
         return <span style={{ fontSize: '12px' }}>{displayName}</span>;
@@ -1251,9 +1525,9 @@ const Backtest: React.FC = () => {
       render: (value: number) => {
         const safeValue = safeNumber(value);
         if (safeValue === null || safeValue === undefined) return <span style={{ color: '#999' }}>--</span>;
-        const color = safeValue >= 0 ? '#3f8600' : '#cf1322';
+        const color = safeValue > 0 ? '#3f8600' : safeValue < 0 ? '#cf1322' : 'var(--bt-ink)';
         return <span style={{ color, fontWeight: 'bold', fontSize: '12px' }}>
-          {safeValue >= 0 ? '+' : ''}{safeToFixed(safeValue, 2)}%
+          {safeValue > 0 ? '+' : ''}{safeToFixed(safeValue, 2)}%
         </span>;
       },
     },
@@ -1323,7 +1597,7 @@ const Backtest: React.FC = () => {
             type="link"
             size="small"
             icon={<EyeOutlined />}
-            onClick={() => handleViewBacktest(record)}
+            onClick={() => navigate(`/backtest/${encodeURIComponent(record.backtestId)}?tab=overview`)}
             disabled={!record.backtestId}
             style={{ fontSize: '11px', padding: '0 4px' }}
           >
@@ -1362,22 +1636,34 @@ const Backtest: React.FC = () => {
 
   // Strategy name mapping
   const strategyNames: Record<string, string> = {
+    'buy_hold': t.backtest.strategyBuyHold,
     'moving_average': t.backtest.strategyMovingAverage,
     'rsi': t.backtest.strategyRsi,
     'macd': t.backtest.strategyMacd,
     'bollinger': t.backtest.strategyBollinger,
     'momentum': t.backtest.strategyMomentum,
-    'mean_reversion': t.backtest.strategyMeanReversion
+    'mean_reversion': t.backtest.strategyMeanReversion,
+    'donchian_breakout': t.backtest.strategyDonchianBreakout,
+    'keltner_breakout': t.backtest.strategyKeltnerBreakout,
+    'supertrend': t.backtest.strategySupertrend,
+    'stochastic': t.backtest.strategyStochastic,
+    'adx_trend': t.backtest.strategyAdxTrend
   };
 
   // Strategy name mapping for blueprint display (shorter names)
   const strategyNameBlueprint: Record<string, string> = {
+    'buy_hold': t.backtest.strategyNameBuyHold,
     'moving_average': t.backtest.strategyNameMovingAverage,
     'rsi': t.backtest.strategyNameRsi,
     'macd': t.backtest.strategyNameMacd,
     'bollinger': t.backtest.strategyNameBollinger,
     'momentum': t.backtest.strategyNameMomentum,
-    'mean_reversion': t.backtest.strategyNameMeanReversion
+    'mean_reversion': t.backtest.strategyNameMeanReversion,
+    'donchian_breakout': t.backtest.strategyNameDonchianBreakout,
+    'keltner_breakout': t.backtest.strategyNameKeltnerBreakout,
+    'supertrend': t.backtest.strategyNameSupertrend,
+    'stochastic': t.backtest.strategyNameStochastic,
+    'adx_trend': t.backtest.strategyNameAdxTrend
   };
 
   // Parameter key mapping for blueprint display
@@ -1401,67 +1687,78 @@ const Backtest: React.FC = () => {
     'oversoldLevel': t.backtest.paramOversoldLevel,
     'trendMaPeriod': t.backtest.paramTrendMaPeriod,
     'enableTrendFilter': t.backtest.paramTrendFilter,
+    'entryPeriod': t.backtest.paramEntryPeriod,
+    'exitPeriod': t.backtest.paramExitPeriod,
+    'atrPeriod': t.backtest.paramAtrPeriod,
+    'atrStopMultiple': t.backtest.paramAtrStopMultiple,
+    'emaPeriod': t.backtest.paramEmaPeriod,
+    'atrMultiplier': t.backtest.paramAtrMultiplier,
+    'multiplier': t.backtest.paramMultiplier,
+    'kPeriod': t.backtest.paramKPeriod,
+    'dPeriod': t.backtest.paramDPeriod,
+    'oversold': t.backtest.paramOversold,
+    'overbought': t.backtest.paramOverbought,
+    'adxPeriod': t.backtest.paramAdxPeriod,
+    'adxThreshold': t.backtest.paramAdxThreshold,
+    'fastEmaPeriod': t.backtest.paramFastEmaPeriod,
+    'slowEmaPeriod': t.backtest.paramSlowEmaPeriod,
   };
 
 
   // 生成权益曲线数据
   const generateEquityCurveData = () => {
     if (backtestResult?.results?.equityCurve && backtestResult.results.equityCurve.length > 0) {
-      const rawData = backtestResult.results.equityCurve;
-      const sortedByDate = sortByDateAsc(rawData);
-      
-      const firstEquity = sortedByDate[0]?.equity || 0;
-      const lastEquity = sortedByDate[sortedByDate.length - 1]?.equity || 0;
-      const totalReturn = backtestResult.results.totalReturn || 0;
-      
-      const needsFix = 
-        (totalReturn > 0 && firstEquity > lastEquity) || 
-        (totalReturn < 0 && firstEquity < lastEquity);
-      
-      if (needsFix) {
-        const equities = sortedByDate.map(item => item.equity);
-        const reversedEquities = [...equities].reverse();
-        return sortedByDate.map((item, index) => ({
-          date: item.date,
-          equity: reversedEquities[index]
-        }));
-      }
-      return sortedByDate;
+      const validData = backtestResult.results.equityCurve.flatMap((item) => {
+        const equity = safeNumber(item?.equity);
+        const date = typeof item?.date === 'string' ? item.date.trim() : '';
+        return equity !== null && date && parseDateSafe(date) ? [{ date, equity }] : [];
+      });
+      return sortByDateAsc(validData);
     }
     return [];
   };
 
-  const equityCurveData = sortByDateAsc(generateEquityCurveData());
+  const equityCurveData = generateEquityCurveData();
 
   const resultData = backtestResult ? [
     { key: 'strategy', metric: t.backtest.strategyLabel, value: strategyNames[backtestResult.parameters?.strategy] || backtestResult.parameters?.strategy || t.backtest.unknown, description: t.backtest.descStrategy },
-    { key: 'dataMode', metric: t.backtest.dataMode, value: backtestResult.parameters?.dataModeDisplay || t.backtest.realData, description: t.backtest.descDataMode },
-    { key: 'dataSource', metric: t.backtest.dataSource, value: backtestResult.parameters?.dataSource || t.backtest.financialApis, description: t.backtest.descDataSource },
-    { key: 'status', metric: t.backtest.statusLabel, value: backtestResult.success ? t.backtest.completed : t.backtest.failed, description: t.backtest.descStatus },
-    { key: 'totalReturn', metric: t.backtest.totalReturnLabel, value: safeToFixed(backtestResult.results?.totalReturn || 0, 2), description: t.backtest.descTotalReturn },
-    { key: 'annualizedReturn', metric: t.backtest.annualizedReturn, value: safeToFixed(backtestResult.results?.annualizedReturn || 0, 2), description: t.backtest.descAnnualizedReturn },
-    { key: 'profitLoss', metric: t.backtest.profitLoss, value: formatMoney(backtestResult.results?.profitLoss || 0), description: t.backtest.descProfitLoss },
-    { key: 'sharpeRatio', metric: t.backtest.sharpeRatioLabel, value: safeToFixed(backtestResult.results?.sharpeRatio || 0, 2), description: t.backtest.descSharpeRatio },
-    { key: 'calmarRatio', metric: t.backtest.calmarRatio, value: safeNumber(backtestResult.results?.calmarRatio || 0), description: t.backtest.descCalmarRatio },
-    { key: 'maxDrawdown', metric: t.backtest.maxDrawdownLabel, value: safeNumber(backtestResult.results?.maxDrawdown || 0), description: t.backtest.descMaxDrawdown },
-    { key: 'winRate', metric: t.backtest.winRateLabel, value: safeToFixed(backtestResult.results?.winRate || 0, 1), description: t.backtest.descWinRate },
-    { key: 'trades', metric: t.backtest.totalTrades, value: backtestResult.results?.trades || 0, description: t.backtest.descTrades },
-    { key: 'avgReturnPerTrade', metric: t.backtest.avgPnlPerTrade, value: formatMoney(backtestResult.results?.avgReturnPerTrade || 0), description: t.backtest.descAvgPnl },
-    { key: 'volatility', metric: t.backtest.volatility, value: safeNumber(backtestResult.results?.volatility || 0), description: t.backtest.descVolatility },
-    { key: 'sortinoRatio', metric: t.backtest.sortinoRatio, value: safeToFixed(backtestResult.results?.sortinoRatio || 0, 2), description: t.backtest.descSortinoRatio },
-    { key: 'profitFactor', metric: t.backtest.profitFactor, value: backtestResult.results?.profitFactor === null || backtestResult.results?.profitFactor === undefined ? t.common.na : safeToFixed(backtestResult.results.profitFactor, 2), description: t.backtest.descProfitFactor },
-    { key: 'expectancy', metric: t.backtest.expectancy, value: formatMoney(backtestResult.results?.expectancy || 0), description: t.backtest.descExpectancy },
-    { key: 'exposure', metric: t.backtest.avgEquityRatio, value: safeNumber(backtestResult.results?.exposure || 0), description: t.backtest.descExposure },
+    {
+      key: 'dataMode',
+      metric: t.backtest.dataMode,
+      value: backtestResult.parameters?.dataModeDisplay
+        || (backtestResult.parameters?.dataMode === 'real'
+          ? (language === 'zh-CN' ? '历史市场数据' : 'Historical market data')
+          : backtestResult.parameters?.dataMode)
+        || t.common.na,
+      description: t.backtest.descDataMode,
+    },
+    { key: 'dataSource', metric: t.backtest.dataSource, value: backtestResult.parameters?.dataSource || t.common.na, description: t.backtest.descDataSource },
+    { key: 'status', metric: t.backtest.statusLabel, value: backtestResult.success === true ? t.backtest.completed : backtestResult.success === false ? t.backtest.failed : t.common.na, description: t.backtest.descStatus },
+    { key: 'totalReturn', metric: t.backtest.totalReturnLabel, value: backtestResult.results?.totalReturn, description: t.backtest.descTotalReturn },
+    { key: 'annualizedReturn', metric: t.backtest.annualizedReturn, value: backtestResult.results?.annualizedReturn, description: t.backtest.descAnnualizedReturn },
+    { key: 'profitLoss', metric: t.backtest.profitLoss, value: backtestResult.results?.profitLoss, description: t.backtest.descProfitLoss },
+    { key: 'sharpeRatio', metric: t.backtest.sharpeRatioLabel, value: backtestResult.results?.sharpeRatio, description: t.backtest.descSharpeRatio },
+    { key: 'calmarRatio', metric: t.backtest.calmarRatio, value: backtestResult.results?.calmarRatio, description: t.backtest.descCalmarRatio },
+    { key: 'maxDrawdown', metric: t.backtest.maxDrawdownLabel, value: backtestResult.results?.maxDrawdown, description: t.backtest.descMaxDrawdown },
+    { key: 'winRate', metric: t.backtest.winRateLabel, value: backtestResult.results?.winRate, description: t.backtest.descWinRate },
+    { key: 'trades', metric: t.backtest.totalTrades, value: backtestResult.results?.trades, description: t.backtest.descTrades },
+    { key: 'avgReturnPerTrade', metric: t.backtest.avgPnlPerTrade, value: backtestResult.results?.avgReturnPerTrade, description: t.backtest.descAvgPnl },
+    { key: 'volatility', metric: t.backtest.volatility, value: backtestResult.results?.volatility, description: t.backtest.descVolatility },
+    { key: 'sortinoRatio', metric: t.backtest.sortinoRatio, value: backtestResult.results?.sortinoRatio, description: t.backtest.descSortinoRatio },
+    { key: 'profitFactor', metric: t.backtest.profitFactor, value: backtestResult.results?.profitFactor, description: t.backtest.descProfitFactor },
+    { key: 'expectancy', metric: t.backtest.expectancy, value: backtestResult.results?.expectancy, description: t.backtest.descExpectancy },
+    { key: 'exposure', metric: t.backtest.avgEquityRatio, value: backtestResult.results?.exposure, description: t.backtest.descExposure },
   ] : [];
   
   const calculateDrawdownFromEquity = (equityData: Array<{date: string, equity: number}>) => {
     const drawdownData: Array<{date: string, drawdown: number, equity: number, peak: number}> = [];
-    let peak = equityData.length > 0 ? equityData[0].equity : 0;
+    let peak = equityData.length > 0 ? equityData[0].equity : null;
     
     for (let i = 0; i < equityData.length; i++) {
       const currentEquity = equityData[i].equity;
-      peak = Math.max(peak, currentEquity);
-      const drawdown = peak > 0 ? ((peak - currentEquity) / peak) * 100 : 0;
+      peak = peak === null ? currentEquity : Math.max(peak, currentEquity);
+      if (peak <= 0) continue;
+      const drawdown = ((peak - currentEquity) / peak) * 100;
       drawdownData.push({ date: equityData[i].date, drawdown: drawdown, equity: currentEquity, peak: peak });
     }
     return drawdownData;
@@ -1497,173 +1794,90 @@ const Backtest: React.FC = () => {
     return sortedTicks.map(item => item.date);
   };
 
-  return (
-    <div className="backtest-page-shell">
-      <style>{`
-        .backtest-page-shell {
-          max-width: 1600px;
-          margin: 0 auto;
-        }
-        .backtest-main-layout {
-          display: grid;
-          grid-template-columns: minmax(0, 1.45fr) minmax(420px, 520px);
-          gap: 20px;
-          align-items: start;
-        }
-        @media (max-width: 1250px) {
-          .backtest-main-layout {
-            grid-template-columns: 1fr;
-          }
-        }
-        .premium-card { 
-          border-radius: 16px !important; 
-          border: 1px solid var(--app-border-soft) !important; 
-          box-shadow: var(--app-card-shadow) !important; 
-          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important; 
-          background: var(--app-card-bg) !important;
-          overflow: hidden;
-        }
-        .premium-card:hover { 
-          box-shadow: var(--app-shadow) !important; 
-          transform: translateY(-1px) !important; 
-          border-color: rgba(24, 144, 255, 0.15) !important;
-        }
-        .config-card .ant-card-body {
-          padding: 20px 22px !important;
-        }
-        .side-panel-card .ant-card-head {
-          padding: 0 16px !important;
-          min-height: 48px !important;
-          border-bottom: 1px solid var(--app-border-soft) !important;
-        }
-        .side-panel-card .ant-card-head-title {
-          padding: 12px 0 !important;
-        }
-        .section-header { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
-        .section-title { font-size: 18px; font-weight: 700; color: var(--app-text-strong); margin: 0; }
-        .performance-strip { display: flex; gap: 12px; margin-bottom: 24px; overflow-x: auto; padding: 4px 0 12px 0; }
-        .stat-metric-card { 
-          flex: 1; 
-          min-width: 140px; 
-          background: var(--app-card-bg); 
-          padding: 16px 18px; 
-          border-radius: 14px; 
-          border: 1px solid var(--app-border-soft); 
-          box-shadow: var(--app-card-shadow); 
-          transition: all 0.2s ease; 
-        }
-        .stat-metric-card:hover { border-color: #1890ff; box-shadow: 0 4px 12px rgba(24,144,255,0.08); }
-        .stat-metric-label { font-size: 10.5px; color: var(--app-text-muted); text-transform: uppercase; letter-spacing: 0.8px; font-weight: 700; margin-bottom: 4px; display: block; }
-        .stat-metric-value { font-size: 22px; font-weight: 800; color: var(--app-text-strong); line-height: 1.1; }
-        .info-strip { 
-          background: var(--app-card-bg-soft); 
-          border: 1px solid var(--app-border-soft); 
-          border-radius: 12px; 
-          padding: 16px 20px; 
-          margin-bottom: 24px; 
-        }
-        .blueprint-module { background: var(--app-card-bg-soft); border-radius: 12px; padding: 18px; border: 1px solid var(--app-border-soft); height: 100%; }
-        .blueprint-label { font-size: 10.5px; color: var(--app-text-muted); font-weight: 700; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
-        .blueprint-value { font-size: 14px; font-weight: 700; color: var(--app-text-strong); }
-        .chart-container-premium { background: var(--app-card-bg); border-radius: 16px; border: 1px solid var(--app-border-soft); padding: 20px; margin-bottom: 24px; }
-        .recent-backtest-row:hover { background-color: rgba(24, 144, 255, 0.02) !important; cursor: pointer; }
-        .recent-backtest-row.selected-row { background-color: var(--app-blue-bg) !important; }
-        
-        .backtest-form-input { height: 40px !important; border-radius: 10px !important; border-color: var(--app-border) !important; background: var(--app-input-bg) !important; color: var(--app-text-strong) !important; }
-        .backtest-form-label { font-size: 13.5px; font-weight: 600; color: var(--app-text-muted); }
-        .execution-inner-panel {
-          background: var(--app-card-bg-soft);
-          border: 1px solid var(--app-border-soft);
-          border-radius: 14px;
-          padding: 16px;
-          margin-bottom: 24px;
-        }
-        .primary-cta-button { 
-          height: 42px; 
-          font-weight: 700; 
-          border-radius: 12px; 
-          box-shadow: 0 4px 12px rgba(24, 144, 255, 0.15); 
-          font-size: 15px;
-        }
-        .secondary-action-btn {
-          height: 40px !important;
-          border-radius: 10px !important;
-          font-weight: 600 !important;
-          font-size: 13.5px !important;
-          background: var(--app-card-bg-soft) !important;
-          color: var(--app-text) !important;
-          border-color: var(--app-border) !important;
-        }
-        .secondary-action-btn:hover {
-          border-color: #1890ff !important;
-          color: #1890ff !important;
-        }
-        .history-table-container {
-          width: 100%;
-          overflow-x: auto;
-        }
-        .history-table .ant-table-thead > tr > th {
-          background: var(--app-table-header-bg) !important;
-          font-size: 11px !important;
-          text-transform: uppercase !important;
-          letter-spacing: 0.5px !important;
-          color: var(--app-text-muted) !important;
-          font-weight: 700 !important;
-          padding: 12px 8px !important;
-          white-space: nowrap;
-          border-bottom: 1px solid var(--app-border-soft) !important;
-        }
-        .history-table .ant-table-tbody > tr > td {
-          padding: 12px 8px !important;
-          height: 58px;
-          border-bottom: 1px solid var(--app-border-soft) !important;
-        }
-        .history-table .ant-pagination {
-          padding: 12px 14px !important;
-          margin: 0 !important;
-          border-top: 1px solid var(--app-border-soft);
-        }
-        /* Custom scrollbar for the table */
-        .history-table-container::-webkit-scrollbar {
-          height: 6px;
-        }
-        .history-table-container::-webkit-scrollbar-track {
-          background: #f1f5f9;
-        }
-        .history-table-container::-webkit-scrollbar-thumb {
-          background: #cbd5e1;
-          border-radius: 3px;
-        }
-        .history-table-container::-webkit-scrollbar-thumb:hover {
-          background: #94a3b8;
-        }
-      `}</style>
+  const formatResultMetric = (value: unknown, decimals: number, suffix = '') => {
+    const numericValue = safeNumber(value);
+    if (numericValue === null) return t.common.na;
+    return `${numericValue > 0 && suffix === '%' ? '+' : ''}${numericValue.toFixed(decimals)}${suffix}`;
+  };
 
+  const resultMetricColor = (value: unknown, positiveThreshold = 0) => {
+    const numericValue = safeNumber(value);
+    if (numericValue === null || numericValue === 0) return 'var(--bt-ink)';
+    return numericValue > positiveThreshold ? '#10b981' : '#ef4444';
+  };
+
+  const handleResultTabChange = (tab: string) => {
+    const nextSearchParams = new URLSearchParams(location.search);
+    nextSearchParams.set('tab', tab);
+    navigate(
+      { pathname: location.pathname, search: `?${nextSearchParams.toString()}` },
+      { state: location.state },
+    );
+  };
+
+  const tradesListValue = backtestResult?.results?.tradesList;
+  const tradeList = Array.isArray(tradesListValue) ? tradesListValue : null;
+  const sharpeSummaryValue = safeNumber(backtestResult?.results?.sharpeRatio);
+  const maxDrawdownSummaryValue = safeNumber(backtestResult?.results?.maxDrawdown);
+  const winRateSummaryValue = safeNumber(backtestResult?.results?.winRate);
+  const profitFactorValue = safeNumber(backtestResult?.results?.profitFactor);
+  const avgWinValue = safeNumber(backtestResult?.results?.avgWin);
+  const avgLossValue = safeNumber(backtestResult?.results?.avgLoss);
+
+  return (
+    <div className="backtest-page-shell backtest-editorial" aria-busy={loading}>
       {/* ── Page Header ── */}
-      <div style={{ marginBottom: 32, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 20 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <div style={{ width: 44, height: 44, borderRadius: '12px', background: 'linear-gradient(135deg, #1890ff 0%, #003a8c 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 22, boxShadow: '0 4px 12px rgba(24, 144, 255, 0.25)' }}>
+      <section className="bt-hero" aria-labelledby="backtest-page-title">
+        <div className="bt-hero__copy">
+          <span className="bt-kicker">
             <LineChartOutlined />
-          </div>
-          <div>
-            <Title level={1} style={{ margin: 0, fontSize: 'clamp(24px, 2.2vw, 30px)', fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--app-text-strong)' }}>{t.backtest.title}</Title>
-            <Text style={{ fontSize: 14, color: 'var(--app-text-muted)' }}>{t.backtest.subtitleForm}</Text>
+            {language === 'zh-CN' ? '01 / 历史验证台' : '01 / HISTORICAL VALIDATION DESK'}
+          </span>
+          <Title id="backtest-page-title" level={1}>{t.backtest.title}</Title>
+          <Text>{t.backtest.subtitleForm}</Text>
+          <div className="bt-hero__meta">
+            <span><i className={loading ? 'is-running' : 'is-ready'} />{loading ? t.backtest.executingSimulation : t.backtest.engineReady}</span>
+            <span>{language === 'zh-CN' ? `${backtestHistory.length} 个历史会话` : `${backtestHistory.length} HISTORICAL SESSIONS`}</span>
+            <span>{language === 'zh-CN' ? `${savedStrategies.length} 个已存方案` : `${savedStrategies.length} SAVED PLANS`}</span>
           </div>
         </div>
-        <div style={{ background: 'var(--app-card-bg)', padding: '8px 16px', borderRadius: '12px', border: '1px solid var(--app-border-soft)' }}>
-           <Badge status="processing" text={<Text strong style={{ color: '#1890ff', fontSize: 12, letterSpacing: '0.5px' }}>{t.backtest.engineReady.toUpperCase()}</Text>} />
-        </div>
-      </div>
+        <aside className="bt-hero__instrument" aria-label={language === 'zh-CN' ? '当前研究方案' : 'Current research mandate'}>
+          <span>{language === 'zh-CN' ? '当前模型' : 'CURRENT MODEL'}</span>
+          <strong>{strategyNames[selectedStrategy] || selectedStrategy}</strong>
+          <small>{portfolioSymbols.length > 1
+            ? (language === 'zh-CN' ? `${portfolioSymbols.length} 个标的组合` : `${portfolioSymbols.length} INSTRUMENT PORTFOLIO`)
+            : (language === 'zh-CN' ? '单一标的研究' : 'SINGLE-INSTRUMENT STUDY')}
+          </small>
+        </aside>
+      </section>
 
       {error && (
-        <Alert message={t.backtest.systemNotification} description={error} type="error" showIcon style={{ marginBottom: 24, borderRadius: 12 }} closable onClose={() => setError('')} />
+        <Alert className="bt-error-alert" message={t.backtest.systemNotification} description={error} type="error" showIcon closable onClose={() => setError('')} />
+      )}
+
+      {loading && (
+        <div className="bt-run-progress" role="status" aria-live="polite">
+          <div className="bt-run-progress__copy">
+            <Spin size="small" />
+            <span>{t.backtest.executingSimulation}</span>
+          </div>
+          <div className="bt-run-progress__track" aria-hidden="true"><i /></div>
+        </div>
       )}
 
       <div className="backtest-main-layout">
         <div className="backtest-left-panel">
-          <Card className="premium-card config-card" title={<span style={{ fontWeight: 800, fontSize: 16, color: 'var(--app-text-strong)' }}>{t.backtest.configuration}</span>}>
+          <Card
+            className="premium-card config-card"
+            title={(
+              <div className="bt-card-heading">
+                <span>{language === 'zh-CN' ? '01 / 研究设定' : '01 / RESEARCH MANDATE'}</span>
+                <strong>{t.backtest.configuration}</strong>
+              </div>
+            )}
+          >
             <Form form={form} layout="vertical" onFinish={handleRunBacktest} requiredMark={false}>
-              <Row gutter={18}>
+              <Row gutter={18} className="bt-primary-fields">
                 <Col span={10}>
                   <Form.Item label={<span className="backtest-form-label">{t.backtest.stockSymbol}</span>} name="symbol" rules={[{ required: true, message: t.backtest.stockSymbolRequired }]} help={<span style={{ fontSize: 11, color: 'var(--app-text-muted)' }}>{t.backtest.stockSymbolHelp}</span>}>
                     <Input placeholder={t.backtest.stockSymbolPlaceholder} className="backtest-form-input" prefix={<LineChartOutlined style={{ color: 'var(--app-text-muted)' }} />} onChange={(e) => parseSymbols(e.target.value)} />
@@ -1689,16 +1903,16 @@ const Backtest: React.FC = () => {
               </Row>
 
               {portfolioSymbols.length > 1 && (
-                <div style={{ marginBottom: '20px', padding: '10px 14px', background: 'var(--app-blue-bg)', border: '1px solid var(--app-blue-border)', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div className="bt-portfolio-notice">
                   <Tag color="blue" style={{ borderRadius: 4, fontWeight: 700, fontSize: 10 }}>{t.backtest.portfolioActive}</Tag>
                   <Text style={{ fontSize: 12.5, color: 'var(--app-blue-text)', fontWeight: 500 }}>{t.backtest.portfolioMode.replace('{count}', String(portfolioSymbols.length))}</Text>
                 </div>
               )}
 
               <div className="execution-inner-panel">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <div className="bt-execution-heading">
                   <h4 style={{ margin: 0, fontSize: 11, fontWeight: 800, textTransform: 'uppercase', color: 'var(--app-text-muted)', letterSpacing: '1px' }}>{t.backtest.executionParams}</h4>
-                  <Badge status="success" text={<Text style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 600 }}>{t.backtest.realMarketData}</Text>} />
+                  <Badge status="default" text={<Text style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 600 }}>{language === 'zh-CN' ? '历史市场数据' : 'Historical market data'}</Text>} />
                 </div>
 
                 {selectedStrategy === 'moving_average' && (
@@ -1735,13 +1949,55 @@ const Backtest: React.FC = () => {
                 {selectedStrategy === 'mean_reversion' && (
                   <Row gutter={12}>
                     <Col span={8}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>{t.backtest.lookbackPeriod}</span>} name="lookbackPeriod" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '20')}</span>}><InputNumber min={5} max={100} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
-                    <Col span={8}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>Z-Score Entry</span>} name="entryZScore" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '-2.0')}</span>}><InputNumber step={0.1} min={-5} max={0} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
-                    <Col span={8}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>Stop Loss %</span>} name="stopLossPct" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '6')}</span>}><InputNumber min={1} max={20} step={0.5} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>{t.backtest.paramEntryZScore}</span>} name="entryZScore" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '-2.0')}</span>}><InputNumber step={0.1} min={-5} max={0} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>{t.backtest.paramStopLossPct}</span>} name="stopLossPct" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '6')}</span>}><InputNumber min={1} max={20} step={0.5} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                  </Row>
+                )}
+                {selectedStrategy === 'buy_hold' && (
+                  <div style={{ fontSize: 12, color: 'var(--app-text-muted)', lineHeight: 1.6 }}>
+                    {t.backtest.buyHoldDescription}
+                  </div>
+                )}
+                {selectedStrategy === 'donchian_breakout' && (
+                  <Row gutter={12}>
+                    <Col span={6}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>{t.backtest.entryPeriod}</span>} name="entryPeriod" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '20')}</span>}><InputNumber min={5} max={120} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={6}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>{t.backtest.exitPeriod}</span>} name="exitPeriod" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '10')}</span>}><InputNumber min={3} max={80} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={6}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>{t.backtest.atrPeriod}</span>} name="atrPeriod" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '20')}</span>}><InputNumber min={5} max={60} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={6}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>{t.backtest.atrStopMultiple}</span>} name="atrStopMultiple" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '2.0')}</span>}><InputNumber min={0.5} max={6} step={0.1} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                  </Row>
+                )}
+                {selectedStrategy === 'keltner_breakout' && (
+                  <Row gutter={12}>
+                    <Col span={8}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>{t.backtest.emaPeriod}</span>} name="emaPeriod" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '20')}</span>}><InputNumber min={5} max={120} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>{t.backtest.atrPeriod}</span>} name="atrPeriod" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '20')}</span>}><InputNumber min={5} max={60} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={8}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>{t.backtest.atrMultiplier}</span>} name="atrMultiplier" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '2.0')}</span>}><InputNumber min={0.5} max={6} step={0.1} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                  </Row>
+                )}
+                {selectedStrategy === 'supertrend' && (
+                  <Row gutter={12}>
+                    <Col span={12}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>{t.backtest.atrPeriod}</span>} name="atrPeriod" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '10')}</span>}><InputNumber min={5} max={60} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={12}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>{t.backtest.multiplier}</span>} name="multiplier" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '3.0')}</span>}><InputNumber min={1} max={8} step={0.1} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                  </Row>
+                )}
+                {selectedStrategy === 'stochastic' && (
+                  <Row gutter={12}>
+                    <Col span={6}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>{t.backtest.kPeriod}</span>} name="kPeriod" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '14')}</span>}><InputNumber min={5} max={60} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={6}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>{t.backtest.dPeriod}</span>} name="dPeriod" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '3')}</span>}><InputNumber min={1} max={20} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={6}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>{t.backtest.oversold}</span>} name="oversold" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '20')}</span>}><InputNumber min={1} max={50} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={6}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>{t.backtest.overbought}</span>} name="overbought" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '80')}</span>}><InputNumber min={50} max={99} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                  </Row>
+                )}
+                {selectedStrategy === 'adx_trend' && (
+                  <Row gutter={12}>
+                    <Col span={6}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>{t.backtest.adxPeriod}</span>} name="adxPeriod" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '14')}</span>}><InputNumber min={5} max={60} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={6}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>{t.backtest.adxThreshold}</span>} name="adxThreshold" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '25')}</span>}><InputNumber min={5} max={60} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={6}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>{t.backtest.fastEmaPeriod}</span>} name="fastEmaPeriod" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '20')}</span>}><InputNumber min={3} max={120} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col span={6}><Form.Item label={<span style={{ fontSize: 12, color: 'var(--app-text)' }}>{t.backtest.slowEmaPeriod}</span>} name="slowEmaPeriod" extra={<span style={{ fontSize: 9, color: 'var(--app-text-muted)' }}>{t.backtest.defaultLabel.replace('{value}', '50')}</span>}><InputNumber min={10} max={220} className="backtest-form-input" style={{ width: '100%' }} /></Form.Item></Col>
                   </Row>
                 )}
               </div>
 
-              <Row gutter={20}>
+              <Row gutter={20} className="bt-simulation-fields">
                 <Col span={14}>
                   <Form.Item label={<span className="backtest-form-label">{t.backtest.simulationWindow}</span>} name="dateRange" rules={[{ required: true }]}>
                     <RangePicker className="backtest-form-input" style={{ width: '100%' }} />
@@ -1754,11 +2010,11 @@ const Backtest: React.FC = () => {
                 </Col>
               </Row>
 
-              <div style={{ marginTop: 12 }}>
+              <div className="bt-form-actions">
                 <Button type="primary" htmlType="submit" size="large" loading={loading} icon={<PlayCircleOutlined />} className="primary-cta-button" style={{ width: '100%', marginBottom: 14 }} disabled={loading}>
                   {loading ? t.backtest.executingSimulation : t.backtest.executeBacktest}
                 </Button>
-                <div style={{ display: 'flex', gap: 12 }}>
+                <div className="bt-secondary-actions">
                   <Button style={{ flex: 1 }} className="secondary-action-btn" icon={<SaveOutlined />} onClick={saveCurrentStrategy}>{t.backtest.savePlan}</Button>
                   <Button style={{ flex: 1 }} className="secondary-action-btn" icon={<FolderOpenOutlined />} onClick={() => setShowSavedStrategies(!showSavedStrategies)}>{showSavedStrategies ? t.backtest.hidePlans : t.backtest.savedPlans}</Button>
                   <Button style={{ flex: 1 }} className="secondary-action-btn" type="dashed" icon={<PlayCircleOutlined />} onClick={() => {
@@ -1775,11 +2031,19 @@ const Backtest: React.FC = () => {
           </Card>
 
           {showSavedStrategies && (
-            <Card className="premium-card" title={<span style={{ fontWeight: 800, fontSize: 15, color: 'var(--app-text-strong)' }}>{t.backtest.strategyLibrary}</span>} style={{ marginTop: 24 }}>
+            <Card
+              className="premium-card bt-saved-plans"
+              title={(
+                <div className="bt-card-heading bt-card-heading--compact">
+                  <span>{language === 'zh-CN' ? '已保存' : 'SAVED RESEARCH'}</span>
+                  <strong>{t.backtest.strategyLibrary}</strong>
+                </div>
+              )}
+            >
               {savedStrategies.length === 0 ? (
                 <Empty description={t.backtest.noSavedPlans} image={Empty.PRESENTED_IMAGE_SIMPLE} />
               ) : (
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div className="bt-saved-plan-grid">
                   {savedStrategies.map((strategy) => (
                     <Card key={strategy.id} size="small" className="premium-card" style={{ border: '1px solid var(--app-border-soft)' }}
                       title={<Text strong style={{ fontSize: 13.5, color: 'var(--app-text-strong)' }}>{strategy.name}</Text>}
@@ -1806,7 +2070,12 @@ const Backtest: React.FC = () => {
         <div className="backtest-right-panel">
           <Card 
             className="premium-card side-panel-card" 
-            title={<span style={{ fontWeight: 800, fontSize: 15, color: 'var(--app-text-strong)' }}><HistoryOutlined style={{ marginRight: 8, color: '#3b82f6' }} />{t.backtest.recentSessions}</span>} 
+            title={(
+              <div className="bt-card-heading bt-card-heading--compact">
+                <span>{language === 'zh-CN' ? '02 / 会话账本' : '02 / SESSION LEDGER'}</span>
+                <strong><HistoryOutlined />{t.backtest.recentSessions}</strong>
+              </div>
+            )}
             bodyStyle={{ padding: '0' }}
             extra={
               <Space>
@@ -1825,7 +2094,15 @@ const Backtest: React.FC = () => {
               </Space>
             }
           >
-            {historyLoading ? <div style={{ textAlign: 'center', padding: '40px' }}><Spin /></div> : backtestHistory.length > 0 ? (
+            {historyLoading ? <div className="bt-loading-state"><Spin /><span>{language === 'zh-CN' ? '正在同步历史会话…' : 'Synchronizing session ledger…'}</span></div> : historyError ? (
+              <Alert
+                type="error"
+                showIcon
+                message={historyError}
+                action={<Button size="small" onClick={() => void fetchBacktestHistory()}>{language === 'zh-CN' ? '重试' : 'Retry'}</Button>}
+                style={{ margin: 16 }}
+              />
+            ) : backtestHistory.length > 0 ? (
               <div className="history-table-container">
                 <Table 
                   className="history-table"
@@ -1839,35 +2116,61 @@ const Backtest: React.FC = () => {
                 />
               </div>
             ) : (
-              <div style={{ padding: '40px 0' }}><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t.backtest.noPreviousSessions} /></div>
+              <div className="bt-empty-state"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t.backtest.noPreviousSessions} /></div>
             )}
           </Card>
-          <Card className="premium-card" title={<span style={{ fontWeight: 800, fontSize: 15, color: 'var(--app-text-strong)' }}>{t.backtest.quickInsights}</span>} style={{ marginTop: 20 }} bodyStyle={{ padding: 18 }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <Card
+            className="premium-card bt-quick-insights"
+            title={(
+              <div className="bt-card-heading bt-card-heading--compact">
+                <span>{language === 'zh-CN' ? '03 / 研究捷径' : '03 / RESEARCH SHORTCUTS'}</span>
+                <strong>{t.backtest.quickInsights}</strong>
+              </div>
+            )}
+            bodyStyle={{ padding: 18 }}
+          >
+            <div className="bt-quick-actions">
               <Button block className="secondary-action-btn" onClick={() => navigate('/market')} icon={<LineChartOutlined />}>{t.backtest.exploreTopSymbols}</Button>
-              <Button block className="secondary-action-btn" onClick={() => { form.setFieldsValue({ symbol: 'MSFT', strategy: 'rsi', initialCapital: 100000, dateRange: defaultDateRange() }); message.info(t.backtest.msftLoaded); }}>{t.backtest.loadMsftBlueprint}</Button>
-              <Button block className="secondary-action-btn" onClick={() => { form.setFieldsValue({ symbol: 'TSLA', strategy: 'momentum', initialCapital: 100000, dateRange: defaultDateRange() }); message.info(t.backtest.tslaLoaded); }}>{t.backtest.loadTslaBlueprint}</Button>
+              <Button block className="secondary-action-btn" onClick={() => loadQuickBlueprint('MSFT', 'rsi')}>{t.backtest.loadMsftBlueprint}</Button>
+              <Button block className="secondary-action-btn" onClick={() => loadQuickBlueprint('TSLA', 'momentum')}>{t.backtest.loadTslaBlueprint}</Button>
             </div>
           </Card>
         </div>
       </div>
 
-      {backtestResult && (
-        <div ref={resultsRef} style={{ marginTop: 40 }}>
-          <div className="section-header">
-            <CheckCircleOutlined style={{ fontSize: 24, color: '#10b981' }} />
+      {backtestResult && backtestResult.success !== false && (
+        <div ref={resultsRef} className="bt-results" id="backtest-report">
+          <div className="section-header bt-report-heading">
+            <span className="bt-report-index">{language === 'zh-CN' ? '04 / 验证结果' : '04 / VALIDATION REPORT'}</span>
+            {backtestResult.success === true
+              ? <CheckCircleOutlined style={{ fontSize: 24, color: '#10b981' }} />
+              : <LineChartOutlined style={{ fontSize: 24, color: 'var(--bt-blue)' }} />}
             <h2 className="section-title" style={{ fontSize: 22 }}>{t.backtest.backtestReport}</h2>
-            <Tag color="success" style={{ borderRadius: 8, fontWeight: 700, fontSize: 10, padding: '1px 8px', border: 'none', background: 'var(--app-blue-bg)', color: '#10b981' }}>{t.backtest.verified.toUpperCase()}</Tag>
+            <Tag
+              color={backtestResult.success === true ? 'success' : 'default'}
+              style={{
+                borderRadius: 2,
+                fontWeight: 700,
+                fontSize: 10,
+                padding: '1px 8px',
+                background: backtestResult.success === true ? 'var(--app-blue-bg)' : 'var(--bt-surface-deep)',
+                color: backtestResult.success === true ? '#10b981' : 'var(--bt-muted)',
+              }}
+            >
+              {backtestResult.success === true
+                ? t.backtest.verified.toUpperCase()
+                : (language === 'zh-CN' ? '结果可用' : 'RESULT AVAILABLE')}
+            </Tag>
           </div>
 
           <div className="performance-strip">
             {[
-              { label: t.backtest.totalReturnLabel, value: `${(backtestResult.results?.totalReturn || 0) >= 0 ? '+' : ''}${safeToFixed(backtestResult.results?.totalReturn, 2)}%`, color: (backtestResult.results?.totalReturn || 0) >= 0 ? '#10b981' : '#ef4444' },
-              { label: t.backtest.sharpeRatioLabel, value: safeToFixed(backtestResult.results?.sharpeRatio, 2), color: (backtestResult.results?.sharpeRatio || 0) >= 1 ? '#10b981' : '#f59e0b' },
-              { label: t.backtest.maxDrawdownLabel, value: `${safeToFixed(backtestResult.results?.maxDrawdown, 2)}%`, color: '#ef4444' },
-              { label: t.backtest.winRateLabel, value: `${safeToFixed(backtestResult.results?.winRate, 1)}%`, color: (backtestResult.results?.winRate || 0) >= 50 ? '#10b981' : '#f59e0b' },
-              { label: t.backtest.totalTrades, value: backtestResult.results?.trades || 0, color: 'var(--app-text-strong)' },
-              { label: t.backtest.netProfit, value: formatCurrency(backtestResult.results?.profitLoss || 0), color: (backtestResult.results?.profitLoss || 0) >= 0 ? '#10b981' : '#ef4444' }
+              { label: t.backtest.totalReturnLabel, value: formatResultMetric(backtestResult.results?.totalReturn, 2, '%'), color: resultMetricColor(backtestResult.results?.totalReturn) },
+              { label: t.backtest.sharpeRatioLabel, value: formatResultMetric(backtestResult.results?.sharpeRatio, 2), color: sharpeSummaryValue === null ? 'var(--bt-ink)' : sharpeSummaryValue >= 1 ? '#10b981' : '#f59e0b' },
+              { label: t.backtest.maxDrawdownLabel, value: formatDrawdown(backtestResult.results?.maxDrawdown, 2), color: maxDrawdownSummaryValue === null ? 'var(--bt-ink)' : '#ef4444' },
+              { label: t.backtest.winRateLabel, value: formatResultMetric(backtestResult.results?.winRate, 1, '%'), color: winRateSummaryValue === null ? 'var(--bt-ink)' : winRateSummaryValue >= 50 ? '#10b981' : '#f59e0b' },
+              { label: t.backtest.totalTrades, value: safeNumber(backtestResult.results?.trades) ?? t.common.na, color: 'var(--app-text-strong)' },
+              { label: t.backtest.netProfit, value: formatCurrency(backtestResult.results?.profitLoss), color: resultMetricColor(backtestResult.results?.profitLoss) }
             ].map(m => (
               <div key={m.label} className="stat-metric-card">
                 <span className="stat-metric-label">{m.label}</span>
@@ -1876,8 +2179,8 @@ const Backtest: React.FC = () => {
             ))}
           </div>
 
-          <Card className="premium-card" bodyStyle={{ padding: '8px 24px 24px 24px' }}>
-            <Tabs defaultActiveKey="results" items={[
+          <Card className="premium-card backtest-report-card" bodyStyle={{ padding: '8px 24px 24px 24px' }}>
+            <Tabs activeKey={activeResultTab} onChange={handleResultTabChange} items={[
               {
                 key: 'results', label: <span style={{ fontWeight: 700 }}>{t.backtest.overview}</span>, children: (
                   <div style={{ paddingTop: 8 }}>
@@ -1885,8 +2188,8 @@ const Backtest: React.FC = () => {
                       <Row gutter={[24, 16]}>
                         <Col xs={12} sm={6}><div className="blueprint-label">{t.backtest.strategyModule}</div><div className="blueprint-value">{strategyNames[backtestResult.parameters.strategy] || backtestResult.parameters.strategy}</div></Col>
                         <Col xs={12} sm={6}><div className="blueprint-label">{t.backtest.instrument}</div><div className="blueprint-value">{backtestResult.parameters.symbol || backtestResult.parameters.symbols?.[0] || 'N/A'}</div></Col>
-                        <Col xs={12} sm={6}><div className="blueprint-label">{t.backtest.initialEquity}</div><div className="blueprint-value" style={{ color: '#1890ff' }}>${backtestResult.parameters.initialCapital?.toLocaleString()}</div></Col>
-                        <Col xs={12} sm={6}><div className="blueprint-label">{t.backtest.simulationPeriod}</div><div className="blueprint-value" style={{ fontSize: 12.5 }}>{backtestResult.parameters.period}</div></Col>
+                        <Col xs={12} sm={6}><div className="blueprint-label">{t.backtest.initialEquity}</div><div className="blueprint-value">{safeNumber(backtestResult.parameters.initialCapital) === null ? t.common.na : `$${Number(backtestResult.parameters.initialCapital).toLocaleString()}`}</div></Col>
+                        <Col xs={12} sm={6}><div className="blueprint-label">{t.backtest.simulationPeriod}</div><div className="blueprint-value" style={{ fontSize: 12.5 }}>{backtestResult.parameters.period || t.common.na}</div></Col>
                       </Row>
                     </div>
                     <h4 style={{ fontSize: 14, fontWeight: 800, marginBottom: 16, color: 'var(--app-text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{t.backtest.performanceBreakdown}</h4>
@@ -1899,7 +2202,7 @@ const Backtest: React.FC = () => {
                   <div style={{ paddingTop: 12 }}>
                     <div className="chart-container-premium">
                       <h4 style={{ fontWeight: 800, fontSize: 15, marginBottom: 20, color: 'var(--app-text-strong)' }}>{t.backtest.equityGrowthCurve}</h4>
-                      <div style={{ height: '360px' }}>
+                      {equityCurveData.length > 0 ? <div style={{ height: '360px' }}>
                         <ResponsiveContainer width="100%" height="100%">
                           <AreaChart data={equityCurveData}>
                             <defs><linearGradient id="colorEquity" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#10b981" stopOpacity={0.12}/><stop offset="95%" stopColor="#10b981" stopOpacity={0}/></linearGradient></defs>
@@ -1925,11 +2228,11 @@ const Backtest: React.FC = () => {
                             <Area type="monotone" dataKey="equity" stroke="#10b981" strokeWidth={2.5} fillOpacity={1} fill="url(#colorEquity)" activeDot={{ r: 5, strokeWidth: 2, stroke: 'var(--app-card-bg)' }} />
                           </AreaChart>
                         </ResponsiveContainer>
-                      </div>
+                      </div> : <div className="bt-chart-empty"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={language === 'zh-CN' ? '该回测暂无权益曲线数据' : 'No equity curve data for this backtest'} /></div>}
                     </div>
                     <div className="chart-container-premium">
                       <h4 style={{ fontWeight: 800, fontSize: 15, marginBottom: 20, color: 'var(--app-text-strong)' }}>{t.backtest.drawdownAnalysis}</h4>
-                      <div style={{ height: '260px' }}>
+                      {drawdownData.length > 0 ? <div style={{ height: '260px' }}>
                         <ResponsiveContainer width="100%" height="100%">
                           <AreaChart data={drawdownData.map(d => ({...d, drawdown: -Math.abs(d.drawdown)}))}>
                             <defs><linearGradient id="colorDrawdown" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#ef4444" stopOpacity={0.12}/><stop offset="95%" stopColor="#ef4444" stopOpacity={0}/></linearGradient></defs>
@@ -1950,10 +2253,15 @@ const Backtest: React.FC = () => {
                             <Area type="monotone" dataKey="drawdown" stroke="#ef4444" strokeWidth={2} fillOpacity={1} fill="url(#colorDrawdown)" activeDot={{ r: 4, strokeWidth: 2, stroke: 'var(--app-card-bg)' }} />
                           </AreaChart>
                         </ResponsiveContainer>
-                      </div>
+                      </div> : <div className="bt-chart-empty bt-chart-empty--compact"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={language === 'zh-CN' ? '该回测暂无回撤数据' : 'No drawdown series for this backtest'} /></div>}
                     </div>
                     {(!backtestResult?.parameters?.symbols || backtestResult.parameters.symbols.length <= 1) ? (
-                      <div className="chart-container-premium"><h4 style={{ fontWeight: 800, fontSize: 15, marginBottom: 20, color: 'var(--app-text-strong)' }}>{t.backtest.detailedTradingSignals}</h4><TradingChart data={backtestResult.results.chartData || []} height={380} /></div>
+                      <div className="chart-container-premium">
+                        <h4 style={{ fontWeight: 800, fontSize: 15, marginBottom: 20, color: 'var(--app-text-strong)' }}>{t.backtest.detailedTradingSignals}</h4>
+                        {(backtestResult.results.chartData?.length || 0) > 0
+                          ? <TradingChart data={backtestResult.results.chartData || []} height={380} />
+                          : <div className="bt-chart-empty"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={language === 'zh-CN' ? '该回测暂无价格信号数据' : 'No price-signal series for this backtest'} /></div>}
+                      </div>
                     ) : <Empty description={t.backtest.portfolioNotAvailable} style={{ padding: '60px 0' }} />}
 
                   </div>
@@ -1962,12 +2270,15 @@ const Backtest: React.FC = () => {
               {
                 key: 'trades', label: <span style={{ fontWeight: 700 }}>{t.backtest.tradeLog}</span>, children: (
                   <div style={{ paddingTop: 8 }}>
-                    <div style={{ background: 'var(--app-card-bg-soft)', border: '1px solid var(--app-border-soft)', borderRadius: 14, padding: 20, marginBottom: 24 }}>
+                    <div className="bt-trade-stats">
                       <Row gutter={24}>
-                        <Col span={6}><Statistic title={<Text style={{ fontSize: 11, fontWeight: 700, color: 'var(--app-text-muted)', textTransform: 'uppercase' }}>{t.backtest.winningTrades}</Text>} value={backtestResult.results.tradesList?.filter(t => t.pnl > 0).length || 0} valueStyle={{ color: '#10b981', fontWeight: 800, fontSize: 24 }} suffix={<span style={{ fontSize: 14, color: 'var(--app-text-muted)', fontWeight: 500 }}>/ {backtestResult.results.tradesList?.length || 0}</span>} /></Col>
-                        <Col span={6}><Statistic title={<Text style={{ fontSize: 11, fontWeight: 700, color: 'var(--app-text-muted)', textTransform: 'uppercase' }}>{t.backtest.profitFactorLabel}</Text>} value={backtestResult.results.profitFactor || '—'} precision={2} valueStyle={{ fontWeight: 800, fontSize: 24, color: 'var(--app-text-strong)' }} /></Col>
-                        <Col span={6}><Statistic title={<Text style={{ fontSize: 11, fontWeight: 700, color: 'var(--app-text-muted)', textTransform: 'uppercase' }}>{t.backtest.avgProfit}</Text>} value={backtestResult.results.avgWin || 0} precision={0} prefix="$" valueStyle={{ color: '#10b981', fontWeight: 800, fontSize: 24 }} /></Col>
-                        <Col span={6}><Statistic title={<Text style={{ fontSize: 11, fontWeight: 700, color: 'var(--app-text-muted)', textTransform: 'uppercase' }}>{t.backtest.avgLoss}</Text>} value={backtestResult.results.avgLoss || 0} precision={0} prefix="$" valueStyle={{ color: '#ef4444', fontWeight: 800, fontSize: 24 }} /></Col>
+                        <Col span={6}><Statistic title={<Text style={{ fontSize: 11, fontWeight: 700, color: 'var(--app-text-muted)', textTransform: 'uppercase' }}>{t.backtest.winningTrades}</Text>} value={tradeList ? tradeList.filter((trade) => {
+                          const pnl = safeNumber(trade.pnl);
+                          return pnl !== null && pnl > 0;
+                        }).length : t.common.na} valueStyle={{ color: '#10b981', fontWeight: 800, fontSize: 24 }} suffix={tradeList ? <span style={{ fontSize: 14, color: 'var(--app-text-muted)', fontWeight: 500 }}>/ {tradeList.length}</span> : undefined} /></Col>
+                        <Col span={6}><Statistic title={<Text style={{ fontSize: 11, fontWeight: 700, color: 'var(--app-text-muted)', textTransform: 'uppercase' }}>{t.backtest.profitFactorLabel}</Text>} value={profitFactorValue ?? '—'} precision={profitFactorValue === null ? undefined : 2} valueStyle={{ fontWeight: 800, fontSize: 24, color: 'var(--app-text-strong)' }} /></Col>
+                        <Col span={6}><Statistic title={<Text style={{ fontSize: 11, fontWeight: 700, color: 'var(--app-text-muted)', textTransform: 'uppercase' }}>{t.backtest.avgProfit}</Text>} value={avgWinValue ?? '—'} precision={avgWinValue === null ? undefined : 0} prefix={avgWinValue === null ? undefined : '$'} valueStyle={{ color: '#10b981', fontWeight: 800, fontSize: 24 }} /></Col>
+                        <Col span={6}><Statistic title={<Text style={{ fontSize: 11, fontWeight: 700, color: 'var(--app-text-muted)', textTransform: 'uppercase' }}>{t.backtest.avgLoss}</Text>} value={avgLossValue ?? '—'} precision={avgLossValue === null ? undefined : 0} prefix={avgLossValue === null ? undefined : '$'} valueStyle={{ color: '#ef4444', fontWeight: 800, fontSize: 24 }} /></Col>
                       </Row>
                     </div>
                     <Table
@@ -1976,10 +2287,10 @@ const Backtest: React.FC = () => {
                         { title: t.backtest.entryDate, dataIndex: 'entryDate', key: 'entryDate', render: d => <Text strong style={{ fontSize: 13, color: 'var(--app-text-strong)' }}>{formatDateToYYYYMMDD(d)}</Text> },
                         { title: t.backtest.symbolCol, dataIndex: 'symbol', key: 'symbol', render: s => <Tag color="blue" style={{ fontWeight: 700, borderRadius: 6, border: 'none', background: 'var(--app-blue-bg)', color: 'var(--app-blue-text)' }}>{s}</Tag> },
                         { title: t.backtest.action, dataIndex: 'action', key: 'action', render: a => <Tag color={a === 'BUY' ? 'green' : 'red'} style={{ borderRadius: 6, fontWeight: 700 }}>{a}</Tag> },
-                        { title: t.backtest.entryPrice, dataIndex: 'entryPrice', key: 'entryPrice', render: p => <Text strong style={{ color: 'var(--app-text-strong)' }}>${p.toFixed(2)}</Text>, align: 'right' },
-                        { title: t.backtest.exitPrice, dataIndex: 'exitPrice', key: 'exitPrice', render: p => <Text style={{ color: 'var(--app-text-muted)' }}>${p?.toFixed(2) || '—'}</Text>, align: 'right' },
-                        { title: t.backtest.pnlDollar, dataIndex: 'pnl', key: 'pnl', render: p => <Text strong style={{ color: p >= 0 ? '#10b981' : '#ef4444' }}>{p >= 0 ? '+' : ''}{p.toFixed(2)}</Text>, align: 'right' },
-                        { title: t.backtest.returnLabel, dataIndex: 'returnPct', key: 'returnPct', render: r => <div style={{ background: r >= 0 ? 'rgba(16, 185, 129, 0.08)' : 'rgba(239, 68, 68, 0.08)', color: r >= 0 ? '#10b981' : '#ef4444', padding: '2px 8px', borderRadius: 6, fontWeight: 800, fontSize: 12, display: 'inline-block' }}>{r >= 0 ? '+' : ''}{r.toFixed(2)}%</div>, align: 'right' },
+                        { title: t.backtest.entryPrice, dataIndex: 'entryPrice', key: 'entryPrice', render: p => { const value = safeNumber(p); return <Text strong style={{ color: value === null ? 'var(--app-text-muted)' : 'var(--app-text-strong)' }}>{value === null ? t.common.na : `$${value.toFixed(2)}`}</Text>; }, align: 'right' },
+                        { title: t.backtest.exitPrice, dataIndex: 'exitPrice', key: 'exitPrice', render: p => { const value = safeNumber(p); return <Text style={{ color: 'var(--app-text-muted)' }}>{value === null ? t.common.na : `$${value.toFixed(2)}`}</Text>; }, align: 'right' },
+                        { title: t.backtest.pnlDollar, dataIndex: 'pnl', key: 'pnl', render: p => { const value = safeNumber(p); return <Text strong style={{ color: value === null ? 'var(--app-text-muted)' : value > 0 ? '#10b981' : value < 0 ? '#ef4444' : 'var(--bt-ink)' }}>{value === null ? t.common.na : `${value > 0 ? '+$' : value < 0 ? '-$' : '$'}${Math.abs(value).toFixed(2)}`}</Text>; }, align: 'right' },
+                        { title: t.backtest.returnLabel, dataIndex: 'returnPct', key: 'returnPct', render: r => { const value = safeNumber(r); return <div style={{ background: value !== null && value > 0 ? 'rgba(16, 185, 129, 0.08)' : value !== null && value < 0 ? 'rgba(239, 68, 68, 0.08)' : 'transparent', color: value === null ? 'var(--app-text-muted)' : value > 0 ? '#10b981' : value < 0 ? '#ef4444' : 'var(--bt-ink)', padding: '2px 8px', borderRadius: 6, fontWeight: 800, fontSize: 12, display: 'inline-block' }}>{value === null ? t.common.na : `${value > 0 ? '+' : ''}${value.toFixed(2)}%`}</div>; }, align: 'right' },
                       ]}
                       dataSource={backtestResult.results.tradesList || []}
                       rowKey={(record, index) => `${record.entryDate}-${index}`}
@@ -1998,8 +2309,8 @@ const Backtest: React.FC = () => {
                           <div className="blueprint-label">{t.backtest.coreStrategyInfo}</div>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: 12 }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between' }}><Text style={{ color: 'var(--app-text-muted)', fontWeight: 500 }}>{t.backtest.modelName}</Text><Text strong style={{ color: 'var(--app-text-strong)' }}>{strategyNameBlueprint[backtestResult.parameters.strategy] || backtestResult.parameters.strategy}</Text></div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><Text style={{ color: 'var(--app-text-muted)', fontWeight: 500 }}>{t.backtest.dataProvider}</Text><Text strong style={{ color: 'var(--app-text-strong)' }}>{backtestResult.parameters.dataSource || 'Alpaca'}{backtestResult.parameters.dataSource?.includes('1Day') ? '' : ` (${t.backtest.dataBars1Day})`}</Text></div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><Text style={{ color: 'var(--app-text-muted)', fontWeight: 500 }}>{t.backtest.engineVersion}</Text><Tag color="blue" style={{ margin: 0, borderRadius: 6, fontWeight: 700 }}>V2.5 PRO</Tag></div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 18 }}><Text style={{ color: 'var(--app-text-muted)', fontWeight: 500 }}>{t.backtest.dataProvider}</Text><Text strong style={{ color: 'var(--app-text-strong)', textAlign: 'right' }}>{backtestResult.parameters.dataSource || t.common.na}</Text></div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 18 }}><Text style={{ color: 'var(--app-text-muted)', fontWeight: 500 }}>{t.backtest.engineVersion}</Text><Text strong style={{ color: 'var(--app-text-strong)' }}>{(backtestResult as BacktestResult & { engineVersion?: string }).engineVersion || t.common.na}</Text></div>
                           </div>
                         </div>
                       </Col>

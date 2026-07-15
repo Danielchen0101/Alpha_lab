@@ -1,183 +1,72 @@
-import React from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import { Button } from 'antd';
-import { ArrowLeftOutlined, CheckCircleFilled } from '@ant-design/icons';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Button, Typography } from 'antd';
+import { ArrowLeftOutlined } from '@ant-design/icons';
+import { Link, useNavigate } from 'react-router-dom';
+import { supabase } from '../lib/supabaseClient';
 import { useLanguage } from '../contexts/LanguageContext';
+import '../styles/Auth.css';
+
+const { Title, Text } = Typography;
 
 const AuthConfirmed: React.FC = () => {
   const navigate = useNavigate();
-  const { t } = useLanguage();
+  const { t, language, setLanguage } = useLanguage();
+  const [checking, setChecking] = useState(true);
+  const [confirmed, setConfirmed] = useState(false);
+  const hasCallback = useMemo(() => {
+    const query = new URLSearchParams(window.location.search);
+    const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    return !!(query.get('code') || query.get('token_hash') || hash.get('access_token') || hash.get('type'));
+  }, []);
+
+  useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    if (query.get('error') || hash.get('error') || !hasCallback) { setChecking(false); return undefined; }
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if ((event === 'SIGNED_IN' || event === 'USER_UPDATED' || event === 'INITIAL_SESSION') && session && hasCallback) {
+        setConfirmed(true);
+        setChecking(false);
+        window.history.replaceState({}, document.title, '/auth/confirmed');
+      }
+    });
+    const timeout = window.setTimeout(() => setChecking(false), 3500);
+    return () => { window.clearTimeout(timeout); subscription.unsubscribe(); };
+  }, [hasCallback]);
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        backgroundColor: '#020611',
-        color: '#e2e8f0',
-        fontFamily:
-          "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: 24,
-        position: 'relative',
-        overflow: 'hidden',
-      }}
-    >
-      {/* Background glow */}
-      <div
-        style={{
-          position: 'absolute',
-          top: '10%',
-          left: '15%',
-          width: '60vw',
-          height: '60vw',
-          maxWidth: 800,
-          maxHeight: 800,
-          background:
-            'radial-gradient(circle, rgba(24,144,255,0.1) 0%, rgba(3,8,22,0) 70%)',
-          filter: 'blur(80px)',
-          zIndex: 0,
-          pointerEvents: 'none',
-        }}
-      />
-      <div
-        style={{
-          position: 'absolute',
-          bottom: '10%',
-          right: '15%',
-          width: '50vw',
-          height: '50vw',
-          maxWidth: 700,
-          maxHeight: 700,
-          background:
-            'radial-gradient(circle, rgba(114,46,209,0.08) 0%, rgba(3,8,22,0) 70%)',
-          filter: 'blur(80px)',
-          zIndex: 0,
-          pointerEvents: 'none',
-        }}
-      />
-
-      {/* Content card */}
-      <div
-        style={{
-          position: 'relative',
-          zIndex: 1,
-          width: '100%',
-          maxWidth: 480,
-          background: 'rgba(17,25,40,0.65)',
-          border: '1px solid rgba(255,255,255,0.08)',
-          borderRadius: 24,
-          backdropFilter: 'blur(24px)',
-          boxShadow:
-            '0 30px 60px -12px rgba(0,0,0,0.8), 0 0 40px rgba(24,144,255,0.05)',
-          padding: 'clamp(32px, 6vh, 56px) clamp(20px, 5vw, 48px)',
-          textAlign: 'center',
-        }}
-      >
-        {/* Logo */}
-        <div style={{ marginBottom: 40 }}>
-          <img
-            src="/brand/alphalab-logo.png"
-            alt="AlphaLab"
-            style={{
-              height: 48,
-              width: 'auto',
-              objectFit: 'contain',
-              cursor: 'pointer',
-            }}
-            onClick={() => navigate('/')}
-          />
-        </div>
-
-        {/* Success icon */}
-        <div style={{ marginBottom: 24 }}>
-          <CheckCircleFilled style={{ fontSize: 64, color: '#52c41a' }} />
-        </div>
-
-        {/* Title */}
-        <h1
-          style={{
-            color: '#fff',
-            fontSize: '1.8rem',
-            fontWeight: 700,
-            marginBottom: 12,
-            letterSpacing: '-0.02em',
-          }}
-        >
-          {t.authConfirmed.title}
-        </h1>
-
-        {/* Subtitle */}
-        <p
-          style={{
-            color: '#94a3b8',
-            fontSize: '1.05rem',
-            lineHeight: 1.6,
-            marginBottom: 8,
-          }}
-        >
-          {t.authConfirmed.subtitle}
-        </p>
-
-        {/* Description */}
-        <p
-          style={{
-            color: '#64748b',
-            fontSize: '0.95rem',
-            lineHeight: 1.6,
-            marginBottom: 40,
-          }}
-        >
-          {t.authConfirmed.description}
-        </p>
-
-        {/* Continue to Sign In */}
-        <Button
-          type="primary"
-          size="large"
-          block
-          onClick={() => navigate('/signin')}
-          style={{
-            height: 52,
-            borderRadius: 12,
-            fontSize: '1.05rem',
-            fontWeight: 600,
-            background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
-            border: 'none',
-            boxShadow: '0 8px 24px rgba(24,144,255,0.3)',
-            marginBottom: 24,
-          }}
-        >
-          {t.authConfirmed.continueToSignIn}
-        </Button>
-
-        {/* Back to Home */}
-        <div>
-          <Link
-            to="/"
-            style={{
-              color: '#94a3b8',
-              fontSize: '0.95rem',
-              textDecoration: 'none',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-              transition: 'color 0.2s',
-            }}
-            onMouseEnter={(e) =>
-              ((e.currentTarget as HTMLAnchorElement).style.color = '#e2e8f0')
-            }
-            onMouseLeave={(e) =>
-              ((e.currentTarget as HTMLAnchorElement).style.color = '#94a3b8')
-            }
-          >
-            <ArrowLeftOutlined /> {t.authConfirmed.backToHome}
-          </Link>
-        </div>
+    <main className="auth-shell">
+      <nav className="auth-nav-top" aria-label={t.authConfirmed.backToHome}>
+        <Link to="/" className="auth-back-link-top"><ArrowLeftOutlined aria-hidden="true" />{t.authConfirmed.backToHome}</Link>
+        <button type="button" className="lang-toggle-btn" onClick={() => setLanguage(language === 'zh-CN' ? 'en-US' : 'zh-CN')} aria-label={language === 'zh-CN' ? 'Switch language to English' : '切换语言为中文'}>{language === 'zh-CN' ? 'EN' : '中文'}</button>
+      </nav>
+      <div className="auth-card-container">
+        <section className="auth-card signup auth-card--compact auth-state-card">
+          <Link to="/" className="auth-brand-logo-text">Alpha<span className="accent">Lab</span></Link>
+          <span className="auth-card-eyebrow">{language === 'zh-CN' ? '邮箱验证 / 状态' : 'EMAIL VERIFICATION / STATUS'}</span>
+          {checking ? (
+            <div className="auth-status-panel" role="status" aria-live="polite">
+              <span className="spinner is-dark" aria-hidden="true" />
+              <Text>{language === 'zh-CN' ? '正在验证确认链接…' : 'Verifying confirmation link…'}</Text>
+            </div>
+          ) : confirmed ? (
+            <div className="auth-status-panel" role="status" aria-live="polite">
+              <div className="auth-status-mark is-success" aria-hidden="true">✓</div>
+              <Title level={1} className="auth-title">{t.authConfirmed.title}</Title>
+              <Text className="auth-subtitle">{t.authConfirmed.description}</Text>
+              <Button type="primary" className="auth-btn" block onClick={() => navigate('/signin')}>{t.authConfirmed.continueToSignIn}</Button>
+            </div>
+          ) : (
+            <div className="auth-status-panel" role="alert">
+              <div className="auth-status-mark is-error" aria-hidden="true">!</div>
+              <Title level={1} className="auth-title">{language === 'zh-CN' ? '确认链接无效' : 'Confirmation link is invalid'}</Title>
+              <Text className="auth-subtitle">{language === 'zh-CN' ? '请使用邮件中的最新确认链接，或返回注册页面重新开始。' : 'Use the latest link from your email, or return to sign up and start again.'}</Text>
+              <Button type="primary" className="auth-btn" block onClick={() => navigate('/signup')}>{t.auth.createAccount}</Button>
+            </div>
+          )}
+        </section>
       </div>
-    </div>
+    </main>
   );
 };
-
 export default AuthConfirmed;

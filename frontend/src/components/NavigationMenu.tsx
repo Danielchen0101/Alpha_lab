@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Menu, Tag, Tooltip, Modal, Input, Typography, Alert } from 'antd';
+import { Checkbox, Menu, Tag, Tooltip, Modal } from 'antd';
 import {
   DashboardOutlined,
   LineChartOutlined,
@@ -12,13 +12,10 @@ import {
   PieChartOutlined,
   RobotOutlined,
   SettingOutlined,
-  WarningOutlined,
 } from '@ant-design/icons';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTradeMode } from '../contexts/TradeModeContext';
 import styles from './NavigationMenu.module.css';
-
-const { Text } = Typography;
 
 interface NavigationMenuProps {
   collapsed?: boolean;
@@ -29,8 +26,7 @@ const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
   const { tradeMode, setTradeMode } = useTradeMode();
   const location = useLocation();
   const [realModalOpen, setRealModalOpen] = useState(false);
-  const [realConfirmText, setRealConfirmText] = useState('');
-  const [realSwitchError, setRealSwitchError] = useState<string | null>(null);
+  const [realRiskAccepted, setRealRiskAccepted] = useState(false);
 
   // Map routes to menu keys
   const routeToKey: Record<string, string> = {
@@ -54,25 +50,19 @@ const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
   const handleRealModeClick = () => {
     if (tradeMode === 'real') return;
     setRealModalOpen(true);
-    setRealConfirmText('');
-    setRealSwitchError(null);
+    setRealRiskAccepted(false);
   };
 
   const handleRealConfirm = () => {
-    if (realConfirmText.trim() !== 'REAL') {
-      setRealSwitchError(t.navigation.typeRealValidation);
-      return;
-    }
+    if (!realRiskAccepted) return;
     setTradeMode('real');
     setRealModalOpen(false);
-    setRealConfirmText('');
-    setRealSwitchError(null);
+    setRealRiskAccepted(false);
   };
 
   const handleRealModalCancel = () => {
     setRealModalOpen(false);
-    setRealConfirmText('');
-    setRealSwitchError(null);
+    setRealRiskAccepted(false);
   };
 
   return (
@@ -161,46 +151,24 @@ const NavigationMenu: React.FC<NavigationMenuProps> = ({ collapsed }) => {
 
       {/* Real Mode Confirmation Modal */}
       <Modal
-        title={
-          <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <WarningOutlined style={{ color: '#ff4d4f', fontSize: 20 }} />
-            {t.navigation.switchToRealTrading}
-          </span>
-        }
+        title={t.navigation.switchToRealTrading}
         open={realModalOpen}
         onOk={handleRealConfirm}
         onCancel={handleRealModalCancel}
         okText={t.navigation.switchToRealMode}
         cancelText={t.navigation.stayInPaperMode}
-        okButtonProps={{ danger: true, disabled: realConfirmText.trim() !== 'REAL' }}
-        width={520}
-        destroyOnClose
+        okButtonProps={{ disabled: !realRiskAccepted }}
+        width={480}
+        destroyOnHidden
       >
-        <Alert
-          message={t.navigation.realTradingWarning}
-          description={t.navigation.realTradingWarningDesc}
-          type="error"
-          showIcon
-          icon={<WarningOutlined />}
-          style={{ marginBottom: 16, borderRadius: 8 }}
-        />
-        <div style={{ marginBottom: 8 }}>
-          <Text strong type="danger">{t.navigation.typeRealToConfirm}</Text>
-        </div>
-        <Input
-          value={realConfirmText}
-          onChange={(e) => {
-            setRealConfirmText(e.target.value);
-            setRealSwitchError(null);
-          }}
-          onPressEnter={handleRealConfirm}
-          placeholder={t.navigation.typeRealPlaceholder}
-          style={{ textTransform: 'uppercase', fontWeight: 700 }}
-          autoFocus
-        />
-        {realSwitchError && (
-          <Text type="danger" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>{realSwitchError}</Text>
-        )}
+        <p>{t.navigation.modeSwitchNoOrder}</p>
+        <ul>
+          <li>{t.navigation.liveOrdersRequireReview}</li>
+          <li>{t.navigation.liveUsesConnectedAccount}</li>
+        </ul>
+        <Checkbox checked={realRiskAccepted} onChange={(event) => setRealRiskAccepted(event.target.checked)}>
+          {t.navigation.liveRiskAcceptance}
+        </Checkbox>
       </Modal>
 
       {/* BOTTOM UTILITY AREA */}

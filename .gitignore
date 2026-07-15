@@ -92,7 +92,13 @@ memory/*.py
 backend/auto_scan_configs.json
 backend/pipeline_auto_configs.json
 backend/pipeline_auto_history.json
+backend/pipeline_runtime_state.json
+backend/pipeline_managed_positions.json
 
 # Debug dumps — never commit
 backend/debug_manual_pipeline_result.json
 backend/debug_auto_pipeline_result.json
+
+# Local visual-review captures and one-off previews
+# Curated product images belong in docs/assets/ instead.
+screenshots/

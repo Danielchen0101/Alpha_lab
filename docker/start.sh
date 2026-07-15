@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Start script for Professional Quantitative Trading Platform
+# AlphaLab v3 container entrypoint
 
 set -e
 
@@ -21,14 +21,19 @@ fi
 echo "Starting backend server..."
 cd /app/backend
 
-# Use gunicorn for production
+# The scheduler is in-process. Production must use exactly one worker so there
+# is exactly one scan/order scheduler; threads provide concurrent API handling.
 if [ "$FLASK_ENV" = "production" ]; then
     echo "Starting in production mode with gunicorn"
+    if ! command -v gunicorn >/dev/null 2>&1; then
+        echo "ERROR: gunicorn is not installed in the runtime image"
+        exit 1
+    fi
     gunicorn \
-        --bind 0.0.0.0:5000 \
-        --workers 4 \
-        --threads 2 \
-        --timeout 120 \
+        --bind 127.0.0.1:5000 \
+        --workers 1 \
+        --threads 8 \
+        --timeout 180 \
         --access-logfile - \
         --error-logfile - \
         --log-level info \
@@ -50,7 +55,7 @@ NGINX_PID=$!
 echo "Waiting for backend to be ready..."
 max_attempts=30
 attempt=1
-while ! curl -f http://localhost:5000/api/system/status >/dev/null 2>&1; do
+while ! curl -f http://127.0.0.1:5000/api/health >/dev/null 2>&1; do
     if [ $attempt -eq $max_attempts ]; then
         echo "Backend failed to start after $max_attempts attempts"
         exit 1
@@ -76,7 +81,7 @@ health_check() {
         return 1
     fi
     
-    if ! curl -f http://localhost:8080/api/system/status >/dev/null 2>&1; then
+    if ! curl -f http://127.0.0.1:8080/api/health >/dev/null 2>&1; then
         echo "Health check failed"
         return 1
     fi

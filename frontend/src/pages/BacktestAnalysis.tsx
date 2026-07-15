@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Row, Col, Card, Spin, Alert, Button, Space, Empty,
@@ -130,16 +130,7 @@ const BacktestAnalysis = () => {
     return ticks;
   };
 
-  useEffect(() => {
-    if (backtestId) {
-      fetchBacktestData();
-    } else {
-      setError('No backtest ID provided');
-      setLoading(false);
-    }
-  }, [backtestId]);
-
-  const fetchBacktestData = async () => {
+  const fetchBacktestData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -155,7 +146,16 @@ const BacktestAnalysis = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [backtestId]);
+
+  useEffect(() => {
+    if (backtestId) {
+      fetchBacktestData();
+    } else {
+      setError('No backtest ID provided');
+      setLoading(false);
+    }
+  }, [backtestId, fetchBacktestData]);
 
   const safeToFixed = (value: number, decimals: number) => {
     if (value === null || value === undefined || isNaN(value)) return '0.00';

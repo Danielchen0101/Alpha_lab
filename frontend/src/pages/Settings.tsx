@@ -1,25 +1,33 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Typography, Card, Button, Space, Row, Col, Badge, Tag, Divider, Radio, Modal, Descriptions, Alert } from 'antd';
-import { 
-  SettingOutlined, 
-  ApiOutlined, 
-  ArrowRightOutlined, 
-  UserOutlined,
-  SafetyCertificateOutlined,
-  LogoutOutlined,
+import React, { useEffect, useRef, useState } from 'react';
+import { Alert, Button, Descriptions, Modal } from 'antd';
+import {
+  ApiOutlined,
+  ArrowRightOutlined,
+  BgColorsOutlined,
+  CheckCircleOutlined,
   CloudServerOutlined,
-  ThunderboltOutlined,
-  RobotOutlined,
+  DesktopOutlined,
+  ExclamationCircleOutlined,
+  EyeOutlined,
+  KeyOutlined,
+  LockOutlined,
+  LogoutOutlined,
+  MoonOutlined,
   ReloadOutlined,
-  BgColorsOutlined
+  RobotOutlined,
+  SafetyCertificateOutlined,
+  SettingOutlined,
+  SunOutlined,
+  ThunderboltOutlined,
+  UserOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTheme } from '../contexts/ThemeContext';
+import { useTradeMode } from '../contexts/TradeModeContext';
 import { clearConfigStatusCache, ConfigStatusLoadResult, loadConfigStatus } from '../services/api';
-
-const { Title, Text, Paragraph } = Typography;
+import './SettingsEditorial.css';
 
 type ServiceStatus =
   | 'loading'
@@ -41,7 +49,7 @@ type ProviderStatus = 'alpaca' | 'ai' | 'finnhub';
 const allStatuses = (status: ServiceStatus): Record<ProviderStatus, ServiceStatus> => ({
   alpaca: status,
   ai: status,
-  finnhub: status
+  finnhub: status,
 });
 
 const providerStatusToServiceStatus = (status?: string): ServiceStatus => {
@@ -54,31 +62,25 @@ const providerStatusToServiceStatus = (status?: string): ServiceStatus => {
 
 const resultToServiceStatus = (result: ConfigStatusLoadResult): ServiceStatus => {
   switch (result.errorCode) {
-    case 'api_base_url_missing':
-      return 'api_base_url_missing';
-    case 'supabase_auth_unavailable':
-      return 'session_unavailable';
-    case 'backend_waking':
-      return 'backend_waking';
-    case 'backend_timeout':
-      return 'backend_timeout';
-    case 'backend_unreachable':
-      return 'backend_unreachable';
+    case 'api_base_url_missing': return 'api_base_url_missing';
+    case 'supabase_auth_unavailable': return 'session_unavailable';
+    case 'backend_waking': return 'backend_waking';
+    case 'backend_timeout': return 'backend_timeout';
+    case 'backend_unreachable': return 'backend_unreachable';
     case 'unauthorized':
-    case 'auth_required':
-      return 'unauthorized';
-    case 'schema_migration':
-      return 'schema_migration';
-    default:
-      return 'connection_check_failed';
+    case 'auth_required': return 'unauthorized';
+    case 'schema_migration': return 'schema_migration';
+    default: return 'connection_check_failed';
   }
 };
 
 const Settings: React.FC = () => {
   const navigate = useNavigate();
   const { user, session, loading, logout } = useAuth();
-  const { t } = useLanguage();
+  const { language } = useLanguage();
   const { themeMode, setThemeMode } = useTheme();
+  const { setTradeMode } = useTradeMode();
+  const isZh = language === 'zh-CN';
   const requestIdRef = useRef(0);
   const [securityModalVisible, setSecurityModalVisible] = useState(false);
   const [statusRefreshKey, setStatusRefreshKey] = useState(0);
@@ -86,8 +88,118 @@ const Settings: React.FC = () => {
   const [statuses, setStatuses] = useState<Record<ProviderStatus, ServiceStatus>>({
     alpaca: 'loading',
     ai: 'loading',
-    finnhub: 'loading'
+    finnhub: 'loading',
   });
+
+  const copy = isZh ? {
+    eyebrow: '工作区 / 设置',
+    statusIndex: '01 / 状态',
+    integrationsIndex: '02 / 连接',
+    displayIndex: '03 / 显示',
+    accountIndex: '04 / 账户',
+    title: '配置中心',
+    subtitle: '集中管理连接、显示偏好与账户安全。此页显示配置状态，实际连通性在各服务的测试按钮中验证。',
+    verify: '刷新状态',
+    overview: '连接状态',
+    overviewDesc: '研究与交易依赖项的当前配置摘要',
+    available: '项已配置',
+    of: '共 3 项服务',
+    broker: '券商与执行',
+    brokerName: 'Alpaca Markets',
+    brokerDesc: '模拟盘、实盘凭证与订单执行环境',
+    intelligence: 'AI 智能',
+    intelligenceName: '模型提供商',
+    intelligenceDesc: '研究审查、策略解释与候选分析',
+    market: '市场数据',
+    marketName: 'Finnhub / Alpaca',
+    marketDesc: '报价、K 线、公司与板块数据',
+    manage: '管理配置',
+    connections: '连接与数据源',
+    connectionsDesc: '配置券商、行情、AI 与通知服务。密钥输入仅在需要替换时填写。',
+    openConnections: '打开连接配置',
+    secureTitle: '凭证安全',
+    secureDesc: '已保存的密钥只显示遮罩值。连接测试和保存是两个独立动作。',
+    appearance: '显示偏好',
+    appearanceDesc: '选择适合当前设备与环境的界面模式。',
+    light: '浅色',
+    lightDesc: '明亮、纸张质感',
+    dark: '深色',
+    darkDesc: '低光环境',
+    system: '跟随系统',
+    systemDesc: '自动匹配设备',
+    selected: '当前',
+    account: '账户与安全',
+    signedInAs: '当前登录账户',
+    activeSession: '会话有效',
+    inactiveSession: '会话不可用',
+    security: '查看安全信息',
+    signOut: '退出登录',
+    modalTitle: '账户安全信息',
+    email: '账户邮箱',
+    provider: '认证服务',
+    session: '当前会话',
+    credentialPolicy: '凭证显示',
+    active: '有效',
+    inactive: '无有效会话',
+    masked: '仅返回遮罩值',
+    securityMessage: '安全边界',
+    securityDescription: '账户认证由 Supabase 管理；外部服务密钥经认证后保存，页面不会回显完整密钥。若怀疑密钥泄露，请立即在对应提供商后台轮换。',
+    close: '完成',
+  } : {
+    eyebrow: 'WORKSPACE / SETTINGS',
+    statusIndex: '01 / STATUS',
+    integrationsIndex: '02 / INTEGRATIONS',
+    displayIndex: '03 / DISPLAY',
+    accountIndex: '04 / ACCOUNT',
+    title: 'Settings center',
+    subtitle: 'Manage connections, display preferences, and account security in one place. This page shows saved configuration; each service has a separate connection test.',
+    verify: 'Refresh status',
+    overview: 'Connection status',
+    overviewDesc: 'Current setup for research and trading dependencies',
+    available: 'configured',
+    of: 'of 3 services',
+    broker: 'Broker & execution',
+    brokerName: 'Alpaca Markets',
+    brokerDesc: 'Paper, live credentials, and order execution',
+    intelligence: 'AI intelligence',
+    intelligenceName: 'Model provider',
+    intelligenceDesc: 'Research review, explanations, and candidate analysis',
+    market: 'Market data',
+    marketName: 'Finnhub / Alpaca',
+    marketDesc: 'Quotes, bars, company, and sector data',
+    manage: 'Manage',
+    connections: 'Connections & data sources',
+    connectionsDesc: 'Configure broker, market data, AI, and notification services. Enter a secret only when replacing it.',
+    openConnections: 'Open connection settings',
+    secureTitle: 'Credential safety',
+    secureDesc: 'Saved secrets are shown only as masked values. Testing and saving are separate actions.',
+    appearance: 'Display preferences',
+    appearanceDesc: 'Choose the interface mode that fits this device and environment.',
+    light: 'Light',
+    lightDesc: 'Bright paper surface',
+    dark: 'Dark',
+    darkDesc: 'For low-light work',
+    system: 'System',
+    systemDesc: 'Match this device',
+    selected: 'Active',
+    account: 'Account & security',
+    signedInAs: 'Signed in as',
+    activeSession: 'Session active',
+    inactiveSession: 'Session unavailable',
+    security: 'Security details',
+    signOut: 'Sign out',
+    modalTitle: 'Account security',
+    email: 'Account email',
+    provider: 'Authentication',
+    session: 'Current session',
+    credentialPolicy: 'Secret display',
+    active: 'Active',
+    inactive: 'No active session',
+    masked: 'Masked values only',
+    securityMessage: 'Security boundary',
+    securityDescription: 'Supabase manages account authentication. External-service credentials are saved after authentication and full secrets are never returned to this page. Rotate a key at its provider immediately if exposure is suspected.',
+    close: 'Done',
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -96,10 +208,25 @@ const Settings: React.FC = () => {
     const isCurrentRequest = () => mounted && requestIdRef.current === requestId;
 
     const checkStatuses = async () => {
+      const localizedStatusMessage = (errorCode: ConfigStatusLoadResult['errorCode'], fallback: string) => {
+        if (!isZh) return fallback;
+        switch (errorCode) {
+          case 'api_base_url_missing': return '尚未配置后端服务地址。';
+          case 'supabase_auth_unavailable': return '认证服务暂时不可用，请稍后重试。';
+          case 'backend_waking': return '服务正在启动，连接状态会自动重试。';
+          case 'backend_timeout': return '状态检查超时，请稍后刷新。';
+          case 'backend_unreachable': return '暂时无法连接后端服务。';
+          case 'unauthorized':
+          case 'auth_required': return '登录会话已失效，请重新登录。';
+          case 'schema_migration': return '服务正在更新配置结构，请稍后刷新。';
+          default: return '暂时无法检查连接状态，请稍后重试。';
+        }
+      };
+
       if (loading) {
         if (isCurrentRequest()) {
           setStatuses(allStatuses('restoring_session'));
-          setStatusMessage('Restoring session...');
+          setStatusMessage(isZh ? '正在恢复登录会话…' : 'Restoring session…');
         }
         return;
       }
@@ -112,7 +239,7 @@ const Settings: React.FC = () => {
       if (!user || !session?.access_token) {
         if (isCurrentRequest()) {
           setStatuses(allStatuses('unauthorized'));
-          setStatusMessage('Please sign in again');
+          setStatusMessage(isZh ? '登录会话已失效，请重新登录。' : 'Your session has expired. Please sign in again.');
         }
         return;
       }
@@ -123,324 +250,215 @@ const Settings: React.FC = () => {
         onRetry: (retryResult) => {
           if (isCurrentRequest()) {
             setStatuses(allStatuses('backend_waking'));
-            setStatusMessage(retryResult.message);
+            setStatusMessage(localizedStatusMessage(retryResult.errorCode, retryResult.message));
           }
-        }
+        },
       });
 
       if (!isCurrentRequest()) return;
-
       if (!result.ok || !result.data?.success) {
         setStatuses(allStatuses(resultToServiceStatus(result)));
-        setStatusMessage(result.message);
+        setStatusMessage(localizedStatusMessage(result.errorCode, result.message));
         return;
       }
 
+      const marketDataConfigured = Boolean(result.data.alpacaMarketData?.configured || result.data.finnhub?.configured);
       setStatuses({
         alpaca: providerStatusToServiceStatus(result.data.alpaca?.status),
         ai: providerStatusToServiceStatus(result.data.aiProvider?.status),
-        finnhub: providerStatusToServiceStatus(result.data.finnhub?.status)
+        finnhub: marketDataConfigured ? 'connected' : providerStatusToServiceStatus(result.data.finnhub?.status),
       });
-      setStatusMessage(result.data.message || '');
+      setStatusMessage('');
     };
-    checkStatuses();
-    return () => {
-      mounted = false;
-    };
-  }, [loading, user, session, statusRefreshKey]);
 
-  const StatusTag = ({ status }: { status: ServiceStatus }) => {
-    if (status === 'loading') return <Badge status="processing" text={t.settings.checking} />;
-    if (status === 'backend_waking') return <Badge status="processing" text="Backend waking up..." />;
-    if (status === 'connected') return <Tag color="success">{t.settings.configured}</Tag>;
-    if (status === 'restoring_session') return <Badge status="processing" text="Restoring session..." />;
-    if (status === 'session_unavailable') return <Tag color="warning">Supabase auth unavailable</Tag>;
-    if (status === 'unauthorized') return <Tag color="error">Please sign in again</Tag>;
-    if (status === 'backend_unreachable') return <Tag color="error">Backend unreachable</Tag>;
-    if (status === 'backend_timeout') return <Tag color="error">Backend timeout</Tag>;
-    if (status === 'api_base_url_missing') return <Tag color="error">Backend URL missing</Tag>;
-    if (status === 'connection_check_failed') return <Tag color="error">Connection check failed</Tag>;
-    if (status === 'schema_migration') return <Tag color="warning">Schema migration needed</Tag>;
-    if (status === 'service_error') return <Tag color="error">Configuration service error</Tag>;
-    return <Tag color="default">{t.settings.notConfigured}</Tag>;
+    checkStatuses();
+    return () => { mounted = false; };
+  }, [isZh, loading, session, statusRefreshKey, user]);
+
+  const statusPresentation = (status: ServiceStatus) => {
+    if (status === 'connected') return { tone: 'ready', label: isZh ? '已配置' : 'Configured', icon: <CheckCircleOutlined /> };
+    if (['loading', 'backend_waking', 'restoring_session'].includes(status)) {
+      return { tone: 'checking', label: isZh ? '检查中' : 'Checking', icon: <ReloadOutlined spin /> };
+    }
+    if (status === 'not_configured') return { tone: 'empty', label: isZh ? '待配置' : 'Not configured', icon: <KeyOutlined /> };
+    if (['session_unavailable', 'unauthorized'].includes(status)) {
+      return { tone: 'attention', label: isZh ? '需要登录' : 'Sign-in required', icon: <ExclamationCircleOutlined /> };
+    }
+    return { tone: 'attention', label: isZh ? '需要检查' : 'Needs attention', icon: <ExclamationCircleOutlined /> };
   };
 
   const retryStatuses = () => {
     clearConfigStatusCache();
-    setStatusRefreshKey(key => key + 1);
+    setStatusRefreshKey((key) => key + 1);
   };
 
+  const providers = [
+    { key: 'alpaca' as const, section: 'paper', icon: <ThunderboltOutlined />, category: copy.broker, name: copy.brokerName, description: copy.brokerDesc },
+    { key: 'ai' as const, section: 'ai', icon: <RobotOutlined />, category: copy.intelligence, name: copy.intelligenceName, description: copy.intelligenceDesc },
+    { key: 'finnhub' as const, section: 'finnhub', icon: <CloudServerOutlined />, category: copy.market, name: copy.marketName, description: copy.marketDesc },
+  ];
+  const readyCount = Object.values(statuses).filter((status) => status === 'connected').length;
+  const themeOptions = [
+    { value: 'light', label: copy.light, description: copy.lightDesc, icon: <SunOutlined /> },
+    { value: 'dark', label: copy.dark, description: copy.darkDesc, icon: <MoonOutlined /> },
+    { value: 'system', label: copy.system, description: copy.systemDesc, icon: <DesktopOutlined /> },
+  ];
+
   return (
-    <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 16px 40px' }}>
-      <div style={{ marginBottom: 40 }}>
-        <Title level={2} style={{ margin: 0, display: 'flex', alignItems: 'center', color: 'var(--app-text-strong)', fontWeight: 800, letterSpacing: '-0.5px' }}>
-          <SettingOutlined style={{ marginRight: 16, color: 'var(--app-blue-text)' }} />
-          {t.settings.title}
-        </Title>
-        <Text style={{ fontSize: 16, color: 'var(--app-text-muted)', fontWeight: 500 }}>
-          {t.settings.subtitle}
-        </Text>
-        <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <Button icon={<ReloadOutlined />} onClick={retryStatuses} style={{ borderRadius: 8, fontWeight: 600 }}>
-            Verify connections
-          </Button>
-          {statusMessage && (
-            <Text style={{ fontSize: 12, color: 'var(--app-text-muted)' }}>
-              {statusMessage}
-            </Text>
-          )}
+    <div className="settings-page">
+      <header className="settings-hero">
+        <div className="settings-hero__copy">
+          <span className="settings-eyebrow"><SettingOutlined /> {copy.eyebrow}</span>
+          <h1>{copy.title}</h1>
+          <p>{copy.subtitle}</p>
         </div>
+        <Button className="settings-verify" icon={<ReloadOutlined />} onClick={retryStatuses}>
+          {copy.verify}
+        </Button>
+      </header>
+
+      <section className="settings-status" aria-labelledby="settings-status-title">
+        <div className="settings-status__summary">
+          <span className="settings-section-index">{copy.statusIndex}</span>
+          <h2 id="settings-status-title">{copy.overview}</h2>
+          <p>{copy.overviewDesc}</p>
+          <div className="settings-status__count">
+            <strong>{readyCount}</strong>
+            <div><b>{copy.available}</b><span>{copy.of}</span></div>
+          </div>
+          {statusMessage && <p className="settings-status__message">{statusMessage}</p>}
+        </div>
+        <div className="settings-provider-grid">
+          {providers.map((provider) => {
+            const visual = statusPresentation(statuses[provider.key]);
+            return (
+              <button
+                type="button"
+                className="settings-provider-card"
+                key={provider.key}
+                onClick={() => navigate(`/settings/configuration#${provider.section}`)}
+              >
+                <span className="settings-provider-card__icon">{provider.icon}</span>
+                <span className="settings-provider-card__body">
+                  <small>{provider.category}</small>
+                  <strong>{provider.name}</strong>
+                  <span>{provider.description}</span>
+                </span>
+                <span className={`settings-status-pill settings-status-pill--${visual.tone}`}>
+                  {visual.icon}{visual.label}
+                </span>
+                <ArrowRightOutlined className="settings-provider-card__arrow" />
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      <div className="settings-content-grid">
+        <section className="settings-panel settings-panel--connections">
+          <div className="settings-panel__icon"><ApiOutlined /></div>
+          <div className="settings-panel__copy">
+            <span className="settings-section-index">{copy.integrationsIndex}</span>
+            <h2>{copy.connections}</h2>
+            <p>{copy.connectionsDesc}</p>
+            <Button type="primary" onClick={() => navigate('/settings/configuration')}>
+              {copy.openConnections}<ArrowRightOutlined />
+            </Button>
+          </div>
+          <div className="settings-security-note">
+            <LockOutlined />
+            <div><strong>{copy.secureTitle}</strong><span>{copy.secureDesc}</span></div>
+          </div>
+        </section>
+
+        <section className="settings-panel settings-panel--appearance">
+          <div className="settings-panel__heading">
+            <div className="settings-panel__icon"><BgColorsOutlined /></div>
+            <div>
+              <span className="settings-section-index">{copy.displayIndex}</span>
+              <h2>{copy.appearance}</h2>
+              <p>{copy.appearanceDesc}</p>
+            </div>
+          </div>
+          <div className="settings-theme-grid" role="radiogroup" aria-label={copy.appearance}>
+            {themeOptions.map((option) => {
+              const active = themeMode === option.value;
+              return (
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  className={`settings-theme-option${active ? ' is-active' : ''}`}
+                  key={option.value}
+                  onClick={() => setThemeMode(option.value as typeof themeMode)}
+                >
+                  <span className={`settings-theme-option__preview settings-theme-option__preview--${option.value}`}>
+                    <i /><i /><i />
+                  </span>
+                  <span className="settings-theme-option__label">{option.icon}<b>{option.label}</b></span>
+                  <small>{option.description}</small>
+                  {active && <span className="settings-theme-option__active"><CheckCircleOutlined /> {copy.selected}</span>}
+                </button>
+              );
+            })}
+          </div>
+        </section>
       </div>
 
-      <Row gutter={[24, 24]} style={{ marginBottom: 40 }}>
-        <Col xs={24} sm={8}>
-          <Card 
-            bordered={false} 
-            className="summary-card" 
-            style={{ 
-              background: 'var(--app-card-bg)', 
-              boxShadow: 'var(--app-shadow)', 
-              borderRadius: 12,
-              border: '1px solid var(--app-border-soft)'
-            }}
-          >
-            <Space direction="vertical" size={12} style={{ width: '100%' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text strong style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--app-text-muted)', letterSpacing: '0.5px' }}>{t.settings.tradingProvider}</Text>
-                <ThunderboltOutlined style={{ color: '#fbbf24' }} />
-              </div>
-              <Title level={4} style={{ margin: 0, color: 'var(--app-text-strong)', fontWeight: 700 }}>Alpaca Markets</Title>
-              <StatusTag status={statuses.alpaca} />
-            </Space>
-          </Card>
-        </Col>
-        <Col xs={24} sm={8}>
-          <Card 
-            bordered={false} 
-            className="summary-card" 
-            style={{ 
-              background: 'var(--app-card-bg)', 
-              boxShadow: 'var(--app-shadow)', 
-              borderRadius: 12,
-              border: '1px solid var(--app-border-soft)'
-            }}
-          >
-            <Space direction="vertical" size={12} style={{ width: '100%' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text strong style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--app-text-muted)', letterSpacing: '0.5px' }}>{t.settings.intelligence}</Text>
-                <RobotOutlined style={{ color: 'var(--app-blue-text)' }} />
-              </div>
-              <Title level={4} style={{ margin: 0, color: 'var(--app-text-strong)', fontWeight: 700 }}>{t.settings.aiProvider}</Title>
-              <StatusTag status={statuses.ai} />
-            </Space>
-          </Card>
-        </Col>
-        <Col xs={24} sm={8}>
-          <Card 
-            bordered={false} 
-            className="summary-card" 
-            style={{ 
-              background: 'var(--app-card-bg)', 
-              boxShadow: 'var(--app-shadow)', 
-              borderRadius: 12,
-              border: '1px solid var(--app-border-soft)'
-            }}
-          >
-            <Space direction="vertical" size={12} style={{ width: '100%' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text strong style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--app-text-muted)', letterSpacing: '0.5px' }}>{t.settings.marketData}</Text>
-                <CloudServerOutlined style={{ color: '#4ade80' }} />
-              </div>
-              <Title level={4} style={{ margin: 0, color: 'var(--app-text-strong)', fontWeight: 700 }}>Finnhub API</Title>
-              <StatusTag status={statuses.finnhub} />
-            </Space>
-          </Card>
-        </Col>
-      </Row>
-
-      <Title level={4} style={{ marginBottom: 16, color: 'var(--app-text-strong)' }}>Appearance</Title>
-      <Card bordered={false} style={{ marginBottom: 24, borderRadius: 12, border: '1px solid var(--app-border-soft)', background: 'var(--app-card-bg)', boxShadow: 'var(--app-shadow-sm)' }} bodyStyle={{ padding: 24 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '20px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
-            <div style={{ 
-              width: 48, 
-              height: 48, 
-              borderRadius: 12, 
-              background: 'var(--app-card-bg-soft)', 
-              display: 'flex', 
-              alignItems: 'center', 
-              justifyContent: 'center',
-              border: '1px solid var(--app-border-soft)'
-            }}>
-              <BgColorsOutlined style={{ fontSize: 24, color: 'var(--app-blue-text)' }} />
-            </div>
-            <Space direction="vertical" size={0}>
-              <Title level={4} style={{ margin: 0, color: 'var(--app-text-strong)' }}>Theme</Title>
-              <Text style={{ fontSize: 14, color: 'var(--app-text-muted)' }}>
-                Customize how AlphaLab looks on this device.
-                {themeMode === 'system' && <span style={{ marginLeft: 8, fontStyle: 'italic', opacity: 0.8 }}>(Follows system appearance)</span>}
-              </Text>
-            </Space>
+      <section className="settings-account">
+        <div className="settings-account__identity">
+          <span className="settings-account__avatar"><UserOutlined /></span>
+          <div>
+            <span className="settings-section-index">{copy.accountIndex}</span>
+            <h2>{copy.account}</h2>
+            <p>{copy.signedInAs} <strong>{user?.email || '—'}</strong></p>
           </div>
-          <Radio.Group value={themeMode} onChange={(e) => setThemeMode(e.target.value)} size="middle">
-            <Radio.Button value="light">Light</Radio.Button>
-            <Radio.Button value="dark">Dark</Radio.Button>
-            <Radio.Button value="system">System</Radio.Button>
-          </Radio.Group>
         </div>
-      </Card>
-
-      <Title level={4} style={{ marginBottom: 16, color: 'var(--app-text-strong)' }}>{t.settings.platformManagement}</Title>
-      
-      <Card
-        hoverable
-        style={{ marginBottom: 24, borderRadius: 12, border: '1px solid var(--app-border-soft)', background: 'var(--app-card-bg)', boxShadow: 'var(--app-shadow-sm)' }}
-        bodyStyle={{ padding: 24 }}
-        onClick={() => navigate('/settings/configuration')}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
-            <div style={{ 
-              width: 48, 
-              height: 48, 
-              borderRadius: 12, 
-              background: 'var(--app-blue-bg-soft)', 
-              display: 'flex', 
-              alignItems: 'center', 
-              justifyContent: 'center' 
-            }}>
-              <ApiOutlined style={{ fontSize: 24, color: 'var(--app-blue-text)' }} />
-            </div>
-            <Space direction="vertical" size={0}>
-              <Title level={4} style={{ margin: 0, color: 'var(--app-text-strong)' }}>{t.settings.connectionConfig}</Title>
-              <Text style={{ fontSize: 14, color: 'var(--app-text-muted)' }}>
-                {t.settings.connectionConfigDesc}
-              </Text>
-            </Space>
-          </div>
-          <ArrowRightOutlined style={{ fontSize: 18, color: 'var(--app-text-muted)' }} />
+        <span className={`settings-session ${session ? 'is-active' : ''}`}>
+          <i />{session ? copy.activeSession : copy.inactiveSession}
+        </span>
+        <div className="settings-account__actions">
+          <Button icon={<SafetyCertificateOutlined />} onClick={() => setSecurityModalVisible(true)}>{copy.security}</Button>
+          <Button
+            danger
+            icon={<LogoutOutlined />}
+            onClick={async () => {
+              setTradeMode('paper');
+              await logout();
+              navigate('/signin', { replace: true });
+            }}
+          >
+            {copy.signOut}
+          </Button>
         </div>
-      </Card>
+      </section>
 
-      <Divider style={{ margin: '40px 0', borderColor: 'var(--app-border-soft)' }} />
-
-      <Title level={4} style={{ marginBottom: 16, color: 'var(--app-text-strong)' }}>{t.settings.securityAccount}</Title>
-      <Card bordered={false} style={{ background: 'var(--app-card-bg-soft)', borderRadius: 12, border: '1px solid var(--app-border-soft)' }}>
-        <Row gutter={[24, 16]} align="middle">
-          <Col xs={24} md={14}>
-            <Space size={16} align="start">
-              <div style={{
-                width: 40,
-                height: 40,
-                borderRadius: '50%',
-                background: 'var(--app-card-bg)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                border: '1px solid var(--app-border-soft)'
-              }}>
-                <UserOutlined style={{ color: 'var(--app-text-muted)' }} />
-              </div>
-              <div>
-                <Text strong style={{ fontSize: 16, color: 'var(--app-text-strong)' }}>{t.settings.accountInfo}</Text>
-                <Paragraph style={{ margin: 0, color: 'var(--app-text-muted)' }}>
-                  {t.settings.loggedInAs} <Text strong style={{ color: 'var(--app-text-strong)' }}>{user?.email}</Text>
-                </Paragraph>
-              </div>
-            </Space>
-          </Col>
-          <Col xs={24} md={10}>
-            <Space size={12} style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <Button 
-                icon={<SafetyCertificateOutlined />} 
-                onClick={() => setSecurityModalVisible(true)}
-                style={{ borderRadius: 8, fontWeight: 600 }}
-              >
-                {t.settings.securitySettings}
-              </Button>
-              <Button
-                icon={<LogoutOutlined />}
-                onClick={async () => { await logout(); navigate('/signin'); }}
-                style={{ borderRadius: 8, fontWeight: 600, borderColor: '#ef4444', color: '#ef4444', background: 'transparent' }}
-              >
-                {t.settings.signOut}
-              </Button>
-            </Space>
-          </Col>
-        </Row>
-      </Card>
-
-      {/* Security Info Modal */}
       <Modal
-        title={
-          <span style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--app-text-strong)' }}>
-            <SafetyCertificateOutlined style={{ color: 'var(--app-blue-text)' }} />
-            Security Info
-          </span>
-        }
+        title={<span className="settings-security-modal__title"><SafetyCertificateOutlined />{copy.modalTitle}</span>}
         open={securityModalVisible}
         onCancel={() => setSecurityModalVisible(false)}
-        footer={
-          <Button type="primary" onClick={() => setSecurityModalVisible(false)} style={{ borderRadius: 8 }}>Close</Button>
-        }
-        width={480}
+        footer={<Button type="primary" onClick={() => setSecurityModalVisible(false)}>{copy.close}</Button>}
+        width={560}
         destroyOnClose
-        className="dark-modal"
+        className="settings-security-modal"
       >
-        <Descriptions 
-          column={1} 
-          bordered 
-          size="small" 
-          style={{ marginBottom: 16 }}
-          labelStyle={{ background: 'var(--app-card-bg-soft)', color: 'var(--app-text-muted)', fontWeight: 600 }}
-          contentStyle={{ background: 'var(--app-card-bg)', color: 'var(--app-text-strong)' }}
-        >
-          <Descriptions.Item label="Email">{user?.email || 'N/A'}</Descriptions.Item>
-          <Descriptions.Item label="Auth Provider">Supabase</Descriptions.Item>
-          <Descriptions.Item label="Session">
-            {session ? 'Active' : 'No active session'}
-          </Descriptions.Item>
+        <div className="settings-security-modal__intro">
+          <span><EyeOutlined /></span>
+          <p>{copy.secureDesc}</p>
+        </div>
+        <Descriptions column={1} bordered size="small" className="settings-security-modal__details">
+          <Descriptions.Item label={copy.email}>{user?.email || '—'}</Descriptions.Item>
+          <Descriptions.Item label={copy.provider}>Supabase Auth</Descriptions.Item>
+          <Descriptions.Item label={copy.session}>{session ? copy.active : copy.inactive}</Descriptions.Item>
+          <Descriptions.Item label={copy.credentialPolicy}>{copy.masked}</Descriptions.Item>
         </Descriptions>
         <Alert
-          message={<span style={{ fontWeight: 600 }}>Auth Security</span>}
-          description="Password and account security are managed by Supabase / Auth provider."
+          message={copy.securityMessage}
+          description={copy.securityDescription}
           type="info"
           showIcon
-          style={{ marginBottom: 12, borderRadius: 8, background: 'var(--app-blue-bg-soft)', border: '1px solid var(--app-blue-border)' }}
         />
-        <Space direction="vertical" style={{ width: '100%' }}>
-          <Text style={{ fontSize: 12, color: 'var(--app-text-muted)' }}>
-            Coming soon: MFA, session management, and activity log.
-          </Text>
-        </Space>
-        <Divider style={{ margin: '16px 0', borderColor: 'var(--app-border-soft)' }} />
-        <Button
-          block
-          icon={<LogoutOutlined />}
-          danger
-          type="primary"
-          onClick={async () => { await logout(); navigate('/signin'); }}
-          style={{ borderRadius: 8, height: 40, fontWeight: 700 }}
-        >
-          Sign Out
-        </Button>
       </Modal>
-
-      <div style={{ marginTop: 40, textAlign: 'center' }}>
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          AlphaLab Quantitative Trading Platform &copy; 2026. {t.settings.footerNote}
-        </Text>
-      </div>
-
-      <style>{`
-        .summary-card {
-          transition: transform 0.3s ease, box-shadow 0.3s ease;
-        }
-        .summary-card:hover {
-          transform: translateY(-4px);
-          box-shadow: var(--app-shadow) !important;
-        }
-      `}</style>
     </div>
   );
 };

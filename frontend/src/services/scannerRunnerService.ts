@@ -18,9 +18,150 @@ interface ActiveRun {
 }
 
 let activeRun: ActiveRun | null = null;
+const INSTITUTIONAL_SCANNER_SETTINGS_KEY = 'alpha_lab_market_scanner_settings_v4';
+
+const MARKET_SCANNER_PROGRESS_STAGES = [
+  {
+    key: 'preflight',
+    label: 'Preflight',
+    detail: 'Checking session, Alpaca keys, Finnhub, and AI configuration',
+    start: 0,
+    end: 5,
+    durationMs: 1500,
+  },
+  {
+    key: 'universe',
+    label: 'Universe',
+    detail: 'Loading active tradable US equities from Alpaca assets',
+    start: 5,
+    end: 12,
+    durationMs: 6000,
+  },
+  {
+    key: 'snapshots',
+    label: 'Liquidity Rank',
+    detail: 'Fetching Alpaca snapshots and ranking candidates by dollar volume',
+    start: 12,
+    end: 24,
+    durationMs: 9000,
+  },
+  {
+    key: 'history',
+    label: 'History + Benchmarks',
+    detail: 'Fetching daily bars, SPY/QQQ, and sector ETF benchmark history',
+    start: 24,
+    end: 44,
+    durationMs: 28000,
+  },
+  {
+    key: 'factors',
+    label: 'Factor Scoring',
+    detail: 'Computing momentum, trend, relative strength, liquidity, and risk scores',
+    start: 44,
+    end: 56,
+    durationMs: 9000,
+  },
+  {
+    key: 'fundamentals',
+    label: 'Fundamentals',
+    detail: 'Adding Finnhub profile, valuation, sector context, and analyst data',
+    start: 56,
+    end: 68,
+    durationMs: 25000,
+  },
+  {
+    key: 'events',
+    label: 'Events + Overlays',
+    detail: 'Fetching news, earnings calendar, FINRA short volume, and options overlay',
+    start: 68,
+    end: 80,
+    durationMs: 25000,
+  },
+  {
+    key: 'ai_review',
+    label: 'AI Trader Review',
+    detail: 'Reviewing top candidates with the Settings AI provider in batches',
+    start: 80,
+    end: 94,
+    durationMs: 50000,
+  },
+  {
+    key: 'finalize',
+    label: 'Finalize',
+    detail: 'Building result table, coverage report, and candidate summary',
+    start: 94,
+    end: 98,
+    durationMs: 5000,
+  },
+];
+
+function getProgressStage(elapsedMs: number) {
+  let elapsedBefore = 0;
+  for (let index = 0; index < MARKET_SCANNER_PROGRESS_STAGES.length; index += 1) {
+    const stage = MARKET_SCANNER_PROGRESS_STAGES[index];
+    const stageElapsed = elapsedMs - elapsedBefore;
+    if (stageElapsed <= stage.durationMs) {
+      const ratio = Math.max(0, Math.min(1, stageElapsed / stage.durationMs));
+      const percent = Math.round(stage.start + (stage.end - stage.start) * ratio);
+      const totalExpectedMs = MARKET_SCANNER_PROGRESS_STAGES.reduce((sum, item) => sum + item.durationMs, 0);
+      return {
+        ...stage,
+        index: index + 1,
+        count: MARKET_SCANNER_PROGRESS_STAGES.length,
+        percent: Math.min(98, percent),
+        estimatedSecondsRemaining: Math.max(0, Math.ceil((totalExpectedMs - elapsedMs) / 1000)),
+      };
+    }
+    elapsedBefore += stage.durationMs;
+  }
+
+  const last = MARKET_SCANNER_PROGRESS_STAGES[MARKET_SCANNER_PROGRESS_STAGES.length - 1];
+  return {
+    ...last,
+    index: MARKET_SCANNER_PROGRESS_STAGES.length,
+    count: MARKET_SCANNER_PROGRESS_STAGES.length,
+    percent: 98,
+    estimatedSecondsRemaining: null,
+    detail: 'Provider calls are still running; waiting for rate limits or AI batch completion',
+  };
+}
 
 function generateRunId(): string {
   return `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getInstitutionalScannerSettings(): any {
+  const defaults = {
+    universe: 'alpaca_market',
+    maxSymbols: 1500,
+    maxResults: 100,
+    aiReviewTopN: 100,
+    historyPeriod: '18mo',
+    filters: {
+      minPrice: 5,
+      minMarketCap: 0,
+      minDollarVolume: 10_000_000,
+      minHistoryDays: 252,
+      maxAtrPercent: 12,
+      maxRealizedVol20: 120,
+    },
+  };
+
+  try {
+    const raw = localStorage.getItem(INSTITUTIONAL_SCANNER_SETTINGS_KEY);
+    if (!raw) return defaults;
+    const parsed = JSON.parse(raw);
+    return {
+      ...defaults,
+      ...parsed,
+      filters: {
+        ...defaults.filters,
+        ...(parsed.filters || {}),
+      },
+    };
+  } catch {
+    return defaults;
+  }
 }
 
 /**
@@ -174,6 +315,10 @@ export function stopMarketScannerByUser(): void {
     detailedScanStatus: {
       ...state.marketScanner.detailedScanStatus,
       currentStatus: 'stopped',
+      currentStage: 'stopped',
+      stageLabel: 'Stopped',
+      stageDetail: 'Scan stopped by user',
+      estimatedSecondsRemaining: null,
       statusMessage: 'Scan stopped by user',
     },
   });
@@ -207,6 +352,13 @@ export async function startMarketScanner(): Promise<void> {
     outputLogs: [],
     detailedScanStatus: {
       currentStatus: 'scanning',
+      currentStage: 'preflight',
+      stageLabel: 'Preflight',
+      stageDetail: 'Checking session, Alpaca keys, Finnhub, and AI configuration',
+      stageIndex: 1,
+      stageCount: MARKET_SCANNER_PROGRESS_STAGES.length,
+      startedAt: Date.now(),
+      estimatedSecondsRemaining: null,
       processedCount: 0,
       totalCount: 0,
       percent: 0,
@@ -252,10 +404,49 @@ export async function startMarketScanner(): Promise<void> {
  */
 async function runMarketScannerLoop(run: ActiveRun): Promise<void> {
   const store = scannerStateStore;
+  let progressTimer: ReturnType<typeof setInterval> | null = null;
+  let progressStartedAt = Date.now();
+
+  const publishProgressStage = (requestedTotal: number) => {
+    const stage = getProgressStage(Date.now() - progressStartedAt);
+    const processedEstimate = Math.max(0, Math.min(
+      requestedTotal,
+      Math.round((requestedTotal * stage.percent) / 100),
+    ));
+    const state = store.getState();
+    store.updateMarketScanner({
+      progress: stage.percent,
+      scannedSymbols: processedEstimate,
+      currentStatus: 'scanning',
+      currentBatch: stage.index,
+      batchProgress: `${stage.label}: ${stage.detail}`,
+      detailedScanStatus: {
+        ...state.marketScanner.detailedScanStatus,
+        currentStatus: 'scanning',
+        currentStage: stage.key,
+        stageLabel: stage.label,
+        stageDetail: stage.detail,
+        stageIndex: stage.index,
+        stageCount: stage.count,
+        estimatedSecondsRemaining: stage.estimatedSecondsRemaining,
+        processedCount: processedEstimate,
+        totalCount: requestedTotal,
+        percent: stage.percent,
+        activeSymbols: [stage.label],
+        statusMessage: stage.detail,
+      },
+    });
+  };
+
+  const stopProgressTimer = () => {
+    if (progressTimer) {
+      clearInterval(progressTimer);
+      progressTimer = null;
+    }
+  };
 
   try {
     // Pre-flight config check
-    let aiAvailable = false;
     try {
       const statusResp = await api.get('/config/status');
       if (statusResp.data?.success) {
@@ -272,53 +463,75 @@ async function runMarketScannerLoop(run: ActiveRun): Promise<void> {
           });
           return;
         }
-        if (!s.alpaca?.paperConfigured && !s.alpaca?.liveConfigured) {
-          store.updateMarketScanner({
-            status: 'failed',
-            currentStatus: 'error',
-            detailedScanStatus: {
-              ...store.getState().marketScanner.detailedScanStatus,
-              currentStatus: 'error',
-              statusMessage: 'Alpaca Market Data API is not configured.',
-            },
-          });
-          return;
+        if (!s.alpaca?.paperConfigured && !s.alpaca?.liveConfigured && process.env.NODE_ENV !== 'production') {
+          console.warn('[ScannerRunner] Alpaca is not configured. Alpaca-only scanner will require saved Alpaca keys.');
         }
-        // Check AI provider availability
         const aiCfg = s.ai || {};
-        if (aiCfg.configured && !aiCfg.keyIsMasked && aiCfg.testStatus === 'connected') {
-          aiAvailable = true;
-        } else {
-          const reason = aiCfg.keyIsMasked ? 'AI key is invalid (masked). Re-enter in Settings.' :
-                         !aiCfg.configured ? 'AI Provider is not configured. Configure in Settings.' :
-                         aiCfg.testStatus !== 'connected' ? `AI Provider not tested (status: ${aiCfg.testStatus}). Click Test AI Connection in Settings.` :
-                         'AI Provider is unavailable.';
-          if (process.env.NODE_ENV !== 'production') console.warn(`[ScannerRunner] AI pre-flight: ${reason}`);
-          // Don't block scanner — market data still useful, AI analysis will use local rules
+        if (process.env.NODE_ENV !== 'production' && (!aiCfg.configured || aiCfg.testStatus !== 'connected')) {
+          console.warn('[ScannerRunner] AI provider is not connected. Scanner will still run; AI trader review may be skipped.');
         }
       }
     } catch (e) {
       if (process.env.NODE_ENV !== 'production') console.warn('[ScannerRunner] Config pre-flight failed, continuing:', e);
     }
 
-    // Get trading universe
-    const symbols = await getTradingUniverse();
+    const settings = getInstitutionalScannerSettings();
+    const requestedTotal = Number(settings.maxSymbols || 1500);
+    const universeLabel = 'ALPACA_MARKET';
+    progressStartedAt = Date.now();
+    store.updateMarketScanner({
+      totalSymbols: requestedTotal,
+      scannedSymbols: 0,
+      currentStatus: 'scanning',
+      currentSymbol: null,
+      currentBatch: null,
+      batchProgress: `${universeLabel} Alpaca whole-market scan`,
+      detailedScanStatus: {
+        ...store.getState().marketScanner.detailedScanStatus,
+        totalCount: requestedTotal,
+        processedCount: 0,
+        percent: 5,
+        currentStage: 'universe',
+        stageLabel: 'Universe',
+        stageDetail: 'Loading active tradable US equities from Alpaca assets',
+        stageIndex: 2,
+        stageCount: MARKET_SCANNER_PROGRESS_STAGES.length,
+        startedAt: progressStartedAt,
+        estimatedSecondsRemaining: null,
+        activeSymbols: ['Universe'],
+        retryCount: 0,
+        validatedCount: 0,
+        failedCount: 0,
+        statusMessage: 'Loading active tradable US equities from Alpaca assets',
+      },
+    });
 
-    let summary;
-    if (!symbols || symbols.length === 0) {
-      const defaultSymbols = [
-        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META',
-        'TSLA', 'NVDA', 'AMD', 'AVGO', 'INTC',
-        'JPM', 'XOM', 'WMT', 'HD', 'JNJ',
-        'PG', 'KO', 'PEP', 'V', 'MA'
-      ];
-      summary = await scanSymbolsLoop(run, defaultSymbols, aiAvailable);
-    } else {
-      summary = await scanSymbolsLoop(run, symbols, aiAvailable);
+    publishProgressStage(requestedTotal);
+    progressTimer = setInterval(() => {
+      if (!run.stopRequested) {
+        publishProgressStage(requestedTotal);
+      }
+    }, 1000);
+
+    const response = await scannerApi.post('/market/scanner', {
+      ...settings,
+      suppressDiscord: true,
+    }, { signal: run.abortController.signal });
+    stopProgressTimer();
+
+    const payload = response.data || {};
+    if (!payload.success) {
+      throw new Error(payload.message || payload.error || 'Institutional scanner failed');
     }
+
+    const results = Array.isArray(payload.results) ? payload.results : [];
+    const summary = payload.summary || {};
+    const stats = payload.scan_stats || {};
+    store.setMarketScannerResults(results);
 
     // Check if stopped by user
     if (run.stopRequested) {
+      stopProgressTimer();
       const state = store.getState();
       const totalProcessed = state.marketScanner.detailedScanStatus.processedCount;
       const totalSymbols = state.marketScanner.detailedScanStatus.totalCount;
@@ -327,6 +540,10 @@ async function runMarketScannerLoop(run: ActiveRun): Promise<void> {
         detailedScanStatus: {
           ...state.marketScanner.detailedScanStatus,
           currentStatus: 'stopped',
+          currentStage: 'stopped',
+          stageLabel: 'Stopped',
+          stageDetail: 'Scan stopped by user',
+          estimatedSecondsRemaining: null,
           statusMessage: `Stopped at ${totalProcessed}/${totalSymbols} symbols — ${state.marketScanner.results.length} results retained`,
         },
       });
@@ -337,9 +554,11 @@ async function runMarketScannerLoop(run: ActiveRun): Promise<void> {
     const now = new Date().toISOString();
     const state = store.getState();
     const totalResults = state.marketScanner.results.length;
-    const summaryMsg = summary
-      ? `Processed: ${totalResults}/${summary.totalSymbols} | Success: ${summary.successCount} | Failed: ${summary.failedCount} | Retries: ${summary.retryCount}`
-      : 'Scan completed';
+    const totalProcessed = Number(summary.universeScanned || stats.history_available || requestedTotal || totalResults);
+    const passed = Number(summary.passedInvestability || stats.passed_investability || totalResults);
+    const aiReviewed = Number(summary.aiReview?.reviewedSymbols || stats.ai_reviewed_symbols || 0);
+    const aiSuffix = aiReviewed > 0 ? ` / AI reviewed ${aiReviewed}` : '';
+    const summaryMsg = `${summary.universe || universeLabel}: ${totalResults} candidates / ${passed} passed / ${totalProcessed} scanned${aiSuffix}`;
     store.updateMarketScanner({
       status: 'completed',
       lastScanTime: now,
@@ -348,25 +567,53 @@ async function runMarketScannerLoop(run: ActiveRun): Promise<void> {
         ...state.marketScanner.detailedScanStatus,
         currentStatus: 'completed',
         lastScanAt: now,
-        processedCount: totalResults,
-        totalCount: summary ? summary.totalSymbols : totalResults,
-        validatedCount: summary ? summary.successCount : totalResults,
-        failedCount: summary ? summary.failedCount : 0,
-        retryCount: summary ? summary.retryCount : 0,
+        currentStage: 'complete',
+        stageLabel: 'Complete',
+        stageDetail: summaryMsg,
+        stageIndex: MARKET_SCANNER_PROGRESS_STAGES.length,
+        stageCount: MARKET_SCANNER_PROGRESS_STAGES.length,
+        estimatedSecondsRemaining: 0,
+        processedCount: totalProcessed,
+        totalCount: totalProcessed,
+        percent: 100,
+        validatedCount: totalResults,
+        failedCount: Number(summary.failedData || stats.failed_count || 0),
+        retryCount: 0,
         statusMessage: summaryMsg,
       },
     });
     if (process.env.NODE_ENV !== 'production') console.log('[ScannerRunner] Market scan completed');
 
   } catch (error: any) {
+    stopProgressTimer();
     if (process.env.NODE_ENV !== 'production') console.error('[ScannerRunner] Market scan failed:', error);
     const state = store.getState();
+    if (run.stopRequested || error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') {
+      store.updateMarketScanner({
+        status: 'stopped',
+        currentStatus: 'stopped',
+        detailedScanStatus: {
+          ...state.marketScanner.detailedScanStatus,
+          currentStatus: 'stopped',
+          currentStage: 'stopped',
+          stageLabel: 'Stopped',
+          stageDetail: 'Scan stopped by user',
+          estimatedSecondsRemaining: null,
+          statusMessage: 'Scan stopped by user',
+        },
+      });
+      return;
+    }
     store.updateMarketScanner({
       status: 'failed',
       currentStatus: 'error',
       detailedScanStatus: {
         ...state.marketScanner.detailedScanStatus,
         currentStatus: 'error',
+        currentStage: 'error',
+        stageLabel: 'Error',
+        stageDetail: error.message || 'Unknown error',
+        estimatedSecondsRemaining: null,
         statusMessage: `Error: ${error.message || 'Unknown error'}`,
       },
     });
@@ -380,6 +627,8 @@ async function runMarketScannerLoop(run: ActiveRun): Promise<void> {
  * A display buffer accumulates validated results and flushes to UI
  * every DISPLAY_CHUNK_SIZE symbols (or at scan end).
  */
+// Legacy per-symbol scanner retained for rollback/reference; the active scanner calls the backend institutional endpoint.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function scanSymbolsLoop(run: ActiveRun, symbols: string[], aiAvailable: boolean = true): Promise<{
   totalSymbols: number;
   attemptedSymbols: number;
@@ -1108,6 +1357,7 @@ function validateSymbolData(data: any): { valid: boolean; missingFields: string[
 /**
  * Get the trading universe (50 symbols).
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function getTradingUniverse(): Promise<string[]> {
   try {
     const response = await api.get('/trading/universe');

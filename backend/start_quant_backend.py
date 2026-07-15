@@ -6,7 +6,7 @@
 
 from flask import Flask, request, jsonify, has_request_context
 
-from datetime import datetime, timedelta, time as dt_time
+from datetime import datetime, timedelta, time as dt_time, timezone
 import re
 import sys
 
@@ -77,7 +77,6 @@ def safe_print_news(news_data, prefix=''):
 
 
 from flask_cors import CORS
-import jwt as pyjwt
 
 import time
 
@@ -281,6 +280,13 @@ import datetime as _dt_mod
 
 AUDIT_LOG_PREFIX = '[AUDIT]'
 
+def _debug_endpoints_enabled():
+    """Debug routes require both development mode and an explicit true flag."""
+    return (
+        os.environ.get('FLASK_ENV') == 'development'
+        and os.environ.get('DEBUG_ENDPOINTS', '').strip().lower() in {'1', 'true', 'yes'}
+    )
+
 def _log_security_event(event_type, detail='', ip='', user_id=''):
     """Log a security-relevant event. No sensitive data recorded."""
     ts = _dt_mod.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
@@ -292,57 +298,6 @@ def _log_security_event(event_type, detail='', ip='', user_id=''):
     if detail:
         parts.append(detail)
     print(' '.join(parts))
-
-
-# ==================== Auth ====================
-
-APP_SECRET_KEY = os.getenv('APP_SECRET_KEY', 'dev-secret-change-me')
-ADMIN_EMAIL = os.getenv('ALPHALAB_ADMIN_EMAIL', 'admin@example.com')
-ADMIN_PASSWORD = os.getenv('ALPHALAB_ADMIN_PASSWORD', '')
-
-# Dev fallback admin — always available for local/demo use
-DEV_ADMIN_EMAIL = '1'
-DEV_ADMIN_PASSWORD = '1'
-
-@app.route('/api/auth/login', methods=['POST'])
-def auth_login():
-    data = request.get_json() or {}
-    email = data.get('email', '')
-    password = data.get('password', '')
-    ip = request.remote_addr or 'unknown'
-
-    # 1) Dev fallback admin (works regardless of env config)
-    if email == DEV_ADMIN_EMAIL and password == DEV_ADMIN_PASSWORD:
-        _log_security_event('LOGIN_OK', 'dev_admin', ip=ip)
-        token = pyjwt.encode({'email': email, 'role': 'admin', 'exp': datetime.utcnow() + timedelta(days=7)}, APP_SECRET_KEY, algorithm='HS256')
-        return jsonify({'success': True, 'token': token, 'user': {'email': email, 'role': 'admin'}})
-
-    # 2) Env-configured admin
-    if ADMIN_PASSWORD and email == ADMIN_EMAIL and password == ADMIN_PASSWORD:
-        _log_security_event('LOGIN_OK', 'env_admin', ip=ip)
-        token = pyjwt.encode({'email': email, 'exp': datetime.utcnow() + timedelta(days=7)}, APP_SECRET_KEY, algorithm='HS256')
-        return jsonify({'success': True, 'token': token, 'user': {'email': email}})
-
-    _log_security_event('LOGIN_FAIL', email, ip=ip)
-    return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
-
-@app.route('/api/auth/me', methods=['GET'])
-def auth_me():
-    auth_header = request.headers.get('Authorization', '')
-    token = auth_header.replace('Bearer ', '') if auth_header.startswith('Bearer ') else ''
-    if not token:
-        return jsonify({'success': False, 'message': 'No token provided'}), 401
-    try:
-        data = pyjwt.decode(token, APP_SECRET_KEY, algorithms=['HS256'])
-        return jsonify({'success': True, 'user': {'email': data['email']}})
-    except pyjwt.ExpiredSignatureError:
-        return jsonify({'success': False, 'message': 'Token expired'}), 401
-    except pyjwt.InvalidTokenError:
-        return jsonify({'success': False, 'message': 'Invalid token'}), 401
-
-@app.route('/api/auth/logout', methods=['POST'])
-def auth_logout():
-    return jsonify({'success': True})
 
 
 # ==================== Supabase Helpers ====================
@@ -611,16 +566,20 @@ def mask_key(key):
 # ==================== Discord Notification Helpers ====================
 
 DISCORD_EVENT_FLAGS = {
+    'cycle_digest': 'notifyCycleDigest',
+    'risk_alert': 'notifyRiskAlerts',
+    # Legacy event names remain accepted so older clients/configs keep working.
     'auto_scan_started': 'notifyScanSummary',  # reuses summary toggle
     'scan_summary': 'notifyScanSummary',
     'entry_plan': 'notifyEntryPlan',
-    'order': 'notifyOrders',
+    'order': 'notifyTradeActivity',
     'exit_scan': 'notifyExitScan',
-    'error': 'notifyErrors',
+    'error': 'notifyRiskAlerts',
 }
 _discord_notify_dedupe = {}
 _discord_last_sent_at = {}
 _discord_error_counts = {}  # key -> [timestamp, ...] for 3x/5min throttle
+_discord_notify_lock = threading.Lock()
 
 
 def _discord_user_label(user_id):
@@ -656,56 +615,73 @@ def _discord_base_event_type(event_type):
 
 def _discord_event_enabled(cfg, event_type):
     base_type = _discord_base_event_type(event_type)
+    if base_type == 'order':
+        if 'notifyTradeActivity' in cfg:
+            return bool(cfg.get('notifyTradeActivity'))
+        return bool(cfg.get('notifyOrders', True))
+    if base_type in ('risk_alert', 'error'):
+        if 'notifyRiskAlerts' in cfg:
+            return bool(cfg.get('notifyRiskAlerts'))
+        return bool(cfg.get('notifyErrors', True) or cfg.get('notifyExitScan', True))
+    if base_type == 'cycle_digest':
+        if 'notifyCycleDigest' in cfg:
+            return bool(cfg.get('notifyCycleDigest'))
+        return bool(cfg.get('notifyScanSummary', True) or cfg.get('notifyEntryPlan', True))
     flag = DISCORD_EVENT_FLAGS.get(base_type)
     return bool(flag and cfg.get(flag, True))
 
 
 def _discord_dedupe_key(user_id, event_type, payload):
+    base_type = _discord_base_event_type(event_type)
+    symbol = str(payload.get('symbol') or payload.get('symbols') or '').upper()
+    if base_type in ('risk_alert', 'error'):
+        # Run IDs change every cycle, but the underlying risk often does not.
+        # Deduplicate the condition itself so repeated retries do not flood Discord.
+        reason = re.sub(r'\s+', ' ', str(payload.get('reason') or payload.get('message') or '')).strip().lower()[:180]
+        step = re.sub(r'\s+', ' ', str(payload.get('step') or payload.get('category') or '')).strip().lower()[:80]
+        fingerprint = str(payload.get('fingerprint') or '').strip().lower()[:100]
+        return f'{user_id}:{base_type}:{step}:{symbol}:{fingerprint or reason}'
     event_id = payload.get('event_id') or payload.get('eventId')
     if event_id:
-        return f'{user_id}:{event_type}:{event_id}'
-    symbol = payload.get('symbol') or payload.get('symbols') or ''
-    if event_type == 'error':
-        reason = (payload.get('reason') or '')[:80]
-        return f'{user_id}:{event_type}:{symbol}:{reason}'
+        return f'{user_id}:{base_type}:{event_id}'
     minute = datetime.utcnow().strftime('%Y%m%d%H%M')
-    return f'{user_id}:{event_type}:{symbol}:{minute}'
+    return f'{user_id}:{base_type}:{symbol}:{minute}'
 
 
 def _discord_should_send(user_id, event_type, payload):
     now = time.time()
-    # Drop stale entries opportunistically.
-    for key, ts in list(_discord_notify_dedupe.items())[:200]:
-        if now - ts > 3600:
-            _discord_notify_dedupe.pop(key, None)
-    key = _discord_dedupe_key(user_id, event_type, payload)
-    if event_type == 'error':
-        # Error throttle: max 3 occurrences per 5 minutes for the same dedup key
-        timestamps = _discord_error_counts.get(key, [])
-        timestamps = [t for t in timestamps if now - t < 300]
-        if len(timestamps) >= 3:
+    with _discord_notify_lock:
+        # Drop stale entries opportunistically.
+        for key, ts in list(_discord_notify_dedupe.items())[:200]:
+            if now - ts > 3600:
+                _discord_notify_dedupe.pop(key, None)
+        key = _discord_dedupe_key(user_id, event_type, payload)
+        base_type = _discord_base_event_type(event_type)
+        if base_type in ('risk_alert', 'error'):
+            if key in _discord_notify_dedupe and now - _discord_notify_dedupe[key] < 1800:
+                return False
+            _discord_notify_dedupe[key] = now
+            return True
+        if key in _discord_notify_dedupe and now - _discord_notify_dedupe[key] < 300:
             return False
-        timestamps.append(now)
-        _discord_error_counts[key] = timestamps
         _discord_notify_dedupe[key] = now
         return True
-    if key in _discord_notify_dedupe and now - _discord_notify_dedupe[key] < 300:
-        return False
-    _discord_notify_dedupe[key] = now
-    return True
 
 
 def _discord_forget_dedupe(user_id, event_type, payload):
     """Release a provisional dedupe reservation after a webhook send failure."""
     key = _discord_dedupe_key(user_id, event_type, payload)
-    _discord_notify_dedupe.pop(key, None)
-    if event_type == 'error':
-        _discord_error_counts.pop(key, None)
+    with _discord_notify_lock:
+        _discord_notify_dedupe.pop(key, None)
+        if _discord_base_event_type(event_type) in ('risk_alert', 'error'):
+            _discord_error_counts.pop(key, None)
 
 
 def _discord_embed(event_type, payload):
     base_event_type = _discord_base_event_type(event_type)
     color_map = {
+        'cycle_digest': 0x1677FF,
+        'risk_alert': 0xEF4444,
         'auto_scan_started': 0x8B5CF6,
         'scan_summary': 0x1677FF,
         'entry_plan': 0x22C55E,
@@ -714,6 +690,8 @@ def _discord_embed(event_type, payload):
         'error': 0xEF4444,
     }
     title_map = {
+        'cycle_digest': 'Auto Cycle Digest',
+        'risk_alert': 'Risk Alert',
         'auto_scan_started': 'Auto Scan Started',
         'scan_summary': 'Market Scanner Completed',
         'entry_plan': 'Entry Plan Generated',
@@ -724,8 +702,45 @@ def _discord_embed(event_type, payload):
     fields = []
     description = payload.get('description') or ''
     _fmt = _discord_fmt
+    override_title = None
 
-    if event_type == 'auto_scan_started':
+    if base_event_type == 'cycle_digest':
+        result = str(payload.get('result') or payload.get('status') or 'completed').upper()
+        duration = payload.get('durationSeconds')
+        duration_display = ('%.1fs' % float(duration)) if duration is not None else '-'
+        funnel = '%s universe -> %s ranked -> %s fine -> %s DV -> %s plans' % (
+            _fmt(payload.get('universeScanned'), 0),
+            _fmt(payload.get('rankedCandidates'), 0),
+            _fmt(payload.get('fineScanned'), 0),
+            _fmt(payload.get('dvPassed'), 0),
+            _fmt(payload.get('entryPlans'), 0),
+        )
+        fields = [
+            {'name': 'Result', 'value': result, 'inline': True},
+            {'name': 'Duration', 'value': duration_display, 'inline': True},
+            {'name': 'Mode', 'value': _fmt(payload.get('mode'), '-').upper(), 'inline': True},
+            {'name': 'Research Funnel', 'value': funnel, 'inline': False},
+            {'name': 'Trade Activity', 'value': '%s orders submitted | %s broker fills' % (
+                _fmt(payload.get('ordersSubmitted'), 0), _fmt(payload.get('brokerFills'), 0)), 'inline': True},
+            {'name': 'Position Protection', 'value': '%s scanned | %s actions' % (
+                _fmt(payload.get('holdingsScanned'), 0), _fmt(payload.get('protectionActions'), 0)), 'inline': True},
+        ]
+        warning = str(payload.get('warning') or '').strip()
+        if warning:
+            fields.append({'name': 'Attention', 'value': warning[:700], 'inline': False})
+
+    elif base_event_type == 'risk_alert':
+        severity = str(payload.get('severity') or 'high').upper()
+        override_title = '%s Risk Alert' % severity.title()
+        fields = [
+            {'name': 'Area', 'value': _fmt(payload.get('step') or payload.get('category'), '-'), 'inline': True},
+            {'name': 'Symbol', 'value': _fmt(payload.get('symbol'), '-').upper(), 'inline': True},
+            {'name': 'Status', 'value': _fmt(payload.get('status'), '-').upper(), 'inline': True},
+            {'name': 'Condition', 'value': _fmt(payload.get('reason'), '-')[:500], 'inline': False},
+            {'name': 'Next Action', 'value': _fmt(payload.get('action'), 'The system will retry and continue monitoring.')[:300], 'inline': False},
+        ]
+
+    elif event_type == 'auto_scan_started':
         # For one-shot runs (auto_run_now), show "Run once" instead of "X min"
         interval_val = payload.get('intervalMinutes')
         if interval_val is not None and str(interval_val) not in ('', '0', '0.0'):
@@ -809,18 +824,26 @@ def _discord_embed(event_type, payload):
                 })
     elif event_type == 'order' or event_type.startswith('order_'):
         mode = _fmt(payload.get('mode'), '-').upper()
+        side = _fmt(payload.get('side'), '-').upper()
+        status = _fmt(payload.get('status'), '-').upper()
+        status_title = 'Filled' if status == 'FILLED' else 'Rejected' if status in ('REJECTED', 'SUSPENDED') else 'Submitted'
+        override_title = '%s %s' % (side, status_title)
         description = payload.get('description') or ('REAL TRADING\n' if mode == 'REAL' else '')
         fields = [
             {'name': 'Mode', 'value': mode, 'inline': True},
-            {'name': 'Side', 'value': _fmt(payload.get('side'), '-').upper(), 'inline': True},
+            {'name': 'Side', 'value': side, 'inline': True},
             {'name': 'Symbol', 'value': _fmt(payload.get('symbol'), '-').upper(), 'inline': True},
             {'name': 'Qty / Notional', 'value': _fmt(payload.get('qty') or payload.get('notional'), '-'), 'inline': True},
             {'name': 'Order Type', 'value': _fmt(payload.get('orderType'), '-'), 'inline': True},
             {'name': 'Price', 'value': _fmt(payload.get('price') or payload.get('limitPrice'), 'N/A'), 'inline': True},
-            {'name': 'Status', 'value': _fmt(payload.get('status'), '-'), 'inline': True},
+            {'name': 'Status', 'value': status, 'inline': True},
             {'name': 'Order ID', 'value': _discord_short_order_id(payload.get('orderId')), 'inline': True},
-            {'name': 'Reason', 'value': _fmt(payload.get('reason'), '-')[:220], 'inline': False},
         ]
+        if payload.get('stopPrice') or payload.get('targetPrice'):
+            fields.append({'name': 'Protection', 'value': 'Stop %s | Target %s' % (
+                _fmt(payload.get('stopPrice'), '-'), _fmt(payload.get('targetPrice'), '-')), 'inline': True})
+        if payload.get('reason'):
+            fields.append({'name': 'Note', 'value': _fmt(payload.get('reason'), '-')[:220], 'inline': False})
     elif event_type == 'exit_scan':
         signals = payload.get('signals') or []
         sell_reduce = payload.get('sellReduceCount')
@@ -849,7 +872,7 @@ def _discord_embed(event_type, payload):
             {'name': 'Recommended Action', 'value': _fmt(payload.get('action'), 'Review Settings and retry.')[:220], 'inline': False},
         ]
 
-    _embed_title = title_map.get(base_event_type, 'AlphaLab Notification')
+    _embed_title = override_title or title_map.get(base_event_type, 'AlphaLab Notification')
     if event_type == 'entry_plan' and payload.get('skipped'):
         _embed_title = 'Entry Plan Skipped'
     _source_label = str(payload.get('source') or '').strip()
@@ -3951,6 +3974,74 @@ def generate_mock_quote_data(symbol):
 
 
 
+def _http_retry_after_seconds(resp=None, default_seconds=5, max_seconds=90):
+    """Read retry headers from APIs without exposing provider-specific details."""
+    candidates = []
+    headers = getattr(resp, 'headers', {}) or {}
+    now = time.time()
+    for header in ('Retry-After', 'X-RateLimit-Reset', 'X-RateLimit-Reset-After'):
+        raw = headers.get(header)
+        if raw is None:
+            continue
+        try:
+            value = float(str(raw).strip())
+        except Exception:
+            continue
+        if 'RESET' in header.upper():
+            if value > 1_000_000_000_000:
+                value = value / 1000.0
+            delay = value - now if value > 1_000_000_000 else value
+        else:
+            delay = value
+        if delay > 0:
+            candidates.append(delay)
+    delay = min(candidates) if candidates else default_seconds
+    return max(1, min(int(delay) + 1, int(max_seconds)))
+
+
+def _http_get_json_with_retry(url, params=None, headers=None, timeout=10, max_retries=1,
+                              retry_statuses=(429, 500, 502, 503, 504),
+                              default_wait=5, max_wait=90, label='HTTP'):
+    """GET JSON with small bounded retry/backoff for market-data enrichment calls."""
+    last_error = None
+    for attempt in range(max_retries + 1):
+        try:
+            if str(label or '').lower().startswith('finnhub'):
+                limiter = globals().get('_inst_finnhub_wait_for_slot')
+                if callable(limiter):
+                    limiter()
+            resp = requests.get(url, params=params, headers=headers, timeout=timeout)
+            if resp.status_code in retry_statuses and attempt < max_retries:
+                wait_seconds = _http_retry_after_seconds(resp, default_seconds=default_wait, max_seconds=max_wait)
+                print('[%s] status=%s; waiting %ss before retry %d/%d' % (
+                    label, resp.status_code, wait_seconds, attempt + 1, max_retries))
+                time.sleep(wait_seconds)
+                continue
+            try:
+                return resp, resp.json(), None
+            except Exception:
+                return resp, None, 'invalid_json'
+        except requests.exceptions.Timeout as e:
+            last_error = 'timeout: %s' % str(e)[:120]
+            if attempt < max_retries:
+                wait_seconds = min(5 * (attempt + 1), max_wait)
+                print('[%s] timeout; waiting %ss before retry %d/%d' % (
+                    label, wait_seconds, attempt + 1, max_retries))
+                time.sleep(wait_seconds)
+                continue
+            return None, None, last_error
+        except Exception as e:
+            last_error = 'exception: %s' % str(e)[:120]
+            if attempt < max_retries:
+                wait_seconds = min(3 * (attempt + 1), max_wait)
+                print('[%s] exception; waiting %ss before retry %d/%d' % (
+                    label, wait_seconds, attempt + 1, max_retries))
+                time.sleep(wait_seconds)
+                continue
+            return None, None, last_error
+    return None, None, last_error or 'request_failed'
+
+
 def fetch_finnhub_profile(symbol, finnhub_cfg=None):
 
     """获取Finnhub profile数据（带缓存）"""
@@ -3989,21 +4080,39 @@ def fetch_finnhub_profile(symbol, finnhub_cfg=None):
 
 
 
-        response = requests.get(url, params=params, timeout=5)
+        timeout_seconds = globals().get('_INST_FINNHUB_TIMEOUT_SECONDS', 12)
+        response, data, request_error = _http_get_json_with_retry(
+            url,
+            params=params,
+            timeout=timeout_seconds,
+            max_retries=1,
+            default_wait=globals().get('_INST_FINNHUB_RETRY_WAIT_SECONDS', 5),
+            label='Finnhub Profile',
+        )
+
+        if request_error and response is None:
+            print(f"[Finnhub Profile] request failed for {symbol}: {request_error}")
+            return None, f"finnhub_profile_request_{request_error}"
+
+        if response is None:
+            return None, "finnhub_profile_no_response"
 
 
 
         if response.status_code != 200:
 
-            # API密钥无效，返回空数据
+            if response.status_code in (401, 403):
+                print(f"[Finnhub Profile] auth failed for {symbol}, status={response.status_code}")
+                return None, f"finnhub_profile_auth_failed_http_{response.status_code}"
+            if response.status_code == 429:
+                return None, "finnhub_profile_rate_limited"
+            print(f"[Finnhub Profile] HTTP {response.status_code} for {symbol}")
+            return None, f"finnhub_profile_http_{response.status_code}"
 
-            print(f"[Finnhub Profile] API密钥无效，返回空数据")
-
-            return None, f"API密钥无效，状态码: {response.status_code}"
 
 
-
-        data = response.json()
+        if not isinstance(data, dict):
+            return None, "finnhub_profile_invalid_json"
 
 
 
@@ -6049,6 +6158,9 @@ def config_alpaca():
                 }
             })
         else:
+            user = require_auth()
+            if not user:
+                return jsonify({'success': False, 'message': 'Authentication required'}), 401
             data = request.get_json() or {}
             existing = get_user_config(user['id'], 'alpaca') or {}
             for k in ['paper_api_key', 'paper_api_secret', 'live_api_key', 'live_api_secret',
@@ -6101,7 +6213,7 @@ def config_alpaca_test():
             'APCA-API-SECRET-KEY': api_secret,
         }
         resp = requests.get(f'{base_url}/v2/account', headers=headers, timeout=10)
-        if resp.status_code == 200:
+        if resp.status_code in (200, 201):
             acct = resp.json()
             return jsonify({
                 'success': True,
@@ -6132,20 +6244,29 @@ def config_market_data():
                 'data_base_url': file_cfg.get('data_base_url', 'https://data.alpaca.markets'),
                 'feed': file_cfg.get('feed', 'iex'),
             }
-            # Market data keys live in the alpaca config row (same as live trading keys)
+            # Market data can use its own credentials or inherit a configured
+            # broker environment. Report the actual source so the UI does not
+            # imply that live trading is configured when it is not.
             user = get_supabase_user()
             if user:
                 alpaca_cfg = get_user_config(user['id'], 'alpaca')
                 if alpaca_cfg:
-                    md_key = alpaca_cfg.get('market_data_api_key', '') or alpaca_cfg.get('live_api_key', '')
-                    md_secret = alpaca_cfg.get('market_data_api_secret', '') or alpaca_cfg.get('live_api_secret', '')
+                    source_candidates = [
+                        ('market_data', alpaca_cfg.get('market_data_api_key', ''), alpaca_cfg.get('market_data_api_secret', '')),
+                        ('live_trading', alpaca_cfg.get('live_api_key', ''), alpaca_cfg.get('live_api_secret', '')),
+                        ('paper_trading', alpaca_cfg.get('paper_api_key', ''), alpaca_cfg.get('paper_api_secret', '')),
+                    ]
+                    credential_source, md_key, md_secret = next(
+                        ((source, key, secret) for source, key, secret in source_candidates if key and secret and not _is_invalid_key(key)[0]),
+                        ('none', '', ''),
+                    )
                     md_bad, _ = _is_invalid_key(md_key)
                     if md_key and md_secret and not md_bad:
                         result['hasApiKey'] = True
                         result['hasSecretKey'] = True
                         result['api_key_masked'] = mask_key(md_key)
                         result['api_secret_masked'] = mask_key(md_secret)
-                        result['credentialSource'] = 'real_trading'
+                        result['credentialSource'] = credential_source
                     else:
                         result['hasApiKey'] = False
                         result['hasSecretKey'] = False
@@ -6168,12 +6289,13 @@ def config_market_data():
             md_secret = data.get('api_secret', '')
             if md_key and md_secret and '****' not in md_key and '****' not in md_secret:
                 user = get_supabase_user()
-                if user:
-                    existing_alpaca = get_user_config(user['id'], 'alpaca') or {}
-                    existing_alpaca['market_data_api_key'] = md_key
-                    existing_alpaca['market_data_api_secret'] = md_secret
-                    save_user_config(user['id'], 'alpaca', existing_alpaca)
-                    safe_print(f'[Market Data Config] Saved market_data keys to Supabase for user {user["id"][:8]}...')
+                if not user:
+                    return jsonify({'success': False, 'message': 'Authentication required'}), 401
+                existing_alpaca = get_user_config(user['id'], 'alpaca') or {}
+                existing_alpaca['market_data_api_key'] = md_key
+                existing_alpaca['market_data_api_secret'] = md_secret
+                save_user_config(user['id'], 'alpaca', existing_alpaca)
+                safe_print(f'[Market Data Config] Saved market_data keys to Supabase for user {user["id"][:8]}...')
 
             return jsonify({'success': True, 'message': 'Market data config saved'})
     except Exception as e:
@@ -8426,6 +8548,8 @@ def ai_chat():
 @app.route('/api/system/diag', methods=['GET'])
 def system_diag():
     """Report backend init status without exposing secrets."""
+    if not _debug_endpoints_enabled():
+        return jsonify({'error': 'Not found'}), 404
     return jsonify({
         'supabaseInitialized': supabase_admin is not None,
         'fernetInitialized': fernet is not None,
@@ -8488,6 +8612,9 @@ def discord_notification_config():
                 'enabled': bool(cfg.get('enabled', False)),
                 'webhookUrlMasked': mask_key(webhook),
                 'hasWebhookUrl': bool(webhook),
+                'notifyTradeActivity': bool(cfg.get('notifyTradeActivity', cfg.get('notifyOrders', True))),
+                'notifyRiskAlerts': bool(cfg.get('notifyRiskAlerts', cfg.get('notifyErrors', True) or cfg.get('notifyExitScan', True))),
+                'notifyCycleDigest': bool(cfg.get('notifyCycleDigest', cfg.get('notifyScanSummary', True) or cfg.get('notifyEntryPlan', True))),
                 'notifyScanSummary': bool(cfg.get('notifyScanSummary', True)),
                 'notifyEntryPlan': bool(cfg.get('notifyEntryPlan', True)),
                 'notifyOrders': bool(cfg.get('notifyOrders', True)),
@@ -8514,6 +8641,10 @@ def discord_notification_config():
         'provider': 'discord',
         'webhookUrl': webhook_url,
         'enabled': enabled_saved,
+        'notifyTradeActivity': bool(data.get('notifyTradeActivity', existing.get('notifyTradeActivity', existing.get('notifyOrders', True)))),
+        'notifyRiskAlerts': bool(data.get('notifyRiskAlerts', existing.get('notifyRiskAlerts', existing.get('notifyErrors', True) or existing.get('notifyExitScan', True)))),
+        'notifyCycleDigest': bool(data.get('notifyCycleDigest', existing.get('notifyCycleDigest', existing.get('notifyScanSummary', True) or existing.get('notifyEntryPlan', True)))),
+        # Keep the previous keys so older frontend builds remain compatible.
         'notifyScanSummary': bool(data.get('notifyScanSummary', existing.get('notifyScanSummary', True))),
         'notifyEntryPlan': bool(data.get('notifyEntryPlan', existing.get('notifyEntryPlan', True))),
         'notifyOrders': bool(data.get('notifyOrders', existing.get('notifyOrders', True))),
@@ -8552,15 +8683,10 @@ def discord_notification_test():
     data = request.get_json() or {}
     mode = str(data.get('mode', '-')).upper()
     event_type = data.get('eventType', '')
-    test_all = bool(data.get('testAll', False))
-
-    # Build list of event types to test
-    if test_all:
-        event_types_to_test = ['scan_summary', 'entry_plan', 'order', 'exit_scan', 'error']
-    elif event_type and event_type in DISCORD_EVENT_FLAGS:
+    if event_type and event_type in DISCORD_EVENT_FLAGS:
         event_types_to_test = [event_type]
     else:
-        event_types_to_test = ['error']
+        event_types_to_test = ['cycle_digest']
 
     # Temporarily enable for manual test (test bypasses enabled flag)
     original_enabled = cfg.get('enabled', False)
@@ -8582,6 +8708,32 @@ def discord_notification_test():
         }), 500
 
     test_payloads = {
+        'cycle_digest': {
+            'event_id': f'discord-test-digest-{int(time.time())}',
+            'result': 'completed',
+            'durationSeconds': 42.5,
+            'mode': mode,
+            'universeScanned': 1500,
+            'rankedCandidates': 100,
+            'fineScanned': 30,
+            'dvPassed': 4,
+            'entryPlans': 2,
+            'ordersSubmitted': 1,
+            'brokerFills': 0,
+            'holdingsScanned': 3,
+            'protectionActions': 0,
+            'description': 'Test of the quiet, information-rich full-cycle digest.',
+        },
+        'risk_alert': {
+            'event_id': f'discord-test-risk-{int(time.time())}',
+            'severity': 'high',
+            'step': 'Position Protection',
+            'status': 'review',
+            'symbol': 'AAPL',
+            'reason': 'Test protection gap detected.',
+            'action': 'No action is required for this test.',
+            'description': 'Test risk alert.',
+        },
         'scan_summary': {
             'event_id': f'discord-test-scan-{int(time.time())}',
             'processed': 10,
@@ -8664,7 +8816,7 @@ def discord_notification_test():
     if all_sent:
         return jsonify({
             'success': True,
-            'message': f'Discord test notification{"s" if len(event_types_to_test) > 1 else ""} sent ({len(event_types_to_test)} type{"s" if len(event_types_to_test) > 1 else ""}).',
+            'message': 'Discord test digest sent.',
             'results': results,
         })
     return jsonify({
@@ -8807,8 +8959,17 @@ def config_status():
     paper_secret = alpaca_cfg.get('paper_api_secret') or ''
     live_key = alpaca_cfg.get('live_api_key') or ''
     live_secret = alpaca_cfg.get('live_api_secret') or ''
-    md_key = alpaca_cfg.get('market_data_api_key') or paper_key or live_key
-    md_secret = alpaca_cfg.get('market_data_api_secret') or paper_secret or live_secret
+    market_data_key = alpaca_cfg.get('market_data_api_key') or ''
+    market_data_secret = alpaca_cfg.get('market_data_api_secret') or ''
+    md_candidates = [
+        ('market_data', market_data_key, market_data_secret),
+        ('live_trading', live_key, live_secret),
+        ('paper_trading', paper_key, paper_secret),
+    ]
+    md_credential_source, md_key, md_secret = next(
+        ((source, key, secret) for source, key, secret in md_candidates if key and secret and not ('****' in key or '****' in secret)),
+        ('none', '', ''),
+    )
     alpaca_has_paper = bool(paper_key and paper_secret and not ('****' in paper_key or '****' in paper_secret))
     alpaca_has_live = bool(live_key and live_secret and not ('****' in live_key or '****' in live_secret))
     alpaca_has_md = bool(md_key and md_secret and not ('****' in md_key or '****' in md_secret))
@@ -8871,7 +9032,7 @@ def config_status():
             'configured': alpaca_has_md,
             'baseUrl': 'https://data.alpaca.markets',
             'keySource': alpaca_md_source,
-            'credentialSource': 'real_trading' if alpaca_has_md else 'none',
+            'credentialSource': md_credential_source if alpaca_has_md else 'none',
             'maskedApiKey': mask_key(md_key) if alpaca_has_md else None,
             'maskedSecretKey': mask_key(md_secret) if alpaca_has_md else None,
         },
@@ -8973,6 +9134,10 @@ def settings_ai_config():
 @app.route('/api/settings/auth-debug', methods=['GET'])
 def settings_auth_debug():
     """Diagnostic endpoint — returns auth chain status without exposing secrets."""
+    if not _debug_endpoints_enabled():
+        return jsonify({'error': 'Not found'}), 404
+    if not require_auth():
+        return jsonify({'error': 'Authentication required'}), 401
     auth_header = request.headers.get('Authorization', '')
     has_header = bool(auth_header)
     has_bearer = auth_header.startswith('Bearer ') if auth_header else False
@@ -8994,7 +9159,7 @@ def settings_auth_debug():
 def config_chain_debug():
     """Diagnostic endpoint — disabled in production. Only available in development."""
     import os
-    if os.environ.get('FLASK_ENV') != 'development' and not os.environ.get('DEBUG_ENDPOINTS'):
+    if not _debug_endpoints_enabled():
         return jsonify({'success': False, 'error': 'This endpoint is disabled in production'}), 403
 
     user = get_supabase_user()
@@ -11268,6 +11433,13 @@ def ai_market_scanner():
                 if _scanner_uid:
                     try:
                         _progress_pct = round((i + 1) / len(shortlist) * 100) if shortlist else 0
+                        _active_progress = _pa_get_active_run(_scanner_uid) or {}
+                        _pipeline_total_steps = max(1, int(_active_progress.get('totalSteps') or 1))
+                        _pipeline_step_index = max(1, int(_active_progress.get('stepIndex') or 1))
+                        _overall_progress_pct = round(
+                            (((_pipeline_step_index - 1) + (_progress_pct / 100)) / _pipeline_total_steps) * 100
+                        )
+                        _top_level_progress = _overall_progress_pct if _pipeline_total_steps > 1 else _progress_pct
                         _pa_update_active_run(_scanner_uid,
                             steps={'market_scanner': {
                                 'status': 'running',
@@ -11286,7 +11458,7 @@ def ai_market_scanner():
                                     'failed': sum(1 for r in results if r.get('dataQuality') not in ('ok', 'need_data', 'PARTIAL')),
                                 }
                             }},
-                            progressPct=_progress_pct,
+                            progressPct=_top_level_progress,
                             message=f'Scanning {i+1}/{len(shortlist)}: {symbol}'
                         )
                         print(f'[ManualPipelineProgress] uid={_scanner_uid[:8]} step=market_scanner processed={i+1}/{len(shortlist)} pct={_progress_pct}% current={symbol}')
@@ -11617,6 +11789,3195 @@ def ai_market_scanner():
 
         })
 
+
+
+
+# ==================== Institutional Market Scanner ====================
+
+_INST_SCANNER_UNIVERSE_CACHE = {
+    'alpaca_assets': {'fetched_at': 0, 'symbols': [], 'metadata': {}, 'source': ''},
+}
+_INST_SCANNER_CACHE_TTL_SECONDS = 60 * 60 * 12
+_INST_SCANNER_DEFAULT_MAX_SYMBOLS = 1500
+_INST_SCANNER_DEFAULT_MAX_RESULTS = 100
+_INST_SCANNER_MARKET_DATA_BASE_URL = 'https://data.alpaca.markets'
+_INST_SCANNER_NEWS_DAYS_BACK = 7
+_INST_SCANNER_AI_REVIEW_TOP_N = 100
+_INST_SCANNER_AI_REVIEW_MAX_N = 100
+_INST_SCANNER_AI_REVIEW_BATCH_SIZE = 5
+_INST_SCANNER_AI_MAX_ATTEMPTS = 2
+_INST_SCANNER_AI_TIMEOUT_SECONDS = 60
+_INST_SCANNER_OPTION_REVIEW_TOP_N = 25
+_INST_SCANNER_EARNINGS_LOOKAHEAD_DAYS = 30
+_INST_BENCHMARK_SYMBOLS = ('SPY', 'QQQ', 'IWM')
+_INST_SECTOR_ETF_SYMBOLS = ('XLK', 'XLF', 'XLV', 'XLY', 'XLP', 'XLI', 'XLE', 'XLB', 'XLU', 'XLRE', 'XLC')
+_INST_FINNHUB_TIMEOUT_SECONDS = 12
+_INST_FINNHUB_RETRY_WAIT_SECONDS = 5
+_INST_FINNHUB_MIN_INTERVAL_SECONDS = 1.15
+_INST_FINNHUB_METRIC_RECOMMENDATION_LIMIT = 25
+_INST_FINNHUB_RATE_LOCK = threading.Lock()
+_INST_FINNHUB_LAST_CALL_AT = 0.0
+_INST_FINRA_SHORT_VOLUME_CACHE = {'fetched_at': 0, 'source': '', 'date': None, 'records': {}, 'error': None}
+_INST_FINRA_SHORT_VOLUME_LOCK = threading.Lock()
+_INST_FINRA_SHORT_VOLUME_TTL_SECONDS = 60 * 60 * 12
+_INST_SCANNER_ASSET_EXCHANGES = {'NYSE', 'NASDAQ', 'AMEX', 'ARCA', 'BATS', 'NYSEARCA', 'NYSEAMERICAN'}
+_INST_SCANNER_EXCHANGE_NAMES = {
+    'NYSE': 'NYSE',
+    'NASDAQ': 'Nasdaq',
+    'AMEX': 'NYSE American',
+    'NYSEAMERICAN': 'NYSE American',
+    'ARCA': 'NYSE Arca',
+    'NYSEARCA': 'NYSE Arca',
+    'BATS': 'Cboe BZX',
+}
+_INST_NEWS_POSITIVE_TERMS = (
+    'beat', 'beats', 'raised guidance', 'raises guidance', 'upgrade',
+    'upgraded', 'buyback', 'partnership', 'contract', 'approval',
+    'launch', 'record revenue', 'surge', 'strong demand'
+)
+_INST_NEWS_NEGATIVE_TERMS = (
+    'miss', 'misses', 'cut guidance', 'cuts guidance', 'downgrade',
+    'downgraded', 'offering', 'lawsuit', 'investigation', 'recall',
+    'layoff', 'bankruptcy', 'sec probe', 'short seller'
+)
+_INST_NEWS_EVENT_TERMS = (
+    'earnings', 'guidance', 'upgrade', 'downgrade', 'offering', 'lawsuit',
+    'investigation', 'fda', 'merger', 'acquisition', 'buyback', 'recall',
+    'bankruptcy', 'contract', 'approval'
+)
+_INST_SECTOR_ETF_KEYWORDS = (
+    ('XLK', ('technology', 'software', 'semiconductor', 'hardware', 'electronic', 'computer', 'information technology')),
+    ('XLF', ('bank', 'financial', 'insurance', 'capital markets', 'credit', 'asset management', 'broker')),
+    ('XLV', ('health', 'biotech', 'pharmaceutical', 'medical', 'life sciences', 'health care')),
+    ('XLY', ('consumer discretionary', 'retail', 'restaurant', 'auto', 'hotel', 'leisure', 'apparel')),
+    ('XLP', ('consumer staple', 'food', 'beverage', 'household', 'tobacco', 'personal products')),
+    ('XLI', ('industrial', 'aerospace', 'defense', 'machinery', 'transportation', 'construction', 'electrical')),
+    ('XLE', ('energy', 'oil', 'gas', 'drilling', 'exploration', 'pipeline')),
+    ('XLB', ('material', 'chemical', 'mining', 'metals', 'paper', 'packaging')),
+    ('XLU', ('utility', 'utilities', 'electric', 'water', 'renewable')),
+    ('XLRE', ('real estate', 'reit', 'property', 'properties')),
+    ('XLC', ('communication', 'telecom', 'media', 'entertainment', 'interactive')),
+)
+
+
+def _inst_now_ts():
+    return int(time.time())
+
+
+def _inst_clean_symbol(symbol):
+    if symbol is None:
+        return ''
+    return str(symbol).upper().strip()
+
+
+def _inst_to_float(value, default=None):
+    try:
+        if value is None:
+            return default
+        if isinstance(value, str):
+            value = value.replace(',', '').replace('%', '').strip()
+            if not value or value in ('-', '--', 'N/A', 'nan'):
+                return default
+        v = float(value)
+        if v != v:
+            return default
+        return v
+    except Exception:
+        return default
+
+
+def _inst_is_cache_fresh(key):
+    item = _INST_SCANNER_UNIVERSE_CACHE.get(key) or {}
+    return bool(item.get('symbols')) and (_inst_now_ts() - int(item.get('fetched_at') or 0) < _INST_SCANNER_CACHE_TTL_SECONDS)
+
+
+def _inst_percentile(values, higher_better=True):
+    parsed = []
+    for idx, value in enumerate(values):
+        v = _inst_to_float(value, None)
+        if v is not None:
+            parsed.append((idx, v))
+    if len(parsed) <= 1:
+        return [50.0 for _ in values]
+    unique_values = {round(item[1], 10) for item in parsed}
+    if len(unique_values) <= 1:
+        return [50.0 for _ in values]
+    parsed.sort(key=lambda item: item[1])
+    scores = [50.0 for _ in values]
+    denom = max(1, len(parsed) - 1)
+    cursor = 0
+    while cursor < len(parsed):
+        group_end = cursor + 1
+        group_key = round(parsed[cursor][1], 10)
+        while group_end < len(parsed) and round(parsed[group_end][1], 10) == group_key:
+            group_end += 1
+        average_rank = (cursor + group_end - 1) / 2.0
+        pct = 100.0 * average_rank / denom
+        score = round(pct if higher_better else 100.0 - pct, 2)
+        for group_index in range(cursor, group_end):
+            scores[parsed[group_index][0]] = score
+        cursor = group_end
+    return scores
+
+
+def _inst_alpaca_headers(config):
+    return {
+        'APCA-API-KEY-ID': config.get('api_key', ''),
+        'APCA-API-SECRET-KEY': config.get('api_secret', ''),
+    }
+
+
+def _inst_unique_configs(configs):
+    seen = set()
+    unique = []
+    for cfg in configs:
+        if not cfg or not cfg.get('api_key') or not cfg.get('api_secret'):
+            continue
+        key = (cfg.get('api_key'), cfg.get('base_url'))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(cfg)
+    return unique
+
+
+def _inst_resolve_alpaca_scanner_configs(mode='paper'):
+    user = get_supabase_user()
+    if not user:
+        return None, [], 'auth_required', 'Authentication required. Please sign in.'
+
+    market_cfg, market_status = resolve_alpaca_config_strict_user('market_data')
+    if market_status != 'ok':
+        return None, [], market_status, 'Alpaca Market Data is not configured. Save Alpaca keys in Settings first.'
+
+    mode = str(mode or 'paper').lower()
+    preferred = [mode]
+    for fallback_mode in ('live', 'paper'):
+        if fallback_mode not in preferred:
+            preferred.append(fallback_mode)
+
+    asset_configs = []
+    for candidate_mode in preferred:
+        cfg, status = resolve_alpaca_config_strict_user(candidate_mode)
+        if status == 'ok':
+            asset_configs.append({
+                **cfg,
+                'mode': candidate_mode,
+                'source': 'alpaca_%s_trading' % candidate_mode,
+            })
+
+    # Some users only save a market-data key. Try the standard trading hosts with
+    # that same key for the public assets list before failing.
+    asset_configs.extend([
+        {
+            'api_key': market_cfg.get('api_key', ''),
+            'api_secret': market_cfg.get('api_secret', ''),
+            'base_url': 'https://api.alpaca.markets',
+            'mode': 'live',
+            'source': 'alpaca_market_data_key_live_assets',
+        },
+        {
+            'api_key': market_cfg.get('api_key', ''),
+            'api_secret': market_cfg.get('api_secret', ''),
+            'base_url': 'https://paper-api.alpaca.markets',
+            'mode': 'paper',
+            'source': 'alpaca_market_data_key_paper_assets',
+        },
+    ])
+
+    return market_cfg, _inst_unique_configs(asset_configs), 'ok', ''
+
+
+def _inst_asset_exchange(asset):
+    return str(asset.get('exchange') or '').upper().strip()
+
+
+def _inst_exchange_name(exchange):
+    return _INST_SCANNER_EXCHANGE_NAMES.get(str(exchange or '').upper(), str(exchange or '') or None)
+
+
+def _inst_is_common_stock_asset(asset, include_otc=False, include_etfs=False):
+    symbol = _inst_clean_symbol(asset.get('symbol'))
+    if not symbol:
+        return False
+    asset_class = asset.get('asset_class') or asset.get('class')
+    if str(asset_class or '').lower() != 'us_equity':
+        return False
+    if str(asset.get('status') or '').lower() != 'active':
+        return False
+    if asset.get('tradable') is False:
+        return False
+
+    exchange = _inst_asset_exchange(asset)
+    if not include_otc and exchange not in _INST_SCANNER_ASSET_EXCHANGES:
+        return False
+
+    name = str(asset.get('name') or '').lower()
+    if not include_etfs:
+        fund_terms = (' etf', ' etn', ' fund', ' trust fund', 'index fund', 'portfolio etf')
+        if any(term in name for term in fund_terms):
+            return False
+
+    non_common_terms = (
+        'warrant', 'right to purchase', 'unit ', ' units', 'preferred stock',
+        'preferred shares', 'depositary share', 'notes due', 'senior notes',
+        'debenture', 'convertible note'
+    )
+    if any(term in name for term in non_common_terms):
+        return False
+
+    bad_symbol_markers = ('+', '=', '^')
+    if any(marker in symbol for marker in bad_symbol_markers):
+        return False
+    return True
+
+
+def _inst_fetch_alpaca_assets(asset_configs, filters):
+    if _inst_is_cache_fresh('alpaca_assets'):
+        item = _INST_SCANNER_UNIVERSE_CACHE['alpaca_assets']
+        return item['symbols'], item['metadata'], item['source'], None
+
+    include_otc = bool(filters.get('includeOTC'))
+    include_etfs = bool(filters.get('includeETFs'))
+    last_error = None
+
+    for cfg in asset_configs:
+        base_url = str(cfg.get('base_url') or 'https://api.alpaca.markets').rstrip('/')
+        try:
+            resp = requests.get(
+                f'{base_url}/v2/assets',
+                headers=_inst_alpaca_headers(cfg),
+                params={'status': 'active', 'asset_class': 'us_equity'},
+                timeout=25,
+            )
+            if resp.status_code != 200:
+                last_error = f'Alpaca assets returned {resp.status_code}: {resp.text[:180]}'
+                print(f'[InstitutionalScanner] assets fetch failed source={cfg.get("source")} status={resp.status_code}')
+                continue
+
+            payload = resp.json()
+            if isinstance(payload, dict) and isinstance(payload.get('assets'), list):
+                assets = payload.get('assets') or []
+            elif isinstance(payload, list):
+                assets = payload
+            else:
+                assets = []
+
+            metadata = {}
+            symbols = []
+            for asset in assets:
+                if not isinstance(asset, dict) or not _inst_is_common_stock_asset(asset, include_otc, include_etfs):
+                    continue
+                symbol = _inst_clean_symbol(asset.get('symbol'))
+                if symbol in metadata:
+                    continue
+                exchange = _inst_asset_exchange(asset)
+                metadata[symbol] = {
+                    'symbol': symbol,
+                    'name': asset.get('name') or symbol,
+                    'exchange': exchange,
+                    'exchangeName': _inst_exchange_name(exchange),
+                    'tradable': bool(asset.get('tradable')),
+                    'marginable': bool(asset.get('marginable')),
+                    'shortable': bool(asset.get('shortable')),
+                    'easyToBorrow': bool(asset.get('easy_to_borrow')),
+                    'fractionable': bool(asset.get('fractionable')),
+                    'assetId': asset.get('id'),
+                    'assetClass': asset.get('asset_class') or asset.get('class'),
+                    'universe': 'ALPACA_MARKET',
+                }
+                symbols.append(symbol)
+
+            source = f'Alpaca /v2/assets ({cfg.get("source") or cfg.get("mode") or "trading"})'
+            _INST_SCANNER_UNIVERSE_CACHE['alpaca_assets'] = {
+                'fetched_at': _inst_now_ts(),
+                'symbols': symbols,
+                'metadata': metadata,
+                'source': source,
+            }
+            return symbols, metadata, source, None
+        except Exception as e:
+            last_error = str(e)
+            print(f'[InstitutionalScanner] assets fetch exception source={cfg.get("source")}: {e}')
+
+    return [], {}, 'Alpaca /v2/assets', last_error or 'Alpaca assets endpoint failed'
+
+
+def _inst_snapshot_bar(snapshot, key):
+    value = snapshot.get(key) if isinstance(snapshot, dict) else None
+    return value if isinstance(value, dict) else {}
+
+
+def _inst_bar_value(bar, *keys):
+    if not isinstance(bar, dict):
+        return None
+    for key in keys:
+        if key in bar:
+            return _inst_to_float(bar.get(key), None)
+    return None
+
+
+def _inst_fetch_alpaca_snapshots(symbols, market_cfg, feed=None, batch_size=200):
+    snapshots = {}
+    errors = {}
+    symbols = [_inst_clean_symbol(s) for s in symbols if _inst_clean_symbol(s)]
+    headers = _inst_alpaca_headers(market_cfg)
+    feed = str(feed or _MARKET_DATA_FEED or 'iex').lower()
+    for start in range(0, len(symbols), batch_size):
+        batch = symbols[start:start + batch_size]
+        try:
+            resp = requests.get(
+                f'{_INST_SCANNER_MARKET_DATA_BASE_URL}/v2/stocks/snapshots',
+                headers=headers,
+                params={'symbols': ','.join(batch), 'feed': feed},
+                timeout=20,
+            )
+            if resp.status_code != 200:
+                err = f'snapshots status={resp.status_code}: {resp.text[:160]}'
+                print(f'[InstitutionalScanner] snapshots failed batch={start}-{start+len(batch)} {err}')
+                for symbol in batch:
+                    errors[symbol] = err
+                continue
+
+            payload = resp.json()
+            data = payload.get('snapshots') if isinstance(payload, dict) and isinstance(payload.get('snapshots'), dict) else payload
+            if not isinstance(data, dict):
+                continue
+            for symbol, snapshot in data.items():
+                clean = _inst_clean_symbol(symbol)
+                if clean and isinstance(snapshot, dict):
+                    snapshots[clean] = snapshot
+        except Exception as e:
+            err = str(e)
+            print(f'[InstitutionalScanner] snapshots exception batch={start}-{start+len(batch)} {err}')
+            for symbol in batch:
+                errors[symbol] = err
+    return snapshots, errors
+
+
+def _inst_snapshot_metrics(symbol, snapshot):
+    daily = _inst_snapshot_bar(snapshot, 'dailyBar')
+    prev_daily = _inst_snapshot_bar(snapshot, 'prevDailyBar')
+    trade = _inst_snapshot_bar(snapshot, 'latestTrade')
+    quote = _inst_snapshot_bar(snapshot, 'latestQuote')
+
+    latest_trade_price = _inst_bar_value(trade, 'p', 'price')
+    bid = _inst_bar_value(quote, 'bp', 'bidPrice')
+    ask = _inst_bar_value(quote, 'ap', 'askPrice')
+
+    price = latest_trade_price
+    if price is None or price <= 0:
+        if bid and ask and bid > 0 and ask > 0:
+            price = (bid + ask) / 2
+    if price is None or price <= 0:
+        price = _inst_bar_value(daily, 'c', 'close')
+
+    prev_close = _inst_bar_value(prev_daily, 'c', 'close')
+    current_volume = _inst_bar_value(daily, 'v', 'volume') or 0
+    previous_volume = _inst_bar_value(prev_daily, 'v', 'volume') or 0
+    volume = current_volume if current_volume > 0 else previous_volume
+    current_reference_price = _inst_bar_value(daily, 'c', 'close') or price or 0
+    previous_reference_price = prev_close or price or 0
+    current_dollar_volume = current_reference_price * current_volume
+    previous_dollar_volume = previous_reference_price * previous_volume
+    liquidity_proxy_dollar_volume = max(current_dollar_volume, previous_dollar_volume)
+    spread = (ask - bid) if bid and ask and ask >= bid else None
+    spread_pct = (spread / price * 100.0) if spread is not None and price else None
+
+    return {
+        'symbol': symbol,
+        'snapshotPrice': price,
+        'snapshotPrevClose': prev_close,
+        'snapshotVolume': volume or 0,
+        'snapshotCurrentVolume': current_volume,
+        'snapshotPreviousVolume': previous_volume,
+        'snapshotCurrentDollarVolume': current_dollar_volume,
+        'snapshotPreviousDollarVolume': previous_dollar_volume,
+        'snapshotLiquidityProxyDollarVolume': liquidity_proxy_dollar_volume,
+        'snapshotDollarVolume': liquidity_proxy_dollar_volume,
+        'latestTradePrice': latest_trade_price,
+        'latestTradeSize': _inst_bar_value(trade, 's', 'size'),
+        'latestTradeTime': trade.get('t') if isinstance(trade, dict) else None,
+        'bidPrice': bid,
+        'askPrice': ask,
+        'bidSize': _inst_bar_value(quote, 'bs', 'bidSize'),
+        'askSize': _inst_bar_value(quote, 'as', 'askSize'),
+        'latestQuoteTime': quote.get('t') if isinstance(quote, dict) else None,
+        'bidAskSpread': spread,
+        'bidAskSpreadPct': spread_pct,
+        'dayOpen': _inst_bar_value(daily, 'o', 'open'),
+        'dayHigh': _inst_bar_value(daily, 'h', 'high'),
+        'dayLow': _inst_bar_value(daily, 'l', 'low'),
+        'dayClose': _inst_bar_value(daily, 'c', 'close'),
+        'dayVWAP': _inst_bar_value(daily, 'vw', 'vwap'),
+        'dayBarTime': daily.get('t') if isinstance(daily, dict) else None,
+    }
+
+
+def _inst_daily_snapshot_is_complete(day_bar_time, now_et=None):
+    """Whether an Alpaca daily snapshot bar represents a completed US session."""
+    try:
+        from zoneinfo import ZoneInfo
+        now_et = now_et or datetime.now(ZoneInfo('America/New_York'))
+        bar_date_text = str(day_bar_time or '')[:10]
+        if not bar_date_text:
+            return False
+        bar_date = datetime.strptime(bar_date_text, '%Y-%m-%d').date()
+        if bar_date < now_et.date():
+            return True
+        if bar_date > now_et.date() or now_et.weekday() >= 5:
+            return False
+        return now_et.time() >= dt_time(16, 15)
+    except Exception:
+        return False
+
+
+def _inst_period_to_start(period):
+    period = str(period or '18mo').lower().strip()
+    days = 550
+    match = re.match(r'^(\d+)\s*(mo|m|month|months)$', period)
+    if match:
+        days = int(match.group(1)) * 31
+    else:
+        match = re.match(r'^(\d+)\s*(y|yr|year|years)$', period)
+        if match:
+            days = int(match.group(1)) * 366
+        elif period.endswith('d') and period[:-1].isdigit():
+            days = int(period[:-1])
+        elif period == '1y':
+            days = 366
+    start = datetime.utcnow() - timedelta(days=max(90, min(days, 2200)))
+    return start.strftime('%Y-%m-%d')
+
+
+def _inst_fetch_alpaca_bars(symbols, market_cfg, period='18mo', feed=None, batch_size=25):
+    history = {}
+    errors = {}
+    symbols = [_inst_clean_symbol(s) for s in symbols if _inst_clean_symbol(s)]
+    headers = _inst_alpaca_headers(market_cfg)
+    start_date = _inst_period_to_start(period)
+    end_date = datetime.utcnow().strftime('%Y-%m-%d')
+    feed = str(feed or _MARKET_DATA_FEED or 'iex').lower()
+
+    for start in range(0, len(symbols), batch_size):
+        batch = symbols[start:start + batch_size]
+        page_token = None
+        pages = 0
+        while True:
+            params = {
+                'symbols': ','.join(batch),
+                'timeframe': '1Day',
+                'start': start_date,
+                'end': end_date,
+                'limit': 10000,
+                'adjustment': 'split',
+                'feed': feed,
+                'sort': 'asc',
+            }
+            if page_token:
+                params['page_token'] = page_token
+
+            try:
+                resp = requests.get(
+                    f'{_INST_SCANNER_MARKET_DATA_BASE_URL}/v2/stocks/bars',
+                    headers=headers,
+                    params=params,
+                    timeout=25,
+                )
+                if resp.status_code != 200:
+                    err = f'bars status={resp.status_code}: {resp.text[:180]}'
+                    print(f'[InstitutionalScanner] bars failed batch={start}-{start+len(batch)} {err}')
+                    for symbol in batch:
+                        errors[symbol] = err
+                    break
+
+                payload = resp.json()
+                bars_payload = payload.get('bars') if isinstance(payload, dict) else None
+                if isinstance(bars_payload, dict):
+                    for symbol, bars in bars_payload.items():
+                        clean = _inst_clean_symbol(symbol)
+                        if clean and isinstance(bars, list):
+                            history.setdefault(clean, []).extend(bars)
+                elif isinstance(bars_payload, list):
+                    for bar in bars_payload:
+                        clean = _inst_clean_symbol(bar.get('S') or bar.get('symbol')) if isinstance(bar, dict) else ''
+                        if clean:
+                            history.setdefault(clean, []).append(bar)
+
+                page_token = payload.get('next_page_token') if isinstance(payload, dict) else None
+                pages += 1
+                if not page_token or pages >= 10:
+                    break
+            except Exception as e:
+                err = str(e)
+                print(f'[InstitutionalScanner] bars exception batch={start}-{start+len(batch)} {err}')
+                for symbol in batch:
+                    errors[symbol] = err
+                break
+
+    for symbol in list(history.keys()):
+        history[symbol] = sorted(history[symbol], key=lambda bar: str(bar.get('t') or bar.get('timestamp') or ''))
+    return history, errors
+
+
+def _inst_bar_date(bar):
+    if not isinstance(bar, dict):
+        return None
+    raw = bar.get('t') or bar.get('timestamp') or bar.get('date')
+    if raw is None:
+        return None
+    text = str(raw)
+    return text[:10] if len(text) >= 10 else None
+
+
+def _inst_bar_close_map(bars):
+    close_map = {}
+    for bar in bars or []:
+        date_key = _inst_bar_date(bar)
+        close = _inst_bar_value(bar, 'c', 'close')
+        if date_key and close is not None and close > 0:
+            close_map[date_key] = close
+    return dict(sorted(close_map.items(), key=lambda item: item[0]))
+
+
+def _inst_pct_return_from_closes(closes, days):
+    if not closes or len(closes) <= days:
+        return None
+    base = _inst_to_float(closes[-days - 1], None)
+    last = _inst_to_float(closes[-1], None)
+    if not base or not last or base <= 0:
+        return None
+    return (last / base - 1.0) * 100.0
+
+
+def _inst_returns_by_date(bars):
+    items = list(_inst_bar_close_map(bars).items())
+    returns = {}
+    for idx in range(1, len(items)):
+        date_key, close = items[idx]
+        prev = items[idx - 1][1]
+        if prev and prev > 0 and close and close > 0:
+            returns[date_key] = (close / prev) - 1.0
+    return returns
+
+
+def _inst_beta_correlation(symbol_bars, benchmark_bars, lookback=252):
+    symbol_returns = _inst_returns_by_date(symbol_bars)
+    benchmark_returns = _inst_returns_by_date(benchmark_bars)
+    dates = sorted(set(symbol_returns.keys()) & set(benchmark_returns.keys()))
+    if len(dates) < 30:
+        return None, None
+    dates = dates[-lookback:]
+    xs = [symbol_returns[d] for d in dates]
+    ys = [benchmark_returns[d] for d in dates]
+    mean_x = sum(xs) / len(xs)
+    mean_y = sum(ys) / len(ys)
+    cov = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    var_x = sum((x - mean_x) ** 2 for x in xs)
+    var_y = sum((y - mean_y) ** 2 for y in ys)
+    if var_y <= 0 or var_x <= 0:
+        return None, None
+    beta = cov / var_y
+    corr = cov / ((var_x * var_y) ** 0.5)
+    return beta, max(-1.0, min(1.0, corr))
+
+
+def _inst_build_benchmark_context(benchmark_history):
+    context = {
+        'bars': benchmark_history or {},
+        'returns': {},
+        'trend': 'Unknown',
+        'symbolsAvailable': [],
+    }
+    for symbol, bars in (benchmark_history or {}).items():
+        closes = list(_inst_bar_close_map(bars).values())
+        if not closes:
+            continue
+        context['symbolsAvailable'].append(symbol)
+        context['returns'][symbol] = {
+            '1m': round(_inst_pct_return_from_closes(closes, 21), 3) if _inst_pct_return_from_closes(closes, 21) is not None else None,
+            '3m': round(_inst_pct_return_from_closes(closes, 63), 3) if _inst_pct_return_from_closes(closes, 63) is not None else None,
+            '6m': round(_inst_pct_return_from_closes(closes, 126), 3) if _inst_pct_return_from_closes(closes, 126) is not None else None,
+            '12m': round(_inst_pct_return_from_closes(closes, 252), 3) if _inst_pct_return_from_closes(closes, 252) is not None else None,
+        }
+    spy_closes = list(_inst_bar_close_map((benchmark_history or {}).get('SPY')).values())
+    if len(spy_closes) >= 200:
+        spy_3m = _inst_pct_return_from_closes(spy_closes, 63)
+        spy_ma200 = sum(spy_closes[-200:]) / 200.0
+        if spy_closes[-1] > spy_ma200 and (spy_3m or 0) > 0:
+            context['trend'] = 'Risk-On'
+        elif spy_closes[-1] < spy_ma200 and (spy_3m or 0) < 0:
+            context['trend'] = 'Risk-Off'
+        else:
+            context['trend'] = 'Neutral'
+    return context
+
+
+def _inst_apply_benchmark_metrics(row, symbol_bars, benchmark_context):
+    if not row or not benchmark_context:
+        return row
+    spy_returns = (benchmark_context.get('returns') or {}).get('SPY') or {}
+    qqq_returns = (benchmark_context.get('returns') or {}).get('QQQ') or {}
+    for horizon, row_key, spy_key in (
+        ('1m', 'momentum1m', 'relativeStrength1m'),
+        ('3m', 'momentum3m', 'relativeStrength3m'),
+        ('6m', 'momentum6m', 'relativeStrength6m'),
+        ('12m', 'momentum12m', 'relativeStrength12m'),
+    ):
+        own = _inst_to_float(row.get(row_key), None)
+        benchmark = _inst_to_float(spy_returns.get(horizon), None)
+        if own is not None and benchmark is not None:
+            row[spy_key] = round(own - benchmark, 3)
+    for horizon, row_key, qqq_key in (
+        ('3m', 'momentum3m', 'qqqRelativeStrength3m'),
+        ('6m', 'momentum6m', 'qqqRelativeStrength6m'),
+    ):
+        own = _inst_to_float(row.get(row_key), None)
+        benchmark = _inst_to_float(qqq_returns.get(horizon), None)
+        if own is not None and benchmark is not None:
+            row[qqq_key] = round(own - benchmark, 3)
+    beta, corr = _inst_beta_correlation(symbol_bars, (benchmark_context.get('bars') or {}).get('SPY'))
+    if beta is not None:
+        row['marketBeta'] = round(beta, 3)
+    if corr is not None:
+        row['marketCorrelation'] = round(corr, 3)
+    row['benchmarkTrend'] = benchmark_context.get('trend') or 'Unknown'
+    row['benchmarkReturns'] = {
+        'SPY': spy_returns,
+        'QQQ': qqq_returns,
+    }
+    row.setdefault('dataSources', {})['benchmarks'] = 'Alpaca Market Data /v2/stocks/bars SPY/QQQ/IWM/sector ETFs'
+    row.setdefault('provenance', {})['benchmarks'] = 'Alpaca Market Data benchmark and ETF bars'
+    return row
+
+
+def _inst_apply_trading_cost_metrics(row):
+    if not row:
+        return row
+    adv = _inst_to_float(row.get('avgDollarVolume20'), 0) or 0
+    spread_pct = _inst_to_float(row.get('bidAskSpreadPct'), None)
+    spread_bps = (spread_pct * 100.0) if spread_pct is not None and spread_pct >= 0 else None
+    spread_source = 'Alpaca latest quote'
+    quote_age_seconds = None
+    quote_time = row.get('latestQuoteTime')
+    if quote_time:
+        try:
+            quote_text = str(quote_time).strip()
+            if quote_text.endswith('Z'):
+                quote_text = quote_text[:-1] + '+00:00'
+            parsed_quote_time = datetime.fromisoformat(quote_text)
+            if parsed_quote_time.tzinfo is None:
+                parsed_quote_time = parsed_quote_time.replace(tzinfo=timezone.utc)
+            quote_age_seconds = max(
+                0.0,
+                (datetime.now(timezone.utc) - parsed_quote_time.astimezone(timezone.utc)).total_seconds(),
+            )
+        except Exception:
+            quote_age_seconds = None
+    quote_is_stale = quote_age_seconds is not None and quote_age_seconds > 1800
+    quote_is_outlier = spread_bps is not None and spread_bps > 80
+    if spread_bps is None or quote_is_stale or quote_is_outlier:
+        spread_source = 'ADV liquidity estimate'
+        if adv >= 1_000_000_000:
+            spread_bps = 2.0
+        elif adv >= 250_000_000:
+            spread_bps = 4.0
+        elif adv >= 75_000_000:
+            spread_bps = 7.0
+        elif adv >= 20_000_000:
+            spread_bps = 12.0
+        else:
+            spread_bps = 25.0
+
+    vol = _inst_to_float(row.get('realizedVol20'), 35) or 35
+    impact_bps = 2.0
+    if adv > 0:
+        impact_bps = max(1.0, min(45.0, (5_000_000.0 / adv) * 18.0 + vol * 0.03))
+    estimated_cost = max(0.0, spread_bps + impact_bps)
+
+    if adv >= 250_000_000 and spread_bps <= 8:
+        tier = 'Institutional'
+        capacity_score = 92
+    elif adv >= 75_000_000 and spread_bps <= 15:
+        tier = 'Liquid'
+        capacity_score = 78
+    elif adv >= 20_000_000:
+        tier = 'Tradable'
+        capacity_score = 62
+    else:
+        tier = 'Thin'
+        capacity_score = 42
+    if estimated_cost > 25:
+        capacity_score -= 12
+    elif estimated_cost > 15:
+        capacity_score -= 6
+    capacity_score = max(0, min(100, capacity_score))
+
+    row['spreadBps'] = round(spread_bps, 2)
+    row['spreadSource'] = spread_source
+    row['quoteAgeSeconds'] = round(quote_age_seconds, 1) if quote_age_seconds is not None else None
+    row['quoteStale'] = quote_is_stale
+    row['estimatedRoundTripCostBps'] = round(estimated_cost, 2)
+    row['estimatedImpactBps'] = round(impact_bps, 2)
+    row['capacityScore'] = capacity_score
+    row['liquidityTier'] = tier
+    row['institutionalLiquidity'] = tier
+    row['participation10pctDollar'] = round(adv * 0.10, 2) if adv else None
+    row.setdefault('dataSources', {})['tradingCost'] = 'Alpaca quote + ADV20 cost model'
+    row.setdefault('provenance', {})['tradingCost'] = 'Estimated spread, impact, and 10% ADV capacity from Alpaca quote/bars'
+    return row
+
+
+def _inst_avg(values):
+    values = [_inst_to_float(v, None) for v in values]
+    values = [v for v in values if v is not None]
+    return sum(values) / len(values) if values else None
+
+
+def _inst_std(values):
+    values = [_inst_to_float(v, None) for v in values]
+    values = [v for v in values if v is not None]
+    if len(values) < 2:
+        return None
+    mean = sum(values) / len(values)
+    variance = sum((v - mean) ** 2 for v in values) / (len(values) - 1)
+    return variance ** 0.5
+
+
+def _inst_compute_symbol_metrics(symbol, bars, meta, snapshot_meta=None):
+    if not bars:
+        return None
+
+    cleaned = []
+    for bar in bars:
+        close = _inst_bar_value(bar, 'c', 'close')
+        high = _inst_bar_value(bar, 'h', 'high')
+        low = _inst_bar_value(bar, 'l', 'low')
+        volume = _inst_bar_value(bar, 'v', 'volume')
+        if close is None or close <= 0:
+            continue
+        cleaned.append({
+            'timestamp': bar.get('t') or bar.get('timestamp') or bar.get('date'),
+            'close': close,
+            'high': high if high is not None and high > 0 else close,
+            'low': low if low is not None and low > 0 else close,
+            'volume': volume if volume is not None and volume >= 0 else 0,
+        })
+
+    if not cleaned:
+        return None
+
+    closes = [item['close'] for item in cleaned]
+    highs = [item['high'] for item in cleaned]
+    lows = [item['low'] for item in cleaned]
+    volumes = [item['volume'] for item in cleaned]
+
+    snapshot_meta = snapshot_meta or {}
+    bar_price = _inst_to_float(closes[-1], None)
+    snapshot_price = _inst_to_float(snapshot_meta.get('snapshotPrice'), None)
+    price = snapshot_price if snapshot_price and snapshot_price > 0 else bar_price
+    if price is None or price <= 0:
+        return None
+
+    prev_snapshot = _inst_to_float(snapshot_meta.get('snapshotPrevClose'), None)
+    prev = prev_snapshot if prev_snapshot and prev_snapshot > 0 else (_inst_to_float(closes[-2], None) if len(closes) >= 2 else None)
+    change_pct = ((price - prev) / prev * 100.0) if prev and prev > 0 else None
+    history_days = int(len(closes))
+    daily_snapshot_complete = _inst_daily_snapshot_is_complete(snapshot_meta.get('dayBarTime'))
+    current_session_date = str(snapshot_meta.get('dayBarTime') or '')[:10]
+    completed_volumes = [
+        item['volume'] for item in cleaned
+        if not (
+            not daily_snapshot_complete and current_session_date and
+            str(item.get('timestamp') or '')[:10] == current_session_date
+        )
+    ]
+    avg_volume20 = _inst_avg(completed_volumes[-20:]) or 0
+    snapshot_volume = _inst_to_float(snapshot_meta.get('snapshotVolume'), None)
+    snapshot_current_volume = _inst_to_float(snapshot_meta.get('snapshotCurrentVolume'), None)
+    snapshot_previous_volume = _inst_to_float(snapshot_meta.get('snapshotPreviousVolume'), None)
+    last_volume = snapshot_volume if snapshot_volume is not None and snapshot_volume > 0 else (_inst_to_float(volumes[-1], 0) or 0)
+    avg_dollar_volume20 = avg_volume20 * price if avg_volume20 and price else 0
+    comparable_volume = None
+    volume_ratio_source = None
+    if daily_snapshot_complete and snapshot_current_volume is not None and snapshot_current_volume > 0:
+        comparable_volume = snapshot_current_volume
+        volume_ratio_source = 'completed current session'
+    elif snapshot_previous_volume is not None and snapshot_previous_volume > 0:
+        comparable_volume = snapshot_previous_volume
+        volume_ratio_source = 'previous completed session'
+    elif len(volumes) >= 2:
+        comparable_volume = _inst_to_float(volumes[-2], None)
+        volume_ratio_source = 'previous Alpaca daily bar'
+    else:
+        comparable_volume = last_volume
+        volume_ratio_source = 'available daily volume fallback'
+    volume_ratio = (comparable_volume / avg_volume20) if avg_volume20 and comparable_volume is not None else None
+    intraday_volume_ratio_raw = (
+        snapshot_current_volume / avg_volume20
+        if avg_volume20 and snapshot_current_volume is not None and snapshot_current_volume >= 0 else None
+    )
+
+    def pct_return(days):
+        if len(closes) <= days:
+            return None
+        base = _inst_to_float(closes[-days - 1], None)
+        return ((price - base) / base * 100.0) if base and base > 0 else None
+
+    momentum_1m = pct_return(21)
+    momentum_3m = pct_return(63)
+    momentum_6m = pct_return(126)
+    momentum_12m = pct_return(252)
+    momentum_12m_ex_1m = None
+    if len(closes) >= 253:
+        start_price = _inst_to_float(closes[-253], None)
+        end_price = _inst_to_float(closes[-22], None)
+        if start_price and start_price > 0 and end_price and end_price > 0:
+            momentum_12m_ex_1m = (end_price / start_price - 1.0) * 100.0
+
+    ma50 = _inst_avg(closes[-50:]) if len(closes) >= 50 else None
+    ma200 = _inst_avg(closes[-200:]) if len(closes) >= 200 else None
+    close_vs_50 = ((price - ma50) / ma50 * 100.0) if ma50 else None
+    close_vs_200 = ((price - ma200) / ma200 * 100.0) if ma200 else None
+    recent_high20 = max(highs[-20:]) if len(highs) >= 20 else (max(highs) if highs else None)
+    recent_low20 = min(lows[-20:]) if len(lows) >= 20 else (min(lows) if lows else None)
+    recent_high50 = max(highs[-50:]) if len(highs) >= 50 else (max(highs) if highs else None)
+    recent_low50 = min(lows[-50:]) if len(lows) >= 50 else (min(lows) if lows else None)
+    dist_to_high20 = ((recent_high20 - price) / price * 100.0) if recent_high20 and price else None
+    dist_from_low20 = ((price - recent_low20) / price * 100.0) if recent_low20 and price else None
+
+    rsi14 = None
+    if len(closes) >= 15:
+        changes = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+        recent_changes = changes[-14:]
+        avg_gain = _inst_avg([max(change, 0) for change in recent_changes])
+        avg_loss = _inst_avg([abs(min(change, 0)) for change in recent_changes])
+        if avg_gain is not None and avg_loss is not None:
+            if avg_loss == 0:
+                rsi14 = 100.0
+            else:
+                rs = avg_gain / avg_loss
+                rsi14 = 100.0 - (100.0 / (1.0 + rs))
+
+    macd_line = None
+    macd_signal = None
+    macd_hist = None
+    macd_hist_prev = None
+    if len(closes) >= 35:
+        def _ema_series(values, period):
+            alpha = 2.0 / (period + 1.0)
+            ema_value = values[0]
+            series = []
+            for value in values:
+                ema_value = value * alpha + ema_value * (1.0 - alpha)
+                series.append(ema_value)
+            return series
+        ema12 = _ema_series(closes, 12)
+        ema26 = _ema_series(closes, 26)
+        macd_series = [fast - slow for fast, slow in zip(ema12, ema26)]
+        signal_series = _ema_series(macd_series, 9)
+        macd_line = macd_series[-1]
+        macd_signal = signal_series[-1]
+        macd_hist = macd_line - macd_signal
+        if len(macd_series) >= 2 and len(signal_series) >= 2:
+            macd_hist_prev = macd_series[-2] - signal_series[-2]
+
+    returns = []
+    for i in range(1, len(closes)):
+        if closes[i - 1] > 0:
+            returns.append((closes[i] / closes[i - 1]) - 1.0)
+    vol20 = None
+    if len(returns) >= 20:
+        vol20 = (_inst_std(returns[-20:]) or 0) * (252 ** 0.5) * 100
+
+    atr_pct = None
+    if len(cleaned) >= 15:
+        try:
+            true_ranges = []
+            for i in range(max(1, len(cleaned) - 20), len(cleaned)):
+                prev_close = closes[i - 1]
+                tr = max(
+                    highs[i] - lows[i],
+                    abs(highs[i] - prev_close),
+                    abs(lows[i] - prev_close),
+                )
+                true_ranges.append(tr)
+            atr = _inst_avg(true_ranges[-14:])
+            atr_pct = (atr / price * 100.0) if atr and price else None
+        except Exception:
+            atr_pct = None
+
+    max_drawdown126 = None
+    if len(closes) >= 30:
+        recent = closes[-min(126, len(closes)):]
+        running_max = recent[0]
+        drawdowns = []
+        for close_value in recent:
+            running_max = max(running_max, close_value)
+            if running_max > 0:
+                drawdowns.append((close_value / running_max - 1.0) * 100.0)
+        max_drawdown126 = abs(min(drawdowns)) if drawdowns else None
+
+    return {
+        'symbol': symbol,
+        'companyName': meta.get('name') or symbol,
+        'sector': None,
+        'exchange': meta.get('exchange'),
+        'exchangeName': meta.get('exchangeName'),
+        'assetClass': meta.get('assetClass'),
+        'tradable': meta.get('tradable'),
+        'marginable': meta.get('marginable'),
+        'shortable': meta.get('shortable'),
+        'fractionable': meta.get('fractionable'),
+        'easyToBorrow': meta.get('easyToBorrow'),
+        'priceSource': 'Alpaca snapshot' if snapshot_price and snapshot_price > 0 else 'Alpaca daily bar',
+        'latestTradePrice': round(snapshot_meta.get('latestTradePrice'), 4) if _inst_to_float(snapshot_meta.get('latestTradePrice'), None) else None,
+        'latestTradeSize': snapshot_meta.get('latestTradeSize'),
+        'latestTradeTime': snapshot_meta.get('latestTradeTime'),
+        'bidPrice': round(snapshot_meta.get('bidPrice'), 4) if _inst_to_float(snapshot_meta.get('bidPrice'), None) else None,
+        'askPrice': round(snapshot_meta.get('askPrice'), 4) if _inst_to_float(snapshot_meta.get('askPrice'), None) else None,
+        'bidSize': snapshot_meta.get('bidSize'),
+        'askSize': snapshot_meta.get('askSize'),
+        'latestQuoteTime': snapshot_meta.get('latestQuoteTime'),
+        'bidAskSpread': round(snapshot_meta.get('bidAskSpread'), 4) if _inst_to_float(snapshot_meta.get('bidAskSpread'), None) is not None else None,
+        'bidAskSpreadPct': round(snapshot_meta.get('bidAskSpreadPct'), 4) if _inst_to_float(snapshot_meta.get('bidAskSpreadPct'), None) is not None else None,
+        'dayOpen': round(snapshot_meta.get('dayOpen'), 4) if _inst_to_float(snapshot_meta.get('dayOpen'), None) else None,
+        'dayHigh': round(snapshot_meta.get('dayHigh'), 4) if _inst_to_float(snapshot_meta.get('dayHigh'), None) else None,
+        'dayLow': round(snapshot_meta.get('dayLow'), 4) if _inst_to_float(snapshot_meta.get('dayLow'), None) else None,
+        'dayClose': round(snapshot_meta.get('dayClose'), 4) if _inst_to_float(snapshot_meta.get('dayClose'), None) else None,
+        'dayVWAP': round(snapshot_meta.get('dayVWAP'), 4) if _inst_to_float(snapshot_meta.get('dayVWAP'), None) else None,
+        'dayBarTime': snapshot_meta.get('dayBarTime'),
+        'price': round(price, 4),
+        'previousClose': round(prev, 4) if prev else None,
+        'change': round(price - prev, 4) if prev else None,
+        'changePct': round(change_pct, 3) if change_pct is not None else None,
+        'changePercent': round(change_pct, 3) if change_pct is not None else None,
+        'volume': last_volume,
+        'snapshotCurrentVolume': snapshot_meta.get('snapshotCurrentVolume'),
+        'snapshotPreviousVolume': snapshot_meta.get('snapshotPreviousVolume'),
+        'snapshotCurrentDollarVolume': snapshot_meta.get('snapshotCurrentDollarVolume'),
+        'snapshotPreviousDollarVolume': snapshot_meta.get('snapshotPreviousDollarVolume'),
+        'snapshotLiquidityProxyDollarVolume': snapshot_meta.get('snapshotLiquidityProxyDollarVolume'),
+        'avgVolume20': round(avg_volume20, 2),
+        'avgDollarVolume20': round(avg_dollar_volume20, 2),
+        'volumeRatio': round(volume_ratio, 3) if volume_ratio is not None else None,
+        'volumeRatioSource': volume_ratio_source,
+        'intradayVolumeRatioRaw': round(intraday_volume_ratio_raw, 3) if intraday_volume_ratio_raw is not None else None,
+        'dailySnapshotComplete': daily_snapshot_complete,
+        'marketCap': None,
+        'historyDays': history_days,
+        'momentum1m': round(momentum_1m, 3) if momentum_1m is not None else None,
+        'momentum3m': round(momentum_3m, 3) if momentum_3m is not None else None,
+        'momentum6m': round(momentum_6m, 3) if momentum_6m is not None else None,
+        'momentum12m': round(momentum_12m, 3) if momentum_12m is not None else None,
+        'momentum12mEx1m': round(momentum_12m_ex_1m, 3) if momentum_12m_ex_1m is not None else None,
+        'ma50': round(ma50, 4) if ma50 else None,
+        'ma200': round(ma200, 4) if ma200 else None,
+        'closeVs50dma': round(close_vs_50, 3) if close_vs_50 is not None else None,
+        'closeVs200dma': round(close_vs_200, 3) if close_vs_200 is not None else None,
+        'recentHigh20': round(recent_high20, 4) if recent_high20 else None,
+        'recentLow20': round(recent_low20, 4) if recent_low20 else None,
+        'recentHigh50': round(recent_high50, 4) if recent_high50 else None,
+        'recentLow50': round(recent_low50, 4) if recent_low50 else None,
+        'distanceTo20dHighPct': round(dist_to_high20, 3) if dist_to_high20 is not None else None,
+        'distanceFrom20dLowPct': round(dist_from_low20, 3) if dist_from_low20 is not None else None,
+        'rsi14': round(rsi14, 3) if rsi14 is not None else None,
+        'macdLine': round(macd_line, 5) if macd_line is not None else None,
+        'macdSignal': round(macd_signal, 5) if macd_signal is not None else None,
+        'macdHistogram': round(macd_hist, 5) if macd_hist is not None else None,
+        'macdHistogramPrev': round(macd_hist_prev, 5) if macd_hist_prev is not None else None,
+        'realizedVol20': round(vol20, 3) if vol20 is not None else None,
+        'atrPercent': round(atr_pct, 3) if atr_pct is not None else None,
+        'maxDrawdown126': round(max_drawdown126, 3) if max_drawdown126 is not None else None,
+        'trailingPE': None,
+        'forwardPE': None,
+        'priceToBook': None,
+        'epsGrowthForward': None,
+        'analystRating': None,
+        'dataSource': 'Alpaca',
+        'universe': 'ALPACA_MARKET',
+    }
+
+
+def _inst_apply_investability_filters(row, filters):
+    min_price = _inst_to_float(filters.get('minPrice'), 5)
+    min_adv = _inst_to_float(filters.get('minDollarVolume'), 10_000_000)
+    min_history = int(_inst_to_float(filters.get('minHistoryDays'), 180) or 180)
+    max_atr = _inst_to_float(filters.get('maxAtrPercent'), None)
+    max_vol = _inst_to_float(filters.get('maxRealizedVol20'), None)
+
+    reasons = []
+    passed = True
+    if row.get('price') is None or row.get('price') < min_price:
+        passed = False
+        reasons.append('price_below_min')
+    if row.get('avgDollarVolume20') is None or row.get('avgDollarVolume20') < min_adv:
+        passed = False
+        reasons.append('adv20_below_min')
+    if row.get('historyDays') is None or row.get('historyDays') < min_history:
+        passed = False
+        reasons.append('history_too_short')
+    if max_atr and row.get('atrPercent') is not None and row.get('atrPercent') > max_atr:
+        passed = False
+        reasons.append('atr_above_max')
+    if max_vol and row.get('realizedVol20') is not None and row.get('realizedVol20') > max_vol:
+        passed = False
+        reasons.append('volatility_above_max')
+
+    return passed, reasons
+
+
+def _inst_apply_market_cap_filter(rows, min_market_cap):
+    """Apply an optional Finnhub-backed filter to the enriched shortlist.
+
+    Alpaca assets and bars do not include market cap, so unavailable values are
+    reported and excluded when the user explicitly requests this filter.
+    """
+    threshold = _inst_to_float(min_market_cap, 0) or 0
+    stats = {
+        'applied': threshold > 0,
+        'threshold': threshold,
+        'input': len(rows or []),
+        'passed': len(rows or []),
+        'belowThreshold': 0,
+        'unavailable': 0,
+        'candidatePoolRefilled': False,
+    }
+    if threshold <= 0:
+        return list(rows or []), stats
+
+    kept = []
+    for row in rows or []:
+        market_cap = _inst_to_float(row.get('marketCap'), None)
+        if market_cap is None or market_cap <= 0:
+            stats['unavailable'] += 1
+        elif market_cap < threshold:
+            stats['belowThreshold'] += 1
+        else:
+            kept.append(row)
+    stats['passed'] = len(kept)
+    return kept, stats
+
+
+def _inst_clamp(value, low=0.0, high=100.0):
+    return max(low, min(high, value))
+
+
+def _inst_risk_adjusted_momentum(row):
+    parts = []
+    for key, weight in (
+        ('momentum6m', 0.45),
+        ('momentum12mEx1m', 0.55),
+    ):
+        value = _inst_to_float(row.get(key), None)
+        if value is not None:
+            parts.append((value, weight))
+    if not parts:
+        for key, weight in (('momentum3m', 0.40), ('momentum6m', 0.60)):
+            value = _inst_to_float(row.get(key), None)
+            if value is not None:
+                parts.append((value, weight))
+    if not parts:
+        return None
+    total_weight = sum(weight for _value, weight in parts) or 1.0
+    medium_term_return = sum(value * weight for value, weight in parts) / total_weight
+    annualized_volatility = max(15.0, _inst_to_float(row.get('realizedVol20'), 50.0) or 50.0)
+    return medium_term_return / annualized_volatility
+
+
+def _inst_direction_snapshot(row):
+    components = []
+
+    def add_scaled(key, scale, weight):
+        value = _inst_to_float(row.get(key), None)
+        if value is not None:
+            components.append((_inst_clamp(50.0 + value * scale), weight, key, value >= 0))
+
+    add_scaled('momentum3m', 1.8, 0.15)
+    add_scaled('momentum6m', 1.0, 0.20)
+    long_momentum_key = 'momentum12mEx1m' if _inst_to_float(row.get('momentum12mEx1m'), None) is not None else 'momentum12m'
+    add_scaled(long_momentum_key, 0.7, 0.15)
+    add_scaled('closeVs50dma', 4.0, 0.15)
+    add_scaled('closeVs200dma', 2.0, 0.20)
+    ma50 = _inst_to_float(row.get('ma50'), None)
+    ma200 = _inst_to_float(row.get('ma200'), None)
+    if ma50 is not None and ma200 is not None:
+        components.append((75.0 if ma50 > ma200 else 25.0, 0.15, 'ma50_above_ma200', ma50 > ma200))
+
+    if not components:
+        return 50.0, 0.0, 0, 0
+    weight_sum = sum(weight for _score, weight, _key, _positive in components) or 1.0
+    score = sum(component_score * weight for component_score, weight, _key, _positive in components) / weight_sum
+    positives = sum(1 for _score, _weight, _key, positive in components if positive)
+    agreement = 100.0 * positives / len(components)
+    return round(score, 2), round(agreement, 2), len(components) - positives, len(components)
+
+
+def _inst_score_rows(rows):
+    if not rows:
+        return rows
+
+    momentum_values = []
+    trend_values = []
+    relative_values = []
+    adv_values = []
+    cost_values = []
+    risk_values = []
+
+    for row in rows:
+        momentum_values.append(_inst_risk_adjusted_momentum(row))
+        trend_raw = (
+            0.55 * (_inst_to_float(row.get('closeVs50dma'), 0) or 0) +
+            0.45 * (_inst_to_float(row.get('closeVs200dma'), 0) or 0)
+        )
+        ma50 = _inst_to_float(row.get('ma50'), None)
+        ma200 = _inst_to_float(row.get('ma200'), None)
+        if ma50 is not None and ma200 is not None:
+            trend_raw += 5 if ma50 > ma200 else -5
+        trend_values.append(trend_raw)
+
+        relative_parts = []
+        for key, weight in (
+            ('relativeStrength3m', 0.45),
+            ('relativeStrength6m', 0.35),
+            ('relativeStrength12m', 0.20),
+        ):
+            value = _inst_to_float(row.get(key), None)
+            if value is not None:
+                relative_parts.append((value, weight))
+        if relative_parts:
+            relative_weight = sum(weight for _value, weight in relative_parts) or 1.0
+            relative_values.append(sum(value * weight for value, weight in relative_parts) / relative_weight)
+        else:
+            relative_values.append(None)
+
+        adv_values.append(_inst_to_float(row.get('avgDollarVolume20'), None))
+        cost_values.append(_inst_to_float(row.get('estimatedRoundTripCostBps'), None))
+        risk_values.append(
+            0.45 * (_inst_to_float(row.get('realizedVol20'), 50) or 50) +
+            0.35 * (_inst_to_float(row.get('atrPercent'), 5) or 5) * 6 +
+            0.20 * (_inst_to_float(row.get('maxDrawdown126'), 25) or 25)
+        )
+
+    momentum_pct = _inst_percentile(momentum_values, True)
+    trend_pct = _inst_percentile(trend_values, True)
+    relative_pct = _inst_percentile(relative_values, True)
+    adv_pct = _inst_percentile(adv_values, True)
+    cost_pct = _inst_percentile(cost_values, False)
+    risk_pct = _inst_percentile(risk_values, False)
+
+    core_coverage_fields = (
+        'momentum6m', 'momentum12mEx1m', 'closeVs50dma', 'closeVs200dma',
+        'ma50', 'ma200', 'relativeStrength3m', 'relativeStrength6m',
+        'avgDollarVolume20', 'estimatedRoundTripCostBps', 'capacityScore',
+        'realizedVol20', 'atrPercent', 'maxDrawdown126',
+    )
+
+    for index, row in enumerate(rows):
+        momentum_score = momentum_pct[index]
+        trend_factor_score = trend_pct[index]
+        relative_score = relative_pct[index]
+        capacity_score = _inst_to_float(row.get('capacityScore'), 50.0) or 50.0
+        liquidity_score = round(0.55 * adv_pct[index] + 0.25 * cost_pct[index] + 0.20 * capacity_score, 2)
+        risk_score = risk_pct[index]
+        direction_score, direction_agreement, direction_conflicts, direction_signal_count = _inst_direction_snapshot(row)
+
+        available_fields = sum(
+            1 for field in core_coverage_fields
+            if (
+                _inst_to_float(row.get(field), None) is not None
+                or (
+                    field == 'momentum12mEx1m'
+                    and _inst_to_float(row.get('momentum12m'), None) is not None
+                )
+            )
+        )
+        factor_coverage = 100.0 * available_fields / len(core_coverage_fields)
+        history_reliability = _inst_clamp((_inst_to_float(row.get('historyDays'), 0) or 0) / 300.0 * 100.0)
+        score_reliability = round(0.75 * factor_coverage + 0.25 * history_reliability, 2)
+
+        base_score = (
+            0.30 * momentum_score +
+            0.20 * trend_factor_score +
+            0.20 * relative_score +
+            0.15 * liquidity_score +
+            0.15 * risk_score
+        )
+        agreement_adjustment = (direction_agreement - 50.0) * 0.06
+        reliability_multiplier = 0.70 + 0.30 * score_reliability / 100.0
+        selection_score = round(_inst_clamp(50.0 + (base_score + agreement_adjustment - 50.0) * reliability_multiplier), 2)
+
+        if selection_score >= 80:
+            selection_label = 'Priority A'
+        elif selection_score >= 65:
+            selection_label = 'Priority B'
+        elif selection_score >= 50:
+            selection_label = 'Priority C'
+        else:
+            selection_label = 'Monitor'
+
+        if direction_score >= 78:
+            direction_label = 'Strong Bullish'
+        elif direction_score >= 60:
+            direction_label = 'Bullish'
+        elif direction_score >= 42:
+            direction_label = 'Neutral'
+        elif direction_score >= 25:
+            direction_label = 'Bearish'
+        else:
+            direction_label = 'Strong Bearish'
+
+        row['factorScores'] = {
+            'momentum': momentum_score,
+            'trend': trend_factor_score,
+            'relative': relative_score,
+            'liquidity': liquidity_score,
+            'risk': risk_score,
+        }
+        row['scoreBreakdown'] = {
+            'weights': {'momentum': 0.30, 'trend': 0.20, 'relative': 0.20, 'liquidity': 0.15, 'risk': 0.15},
+            'riskAdjustedMomentumRaw': round(momentum_values[index], 4) if momentum_values[index] is not None else None,
+            'advPercentile': adv_pct[index],
+            'costPercentile': cost_pct[index],
+            'baseScore': round(base_score, 2),
+            'agreementAdjustment': round(agreement_adjustment, 2),
+            'reliabilityMultiplier': round(reliability_multiplier, 3),
+        }
+        row['momentumScore'] = momentum_score
+        row['relativeScore'] = relative_score
+        row['volumeScore'] = liquidity_score
+        row['volatilityScore'] = risk_score
+        row['structureScore'] = trend_factor_score
+        row['sentimentScore'] = None
+        row['newsScore'] = None
+        row['selectionScore'] = selection_score
+        row['selectionLabel'] = selection_label
+        row['overallScore'] = selection_score
+        row['trendScore'] = selection_score
+        row['trendScoreDetail'] = direction_score
+        row['directionScore'] = direction_score
+        row['trendLabel'] = direction_label
+        row['factorAgreementPct'] = direction_agreement
+        row['factorConflictCount'] = direction_conflicts
+        row['directionSignalCount'] = direction_signal_count
+        row['factorCoveragePct'] = round(factor_coverage, 2)
+        row['scoreReliability'] = score_reliability
+        row['scoreVersion'] = 'institutional_cross_section_v5'
+        confidence = (0.45 + abs(direction_score - 50.0) / 100.0) * (0.75 + 0.25 * score_reliability / 100.0)
+        row['trendConfidence'] = round(min(0.95, confidence), 2)
+        row['volumeStatus'] = 'High' if (row.get('volumeRatio') or 0) >= 1.5 else ('Low' if (row.get('volumeRatio') or 0) < 0.7 else 'Normal')
+
+        relative_3m = _inst_to_float(row.get('relativeStrength3m'), None)
+        relative_3m_label = ('%.1f%%' % relative_3m) if relative_3m is not None else 'n/a'
+        row['scannerReason'] = (
+            '%s research priority (%.0f/100); directional signal is %s (%.0f/100). '
+            'Risk-adjusted momentum %.0f, trend %.0f, relative %.0f, investability %.0f, risk %.0f. '
+            'Factor agreement %.0f%%, reliability %.0f%%, SPY-relative 3m %s, ADV20 $%.1fM.'
+        ) % (
+            selection_label, selection_score, direction_label, direction_score,
+            momentum_score, trend_factor_score, relative_score, liquidity_score, risk_score,
+            direction_agreement, score_reliability, relative_3m_label,
+            (_inst_to_float(row.get('avgDollarVolume20'), 0) or 0) / 1_000_000,
+        )
+        row['conciseReasoning'] = row['scannerReason']
+        row['aiReasoning'] = row['scannerReason']
+        row['detailedReasoning'] = row['scannerReason']
+        row['analysisStatus'] = 'completed'
+        row['analysisSource'] = 'institutional_cross_section_v5'
+        row['scoreSource'] = 'deterministic_institutional_factors'
+        row['reasoningSource'] = 'deterministic_institutional_factors'
+        row['aiCalled'] = False
+        row['aiSuccess'] = False
+        row['aiSource'] = 'Deterministic Factors'
+        row['aiModel'] = None
+        if score_reliability >= 90:
+            row['dataQuality'] = 'good'
+        elif score_reliability >= 75:
+            row['dataQuality'] = 'review'
+        else:
+            row['dataQuality'] = 'partial'
+        quality_reasons = list(row.get('dataQualityReasons') or [])
+        quality_reasons.append('alpaca_assets_snapshots_bars')
+        if score_reliability < 90:
+            quality_reasons.append('core_factor_coverage_below_90pct')
+        row['dataQualityReasons'] = list(dict.fromkeys(quality_reasons))
+        row['topNews'] = None
+        row['hasNews'] = False
+        row['newsCount'] = 0
+        row['newsSentiment'] = None
+        row['eventRisk'] = 'Unknown'
+        row['marketRiskLevel'] = 'High' if risk_score < 25 else ('Review' if risk_score < 45 else 'Normal')
+        data_sources = row.get('dataSources') if isinstance(row.get('dataSources'), dict) else {}
+        data_sources.update({
+            'marketData': 'Alpaca Market Data /v2/stocks/bars',
+            'companyInfo': 'Alpaca Trading /v2/assets',
+            'news': 'Pending event overlay',
+            'aiData': 'Pending AI challenge review',
+        })
+        row['dataSources'] = data_sources
+        provenance = row.get('provenance') if isinstance(row.get('provenance'), dict) else {}
+        provenance.update({
+            'marketData': 'Alpaca Market Data /v2/stocks/bars',
+            'companyInfo': 'Alpaca Trading /v2/assets',
+            'news': 'Pending event overlay',
+            'aiData': 'Pending AI challenge review',
+            'method': 'Institutional cross-sectional research priority v5',
+        })
+        row['provenance'] = provenance
+        row['timestamp'] = int(time.time())
+
+    return rows
+
+
+def _inst_strip_html(value):
+    text = _safe_str(value)
+    if not text:
+        return ''
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+
+def _inst_truthy_text(value):
+    text = _safe_str(value).strip()
+    if not text or text.upper() in ('N/A', 'NA', 'NONE', 'NULL', '-'):
+        return None
+    return text
+
+
+def _inst_finnhub_wait_for_slot():
+    global _INST_FINNHUB_LAST_CALL_AT
+    with _INST_FINNHUB_RATE_LOCK:
+        now = time.time()
+        elapsed = now - (_INST_FINNHUB_LAST_CALL_AT or 0)
+        wait_seconds = _INST_FINNHUB_MIN_INTERVAL_SECONDS - elapsed
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+        _INST_FINNHUB_LAST_CALL_AT = time.time()
+
+
+def _inst_finnhub_error_kind(status_code=None, payload=None, fallback='finnhub_error'):
+    message = ''
+    if isinstance(payload, dict):
+        message = _safe_str(payload.get('error') or payload.get('message'))
+    lower = message.lower()
+    if status_code in (401, 403) or 'invalid api key' in lower or 'token' in lower and 'invalid' in lower:
+        return 'invalid_key'
+    if status_code == 429 or 'limit' in lower or 'too many' in lower:
+        return 'rate_limited'
+    if status_code:
+        return 'http_%s' % status_code
+    return fallback
+
+
+def _inst_validate_finnhub_config(finnhub_cfg):
+    api_key = (finnhub_cfg or {}).get('api_key', '')
+    base_url = (finnhub_cfg or {}).get('base_url', 'https://finnhub.io/api/v1').rstrip('/')
+    result = {
+        'ok': False,
+        'status': 'not_configured',
+        'reason': 'finnhub_not_configured',
+        'httpStatus': None,
+        'checkedSymbol': 'AAPL',
+    }
+    if not api_key:
+        return result
+
+    resp, payload, request_error = _http_get_json_with_retry(
+        f'{base_url}/quote',
+        params={'symbol': 'AAPL', 'token': api_key},
+        timeout=_INST_FINNHUB_TIMEOUT_SECONDS,
+        max_retries=1,
+        default_wait=_INST_FINNHUB_RETRY_WAIT_SECONDS,
+        label='Finnhub Preflight',
+    )
+    if request_error and resp is None:
+        result.update({'status': 'network_error', 'reason': 'finnhub_preflight_%s' % request_error})
+        return result
+    if resp is None:
+        result.update({'status': 'network_error', 'reason': 'finnhub_preflight_no_response'})
+        return result
+
+    result['httpStatus'] = resp.status_code
+    if resp.status_code != 200:
+        kind = _inst_finnhub_error_kind(resp.status_code, payload, fallback='preflight_failed')
+        result.update({'status': kind, 'reason': 'finnhub_preflight_%s' % kind})
+        return result
+
+    if not isinstance(payload, dict):
+        result.update({'status': 'invalid_response', 'reason': 'finnhub_preflight_invalid_json'})
+        return result
+    if payload.get('error'):
+        kind = _inst_finnhub_error_kind(resp.status_code, payload, fallback='api_error')
+        result.update({'status': kind, 'reason': 'finnhub_preflight_%s' % kind})
+        return result
+
+    current_price = _inst_to_float(payload.get('c'), None)
+    if current_price is None or current_price <= 0:
+        result.update({'status': 'no_quote_data', 'reason': 'finnhub_preflight_no_quote_data'})
+        return result
+
+    result.update({'ok': True, 'status': 'ok', 'reason': 'finnhub_preflight_ok'})
+    return result
+
+
+def _inst_fetch_finnhub_basic_financials(symbol, finnhub_cfg):
+    symbol = _inst_clean_symbol(symbol)
+    cache_key = get_cache_key(symbol, 'finnhub_metric_all')
+    cached = stock_cache.get(cache_key)
+    if cached is not None:
+        return cached, None
+
+    api_key = (finnhub_cfg or {}).get('api_key', '')
+    if not api_key:
+        return None, 'finnhub_not_configured'
+
+    base_url = (finnhub_cfg or {}).get('base_url', 'https://finnhub.io/api/v1').rstrip('/')
+    try:
+        resp, payload, request_error = _http_get_json_with_retry(
+            f'{base_url}/stock/metric',
+            params={'symbol': symbol, 'metric': 'all', 'token': api_key},
+            timeout=_INST_FINNHUB_TIMEOUT_SECONDS,
+            max_retries=1,
+            default_wait=_INST_FINNHUB_RETRY_WAIT_SECONDS,
+            label='Finnhub Metric',
+        )
+        if request_error and resp is None:
+            return None, 'finnhub_metric_request_%s' % request_error
+        if resp is None:
+            return None, 'finnhub_metric_no_response'
+        if resp.status_code != 200:
+            return None, 'finnhub_metric_http_%s' % resp.status_code
+        if not isinstance(payload, dict) or payload.get('error'):
+            kind = _inst_finnhub_error_kind(resp.status_code, payload, fallback='metric_error')
+            return None, 'finnhub_metric_%s' % kind
+        stock_cache.set(cache_key, payload)
+        return payload, None
+    except Exception as e:
+        return None, 'finnhub_metric_exception: %s' % str(e)[:120]
+
+
+def _inst_fetch_finnhub_recommendation(symbol, finnhub_cfg):
+    symbol = _inst_clean_symbol(symbol)
+    cache_key = get_cache_key(symbol, 'finnhub_recommendation')
+    cached = stock_cache.get(cache_key)
+    if cached is not None:
+        return cached, None
+
+    api_key = (finnhub_cfg or {}).get('api_key', '')
+    if not api_key:
+        return None, 'finnhub_not_configured'
+
+    base_url = (finnhub_cfg or {}).get('base_url', 'https://finnhub.io/api/v1').rstrip('/')
+    try:
+        resp, payload, request_error = _http_get_json_with_retry(
+            f'{base_url}/stock/recommendation',
+            params={'symbol': symbol, 'token': api_key},
+            timeout=_INST_FINNHUB_TIMEOUT_SECONDS,
+            max_retries=1,
+            default_wait=_INST_FINNHUB_RETRY_WAIT_SECONDS,
+            label='Finnhub Recommendation',
+        )
+        if request_error and resp is None:
+            return None, 'finnhub_recommendation_request_%s' % request_error
+        if resp is None:
+            return None, 'finnhub_recommendation_no_response'
+        if resp.status_code != 200:
+            return None, 'finnhub_recommendation_http_%s' % resp.status_code
+        if not isinstance(payload, list):
+            return None, 'finnhub_recommendation_error'
+        stock_cache.set(cache_key, payload)
+        return payload, None
+    except Exception as e:
+        return None, 'finnhub_recommendation_exception: %s' % str(e)[:120]
+
+
+def _inst_metric_first(metric, keys):
+    if not isinstance(metric, dict):
+        return None
+    for key in keys:
+        value = _inst_to_float(metric.get(key), None)
+        if value is not None:
+            return value
+    return None
+
+
+def _inst_rating_from_recommendation(payload):
+    if not isinstance(payload, list) or not payload:
+        return None
+    latest = payload[0] if isinstance(payload[0], dict) else None
+    if not latest:
+        return None
+    strong_buy = _inst_to_float(latest.get('strongBuy'), 0) or 0
+    buy = _inst_to_float(latest.get('buy'), 0) or 0
+    hold = _inst_to_float(latest.get('hold'), 0) or 0
+    sell = _inst_to_float(latest.get('sell'), 0) or 0
+    strong_sell = _inst_to_float(latest.get('strongSell'), 0) or 0
+    total = strong_buy + buy + hold + sell + strong_sell
+    if total <= 0:
+        return None
+    score = (2 * strong_buy + buy - sell - 2 * strong_sell) / total
+    if score >= 1.15:
+        return 'Strong Buy'
+    if score >= 0.35:
+        return 'Buy'
+    if score > -0.35:
+        return 'Hold'
+    if score > -1.15:
+        return 'Sell'
+    return 'Strong Sell'
+
+
+def _inst_finnhub_symbol_enrichment(symbol, finnhub_cfg, include_metrics_rating=True):
+    symbol = _inst_clean_symbol(symbol)
+    result = {
+        'symbol': symbol,
+        'profile': None,
+        'metrics': None,
+        'rating': None,
+        'errors': [],
+    }
+
+    profile, profile_err = fetch_finnhub_profile(symbol, finnhub_cfg)
+    if profile and not profile_err:
+        result['profile'] = profile
+    elif profile_err:
+        result['errors'].append(profile_err)
+
+    if include_metrics_rating:
+        metrics_payload, metric_err = _inst_fetch_finnhub_basic_financials(symbol, finnhub_cfg)
+        if metrics_payload and not metric_err:
+            result['metrics'] = metrics_payload.get('metric') if isinstance(metrics_payload.get('metric'), dict) else {}
+        elif metric_err:
+            result['errors'].append(metric_err)
+
+        recommendation_payload, recommendation_err = _inst_fetch_finnhub_recommendation(symbol, finnhub_cfg)
+        rating = _inst_rating_from_recommendation(recommendation_payload)
+        if rating:
+            result['rating'] = rating
+        elif recommendation_err:
+            result['errors'].append(recommendation_err)
+
+    return result
+
+
+def _inst_apply_finnhub_enrichment(rows, finnhub_cfg, max_workers=4):
+    stats = {
+        'configured': bool((finnhub_cfg or {}).get('api_key')),
+        'usable': False,
+        'skipped': False,
+        'preflightStatus': 'not_run',
+        'preflightReason': None,
+        'preflightHttpStatus': None,
+        'requestTimeoutSeconds': _INST_FINNHUB_TIMEOUT_SECONDS,
+        'minRequestIntervalSeconds': _INST_FINNHUB_MIN_INTERVAL_SECONDS,
+        'metricRecommendationLimit': _INST_FINNHUB_METRIC_RECOMMENDATION_LIMIT,
+        'symbolsRequested': len(rows or []),
+        'profileOnlySymbols': 0,
+        'profileEnriched': 0,
+        'metricsEnriched': 0,
+        'ratingsEnriched': 0,
+        'errors': {},
+        'source': 'Finnhub /stock/profile2 + /stock/metric + /stock/recommendation',
+    }
+    if not rows or not stats['configured']:
+        stats['source'] = 'Finnhub not configured'
+        return stats
+
+    preflight = _inst_validate_finnhub_config(finnhub_cfg)
+    stats['preflightStatus'] = preflight.get('status')
+    stats['preflightReason'] = preflight.get('reason')
+    stats['preflightHttpStatus'] = preflight.get('httpStatus')
+    if not preflight.get('ok'):
+        stats['skipped'] = True
+        stats['source'] = 'Finnhub unavailable: %s' % (preflight.get('status') or 'preflight_failed')
+        reason = preflight.get('reason') or 'finnhub_preflight_failed'
+        stats['errors'][reason] = len(rows)
+        for row in rows:
+            row['finnhubStatus'] = preflight.get('status')
+            row['finnhubFetchReason'] = reason
+            row.setdefault('dataQualityReasons', []).append(reason)
+            row.setdefault('dataSources', {})['fundamentals'] = stats['source']
+            row.setdefault('provenance', {})['fundamentals'] = stats['source']
+        print('[InstitutionalScanner] Finnhub enrichment skipped: %s http=%s' % (
+            reason, preflight.get('httpStatus')))
+        return stats
+
+    stats['usable'] = True
+    stats['source'] = 'Finnhub /stock/profile2 + /stock/metric + /stock/recommendation'
+
+    row_by_symbol = {_inst_clean_symbol(row.get('symbol')): row for row in rows}
+    symbols = list(row_by_symbol.keys())
+    metric_limit = max(0, min(_INST_FINNHUB_METRIC_RECOMMENDATION_LIMIT, len(symbols)))
+    stats['profileOnlySymbols'] = max(0, len(symbols) - metric_limit)
+
+    with ThreadPoolExecutor(max_workers=max(1, min(max_workers, 2))) as executor:
+        futures = {
+            executor.submit(_inst_finnhub_symbol_enrichment, symbol, finnhub_cfg, idx < metric_limit): symbol
+            for idx, symbol in enumerate(symbols)
+        }
+        for future in as_completed(futures):
+            symbol = futures[future]
+            row = row_by_symbol.get(symbol)
+            if not row:
+                continue
+            try:
+                enriched = future.result()
+            except Exception as e:
+                key = 'exception'
+                stats['errors'][key] = stats['errors'].get(key, 0) + 1
+                print('[InstitutionalScanner] Finnhub enrichment exception %s: %s' % (symbol, e))
+                continue
+
+            profile = enriched.get('profile') or {}
+            metrics = enriched.get('metrics') or {}
+
+            if profile:
+                stats['profileEnriched'] += 1
+                profile_name = _inst_truthy_text(profile.get('name'))
+                industry = _inst_truthy_text(profile.get('finnhubIndustry'))
+                market_cap_millions = _inst_to_float(profile.get('marketCapitalization'), None)
+                if profile_name:
+                    row['companyName'] = profile_name
+                if industry:
+                    row['sector'] = industry
+                    row['industry'] = industry
+                if market_cap_millions is not None and market_cap_millions > 0:
+                    row['marketCap'] = round(market_cap_millions * 1_000_000, 2)
+                row['currency'] = _inst_truthy_text(profile.get('currency')) or row.get('currency')
+                row['webUrl'] = _inst_truthy_text(profile.get('weburl'))
+                row['companyInfoSource'] = 'Finnhub Profile2'
+                row.setdefault('dataSources', {})['companyInfo'] = 'Alpaca /v2/assets + Finnhub /stock/profile2'
+                row.setdefault('provenance', {})['companyInfo'] = 'Alpaca /v2/assets + Finnhub /stock/profile2'
+
+            if metrics:
+                stats['metricsEnriched'] += 1
+                trailing_pe = _inst_metric_first(metrics, ('peTTM', 'peNormalizedAnnual', 'peBasicExclExtraTTM'))
+                forward_pe = _inst_metric_first(metrics, ('forwardPE', 'peInclExtraTTM'))
+                price_to_book = _inst_metric_first(metrics, ('pbAnnual', 'pbQuarterly'))
+                eps_growth = _inst_metric_first(metrics, ('epsGrowth5Y', 'epsGrowth3Y', 'epsGrowthTTMYoy'))
+                beta = _inst_metric_first(metrics, ('beta',))
+                dividend_yield = _inst_metric_first(metrics, ('dividendYieldIndicatedAnnual', 'currentDividendYieldTTM'))
+                if trailing_pe is not None:
+                    row['trailingPE'] = round(trailing_pe, 3)
+                if forward_pe is not None:
+                    row['forwardPE'] = round(forward_pe, 3)
+                if price_to_book is not None:
+                    row['priceToBook'] = round(price_to_book, 3)
+                if eps_growth is not None:
+                    row['epsGrowthForward'] = round(eps_growth, 3)
+                if beta is not None:
+                    row['beta'] = round(beta, 3)
+                if dividend_yield is not None:
+                    row['dividendYield'] = round(dividend_yield, 3)
+                row.setdefault('dataSources', {})['fundamentals'] = 'Finnhub /stock/metric'
+                row.setdefault('provenance', {})['fundamentals'] = 'Finnhub /stock/metric'
+
+            if enriched.get('rating'):
+                stats['ratingsEnriched'] += 1
+                row['analystRating'] = enriched['rating']
+                row.setdefault('dataSources', {})['analystRating'] = 'Finnhub /stock/recommendation'
+                row.setdefault('provenance', {})['analystRating'] = 'Finnhub /stock/recommendation'
+
+            for err in enriched.get('errors') or []:
+                err_key = str(err).split(':')[0][:80]
+                stats['errors'][err_key] = stats['errors'].get(err_key, 0) + 1
+
+    if stats['profileEnriched'] + stats['metricsEnriched'] + stats['ratingsEnriched'] <= 0:
+        stats['source'] = 'Finnhub configured but no enrichment fields returned'
+    return stats
+
+
+def _inst_sector_etf_for_row(row):
+    text = ' '.join(_safe_str(row.get(key)).lower() for key in ('sector', 'industry', 'companyName'))
+    if not text.strip():
+        return None
+    for etf, keywords in _INST_SECTOR_ETF_KEYWORDS:
+        if any(keyword in text for keyword in keywords):
+            return etf
+    return None
+
+
+def _inst_apply_sector_overlays(rows, benchmark_context):
+    stats = {
+        'source': 'Alpaca Market Data sector ETF benchmark bars',
+        'symbolsRequested': len(rows or []),
+        'symbolsWithSectorBenchmark': 0,
+        'symbolsWithSectorRank': 0,
+        'availableEtfs': sorted((benchmark_context or {}).get('symbolsAvailable') or []),
+    }
+    if not rows:
+        return stats
+
+    groups = {}
+    returns = (benchmark_context or {}).get('returns') or {}
+    for row in rows:
+        etf = _inst_sector_etf_for_row(row)
+        if etf and etf in returns:
+            row['sectorBenchmarkSymbol'] = etf
+            row['sectorBenchmarkReturn3m'] = returns.get(etf, {}).get('3m')
+            row['sectorBenchmarkReturn6m'] = returns.get(etf, {}).get('6m')
+            if row.get('momentum3m') is not None and row.get('sectorBenchmarkReturn3m') is not None:
+                row['sectorRelativeStrength3m'] = round((_inst_to_float(row.get('momentum3m'), 0) or 0) - (_inst_to_float(row.get('sectorBenchmarkReturn3m'), 0) or 0), 3)
+            if row.get('momentum6m') is not None and row.get('sectorBenchmarkReturn6m') is not None:
+                row['sectorRelativeStrength6m'] = round((_inst_to_float(row.get('momentum6m'), 0) or 0) - (_inst_to_float(row.get('sectorBenchmarkReturn6m'), 0) or 0), 3)
+            row.setdefault('dataSources', {})['sectorBenchmark'] = 'Alpaca Market Data %s ETF bars' % etf
+            row.setdefault('provenance', {})['sectorBenchmark'] = 'Sector-relative overlay from %s ETF daily bars' % etf
+            stats['symbolsWithSectorBenchmark'] += 1
+        group_key = _safe_str(row.get('sector') or row.get('industry') or row.get('sectorBenchmarkSymbol') or 'Unclassified')
+        groups.setdefault(group_key, []).append(row)
+
+    for _group_key, group_rows in groups.items():
+        group_rows.sort(key=lambda item: _inst_to_float(item.get('trendScore'), 0) or 0, reverse=True)
+        count = len(group_rows)
+        for idx, row in enumerate(group_rows, start=1):
+            row['sectorRank'] = idx
+            row['sectorCount'] = count
+            row['sectorRankPct'] = round(100.0 * (count - idx) / max(1, count - 1), 2) if count > 1 else 100.0
+            stats['symbolsWithSectorRank'] += 1
+    return stats
+
+
+def _inst_fetch_finnhub_earnings_calendar(finnhub_cfg, days_back=3, days_forward=_INST_SCANNER_EARNINGS_LOOKAHEAD_DAYS):
+    api_key = (finnhub_cfg or {}).get('api_key', '')
+    if not api_key:
+        return None, 'finnhub_not_configured'
+    start_date = (datetime.utcnow() - timedelta(days=days_back)).strftime('%Y-%m-%d')
+    end_date = (datetime.utcnow() + timedelta(days=days_forward)).strftime('%Y-%m-%d')
+    cache_key = 'finnhub_earnings_calendar_%s_%s' % (start_date, end_date)
+    cached = stock_cache.get(cache_key)
+    if cached is not None:
+        return cached, None
+    base_url = (finnhub_cfg or {}).get('base_url', 'https://finnhub.io/api/v1').rstrip('/')
+    resp, payload, request_error = _http_get_json_with_retry(
+        f'{base_url}/calendar/earnings',
+        params={'from': start_date, 'to': end_date, 'token': api_key},
+        timeout=_INST_FINNHUB_TIMEOUT_SECONDS,
+        max_retries=1,
+        default_wait=_INST_FINNHUB_RETRY_WAIT_SECONDS,
+        label='Finnhub Earnings',
+    )
+    if request_error and resp is None:
+        return None, 'finnhub_earnings_request_%s' % request_error
+    if resp is None:
+        return None, 'finnhub_earnings_no_response'
+    if resp.status_code != 200:
+        return None, 'finnhub_earnings_http_%s' % resp.status_code
+    if not isinstance(payload, dict) or payload.get('error'):
+        kind = _inst_finnhub_error_kind(resp.status_code, payload, fallback='earnings_error')
+        return None, 'finnhub_earnings_%s' % kind
+    stock_cache.set(cache_key, payload)
+    return payload, None
+
+
+def _inst_apply_earnings_calendar(rows, finnhub_cfg):
+    stats = {
+        'configured': bool((finnhub_cfg or {}).get('api_key')),
+        'source': 'Finnhub /calendar/earnings',
+        'symbolsRequested': len(rows or []),
+        'symbolsWithEarnings': 0,
+        'windowDays': _INST_SCANNER_EARNINGS_LOOKAHEAD_DAYS,
+        'errors': {},
+    }
+    if not rows or not stats['configured']:
+        stats['source'] = 'Finnhub earnings calendar not configured'
+        return stats
+
+    payload, error = _inst_fetch_finnhub_earnings_calendar(finnhub_cfg)
+    if error:
+        stats['errors'][error] = len(rows)
+        stats['source'] = 'Finnhub earnings calendar unavailable: %s' % error
+        for row in rows:
+            row.setdefault('dataQualityReasons', []).append(error)
+        return stats
+
+    events = payload.get('earningsCalendar') if isinstance(payload, dict) else None
+    if not isinstance(events, list):
+        stats['errors']['finnhub_earnings_invalid_payload'] = len(rows)
+        return stats
+
+    today = datetime.utcnow().date()
+    row_by_symbol = {_inst_clean_symbol(row.get('symbol')): row for row in rows}
+    events_by_symbol = {}
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        symbol = _inst_clean_symbol(event.get('symbol'))
+        if symbol not in row_by_symbol:
+            continue
+        date_text = _safe_str(event.get('date'))
+        try:
+            event_date = datetime.strptime(date_text[:10], '%Y-%m-%d').date()
+        except Exception:
+            continue
+        current = events_by_symbol.get(symbol)
+        if current is None or abs((event_date - today).days) < abs((current[0] - today).days):
+            events_by_symbol[symbol] = (event_date, event)
+
+    for symbol, (event_date, event) in events_by_symbol.items():
+        row = row_by_symbol.get(symbol)
+        if not row:
+            continue
+        days_to = (event_date - today).days
+        row['nextEarningsDate'] = event_date.isoformat()
+        row['daysToEarnings'] = days_to
+        row['earningsHour'] = _inst_truthy_text(event.get('hour'))
+        eps_est = _inst_to_float(event.get('epsEstimate'), None)
+        rev_est = _inst_to_float(event.get('revenueEstimate'), None)
+        if eps_est is not None:
+            row['earningsEpsEstimate'] = round(eps_est, 4)
+        if rev_est is not None:
+            row['earningsRevenueEstimate'] = round(rev_est, 2)
+        tags = list(row.get('eventTags') or [])
+        if 0 <= days_to <= 10 and 'earnings_window' not in tags:
+            tags.append('earnings_window')
+        row['eventTags'] = tags
+        if 0 <= days_to <= 3:
+            row['eventRisk'] = 'High'
+        elif 0 <= days_to <= 10 and row.get('eventRisk') != 'High':
+            row['eventRisk'] = 'Medium'
+        row.setdefault('dataSources', {})['events'] = 'Finnhub /calendar/earnings'
+        row.setdefault('provenance', {})['events'] = 'Finnhub earnings calendar'
+        stats['symbolsWithEarnings'] += 1
+    return stats
+
+
+def _inst_fetch_finra_latest_short_volume(symbols):
+    symbols_set = {_inst_clean_symbol(symbol) for symbol in symbols if _inst_clean_symbol(symbol)}
+    stats = {
+        'source': 'FINRA CNMS daily short sale volume',
+        'date': None,
+        'symbolsRequested': len(symbols_set),
+        'symbolsWithShortVolume': 0,
+        'error': None,
+    }
+    if not symbols_set:
+        return {}, stats
+
+    with _INST_FINRA_SHORT_VOLUME_LOCK:
+        cached_records = _INST_FINRA_SHORT_VOLUME_CACHE.get('records') or {}
+        if cached_records and (_inst_now_ts() - int(_INST_FINRA_SHORT_VOLUME_CACHE.get('fetched_at') or 0) < _INST_FINRA_SHORT_VOLUME_TTL_SECONDS):
+            stats['source'] = _INST_FINRA_SHORT_VOLUME_CACHE.get('source') or stats['source']
+            stats['date'] = _INST_FINRA_SHORT_VOLUME_CACHE.get('date')
+            stats['error'] = _INST_FINRA_SHORT_VOLUME_CACHE.get('error')
+            subset = {symbol: cached_records.get(symbol) for symbol in symbols_set if cached_records.get(symbol)}
+            stats['symbolsWithShortVolume'] = len(subset)
+            return subset, stats
+
+    page_url = 'https://www.finra.org/finra-data/browse-catalog/short-sale-volume-data/daily-short-sale-volume-files'
+    headers = {'User-Agent': 'AlphaLab Market Scanner'}
+    try:
+        page_resp = requests.get(page_url, headers=headers, timeout=15)
+        if page_resp.status_code != 200:
+            stats['error'] = 'finra_page_http_%s' % page_resp.status_code
+            return {}, stats
+        links = re.findall(r'https://cdn\.finra\.org/equity/regsho/daily/CNMSshvol(\d{8})\.txt', page_resp.text)
+        links = sorted(set(links), reverse=True)
+        if not links:
+            stats['error'] = 'finra_no_cnms_file_link'
+            return {}, stats
+
+        records = {}
+        source_url = ''
+        source_date = None
+        for date_key in links[:5]:
+            source_url = 'https://cdn.finra.org/equity/regsho/daily/CNMSshvol%s.txt' % date_key
+            file_resp = requests.get(source_url, headers=headers, timeout=25)
+            if file_resp.status_code != 200 or not file_resp.text:
+                continue
+            lines = [line.strip() for line in file_resp.text.splitlines() if line.strip()]
+            if len(lines) < 2:
+                continue
+            header = lines[0].split('|')
+            index = {name: idx for idx, name in enumerate(header)}
+            for line in lines[1:]:
+                parts = line.split('|')
+                try:
+                    symbol = _inst_clean_symbol(parts[index.get('Symbol', 1)])
+                    short_volume = _inst_to_float(parts[index.get('ShortVolume', 2)], None)
+                    short_exempt = _inst_to_float(parts[index.get('ShortExemptVolume', 3)], 0) or 0
+                    total_volume = _inst_to_float(parts[index.get('TotalVolume', 4)], None)
+                    if not symbol or total_volume is None or total_volume <= 0:
+                        continue
+                    records[symbol] = {
+                        'shortVolume': short_volume,
+                        'shortExemptVolume': short_exempt,
+                        'shortTotalVolume': total_volume,
+                        'shortVolumeRatio': round((short_volume or 0) / total_volume * 100.0, 3),
+                        'shortVolumeMarket': parts[index.get('Market', 5)] if len(parts) > index.get('Market', 5) else None,
+                        'shortVolumeDate': datetime.strptime(date_key, '%Y%m%d').strftime('%Y-%m-%d'),
+                        'shortVolumeSource': source_url,
+                    }
+                except Exception:
+                    continue
+            if records:
+                source_date = datetime.strptime(date_key, '%Y%m%d').strftime('%Y-%m-%d')
+                break
+
+        if not records:
+            stats['error'] = 'finra_no_records_parsed'
+            return {}, stats
+        with _INST_FINRA_SHORT_VOLUME_LOCK:
+            _INST_FINRA_SHORT_VOLUME_CACHE.update({
+                'fetched_at': _inst_now_ts(),
+                'source': source_url,
+                'date': source_date,
+                'records': records,
+                'error': None,
+            })
+        subset = {symbol: records.get(symbol) for symbol in symbols_set if records.get(symbol)}
+        stats['source'] = source_url
+        stats['date'] = source_date
+        stats['symbolsWithShortVolume'] = len(subset)
+        return subset, stats
+    except Exception as e:
+        stats['error'] = 'finra_exception: %s' % str(e)[:120]
+        return {}, stats
+
+
+def _inst_apply_finra_short_volume(rows):
+    stats = {
+        'source': 'FINRA CNMS daily short sale volume',
+        'symbolsRequested': len(rows or []),
+        'symbolsWithShortVolume': 0,
+        'date': None,
+        'error': None,
+    }
+    if not rows:
+        return stats
+    symbols = [_inst_clean_symbol(row.get('symbol')) for row in rows]
+    records, fetch_stats = _inst_fetch_finra_latest_short_volume(symbols)
+    stats.update(fetch_stats)
+    for row in rows:
+        symbol = _inst_clean_symbol(row.get('symbol'))
+        record = records.get(symbol)
+        if not record:
+            continue
+        row.update(record)
+        ratio = _inst_to_float(record.get('shortVolumeRatio'), None)
+        if ratio is not None:
+            # FINRA daily short-sale volume is execution flow, not short
+            # interest and not a standalone crowding/short-squeeze measure.
+            row['shortVolumeContext'] = 'Daily short-sale flow only'
+            row['shortVolumeIsShortInterest'] = False
+            row['crowdingRisk'] = None
+        row.setdefault('dataSources', {})['shortVolume'] = 'FINRA CNMS daily short sale volume'
+        row.setdefault('provenance', {})['shortVolume'] = record.get('shortVolumeSource') or 'FINRA CNMS daily short sale volume'
+    return stats
+
+
+def _inst_option_type_from_snapshot(contract_symbol, snapshot):
+    details = snapshot.get('details') if isinstance(snapshot, dict) and isinstance(snapshot.get('details'), dict) else {}
+    raw_type = _safe_str(details.get('type') or details.get('contract_type') or snapshot.get('type')).lower()
+    if raw_type.startswith('c'):
+        return 'call'
+    if raw_type.startswith('p'):
+        return 'put'
+    contract_symbol = _safe_str(contract_symbol).upper()
+    if len(contract_symbol) >= 9 and contract_symbol[-9] == 'C':
+        return 'call'
+    if len(contract_symbol) >= 9 and contract_symbol[-9] == 'P':
+        return 'put'
+    return None
+
+
+def _inst_snapshot_iv(snapshot):
+    if not isinstance(snapshot, dict):
+        return None
+    greeks = snapshot.get('greeks') if isinstance(snapshot.get('greeks'), dict) else {}
+    for container in (snapshot, greeks):
+        for key in ('impliedVolatility', 'implied_volatility', 'iv'):
+            value = _inst_to_float(container.get(key), None)
+            if value is not None and value > 0:
+                return value * 100.0 if value < 3 else value
+    return None
+
+
+def _inst_fetch_alpaca_option_summary(symbol, market_cfg, feed='indicative'):
+    symbol = _inst_clean_symbol(symbol)
+    cache_key = get_cache_key(symbol, 'alpaca_option_summary')
+    cached = stock_cache.get(cache_key)
+    if cached is not None:
+        return cached, None
+    try:
+        resp = requests.get(
+            f'{_INST_SCANNER_MARKET_DATA_BASE_URL}/v1beta1/options/snapshots/{symbol}',
+            headers=_inst_alpaca_headers(market_cfg),
+            params={'feed': feed, 'limit': 100},
+            timeout=12,
+        )
+        if resp.status_code != 200:
+            return None, 'alpaca_options_http_%s' % resp.status_code
+        payload = resp.json()
+        snapshots = payload.get('snapshots') if isinstance(payload, dict) else None
+        if not isinstance(snapshots, dict) or not snapshots:
+            return None, 'alpaca_options_empty'
+
+        call_ivs = []
+        put_ivs = []
+        call_count = 0
+        put_count = 0
+        for contract_symbol, snapshot in snapshots.items():
+            if not isinstance(snapshot, dict):
+                continue
+            ctype = _inst_option_type_from_snapshot(contract_symbol, snapshot)
+            iv = _inst_snapshot_iv(snapshot)
+            if ctype == 'call':
+                call_count += 1
+                if iv is not None:
+                    call_ivs.append(iv)
+            elif ctype == 'put':
+                put_count += 1
+                if iv is not None:
+                    put_ivs.append(iv)
+
+        avg_call_iv = _inst_avg(call_ivs)
+        avg_put_iv = _inst_avg(put_ivs)
+        summary = {
+            'optionContractsSampled': len(snapshots),
+            'optionCallContracts': call_count,
+            'optionPutContracts': put_count,
+            'avgCallIV': round(avg_call_iv, 3) if avg_call_iv is not None else None,
+            'avgPutIV': round(avg_put_iv, 3) if avg_put_iv is not None else None,
+            'optionIvSkew': round(avg_put_iv - avg_call_iv, 3) if avg_call_iv is not None and avg_put_iv is not None else None,
+            'callPutCountRatio': round(call_count / put_count, 3) if put_count else None,
+            'optionSource': 'Alpaca /v1beta1/options/snapshots/%s feed=%s' % (symbol, feed),
+        }
+        stock_cache.set(cache_key, summary)
+        return summary, None
+    except Exception as e:
+        return None, 'alpaca_options_exception: %s' % str(e)[:120]
+
+
+def _inst_apply_options_overlay(rows, market_cfg, max_symbols=_INST_SCANNER_OPTION_REVIEW_TOP_N):
+    stats = {
+        'configured': bool((market_cfg or {}).get('api_key') and (market_cfg or {}).get('api_secret')),
+        'source': 'Alpaca /v1beta1/options/snapshots/{underlying_symbol}',
+        'symbolsRequested': min(len(rows or []), max_symbols),
+        'symbolsWithOptions': 0,
+        'maxSymbols': max_symbols,
+        'errors': {},
+    }
+    if not rows or not stats['configured'] or max_symbols <= 0:
+        if not stats['configured']:
+            stats['source'] = 'Alpaca options not configured'
+        return stats
+
+    target_rows = list(rows or [])[:max_symbols]
+    row_by_symbol = {_inst_clean_symbol(row.get('symbol')): row for row in target_rows}
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {
+            executor.submit(_inst_fetch_alpaca_option_summary, symbol, market_cfg): symbol
+            for symbol in row_by_symbol.keys()
+        }
+        for future in as_completed(futures):
+            symbol = futures[future]
+            try:
+                summary, error = future.result()
+            except Exception as e:
+                summary, error = None, 'alpaca_options_exception: %s' % str(e)[:120]
+            if error:
+                key = str(error).split(':')[0][:80]
+                stats['errors'][key] = stats['errors'].get(key, 0) + 1
+                continue
+            row = row_by_symbol.get(symbol)
+            if not row or not isinstance(summary, dict):
+                continue
+            row.update({k: v for k, v in summary.items() if v is not None})
+            row.setdefault('dataSources', {})['options'] = summary.get('optionSource') or stats['source']
+            row.setdefault('provenance', {})['options'] = summary.get('optionSource') or stats['source']
+            stats['symbolsWithOptions'] += 1
+    return stats
+
+
+def _inst_clean_alpaca_news_item(item):
+    if not isinstance(item, dict):
+        return None
+    headline = _inst_strip_html(item.get('headline'))
+    if not headline:
+        return None
+    summary = _inst_strip_html(item.get('summary'))
+    symbols = item.get('symbols') if isinstance(item.get('symbols'), list) else []
+    return {
+        'id': item.get('id'),
+        'headline': headline,
+        'summary': summary,
+        'source': _inst_truthy_text(item.get('source')) or 'Alpaca News',
+        'author': _inst_truthy_text(item.get('author')),
+        'url': _inst_truthy_text(item.get('url')),
+        'createdAt': item.get('created_at'),
+        'updatedAt': item.get('updated_at'),
+        'symbols': [_inst_clean_symbol(s) for s in symbols if _inst_clean_symbol(s)],
+    }
+
+
+def _inst_news_signal(items):
+    if not items:
+        return {
+            'sentiment': None,
+            'score': None,
+            'eventRisk': 'Low',
+            'tags': [],
+        }
+
+    positive = 0
+    negative = 0
+    tags = set()
+    for item in items[:10]:
+        text = ('%s %s' % (item.get('headline') or '', item.get('summary') or '')).lower()
+        if any(term in text for term in _INST_NEWS_POSITIVE_TERMS):
+            positive += 1
+        if any(term in text for term in _INST_NEWS_NEGATIVE_TERMS):
+            negative += 1
+        for term in _INST_NEWS_EVENT_TERMS:
+            if term in text:
+                tags.add(term.replace(' ', '_'))
+
+    if positive > negative:
+        sentiment = 'Positive'
+        score = min(100, 55 + 15 * (positive - negative))
+    elif negative > positive:
+        sentiment = 'Negative'
+        score = max(0, 45 - 15 * (negative - positive))
+    else:
+        sentiment = 'Neutral'
+        score = 50
+
+    high_risk_tags = {'lawsuit', 'investigation', 'offering', 'bankruptcy', 'recall', 'fda'}
+    if tags & high_risk_tags or negative >= 2:
+        event_risk = 'High'
+    elif tags:
+        event_risk = 'Medium'
+    else:
+        event_risk = 'Low'
+
+    return {
+        'sentiment': sentiment,
+        'score': score,
+        'eventRisk': event_risk,
+        'tags': sorted(tags),
+    }
+
+
+def _inst_alpaca_retry_after_seconds(resp=None, default_seconds=65):
+    """Best-effort wait time for Alpaca 429 responses."""
+    return _http_retry_after_seconds(resp, default_seconds=default_seconds, max_seconds=90)
+
+
+def _inst_fetch_alpaca_news(symbols, market_cfg, days_back=_INST_SCANNER_NEWS_DAYS_BACK, batch_size=50, page_limit=2, max_retries=1):
+    symbols = [_inst_clean_symbol(s) for s in symbols if _inst_clean_symbol(s)]
+    news_by_symbol = {symbol: [] for symbol in symbols}
+    errors = {}
+    if not symbols:
+        return news_by_symbol, errors, {'articlesFetched': 0, 'requestCount': 0}
+
+    headers = _inst_alpaca_headers(market_cfg)
+    start_iso = (datetime.utcnow() - timedelta(days=days_back)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    end_iso = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+    request_count = 0
+    articles_fetched = 0
+    retry_count = 0
+    rate_limit_wait_seconds = 0
+    timeout_wait_seconds = 0
+
+    for start in range(0, len(symbols), batch_size):
+        batch = symbols[start:start + batch_size]
+        page_token = None
+        pages = 0
+        while True:
+            params = {
+                'symbols': ','.join(batch),
+                'start': start_iso,
+                'end': end_iso,
+                'sort': 'desc',
+                'limit': 50,
+                'include_content': 'false',
+                'exclude_contentless': 'false',
+            }
+            if page_token:
+                params['page_token'] = page_token
+
+            payload = None
+            failed_error = None
+            attempt = 0
+            while attempt <= max_retries:
+                try:
+                    resp = requests.get(
+                        f'{_INST_SCANNER_MARKET_DATA_BASE_URL}/v1beta1/news',
+                        headers=headers,
+                        params=params,
+                        timeout=15,
+                    )
+                    request_count += 1
+                    if resp.status_code == 429 and attempt < max_retries:
+                        wait_seconds = _inst_alpaca_retry_after_seconds(resp)
+                        rate_limit_wait_seconds += wait_seconds
+                        retry_count += 1
+                        print('[InstitutionalScanner] Alpaca news rate limited batch=%d; waiting %ss before retry' % (start, wait_seconds))
+                        time.sleep(wait_seconds)
+                        attempt += 1
+                        continue
+                    if resp.status_code >= 500 and attempt < max_retries:
+                        wait_seconds = 5
+                        timeout_wait_seconds += wait_seconds
+                        retry_count += 1
+                        print('[InstitutionalScanner] Alpaca news server status=%s batch=%d; waiting %ss before retry' % (resp.status_code, start, wait_seconds))
+                        time.sleep(wait_seconds)
+                        attempt += 1
+                        continue
+                    if resp.status_code != 200:
+                        failed_error = 'alpaca_news_rate_limited' if resp.status_code == 429 else 'alpaca_news_http_%s' % resp.status_code
+                        print('[InstitutionalScanner] Alpaca news failed batch=%d status=%s body=%s' % (start, resp.status_code, resp.text[:160]))
+                        break
+                    payload = resp.json()
+                    break
+                except requests.exceptions.Timeout as e:
+                    if attempt < max_retries:
+                        wait_seconds = 5
+                        timeout_wait_seconds += wait_seconds
+                        retry_count += 1
+                        print('[InstitutionalScanner] Alpaca news timeout batch=%d; waiting %ss before retry' % (start, wait_seconds))
+                        time.sleep(wait_seconds)
+                        attempt += 1
+                        continue
+                    failed_error = 'alpaca_news_timeout: %s' % str(e)[:80]
+                    print('[InstitutionalScanner] Alpaca news timeout batch=%d: %s' % (start, e))
+                    break
+                except Exception as e:
+                    failed_error = 'alpaca_news_exception: %s' % str(e)[:120]
+                    print('[InstitutionalScanner] Alpaca news exception batch=%d: %s' % (start, e))
+                    break
+
+            if failed_error:
+                for symbol in batch:
+                    errors[symbol] = failed_error
+                break
+            if payload is None:
+                for symbol in batch:
+                    errors[symbol] = 'alpaca_news_empty_response'
+                break
+
+            articles = payload.get('news') if isinstance(payload, dict) and isinstance(payload.get('news'), list) else []
+            articles_fetched += len(articles)
+            for article in articles:
+                cleaned = _inst_clean_alpaca_news_item(article)
+                if not cleaned:
+                    continue
+                related = set(cleaned.get('symbols') or [])
+                for symbol in batch:
+                    if symbol in related:
+                        existing_ids = {i.get('id') for i in news_by_symbol.get(symbol, [])}
+                        if cleaned.get('id') not in existing_ids:
+                            news_by_symbol.setdefault(symbol, []).append(cleaned)
+
+            page_token = payload.get('next_page_token') if isinstance(payload, dict) else None
+            pages += 1
+            if not page_token or pages >= page_limit:
+                break
+
+    for symbol in news_by_symbol:
+        news_by_symbol[symbol] = sorted(
+            news_by_symbol[symbol],
+            key=lambda item: str(item.get('createdAt') or item.get('updatedAt') or ''),
+            reverse=True,
+        )
+    return news_by_symbol, errors, {
+        'articlesFetched': articles_fetched,
+        'requestCount': request_count,
+        'retryCount': retry_count,
+        'rateLimitWaitSeconds': rate_limit_wait_seconds,
+        'timeoutWaitSeconds': timeout_wait_seconds,
+    }
+
+
+def _inst_apply_news_enrichment(rows, market_cfg, days_back=_INST_SCANNER_NEWS_DAYS_BACK):
+    stats = {
+        'configured': bool((market_cfg or {}).get('api_key') and (market_cfg or {}).get('api_secret')),
+        'source': 'Alpaca /v1beta1/news',
+        'symbolsRequested': len(rows or []),
+        'symbolsWithNews': 0,
+        'articlesFetched': 0,
+        'requestCount': 0,
+        'errors': {},
+        'windowDays': days_back,
+    }
+    if not rows or not stats['configured']:
+        stats['source'] = 'Alpaca news not configured'
+        return stats
+
+    symbols = [_inst_clean_symbol(row.get('symbol')) for row in rows]
+    news_by_symbol, errors, fetch_stats = _inst_fetch_alpaca_news(symbols, market_cfg, days_back=days_back)
+    stats.update(fetch_stats)
+
+    for row in rows:
+        symbol = _inst_clean_symbol(row.get('symbol'))
+        err = errors.get(symbol)
+        if err:
+            row['newsSource'] = 'Alpaca News error'
+            row['newsFetchReason'] = err
+            row.setdefault('dataQualityReasons', []).append(err)
+            stats['errors'][err] = stats['errors'].get(err, 0) + 1
+            continue
+
+        items = news_by_symbol.get(symbol, [])
+        signal = _inst_news_signal(items)
+        row['newsCount'] = len(items)
+        row['hasNews'] = len(items) > 0
+        row['newsSource'] = 'Alpaca News'
+        row['newsWindowDays'] = days_back
+        row['newsSentiment'] = signal['sentiment']
+        row['newsScore'] = signal['score']
+        row['sentimentScore'] = signal['score']
+        row['eventRisk'] = signal['eventRisk']
+        row['eventTags'] = signal['tags']
+        row['newsFetchReason'] = 'fetched: %d articles in %dd' % (len(items), days_back) if items else 'no_news_last_%dd' % days_back
+        row.setdefault('dataSources', {})['news'] = 'Alpaca /v1beta1/news'
+        row.setdefault('provenance', {})['news'] = 'Alpaca /v1beta1/news'
+        if items:
+            top = items[0]
+            row['topNews'] = top
+            row['topNewsHeadline'] = top.get('headline')
+            row['topNewsSource'] = top.get('source')
+            row['topNewsUrl'] = top.get('url')
+            row['latestNewsTime'] = top.get('createdAt') or top.get('updatedAt')
+            stats['symbolsWithNews'] += 1
+        else:
+            row['topNews'] = None
+            row['topNewsHeadline'] = None
+            row['latestNewsTime'] = None
+
+    return stats
+
+
+def _inst_trim_text(value, limit=280):
+    text = re.sub(r'\s+', ' ', _safe_str(value)).strip()
+    if limit and len(text) > limit:
+        return text[:max(0, limit - 3)].rstrip() + '...'
+    return text
+
+
+def _inst_ai_payload_rows(rows, max_symbols):
+    payload_rows = []
+    for row in (rows or [])[:max_symbols]:
+        scores = row.get('factorScores') if isinstance(row.get('factorScores'), dict) else {}
+        payload_rows.append({
+            'symbol': row.get('symbol'),
+            'companyName': row.get('companyName'),
+            'sector': row.get('sector') or row.get('industry'),
+            'industry': row.get('industry'),
+            'exchange': row.get('exchangeName') or row.get('exchange'),
+            'tradable': row.get('tradable'),
+            'shortable': row.get('shortable'),
+            'easyToBorrow': row.get('easyToBorrow'),
+            'marginable': row.get('marginable'),
+            'price': row.get('price'),
+            'changePct': row.get('changePct'),
+            'marketCap': row.get('marketCap'),
+            'historyDays': row.get('historyDays'),
+            'selectionLabel': row.get('selectionLabel'),
+            'selectionScore': row.get('selectionScore') or row.get('overallScore'),
+            'trendLabel': row.get('trendLabel'),
+            'directionScore': row.get('directionScore') or row.get('trendScoreDetail'),
+            'scoreReliability': row.get('scoreReliability'),
+            'factorCoveragePct': row.get('factorCoveragePct'),
+            'factorAgreementPct': row.get('factorAgreementPct'),
+            'factorConflictCount': row.get('factorConflictCount'),
+            'scoreVersion': row.get('scoreVersion'),
+            'factorScores': {
+                'momentum': scores.get('momentum'),
+                'trend': scores.get('trend'),
+                'relative': scores.get('relative'),
+                'liquidity': scores.get('liquidity'),
+                'risk': scores.get('risk'),
+            },
+            'avgDollarVolume20': row.get('avgDollarVolume20'),
+            'volumeRatio': row.get('volumeRatio'),
+            'volumeRatioSource': row.get('volumeRatioSource'),
+            'intradayVolumeRatioRaw': row.get('intradayVolumeRatioRaw'),
+            'dailySnapshotComplete': row.get('dailySnapshotComplete'),
+            'volumeStatus': row.get('volumeStatus'),
+            'bidAskSpreadPct': row.get('bidAskSpreadPct'),
+            'spreadBps': row.get('spreadBps'),
+            'momentum1m': row.get('momentum1m'),
+            'momentum3m': row.get('momentum3m'),
+            'momentum6m': row.get('momentum6m'),
+            'momentum12m': row.get('momentum12m'),
+            'momentum12mEx1m': row.get('momentum12mEx1m'),
+            'benchmarkTrend': row.get('benchmarkTrend'),
+            'relativeStrength3m': row.get('relativeStrength3m'),
+            'relativeStrength6m': row.get('relativeStrength6m'),
+            'relativeStrength12m': row.get('relativeStrength12m'),
+            'qqqRelativeStrength3m': row.get('qqqRelativeStrength3m'),
+            'qqqRelativeStrength6m': row.get('qqqRelativeStrength6m'),
+            'marketBeta': row.get('marketBeta'),
+            'marketCorrelation': row.get('marketCorrelation'),
+            'sectorBenchmarkSymbol': row.get('sectorBenchmarkSymbol'),
+            'sectorRelativeStrength3m': row.get('sectorRelativeStrength3m'),
+            'sectorRelativeStrength6m': row.get('sectorRelativeStrength6m'),
+            'sectorRank': row.get('sectorRank'),
+            'sectorCount': row.get('sectorCount'),
+            'sectorRankPct': row.get('sectorRankPct'),
+            'closeVs50dma': row.get('closeVs50dma'),
+            'closeVs200dma': row.get('closeVs200dma'),
+            'realizedVol20': row.get('realizedVol20'),
+            'atrPercent': row.get('atrPercent'),
+            'maxDrawdown126': row.get('maxDrawdown126'),
+            'trailingPE': row.get('trailingPE'),
+            'forwardPE': row.get('forwardPE'),
+            'priceToBook': row.get('priceToBook'),
+            'epsGrowthForward': row.get('epsGrowthForward'),
+            'dividendYield': row.get('dividendYield'),
+            'analystRating': row.get('analystRating'),
+            'estimatedRoundTripCostBps': row.get('estimatedRoundTripCostBps'),
+            'capacityScore': row.get('capacityScore'),
+            'liquidityTier': row.get('liquidityTier'),
+            'participation10pctDollar': row.get('participation10pctDollar'),
+            'shortVolumeRatio': row.get('shortVolumeRatio'),
+            'shortVolumeDate': row.get('shortVolumeDate'),
+            'shortVolumeContext': row.get('shortVolumeContext'),
+            'shortVolumeIsShortInterest': row.get('shortVolumeIsShortInterest'),
+            'nextEarningsDate': row.get('nextEarningsDate'),
+            'daysToEarnings': row.get('daysToEarnings'),
+            'earningsHour': row.get('earningsHour'),
+            'optionIvSkew': row.get('optionIvSkew'),
+            'avgCallIV': row.get('avgCallIV'),
+            'avgPutIV': row.get('avgPutIV'),
+            'optionContractsSampled': row.get('optionContractsSampled'),
+            'callPutCountRatio': row.get('callPutCountRatio'),
+            'newsCount': row.get('newsCount'),
+            'newsSentiment': row.get('newsSentiment'),
+            'newsScore': row.get('newsScore'),
+            'eventRisk': row.get('eventRisk'),
+            'eventTags': row.get('eventTags'),
+            'latestNewsTime': row.get('latestNewsTime'),
+            'topNewsSource': row.get('topNewsSource'),
+            'topNewsHeadline': _inst_trim_text(row.get('topNewsHeadline'), 180),
+            'scannerReason': _inst_trim_text(row.get('scannerReason'), 220),
+        })
+    return payload_rows
+
+
+def _inst_extract_json_from_text(text):
+    text = _safe_str(text).strip()
+    if text.startswith('```'):
+        text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\s*```$', '', text)
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    match = re.search(r'\{.*\}', text, flags=re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except Exception:
+            return None
+    return None
+
+
+def _inst_extract_ai_response_text(resp_data, provider):
+    provider_upper = _safe_str(provider).upper()
+    if 'CLAUDE' in provider_upper or 'ANTHROPIC' in provider_upper:
+        content = resp_data.get('content') if isinstance(resp_data, dict) else None
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get('text'):
+                    parts.append(_safe_str(item.get('text')))
+            return '\n'.join(parts).strip()
+    if 'GEMINI' in provider_upper or 'GOOGLE' in provider_upper:
+        candidates = resp_data.get('candidates') if isinstance(resp_data, dict) else None
+        if isinstance(candidates, list) and candidates:
+            content = candidates[0].get('content') if isinstance(candidates[0], dict) else None
+            parts = content.get('parts') if isinstance(content, dict) else None
+            if isinstance(parts, list):
+                return '\n'.join(_safe_str(part.get('text')) for part in parts if isinstance(part, dict) and part.get('text')).strip()
+    choices = resp_data.get('choices') if isinstance(resp_data, dict) else None
+    if isinstance(choices, list) and choices:
+        message = choices[0].get('message') if isinstance(choices[0], dict) else None
+        if isinstance(message, dict):
+            return _safe_str(message.get('content')).strip()
+        return _safe_str(choices[0].get('text')).strip()
+    return ''
+
+
+def _inst_call_ai_trader(ai_cfg, system_prompt, user_prompt):
+    api_key = ai_cfg.get('apiKey', '')
+    base_url = _safe_str(ai_cfg.get('baseURL') or ai_cfg.get('baseUrl')).rstrip('/')
+    model = _safe_str(ai_cfg.get('model') or 'deepseek-chat')
+    provider = _safe_str(ai_cfg.get('provider') or 'DeepSeek')
+    if not base_url:
+        base_url = 'https://api.deepseek.com'
+    if not base_url.startswith('http'):
+        base_url = 'https://' + base_url
+
+    provider_upper = provider.upper()
+    if 'CLAUDE' in provider_upper or 'ANTHROPIC' in provider_upper:
+        resp = requests.post(
+            f'{base_url}/messages',
+            headers={
+                'x-api-key': api_key,
+                'anthropic-version': '2023-06-01',
+                'content-type': 'application/json',
+            },
+            json={
+                'model': model,
+                'system': system_prompt,
+                'max_tokens': 3000,
+                'temperature': 0.1,
+                'messages': [{'role': 'user', 'content': user_prompt}],
+            },
+            timeout=_INST_SCANNER_AI_TIMEOUT_SECONDS,
+        )
+    elif 'GEMINI' in provider_upper or 'GOOGLE' in provider_upper:
+        resp = requests.post(
+            f'{base_url}/models/{model}:generateContent',
+            params={'key': api_key},
+            headers={'content-type': 'application/json'},
+            json={
+                'contents': [{'parts': [{'text': system_prompt + '\n\n' + user_prompt}]}],
+                'generationConfig': {'temperature': 0.1, 'maxOutputTokens': 3000},
+            },
+            timeout=_INST_SCANNER_AI_TIMEOUT_SECONDS,
+        )
+    else:
+        headers = {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}
+        payload = {
+            'model': model,
+            'messages': [
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': user_prompt},
+            ],
+            'temperature': 0.1,
+            'max_tokens': 3000,
+            'stream': False,
+            'response_format': {'type': 'json_object'},
+        }
+        resp = ai_chat_request(
+            f'{base_url}/chat/completions',
+            headers=headers,
+            json_data=payload,
+            timeout=_INST_SCANNER_AI_TIMEOUT_SECONDS,
+            provider=provider,
+        )
+        if resp.status_code == 400:
+            payload.pop('response_format', None)
+            resp = ai_chat_request(
+                f'{base_url}/chat/completions',
+                headers=headers,
+                json_data=payload,
+                timeout=_INST_SCANNER_AI_TIMEOUT_SECONDS,
+                provider=provider,
+            )
+
+    if resp.status_code != 200:
+        return None, 'ai_http_%s: %s' % (resp.status_code, _inst_trim_text(getattr(resp, 'text', ''), 180))
+    try:
+        resp_data = resp.json()
+    except Exception as e:
+        return None, 'ai_invalid_json_response: %s' % str(e)[:80]
+    text = _inst_extract_ai_response_text(resp_data, provider)
+    if not text:
+        return None, 'ai_empty_response'
+    parsed = _inst_extract_json_from_text(text)
+    if not isinstance(parsed, dict):
+        return None, 'ai_unparseable_json'
+    return parsed, None
+
+
+def _inst_apply_ai_trader_review(rows, max_symbols=_INST_SCANNER_AI_REVIEW_TOP_N):
+    stats = {
+        'configured': False,
+        'used': False,
+        'status': 'not_configured',
+        'provider': None,
+        'model': None,
+        'testStatus': None,
+        'maxSymbols': max_symbols,
+        'requestedSymbols': 0,
+        'reviewedSymbols': 0,
+        'batchSize': _INST_SCANNER_AI_REVIEW_BATCH_SIZE,
+        'batchCount': 0,
+        'successfulBatches': 0,
+        'failedBatches': 0,
+        'retryAttempts': 0,
+        'challengedSymbols': 0,
+        'errors': {},
+        'timeoutSeconds': _INST_SCANNER_AI_TIMEOUT_SECONDS,
+        'error': None,
+        'source': 'Settings AI provider',
+    }
+    max_symbols = max(0, min(int(max_symbols or 0), _INST_SCANNER_AI_REVIEW_MAX_N))
+    stats['maxSymbols'] = max_symbols
+    if not rows or max_symbols <= 0:
+        stats['status'] = 'disabled'
+        return stats
+
+    ai_cfg, ai_source = resolve_ai_config(require_user_config=True)
+    api_key = ai_cfg.get('apiKey', '')
+    provider = ai_cfg.get('provider') or 'AI'
+    model = ai_cfg.get('model') or ''
+    stats.update({
+        'configured': bool(api_key),
+        'provider': provider,
+        'model': model,
+        'testStatus': ai_cfg.get('testStatus'),
+        'configSource': ai_source,
+    })
+    if not api_key:
+        stats['status'] = 'not_configured'
+        stats['error'] = 'AI key is not configured in Settings'
+        return stats
+
+    review_target_rows = list(rows or [])[:max_symbols]
+    stats['requestedSymbols'] = len(review_target_rows)
+    system_prompt = (
+        'You are the challenge layer for an institutional-style quantitative market scanner. '
+        'Deterministic factors own selectionScore, directionScore, investability filters, and hard gates; never change them. '
+        'Your task is to test whether evidence supports advancing a candidate to Fine Scan, identify contradictions, '
+        'and name the next check. Advance is a research-routing decision, never a buy recommendation. '
+        'Use factor agreement and reliability, risk-adjusted momentum, relative strength, benchmark/sector context, '
+        'liquidity and estimated cost, event/news risk, daily short-sale flow, and options context when supplied. '
+        'FINRA daily short-sale volume is not short interest or a standalone crowding signal. '
+        'Missing optional fundamentals, news, or options are unknown and must not alone cause Avoid. '
+        'Use Watch for unresolved conflicts or a specific confirmation need. Use Avoid only for material contradictions, '
+        'poor investability, extreme cost, or blocking event risk. Return valid JSON only. '
+        'Return exactly one review for every candidate symbol supplied in the current batch.'
+    )
+
+    started = time.time()
+    row_by_symbol = {_inst_clean_symbol(row.get('symbol')): row for row in rows}
+    valid_decisions = {'ADVANCE': 'Advance', 'WATCH': 'Watch', 'AVOID': 'Avoid'}
+    reviewed_symbols = set()
+    batch_size = max(1, min(_INST_SCANNER_AI_REVIEW_BATCH_SIZE, max_symbols))
+    batches = [review_target_rows[i:i + batch_size] for i in range(0, len(review_target_rows), batch_size)]
+    stats['batchCount'] = len(batches)
+
+    def apply_reviews(reviews):
+        applied = 0
+        for review in reviews:
+            if not isinstance(review, dict):
+                continue
+            symbol = _inst_clean_symbol(review.get('symbol'))
+            row = row_by_symbol.get(symbol)
+            if not row:
+                continue
+            decision_raw = _safe_str(review.get('decision')).upper()
+            decision = valid_decisions.get(decision_raw, 'Watch')
+            confidence = _inst_to_float(review.get('confidence'), None)
+            if confidence is not None:
+                confidence = max(0, min(100, confidence))
+            rationale = _inst_trim_text(review.get('rationale'), 260)
+            risk_flags = review.get('riskFlags') if isinstance(review.get('riskFlags'), list) else []
+            risk_flags = [_inst_trim_text(flag, 40) for flag in risk_flags if _inst_trim_text(flag, 40)][:5]
+            contradictions = review.get('contradictions') if isinstance(review.get('contradictions'), list) else []
+            contradictions = [_inst_trim_text(item, 70) for item in contradictions if _inst_trim_text(item, 70)][:4]
+            missing_checks = review.get('missingChecks') if isinstance(review.get('missingChecks'), list) else []
+            missing_checks = [_inst_trim_text(item, 70) for item in missing_checks if _inst_trim_text(item, 70)][:4]
+            urgency = _inst_trim_text(review.get('urgency'), 20)
+            if urgency not in ('Now', 'Next session', 'After event', 'Low'):
+                urgency = 'Low'
+            next_step = _inst_trim_text(review.get('nextStep'), 160)
+            if not rationale:
+                rationale = 'AI reviewed the deterministic factor stack and assigned %s.' % decision
+
+            row['ruleScannerReason'] = row.get('scannerReason')
+            row['aiCalled'] = True
+            row['aiSuccess'] = True
+            row['aiSource'] = provider
+            row['aiModel'] = model
+            row['aiTraderDecision'] = decision
+            row['aiTraderConfidence'] = round(confidence, 1) if confidence is not None else None
+            row['aiTraderRationale'] = rationale
+            row['aiRiskFlags'] = risk_flags
+            row['aiContradictions'] = contradictions
+            row['aiMissingChecks'] = missing_checks
+            row['aiUrgency'] = urgency
+            row['aiNextStep'] = next_step
+            row['aiChallenged'] = decision != 'Advance' or bool(risk_flags) or bool(contradictions)
+            row['aiReviewSource'] = 'Settings AI provider'
+            ai_summary = 'AI %s%s: %s' % (
+                decision,
+                (' %.0f%%' % confidence) if confidence is not None else '',
+                rationale,
+            )
+            if next_step:
+                ai_summary += ' Next: %s' % next_step
+            row['aiReasoning'] = ai_summary
+            row['detailedReasoning'] = ai_summary
+            row['conciseReasoning'] = _inst_trim_text(ai_summary, 220)
+            row['reasoningSource'] = 'ai_trader_review'
+            row['analysisSource'] = 'institutional_rules_plus_ai_review'
+            row.setdefault('dataSources', {})['aiData'] = '%s %s via Settings AI provider' % (provider, model)
+            row.setdefault('provenance', {})['aiData'] = '%s review over deterministic Alpaca/Finnhub/news scanner output' % provider
+            if symbol not in reviewed_symbols:
+                reviewed_symbols.add(symbol)
+                applied += 1
+        return applied
+
+    def call_batch(batch_index, batch_rows, retry=False):
+        batch_payload = _inst_ai_payload_rows(batch_rows, len(batch_rows))
+        batch_symbols = [_inst_clean_symbol(row.get('symbol')) for row in batch_rows]
+        user_prompt = (
+            '%s batch %d of %d. Use only the supplied data; do not invent missing fundamentals or news. '
+            'Treat missing optional fields as unknown, not as bearish. Check score, relative strength, benchmark/sector rank, '
+            'liquidity tier, round-trip cost, 10%% ADV capacity, event/news risk, daily short-sale flow, and options skew. '
+            'FINRA daily short-sale volume is not short interest or a standalone crowding signal. '
+            'Return exactly this JSON shape and include every symbol in this batch exactly once: '
+            '{"reviews":[{"symbol":"AAPL","decision":"Advance|Watch|Avoid","confidence":0-100,'
+            '"rationale":"one evidence-based sentence","riskFlags":["short labels"],'
+            '"contradictions":["selection versus evidence conflicts"],"missingChecks":["next-stage checks"],'
+            '"urgency":"Now|Next session|After event|Low","nextStep":"one Fine Scan action"}]}.\n'
+            'Batch symbols: %s\n'
+            'Candidates:\n%s'
+        ) % (
+            'Retry' if retry else 'Review',
+            batch_index,
+            len(batches),
+            ','.join(batch_symbols),
+            json.dumps(batch_payload, ensure_ascii=True, separators=(',', ':')),
+        )
+
+        try:
+            parsed, error = _inst_call_ai_trader(ai_cfg, system_prompt, user_prompt)
+        except Exception as e:
+            parsed, error = None, 'ai_exception: %s' % str(e)[:160]
+        reviews = parsed.get('reviews') if isinstance(parsed, dict) else None
+        if not error and not isinstance(reviews, list):
+            error = 'AI response missing reviews[]'
+        return batch_rows, batch_symbols, (reviews or []), error
+
+    with ThreadPoolExecutor(max_workers=min(3, max(1, len(batches)))) as executor:
+        futures = {
+            executor.submit(call_batch, batch_index, batch_rows): batch_index
+            for batch_index, batch_rows in enumerate(batches, start=1)
+        }
+        for future in as_completed(futures):
+            batch_index = futures[future]
+            try:
+                batch_rows, batch_symbols, reviews, error = future.result()
+            except Exception as e:
+                batch_rows, batch_symbols, reviews = [], [], []
+                error = 'ai_exception: %s' % str(e)[:160]
+            if error:
+                stats['failedBatches'] += 1
+                stats['errors'][error] = stats['errors'].get(error, 0) + 1
+                print('[InstitutionalScanner] AI trader review batch %d/%d failed: %s' % (batch_index, len(batches), error))
+                continue
+            applied = apply_reviews(reviews)
+            stats['successfulBatches'] += 1
+            missing = [symbol for symbol in batch_symbols if symbol and symbol not in reviewed_symbols]
+            if missing:
+                key = 'ai_missing_symbols_in_batch'
+                stats['errors'][key] = stats['errors'].get(key, 0) + len(missing)
+                print('[InstitutionalScanner] AI trader review batch %d/%d missing symbols: %s' % (
+                    batch_index, len(batches), ','.join(missing[:8])))
+            print('[InstitutionalScanner] AI trader review batch %d/%d applied=%d requested=%d' % (
+                batch_index, len(batches), applied, len(batch_rows)))
+
+    missing_rows = [
+        row for row in review_target_rows
+        if _inst_clean_symbol(row.get('symbol')) not in reviewed_symbols
+    ]
+    if missing_rows and _INST_SCANNER_AI_MAX_ATTEMPTS > 1:
+        retry_batches = [
+            missing_rows[i:i + _INST_SCANNER_AI_REVIEW_BATCH_SIZE]
+            for i in range(0, len(missing_rows), _INST_SCANNER_AI_REVIEW_BATCH_SIZE)
+        ]
+        for retry_index, retry_rows in enumerate(retry_batches, start=1):
+            stats['retryAttempts'] += 1
+            time.sleep(min(4.0, 1.25 + retry_index * 0.25))
+            retry_symbols = [_inst_clean_symbol(row.get('symbol')) for row in retry_rows]
+            retry_prompt = (
+                'Retry only these previously missing symbols. Use supplied data only. Missing optional data is unknown. '
+                'Return every symbol exactly once using this JSON shape: '
+                '{"reviews":[{"symbol":"AAPL","decision":"Advance|Watch|Avoid","confidence":0-100,'
+                '"rationale":"one evidence-based sentence","riskFlags":["short labels"],'
+                '"contradictions":["selection versus evidence conflicts"],"missingChecks":["next-stage checks"],'
+                '"urgency":"Now|Next session|After event|Low","nextStep":"one Fine Scan action"}]}.\n'
+                'Symbols: %s\nCandidates:\n%s'
+            ) % (
+                ','.join(retry_symbols),
+                json.dumps(_inst_ai_payload_rows(retry_rows, len(retry_rows)), ensure_ascii=True, separators=(',', ':')),
+            )
+            try:
+                parsed, retry_error = _inst_call_ai_trader(ai_cfg, system_prompt, retry_prompt)
+            except Exception as e:
+                parsed, retry_error = None, 'ai_retry_exception: %s' % str(e)[:160]
+            if retry_error:
+                stats['errors'][retry_error] = stats['errors'].get(retry_error, 0) + 1
+                continue
+            retry_reviews = parsed.get('reviews') if isinstance(parsed, dict) else None
+            if isinstance(retry_reviews, list):
+                retry_applied = apply_reviews(retry_reviews)
+                if retry_applied:
+                    stats['successfulBatches'] += 1
+
+    stats['reviewedSymbols'] = len(reviewed_symbols)
+    stats['challengedSymbols'] = sum(1 for row in review_target_rows if row.get('aiChallenged'))
+    unresolved_symbols = max(0, stats['requestedSymbols'] - stats['reviewedSymbols'])
+    stats['transientFailedBatches'] = stats['failedBatches']
+    stats['unresolvedSymbols'] = unresolved_symbols
+    stats['failedBatches'] = (
+        (unresolved_symbols + batch_size - 1) // batch_size
+        if unresolved_symbols
+        else 0
+    )
+    stats['elapsedSeconds'] = round(time.time() - started, 2)
+    stats['used'] = stats['reviewedSymbols'] > 0
+    if stats['reviewedSymbols'] == stats['requestedSymbols']:
+        stats['status'] = 'ok'
+    elif stats['reviewedSymbols'] > 0:
+        stats['status'] = 'partial'
+        stats['error'] = 'AI reviewed %d/%d symbols' % (stats['reviewedSymbols'], stats['requestedSymbols'])
+    else:
+        stats['status'] = 'error'
+        stats['error'] = 'AI did not return usable reviews'
+    return stats
+
+
+def _inst_default_filters(data):
+    filters = data.get('filters') if isinstance(data.get('filters'), dict) else {}
+    merged = {
+        'minPrice': data.get('minPrice', filters.get('minPrice', 5)),
+        'minMarketCap': data.get('minMarketCap', filters.get('minMarketCap', 0)),
+        'minDollarVolume': data.get('minDollarVolume', filters.get('minDollarVolume', 10_000_000)),
+        'minHistoryDays': data.get('minHistoryDays', filters.get('minHistoryDays', 252)),
+        'maxAtrPercent': data.get('maxAtrPercent', filters.get('maxAtrPercent', 12)),
+        'maxRealizedVol20': data.get('maxRealizedVol20', filters.get('maxRealizedVol20', 120)),
+        'includeOTC': data.get('includeOTC', filters.get('includeOTC', False)),
+        'includeETFs': data.get('includeETFs', filters.get('includeETFs', False)),
+    }
+    return merged
+
+
+@app.route('/api/market/scanner', methods=['POST'])
+def institutional_market_scanner():
+    """Alpaca-led whole-market scanner with optional enrichment overlays."""
+    started = time.time()
+    try:
+        data = request.get_json(silent=True) or {}
+        filters = _inst_default_filters(data)
+        max_symbols = int(_inst_to_float(data.get('maxSymbols'), _INST_SCANNER_DEFAULT_MAX_SYMBOLS) or _INST_SCANNER_DEFAULT_MAX_SYMBOLS)
+        max_symbols = max(25, min(max_symbols, 3000))
+        max_results = int(_inst_to_float(data.get('maxResults'), _INST_SCANNER_DEFAULT_MAX_RESULTS) or _INST_SCANNER_DEFAULT_MAX_RESULTS)
+        max_results = max(5, min(max_results, 300))
+        ai_review_top_n = int(_inst_to_float(data.get('aiReviewTopN'), _INST_SCANNER_AI_REVIEW_TOP_N) or _INST_SCANNER_AI_REVIEW_TOP_N)
+        ai_review_top_n = max(0, min(ai_review_top_n, _INST_SCANNER_AI_REVIEW_MAX_N))
+        history_period = data.get('historyPeriod', '18mo')
+        feed = data.get('feed') or _MARKET_DATA_FEED or 'iex'
+        alpaca_mode = data.get('alpacaMode') or data.get('mode') or 'paper'
+
+        market_cfg, asset_configs, cfg_status, cfg_message = _inst_resolve_alpaca_scanner_configs(alpaca_mode)
+        if cfg_status == 'auth_required':
+            return jsonify({'success': False, 'message': cfg_message, 'error': cfg_message}), 401
+        if cfg_status != 'ok':
+            return jsonify({'success': False, 'message': cfg_message, 'error': cfg_message}), 400
+
+        all_symbols, metadata, universe_source, asset_error = _inst_fetch_alpaca_assets(asset_configs, filters)
+        if not all_symbols:
+            message = asset_error or 'No Alpaca assets available'
+            return jsonify({'success': False, 'message': message, 'error': message}), 400
+
+        requested_symbols = data.get('symbols') or []
+        if requested_symbols:
+            symbols = [s for s in list(dict.fromkeys(_inst_clean_symbol(s) for s in requested_symbols if _inst_clean_symbol(s))) if s in metadata][:max_symbols]
+        else:
+            symbols = all_symbols
+        raw_universe_count = len(all_symbols)
+
+        print('[InstitutionalScanner] start universe=ALPACA_MARKET rawAssets=%d candidates=%d maxSymbols=%d maxResults=%d source=%s filters=%s' % (
+            raw_universe_count, len(symbols), max_symbols, max_results, universe_source, filters))
+
+        if not symbols:
+            return jsonify({
+                'success': False,
+                'error': 'No symbols available from Alpaca assets',
+                'message': 'No symbols available from Alpaca assets',
+            }), 400
+
+        snapshots, snapshot_errors = _inst_fetch_alpaca_snapshots(symbols, market_cfg, feed=feed, batch_size=200)
+        snapshot_ranked = []
+        min_price = _inst_to_float(filters.get('minPrice'), 5) or 5
+        for symbol in symbols:
+            snap_meta = _inst_snapshot_metrics(symbol, snapshots.get(symbol, {}))
+            price = _inst_to_float(snap_meta.get('snapshotPrice'), None)
+            if price is not None and price < min_price:
+                continue
+            snapshot_ranked.append((symbol, snap_meta))
+
+        snapshot_ranked.sort(
+            key=lambda item: _inst_to_float(item[1].get('snapshotLiquidityProxyDollarVolume'), 0) or 0,
+            reverse=True,
+        )
+        if snapshot_ranked:
+            selected_pairs = snapshot_ranked[:max_symbols]
+        else:
+            selected_pairs = [(symbol, {}) for symbol in symbols[:max_symbols]]
+        selected_symbols = [symbol for symbol, _snap in selected_pairs]
+        snapshot_meta_by_symbol = {symbol: snap for symbol, snap in selected_pairs}
+
+        history, history_errors = _inst_fetch_alpaca_bars(
+            selected_symbols,
+            market_cfg,
+            period=history_period,
+            feed=feed,
+            batch_size=25,
+        )
+        benchmark_symbols = list(dict.fromkeys(list(_INST_BENCHMARK_SYMBOLS) + list(_INST_SECTOR_ETF_SYMBOLS)))
+        benchmark_history, benchmark_errors = _inst_fetch_alpaca_bars(
+            benchmark_symbols,
+            market_cfg,
+            period=history_period,
+            feed=feed,
+            batch_size=25,
+        )
+        benchmark_context = _inst_build_benchmark_context(benchmark_history)
+
+        raw_rows = []
+        failed_count = 0
+        for symbol in selected_symbols:
+            row = _inst_compute_symbol_metrics(
+                symbol,
+                history.get(symbol),
+                metadata.get(symbol, {}),
+                snapshot_meta_by_symbol.get(symbol, {}),
+            )
+            if row is None:
+                failed_count += 1
+                continue
+            _inst_apply_benchmark_metrics(row, history.get(symbol), benchmark_context)
+            _inst_apply_trading_cost_metrics(row)
+            raw_rows.append(row)
+
+        passed_rows = []
+        filtered_reasons = {}
+        for row in raw_rows:
+            passed, reasons = _inst_apply_investability_filters(row, filters)
+            if passed:
+                passed_rows.append(row)
+            else:
+                for reason in reasons:
+                    filtered_reasons[reason] = filtered_reasons.get(reason, 0) + 1
+
+        scored = _inst_score_rows(passed_rows)
+        scored.sort(key=lambda r: (
+            _inst_to_float(r.get('selectionScore'), 0) or 0,
+            _inst_to_float(r.get('factorScores', {}).get('liquidity'), 0) or 0,
+            _inst_to_float(r.get('avgDollarVolume20'), 0) or 0,
+        ), reverse=True)
+        results = scored[:max_results]
+
+        finnhub_cfg, finnhub_status = resolve_finnhub_config_strict_user()
+        finnhub_stats = _inst_apply_finnhub_enrichment(
+            results,
+            finnhub_cfg if finnhub_status == 'ok' else {},
+            max_workers=4,
+        )
+        results, market_cap_filter_stats = _inst_apply_market_cap_filter(
+            results,
+            filters.get('minMarketCap'),
+        )
+        if market_cap_filter_stats.get('applied'):
+            if market_cap_filter_stats.get('belowThreshold'):
+                filtered_reasons['market_cap_below_min'] = market_cap_filter_stats['belowThreshold']
+            if market_cap_filter_stats.get('unavailable'):
+                filtered_reasons['market_cap_unavailable'] = market_cap_filter_stats['unavailable']
+        sector_stats = _inst_apply_sector_overlays(results, benchmark_context)
+        news_stats = _inst_apply_news_enrichment(results, market_cfg, days_back=_INST_SCANNER_NEWS_DAYS_BACK)
+        earnings_stats = _inst_apply_earnings_calendar(results, finnhub_cfg if finnhub_status == 'ok' else {})
+        short_volume_stats = _inst_apply_finra_short_volume(results)
+        options_stats = _inst_apply_options_overlay(results, market_cfg, max_symbols=_INST_SCANNER_OPTION_REVIEW_TOP_N)
+        ai_review_stats = _inst_apply_ai_trader_review(results, max_symbols=ai_review_top_n)
+
+        bullish_count = sum(1 for r in results if 'Bullish' in _safe_str(r.get('trendLabel')))
+        bearish_count = sum(1 for r in results if _safe_str(r.get('trendLabel')) == 'Bearish')
+        neutral_count = sum(1 for r in results if _safe_str(r.get('trendLabel')) == 'Neutral')
+        strong_trend_count = sum(1 for r in results if _safe_str(r.get('trendLabel')) == 'Strong Bullish')
+        priority_a_count = sum(1 for r in results if r.get('selectionLabel') == 'Priority A')
+        priority_b_count = sum(1 for r in results if r.get('selectionLabel') == 'Priority B')
+        reliable_count = sum(1 for r in results if (_inst_to_float(r.get('scoreReliability'), 0) or 0) >= 90)
+        conflict_count = sum(1 for r in results if (_inst_to_float(r.get('factorAgreementPct'), 100) or 0) < 60)
+        risk_watch_count = sum(
+            1 for r in results
+            if (r.get('factorScores') or {}).get('risk', 0) < 35
+            or r.get('eventRisk') == 'High'
+            or r.get('marketRiskLevel') == 'High'
+        )
+        total_time = time.time() - started
+        finnhub_has_data = (
+            (finnhub_stats.get('profileEnriched', 0) or 0) +
+            (finnhub_stats.get('metricsEnriched', 0) or 0) +
+            (finnhub_stats.get('ratingsEnriched', 0) or 0)
+        ) > 0
+        data_sources = ['Alpaca', 'Alpaca News']
+        if finnhub_has_data:
+            data_sources.append('Finnhub')
+        if benchmark_context.get('symbolsAvailable'):
+            data_sources.append('Alpaca Benchmarks')
+        if short_volume_stats.get('symbolsWithShortVolume'):
+            data_sources.append('FINRA Short Volume')
+        if options_stats.get('symbolsWithOptions'):
+            data_sources.append('Alpaca Options')
+        if ai_review_stats.get('used'):
+            data_sources.append('AI Review')
+
+        summary = {
+            'universe': 'ALPACA_MARKET',
+            'universeSource': universe_source,
+            'rawUniverseCount': raw_universe_count,
+            'snapshotAvailable': len(snapshots),
+            'universeScanned': len(selected_symbols),
+            'historyAvailable': len(raw_rows),
+            'passedInvestability': len(passed_rows),
+            'filteredOut': (
+                max(0, len(raw_rows) - len(passed_rows)) +
+                market_cap_filter_stats.get('belowThreshold', 0) +
+                market_cap_filter_stats.get('unavailable', 0)
+            ),
+            'failedData': failed_count,
+            'resultsCount': len(results),
+            'bullishCount': bullish_count,
+            'bearishCount': bearish_count,
+            'neutralCount': neutral_count,
+            'strongTrendCount': strong_trend_count,
+            'priorityACount': priority_a_count,
+            'priorityBCount': priority_b_count,
+            'reliableCount': reliable_count,
+            'factorConflictCount': conflict_count,
+            'newsRiskCount': risk_watch_count,
+            'lastScanTime': int(time.time()),
+            'filters': filters,
+            'weights': {
+                'momentum': 0.30,
+                'trend': 0.20,
+                'relative': 0.20,
+                'liquidity': 0.15,
+                'risk': 0.15,
+            },
+            'filteredReasons': filtered_reasons,
+            'dataSource': ' + '.join(data_sources),
+            'finnhubStatus': finnhub_status,
+            'finnhubEnrichment': finnhub_stats,
+            'marketCapFilter': market_cap_filter_stats,
+            'benchmarkEnrichment': {
+                'source': 'Alpaca /v2/stocks/bars benchmark ETF history',
+                'symbolsRequested': len(benchmark_symbols),
+                'symbolsAvailable': len(benchmark_context.get('symbolsAvailable') or []),
+                'benchmarkTrend': benchmark_context.get('trend'),
+                'errors': benchmark_errors,
+            },
+            'sectorEnrichment': sector_stats,
+            'newsEnrichment': news_stats,
+            'earningsEnrichment': earnings_stats,
+            'shortVolumeEnrichment': short_volume_stats,
+            'optionsEnrichment': options_stats,
+            'aiReview': ai_review_stats,
+            'aiReviewedCount': ai_review_stats.get('reviewedSymbols', 0),
+            'aiChallengedCount': ai_review_stats.get('challengedSymbols', 0),
+            'aiAdvanceCount': sum(1 for r in results if r.get('aiTraderDecision') == 'Advance'),
+            'aiWatchCount': sum(1 for r in results if r.get('aiTraderDecision') == 'Watch'),
+            'aiAvoidCount': sum(1 for r in results if r.get('aiTraderDecision') == 'Avoid'),
+            'scoreVersion': 'institutional_cross_section_v5',
+            'dataCoverage': {
+                'assets': 'Alpaca /v2/assets',
+                'snapshots': 'Alpaca /v2/stocks/snapshots',
+                'bars': 'Alpaca /v2/stocks/bars',
+                'benchmarks': 'Alpaca /v2/stocks/bars SPY/QQQ/IWM + sector ETFs',
+                'news': news_stats.get('source'),
+                'fundamentals': finnhub_stats.get('source'),
+                'events': earnings_stats.get('source'),
+                'shortVolume': short_volume_stats.get('source'),
+                'options': options_stats.get('source'),
+                'aiReview': ai_review_stats.get('source') if ai_review_stats.get('used') else ai_review_stats.get('status'),
+                'feed': feed,
+                'staticFieldsCached': ['companyName', 'exchangeName', 'tradable', 'marginable', 'shortable', 'fractionable', 'easyToBorrow'],
+                'dynamicFields': ['price', 'bidPrice', 'askPrice', 'dayOpen', 'dayHigh', 'dayLow', 'volume', 'snapshotLiquidityProxyDollarVolume'],
+                'rankingFields': ['selectionScore', 'selectionLabel', 'directionScore', 'trendLabel', 'factorAgreementPct', 'factorCoveragePct', 'scoreReliability'],
+                'finnhubFields': ['marketCap', 'sector', 'trailingPE', 'forwardPE', 'priceToBook', 'epsGrowthForward', 'beta', 'dividendYield', 'analystRating'],
+                'benchmarkFields': ['relativeStrength1m', 'relativeStrength3m', 'relativeStrength6m', 'relativeStrength12m', 'marketBeta', 'marketCorrelation', 'sectorRelativeStrength3m', 'sectorRank'],
+                'tradingCostFields': ['spreadBps', 'estimatedRoundTripCostBps', 'capacityScore', 'liquidityTier', 'participation10pctDollar', 'quoteAgeSeconds', 'quoteStale'],
+                'alpacaNewsFields': ['newsCount', 'newsSentiment', 'eventRisk', 'topNewsHeadline', 'latestNewsTime'],
+                'eventFields': ['nextEarningsDate', 'daysToEarnings', 'earningsHour'],
+                'shortVolumeFields': ['shortVolumeRatio', 'shortVolumeDate', 'shortVolumeContext', 'shortVolumeIsShortInterest'],
+                'optionsFields': ['optionContractsSampled', 'avgCallIV', 'avgPutIV', 'optionIvSkew', 'callPutCountRatio'],
+                'aiReviewFields': ['aiTraderDecision', 'aiTraderConfidence', 'aiTraderRationale', 'aiRiskFlags', 'aiContradictions', 'aiMissingChecks', 'aiUrgency', 'aiNextStep'],
+                'excludedUnavailableFundamentals': [] if finnhub_has_data else ['marketCap', 'sector', 'trailingPE', 'forwardPE', 'priceToBook', 'epsGrowthForward', 'analystRating'],
+            },
+        }
+
+        return jsonify({
+            'success': True,
+            'results': results,
+            'summary': summary,
+            'message': 'Alpaca whole-market scan completed: %d candidates from %d selected symbols (%d Alpaca assets)' % (len(results), len(selected_symbols), raw_universe_count),
+            'completed': True,
+            'scan_stats': {
+                'total_symbols': len(selected_symbols),
+                'raw_assets': raw_universe_count,
+                'snapshot_available': len(snapshots),
+                'history_available': len(raw_rows),
+                'passed_investability': len(passed_rows),
+                'results_count': len(results),
+                'failed_count': failed_count,
+                'filtered_reasons': filtered_reasons,
+                'snapshot_error_count': len(snapshot_errors),
+                'history_error_count': len(history_errors),
+                'benchmark_available': len(benchmark_context.get('symbolsAvailable') or []),
+                'benchmark_error_count': len(benchmark_errors),
+                'finnhub_profile_enriched': finnhub_stats.get('profileEnriched', 0),
+                'finnhub_metrics_enriched': finnhub_stats.get('metricsEnriched', 0),
+                'finnhub_ratings_enriched': finnhub_stats.get('ratingsEnriched', 0),
+                'news_symbols_with_news': news_stats.get('symbolsWithNews', 0),
+                'news_articles_fetched': news_stats.get('articlesFetched', 0),
+                'earnings_symbols': earnings_stats.get('symbolsWithEarnings', 0),
+                'short_volume_symbols': short_volume_stats.get('symbolsWithShortVolume', 0),
+                'options_symbols': options_stats.get('symbolsWithOptions', 0),
+                'ai_reviewed_symbols': ai_review_stats.get('reviewedSymbols', 0),
+                'ai_review_status': ai_review_stats.get('status'),
+                'total_time_seconds': round(total_time, 2),
+                'method': 'alpaca_whole_market_scan_v5_risk_adjusted_cross_section',
+            }
+        })
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        print(f'[InstitutionalScanner] failed: {e}')
+        print(tb)
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'message': 'Alpaca market scanner failed: %s' % str(e),
+            'traceback': tb[:2000],
+        }), 500
+
+
+@app.route('/api/market/scanner/universes', methods=['GET'])
+def institutional_market_scanner_universes():
+    return jsonify({
+        'success': True,
+        'universes': [
+            {
+                'value': 'alpaca_market',
+                'label': 'Alpaca Market',
+                'description': 'Active tradable US equities from Alpaca /v2/assets. Snapshots rank the whole pool before daily-bar scoring.',
+                'defaultMaxSymbols': _INST_SCANNER_DEFAULT_MAX_SYMBOLS,
+                'maxSymbols': 3000,
+            },
+        ],
+        'defaultFilters': _inst_default_filters({}),
+        'weights': {
+            'momentum': 0.30,
+            'trend': 0.20,
+            'relative': 0.20,
+            'liquidity': 0.15,
+            'risk': 0.15,
+        }
+    })
+
+
+# Keep the existing AI pipeline route stable while replacing its implementation.
+app.view_functions['ai_market_scanner'] = institutional_market_scanner
 
 
 
@@ -14195,7 +17556,7 @@ def get_status():
 
         'timestamp': int(time.time()),
 
-        'version': '1.0.0-simple-with-ai'
+        'version': '3.0.0'
 
     })
 
@@ -15038,6 +18399,14 @@ def debug_alpaca():
 
     """调试Alpaca连接"""
 
+    if not _debug_endpoints_enabled():
+
+        return jsonify({'error': 'Not found'}), 404
+
+    if not require_auth():
+
+        return jsonify({'error': 'Authentication required'}), 401
+
     try:
 
         # 获取当前配置
@@ -15085,9 +18454,9 @@ def debug_alpaca():
 
             "statusCode": response.status_code,
 
-            "responseHeaders": dict(response.headers),
+            "contentType": response.headers.get('content-type', ''),
 
-            "responseBodyPreview": response.text[:1000] if response.text else "Empty"
+            "responseReceived": bool(response.text)
 
         }
 
@@ -15099,21 +18468,9 @@ def debug_alpaca():
 
     except Exception as e:
 
-        return jsonify({
+        safe_print(f'[Debug Alpaca] request failed: {type(e).__name__}')
 
-            "error": str(e),
-
-            "config": {
-
-                "environment": alpaca_config_state.get('environment', 'paper'),
-
-                "paper_api_key_preview": f"{alpaca_config_state.get('paper_api_key', '')[:10]}..." if alpaca_config_state.get('paper_api_key') else "None",
-
-                "live_api_key_preview": f"{alpaca_config_state.get('live_api_key', '')[:10]}..." if alpaca_config_state.get('live_api_key') else "None"
-
-            }
-
-        }), 500
+        return jsonify({"error": "Debug request failed"}), 500
 
 
 
@@ -16257,6 +19614,18 @@ def run_backtest():
                     min_required_data = long_ma_period + 10  # 需要足够数据计算均线+额外数据点
 
                     print(f"[Backtest] MA策略验证: longMaPeriod={long_ma_period}, 需要最小数据量={min_required_data}")
+                elif strategy == 'donchian_breakout':
+                    min_required_data = max(parameters.get('entryPeriod', 20), parameters.get('exitPeriod', 10), parameters.get('atrPeriod', 20)) + 20
+                elif strategy == 'keltner_breakout':
+                    min_required_data = max(parameters.get('emaPeriod', 20), parameters.get('atrPeriod', 20)) + 20
+                elif strategy == 'supertrend':
+                    min_required_data = parameters.get('atrPeriod', 10) * 3
+                elif strategy == 'stochastic':
+                    min_required_data = parameters.get('kPeriod', 14) + parameters.get('dPeriod', 3) + 20
+                elif strategy == 'adx_trend':
+                    min_required_data = max(parameters.get('adxPeriod', 14) * 3, parameters.get('slowEmaPeriod', 50) + 10)
+                elif strategy == 'mean_reversion':
+                    min_required_data = max(parameters.get('lookbackPeriod', 20), parameters.get('trendMaPeriod', 100) if parameters.get('enableTrendFilter', True) else 20) + 20
 
 
 
@@ -17629,7 +20998,19 @@ def run_backtest():
 
                 'momentum': run_momentum_strategy,
 
-                'mean_reversion': run_mean_reversion_strategy
+                'mean_reversion': run_mean_reversion_strategy,
+
+                'buy_hold': run_buy_hold_strategy_for_optimization,
+
+                'donchian_breakout': run_donchian_breakout_strategy_for_optimization,
+
+                'keltner_breakout': run_keltner_breakout_strategy_for_optimization,
+
+                'supertrend': run_supertrend_strategy_for_optimization,
+
+                'stochastic': run_stochastic_strategy_for_optimization,
+
+                'adx_trend': run_adx_trend_strategy_for_optimization
 
             }
 
@@ -19229,6 +22610,324 @@ def run_mean_reversion_strategy_for_optimization(data, params, initial_capital, 
         equity = cash + (position * price)
         equity_curve.append({'date': date, 'equity': equity, 'price': price})
 
+    return trades, equity_curve
+
+
+def _bt_sma(values, period):
+    out = []
+    for i, value in enumerate(values):
+        if i + 1 >= period:
+            window = values[i - period + 1:i + 1]
+            out.append(sum(window) / period)
+        else:
+            out.append(value)
+    return out
+
+
+def _bt_ema(values, period):
+    out = []
+    alpha = 2 / (period + 1)
+    for i, value in enumerate(values):
+        if i == 0:
+            out.append(value)
+        else:
+            out.append(value * alpha + out[-1] * (1 - alpha))
+    return out
+
+
+def _bt_true_ranges(data):
+    tr = []
+    for i, bar in enumerate(data):
+        high = float(bar.get('high', bar.get('close', 0)) or 0)
+        low = float(bar.get('low', bar.get('close', 0)) or 0)
+        close = float(bar.get('close', 0) or 0)
+        prev_close = float(data[i - 1].get('close', close) or close) if i > 0 else close
+        tr.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+    return tr
+
+
+def _bt_atr(data, period=14):
+    tr = _bt_true_ranges(data)
+    atr = []
+    for i, value in enumerate(tr):
+        if i == 0:
+            atr.append(value)
+        elif i < period:
+            atr.append(sum(tr[:i + 1]) / (i + 1))
+        else:
+            atr.append((atr[-1] * (period - 1) + value) / period)
+    return atr
+
+
+def _bt_open_long(trades, cash, price, date, symbol):
+    if price <= 0 or cash <= 0:
+        return cash, 0
+    shares = cash // price
+    if shares <= 0:
+        return cash, 0
+    cash -= shares * price
+    trades.append({
+        'entryDate': date, 'exitDate': None,
+        'entryPrice': price, 'exitPrice': None,
+        'pnl': 0, 'returnPct': 0, 'holdingPeriod': 0,
+        'position': 1, 'action': 'BUY',
+        'quantity': shares, 'symbol': symbol
+    })
+    return cash, shares
+
+
+def _bt_close_long(trades, cash, position, price, date, data, current_index):
+    if position <= 0:
+        return cash
+    cash += position * price
+    for trade in reversed(trades):
+        if trade.get('exitDate') is None and trade.get('action') == 'BUY':
+            entry_price = trade.get('entryPrice', 0) or 0
+            qty = trade.get('quantity', position) or position
+            pnl = (price - entry_price) * qty
+            ret = ((price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+            trade['exitDate'] = date
+            trade['exitPrice'] = price
+            trade['pnl'] = round(pnl, 2)
+            trade['returnPct'] = round(ret, 2)
+            trade['holdingPeriod'] = current_index - next((idx for idx, p in enumerate(data) if p.get('timestamp') == trade.get('entryDate')), current_index)
+            break
+    return cash
+
+
+def _bt_adx(data, period=14):
+    highs = [float(point.get('high', point.get('close', 0)) or 0) for point in data]
+    lows = [float(point.get('low', point.get('close', 0)) or 0) for point in data]
+    closes = [float(point.get('close', 0) or 0) for point in data]
+    tr = _bt_true_ranges(data)
+    plus_dm = [0]
+    minus_dm = [0]
+    for i in range(1, len(data)):
+        up_move = highs[i] - highs[i - 1]
+        down_move = lows[i - 1] - lows[i]
+        plus_dm.append(up_move if up_move > down_move and up_move > 0 else 0)
+        minus_dm.append(down_move if down_move > up_move and down_move > 0 else 0)
+
+    sm_tr, sm_plus, sm_minus = [], [], []
+    for i in range(len(data)):
+        if i == 0:
+            sm_tr.append(tr[i])
+            sm_plus.append(plus_dm[i])
+            sm_minus.append(minus_dm[i])
+        elif i < period:
+            sm_tr.append(sum(tr[:i + 1]))
+            sm_plus.append(sum(plus_dm[:i + 1]))
+            sm_minus.append(sum(minus_dm[:i + 1]))
+        else:
+            sm_tr.append(sm_tr[-1] - (sm_tr[-1] / period) + tr[i])
+            sm_plus.append(sm_plus[-1] - (sm_plus[-1] / period) + plus_dm[i])
+            sm_minus.append(sm_minus[-1] - (sm_minus[-1] / period) + minus_dm[i])
+
+    plus_di, minus_di, dx = [], [], []
+    for i in range(len(data)):
+        if sm_tr[i] <= 0:
+            plus_di.append(0)
+            minus_di.append(0)
+            dx.append(0)
+            continue
+        pdi = 100 * sm_plus[i] / sm_tr[i]
+        mdi = 100 * sm_minus[i] / sm_tr[i]
+        plus_di.append(pdi)
+        minus_di.append(mdi)
+        denom = pdi + mdi
+        dx.append(100 * abs(pdi - mdi) / denom if denom > 0 else 0)
+
+    adx = []
+    for i, value in enumerate(dx):
+        if i < period:
+            adx.append(sum(dx[:i + 1]) / (i + 1))
+        else:
+            adx.append((adx[-1] * (period - 1) + value) / period)
+    return adx, plus_di, minus_di
+
+
+def run_buy_hold_strategy_for_optimization(data, params, initial_capital, symbol):
+    """Buy-and-hold benchmark."""
+    trades = []
+    equity_curve = []
+    if not data:
+        return trades, equity_curve
+    cash = initial_capital
+    position = 0
+    for i, point in enumerate(data):
+        date = point['timestamp']
+        price = point['close']
+        if i == 0 and position == 0:
+            cash, position = _bt_open_long(trades, cash, price, date, symbol)
+        equity_curve.append({'date': date, 'equity': cash + position * price, 'price': price})
+    return trades, equity_curve
+
+
+def run_donchian_breakout_strategy_for_optimization(data, params, initial_capital, symbol):
+    """Donchian/Turtle-style channel breakout, using prior-window highs/lows."""
+    entry_period = int(params.get('entryPeriod', params.get('donchianEntryPeriod', 20)))
+    exit_period = int(params.get('exitPeriod', params.get('donchianExitPeriod', 10)))
+    atr_period = int(params.get('atrPeriod', 20))
+    atr_stop = float(params.get('atrStopMultiple', 2.0))
+    trades, equity_curve = [], []
+    position, cash, entry_price, highest_since_entry = 0, initial_capital, 0, 0
+    atr = _bt_atr(data, atr_period)
+
+    for i, point in enumerate(data):
+        date, price = point['timestamp'], point['close']
+        if i >= max(entry_period, exit_period, atr_period):
+            prior_high = max(p.get('high', p.get('close', 0)) for p in data[i - entry_period:i])
+            prior_low = min(p.get('low', p.get('close', 0)) for p in data[i - exit_period:i])
+            if position == 0 and price > prior_high:
+                cash, position = _bt_open_long(trades, cash, price, date, symbol)
+                entry_price = price
+                highest_since_entry = price
+            elif position > 0:
+                highest_since_entry = max(highest_since_entry, point.get('high', price))
+                trailing_stop = highest_since_entry - atr_stop * atr[i]
+                if price < prior_low or price <= trailing_stop:
+                    cash = _bt_close_long(trades, cash, position, price, date, data, i)
+                    position, entry_price, highest_since_entry = 0, 0, 0
+        equity_curve.append({'date': date, 'equity': cash + position * price, 'price': price})
+    return trades, equity_curve
+
+
+def run_keltner_breakout_strategy_for_optimization(data, params, initial_capital, symbol):
+    """Keltner Channel breakout with EMA basis and ATR bands."""
+    ema_period = int(params.get('emaPeriod', params.get('keltnerEmaPeriod', 20)))
+    atr_period = int(params.get('atrPeriod', params.get('keltnerAtrPeriod', 20)))
+    mult = float(params.get('atrMultiplier', params.get('keltnerMultiplier', 2.0)))
+    trades, equity_curve = [], []
+    position, cash = 0, initial_capital
+    closes = [point['close'] for point in data]
+    ema = _bt_ema(closes, ema_period)
+    atr = _bt_atr(data, atr_period)
+    warmup = max(ema_period, atr_period)
+
+    for i, point in enumerate(data):
+        date, price = point['timestamp'], point['close']
+        if i >= warmup:
+            upper_prev = ema[i - 1] + mult * atr[i - 1]
+            mid_prev = ema[i - 1]
+            lower_prev = ema[i - 1] - mult * atr[i - 1]
+            if position == 0 and price > upper_prev:
+                cash, position = _bt_open_long(trades, cash, price, date, symbol)
+            elif position > 0 and (price < mid_prev or price < lower_prev):
+                cash = _bt_close_long(trades, cash, position, price, date, data, i)
+                position = 0
+        equity_curve.append({'date': date, 'equity': cash + position * price, 'price': price})
+    return trades, equity_curve
+
+
+def run_supertrend_strategy_for_optimization(data, params, initial_capital, symbol):
+    """SuperTrend trend-following strategy based on ATR bands."""
+    atr_period = int(params.get('atrPeriod', params.get('supertrendAtrPeriod', 10)))
+    mult = float(params.get('multiplier', params.get('supertrendMultiplier', 3.0)))
+    trades, equity_curve = [], []
+    position, cash = 0, initial_capital
+    atr = _bt_atr(data, atr_period)
+    final_upper, final_lower, trend_up = [], [], []
+
+    for i, point in enumerate(data):
+        high = point.get('high', point.get('close', 0))
+        low = point.get('low', point.get('close', 0))
+        close = point.get('close', 0)
+        hl2 = (high + low) / 2
+        basic_upper = hl2 + mult * atr[i]
+        basic_lower = hl2 - mult * atr[i]
+        if i == 0:
+            final_upper.append(basic_upper)
+            final_lower.append(basic_lower)
+            trend_up.append(True)
+            equity_curve.append({'date': point['timestamp'], 'equity': cash, 'price': close})
+            continue
+        prev_close = data[i - 1].get('close', close)
+        upper = basic_upper if basic_upper < final_upper[-1] or prev_close > final_upper[-1] else final_upper[-1]
+        lower = basic_lower if basic_lower > final_lower[-1] or prev_close < final_lower[-1] else final_lower[-1]
+        if close > final_upper[-1]:
+            is_up = True
+        elif close < final_lower[-1]:
+            is_up = False
+        else:
+            is_up = trend_up[-1]
+        final_upper.append(upper)
+        final_lower.append(lower)
+        trend_up.append(is_up)
+
+        date = point['timestamp']
+        if i >= atr_period:
+            if position == 0 and is_up and not trend_up[i - 1]:
+                cash, position = _bt_open_long(trades, cash, close, date, symbol)
+            elif position > 0 and (not is_up and trend_up[i - 1]):
+                cash = _bt_close_long(trades, cash, position, close, date, data, i)
+                position = 0
+        equity_curve.append({'date': date, 'equity': cash + position * close, 'price': close})
+    return trades, equity_curve
+
+
+def run_stochastic_strategy_for_optimization(data, params, initial_capital, symbol):
+    """Stochastic oscillator reversal strategy."""
+    k_period = int(params.get('kPeriod', params.get('stochKPeriod', 14)))
+    d_period = int(params.get('dPeriod', params.get('stochDPeriod', 3)))
+    oversold = float(params.get('oversold', params.get('stochOversold', 20)))
+    overbought = float(params.get('overbought', params.get('stochOverbought', 80)))
+    trades, equity_curve = [], []
+    position, cash = 0, initial_capital
+    k_values, d_values = [], []
+
+    for i, point in enumerate(data):
+        price = point['close']
+        if i + 1 >= k_period:
+            window = data[i - k_period + 1:i + 1]
+            high_n = max(p.get('high', p.get('close', 0)) for p in window)
+            low_n = min(p.get('low', p.get('close', 0)) for p in window)
+            k = 100 * (price - low_n) / (high_n - low_n) if high_n > low_n else 50
+        else:
+            k = 50
+        k_values.append(k)
+        if len(k_values) >= d_period:
+            d_values.append(sum(k_values[-d_period:]) / d_period)
+        else:
+            d_values.append(k)
+
+        if i >= k_period + d_period:
+            prev_k, prev_d = k_values[i - 1], d_values[i - 1]
+            cur_k, cur_d = k_values[i], d_values[i]
+            date = point['timestamp']
+            if position == 0 and prev_k <= prev_d and cur_k > cur_d and cur_k <= oversold + 10:
+                cash, position = _bt_open_long(trades, cash, price, date, symbol)
+            elif position > 0 and prev_k >= prev_d and cur_k < cur_d and cur_k >= overbought - 10:
+                cash = _bt_close_long(trades, cash, position, price, date, data, i)
+                position = 0
+        equity_curve.append({'date': point['timestamp'], 'equity': cash + position * price, 'price': price})
+    return trades, equity_curve
+
+
+def run_adx_trend_strategy_for_optimization(data, params, initial_capital, symbol):
+    """ADX + EMA trend filter strategy."""
+    adx_period = int(params.get('adxPeriod', 14))
+    threshold = float(params.get('adxThreshold', 25))
+    fast_period = int(params.get('fastEmaPeriod', 20))
+    slow_period = int(params.get('slowEmaPeriod', 50))
+    trades, equity_curve = [], []
+    position, cash = 0, initial_capital
+    closes = [point['close'] for point in data]
+    fast = _bt_ema(closes, fast_period)
+    slow = _bt_ema(closes, slow_period)
+    adx, plus_di, minus_di = _bt_adx(data, adx_period)
+    warmup = max(adx_period * 2, slow_period)
+
+    for i, point in enumerate(data):
+        date, price = point['timestamp'], point['close']
+        if i >= warmup:
+            trend_long = adx[i] >= threshold and plus_di[i] > minus_di[i] and fast[i] > slow[i]
+            trend_exit = minus_di[i] > plus_di[i] or fast[i] < slow[i] or adx[i] < threshold * 0.75
+            if position == 0 and trend_long:
+                cash, position = _bt_open_long(trades, cash, price, date, symbol)
+            elif position > 0 and trend_exit:
+                cash = _bt_close_long(trades, cash, position, price, date, data, i)
+                position = 0
+        equity_curve.append({'date': date, 'equity': cash + position * price, 'price': price})
     return trades, equity_curve
 
 
@@ -22716,13 +26415,538 @@ _watchlist_store = []  # in-memory watchlist (survives until restart)
 import uuid as _uuid
 
 
+def _entry_price_tick(price):
+    """Return Alpaca's supported equity order-price increment."""
+    try:
+        return 0.01 if float(price) >= 1 else 0.0001
+    except (TypeError, ValueError):
+        return 0.01
+
+
+def _entry_round_price(price, direction='nearest'):
+    """Round an order price without accidentally crossing its protection cap."""
+    from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
+
+    value = Decimal(str(price or 0))
+    tick = Decimal(str(_entry_price_tick(value)))
+    rounding = {
+        'up': ROUND_CEILING,
+        'down': ROUND_FLOOR,
+    }.get(direction, ROUND_HALF_UP)
+    return float((value / tick).to_integral_value(rounding=rounding) * tick)
+
+
+def _entry_quote_age_seconds(timestamp_value, now=None):
+    if not timestamp_value:
+        return None
+    try:
+        parsed = dateutil.parser.isoparse(str(timestamp_value))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        current = now or datetime.now(timezone.utc)
+        return max(0.0, (current - parsed.astimezone(timezone.utc)).total_seconds())
+    except Exception:
+        return None
+
+
+def _entry_setup_kind(setup, strategy=None):
+    """Normalize an Entry Plan setup into a deterministic trigger family."""
+    setup_text = str(setup or '').strip().lower()
+    strategy_text = str(strategy or '').strip().lower()
+    combined = f'{setup_text} {strategy_text}'
+    if any(token in setup_text for token in ('watch', 'no trade', 'avoid', 'event only')):
+        return 'ineligible'
+    if 'breakout' in setup_text:
+        return 'breakout'
+    if 'pullback' in setup_text:
+        return 'pullback'
+    if any(token in setup_text for token in ('support', 'range')):
+        if any(token in combined for token in ('mean', 'reversion', 'bollinger', 'rsi')):
+            return 'mean_reversion'
+        return 'support'
+    if any(token in setup_text for token in ('mean', 'reversion', 'bollinger')):
+        return 'mean_reversion'
+    if any(token in setup_text for token in ('continuation', 'trend', 'momentum', 'moving average', 'macd')):
+        return 'continuation'
+    return 'ineligible'
+
+
+def _evaluate_entry_setup_trigger(
+    setup,
+    executable_price,
+    zone_low,
+    zone_high,
+    *,
+    strategy=None,
+    latest_bar=None,
+    previous_bar=None,
+    bar_age_seconds=None,
+    resistance=None,
+    support=None,
+    ema20=None,
+    ema50=None,
+    rsi14=None,
+    macd_histogram=None,
+    intraday_volume_ratio=None,
+    comparable_volume_ratio=None,
+):
+    """Evaluate setup-specific entry confirmation without allowing AI overrides.
+
+    The zone is necessary but never sufficient. A completed, recent intraday bar
+    and the setup's own confirmation evidence must also pass before auto entry.
+    Optional context checks are displayed but do not make the trigger brittle.
+    """
+    def number(value):
+        try:
+            if value in (None, ''):
+                return None
+            parsed = float(value)
+            return parsed if parsed == parsed else None
+        except (TypeError, ValueError):
+            return None
+
+    def bar_value(bar, *keys):
+        if not isinstance(bar, dict):
+            return None
+        for key in keys:
+            value = number(bar.get(key))
+            if value is not None:
+                return value
+        return None
+
+    checks = []
+
+    def add_check(name, value, requirement, *, required=True, observed=None):
+        available = value is not None
+        checks.append({
+            'name': name,
+            'passed': bool(value) if available else None,
+            'available': available,
+            'required': required,
+            'observed': observed,
+            'requirement': requirement,
+        })
+
+    setup_kind = _entry_setup_kind(setup, strategy)
+    price = number(executable_price)
+    low = number(zone_low)
+    high = number(zone_high)
+    zone_available = price is not None and low is not None and high is not None and low > 0 and high >= low
+    in_zone = (low <= price <= high) if zone_available else None
+    add_check(
+        'Executable price in zone',
+        in_zone,
+        'ask must be inside the approved entry zone',
+        observed=(f'${price:.4f}' if price is not None else None),
+    )
+
+    if setup_kind == 'ineligible':
+        return {
+            'eligible': False,
+            'met': False,
+            'status': 'NOT_ELIGIBLE',
+            'setupKind': setup_kind,
+            'checks': checks,
+            'missing': [],
+            'reasons': ['Setup is research/watch-only and is not eligible for automatic entry.'],
+        }
+
+    latest_close = bar_value(latest_bar, 'c', 'close')
+    latest_open = bar_value(latest_bar, 'o', 'open')
+    latest_low = bar_value(latest_bar, 'l', 'low')
+    previous_close = bar_value(previous_bar, 'c', 'close')
+    bar_age = number(bar_age_seconds)
+    bar_fresh = (bar_age <= 15 * 60) if bar_age is not None else None
+    add_check(
+        'Completed 5m bar fresh',
+        bar_fresh,
+        'latest completed 5m bar must be no more than 15 minutes old',
+        observed=(f'{bar_age:.0f}s' if bar_age is not None else None),
+    )
+
+    volume_ratio = number(intraday_volume_ratio)
+    if volume_ratio is None:
+        volume_ratio = number(comparable_volume_ratio)
+    rsi = number(rsi14)
+    ema20_value = number(ema20)
+    ema50_value = number(ema50)
+    resistance_value = number(resistance)
+    support_value = number(support)
+    macd_value = number(macd_histogram)
+
+    bullish_reversal = None
+    if latest_close is not None and latest_open is not None and previous_close is not None:
+        bullish_reversal = latest_close > latest_open and latest_close >= previous_close
+
+    if setup_kind == 'breakout':
+        breakout_level = resistance_value if resistance_value and resistance_value > 0 else low
+        close_breakout = (
+            latest_close > breakout_level
+            if latest_close is not None and breakout_level is not None else None
+        )
+        add_check(
+            'Breakout close confirmed',
+            close_breakout,
+            'completed 5m close must finish above resistance',
+            observed=(f'${latest_close:.4f}' if latest_close is not None else None),
+        )
+        add_check(
+            'Breakout participation',
+            volume_ratio >= 1.25 if volume_ratio is not None else None,
+            'relative volume must be at least 1.25x',
+            observed=(f'{volume_ratio:.2f}x' if volume_ratio is not None else None),
+        )
+        add_check(
+            'Trend context',
+            latest_close >= ema20_value if latest_close is not None and ema20_value is not None else None,
+            'close at or above EMA20',
+            required=False,
+            observed=(f'EMA20 ${ema20_value:.4f}' if ema20_value is not None else None),
+        )
+    elif setup_kind == 'pullback':
+        add_check(
+            'Bullish pullback reversal',
+            bullish_reversal,
+            'completed 5m bar closes bullish and no lower than the prior close',
+            observed=(f'close ${latest_close:.4f}' if latest_close is not None else None),
+        )
+        trend_aligned = None
+        if ema20_value is not None and ema50_value is not None and price is not None:
+            trend_aligned = ema20_value > ema50_value and price >= ema50_value
+        add_check(
+            'Trend structure intact',
+            trend_aligned,
+            'EMA20 above EMA50 and executable price not below EMA50',
+            observed=(
+                f'EMA20 ${ema20_value:.4f} / EMA50 ${ema50_value:.4f}'
+                if ema20_value is not None and ema50_value is not None else None
+            ),
+        )
+        add_check(
+            'RSI reset',
+            35 <= rsi <= 65 if rsi is not None else None,
+            'RSI14 between 35 and 65',
+            observed=(f'{rsi:.1f}' if rsi is not None else None),
+        )
+        add_check(
+            'Orderly volume',
+            volume_ratio <= 1.50 if volume_ratio is not None else None,
+            'pullback volume no more than 1.50x baseline',
+            required=False,
+            observed=(f'{volume_ratio:.2f}x' if volume_ratio is not None else None),
+        )
+    elif setup_kind == 'support':
+        add_check(
+            'Bullish support reversal',
+            bullish_reversal,
+            'completed 5m bar closes bullish and no lower than the prior close',
+            observed=(f'close ${latest_close:.4f}' if latest_close is not None else None),
+        )
+        touched_zone = None
+        if latest_low is not None and high is not None and latest_close is not None and low is not None:
+            touched_zone = latest_low <= high and latest_close >= low
+        add_check(
+            'Support held',
+            touched_zone,
+            'bar trades into the zone and closes back above its lower bound',
+            observed=(f'low ${latest_low:.4f}' if latest_low is not None else None),
+        )
+        add_check(
+            'Support context',
+            latest_close >= support_value if latest_close is not None and support_value is not None else None,
+            'close at or above structural support',
+            required=False,
+            observed=(f'support ${support_value:.4f}' if support_value is not None else None),
+        )
+    elif setup_kind == 'mean_reversion':
+        add_check(
+            'Bullish mean-reversion turn',
+            bullish_reversal,
+            'completed 5m bar closes bullish and no lower than the prior close',
+            observed=(f'close ${latest_close:.4f}' if latest_close is not None else None),
+        )
+        add_check(
+            'Oversold evidence',
+            rsi <= 42 if rsi is not None else None,
+            'RSI14 at or below 42',
+            observed=(f'{rsi:.1f}' if rsi is not None else None),
+        )
+        add_check(
+            'Range reclaimed',
+            latest_close >= low if latest_close is not None and low is not None else None,
+            'completed close back above the lower entry-zone boundary',
+            observed=(f'${latest_close:.4f}' if latest_close is not None else None),
+        )
+    else:  # continuation
+        add_check(
+            'Price continuation',
+            latest_close > previous_close if latest_close is not None and previous_close is not None else None,
+            'completed 5m close above the prior completed close',
+            observed=(f'${latest_close:.4f}' if latest_close is not None else None),
+        )
+        trend_aligned = None
+        if latest_close is not None and ema20_value is not None and ema50_value is not None:
+            trend_aligned = latest_close >= ema20_value and ema20_value > ema50_value
+        add_check(
+            'Trend alignment',
+            trend_aligned,
+            'close at or above EMA20 with EMA20 above EMA50',
+            observed=(
+                f'EMA20 ${ema20_value:.4f} / EMA50 ${ema50_value:.4f}'
+                if ema20_value is not None and ema50_value is not None else None
+            ),
+        )
+        momentum_confirmed = None
+        if macd_value is not None or volume_ratio is not None:
+            momentum_confirmed = bool(
+                (macd_value is not None and macd_value >= 0)
+                or (volume_ratio is not None and volume_ratio >= 1.0)
+            )
+        add_check(
+            'Momentum confirmation',
+            momentum_confirmed,
+            'non-negative MACD histogram or relative volume at least 1.0x',
+            observed=(
+                f'MACD {macd_value:.4f}' if macd_value is not None
+                else (f'volume {volume_ratio:.2f}x' if volume_ratio is not None else None)
+            ),
+        )
+
+    required_checks = [check for check in checks if check['required']]
+    missing = [check['name'] for check in required_checks if not check['available']]
+    failed = [check['name'] for check in required_checks if check['available'] and not check['passed']]
+    met = bool(required_checks) and not missing and not failed
+    if in_zone is False:
+        status = 'WAIT_ZONE'
+    elif missing:
+        status = 'NEED_DATA'
+    elif met:
+        status = 'CONFIRMED'
+    else:
+        status = 'WAIT_TRIGGER'
+    reasons = []
+    if missing:
+        reasons.append('Missing required trigger evidence: ' + ', '.join(missing))
+    if failed:
+        reasons.append('Trigger checks not met: ' + ', '.join(failed))
+    return {
+        'eligible': True,
+        'met': met,
+        'status': status,
+        'setupKind': setup_kind,
+        'checks': checks,
+        'missing': missing,
+        'reasons': reasons,
+    }
+
+
+def _assess_entry_reward_geometry(entry, stop, target1, target2=None, min_rr=1.45):
+    """Score structural targets as supplied; never move a target to manufacture R/R."""
+    def number(value):
+        try:
+            if value in (None, ''):
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    entry_value = number(entry)
+    stop_value = number(stop)
+    target1_value = number(target1)
+    target2_value = number(target2)
+    min_rr_value = number(min_rr) or 1.45
+    risk = (
+        entry_value - stop_value
+        if entry_value is not None and stop_value is not None and entry_value > stop_value > 0 else None
+    )
+    rr1 = (
+        (target1_value - entry_value) / risk
+        if risk and target1_value is not None and target1_value > entry_value else 0.0
+    )
+    rr2 = (
+        (target2_value - entry_value) / risk
+        if risk and target2_value is not None and target2_value > entry_value else 0.0
+    )
+    primary_valid = bool(risk and target1_value is not None and target1_value > entry_value)
+    return {
+        'valid': bool(risk and primary_valid),
+        'riskPerShare': round(risk, 4) if risk else 0.0,
+        'riskReward1': round(rr1, 2),
+        'riskReward2': round(rr2, 2),
+        'primaryTargetValid': primary_valid,
+        'passesMinimum': primary_valid and rr1 >= min_rr_value,
+        'minRiskReward': min_rr_value,
+    }
+
+
+def _build_entry_limit_preflight(
+    plan_snapshot,
+    quote,
+    buying_power,
+    fractionable=True,
+    require_attached_protection=False,
+    require_marketable=False,
+):
+    """Reprice and resize an approved plan against the executable quote.
+
+    The Entry Plan owns the zone, stop, target, and risk budget. The live quote
+    owns the trigger and final limit price. The returned quantity never exceeds
+    the plan size, risk budget, allocation cap, or buffered buying power.
+    """
+    import math
+
+    def number(value, default=0.0):
+        try:
+            if value in (None, ''):
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    zone = plan_snapshot.get('entryZone') if isinstance(plan_snapshot.get('entryZone'), dict) else {}
+    low = number(plan_snapshot.get('entryZoneLow', plan_snapshot.get('entryLow', zone.get('low'))))
+    high = number(plan_snapshot.get('entryZoneHigh', plan_snapshot.get('entryHigh', zone.get('high'))))
+    stop = number(plan_snapshot.get('stopLoss', plan_snapshot.get('stop')))
+    target = number(plan_snapshot.get('takeProfit1', plan_snapshot.get('takeProfit', plan_snapshot.get('target'))))
+    planned_shares = number(plan_snapshot.get('shares', plan_snapshot.get('positionSizeShares')))
+    risk_budget = number(plan_snapshot.get('riskBudget'), number(plan_snapshot.get('riskDollars')))
+    max_allocation = number(plan_snapshot.get('maxAllocationDollars'), number(plan_snapshot.get('allocationDollars')))
+    slippage_bps = max(1.0, min(50.0, number(plan_snapshot.get('slippageCapBps'), 18.0)))
+    bid = number(quote.get('bid'))
+    ask = number(quote.get('ask'))
+    last = number(quote.get('last'))
+
+    blockers = []
+    if low <= 0 or high <= 0 or high < low:
+        blockers.append('Entry zone unavailable or invalid')
+    if bid <= 0 or ask <= 0 or ask < bid:
+        blockers.append('Fresh executable bid/ask quote unavailable')
+    if stop <= 0 or target <= 0:
+        blockers.append('Stop loss or target unavailable')
+    if planned_shares <= 0:
+        blockers.append('Planned position size is zero')
+    if buying_power <= 0:
+        blockers.append('Available buying power is zero')
+    if blockers:
+        return {'ok': False, 'blockers': blockers}
+
+    # A buy is triggered by the executable ask, not a stale last-trade marker.
+    if not (low <= ask <= high):
+        return {
+            'ok': False,
+            'code': 'price_outside_zone',
+            'blockers': [f'Executable ask ${ask:.4f} is outside entry zone ${low:.4f}-${high:.4f}'],
+            'quote': {'bid': bid, 'ask': ask, 'last': last},
+        }
+
+    midpoint = (bid + ask) / 2.0
+    zone_cap = _entry_round_price(high, 'down')
+    slippage_cap = _entry_round_price(midpoint * (1 + slippage_bps / 10000.0), 'down')
+    marketable_ask = _entry_round_price(ask, 'up')
+    limit_price = max(_entry_round_price(low, 'up'), min(zone_cap, slippage_cap, marketable_ask))
+    limit_price = _entry_round_price(limit_price, 'down')
+    marketable = limit_price + (_entry_price_tick(limit_price) / 10.0) >= ask
+
+    if require_marketable and not marketable:
+        return {
+            'ok': False,
+            'code': 'non_marketable_auto_limit',
+            'blockers': [
+                'Automatic entry requires a marketable limit; the slippage cap is below the executable ask.'
+            ],
+            'limitPrice': limit_price,
+            'quote': {'bid': bid, 'ask': ask, 'last': last},
+        }
+
+    risk_per_share = limit_price - stop
+    if risk_per_share <= 0:
+        return {
+            'ok': False,
+            'code': 'invalid_risk_geometry',
+            'blockers': [f'Limit ${limit_price:.4f} must be above stop ${stop:.4f}'],
+        }
+    if target <= limit_price:
+        return {
+            'ok': False,
+            'code': 'invalid_risk_geometry',
+            'blockers': [f'Target ${target:.4f} must be above limit ${limit_price:.4f}'],
+        }
+
+    caps = [planned_shares, (buying_power * 0.95) / limit_price]
+    if risk_budget > 0:
+        caps.append(risk_budget / risk_per_share)
+    if max_allocation > 0:
+        caps.append(max_allocation / limit_price)
+    executable_shares = max(0.0, min(caps))
+
+    # Whole-share plans can use Alpaca bracket protection. Keep genuinely small
+    # positions fractional instead of inflating them to one share.
+    use_bracket = executable_shares >= 1.0
+    if require_attached_protection and not use_bracket:
+        return {
+            'ok': False,
+            'code': 'fractional_protection_unavailable',
+            'blockers': [
+                'Automatic entry requires at least one whole share so stop and target can be attached as a bracket order.'
+            ],
+        }
+    if use_bracket or not fractionable:
+        executable_shares = float(math.floor(executable_shares))
+    else:
+        executable_shares = round(executable_shares, 4)
+
+    min_shares = 0.01 if fractionable else 1.0
+    if executable_shares < min_shares or executable_shares * limit_price < 1.0:
+        return {
+            'ok': False,
+            'code': 'position_below_minimum',
+            'blockers': ['Risk and allocation caps leave no executable position size'],
+        }
+
+    rounded_stop = _entry_round_price(stop, 'down')
+    rounded_target = _entry_round_price(target, 'down')
+    entry_tick = _entry_price_tick(limit_price)
+    if rounded_stop > limit_price - entry_tick or rounded_target < limit_price + entry_tick:
+        return {
+            'ok': False,
+            'code': 'invalid_risk_geometry',
+            'blockers': [
+                'Rounded stop/target must remain at least one price increment outside the entry limit'
+            ],
+        }
+
+    spread_bps = ((ask - bid) / midpoint * 10000.0) if midpoint > 0 else None
+    return {
+        'ok': True,
+        'limitPrice': limit_price,
+        'shares': executable_shares,
+        'notional': round(executable_shares * limit_price, 2),
+        'riskDollars': round(executable_shares * risk_per_share, 2),
+        'riskPerShare': round(risk_per_share, 4),
+        'marketable': marketable,
+        'orderClass': 'bracket' if use_bracket else 'simple',
+        'protectionMode': 'alpaca_bracket' if use_bracket else 'exit_scan',
+        'quote': {
+            'bid': bid,
+            'ask': ask,
+            'last': last,
+            'mid': round(midpoint, 4),
+            'spreadBps': round(spread_bps, 2) if spread_bps is not None else None,
+        },
+        'entryZone': {'low': low, 'high': high},
+        'stopLoss': rounded_stop,
+        'takeProfit': rounded_target,
+        'slippageCapBps': slippage_bps,
+    }
+
+
 @app.route('/api/entry-plan/execute', methods=['POST'])
 def entry_plan_execute():
     """
     Execute an entry plan order via Alpaca broker.
     Requires BUY_READY + all safety gates passed + broker connected.
-    Supports market, limit, and stop_limit orders. All buy orders enforce time_in_force=day.
-    Paper/Live modes with live requiring confirmation.
+    Entry Plan execution is limit-only. Automatic orders require an open market,
+    a fresh executable quote inside the approved zone, and a clean pre-trade gate.
     """
     import requests as _req
     import time as _time
@@ -22733,6 +26957,14 @@ def entry_plan_execute():
         if not data:
             return jsonify({'success': False, 'action': 'BLOCKED', 'reason': 'No data provided', 'blockers': ['Empty request']}), 400
         user = get_supabase_user()
+        if not user:
+            return jsonify({
+                'success': False,
+                'action': 'BLOCKED',
+                'reason': 'Authentication required',
+                'blockers': ['Authentication required'],
+            }), 401
+        suppress_discord = bool(data.get('suppressDiscord'))
 
         symbol = data.get('symbol', '').upper().strip()
         plan_snapshot = data.get('planSnapshot', {})
@@ -22759,8 +26991,15 @@ def entry_plan_execute():
             shares = float(plan_snapshot.get('shares', plan_snapshot.get('positionSizeShares', 0)) or 0)
         except (TypeError, ValueError):
             shares = 0
-        order_preview = plan_snapshot.get('orderPreview', {}) or {}
-        order_type = order_preview.get('orderType', '')
+        order_preview = (
+            plan_snapshot.get('orderPreview', {})
+            or (plan_snapshot.get('executionDetails', {}) or {}).get('orderPreview', {})
+            or ((plan_snapshot.get('institutionalEntryPlan', {}) or {}).get('execution', {}) if isinstance(plan_snapshot.get('institutionalEntryPlan'), dict) else {})
+            or {}
+        )
+        # Entry Plan is intentionally limit-only. Any legacy market/stop-limit
+        # suggestion is repriced from a fresh quote before submission.
+        order_type = 'limit'
         time_in_force = plan_snapshot.get('timeInForce', order_preview.get('timeInForce', 'day'))
         def _as_float(v, default=0):
             try:
@@ -22782,35 +27021,54 @@ def entry_plan_execute():
 
         if final_action != 'BUY_READY':
             blockers.append(f'finalAction is {final_action}, not BUY_READY')
-        if risk_gate_status not in ('PASS', 'REVIEW'):
-            blockers.append(f'Risk Gate status is {risk_gate_status}, not PASS or REVIEW')
-        # Allow PARTIAL data quality when all critical trading fields are present
-        _has_critical = (entry_low > 0 and entry_high > 0 and current_price > 0
-                         and stop_loss_plan > 0 and take_profit_plan > 0 and shares > 0)
-        if data_quality not in ('GOOD',) and not (data_quality == 'PARTIAL' and _has_critical):
+        if risk_gate_status != 'PASS':
+            blockers.append(f'Risk Gate status is {risk_gate_status}, not PASS')
+        # Automated execution requires complete evidence. Manual review can still
+        # inspect a PARTIAL plan, but it cannot be promoted by setting a flag here.
+        if data_quality != 'GOOD':
             blockers.append(f'Data Quality is {data_quality}, not GOOD')
         if trade_readiness != 'READY':
             blockers.append(f'Trade Readiness is {trade_readiness}, not READY')
+        if plan_snapshot.get('setupAutoEligible') is not True:
+            blockers.append('Setup is not eligible for automatic entry')
+        if plan_snapshot.get('entryTriggerMet') is not True:
+            blockers.append('Setup-specific entry trigger is not confirmed')
+        trigger_status = str(plan_snapshot.get('entryTriggerStatus') or '').upper()
+        if trigger_status != 'CONFIRMED':
+            blockers.append(f'Entry trigger status is {trigger_status or "unavailable"}, not CONFIRMED')
+        trigger_age_seconds = _entry_quote_age_seconds(plan_snapshot.get('triggerEvaluatedAt'))
+        if is_auto_execute and (trigger_age_seconds is None or trigger_age_seconds > 300):
+            blockers.append('Entry trigger evaluation is stale; rerun Entry Plan before automatic execution')
+        admission_decision = str(plan_snapshot.get('admissionDecision') or '').upper()
+        admission_snapshot = plan_snapshot.get('admissionSnapshot') if isinstance(plan_snapshot.get('admissionSnapshot'), dict) else {}
+        if is_auto_execute:
+            if admission_decision != 'ADMIT':
+                blockers.append('Portfolio Admission is not ADMIT')
+            if not admission_snapshot.get('id') or not admission_snapshot.get('inputFingerprint'):
+                blockers.append('Portfolio Admission snapshot is unavailable')
+            admission_expiry = _pa_parse_timestamp(admission_snapshot.get('expiresAt'))
+            if admission_expiry is None or admission_expiry.astimezone(timezone.utc) <= datetime.now(timezone.utc):
+                blockers.append('Portfolio Admission snapshot is expired; rerun validation')
+            locked_strategy = _pa_normalize_strategy(admission_snapshot.get('strategy'))
+            plan_strategy = _pa_normalize_strategy(plan_snapshot.get('strategy') or plan_snapshot.get('bestStrategy') or plan_snapshot.get('setup'))
+            if locked_strategy and plan_strategy and locked_strategy != plan_strategy:
+                blockers.append('Entry Plan strategy differs from the admitted strategy version')
         if shares <= 0:
             blockers.append(f'Shares is {shares}, must be > 0')
         # Build order preview from plan fields if missing (leveraged alternatives may lack it)
-        if not order_preview or not order_preview.get('orderType'):
+        if not order_preview:
             _op_limit = min(current_price, entry_high) if current_price > 0 and entry_high > 0 else (current_price or entry_high or 0)
             order_preview = {'orderType': 'limit', 'limitPrice': _op_limit, 'timeInForce': 'day',
                              'entryZoneLow': entry_low, 'entryZoneHigh': entry_high}
-            order_type = 'limit'
-        if order_type not in ('limit', 'stop_limit', 'market'):
-            blockers.append(f'Order type {order_type} is not limit, stop_limit, or market')
+        order_preview['orderType'] = 'limit'
         if entry_low <= 0 or entry_high <= 0:
             blockers.append('Entry zone unavailable')
-        if current_price <= 0:
-            blockers.append('Current price unavailable')
         if stop_loss_plan <= 0:
             blockers.append('Stop loss unavailable')
         if take_profit_plan <= 0:
             blockers.append('Target price unavailable')
-        if current_price > 0 and entry_low > 0 and entry_high > 0 and not (entry_low <= current_price <= entry_high):
-            blockers.append(f'Current price ${current_price:.2f} is outside entry zone ${entry_low:.2f}-${entry_high:.2f}')
+        # Do not gate on the generation-time snapshot. A fresh executable ask is
+        # fetched immediately before submission and owns the final zone decision.
 
         if blockers:
             # Classify blocker for frontend status display
@@ -22827,7 +27085,7 @@ def entry_plan_execute():
             elif 'not configured' in _blockers_lower or 'api key' in _blockers_lower:
                 _blocker_code = 'config_missing'
             print(f'[ENTRY EXECUTE] {symbol} BLOCKED code={_blocker_code}: {blockers}')
-            if user:
+            if user and not suppress_discord:
                 send_discord_notification(user['id'], 'error', {
                     'event_id': f'entry-execute-blocked-{symbol}-{int(time.time())}',
                     'step': 'Entry Plan Execute',
@@ -22845,7 +27103,7 @@ def entry_plan_execute():
 
         # ── 3. Check execution mode ──
         if execution_mode == 'recommend_only':
-            if user:
+            if user and not suppress_discord:
                 send_discord_notification(user['id'], 'error', {
                     'event_id': f'entry-execute-review-only-{symbol}-{int(time.time())}',
                     'step': 'Entry Plan Execute',
@@ -22871,6 +27129,17 @@ def entry_plan_execute():
                     'reason': 'Live trading requires explicit confirmation',
                     'blockers': ['liveConfirm missing or confirmText mismatch']
                 })
+        if execution_mode == 'live' and is_auto_execute:
+            automation_config = _pa_get_config(user['id']) or {}
+            if automation_config.get('live_auto_trading_enabled') is not True:
+                return jsonify({
+                    'success': False,
+                    'action': 'BLOCKED',
+                    'symbol': symbol,
+                    'code': 'live_auto_not_enabled',
+                    'reason': 'Live background auto trading is not explicitly enabled',
+                    'blockers': ['Enable Live Auto Trading in the automation controls before unattended real orders'],
+                })
 
         # ── 5. Connect to Alpaca broker (from per-user Supabase config) ──
         alpaca_mode = 'live' if execution_mode == 'live' else 'paper'
@@ -22893,23 +27162,121 @@ def entry_plan_execute():
             'Content-Type': 'application/json'
         }
 
-        # ── 6. Check buying power, existing position, open orders ──
+        # ── 6. Fresh market preflight ──
+        market_clock = {}
+        try:
+            clock_resp = _req.get(f'{base_url}/v2/clock', headers=headers, timeout=8)
+            if clock_resp.status_code == 200:
+                market_clock = clock_resp.json() or {}
+            elif is_auto_execute:
+                blockers.append(f'Cannot verify market clock: HTTP {clock_resp.status_code}')
+        except Exception as clock_error:
+            if is_auto_execute:
+                blockers.append(f'Cannot verify market clock: {str(clock_error)[:80]}')
+
+        if market_clock.get('is_open') is not True:
+            next_open = market_clock.get('next_open')
+            suffix = f' Next open: {next_open}.' if next_open else ''
+            blockers.append(f'Market is closed; Entry Plan orders are not queued overnight.{suffix}')
+
+        quote_packet = {}
+        quote_age_seconds = None
+        try:
+            market_cfg, _ = resolve_alpaca_config('market_data', require_user_config=True)
+            market_headers = {
+                'APCA-API-KEY-ID': market_cfg.get('api_key', ''),
+                'APCA-API-SECRET-KEY': market_cfg.get('api_secret', ''),
+            }
+            if not market_headers['APCA-API-KEY-ID'] or not market_headers['APCA-API-SECRET-KEY']:
+                blockers.append('Alpaca Market Data credentials are not configured')
+            else:
+                snapshot_resp = _req.get(
+                    f'{_get_market_data_base_url()}/v2/stocks/{symbol}/snapshot',
+                    headers=market_headers,
+                    timeout=10,
+                )
+                if snapshot_resp.status_code == 200:
+                    snapshot = snapshot_resp.json() or {}
+                    latest_quote = snapshot.get('latestQuote') or {}
+                    latest_trade = snapshot.get('latestTrade') or {}
+                    quote_packet = {
+                        'bid': _as_float(latest_quote.get('bp')),
+                        'ask': _as_float(latest_quote.get('ap')),
+                        'bidSize': _as_float(latest_quote.get('bs')),
+                        'askSize': _as_float(latest_quote.get('as')),
+                        'last': _as_float(latest_trade.get('p')),
+                        'timestamp': latest_quote.get('t') or latest_trade.get('t'),
+                        'feed': snapshot.get('feed') or 'Alpaca Market Data snapshot',
+                    }
+                    quote_age_seconds = _entry_quote_age_seconds(quote_packet.get('timestamp'))
+                else:
+                    blockers.append(f'Fresh Alpaca quote unavailable: HTTP {snapshot_resp.status_code}')
+        except Exception as quote_error:
+            blockers.append(f'Fresh Alpaca quote unavailable: {str(quote_error)[:100]}')
+
+        if not quote_packet.get('bid') or not quote_packet.get('ask'):
+            blockers.append('Fresh executable bid/ask quote unavailable')
+        if is_auto_execute and market_clock.get('is_open') is True:
+            if quote_age_seconds is None:
+                blockers.append('Quote timestamp unavailable; automatic execution requires freshness verification')
+            elif quote_age_seconds > 90:
+                blockers.append(f'Quote is stale ({quote_age_seconds:.0f}s old); automatic execution requires <= 90s')
+
+        if blockers:
+            blocker_text = ' '.join(blockers).lower()
+            if 'market is closed' in blocker_text:
+                blocker_code = 'market_closed'
+            elif 'stale' in blocker_text:
+                blocker_code = 'stale_quote'
+            else:
+                blocker_code = 'quote_unavailable'
+            return jsonify({
+                'success': False,
+                'action': 'BLOCKED',
+                'symbol': symbol,
+                'code': blocker_code,
+                'reason': '; '.join(blockers)[:300],
+                'blockers': blockers,
+                'marketClock': market_clock,
+                'quote': quote_packet,
+            })
+
+        # ── 7. Check buying power, account state, position, and open orders ──
         _bp_check_passed = True
         _existing_position_found = False
         _open_buy_order_found = False
+        buying_power = 0.0
+        spendable_buying_power = 0.0
+        cash = 0.0
+        non_marginable_buying_power = 0.0
+        equity = 0.0
+        last_equity = 0.0
+        current_position_count = 0
+        open_buy_order_count = 0
+        fractionable = bool(plan_snapshot.get('fractionable', True))
         try:
             acc_resp = _req.get(f'{base_url}/v2/account', headers=headers, timeout=10)
             if acc_resp.status_code == 200:
                 acc_data = acc_resp.json()
                 buying_power = float(acc_data.get('buying_power', 0))
                 cash = float(acc_data.get('cash', 0))
+                non_marginable_buying_power = float(acc_data.get('non_marginable_buying_power', 0) or 0)
                 equity = float(acc_data.get('equity', 0))
-                estimate_price = _as_float(order_preview.get('limitPrice')) or current_price
-                est_value = shares * estimate_price
-                print(f'[ENTRY EXECUTE] {symbol} BP CHECK: shares={shares} limitPrice={estimate_price} estValue={est_value:.4f} buyingPower={buying_power:.2f} cash={cash:.2f} equity={equity:.2f} mode={alpaca_mode}')
-                if est_value > buying_power:
-                    blockers.append(f'Estimated value ${est_value:.2f} exceeds buying power ${buying_power:.2f}')
+                last_equity = float(acc_data.get('last_equity', 0) or 0)
+                allow_margin = bool(plan_snapshot.get('allowMargin', False))
+                cash_capacity = max(cash, non_marginable_buying_power, 0.0)
+                spendable_buying_power = buying_power if allow_margin else min(buying_power, cash_capacity)
+                if acc_data.get('trading_blocked') or acc_data.get('account_blocked') or acc_data.get('trade_suspended_by_user'):
+                    blockers.append('Alpaca account is currently blocked or trading is suspended')
                     _bp_check_passed = False
+                if spendable_buying_power <= 0:
+                    blockers.append('Available cash-funded buying power is zero')
+                    _bp_check_passed = False
+                if last_equity > 0 and equity > 0:
+                    session_loss_pct = max(0.0, (last_equity - equity) / last_equity * 100.0)
+                    if session_loss_pct >= 3.0:
+                        blockers.append(f'Account session loss {session_loss_pct:.2f}% reached the 3% kill switch')
+                        _bp_check_passed = False
             else:
                 blockers.append(f'Cannot verify buying power: HTTP {acc_resp.status_code}')
                 _bp_check_passed = False
@@ -22918,26 +27285,55 @@ def entry_plan_execute():
             _bp_check_passed = False
 
         try:
-            pos_resp = _req.get(f'{base_url}/v2/positions/{symbol}', headers=headers, timeout=10)
+            asset_resp = _req.get(f'{base_url}/v2/assets/{symbol}', headers=headers, timeout=8)
+            if asset_resp.status_code == 200:
+                asset_data = asset_resp.json() or {}
+                fractionable = bool(asset_data.get('fractionable', fractionable))
+                if not asset_data.get('tradable', True) or asset_data.get('status') not in (None, 'active'):
+                    blockers.append(f'{symbol} is not active and tradable in Alpaca {alpaca_mode}')
+            else:
+                blockers.append(f'Cannot verify asset tradability: HTTP {asset_resp.status_code}')
+        except Exception as asset_error:
+            blockers.append(f'Cannot verify asset tradability: {str(asset_error)[:80]}')
+
+        try:
+            pos_resp = _req.get(f'{base_url}/v2/positions', headers=headers, timeout=10)
             if pos_resp.status_code == 200:
-                pos_data = pos_resp.json() or {}
-                pos_qty = _as_float(pos_data.get('qty'))
-                if pos_qty > 0:
-                    blockers.append(f'Existing position already held for {symbol} ({pos_qty} shares)')
-                    _existing_position_found = True
-            elif pos_resp.status_code not in (404,):
-                blockers.append(f'Cannot verify existing position: HTTP {pos_resp.status_code}')
+                position_rows = pos_resp.json() or []
+                current_position_count = len(position_rows)
+                for position in position_rows:
+                    if str(position.get('symbol', '')).upper() != symbol:
+                        continue
+                    pos_qty = _as_float(position.get('qty'))
+                    if pos_qty > 0:
+                        blockers.append(f'Existing position already held for {symbol} ({pos_qty} shares)')
+                        _existing_position_found = True
+                    break
+                max_positions = int(_as_float(plan_snapshot.get('maxPortfolioPositions'), 0))
+                if max_positions > 0 and not _existing_position_found and current_position_count + 1 > max_positions:
+                    blockers.append(
+                        f'Portfolio position limit reached ({current_position_count}/{max_positions})'
+                    )
+            else:
+                blockers.append(f'Cannot verify existing positions: HTTP {pos_resp.status_code}')
         except Exception as pos_e:
-            blockers.append(f'Cannot verify existing position: {str(pos_e)[:80]}')
+            blockers.append(f'Cannot verify existing positions: {str(pos_e)[:80]}')
 
         try:
             ord_resp = _req.get(f'{base_url}/v2/orders?status=open', headers=headers, timeout=10)
             if ord_resp.status_code == 200:
                 for order in (ord_resp.json() or []):
-                    if str(order.get('symbol', '')).upper() == symbol and str(order.get('side', '')).lower() == 'buy':
+                    if str(order.get('side', '')).lower() != 'buy':
+                        continue
+                    open_buy_order_count += 1
+                    if str(order.get('symbol', '')).upper() == symbol:
                         blockers.append(f'Open buy order already exists for {symbol}')
                         _open_buy_order_found = True
-                        break
+                max_open_buys = int(_as_float(plan_snapshot.get('maxOpenBuyOrders'), 0))
+                if max_open_buys > 0 and not _open_buy_order_found and open_buy_order_count >= max_open_buys:
+                    blockers.append(
+                        f'Open buy order limit reached ({open_buy_order_count}/{max_open_buys})'
+                    )
             else:
                 blockers.append(f'Cannot verify open orders: HTTP {ord_resp.status_code}')
         except Exception as ord_e:
@@ -22962,87 +27358,101 @@ def entry_plan_execute():
                 'code': _code, 'reason': reason[:300], 'blockers': blockers
             })
 
-        # ── 7. Build and submit order ──
-        def _safe_float(v, default=0):
-            """Safely convert to float; return default if None or non-numeric."""
-            if v is None:
-                return default
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                return default
-
-        limit_price = _safe_float(order_preview.get('limitPrice'), 0)
-        stop_price = order_preview.get('stopPrice', None)
-        stop_loss = _safe_float(order_preview.get('stopLoss'), 0)
-        take_profit = _safe_float(order_preview.get('takeProfit'), 0)
-        client_order_id = data.get('clientOrderId') or data.get('client_order_id')
-
-        if order_type == 'stop_limit' and stop_price:
-            order_payload = {
-                'symbol': symbol,
-                'side': 'buy',
-                'qty': str(shares),
-                'type': 'stop_limit',
-                'stop_price': str(stop_price),
-                'limit_price': str(limit_price),
-                'time_in_force': 'day'
-            }
-        elif order_type == 'limit':
-            order_payload = {
-                'symbol': symbol,
-                'side': 'buy',
-                'qty': str(shares),
-                'type': 'limit',
-                'limit_price': str(limit_price),
-                'time_in_force': 'day'
-            }
-        elif order_type == 'market':
-            order_payload = {
-                'symbol': symbol,
-                'side': 'buy',
-                'qty': str(shares),
-                'type': 'market',
-                'time_in_force': 'day'
-            }
-        else:
+        # ── 8. Reprice, resize, and submit a limit-only order ──
+        preflight = _build_entry_limit_preflight(
+            plan_snapshot,
+            quote_packet,
+            spendable_buying_power,
+            fractionable=fractionable,
+            require_attached_protection=is_auto_execute,
+            require_marketable=is_auto_execute,
+        )
+        if not preflight.get('ok'):
+            preflight_blockers = preflight.get('blockers') or ['Execution preflight failed']
             return jsonify({
-                'success': False, 'action': 'BLOCKED', 'symbol': symbol,
-                'reason': f'Unsupported order type: {order_type}',
-                'blockers': [f'Order type {order_type} not supported']
+                'success': False,
+                'action': 'BLOCKED',
+                'symbol': symbol,
+                'code': preflight.get('code') or 'execution_preflight',
+                'reason': '; '.join(preflight_blockers)[:300],
+                'blockers': preflight_blockers,
+                'preflight': preflight,
+                'marketClock': market_clock,
+                'quoteAgeSeconds': round(quote_age_seconds, 1) if quote_age_seconds is not None else None,
             })
 
-        if client_order_id:
-            order_payload['client_order_id'] = str(client_order_id)[:48]
+        limit_price = preflight['limitPrice']
+        shares = preflight['shares']
+        stop_loss = preflight['stopLoss']
+        take_profit = preflight['takeProfit']
+        order_class = preflight['orderClass']
+        protection_mode = preflight['protectionMode']
+        qty_value = str(int(shares)) if order_class == 'bracket' else ('%.4f' % shares).rstrip('0').rstrip('.')
+        client_order_id = data.get('clientOrderId') or data.get('client_order_id')
+        if not client_order_id:
+            client_order_id = f'alphalab-entry-{symbol}-{_uuid.uuid4().hex[:16]}'
 
-        print(f'[ENTRY EXECUTE] {symbol}: submitting {mode_label} {order_type} order: shares={shares}' + (f' limit=${limit_price}' if limit_price and order_type != 'market' else ''))
+        order_payload = {
+            'symbol': symbol,
+            'side': 'buy',
+            'qty': qty_value,
+            'type': 'limit',
+            'limit_price': str(limit_price),
+            'time_in_force': 'day',
+            'extended_hours': False,
+            'client_order_id': str(client_order_id)[:48],
+        }
+        if order_class == 'bracket':
+            order_payload.update({
+                'order_class': 'bracket',
+                'take_profit': {'limit_price': str(take_profit)},
+                'stop_loss': {'stop_price': str(stop_loss)},
+            })
+
+        print(
+            f'[ENTRY EXECUTE] {symbol}: submitting {mode_label} limit order '
+            f'shares={shares} limit=${limit_price} class={order_class} '
+            f'marketable={preflight.get("marketable")}'
+        )
 
         order_resp = _req.post(f'{base_url}/v2/orders', headers=headers, json=order_payload, timeout=30)
 
-        if order_resp.status_code == 200:
+        if order_resp.status_code in (200, 201):
             order_data = order_resp.json()
             order_id = order_data.get('id', 'unknown')
             order_status = order_data.get('status', 'unknown')
             print(f'[ENTRY EXECUTE] {symbol}: ORDER SUBMITTED id={order_id} status={order_status}')
-            if user:
+            if user and not suppress_discord:
                 send_discord_notification(user['id'], 'order', {
                     'event_id': order_id,
                     'mode': 'real' if mode_label == 'live' else 'paper',
                     'side': 'buy',
                     'symbol': symbol,
                     'qty': shares,
-                    'orderType': order_type,
+                    'orderType': 'limit',
+                    'orderClass': order_class,
                     'limitPrice': limit_price,
                     'price': limit_price,
                     'status': order_status,
                     'orderId': order_id,
                     'reason': 'Entry Plan execution submitted order.',
                 })
+            if user:
+                _pa_record_managed_position_plan(
+                    user['id'], mode_label, symbol, plan_snapshot,
+                    order=order_data, status='entry_submitted',
+                )
 
-            # Build response with stop/take profit note
-            note = 'Stop/target are plan levels only. No bracket/OCO order was attached. Exit Scan manages exits separately.'
-            if stop_loss > 0 and take_profit and take_profit > 0:
-                note = f'Stop ${stop_loss:.2f} / target ${take_profit:.2f} are plan levels only. No bracket/OCO order was attached. Exit Scan manages exits separately.'
+            if order_class == 'bracket':
+                note = (
+                    f'Protected limit entry: target ${take_profit:.2f} and stop ${stop_loss:.2f} '
+                    'will activate after the entry fills.'
+                )
+            else:
+                note = (
+                    f'Fractional limit entry submitted. Stop ${stop_loss:.2f} / target ${take_profit:.2f} '
+                    'remain managed by Exit Scan because Alpaca advanced-order support is not used for this fractional quantity.'
+                )
 
             return jsonify({
                 'success': True,
@@ -23054,8 +27464,22 @@ def entry_plan_execute():
                 'order': order_data,
                 'orderData': order_data,
                 'submittedOrder': order_data,
-                'message': f'{mode_label.capitalize()} {order_type} order submitted for {shares} shares of {symbol}',
-                'note': note
+                'orderType': 'limit',
+                'orderClass': order_class,
+                'protectionMode': protection_mode,
+                'limitPrice': limit_price,
+                'submittedShares': shares,
+                'submittedNotional': preflight.get('notional'),
+                'submittedRiskDollars': preflight.get('riskDollars'),
+                'accountBuyingPower': round(buying_power, 2),
+                'cashFundedBuyingPower': round(spendable_buying_power, 2),
+                'marginUsed': bool(plan_snapshot.get('allowMargin', False)),
+                'marketableLimit': preflight.get('marketable'),
+                'preflight': preflight,
+                'marketClock': market_clock,
+                'quoteAgeSeconds': round(quote_age_seconds, 1) if quote_age_seconds is not None else None,
+                'message': f'{mode_label.capitalize()} limit order submitted for {shares:g} shares of {symbol}',
+                'note': note,
             })
         else:
             error_text = order_resp.text[:300]
@@ -23077,7 +27501,7 @@ def entry_plan_execute():
                     'reason': 'client_order_id must be unique — use Retry to submit with a new ID',
                     'blockers': ['Duplicate client order ID. Retry with a new ID.']
                 })
-            if user:
+            if user and not suppress_discord:
                 send_discord_notification(user['id'], 'error', {
                     'event_id': f'entry-execute-api-{symbol}-{int(time.time())}',
                     'step': 'Entry Plan Execute',
@@ -23112,6 +27536,7 @@ def ai_execution_order():
     import requests as _req
 
     data = request.get_json() or {}
+    suppress_discord = bool(data.get('suppressDiscord'))
 
     # ── 1. Auth check ──
     user = get_supabase_user()
@@ -23119,6 +27544,8 @@ def ai_execution_order():
         return jsonify({'success': False, 'status': 'auth_required', 'message': 'Authentication required. Please sign in.'})
 
     def _notify_ai_exec_block(status, message):
+        if suppress_discord:
+            return
         send_discord_notification(user['id'], 'error', {
             'event_id': f'ai-exec-{status}-{symbol or "unknown"}-{int(time.time())}',
             'step': 'AI Execution Order',
@@ -23143,6 +27570,12 @@ def ai_execution_order():
     trail_percent = data.get('trail_percent')
     time_in_force = data.get('time_in_force', 'day')
     client_order_id = data.get('client_order_id') or data.get('clientOrderId')
+    order_class = str(data.get('order_class') or data.get('orderClass') or 'simple').lower().strip()
+    take_profit = data.get('take_profit') if isinstance(data.get('take_profit'), dict) else {}
+    stop_loss = data.get('stop_loss') if isinstance(data.get('stop_loss'), dict) else {}
+    take_profit_price = data.get('take_profit_price') or take_profit.get('limit_price')
+    protective_stop_price = data.get('protective_stop_price') or stop_loss.get('stop_price')
+    execution_source = str(data.get('executionSource') or '')
 
     if not symbol:
         _notify_ai_exec_block('risk_blocked', 'Symbol is required.')
@@ -23155,7 +27588,9 @@ def ai_execution_order():
         return jsonify({'success': False, 'status': 'risk_blocked', 'message': f'Type must be one of: {", ".join(valid_types)}.'})
     if (not qty or qty <= 0) and (not notional or notional <= 0):
         return jsonify({'success': False, 'status': 'risk_blocked', 'message': 'qty or notional must be > 0.'})
-    if order_type == 'limit' and (not limit_price or limit_price <= 0):
+    if order_class not in ('simple', 'oco'):
+        return jsonify({'success': False, 'status': 'risk_blocked', 'message': 'order_class must be simple or oco.'})
+    if order_type == 'limit' and order_class != 'oco' and (not limit_price or limit_price <= 0):
         return jsonify({'success': False, 'status': 'risk_blocked', 'message': 'Limit orders require limit_price > 0.'})
     if order_type == 'stop' and (not stop_price or stop_price <= 0):
         return jsonify({'success': False, 'status': 'risk_blocked', 'message': 'Stop orders require stop_price > 0.'})
@@ -23167,6 +27602,19 @@ def ai_execution_order():
     if order_type == 'trailing_stop':
         if (not trail_price or trail_price <= 0) and (not trail_percent or trail_percent <= 0):
             return jsonify({'success': False, 'status': 'risk_blocked', 'message': 'Trailing stop orders require trail_price or trail_percent > 0.'})
+    if order_class == 'oco':
+        try:
+            _oco_qty = float(qty or 0)
+            _oco_tp = float(take_profit_price or 0)
+            _oco_stop = float(protective_stop_price or 0)
+        except (TypeError, ValueError):
+            _oco_qty = _oco_tp = _oco_stop = 0
+        if side != 'sell' or order_type != 'limit':
+            return jsonify({'success': False, 'status': 'risk_blocked', 'message': 'OCO protection requires a sell limit order.'})
+        if _oco_qty < 1 or not float(_oco_qty).is_integer():
+            return jsonify({'success': False, 'status': 'risk_blocked', 'message': 'OCO protection requires a whole-share quantity.'})
+        if _oco_tp <= 0 or _oco_stop <= 0 or _oco_stop >= _oco_tp:
+            return jsonify({'success': False, 'status': 'risk_blocked', 'message': 'OCO requires a valid target above its protective stop.'})
 
     # ── 3. Automation mode gates ──
     if automation_mode == 'manual':
@@ -23187,6 +27635,17 @@ def ai_execution_order():
         return jsonify({'success': False, 'status': 'confirmation_required',
                         'message': 'Real trading in Full-AI mode requires explicit confirmation.',
                         'orderPreview': order_preview})
+    if automation_mode == 'full-ai' and trading_mode == 'real':
+        automation_config = _pa_get_config(user['id']) or {}
+        if automation_config.get('live_auto_trading_enabled') is not True:
+            _notify_ai_exec_block('live_auto_not_enabled', 'Live background auto trading is not explicitly enabled.')
+            return jsonify({
+                'success': False,
+                'status': 'risk_blocked',
+                'code': 'live_auto_not_enabled',
+                'message': 'Enable Live Auto Trading before unattended real orders.',
+                'executionSource': execution_source,
+            })
 
     # ── 4. Resolve Alpaca config (strict user-only) ──
     alpaca_mode = 'paper' if trading_mode == 'paper' else 'live'
@@ -23221,6 +27680,91 @@ def ai_execution_order():
         'Content-Type': 'application/json'
     }
 
+    # Automatic exits must be reconciled against the broker immediately before
+    # submission. This prevents stale position quantities, duplicate sell
+    # orders, or an already-filled OCO leg from turning into an oversell.
+    if side == 'sell':
+        if not qty or float(qty or 0) <= 0:
+            _notify_ai_exec_block('risk_blocked', 'Sell execution requires an explicit share quantity.')
+            return jsonify({
+                'success': False,
+                'status': 'risk_blocked',
+                'code': 'sell_quantity_required',
+                'message': 'Sell execution requires an explicit share quantity.',
+            })
+        try:
+            position_response = _req.get(
+                f'{base_url}/v2/positions/{symbol}',
+                headers=headers,
+                timeout=10,
+            )
+            if position_response.status_code != 200:
+                message = 'No verified open position is available for this sell order.'
+                _notify_ai_exec_block('risk_blocked', message)
+                return jsonify({
+                    'success': False,
+                    'status': 'risk_blocked',
+                    'code': 'position_unavailable',
+                    'message': message,
+                })
+            position_payload = position_response.json() or {}
+            available_qty = abs(float(position_payload.get('qty') or 0))
+            requested_qty = float(qty or 0)
+            if requested_qty > available_qty + 1e-6:
+                message = 'Sell quantity %.4f exceeds verified position quantity %.4f.' % (
+                    requested_qty,
+                    available_qty,
+                )
+                _notify_ai_exec_block('risk_blocked', message)
+                return jsonify({
+                    'success': False,
+                    'status': 'risk_blocked',
+                    'code': 'sell_quantity_exceeds_position',
+                    'message': message,
+                    'availableQty': available_qty,
+                    'requestedQty': requested_qty,
+                })
+
+            open_order_response = _req.get(
+                f'{base_url}/v2/orders',
+                headers=headers,
+                params={'status': 'open', 'symbols': symbol, 'nested': 'true', 'limit': 100},
+                timeout=10,
+            )
+            if open_order_response.status_code != 200:
+                message = 'Open sell orders could not be verified before submission.'
+                _notify_ai_exec_block('risk_blocked', message)
+                return jsonify({
+                    'success': False,
+                    'status': 'risk_blocked',
+                    'code': 'open_orders_unavailable',
+                    'message': message,
+                })
+            open_sell_orders = [
+                order for order in _pa_flatten_alpaca_order_tree(open_order_response.json() or [])
+                if str(order.get('symbol') or '').upper() == symbol
+                and str(order.get('side') or '').lower() == 'sell'
+            ]
+            if open_sell_orders:
+                message = 'An open sell/protection order already exists for %s.' % symbol
+                _notify_ai_exec_block('risk_blocked', message)
+                return jsonify({
+                    'success': False,
+                    'status': 'risk_blocked',
+                    'code': 'open_sell_order_exists',
+                    'message': message,
+                    'openOrderIds': [order.get('id') for order in open_sell_orders if order.get('id')],
+                })
+        except Exception as sell_preflight_error:
+            message = 'Sell preflight verification failed: %s' % str(sell_preflight_error)[:160]
+            _notify_ai_exec_block('risk_blocked', message)
+            return jsonify({
+                'success': False,
+                'status': 'risk_blocked',
+                'code': 'sell_preflight_failed',
+                'message': message,
+            })
+
     order_payload = {
         'symbol': symbol,
         'side': side,
@@ -23231,7 +27775,7 @@ def ai_execution_order():
         order_payload['qty'] = str(qty)
     elif notional and notional > 0:
         order_payload['notional'] = str(round(notional, 2))
-    if order_type in ('limit', 'stop_limit') and limit_price:
+    if order_type in ('limit', 'stop_limit') and limit_price and order_class != 'oco':
         order_payload['limit_price'] = str(limit_price)
     if order_type in ('stop', 'stop_limit') and stop_price:
         order_payload['stop_price'] = str(stop_price)
@@ -23242,28 +27786,36 @@ def ai_execution_order():
             order_payload['trail_percent'] = str(trail_percent)
     if client_order_id:
         order_payload['client_order_id'] = str(client_order_id)[:48]
+    if order_class == 'oco':
+        order_payload.update({
+            'order_class': 'oco',
+            'take_profit': {'limit_price': str(round(float(take_profit_price), 4))},
+            'stop_loss': {'stop_price': str(round(float(protective_stop_price), 4))},
+        })
 
     mode_label = 'paper' if alpaca_mode == 'paper' else 'real'
     print(f'[AI EXECUTION] {symbol} {side} {order_type} mode={mode_label} auto={automation_mode} user={user["id"][:8]}...')
 
     try:
         resp = _req.post(f'{base_url}/v2/orders', headers=headers, json=order_payload, timeout=30)
-        if resp.status_code == 200:
+        if resp.status_code in (200, 201):
             order_data = resp.json()
             print(f'[AI EXECUTION] {symbol}: ORDER SUBMITTED id={order_data.get("id")} status={order_data.get("status")}')
-            send_discord_notification(user['id'], 'order', {
-                'event_id': order_data.get('id') or order_data.get('client_order_id') or f'ai-exec-order-{symbol}-{int(time.time())}',
-                'mode': mode_label,
-                'side': side,
-                'symbol': symbol,
-                'qty': qty,
-                'notional': notional,
-                'orderType': order_type,
-                'limitPrice': limit_price,
-                'status': order_data.get('status') or 'submitted',
-                'orderId': order_data.get('id'),
-                'reason': f'AI execution {automation_mode} submitted order.',
-            })
+            if not suppress_discord:
+                send_discord_notification(user['id'], 'order', {
+                    'event_id': order_data.get('id') or order_data.get('client_order_id') or f'ai-exec-order-{symbol}-{int(time.time())}',
+                    'mode': mode_label,
+                    'side': side,
+                    'symbol': symbol,
+                    'qty': qty,
+                    'notional': notional,
+                    'orderType': order_type,
+                    'orderClass': order_class,
+                    'limitPrice': limit_price,
+                    'status': order_data.get('status') or 'submitted',
+                    'orderId': order_data.get('id'),
+                    'reason': f'AI execution {automation_mode} submitted order.',
+                })
             return jsonify({
                 'success': True, 'status': 'submitted',
                 'message': f'{mode_label.capitalize()} {order_type} order submitted for {symbol}',
@@ -23292,10 +27844,12 @@ def ai_execution_order():
 
 # ============ AI Agent Watchlist Endpoints ============
 
-def _find_watchlist_item(symbol):
+def _find_watchlist_item(symbol, user_id):
     """Find watchlist item by symbol (case-insensitive). Returns (index, item) or (None, None)."""
     sym_upper = symbol.upper().strip()
     for i, item in enumerate(_watchlist_store):
+        if item.get('ownerId') != user_id:
+            continue
         if item.get('symbol', '').upper().strip() == sym_upper:
             return i, item
     return None, None
@@ -23307,7 +27861,8 @@ def ai_agent_watchlist_list():
     user = require_auth()
     if not user:
         return jsonify({'success': False, 'message': 'Authentication required'}), 401
-    return jsonify({'success': True, 'items': _watchlist_store, 'count': len(_watchlist_store)})
+    items = [item for item in _watchlist_store if item.get('ownerId') == user['id']]
+    return jsonify({'success': True, 'items': items, 'count': len(items)})
 
 
 @app.route('/api/ai-agent/watchlist', methods=['POST'])
@@ -23317,6 +27872,9 @@ def ai_agent_watchlist_add():
     from datetime import datetime as _dt
 
     try:
+        user = require_auth()
+        if not user:
+            return jsonify({'success': False, 'message': 'Authentication required'}), 401
         data = request.get_json()
         if not data:
             return jsonify({'success': False, 'message': 'No data provided'}), 400
@@ -23325,10 +27883,11 @@ def ai_agent_watchlist_add():
         if not symbol:
             return jsonify({'success': False, 'message': 'Symbol required'}), 400
 
-        existing_idx, existing_item = _find_watchlist_item(symbol)
+        existing_idx, existing_item = _find_watchlist_item(symbol, user['id'])
 
         item = {
             'id': data.get('id', str(_uuid.uuid4())[:8]),
+            'ownerId': user['id'],
             'symbol': symbol,
             'setupType': data.get('setupType', ''),
             'aiDecision': data.get('aiDecision', 'WATCH'),
@@ -23381,8 +27940,11 @@ def ai_agent_watchlist_add():
 @app.route('/api/ai-agent/watchlist/<item_id>', methods=['DELETE'])
 def ai_agent_watchlist_remove(item_id):
     """Remove an item from the AI Agent watchlist."""
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
     for i, item in enumerate(_watchlist_store):
-        if item.get('id') == item_id:
+        if item.get('id') == item_id and item.get('ownerId') == user['id']:
             removed = _watchlist_store.pop(i)
             print(f'[WATCHLIST] Removed {removed.get("symbol")} id={item_id}')
             return jsonify({'success': True, 'message': f'{removed.get("symbol")} removed from watchlist'})
@@ -23395,8 +27957,12 @@ def ai_agent_watchlist_update(item_id):
     import time as _time
     from datetime import datetime as _dt
 
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+
     for i, item in enumerate(_watchlist_store):
-        if item.get('id') == item_id:
+        if item.get('id') == item_id and item.get('ownerId') == user['id']:
             data = request.get_json() or {}
             if 'status' in data:
                 _watchlist_store[i]['status'] = data['status']
@@ -24746,6 +29312,63 @@ STRATEGY_PARAM_GRIDS = {
             {'momentum_period': 20, 'momentum_threshold': 0.02},
             {'momentum_period': 20, 'momentum_threshold': 0.05},
         ]
+    },
+    'mean_reversion': {
+        'param_sets': [
+            {'lookbackPeriod': 15, 'entryZScore': -1.5, 'exitZScore': 0.0, 'stopLossPct': 0.05, 'takeProfitPct': 0.07, 'rsiPeriod': 14, 'oversoldLevel': 35, 'enableTrendFilter': True, 'trendMaPeriod': 100},
+            {'lookbackPeriod': 20, 'entryZScore': -2.0, 'exitZScore': 0.0, 'stopLossPct': 0.06, 'takeProfitPct': 0.08, 'rsiPeriod': 14, 'oversoldLevel': 30, 'enableTrendFilter': True, 'trendMaPeriod': 100},
+            {'lookbackPeriod': 20, 'entryZScore': -1.5, 'exitZScore': 0.25, 'stopLossPct': 0.05, 'takeProfitPct': 0.08, 'rsiPeriod': 10, 'oversoldLevel': 35, 'enableTrendFilter': False, 'trendMaPeriod': 100},
+            {'lookbackPeriod': 25, 'entryZScore': -2.0, 'exitZScore': 0.25, 'stopLossPct': 0.07, 'takeProfitPct': 0.10, 'rsiPeriod': 14, 'oversoldLevel': 30, 'enableTrendFilter': True, 'trendMaPeriod': 150},
+            {'lookbackPeriod': 30, 'entryZScore': -2.5, 'exitZScore': 0.0, 'stopLossPct': 0.08, 'takeProfitPct': 0.12, 'rsiPeriod': 18, 'oversoldLevel': 30, 'enableTrendFilter': True, 'trendMaPeriod': 150},
+        ]
+    },
+    'buy_hold': {
+        'param_sets': [{}]
+    },
+    'donchian_breakout': {
+        'param_sets': [
+            {'entryPeriod': 20, 'exitPeriod': 10, 'atrPeriod': 20, 'atrStopMultiple': 2.0},
+            {'entryPeriod': 40, 'exitPeriod': 20, 'atrPeriod': 20, 'atrStopMultiple': 2.0},
+            {'entryPeriod': 55, 'exitPeriod': 20, 'atrPeriod': 20, 'atrStopMultiple': 2.5},
+            {'entryPeriod': 20, 'exitPeriod': 10, 'atrPeriod': 14, 'atrStopMultiple': 1.8},
+            {'entryPeriod': 60, 'exitPeriod': 30, 'atrPeriod': 20, 'atrStopMultiple': 3.0},
+        ]
+    },
+    'keltner_breakout': {
+        'param_sets': [
+            {'emaPeriod': 20, 'atrPeriod': 20, 'atrMultiplier': 1.5},
+            {'emaPeriod': 20, 'atrPeriod': 20, 'atrMultiplier': 2.0},
+            {'emaPeriod': 30, 'atrPeriod': 20, 'atrMultiplier': 2.0},
+            {'emaPeriod': 40, 'atrPeriod': 20, 'atrMultiplier': 2.5},
+            {'emaPeriod': 20, 'atrPeriod': 14, 'atrMultiplier': 1.8},
+        ]
+    },
+    'supertrend': {
+        'param_sets': [
+            {'atrPeriod': 10, 'multiplier': 2.0},
+            {'atrPeriod': 10, 'multiplier': 3.0},
+            {'atrPeriod': 14, 'multiplier': 2.5},
+            {'atrPeriod': 14, 'multiplier': 3.0},
+            {'atrPeriod': 21, 'multiplier': 3.0},
+        ]
+    },
+    'stochastic': {
+        'param_sets': [
+            {'kPeriod': 14, 'dPeriod': 3, 'oversold': 20, 'overbought': 80},
+            {'kPeriod': 14, 'dPeriod': 5, 'oversold': 20, 'overbought': 80},
+            {'kPeriod': 21, 'dPeriod': 3, 'oversold': 20, 'overbought': 80},
+            {'kPeriod': 10, 'dPeriod': 3, 'oversold': 25, 'overbought': 75},
+            {'kPeriod': 14, 'dPeriod': 3, 'oversold': 15, 'overbought': 85},
+        ]
+    },
+    'adx_trend': {
+        'param_sets': [
+            {'adxPeriod': 14, 'adxThreshold': 20, 'fastEmaPeriod': 20, 'slowEmaPeriod': 50},
+            {'adxPeriod': 14, 'adxThreshold': 25, 'fastEmaPeriod': 20, 'slowEmaPeriod': 50},
+            {'adxPeriod': 14, 'adxThreshold': 25, 'fastEmaPeriod': 10, 'slowEmaPeriod': 40},
+            {'adxPeriod': 21, 'adxThreshold': 20, 'fastEmaPeriod': 20, 'slowEmaPeriod': 60},
+            {'adxPeriod': 21, 'adxThreshold': 25, 'fastEmaPeriod': 30, 'slowEmaPeriod': 80},
+        ]
     }
 }
 
@@ -24756,6 +29379,12 @@ DEFAULT_FALLBACK_PARAMS = {
     'bollinger': {'period': 20, 'std_dev': 2.0},
     'momentum': {'momentum_period': 15, 'momentum_threshold': 0.02},
     'mean_reversion': {'lookbackPeriod': 20, 'entryZScore': -2.0, 'exitZScore': 0.0, 'stopLossPct': 0.06, 'takeProfitPct': 0.08, 'rsiPeriod': 14, 'oversoldLevel': 30, 'enableTrendFilter': True, 'trendMaPeriod': 100},
+    'buy_hold': {},
+    'donchian_breakout': {'entryPeriod': 20, 'exitPeriod': 10, 'atrPeriod': 20, 'atrStopMultiple': 2.0},
+    'keltner_breakout': {'emaPeriod': 20, 'atrPeriod': 20, 'atrMultiplier': 2.0},
+    'supertrend': {'atrPeriod': 10, 'multiplier': 3.0},
+    'stochastic': {'kPeriod': 14, 'dPeriod': 3, 'oversold': 20, 'overbought': 80},
+    'adx_trend': {'adxPeriod': 14, 'adxThreshold': 25, 'fastEmaPeriod': 20, 'slowEmaPeriod': 50},
 }
 
 STRATEGY_FN_MAP = {
@@ -24765,6 +29394,12 @@ STRATEGY_FN_MAP = {
     'bollinger': run_bollinger_strategy_for_optimization,
     'momentum': run_momentum_strategy_for_optimization,
     'mean_reversion': run_mean_reversion_strategy_for_optimization,
+    'buy_hold': run_buy_hold_strategy_for_optimization,
+    'donchian_breakout': run_donchian_breakout_strategy_for_optimization,
+    'keltner_breakout': run_keltner_breakout_strategy_for_optimization,
+    'supertrend': run_supertrend_strategy_for_optimization,
+    'stochastic': run_stochastic_strategy_for_optimization,
+    'adx_trend': run_adx_trend_strategy_for_optimization,
 }
 
 STRATEGY_LABEL_MAP = {
@@ -24780,23 +29415,73 @@ STRATEGY_LABEL_MAP = {
     'bollinger': 'bollinger',
     'range': 'bollinger',
     'bands': 'bollinger',
+    'buy and hold': 'buy_hold',
+    'buy_hold': 'buy_hold',
+    'donchian': 'donchian_breakout',
+    'turtle': 'donchian_breakout',
+    'channel breakout': 'donchian_breakout',
+    'keltner': 'keltner_breakout',
+    'supertrend': 'supertrend',
+    'super trend': 'supertrend',
+    'stochastic': 'stochastic',
+    'adx': 'adx_trend',
+    'adx trend': 'adx_trend',
 }
 
 def _count_trading_days(days_back=365):
     """Estimate ~252 trading days per year."""
     return max(60, int(days_back * 252 / 365))
 
-def _fetch_1y_data(symbol):
-    """Fetch ~1 year of daily data using backtest-specific Alpaca API (date range)."""
-    from datetime import datetime, timedelta
-    end = datetime.now()
-    start = end - timedelta(days=400)
-    range_str = start.strftime('%Y-%m-%d') + ' to ' + end.strftime('%Y-%m-%d')
+def _dv_normalize_bars_for_backtest(bars):
+    """Normalize Alpaca bar payloads into the shared Backtest OHLCV shape."""
+    normalized = []
+    for bar in bars or []:
+        if not isinstance(bar, dict):
+            continue
+        close = _dv_num(bar.get('c', bar.get('close')), None)
+        if close is None or close <= 0:
+            continue
+        raw_ts = bar.get('t') or bar.get('timestamp') or bar.get('date') or ''
+        timestamp = str(raw_ts)[:10] if raw_ts else ''
+        normalized.append({
+            'timestamp': timestamp,
+            'open': _dv_num(bar.get('o', bar.get('open')), close) or close,
+            'high': _dv_num(bar.get('h', bar.get('high')), close) or close,
+            'low': _dv_num(bar.get('l', bar.get('low')), close) or close,
+            'close': close,
+            'volume': _dv_num(bar.get('v', bar.get('volume')), 0) or 0,
+        })
+    normalized.sort(key=lambda item: str(item.get('timestamp') or ''))
+    return normalized
+
+
+def _fetch_1y_data(symbol, period='1y'):
+    """Fetch DV daily bars from the same Alpaca path used by Market/Fine Scan, then fallback."""
+    symbol = _inst_clean_symbol(symbol)
+    period = period or '1y'
+
+    try:
+        market_cfg, cfg_source = resolve_alpaca_config('market_data', require_user_config=True)
+        history, errors = _inst_fetch_alpaca_bars([symbol], market_cfg, period=period, feed=_MARKET_DATA_FEED, batch_size=1)
+        bars = _dv_normalize_bars_for_backtest(history.get(symbol, []))
+        if bars and len(bars) >= 60:
+            print(f'[DV] Alpaca scanner bars loaded for {symbol}: {len(bars)} rows source={cfg_source}')
+            return bars, f'Alpaca Market Data /v2/stocks/bars ({period})'
+        if errors.get(symbol):
+            print(f'[DV] Scanner bars unavailable for {symbol}: {errors.get(symbol)}')
+        else:
+            print(f'[DV] Scanner bars insufficient for {symbol}: {len(bars) if bars else 0} rows')
+    except Exception as e:
+        print(f'[DV] Scanner bars exception for {symbol}: {str(e)[:180]}')
+
+    start_date = _inst_period_to_start(period)
+    end_date = datetime.now().strftime('%Y-%m-%d')
+    range_str = f'{start_date} to {end_date}'
     data, num, note = get_alpaca_history_for_backtest(symbol, '1day', range_str)
     if not data or len(data) < 60:
         print(f'[DV] Insufficient data from backtest API: {note}')
         return None, f'Insufficient data: {note}'
-    return data, 'alpaca'
+    return data, f'Alpaca Backtest bars fallback ({period})'
 
 def _compute_metrics(trades, equity_curve, initial_capital):
     """Compute standard backtest metrics from trades + equity curve."""
@@ -24858,13 +29543,13 @@ def _compute_metrics(trades, equity_curve, initial_capital):
     }
     print(f'[DV_METRICS] trades={len(trades)} wins={len(wins)} losses={len(losses)} breakeven={len(breakeven)} total_closed={total_closed} winRate={win_rate} grossProfit={gross_profit:.2f} grossLoss={gross_loss:.2f} pf={profit_factor} totalReturn={total_return:.2f}')
 
-def _run_backtest_core(symbol, strategy_name, params, data):
+def _run_backtest_core(symbol, strategy_name, params, data, initial_capital=100000):
     """Run a single backtest for given symbol + strategy + params on pre-fetched data."""
     fn = STRATEGY_FN_MAP.get(strategy_name)
     if not fn:
         return None, f'Unknown strategy: {strategy_name}'
 
-    ic = 100000
+    ic = _dv_num(initial_capital, 100000) or 100000
     try:
         result = fn(data, params, ic, symbol)
         if len(result) == 3:
@@ -24876,14 +29561,14 @@ def _run_backtest_core(symbol, strategy_name, params, data):
     except Exception as e:
         return None, str(e)
 
-def _compute_stability_score(opt_results, valid_count):
-    """Compute parameter stability score 0-100."""
+def _compute_stability_score(opt_results, valid_count, expected_count=None):
+    """Compute cost-adjusted parameter-neighborhood stability on a 0-100 scale."""
     if valid_count == 0:
         return 0, 'No valid parameter combinations'
 
-    profitable = sum(1 for r in opt_results if r.get('totalReturn', -999) > 0)
+    profitable = sum(1 for r in opt_results if r.get('netReturn', r.get('totalReturn', -999)) > 0)
     profitable_ratio = profitable / valid_count if valid_count > 0 else 0
-    returns = [r.get('totalReturn', 0) for r in opt_results]
+    returns = [r.get('netReturn', r.get('totalReturn', 0)) for r in opt_results]
     median_ret = sorted(returns)[len(returns)//2] if returns else 0
     best_ret = max(returns) if returns else 0
     sharps = [r.get('sharpeRatio', 0) for r in opt_results]
@@ -24910,7 +29595,7 @@ def _compute_stability_score(opt_results, valid_count):
     elif median_dd < 40:
         score += 5
     # valid combinations (max 10)
-    max_possible = len(STRATEGY_PARAM_GRIDS.get('moving_average', {}).get('param_sets', []))
+    max_possible = expected_count or valid_count or len(opt_results) or len(STRATEGY_PARAM_GRIDS.get('moving_average', {}).get('param_sets', []))
     score += min(10, int(valid_count / max_possible * 10)) if max_possible > 0 else 5
 
     # Small bonus for spread not being extreme
@@ -24927,16 +29612,16 @@ def _compute_stability_score(opt_results, valid_count):
         reason_parts.append(f'{valid_count} combinations tested')
 
     if profitable_ratio >= 0.7:
-        reason_parts.append(f'{int(profitable_ratio*100)}% parameter sets profitable')
+        reason_parts.append(f'{int(profitable_ratio*100)}% parameter sets profitable after costs')
     elif profitable_ratio >= 0.4:
-        reason_parts.append(f'{int(profitable_ratio*100)}% parameter sets profitable')
+        reason_parts.append(f'{int(profitable_ratio*100)}% parameter sets profitable after costs')
     else:
-        reason_parts.append(f'only {int(profitable_ratio*100)}% sets profitable')
+        reason_parts.append(f'only {int(profitable_ratio*100)}% sets profitable after costs')
 
     if median_ret > 0:
-        reason_parts.append(f'median return +{median_ret:.1f}%')
+        reason_parts.append(f'median net return +{median_ret:.1f}%')
     else:
-        reason_parts.append(f'median return {median_ret:.1f}%')
+        reason_parts.append(f'median net return {median_ret:.1f}%')
 
     if median_sharpe > 0.5:
         reason_parts.append('median sharpe > 0.5')
@@ -25028,6 +29713,561 @@ def _compute_verdict(metrics, stability, recent_vs_long, opt_results, valid_coun
         watch_parts.append(f' marginal PF {pf:.2f}')
     watch_parts.append(f' - {metric_str}')
     return 'Watch', ''.join(watch_parts)
+
+def _dv_num(value, default=None):
+    """Parse a numeric value without throwing."""
+    try:
+        if value is None or value == '':
+            return default
+        if isinstance(value, str):
+            value = value.replace('$', '').replace(',', '').replace('%', '').strip()
+            if value.upper() in ('N/A', 'NA', '--', 'NONE'):
+                return default
+        return float(value)
+    except Exception:
+        return default
+
+def _dv_clamp(value, low=0, high=100):
+    return max(low, min(high, value))
+
+def _dv_score_range(value, low, high, default=50):
+    v = _dv_num(value, None)
+    if v is None:
+        return default
+    if high == low:
+        return default
+    return _dv_clamp(((v - low) / (high - low)) * 100)
+
+def _dv_round(value, digits=1):
+    v = _dv_num(value, None)
+    return round(v, digits) if v is not None else None
+
+def _dv_annualize_return(total_return_pct, bars):
+    """Annualize a compounded return over daily bars without extrapolating total loss."""
+    total_return = _dv_num(total_return_pct, None)
+    bar_count = int(_dv_num(bars, 0) or 0)
+    if total_return is None or bar_count <= 0 or total_return <= -100:
+        return None
+    years = bar_count / 252.0
+    if years <= 0:
+        return None
+    return round(((1.0 + total_return / 100.0) ** (1.0 / years) - 1.0) * 100.0, 2)
+
+def _dv_buy_hold_annualized_return(rows):
+    """Annualized close-to-close return for an aligned benchmark bar window."""
+    closes = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        close = _dv_num(row.get('close', row.get('c')), None)
+        if close is not None and close > 0:
+            closes.append(close)
+    if len(closes) < 2:
+        return None
+    total_return = (closes[-1] / closes[0] - 1.0) * 100.0
+    return _dv_annualize_return(total_return, len(closes) - 1)
+
+def _dv_money(value):
+    v = _dv_num(value, None)
+    if v is None:
+        return None
+    if v >= 1_000_000_000:
+        return f'${v / 1_000_000_000:.1f}B'
+    if v >= 1_000_000:
+        return f'${v / 1_000_000:.1f}M'
+    if v >= 1_000:
+        return f'${v / 1_000:.1f}K'
+    return f'${v:.0f}'
+
+def _dv_best_from_candidate(cand, keys, default=None):
+    """Read the first non-empty candidate value from a list of possible field names."""
+    for key in keys:
+        if key in cand and cand.get(key) not in (None, '', '--'):
+            return cand.get(key)
+    return default
+
+def _build_institutional_dv_packet(cand, metrics, stability, recent_vs_long, entry_plan, risk_gate,
+                                   strategy, data_source, data_bar_count, valid_count, param_set_count,
+                                   oos_validation=None):
+    """Build the cost-aware, selection-adjusted DV decision packet.
+
+    This stage answers a different question from Fine Scan:
+    Does the setup have enough historical edge, sample quality, execution capacity,
+    and risk control to justify moving into Entry Plan?
+    """
+    tr = _dv_num(metrics.get('totalReturn'), 0)
+    sharpe = _dv_num(metrics.get('sharpeRatio'), 0)
+    max_dd = abs(_dv_num(metrics.get('maxDrawdown'), 0))
+    win_rate = _dv_num(metrics.get('winRate'), None)
+    pf_raw = metrics.get('profitFactor')
+    pf = _dv_num(pf_raw, None)
+    tc = int(_dv_num(metrics.get('tradeCount'), 0) or 0)
+
+    benchmark_returns = cand.get('benchmarkReturns') if isinstance(cand.get('benchmarkReturns'), dict) else {}
+    spy_returns = benchmark_returns.get('SPY') if isinstance(benchmark_returns.get('SPY'), dict) else {}
+    benchmark_return = _dv_num(cand.get('_dvAlignedBenchmarkReturn'), None)
+    benchmark_aligned = benchmark_return is not None
+    benchmark_source = cand.get('_dvAlignedBenchmarkSource') if benchmark_aligned else None
+    if benchmark_return is None:
+        for benchmark_key in ('12m', '1y', '1Y'):
+            benchmark_return = _dv_num(spy_returns.get(benchmark_key), None)
+            if benchmark_return is not None:
+                benchmark_source = 'Market Scanner SPY 12M fallback'
+                break
+
+    stability_score = _dv_num(stability.get('score'), 0)
+    profitable_ratio = _dv_num(stability.get('profitableRatio'), 0)
+    median_return = _dv_num(stability.get('medianReturn'), 0)
+    return_spread = _dv_num(stability.get('returnSpread'), 0)
+    oos_validation = oos_validation or {}
+    oos_available = bool(oos_validation.get('available'))
+    oos_return = _dv_num(oos_validation.get('holdoutReturn'), None)
+    oos_sharpe = _dv_num(oos_validation.get('holdoutSharpe'), None)
+    oos_trades = int(_dv_num(oos_validation.get('holdoutTrades'), 0) or 0)
+    oos_fold_count = int(_dv_num(oos_validation.get('foldCount'), 0) or 0)
+    oos_positive_fold_ratio = _dv_num(oos_validation.get('positiveFoldRatio'), None)
+    oos_worst_fold_return = _dv_num(oos_validation.get('worstFoldReturn'), None)
+    oos_method = oos_validation.get('method')
+
+    adv20 = _dv_num(_dv_best_from_candidate(cand, ['avgDollarVolume20', 'adv20', 'averageDollarVolume20']), None)
+    cost_bps = _dv_num(_dv_best_from_candidate(cand, ['estimatedRoundTripCostBps', 'roundTripCostBps', 'costBps']), None)
+    spread_bps = _dv_num(_dv_best_from_candidate(cand, ['quotedSpreadBps', 'spreadBps']), None)
+    spread_score = 100 - _dv_score_range(spread_bps, 5, 80, 45) if spread_bps is not None else None
+    cost_score = 100 - _dv_score_range(cost_bps, 8, 120, 45) if cost_bps is not None else None
+    adv_score = _dv_score_range(adv20, 5_000_000, 250_000_000, 45)
+    execution_base = _dv_num(_dv_best_from_candidate(cand, ['executionReadinessScore', 'executionScore']), None)
+    liquidity_base = _dv_num(_dv_best_from_candidate(cand, ['liquidityScore']), None)
+
+    execution_parts = [
+        execution_base if execution_base is not None else None,
+        liquidity_base if liquidity_base is not None else None,
+        adv_score,
+        cost_score,
+        spread_score,
+    ]
+    execution_parts = [p for p in execution_parts if p is not None]
+    execution_score = round(sum(execution_parts) / len(execution_parts), 1) if execution_parts else 50
+
+    estimated_cost_drag = (tc * cost_bps / 100.0) if cost_bps is not None and tc > 0 else 0.0
+    net_return = tr - estimated_cost_drag
+    stressed_net_return = tr - (estimated_cost_drag * 2.0)
+    annualized_gross_return = _dv_annualize_return(tr, data_bar_count)
+    annualized_net_return = _dv_annualize_return(net_return, data_bar_count)
+    annualized_stressed_return = _dv_annualize_return(stressed_net_return, data_bar_count)
+    # Scanner benchmarkReturns.SPY.12m is already a one-year return. Compare it
+    # only with annualized strategy evidence when DV uses a longer history.
+    benchmark_annualized_return = benchmark_return
+    excess_return = (
+        annualized_net_return - benchmark_annualized_return
+        if annualized_net_return is not None and benchmark_annualized_return is not None else None
+    )
+
+    edge_score = (
+        0.28 * _dv_score_range(annualized_net_return, -8, 28, 35) +
+        0.25 * _dv_score_range(sharpe, 0, 1.7, 35) +
+        0.18 * _dv_score_range(pf if pf is not None else 1.0, 0.8, 2.0, 45) +
+        0.14 * _dv_score_range(win_rate, 35, 62, 45) +
+        0.15 * _dv_score_range(excess_return, -15, 15, 50)
+    )
+
+    trade_count_score = _dv_score_range(tc, 8, 30, 10)
+    sample_score = (
+        0.45 * trade_count_score +
+        0.25 * _dv_score_range(valid_count, 2, max(6, param_set_count or 6), 35) +
+        0.20 * _dv_score_range(data_bar_count, 160, 504, 35) +
+        0.10 * _dv_score_range(profitable_ratio, 0.25, 0.75, 35)
+    )
+    if data_bar_count < 252:
+        sample_score = min(sample_score, 54)
+    if tc < 10:
+        sample_score = min(sample_score, 54)
+    elif tc < 15:
+        sample_score = min(sample_score, 72)
+
+    oos_base = {'Improving': 88, 'Consistent': 76, 'Divergent': 52, 'Weakening': 38}.get(recent_vs_long, 60)
+    recent_return = _dv_num(_dv_best_from_candidate({'recentReturn': cand.get('recentReturn')}, ['recentReturn']), None)
+    oos_score = oos_base
+    if oos_available and oos_fold_count >= 2:
+        oos_score = (
+            0.32 * _dv_score_range(oos_return, -8, 14, 45) +
+            0.22 * _dv_score_range(oos_sharpe, -0.2, 1.4, 40) +
+            0.18 * _dv_score_range(oos_trades, 3, 12, 35) +
+            0.18 * _dv_score_range(oos_positive_fold_ratio, 0.25, 1.0, 35) +
+            0.10 * _dv_score_range(oos_worst_fold_return, -15, 4, 35)
+        )
+    elif oos_available:
+        oos_score = (
+            0.45 * _dv_score_range(oos_return, -8, 14, 45) +
+            0.30 * _dv_score_range(oos_sharpe, -0.2, 1.4, 40) +
+            0.25 * _dv_score_range(oos_trades, 2, 8, 35)
+        )
+    elif recent_return is not None:
+        oos_score = 0.7 * oos_base + 0.3 * _dv_score_range(recent_return, -8, 12, 50)
+
+    risk_score = 88
+    if max_dd > 35:
+        risk_score -= 35
+    elif max_dd > 25:
+        risk_score -= 18
+    elif max_dd > 18:
+        risk_score -= 8
+    if str(cand.get('eventRisk') or '').upper() == 'HIGH':
+        risk_score -= 18
+    elif str(cand.get('eventRisk') or '').upper() == 'MEDIUM':
+        risk_score -= 8
+    if cost_bps is not None and cost_bps > 80:
+        risk_score -= 18
+    elif cost_bps is not None and cost_bps > 40:
+        risk_score -= 8
+    if adv20 is not None and adv20 < 25_000_000:
+        risk_score -= 18
+    elif adv20 is not None and adv20 < 50_000_000:
+        risk_score -= 8
+    risk_score = _dv_clamp(risk_score)
+
+    raw_validation_score = round(
+        0.25 * edge_score +
+        0.20 * stability_score +
+        0.15 * sample_score +
+        0.13 * execution_score +
+        0.12 * risk_score +
+        0.15 * oos_score,
+        1,
+    )
+    import math as _math
+    strategy_trial_count = max(1, int(_dv_num(cand.get('_dvStrategyTrialCount'), 1) or 1))
+    parameter_trial_count = max(1, int(param_set_count or valid_count or 1))
+    total_selection_trials = strategy_trial_count * parameter_trial_count
+    trial_risk = _dv_clamp(_dv_score_range(total_selection_trials, 6, 48, 20))
+    spread_risk = _dv_clamp(_dv_score_range(return_spread, 5, 45, 20))
+    oos_degradation = 0
+    if annualized_net_return is not None and oos_return is not None:
+        oos_degradation = max(0.0, annualized_net_return - oos_return)
+    degradation_risk = _dv_clamp(_dv_score_range(oos_degradation, 0, 30, 10))
+    instability_risk = _dv_clamp(100 - stability_score)
+    overfit_risk_score = round(
+        0.30 * trial_risk +
+        0.25 * spread_risk +
+        0.25 * degradation_risk +
+        0.20 * instability_risk,
+        1,
+    )
+    base_trial_penalty = max(0.0, _math.log2(max(total_selection_trials, 1) / 6.0) * 1.4)
+    selection_bias_penalty = min(12.0, base_trial_penalty + max(0.0, overfit_risk_score - 45) * 0.08)
+    selection_adjusted_sharpe_proxy = round(
+        sharpe - selection_bias_penalty / 20.0,
+        3,
+    )
+    validation_score = round(_dv_clamp(raw_validation_score - selection_bias_penalty), 1)
+
+    rr1 = _dv_num((entry_plan or {}).get('riskReward1'), None)
+    entry_distance = _dv_num((entry_plan or {}).get('entryDistancePct'), None)
+    if entry_distance is None:
+        entry_distance = _dv_num(_dv_best_from_candidate(cand, ['entryDistancePct', 'entryDistance']), None)
+    hard_blockers = []
+    warnings = []
+    strengths = []
+
+    dq = str(cand.get('dataQuality') or '').lower()
+    if dq in ('unavailable', 'failed', 'need_data'):
+        hard_blockers.append('insufficient upstream data quality')
+    legacy_gate_reason = str((risk_gate or {}).get('reason') or '')
+    if str((risk_gate or {}).get('status') or '').upper() == 'BLOCK' and 'Rejected by validation' not in legacy_gate_reason:
+        warnings.append(legacy_gate_reason or 'legacy risk gate warning')
+    if data_bar_count < 160:
+        hard_blockers.append(f'limited history ({data_bar_count} bars)')
+    elif data_bar_count < 252:
+        warnings.append(f'less than one trading year of history ({data_bar_count} bars)')
+    if tc < 3:
+        hard_blockers.append(f'insufficient historical trades ({tc})')
+    elif tc < 8:
+        warnings.append(f'thin historical sample ({tc} trades); PASS requires 8+')
+    elif tc < 12:
+        warnings.append(f'moderate historical sample ({tc} trades)')
+    if oos_available:
+        if oos_fold_count and oos_fold_count < 2:
+            warnings.append('walk-forward requires at least two valid folds')
+        if oos_trades < 4:
+            warnings.append(f'thin walk-forward sample ({oos_trades} trades)')
+        if oos_worst_fold_return is not None and oos_worst_fold_return < -15:
+            hard_blockers.append(f'worst walk-forward fold {oos_worst_fold_return:.1f}%')
+        elif oos_return is not None and oos_return < -10 and (oos_sharpe is None or oos_sharpe < 0):
+            hard_blockers.append(f'walk-forward failed {oos_return:.1f}%')
+        elif oos_return is not None and oos_return < 0:
+            warnings.append(f'walk-forward net return {oos_return:.1f}%')
+        if oos_positive_fold_ratio is not None and oos_positive_fold_ratio < 0.5:
+            warnings.append(f'only {oos_positive_fold_ratio * 100:.0f}% of walk-forward folds positive')
+    else:
+        warnings.append('holdout/OOS unavailable; PASS requires out-of-sample evidence')
+    if valid_count <= 0:
+        hard_blockers.append('no valid parameter combinations')
+    elif valid_count < 3:
+        warnings.append(f'limited parameter sample ({valid_count} combos)')
+    if annualized_net_return is not None and annualized_net_return < -8:
+        hard_blockers.append(f'annualized net validation return {annualized_net_return:.1f}%')
+    elif annualized_stressed_return is not None and annualized_stressed_return < 0:
+        warnings.append(f'2x-cost annualized return {annualized_stressed_return:.1f}%')
+    if sharpe < -0.25:
+        hard_blockers.append(f'negative Sharpe {sharpe:.2f}')
+    elif sharpe < 0.5:
+        warnings.append(f'low Sharpe {sharpe:.2f}')
+    if pf is not None and pf < 0.75:
+        hard_blockers.append(f'profit factor {pf:.2f} below 0.75')
+    elif pf is not None and pf < 1.2:
+        warnings.append(f'marginal profit factor {pf:.2f}')
+    elif pf is None and tc < 12:
+        warnings.append('profit factor undefined in a small no-loss sample')
+    if max_dd > 45:
+        hard_blockers.append(f'drawdown {max_dd:.1f}% above 45%')
+    elif max_dd > 28:
+        warnings.append(f'elevated drawdown {max_dd:.1f}%')
+    if stability_score < 25:
+        hard_blockers.append(f'poor parameter stability {stability_score:.0f}')
+    elif stability_score < 55:
+        warnings.append(f'moderate parameter stability {stability_score:.0f}')
+    if recent_vs_long == 'Weakening':
+        warnings.append('recent validation weakening')
+    elif recent_vs_long == 'Divergent':
+        warnings.append('recent and long-term validation diverge')
+    if adv20 is not None and adv20 < 3_000_000:
+        hard_blockers.append('ADV20 below $3M')
+    elif adv20 is not None and adv20 < 25_000_000:
+        warnings.append('ADV20 below $25M')
+    elif adv20 is not None and adv20 < 50_000_000:
+        warnings.append('ADV20 below institutional comfort band')
+    if cost_bps is not None and cost_bps > 250:
+        hard_blockers.append(f'round-trip cost {cost_bps:.1f} bps')
+    elif cost_bps is not None and cost_bps > 50:
+        warnings.append(f'high estimated cost {cost_bps:.1f} bps')
+    if spread_bps is not None and spread_bps > 150:
+        hard_blockers.append(f'quoted spread {spread_bps:.1f} bps')
+    elif spread_bps is not None and spread_bps > 35:
+        warnings.append(f'wide quoted spread {spread_bps:.1f} bps')
+    if rr1 is not None and rr1 < 0.9:
+        hard_blockers.append(f'reward/risk {rr1:.2f}x below 0.9')
+    elif rr1 is not None and rr1 < 1.35:
+        warnings.append(f'reward/risk {rr1:.2f}x needs improvement')
+    if str(cand.get('eventRisk') or '').upper() == 'HIGH':
+        warnings.append('high event risk')
+    if excess_return is not None and excess_return < -10:
+        warnings.append(f'underperformed SPY by {abs(excess_return):.1f}% after costs')
+
+    if annualized_net_return is not None and annualized_net_return > 0:
+        strengths.append(f'positive annualized net return {annualized_net_return:.1f}%')
+    if excess_return is not None and excess_return > 0:
+        strengths.append(f'SPY excess return {excess_return:.1f}%')
+    if sharpe >= 0.8:
+        strengths.append(f'Sharpe {sharpe:.2f}')
+    if pf is None and tc >= 8 and tr > 0:
+        strengths.append('no losing closed trades in sample')
+    elif pf is not None and pf >= 1.2:
+        strengths.append(f'profit factor {pf:.2f}')
+    if stability_score >= 65:
+        strengths.append(f'parameter stability {stability_score:.0f}')
+    if execution_score >= 65:
+        strengths.append(f'execution score {execution_score:.0f}')
+
+    evidence_inputs = [
+        data_bar_count >= 252,
+        tc >= 10,
+        valid_count >= 3,
+        oos_available and (oos_fold_count >= 2 or not oos_method),
+        oos_trades >= 4,
+        cost_bps is not None,
+        benchmark_annualized_return is not None,
+    ]
+    evidence_reliability = round(sum(1 for item in evidence_inputs if item) / len(evidence_inputs) * 100, 1)
+    needs_data = data_bar_count < 160 or valid_count <= 0 or tc == 0
+    pass_sample_ok = data_bar_count >= 252 and tc >= 10 and sample_score >= 55
+    if oos_fold_count >= 2:
+        pass_oos_ok = (
+            oos_available and oos_trades >= 4 and
+            oos_return is not None and oos_return >= -1 and
+            (oos_sharpe is None or oos_sharpe >= -0.1) and
+            oos_positive_fold_ratio is not None and oos_positive_fold_ratio >= 0.5 and
+            (oos_worst_fold_return is None or oos_worst_fold_return >= -10)
+        )
+    else:
+        # Backward-compatible path for stored DV packets created before v5.
+        pass_oos_ok = (
+            oos_available and not oos_method and oos_trades >= 2 and
+            oos_return is not None and oos_return >= -1 and
+            (oos_sharpe is None or oos_sharpe >= -0.1)
+        )
+    pass_edge_ok = (
+        annualized_net_return is not None and annualized_net_return > 0 and
+        sharpe >= 0.5 and (pf is None or pf >= 1.0)
+    )
+    if needs_data:
+        dv_decision = 'NEED_DATA'
+        verdict = 'Rejected'
+    elif hard_blockers:
+        dv_decision = 'REJECT'
+        verdict = 'Rejected'
+    elif validation_score >= 72 and edge_score >= 55 and stability_score >= 55 and pass_sample_ok and pass_oos_ok and pass_edge_ok and execution_score >= 50 and risk_score >= 50 and evidence_reliability >= 70 and len(warnings) <= 5:
+        dv_decision = 'PASS_DV'
+        verdict = 'Confirmed'
+    elif validation_score >= 45 and edge_score >= 30 and risk_score >= 40:
+        dv_decision = 'WATCH'
+        verdict = 'Watch'
+    else:
+        dv_decision = 'REJECT'
+        verdict = 'Rejected'
+
+    if dv_decision == 'PASS_DV':
+        next_step = 'Move to Entry Plan for final sizing, order type, and risk limits.'
+    elif dv_decision == 'WATCH':
+        next_step = 'Keep on watchlist and revalidate when entry, sample, or cost improves.'
+    elif dv_decision == 'NEED_DATA':
+        next_step = 'Refresh market data and rerun DV before any entry planning.'
+    else:
+        next_step = 'Do not advance until blockers clear.'
+
+    gate_status = 'BLOCK' if hard_blockers else ('REVIEW' if warnings else 'PASS')
+    gate_reason = '; '.join((hard_blockers or warnings or ['DV checks passed'])[:4])
+
+    return {
+        'dvVersion': 'institutional_v5_walk_forward_cost_selection_adjusted',
+        'dvDecision': dv_decision,
+        'verdict': verdict,
+        'validationScore': validation_score,
+        'rawValidationScore': raw_validation_score,
+        'selectionBiasPenalty': round(selection_bias_penalty, 1),
+        'selectionAdjustedSharpeProxy': selection_adjusted_sharpe_proxy,
+        'overfitRiskScore': overfit_risk_score,
+        'evidenceReliability': evidence_reliability,
+        'totalSelectionTrials': total_selection_trials,
+        'grossReturn': _dv_round(tr, 1),
+        'netReturn': _dv_round(net_return, 1),
+        'stressedNetReturn': _dv_round(stressed_net_return, 1),
+        'annualizedGrossReturn': _dv_round(annualized_gross_return, 1),
+        'annualizedNetReturn': _dv_round(annualized_net_return, 1),
+        'annualizedStressedReturn': _dv_round(annualized_stressed_return, 1),
+        'benchmarkReturn': _dv_round(benchmark_annualized_return, 1),
+        'benchmarkAnnualizedReturn': _dv_round(benchmark_annualized_return, 1),
+        'benchmarkAligned': benchmark_aligned,
+        'benchmarkSource': benchmark_source,
+        'excessReturn': _dv_round(excess_return, 1),
+        'estimatedCostDragPct': _dv_round(estimated_cost_drag, 2),
+        'edgeScore': round(edge_score, 1),
+        'sampleScore': round(sample_score, 1),
+        'executionScore': round(execution_score, 1),
+        'riskScore': round(risk_score, 1),
+        'oosScore': round(oos_score, 1),
+        'capacityScore': round(adv_score, 1),
+        'costScore': round(cost_score, 1) if cost_score is not None else None,
+        'setupEdge': {
+            'totalReturn': _dv_round(tr, 1),
+            'netReturn': _dv_round(net_return, 1),
+            'stressedNetReturn': _dv_round(stressed_net_return, 1),
+            'annualizedGrossReturn': _dv_round(annualized_gross_return, 1),
+            'annualizedNetReturn': _dv_round(annualized_net_return, 1),
+            'annualizedStressedReturn': _dv_round(annualized_stressed_return, 1),
+            'benchmarkReturn': _dv_round(benchmark_annualized_return, 1),
+            'benchmarkAligned': benchmark_aligned,
+            'benchmarkSource': benchmark_source,
+            'excessReturn': _dv_round(excess_return, 1),
+            'estimatedCostDragPct': _dv_round(estimated_cost_drag, 2),
+            'sharpeRatio': _dv_round(sharpe, 2),
+            'profitFactor': _dv_round(pf, 2),
+            'winRate': _dv_round(win_rate, 1),
+            'expectancyProxy': round((tr / max(tc, 1)), 2) if tc else None,
+            'maxDrawdown': _dv_round(max_dd, 1),
+        },
+        'sampleQuality': {
+            'bars': data_bar_count,
+            'trades': tc,
+            'minPassTrades': 10,
+            'passEligible': pass_sample_ok,
+            'strategyTrials': strategy_trial_count,
+            'parameterTrialsPerStrategy': parameter_trial_count,
+            'totalSelectionTrials': total_selection_trials,
+            'selectionBiasPenalty': round(selection_bias_penalty, 1),
+            'overfitRiskScore': overfit_risk_score,
+            'evidenceReliability': evidence_reliability,
+            'testedCombinations': param_set_count,
+            'validCombinations': valid_count,
+            'profitableRatio': _dv_round(profitable_ratio * 100, 0),
+            'medianReturn': _dv_round(median_return, 1),
+            'returnSpread': _dv_round(return_spread, 1),
+            'label': 'Strong' if tc >= 12 and sample_score >= 70 else 'Usable' if tc >= 8 and sample_score >= 55 else 'Thin',
+        },
+        'walkForwardProxy': {
+            'status': oos_validation.get('status') if oos_available else recent_vs_long,
+            'method': oos_method,
+            'longReturn': _dv_round(cand.get('longTermReturn'), 1),
+            'recentReturn': _dv_round(cand.get('recentReturn'), 1),
+            'score': round(oos_score, 1),
+            'available': oos_available,
+            'holdoutReturn': _dv_round(oos_return, 1),
+            'holdoutSharpe': _dv_round(oos_sharpe, 2),
+            'holdoutTrades': oos_trades if oos_available else None,
+            'foldCount': oos_fold_count,
+            'positiveFoldCount': oos_validation.get('positiveFoldCount'),
+            'positiveFoldRatio': _dv_round(oos_positive_fold_ratio, 3),
+            'worstFoldReturn': _dv_round(oos_worst_fold_return, 2),
+            'trainBars': oos_validation.get('trainBars'),
+            'holdoutBars': oos_validation.get('holdoutBars'),
+            'bestTrainParams': oos_validation.get('bestTrainParams'),
+            'folds': oos_validation.get('folds') or [],
+        },
+        'multipleTesting': {
+            'method': 'transparent_overfit_risk_proxy_v1',
+            'overfitRiskScore': overfit_risk_score,
+            'selectionBiasPenalty': round(selection_bias_penalty, 1),
+            'selectionAdjustedSharpeProxy': selection_adjusted_sharpe_proxy,
+            'strategyTrials': strategy_trial_count,
+            'parameterTrialsPerStrategy': parameter_trial_count,
+            'totalSelectionTrials': total_selection_trials,
+            'boundary': 'Risk proxy only; not Deflated Sharpe Ratio, CSCV, or Probability of Backtest Overfitting.',
+        },
+        'costCapacity': {
+            'adv20': adv20,
+            'adv20Label': _dv_money(adv20),
+            'roundTripCostBps': _dv_round(cost_bps, 1),
+            'spreadBps': _dv_round(spread_bps, 1),
+            'tenPctAdvCapacity': _dv_num(_dv_best_from_candidate(cand, ['participation10pctDollar']), None) or (adv20 * 0.10 if adv20 else None),
+            'liquidityTier': cand.get('liquidityTier') or cand.get('liquidityGrade'),
+        },
+        'entryValidation': {
+            'currentPrice': _dv_round((entry_plan or {}).get('currentPrice'), 2),
+            'entryZoneLow': _dv_round((entry_plan or {}).get('entryZoneLow'), 2),
+            'entryZoneHigh': _dv_round((entry_plan or {}).get('entryZoneHigh'), 2),
+            'stopLoss': _dv_round((entry_plan or {}).get('stopLoss'), 2),
+            'takeProfit1': _dv_round((entry_plan or {}).get('takeProfit1'), 2),
+            'takeProfit2': _dv_round((entry_plan or {}).get('takeProfit2'), 2),
+            'riskReward1': _dv_round(rr1, 2),
+            'entryDistancePct': _dv_round(entry_distance, 2),
+            'readiness': cand.get('entryReadiness') or cand.get('readiness') or 'Review',
+        },
+        'institutionalGate': {
+            'status': gate_status,
+            'reason': gate_reason,
+            'blockers': hard_blockers,
+            'warnings': warnings,
+            'strengths': strengths[:5],
+        },
+        'dvNarrative': (
+            f'{dv_decision}: score {validation_score:.0f}. '
+            f'Edge {edge_score:.0f}, stability {stability_score:.0f}, sample {sample_score:.0f}, '
+            f'execution {execution_score:.0f}, risk {risk_score:.0f}. {gate_reason}'
+        ),
+        'nextStep': next_step,
+        'dataSources': {
+            'marketData': 'Alpaca Market Data bars/snapshots',
+            'benchmark': benchmark_source or 'SPY benchmark unavailable',
+            'backtest': 'Shared Backtest strategy engines over Alpaca daily bars',
+            'optimization': 'Shared parameter sweep over Backtest strategy engines',
+            'execution': 'Fine Scan Alpaca quote/cost/capacity packet',
+            'ai': 'Configured AI provider overlay when available',
+        },
+        'researchLimitations': [
+            'Current tradable universe may contain survivorship bias.',
+            'Daily bars cannot reproduce intraday order path or queue position.',
+            'Costs are estimated from the Fine Scan quote, spread, and capacity packet.',
+            'Multiple-testing control is a transparent proxy, not exact DSR, CSCV, or PBO.',
+        ] + ([] if benchmark_aligned else ['SPY comparison uses a 12M fallback because aligned benchmark bars were unavailable.']),
+    }
 
 @app.route('/api/ai/fine-scan-explain', methods=['POST'])
 def fine_scan_explain():
@@ -25269,6 +30509,12 @@ def fine_scan_decision():
         risk_grade = data.get('riskGrade', '')
         risk_score = data.get('riskScore', 0)
         entry_score = data.get('entryScore', 0)
+        institutional_packet = data.get('institutionalFineScan') if isinstance(data.get('institutionalFineScan'), dict) else {}
+        try:
+            institutional_json = _json.dumps(institutional_packet, ensure_ascii=False, default=str, separators=(',', ':'))
+        except Exception:
+            institutional_json = '{}'
+        institutional_json = institutional_json[:7000]
         
         # Build evidence summary for AI prompt
         bt_summary = f"{bt_status}/{bt_perf}" if bt_status else "N/A"
@@ -25278,13 +30524,16 @@ def fine_scan_decision():
         eq_summary = f"{eq_grade}" if eq_grade else "N/A"
         if eq_score: eq_summary += f" score={eq_score}"
         
-        strategy_str = ', '.join(matched_strategies[:4]) if matched_strategies else 'none'
+        strategy_str = ', '.join(str(item) for item in matched_strategies[:4] if item) if matched_strategies else 'none'
         
-        ai_prompt = f"""You are a quantitative trading analyst. Based on the evidence below, decide whether this stock should CONTINUE (best candidates for further analysis), WATCH (potentially good but needs monitoring), REJECT (not suitable), or NEED_MORE_DATA (insufficient data to decide).
+        ai_prompt = f"""You are the AI trader overlay for an institutional Fine Scan. This is NOT the coarse Market Scanner stage.
+
+Your job is to review a second-pass trading evidence packet and decide whether the name should proceed to Deeper Validation.
+Focus on setup quality, entry geometry, execution feasibility, microstructure, event/crowding risk, and data completeness.
 
 SYMBOL: {symbol}
 
-EVIDENCE:
+LEGACY SUMMARY:
 - Trend: {trend_label} (Score: {trend_score}/100)
 - Matched Strategies: {strategy_str} (conf: {match_conf}/100)
 - Backtest: {bt_summary}
@@ -25292,24 +30541,23 @@ EVIDENCE:
 - Liquidity: {liq_grade}
 - News: {news_grade}
 - Risk: {risk_grade} (Score: {risk_score}/100)
+- Entry Score: {entry_score}/100
+
+FINE_SCAN_PACKET_JSON:
+{institutional_json}
 
 RULES:
-1. CONTINUE means "worth entering deeper validation / entry plan analysis." NOT a buy signal. Give CONTINUE to any candidate with:
-   - Score >= 60 AND backtest positive/acceptable/caution
-   - OR score >= 50 AND strong trend + no hard blockers
-   - OR score >= 45 AND backtest is missing (N/A) but trend is bullish and entry quality is acceptable
-   - Entry: Good/Wait/Pullback/Breakout Setup all qualify. Extended alone is NOT a hard blocker.
-   - Risk: LOW/MEDIUM preferred, but HIGH alone does NOT prevent CONTINUE (downgrade to WATCH instead)
-   - General guidance: when in doubt between WATCH and CONTINUE for a strong-ish candidate, choose CONTINUE.
-2. WATCH if: some positive signals but one area needs monitoring (e.g. backtest caution, entry wait zone, moderate risk, or risk=HIGH with other decent signals).
-3. REJECT if: trend clearly bearish AND backtest negative, OR entry is Avoid/Downtrend, OR risk is SKIP (critical data missing), OR multiple hard blockers present.
-4. NEED_MORE_DATA if: key fields are missing (price=0, no backtest, no entry quality) AND you cannot make a reliable CONTINUE/REJECT decision.
-5. Do NOT reject just because entry is "Wait for Pullback" or "Chasing/Extended" — if other signals are strong, WATCH or CONTINUE.
-6. Do NOT reject just because risk is HIGH. HIGH risk alone → WATCH. Only risk=SKIP triggers reject.
-7. Consider News grade: "High Event Risk" or "Caution" with earnings upcoming should push toward WATCH. "Catalyst" is a positive signal. "Clear" is neutral.
-8. Consider Risk score: higher risk score (closer to 100) means more caution. Risk score > 65 should push toward WATCH unless other signals are very strong.
-9. Backtest missing (N/A) is NOT a reason to REJECT. If trend/entry/risk are acceptable, give CONTINUE or WATCH.
-10. NEVER invent or assume data. Only use the evidence provided above.
+1. CONTINUE means "worth sending to Deeper Validation." It is NOT a buy signal.
+2. WATCH means the setup is real, but entry, liquidity, event, microstructure, or confirmation is not ready yet.
+3. REJECT means do not spend deeper validation time until hard blockers clear.
+4. NEED_MORE_DATA means required evidence is missing or stale enough that a reliable decision is not possible.
+5. Hard blockers and deterministic decisions in FINE_SCAN_PACKET_JSON are binding. If hardBlockers is non-empty, return REJECT.
+6. You are a challenge overlay, not the score owner. Never upgrade deterministic REJECT/NEED_MORE_DATA/WATCH to CONTINUE.
+7. Missing paid feeds such as Nasdaq TotalView/NOII or NYSE OpenBook are data-boundary notes, not risk warnings. Do not downgrade just because these paid feeds are absent.
+8. Entry readiness "Review" can remain CONTINUE only when deterministicDecision is already CONTINUE, fineScore >= 78, setupQualityScore >= 76, executionReadinessScore >= 65, reward/risk is acceptable, and hardBlockers is empty.
+9. High momentum alone is not enough. Penalize chasing far above VWAP/entry zone, poor R/R, stale quotes, high costs, and crowded event risk.
+10. Prefer concise professional reasoning. Mention the single most important next action.
+11. NEVER invent or assume data. Only use the evidence provided above.
 
 Return ONLY valid JSON (no markdown):
 {{
@@ -25711,6 +30959,465 @@ def _generate_entry_plan_summary(symbol, strategy, metrics, data_source):
     return entry_plan
 
 
+def _dv_normalize_strategy_name(raw):
+    """Map UI/setup labels to a supported backtest strategy key."""
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    if not value:
+        return None
+    lower = value.lower().replace('-', ' ').replace('_', ' ')
+    compact = lower.replace(' ', '_')
+    if compact in STRATEGY_FN_MAP:
+        return compact
+    if lower in STRATEGY_LABEL_MAP:
+        return STRATEGY_LABEL_MAP[lower]
+    if compact in STRATEGY_LABEL_MAP:
+        return STRATEGY_LABEL_MAP[compact]
+    if 'breakout' in lower or 'momentum' in lower or 'volume confirmation' in lower:
+        return 'momentum'
+    if 'macd' in lower:
+        return 'macd'
+    if 'rsi' in lower or 'reversal' in lower:
+        return 'rsi'
+    if 'bollinger' in lower or 'range' in lower or 'band' in lower:
+        return 'bollinger'
+    if 'mean reversion' in lower:
+        return 'mean_reversion'
+    if 'moving average' in lower or 'trend following' in lower or lower in ('ma', 'ema'):
+        return 'moving_average'
+    return None
+
+
+def _dv_strategy_stack_from_candidate(cand, validate_all=False, mode='trend_aware', max_strategies=6):
+    """Return ordered supported strategy keys for DV testing.
+
+    DV should validate strategies that fit the Fine Scan regime instead of
+    blindly testing every engine. Buy-and-hold is kept out of DV because it is a
+    benchmark, not an actionable setup.
+    """
+    tradable_strategies = (
+        'moving_average', 'macd', 'momentum', 'rsi', 'bollinger', 'mean_reversion',
+        'donchian_breakout', 'keltner_breakout', 'supertrend', 'stochastic', 'adx_trend'
+    )
+    ordered = []
+
+    def add(value):
+        key = _dv_normalize_strategy_name(value)
+        if key == 'buy_hold':
+            return
+        if key and key in STRATEGY_FN_MAP and key in tradable_strategies and key not in ordered:
+            ordered.append(key)
+
+    def add_many(values):
+        for value in values:
+            add(value)
+
+    try:
+        max_count = int(max_strategies or 6)
+    except Exception:
+        max_count = 6
+    max_count = max(1, min(max_count, len(tradable_strategies)))
+
+    selection_mode = str(mode or 'trend_aware').lower().replace('-', '_')
+
+    for value in cand.get('strategyStack') or []:
+        add(value)
+    add(cand.get('bestStrategy'))
+    add(cand.get('strategy'))
+    for value in cand.get('matchedStrategies') or []:
+        add(value)
+
+    setup = str(cand.get('setup') or cand.get('setupType') or cand.get('regime') or cand.get('marketRegime') or '').lower()
+    trend = str(cand.get('trendLabel') or cand.get('trend') or cand.get('trendDirection') or cand.get('grade') or '').lower()
+    signal_text = ' '.join(str(v).lower() for v in (
+        setup,
+        trend,
+        cand.get('decisionReason'),
+        cand.get('whyMatched'),
+        cand.get('matchReason'),
+        cand.get('finalReason'),
+    ) if v)
+
+    trend_following_stack = ('adx_trend', 'supertrend', 'moving_average', 'macd', 'momentum')
+    breakout_stack = ('donchian_breakout', 'keltner_breakout', 'supertrend', 'momentum', 'macd')
+    pullback_stack = ('moving_average', 'adx_trend', 'macd', 'rsi', 'stochastic')
+    range_stack = ('mean_reversion', 'bollinger', 'stochastic', 'rsi')
+    bearish_long_only_stack = ('mean_reversion', 'stochastic', 'rsi', 'bollinger')
+
+    if validate_all or selection_mode in ('all', 'all_supported', 'full'):
+        add_many(tradable_strategies)
+    elif selection_mode in ('trend_aware', 'regime_aware', 'setup_aware'):
+        if any(token in signal_text for token in ('breakout', 'donchian', 'channel', 'new high', 'resistance')):
+            add_many(breakout_stack)
+        elif any(token in signal_text for token in ('pullback', 'dip', 'retest', 'mean pullback')):
+            add_many(pullback_stack)
+        elif any(token in signal_text for token in ('mean reversion', 'range', 'neutral', 'sideways', 'oversold', 'overbought')):
+            add_many(range_stack)
+        elif any(token in trend for token in ('bearish', 'downtrend', 'weak')):
+            add_many(bearish_long_only_stack)
+        elif any(token in signal_text for token in ('continuation', 'trend', 'bullish', 'momentum', 'strong')):
+            add_many(trend_following_stack)
+        else:
+            add_many(('moving_average', 'macd', 'rsi', 'bollinger'))
+    else:
+        add_many(('moving_average', 'macd', 'momentum', 'rsi', 'bollinger', 'mean_reversion'))
+
+    if not ordered:
+        ordered = list(tradable_strategies) if validate_all else list(trend_following_stack)
+    return ordered[:max_count]
+
+
+def _dv_normalize_entry_plan_from_candidate(cand, fallback_plan=None):
+    """Use Fine Scan entry geometry as the DV entry packet; fallback only if missing."""
+    entry_details = cand.get('entryDetails') if isinstance(cand.get('entryDetails'), dict) else {}
+    fine_plan = cand.get('entryPlanFine') or cand.get('entryPlan') or entry_details.get('entry_plan') or {}
+    if not isinstance(fine_plan, dict):
+        fine_plan = {}
+    fallback_plan = fallback_plan or {}
+    source = 'fine_scan_entry_plan' if fine_plan else 'dv_generated_fallback'
+
+    def pick(*values):
+        for value in values:
+            if value not in (None, '', '--'):
+                return value
+        return None
+
+    zone = fine_plan.get('entryZone') if isinstance(fine_plan.get('entryZone'), dict) else {}
+    entry_low = pick(fine_plan.get('entryZoneLow'), fine_plan.get('entryLow'), zone.get('low'), fallback_plan.get('entryZoneLow'))
+    entry_high = pick(fine_plan.get('entryZoneHigh'), fine_plan.get('entryHigh'), zone.get('high'), fallback_plan.get('entryZoneHigh'))
+    stop = pick(fine_plan.get('stopLoss'), fine_plan.get('stop'), fallback_plan.get('stopLoss'))
+    target1 = pick(fine_plan.get('takeProfit1'), fine_plan.get('target1'), fallback_plan.get('takeProfit1'))
+    target2 = pick(fine_plan.get('takeProfit2'), fine_plan.get('target2'), fallback_plan.get('takeProfit2'))
+    rr1 = pick(fine_plan.get('riskReward1'), fine_plan.get('rewardRiskRatio'), fallback_plan.get('riskReward1'))
+    rr2 = pick(fine_plan.get('riskReward2'), fallback_plan.get('riskReward2'))
+    current = pick(fine_plan.get('currentPrice'), cand.get('price'), cand.get('lastPrice'), fallback_plan.get('currentPrice'))
+
+    normalized = {
+        'setup': pick(fine_plan.get('planType'), fine_plan.get('setup'), cand.get('setup'), fallback_plan.get('setup')),
+        'currentPrice': _dv_round(current, 4),
+        'entryZoneLow': _dv_round(entry_low, 4),
+        'entryZoneHigh': _dv_round(entry_high, 4),
+        'stopLoss': _dv_round(stop, 4),
+        'takeProfit1': _dv_round(target1, 4),
+        'takeProfit2': _dv_round(target2, 4),
+        'riskReward1': _dv_round(rr1, 2),
+        'riskReward2': _dv_round(rr2, 2),
+        'entryDistancePct': _dv_round(pick(fine_plan.get('entryDistancePct'), cand.get('entryDistancePct'), fallback_plan.get('entryDistancePct')), 2),
+        'invalidationCondition': pick(fine_plan.get('invalidationCondition'), fine_plan.get('stopBasis'), fallback_plan.get('invalidationCondition')),
+        'sourceStatus': 'Fine Scan' if source == 'fine_scan_entry_plan' else fallback_plan.get('sourceStatus', 'DV fallback'),
+        'entryPlanSource': source,
+        'supportLevel': _dv_round(fine_plan.get('supportLevel'), 4),
+        'resistanceLevel': _dv_round(fine_plan.get('resistanceLevel'), 4),
+        'targetBasis': fine_plan.get('targetBasis'),
+        'stopBasis': fine_plan.get('stopBasis'),
+    }
+    if normalized['riskReward1'] is None and normalized['entryZoneHigh'] and normalized['stopLoss'] and normalized['takeProfit1']:
+        risk = normalized['entryZoneHigh'] - normalized['stopLoss']
+        reward = normalized['takeProfit1'] - normalized['entryZoneHigh']
+        if risk > 0 and reward > 0:
+            normalized['riskReward1'] = round(reward / risk, 2)
+    return normalized
+
+
+def _dv_params_for_strategy(cand, strategy):
+    params = cand.get('parameters') if isinstance(cand.get('parameters'), dict) else {}
+    if isinstance(params.get(strategy), dict):
+        return params.get(strategy)
+    if params and not any(isinstance(v, dict) for v in params.values()):
+        return params
+    return DEFAULT_FALLBACK_PARAMS.get(strategy, {})
+
+
+def _dv_parameter_rank_score(metrics, round_trip_cost_bps=0):
+    """Rank parameter sets on risk-adjusted, cost-aware evidence rather than raw return."""
+    metrics = metrics or {}
+    total_return = _dv_num(metrics.get('totalReturn'), 0) or 0
+    sharpe = _dv_num(metrics.get('sharpeRatio'), 0) or 0
+    drawdown = abs(_dv_num(metrics.get('maxDrawdown'), 0) or 0)
+    trades = max(0, int(_dv_num(metrics.get('tradeCount'), 0) or 0))
+    cost_bps = max(0, _dv_num(round_trip_cost_bps, 0) or 0)
+    net_return = total_return - trades * cost_bps / 100.0
+    score = net_return + 4.0 * sharpe - 0.25 * drawdown + min(trades, 20) * 0.15
+    return round(score, 4), round(net_return, 4)
+
+
+def _dv_compound_returns(returns):
+    value = 1.0
+    for item in returns or []:
+        ret = _dv_num(item, None)
+        if ret is None:
+            continue
+        value *= max(0.0, 1.0 + ret / 100.0)
+    return round((value - 1.0) * 100.0, 2)
+
+
+def _dv_walk_forward_validation(symbol, strategy, param_sets, fallback_params, data_daily,
+                                initial_capital, round_trip_cost_bps=0):
+    """Anchored multi-fold walk-forward validation over ordered daily bars.
+
+    Each fold selects parameters only on data available before its test window.
+    This is deliberately called walk-forward, not CSCV/PBO, because the local
+    engine does not retain the complete return paths required for those tests.
+    """
+    rows = list(data_daily or [])
+    total_bars = len(rows)
+    if total_bars < 220:
+        return {
+            'available': False,
+            'status': 'Insufficient history for multi-fold walk-forward',
+            'method': 'anchored_walk_forward_v1',
+            'foldCount': 0,
+            'folds': [],
+        }
+
+    desired_folds = 3 if total_bars >= 360 else 2
+    min_train_bars = 160
+    test_bars = min(126, max(60, (total_bars - min_train_bars) // desired_folds))
+    first_train_end = total_bars - desired_folds * test_bars
+    if first_train_end < min_train_bars:
+        desired_folds = 2
+        test_bars = max(60, (total_bars - min_train_bars) // desired_folds)
+        first_train_end = total_bars - desired_folds * test_bars
+    if desired_folds < 2 or test_bars < 40 or first_train_end < 120:
+        return {
+            'available': False,
+            'status': 'Insufficient history for multi-fold walk-forward',
+            'method': 'anchored_walk_forward_v1',
+            'foldCount': 0,
+            'folds': [],
+        }
+
+    candidate_params = list(param_sets or []) or [fallback_params or {}]
+    folds = []
+    for fold_index in range(desired_folds):
+        train_end = first_train_end + fold_index * test_bars
+        test_end = total_bars if fold_index == desired_folds - 1 else min(total_bars, train_end + test_bars)
+        train_data = rows[:train_end]
+        test_data = rows[train_end:test_end]
+        if len(train_data) < 120 or len(test_data) < 40:
+            continue
+
+        ranked = []
+        for params in candidate_params:
+            train_bt, _train_error = _run_backtest_core(symbol, strategy, params, train_data, initial_capital)
+            if not train_bt:
+                continue
+            rank_score, train_net_return = _dv_parameter_rank_score(
+                train_bt.get('metrics') or {}, round_trip_cost_bps
+            )
+            ranked.append({
+                'params': params,
+                'rankScore': rank_score,
+                'netReturn': train_net_return,
+                'metrics': train_bt.get('metrics') or {},
+            })
+        if not ranked:
+            continue
+
+        best_train = max(ranked, key=lambda item: item['rankScore'])
+        test_bt, _test_error = _run_backtest_core(
+            symbol, strategy, best_train['params'], test_data, initial_capital
+        )
+        if not test_bt:
+            continue
+        test_metrics = test_bt.get('metrics') or {}
+        _rank, test_net_return = _dv_parameter_rank_score(test_metrics, round_trip_cost_bps)
+        folds.append({
+            'fold': fold_index + 1,
+            'trainBars': len(train_data),
+            'testBars': len(test_data),
+            'bestTrainParams': best_train['params'],
+            'trainReturn': _dv_round(best_train['metrics'].get('totalReturn'), 2),
+            'trainNetReturn': _dv_round(best_train['netReturn'], 2),
+            'trainSharpe': _dv_round(best_train['metrics'].get('sharpeRatio'), 3),
+            'testReturn': _dv_round(test_metrics.get('totalReturn'), 2),
+            'testNetReturn': _dv_round(test_net_return, 2),
+            'testSharpe': _dv_round(test_metrics.get('sharpeRatio'), 3),
+            'testMaxDrawdown': _dv_round(test_metrics.get('maxDrawdown'), 2),
+            'testTrades': int(_dv_num(test_metrics.get('tradeCount'), 0) or 0),
+        })
+
+    if len(folds) < 2:
+        return {
+            'available': False,
+            'status': 'Fewer than two valid walk-forward folds',
+            'method': 'anchored_walk_forward_v1',
+            'foldCount': len(folds),
+            'folds': folds,
+        }
+
+    net_returns = [fold.get('testNetReturn') for fold in folds]
+    sharpes = [_dv_num(fold.get('testSharpe'), 0) or 0 for fold in folds]
+    total_trades = sum(int(fold.get('testTrades') or 0) for fold in folds)
+    positive_folds = sum(1 for value in net_returns if (_dv_num(value, 0) or 0) > 0)
+    positive_ratio = positive_folds / len(folds)
+    aggregate_return = _dv_compound_returns(net_returns)
+    average_sharpe = round(sum(sharpes) / len(sharpes), 3)
+    worst_return = min((_dv_num(value, 0) or 0) for value in net_returns)
+    if positive_ratio >= 2 / 3 and aggregate_return > 0 and average_sharpe >= 0.2:
+        status = 'Walk-forward Positive'
+    elif aggregate_return >= -3 and worst_return >= -10:
+        status = 'Walk-forward Mixed'
+    else:
+        status = 'Walk-forward Weak'
+    return {
+        'available': True,
+        'status': status,
+        'method': 'anchored_walk_forward_v1',
+        'foldCount': len(folds),
+        'positiveFoldCount': positive_folds,
+        'positiveFoldRatio': round(positive_ratio, 3),
+        'aggregateNetReturn': aggregate_return,
+        'averageSharpe': average_sharpe,
+        'worstFoldReturn': round(worst_return, 2),
+        'totalTrades': total_trades,
+        'trainBars': folds[-1].get('trainBars'),
+        'holdoutBars': sum(int(fold.get('testBars') or 0) for fold in folds),
+        'holdoutReturn': aggregate_return,
+        'holdoutSharpe': average_sharpe,
+        'holdoutMaxDrawdown': max((_dv_num(fold.get('testMaxDrawdown'), 0) or 0) for fold in folds),
+        'holdoutTrades': total_trades,
+        'bestTrainParams': folds[-1].get('bestTrainParams'),
+        'folds': folds,
+    }
+
+
+def _dv_validate_strategy_for_candidate(symbol, strategy, cand, data_daily, data_source, initial_capital,
+                                        risk_profile='medium', time_horizon='mid'):
+    """Run DV evidence for one supported strategy key."""
+    split_idx = max(len(data_daily) - 60, len(data_daily) // 2)
+    long_data = data_daily
+    short_data = data_daily[split_idx:]
+    params = _dv_params_for_strategy(cand, strategy)
+
+    bt_result, bt_err = _run_backtest_core(symbol, strategy, params, data_daily, initial_capital)
+    if bt_err or not bt_result:
+        return None, bt_err or 'No results'
+
+    metrics = bt_result['metrics']
+    param_sets = STRATEGY_PARAM_GRIDS.get(strategy, {}).get('param_sets', [])
+    opt_results = []
+    round_trip_cost_bps = _dv_num(_dv_best_from_candidate(
+        cand, ['estimatedRoundTripCostBps', 'roundTripCostBps', 'costBps']
+    ), 0) or 0
+    seen_params = set()
+    for ps in param_sets:
+        key = str(sorted(ps.items()))
+        if key in seen_params:
+            continue
+        seen_params.add(key)
+        r, _e = _run_backtest_core(symbol, strategy, ps, data_daily, initial_capital)
+        if r:
+            rank_score, net_return = _dv_parameter_rank_score(r['metrics'], round_trip_cost_bps)
+            opt_results.append({
+                'strategy': strategy,
+                'params': ps,
+                'totalReturn': r['metrics']['totalReturn'],
+                'netReturn': net_return,
+                'rankScore': rank_score,
+                'sharpeRatio': r['metrics']['sharpeRatio'],
+                'maxDrawdown': r['metrics']['maxDrawdown'],
+                'winRate': r['metrics']['winRate'],
+                'profitFactor': r['metrics']['profitFactor'],
+                'tradeCount': r['metrics']['tradeCount'],
+            })
+
+    valid_count = len(opt_results)
+    best_opt = max(opt_results, key=lambda x: x.get('rankScore', -9999)) if opt_results else None
+    if best_opt:
+        # The selected parameter set must own every downstream full-sample metric.
+        # Walk-forward folds still reselect independently using train-only data.
+        params = best_opt['params']
+        metrics = {
+            'totalReturn': best_opt.get('totalReturn', 0),
+            'sharpeRatio': best_opt.get('sharpeRatio', 0),
+            'maxDrawdown': best_opt.get('maxDrawdown', 0),
+            'winRate': best_opt.get('winRate'),
+            'profitFactor': best_opt.get('profitFactor'),
+            'tradeCount': best_opt.get('tradeCount', 0),
+        }
+    stability_score, stability_reason_str = _compute_stability_score(opt_results, valid_count, expected_count=len(param_sets))
+    returns = sorted([r.get('netReturn', r.get('totalReturn', 0)) for r in opt_results])
+    median_return = round(returns[valid_count // 2], 2) if valid_count > 0 else 0
+    stability = {
+        'score': stability_score,
+        'profitableRatio': round(sum(1 for r in opt_results if r.get('netReturn', r.get('totalReturn', -999)) > 0) / valid_count, 2) if valid_count > 0 else 0,
+        'medianReturn': median_return,
+        'bestReturn': best_opt.get('netReturn', best_opt.get('totalReturn', 0)) if best_opt else 0,
+        'returnSpread': round((best_opt.get('netReturn', best_opt.get('totalReturn', 0)) if best_opt else 0) - median_return, 2) if valid_count > 0 else 0,
+        'stableParameterCount': sum(
+            1 for row in opt_results
+            if row.get('netReturn', row.get('totalReturn', -999)) > 0
+            and abs(row.get('netReturn', row.get('totalReturn', 0)) - median_return) <= max(8, abs(median_return) * 0.75)
+        ),
+        'stabilityReason': stability_reason_str,
+    }
+
+    long_bt, _ = _run_backtest_core(symbol, strategy, params, long_data, initial_capital)
+    short_bt, _ = _run_backtest_core(symbol, strategy, params, short_data, initial_capital)
+    long_metrics = long_bt['metrics'] if long_bt else None
+    short_metrics = short_bt['metrics'] if short_bt else None
+    recent_vs_long = _compute_recent_vs_long_term(metrics, long_metrics, short_metrics) if long_metrics and short_metrics else 'Consistent'
+
+    oos_validation = _dv_walk_forward_validation(
+        symbol,
+        strategy,
+        param_sets,
+        params,
+        data_daily,
+        initial_capital,
+        round_trip_cost_bps,
+    )
+
+    legacy_verdict, reason_str = _compute_verdict(metrics, stability, recent_vs_long, opt_results, valid_count)
+    fallback_entry_plan = {}
+    has_fine_plan = bool(cand.get('entryPlanFine') or cand.get('entryPlan') or ((cand.get('entryDetails') or {}).get('entry_plan') if isinstance(cand.get('entryDetails'), dict) else None))
+    if not has_fine_plan:
+        fallback_entry_plan = _generate_entry_plan_summary(symbol, strategy, metrics, data_source)
+    entry_plan_summary = _dv_normalize_entry_plan_from_candidate(cand, fallback_entry_plan)
+    legacy_risk_gate = _generate_risk_gate(
+        legacy_verdict, metrics, stability, strategy, recent_vs_long,
+        risk_profile=risk_profile, time_horizon=time_horizon,
+        event_risk=cand.get('eventRisk'), data_quality=cand.get('dataQuality')
+    )
+    institutional_packet = _build_institutional_dv_packet(
+        cand, metrics, stability, recent_vs_long, entry_plan_summary, legacy_risk_gate,
+        strategy, data_source, len(data_daily), valid_count, len(param_sets), oos_validation=oos_validation
+    )
+
+    top3 = sorted(opt_results, key=lambda x: x.get('rankScore', -9999), reverse=True)[:3] if opt_results else []
+    top3_fmt = [{
+        'strategy': strategy,
+        'params': str(r['params']),
+        'ret': round(r['totalReturn'], 2),
+        'netRet': round(r.get('netReturn', r['totalReturn']), 2),
+        'sharp': round(r['sharpeRatio'], 2),
+        'rankScore': round(r.get('rankScore', 0), 2),
+    } for r in top3] if top3 else []
+    return {
+        'strategy': strategy,
+        'parameters': params,
+        'metrics': metrics,
+        'btResult': bt_result,
+        'optimizationResults': opt_results,
+        'bestOpt': best_opt,
+        'validCount': valid_count,
+        'paramSets': param_sets,
+        'top3': top3_fmt,
+        'stability': stability,
+        'longMetrics': long_metrics,
+        'shortMetrics': short_metrics,
+        'recentVsLong': recent_vs_long,
+        'oosValidation': oos_validation,
+        'legacyVerdict': legacy_verdict,
+        'legacyReason': reason_str,
+        'entryPlan': entry_plan_summary,
+        'legacyRiskGate': legacy_risk_gate,
+        'institutionalPacket': institutional_packet,
+    }, None
+
+
 def _get_strategy_atr(symbol):
     """Fetch ATR for a symbol using Alpaca bars."""
     try:
@@ -25818,8 +31525,12 @@ def _generate_final_decision(verdict, metrics, stability, opt_results, strategy)
                 score -= 5
 
         # Optimization results
-        if opt_results and isinstance(opt_results, dict):
-            opt_ret = opt_results.get('optimizedReturn', 0) or 0
+        if opt_results:
+            opt_ret = 0
+            if isinstance(opt_results, dict):
+                opt_ret = opt_results.get('optimizedReturn', 0) or opt_results.get('totalReturn', 0) or 0
+            elif isinstance(opt_results, list):
+                opt_ret = max((_dv_num(r.get('totalReturn'), 0) or 0) for r in opt_results if isinstance(r, dict)) if opt_results else 0
             if opt_ret > 15:
                 score += 15
                 reasons.append(f'Opt: +{opt_ret:.0f}%')
@@ -25975,16 +31686,63 @@ _DV_AI_OVERLAY_CACHE = {}
 _DV_AI_OVERLAY_CACHE_TTL_SECONDS = 1800
 
 
-def _build_ai_overlay_cache_key(dv_result):
+def _dv_sync_final_verdict(dv_result):
+    """Keep cached/live AI outcome and deterministic routing fields consistent."""
+    final_verdict = dv_result.get('finalVerdict')
+    if not final_verdict:
+        return dv_result
+    dv_result['verdict'] = final_verdict
+    if final_verdict == 'Confirmed':
+        dv_result['dvDecision'] = 'PASS_DV'
+    elif final_verdict == 'Watch':
+        dv_result['dvDecision'] = 'WATCH'
+    elif final_verdict in ('Reject', 'Rejected'):
+        dv_result['dvDecision'] = 'REJECT'
+    return dv_result
+
+
+def _dv_normalize_verdict_label(value):
+    text = str(value or '').strip().lower().replace('_', ' ')
+    if text in ('confirmed', 'confirm', 'pass', 'pass dv', 'advance'):
+        return 'confirmed'
+    if text in ('reject', 'rejected', 'avoid', 'skip'):
+        return 'reject'
+    if text in ('watch', 'review', 'needs manual review'):
+        return 'watch'
+    return text
+
+
+def _build_ai_overlay_cache_key(dv_result, ai_config=None):
     """Build cache key from stable fields — avoid re-calling AI for same scenario."""
+    ai_config = ai_config or {}
+    gate = dv_result.get('institutionalGate') or dv_result.get('riskGate') or {}
+    if not isinstance(gate, dict):
+        gate = {}
     parts = [
+        str(ai_config.get('provider') or ''),
+        str(ai_config.get('model') or ''),
         dv_result.get('symbol', '?'),
         dv_result.get('validationStrategy', '?'),
+        str(round(float(dv_result.get('validationScore') or 0), 0)),
+        str(round(float(dv_result.get('edgeScore') or 0), 0)),
+        str(round(float(dv_result.get('sampleScore') or 0), 0)),
+        str(round(float(dv_result.get('executionScore') or 0), 0)),
+        str(round(float(dv_result.get('riskScore') or 0), 0)),
         str(round(float(dv_result.get('totalReturn') or 0), 0)),
         str(round(float(dv_result.get('sharpeRatio') or 0), 1)),
         str(round(float(dv_result.get('maxDrawdown') or 0), 0)),
         str(round(float(dv_result.get('profitFactor') or 0), 1)),
+        str(round(float(dv_result.get('annualizedNetReturn') or 0), 1)),
+        str(round(float(dv_result.get('overfitRiskScore') or 0), 0)),
+        str(round(float(dv_result.get('evidenceReliability') or 0), 0)),
+        str((dv_result.get('walkForwardProxy') or {}).get('foldCount') or 0),
+        str(round(float((dv_result.get('walkForwardProxy') or {}).get('holdoutReturn') or 0), 1)),
+        str(round(float((dv_result.get('walkForwardProxy') or {}).get('positiveFoldRatio') or 0), 2)),
+        str(round(float((dv_result.get('walkForwardProxy') or {}).get('worstFoldReturn') or 0), 1)),
         dv_result.get('verdict', '?'),
+        str(gate.get('status') or ''),
+        ';'.join(str(x) for x in (gate.get('blockers') or [])[:5]),
+        ';'.join(str(x) for x in (gate.get('warnings') or gate.get('checks') or [])[:5]),
         dv_result.get('riskProfileUsed', '?'),
         dv_result.get('timeHorizonUsed', '?'),
         str(dv_result.get('eventRisk') or ''),
@@ -25994,19 +31752,20 @@ def _build_ai_overlay_cache_key(dv_result):
     return '|'.join(parts)
 
 
-def _ai_deeper_validation_overlay_safe(dv_result, timeout_sec=20):
+def _ai_deeper_validation_overlay_safe(dv_result, timeout_sec=30, ai_config=None, ai_source=None):
     """Safe wrapper: timeout, cache, exception handling. Returns updated dv_result."""
     import time as _time
     _start = _time.time()
 
     # Check cache
-    _cache_key = _build_ai_overlay_cache_key(dv_result)
+    _cache_key = _build_ai_overlay_cache_key(dv_result, ai_config)
     _cached = _DV_AI_OVERLAY_CACHE.get(_cache_key)
     if _cached:
         _age = _time.time() - _cached['ts']
         if _age < _DV_AI_OVERLAY_CACHE_TTL_SECONDS:
             for _k, _v in _cached['fields'].items():
                 dv_result[_k] = _v
+            _dv_sync_final_verdict(dv_result)
             dv_result['aiValidationCacheHit'] = True
             dv_result['aiValidationElapsedMs'] = int((_time.time() - _start) * 1000)
             return dv_result
@@ -26016,7 +31775,7 @@ def _ai_deeper_validation_overlay_safe(dv_result, timeout_sec=20):
     dv_result['aiValidationCacheHit'] = False
 
     try:
-        dv_result = _ai_deeper_validation_overlay(dv_result)
+        dv_result = _ai_deeper_validation_overlay(dv_result, ai_config=ai_config, ai_source=ai_source, timeout_sec=timeout_sec)
         _elapsed = int((_time.time() - _start) * 1000)
         dv_result['aiValidationElapsedMs'] = _elapsed
         dv_result['aiValidationTimeout'] = False
@@ -26028,7 +31787,10 @@ def _ai_deeper_validation_overlay_safe(dv_result, timeout_sec=20):
                 'fields': {k: dv_result[k] for k in [
                     'aiValidationUsed', 'aiValidationVerdict', 'aiValidationConfidence',
                     'aiValidationReason', 'aiRiskNotes', 'aiCatalystNotes', 'aiContextAdjustment',
+                    'aiContradictions', 'aiMissingEvidence', 'aiNextCheck',
+                    'aiValidationProvider', 'aiValidationModel', 'aiValidationSource',
                     'localVerdictBeforeAI', 'finalVerdict', 'finalVerdictSource',
+                    'verdict', 'dvDecision',
                 ] if k in dv_result},
             }
         return dv_result
@@ -26043,7 +31805,7 @@ def _ai_deeper_validation_overlay_safe(dv_result, timeout_sec=20):
         return dv_result
 
 
-def _ai_deeper_validation_overlay(dv_result):
+def _ai_deeper_validation_overlay(dv_result, ai_config=None, ai_source=None, timeout_sec=30):
     """AI overlay: review DV result with market/news/FineScan/user context.
     Returns updated dv_result with aiValidation* fields and finalVerdict.
     AI can downgrade but cannot override hard BLOCK or upgrade bad metrics to Confirmed.
@@ -26051,10 +31813,15 @@ def _ai_deeper_validation_overlay(dv_result):
     try:
         # Only call AI for non-trivial cases
         local_verdict = dv_result.get('verdict', 'Watch')
-        risk_gate_status = (dv_result.get('riskGate') or {}).get('status', 'PASS')
+        risk_gate_status = (dv_result.get('institutionalGate') or dv_result.get('riskGate') or {}).get('status', 'PASS')
 
-        # Check AI config
-        _ai_cfg, _ai_src = resolve_ai_config(require_user_config=True)
+        # Check AI config. When called from ThreadPoolExecutor, Flask request
+        # context is not available, so the endpoint resolves config once and
+        # passes it in explicitly.
+        if ai_config is not None:
+            _ai_cfg, _ai_src = ai_config, (ai_source or 'request_user_config')
+        else:
+            _ai_cfg, _ai_src = resolve_ai_config(require_user_config=True)
         _api_key = _ai_cfg.get('apiKey', '')
         if not _api_key or not _api_key.strip():
             dv_result['aiValidationUsed'] = False
@@ -26066,31 +31833,72 @@ def _ai_deeper_validation_overlay(dv_result):
 
         # Build concise payload
         symbol = dv_result.get('symbol', '?')
-        sharpe = dv_result.get('sharpeRatio', 0)
-        total_ret = dv_result.get('totalReturn', 0)
-        max_dd = dv_result.get('maxDrawdown', 0)
-        pf = dv_result.get('profitFactor', 0)
+        sharpe = _dv_num(dv_result.get('sharpeRatio'), 0)
+        gross_ret = _dv_num(dv_result.get('grossReturn', dv_result.get('totalReturn')), 0)
+        net_ret = _dv_num(dv_result.get('netReturn'), gross_ret)
+        excess_ret = _dv_num(dv_result.get('excessReturn'), None)
+        annualized_net_ret = _dv_num(dv_result.get('annualizedNetReturn'), net_ret)
+        overfit_risk = _dv_num(dv_result.get('overfitRiskScore'), None)
+        adjusted_sharpe = _dv_num(dv_result.get('selectionAdjustedSharpeProxy'), None)
+        evidence_reliability = _dv_num(dv_result.get('evidenceReliability'), None)
+        max_dd = _dv_num(dv_result.get('maxDrawdown'), 0)
+        pf = _dv_num(dv_result.get('profitFactor'), 1.0)
         news_sent = dv_result.get('newsSentiment')
         event_risk = dv_result.get('eventRisk')
-        regime = dv_result.get('fineScanRegimeUsed')
+        sample = dv_result.get('sampleQuality') if isinstance(dv_result.get('sampleQuality'), dict) else {}
+        walk = dv_result.get('walkForwardProxy') if isinstance(dv_result.get('walkForwardProxy'), dict) else {}
+        cost = dv_result.get('costCapacity') if isinstance(dv_result.get('costCapacity'), dict) else {}
+        entry = dv_result.get('entryValidation') if isinstance(dv_result.get('entryValidation'), dict) else {}
+        gate = dv_result.get('institutionalGate') or dv_result.get('riskGate') or {}
+        if not isinstance(gate, dict):
+            gate = {}
+        per_strategy = dv_result.get('perStrategyValidation') if isinstance(dv_result.get('perStrategyValidation'), list) else []
+        strategy_rows = []
+        for item in per_strategy[:6]:
+            if not isinstance(item, dict):
+                continue
+            strategy_rows.append(
+                '%s score=%s return=%s sharpe=%s trades=%s oos=%s' % (
+                    item.get('strategy'),
+                    item.get('validationScore'),
+                    item.get('totalReturn'),
+                    item.get('sharpeRatio'),
+                    item.get('tradeCount'),
+                    item.get('walkForwardReturn', item.get('holdoutReturn')),
+                )
+            )
+        blockers = gate.get('blockers') or []
+        warnings = gate.get('warnings') or gate.get('checks') or []
 
-        prompt = f"""Review this Deeper Validation result and provide a brief assessment:
+        prompt = f"""You are the AI trader overlay for the Deeper Validation stage of a quantitative trading pipeline.
+
+DV is not an entry signal. It decides whether a Fine Scan candidate has enough historical edge, strategy stability, sample quality, execution capacity, and risk control to move to Entry Plan.
 
 Symbol: {symbol}
 Risk Profile: {dv_result.get('riskProfileUsed', 'medium')}
 Time Horizon: {dv_result.get('timeHorizonUsed', 'mid')}
-Trend: {dv_result.get('fineScanRegimeUsed', 'N/A')}
-Scanner Score: {dv_result.get('fineScanMatchConfidence', 'N/A')}
+Fine Scan Setup: {dv_result.get('fineScanRegimeUsed', 'N/A')}
+Strategy Selection: {dv_result.get('strategySelectionModeUsed', 'N/A')} / tested {', '.join(dv_result.get('strategyStackTested') or [])}
+Best Strategy: {dv_result.get('validationStrategy') or dv_result.get('strategy')}
+Scanner/Fine Score: {dv_result.get('fineScanMatchConfidence', 'N/A')}
 Fine Scan Decision: {dv_result.get('fineScanDecision', 'N/A')}
 Fine Scan Grade: {dv_result.get('fineScanGrade', 'N/A')}
 News Sentiment: {news_sent or 'N/A'}
 Event Risk: {event_risk or 'N/A'}
 News Count: {dv_result.get('newsCount', 0)}
-1Y Backtest: Return={total_ret:.1f}% Sharpe={sharpe:.2f} MaxDD={max_dd:.1f}% ProfitFactor={pf:.2f}
-Stability: {dv_result.get('stabilityScore', 'N/A')}
-Recent vs Long: {dv_result.get('recentVsLongTerm', 'N/A')}
+Validation Score: {dv_result.get('validationScore', 'N/A')} Edge={dv_result.get('edgeScore', 'N/A')} Sample={dv_result.get('sampleScore', 'N/A')} Execution={dv_result.get('executionScore', 'N/A')} Risk={dv_result.get('riskScore', 'N/A')} OOS={dv_result.get('oosScore', 'N/A')}
+Historical Backtest: GrossReturn={gross_ret:.1f}% NetAfterEstimatedCosts={net_ret:.1f}% AnnualizedNet={annualized_net_ret if annualized_net_ret is not None else 'N/A'}% AnnualizedSPY={dv_result.get('benchmarkAnnualizedReturn', 'N/A')}% AnnualizedSPYExcess={excess_ret if excess_ret is not None else 'N/A'} BenchmarkAligned={dv_result.get('benchmarkAligned', False)} BenchmarkSource={dv_result.get('benchmarkSource', 'N/A')} Sharpe={sharpe:.2f} MaxDD={max_dd:.1f}% ProfitFactor={pf:.2f} Trades={dv_result.get('tradeCount', 'N/A')} WinRate={dv_result.get('winRate', 'N/A')}
+Selection Adjustment: testedTrials={dv_result.get('totalSelectionTrials', 'N/A')} penalty={dv_result.get('selectionBiasPenalty', 0)} overfitRiskProxy={overfit_risk if overfit_risk is not None else 'N/A'} adjustedSharpeProxy={adjusted_sharpe if adjusted_sharpe is not None else 'N/A'} evidenceReliability={evidence_reliability if evidence_reliability is not None else 'N/A'} rawScore={dv_result.get('rawValidationScore', 'N/A')} adjustedScore={dv_result.get('validationScore', 'N/A')}
+Parameter Stability: score={dv_result.get('stabilityScore', 'N/A')} profitableRatio={dv_result.get('profitableRatio', 'N/A')} medianReturn={dv_result.get('medianReturn', 'N/A')} returnSpread={dv_result.get('returnSpread', 'N/A')}
+Sample Quality: bars={sample.get('bars')} trades={sample.get('trades')} combos={sample.get('validCombinations')}/{sample.get('testedCombinations')} label={sample.get('label')}
+Walk Forward: method={walk.get('method')} status={walk.get('status')} available={walk.get('available')} folds={walk.get('foldCount')} positiveFoldRatio={walk.get('positiveFoldRatio')} aggregateNetReturn={walk.get('holdoutReturn')} averageSharpe={walk.get('holdoutSharpe')} worstFold={walk.get('worstFoldReturn')} trades={walk.get('holdoutTrades')}
+Execution/Capacity: ADV20={cost.get('adv20Label') or cost.get('adv20')} costBps={cost.get('roundTripCostBps')} spreadBps={cost.get('spreadBps')} 10pctADV={cost.get('tenPctAdvCapacity')} tier={cost.get('liquidityTier')}
+Entry Packet: zone={entry.get('entryZoneLow')}-{entry.get('entryZoneHigh')} stop={entry.get('stopLoss')} target1={entry.get('takeProfit1')} rr={entry.get('riskReward1')} distancePct={entry.get('entryDistancePct')} readiness={entry.get('readiness')}
+Per Strategy Results: {' | '.join(strategy_rows) if strategy_rows else 'N/A'}
 Local Verdict: {local_verdict}
 Risk Gate: {risk_gate_status}
+Hard Blockers: {'; '.join(str(x) for x in blockers) if blockers else 'none'}
+Warnings: {'; '.join(str(x) for x in warnings[:5]) if warnings else 'none'}
 
 Based on this data, return a JSON with:
 - aiVerdict: "Confirmed", "Watch", or "Reject"
@@ -26099,9 +31907,16 @@ Based on this data, return a JSON with:
 - aiRiskNotes: brief risk observation (max 80 chars)
 - aiCatalystNotes: any catalyst from news/sentiment (max 80 chars, or "none")
 - aiContextAdjustment: whether user risk/horizon affects verdict (max 80 chars, or "none")
+- aiContradictions: array of at most 3 conflicting pieces of evidence
+- aiMissingEvidence: array of at most 3 missing checks that matter
+- aiNextCheck: one measurable next validation step (max 100 chars)
 
-Rules: Do NOT upgrade to Confirmed if RiskGate is BLOCK, or Sharpe<0, or TotalReturn<0, or ProfitFactor<1.
-You may downgrade Confirmed→Watch/Reject if event risk is High, news is negative, or low risk profile.
+Rules:
+1. Do NOT upgrade to Confirmed if RiskGate is BLOCK, hard blockers exist, Sharpe<0, net cost-adjusted return<0, ProfitFactor<1, OOS evidence is weak, or the validation sample is thin.
+2. You may downgrade Confirmed to Watch/Reject if event risk is High, news is negative, OOS is weak, execution cost is high, or low risk profile needs more evidence.
+3. You are a challenge overlay, not the validation score owner. If deterministic rules say Watch or Rejected, do not upgrade it.
+4. Never invent data. Mention missing/thin evidence honestly.
+5. Treat the overfit score and adjusted Sharpe as transparent risk proxies, not exact DSR, CSCV, or PBO.
 Return ONLY valid JSON, no markdown."""
 
         headers = {'Authorization': f'Bearer {_api_key}', 'Content-Type': 'application/json'}
@@ -26111,15 +31926,23 @@ Return ONLY valid JSON, no markdown."""
         payload = {
             'model': _ai_cfg.get('model', 'deepseek-chat'),
             'messages': [{'role': 'user', 'content': prompt}],
-            'max_tokens': 200, 'temperature': 0.2,
+            'max_tokens': 520, 'temperature': 0.15,
             'response_format': {'type': 'json_object'},
         }
-        resp = ai_chat_request(f'{base_url}/chat/completions', headers=headers, json_data=payload, provider=_ai_cfg.get('provider'))
+        resp = ai_chat_request(
+            f'{base_url}/chat/completions',
+            headers=headers,
+            json_data=payload,
+            timeout=timeout_sec,
+            provider=_ai_cfg.get('provider'),
+        )
         if resp.status_code != 200:
             raise Exception('AI HTTP %d' % resp.status_code)
 
-        import json as _json
-        ai_data = _json.loads(resp.json()['choices'][0]['message']['content'])
+        ai_content = resp.json()['choices'][0]['message']['content']
+        ai_data = _inst_extract_json_from_text(ai_content)
+        if not isinstance(ai_data, dict):
+            raise Exception('AI response was not valid JSON')
 
         ai_verdict = str(ai_data.get('aiVerdict', 'Watch'))
         # Normalize
@@ -26129,25 +31952,48 @@ Return ONLY valid JSON, no markdown."""
 
         dv_result['aiValidationUsed'] = True
         dv_result['aiValidationVerdict'] = ai_verdict
-        dv_result['aiValidationConfidence'] = float(ai_data.get('aiConfidence', 0.5))
+        ai_confidence = _dv_num(ai_data.get('aiConfidence'), 0.5) or 0.5
+        if ai_confidence > 1 and ai_confidence <= 100:
+            ai_confidence /= 100.0
+        dv_result['aiValidationConfidence'] = round(max(0.0, min(1.0, ai_confidence)), 3)
         dv_result['aiValidationReason'] = str(ai_data.get('aiReason', ''))[:200]
         dv_result['aiRiskNotes'] = str(ai_data.get('aiRiskNotes', ''))[:120]
         dv_result['aiCatalystNotes'] = str(ai_data.get('aiCatalystNotes', ''))[:120]
         dv_result['aiContextAdjustment'] = str(ai_data.get('aiContextAdjustment', ''))[:120]
+        dv_result['aiContradictions'] = [str(x)[:140] for x in (ai_data.get('aiContradictions') or [])[:3]]
+        dv_result['aiMissingEvidence'] = [str(x)[:140] for x in (ai_data.get('aiMissingEvidence') or [])[:3]]
+        dv_result['aiNextCheck'] = str(ai_data.get('aiNextCheck', ''))[:160]
+        dv_result['aiValidationProvider'] = _ai_cfg.get('provider') or _ai_src
+        dv_result['aiValidationModel'] = _ai_cfg.get('model')
+        dv_result['aiValidationSource'] = _ai_src
         dv_result['localVerdictBeforeAI'] = local_verdict
 
         # Final verdict merge
+        validation_score = _dv_num(dv_result.get('validationScore'), 0) or 0
+        edge_score = _dv_num(dv_result.get('edgeScore'), 0) or 0
+        stability_score = _dv_num(dv_result.get('stabilityScore'), 0) or 0
+        execution_score = _dv_num(dv_result.get('executionScore'), 0) or 0
+        risk_score = _dv_num(dv_result.get('riskScore'), 0) or 0
+        trade_count = int(_dv_num(dv_result.get('tradeCount'), 0) or 0)
+        hard_blockers = []
+        _gate = dv_result.get('institutionalGate') or dv_result.get('riskGate') or {}
+        if isinstance(_gate, dict):
+            hard_blockers = _gate.get('blockers') or []
+
         if risk_gate_status == 'BLOCK' or local_verdict == 'Rejected':
             dv_result['finalVerdict'] = local_verdict
             dv_result['finalVerdictSource'] = 'local_rules'
-        elif sharpe < 0 or total_ret < 0 or pf < 1:
-            dv_result['finalVerdict'] = max([local_verdict, ai_verdict], key=lambda v: {'Confirmed': 3, 'Watch': 2, 'Reject': 1}.get(v, 0))
-            dv_result['finalVerdictSource'] = 'local_rules_plus_ai'
+        elif sharpe < 0 or net_ret < 0 or pf < 1:
+            dv_result['finalVerdict'] = 'Watch' if local_verdict == 'Confirmed' else local_verdict
+            dv_result['finalVerdictSource'] = 'local_rules_metric_guard'
+        elif ai_verdict == 'Confirmed' and local_verdict == 'Watch':
+            dv_result['finalVerdict'] = local_verdict
+            dv_result['finalVerdictSource'] = 'local_rules_ai_no_upgrade'
         elif ai_verdict == 'Reject' and local_verdict == 'Confirmed':
             dv_result['finalVerdict'] = 'Watch'
             dv_result['finalVerdictSource'] = 'local_rules_ai_downgrade'
-        elif ai_verdict == 'Reject' or (ai_verdict == 'Watch' and local_verdict == 'Confirmed'):
-            dv_result['finalVerdict'] = ai_verdict
+        elif ai_verdict == 'Watch' and local_verdict == 'Confirmed':
+            dv_result['finalVerdict'] = 'Watch'
             dv_result['finalVerdictSource'] = 'local_rules_ai_downgrade'
         else:
             dv_result['finalVerdict'] = local_verdict
@@ -26160,11 +32006,7 @@ Return ONLY valid JSON, no markdown."""
         dv_result['localVerdictBeforeAI'] = dv_result.get('verdict', 'Watch')
         dv_result['finalVerdict'] = dv_result.get('verdict', 'Watch')
 
-    # Sync finalVerdict into verdict for downstream consumers (Entry Plan, summary, frontend)
-    if dv_result.get('finalVerdict'):
-        dv_result['verdict'] = dv_result['finalVerdict']
-
-    return dv_result
+    return _dv_sync_final_verdict(dv_result)
 
 
 @app.route('/api/ai/deeper-validation', methods=['POST'])
@@ -26174,7 +32016,7 @@ def deeper_validation():
     try:
         data = request.get_json()
         raw_candidates = data.get('candidates', [])
-        period = data.get('period', '1y')
+        period = data.get('period', '2y')
         initial_capital = data.get('initialCapital', 100000)
 
         # User context for thresholds and AI overlay
@@ -26182,6 +32024,11 @@ def deeper_validation():
         _dv_time_horizon = data.get('timeHorizon') or data.get('time_horizon') or 'mid'
         _dv_pipeline_mode = data.get('pipelineMode') or data.get('mode') or 'hybrid'
         _dv_trade_mode = data.get('tradeMode') or data.get('trade_mode') or 'paper'
+        _dv_skip_ai_overlay = bool(data.get('skipAiOverlay') or data.get('skip_ai_overlay'))
+        _dv_ai_cfg = None
+        _dv_ai_src = None
+        if not _dv_skip_ai_overlay:
+            _dv_ai_cfg, _dv_ai_src = resolve_ai_config(require_user_config=True)
 
         if not raw_candidates:
             return jsonify({'success': False, 'message': 'No candidates provided'}), 400
@@ -26190,6 +32037,16 @@ def deeper_validation():
         errors = []
 
         all_data_cache = {}
+        aligned_benchmark_return = None
+        aligned_benchmark_source = None
+        try:
+            benchmark_result = _fetch_1y_data('SPY', period)
+            if benchmark_result and benchmark_result[0]:
+                aligned_benchmark_return = _dv_buy_hold_annualized_return(benchmark_result[0])
+                if aligned_benchmark_return is not None:
+                    aligned_benchmark_source = '%s aligned to DV %s window' % (benchmark_result[1], period)
+        except Exception as benchmark_error:
+            print('[DV] Aligned SPY benchmark unavailable: %s' % str(benchmark_error)[:160])
 
         print(f'[DV] Request: {len(raw_candidates)} candidates, period={period}, capital={initial_capital}, risk={_dv_risk_profile}, horizon={_dv_time_horizon}')
 
@@ -26200,42 +32057,38 @@ def deeper_validation():
                 continue
 
             try:
-                # Strategy: prefer Fine Scan bestStrategy, fallback to matchedStrategies[0], then moving_average
-                strategy = cand.get('bestStrategy') or cand.get('strategy') or ''
-                if not strategy or strategy == 'unknown':
-                    _ms = cand.get('matchedStrategies') or []
-                    strategy = _ms[0] if _ms else 'moving_average'
-                _strategy_source = 'fine_scan_best_strategy' if strategy == cand.get('bestStrategy') else (
-                    'fine_scan_matched_strategy' if cand.get('matchedStrategies') else 'fallback_default')
-
-                # Map fine-scan labels to supported strategy keys
-                fallback_reason = ''
-                strategy_lower = strategy.strip().lower()
-                if strategy_lower in STRATEGY_LABEL_MAP:
-                    mapped = STRATEGY_LABEL_MAP[strategy_lower]
-                    if strategy_lower != mapped:
-                        fallback_reason = f'Strategy mapped: {strategy} → {mapped}'
-                        strategy = mapped
-
-                if strategy not in STRATEGY_FN_MAP:
-                    fallback_reason = f'Strategy fallback: moving_average (unrecognized: {strategy})'
-                    strategy = 'moving_average'
-
-                if not fallback_reason and cand.get('strategy', '') != strategy:
-                    fallback_reason = f'Strategy fallback: {strategy}'
-
-                print(f'[DV] Processing {symbol} with {strategy} ({idx+1}/{len(raw_candidates)})')
+                validate_all_strategies = bool(data.get('validateAllStrategies', False))
+                strategy_selection_mode = data.get('strategySelectionMode') or data.get('strategy_selection_mode') or 'trend_aware'
+                try:
+                    max_strategies_per_symbol = int(data.get('maxStrategiesPerSymbol') or data.get('max_strategies_per_symbol') or 6)
+                except Exception:
+                    max_strategies_per_symbol = 6
+                strategy_candidates = _dv_strategy_stack_from_candidate(
+                    cand,
+                    validate_all=validate_all_strategies,
+                    mode=strategy_selection_mode,
+                    max_strategies=max_strategies_per_symbol,
+                )
+                _strategy_source = 'all_supported_strategies' if validate_all_strategies else (
+                    'trend_aware_strategy_stack' if str(strategy_selection_mode).lower().replace('-', '_') in ('trend_aware', 'regime_aware', 'setup_aware')
+                    else 'requested_strategy_stack'
+                )
+                print(f'[DV] Processing {symbol} strategies={strategy_candidates} ({idx+1}/{len(raw_candidates)})')
+                validation_candidate = dict(cand)
+                validation_candidate['_dvStrategyTrialCount'] = len(strategy_candidates)
+                validation_candidate['_dvAlignedBenchmarkReturn'] = aligned_benchmark_return
+                validation_candidate['_dvAlignedBenchmarkSource'] = aligned_benchmark_source
 
                 # Step 1: Fetch Data (cache per symbol)
                 if symbol not in all_data_cache:
-                    all_data_cache[symbol] = _fetch_1y_data(symbol)
+                    all_data_cache[symbol] = _fetch_1y_data(symbol, period)
                 data_result = all_data_cache[symbol]
 
                 if data_result is None or data_result[0] is None:
                     errors.append({'symbol': symbol, 'step': 'data_fetch', 'message': 'No data available'})
                     results.append({
                         'symbol': symbol,
-                        'strategy': strategy,
+                        'strategy': strategy_candidates[0] if strategy_candidates else 'unknown',
                         'verdict': 'Rejected',
                         'reason': 'No 1-year historical data available',
                         'error': True
@@ -26244,123 +32097,133 @@ def deeper_validation():
 
                 data_daily, data_source = data_result
 
-                # Step 2: Split data for recent vs long-term
-                split_idx = max(len(data_daily) - 60, len(data_daily) // 2)
-                long_data = data_daily
-                short_data = data_daily[split_idx:]
+                strategy_validations = []
+                strategy_errors = []
+                for strategy_name in strategy_candidates:
+                    validation, validation_err = _dv_validate_strategy_for_candidate(
+                        symbol, strategy_name, validation_candidate, data_daily, data_source, initial_capital,
+                        risk_profile=_dv_risk_profile, time_horizon=_dv_time_horizon
+                    )
+                    if validation:
+                        strategy_validations.append(validation)
+                        m = validation['metrics']
+                        p = validation['institutionalPacket']
+                        print('[DeeperValidation][Strategy] %s %s decision=%s score=%s return=%s sharpe=%s trades=%s' % (
+                            symbol, strategy_name, p.get('dvDecision'), p.get('validationScore'),
+                            m.get('totalReturn'), m.get('sharpeRatio'), m.get('tradeCount')
+                        ))
+                    else:
+                        strategy_errors.append({'strategy': strategy_name, 'message': validation_err})
 
-                # Step 3: 1-Year Backtest with best/selected params
-                params = {}
-                p = cand.get('parameters', {})
-                if p and isinstance(p, dict) and len(p) > 0:
-                    params = p
-                else:
-                    params = DEFAULT_FALLBACK_PARAMS.get(strategy, {})
-
-                bt_result, bt_err = _run_backtest_core(symbol, strategy, params, data_daily)
-                if bt_err or not bt_result:
-                    errors.append({'symbol': symbol, 'step': 'backtest', 'message': bt_err or 'No results'})
+                if not strategy_validations:
+                    errors.append({'symbol': symbol, 'step': 'backtest', 'message': '; '.join([e['message'] for e in strategy_errors]) or 'No strategy results'})
+                    results.append({
+                        'symbol': symbol,
+                        'strategy': strategy_candidates[0] if strategy_candidates else 'unknown',
+                        'strategyStackTested': strategy_candidates,
+                        'strategySelectionModeUsed': strategy_selection_mode,
+                        'maxStrategiesPerSymbolUsed': max_strategies_per_symbol,
+                        'strategyErrors': strategy_errors,
+                        'verdict': 'Rejected',
+                        'reason': 'No supported strategy produced validation results',
+                        'error': True,
+                        'riskGate': {'status': 'BLOCK', 'reason': 'No supported strategy produced validation results'},
+                        'totalReturn': 0, 'sharpeRatio': 0, 'maxDrawdown': 0,
+                        'winRate': None, 'profitFactor': None, 'tradeCount': 0,
+                        'stabilityScore': 0, 'stabilityReason': 'No strategy validation',
+                        'recentVsLongTerm': 'N/A',
+                    })
                     continue
 
-                metrics = bt_result['metrics']
-                print(f'[DeeperValidation][1Y] {symbol} {strategy} totalReturn={metrics.get("totalReturn", "N/A")} sharpeRatio={metrics.get("sharpeRatio", "N/A")} maxDrawdown={metrics.get("maxDrawdown", "N/A")} winRate={metrics.get("winRate", "N/A")} profitFactor={metrics.get("profitFactor", "N/A")} tradeCount={metrics.get("tradeCount", "N/A")} tradesLen={len(bt_result.get("trades", [])) if bt_result else 0}')
-
-                # Step 4: Light Optimization (parameter grid)
-                param_grid = STRATEGY_PARAM_GRIDS.get(strategy, {})
-                param_sets = param_grid.get('param_sets', [])
-                opt_results = []
-                seen_params = set()
-
-                for ps in param_sets:
-                    # Skip if same params as already done
-                    key = str(sorted(ps.items()))
-                    if key in seen_params:
-                        continue
-                    seen_params.add(key)
-
-                    r, e = _run_backtest_core(symbol, strategy, ps, data_daily)
-                    if r:
-                        opt_results.append({
-                            'params': ps,
-                            'totalReturn': r['metrics']['totalReturn'],
-                            'sharpeRatio': r['metrics']['sharpeRatio'],
-                            'maxDrawdown': r['metrics']['maxDrawdown'],
-                            'winRate': r['metrics']['winRate'],
-                            'profitFactor': r['metrics']['profitFactor'],
-                            'tradeCount': r['metrics']['tradeCount'],
-                        })
-
-                valid_count = len(opt_results)
-                best_opt = max(opt_results, key=lambda x: x['totalReturn']) if opt_results else None
-
-                # Log optimization details
-                top3 = sorted(opt_results, key=lambda x: x['totalReturn'], reverse=True)[:3] if opt_results else []
-                top3_fmt = [{'params': str(r['params']), 'ret': round(r['totalReturn'], 2), 'sharp': round(r['sharpeRatio'], 2)} for r in top3] if top3 else []
-                print(f'[DeeperValidation][LightOpt] {symbol} validCombinations={valid_count} bestReturn={best_opt["totalReturn"] if best_opt else "None"} bestParams={best_opt["params"] if best_opt else "None"} top3={top3_fmt}')
-
-                # Step 5: Parameter Stability
-                stability_score, stability_reason_str = _compute_stability_score(opt_results, valid_count)
-                stability = {
-                    'score': stability_score,
-                    'profitableRatio': round(sum(1 for r in opt_results if r.get('totalReturn', -999) > 0) / valid_count, 2) if valid_count > 0 else 0,
-                    'medianReturn': round(sorted([r.get('totalReturn', 0) for r in opt_results])[valid_count//2], 2) if valid_count > 0 else 0,
-                    'bestReturn': best_opt['totalReturn'] if best_opt else 0,
-                    'returnSpread': round(best_opt['totalReturn'] - sorted([r.get('totalReturn', 0) for r in opt_results])[valid_count//2], 2) if best_opt and valid_count > 0 else 0,
-                    'stableParameterCount': valid_count,
-                    'stabilityReason': stability_reason_str,
+                decision_rank = {'PASS_DV': 3, 'WATCH': 2, 'NEED_DATA': 1, 'REJECT': 0}
+                strategy_validations.sort(key=lambda v: (
+                    decision_rank.get(v['institutionalPacket'].get('dvDecision'), 0),
+                    _dv_num(v['institutionalPacket'].get('validationScore'), 0) or 0,
+                    _dv_num(v['institutionalPacket'].get('edgeScore'), 0) or 0,
+                    _dv_num(v['institutionalPacket'].get('annualizedNetReturn'), 0) or 0,
+                ), reverse=True)
+                best_validation = strategy_validations[0]
+                strategy = best_validation['strategy']
+                params = best_validation['parameters']
+                metrics = best_validation['metrics']
+                opt_results = best_validation['optimizationResults']
+                best_opt = best_validation['bestOpt']
+                valid_count = best_validation['validCount']
+                param_sets = best_validation['paramSets']
+                top3_fmt = best_validation['top3']
+                stability = best_validation['stability']
+                long_metrics = best_validation['longMetrics']
+                short_metrics = best_validation['shortMetrics']
+                recent_vs_long = best_validation['recentVsLong']
+                legacy_verdict = best_validation['legacyVerdict']
+                reason_str = best_validation['legacyReason']
+                entry_plan_summary = best_validation['entryPlan']
+                legacy_risk_gate = best_validation['legacyRiskGate']
+                institutional_packet = best_validation['institutionalPacket']
+                verdict = institutional_packet['verdict']
+                per_strategy_validation = [{
+                    'strategy': v['strategy'],
+                    'dvDecision': v['institutionalPacket'].get('dvDecision'),
+                    'verdict': v['institutionalPacket'].get('verdict'),
+                    'validationScore': v['institutionalPacket'].get('validationScore'),
+                    'edgeScore': v['institutionalPacket'].get('edgeScore'),
+                    'stabilityScore': v['stability'].get('score'),
+                    'totalReturn': v['metrics'].get('totalReturn'),
+                    'sharpeRatio': v['metrics'].get('sharpeRatio'),
+                    'maxDrawdown': v['metrics'].get('maxDrawdown'),
+                    'profitFactor': v['metrics'].get('profitFactor'),
+                    'tradeCount': v['metrics'].get('tradeCount'),
+                    'holdoutReturn': (v.get('oosValidation') or {}).get('holdoutReturn'),
+                    'holdoutSharpe': (v.get('oosValidation') or {}).get('holdoutSharpe'),
+                    'holdoutTrades': (v.get('oosValidation') or {}).get('holdoutTrades'),
+                    'grossReturn': v['institutionalPacket'].get('grossReturn'),
+                    'netReturn': v['institutionalPacket'].get('netReturn'),
+                    'annualizedNetReturn': v['institutionalPacket'].get('annualizedNetReturn'),
+                    'excessReturn': v['institutionalPacket'].get('excessReturn'),
+                    'selectionBiasPenalty': v['institutionalPacket'].get('selectionBiasPenalty'),
+                    'selectionAdjustedSharpeProxy': v['institutionalPacket'].get('selectionAdjustedSharpeProxy'),
+                    'overfitRiskScore': v['institutionalPacket'].get('overfitRiskScore'),
+                    'evidenceReliability': v['institutionalPacket'].get('evidenceReliability'),
+                    'walkForwardMethod': (v.get('oosValidation') or {}).get('method'),
+                    'walkForwardFolds': (v.get('oosValidation') or {}).get('foldCount'),
+                    'walkForwardPositiveRatio': (v.get('oosValidation') or {}).get('positiveFoldRatio'),
+                    'walkForwardWorstFold': (v.get('oosValidation') or {}).get('worstFoldReturn'),
+                    'walkForwardReturn': (v.get('oosValidation') or {}).get('aggregateNetReturn'),
+                    'bestParams': v['bestOpt']['params'] if v['bestOpt'] else v['parameters'],
+                    'entryPlanSource': (v['entryPlan'] or {}).get('entryPlanSource'),
+                } for v in strategy_validations]
+                reason_parts = [
+                    institutional_packet['dvNarrative'],
+                    'Best strategy %s selected from %d tested' % (strategy, len(strategy_validations)),
+                    reason_str,
+                ]
+                final_risk_gate = {
+                    **legacy_risk_gate,
+                    'status': institutional_packet['institutionalGate']['status'],
+                    'reason': institutional_packet['institutionalGate']['reason'],
+                    'checks': institutional_packet['institutionalGate']['blockers'] or institutional_packet['institutionalGate']['warnings'],
+                    'source': 'Institutional DV v5',
+                    'blockers': institutional_packet['institutionalGate']['blockers'],
+                    'warnings': institutional_packet['institutionalGate']['warnings'],
+                    'strengths': institutional_packet['institutionalGate']['strengths'],
                 }
-
-                # Step 6: Recent vs Long-Term
-                long_bt, _ = _run_backtest_core(symbol, strategy, params, long_data)
-                short_bt, _ = _run_backtest_core(symbol, strategy, params, short_data)
-                long_metrics = long_bt['metrics'] if long_bt else None
-                short_metrics = short_bt['metrics'] if short_bt else None
-
-                if long_metrics and short_metrics:
-                    recent_vs_long = _compute_recent_vs_long_term(metrics, long_metrics, short_metrics)
-                else:
-                    recent_vs_long = 'Consistent'
-
-                # Step 7: Verdict
-                verdict, reason_str = _compute_verdict(metrics, stability, recent_vs_long, opt_results, valid_count)
-
-                # Context-aware verdict adjustment
-                _ctx_parts = []
-                if _dv_risk_profile == 'low':
-                    if verdict == 'Confirmed' and (metrics.get('maxDrawdown', 0) < -20 or metrics.get('sharpeRatio', 0) < 0.5):
-                        verdict = 'Watch'
-                        _ctx_parts.append('Downgraded: low risk profile requires lower drawdown/better Sharpe')
-                elif _dv_risk_profile == 'high':
-                    if verdict == 'Reject' and stability['score'] >= 3 and (metrics.get('sharpeRatio', 0) > 0.3):
-                        verdict = 'Watch'
-                        _ctx_parts.append('Upgraded: high risk profile tolerates higher volatility')
-
-                if _dv_time_horizon == 'short':
-                    if recent_vs_long == 'Weakening' and verdict == 'Confirmed':
-                        verdict = 'Watch'
-                        _ctx_parts.append('Downgraded: short-term horizon penalizes weakening trend')
-                elif _dv_time_horizon == 'long':
-                    if recent_vs_long == 'Improving' and verdict == 'Reject':
-                        verdict = 'Watch'
-                        _ctx_parts.append('Upgraded: long-term horizon benefits from improving trend')
-
-                _ctx_reason = '; '.join(_ctx_parts) if _ctx_parts else ''
-
-                # Build reason
-                reason_parts = []
-                if fallback_reason:
-                    reason_parts.append(fallback_reason)
-                reason_parts.append(reason_str)
-                if _ctx_reason:
-                    reason_parts.append(_ctx_reason)
 
                 result_entry = {
                     'symbol': symbol,
                     'strategy': strategy,
+                    'bestStrategy': strategy,
+                    'strategyStackTested': strategy_candidates,
+                    'strategySelectionModeUsed': strategy_selection_mode,
+                    'maxStrategiesPerSymbolUsed': max_strategies_per_symbol,
+                    'strategyErrors': strategy_errors,
+                    'perStrategyValidation': per_strategy_validation,
+                    'backtestPerStrategy': per_strategy_validation,
                     'parameters': params,
                     'verdict': verdict,
                     'reason': ' | '.join(reason_parts),
-                    # 1Y backtest
+                    'legacyVerdict': legacy_verdict,
+                    'legacyReason': reason_str,
+                    # Multi-year historical backtest
                     'totalReturn': metrics['totalReturn'],
                     'sharpeRatio': metrics['sharpeRatio'],
                     'maxDrawdown': metrics['maxDrawdown'],
@@ -26370,6 +32233,8 @@ def deeper_validation():
                     # Optimization
                     'bestParams': best_opt['params'] if best_opt else params,
                     'optimizedReturn': best_opt['totalReturn'] if best_opt else 0,
+                    'optimizedNetReturn': best_opt.get('netReturn') if best_opt else 0,
+                    'optimizedRankScore': best_opt.get('rankScore') if best_opt else 0,
                     'optimizedSharpe': best_opt['sharpeRatio'] if best_opt else 0,
                     'optimizationResults': opt_results,
                     'bestReturn': stability['bestReturn'],
@@ -26396,15 +32261,16 @@ def deeper_validation():
                     'recentMaxDrawdown': short_metrics['maxDrawdown'] if short_metrics else 0,
                     # Entry Plan summary
                     'setupType': _map_strategy_to_setup(strategy),
-                    'entryPlan': _generate_entry_plan_summary(symbol, strategy, metrics, data_source),
+                    'entryPlan': entry_plan_summary,
+                    'entryPlanSource': entry_plan_summary.get('entryPlanSource'),
+                    'fineScanEntryPlanUsed': entry_plan_summary.get('entryPlanSource') == 'fine_scan_entry_plan',
                     'finalDecision': _generate_final_decision(verdict, metrics, stability, opt_results, strategy),
-                    'riskGate': _generate_risk_gate(verdict, metrics, stability, strategy, recent_vs_long,
-                                                       risk_profile=_dv_risk_profile, time_horizon=_dv_time_horizon,
-                                                       event_risk=cand.get('eventRisk'), data_quality=cand.get('dataQuality')),
+                    'riskGate': final_risk_gate,
                     'dataSource': data_source,
                     # Fine Scan context
                     'validationStrategy': strategy,
                     'validationStrategySource': _strategy_source,
+                    'fineScanStrategyStack': cand.get('strategyStack') or [],
                     'fineScanRegimeUsed': cand.get('regime'),
                     'fineScanBestStrategyUsed': cand.get('bestStrategy'),
                     'fineScanDecision': cand.get('decision'),
@@ -26442,6 +32308,9 @@ def deeper_validation():
                     'aiContextAdjustment': None,
                     'finalVerdictSource': 'local_rules',
                 }
+                result_entry.update(institutional_packet)
+                result_entry['walkForwardProxy']['longReturn'] = result_entry['longTermReturn']
+                result_entry['walkForwardProxy']['recentReturn'] = result_entry['recentReturn']
                 results.append(result_entry)
 
             except Exception as sym_err:
@@ -26451,7 +32320,7 @@ def deeper_validation():
                 errors.append({'symbol': symbol, 'step': 'processing', 'message': str(sym_err)})
                 results.append({
                     'symbol': symbol,
-                    'strategy': strategy if 'strategy' in dir() else 'unknown',
+                    'strategy': (locals().get('strategy_candidates') or [locals().get('strategy', 'unknown')])[0],
                     'verdict': 'Rejected',
                     'reason': f'Processing error: {str(sym_err)}',
                     'error': True,
@@ -26467,44 +32336,116 @@ def deeper_validation():
         _ai_overlay_success = 0
         _ai_overlay_fallback = 0
         _ai_overlay_cache_hits = 0
-        _indexed = {r.get('symbol', str(i)): r for i, r in enumerate(results)}
-        with ThreadPoolExecutor(max_workers=3) as _ai_exec:
-            _futures = {
-                _ai_exec.submit(_ai_deeper_validation_overlay_safe, r): r.get('symbol', str(i))
-                for i, r in enumerate(results) if not r.get('error')
-            }
-            for _fut in as_completed(_futures):
-                _sym = _futures[_fut]
-                try:
-                    _updated = _fut.result(timeout=30)
-                    if _updated.get('aiValidationUsed'):
-                        _ai_overlay_success += 1
-                    else:
-                        _ai_overlay_fallback += 1
-                    if _updated.get('aiValidationCacheHit'):
-                        _ai_overlay_cache_hits += 1
-                    _indexed[_sym] = _updated
-                except Exception:
+        _ai_overlay_retry_count = 0
+        _dv_ai_key = (_dv_ai_cfg or {}).get('apiKey', '') if _dv_ai_cfg else ''
+        if _dv_skip_ai_overlay:
+            for _r in results:
+                if not _r.get('error'):
+                    _r['aiValidationUsed'] = False
+                    _r['aiValidationFallbackReason'] = 'AI overlay skipped by client preflight'
+                    _r['finalVerdictSource'] = 'local_rules'
+                    _r['localVerdictBeforeAI'] = _r.get('verdict', 'Watch')
+                    _r['finalVerdict'] = _r.get('verdict', 'Watch')
                     _ai_overlay_fallback += 1
-                    _orig = _indexed.get(_sym, {})
-                    _orig['aiValidationUsed'] = False
-                    _orig['aiValidationFallbackReason'] = 'timeout_or_thread_exception'
-                    _orig['aiValidationTimeout'] = True
-                    _orig['finalVerdictSource'] = 'local_rules_ai_fallback'
-                    _orig['localVerdictBeforeAI'] = _orig.get('verdict', 'Watch')
-                    _orig['finalVerdict'] = _orig.get('verdict', 'Watch')
-                    _indexed[_sym] = _orig
-        results = [_indexed[r.get('symbol', str(i))] for i, r in enumerate(results)]
+            print(f'[DV] AI overlay skipped by request; local rules used for {len([r for r in results if not r.get("error")])} symbols')
+        elif not _dv_ai_key or not str(_dv_ai_key).strip():
+            for _r in results:
+                if not _r.get('error'):
+                    _r['aiValidationUsed'] = False
+                    _r['aiValidationFallbackReason'] = 'AI not configured'
+                    _r['finalVerdictSource'] = 'local_rules'
+                    _r['localVerdictBeforeAI'] = _r.get('verdict', 'Watch')
+                    _r['finalVerdict'] = _r.get('verdict', 'Watch')
+                    _ai_overlay_fallback += 1
+            print(f'[DV] AI overlay unavailable: no configured AI key source={_dv_ai_src}')
+        else:
+            _indexed = {r.get('symbol', str(i)): r for i, r in enumerate(results)}
+            with ThreadPoolExecutor(max_workers=3) as _ai_exec:
+                _futures = {
+                    _ai_exec.submit(
+                        _ai_deeper_validation_overlay_safe,
+                        r,
+                        30,
+                        _dv_ai_cfg,
+                        _dv_ai_src,
+                    ): r.get('symbol', str(i))
+                    for i, r in enumerate(results) if not r.get('error')
+                }
+                for _fut in as_completed(_futures):
+                    _sym = _futures[_fut]
+                    try:
+                        _updated = _fut.result(timeout=30)
+                        if _updated.get('aiValidationUsed'):
+                            _ai_overlay_success += 1
+                        else:
+                            _ai_overlay_fallback += 1
+                        if _updated.get('aiValidationCacheHit'):
+                            _ai_overlay_cache_hits += 1
+                        _indexed[_sym] = _updated
+                    except Exception:
+                        _ai_overlay_fallback += 1
+                        _orig = _indexed.get(_sym, {})
+                        _orig['aiValidationUsed'] = False
+                        _orig['aiValidationFallbackReason'] = 'timeout_or_thread_exception'
+                        _orig['aiValidationTimeout'] = True
+                        _orig['finalVerdictSource'] = 'local_rules_ai_fallback'
+                        _orig['localVerdictBeforeAI'] = _orig.get('verdict', 'Watch')
+                        _orig['finalVerdict'] = _orig.get('verdict', 'Watch')
+                        _indexed[_sym] = _orig
+            _retry_rows = [
+                row for row in _indexed.values()
+                if not row.get('error') and not row.get('aiValidationUsed')
+            ]
+            if _retry_rows:
+                _ai_overlay_retry_count = len(_retry_rows)
+                with ThreadPoolExecutor(max_workers=2) as _retry_exec:
+                    _retry_futures = {
+                        _retry_exec.submit(
+                            _ai_deeper_validation_overlay_safe,
+                            row,
+                            45,
+                            _dv_ai_cfg,
+                            _dv_ai_src,
+                        ): row.get('symbol')
+                        for row in _retry_rows
+                    }
+                    for _future in as_completed(_retry_futures):
+                        _sym = _retry_futures[_future]
+                        try:
+                            _updated = _future.result(timeout=45)
+                            _updated['aiValidationRetried'] = True
+                            _indexed[_sym] = _updated
+                        except Exception as _retry_error:
+                            _orig = _indexed.get(_sym, {})
+                            _orig['aiValidationRetried'] = True
+                            _orig['aiValidationFallbackReason'] = str(_retry_error)[:120]
+                            _indexed[_sym] = _orig
+            results = [_indexed[r.get('symbol', str(i))] for i, r in enumerate(results)]
+            _ai_overlay_success = sum(1 for row in results if not row.get('error') and row.get('aiValidationUsed'))
+            _ai_overlay_fallback = sum(1 for row in results if not row.get('error') and not row.get('aiValidationUsed'))
+            _ai_overlay_cache_hits = sum(1 for row in results if row.get('aiValidationCacheHit'))
         _ai_overlay_elapsed = int((time.time() - _ai_overlay_start) * 1000)
-        print(f'[DV] AI overlay: success={_ai_overlay_success} fallback={_ai_overlay_fallback} cacheHits={_ai_overlay_cache_hits} elapsed={_ai_overlay_elapsed}ms')
+        print(f'[DV] AI overlay: success={_ai_overlay_success} fallback={_ai_overlay_fallback} retries={_ai_overlay_retry_count} cacheHits={_ai_overlay_cache_hits} elapsed={_ai_overlay_elapsed}ms')
+
+        # Stamp the evidence at the point validation completes. Portfolio
+        # Admission uses this timestamp to reject stale restored signals.
+        _validated_at = datetime.now(timezone.utc).isoformat()
+        for _validated_row in results:
+            if not _validated_row.get('error'):
+                _validated_row['validatedAt'] = _validated_at
+                _validated_row.setdefault('generatedAt', _validated_at)
 
         # Sort: Confirmed first, then Watch, Reject, Needs Manual Review
-        verdict_order = {'Confirmed': 0, 'Watch': 1, 'Reject': 2, 'Needs Manual Review': 3}
-        results.sort(key=lambda r: (verdict_order.get(r.get('verdict', 'Needs Manual Review'), 9), -r.get('stabilityScore', 0)))
+        verdict_order = {'Confirmed': 0, 'Pass': 0, 'Watch': 1, 'Review': 2, 'Reject': 3, 'Rejected': 3, 'Needs Manual Review': 4}
+        results.sort(key=lambda r: (
+            verdict_order.get(r.get('verdict', 'Needs Manual Review'), 9),
+            -(r.get('validationScore') or 0),
+            -r.get('stabilityScore', 0)
+        ))
 
-        confirmed_count = sum(1 for r in results if r.get('verdict') == 'Confirmed')
+        confirmed_count = sum(1 for r in results if r.get('verdict') in ('Confirmed', 'Pass') or r.get('dvDecision') == 'PASS_DV')
         watch_count = sum(1 for r in results if r.get('verdict') == 'Watch')
-        reject_count = sum(1 for r in results if r.get('verdict') == 'Reject')
+        reject_count = sum(1 for r in results if r.get('verdict') in ('Reject', 'Rejected') or r.get('dvDecision') in ('REJECT', 'NEED_DATA'))
         manual_count = sum(1 for r in results if r.get('verdict') == 'Needs Manual Review')
         failed_count = sum(1 for r in results if r.get('error'))
 
@@ -26529,6 +32470,18 @@ def deeper_validation():
                 'needsManualReview': manual_count,
                 'failed': failed_count,
                 'averageStabilityScore': round(sum(r.get('stabilityScore', 0) for r in results) / len(results), 1) if results else 0,
+                'averageValidationScore': round(sum(r.get('validationScore', 0) for r in results) / len(results), 1) if results else 0,
+                'aiReviewed': sum(1 for r in results if r.get('aiValidationUsed')),
+                'aiRequested': sum(1 for r in results if not r.get('error')) if not _dv_skip_ai_overlay and _dv_ai_key else 0,
+                'aiRetried': _ai_overlay_retry_count,
+                'aiFallback': sum(1 for r in results if not r.get('error') and not r.get('aiValidationUsed')),
+                'aiChallenged': sum(
+                    1 for r in results
+                    if r.get('aiValidationUsed') and
+                    _dv_normalize_verdict_label(r.get('aiValidationVerdict')) !=
+                    _dv_normalize_verdict_label(r.get('localVerdictBeforeAI'))
+                ),
+                'averageEvidenceReliability': round(sum(r.get('evidenceReliability', 0) for r in results) / len(results), 1) if results else 0,
             }
         })
 
@@ -26545,6 +32498,30 @@ def deeper_validation():
         }), 500
 
 # ============ Entry Plan - Deterministic Entry/Stop/Target Calculator with AI Decision + Hard Risk Gate ============
+
+def _merge_entry_ai_decision(deterministic_decision, ai_decision):
+    """Apply a downgrade-only AI overlay to the deterministic entry decision."""
+    aliases = {
+        'ADVANCE': 'BUY',
+        'PROCEED': 'BUY',
+        'REVIEW': 'WATCH',
+        'HOLD': 'WATCH',
+        'REJECT': 'SKIP',
+        'AVOID': 'SKIP',
+    }
+
+    def _normalize(value, fallback):
+        normalized = str(value or '').strip().upper()
+        normalized = aliases.get(normalized, normalized)
+        return normalized if normalized in ('BUY', 'WATCH', 'SKIP') else fallback
+
+    deterministic = _normalize(deterministic_decision, 'WATCH')
+    suggested = _normalize(ai_decision, deterministic)
+    rank = {'SKIP': 0, 'WATCH': 1, 'BUY': 2}
+    promotion_blocked = rank[suggested] > rank[deterministic]
+    merged = deterministic if promotion_blocked else suggested
+    return merged, promotion_blocked, suggested
+
 
 def _call_ai_entry_final_decision(plans, execution_mode, account_mode, risk_profile='medium', time_horizon='mid'):
     """
@@ -26613,13 +32590,17 @@ def _call_ai_entry_final_decision(plans, execution_mode, account_mode, risk_prof
         sym = p.get('symbol', '?')
         plan_lines.append(
             f"{i+1}. {sym} | Setup: {p.get('setup','?')} | Price: ${p.get('currentPrice',0):.2f} | "
+            f"Bid/Ask: {p.get('latestBid','?')}/{p.get('latestAsk','?')} | QuoteAge: {p.get('quoteAgeSeconds','?')}s | MarketOpen: {p.get('marketIsOpen','?')} | "
             f"Entry: ${p.get('entryZoneLow',0):.2f}-${p.get('entryZoneHigh',0):.2f} | "
             f"Trigger: {p.get('triggerCondition','N/A')[:80]} | "
+            f"TriggerStatus: {p.get('entryTriggerStatus','?')} / Met: {p.get('entryTriggerMet',False)} / AutoEligible: {p.get('setupAutoEligible',False)} | "
+            f"TriggerChecks: {json.dumps(p.get('entryTriggerChecks', []), ensure_ascii=True)[:400]} | "
             f"Stop: ${p.get('stopLoss',0):.2f} ({p.get('stopLossPct',0):.1f}%) | "
             f"T1: ${p.get('takeProfit1',0):.2f} T2: ${p.get('takeProfit2',0):.2f} | "
             f"R/R1: {p.get('riskReward1',0):.1f}:1 R/R2: {p.get('riskReward2',0):.1f}:1 | "
             f"Shares: {p.get('positionSizeShares',0)} (${p.get('positionSizeDollars',0):.0f}, {p.get('positionPct',0):.1f}%) | "
             f"Risk: ${p.get('riskDollars',0):.0f} / Budget: ${p.get('riskBudget',0):.0f} ({p.get('riskUsedPct',0):.1f}%) | "
+            f"ADV20: {p.get('avgDollarVolume20','?')} | Spread: {p.get('quotedSpreadBps','?')}bps | Cost: {p.get('estimatedRoundTripCostBps','?')}bps | "
             f"Gate: {p.get('hardRiskGate',{}).get('status','?')} | "
             f"Data: {p.get('dataQuality','?')} | "
             f"Readiness: {p.get('tradeReadiness','?')} | "
@@ -26634,7 +32615,7 @@ def _call_ai_entry_final_decision(plans, execution_mode, account_mode, risk_prof
     risk_guidance = {
         'low': 'CONSERVATIVE MODE: Prefer stable trends, low volatility, high volume. Stricter criteria — R/R >= 2.0 for BUY. More likely to WATCH or SKIP. Avoid high-volatility, poor-data, or event-risk setups.',
         'medium': 'BALANCED MODE: Standard criteria apply.',
-        'high': 'AGGRESSIVE MODE: Favor momentum/breakout/high-volatility opportunities. Relaxed criteria — R/R >= 1.2 for BUY. More likely to BUY. Allow concentrated positions but still respect hard risk gates.',
+        'high': 'AGGRESSIVE MODE: Accept more volatility within deterministic size limits, but do not relax data freshness, liquidity, duplicate-order, or hard risk controls.',
     }.get(risk_profile, 'BALANCED MODE: Standard criteria apply.')
 
     time_guidance = {
@@ -26643,7 +32624,7 @@ def _call_ai_entry_final_decision(plans, execution_mode, account_mode, risk_prof
         'long': 'LONG-TERM FOCUS: 3M/6M/1Y trends, stable fundamentals, lower drawdown. Wider stops acceptable. Do not SKIP just because of short-term noise.',
     }.get(time_horizon, 'MID-TERM FOCUS: Swing setups, 1M/3M trends, pullback support.')
 
-    ai_prompt = f"""You are a disciplined quantitative trading risk manager. Review these ENTRY PLANS (deterministic — prices, stops, targets, sizes are ALREADY CALCULATED). Your job is ONLY to output a BUY / WATCH / SKIP decision with reasoning.
+    ai_prompt = f"""You are the second-line risk reviewer for quantitative ENTRY PLANS. Prices, zones, stops, targets, sizes, account limits, and order type are deterministic and binding. Your job is to challenge contradictions, stale or missing evidence, event risk, regime mismatch, and execution concerns. You may confirm or downgrade a plan, but you never authorize execution and never override a deterministic gate.
 
 You are in {exec_note} mode.
 
@@ -26657,15 +32638,15 @@ PLANS ({len(plans)} symbols):
 {plans_text}
 
 RULES (you MUST follow):
-1. BUY if: R/R meets threshold for risk profile (low>=2.0, medium>=1.5, high>=1.2), no hard blockers, setup valid, data not POOR. Price in entry zone is a strong BUY signal even if Gate is REVIEW (warnings only, not blockers).
-2. BUY (aggressive) if: Price is IN entry zone, R/R >= 2.0, stop and target defined, data not POOR, no hard blockers — even if Risk Gate shows REVIEW due to advisory warnings.
-3. WATCH only if: price is NOT in entry zone, or entry trigger truly not met, or data is very poor, or R/R below threshold. Gate REVIEW alone should NOT prevent BUY if price is in zone.
-4. SKIP if: Gate BLOCK, Data POOR, R/R below minimum (low<1.5, medium<1.0, high<0.8), setup is Watch Only or No Trade, verdict Rejected, or multiple hard problems.
+1. BUY means "no qualitative objection" only. The deterministic engine still requires market open, fresh executable ask inside the zone, CONFIRMED setup-specific trigger, GOOD data, PASS gate, valid geometry, attached protection, and account capacity.
+2. WATCH if the trigger is not ready, market is closed, quote is stale, evidence conflicts, event/regime risk needs monitoring, or a REVIEW warning is material.
+3. SKIP if Gate is BLOCK, data is POOR/need_data, geometry is invalid, setup is Watch Only/No Trade, verdict is rejected, or the thesis conflicts with validated evidence.
+4. Never promote READY_REVIEW, WAIT_FOR_ENTRY, BLOCKED, Watch Only, an unconfirmed trigger, leveraged alternatives, or incomplete data to execution-ready.
 5. confidence 0-100: how confident you are in this decision.
 6. decisionReason: 1-2 sentences explaining WHY this decision, what's the key factor. Mention how risk profile / time horizon influenced the decision if applicable.
 7. nextStep: very specific — what exact price level or condition to wait for. For BUY, where to place order. For WATCH, what trigger to monitor. For SKIP, what would need to change.
 8. You MUST NOT invent or change ANY prices, stops, targets, shares, or risk numbers. Only reference the deterministic values provided.
-9. If Risk Gate is BLOCK, you MUST output SKIP regardless of preferences or other signals.
+9. If Risk Gate is BLOCK, you MUST output SKIP regardless of preferences or other signals. If Gate is REVIEW, use WATCH unless the warning is clearly informational and all listed execution evidence is complete.
 
 Return ONLY valid JSON (no markdown, no preamble):
 {{
@@ -26829,8 +32810,10 @@ def ai_entry_plan():
         account_data_source = 'none'
         live_cash = 0
         live_buying_power = 0
+        live_non_marginable_buying_power = 0
         live_portfolio_value = 0
         live_equity = 0
+        live_last_equity = 0
         open_buy_orders = []  # B8: for duplicate open order prevention
         # Resolve Alpaca config from per-user Supabase
         alpaca_mode = 'paper' if account_mode == 'paper' else 'live'
@@ -26838,17 +32821,30 @@ def ai_entry_plan():
         acc_key = alpaca_cfg.get('api_key', '')
         acc_secret = alpaca_cfg.get('api_secret', '')
         acc_url = alpaca_cfg.get('base_url', 'https://paper-api.alpaca.markets' if alpaca_mode == 'paper' else 'https://api.alpaca.markets')
+        market_clock = {}
+        market_is_open = None
 
         if acc_key and acc_secret:
             try:
                 acc_headers = {'APCA-API-KEY-ID': acc_key, 'APCA-API-SECRET-KEY': acc_secret}
+                try:
+                    clock_resp = req_lib.get(f'{acc_url}/v2/clock', headers=acc_headers, timeout=8)
+                    if clock_resp.status_code == 200:
+                        market_clock = clock_resp.json() or {}
+                        market_is_open = market_clock.get('is_open')
+                except Exception as clock_error:
+                    print(f'    [MARKET CLOCK WARNING] {clock_error}')
                 acc_resp = req_lib.get(f'{acc_url}/v2/account', headers=acc_headers, timeout=10)
                 if acc_resp.status_code == 200:
                     acc_data = acc_resp.json()
                     live_cash = float(acc_data.get('cash', 0))
                     live_buying_power = float(acc_data.get('buying_power', 0))
+                    live_non_marginable_buying_power = float(acc_data.get('non_marginable_buying_power', 0) or 0)
                     live_portfolio_value = float(acc_data.get('portfolio_value', 0))
                     live_equity = float(acc_data.get('equity', 0))
+                    live_last_equity = float(acc_data.get('last_equity', 0) or 0)
+                    if live_last_equity > live_equity > 0:
+                        daily_loss = max(daily_loss, live_last_equity - live_equity)
                     live_id = acc_data.get('id', '')
                     # Use portfolioValue (not buyingPower) as account_size for position sizing
                     # Buying power is leverage and shouldn't determine position size
@@ -26905,6 +32901,7 @@ def ai_entry_plan():
                 'max_per_trade_pv_pct': 0.05,
                 'max_per_trade_bp_pct': 0.10,
                 'max_open_buys': 2,
+                'max_portfolio_positions': 5,
                 'leveraged_allowed': False,
                 'label': 'Conservative',
             },
@@ -26913,6 +32910,7 @@ def ai_entry_plan():
                 'max_per_trade_pv_pct': 0.08,
                 'max_per_trade_bp_pct': 0.15,
                 'max_open_buys': 5,
+                'max_portfolio_positions': 10,
                 'leveraged_allowed': 'limited',
                 'leveraged_max_pct': 0.20,
                 'label': 'Moderate',
@@ -26922,6 +32920,7 @@ def ai_entry_plan():
                 'max_per_trade_pv_pct': 0.12,
                 'max_per_trade_bp_pct': 0.25,
                 'max_open_buys': 8,
+                'max_portfolio_positions': 15,
                 'leveraged_allowed': True,
                 'leveraged_max_pct': 0.35,
                 'label': 'Aggressive',
@@ -26930,21 +32929,26 @@ def ai_entry_plan():
         _rules = ALLOCATION_RULES.get(risk_profile, ALLOCATION_RULES['medium'])
 
         # Per-trade cap: min(portfolio_value * pv_pct, available_bp * bp_pct)
-        _safe_bp = max(live_buying_power * 0.90, 0)  # 10% safety buffer
+        # Use cash-funded capacity by default. Margin buying power remains
+        # informational and never silently increases an automated position.
+        _cash_capacity = max(live_cash, live_non_marginable_buying_power, 0)
+        _spendable_bp = min(live_buying_power, _cash_capacity) if live_buying_power > 0 else 0
+        _safe_bp = max(_spendable_bp * 0.90, 0)  # 10% operational buffer
         _max_total_allocation = _safe_bp * _rules['max_total_bp_pct']
         _max_per_trade = min(
             account_size * _rules['max_per_trade_pv_pct'],
             _safe_bp * _rules['max_per_trade_bp_pct']
         ) if account_size > 0 else 0
         _max_open_buys = _rules['max_open_buys']
+        _max_portfolio_positions = _rules.get('max_portfolio_positions', 10)
         _lev_allowed = _rules['leveraged_allowed']
         _lev_max_pct = _rules.get('leveraged_max_pct', 0.0)
 
-        # Legacy-compatible multipliers for stop/target adjustments
-        risk_multiplier = {'low': 0.6, 'medium': 1.0, 'high': 1.5}.get(risk_profile, 1.0)
-        max_pos_multiplier = {'low': 0.7, 'medium': 1.0, 'high': 1.3}.get(risk_profile, 1.0)
-        adjusted_risk_pct = risk_per_trade_pct * risk_multiplier
-        adjusted_max_pos_pct = min(max_position_pct * max_pos_multiplier, 25.0)
+        # Risk is a portfolio-loss budget, not a leverage preference. Keep the
+        # caller's profile-derived budget bounded at 1% per trade; allocation
+        # limits above control gross exposure separately.
+        adjusted_risk_pct = max(0.10, min(risk_per_trade_pct, 1.0))
+        adjusted_max_pos_pct = min(max_position_pct, _rules['max_per_trade_pv_pct'] * 100.0)
 
         risk_dollars = account_size * (adjusted_risk_pct / 100.0)
         max_pos_dollars = account_size * (adjusted_max_pos_pct / 100.0)
@@ -26959,13 +32963,13 @@ def ai_entry_plan():
         print(f'    Account: portfolio_value=${account_size:.0f}, bp=${live_buying_power:.0f}, safe_bp=${_safe_bp:.0f}')
         print(f'    Allocation rules: {_rules["label"]} — max_total=${_max_total_allocation:.0f}, max_per_trade=${_max_per_trade:.0f}, max_open_buys={_max_open_buys}')
         print(f'    Leveraged: {_lev_allowed}' + (f' (max {_lev_max_pct*100:.0f}% of total)' if _lev_allowed else ''))
-        print(f'    Legacy: risk/trade=${risk_dollars:.0f} (adjusted {adjusted_risk_pct:.2f}%), max_pos=${max_pos_dollars:.0f} (adjusted {adjusted_max_pos_pct:.1f}%)')
+        print(f'    Risk budget: risk/trade=${risk_dollars:.0f} ({adjusted_risk_pct:.2f}%), max_pos=${max_pos_dollars:.0f} ({adjusted_max_pos_pct:.1f}%)')
         print(f'    Risk profile: {risk_profile}, Time horizon: {time_horizon}')
         print(f'    Existing positions: {existing_positions}, Daily loss: ${daily_loss:.0f}/{daily_loss_limit:.0f}')
         print(f'    Execution mode: {execution_mode}')
 
         plans = []
-        from datetime import datetime as dt_dt, timedelta as dt_td
+        from datetime import datetime as dt_dt, timedelta as dt_td, timezone as dt_timezone
 
         # ── Sector mapping for concentration check (hard-coded, AI cannot bypass) ──
         COMMON_SECTOR_MAP = {
@@ -26993,18 +32997,12 @@ def ai_entry_plan():
             sym_lower = sym.lower().strip()
             return COMMON_SECTOR_MAP.get(sym_lower, 'Unknown')
 
-        # Track sectors among all candidates (including existing positions) for concentration check
+        # Track actual holdings, then add viable plans sequentially. Candidate-list
+        # concentration alone is not portfolio exposure.
         candidate_sectors = {}
-        for c in candidates:
-            csym = c.get('symbol', '').upper().strip()
-            if csym:
-                csector = get_sector(csym)
-                candidate_sectors[csector] = candidate_sectors.get(csector, 0) + 1
         for hs in holding_symbols:
             hsector = get_sector(hs)
             candidate_sectors[hsector] = candidate_sectors.get(hsector, 0) + 1
-
-        holding_sectors = {get_sector(h) for h in holding_symbols}
 
         errors = []
 
@@ -27019,8 +33017,8 @@ def ai_entry_plan():
             wr = float(c.get('winRate') or 0)
             conf = float(c.get('confidence') or c.get('matchConfidence') or 50)
             stability = float(c.get('stabilityScore') or 50)
-            # Negative sharpe so higher is better; negative vo so lower (better) verdict comes first
-            return (-vo, -sharpe, -pf, -wr, -conf, -stability)
+            # Lower verdict rank is better; evidence metrics sort descending.
+            return (vo, -sharpe, -pf, -wr, -conf, -stability)
         candidates = sorted(candidates, key=_candidate_sort_key)
 
         for candidate in candidates:
@@ -27043,6 +33041,29 @@ def ai_entry_plan():
             risk_grade = candidate.get('riskGrade', '')
             fine_scan_decision = candidate.get('fineScanDecision', 'Pass')
             fine_scan_score = candidate.get('fineScanScore', 0)
+            candidate_adv20 = _dv_num(_dv_best_from_candidate(
+                candidate,
+                ['avgDollarVolume20', 'adv20', 'averageDollarVolume20']
+            ), None)
+            if not candidate_adv20:
+                _candidate_10pct_adv = _dv_num(_dv_best_from_candidate(candidate, ['participation10pctDollar']), None)
+                candidate_adv20 = (_candidate_10pct_adv / 0.10) if _candidate_10pct_adv else None
+            candidate_cost_bps = _dv_num(_dv_best_from_candidate(
+                candidate,
+                ['estimatedRoundTripCostBps', 'roundTripCostBps', 'costBps']
+            ), None)
+            candidate_spread_bps = _dv_num(_dv_best_from_candidate(
+                candidate,
+                ['quotedSpreadBps', 'spreadBps']
+            ), None)
+            candidate_entry_plan = (
+                candidate.get('entryPlan')
+                or candidate.get('entryValidation')
+                or candidate.get('entryPlanFine')
+                or ((candidate.get('institutionalPacket') or {}).get('entryValidation') if isinstance(candidate.get('institutionalPacket'), dict) else None)
+                or {}
+            )
+            candidate_entry_source = candidate.get('entryPlanSource') or candidate_entry_plan.get('entryPlanSource') or 'deeper_validation'
 
             # B8: Duplicate prevention — check for existing open buy orders and positions
             _existing_open_order = symbol in (open_buy_orders if account_data_fetched else [])
@@ -27284,10 +33305,17 @@ def ai_entry_plan():
             current_price = 0
             previous_close = None
             change_percent = None
+            latest_bid = 0
+            latest_ask = 0
+            quote_timestamp = None
+            quote_age_seconds = None
             closes = []
             highs = []
             lows = []
             volumes = []
+            intraday_bars = []
+            intraday_volume_ratio = None
+            intraday_bar_age_seconds = None
 
             try:
                 _acfg, _acfg_src = resolve_alpaca_config('market_data', require_user_config=True)
@@ -27300,8 +33328,13 @@ def ai_entry_plan():
                 if snap_resp.status_code == 200:
                     snap = snap_resp.json()
                     latest_trade = snap.get('latestTrade', {}) or {}
+                    latest_quote = snap.get('latestQuote', {}) or {}
                     daily_bar = snap.get('dailyBar', {}) or {}
                     prev_daily = snap.get('prevDailyBar', {}) or {}
+                    latest_bid = float(latest_quote.get('bp', 0) or 0)
+                    latest_ask = float(latest_quote.get('ap', 0) or 0)
+                    quote_timestamp = latest_quote.get('t') or latest_trade.get('t')
+                    quote_age_seconds = _entry_quote_age_seconds(quote_timestamp)
                     current_price = float(latest_trade.get('p', 0))
                     if current_price <= 0:
                         current_price = float(daily_bar.get('c', 0))
@@ -27330,6 +33363,48 @@ def ai_entry_plan():
                         highs = [float(b['h']) for b in raw if b.get('h')]
                         lows = [float(b['l']) for b in raw if b.get('l')]
                         volumes = [float(b['v']) for b in raw if b.get('v')]
+                intraday_end = dt_dt.now(dt_timezone.utc)
+                intraday_start = intraday_end - dt_td(days=5)
+                intraday_resp = req_lib.get(
+                    f'{_get_market_data_base_url()}/v2/stocks/{symbol}/bars',
+                    headers=snap_headers,
+                    params={
+                        'timeframe': '5Min',
+                        'limit': 1000,
+                        'adjustment': 'raw',
+                        'start': intraday_start.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                        'end': intraday_end.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                        'sort': 'asc',
+                    },
+                    timeout=10,
+                )
+                if intraday_resp.status_code == 200:
+                    for intraday_bar in intraday_resp.json().get('bars', []) or []:
+                        timestamp = intraday_bar.get('t')
+                        try:
+                            parsed = dateutil.parser.isoparse(str(timestamp))
+                            if parsed.tzinfo is None:
+                                parsed = parsed.replace(tzinfo=dt_timezone.utc)
+                            if parsed.astimezone(dt_timezone.utc) + dt_td(minutes=5) <= intraday_end:
+                                intraday_bars.append(intraday_bar)
+                        except Exception:
+                            continue
+                if intraday_bars:
+                    latest_intraday = intraday_bars[-1]
+                    intraday_bar_age_seconds = _entry_quote_age_seconds(
+                        latest_intraday.get('t'),
+                        now=intraday_end,
+                    )
+                    baseline_volumes = [
+                        float(bar.get('v') or 0)
+                        for bar in intraday_bars[-21:-1]
+                        if float(bar.get('v') or 0) > 0
+                    ]
+                    latest_intraday_volume = float(latest_intraday.get('v') or 0)
+                    if baseline_volumes and latest_intraday_volume > 0:
+                        intraday_volume_ratio = latest_intraday_volume / (
+                            sum(baseline_volumes) / len(baseline_volumes)
+                        )
                 if current_price <= 0 and closes:
                     current_price = closes[-1]
             except Exception as fetch_err:
@@ -27374,6 +33449,34 @@ def ai_entry_plan():
             if n > 0:
                 avg_volume = sum(volumes[-20:]) / min(20, len(volumes)) if volumes else 0
 
+            daily_rsi14 = None
+            if len(closes) >= 15:
+                changes = [closes[index] - closes[index - 1] for index in range(1, len(closes))]
+                recent_changes = changes[-14:]
+                avg_gain = sum(max(change, 0) for change in recent_changes) / 14.0
+                avg_loss = sum(max(-change, 0) for change in recent_changes) / 14.0
+                if avg_loss == 0:
+                    daily_rsi14 = 100.0 if avg_gain > 0 else 50.0
+                else:
+                    daily_rsi14 = 100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
+
+            def _candidate_metric(keys):
+                direct = _dv_num(_dv_best_from_candidate(candidate, keys), None)
+                if direct is not None:
+                    return direct
+                for container_name in ('fineScanFactorScores', 'entryDetails', 'factorScores', 'technicalIndicators'):
+                    container = candidate.get(container_name)
+                    if not isinstance(container, dict):
+                        continue
+                    nested = _dv_num(_dv_best_from_candidate(container, keys), None)
+                    if nested is not None:
+                        return nested
+                return None
+
+            candidate_rsi14 = daily_rsi14 if daily_rsi14 is not None else _candidate_metric(['rsi14', 'rsi'])
+            candidate_macd_histogram = _candidate_metric(['macdHistogram', 'macd_histogram', 'macdHist'])
+            candidate_volume_ratio = _candidate_metric(['volumeRatio', 'relativeVolume', 'relative_volume'])
+
             # ── 3. Fallback from candidate data if Alpaca failed ──
             if current_price <= 0:
                 current_price = float(candidate.get('currentPrice', 0))
@@ -27395,7 +33498,8 @@ def ai_entry_plan():
                 avg_volume = float(candidate.get('avgVolume', 0))
 
             atr_pct = (atr / current_price * 100) if current_price > 0 else 0
-            current_sector = get_sector(symbol)
+            avg_dollar_volume20 = candidate_adv20 or (avg_volume * current_price if avg_volume and current_price > 0 else None)
+            current_sector = candidate.get('sector') or candidate.get('companySector') or get_sector(symbol)
 
             if current_price <= 0:
                 plans.append({
@@ -27448,7 +33552,7 @@ def ai_entry_plan():
             dist_from_resistance_pct = (resistance - current_price) / current_price * 100 if resistance > 0 and current_price > 0 else 0
             is_above_ema20 = ema20 is not None and current_price > ema20
             is_above_ema50 = ema50 is not None and current_price > ema50
-            is_near_resistance = dist_from_resistance_pct < 3.0
+            is_near_resistance = resistance > 0 and dist_from_resistance_pct < 3.0
             is_near_support = dist_from_support_pct < 3.0 and dist_from_support_pct > 0
             is_over_extended = dist_from_ema20_pct > 12.0
 
@@ -27458,6 +33562,21 @@ def ai_entry_plan():
             is_ma_cross = any(s in strategy_lower for s in ['moving_average', 'ma_cross', 'ma cross'])
             is_macd = 'macd' in strategy_lower
             is_bollinger = any(s in strategy_lower for s in ['bollinger', 'range', 'bb'])
+            symbol_fractionable = bool(candidate.get('fractionable', True))
+            symbol_tradable = True
+            if acc_key and acc_secret:
+                try:
+                    asset_headers = {'APCA-API-KEY-ID': acc_key, 'APCA-API-SECRET-KEY': acc_secret}
+                    asset_resp = req_lib.get(f'{acc_url}/v2/assets/{symbol}', headers=asset_headers, timeout=8)
+                    if asset_resp.status_code == 200:
+                        asset_data = asset_resp.json() or {}
+                        symbol_fractionable = bool(asset_data.get('fractionable', symbol_fractionable))
+                        symbol_tradable = bool(asset_data.get('tradable', True))
+                except Exception as asset_e:
+                    print(f'    [{symbol}] Asset lookup warning: {asset_e}')
+
+            geometry_is_validated = False
+            geometry_source = 'local_market_structure'
 
             # Determine Setup
             if is_over_extended:
@@ -27521,30 +33640,186 @@ def ai_entry_plan():
                 invalidation = 'Cancel until clearer trend emerges'
                 reason_parts = ['No clear entry signal. Watch only.']
 
-            # ── 5. Compute R/R ──
-            risk_per_share = abs(entry_zone_low - stop_loss)
-            if risk_per_share <= 0:
-                risk_per_share = atr if atr > 0 else current_price * 0.02
-                stop_loss = entry_zone_low - risk_per_share
-                stop_loss_pct = round(risk_per_share / current_price * 100, 2)
+            # Preserve the geometry that survived Fine Scan and Deeper Validation.
+            # Entry Plan may reprice execution from a live quote, but it should not
+            # silently invent a different research thesis at the final stage.
+            if isinstance(candidate_entry_plan, dict) and candidate_entry_plan:
+                _validated_zone = candidate_entry_plan.get('entryZone') if isinstance(candidate_entry_plan.get('entryZone'), dict) else {}
+                _validated_low = _dv_num(candidate_entry_plan.get('entryZoneLow', candidate_entry_plan.get('entryLow', _validated_zone.get('low'))), None)
+                _validated_high = _dv_num(candidate_entry_plan.get('entryZoneHigh', candidate_entry_plan.get('entryHigh', _validated_zone.get('high'))), None)
+                _validated_stop = _dv_num(candidate_entry_plan.get('stopLoss', candidate_entry_plan.get('stop')), None)
+                _validated_tp1 = _dv_num(candidate_entry_plan.get('takeProfit1', candidate_entry_plan.get('target1')), None)
+                _validated_tp2 = _dv_num(candidate_entry_plan.get('takeProfit2', candidate_entry_plan.get('target2')), None)
+                if (
+                    _validated_low and _validated_high and _validated_stop and _validated_tp1
+                    and _validated_stop < _validated_low <= _validated_high < _validated_tp1
+                ):
+                    entry_zone_low = _entry_round_price(_validated_low, 'nearest')
+                    entry_zone_high = _entry_round_price(_validated_high, 'nearest')
+                    stop_loss = _entry_round_price(_validated_stop, 'down')
+                    tp1 = _entry_round_price(_validated_tp1, 'down')
+                    if _validated_tp2 and _validated_tp2 > tp1:
+                        tp2 = _entry_round_price(_validated_tp2, 'down')
+                    entry_zone_desc = f'${entry_zone_low:.2f} - ${entry_zone_high:.2f} (DV-validated zone)'
+                    setup = candidate_entry_plan.get('setup') or candidate_entry_plan.get('planType') or setup
+                    trigger_condition = candidate_entry_plan.get('triggerCondition') or candidate_entry_plan.get('trigger') or trigger_condition
+                    invalidation = candidate_entry_plan.get('invalidationCondition') or candidate_entry_plan.get('stopBasis') or invalidation
+                    reason_parts.append('Preserved Fine Scan / DV validated entry geometry.')
+                    candidate_entry_source = candidate_entry_plan.get('entryPlanSource') or candidate_entry_source
+                    geometry_is_validated = True
+                    geometry_source = 'fine_scan_deeper_validation'
 
-            rr1 = round((tp1 - entry_zone_low) / risk_per_share, 2) if tp1 > 0 and entry_zone_low > 0 and risk_per_share > 0 else 0
-            rr2 = round((tp2 - entry_zone_low) / risk_per_share, 2) if tp2 > 0 and entry_zone_low > 0 and risk_per_share > 0 else 0
-            risk_reward_review = rr1 < 1.5 or rr2 < 1.5
+            # Guardrail for sparse/fallback data: never allow invalid price geometry
+            # to reach stop/RR sizing. Missing support/resistance should degrade into
+            # a watchable current-range plan, not a server error.
+            if entry_zone_low <= 0 or entry_zone_high <= 0 or entry_zone_high < entry_zone_low:
+                entry_zone_low = round(max(0.01, current_price * 0.98), 2)
+                entry_zone_high = round(max(entry_zone_low + 0.01, current_price * 1.02), 2)
+                entry_zone_desc = f'${entry_zone_low:.2f} - ${entry_zone_high:.2f} (fallback current range)'
+                trigger_condition = trigger_condition or 'Wait for valid market structure before entry'
+                reason_parts.append('Fallback entry geometry used because support/resistance was unavailable.')
+
+            if stop_loss <= 0 or stop_loss >= entry_zone_high:
+                fallback_stop_distance = max(current_price * 0.025, atr if atr > 0 else current_price * 0.025)
+                stop_loss = round(max(0.01, entry_zone_low - fallback_stop_distance), 2)
+                invalidation = invalidation or f'Cancel if price breaks below ${stop_loss:.2f}'
+
+            stop_basis = entry_zone_low if entry_zone_low > 0 else current_price
+            stop_loss_pct = round(abs(stop_basis - stop_loss) / max(stop_basis, 0.01) * 100, 2)
+
+            # ── 5. Compute institutional entry geometry ──
+            # Use the high side of the buy zone as the conservative fill reference.
+            # This keeps stop distance, reward/risk, and position sizing on the same basis.
+            HOLDING_PERIOD_MAP = {
+                'short': {
+                    'label': '1-3 trading days',
+                    'stop_mult': 0.85,
+                    'target_rr1': 1.45,
+                    'target_rr2': 2.20,
+                    'slippage_bps': 12,
+                    'participation_cap_pct': 0.03,
+                    'min_rr': 1.25,
+                    'max_stop_pct': 0.055,
+                },
+                'mid': {
+                    'label': '3-15 trading days',
+                    'stop_mult': 1.00,
+                    'target_rr1': 1.75,
+                    'target_rr2': 2.70,
+                    'slippage_bps': 18,
+                    'participation_cap_pct': 0.05,
+                    'min_rr': 1.45,
+                    'max_stop_pct': 0.080,
+                },
+                'long': {
+                    'label': '2-8 weeks',
+                    'stop_mult': 1.20,
+                    'target_rr1': 2.00,
+                    'target_rr2': 3.20,
+                    'slippage_bps': 25,
+                    'participation_cap_pct': 0.08,
+                    'min_rr': 1.60,
+                    'max_stop_pct': 0.120,
+                },
+            }
+            _hp = HOLDING_PERIOD_MAP.get(time_horizon, HOLDING_PERIOD_MAP['mid'])
+            _holding_period_label = _hp['label']
+            planned_entry_ref = entry_zone_high if entry_zone_high > 0 else current_price
+            if planned_entry_ref <= 0:
+                planned_entry_ref = current_price
+            if geometry_is_validated:
+                risk_per_share = round(max(0.0, planned_entry_ref - stop_loss), 2)
+            else:
+                base_risk_distance = planned_entry_ref - stop_loss if stop_loss > 0 else 0
+                min_stop_distance = max(planned_entry_ref * 0.012, atr * 0.45 if atr > 0 else planned_entry_ref * 0.012)
+                max_stop_distance = planned_entry_ref * _hp['max_stop_pct']
+                if atr > 0:
+                    base_risk_distance = max(base_risk_distance, atr * 0.75)
+                if base_risk_distance <= 0:
+                    base_risk_distance = max(planned_entry_ref * 0.025, atr if atr > 0 else 0)
+                risk_per_share = max(min_stop_distance, min(base_risk_distance * _hp['stop_mult'], max_stop_distance))
+                stop_loss = round(max(0.01, planned_entry_ref - risk_per_share), 2)
+                risk_per_share = round(max(0.01, planned_entry_ref - stop_loss), 2)
+            stop_loss_pct = round(risk_per_share / planned_entry_ref * 100, 2) if planned_entry_ref > 0 else 0
+            reward_geometry = _assess_entry_reward_geometry(
+                planned_entry_ref,
+                stop_loss,
+                tp1,
+                tp2,
+                _hp['min_rr'],
+            )
+            risk_per_share = reward_geometry['riskPerShare']
+            rr1 = reward_geometry['riskReward1']
+            rr2 = reward_geometry['riskReward2']
+            risk_reward_review = not reward_geometry['passesMinimum']
 
             # ── 6. Entry Readiness Gate ──
-            # Check if current price is inside the entry zone
+            # For a buy, the executable ask owns the trigger. Last trade remains
+            # useful context but cannot prove that the planned price is available.
+            executable_reference_price = latest_ask if latest_ask > 0 else current_price
             is_in_entry_zone = (entry_zone_low > 0 and entry_zone_high > 0
-                                and current_price >= entry_zone_low and current_price <= entry_zone_high)
+                                and executable_reference_price >= entry_zone_low
+                                and executable_reference_price <= entry_zone_high)
+
+            latest_trigger_bar = intraday_bars[-1] if intraday_bars else None
+            previous_trigger_bar = intraday_bars[-2] if len(intraday_bars) >= 2 else None
+            entry_trigger = _evaluate_entry_setup_trigger(
+                setup,
+                executable_reference_price,
+                entry_zone_low,
+                entry_zone_high,
+                strategy=strategy,
+                latest_bar=latest_trigger_bar,
+                previous_bar=previous_trigger_bar,
+                bar_age_seconds=intraday_bar_age_seconds,
+                resistance=resistance,
+                support=support,
+                ema20=ema20,
+                ema50=ema50,
+                rsi14=candidate_rsi14,
+                macd_histogram=candidate_macd_histogram,
+                intraday_volume_ratio=intraday_volume_ratio,
+                comparable_volume_ratio=candidate_volume_ratio,
+            )
+            setup_auto_eligible = bool(entry_trigger.get('eligible'))
+            entry_trigger_met = bool(entry_trigger.get('met'))
+            entry_trigger_status = entry_trigger.get('status', 'NEED_DATA')
+            trigger_evaluated_at = datetime.now(timezone.utc).isoformat()
 
             entry_readiness = 'Wait'
-            if setup == 'Breakout Entry':
-                entry_readiness = 'Breakout Watch'
-            elif is_in_entry_zone:
-                # Price is in entry zone — ready regardless of setup type
+            if market_is_open is not True:
+                entry_readiness = 'Market Closed' if market_is_open is False else 'Need Market Clock'
+            elif market_is_open is True and (quote_age_seconds is None or quote_age_seconds > 90):
+                entry_readiness = 'Need Fresh Quote'
+            elif entry_trigger_status == 'NOT_ELIGIBLE':
+                entry_readiness = 'Watch Only'
+            elif entry_trigger_status == 'NEED_DATA':
+                entry_readiness = 'Need Trigger Data'
+            elif entry_trigger_status == 'WAIT_ZONE':
+                entry_readiness = 'Breakout Watch' if _entry_setup_kind(setup, strategy) == 'breakout' else 'Wait for Zone'
+            elif entry_trigger_status == 'WAIT_TRIGGER':
+                entry_readiness = 'Trigger Pending'
+            elif entry_trigger_status == 'CONFIRMED' and entry_trigger_met:
                 entry_readiness = 'Ready'
-            elif dist_from_ema20_pct < 5 and is_above_ema20 and is_above_ema50:
-                entry_readiness = 'Ready'
+
+            preview_slippage_bps = _hp.get('slippage_bps', 18)
+            preview_quote_mid = (
+                (latest_bid + latest_ask) / 2.0
+                if latest_bid > 0 and latest_ask >= latest_bid else executable_reference_price
+            )
+            preview_slippage_cap = (
+                preview_quote_mid * (1 + preview_slippage_bps / 10000.0)
+                if preview_quote_mid > 0 else 0
+            )
+            preview_limit = (
+                _entry_round_price(min(entry_zone_high, latest_ask, preview_slippage_cap), 'down')
+                if latest_ask > 0 and entry_zone_high > 0 and preview_slippage_cap > 0 else None
+            )
+            auto_limit_marketable = bool(
+                preview_limit is not None
+                and latest_ask > 0
+                and preview_limit + (_entry_price_tick(preview_limit) / 10.0) >= latest_ask
+            )
 
             # ── 7. AI Decision (rule-based, deterministic from hard data) ──
             ai_decision = 'BUY'
@@ -27629,7 +33904,9 @@ def ai_entry_plan():
                 # Step 2: Cap by max position % of portfolio.
                 # Allocation caps reduce executable size; they are not hard risk blockers
                 # unless the capped size is too small to submit.
-                max_pos_shares = int(max_pos_dollars / current_price) if current_price > 0 else 0
+                max_pos_shares = round(max_pos_dollars / current_price, 4) if current_price > 0 else 0
+                if not symbol_fractionable:
+                    max_pos_shares = math.floor(max_pos_shares)
                 pos_shares = min(risk_shares, max_pos_shares)
                 pos_dollars = pos_shares * current_price
                 pos_pct = round(pos_dollars / account_size * 100, 2) if account_size > 0 else 0
@@ -27642,12 +33919,20 @@ def ai_entry_plan():
                         f'capped to {pos_pct:.1f}% max allocation '
                         f'(raw {raw_position_dollars / account_size * 100:.1f}% > {max_position_pct}%)'
                     ) if account_size > 0 else f'capped to max allocation ${max_pos_dollars:.0f}'
-                    if pos_shares < 1:
-                        risk_gate_blockers.append('position below minimum size after allocation cap')
+                    _min_shares = 0.01 if symbol_fractionable else 1.0
+                    if pos_shares < _min_shares:
+                        risk_gate_blockers.append(
+                            f'position below minimum size after allocation cap '
+                            f'({pos_shares:.4f} < {_min_shares:g} {"fractional" if symbol_fractionable else "whole"} share minimum)'
+                        )
                         pos_shares = 0
                         pos_dollars = 0
                         risk_dollars_actual = 0
                         risk_gate_passed = False
+
+                if not symbol_tradable:
+                    risk_gate_blockers.append(f'{symbol} is not tradable on Alpaca account mode {account_mode}')
+                    risk_gate_passed = False
 
                 # 9b. Risk ≤ 1% per trade (as % of portfolio value)
                 risk_as_pct_of_account = round(risk_dollars_actual / account_size * 100, 2) if account_size > 0 else 0
@@ -27691,7 +33976,10 @@ def ai_entry_plan():
             if pos_dollars > _max_per_trade and pos_shares > 0 and not _position_sizing_blocked:
                 # Cap position size to per-trade limit
                 _capped_shares = round(_max_per_trade / current_price, 4) if current_price > 0 else 0
-                if _capped_shares >= 0.01:
+                if not symbol_fractionable:
+                    _capped_shares = math.floor(_capped_shares)
+                _min_trade_shares = 0.01 if symbol_fractionable else 1.0
+                if _capped_shares >= _min_trade_shares:
                     pos_shares = _capped_shares
                     pos_dollars = pos_shares * current_price
                     pos_pct = round(pos_dollars / account_size * 100, 2) if account_size > 0 else 0
@@ -27699,10 +33987,52 @@ def ai_entry_plan():
                     position_capped = True
                     position_cap_status = f'capped by per-trade limit (${_max_per_trade:.0f})'
                 else:
-                    risk_gate_blockers.append(f'position below minimum size after allocation cap')
+                    risk_gate_blockers.append(
+                        f'position below minimum size after per-trade cap '
+                        f'({_capped_shares:.4f} < {_min_trade_shares:g} {"fractional" if symbol_fractionable else "whole"} share minimum)'
+                    )
                     pos_shares = 0
                     pos_dollars = 0
                     risk_gate_passed = False
+
+            # Institutional capacity check: keep planned notional below a small ADV slice.
+            # This is a sizing control, not a signal filter, so most cases become REVIEW/capped.
+            _participation_cap_pct = _hp.get('participation_cap_pct', 0.05)
+            _participation_cap_dollars = (avg_dollar_volume20 * _participation_cap_pct) if avg_dollar_volume20 else None
+            _capacity_capped = False
+            if _participation_cap_dollars and pos_dollars > _participation_cap_dollars and pos_shares > 0:
+                _capacity_shares = round(_participation_cap_dollars / current_price, 4) if current_price > 0 else 0
+                if not symbol_fractionable:
+                    _capacity_shares = math.floor(_capacity_shares)
+                _min_capacity_shares = 0.01 if symbol_fractionable else 1.0
+                if _capacity_shares >= _min_capacity_shares and _participation_cap_dollars >= 1.0:
+                    pos_shares = _capacity_shares
+                    pos_dollars = pos_shares * current_price
+                    pos_pct = round(pos_dollars / account_size * 100, 2) if account_size > 0 else 0
+                    risk_dollars_actual = pos_shares * risk_per_share
+                    position_capped = True
+                    _capacity_capped = True
+                    position_cap_status = (
+                        f'capped by {int(_participation_cap_pct * 100)}% ADV capacity '
+                        f'(${_participation_cap_dollars:.0f})'
+                    )
+                    risk_gate_warnings.append(
+                        f'Order notional capped to {int(_participation_cap_pct * 100)}% ADV capacity '
+                        f'(${_participation_cap_dollars:.0f}).'
+                    )
+                else:
+                    risk_gate_blockers.append(
+                        f'position below minimum size after ADV capacity cap '
+                        f'({_capacity_shares:.4f} < {_min_capacity_shares:g} {"fractional" if symbol_fractionable else "whole"} share minimum)'
+                    )
+                    pos_shares = 0
+                    pos_dollars = 0
+                    risk_gate_passed = False
+
+            if candidate_cost_bps is not None and candidate_cost_bps > 75:
+                risk_gate_warnings.append(f'Estimated round-trip cost {candidate_cost_bps:.1f} bps is elevated.')
+            if candidate_spread_bps is not None and candidate_spread_bps > 25:
+                risk_gate_warnings.append(f'Quoted spread {candidate_spread_bps:.1f} bps is wide.')
 
             # B2: Check total budget — block if allocation would exceed remaining buying power
             if pos_dollars > 0 and not _position_sizing_blocked:
@@ -27722,7 +34052,10 @@ def ai_entry_plan():
                 elif pos_dollars > _remaining:
                     # Try to fit remaining budget
                     _fit_shares = round(_remaining / current_price, 4) if current_price > 0 else 0
-                    if _fit_shares >= 0.01:
+                    if not symbol_fractionable:
+                        _fit_shares = math.floor(_fit_shares)
+                    _min_fit_shares = 0.01 if symbol_fractionable else 1.0
+                    if _fit_shares >= _min_fit_shares:
                         pos_shares = _fit_shares
                         pos_dollars = pos_shares * current_price
                         pos_pct = round(pos_dollars / account_size * 100, 2) if account_size > 0 else 0
@@ -27731,7 +34064,8 @@ def ai_entry_plan():
                         position_cap_status = f'capped by remaining budget (${_remaining:.0f})'
                     else:
                         risk_gate_blockers.append(
-                            f'Remaining budget ${_remaining:.0f} yields {_fit_shares:.4f} shares — position below minimum size after allocation cap. '
+                            f'Remaining budget ${_remaining:.0f} yields {_fit_shares:.4f} shares — below '
+                            f'{_min_fit_shares:g} {"fractional" if symbol_fractionable else "whole"} share minimum. '
                             f'{symbol} blocked — insufficient buying power after higher priority allocations.')
                         pos_shares = 0
                         pos_dollars = 0
@@ -27746,21 +34080,19 @@ def ai_entry_plan():
                 risk_gate_passed = False
                 final_action = 'BLOCKED_BY_RISK'
 
-            # B2: Update budget tracker if position is viable
-            if pos_dollars > 0 and final_action not in ('BLOCKED_BY_RISK', 'SKIP'):
-                _total_allocated += pos_dollars
-                _open_buy_count += 1
-
             # 9c. Daily loss < 3%
             if daily_loss >= daily_loss_limit:
                 risk_gate_blockers.append(f'Daily loss ${daily_loss:.0f} exceeds 3% limit ${daily_loss_limit:.0f} - BLOCK ALL TRADING')
                 risk_gate_passed = False
                 final_action = 'SKIP'
 
-            # 9d. Max positions 5
-            total_positions = len(existing_positions) + 1  # including this one
-            if total_positions > 5:
-                risk_gate_blockers.append(f'Would exceed max 5 positions (currently {len(existing_positions)})')
+            # 9d. Max total positions by risk profile
+            total_positions = len(existing_positions) + _open_buy_count + 1
+            if total_positions > _max_portfolio_positions:
+                risk_gate_blockers.append(
+                    f'Would exceed max {_max_portfolio_positions} positions for {_rules["label"]} profile '
+                    f'(currently {len(existing_positions)})'
+                )
                 risk_gate_passed = False
 
             # 9e. Duplicate holding check
@@ -27769,10 +34101,16 @@ def ai_entry_plan():
                 risk_gate_passed = False
 
             # 9f. Same sector excess exposure → WATCH
-            sector_count = candidate_sectors.get(current_sector, 0) + 1
-            if current_sector != 'Unknown' and current_sector not in holding_sectors and sector_count >= 2:
-                risk_gate_warnings.append(f'Sector {current_sector} has {sector_count} candidates - concentration high, downgraded to WATCH')
-                final_action = 'WATCH_ONLY'
+            planned_sector_count = sum(
+                1 for existing_plan in plans
+                if existing_plan.get('currentSector') == current_sector
+                and existing_plan.get('positionSizeShares', 0) > 0
+            )
+            sector_count = candidate_sectors.get(current_sector, 0) + planned_sector_count + 1
+            if current_sector != 'Unknown' and sector_count >= 3:
+                risk_gate_warnings.append(
+                    f'Proposed {current_sector} exposure would reach {sector_count} positions; review concentration.'
+                )
 
             # 9g. Earnings check
             earnings_warn = candidate.get('earningsSoon', '')
@@ -27783,7 +34121,6 @@ def ai_entry_plan():
             # 9h. ATR% > 6% → high volatility review
             if atr_pct > 6:
                 risk_gate_warnings.append(f'ATR% {atr_pct:.1f}% > 6% - high volatility, position size reduced')
-                risk_gate_passed = False
                 final_action = 'WATCH_ONLY' if final_action == 'BUY_ALLOWED' else final_action
 
             # 9i. Liquidity check
@@ -27795,13 +34132,32 @@ def ai_entry_plan():
                 liquidity_ok = False
 
             # 9j. Entry readiness gate
-            if entry_readiness in ('Wait', 'Breakout Watch') and ai_decision == 'BUY':
+            if entry_readiness != 'Ready' and ai_decision == 'BUY':
                 risk_gate_warnings.append(f'Entry readiness: {entry_readiness} - entry trigger not yet met, cannot enter immediately')
                 ai_decision = 'WATCH'
 
             # 9k. R/R check integrated into gate
             if risk_reward_review:
-                risk_gate_warnings.append(f'R/R ratio below 1.5 - flagged for review')
+                risk_gate_warnings.append(
+                    f'Structural Target 1 provides {rr1:.2f}R, below the {_hp["min_rr"]:.2f}R minimum; target was not inflated.'
+                )
+            if not reward_geometry.get('valid'):
+                risk_gate_blockers.append(
+                    'Entry, stop, and structural Target 1 do not form valid long-trade geometry.'
+                )
+                risk_gate_passed = False
+
+            # Auto execution only advances when Alpaca can attach both exit legs.
+            # Fractional recommendation sizing remains visible in manual review.
+            if not is_manual and 0 < pos_shares < 1:
+                risk_gate_blockers.append(
+                    'Automatic Entry Plan requires at least one whole share for attached bracket protection.'
+                )
+                risk_gate_passed = False
+            if not is_manual and entry_trigger_met and not auto_limit_marketable:
+                risk_gate_warnings.append(
+                    'Automatic limit is not marketable inside the slippage cap; wait for the spread or ask to improve.'
+                )
 
             # ── Categorize Risk Gate Status ──
             # BLOCK: any hard blockers exist (missing data, invalid prices, duplicates, daily loss, liquidity)
@@ -27825,16 +34181,21 @@ def ai_entry_plan():
             change_pct_ok = change_percent is not None
             technical_data_ok = atr > 0 and ema20 is not None and ema50 is not None
             account_data_ok = account_data_fetched
+            executable_quote_ok = latest_bid > 0 and latest_ask > 0 and latest_ask >= latest_bid
+            quote_fresh_ok = market_is_open is not True or (quote_age_seconds is not None and quote_age_seconds <= 90)
             data_fallback_used = data_source != 'alpaca'
 
-            if market_data_ok and previous_close_ok and change_pct_ok and technical_data_ok and account_data_ok and not data_fallback_used:
+            if market_data_ok and previous_close_ok and change_pct_ok and technical_data_ok and account_data_ok and executable_quote_ok and quote_fresh_ok and not data_fallback_used:
                 data_quality = 'GOOD'
-            elif market_data_ok and (not previous_close_ok or not change_pct_ok):
+            elif market_data_ok and (not previous_close_ok or not change_pct_ok or not executable_quote_ok or not quote_fresh_ok):
                 data_quality = 'need_data'
             elif market_data_ok and (not technical_data_ok or data_fallback_used):
                 data_quality = 'PARTIAL'
             else:
                 data_quality = 'POOR'
+
+            if market_is_open is True and entry_trigger_status == 'NEED_DATA' and data_quality != 'POOR':
+                data_quality = 'need_data'
 
             # For BUY-ready decisions, require previousClose (not just "not POOR")
             data_ok_for_buy = data_quality == 'GOOD'
@@ -27849,21 +34210,28 @@ def ai_entry_plan():
 
             # Derived checks for smart gating
             has_hard_block = risk_gate_status == 'BLOCK' or len(risk_gate_blockers) > 0
-            rr_ok = max(rr1 or 0, rr2 or 0) >= 2.0
-            levels_ok = stop_loss > 0 and (tp1 > 0 or tp2 > 0)
+            rr_ok = bool(reward_geometry.get('passesMinimum'))
+            levels_ok = bool(
+                reward_geometry.get('valid')
+                and stop_loss < planned_entry_ref < tp1
+            )
             data_ok = data_quality != 'POOR'
             ai_skip = ai_decision == 'SKIP'
             ai_buy_or_watch = ai_decision in ('BUY', 'WATCH')
 
             ready_review_reason = ''
-            entry_trigger_met = entry_readiness == 'Ready'
 
             if has_hard_block:
                 final_action = 'BLOCKED_BY_RISK'
+            elif not setup_auto_eligible:
+                final_action = 'SKIP'
             elif ai_skip:
                 final_action = 'SKIP'
-            elif is_in_entry_zone and rr_ok and levels_ok and data_ok_for_buy and ai_buy_or_watch:
-                if ai_decision == 'BUY':
+            elif (
+                is_in_entry_zone and entry_trigger_met and rr_ok and levels_ok and data_ok
+                and ai_buy_or_watch and (is_manual or auto_limit_marketable)
+            ):
+                if ai_decision == 'BUY' and risk_gate_status == 'PASS' and data_ok_for_buy:
                     final_action = 'BUY_READY'
                 else:
                     # AI=WATCH but all deterministic checks pass → READY_REVIEW
@@ -27877,18 +34245,32 @@ def ai_entry_plan():
                     if data_quality in ('PARTIAL', 'need_data'):
                         review_factors.append('Data quality %s' % data_quality)
                     ready_review_reason = '; '.join(review_factors) if review_factors else 'AI decision is WATCH — needs manual review'
+            elif is_in_entry_zone and entry_trigger_met and levels_ok and not rr_ok:
+                final_action = 'READY_REVIEW'
+                ready_review_reason = (
+                    f'Structural Target 1 offers {rr1:.2f}R, below the {_hp["min_rr"]:.2f}R minimum. '
+                    'Target was preserved for review.'
+                )
             elif not is_in_entry_zone or not entry_trigger_met:
                 final_action = 'WAIT_FOR_ENTRY'
             else:
                 final_action = 'WAIT_FOR_ENTRY'
 
             # ── Trade Readiness ──
-            if final_action in ('BUY_READY', 'READY_REVIEW'):
+            if final_action == 'BUY_READY':
                 trade_readiness = 'READY'
-            elif final_action == 'WAIT_FOR_ENTRY':
+            elif final_action in ('READY_REVIEW', 'WAIT_FOR_ENTRY'):
                 trade_readiness = 'WAIT'
             else:
                 trade_readiness = 'BLOCKED'
+
+            # Reserve portfolio capacity only for plans that can actually advance.
+            # Waiting and blocked plans are repriced/re-sized on a future run.
+            _bp_after = _bp_before
+            if pos_dollars > 0 and final_action == 'BUY_READY':
+                _total_allocated += pos_dollars
+                _open_buy_count += 1
+                _bp_after = max(0.0, _safe_bp - _total_allocated)
 
             # ── 10. Technical trailing stop (if applicable) ──
             if ema50 and ema50 < current_price:
@@ -27898,7 +34280,7 @@ def ai_entry_plan():
 
             # ── 11. Compute derived fields ──
             # Risk Used % = actual risk / risk budget * 100
-            risk_budget_dollars = round(account_size * (risk_per_trade_pct / 100.0), 2)
+            risk_budget_dollars = round(account_size * (adjusted_risk_pct / 100.0), 2)
             risk_used_pct = round(risk_dollars_actual / risk_budget_dollars * 100, 2) if risk_budget_dollars > 0 else 0
 
             # Data sources breakdown
@@ -27945,11 +34327,12 @@ def ai_entry_plan():
 
             broker_source = f'Alpaca {account_mode.capitalize()}' if broker_connected else 'Not Connected'
 
-            # Entry trigger met determination
-            entry_trigger_met = entry_readiness == 'Ready'
-
             # Stop source description
-            stop_source = 'ATR-based from planned entry' if atr > 0 else 'Percentage-based fallback'
+            stop_source = (
+                'Fine Scan / DV validated structure'
+                if geometry_is_validated
+                else ('ATR-based from planned entry' if atr > 0 else 'Percentage-based fallback')
+            )
 
             # Build structured reason fields
             decision_reason = ' | '.join(reason_parts) if reason_parts else 'No specific setup reason'
@@ -27998,54 +34381,107 @@ def ai_entry_plan():
             else:
                 execution_details['orderPreview'] = None
 
-            # B5: timeHorizon-based holding period and stop/target adjustments
-            HOLDING_PERIOD_MAP = {
-                'short': {'label': '1-3 trading days', 'stop_mult': 0.85, 'target_mult': 0.80},
-                'mid':   {'label': '3-15 trading days', 'stop_mult': 1.0, 'target_mult': 1.0},
-                'long':  {'label': '2-8 weeks', 'stop_mult': 1.2, 'target_mult': 1.3},
-            }
-            _hp = HOLDING_PERIOD_MAP.get(time_horizon, HOLDING_PERIOD_MAP['mid'])
-            _holding_period_label = _hp['label']
-            # Adjust stop loss and take profit by timeHorizon
-            _adj_stop_loss = round(stop_loss * _hp['stop_mult'], 2) if stop_loss > 0 else stop_loss
-            _adj_tp1 = round(tp1 * _hp['target_mult'], 2) if tp1 > 0 else tp1
-            _adj_tp2 = round(tp2 * _hp['target_mult'], 2) if tp2 > 0 else tp2
-            # Recompute R/R with adjusted values
-            _adj_risk_per_share = round(abs(current_price - _adj_stop_loss), 2) if current_price > 0 and _adj_stop_loss > 0 else risk_per_share
-            _adj_rr1 = round((_adj_tp1 - current_price) / _adj_risk_per_share, 1) if _adj_risk_per_share > 0 and _adj_tp1 > current_price else rr1
-            _adj_rr2 = round((_adj_tp2 - current_price) / _adj_risk_per_share, 1) if _adj_risk_per_share > 0 and _adj_tp2 > current_price else rr2
+            # Stop/target were already adjusted before position sizing.
+            _adj_stop_loss = stop_loss
+            _adj_tp1 = tp1
+            _adj_tp2 = tp2
+            _adj_risk_per_share = risk_per_share
+            _adj_rr1 = rr1
+            _adj_rr2 = rr2
 
-            # B7: In-zone → market order; Out-of-zone → limit order
+            # B7: Professional order protection.
+            # In-zone entries use a marketable limit with slippage cap instead of raw market orders.
+            _slippage_cap_bps = _hp.get('slippage_bps', 18)
+            _quote_mid = ((latest_bid + latest_ask) / 2.0) if latest_bid > 0 and latest_ask >= latest_bid else current_price
+            _quote_slippage_cap = _quote_mid * (1 + _slippage_cap_bps / 10000.0) if _quote_mid > 0 else 0
+            _marketable_limit = (
+                _entry_round_price(min(entry_zone_high, latest_ask, _quote_slippage_cap), 'down')
+                if latest_ask > 0 and entry_zone_high > 0 and _quote_slippage_cap > 0 else None
+            )
             if is_in_entry_zone and pos_shares > 0:
-                _order_type_hint = 'Market Buy'
-                _order_preview_type = 'market'
-                _limit_price = None
+                _is_marketable_preview = bool(_marketable_limit and latest_ask > 0 and _marketable_limit >= latest_ask)
+                _order_type_hint = 'Marketable Limit Buy' if _is_marketable_preview else 'Protected Limit Buy'
+                _order_preview_type = 'limit'
+                _limit_price = _marketable_limit
+                _stop_price = None
+                _order_type_reason = (
+                    f'Executable ask is inside the entry zone; submit a limit capped at {_slippage_cap_bps} bps. '
+                    + ('The current quote is marketable.' if _is_marketable_preview else 'The cap is passive and may rest unfilled.')
+                )
+            elif setup == 'Breakout Entry' and pos_shares > 0:
+                _order_type_hint = 'Stop-Limit Buy'
+                _order_preview_type = 'stop_limit'
+                _limit_price = round(entry_zone_high, 2)
+                _stop_price = round(entry_zone_low, 2)
+                _order_type_reason = 'Breakout entry uses stop-limit so the trigger is explicit and slippage is capped.'
             elif pos_shares > 0:
                 _order_type_hint = 'Limit Buy'
                 _order_preview_type = 'limit'
-                _limit_price = round(entry_zone_low, 2)
+                _limit_price = round(entry_zone_high, 2)
+                _stop_price = None
+                _order_type_reason = 'Wait for price to trade into the planned entry zone; use a limit order for price protection.'
             else:
                 _order_type_hint = 'N/A'
                 _order_preview_type = 'N/A'
                 _limit_price = None
+                _stop_price = None
+                _order_type_reason = 'No executable position size or no valid entry setup.'
 
             # Build order preview with B7 logic
             if pos_shares > 0:
+                _preview_protection_mode = (
+                    'alpaca_bracket'
+                    if pos_shares >= 1
+                    else ('manual_exit_required' if is_manual else 'unavailable_for_auto_fractional')
+                )
                 execution_details['orderPreview'] = {
                     'symbol': symbol,
                     'shares': pos_shares,
                     'orderType': _order_preview_type,
                     'limitPrice': _limit_price,
+                    'stopPrice': _stop_price,
                     'stopLoss': round(_adj_stop_loss, 2),
                     'takeProfit': round(_adj_tp1, 2) if _adj_tp1 > 0 else None,
                     'maxRisk': round(risk_dollars_actual, 2),
                     'timeInForce': 'day',
+                    'extendedHours': False,
+                    'slippageCapBps': _slippage_cap_bps,
+                    'latestBid': round(latest_bid, 4) if latest_bid > 0 else None,
+                    'latestAsk': round(latest_ask, 4) if latest_ask > 0 else None,
+                    'quoteAgeSeconds': round(quote_age_seconds, 1) if quote_age_seconds is not None else None,
+                    'protectionMode': _preview_protection_mode,
                 }
             else:
                 execution_details['orderPreview'] = None
+            execution_details['orderTypeSuggestion'] = _order_type_hint
+            execution_details['orderTypeReason'] = _order_type_reason
+            if final_action == 'BUY_READY':
+                next_step_text = (
+                    f'Prepare {_order_type_hint} for {pos_shares} shares'
+                    + (f' limit ${_limit_price:.2f}' if _limit_price else '')
+                    + (f' stop trigger ${_stop_price:.2f}' if _stop_price else '')
+                    + f'; stop ${_adj_stop_loss:.2f}; target1 ${_adj_tp1:.2f}; max risk ${risk_dollars_actual:.0f}.'
+                )
+            elif final_action == 'READY_REVIEW':
+                next_step_text = (
+                    f'Review warnings, then use {_order_type_hint}'
+                    + (f' at limit ${_limit_price:.2f}' if _limit_price else '')
+                    + f'; stop ${_adj_stop_loss:.2f}; target1 ${_adj_tp1:.2f}.'
+                )
+
+            if is_in_entry_zone:
+                _zone_status = 'INSIDE'
+                _entry_distance_pct = 0.0
+            elif current_price < entry_zone_low:
+                _zone_status = 'BELOW'
+                _entry_distance_pct = round((current_price - entry_zone_low) / current_price * 100, 2) if current_price > 0 else None
+            else:
+                _zone_status = 'ABOVE'
+                _entry_distance_pct = round((current_price - entry_zone_high) / entry_zone_high * 100, 2) if entry_zone_high > 0 else None
 
             plans.append({
                 'symbol': symbol,
+                'companyName': candidate.get('companyName') or candidate.get('name'),
                 'underlyingSymbol': symbol,
                 'selectedSymbol': symbol,
                 'strategy': strategy,
@@ -28075,6 +34511,10 @@ def ai_entry_plan():
                 'cappedByAllocation': position_capped,
                 'maxAllocationPct': max_allocation_pct,
                 'maxAllocationDollars': round(max_allocation_dollars, 2),
+                'maxTotalAllocationDollars': round(_max_total_allocation, 2),
+                'maxOpenBuyOrders': _max_open_buys,
+                'maxPortfolioPositions': _max_portfolio_positions,
+                'allowMargin': False,
                 'rawShares': raw_position_shares,
                 'suggestedShares': raw_position_shares,
                 'rawAllocationDollars': round(raw_position_dollars, 2),
@@ -28086,20 +34526,39 @@ def ai_entry_plan():
                 ),
                 'accountMode': account_mode,
                 'accountBuyingPower': round(live_buying_power, 2),
-                'buyingPowerBefore': round(_bp_before, 2) if pos_dollars > 0 else round(_safe_bp - _total_allocated, 2),
-                'buyingPowerAfter': round(_safe_bp - _total_allocated - pos_dollars, 2) if pos_dollars > 0 else round(_safe_bp - _total_allocated, 2),
+                'accountSpendablePower': round(_spendable_bp, 2),
+                'symbolTradable': symbol_tradable,
+                'fractionable': symbol_fractionable,
+                'buyingPowerBefore': round(_bp_before, 2),
+                'buyingPowerAfter': round(_bp_after, 2),
                 'positionPct': pos_pct,
                 'riskDollars': round(risk_dollars_actual, 2),
                 'riskBudget': risk_budget_dollars,
                 'riskUsedPct': risk_used_pct,
-                'riskPct': risk_per_trade_pct,
+                'riskPct': adjusted_risk_pct,
                 'maxLossPct': max_loss_pct,
                 'holdingPeriod': _holding_period_label,
                 'timeHorizon': time_horizon,
                 'riskProfile': risk_profile,
                 'orderType': _order_preview_type,
                 'limitPrice': _limit_price,
+                'stopPrice': _stop_price,
                 'timeInForce': 'day',
+                'plannedEntryReference': round(planned_entry_ref, 2),
+                'entryDistancePct': _entry_distance_pct,
+                'zoneStatus': _zone_status,
+                'slippageCapBps': _slippage_cap_bps,
+                'minRiskReward': _hp.get('min_rr', 1.45),
+                'participationCapPct': round(_participation_cap_pct * 100, 2),
+                'participationCapDollars': round(_participation_cap_dollars, 2) if _participation_cap_dollars else None,
+                'avgDollarVolume20': round(avg_dollar_volume20, 2) if avg_dollar_volume20 else None,
+                'currentSector': current_sector,
+                'estimatedRoundTripCostBps': candidate_cost_bps,
+                'quotedSpreadBps': candidate_spread_bps,
+                'entryPlanInputSource': candidate_entry_source,
+                'geometrySource': geometry_source,
+                'targetSource': geometry_source,
+                'capacityCapped': _capacity_capped,
                 'isLeveraged': False,
                 'leverageReason': None,
                 'aiDecision': ai_decision,
@@ -28113,6 +34572,15 @@ def ai_entry_plan():
                 'finalAction': final_action,
                 'tradeReadiness': trade_readiness,
                 'entryTriggerMet': entry_trigger_met,
+                'entryTriggerStatus': entry_trigger_status,
+                'entryTriggerChecks': entry_trigger.get('checks', []),
+                'entryTriggerMissing': entry_trigger.get('missing', []),
+                'entryTriggerReasons': entry_trigger.get('reasons', []),
+                'entryTriggerKind': entry_trigger.get('setupKind'),
+                'triggerEvaluatedAt': trigger_evaluated_at,
+                'triggerDataSource': 'Alpaca completed 5m bars + validated daily indicators',
+                'setupAutoEligible': setup_auto_eligible,
+                'autoLimitMarketable': auto_limit_marketable,
                 'hardRiskGate': {
                     'status': risk_gate_status,
                     'passed': risk_gate_passed,
@@ -28126,8 +34594,16 @@ def ai_entry_plan():
                 'aiCalled': ai_called,
                 'aiModel': ai_model_name,
                 'executionDetails': execution_details,
+                'orderPreview': execution_details.get('orderPreview'),
                 'sourceVerdict': verdict,
                 'currentPrice': round(current_price, 2),
+                'executableAsk': round(latest_ask, 4) if latest_ask > 0 else None,
+                'latestBid': round(latest_bid, 4) if latest_bid > 0 else None,
+                'latestAsk': round(latest_ask, 4) if latest_ask > 0 else None,
+                'quoteTimestamp': quote_timestamp,
+                'quoteAgeSeconds': round(quote_age_seconds, 1) if quote_age_seconds is not None else None,
+                'marketIsOpen': market_is_open,
+                'nextMarketOpen': market_clock.get('next_open') if isinstance(market_clock, dict) else None,
                 'reason': decision_reason,
                 'decisionReason': decision_reason,
                 'riskNotes': risk_notes_list,
@@ -28138,6 +34614,14 @@ def ai_entry_plan():
                 'dataSource': data_source,
                 'entryReadiness': entry_readiness,
                 'isInEntryZone': is_in_entry_zone,
+                'eventRisk': candidate.get('eventRisk'),
+                'daysToEarnings': candidate.get('daysToEarnings'),
+                'nextEarningsDate': candidate.get('nextEarningsDate'),
+                'newsSentiment': candidate.get('newsSentiment'),
+                'topNewsHeadline': candidate.get('topNewsHeadline') or ((candidate.get('topNews') or {}).get('headline') if isinstance(candidate.get('topNews'), dict) else None),
+                'latestNewsTime': candidate.get('latestNewsTime'),
+                'eventTags': candidate.get('eventTags') or [],
+                'eventObservedAt': datetime.now(timezone.utc).isoformat(),
                 'readyReviewReason': ready_review_reason,
                 'riskGateReasons': {
                     'blockers': risk_gate_blockers,
@@ -28155,6 +34639,159 @@ def ai_entry_plan():
                 'existingPosition': _existing_position,
             })
 
+        def _entry_plan_state(plan):
+            fa = str(plan.get('finalAction') or '').upper()
+            if fa == 'BUY_READY':
+                return 'EXECUTE_READY'
+            if fa == 'READY_REVIEW':
+                return 'READY_REVIEW'
+            if fa == 'WAIT_FOR_ENTRY':
+                return 'WAIT_FOR_ENTRY'
+            if fa == 'NEED_DATA':
+                return 'NEED_DATA'
+            if fa in ('BLOCKED_BY_RISK', 'SKIP'):
+                return 'BLOCKED'
+            return 'REVIEW'
+
+        def _decorate_institutional_entry_plan(plan):
+            rg = plan.get('hardRiskGate') or plan.get('riskGate') or {}
+            ed = plan.get('executionDetails') or {}
+            preview = ed.get('orderPreview') or {}
+            blockers = rg.get('blockers') or plan.get('blockers') or []
+            warnings = rg.get('warnings') or []
+            state = _entry_plan_state(plan)
+            order_type = plan.get('orderType') or preview.get('orderType') or 'N/A'
+            limit_price = plan.get('limitPrice') if plan.get('limitPrice') is not None else preview.get('limitPrice')
+            stop_price = plan.get('stopPrice') if plan.get('stopPrice') is not None else preview.get('stopPrice')
+            entry_low = plan.get('entryZoneLow') or 0
+            entry_high = plan.get('entryZoneHigh') or 0
+            cur = plan.get('currentPrice') or 0
+            stop_loss = plan.get('stopLoss') or 0
+            target1 = plan.get('takeProfit1') or 0
+            target2 = plan.get('takeProfit2') or 0
+            plan['planState'] = state
+            plan['executionPlanVersion'] = 'institutional_pretrade_v2_limit_auto'
+            plan['institutionalEntryPlan'] = {
+                'method': 'institutional_pretrade_v2_limit_auto',
+                'planState': state,
+                'stage': 'Entry Plan',
+                'setupClass': plan.get('setup'),
+                'validatedStrategy': plan.get('strategy'),
+                'inputSource': plan.get('entryPlanInputSource') or plan.get('sourceVerdict') or 'deeper_validation',
+                'entry': {
+                    'currentPrice': cur,
+                    'executableAsk': plan.get('executableAsk'),
+                    'latestBid': plan.get('latestBid'),
+                    'latestAsk': plan.get('latestAsk'),
+                    'quoteTimestamp': plan.get('quoteTimestamp'),
+                    'quoteAgeSeconds': plan.get('quoteAgeSeconds'),
+                    'marketIsOpen': plan.get('marketIsOpen'),
+                    'nextMarketOpen': plan.get('nextMarketOpen'),
+                    'zoneLow': entry_low,
+                    'zoneHigh': entry_high,
+                    'referencePrice': plan.get('plannedEntryReference') or entry_high or cur,
+                    'trigger': plan.get('triggerCondition'),
+                    'triggerStatus': plan.get('entryTriggerStatus'),
+                    'triggerMet': plan.get('entryTriggerMet', False),
+                    'triggerChecks': plan.get('entryTriggerChecks') or [],
+                    'triggerMissing': plan.get('entryTriggerMissing') or [],
+                    'triggerEvaluatedAt': plan.get('triggerEvaluatedAt'),
+                    'setupAutoEligible': plan.get('setupAutoEligible', False),
+                    'zoneStatus': plan.get('zoneStatus'),
+                    'distancePct': plan.get('entryDistancePct'),
+                    'readiness': plan.get('entryReadiness'),
+                },
+                'exits': {
+                    'stopLoss': stop_loss,
+                    'target1': target1,
+                    'target2': target2,
+                    'riskReward1': plan.get('riskReward1'),
+                    'riskReward2': plan.get('riskReward2'),
+                    'stopDistancePct': plan.get('stopLossPct'),
+                    'invalidation': plan.get('invalidationCondition') or plan.get('invalidationComment'),
+                    'trailingStop': plan.get('trailingStop'),
+                    'geometrySource': plan.get('geometrySource'),
+                    'targetSource': plan.get('targetSource'),
+                },
+                'sizing': {
+                    'shares': plan.get('shares') or plan.get('positionSizeShares') or 0,
+                    'notional': plan.get('allocationDollars') or plan.get('positionSizeDollars') or 0,
+                    'positionPct': plan.get('positionPct') or 0,
+                    'riskDollars': plan.get('riskDollars') or 0,
+                    'riskBudget': plan.get('riskBudget') or 0,
+                    'riskUsedPct': plan.get('riskUsedPct') or 0,
+                    'capStatus': plan.get('positionCapStatus') or 'not capped',
+                    'capacityCapped': plan.get('capacityCapped') or False,
+                    'fractionable': plan.get('fractionable', True),
+                },
+                'execution': {
+                    'orderType': order_type,
+                    'orderLabel': ed.get('orderTypeSuggestion') or order_type,
+                    'limitPrice': limit_price,
+                    'stopPrice': stop_price,
+                    'timeInForce': plan.get('timeInForce') or preview.get('timeInForce') or 'day',
+                    'slippageCapBps': plan.get('slippageCapBps') or preview.get('slippageCapBps'),
+                    'participationCapPct': plan.get('participationCapPct'),
+                    'participationCapDollars': plan.get('participationCapDollars'),
+                    'canExecute': ed.get('canExecute') and state == 'EXECUTE_READY',
+                    'limitOnly': True,
+                    'extendedHours': False,
+                    'protectionMode': preview.get('protectionMode') or 'whole_share_bracket_required_for_auto',
+                    'reason': ed.get('orderTypeReason') or ed.get('reason'),
+                },
+                'controls': {
+                    'gateStatus': rg.get('status') or 'N/A',
+                    'blockers': blockers,
+                    'warnings': warnings,
+                    'dataQuality': plan.get('dataQuality'),
+                    'accountConnected': ed.get('brokerConnected', False),
+                    'existingPosition': plan.get('existingPosition', False),
+                    'existingOpenOrder': plan.get('existingOpenOrder', False),
+                },
+                'marketContext': {
+                    'atrPct': plan.get('atrPct'),
+                    'atr': plan.get('atr'),
+                    'ema20': plan.get('ema20'),
+                    'ema50': plan.get('ema50'),
+                    'support': plan.get('support'),
+                    'resistance': plan.get('resistance'),
+                    'avgDollarVolume20': plan.get('avgDollarVolume20'),
+                    'roundTripCostBps': plan.get('estimatedRoundTripCostBps'),
+                    'spreadBps': plan.get('quotedSpreadBps'),
+                },
+                'eventContext': {
+                    'eventRisk': plan.get('eventRisk'),
+                    'daysToEarnings': plan.get('daysToEarnings'),
+                    'nextEarningsDate': plan.get('nextEarningsDate'),
+                    'newsSentiment': plan.get('newsSentiment'),
+                    'topNewsHeadline': plan.get('topNewsHeadline'),
+                    'latestNewsTime': plan.get('latestNewsTime'),
+                    'eventTags': plan.get('eventTags') or [],
+                    'observedAt': plan.get('eventObservedAt'),
+                    'authority': 'review_only_not_an_automatic_exit',
+                },
+                'aiReview': {
+                    'decision': plan.get('aiDecision'),
+                    'confidence': plan.get('confidence'),
+                    'source': plan.get('aiSource'),
+                    'model': plan.get('aiModel'),
+                    'reason': plan.get('decisionReason'),
+                    'nextStep': plan.get('nextStep'),
+                    'riskComment': plan.get('riskComment'),
+                },
+                'provenance': {
+                    'marketData': (plan.get('dataSources') or {}).get('marketData'),
+                    'technicalData': (plan.get('dataSources') or {}).get('technicalData'),
+                    'accountData': (plan.get('dataSources') or {}).get('accountData'),
+                    'aiData': (plan.get('dataSources') or {}).get('aiData'),
+                    'regulatoryModel': 'SEC 15c3-5 style pre-trade controls; FINRA algo supervision; exchange order protection controls',
+                },
+            }
+            return plan
+
+        for _plan in plans:
+            _decorate_institutional_entry_plan(_plan)
+
         print(f'=== ENTRY PLAN DETERMINISTIC: {len(plans)} plans generated ===')
 
         # ── 13. AI Final Decision Step (after deterministic plans are built) ──
@@ -28169,7 +34806,11 @@ def ai_entry_plan():
                 continue
 
             # AI decision fields (AI cannot override deterministic fields)
-            ai_decision = ai.get('aiDecision', plan['aiDecision'])
+            deterministic_ai_decision = plan.get('aiDecision', 'WATCH')
+            ai_decision, ai_promotion_blocked, ai_suggested_decision = _merge_entry_ai_decision(
+                deterministic_ai_decision,
+                ai.get('aiDecision', deterministic_ai_decision),
+            )
             ai_confidence = ai.get('confidence', plan['confidence'])
             ai_called = ai.get('aiCalled', False)
             ai_source_label = ai.get('aiSource', 'Local Rules')
@@ -28182,6 +34823,10 @@ def ai_entry_plan():
             final_action_suggestion = ai.get('finalActionSuggestion', '')
 
             # Update plan fields from AI
+            plan['deterministicAiDecision'] = deterministic_ai_decision
+            plan['aiSuggestedDecision'] = ai_suggested_decision
+            plan['aiPromotionBlocked'] = ai_promotion_blocked
+            plan['aiAuthority'] = 'confirm_or_downgrade_only'
             plan['aiDecision'] = ai_decision
             plan['confidence'] = ai_confidence
             plan['aiCalled'] = ai_called
@@ -28192,6 +34837,11 @@ def ai_entry_plan():
             plan['nextStep'] = next_step_text
             plan['invalidationComment'] = invalidation_comment
             plan['riskComment'] = risk_comment
+            if ai_promotion_blocked:
+                plan['decisionReason'] = (
+                    'AI promotion from %s to %s was ignored; the deterministic decision remains binding. %s'
+                    % (deterministic_ai_decision, ai_suggested_decision, decision_reason or '')
+                ).strip()
 
             # ── Re-evaluate finalAction with AI decision (smart gating) ──
             rg = plan.get('hardRiskGate', {})
@@ -28201,14 +34851,18 @@ def ai_entry_plan():
             entry_readiness = plan.get('entryReadiness', 'Wait')
             dq = plan.get('dataQuality', 'PARTIAL')
             plan_in_zone = plan.get('isInEntryZone', False)
-            plan_rr = max(plan.get('riskReward1', 0) or 0, plan.get('riskReward2', 0) or 0)
+            plan_rr = plan.get('riskReward1', 0) or 0
             plan_sl = plan.get('stopLoss', 0) or 0
             plan_tp1 = plan.get('takeProfit1', 0) or 0
-            plan_tp2 = plan.get('takeProfit2', 0) or 0
+            planned_entry = plan.get('plannedEntryReference', 0) or plan.get('entryZoneHigh', 0) or 0
+            setup_auto_eligible = plan.get('setupAutoEligible') is True
+            entry_trigger_met = plan.get('entryTriggerMet') is True
+            entry_trigger_status = str(plan.get('entryTriggerStatus') or '').upper()
+            auto_limit_marketable = plan.get('autoLimitMarketable') is True
 
             has_hard_block = rg_status == 'BLOCK' or len(rg_blockers) > 0
-            rr_ok = plan_rr >= 2.0
-            levels_ok = plan_sl > 0 and (plan_tp1 > 0 or plan_tp2 > 0)
+            rr_ok = plan_rr >= float(plan.get('minRiskReward') or 1.45)
+            levels_ok = plan_sl > 0 and planned_entry > plan_sl and plan_tp1 > planned_entry
             data_ok = dq != 'POOR'
             ai_skip = ai_decision == 'SKIP'
             ai_buy_or_watch = ai_decision in ('BUY', 'WATCH')
@@ -28217,10 +34871,16 @@ def ai_entry_plan():
 
             if has_hard_block:
                 plan['finalAction'] = 'BLOCKED_BY_RISK'
+            elif not setup_auto_eligible:
+                plan['finalAction'] = 'SKIP'
             elif ai_skip:
                 plan['finalAction'] = 'SKIP'
-            elif plan_in_zone and rr_ok and levels_ok and data_ok and ai_buy_or_watch:
-                if ai_decision == 'BUY':
+            elif (
+                plan_in_zone and entry_readiness == 'Ready' and entry_trigger_met
+                and entry_trigger_status == 'CONFIRMED' and rr_ok and levels_ok and data_ok
+                and ai_buy_or_watch and (is_manual or auto_limit_marketable)
+            ):
+                if ai_decision == 'BUY' and rg_status == 'PASS' and dq == 'GOOD':
                     plan['finalAction'] = 'BUY_READY'
                 else:
                     plan['finalAction'] = 'READY_REVIEW'
@@ -28232,6 +34892,12 @@ def ai_entry_plan():
                     if dq == 'PARTIAL':
                         review_factors.append('Data quality PARTIAL')
                     ready_review_reason = '; '.join(review_factors) if review_factors else 'AI decision is WATCH — needs manual review'
+            elif plan_in_zone and entry_trigger_met and levels_ok and not rr_ok:
+                plan['finalAction'] = 'READY_REVIEW'
+                ready_review_reason = (
+                    f'Structural Target 1 offers {plan_rr:.2f}R, below the '
+                    f'{float(plan.get("minRiskReward") or 1.45):.2f}R minimum.'
+                )
             elif not plan_in_zone or entry_readiness != 'Ready':
                 plan['finalAction'] = 'WAIT_FOR_ENTRY'
             else:
@@ -28241,9 +34907,9 @@ def ai_entry_plan():
 
             # Update tradeReadiness based on finalAction
             fa = plan['finalAction']
-            if fa in ('BUY_READY', 'READY_REVIEW'):
+            if fa == 'BUY_READY':
                 plan['tradeReadiness'] = 'READY'
-            elif fa == 'WAIT_FOR_ENTRY':
+            elif fa in ('READY_REVIEW', 'WAIT_FOR_ENTRY'):
                 plan['tradeReadiness'] = 'WAIT'
             else:
                 plan['tradeReadiness'] = 'BLOCKED'
@@ -28261,6 +34927,7 @@ def ai_entry_plan():
                     plan['dataSources']['aiData'] = f'{ai_source_label} ({ai_model_name or "AI"}) called'
                 else:
                     plan['dataSources']['aiData'] = 'AI unavailable' + (f' — {ai_error}' if ai_error else '')
+            _decorate_institutional_entry_plan(plan)
 
         # ── 14. Leveraged ETF Alternative Lookup (per riskProfile allocation caps) ──
         if _lev_allowed:
@@ -28482,13 +35149,17 @@ def ai_entry_plan():
                     if alt_pos_shares < alt_risk_shares:
                         alt_warnings.append(f'Position capped by allocation limit ({alt_pos_pct:.1f}% of portfolio)')
 
+                    alt_warnings.append(
+                        'Leveraged alternative requires its own Fine Scan, DV, and setup-trigger validation; it is never auto-promoted.'
+                    )
+
                     alt_gate = 'BLOCK' if (not alt_passed or alt_blockers) else ('REVIEW' if alt_warnings else 'PASS')
                     if alt_blockers:
                         alt_final_action = 'BLOCKED_BY_RISK'
                     elif alt_warnings:
                         alt_final_action = 'READY_REVIEW'
                     else:
-                        alt_final_action = 'BUY_READY'
+                        alt_final_action = 'READY_REVIEW'
 
                     alt_plan = {
                         'symbol': alt_sym,
@@ -28530,7 +35201,12 @@ def ai_entry_plan():
                         'bestStrategy': plan.get('bestStrategy', plan.get('strategy', 'unknown')),
                         'finalAction': alt_final_action,
                         'tradeReadiness': 'READY' if alt_final_action == 'BUY_READY' else ('WAIT' if alt_final_action == 'READY_REVIEW' else 'BLOCKED'),
-                        'entryTriggerMet': True,
+                        'entryTriggerMet': False,
+                        'entryTriggerStatus': 'NOT_EVALUATED',
+                        'entryTriggerChecks': [],
+                        'entryTriggerMissing': ['separate leveraged-instrument validation'],
+                        'setupAutoEligible': False,
+                        'triggerEvaluatedAt': None,
                         'hardRiskGate': {
                             'status': alt_gate,
                             'passed': alt_passed,
@@ -28567,8 +35243,8 @@ def ai_entry_plan():
                         'nextStep': f'{alt_pos_shares:.2f} shares of {alt_sym} at ${alt_price:.2f}, stop ${alt_stop:.2f}' if alt_passed else f'Blocked: {"; ".join(alt_blockers)}',
                         'blockers': alt_blockers,
                         'dataSource': 'leveraged_alternative',
-                        'entryReadiness': 'Ready' if alt_passed else 'Wait',
-                        'isInEntryZone': True,
+                        'entryReadiness': 'Need Separate Validation' if alt_passed else 'Wait',
+                        'isInEntryZone': False,
                         'readyReviewReason': 'Leveraged alternative — review before executing' if alt_gate == 'REVIEW' else '',
                         'riskGateReasons': {'blockers': alt_blockers, 'warnings': alt_warnings, 'all': alt_blockers + alt_warnings},
                         'atrPct': round(alt_sl_pct * 0.7, 2),
@@ -28601,8 +35277,30 @@ def ai_entry_plan():
                     break  # First valid candidate
 
             if alt_plans:
+                for _alt_plan in alt_plans:
+                    _decorate_institutional_entry_plan(_alt_plan)
                 plans.extend(alt_plans)
                 print(f'    [LEVERAGED ALT] Added {len(alt_plans)} alternative plans')
+
+        # Carry the immutable Admission evidence into the execution contract.
+        # Leveraged alternatives deliberately do not inherit admission from their
+        # underlying symbol because a different instrument requires fresh checks.
+        _admission_candidates = {
+            str(candidate.get('symbol') or '').upper(): candidate
+            for candidate in candidates
+            if candidate.get('symbol') and (
+                candidate.get('admissionDecision') or candidate.get('admissionSnapshot')
+            )
+        }
+        for plan in plans:
+            _admission_candidate = _admission_candidates.get(str(plan.get('symbol') or '').upper())
+            if not _admission_candidate:
+                continue
+            plan['admissionDecision'] = _admission_candidate.get('admissionDecision')
+            plan['admissionScore'] = _admission_candidate.get('admissionScore')
+            plan['admissionSnapshot'] = _admission_candidate.get('admissionSnapshot')
+            plan['admissionWarnings'] = _admission_candidate.get('admissionWarnings') or []
+            plan['admissionAiReview'] = _admission_candidate.get('admissionAiReview')
 
         ai_success_count = sum(1 for p in plans if p.get('aiCalled'))
         error_count = sum(1 for p in plans if p.get('finalAction') == 'BLOCKED_BY_RISK' and p.get('setup') == 'Error')
@@ -28610,7 +35308,7 @@ def ai_entry_plan():
         print(f'=== ENTRY PLAN COMPLETE: {len(plans)} plans ({ai_success_count} with AI decisions, {error_count} errors) ===')
         user = get_supabase_user()
         if user and not suppress_discord:
-            buy_plans = [p for p in plans if p.get('finalAction') in ('BUY_READY', 'READY_REVIEW')]
+            buy_plans = [p for p in plans if p.get('finalAction') == 'BUY_READY']
             watch_count = sum(1 for p in plans if p.get('finalAction') == 'WAIT_FOR_ENTRY' or p.get('aiDecision') == 'WATCH')
             skip_count = sum(1 for p in plans if p.get('finalAction') in ('SKIP', 'BLOCKED_BY_RISK'))
             send_discord_notification(user['id'], 'entry_plan', {
@@ -29143,19 +35841,6 @@ def calculate_mtf_alignment(frame_results):
 
 
 
-
-
-    # ============ End MTF ============
-
-
-
-
-    print("\n启动服务器...")
-
-    app.run(host='127.0.0.1', port=8889, debug=True, use_reloader=False)  # 使用端口8889，禁用reloader避免重复启动
-
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Pipeline Auto Scheduler — runs AI pipeline during US market hours
 # ══════════════════════════════════════════════════════════════════════════════
@@ -29172,8 +35857,12 @@ _PA_PER_USER_LAST_CHECK = {}
 _PA_PER_USER_LAST_CHECK_LOCK = threading.Lock()
 _PA_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pipeline_auto_configs.json')
 _PA_FILE_HISTORY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pipeline_auto_history.json')
+_PA_RUNTIME_STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pipeline_runtime_state.json')
+_PA_MANAGED_POSITIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pipeline_managed_positions.json')
 _PA_MARKET_CACHE = {}
 _PA_MARKET_CACHE_LOCK = threading.Lock()
+_PA_EXIT_BARS_CACHE_TTL_SECONDS = 15 * 60
+_PA_EXIT_EVENTS_CACHE_TTL_SECONDS = 30 * 60
 _PA_CURRENT_UID = None
 _PA_RUNNING_USERS = set()
 _PA_RUNNING_USERS_LOCK = threading.Lock()
@@ -29189,6 +35878,545 @@ _PA_PENDING_RUNS = {}
 _PA_PENDING_RUNS_LOCK = threading.Lock()
 _PA_LAST_PIPELINE_RESULTS = {}
 _PA_LAST_PIPELINE_RESULTS_LOCK = threading.Lock()
+_PA_MANAGED_POSITIONS = {}
+_PA_MANAGED_POSITIONS_LOCK = threading.Lock()
+_PA_MANAGED_CONFIG_WRITE_LOCK = threading.Lock()
+_PA_POSITION_GUARD_STATE = {}
+_PA_POSITION_GUARD_LOCK = threading.Lock()
+_PA_POSITION_GUARD_INTERVAL_SECONDS = 60
+_PA_PROCESS_STARTED_AT = datetime.now(timezone.utc)
+
+# Manual runs and background scheduled runs share this exact stage contract.
+# Admission is deliberately lightweight: it owns portfolio/cross-stage eligibility,
+# while Entry Plan continues to own price geometry, sizing, and order construction.
+_PA_PIPELINE_STAGES = (
+    ('market_scanner', 'Market Scanner'),
+    ('fine_scan', 'Fine Scan'),
+    ('deeper_validation', 'Deeper Validation'),
+    ('admission', 'Portfolio Admission'),
+    ('entry_plan', 'Entry Plan'),
+    ('execution', 'Execution'),
+    ('exit_scan', 'Position & Exit'),
+)
+_PA_PIPELINE_TOTAL_STEPS = len(_PA_PIPELINE_STAGES)
+_PA_AI_AUTHORITY = {
+    'market_scanner': {
+        'role': 'research_synthesis',
+        'may': ['summarize evidence', 'challenge factor conflicts', 'set research priority overlay'],
+        'mayNot': ['invent market data', 'override data-quality gates', 'place orders'],
+    },
+    'fine_scan': {
+        'role': 'setup_challenge',
+        'may': ['downgrade contradictory setups', 'request more evidence'],
+        'mayNot': ['promote deterministic Watch/Reject', 'change entry geometry'],
+    },
+    'deeper_validation': {
+        'role': 'model_risk_challenge',
+        'may': ['challenge overfit, regime mismatch, or weak samples'],
+        'mayNot': ['override hard risk gates', 'rewrite backtest results'],
+    },
+    'admission': {
+        'role': 'portfolio_contradiction_review',
+        'may': ['downgrade ADMIT to HOLD'],
+        'mayNot': ['promote HOLD/BLOCK', 'override capacity or duplicate-order gates'],
+    },
+    'entry_plan': {
+        'role': 'trade_plan_review',
+        'may': ['confirm or downgrade qualitative readiness'],
+        'mayNot': ['change prices, size, stop, target, or execution authorization'],
+    },
+    'execution': {
+        'role': 'deterministic_only',
+        'may': [],
+        'mayNot': ['bypass market, quote, account, admission, or live-auto controls'],
+    },
+    'exit_scan': {
+        'role': 'position_thesis_challenge',
+        'may': ['flag non-emergency exits for review'],
+        'mayNot': ['delay hard stops', 'cancel protection', 'override kill switches'],
+    },
+}
+
+
+def _pa_utc_iso(value=None):
+    """Return an unambiguous UTC timestamp for browser/runtime state."""
+    moment = value or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+def _pa_initial_steps():
+    return {
+        key: {
+            'status': 'pending',
+            'label': label,
+            'progressPct': 0,
+            'startedAt': None,
+            'finishedAt': None,
+            'durationSeconds': None,
+        }
+        for key, label in _PA_PIPELINE_STAGES
+    }
+
+
+def _pa_persist_runtime_state():
+    """Persist non-secret live run state so a backend restart is observable."""
+    try:
+        snapshot = {}
+        with _PA_ACTIVE_RUNS_LOCK:
+            snapshot = {uid: dict(run) for uid, run in _PA_ACTIVE_RUNS.items()}
+        tmp_path = _PA_RUNTIME_STATE_PATH + '.tmp'
+        with open(tmp_path, 'w', encoding='utf-8') as handle:
+            json.dump(snapshot, handle, indent=2, default=str)
+        os.replace(tmp_path, _PA_RUNTIME_STATE_PATH)
+    except Exception as exc:
+        _pa_log_error('Runtime state persistence failed: %s' % type(exc).__name__)
+
+
+def _pa_restore_runtime_state():
+    """Restore prior run metadata and mark interrupted runs explicitly."""
+    if not os.path.exists(_PA_RUNTIME_STATE_PATH):
+        return
+    try:
+        with open(_PA_RUNTIME_STATE_PATH, 'r', encoding='utf-8') as handle:
+            restored = json.load(handle)
+        if not isinstance(restored, dict):
+            return
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with _PA_ACTIVE_RUNS_LOCK:
+            for uid, run in restored.items():
+                if not isinstance(run, dict):
+                    continue
+                if run.get('status') == 'running':
+                    run['status'] = 'interrupted'
+                    run['message'] = 'Backend restarted while this pipeline was running'
+                    run['lastError'] = 'backend_restart'
+                    run['finishedAt'] = now_iso
+                run['updatedAt'] = now_iso
+                run['totalSteps'] = _PA_PIPELINE_TOTAL_STEPS
+                run.setdefault('steps', _pa_initial_steps())
+                _PA_ACTIVE_RUNS[uid] = run
+    except Exception as exc:
+        _pa_log_error('Runtime state restore failed: %s' % type(exc).__name__)
+
+
+def _pa_load_managed_positions():
+    global _PA_MANAGED_POSITIONS
+    restored = {}
+    if os.path.exists(_PA_MANAGED_POSITIONS_PATH):
+        try:
+            with open(_PA_MANAGED_POSITIONS_PATH, 'r', encoding='utf-8') as handle:
+                payload = json.load(handle)
+            if isinstance(payload, dict):
+                restored.update(payload)
+        except Exception as exc:
+            _pa_log_error('Managed position local restore failed: %s' % type(exc).__name__)
+
+    # The pipeline config row already has per-user RLS and a JSONB config field.
+    # Store managed plans there as the durable copy so container replacement does
+    # not discard validated stop/target geometry.
+    try:
+        client = _pa_supabase_client()
+        if client:
+            response = client.table('user_pipeline_auto_configs').select('user_id,config').execute()
+            for row in response.data or []:
+                if not isinstance(row, dict) or not row.get('user_id'):
+                    continue
+                uid = str(row['user_id'])
+                config = row.get('config') if isinstance(row.get('config'), dict) else {}
+                durable = config.get('managed_positions') if isinstance(config.get('managed_positions'), dict) else {}
+                for scoped_key, record in durable.items():
+                    if not isinstance(record, dict):
+                        continue
+                    parts = str(scoped_key).split(':', 1)
+                    if len(parts) != 2:
+                        continue
+                    mode, symbol = parts
+                    full_key = _pa_managed_position_key(uid, mode, symbol)
+                    local_record = restored.get(full_key) if isinstance(restored.get(full_key), dict) else {}
+                    if str(record.get('updatedAt') or '') >= str(local_record.get('updatedAt') or ''):
+                        restored[full_key] = dict(record)
+    except Exception as exc:
+        _pa_log_error('Managed position Supabase restore failed: %s' % type(exc).__name__)
+
+    with _PA_MANAGED_POSITIONS_LOCK:
+        _PA_MANAGED_POSITIONS = restored
+
+
+def _pa_save_managed_positions():
+    try:
+        with _PA_MANAGED_POSITIONS_LOCK:
+            payload = dict(_PA_MANAGED_POSITIONS)
+        tmp_path = _PA_MANAGED_POSITIONS_PATH + '.tmp'
+        with open(tmp_path, 'w', encoding='utf-8') as handle:
+            json.dump(payload, handle, indent=2, default=str)
+        os.replace(tmp_path, _PA_MANAGED_POSITIONS_PATH)
+    except Exception as exc:
+        _pa_log_error('Managed position state persistence failed: %s' % type(exc).__name__)
+
+
+def _pa_persist_managed_position_to_config(uid, trade_mode, symbol, record):
+    """Persist one non-secret managed plan into the existing per-user config JSONB."""
+    if not uid or not symbol or not isinstance(record, dict):
+        return False
+    normalized_mode = 'paper' if str(trade_mode or 'paper').lower() == 'paper' else 'real'
+    scoped_key = '%s:%s' % (normalized_mode, str(symbol).upper())
+    with _PA_MANAGED_CONFIG_WRITE_LOCK:
+        config = _pa_get_config(uid) or {}
+        managed = config.get('managed_positions') if isinstance(config.get('managed_positions'), dict) else {}
+        managed = dict(managed)
+        managed[scoped_key] = dict(record)
+        if len(managed) > 200:
+            ranked = sorted(
+                managed.items(),
+                key=lambda item: str((item[1] or {}).get('updatedAt') or ''),
+                reverse=True,
+            )[:200]
+            managed = dict(ranked)
+        config['managed_positions'] = managed
+        config['managed_positions_version'] = 1
+        success, _ = _pa_save_config(uid, config)
+        return bool(success)
+
+
+def _pa_managed_position_key(uid, trade_mode, symbol):
+    normalized_mode = 'paper' if str(trade_mode or 'paper').lower() == 'paper' else 'real'
+    return '%s:%s:%s' % (uid, normalized_mode, str(symbol or '').upper())
+
+
+def _pa_record_managed_position_plan(uid, trade_mode, symbol, plan, order=None, status='entry_submitted'):
+    """Persist the validated exit geometry used by later background runs."""
+    if not uid or not symbol or not isinstance(plan, dict):
+        return
+    packet = plan.get('institutionalPacket') if isinstance(plan.get('institutionalPacket'), dict) else {}
+    exits = packet.get('exits') if isinstance(packet.get('exits'), dict) else {}
+    institutional_entry = plan.get('institutionalEntryPlan') if isinstance(plan.get('institutionalEntryPlan'), dict) else {}
+    event_context = institutional_entry.get('eventContext') if isinstance(institutional_entry.get('eventContext'), dict) else {}
+    admission_snapshot = plan.get('admissionSnapshot') if isinstance(plan.get('admissionSnapshot'), dict) else {}
+    stop_loss = exits.get('stopLoss') or plan.get('stopLoss') or plan.get('stop')
+    target_1 = exits.get('target1') or plan.get('takeProfit1') or plan.get('takeProfit') or plan.get('target')
+    target_2 = exits.get('target2') or plan.get('takeProfit2')
+    entry_reference = (
+        (order or {}).get('filled_avg_price') if isinstance(order, dict) else None
+    ) or plan.get('limitPrice') or plan.get('entryZoneHigh') or plan.get('entryHigh') or plan.get('currentPrice')
+    initial_risk = None
+    try:
+        if float(entry_reference or 0) > float(stop_loss or 0) > 0:
+            initial_risk = round(float(entry_reference) - float(stop_loss), 4)
+    except (TypeError, ValueError):
+        initial_risk = None
+    record = {
+        'userId': uid,
+        'tradeMode': 'paper' if str(trade_mode or 'paper').lower() == 'paper' else 'real',
+        'symbol': str(symbol).upper(),
+        'status': status,
+        'entryOrderId': (order or {}).get('id') if isinstance(order, dict) else None,
+        'clientOrderId': (order or {}).get('client_order_id') if isinstance(order, dict) else None,
+        'entryZoneLow': plan.get('entryZoneLow') or plan.get('entryLow'),
+        'entryZoneHigh': plan.get('entryZoneHigh') or plan.get('entryHigh'),
+        'stopLoss': stop_loss,
+        'initialStop': stop_loss,
+        'currentStop': stop_loss,
+        'takeProfit1': target_1,
+        'takeProfit2': target_2,
+        'entryReferencePrice': entry_reference,
+        'initialRiskPerShare': initial_risk,
+        'highWaterMark': entry_reference,
+        'exitState': 'INITIAL_RISK',
+        'exitPolicyVersion': 2,
+        'planSource': plan.get('exitPlanSource') or 'entry_plan',
+        'stopPolicy': 'ratchet_only',
+        'targetPolicy': 'fixed_structural',
+        'strategy': plan.get('strategy') or plan.get('bestStrategy') or plan.get('setup'),
+        'eventRisk': plan.get('eventRisk') or event_context.get('eventRisk') or admission_snapshot.get('eventRisk'),
+        'daysToEarnings': plan.get('daysToEarnings') if plan.get('daysToEarnings') is not None else event_context.get('daysToEarnings'),
+        'nextEarningsDate': plan.get('nextEarningsDate') or event_context.get('nextEarningsDate'),
+        'newsSentiment': plan.get('newsSentiment') or event_context.get('newsSentiment'),
+        'topNewsHeadline': plan.get('topNewsHeadline') or event_context.get('topNewsHeadline'),
+        'latestNewsTime': plan.get('latestNewsTime') or event_context.get('latestNewsTime'),
+        'eventTags': plan.get('eventTags') or event_context.get('eventTags') or [],
+        'eventObservedAt': plan.get('eventObservedAt') or event_context.get('observedAt') or datetime.now(timezone.utc).isoformat(),
+        'admissionSnapshot': plan.get('admissionSnapshot'),
+        'planFingerprint': admission_snapshot.get('inputFingerprint'),
+        'updatedAt': datetime.now(timezone.utc).isoformat(),
+    }
+    key = _pa_managed_position_key(uid, trade_mode, symbol)
+    with _PA_MANAGED_POSITIONS_LOCK:
+        prior = _PA_MANAGED_POSITIONS.get(key) if isinstance(_PA_MANAGED_POSITIONS.get(key), dict) else {}
+        record['createdAt'] = prior.get('createdAt') or record['updatedAt']
+        _PA_MANAGED_POSITIONS[key] = {**prior, **record}
+        saved_record = dict(_PA_MANAGED_POSITIONS[key])
+    _pa_save_managed_positions()
+    _pa_persist_managed_position_to_config(uid, trade_mode, symbol, saved_record)
+
+
+def _pa_get_managed_position_plan(uid, trade_mode, symbol):
+    key = _pa_managed_position_key(uid, trade_mode, symbol)
+    with _PA_MANAGED_POSITIONS_LOCK:
+        record = _PA_MANAGED_POSITIONS.get(key)
+        return dict(record) if isinstance(record, dict) else None
+
+
+def _pa_update_managed_position(uid, trade_mode, symbol, **updates):
+    key = _pa_managed_position_key(uid, trade_mode, symbol)
+    persist_to_supabase = False
+    saved_record = None
+    with _PA_MANAGED_POSITIONS_LOCK:
+        record = _PA_MANAGED_POSITIONS.get(key)
+        if not isinstance(record, dict):
+            return
+        persist_to_supabase = any(
+            field != 'lastReconciledAt' and record.get(field) != value
+            for field, value in updates.items()
+        )
+        record.update(updates)
+        record['updatedAt'] = datetime.now(timezone.utc).isoformat()
+        saved_record = dict(record)
+    _pa_save_managed_positions()
+    if persist_to_supabase and saved_record is not None:
+        _pa_persist_managed_position_to_config(uid, trade_mode, symbol, saved_record)
+
+
+def _pa_managed_records_for_user(uid, trade_mode):
+    normalized_mode = 'paper' if str(trade_mode or 'paper').lower() == 'paper' else 'real'
+    prefix = '%s:%s:' % (uid, normalized_mode)
+    with _PA_MANAGED_POSITIONS_LOCK:
+        return {
+            key: dict(value) for key, value in _PA_MANAGED_POSITIONS.items()
+            if key.startswith(prefix) and isinstance(value, dict)
+        }
+
+
+def _pa_flatten_alpaca_order_tree(orders):
+    """Flatten nested bracket/OCO orders while retaining parent identity."""
+    flattened = []
+
+    def visit(order, parent_order_id='', parent_client_order_id=''):
+        if not isinstance(order, dict):
+            return
+        row = dict(order)
+        row['_parent_order_id'] = parent_order_id
+        row['_parent_client_order_id'] = parent_client_order_id
+        flattened.append(row)
+        order_id = str(order.get('id') or parent_order_id or '')
+        client_order_id = str(order.get('client_order_id') or parent_client_order_id or '')
+        for leg in order.get('legs') or []:
+            visit(leg, order_id, client_order_id)
+
+    for item in orders or []:
+        visit(item)
+    return flattened
+
+
+def _pa_reconcile_order_lifecycle(uid, trade_mode='paper', notify=False):
+    """Reconcile AlphaLab orders from Alpaca REST after refreshes/restarts."""
+    config = resolve_alpaca_config_for_user(uid, trade_mode)
+    api_key = config.get('api_key', '')
+    api_secret = config.get('api_secret', '')
+    base_url = config.get('base_url') or (
+        'https://paper-api.alpaca.markets' if str(trade_mode).lower() == 'paper' else 'https://api.alpaca.markets'
+    )
+    summary = {
+        'configured': bool(api_key and api_secret),
+        'checked': 0,
+        'filled': 0,
+        'partial': 0,
+        'open': 0,
+        'failed': 0,
+        'updatedSymbols': [],
+        'error': None,
+    }
+    if not summary['configured']:
+        summary['error'] = 'config_required'
+        return summary
+    headers = {'APCA-API-KEY-ID': api_key, 'APCA-API-SECRET-KEY': api_secret}
+    try:
+        # GTC protection legs can remain active for weeks. Keep enough lifecycle
+        # history to reconcile their eventual fill after a restart or long hold.
+        after = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+        response = requests.get(
+            f'{base_url}/v2/orders',
+            headers=headers,
+            params={'status': 'all', 'after': after, 'direction': 'desc', 'nested': 'true', 'limit': 500},
+            timeout=15,
+        )
+        if response.status_code != 200:
+            summary['error'] = 'alpaca_http_%s' % response.status_code
+            return summary
+        orders = _pa_flatten_alpaca_order_tree(response.json() or [])
+    except Exception as exc:
+        summary['error'] = str(exc)[:140]
+        return summary
+
+    managed = _pa_managed_records_for_user(uid, trade_mode)
+    by_order_id = {}
+    by_client_id = {}
+    notified_events_by_record = {}
+    for key, record in managed.items():
+        if record.get('entryOrderId'):
+            by_order_id[str(record['entryOrderId'])] = (key, record)
+        if record.get('protectionOrderId'):
+            by_order_id[str(record['protectionOrderId'])] = (key, record)
+        if record.get('exitOrderId'):
+            by_order_id[str(record['exitOrderId'])] = (key, record)
+        if record.get('clientOrderId'):
+            by_client_id[str(record['clientOrderId'])] = (key, record)
+        event_map = record.get('notifiedOrderEvents') if isinstance(record.get('notifiedOrderEvents'), dict) else {}
+        event_map = dict(event_map)
+        legacy_status = str(record.get('lastNotifiedOrderStatus') or '')
+        legacy_order_id = str(record.get('lastNotifiedOrderId') or record.get('lastOrderId') or '')
+        if legacy_status and legacy_order_id:
+            event_map.setdefault('%s:%s' % (legacy_order_id, legacy_status), record.get('updatedAt') or 'legacy')
+        notified_events_by_record[key] = event_map
+
+    # Only material broker outcomes deserve an immediate alert. Historical
+    # terminal orders are reconciled silently on process startup, otherwise a
+    # restart can replay months of fills/cancellations into Discord.
+    notifiable_terminal_statuses = {'filled', 'rejected', 'suspended'}
+    open_statuses = {'new', 'accepted', 'pending_new', 'accepted_for_bidding', 'partially_filled', 'held', 'pending_replace'}
+    filled_sell_parent_ids = {
+        str(order.get('_parent_order_id') or '')
+        for order in orders
+        if str(order.get('side') or '').lower() == 'sell'
+        and str(order.get('status') or '').lower() == 'filled'
+        and order.get('_parent_order_id')
+    }
+    for order in orders:
+        if not isinstance(order, dict):
+            continue
+        client_id = str(order.get('client_order_id') or '')
+        order_id = str(order.get('id') or '')
+        parent_order_id = str(order.get('_parent_order_id') or '')
+        parent_client_id = str(order.get('_parent_client_order_id') or '')
+        match = (
+            by_order_id.get(order_id)
+            or by_client_id.get(client_id)
+            or by_order_id.get(parent_order_id)
+            or by_client_id.get(parent_client_id)
+        )
+        if not match and not client_id.startswith(('alphalab-', 'alpha-lab-')):
+            continue
+        symbol = str(order.get('symbol') or '').upper()
+        if not symbol:
+            continue
+        summary['checked'] += 1
+        status = str(order.get('status') or '').lower()
+        side = str(order.get('side') or '').lower()
+        is_oco_sibling_cancel = bool(
+            side == 'sell'
+            and status == 'canceled'
+            and parent_order_id
+            and parent_order_id in filled_sell_parent_ids
+        )
+        managed_record_key = match[0] if match else None
+        notification_event_key = '%s:%s' % (order_id or client_id, status)
+        already_notified = bool(
+            managed_record_key
+            and notification_event_key in notified_events_by_record.get(managed_record_key, {})
+        )
+        filled_qty = _pa_safe_float(order.get('filled_qty'), 0) or 0
+        filled_price = _pa_safe_float(order.get('filled_avg_price'), None)
+        event_timestamp = (
+            order.get('filled_at')
+            or order.get('failed_at')
+            or order.get('updated_at')
+            or order.get('submitted_at')
+        )
+        event_is_current_session = False
+        if event_timestamp:
+            try:
+                parsed_event_at = dateutil.parser.isoparse(str(event_timestamp))
+                if parsed_event_at.tzinfo is None:
+                    parsed_event_at = parsed_event_at.replace(tzinfo=timezone.utc)
+                event_is_current_session = parsed_event_at >= (_PA_PROCESS_STARTED_AT - timedelta(seconds=5))
+            except Exception:
+                event_is_current_session = False
+        if status == 'filled':
+            summary['filled'] += 1
+            managed_status = 'position_open' if side == 'buy' else 'closed'
+        elif status == 'partially_filled':
+            summary['partial'] += 1
+            managed_status = 'partially_filled'
+        elif status in open_statuses:
+            summary['open'] += 1
+            managed_status = 'protection_open' if side == 'sell' else 'entry_open'
+        elif is_oco_sibling_cancel:
+            managed_status = 'closed'
+        else:
+            summary['failed'] += 1
+            managed_status = 'needs_protection' if side == 'sell' else 'entry_failed'
+
+        if match and not is_oco_sibling_cancel:
+            lifecycle_updates = {
+                'status': managed_status,
+                'lastOrderStatus': status,
+                'lastOrderId': order_id,
+                'filledQty': filled_qty,
+                'filledAvgPrice': filled_price,
+                'lastReconciledAt': datetime.now(timezone.utc).isoformat(),
+            }
+            if side == 'buy' and status in ('filled', 'partially_filled'):
+                matched_record = match[1] if isinstance(match[1], dict) else {}
+                filled_at = order.get('filled_at') or order.get('updated_at')
+                if filled_at:
+                    lifecycle_updates['filledAt'] = filled_at
+                if filled_price and filled_price > 0:
+                    lifecycle_updates['entryReferencePrice'] = filled_price
+                    prior_high_water = _pa_safe_float(matched_record.get('highWaterMark'), 0) or 0
+                    lifecycle_updates['highWaterMark'] = max(prior_high_water, filled_price)
+                    initial_stop = _pa_safe_float(
+                        matched_record.get('initialStop') or matched_record.get('stopLoss'), None,
+                    )
+                    if initial_stop and filled_price > initial_stop:
+                        lifecycle_updates['initialRiskPerShare'] = round(filled_price - initial_stop, 4)
+            _pa_update_managed_position(
+                uid, trade_mode, symbol,
+                **lifecycle_updates,
+            )
+            summary['updatedSymbols'].append(symbol)
+
+        if (
+            notify
+            and match
+            and status in notifiable_terminal_statuses
+            and event_is_current_session
+            and not already_notified
+            and not is_oco_sibling_cancel
+        ):
+            event_run_id = 'order-life-%s-%s' % (order_id or client_id, status)
+            event_type = 'order'
+            notification_result = _pa_discord_send_once(uid, event_run_id, event_type, {
+                'event_id': event_run_id,
+                'mode': 'real' if str(trade_mode).lower() != 'paper' else 'paper',
+                'side': side,
+                'symbol': symbol,
+                'qty': filled_qty or order.get('qty'),
+                'price': filled_price or order.get('limit_price') or order.get('stop_price'),
+                'orderType': order.get('type'),
+                'orderClass': order.get('order_class'),
+                'status': status,
+                'orderId': order_id,
+                'step': 'Order Lifecycle',
+                'reason': 'Alpaca order lifecycle reconciliation: %s.' % status,
+                'action': 'Review the position protection state.' if status != 'filled' else 'Position state updated.',
+            })
+            if match and notification_result and notification_result.get('sent'):
+                event_map = notified_events_by_record.setdefault(managed_record_key, {})
+                event_map[notification_event_key] = datetime.now(timezone.utc).isoformat()
+                if len(event_map) > 100:
+                    event_map = dict(list(event_map.items())[-100:])
+                    notified_events_by_record[managed_record_key] = event_map
+                _pa_update_managed_position(
+                    uid,
+                    trade_mode,
+                    symbol,
+                    lastNotifiedOrderStatus=status,
+                    lastNotifiedOrderId=order_id or client_id,
+                    notifiedOrderEvents=event_map,
+                )
+    summary['updatedSymbols'] = sorted(set(summary['updatedSymbols']))
+    return summary
 
 
 def _pa_update_active_run(uid, **kwargs):
@@ -29205,22 +36433,14 @@ def _pa_update_active_run(uid, **kwargs):
                 'runId': '',
                 'trigger': '',
                 'status': 'running',
-                'startedAt': datetime.utcnow().isoformat(),
-                'updatedAt': datetime.utcnow().isoformat(),
+                'startedAt': _pa_utc_iso(),
+                'updatedAt': _pa_utc_iso(),
                 'currentStep': '',
                 'stepIndex': 0,
-                'totalSteps': 6,
+                'totalSteps': _PA_PIPELINE_TOTAL_STEPS,
                 'progressPct': 0,
                 'message': '',
-                'steps': {
-                    'market_scanner': {'status': 'pending'},
-                    'continue_scan': {'status': 'pending'},
-                    'fine_scan': {'status': 'pending'},
-                    'deeper_validation': {'status': 'pending'},
-                    'entry_plan': {'status': 'pending'},
-                    'execution': {'status': 'pending'},
-                    'exit_scan': {'status': 'pending'},
-                },
+                'steps': _pa_initial_steps(),
                 'lastError': None,
                 'stopRequested': False,
                 'finishedAt': None,
@@ -29237,7 +36457,8 @@ def _pa_update_active_run(uid, **kwargs):
                         run['steps'][step_key] = step_val
             else:
                 run[k] = v
-        run['updatedAt'] = datetime.utcnow().isoformat()
+        run['updatedAt'] = _pa_utc_iso()
+    _pa_persist_runtime_state()
 
 
 def _pa_get_active_run(uid):
@@ -29251,17 +36472,60 @@ def _pa_clear_active_run(uid):
     """Remove the active run state for a user."""
     with _PA_ACTIVE_RUNS_LOCK:
         _PA_ACTIVE_RUNS.pop(uid, None)
+    _pa_persist_runtime_state()
 
 
 def _pa_active_run_step(uid, step_key, step_index, total_steps, status='running', message=None, step_data=None):
-    """Convenience: update active run at a step boundary."""
-    pct = int((step_index / total_steps) * 100) if total_steps > 0 else 0
+    """Update one stage while keeping overall and per-stage progress monotonic."""
+    now_iso = _pa_utc_iso()
+    active_run = _pa_get_active_run(uid) or {}
+    prior_step = ((active_run.get('steps') or {}).get(step_key) or {})
+    incoming = dict(step_data or {})
+    completed_statuses = {'completed', 'completed_no_candidates', 'partial'}
+    if status in completed_statuses:
+        stage_pct = 100
+    else:
+        stage_pct = max(
+            0,
+            min(100, int(incoming.get('progressPct', prior_step.get('progressPct', 0)) or 0)),
+        )
+    completed_steps = step_index if status in completed_statuses else max(0, step_index - 1)
+    if total_steps > 0:
+        raw_pct = ((completed_steps + (0 if status in completed_statuses else stage_pct / 100)) / total_steps) * 100
+        pct = min(100, int(raw_pct))
+    else:
+        pct = 0
+    pct = max(int(active_run.get('progressPct') or 0), pct)
+
+    stage_started_at = prior_step.get('startedAt') or now_iso
+    stage_finished_at = now_iso if status in completed_statuses or status in {'failed', 'stopped', 'interrupted'} else None
+    duration_seconds = prior_step.get('durationSeconds')
+    if stage_finished_at and stage_started_at:
+        try:
+            duration_seconds = round(
+                max(0, (dateutil.parser.isoparse(stage_finished_at) - dateutil.parser.isoparse(stage_started_at)).total_seconds()),
+                1,
+            )
+        except Exception:
+            duration_seconds = duration_seconds
+
+    stage_update = {
+        'status': status,
+        'progressPct': stage_pct,
+        'startedAt': stage_started_at,
+        'finishedAt': stage_finished_at,
+        'durationSeconds': duration_seconds,
+        **incoming,
+    }
+    # Terminal stage status owns its final percentage even if callers passed a
+    # stale intra-stage value in step_data.
+    stage_update['progressPct'] = stage_pct
     updates = {
         'currentStep': step_key,
         'stepIndex': step_index,
         'totalSteps': total_steps,
         'progressPct': pct,
-        'steps': {step_key: {'status': status, **(step_data or {})}},
+        'steps': {step_key: stage_update},
     }
     if message:
         updates['message'] = message
@@ -29313,9 +36577,24 @@ def _pa_check_stop_requested(uid):
     """Check if stop was requested for this user's active run. Returns True if stopped."""
     run = _pa_get_active_run(uid)
     if run and run.get('stopRequested'):
-        _pa_update_active_run(uid, status='stopped', progressPct=0,
-                              message='Pipeline stopped by user',
-                              finishedAt=datetime.utcnow().isoformat())
+        current_step = str(run.get('currentStep') or '')
+        current_step_state = ((run.get('steps') or {}).get(current_step) or {})
+        step_update = {}
+        if current_step:
+            step_update[current_step] = {
+                'status': 'stopped',
+                'progressPct': int(current_step_state.get('progressPct') or 0),
+                'startedAt': current_step_state.get('startedAt'),
+                'finishedAt': _pa_utc_iso(),
+            }
+        _pa_update_active_run(
+            uid,
+            status='stopped',
+            progressPct=int(run.get('progressPct') or 0),
+            message='Pipeline stopped by user',
+            finishedAt=_pa_utc_iso(),
+            steps=step_update,
+        )
         _pa_log('[PipelineRun] stop requested user=%s run=%s' % (uid[:8], run.get('runId', '?')[:20]))
         return True
     return False
@@ -29530,10 +36809,445 @@ def _pa_fmt_number(value, fallback='N/A'):
     v = _pa_safe_float(value)
     return fallback if v is None else '%.0f' % v
 
+
+def _pa_parse_timestamp(value):
+    if value in (None, ''):
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            numeric = float(value)
+            if numeric > 1e12:
+                numeric /= 1000.0
+            return datetime.fromtimestamp(numeric, tz=timezone.utc)
+        parsed = dateutil.parser.isoparse(str(value))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _pa_age_seconds(value):
+    parsed = _pa_parse_timestamp(value)
+    if parsed is None:
+        return None
+    return max(0.0, (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds())
+
+
+def _pa_normalize_strategy(value):
+    normalized = re.sub(r'[^a-z0-9]+', '_', str(value or '').strip().lower()).strip('_')
+    aliases = {
+        'ma': 'moving_average',
+        'moving_average_crossover': 'moving_average',
+        'macd_strategy': 'macd',
+        'relative_strength_index': 'rsi',
+        'bollinger_bands': 'bollinger',
+        'mean_reversion_strategy': 'mean_reversion',
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _pa_strategy_set(row):
+    if not isinstance(row, dict):
+        return set()
+    values = []
+    for field in ('strategy', 'bestStrategy', 'fineScanBestStrategyUsed', 'setupType', 'setup'):
+        if row.get(field):
+            values.append(row.get(field))
+    for field in ('matchedStrategies', 'strategyStack', 'testedStrategies'):
+        raw = row.get(field)
+        if isinstance(raw, list):
+            values.extend(raw)
+        elif raw:
+            values.extend(re.split(r'[,/|]', str(raw)))
+    return {normalized for normalized in (_pa_normalize_strategy(value) for value in values) if normalized}
+
+
+def _pa_dv_verdict(row):
+    if not isinstance(row, dict):
+        return ''
+    value = (
+        row.get('finalVerdict') or row.get('verdict') or
+        row.get('aiValidationVerdict') or row.get('localVerdictBeforeAI') or ''
+    )
+    return str(value).strip()
+
+
+def _pa_is_dv_confirmed(row):
+    if not isinstance(row, dict):
+        return False
+    gate = row.get('institutionalGate') or row.get('riskGate') or {}
+    if str((gate or {}).get('status') or '').upper() == 'BLOCK':
+        return False
+    if str(row.get('dvDecision') or '').upper() == 'PASS_DV':
+        return True
+    return _pa_dv_verdict(row).lower() in ('confirmed', 'pass', 'pass_dv')
+
+
+def _pa_admission_ai_challenge(uid, rows, enabled=True):
+    """Second-line contradiction review. AI may downgrade, never promote."""
+    stats = {
+        'configured': False,
+        'used': False,
+        'reviewedSymbols': 0,
+        'challengedSymbols': 0,
+        'provider': None,
+        'model': None,
+        'status': 'disabled' if not enabled else 'not_configured',
+    }
+    if not enabled or not rows:
+        return stats
+    ai_cfg, source = resolve_ai_config_for_user(uid)
+    api_key = ai_cfg.get('apiKey') or ''
+    base_url = (ai_cfg.get('baseURL') or 'https://api.deepseek.com').rstrip('/')
+    provider = ai_cfg.get('provider') or 'AI'
+    model = ai_cfg.get('model') or 'deepseek-chat'
+    stats.update({
+        'configured': bool(api_key),
+        'provider': provider,
+        'model': model,
+        'configSource': source,
+    })
+    if not api_key:
+        return stats
+
+    packets = []
+    row_map = {}
+    for row in rows:
+        symbol = str(row.get('symbol') or '').upper()
+        if not symbol:
+            continue
+        row_map[symbol] = row
+        packets.append({
+            'symbol': symbol,
+            'deterministicDecision': row.get('deterministicDecision'),
+            'admissionScore': row.get('admissionScore'),
+            'selectedStrategy': row.get('selectedStrategy'),
+            'strategyConsistent': row.get('strategyConsistent'),
+            'signalAgeSeconds': row.get('signalAgeSeconds'),
+            'priceDriftAtr': row.get('priceDriftAtr'),
+            'eventRisk': row.get('eventRisk'),
+            'sector': row.get('sector'),
+            'portfolio': row.get('portfolioContext'),
+            'blockers': row.get('blockers') or [],
+            'warnings': row.get('warnings') or [],
+        })
+    if not packets:
+        return stats
+
+    prompt = (
+        'You are the contradiction reviewer between Deeper Validation and Entry Plan. '
+        'Deterministic portfolio, data freshness, duplicate position/order, regulatory, and risk gates are binding. '
+        'You cannot promote HOLD or BLOCK to ADMIT and cannot change strategy, prices, size, stops, or targets. '
+        'For each ADMIT candidate, challenge only material strategy/regime contradictions, event risk, stale evidence, '
+        'or portfolio concentration not captured by the packet. Unknown optional data is not automatically bearish. '
+        'Return JSON only: {"reviews":[{"symbol":"AAPL","result":"CLEAR|CHALLENGE",'
+        '"confidence":0,"reason":"short evidence-based reason","nextCheck":"specific check"}]}. '
+        'Include every symbol exactly once. Packets: ' + json.dumps(packets, ensure_ascii=True, default=str)
+    )
+    try:
+        request_payload = {
+            'model': model,
+            'messages': [
+                {'role': 'system', 'content': 'You are a risk-control challenge layer. Return valid JSON only.'},
+                {'role': 'user', 'content': prompt},
+            ],
+            'temperature': 0.1,
+            'max_tokens': 2200,
+        }
+        if str(provider).lower() in ('deepseek', 'openai'):
+            request_payload['response_format'] = {'type': 'json_object'}
+        response = ai_chat_request(
+            base_url + '/chat/completions',
+            headers={'Authorization': 'Bearer ' + api_key, 'Content-Type': 'application/json'},
+            json_data=request_payload,
+            timeout=45,
+            provider=provider,
+        )
+        if response.status_code != 200:
+            stats['status'] = 'http_error_%s' % response.status_code
+            return stats
+        content = response.json().get('choices', [{}])[0].get('message', {}).get('content', '').strip()
+        if content.startswith('```'):
+            content = re.sub(r'^```(?:json)?\s*|\s*```$', '', content, flags=re.IGNORECASE | re.DOTALL).strip()
+        reviews = (json.loads(content) or {}).get('reviews') or []
+        for review in reviews:
+            symbol = str(review.get('symbol') or '').upper()
+            row = row_map.get(symbol)
+            if row is None:
+                continue
+            result = str(review.get('result') or 'CLEAR').upper()
+            if result not in ('CLEAR', 'CHALLENGE'):
+                result = 'CLEAR'
+            row['aiAdmissionReview'] = {
+                'result': result,
+                'confidence': max(0, min(100, int(_pa_safe_float(review.get('confidence'), 0) or 0))),
+                'reason': str(review.get('reason') or '')[:300],
+                'nextCheck': str(review.get('nextCheck') or '')[:200],
+                'provider': provider,
+                'model': model,
+            }
+            row['aiReviewed'] = True
+            stats['reviewedSymbols'] += 1
+            if result == 'CHALLENGE':
+                stats['challengedSymbols'] += 1
+                if row.get('admissionDecision') == 'ADMIT':
+                    row['admissionDecision'] = 'HOLD'
+                    row['warnings'].append('AI challenge: %s' % (row['aiAdmissionReview']['reason'] or 'material contradiction requires review'))
+                    row['decisionReason'] = 'Held after AI contradiction review; deterministic hard gates remain unchanged.'
+        stats['used'] = stats['reviewedSymbols'] > 0
+        stats['status'] = 'completed' if stats['used'] else 'empty_response'
+    except Exception as exc:
+        stats['status'] = 'failed'
+        stats['error'] = str(exc)[:160]
+    return stats
+
+
+def _pa_run_admission(uid, dv_results, fine_results=None, market_results=None,
+                      account_state=None, risk_profile='medium', time_horizon='mid',
+                      pipeline_mode='hybrid', ai_enabled=True):
+    """Portfolio-level admission between DV and Entry Plan.
+
+    This stage does not generate entry prices. It verifies that a validated signal
+    is coherent, fresh, non-duplicative, and compatible with current account limits.
+    """
+    import hashlib
+
+    fine_by_symbol = {
+        str(row.get('symbol') or '').upper(): row for row in (fine_results or []) if row.get('symbol')
+    }
+    market_by_symbol = {
+        str(row.get('symbol') or '').upper(): row for row in (market_results or []) if row.get('symbol')
+    }
+    account = account_state if isinstance(account_state, dict) else {}
+    existing_positions = {str(value).upper() for value in (account.get('holdingSymbols') or []) if value}
+    open_buy_orders = {str(value).upper() for value in (account.get('openBuySymbols') or []) if value}
+    position_count = int(_pa_safe_float(account.get('positionCount'), len(existing_positions)) or 0)
+    buying_power = _pa_safe_float(account.get('buyingPower'), None)
+    account_blocked = bool(account.get('accountBlocked'))
+    profile = str(risk_profile or 'medium').lower()
+    max_positions = {'low': 5, 'medium': 8, 'high': 10}.get(profile, 8)
+    max_new_positions = {'low': 2, 'medium': 4, 'high': 5}.get(profile, 4)
+    max_per_sector = {'low': 1, 'medium': 2, 'high': 3}.get(profile, 2)
+    max_signal_age = {'short': 1200, 'mid': 1800, 'long': 3600}.get(str(time_horizon).lower(), 1800)
+
+    rows = []
+    for dv in (dv_results or []):
+        if not _pa_is_dv_confirmed(dv):
+            continue
+        symbol = str(dv.get('symbol') or '').upper().strip()
+        fine = fine_by_symbol.get(symbol, {})
+        market = market_by_symbol.get(symbol, {})
+        blockers = []
+        warnings = []
+
+        dq = str(dv.get('dataQuality') or fine.get('dataQuality') or market.get('dataQuality') or '').lower()
+        if not symbol:
+            blockers.append('Symbol is missing')
+        if dq in ('unavailable', 'need_data', 'failed', 'poor', 'partial', ''):
+            blockers.append('Required evidence is incomplete (%s)' % (dq or 'unknown'))
+        if symbol in existing_positions:
+            blockers.append('Existing position already held')
+        if symbol in open_buy_orders:
+            blockers.append('Open buy order already exists')
+        if account_blocked:
+            blockers.append('Broker account is blocked or trading is suspended')
+        if buying_power is not None and buying_power <= 0:
+            blockers.append('Available buying power is zero')
+
+        dv_strategies = _pa_strategy_set(dv)
+        fine_strategies = _pa_strategy_set(fine)
+        selected_strategy = _pa_normalize_strategy(
+            dv.get('strategy') or dv.get('bestStrategy') or dv.get('fineScanBestStrategyUsed') or
+            fine.get('bestStrategy') or fine.get('setup')
+        )
+        strategy_consistent = bool(selected_strategy and (not fine_strategies or selected_strategy in fine_strategies))
+        if not selected_strategy:
+            blockers.append('Validated strategy is unavailable')
+        elif fine_strategies and selected_strategy not in fine_strategies:
+            warnings.append('DV strategy does not match Fine Scan strategy route')
+
+        source_time = (
+            dv.get('generatedAt') or dv.get('validatedAt') or dv.get('timestamp') or
+            fine.get('generatedAt') or fine.get('timestamp') or
+            market.get('generatedAt') or market.get('timestamp')
+        )
+        signal_age = _pa_age_seconds(source_time)
+        if signal_age is None:
+            warnings.append('Signal timestamp is unavailable')
+        elif signal_age > max_signal_age:
+            warnings.append('Signal is stale (%.0f minutes old)' % (signal_age / 60.0))
+
+        entry = dv.get('entryPlan') if isinstance(dv.get('entryPlan'), dict) else {}
+        fine_entry = fine.get('entryPlanFine') if isinstance(fine.get('entryPlanFine'), dict) else {}
+        reference_price = _pa_safe_float(entry.get('currentPrice'), None)
+        current_price = _pa_safe_float(market.get('price'), _pa_safe_float(fine.get('price'), reference_price))
+        atr = _pa_safe_float(entry.get('atr'), _pa_safe_float(fine_entry.get('atr'), _pa_safe_float((fine.get('entryDetails') or {}).get('atr'), None)))
+        drift_atr = None
+        if current_price is not None and reference_price is not None and atr and atr > 0:
+            drift_atr = abs(current_price - reference_price) / atr
+            if drift_atr > 0.5:
+                warnings.append('Price drifted %.2f ATR from the validated reference' % drift_atr)
+
+        event_risk = str(dv.get('eventRisk') or fine.get('eventRisk') or market.get('eventRisk') or 'Unknown')
+        if event_risk.lower() == 'high':
+            warnings.append('High event risk requires a fresh event review')
+
+        validation_score = _pa_safe_float(dv.get('validationScore'), _pa_safe_float(dv.get('score'), 50)) or 50
+        execution_score = _pa_safe_float(dv.get('executionScore'), _pa_safe_float(fine.get('executionReadinessScore'), 50)) or 50
+        stability_score = _pa_safe_float(dv.get('stabilityScore'), 50) or 50
+        admission_score = max(0, min(100, round(
+            validation_score * 0.50 + execution_score * 0.25 + stability_score * 0.25
+            - min(20, len(warnings) * 4), 1
+        )))
+        deterministic = 'BLOCK' if blockers else ('HOLD' if warnings else 'ADMIT')
+        if not blockers and admission_score < 65:
+            deterministic = 'HOLD'
+            warnings.append('Admission score is below the 65 research threshold')
+
+        fingerprint_payload = {
+            'symbol': symbol,
+            'strategy': selected_strategy,
+            'params': dv.get('bestParams') or dv.get('parameters') or {},
+            'dvScore': validation_score,
+            'fineDecision': fine.get('decision'),
+            'sourceTime': str(source_time or ''),
+            'referencePrice': reference_price,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(fingerprint_payload, sort_keys=True, default=str).encode('utf-8')
+        ).hexdigest()[:20]
+        generated_at = datetime.now(timezone.utc)
+        row = {
+            'symbol': symbol,
+            'companyName': dv.get('companyName') or fine.get('companyName') or market.get('companyName'),
+            'admissionDecision': deterministic,
+            'deterministicDecision': deterministic,
+            'admissionScore': admission_score,
+            'decisionReason': 'Eligible for Entry Plan' if deterministic == 'ADMIT' else ('Hard admission gate failed' if deterministic == 'BLOCK' else 'Hold for refreshed or improved evidence'),
+            'blockers': blockers,
+            'warnings': warnings,
+            'selectedStrategy': selected_strategy,
+            'strategyConsistent': strategy_consistent,
+            'fineStrategies': sorted(fine_strategies),
+            'dvStrategies': sorted(dv_strategies),
+            'signalAgeSeconds': round(signal_age, 1) if signal_age is not None else None,
+            'priceDriftAtr': round(drift_atr, 3) if drift_atr is not None else None,
+            'eventRisk': event_risk,
+            'sector': dv.get('sector') or fine.get('sector') or market.get('sector') or 'Unknown',
+            'validationScore': validation_score,
+            'executionScore': execution_score,
+            'stabilityScore': stability_score,
+            'sourceCandidate': dv,
+            'signalSnapshot': {
+                'id': fingerprint,
+                'generatedAt': generated_at.isoformat(),
+                'expiresAt': (generated_at + timedelta(seconds=max_signal_age)).isoformat(),
+                'inputFingerprint': fingerprint,
+                'strategy': selected_strategy,
+                'parametersHash': hashlib.sha256(json.dumps(
+                    dv.get('bestParams') or dv.get('parameters') or {}, sort_keys=True, default=str
+                ).encode('utf-8')).hexdigest()[:16],
+            },
+            'portfolioContext': {
+                'positionCount': position_count,
+                'maxPositions': max_positions,
+                'buyingPower': buying_power,
+                'existingPosition': symbol in existing_positions,
+                'openBuyOrder': symbol in open_buy_orders,
+            },
+            'aiReviewed': False,
+            'aiAdmissionReview': None,
+            'riskProfileUsed': profile,
+            'timeHorizonUsed': time_horizon,
+            'pipelineModeUsed': pipeline_mode,
+        }
+        rows.append(row)
+
+    # Portfolio arbitration is deterministic and rank-aware. It does not target a
+    # fixed pass rate; it prevents simultaneous candidates from exceeding capacity.
+    rows.sort(key=lambda item: (
+        0 if item['deterministicDecision'] == 'ADMIT' else 1 if item['deterministicDecision'] == 'HOLD' else 2,
+        -float(item.get('admissionScore') or 0),
+        item.get('symbol') or '',
+    ))
+    admitted_count = 0
+    sector_counts = {}
+    available_slots = max(0, min(max_new_positions, max_positions - position_count))
+    for row in rows:
+        if row['admissionDecision'] != 'ADMIT':
+            continue
+        sector = row.get('sector') or 'Unknown'
+        sector_key = str(sector).lower()
+        if admitted_count >= available_slots:
+            row['admissionDecision'] = 'HOLD'
+            row['warnings'].append('Portfolio capacity is reserved for higher-ranked candidates')
+            row['decisionReason'] = 'Held by portfolio capacity arbitration'
+            continue
+        if sector_key != 'unknown' and sector_counts.get(sector_key, 0) >= max_per_sector:
+            row['admissionDecision'] = 'HOLD'
+            row['warnings'].append('Sector concentration limit reached for this admission batch')
+            row['decisionReason'] = 'Held by sector concentration arbitration'
+            continue
+        admitted_count += 1
+        sector_counts[sector_key] = sector_counts.get(sector_key, 0) + 1
+
+    ai_stats = _pa_admission_ai_challenge(uid, rows, enabled=ai_enabled and pipeline_mode in ('ai', 'hybrid'))
+    counts = {'ADMIT': 0, 'HOLD': 0, 'BLOCK': 0}
+    for row in rows:
+        decision = row.get('admissionDecision') or 'HOLD'
+        counts[decision] = counts.get(decision, 0) + 1
+    return rows, {
+        'inputCount': len(dv_results or []),
+        'eligibleDvCount': len(rows),
+        'counts': counts,
+        'availablePortfolioSlots': available_slots,
+        'maxNewPositions': max_new_positions,
+        'maxPerSector': max_per_sector,
+        'ai': ai_stats,
+        'policy': 'institutional_pre_entry_admission_v1',
+    }
+
+
+@app.route('/api/ai-agent/admission', methods=['POST'])
+def pipeline_admission():
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    payload = request.get_json(silent=True) or {}
+    rows, summary = _pa_run_admission(
+        user['id'],
+        payload.get('candidates') or payload.get('dvResults') or [],
+        fine_results=payload.get('fineResults') or [],
+        market_results=payload.get('marketResults') or [],
+        account_state=payload.get('accountState') or {},
+        risk_profile=payload.get('riskProfile') or 'medium',
+        time_horizon=payload.get('timeHorizon') or 'mid',
+        pipeline_mode=payload.get('pipelineMode') or 'hybrid',
+        ai_enabled=payload.get('aiEnabled', True),
+    )
+    return jsonify({'success': True, 'results': rows, 'summary': summary})
+
 def _pa_now_et():
     """Return current real time in America/New_York."""
     import pytz
     return datetime.now(pytz.timezone('America/New_York'))
+
+def _pa_is_circuit_breaker_open(config, now_et=None):
+    """Return True only while the persisted circuit-breaker deadline is active."""
+    if not isinstance(config, dict):
+        return False
+    breaker_until = str(config.get('circuit_breaker_until') or '').strip()
+    if not breaker_until:
+        return False
+    now_et = now_et or _pa_now_et()
+    try:
+        breaker_dt = dateutil.parser.isoparse(breaker_until)
+        if breaker_dt.tzinfo is None:
+            breaker_dt = breaker_dt.replace(tzinfo=now_et.tzinfo)
+        else:
+            breaker_dt = breaker_dt.astimezone(now_et.tzinfo)
+        return now_et < breaker_dt
+    except Exception:
+        return False
 
 def _pa_log(msg):
     print('[PipelineAuto] %s' % msg, flush=True)
@@ -29722,8 +37436,11 @@ def _pa_get_history(uid, limit=5):
         _pa_log_error('File fallback history read failed: %s' % e)
     return []
 
-def _pa_check_market_open(uid):
-    """Check if US market is open using Alpaca clock API, with basic-hours fallback.
+def _pa_check_market_open(uid, trade_mode='paper'):
+    """Check market status using the current user's Alpaca clock when available.
+
+    An explicit Alpaca ``is_open=false`` is authoritative. The calendar fallback
+    is used only when the broker clock cannot be reached or is not configured.
     Returns: (is_open, status_string, source_string, next_open, next_close, market_stage)
     market_stage: 'premarket' | 'open' | 'after_hours' | 'weekend' | 'holiday'
     """
@@ -29749,56 +37466,34 @@ def _pa_check_market_open(uid):
         # Between 09:30 and 16:00 but Alpaca says closed — treat as after_hours
         return 'after_hours'
 
-    # Try Alpaca clock API first
-    if True:
+    # Try the authenticated user's Alpaca clock API first.
+    if uid:
         try:
-            alpaca_base = 'https://paper-api.alpaca.markets'
-            alpaca_key = os.environ.get('ALPACA_API_KEY', '')
-            alpaca_secret = os.environ.get('ALPACA_SECRET_KEY', '')
-            config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'alpaca_config.json')
-            if os.path.exists(config_path):
-                import json
-                with open(config_path, 'r') as f:
-                    cfg = json.load(f)
-                if not alpaca_key:
-                    # Try paper keys first, then live keys based on environment setting
-                    env_mode = cfg.get('environment', 'paper')
-                    if env_mode == 'paper':
-                        alpaca_key = cfg.get('paper_api_key', '')
-                        alpaca_secret = cfg.get('paper_api_secret', '')
-                    else:
-                        alpaca_key = cfg.get('live_api_key', '')
-                        alpaca_secret = cfg.get('live_api_secret', '')
-                    if alpaca_key and not alpaca_secret:
-                        alpaca_secret = cfg.get('paper_api_secret', '') or cfg.get('live_api_secret', '')
+            normalized_mode = 'paper' if str(trade_mode).lower() == 'paper' else 'live'
+            cfg = resolve_alpaca_config_for_user(uid, normalized_mode)
+            alpaca_base = cfg.get('base_url') or (
+                'https://paper-api.alpaca.markets' if normalized_mode == 'paper' else 'https://api.alpaca.markets'
+            )
+            alpaca_key = cfg.get('api_key', '')
+            alpaca_secret = cfg.get('api_secret', '')
             if alpaca_key and alpaca_secret:
                 headers = {'Apca-Api-Key-Id': alpaca_key, 'Apca-Api-Secret-Key': alpaca_secret}
                 resp = requests.get(alpaca_base + '/v2/clock', headers=headers, timeout=5)
                 if resp.status_code == 200:
                     data = resp.json()
-                    is_open = data.get('is_open', False)
+                    is_open = data.get('is_open') is True
                     next_open = data.get('next_open', '')
                     next_close = data.get('next_close', '')
-                    local_open = (
-                        now_et.weekday() < 5
-                        and not _pa_is_holiday(now_et)
-                        and now_et.replace(hour=9, minute=30, second=0, microsecond=0) <= now_et < now_et.replace(hour=16, minute=0, second=0, microsecond=0)
-                    )
-                    if local_open and not is_open:
-                        _pa_log('Alpaca clock returned closed during regular session; using ET regular-hours override')
-                        is_open = True
-                        if not next_close:
-                            next_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0).isoformat()
-                    status = 'open' if is_open else 'closed'
+                    status = 'open' if is_open else ('holiday' if _pa_is_holiday(now_et) else 'closed')
                     market_stage = _derive_market_stage(is_open, status, now_et)
                     with _PA_MARKET_CACHE_LOCK:
-                        _PA_MARKET_CACHE['status'] = status
-                        _PA_MARKET_CACHE['source'] = 'alpaca'
-                        _PA_MARKET_CACHE['next_open'] = next_open
-                        _PA_MARKET_CACHE['next_close'] = next_close
-                        _PA_MARKET_CACHE['checked_at'] = now_et.isoformat()
+                        _PA_MARKET_CACHE[(uid, normalized_mode)] = {
+                            'status': status, 'source': 'alpaca_user_clock',
+                            'next_open': next_open, 'next_close': next_close,
+                            'checked_at': now_et.isoformat(),
+                        }
                     _pa_log('Alpaca clock: is_open=%s, next_open=%s, next_close=%s, stage=%s' % (is_open, next_open, next_close, market_stage))
-                    return is_open, status, 'alpaca', next_open or '', next_close or '', market_stage
+                    return is_open, status, 'alpaca_user_clock', next_open or '', next_close or '', market_stage
                 else:
                     _pa_log_error('Alpaca clock API returned %d' % resp.status_code)
         except Exception as e:
@@ -29873,9 +37568,50 @@ def _pa_call_endpoint(uid, path, view_func, payload=None, method='POST', query_s
             return _pa_json_from_response(view_func())
 
 
-def _pa_default_symbols_for_user(uid):
-    symbols, _source = get_market_scan_universe(uid, limit=50)
-    return symbols, _source
+_PA_MARKET_SCANNER_SETTINGS = {
+    'universe': 'alpaca_market',
+    'maxSymbols': 1500,
+    'maxResults': 100,
+    'aiReviewTopN': 100,
+    'historyPeriod': '18mo',
+    'filters': {
+        'minPrice': 5,
+        'minMarketCap': 0,
+        'minDollarVolume': 10_000_000,
+        'minHistoryDays': 252,
+        'maxAtrPercent': 12,
+        'maxRealizedVol20': 120,
+    },
+}
+
+
+def _pa_market_scanner_headless(uid, trade_mode='paper'):
+    """Run the exact institutional scanner used by the AI Agent page.
+
+    Keeping the settings here mirrors scannerRunnerService defaults while the
+    endpoint remains the single implementation of universe selection, factor
+    scoring, enrichment, and AI review. The browser is never involved.
+    """
+    payload = {
+        **_PA_MARKET_SCANNER_SETTINGS,
+        'filters': dict(_PA_MARKET_SCANNER_SETTINGS['filters']),
+        'alpacaMode': 'live' if str(trade_mode).lower() in ('real', 'live') else 'paper',
+        'suppressDiscord': True,
+    }
+    response, status = _pa_call_endpoint(
+        uid,
+        '/api/market/scanner',
+        institutional_market_scanner,
+        payload,
+    )
+    if status >= 400 or not isinstance(response, dict) or not response.get('success'):
+        message = (response or {}).get('message') or (response or {}).get('error') or 'Institutional market scanner failed'
+        raise RuntimeError('Market Scanner failed: %s' % str(message)[:300])
+
+    rows = response.get('results') if isinstance(response.get('results'), list) else []
+    scanner_summary = response.get('summary') if isinstance(response.get('summary'), dict) else {}
+    scanner_stats = response.get('scan_stats') if isinstance(response.get('scan_stats'), dict) else {}
+    return rows, scanner_summary, scanner_stats
 
 
 def _pa_continue_scan_headless(scanner_results,
@@ -30270,199 +38006,1410 @@ _FS_BT_STRATEGY_MAP = {
 }
 
 
+def _pa_merge_fine_scan_ai_decision(local_decision, ai_decision, gate, hard_blockers=None):
+    """Merge an AI challenge into Fine Scan without letting it own hard gates."""
+    local_decision = str(local_decision or 'Watch')
+    ai_decision = str(ai_decision or 'Watch')
+    hard_blockers = hard_blockers or []
+
+    if local_decision == 'NeedMoreData':
+        return 'NeedMoreData', ai_decision != 'NeedMoreData', 'required evidence remains incomplete'
+    if gate == 'BLOCK' or hard_blockers or local_decision == 'Reject':
+        return 'Reject', ai_decision != 'Reject', 'deterministic hard gate remains binding'
+    if local_decision == 'Watch':
+        return 'Watch', ai_decision == 'Continue', 'AI cannot promote a deterministic Watch'
+    if local_decision == 'Continue' and ai_decision in ('Watch', 'Reject', 'NeedMoreData'):
+        return 'Watch', False, 'AI challenged an otherwise eligible setup'
+    return local_decision, False, 'AI agreed with deterministic eligibility'
+
+
+def _pa_fine_scan_confirmation_metrics(signal_values):
+    """Score direction confirmation using available evidence only.
+
+    Missing observations reduce coverage/reliability; they are not bearish votes.
+    """
+    labels = ('momentum1m', 'momentum3m', 'momentum6m', 'closeVs50dma', 'closeVs200dma', 'relativeStrength3m')
+    values = signal_values if isinstance(signal_values, dict) else {}
+    available = [label for label in labels if _inst_to_float(values.get(label), None) is not None]
+    positive = [label for label in available if (_inst_to_float(values.get(label), 0) or 0) > 0]
+    missing = [label for label in labels if label not in available]
+    score = round(len(positive) / len(available) * 100.0, 2) if available else 50.0
+    coverage = round(len(available) / len(labels) * 100.0, 2)
+    return {
+        'score': score,
+        'positiveCount': len(positive),
+        'availableCount': len(available),
+        'coveragePct': coverage,
+        'positiveSignals': positive,
+        'missingSignals': missing,
+    }
+
+
+def _pa_fine_scan_decision_policy(score, gate, required_evidence_missing=None,
+                                  entry_readiness='Review', execution_score=0,
+                                  hard_blockers=None, setup_score=0,
+                                  warning_count=0, reward_risk=None,
+                                  evidence_reliability=85):
+    """Route a candidate to DV without targeting a fixed pass/reject distribution."""
+    missing = required_evidence_missing or []
+    blockers = hard_blockers or []
+    score = _inst_to_float(score, 0) or 0
+    execution_score = _inst_to_float(execution_score, 0) or 0
+    setup_score = _inst_to_float(setup_score, 0) or 0
+    evidence_reliability = _inst_to_float(evidence_reliability, 0) or 0
+    reward_risk = _inst_to_float(reward_risk, None)
+
+    if missing:
+        return 'NeedMoreData'
+    if gate == 'BLOCK' or blockers:
+        return 'Reject'
+
+    rr_ok = reward_risk is None or reward_risk >= 1.20
+    entry_ready = entry_readiness in ('Ready', 'BreakoutConfirm')
+    high_quality_review = (
+        entry_readiness == 'Review' and score >= 78 and setup_score >= 76 and
+        execution_score >= 68 and (reward_risk is None or reward_risk >= 1.50) and
+        evidence_reliability >= 80 and warning_count <= 2
+    )
+    if (
+        (entry_ready or high_quality_review) and score >= 70 and setup_score >= 70 and
+        execution_score >= 62 and evidence_reliability >= 72 and rr_ok and warning_count <= 4
+    ):
+        return 'Continue'
+
+    if score >= 48 and setup_score >= 45 and execution_score >= 38:
+        return 'Watch'
+    return 'Reject'
+
+
+def _pa_apply_fine_scan_ai_reviews(uid, rows, enabled=True):
+    """Batch-review every Fine Scan row with the configured AI challenge layer."""
+    stats = {
+        'configured': False,
+        'used': False,
+        'status': 'disabled' if not enabled else 'not_configured',
+        'requestedSymbols': len(rows or []) if enabled else 0,
+        'reviewedSymbols': 0,
+        'challengedSymbols': 0,
+        'batchSize': _INST_SCANNER_AI_REVIEW_BATCH_SIZE,
+        'batchCount': 0,
+        'retryAttempts': 0,
+        'errors': {},
+        'provider': None,
+        'model': None,
+        'source': 'Settings AI provider',
+    }
+    if not enabled or not rows:
+        return stats
+
+    try:
+        with headless_user_context(uid):
+            ai_cfg, config_source = resolve_ai_config(require_user_config=True)
+    except Exception:
+        ai_cfg, config_source = resolve_ai_config(require_user_config=True)
+    api_key = ai_cfg.get('apiKey', '')
+    provider = ai_cfg.get('provider') or 'AI'
+    model = ai_cfg.get('model') or ''
+    stats.update({
+        'configured': bool(api_key),
+        'provider': provider,
+        'model': model,
+        'configSource': config_source,
+    })
+    if not api_key:
+        stats['error'] = 'AI key is not configured in Settings'
+        return stats
+
+    row_by_symbol = {_inst_clean_symbol(row.get('symbol')): row for row in rows}
+    target_rows = [row for row in rows if _inst_clean_symbol(row.get('symbol'))]
+    for row in target_rows:
+        row['aiCalled'] = True
+        row['aiSuccess'] = False
+
+    system_prompt = (
+        'You are the challenge layer for an institutional-style Fine Scan. Deterministic rules own scores, '
+        'entry geometry, execution controls, and hard gates. Never change those values and never promote a '
+        'deterministic Watch, Reject, or NeedMoreData to Continue. Review setup coherence, entry readiness, '
+        'reward/risk, spread/cost/capacity, quote freshness, event/volatility risk, evidence reliability, and '
+        'contradictions inherited from Market Scanner. Missing optional news, fundamentals, options, or paid '
+        'exchange depth is unknown, not bearish. FINRA daily short-sale volume is flow context, not short interest '
+        'or a standalone crowding signal. Continue means worth Deeper Validation, not a buy signal. '
+        'Return valid JSON only and include every supplied symbol exactly once.'
+    )
+
+    def compact_row(row):
+        entry = row.get('entryPlanFine') if isinstance(row.get('entryPlanFine'), dict) else {}
+        factors = row.get('fineScanFactorScores') if isinstance(row.get('fineScanFactorScores'), dict) else {}
+        return {
+            'symbol': row.get('symbol'),
+            'deterministicDecision': row.get('deterministicDecision') or row.get('decision'),
+            'fineScore': row.get('fineScanScore'),
+            'scoreReliability': row.get('fineScoreReliability'),
+            'setup': row.get('setup'),
+            'strategyRoutes': row.get('strategyStack'),
+            'setupScore': row.get('setupQualityScore'),
+            'entry': {
+                'readiness': row.get('entryReadiness'),
+                'score': row.get('entryScore'),
+                'distancePct': entry.get('entryDistancePct'),
+                'rewardRisk': entry.get('rewardRiskRatio'),
+                'stopDistancePct': entry.get('stopDistancePct'),
+            },
+            'execution': {
+                'score': row.get('executionReadinessScore'),
+                'spreadBps': row.get('spreadBps'),
+                'roundTripCostBps': row.get('estimatedRoundTripCostBps'),
+                'adv20': row.get('avgDollarVolume20'),
+                'comparableVolumeRatio': row.get('volumeRatio'),
+                'volumeRatioSource': row.get('volumeRatioSource'),
+                'intradayVolumeRatioRaw': row.get('intradayVolumeRatioRaw'),
+                'quoteStale': (row.get('microstructureDetails') or {}).get('quoteIsStale'),
+            },
+            'riskContext': {
+                'eventRisk': row.get('eventRisk'),
+                'daysToEarnings': row.get('daysToEarnings'),
+                'newsSentiment': row.get('newsSentiment'),
+                'realizedVol20': row.get('realizedVol20'),
+                'atrPercent': row.get('atrPercent'),
+                'maxDrawdown126': row.get('maxDrawdown126'),
+                'marketBeta': row.get('marketBeta'),
+                'optionIvSkew': row.get('optionIvSkew'),
+                'finraDailyShortSaleVolumePct': row.get('shortVolumeRatio'),
+                'shortSaleVolumeInterpretation': row.get('shortVolumeContext'),
+                'priceVsVwapPct': (row.get('microstructureDetails') or {}).get('priceVsVwapPct'),
+                'dayRangePositionPct': (row.get('microstructureDetails') or {}).get('dayRangePositionPct'),
+            },
+            'riskGate': row.get('riskGateStatus'),
+            'hardBlockers': row.get('decisionBlockers') or [],
+            'warnings': row.get('decisionWarnings') or [],
+            'requiredEvidenceMissing': row.get('requiredEvidenceMissing') or [],
+            'marketContext': {
+                'selectionScore': row.get('selectionScore'),
+                'directionScore': row.get('directionScore'),
+                'factorAgreementPct': row.get('factorAgreementPct'),
+                'marketAiDecision': row.get('aiTraderDecision'),
+            },
+            'factorScores': {key: factors.get(key) for key in ('setup', 'entry', 'execution', 'microstructure', 'risk', 'event')},
+        }
+
+    def call_batch(batch_index, batch_rows, retry=False):
+        symbols = [_inst_clean_symbol(row.get('symbol')) for row in batch_rows]
+        prompt = (
+            'Review %s batch %d. Return exactly: '
+            '{"reviews":[{"symbol":"AAPL","decision":"Continue|Watch|Reject|NeedMoreData",'
+            '"confidence":0-100,"rationale":"one evidence-based sentence","strengths":["short"],'
+            '"warnings":["short"],"contradictions":["short"],"missingChecks":["short"],'
+            '"urgency":"Now|Next session|After event|Low","nextStep":"one action"}]}. '
+            '\nSymbols: %s\nPackets:\n%s'
+        ) % (
+            'retry' if retry else 'primary',
+            batch_index,
+            ','.join(symbols),
+            json.dumps([compact_row(row) for row in batch_rows], ensure_ascii=True, separators=(',', ':')),
+        )
+        parsed, error = _inst_call_ai_trader(ai_cfg, system_prompt, prompt)
+        reviews = parsed.get('reviews') if isinstance(parsed, dict) else None
+        if error:
+            return [], error
+        if not isinstance(reviews, list):
+            return [], 'AI response missing reviews[]'
+        return reviews, None
+
+    reviewed = set()
+
+    def apply_reviews(reviews):
+        for review in reviews:
+            if not isinstance(review, dict):
+                continue
+            symbol = _inst_clean_symbol(review.get('symbol'))
+            row = row_by_symbol.get(symbol)
+            if not row:
+                continue
+            raw = _safe_str(review.get('decision')).upper().replace(' ', '_')
+            ai_decision = 'Continue' if raw in ('CONTINUE', 'ADVANCE', 'PROCEED') else \
+                'Reject' if raw in ('REJECT', 'AVOID', 'SKIP') else \
+                'NeedMoreData' if raw in ('NEEDMOREDATA', 'NEED_MORE_DATA', 'INSUFFICIENT_DATA') else 'Watch'
+            deterministic = row.get('deterministicDecision') or row.get('decision') or 'Watch'
+            blockers = row.get('decisionBlockers') or []
+            gate = row.get('riskGateStatus') or row.get('riskGate') or 'REVIEW'
+            final_decision, override_blocked, merge_reason = _pa_merge_fine_scan_ai_decision(
+                deterministic, ai_decision, gate, blockers
+            )
+            confidence = _inst_to_float(review.get('confidence'), None)
+            rationale = _inst_trim_text(review.get('rationale'), 280)
+            strengths = review.get('strengths') if isinstance(review.get('strengths'), list) else []
+            warnings = review.get('warnings') if isinstance(review.get('warnings'), list) else []
+            contradictions = review.get('contradictions') if isinstance(review.get('contradictions'), list) else []
+            missing_checks = review.get('missingChecks') if isinstance(review.get('missingChecks'), list) else []
+            next_step = _inst_trim_text(review.get('nextStep'), 180)
+            urgency = _inst_trim_text(review.get('urgency'), 20)
+            if urgency not in ('Now', 'Next session', 'After event', 'Low'):
+                urgency = 'Low'
+
+            row['decision'] = final_decision
+            row['fineScanDecision'] = final_decision
+            row['decisionLabel'] = final_decision
+            row['decisionSource'] = 'institutional_rules_plus_ai_challenge'
+            row['aiUsed'] = True
+            row['aiSuccess'] = True
+            row['aiExplained'] = True
+            row['aiSource'] = provider
+            row['aiModel'] = model
+            row['aiRawDecision'] = ai_decision
+            row['aiTraderDecisionFine'] = ai_decision
+            row['aiTraderConfidenceFine'] = round(max(0, min(100, confidence)), 1) if confidence is not None else None
+            row['aiTraderRationaleFine'] = rationale or 'AI reviewed the deterministic Fine Scan packet.'
+            row['aiContradictionsFine'] = [_inst_trim_text(item, 90) for item in contradictions if _inst_trim_text(item, 90)][:4]
+            row['aiMissingChecksFine'] = [_inst_trim_text(item, 90) for item in missing_checks if _inst_trim_text(item, 90)][:4]
+            row['aiUrgencyFine'] = urgency
+            row['aiNextStepFine'] = next_step
+            row['aiChallengedFine'] = ai_decision != 'Continue' or final_decision != deterministic or bool(contradictions) or bool(warnings)
+            row['aiOverrideBlocked'] = override_blocked
+            row['aiMergeReason'] = merge_reason
+            row['aiDecisionDetail'] = {
+                'strengths': [_inst_trim_text(item, 90) for item in strengths if _inst_trim_text(item, 90)][:4],
+                'warnings': [_inst_trim_text(item, 90) for item in warnings if _inst_trim_text(item, 90)][:4],
+                'blockers': [],
+                'contradictions': row['aiContradictionsFine'],
+                'missingChecks': row['aiMissingChecksFine'],
+            }
+            if final_decision == 'Continue':
+                row['nextStep'] = next_step or 'Send to Deeper Validation for strategy and parameter robustness testing.'
+            elif final_decision == 'Watch':
+                row['nextStep'] = next_step or 'Monitor entry geometry, execution quality, and unresolved evidence before DV.'
+            elif final_decision == 'NeedMoreData':
+                row['nextStep'] = next_step or 'Refresh required Fine Scan evidence before DV.'
+            else:
+                row['nextStep'] = next_step or 'Do not advance until deterministic blockers clear.'
+            reviewed.add(symbol)
+
+    batch_size = max(1, _INST_SCANNER_AI_REVIEW_BATCH_SIZE)
+    batches = [target_rows[i:i + batch_size] for i in range(0, len(target_rows), batch_size)]
+    stats['batchCount'] = len(batches)
+    with ThreadPoolExecutor(max_workers=min(3, max(1, len(batches)))) as executor:
+        futures = {executor.submit(call_batch, index, batch): index for index, batch in enumerate(batches, start=1)}
+        for future in as_completed(futures):
+            try:
+                reviews, error = future.result()
+            except Exception as e:
+                reviews, error = [], 'ai_exception: %s' % str(e)[:160]
+            if error:
+                stats['errors'][error] = stats['errors'].get(error, 0) + 1
+            else:
+                apply_reviews(reviews)
+
+    missing_rows = [row for row in target_rows if _inst_clean_symbol(row.get('symbol')) not in reviewed]
+    if missing_rows and _INST_SCANNER_AI_MAX_ATTEMPTS > 1:
+        retry_batches = [missing_rows[i:i + batch_size] for i in range(0, len(missing_rows), batch_size)]
+        stats['retryAttempts'] = len(retry_batches)
+        with ThreadPoolExecutor(max_workers=min(2, max(1, len(retry_batches)))) as executor:
+            futures = {executor.submit(call_batch, index, batch, True): index for index, batch in enumerate(retry_batches, start=1)}
+            for future in as_completed(futures):
+                try:
+                    reviews, error = future.result()
+                except Exception as e:
+                    reviews, error = [], 'ai_retry_exception: %s' % str(e)[:160]
+                if error:
+                    stats['errors'][error] = stats['errors'].get(error, 0) + 1
+                else:
+                    apply_reviews(reviews)
+
+    stats['reviewedSymbols'] = len(reviewed)
+    stats['challengedSymbols'] = sum(1 for row in target_rows if row.get('aiChallengedFine'))
+    stats['used'] = bool(reviewed)
+    stats['status'] = 'ok' if len(reviewed) == len(target_rows) else 'partial' if reviewed else 'error'
+    if stats['status'] != 'ok':
+        stats['error'] = 'AI reviewed %d/%d Fine Scan candidates' % (len(reviewed), len(target_rows))
+    for row in rows:
+        row['fineScanAiStatus'] = stats['status']
+        row['fineScanAiStats'] = stats
+        row.setdefault('dataSources', {})['ai'] = (
+            '%s %s batched Fine Scan challenge' % (provider, model)
+            if row.get('aiUsed') else 'Configured AI unavailable for this candidate'
+        )
+    return stats
+
+
+def _pa_fine_scan_execution_cost(adv20, realized_vol20, fresh_spread_bps,
+                                 scanner_spread_bps, scanner_cost_bps, quote_is_stale):
+    """Rebase execution cost on the newest quote instead of mixing quote vintages."""
+    adv20 = _inst_to_float(adv20, None)
+    realized_vol20 = _inst_to_float(realized_vol20, 35) or 35
+    fresh_spread_bps = _inst_to_float(fresh_spread_bps, None)
+    scanner_spread_bps = _inst_to_float(scanner_spread_bps, None)
+    scanner_cost_bps = _inst_to_float(scanner_cost_bps, None)
+
+    impact_bps = None
+    modeled_spread_bps = None
+    if adv20 is not None and adv20 > 0:
+        if adv20 >= 1_000_000_000:
+            modeled_spread_bps = 2.0
+        elif adv20 >= 250_000_000:
+            modeled_spread_bps = 4.0
+        elif adv20 >= 75_000_000:
+            modeled_spread_bps = 7.0
+        elif adv20 >= 20_000_000:
+            modeled_spread_bps = 12.0
+        else:
+            modeled_spread_bps = 25.0
+        impact_bps = max(1.0, min(45.0, (5_000_000.0 / adv20) * 18.0 + realized_vol20 * 0.03))
+
+    if not quote_is_stale and fresh_spread_bps is not None and fresh_spread_bps >= 0:
+        return (
+            round(fresh_spread_bps + (impact_bps or 1.0), 2),
+            round(fresh_spread_bps, 2),
+            'fresh Alpaca quote + ADV impact',
+        )
+
+    fallback_spread = scanner_spread_bps
+    if fallback_spread is None or fallback_spread > 80:
+        fallback_spread = modeled_spread_bps
+    fallback_cost = scanner_cost_bps
+    if fallback_cost is None or fallback_cost > 120:
+        fallback_cost = (fallback_spread + impact_bps) if fallback_spread is not None and impact_bps is not None else None
+    return (
+        round(fallback_cost, 2) if fallback_cost is not None else None,
+        round(fallback_spread, 2) if fallback_spread is not None else None,
+        'ADV fallback for stale/unavailable quote',
+    )
+
+
 def _pa_fine_scan_headless(uid, candidates,
                             risk_profile='medium', time_horizon='mid',
                             pipeline_mode='ai', trade_mode='paper'):
+    """Institutional-style Fine Scan.
+
+    Market Scanner is the coarse universe pull. Fine Scan is the trade-desk
+    filter: confirm setup quality, execution feasibility, event risk, and
+    crowding before Deeper Validation spends time on backtests/optimization.
+    """
+    def _num(value, default=None):
+        return _inst_to_float(value, default)
+
+    def _clamp(value, low=0.0, high=100.0):
+        try:
+            return max(low, min(high, float(value)))
+        except Exception:
+            return low
+
+    def _score_inverse(value, good, bad, default=50):
+        value = _num(value, None)
+        if value is None:
+            return default
+        if value <= good:
+            return 100
+        if value >= bad:
+            return 0
+        return round(100 - ((value - good) / (bad - good) * 100), 2)
+
+    def _score_range(value, bad, good, default=50):
+        value = _num(value, None)
+        if value is None:
+            return default
+        if value <= bad:
+            return 0
+        if value >= good:
+            return 100
+        return round((value - bad) / (good - bad) * 100, 2)
+
+    def _compact_money(value):
+        value = _num(value, None)
+        if value is None:
+            return 'n/a'
+        if value >= 1_000_000_000:
+            return '$%.1fB' % (value / 1_000_000_000)
+        if value >= 1_000_000:
+            return '$%.1fM' % (value / 1_000_000)
+        return '$%.0f' % value
+
+    def _pct_text(value, digits=1):
+        value = _num(value, None)
+        if value is None:
+            return 'n/a'
+        return ('+' if value >= 0 else '') + ('%.*f%%' % (digits, value))
+
+    def _grade_from_score(score):
+        if score >= 78:
+            return 'HIGH'
+        if score >= 58:
+            return 'MEDIUM'
+        return 'LOW'
+
+    def _fmt_price(value):
+        value = _num(value, None)
+        if value is None:
+            return 'n/a'
+        return '$%.2f' % value
+
+    def _round_or_none(value, digits=2):
+        value = _num(value, None)
+        if value is None:
+            return None
+        return round(value, digits)
+
+    def _quote_age_seconds(raw):
+        if not raw:
+            return None
+        try:
+            text = str(raw).strip()
+            if text.endswith('Z'):
+                text = text[:-1] + '+00:00'
+            parsed = datetime.fromisoformat(text)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()
+            return round(max(0.0, age), 1)
+        except Exception:
+            return None
+
+    def _derive_setup(rec, confirmations, event_risk, days_to_earnings):
+        m1 = _num(rec.get('momentum1m'), 0) or 0
+        m3 = _num(rec.get('momentum3m'), 0) or 0
+        cv50 = _num(rec.get('closeVs50dma'), 0) or 0
+        cv200 = _num(rec.get('closeVs200dma'), 0) or 0
+        vr = _num(rec.get('volumeRatio'), 1) or 1
+        rsi14 = _num(rec.get('rsi14'), None)
+        macd_hist = _num(rec.get('macdHistogram'), None)
+        macd_hist_prev = _num(rec.get('macdHistogramPrev'), None)
+        macd_bullish = macd_hist is not None and (
+            macd_hist > 0 or (macd_hist_prev is not None and macd_hist > macd_hist_prev)
+        )
+
+        def _unique(values):
+            return list(dict.fromkeys([value for value in values if value]))
+
+        if event_risk == 'High' or (days_to_earnings is not None and 0 <= days_to_earnings <= 10):
+            stack = _unique(['moving_average', 'macd' if macd_bullish else None, 'rsi' if rsi14 is not None and (rsi14 < 35 or rsi14 > 70) else None])
+            return 'Event Watch', ['Event Risk Review', 'Catalyst Monitoring'] + stack, stack or ['moving_average'], stack[0] if stack else 'moving_average'
+        if confirmations >= 5 and vr >= 1.1 and m1 > 0:
+            stack = _unique(['momentum', 'macd' if macd_bullish else None, 'moving_average'])
+            return 'Momentum Breakout', ['Momentum Breakout', 'Volume Confirmation', 'MACD' if macd_bullish else None, 'Moving Average'], stack, stack[0]
+        if cv200 > 0 and m3 > 0 and (-4 <= cv50 <= 4 or m1 < 0):
+            stack = _unique(['moving_average', 'macd' if macd_bullish else None, 'rsi' if rsi14 is not None and 35 <= rsi14 <= 55 else None])
+            return 'Trend Pullback', ['Trend Following', 'Pullback Entry', 'Moving Average', 'MACD' if macd_bullish else None, 'RSI Pullback' if rsi14 is not None and 35 <= rsi14 <= 55 else None], stack, stack[0]
+        if cv200 > 0 and m3 > 0:
+            stack = _unique(['moving_average', 'macd' if macd_bullish else None, 'momentum' if m1 > 0 else None])
+            return 'Trend Continuation', ['Trend Following', 'Moving Average', 'MACD' if macd_bullish else None, 'Momentum Continuation' if m1 > 0 else None], stack, stack[0]
+        if m1 <= -5 and cv200 > 0:
+            stack = _unique(['mean_reversion', 'rsi', 'bollinger'])
+            return 'Mean Reversion Watch', ['Mean Reversion', 'RSI Reversal', 'Bollinger Band'], stack, stack[0]
+        stack = _unique(['moving_average', 'rsi' if rsi14 is not None and (rsi14 < 35 or rsi14 > 70) else None])
+        return 'Quality Watch', ['Moving Average', 'Risk Review', 'RSI' if 'rsi' in stack else None], stack, stack[0]
+
+    max_candidates = 30
+    try:
+        max_candidates = int(_num((request.get_json(silent=True) or {}).get('maxSymbols'), 30) or 30)
+    except Exception:
+        max_candidates = 30
+    max_candidates = max(5, min(100, max_candidates))
+
+    raw_candidates = [c for c in (candidates or []) if isinstance(c, dict) and (c.get('symbol') or '').strip()]
+    raw_candidates.sort(key=lambda c: _num(c.get('selectionScore') or c.get('overallScore') or c.get('trendScore') or c.get('priorityScore'), 0) or 0, reverse=True)
+    raw_candidates = raw_candidates[:max_candidates]
+
     results = []
-    for idx, cand in enumerate(candidates or []):
+    ai_review_requested = str(pipeline_mode or '').lower() in ('ai', 'hybrid', 'auto')
+    symbols = [(c.get('symbol') or '').upper().strip() for c in raw_candidates if (c.get('symbol') or '').strip()]
+    snapshot_by_symbol = {}
+    snapshot_errors = {}
+    market_cfg = resolve_alpaca_config_for_user(uid, 'market_data') if uid else {}
+    if market_cfg and market_cfg.get('api_key') and market_cfg.get('api_secret') and symbols:
+        try:
+            raw_snapshots, snapshot_errors = _inst_fetch_alpaca_snapshots(symbols, market_cfg, feed=_MARKET_DATA_FEED, batch_size=100)
+            snapshot_by_symbol = {
+                _inst_clean_symbol(sym): _inst_snapshot_metrics(_inst_clean_symbol(sym), snap)
+                for sym, snap in raw_snapshots.items()
+                if _inst_clean_symbol(sym) and isinstance(snap, dict)
+            }
+        except Exception as e:
+            snapshot_errors = {sym: 'fine scan snapshot refresh failed: %s' % str(e)[:120] for sym in symbols}
+            _pa_log_error('Fine Scan snapshot refresh failed: %s' % e)
+    elif symbols:
+        snapshot_errors = {sym: 'Alpaca market-data config unavailable for Fine Scan snapshot refresh' for sym in symbols}
+
+    for idx, cand in enumerate(raw_candidates):
         symbol = (cand.get('symbol') or '').upper().strip()
-        if not symbol:
-            continue
         try:
             rec = dict(cand)
             rec['symbol'] = symbol
             rec['scanStatus'] = 'running'
 
-            # ── Gate 1: dataQuality ──
-            dq = str(rec.get('dataQuality') or '').lower()
-            if dq in ('need_data', 'partial', 'failed', 'unavailable'):
-                rec.update({'scanStatus': 'completed', 'decision': 'NeedMoreData',
-                            'decisionReason': 'Insufficient market data quality (%s)' % dq,
-                            'decisionSource': 'data_quality_gate',
-                            'fineScanSource': 'backend_unified'})
-                results.append(rec)
-                _pa_log('fine_scan gate=blocked symbol=%s reason=data_quality=%s' % (symbol, dq))
-                continue
+            factor_scores = rec.get('factorScores') if isinstance(rec.get('factorScores'), dict) else {}
+            market_score = _num(rec.get('selectionScore') or rec.get('overallScore') or rec.get('trendScore') or rec.get('priorityScore'), 50) or 50
+            dq = str(rec.get('dataQuality') or 'ok').lower()
+            source_data_quality_bad = dq in ('need_data', 'failed', 'unavailable')
 
-            # ── Regime detection + strategy matching ──
-            regime, match_conf, matched_strategies, match_reason, regime_signals = \
-                _pa_detect_fine_scan_regime(rec)
+            snapshot_metrics = snapshot_by_symbol.get(symbol) if isinstance(snapshot_by_symbol.get(symbol), dict) else {}
+            snapshot_error = snapshot_errors.get(symbol)
+
+            snapshot_price = _num(snapshot_metrics.get('snapshotPrice'), None)
+            candidate_price = _num(rec.get('price') or rec.get('lastPrice'), None)
+            price = snapshot_price if snapshot_price is not None and snapshot_price > 0 else candidate_price
+            prev_close = _num(snapshot_metrics.get('snapshotPrevClose') or rec.get('previousClose') or rec.get('prevClose'), None)
+            snapshot_volume = _num(snapshot_metrics.get('snapshotVolume'), None)
+            bid_price = _num(snapshot_metrics.get('bidPrice'), None)
+            ask_price = _num(snapshot_metrics.get('askPrice'), None)
+            bid_size = _num(snapshot_metrics.get('bidSize'), None)
+            ask_size = _num(snapshot_metrics.get('askSize'), None)
+            day_high = _num(snapshot_metrics.get('dayHigh') or rec.get('dayHigh') or rec.get('high'), None)
+            day_low = _num(snapshot_metrics.get('dayLow') or rec.get('dayLow') or rec.get('low'), None)
+            day_vwap = _num(snapshot_metrics.get('dayVWAP') or rec.get('dayVWAP') or rec.get('vwap'), None)
+            day_open = _num(snapshot_metrics.get('dayOpen') or rec.get('dayOpen') or rec.get('open'), None)
+            quote_age_seconds = _quote_age_seconds(snapshot_metrics.get('latestQuoteTime'))
+            trade_age_seconds = _quote_age_seconds(snapshot_metrics.get('latestTradeTime'))
+            quote_is_stale = quote_age_seconds is not None and quote_age_seconds > 1800
+            intraday_change_pct = None
+            if price is not None and prev_close is not None and prev_close > 0:
+                intraday_change_pct = round((price - prev_close) / prev_close * 100.0, 2)
+            else:
+                intraday_change_pct = _num(rec.get('changePercent') or rec.get('priceChangePct') or rec.get('changePct'), None)
+
+            day_range_position_pct = None
+            if price is not None and day_high is not None and day_low is not None and day_high > day_low:
+                day_range_position_pct = round(_clamp((price - day_low) / (day_high - day_low) * 100.0), 2)
+
+            price_vs_vwap_pct = None
+            if price is not None and day_vwap is not None and day_vwap > 0:
+                price_vs_vwap_pct = round((price - day_vwap) / day_vwap * 100.0, 2)
+
+            quote_imbalance_pct = None
+            if not quote_is_stale and bid_size is not None and ask_size is not None and (bid_size + ask_size) > 0:
+                quote_imbalance_pct = round((bid_size - ask_size) / (bid_size + ask_size) * 100.0, 2)
+
+            adv20 = _num(rec.get('avgDollarVolume20'), None)
+            scanner_cost_bps = _num(rec.get('estimatedRoundTripCostBps'), None)
+            scanner_spread_bps = _num(rec.get('spreadBps'), None)
+            snapshot_spread_bps = None
+            if not quote_is_stale and bid_price is not None and ask_price is not None and ask_price >= bid_price and price:
+                snapshot_spread_bps = round((ask_price - bid_price) / price * 10000.0, 2)
+            elif not quote_is_stale and _num(snapshot_metrics.get('bidAskSpreadPct'), None) is not None:
+                snapshot_spread_bps = round((_num(snapshot_metrics.get('bidAskSpreadPct'), 0) or 0) * 100.0, 2)
+            cost_bps, spread_metric_bps, cost_estimate_source = _pa_fine_scan_execution_cost(
+                adv20,
+                rec.get('realizedVol20'),
+                snapshot_spread_bps,
+                scanner_spread_bps,
+                scanner_cost_bps,
+                quote_is_stale,
+            )
+            stale_quote_cost_model = cost_estimate_source.startswith('ADV fallback')
+            capacity_score = _num(rec.get('capacityScore'), None)
+            liquidity_tier = rec.get('liquidityTier') or rec.get('institutionalLiquidity') or 'Unknown'
+            history_days = int(_num(rec.get('historyDays'), 0) or 0)
+
+            m1 = _num(rec.get('momentum1m'), None)
+            m3 = _num(rec.get('momentum3m'), None)
+            m6 = _num(rec.get('momentum6m'), None)
+            m12 = _num(rec.get('momentum12m'), None)
+            rel3 = _num(rec.get('relativeStrength3m'), None)
+            rel6 = _num(rec.get('relativeStrength6m'), None)
+            cv50 = _num(rec.get('closeVs50dma'), None)
+            cv200 = _num(rec.get('closeVs200dma'), None)
+            vol20 = _num(rec.get('realizedVol20'), None)
+            atr_pct = _num(rec.get('atrPercent'), None)
+            max_dd = _num(rec.get('maxDrawdown126'), None)
+            beta = _num(rec.get('marketBeta'), None)
+            volume_ratio = _num(rec.get('volumeRatio'), None)
+            sector_rank = _num(rec.get('sectorRank'), None)
+            sector_count = _num(rec.get('sectorCount'), None)
+            short_ratio = _num(rec.get('shortVolumeRatio'), None)
+            iv_skew = _num(rec.get('optionIvSkew'), None)
+            event_risk = rec.get('eventRisk') or 'Low'
+            days_to_earnings = _num(rec.get('daysToEarnings'), None)
+            news_sentiment = rec.get('newsSentiment') or 'Neutral'
+            recent_high20 = _num(rec.get('recentHigh20'), None)
+            recent_low20 = _num(rec.get('recentLow20'), None)
+            recent_high50 = _num(rec.get('recentHigh50'), None)
+            recent_low50 = _num(rec.get('recentLow50'), None)
+            rsi14 = _num(rec.get('rsi14'), None)
+            macd_hist = _num(rec.get('macdHistogram'), None)
+
+            confirmation_metrics = _pa_fine_scan_confirmation_metrics({
+                'momentum1m': m1,
+                'momentum3m': m3,
+                'momentum6m': m6,
+                'closeVs50dma': cv50,
+                'closeVs200dma': cv200,
+                'relativeStrength3m': rel3,
+            })
+            confirmations = confirmation_metrics['positiveCount']
+            confirmation_available = confirmation_metrics['availableCount']
+            confirmation_score = confirmation_metrics['score']
+
+            range_position_score = 60
+            if day_range_position_pct is not None:
+                if 28 <= day_range_position_pct <= 78:
+                    range_position_score = 100
+                elif 15 <= day_range_position_pct < 28 or 78 < day_range_position_pct <= 90:
+                    range_position_score = 76
+                elif 5 <= day_range_position_pct < 15 or 90 < day_range_position_pct <= 96:
+                    range_position_score = 52
+                else:
+                    range_position_score = 35
+            vwap_alignment_score = _score_inverse(abs(price_vs_vwap_pct), 1.5, 9.0, 62) if price_vs_vwap_pct is not None else 60
+            day_structure_score = round(_clamp(0.55 * vwap_alignment_score + 0.45 * range_position_score), 2)
+
+            technical_base = (
+                0.45 * (_num(factor_scores.get('momentum'), market_score) or market_score) +
+                0.35 * (_num(factor_scores.get('trend'), market_score) or market_score) +
+                0.20 * confirmation_score
+            )
+            if cv50 is not None and cv50 < -5:
+                technical_base -= 8
+            if cv200 is not None and cv200 < 0:
+                technical_base -= 12
+            technical_score = round(_clamp(technical_base), 2)
+
+            sector_score = 50
+            if sector_rank and sector_count and sector_count > 1:
+                sector_score = round(100 - ((sector_rank - 1) / (sector_count - 1) * 100), 2)
+            relative_base = (
+                0.65 * (_num(factor_scores.get('relative'), _score_range(rel3, -15, 15)) or 50) +
+                0.35 * sector_score
+            )
+            relative_score = round(_clamp(relative_base), 2)
+
+            cost_score = _score_inverse(cost_bps, 10, 150, 50)
+            adv_score = _score_range(adv20, 10_000_000, 250_000_000, 45)
+            volume_ratio_score = _score_range(volume_ratio, 0.5, 1.7, 55)
+            liquidity_base = (
+                0.35 * (_num(factor_scores.get('liquidity'), adv_score) or adv_score) +
+                0.30 * (capacity_score if capacity_score is not None else adv_score) +
+                0.25 * cost_score +
+                0.10 * volume_ratio_score
+            )
+            liquidity_score = round(_clamp(liquidity_base), 2)
+
+            spread_score = _score_inverse(spread_metric_bps, 8, 90, 55)
+            quote_age_score = 58 if quote_is_stale else (_score_inverse(quote_age_seconds, 120, 1800, 68) if quote_age_seconds is not None else 58)
+            # L1 quote size is fleeting. Only severe ask-side imbalance is adverse;
+            # positive bid imbalance is not rewarded as if it were full depth data.
+            if quote_imbalance_pct is None:
+                imbalance_score = 60
+            elif quote_imbalance_pct <= -75:
+                imbalance_score = 30
+            elif quote_imbalance_pct <= -45:
+                imbalance_score = 50
+            else:
+                imbalance_score = 65
+            microstructure_score = round(_clamp(
+                0.45 * spread_score +
+                0.25 * quote_age_score +
+                0.05 * imbalance_score +
+                0.25 * vwap_alignment_score
+            ), 2)
+            execution_readiness_score = round(_clamp(
+                0.35 * liquidity_score +
+                0.25 * cost_score +
+                0.20 * spread_score +
+                0.12 * quote_age_score +
+                0.08 * volume_ratio_score
+            ), 2)
+            if quote_is_stale:
+                microstructure_score = min(microstructure_score, 55.0)
+                execution_readiness_score = min(execution_readiness_score, 58.0)
+            elif snapshot_error and not snapshot_metrics:
+                microstructure_score = min(microstructure_score, 50.0)
+                execution_readiness_score = min(execution_readiness_score, 55.0)
+
+            risk_base = _num(factor_scores.get('risk'), 72) or 72
+            risk_penalties = []
+            if event_risk == 'High':
+                risk_penalties.append(('High event risk', 20))
+            if days_to_earnings is not None and 0 <= days_to_earnings <= 3:
+                risk_penalties.append(('Earnings within 3 days', 25))
+            elif days_to_earnings is not None and 0 <= days_to_earnings <= 10:
+                risk_penalties.append(('Earnings within 10 days', 10))
+            if atr_pct is not None and atr_pct > 10:
+                risk_penalties.append(('ATR above 10%', 12))
+            if vol20 is not None and vol20 > 90:
+                risk_penalties.append(('Realized vol above 90%', 10))
+            if max_dd is not None and max_dd > 35:
+                risk_penalties.append(('Large recent drawdown', 8))
+            # A one-day FINRA short-sale-volume ratio is flow context, not
+            # short interest. It is intentionally excluded from risk scoring.
+            if iv_skew is not None and abs(iv_skew) >= 20:
+                risk_penalties.append(('Large options IV skew', 8))
+            if beta is not None and beta >= 2.2:
+                risk_penalties.append(('High beta', 6))
+            risk_score = round(_clamp(risk_base - sum(p for _label, p in risk_penalties)), 2)
+
+            event_score = 68
+            if news_sentiment == 'Positive':
+                event_score += 12
+            elif news_sentiment == 'Negative':
+                event_score -= 18
+            if event_risk == 'High':
+                event_score -= 20
+            elif event_risk == 'Medium':
+                event_score -= 7
+            if days_to_earnings is not None and 0 <= days_to_earnings <= 10:
+                event_score -= 10
+            if rec.get('hasNews') and news_sentiment in ('Positive', 'Neutral'):
+                event_score += 4
+            event_score = round(_clamp(event_score), 2)
+
+            confirmation_equivalent = int(round(confirmation_score / 100.0 * 6.0))
+            setup, matched_strategies, strategy_stack, primary_strategy = _derive_setup(rec, confirmation_equivalent, event_risk, days_to_earnings)
+            setup_quality_score = round(_clamp(
+                0.38 * technical_score +
+                0.24 * relative_score +
+                0.18 * confirmation_score +
+                0.10 * day_structure_score +
+                0.10 * volume_ratio_score
+            ), 2)
+
+            atr_basis_pct = atr_pct if atr_pct is not None and atr_pct > 0 else None
+            if atr_basis_pct is None:
+                atr_basis_pct = max(1.2, min(8.0, (vol20 or 32) / 16.0))
+            atr_abs = price * atr_basis_pct / 100.0 if price is not None and price > 0 else None
+            entry_plan = {
+                'entryLow': None,
+                'entryHigh': None,
+                'stopLoss': None,
+                'target1': None,
+                'target2': None,
+                'rewardRiskRatio': None,
+                'stopDistancePct': None,
+                'entryDistancePct': None,
+                'invalidationLevel': None,
+                'readiness': 'Review',
+                'planType': setup,
+                'basis': 'VWAP/day range/ATR geometry',
+            }
+            entry_score = 45
+            entry_readiness = 'Review'
+            if price is not None and price > 0 and atr_abs is not None and atr_abs > 0:
+                range_low = day_low if day_low is not None and day_low > 0 else max(0.01, price - atr_abs)
+                range_high = day_high if day_high is not None and day_high > 0 else price + atr_abs
+                anchor = day_vwap if day_vwap is not None and day_vwap > 0 else price
+                support_candidates = [
+                    value for value in (recent_low20, recent_low50, range_low)
+                    if value is not None and value > 0 and value < price
+                ]
+                resistance_candidates = [
+                    value for value in (recent_high20, recent_high50, range_high)
+                    if value is not None and value > 0
+                ]
+                support_level = max(support_candidates) if support_candidates else None
+                if setup == 'Momentum Breakout':
+                    breakout_ref = max(range_high, price)
+                    entry_low = max(0.01, breakout_ref * 0.995)
+                    entry_high = breakout_ref * 1.008
+                elif setup in ('Trend Pullback', 'Mean Reversion Watch'):
+                    entry_low = max(0.01, min(price, anchor - 0.35 * atr_abs))
+                    entry_high = max(entry_low * 1.002, min(price * 1.01, anchor + 0.25 * atr_abs))
+                elif setup == 'Event Watch':
+                    entry_low = max(0.01, min(price, anchor - 0.25 * atr_abs))
+                    entry_high = max(entry_low * 1.002, min(price * 1.006, anchor + 0.20 * atr_abs))
+                else:
+                    entry_low = max(0.01, min(price, anchor - 0.20 * atr_abs))
+                    entry_high = max(entry_low * 1.002, min(price * 1.012, anchor + 0.35 * atr_abs))
+                resistance_candidates = [
+                    value for value in resistance_candidates
+                    if value is not None and value > entry_high
+                ]
+                resistance_level = min(resistance_candidates) if resistance_candidates else None
+
+                stop_mult = 1.15 if setup == 'Momentum Breakout' else 1.30 if setup in ('Trend Pullback', 'Mean Reversion Watch') else 1.20
+                atr_stop = entry_low - stop_mult * atr_abs
+                structure_stop = (support_level - 0.25 * atr_abs) if support_level is not None and support_level < entry_low else None
+                if structure_stop is not None:
+                    stop_loss = max(0.01, max(atr_stop, structure_stop))
+                    stop_basis = 'nearest support / ATR'
+                else:
+                    stop_loss = max(0.01, atr_stop)
+                    stop_basis = 'ATR below entry zone'
+                risk_per_share = max(0.01, entry_high - stop_loss)
+                target_mult = 1.70 if setup == 'Momentum Breakout' else 1.45 if setup in ('Trend Pullback', 'Mean Reversion Watch') else 1.55
+                atr_target = entry_high + target_mult * atr_abs
+                target_basis = 'ATR extension'
+                if resistance_level is not None and resistance_level <= entry_high + 2.60 * atr_abs:
+                    target1 = max(entry_high + 0.15 * atr_abs, resistance_level)
+                    target_basis = 'nearest 20/50d or day resistance'
+                elif setup == 'Momentum Breakout' and resistance_level is not None and resistance_level <= entry_high + 3.40 * atr_abs:
+                    target1 = max(atr_target, resistance_level)
+                    target_basis = 'breakout resistance extension'
+                else:
+                    target1 = atr_target
+                target2_floor = entry_high + (2.70 if setup == 'Momentum Breakout' else 2.35) * atr_abs
+                target2 = max(target1 + 0.75 * atr_abs, target2_floor)
+                reward_risk = (target1 - entry_high) / risk_per_share if risk_per_share > 0 else None
+                stop_distance_pct = risk_per_share / entry_high * 100.0 if entry_high > 0 else None
+                if price < entry_low:
+                    entry_distance_pct = (entry_low - price) / price * 100.0
+                elif price > entry_high:
+                    entry_distance_pct = (price - entry_high) / entry_high * 100.0
+                else:
+                    entry_distance_pct = 0.0
+
+                entry_base = 78
+                if price > entry_high:
+                    entry_base -= min(32, entry_distance_pct * 5.5)
+                elif price < entry_low and setup == 'Momentum Breakout':
+                    entry_base -= min(18, entry_distance_pct * 4.0)
+                if day_range_position_pct is not None and day_range_position_pct > 90 and setup != 'Momentum Breakout':
+                    entry_base -= 14
+                if price_vs_vwap_pct is not None and price_vs_vwap_pct > 6:
+                    entry_base -= min(22, (price_vs_vwap_pct - 6) * 3.0)
+                if price_vs_vwap_pct is not None and price_vs_vwap_pct < -4 and setup != 'Mean Reversion Watch':
+                    entry_base -= 9
+                if reward_risk is not None:
+                    if reward_risk < 1.00:
+                        entry_base -= 28
+                    elif reward_risk < 1.25:
+                        entry_base -= 18
+                    elif reward_risk < 1.50:
+                        entry_base -= 10
+                    elif reward_risk >= 2.0:
+                        entry_base += 8
+                else:
+                    entry_base -= 12
+                if stop_distance_pct is not None:
+                    if stop_distance_pct > 12:
+                        entry_base -= 14
+                    elif stop_distance_pct > 8:
+                        entry_base -= 7
+                if volume_ratio is not None and volume_ratio < 0.70:
+                    entry_base -= 8
+                if event_risk == 'High':
+                    entry_base -= 10
+                if spread_metric_bps is not None and spread_metric_bps > 50:
+                    entry_base -= 8
+
+                entry_score = round(_clamp(entry_base), 2)
+                if reward_risk is not None and reward_risk < 0.75:
+                    entry_readiness = 'Avoid'
+                elif entry_score >= 75 and entry_distance_pct <= 1.25 and (day_range_position_pct is None or day_range_position_pct <= 88 or setup == 'Momentum Breakout'):
+                    entry_readiness = 'Ready'
+                elif setup == 'Momentum Breakout' and price <= entry_high and volume_ratio is not None and volume_ratio >= 1.0 and entry_score >= 68:
+                    entry_readiness = 'BreakoutConfirm'
+                elif price > entry_high or (day_range_position_pct is not None and day_range_position_pct > 85) or (price_vs_vwap_pct is not None and price_vs_vwap_pct > 5):
+                    entry_readiness = 'WaitPullback'
+                elif entry_score < 35:
+                    entry_readiness = 'Avoid'
+                else:
+                    entry_readiness = 'Review'
+
+                entry_plan.update({
+                    'entryLow': _round_or_none(entry_low),
+                    'entryHigh': _round_or_none(entry_high),
+                    'stopLoss': _round_or_none(stop_loss),
+                    'target1': _round_or_none(target1),
+                    'target2': _round_or_none(target2),
+                    'rewardRiskRatio': _round_or_none(reward_risk, 2),
+                    'stopDistancePct': _round_or_none(stop_distance_pct, 2),
+                    'entryDistancePct': _round_or_none(entry_distance_pct, 2),
+                    'invalidationLevel': _round_or_none(stop_loss),
+                    'readiness': entry_readiness,
+                    'atrBasisPct': _round_or_none(atr_basis_pct, 2),
+                    'supportLevel': _round_or_none(support_level),
+                    'resistanceLevel': _round_or_none(resistance_level),
+                    'targetBasis': target_basis,
+                    'stopBasis': stop_basis,
+                })
+
+            required_evidence_missing = []
+            if source_data_quality_bad:
+                required_evidence_missing.append('Market Scanner required data quality failed')
+            if price is None or price <= 0:
+                required_evidence_missing.append('current price unavailable')
+            if adv20 is None or adv20 <= 0:
+                required_evidence_missing.append('ADV20 unavailable')
+            if confirmation_available < 4:
+                required_evidence_missing.append('fewer than 4/6 directional observations available')
+            if history_days and history_days < 180:
+                required_evidence_missing.append('fewer than 180 daily bars')
+            if entry_plan.get('entryLow') is None or entry_plan.get('entryHigh') is None:
+                required_evidence_missing.append('entry geometry unavailable')
+            required_evidence_missing = list(dict.fromkeys(required_evidence_missing))
+
+            optional_evidence_missing = []
+            if rec.get('marketCap') is None:
+                optional_evidence_missing.append('market cap')
+            if not rec.get('hasNews'):
+                optional_evidence_missing.append('recent news')
+            if short_ratio is None:
+                optional_evidence_missing.append('short-volume context')
+            if iv_skew is None:
+                optional_evidence_missing.append('options skew')
+
+            core_evidence_checks = [
+                price is not None and price > 0,
+                adv20 is not None and adv20 > 0,
+                confirmation_available >= 4,
+                not history_days or history_days >= 180,
+                entry_plan.get('entryLow') is not None and entry_plan.get('entryHigh') is not None,
+                cost_bps is not None,
+            ]
+            fine_data_coverage_pct = round(sum(1 for value in core_evidence_checks if value) / len(core_evidence_checks) * 100.0, 1)
+            market_reliability = _num(rec.get('scoreReliability'), None)
+            if market_reliability is None:
+                market_reliability = max(72.0, confirmation_metrics['coveragePct'])
+            fine_score_reliability = round(_clamp(
+                0.55 * market_reliability + 0.45 * fine_data_coverage_pct
+            ), 1)
+
+            blockers = []
+            warnings = []
+            if dq in ('partial', 'review'):
+                warnings.append('partial optional enrichment')
+            if snapshot_error and not snapshot_metrics:
+                warnings.append('fresh Alpaca snapshot unavailable')
+            if rec.get('tradable') is False:
+                blockers.append('asset not tradable')
+            if adv20 is not None and adv20 < 5_000_000:
+                blockers.append('ADV20 below $5M')
+            elif adv20 is not None and adv20 < 25_000_000:
+                warnings.append('ADV20 below $25M')
+            elif adv20 is not None and adv20 < 50_000_000:
+                warnings.append('ADV20 below institutional comfort band')
+            if cost_bps is not None and cost_bps > 250 and not quote_is_stale:
+                blockers.append('round-trip cost above 250 bps')
+            elif cost_bps is not None and cost_bps > 80:
+                warnings.append('round-trip cost above 80 bps')
+            elif cost_bps is not None and cost_bps > 40:
+                warnings.append('round-trip cost above 40 bps')
+            if spread_metric_bps is not None and spread_metric_bps > 150 and not quote_is_stale:
+                blockers.append('quoted spread above 150 bps')
+            elif spread_metric_bps is not None and spread_metric_bps > 60:
+                warnings.append('quoted spread above 60 bps')
+            elif spread_metric_bps is not None and spread_metric_bps > 30:
+                warnings.append('quoted spread above 30 bps')
+            if quote_age_seconds is not None and quote_age_seconds > 1800:
+                warnings.append('stale quote; live execution gate deferred')
+            if event_risk == 'High' and days_to_earnings is not None and 0 <= days_to_earnings <= 2:
+                blockers.append('high event risk inside 2 days')
+            elif event_risk == 'High':
+                warnings.append('high event risk')
+            elif days_to_earnings is not None and 0 <= days_to_earnings <= 10:
+                warnings.append('earnings inside 10 days')
+            if atr_pct is not None and atr_pct > 20:
+                blockers.append('ATR above 20%')
+            elif atr_pct is not None and atr_pct > 12:
+                warnings.append('ATR above 12%')
+            elif atr_pct is not None and atr_pct > 8:
+                warnings.append('ATR above 8%')
+            if vol20 is not None and vol20 > 150:
+                blockers.append('realized vol above 150%')
+            elif vol20 is not None and vol20 > 100:
+                warnings.append('realized vol above 100%')
+            elif vol20 is not None and vol20 > 80:
+                warnings.append('realized vol above 80%')
+            if rel3 is not None and rel3 < 0:
+                warnings.append('negative SPY-relative 3M')
+            if cv200 is not None and cv200 < 0:
+                warnings.append('price below 200-day average')
+            if iv_skew is not None and abs(iv_skew) >= 15:
+                warnings.append('options skew elevated')
+            if entry_plan.get('rewardRiskRatio') is not None and entry_plan.get('rewardRiskRatio') < 0.75:
+                blockers.append('reward/risk below 0.75')
+            elif entry_plan.get('rewardRiskRatio') is not None and entry_plan.get('rewardRiskRatio') < 1.15:
+                warnings.append('reward/risk below 1.15')
+            elif entry_plan.get('rewardRiskRatio') is not None and entry_plan.get('rewardRiskRatio') < 1.35:
+                warnings.append('reward/risk below 1.35')
+            if entry_readiness == 'Avoid':
+                if entry_score < 25 or (entry_plan.get('rewardRiskRatio') is not None and entry_plan.get('rewardRiskRatio') < 0.75):
+                    blockers.append('entry geometry avoid')
+                else:
+                    warnings.append('entry geometry avoid')
+            elif entry_readiness == 'WaitPullback':
+                warnings.append('wait for pullback into entry zone')
+            if quote_imbalance_pct is not None and quote_imbalance_pct < -60 and not quote_is_stale:
+                warnings.append('quote imbalance skewed to ask side')
+            if day_range_position_pct is not None and day_range_position_pct > 95 and setup != 'Momentum Breakout':
+                warnings.append('price near top of day range')
+            factor_agreement_pct = _num(rec.get('factorAgreementPct'), None)
+            if factor_agreement_pct is not None and factor_agreement_pct < 45:
+                warnings.append('low Market Scanner factor agreement')
+            if fine_score_reliability < 78 and not required_evidence_missing:
+                warnings.append('Fine Scan evidence reliability below 78%')
+            market_ai_decision = rec.get('aiTraderDecision')
+            if market_ai_decision == 'Avoid':
+                warnings.append('Market Scanner AI challenge remains unresolved')
+
+            blockers = list(dict.fromkeys(blockers))
+            warnings = [w for w in list(dict.fromkeys(warnings)) if w not in blockers]
+            fine_score_pre_gate = round(_clamp(
+                0.22 * setup_quality_score +
+                0.20 * entry_score +
+                0.20 * execution_readiness_score +
+                0.16 * microstructure_score +
+                0.14 * risk_score +
+                0.08 * event_score
+            ), 2)
+            decision_warning_count = len([
+                w for w in warnings
+                if 'stale quote' not in str(w).lower()
+            ])
+            fine_score = round(_clamp(
+                fine_score_pre_gate -
+                min(22, len(blockers) * 7) -
+                min(8, decision_warning_count * 1.2)
+            ), 2)
+
+            gate = 'BLOCK' if blockers else ('REVIEW' if required_evidence_missing or warnings or entry_readiness in ('WaitPullback', 'Review') or fine_score < 76 else 'PASS')
+            decision = _pa_fine_scan_decision_policy(
+                fine_score,
+                gate,
+                required_evidence_missing=required_evidence_missing,
+                entry_readiness=entry_readiness,
+                execution_score=execution_readiness_score,
+                hard_blockers=blockers,
+                setup_score=setup_quality_score,
+                warning_count=decision_warning_count,
+                reward_risk=entry_plan.get('rewardRiskRatio'),
+                evidence_reliability=fine_score_reliability,
+            )
+            fine_grade = _grade_from_score(fine_score)
+
+            liquidity_grade = 'Good' if execution_readiness_score >= 72 and not any('cost' in w or 'spread' in w for w in warnings) else 'Caution' if execution_readiness_score >= 50 else 'Poor'
+            risk_grade = 'LOW' if risk_score >= 72 and gate != 'BLOCK' else 'MEDIUM' if risk_score >= 48 and gate != 'BLOCK' else 'HIGH'
+            news_grade = 'High Event Risk' if event_risk == 'High' else 'Catalyst' if news_sentiment == 'Positive' else 'Caution' if news_sentiment == 'Negative' else 'Neutral'
+
+            reason_bits = [
+                'Fine score %.0f' % fine_score,
+                'setup %s' % setup,
+                'entry %s %.0f' % (entry_readiness, entry_score),
+                'execution %.0f' % execution_readiness_score,
+                'microstructure %.0f' % microstructure_score,
+                'risk %.0f' % risk_score,
+            ]
+            if blockers:
+                reason_bits.append('blocked: ' + '; '.join(blockers[:3]))
+            elif warnings:
+                reason_bits.append('review: ' + '; '.join(warnings[:3]))
+
+            next_step = 'Send to Deeper Validation for strategy stability, slippage, and parameter tests.' if decision == 'Continue' else \
+                        'Keep on watchlist; wait for entry zone, execution quality, or risk gate to improve.' if decision == 'Watch' else \
+                        'Refresh required evidence before making a routing decision.' if decision == 'NeedMoreData' else \
+                        'Do not validate until hard blockers clear.'
 
             rec.update({
-                'regime': regime,
-                'matchedStrategies': matched_strategies,
-                'matchReason': match_reason,
-                'regimeSignals': regime_signals,
-                'matchConfidence': match_conf,
+                'price': price,
+                'lastPrice': price,
+                'changePercent': intraday_change_pct,
+                'dayHigh': day_high,
+                'dayLow': day_low,
+                'dayVWAP': day_vwap,
+                'dayOpen': day_open,
+                'volume': snapshot_volume if snapshot_volume is not None else rec.get('volume'),
+                'bidPrice': bid_price,
+                'askPrice': ask_price,
+                'bidSize': bid_size,
+                'askSize': ask_size,
+                'spreadBps': spread_metric_bps,
+                'estimatedRoundTripCostBps': _round_or_none(cost_bps, 2),
             })
 
-            # ── Confidence assessment (penalty, NOT a skip gate) ──
-            _conf_threshold = 25 if risk_profile == 'high' else 35 if risk_profile == 'low' else 30
-            _low_conf = match_conf < _conf_threshold
             rec.update({
-                'lowConfidenceFlag': _low_conf,
-                'confidenceUsed': True,
-                'confidenceThreshold': _conf_threshold,
-                'confidencePenaltyApplied': _low_conf,
-                'confidencePenaltyReason': 'Low regime confidence (%d < %d)' % (match_conf, _conf_threshold) if _low_conf else '',
-            })
-
-            # ── Multi-strategy backtest ──
-            best_strategy = matched_strategies[0]
-            best_sharpe = -999
-            best_total_return = -999
-            per_strategy_results = []
-            bt_overall_status = 'skipped'
-
-            for s_name in matched_strategies[:3]:  # max 3 strategies
-                bt_key = _FS_BT_STRATEGY_MAP.get(s_name, 'moving_average')
-                bt, bt_err = _pa_backtest_snapshot(symbol, bt_key)
-                bt_item = {
-                    'strategy': s_name,
-                    'mappedKey': bt_key,
-                    'status': bt.get('status', 'skipped'),
-                    'totalReturn': bt.get('totalReturn'),
-                    'sharpe': (bt.get('metrics') or {}).get('sharpe') if bt else None,
-                    'maxDrawdown': (bt.get('metrics') or {}).get('maxDrawdown') if bt else None,
-                    'error': bt_err,
-                }
-                per_strategy_results.append(bt_item)
-                if bt.get('status') == 'pass' and bt.get('totalReturn') is not None:
-                    bt_overall_status = 'pass'
-                    _sharpe = float((bt.get('metrics') or {}).get('sharpe') or 0)
-                    _tr = float(bt.get('totalReturn') or 0)
-                    if _sharpe > best_sharpe or (_sharpe == best_sharpe and _tr > best_total_return):
-                        best_sharpe = _sharpe
-                        best_total_return = _tr
-                        best_strategy = s_name
-
-            # Use the best backtest for entry quality context
-            _best_bt = per_strategy_results[0] if per_strategy_results else {}
-            _best_bt_raw = (per_strategy_results[0] if per_strategy_results else {})
-            # ── AI: entry quality ──
-            entry_resp, _ = _pa_call_endpoint(uid, '/api/ai/entry-quality', ai_entry_quality, {'symbol': symbol})
-            entry_details = (entry_resp or {}).get('details') or {}
-            entry_details['entry_quality'] = (entry_resp or {}).get('entry_quality', '')
-
-            # ── AI: advanced scan (liquidity, news, risk grades) ──
-            adv_resp, _ = _pa_call_endpoint(uid, '/api/ai/fine-scan-advanced', ai_fine_scan_advanced, {
-                'symbol': symbol,
-                'entryDetails': entry_details,
-                'regime': regime,
-                'strategies': matched_strategies[:3],
-                'newsContext': {
-                    'newsSentiment': rec.get('newsSentiment'),
-                    'newsCount': rec.get('newsCount', 0),
-                    'hasNews': rec.get('hasNews', False),
-                    'eventRisk': rec.get('eventRisk'),
-                    'newsSource': rec.get('newsSource'),
-                    'newsFetchReason': rec.get('newsFetchReason'),
-                },
-            })
-            rec['fineScanNewsContextUsed'] = True
-            rec.update({
-                'bestStrategy': best_strategy,
-                'scanScore': min(100, max(0, int(rec.get('priorityScore') or rec.get('trendScore') or 50))),
-                'backtestStatus': bt_overall_status,
-                'backtestPerformance': 'positive' if best_total_return >= 0 else 'negative',
-                'backtestPerStrategy': per_strategy_results,
-                'backtestError': None,
-                'entryQuality': (entry_resp or {}).get('entry_quality', ''),
-                'entryReason': (entry_resp or {}).get('entry_reason', ''),
-                'entryScore': (entry_resp or {}).get('entry_score', 0),
-                'entryDetails': entry_details,
-                'liquidityGrade': ((adv_resp or {}).get('liquidity') or {}).get('grade', ''),
-                'liquidityReason': ((adv_resp or {}).get('liquidity') or {}).get('reason', ''),
-                'newsGrade': ((adv_resp or {}).get('news') or {}).get('grade', ''),
-                'newsReason': ((adv_resp or {}).get('news') or {}).get('reason', ''),
-                'riskGrade': ((adv_resp or {}).get('risk') or {}).get('grade', ''),
-                'riskReason': ((adv_resp or {}).get('risk') or {}).get('reason', ''),
-                'riskScore': (((adv_resp or {}).get('risk') or {}).get('details') or {}).get('risk_score') or 0,
                 'scanStatus': 'completed',
-                'fineScanSource': 'backend_unified',
-                'fallbackUsed': False,
+                'fineScanSource': 'backend_institutional_v4',
+                'fineScanMethod': 'institutional_setup_entry_execution_gate_v4',
+                'score': fine_score,
+                'fineScanScore': fine_score,
+                'matchConfidence': fine_score,
+                'decision': decision,
+                'deterministicDecision': decision,
+                'fineScanDecision': decision,
+                'fineScanGrade': fine_grade,
+                'decisionConfidence': fine_score,
+                'decisionSource': 'data_quality_gate' if decision == 'NeedMoreData' else 'institutional_rules',
+                'decisionReason': '. '.join(reason_bits),
+                'decisionBlockers': blockers,
+                'decisionWarnings': warnings,
+                'decisionWarningCount': decision_warning_count,
+                'requiredEvidenceMissing': required_evidence_missing,
+                'optionalEvidenceMissing': optional_evidence_missing,
+                'fineDataCoveragePct': fine_data_coverage_pct,
+                'fineScoreReliability': fine_score_reliability,
+                'riskGate': gate,
+                'riskGateStatus': gate,
+                'decisionLabel': decision,
+                'setup': setup,
+                'regime': setup,
+                'matchedStrategies': matched_strategies,
+                'strategyStack': strategy_stack,
+                'bestStrategy': primary_strategy,
+                'bestStrategyLabel': matched_strategies[0] if matched_strategies else primary_strategy,
+                'matchReason': '. '.join(reason_bits),
+                'keySignals': [
+                    'Direction confirmations %d/%d available' % (confirmations, confirmation_available),
+                    'SPY-relative 3M %s' % _pct_text(rel3),
+                    'ADV20 %s' % _compact_money(adv20),
+                    'Cost %s bps' % ('%.1f' % cost_bps if cost_bps is not None else 'n/a'),
+                    'VWAP distance %s' % _pct_text(price_vs_vwap_pct),
+                    'Entry %s' % entry_readiness,
+                    'Event risk %s' % event_risk,
+                ],
+                'regimeSignals': [
+                    '1M %s' % _pct_text(m1),
+                    '3M %s' % _pct_text(m3),
+                    '6M %s' % _pct_text(m6),
+                    '50DMA %s' % _pct_text(cv50),
+                    '200DMA %s' % _pct_text(cv200),
+                    'Volume ratio %s' % ('%.2fx' % volume_ratio if volume_ratio is not None else 'n/a'),
+                ],
+                'fineScanFactorScores': {
+                    'setup': setup_quality_score,
+                    'entry': entry_score,
+                    'execution': execution_readiness_score,
+                    'microstructure': microstructure_score,
+                    'risk': risk_score,
+                    'event': event_score,
+                    'technical': technical_score,
+                    'relative': relative_score,
+                    'liquidity': liquidity_score,
+                    'confirmation': confirmation_score,
+                    'cost': cost_score,
+                    'dayStructure': day_structure_score,
+                    'rsi14': rsi14,
+                    'macdHistogram': macd_hist,
+                },
+                'fineScanScorePreGate': fine_score_pre_gate,
+                'setupQualityScore': setup_quality_score,
+                'executionReadinessScore': execution_readiness_score,
+                'microstructureScore': microstructure_score,
+                'entryReadiness': entry_readiness,
+                'entryPlanFine': entry_plan,
+                'fineScanSummary': '%s | entry %s | execution %.0f | gate %s' % (setup, entry_readiness, execution_readiness_score, gate),
+                'technicalScore': technical_score,
+                'relativeScoreFine': relative_score,
+                'liquidityScore': liquidity_score,
+                'riskScore': risk_score,
+                'eventScore': event_score,
+                'confirmationScore': confirmation_score,
+                'confirmationCount': confirmations,
+                'confirmationAvailableCount': confirmation_available,
+                'confirmationCoveragePct': confirmation_metrics['coveragePct'],
+                'entryQuality': 'Ready' if entry_readiness == 'Ready' else 'Breakout confirm' if entry_readiness == 'BreakoutConfirm' else 'Wait for Pullback' if entry_readiness == 'WaitPullback' else 'Review Entry' if entry_readiness == 'Review' else 'Avoid / Blocked',
+                'entryScore': entry_score,
+                'entryReason': next_step,
+                'entryDetails': {
+                    'price': price,
+                    'volume_ratio': volume_ratio,
+                    'cost_bps': cost_bps,
+                    'setup': setup,
+                    'strategy_stack': strategy_stack,
+                    'primary_strategy': primary_strategy,
+                    'risk_gate': gate,
+                    'entry_plan': entry_plan,
+                    'price_vs_vwap_pct': price_vs_vwap_pct,
+                    'day_range_position_pct': day_range_position_pct,
+                },
+                'liquidityGrade': liquidity_grade,
+                'liquidityReason': 'Execution score %.0f. ADV20 %s, tier %s, spread %s bps, estimated cost %s bps.' % (
+                    execution_readiness_score,
+                    _compact_money(adv20),
+                    liquidity_tier,
+                    '%.1f' % spread_metric_bps if spread_metric_bps is not None else 'n/a',
+                    '%.1f' % cost_bps if cost_bps is not None else 'n/a'
+                ),
+                'liquidityDetails': {
+                    'adv20': adv20,
+                    'volumeRatio': volume_ratio,
+                    'volumeRatioSource': rec.get('volumeRatioSource'),
+                    'intradayVolumeRatioRaw': rec.get('intradayVolumeRatioRaw'),
+                    'spreadBps': spread_metric_bps,
+                    'snapshotSpreadBps': snapshot_spread_bps,
+                    'estimatedRoundTripCostBps': cost_bps,
+                    'costEstimateSource': cost_estimate_source,
+                    'capacityScore': capacity_score,
+                    'liquidityTier': liquidity_tier,
+                    'executionReadinessScore': execution_readiness_score,
+                },
+                'riskGrade': risk_grade,
+                'riskReason': '; '.join([label for label, _penalty in risk_penalties]) or 'No major event, volatility, or crowding penalty.',
+                'riskDetails': {
+                    'risk_score': risk_score,
+                    'realizedVol20': vol20,
+                    'atrPercent': atr_pct,
+                    'maxDrawdown126': max_dd,
+                    'marketBeta': beta,
+                    'eventRisk': event_risk,
+                    'daysToEarnings': days_to_earnings,
+                    'shortVolumeRatio': short_ratio,
+                    'shortVolumeContext': rec.get('shortVolumeContext'),
+                    'shortVolumeIsShortInterest': rec.get('shortVolumeIsShortInterest'),
+                    'optionIvSkew': iv_skew,
+                    'gate': gate,
+                    'hardBlockers': blockers,
+                    'warnings': warnings,
+                    'requiredEvidenceMissing': required_evidence_missing,
+                    'evidenceReliability': fine_score_reliability,
+                    'dataCoveragePct': fine_data_coverage_pct,
+                },
+                'newsGrade': news_grade,
+                'newsReason': 'News sentiment %s, event risk %s%s.' % (
+                    news_sentiment, event_risk,
+                    ', earnings in %sd' % int(days_to_earnings) if days_to_earnings is not None and days_to_earnings >= 0 else ''
+                ),
+                'newsDetails': {
+                    'headline_count': rec.get('newsCount') or 0,
+                    'top_headlines': [((rec.get('topNews') or {}).get('headline') or rec.get('topNewsHeadline'))] if (rec.get('topNews') or rec.get('topNewsHeadline')) else [],
+                    'earnings_soon': days_to_earnings is not None and 0 <= days_to_earnings <= 10,
+                },
+                'microstructureDetails': {
+                    'bidPrice': bid_price,
+                    'askPrice': ask_price,
+                    'bidSize': bid_size,
+                    'askSize': ask_size,
+                    'spreadBps': spread_metric_bps,
+                    'quoteImbalancePct': quote_imbalance_pct,
+                    'quoteAgeSeconds': quote_age_seconds,
+                    'tradeAgeSeconds': trade_age_seconds,
+                    'quoteIsStale': quote_is_stale,
+                    'costModelFallback': stale_quote_cost_model,
+                    'dayVWAP': day_vwap,
+                    'priceVsVwapPct': price_vs_vwap_pct,
+                    'dayRangePositionPct': day_range_position_pct,
+                    'intradayChangePct': intraday_change_pct,
+                    'comparableVolumeRatio': volume_ratio,
+                    'volumeRatioSource': rec.get('volumeRatioSource'),
+                    'intradayVolumeRatioRaw': rec.get('intradayVolumeRatioRaw'),
+                    'score': microstructure_score,
+                    'freshSnapshot': bool(snapshot_metrics),
+                    'snapshotError': snapshot_error,
+                },
+                'executionDetails': {
+                    'executionReadinessScore': execution_readiness_score,
+                    'spreadScore': spread_score,
+                    'costScore': cost_score,
+                    'quoteAgeScore': quote_age_score,
+                    'volumeRatioScore': volume_ratio_score,
+                    'capacityScore': capacity_score,
+                    'participation10pctDollar': rec.get('participation10pctDollar'),
+                },
+                'institutionalFineScan': {
+                    'stage': 'Fine Scan / second-pass trade desk gate',
+                    'deterministicDecision': decision,
+                    'fineScore': fine_score,
+                    'fineScorePreGate': fine_score_pre_gate,
+                    'setup': setup,
+                    'strategyStack': strategy_stack,
+                    'primaryStrategy': primary_strategy,
+                    'setupQualityScore': setup_quality_score,
+                    'entryReadiness': entry_readiness,
+                    'entryScore': entry_score,
+                    'entryPlan': entry_plan,
+                    'executionReadinessScore': execution_readiness_score,
+                    'microstructureScore': microstructure_score,
+                    'riskGate': gate,
+                    'hardBlockers': blockers,
+                    'warnings': warnings,
+                    'requiredEvidenceMissing': required_evidence_missing,
+                    'optionalEvidenceMissing': optional_evidence_missing,
+                    'evidenceReliability': fine_score_reliability,
+                    'dataCoveragePct': fine_data_coverage_pct,
+                    'snapshotMetrics': {
+                        'price': price,
+                        'prevClose': prev_close,
+                        'intradayChangePct': intraday_change_pct,
+                        'dayVWAP': day_vwap,
+                        'priceVsVwapPct': price_vs_vwap_pct,
+                        'dayRangePositionPct': day_range_position_pct,
+                        'bidPrice': bid_price,
+                        'askPrice': ask_price,
+                        'bidSize': bid_size,
+                        'askSize': ask_size,
+                        'quoteImbalancePct': quote_imbalance_pct,
+                        'quoteAgeSeconds': quote_age_seconds,
+                        'quoteIsStale': quote_is_stale,
+                        'freshSnapshot': bool(snapshot_metrics),
+                    },
+                    'liquidity': {
+                        'adv20': adv20,
+                        'spreadBps': spread_metric_bps,
+                        'costBps': cost_bps,
+                        'costEstimateSource': cost_estimate_source,
+                        'liquidityTier': liquidity_tier,
+                        'costModelFallback': stale_quote_cost_model,
+                    },
+                    'eventCrowding': {
+                        'eventRisk': event_risk,
+                        'daysToEarnings': days_to_earnings,
+                        'shortVolumeRatio': short_ratio,
+                        'optionIvSkew': iv_skew,
+                        'newsSentiment': news_sentiment,
+                    },
+                    'dataBoundaryNote': 'Paid exchange imbalance feeds are not used in this local Fine Scan and should not affect the candidate decision.',
+                },
+                'backtestStatus': 'pending_deeper_validation',
+                'backtestPerformance': 'pending',
+                'backtestPerStrategy': [],
+                'quickOptStatus': 'pending_deeper_validation',
+                'quickOptResults': [],
+                'finalReason': '. '.join(reason_bits),
+                'nextStep': next_step,
+                'institutionalContext': {
+                    'microstructureProxy': 'Alpaca snapshots latestQuote/latestTrade/dailyBar, ADV capacity, estimated cost, FINRA short-sale flow context, options skew',
+                    'missingPaidFeeds': ['Nasdaq TotalView/NOII', 'NYSE OpenBook/Order Imbalances'],
+                    'stageBoundary': 'Fine Scan validates setup, entry geometry, execution feasibility, and event/crowding before Deeper Validation.',
+                    'institutionalReferences': ['Nasdaq NOII/order imbalance concepts', 'NYSE auction imbalance concepts', 'Alpaca snapshot latest quote/trade/bar'],
+                },
                 'riskProfileUsed': risk_profile,
                 'timeHorizonUsed': time_horizon,
                 'pipelineModeUsed': pipeline_mode,
                 'tradeModeUsed': trade_mode,
+                'priority': idx,
+                'aiUsed': False,
+                'aiExplained': False,
             })
 
-            # ── AI: fine scan decision ──
-            decision_payload = {
-                'symbol': symbol,
-                'trendLabel': rec.get('trendLabel') or rec.get('trend') or 'Neutral',
-                'trendScore': rec.get('scanScore') or 50,
-                'matchedStrategies': rec.get('matchedStrategies') or [],
-                'matchConfidence': rec.get('matchConfidence') or 0,
-                'lowConfidenceFlag': _low_conf,
-                'backtestStatus': rec.get('backtestStatus') or '',
-                'backtestPerformance': rec.get('backtestPerformance') or '',
-                'backtestTotalReturn': best_total_return if best_total_return != -999 else None,
-                'entryQuality': {
-                    'grade': rec.get('entryQuality') or '',
-                    'score': rec.get('entryScore') or 0,
-                    'zone': entry_details.get('zone') or '',
-                },
-                'liquidityGrade': rec.get('liquidityGrade') or '',
-                'newsGrade': rec.get('newsGrade') or '',
-                'riskGrade': rec.get('riskGrade') or '',
-                'riskScore': rec.get('riskScore') or 0,
-                'entryScore': rec.get('entryScore') or 0,
-            }
-            _fine_decision_cache_payload = {
-                'uid': uid,
-                'provider': (ai_provider_config_state or {}).get('provider'),
-                'model': (ai_provider_config_state or {}).get('model'),
-                'payload': decision_payload,
-            }
-            dec_resp = _pipeline_ai_cache_get('fine_scan_decision', _fine_decision_cache_payload)
-            if dec_resp is None:
-                dec_resp, _ = _pa_call_endpoint(uid, '/api/ai/fine-scan-decision', fine_scan_decision, decision_payload)
-                _pipeline_ai_cache_set('fine_scan_decision', _fine_decision_cache_payload, dec_resp)
-            else:
-                _pa_log('fine_scan_decision cache hit symbol=%s' % symbol)
-            if dec_resp and dec_resp.get('success'):
-                raw_decision = (dec_resp.get('decision') or '').upper()
-                rec['decision'] = 'Continue' if raw_decision == 'CONTINUE' else 'Reject' if raw_decision == 'REJECT' else 'NeedMoreData' if raw_decision == 'NEED_MORE_DATA' else 'Watch'
-                rec['fineScanDecision'] = rec['decision']
-                rec['fineScanGrade'] = dec_resp.get('grade')
-                rec['decisionConfidence'] = dec_resp.get('confidence')
-                rec['decisionSource'] = dec_resp.get('source')
-                rec['decisionReason'] = dec_resp.get('reason')
-            else:
-                with app.test_request_context('/internal/fine-scan-fallback'):
-                    local_resp = _fine_scan_fallback_decision(
-                        symbol, decision_payload['trendLabel'], decision_payload['trendScore'],
-                        decision_payload['matchedStrategies'], decision_payload['matchConfidence'],
-                        decision_payload['backtestStatus'], decision_payload['backtestPerformance'],
-                        decision_payload['backtestTotalReturn'], decision_payload['entryQuality']['grade'],
-                        decision_payload['entryQuality']['zone'], decision_payload['liquidityGrade'],
-                        decision_payload['newsGrade'], decision_payload['riskGrade'], decision_payload['riskScore']
-                    )
-                local_json, _ = _pa_json_from_response(local_resp)
-                raw_decision = (local_json.get('decision') or '').upper()
-                rec['decision'] = 'Continue' if raw_decision == 'CONTINUE' else 'Skip' if raw_decision == 'SKIP' else 'Watch'
-                rec['fineScanDecision'] = rec['decision']
-                rec['fineScanGrade'] = local_json.get('grade')
-                rec['decisionSource'] = 'local-rule'
-                rec['decisionReason'] = local_json.get('reason')
+            data_sources = rec.get('dataSources') if isinstance(rec.get('dataSources'), dict) else {}
+            data_sources.update({
+                'fineScan': 'Institutional Fine Scan v4: Alpaca snapshot refresh plus Market Scanner v5 evidence',
+                'microstructure': 'Alpaca /v2/stocks/snapshots latestQuote/latestTrade/dailyBar proxy',
+                'entryGeometry': 'VWAP, day range, ATR, and reward/risk geometry',
+                'ai': rec.get('aiSource') or ('AI not used' if not rec.get('aiUsed') else 'Configured AI'),
+            })
+            rec['dataSources'] = data_sources
+            provenance = rec.get('provenance') if isinstance(rec.get('provenance'), dict) else {}
+            provenance.update({
+                'fineScan': 'Institutional Fine Scan v4',
+                'stage': 'Market Scanner candidates directly; Continue Scan removed',
+                'decision': 'AI trader overlay' if rec.get('aiUsed') else 'Institutional rules',
+            })
+            rec['provenance'] = provenance
+
             results.append(rec)
-            _pa_log('step completed step=fine_scan_symbol symbol=%s index=%d/%d decision=%s' % (symbol, idx + 1, len(candidates), rec.get('decision')))
+            _pa_log('step completed step=fine_scan_symbol symbol=%s index=%d/%d gate=%s score=%.1f decision=%s' % (
+                symbol, idx + 1, len(raw_candidates), gate, fine_score, rec.get('decision')
+            ))
         except Exception as e:
             _pa_log_error('Fine Scan %s failed: %s' % (symbol, e))
             failed = dict(cand)
-            failed.update({'symbol': symbol, 'scanStatus': 'failed', 'decision': 'NeedMoreData', 'error': str(e)[:200]})
+            failed.update({
+                'symbol': symbol,
+                'scanStatus': 'failed',
+                'decision': 'NeedMoreData',
+                'fineScanDecision': 'NeedMoreData',
+                'decisionSource': 'fine_scan_error',
+                'decisionReason': str(e)[:200],
+                'error': str(e)[:200],
+            })
             results.append(failed)
+
+    ai_stats = _pa_apply_fine_scan_ai_reviews(uid, results, enabled=ai_review_requested)
+    for rec in results:
+        rec['fineScanAiStats'] = ai_stats
+        rec.setdefault('institutionalFineScan', {})['aiReview'] = {
+            'status': rec.get('fineScanAiStatus'),
+            'decision': rec.get('aiTraderDecisionFine'),
+            'confidence': rec.get('aiTraderConfidenceFine'),
+            'rationale': rec.get('aiTraderRationaleFine'),
+            'contradictions': rec.get('aiContradictionsFine') or [],
+            'missingChecks': rec.get('aiMissingChecksFine') or [],
+            'mergeReason': rec.get('aiMergeReason'),
+        }
+        rec.setdefault('provenance', {})['decision'] = (
+            'Institutional rules plus batched AI challenge'
+            if rec.get('aiUsed') else 'Institutional rules'
+        )
+
+    results.sort(key=lambda r: (_num(r.get('fineScanScore') or r.get('score'), 0) or 0), reverse=True)
+    for idx, rec in enumerate(results):
+        rec['priority'] = idx
     return results
 
 
@@ -30485,210 +39432,1609 @@ def _pa_fetch_positions_for_mode(uid, mode):
         return [], str(e)[:120]
 
 
-def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='medium', time_horizon='mid', trade_mode='paper', run_id=''):
-    """Exit scan for headless pipeline — matches frontend runExitScan / evaluateExitPlan logic.
+def _pa_classify_sell_protection(orders):
+    """Describe broker-side downside coverage, profit orders, and ownership.
 
-    Synced with frontend:
-    - Fallback stop/target generation when no entry plan exists
-    - Open sell order duplicate guard
-    - Correct trading mode (paper/live)
-    - hold → place take-profit limit (not just skip)
-    - sell_now → market sell
-    - place_target_limit → limit sell at target
+    A stop-only order protects downside even though it is not a complete exit
+    package. A target-only limit is never called protection. Parent client IDs
+    are inherited by bracket/OCO legs so managed orders remain identifiable.
     """
-    positions, pos_err = _pa_fetch_positions_for_mode(uid, trade_mode)
-    plan_by_symbol = {str(p.get('symbol', '')).upper(): p for p in (entry_plans or [])}
-    results = []
-    submitted = []
+    flattened = _pa_flatten_alpaca_order_tree(orders or [])
+    terminal = {'filled', 'canceled', 'cancelled', 'expired', 'rejected', 'suspended', 'done_for_day'}
+    sell_orders = [
+        order for order in flattened
+        if str(order.get('side') or '').lower() == 'sell'
+        and str(order.get('status') or '').lower() not in terminal
+    ]
 
+    def effective_client_id(order):
+        return str(order.get('client_order_id') or order.get('_parent_client_order_id') or '')
+
+    def qty_value(order):
+        return abs(_pa_safe_float(order.get('qty'), 0) or 0)
+
+    stop_orders = [
+        order for order in sell_orders
+        if str(order.get('type') or '').lower() in ('stop', 'stop_limit', 'trailing_stop')
+        or _pa_safe_float(order.get('stop_price'), None) is not None
+    ]
+    target_orders = [
+        order for order in sell_orders
+        if str(order.get('type') or '').lower() == 'limit'
+        and _pa_safe_float(order.get('limit_price'), None) is not None
+        and order not in stop_orders
+    ]
+    stop_prices = [
+        _pa_safe_float(order.get('stop_price'), None) for order in stop_orders
+        if _pa_safe_float(order.get('stop_price'), None) is not None
+    ]
+    target_prices = [
+        _pa_safe_float(order.get('limit_price'), None) for order in target_orders
+        if _pa_safe_float(order.get('limit_price'), None) is not None
+    ]
+    advanced = any(str(order.get('order_class') or '').lower() in ('oco', 'bracket') for order in flattened)
+    managed_flags = [
+        effective_client_id(order).startswith(('alphalab-', 'alpha-lab-'))
+        for order in sell_orders
+    ]
+    has_stop = bool(stop_orders)
+    has_target = bool(target_orders)
+    if has_stop and has_target and advanced:
+        protection_status = 'linked_stop_target'
+    elif has_stop and has_target:
+        protection_status = 'independent_stop_target'
+    elif has_stop:
+        protection_status = 'stop_only'
+    elif has_target:
+        protection_status = 'target_only'
+    else:
+        protection_status = 'none'
+    return {
+        'orderCount': len(sell_orders),
+        'hasStop': has_stop,
+        'hasTarget': has_target,
+        'hasDownsideProtection': has_stop,
+        'hasProfitTarget': has_target,
+        'isProtective': has_stop,
+        'isComplete': bool(has_stop and has_target),
+        'protectionStatus': protection_status,
+        'advancedOrder': advanced,
+        'hasTrailingStop': any(str(order.get('type') or '').lower() == 'trailing_stop' for order in stop_orders),
+        'managedByAlphaLab': bool(managed_flags and all(managed_flags)),
+        'hasManagedOrders': any(managed_flags),
+        'hasExternalOrders': any(not flag for flag in managed_flags),
+        'stopPrice': max(stop_prices) if stop_prices else None,
+        'targetPrice': min(target_prices) if target_prices else None,
+        'stopQty': max([qty_value(order) for order in stop_orders] or [0]),
+        'targetQty': max([qty_value(order) for order in target_orders] or [0]),
+        'stopOrderIds': [order.get('id') for order in stop_orders if order.get('id')],
+        'targetOrderIds': [order.get('id') for order in target_orders if order.get('id')],
+        'orderIds': [order.get('id') for order in sell_orders if order.get('id')],
+        'orders': [{
+            'id': order.get('id'),
+            'type': order.get('type'),
+            'status': order.get('status'),
+            'qty': _pa_safe_float(order.get('qty'), None),
+            'limitPrice': _pa_safe_float(order.get('limit_price'), None),
+            'stopPrice': _pa_safe_float(order.get('stop_price'), None),
+            'managed': effective_client_id(order).startswith(('alphalab-', 'alpha-lab-')),
+        } for order in sell_orders],
+    }
+
+
+def _pa_exit_policy(risk_profile='medium', time_horizon='mid'):
+    """Return transparent, volatility-aware long-position exit thresholds."""
+    profile = str(risk_profile or 'medium').lower()
+    horizon = str(time_horizon or 'mid').lower()
+    return {
+        'riskProfile': profile,
+        'timeHorizon': horizon,
+        'fallbackRiskPct': {
+            'low': {'short': 0.04, 'mid': 0.05, 'long': 0.07},
+            'medium': {'short': 0.05, 'mid': 0.06, 'long': 0.08},
+            'high': {'short': 0.07, 'mid': 0.08, 'long': 0.10},
+        }.get(profile, {}).get(horizon, 0.06),
+        'fallbackTargetR': {'low': 1.6, 'medium': 1.8, 'high': 2.0}.get(profile, 1.8),
+        'breakEvenAtR': {'low': 0.85, 'medium': 1.0, 'high': 1.2}.get(profile, 1.0),
+        'trailStartsAtR': {'low': 1.25, 'medium': 1.5, 'high': 1.75}.get(profile, 1.5),
+        'atrStopMultiple': {
+            'low': {'short': 2.2, 'mid': 2.6, 'long': 3.0},
+            'medium': {'short': 2.5, 'mid': 3.0, 'long': 3.4},
+            'high': {'short': 2.8, 'mid': 3.3, 'long': 3.8},
+        }.get(profile, {}).get(horizon, 3.0),
+        'timeStopDays': {'short': 10, 'mid': 30, 'long': 90}.get(horizon, 30),
+        'maxPositionReviewPct': {'low': 10.0, 'medium': 15.0, 'high': 20.0}.get(profile, 15.0),
+    }
+
+
+def _pa_exit_ema(values, period):
+    values = [float(value) for value in values if _pa_safe_float(value, None) is not None]
+    if len(values) < period:
+        return None
+    alpha = 2.0 / (period + 1.0)
+    result = values[0]
+    for value in values[1:]:
+        result = value * alpha + result * (1.0 - alpha)
+    return result
+
+
+def _pa_wilder_average(values, period=14):
+    cleaned = [float(value) for value in values if _pa_safe_float(value, None) is not None]
+    if len(cleaned) < period:
+        return None
+    average = sum(cleaned[:period]) / period
+    for value in cleaned[period:]:
+        average = ((average * (period - 1)) + value) / period
+    return average
+
+
+def _pa_compute_exit_indicators(bars, snapshot=None, now_et=None):
+    """Compute only observable position-management inputs from Alpaca data."""
+    cleaned = []
+    for bar in bars or []:
+        close = _inst_bar_value(bar, 'c', 'close')
+        if close is None or close <= 0:
+            continue
+        cleaned.append({
+            'time': bar.get('t') or bar.get('timestamp') or bar.get('date'),
+            'close': close,
+            'high': _inst_bar_value(bar, 'h', 'high') or close,
+            'low': _inst_bar_value(bar, 'l', 'low') or close,
+            'volume': _inst_bar_value(bar, 'v', 'volume') or 0,
+        })
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    completed = list(cleaned)
+    if completed:
+        try:
+            from zoneinfo import ZoneInfo
+            now_et = now_et or datetime.now(ZoneInfo('America/New_York'))
+            latest_date = str(completed[-1].get('time') or '')[:10]
+            if latest_date == now_et.strftime('%Y-%m-%d') and now_et.time() < dt_time(16, 15):
+                completed = completed[:-1]
+        except Exception:
+            pass
+    closes = [row['close'] for row in completed]
+    highs = [row['high'] for row in completed]
+    lows = [row['low'] for row in completed]
+    volumes = [row['volume'] for row in completed]
+    atr = None
+    if len(completed) >= 15:
+        true_ranges = []
+        for index in range(1, len(completed)):
+            previous_close = closes[index - 1]
+            true_ranges.append(max(
+                highs[index] - lows[index],
+                abs(highs[index] - previous_close),
+                abs(lows[index] - previous_close),
+            ))
+        atr = _pa_wilder_average(true_ranges, 14)
+    rsi = None
+    if len(closes) >= 15:
+        changes = [closes[index] - closes[index - 1] for index in range(1, len(closes))]
+        gain = _pa_wilder_average([max(change, 0) for change in changes], 14) or 0
+        loss = _pa_wilder_average([abs(min(change, 0)) for change in changes], 14) or 0
+        rsi = 100.0 if loss == 0 else 100.0 - (100.0 / (1.0 + gain / loss))
+    ema20 = _pa_exit_ema(closes, 20)
+    ema50 = _pa_exit_ema(closes, 50)
+    current_price = _pa_safe_float(snapshot.get('snapshotPrice'), None) or (closes[-1] if closes else None)
+    quote_time = snapshot.get('latestQuoteTime') or snapshot.get('latestTradeTime')
+    quote_age = None
+    if quote_time:
+        try:
+            quote_at = dateutil.parser.isoparse(str(quote_time))
+            if quote_at.tzinfo is None:
+                quote_at = quote_at.replace(tzinfo=timezone.utc)
+            quote_age = max(0.0, (datetime.now(timezone.utc) - quote_at.astimezone(timezone.utc)).total_seconds())
+        except Exception:
+            quote_age = None
+    returns = []
+    for index in range(1, len(closes)):
+        if closes[index - 1] > 0:
+            returns.append(closes[index] / closes[index - 1] - 1.0)
+    realized_vol = (_inst_std(returns[-20:]) or 0) * (252 ** 0.5) * 100 if len(returns) >= 20 else None
+    adv20 = None
+    if closes and volumes:
+        dollar_volumes = [closes[index] * volumes[index] for index in range(max(0, len(closes) - 20), len(closes))]
+        adv20 = _inst_avg(dollar_volumes)
+    trend_state = 'unknown'
+    if current_price and ema20 and ema50:
+        if current_price >= ema20 >= ema50:
+            trend_state = 'uptrend'
+        elif current_price < ema20 < ema50:
+            trend_state = 'downtrend'
+        else:
+            trend_state = 'mixed'
+    return {
+        'price': round(current_price, 4) if current_price else None,
+        'atr14': round(atr, 4) if atr else None,
+        'atrPct': round(atr / current_price * 100.0, 2) if atr and current_price else None,
+        'ema20': round(ema20, 4) if ema20 else None,
+        'ema50': round(ema50, 4) if ema50 else None,
+        'rsi14': round(rsi, 2) if rsi is not None else None,
+        'realizedVol20': round(realized_vol, 2) if realized_vol is not None else None,
+        'adv20': round(adv20, 2) if adv20 is not None else None,
+        'trendState': trend_state,
+        'bid': snapshot.get('bidPrice'),
+        'ask': snapshot.get('askPrice'),
+        'spreadPct': snapshot.get('bidAskSpreadPct'),
+        'quoteAgeSeconds': round(quote_age, 1) if quote_age is not None else None,
+        'quoteTime': quote_time,
+        'barsAsOf': completed[-1]['time'] if completed else None,
+        'recentHigh': max(highs[-20:]) if highs else None,
+        'sessionHigh': snapshot.get('dayHigh'),
+        'sessionLow': snapshot.get('dayLow'),
+        'historyDays': len(completed),
+        'excludedIncompleteDailyBar': len(completed) != len(cleaned),
+    }
+
+
+def _pa_build_dynamic_exit_plan(position, persisted_plan, initial_stop, target_1,
+                                target_2, indicators, account_equity=0,
+                                risk_profile='medium', time_horizon='mid', now=None,
+                                event_context=None):
+    """Build a ratchet-only long exit plan; prices never loosen between scans."""
+    now = now or datetime.now(timezone.utc)
+    policy = _pa_exit_policy(risk_profile, time_horizon)
+    avg_entry = _pa_safe_float(position.get('avg_entry_price'), 0) or 0
+    qty = abs(_pa_safe_float(position.get('qty'), 0) or 0)
+    current_price = _pa_safe_float(position.get('current_price'), 0) or _pa_safe_float(indicators.get('price'), 0) or 0
+    market_value = abs(_pa_safe_float(position.get('market_value'), 0) or current_price * qty)
+    initial_stop = _pa_safe_float(persisted_plan.get('initialStop'), None) or _pa_safe_float(initial_stop, None)
+    previous_stop = _pa_safe_float(persisted_plan.get('currentStop'), None) or initial_stop
+    target_1 = _pa_safe_float(persisted_plan.get('takeProfit1'), None) or _pa_safe_float(target_1, None)
+    target_2 = _pa_safe_float(persisted_plan.get('takeProfit2'), None) or _pa_safe_float(target_2, None)
+    initial_risk = _pa_safe_float(persisted_plan.get('initialRiskPerShare'), None)
+    if not initial_risk and avg_entry > 0 and initial_stop and avg_entry > initial_stop:
+        initial_risk = avg_entry - initial_stop
+    high_water = max(
+        current_price,
+        _pa_safe_float(persisted_plan.get('highWaterMark'), 0) or 0,
+        _pa_safe_float(indicators.get('sessionHigh'), 0) or 0,
+    )
+    allocation_pct = market_value / account_equity * 100.0 if account_equity > 0 else None
+    r_multiple = ((current_price - avg_entry) / initial_risk) if initial_risk and avg_entry > 0 else None
+    mfe_r = ((high_water - avg_entry) / initial_risk) if initial_risk and avg_entry > 0 else None
+    candidate_stop = initial_stop
+    state = 'INITIAL_RISK'
+    if initial_risk and mfe_r is not None and mfe_r >= policy['breakEvenAtR']:
+        candidate_stop = max(candidate_stop or 0, avg_entry)
+        state = 'BREAKEVEN'
+    atr = _pa_safe_float(indicators.get('atr14'), None)
+    if initial_risk and atr and mfe_r is not None and mfe_r >= policy['trailStartsAtR']:
+        chandelier = high_water - policy['atrStopMultiple'] * atr
+        candidate_stop = max(candidate_stop or 0, chandelier)
+        state = 'TRAILING'
+    current_stop = max(value for value in (initial_stop, previous_stop, candidate_stop) if value is not None)
+    current_stop = _entry_round_price(current_stop, 'down')
+    created_at = persisted_plan.get('filledAt') or persisted_plan.get('createdAt')
+    days_held = None
+    if created_at:
+        try:
+            opened_at = dateutil.parser.isoparse(str(created_at))
+            if opened_at.tzinfo is None:
+                opened_at = opened_at.replace(tzinfo=timezone.utc)
+            days_held = max(0, (now - opened_at.astimezone(timezone.utc)).days)
+        except Exception:
+            days_held = None
+    trend_invalid = bool(
+        indicators.get('trendState') == 'downtrend'
+        and _pa_safe_float(indicators.get('rsi14'), 50) < 45
+    )
+    time_stop = bool(
+        days_held is not None
+        and days_held >= policy['timeStopDays']
+        and current_price <= avg_entry
+        and indicators.get('trendState') != 'uptrend'
+    )
+    event_context = event_context if isinstance(event_context, dict) else {}
+    event_risk = str(event_context.get('eventRisk') or 'Unknown').upper()
+    days_to_earnings = _pa_safe_float(event_context.get('daysToEarnings'), None)
+    event_review = bool(
+        event_risk == 'HIGH'
+        or (days_to_earnings is not None and 0 <= days_to_earnings <= 1)
+    )
+    concentration_review = bool(
+        allocation_pct is not None
+        and allocation_pct > policy['maxPositionReviewPct']
+    )
+    if current_price <= current_stop:
+        action = 'emergency_exit'
+        reason = 'Current price %.2f is at/below ratcheted stop %.2f' % (current_price, current_stop)
+        thesis_status = 'invalid'
+    elif target_1 and current_price >= target_1:
+        action = 'target_reached'
+        reason = 'Current price %.2f reached fixed structural target %.2f' % (current_price, target_1)
+        thesis_status = 'target_met'
+    elif time_stop:
+        action = 'time_exit_review'
+        reason = 'Time stop reached after %d days without positive trend confirmation' % days_held
+        thesis_status = 'review'
+    elif trend_invalid:
+        action = 'thesis_review'
+        reason = 'Price trend and RSI jointly indicate thesis deterioration'
+        thesis_status = 'review'
+    elif event_review:
+        action = 'event_review'
+        if days_to_earnings is not None and 0 <= days_to_earnings <= 1:
+            reason = 'Earnings are due within one day; holding through the event requires explicit review'
+        else:
+            reason = 'Fresh event evidence is high risk; review the thesis without changing hard protection'
+        thesis_status = 'review'
+    elif concentration_review:
+        action = 'concentration_review'
+        reason = 'Position allocation %.1f%% exceeds the %.1f%% review threshold' % (
+            allocation_pct, policy['maxPositionReviewPct'],
+        )
+        thesis_status = 'review'
+    else:
+        action = 'hold'
+        reason = 'Position remains above its ratcheted stop and below its fixed target'
+        thesis_status = 'intact'
+    risk_remaining = max(0.0, current_price - current_stop) * qty
+    locked_profit = max(0.0, current_stop - avg_entry) * qty
+    drawdown_from_high = ((current_price / high_water) - 1.0) * 100.0 if high_water > 0 else None
+    quote_age = _pa_safe_float(indicators.get('quoteAgeSeconds'), None)
+    history_days = int(_pa_safe_float(indicators.get('historyDays'), 0) or 0)
+    if not indicators.get('atr14') or history_days < 50:
+        data_quality = 'PARTIAL'
+    elif not indicators.get('quoteTime') or quote_age is None or quote_age > 300:
+        data_quality = 'STALE'
+    else:
+        data_quality = 'GOOD'
+    return {
+        'version': 2,
+        'state': state,
+        'action': action,
+        'reason': reason,
+        'thesisStatus': thesis_status,
+        'initialStop': _entry_round_price(initial_stop, 'down') if initial_stop else None,
+        'currentStop': current_stop,
+        'target1': _entry_round_price(target_1, 'down') if target_1 else None,
+        'target2': _entry_round_price(target_2, 'down') if target_2 else None,
+        'targetPolicy': 'fixed_structural',
+        'stopPolicy': 'ratchet_only',
+        'initialRiskPerShare': round(initial_risk, 4) if initial_risk else None,
+        'rMultiple': round(r_multiple, 2) if r_multiple is not None else None,
+        'mfeR': round(mfe_r, 2) if mfe_r is not None else None,
+        'highWaterMark': round(high_water, 4),
+        'drawdownFromHighPct': round(drawdown_from_high, 2) if drawdown_from_high is not None else None,
+        'riskRemainingDollars': round(risk_remaining, 2),
+        'lockedProfitDollars': round(locked_profit, 2),
+        'marketValue': round(market_value, 2),
+        'allocationPct': round(allocation_pct, 2) if allocation_pct is not None else None,
+        'daysHeld': days_held,
+        'timeStopDays': policy['timeStopDays'],
+        'breakEvenAtR': policy['breakEvenAtR'],
+        'trailStartsAtR': policy['trailStartsAtR'],
+        'atrStopMultiple': policy['atrStopMultiple'],
+        'eventReview': event_review,
+        'concentrationReview': concentration_review,
+        'maxPositionReviewPct': policy['maxPositionReviewPct'],
+        'dataQuality': data_quality,
+        'evaluatedAt': _pa_utc_iso(now),
+    }
+
+
+def _pa_normalize_exit_event_context(row, now=None):
+    """Normalize cached event evidence and keep earnings distance current."""
+    row = dict(row) if isinstance(row, dict) else {}
+    now = now or datetime.now(timezone.utc)
+    next_earnings = row.get('nextEarningsDate')
+    days_to_earnings = _pa_safe_float(row.get('daysToEarnings'), None)
+    if next_earnings:
+        try:
+            earnings_date = dateutil.parser.isoparse(str(next_earnings)[:10]).date()
+            days_to_earnings = (earnings_date - now.date()).days
+        except Exception:
+            pass
+    event_risk = str(row.get('eventRisk') or 'Unknown').title()
+    if days_to_earnings is not None and 0 <= days_to_earnings <= 3:
+        event_risk = 'High'
+    elif days_to_earnings is not None and 0 <= days_to_earnings <= 10 and event_risk not in ('High',):
+        event_risk = 'Medium'
+    return {
+        'eventRisk': event_risk,
+        'daysToEarnings': int(days_to_earnings) if days_to_earnings is not None else None,
+        'nextEarningsDate': next_earnings,
+        'newsSentiment': row.get('newsSentiment'),
+        'topNewsHeadline': row.get('topNewsHeadline'),
+        'latestNewsTime': row.get('latestNewsTime'),
+        'eventTags': list(row.get('eventTags') or []),
+        'observedAt': row.get('observedAt') or row.get('eventObservedAt'),
+        'newsError': row.get('newsError'),
+        'earningsSource': row.get('earningsSource'),
+        'newsSource': row.get('newsSource'),
+        'authority': 'review_only_not_an_automatic_exit',
+    }
+
+
+def _pa_fetch_exit_event_context(uid, symbols, market_cfg):
+    """Refresh held-symbol events on a slow cache, separate from the 60s risk loop."""
+    symbols = sorted({str(symbol or '').upper() for symbol in symbols if symbol})
+    now_ts = time.time()
+    events_by_symbol = {}
+    missing = []
+    with _PA_MARKET_CACHE_LOCK:
+        for symbol in symbols:
+            cached = _PA_MARKET_CACHE.get('exit-events:%s:%s' % (uid, symbol))
+            if isinstance(cached, dict) and now_ts - float(cached.get('fetchedAt') or 0) < _PA_EXIT_EVENTS_CACHE_TTL_SECONDS:
+                events_by_symbol[symbol] = _pa_normalize_exit_event_context(cached.get('events') or {})
+            else:
+                missing.append(symbol)
+
+    news_errors = {}
+    news_stats = {'requestCount': 0, 'articlesFetched': 0}
+    earnings_stats = {'configured': False, 'symbolsWithEarnings': 0, 'errors': {}}
+    if missing:
+        rows = [{'symbol': symbol} for symbol in missing]
+        news_by_symbol = {symbol: [] for symbol in missing}
+        if (market_cfg or {}).get('api_key') and (market_cfg or {}).get('api_secret'):
+            news_by_symbol, news_errors, news_stats = _inst_fetch_alpaca_news(
+                missing, market_cfg, days_back=7, batch_size=50, page_limit=1, max_retries=0,
+            )
+        else:
+            news_errors = {symbol: 'alpaca_news_not_configured' for symbol in missing}
+        for row in rows:
+            symbol = row['symbol']
+            items = news_by_symbol.get(symbol) or []
+            signal = _inst_news_signal(items)
+            row.update({
+                'eventRisk': signal.get('eventRisk') if not news_errors.get(symbol) else 'Unknown',
+                'newsSentiment': signal.get('sentiment') if not news_errors.get(symbol) else None,
+                'eventTags': signal.get('tags') or [],
+                'topNewsHeadline': items[0].get('headline') if items else None,
+                'latestNewsTime': (items[0].get('createdAt') or items[0].get('updatedAt')) if items else None,
+                'newsError': news_errors.get(symbol),
+                'newsSource': 'Alpaca /v1beta1/news',
+            })
+        finnhub_cfg, _ = resolve_finnhub_config_for_user(uid)
+        earnings_stats = _inst_apply_earnings_calendar(rows, finnhub_cfg)
+        observed_at = _pa_utc_iso()
+        with _PA_MARKET_CACHE_LOCK:
+            for row in rows:
+                symbol = row['symbol']
+                raw_context = {
+                    **row,
+                    'observedAt': observed_at,
+                    'earningsSource': earnings_stats.get('source'),
+                }
+                normalized = _pa_normalize_exit_event_context(raw_context)
+                _PA_MARKET_CACHE['exit-events:%s:%s' % (uid, symbol)] = {
+                    'fetchedAt': now_ts,
+                    'events': normalized,
+                }
+                events_by_symbol[symbol] = normalized
+
+    return events_by_symbol, {
+        'source': 'Alpaca News + Finnhub earnings calendar',
+        'cacheSeconds': _PA_EXIT_EVENTS_CACHE_TTL_SECONDS,
+        'newsErrors': news_errors,
+        'news': news_stats,
+        'earnings': earnings_stats,
+    }
+
+
+def _pa_fetch_exit_market_context(uid, symbols, trade_mode='paper'):
+    """Fetch fresh snapshots and cached daily history for held symbols."""
+    symbols = sorted({str(symbol or '').upper() for symbol in symbols if symbol})
+    market_cfg = resolve_alpaca_config_for_user(uid, 'market_data') or resolve_alpaca_config_for_user(uid, trade_mode)
+    if not market_cfg.get('api_key') or not market_cfg.get('api_secret'):
+        return {}, {'error': 'market_data_config_required'}
+    held_symbols = list(symbols)
+    requested = sorted(set(symbols + ['SPY']))
+    snapshots, snapshot_errors = _inst_fetch_alpaca_snapshots(requested, market_cfg, feed='iex', batch_size=200)
+    now_ts = time.time()
+    bars_by_symbol = {}
+    missing = []
+    with _PA_MARKET_CACHE_LOCK:
+        for symbol in requested:
+            cached = _PA_MARKET_CACHE.get('exit-bars:%s:%s' % (uid, symbol))
+            if isinstance(cached, dict) and now_ts - float(cached.get('fetchedAt') or 0) < _PA_EXIT_BARS_CACHE_TTL_SECONDS:
+                bars_by_symbol[symbol] = list(cached.get('bars') or [])
+            else:
+                missing.append(symbol)
+    bar_errors = {}
+    if missing:
+        fetched, bar_errors = _inst_fetch_alpaca_bars(missing, market_cfg, period='9mo', feed='iex', batch_size=25)
+        with _PA_MARKET_CACHE_LOCK:
+            for symbol, bars in fetched.items():
+                _PA_MARKET_CACHE['exit-bars:%s:%s' % (uid, symbol)] = {
+                    'fetchedAt': now_ts,
+                    'bars': list(bars or []),
+                }
+                bars_by_symbol[symbol] = list(bars or [])
+    events_by_symbol, event_meta = _pa_fetch_exit_event_context(uid, held_symbols, market_cfg)
+    context = {}
+    for symbol in requested:
+        snapshot_metrics = _inst_snapshot_metrics(symbol, snapshots.get(symbol) or {})
+        context[symbol] = {
+            'snapshot': snapshot_metrics,
+            'bars': bars_by_symbol.get(symbol) or [],
+            'indicators': _pa_compute_exit_indicators(bars_by_symbol.get(symbol) or [], snapshot_metrics),
+            'events': events_by_symbol.get(symbol) or {},
+        }
+    return context, {
+        'source': 'Alpaca IEX snapshots + split-adjusted daily bars',
+        'snapshotErrors': snapshot_errors,
+        'barErrors': bar_errors,
+        'historyCacheSeconds': _PA_EXIT_BARS_CACHE_TTL_SECONDS,
+        'events': event_meta,
+    }
+
+
+def _pa_exit_risk_decision(current_price, avg_entry, stop, target, risk_profile='medium'):
+    pl_pct = ((current_price - avg_entry) / avg_entry * 100.0) if avg_entry > 0 else 0.0
+    severe_loss_threshold = {'low': -7.0, 'medium': -10.0, 'high': -15.0}.get(str(risk_profile).lower(), -10.0)
+    if pl_pct <= severe_loss_threshold:
+        return 'emergency_exit', 'Account risk stop reached at %.1f%% P/L' % pl_pct, pl_pct
+    if stop and current_price <= float(stop):
+        return 'emergency_exit', 'Price %.2f breached stop %.2f' % (current_price, float(stop)), pl_pct
+    if target and current_price >= float(target):
+        return 'target_reached', 'Price %.2f reached target %.2f' % (current_price, float(target)), pl_pct
+    return 'hold', 'Position remains between its validated stop and target', pl_pct
+
+
+def _pa_exit_ai_challenge(uid, signals, enabled=True):
+    """Ask the configured AI to challenge non-emergency hold decisions."""
+    stats = {
+        'configured': False,
+        'used': False,
+        'reviewedSymbols': 0,
+        'challengedSymbols': 0,
+        'status': 'disabled' if not enabled else 'not_configured',
+    }
+    if not enabled or not signals:
+        return stats
+    ai_cfg, source = resolve_ai_config_for_user(uid)
+    api_key = ai_cfg.get('apiKey') or ''
+    if not api_key:
+        return stats
+    provider = ai_cfg.get('provider') or 'AI'
+    model = ai_cfg.get('model') or 'deepseek-chat'
+    base_url = (ai_cfg.get('baseURL') or 'https://api.deepseek.com').rstrip('/')
+    stats.update({'configured': True, 'provider': provider, 'model': model, 'configSource': source})
+    packets = [{
+        'symbol': signal.get('symbol'),
+        'deterministicAction': signal.get('triggerAction') or signal.get('action'),
+        'plPct': signal.get('plPct'),
+        'currentPrice': signal.get('currentPrice'),
+        'avgEntry': signal.get('avgEntry'),
+        'stop': signal.get('stopPrice'),
+        'target': signal.get('targetPrice'),
+        'exitState': (signal.get('exitPlan') or {}).get('state'),
+        'rMultiple': (signal.get('exitPlan') or {}).get('rMultiple'),
+        'mfeR': (signal.get('exitPlan') or {}).get('mfeR'),
+        'drawdownFromHighPct': (signal.get('exitPlan') or {}).get('drawdownFromHighPct'),
+        'daysHeld': (signal.get('exitPlan') or {}).get('daysHeld'),
+        'allocationPct': (signal.get('exitPlan') or {}).get('allocationPct'),
+        'riskRemainingDollars': (signal.get('exitPlan') or {}).get('riskRemainingDollars'),
+        'indicators': signal.get('indicators'),
+        'eventContext': signal.get('eventContext'),
+        'dataQuality': signal.get('dataQuality'),
+        'protection': signal.get('protection'),
+        'planSource': signal.get('exitPlanSource'),
+        'reason': signal.get('reason'),
+    } for signal in signals]
+    prompt = (
+        'You are the second-line position-management reviewer. Hard stops, severe-loss exits, kill switches, '
+        'and broker protection are deterministic and binding. Never delay an emergency_exit, cancel protection, '
+        'invent prices, move a stop lower, change structural targets, or claim that a target-only order is protected. '
+        'For non-emergency positions, challenge only thesis deterioration, stale evidence, event risk, concentration, '
+        'or broker-protection contradictions. Return JSON only: '
+        '{"reviews":[{"symbol":"AAPL","decision":"HOLD|REVIEW_EXIT|REDUCE_REVIEW",'
+        '"confidence":0,"reason":"short reason","nextCheck":"specific evidence"}]}. '
+        'Packets: ' + json.dumps(packets, ensure_ascii=True, default=str)
+    )
+    try:
+        request_payload = {
+            'model': model,
+            'messages': [
+                {'role': 'system', 'content': 'You are a conservative position-risk challenge layer. Return JSON only.'},
+                {'role': 'user', 'content': prompt},
+            ],
+            'temperature': 0.1,
+            'max_tokens': 1800,
+        }
+        if str(provider).lower() in ('deepseek', 'openai'):
+            request_payload['response_format'] = {'type': 'json_object'}
+        response = ai_chat_request(
+            base_url + '/chat/completions',
+            headers={'Authorization': 'Bearer ' + api_key, 'Content-Type': 'application/json'},
+            json_data=request_payload,
+            timeout=40,
+            provider=provider,
+        )
+        if response.status_code != 200:
+            stats['status'] = 'http_error_%s' % response.status_code
+            return stats
+        content = response.json().get('choices', [{}])[0].get('message', {}).get('content', '').strip()
+        if content.startswith('```'):
+            content = re.sub(r'^```(?:json)?\s*|\s*```$', '', content, flags=re.IGNORECASE | re.DOTALL).strip()
+        row_map = {str(signal.get('symbol') or '').upper(): signal for signal in signals}
+        for review in (json.loads(content) or {}).get('reviews') or []:
+            symbol = str(review.get('symbol') or '').upper()
+            signal = row_map.get(symbol)
+            if signal is None:
+                continue
+            decision = str(review.get('decision') or 'HOLD').upper()
+            if decision not in ('HOLD', 'REVIEW_EXIT', 'REDUCE_REVIEW'):
+                decision = 'HOLD'
+            if signal.get('action') == 'emergency_exit':
+                decision = 'REVIEW_EXIT'
+            signal['aiExitReview'] = {
+                'decision': decision,
+                'confidence': max(0, min(100, int(_pa_safe_float(review.get('confidence'), 0) or 0))),
+                'reason': str(review.get('reason') or '')[:300],
+                'nextCheck': str(review.get('nextCheck') or '')[:200],
+                'provider': provider,
+                'model': model,
+            }
+            stats['reviewedSymbols'] += 1
+            if decision != 'HOLD':
+                stats['challengedSymbols'] += 1
+                if signal.get('action') not in ('emergency_exit', 'target_reached'):
+                    signal['aiReviewRequired'] = True
+        stats['used'] = stats['reviewedSymbols'] > 0
+        stats['status'] = 'completed' if stats['used'] else 'empty_response'
+    except Exception as exc:
+        stats['status'] = 'failed'
+        stats['error'] = str(exc)[:160]
+    return stats
+
+
+def _pa_exit_scan_headless_legacy(uid, entry_plans, mode, dry_run=False, risk_profile='medium', time_horizon='mid', trade_mode='paper', run_id='', ai_review=True, suppress_discord=False):
+    """Protection-first position manager for the unified pipeline.
+
+    Hard stops are deterministic. A valid bracket/OCO is monitored without
+    duplication; a target-only sell is never described as protected.
+    """
+    import math
+
+    positions, pos_err = _pa_fetch_positions_for_mode(uid, trade_mode)
     if pos_err:
         return {'holdingsScanned': 0, 'signals': [], 'submitted': [], 'error': pos_err}
 
-    # Fetch open sell orders for duplicate guard (matches frontend openSellOrders)
-    open_sell_symbols = set()
-    try:
-        alpaca_cfg = resolve_alpaca_config_for_user(uid, trade_mode)
-        _key = alpaca_cfg.get('api_key', '')
-        _secret = alpaca_cfg.get('api_secret', '')
-        _url = alpaca_cfg.get('base_url', 'https://paper-api.alpaca.markets' if trade_mode == 'paper' else 'https://api.alpaca.markets')
-        if _key and _secret:
-            _hdrs = {'APCA-API-KEY-ID': _key, 'APCA-API-SECRET-KEY': _secret}
-            _ord_resp = requests.get(f'{_url}/v2/orders?status=open', headers=_hdrs, timeout=10)
-            if _ord_resp.status_code == 200:
-                for o in (_ord_resp.json() or []):
-                    if str(o.get('side', '')).lower() == 'sell':
-                        open_sell_symbols.add(str(o.get('symbol', '')).upper())
-    except Exception:
-        pass
+    current_plan_by_symbol = {str(plan.get('symbol') or '').upper(): plan for plan in (entry_plans or [])}
+    results = []
+    submitted = []
+    config = resolve_alpaca_config_for_user(uid, trade_mode)
+    api_key = config.get('api_key', '')
+    api_secret = config.get('api_secret', '')
+    base_url = config.get('base_url') or ('https://paper-api.alpaca.markets' if trade_mode == 'paper' else 'https://api.alpaca.markets')
+    headers = {'APCA-API-KEY-ID': api_key, 'APCA-API-SECRET-KEY': api_secret}
+    open_orders = []
+    if api_key and api_secret:
+        try:
+            response = requests.get(f'{base_url}/v2/orders?status=open&nested=true&limit=500', headers=headers, timeout=12)
+            if response.status_code == 200:
+                open_orders = response.json() or []
+        except Exception as exc:
+            _pa_log_error('[ExitScan] open-order reconciliation failed: %s' % str(exc)[:100])
 
-    def _generate_exit_fallback(avg_entry, current_price, pl_pct):
-        """Fallback stop/target — matches frontend generateExitPlanFallback."""
+    orders_by_symbol = {}
+    for order in open_orders:
+        symbol = str(order.get('symbol') or '').upper()
+        if symbol:
+            orders_by_symbol.setdefault(symbol, []).append(order)
+
+    automation_cfg = _pa_get_config(uid) or {}
+    unattended_live_allowed = trade_mode != 'real' or automation_cfg.get('live_auto_trading_enabled') is True
+    can_submit = mode == 'ai' and unattended_live_allowed and not dry_run
+
+    def fallback_geometry(avg_entry, current_price):
         baseline = avg_entry if avg_entry > 0 else current_price
-        stop_pct_map = {
-            'low':    {'short': 0.96, 'mid': 0.95, 'long': 0.93},
+        stop_factor = {
+            'low': {'short': 0.96, 'mid': 0.95, 'long': 0.93},
             'medium': {'short': 0.95, 'mid': 0.94, 'long': 0.92},
-            'high':   {'short': 0.93, 'mid': 0.92, 'long': 0.90},
-        }
-        target_pct_map = {
-            'low':    {'short': 1.06, 'mid': 1.08, 'long': 1.10},
+            'high': {'short': 0.93, 'mid': 0.92, 'long': 0.90},
+        }.get(risk_profile, {}).get(time_horizon, 0.94)
+        target_factor = {
+            'low': {'short': 1.06, 'mid': 1.08, 'long': 1.10},
             'medium': {'short': 1.08, 'mid': 1.12, 'long': 1.15},
-            'high':   {'short': 1.10, 'mid': 1.15, 'long': 1.20},
-        }
-        stop_pct = stop_pct_map.get(risk_profile, {}).get(time_horizon, 0.94)
-        target_pct = target_pct_map.get(risk_profile, {}).get(time_horizon, 1.12)
-        stop_price = baseline * stop_pct
-        if pl_pct <= -5:
-            stop_price = current_price * 0.97
-        target_price = baseline * target_pct
-        if pl_pct > 5:
-            target_price = max(baseline * (target_pct - 0.02), current_price * 1.03)
-        return round(stop_price, 2), round(target_price, 2)
+            'high': {'short': 1.10, 'mid': 1.15, 'long': 1.20},
+        }.get(risk_profile, {}).get(time_horizon, 1.12)
+        return _entry_round_price(baseline * stop_factor, 'down'), _entry_round_price(baseline * target_factor, 'down')
 
-    for pos in (positions or []):
-        symbol = str(pos.get('symbol', '')).upper()
-        qty = float(pos.get('qty') or 0)
-        current_price = float(pos.get('current_price') or pos.get('market_value') or 0)
-        avg_entry = float(pos.get('avg_entry_price') or 0)
-        if qty and current_price > 100000:
-            current_price = current_price / qty
-        if qty <= 0 or current_price <= 0:
+    for position in positions or []:
+        symbol = str(position.get('symbol') or '').upper()
+        qty = abs(_pa_safe_float(position.get('qty'), 0) or 0)
+        avg_entry = _pa_safe_float(position.get('avg_entry_price'), 0) or 0
+        current_price = _pa_safe_float(position.get('current_price'), 0) or 0
+        if current_price <= 0 and qty > 0:
+            market_value = _pa_safe_float(position.get('market_value'), 0) or 0
+            current_price = abs(market_value) / qty if market_value else 0
+        if not symbol or qty <= 0 or current_price <= 0:
             continue
 
-        pl_pct = ((current_price - avg_entry) / avg_entry * 100) if avg_entry > 0 else 0
-
-        # Open sell order guard (matches frontend existingExitOrderSymbols check)
-        if symbol in open_sell_symbols:
-            results.append({'symbol': symbol, 'qty': qty, 'currentPrice': current_price,
-                            'action': 'blocked', 'reason': 'Active sell order exists',
-                            'status': 'blocked', 'exitPlanSource': 'guard'})
-            continue
-
-        plan = plan_by_symbol.get(symbol, {})
-        stop = None
-        target = None
-        exit_plan_source = 'entry_plan'
-
-        if plan:
-            stop = plan.get('stopLoss') or plan.get('entryPlanStop')
-            target = plan.get('takeProfit1') or plan.get('entryPlanTarget')
-
-        # Fallback stop/target when no entry plan (matches frontend evaluateExitPlan → generateExitPlanFallback)
+        persisted_plan = _pa_get_managed_position_plan(uid, trade_mode, symbol) or {}
+        plan = current_plan_by_symbol.get(symbol) or persisted_plan
+        packet = plan.get('institutionalPacket') if isinstance(plan.get('institutionalPacket'), dict) else {}
+        exits = packet.get('exits') if isinstance(packet.get('exits'), dict) else {}
+        stop = _pa_safe_float(exits.get('stopLoss') or plan.get('stopLoss') or plan.get('entryPlanStop'), None)
+        target = _pa_safe_float(exits.get('target1') or plan.get('takeProfit1') or plan.get('entryPlanTarget'), None)
+        source = 'current_entry_plan' if symbol in current_plan_by_symbol else 'managed_plan' if persisted_plan else 'generated_fallback'
         if not stop or not target:
-            fb_stop, fb_target = _generate_exit_fallback(avg_entry, current_price, pl_pct)
-            if not stop:
-                stop = fb_stop
-            if not target:
-                target = fb_target
-            exit_plan_source = 'generated'
+            fallback_stop, fallback_target = fallback_geometry(avg_entry, current_price)
+            stop = stop or fallback_stop
+            target = target or fallback_target
+            if not persisted_plan and symbol not in current_plan_by_symbol:
+                source = 'generated_fallback'
 
-        # Evaluate exit decision (matches frontend evaluateExitPlan logic)
-        decision = 'hold'
-        reason = 'Position between stop and target — hold.'
-
-        # Severe loss threshold varies by risk profile (matches frontend)
-        severe_loss_threshold = {'low': -7, 'high': -15}.get(risk_profile, -10)
-        if pl_pct <= severe_loss_threshold:
-            decision = 'sell_now'
-            reason = f'Severe loss {pl_pct:.1f}% — immediate exit recommended.'
-        elif stop and current_price and current_price <= float(stop):
-            decision = 'sell_now'
-            reason = f'Current price ${current_price:.2f} is at or below stop ${float(stop):.2f}.'
-        elif target and current_price and current_price >= float(target):
-            decision = 'place_target_limit'
-            reason = f'Current price ${current_price:.2f} reached target ${float(target):.2f}.'
-
+        symbol_orders = orders_by_symbol.get(symbol, [])
+        protection = _pa_classify_sell_protection(symbol_orders)
+        action, reason, pl_pct = _pa_exit_risk_decision(current_price, avg_entry, stop, target, risk_profile)
         signal = {
-            'symbol': symbol, 'qty': qty, 'currentPrice': current_price,
-            'avgEntry': avg_entry, 'plPct': round(pl_pct, 2),
-            'stopPrice': stop, 'targetPrice': target,
-            'action': decision, 'reason': reason,
-            'exitPlanSource': exit_plan_source,
-            'status': 'dry_run' if dry_run else 'pending',
+            'symbol': symbol,
+            'qty': qty,
+            'avgEntry': avg_entry,
+            'currentPrice': current_price,
+            'plPct': round(pl_pct, 2),
+            'stopPrice': stop,
+            'targetPrice': target,
+            'action': action,
+            'reason': reason,
+            'exitPlanSource': source,
+            'protection': protection,
+            'status': 'dry_run' if dry_run else 'monitoring',
+            'aiAuthority': 'challenge_non_emergency_only',
         }
 
-        # Submit orders in AI mode (matches frontend runExitScan auto-submit logic)
-        if decision in ('sell_now', 'place_target_limit', 'hold') and mode == 'ai' and not dry_run:
-            sell_qty = qty
-            _exit_cid = 'alphalab-%s-%s-sell' % (run_id[:20], symbol) if run_id else 'alphalab-exit-%s-sell' % symbol
-            if decision == 'sell_now':
-                # Market sell
-                order_payload = {
-                    'symbol': symbol, 'side': 'sell', 'qty': sell_qty,
-                    'type': 'market', 'time_in_force': 'day',
-                    'tradingMode': trade_mode, 'automationMode': 'full-ai',
-                    'executionSource': 'exit_scan', 'confirmed': True,
-                    'client_order_id': _exit_cid,
-                }
-                order_resp, _ = _pa_call_endpoint(uid, '/api/ai/execution/order', ai_execution_order, order_payload)
-                signal['status'] = order_resp.get('status', 'unknown')
-                signal['orderId'] = (order_resp.get('order') or {}).get('id')
-                submitted.append(signal)
-                _pa_log('[ExitScan] order submitted mode=%s symbol=%s type=market status=%s' % (trade_mode.upper(), symbol, signal['status']))
-            elif decision == 'place_target_limit' and target and float(target) > 0:
-                # Take-profit limit sell (matches frontend place_target_limit)
-                tp_price = round(float(target), 2)
-                order_payload = {
-                    'symbol': symbol, 'side': 'sell', 'qty': sell_qty,
-                    'type': 'limit', 'limit_price': tp_price,
-                    'time_in_force': 'day',
-                    'tradingMode': trade_mode, 'automationMode': 'full-ai',
-                    'executionSource': 'exit_scan', 'confirmed': True,
-                    'client_order_id': _exit_cid,
-                }
-                order_resp, _ = _pa_call_endpoint(uid, '/api/ai/execution/order', ai_execution_order, order_payload)
-                signal['status'] = order_resp.get('status', 'unknown')
-                signal['orderId'] = (order_resp.get('order') or {}).get('id')
-                signal['exitPrice'] = tp_price
-                submitted.append(signal)
-                _pa_log('[ExitScan] order submitted mode=%s symbol=%s type=limit price=%.2f status=%s' % (trade_mode.upper(), symbol, tp_price, signal['status']))
-            elif decision == 'hold' and target and float(target) > 0 and stop and float(stop) > 0:
-                # Place take-profit limit for hold positions (matches frontend hold → OCO/limit)
-                tp_price = round(float(target), 2)
-                order_payload = {
-                    'symbol': symbol, 'side': 'sell', 'qty': sell_qty,
-                    'type': 'limit', 'limit_price': tp_price,
-                    'time_in_force': 'day',
-                    'tradingMode': trade_mode, 'automationMode': 'full-ai',
-                    'executionSource': 'exit_scan', 'confirmed': True,
-                    'client_order_id': _exit_cid,
-                }
-                order_resp, _ = _pa_call_endpoint(uid, '/api/ai/execution/order', ai_execution_order, order_payload)
-                if order_resp.get('success') or order_resp.get('status') in ('submitted', 'accepted'):
-                    signal['status'] = 'submitted'
-                    signal['orderId'] = (order_resp.get('order') or {}).get('id')
-                    signal['exitPrice'] = tp_price
-                    signal['reason'] = f'Position in range — take-profit limit at ${tp_price:.2f}.'
-                    submitted.append(signal)
-                    _pa_log('[ExitScan] order submitted mode=%s symbol=%s type=limit_tp price=%.2f status=%s' % (trade_mode.upper(), symbol, tp_price, signal['status']))
+        if action == 'emergency_exit':
+            signal['status'] = 'risk_exit_required'
+            if can_submit:
+                cancellation_failed = False
+                for order_id in protection.get('orderIds') or []:
+                    try:
+                        cancel_response = requests.delete(f'{base_url}/v2/orders/{order_id}', headers=headers, timeout=10)
+                        if cancel_response.status_code not in (200, 204, 404):
+                            cancellation_failed = True
+                    except Exception:
+                        cancellation_failed = True
+                if cancellation_failed:
+                    signal['status'] = 'blocked'
+                    signal['reason'] += '; open sell orders could not be canceled safely'
                 else:
-                    # Limit rejected — just monitor
-                    signal['status'] = 'monitoring'
-                    signal['reason'] = f'Position in range — monitoring (limit order rejected: {order_resp.get("message", "unknown")}).'
-                    _pa_log('[ExitScan] limit order rejected mode=%s symbol=%s reason=%s' % (trade_mode.upper(), symbol, order_resp.get('message', 'unknown')))
+                    order_response, _ = _pa_call_endpoint(uid, '/api/ai/execution/order', ai_execution_order, {
+                        'symbol': symbol,
+                        'side': 'sell',
+                        'qty': qty,
+                        'type': 'market',
+                        'time_in_force': 'day',
+                        'tradingMode': trade_mode,
+                        'automationMode': 'full-ai',
+                        'executionSource': 'exit_scan_hard_stop',
+                        'suppressDiscord': suppress_discord,
+                        'confirmed': True,
+                        'client_order_id': ('alphalab-%s-%s-risk-exit' % (run_id[:16], symbol))[:48],
+                    })
+                    signal['status'] = order_response.get('status') or 'unknown'
+                    signal['orderId'] = (order_response.get('order') or {}).get('id')
+                    submitted.append(dict(signal))
+                    if order_response.get('success'):
+                        _pa_update_managed_position(uid, trade_mode, symbol, status='exit_submitted', exitOrderId=signal.get('orderId'))
+        elif protection.get('isProtective'):
+            signal['action'] = 'protected_hold' if action == 'hold' else 'target_managed'
+            signal['status'] = 'protected'
+            signal['reason'] = 'Validated OCO/bracket protection is active; no duplicate order submitted'
+            _pa_update_managed_position(uid, trade_mode, symbol, status='protected')
+        elif protection.get('orderCount', 0) > 0:
+            signal['action'] = 'review_open_orders'
+            signal['status'] = 'unprotected'
+            signal['reason'] = 'Open sell order exists without both stop and target protection'
+        else:
+            whole_qty = int(math.floor(qty))
+            if whole_qty < 1:
+                signal['action'] = 'fractional_unprotected'
+                signal['status'] = 'unprotected'
+                signal['reason'] = 'Fractional position cannot receive whole-share OCO protection; hard-stop monitoring remains active'
+            elif stop >= current_price or target <= current_price or stop <= 0:
+                signal['action'] = 'review_geometry'
+                signal['status'] = 'unprotected'
+                signal['reason'] = 'Protection geometry is no longer valid at the current price'
+            elif can_submit:
+                order_response, _ = _pa_call_endpoint(uid, '/api/ai/execution/order', ai_execution_order, {
+                    'symbol': symbol,
+                    'side': 'sell',
+                    'qty': whole_qty,
+                    'type': 'limit',
+                    'order_class': 'oco',
+                    'take_profit': {'limit_price': _entry_round_price(target, 'down')},
+                    'stop_loss': {'stop_price': _entry_round_price(stop, 'down')},
+                    'time_in_force': 'gtc',
+                    'tradingMode': trade_mode,
+                    'automationMode': 'full-ai',
+                    'executionSource': 'exit_scan_protection',
+                    'suppressDiscord': suppress_discord,
+                    'confirmed': True,
+                    'client_order_id': ('alphalab-%s-%s-oco' % (run_id[:20], symbol))[:48],
+                })
+                signal['action'] = 'attach_protection'
+                signal['status'] = order_response.get('status') or 'unknown'
+                signal['orderId'] = (order_response.get('order') or {}).get('id')
+                signal['reason'] = 'Submitted linked OCO target and protective stop'
+                submitted.append(dict(signal))
+                if order_response.get('success'):
+                    _pa_update_managed_position(uid, trade_mode, symbol, status='protected', protectionOrderId=signal.get('orderId'))
+            else:
+                signal['action'] = 'protection_required'
+                signal['status'] = 'review' if mode != 'ai' or dry_run else 'blocked'
+                signal['reason'] = 'Position needs linked stop/target protection; automatic submission is not authorized'
 
         results.append(signal)
 
-    # Summary counts (matches frontend exitScanResults stats)
-    _sell_now_count = sum(1 for s in results if s.get('action') == 'sell_now')
-    _target_limit_count = sum(1 for s in results if s.get('action') == 'place_target_limit')
-    _hold_count = sum(1 for s in results if s.get('action') == 'hold')
-    _blocked_count = sum(1 for s in results if s.get('action') == 'blocked')
-    _with_plan = sum(1 for s in results if s.get('exitPlanSource') == 'entry_plan')
-    _with_fallback = sum(1 for s in results if s.get('exitPlanSource') == 'generated')
+    ai_stats = _pa_exit_ai_challenge(uid, results, enabled=ai_review and mode in ('ai', 'hybrid'))
 
     return {
-        'holdingsScanned': len(positions),
+        'holdingsScanned': len(positions or []),
         'signals': results,
         'submitted': submitted,
         'error': None,
-        'sellNowCount': _sell_now_count,
-        'targetLimitCount': _target_limit_count,
-        'holdCount': _hold_count,
-        'blockedCount': _blocked_count,
-        'withEntryPlanCount': _with_plan,
-        'fallbackPlanCount': _with_fallback,
-        'openSellOrderCount': len(open_sell_symbols),
+        'sellNowCount': sum(1 for signal in results if signal.get('action') == 'emergency_exit'),
+        'targetLimitCount': sum(1 for signal in results if signal.get('action') in ('target_managed',)),
+        'holdCount': sum(1 for signal in results if signal.get('action') in ('hold', 'protected_hold')),
+        'blockedCount': sum(1 for signal in results if signal.get('status') in ('blocked', 'unprotected')),
+        'protectedCount': sum(1 for signal in results if signal.get('status') == 'protected'),
+        'protectionAttachedCount': sum(1 for signal in results if signal.get('action') == 'attach_protection'),
+        'withEntryPlanCount': sum(1 for signal in results if signal.get('exitPlanSource') in ('current_entry_plan', 'managed_plan')),
+        'fallbackPlanCount': sum(1 for signal in results if signal.get('exitPlanSource') == 'generated_fallback'),
+        'openSellOrderCount': sum(len(rows) for rows in orders_by_symbol.values()),
+        'liveAutoAuthorized': unattended_live_allowed,
+        'ai': ai_stats,
     }
+
+
+def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='medium',
+                           time_horizon='mid', trade_mode='paper', run_id='',
+                           ai_review=True, suppress_discord=False):
+    """Unified position lifecycle and exit engine.
+
+    The broker owns order state, the persisted entry packet owns initial risk,
+    and this engine may only ratchet a long-position stop upward. Structural
+    targets stay fixed. AI can challenge soft thesis decisions but cannot alter
+    geometry, cancel protection, or delay a hard stop.
+    """
+    normalized_trade_mode = 'paper' if str(trade_mode or 'paper').lower() == 'paper' else 'real'
+    positions, pos_err = _pa_fetch_positions_for_mode(uid, normalized_trade_mode)
+    if pos_err:
+        return {'holdingsScanned': 0, 'signals': [], 'submitted': [], 'error': pos_err}
+
+    config = resolve_alpaca_config_for_user(uid, normalized_trade_mode)
+    api_key = config.get('api_key', '')
+    api_secret = config.get('api_secret', '')
+    base_url = config.get('base_url') or (
+        'https://paper-api.alpaca.markets'
+        if normalized_trade_mode == 'paper' else 'https://api.alpaca.markets'
+    )
+    headers = {
+        'APCA-API-KEY-ID': api_key,
+        'APCA-API-SECRET-KEY': api_secret,
+        'Content-Type': 'application/json',
+    }
+    open_orders = []
+    account_equity = 0.0
+    account_buying_power = 0.0
+    account_last_equity = 0.0
+    account_day_pl_pct = None
+    account_trading_blocked = False
+    broker_errors = []
+    if api_key and api_secret:
+        try:
+            response = requests.get(
+                f'{base_url}/v2/orders', headers=headers,
+                params={'status': 'open', 'nested': 'true', 'limit': 500}, timeout=12,
+            )
+            if response.status_code == 200:
+                open_orders = response.json() or []
+            else:
+                broker_errors.append('orders_http_%s' % response.status_code)
+        except Exception as exc:
+            broker_errors.append('orders_%s' % str(exc)[:100])
+        try:
+            response = requests.get(f'{base_url}/v2/account', headers=headers, timeout=12)
+            if response.status_code == 200:
+                account = response.json() or {}
+                account_equity = _pa_safe_float(account.get('equity'), 0) or 0
+                account_buying_power = _pa_safe_float(account.get('buying_power'), 0) or 0
+                account_last_equity = _pa_safe_float(account.get('last_equity'), 0) or 0
+                account_day_pl_pct = (
+                    (account_equity - account_last_equity) / account_last_equity * 100.0
+                    if account_last_equity > 0 else None
+                )
+                account_trading_blocked = bool(account.get('trading_blocked') or account.get('account_blocked'))
+            else:
+                broker_errors.append('account_http_%s' % response.status_code)
+        except Exception as exc:
+            broker_errors.append('account_%s' % str(exc)[:100])
+
+    orders_by_symbol = {}
+    for order in open_orders:
+        symbol = str(order.get('symbol') or '').upper()
+        if symbol:
+            orders_by_symbol.setdefault(symbol, []).append(order)
+
+    symbols = [str(position.get('symbol') or '').upper() for position in positions or []]
+    market_context, market_meta = _pa_fetch_exit_market_context(
+        uid, symbols, normalized_trade_mode,
+    )
+    spy_indicators = ((market_context.get('SPY') or {}).get('indicators') or {})
+    market_regime = spy_indicators.get('trendState') or 'unknown'
+    current_plan_by_symbol = {
+        str(plan.get('symbol') or '').upper(): plan
+        for plan in (entry_plans or []) if isinstance(plan, dict) and plan.get('symbol')
+    }
+    automation_cfg = _pa_get_config(uid) or {}
+    unattended_live_allowed = (
+        normalized_trade_mode != 'real'
+        or automation_cfg.get('live_auto_trading_enabled') is True
+    )
+    can_submit = (
+        str(mode or '').lower() == 'ai'
+        and unattended_live_allowed
+        and not account_trading_blocked
+        and not dry_run
+    )
+    policy = _pa_exit_policy(risk_profile, time_horizon)
+    results = []
+    submitted = []
+    scan_id = str(run_id or 'exit-%d' % int(time.time()))
+
+    def fallback_geometry(avg_entry, current_price, indicators):
+        baseline = avg_entry if avg_entry > 0 else current_price
+        atr = _pa_safe_float(indicators.get('atr14'), None)
+        risk_distance = baseline * policy['fallbackRiskPct']
+        if atr and atr > 0:
+            risk_distance = max(risk_distance, atr * min(2.5, policy['atrStopMultiple']))
+        stop = max(_entry_price_tick(baseline), baseline - risk_distance)
+        target = baseline + risk_distance * policy['fallbackTargetR']
+        target_2 = baseline + risk_distance * max(policy['fallbackTargetR'] + 0.7, 2.5)
+        return (
+            _entry_round_price(stop, 'down'),
+            _entry_round_price(target, 'down'),
+            _entry_round_price(target_2, 'down'),
+        )
+
+    def wait_until_sell_orders_clear(symbol, attempts=4):
+        for attempt in range(attempts):
+            try:
+                response = requests.get(
+                    f'{base_url}/v2/orders', headers=headers,
+                    params={'status': 'open', 'symbols': symbol, 'nested': 'true', 'limit': 100},
+                    timeout=10,
+                )
+                if response.status_code == 200:
+                    remaining = [
+                        order for order in _pa_flatten_alpaca_order_tree(response.json() or [])
+                        if str(order.get('symbol') or '').upper() == symbol
+                        and str(order.get('side') or '').lower() == 'sell'
+                    ]
+                    if not remaining:
+                        return True
+            except Exception:
+                pass
+            if attempt < attempts - 1:
+                time.sleep(0.35)
+        return False
+
+    def cancel_managed_orders(symbol, protection):
+        if protection.get('hasExternalOrders'):
+            return False, 'External sell order ownership prevents automatic cancellation'
+        failed = []
+        for order_id in protection.get('orderIds') or []:
+            try:
+                response = requests.delete(f'{base_url}/v2/orders/{order_id}', headers=headers, timeout=10)
+                if response.status_code not in (200, 204, 404):
+                    failed.append(str(order_id))
+            except Exception:
+                failed.append(str(order_id))
+        if failed:
+            return False, 'Could not cancel broker orders: %s' % ', '.join(failed)
+        if protection.get('orderIds') and not wait_until_sell_orders_clear(symbol):
+            return False, 'Broker has not confirmed cancellation of prior sell orders'
+        return True, None
+
+    def submit_exit_order(symbol, qty, payload):
+        body = {
+            'symbol': symbol,
+            'side': 'sell',
+            'qty': qty,
+            'tradingMode': normalized_trade_mode,
+            'automationMode': 'full-ai',
+            'executionSource': payload.pop('executionSource', 'exit_scan'),
+            'suppressDiscord': suppress_discord,
+            'confirmed': True,
+            **payload,
+        }
+        response, _ = _pa_call_endpoint(uid, '/api/ai/execution/order', ai_execution_order, body)
+        return response if isinstance(response, dict) else {'success': False, 'status': 'api_error'}
+
+    for position in positions or []:
+        symbol = str(position.get('symbol') or '').upper()
+        qty = abs(_pa_safe_float(position.get('qty'), 0) or 0)
+        side = str(position.get('side') or 'long').lower()
+        avg_entry = _pa_safe_float(position.get('avg_entry_price'), 0) or 0
+        position_price = _pa_safe_float(position.get('current_price'), 0) or 0
+        if position_price <= 0 and qty > 0:
+            market_value = abs(_pa_safe_float(position.get('market_value'), 0) or 0)
+            position_price = market_value / qty if market_value else 0
+        if not symbol or qty <= 0 or position_price <= 0:
+            continue
+
+        symbol_context = market_context.get(symbol) or {}
+        indicators = dict(symbol_context.get('indicators') or {})
+        fresh_events = dict(symbol_context.get('events') or {})
+        snapshot_price = _pa_safe_float(indicators.get('price'), None)
+        quote_age = _pa_safe_float(indicators.get('quoteAgeSeconds'), None)
+        current_price = snapshot_price if snapshot_price and (quote_age is None or quote_age <= 300) else position_price
+        position_for_plan = dict(position)
+        position_for_plan['current_price'] = current_price
+        position_for_plan.setdefault('market_value', current_price * qty)
+        persisted_plan = _pa_get_managed_position_plan(uid, normalized_trade_mode, symbol) or {}
+        research_plan = current_plan_by_symbol.get(symbol) or {}
+        plan = persisted_plan or research_plan
+        event_context = _pa_normalize_exit_event_context({
+            'eventRisk': (
+                fresh_events.get('eventRisk')
+                if fresh_events.get('eventRisk') not in (None, '', 'Unknown')
+                else persisted_plan.get('eventRisk') or research_plan.get('eventRisk')
+            ),
+            'daysToEarnings': fresh_events.get('daysToEarnings') if fresh_events.get('daysToEarnings') is not None else persisted_plan.get('daysToEarnings', research_plan.get('daysToEarnings')),
+            'nextEarningsDate': fresh_events.get('nextEarningsDate') or persisted_plan.get('nextEarningsDate') or research_plan.get('nextEarningsDate'),
+            'newsSentiment': fresh_events.get('newsSentiment') or persisted_plan.get('newsSentiment') or research_plan.get('newsSentiment'),
+            'topNewsHeadline': fresh_events.get('topNewsHeadline') or persisted_plan.get('topNewsHeadline') or research_plan.get('topNewsHeadline'),
+            'latestNewsTime': fresh_events.get('latestNewsTime') or persisted_plan.get('latestNewsTime') or research_plan.get('latestNewsTime'),
+            'eventTags': fresh_events.get('eventTags') or persisted_plan.get('eventTags') or research_plan.get('eventTags') or [],
+            'observedAt': fresh_events.get('observedAt') or persisted_plan.get('eventObservedAt') or research_plan.get('eventObservedAt'),
+            'newsError': fresh_events.get('newsError'),
+            'newsSource': fresh_events.get('newsSource'),
+            'earningsSource': fresh_events.get('earningsSource'),
+        })
+        packet = plan.get('institutionalPacket') if isinstance(plan.get('institutionalPacket'), dict) else {}
+        exits = packet.get('exits') if isinstance(packet.get('exits'), dict) else {}
+        initial_stop = _pa_safe_float(
+            persisted_plan.get('initialStop')
+            or exits.get('stopLoss') or plan.get('stopLoss') or plan.get('entryPlanStop'),
+            None,
+        )
+        target_1 = _pa_safe_float(
+            persisted_plan.get('takeProfit1')
+            or exits.get('target1') or plan.get('takeProfit1') or plan.get('entryPlanTarget'),
+            None,
+        )
+        target_2 = _pa_safe_float(
+            persisted_plan.get('takeProfit2')
+            or exits.get('target2') or plan.get('takeProfit2'),
+            None,
+        )
+        source = (
+            'managed_plan' if persisted_plan
+            else 'current_entry_plan' if research_plan
+            else 'broker_reconstructed'
+        )
+        fallback_used = False
+        if not initial_stop or not target_1:
+            fallback_stop, fallback_target, fallback_target_2 = fallback_geometry(
+                avg_entry, current_price, indicators,
+            )
+            initial_stop = initial_stop or fallback_stop
+            target_1 = target_1 or fallback_target
+            target_2 = target_2 or fallback_target_2
+            fallback_used = True
+            if not persisted_plan and not research_plan:
+                source = 'broker_reconstructed'
+
+        protection = _pa_classify_sell_protection(orders_by_symbol.get(symbol, []))
+        coverage_tolerance = max(1e-6, qty * 1e-6)
+        stop_coverage_pct = min(100.0, (_pa_safe_float(protection.get('stopQty'), 0) or 0) / qty * 100.0)
+        target_coverage_pct = min(100.0, (_pa_safe_float(protection.get('targetQty'), 0) or 0) / qty * 100.0)
+        has_full_stop_coverage = bool(
+            protection.get('hasStop')
+            and (_pa_safe_float(protection.get('stopQty'), 0) or 0) >= qty - coverage_tolerance
+        )
+        protection.update({
+            'positionQty': qty,
+            'stopCoveragePct': round(stop_coverage_pct, 2),
+            'targetCoveragePct': round(target_coverage_pct, 2),
+            'hasFullStopCoverage': has_full_stop_coverage,
+            'isFullyProtective': has_full_stop_coverage,
+        })
+        if protection.get('hasStop') and not has_full_stop_coverage:
+            protection['protectionStatus'] = 'partial_stop_coverage'
+        if not persisted_plan:
+            reconstructed = dict(research_plan) if research_plan else {}
+            reconstructed.update({
+                'symbol': symbol,
+                'currentPrice': avg_entry,
+                'entryZoneHigh': avg_entry,
+                'stopLoss': initial_stop,
+                'takeProfit1': target_1,
+                'takeProfit2': target_2,
+                'exitPlanSource': source,
+            })
+            _pa_record_managed_position_plan(
+                uid, normalized_trade_mode, symbol, reconstructed,
+                status='position_reconstructed' if source == 'broker_reconstructed' else 'position_open',
+            )
+            persisted_plan = _pa_get_managed_position_plan(uid, normalized_trade_mode, symbol) or reconstructed
+
+        if protection.get('stopPrice'):
+            broker_stop = _pa_safe_float(protection.get('stopPrice'), None)
+            prior_stop = _pa_safe_float(persisted_plan.get('currentStop'), None)
+            if broker_stop and (not prior_stop or broker_stop > prior_stop):
+                persisted_plan = {**persisted_plan, 'currentStop': broker_stop}
+
+        if side not in ('long', ''):
+            signal = {
+                'symbol': symbol,
+                'qty': qty,
+                'avgEntry': avg_entry,
+                'currentPrice': current_price,
+                'pl': _pa_safe_float(position.get('unrealized_pl'), 0) or 0,
+                'plPct': round((_pa_safe_float(position.get('unrealized_plpc'), 0) or 0) * 100.0, 2),
+                'positionSource': source,
+                'exitPlanSource': source,
+                'triggerAction': 'unsupported_short_position',
+                'action': 'manual_review',
+                'exitDecision': 'manual_review',
+                'status': 'review',
+                'reason': 'Short-position exit geometry is not authorized by the long-only research pipeline',
+                'protection': protection,
+                'indicators': indicators,
+                'dataQuality': 'PARTIAL',
+            }
+            results.append(signal)
+            continue
+
+        dynamic_plan = _pa_build_dynamic_exit_plan(
+            position_for_plan, persisted_plan, initial_stop, target_1, target_2,
+            indicators, account_equity=account_equity,
+            risk_profile=risk_profile, time_horizon=time_horizon,
+            event_context=event_context,
+        )
+        trigger_action = dynamic_plan['action']
+        pl_pct = ((current_price - avg_entry) / avg_entry * 100.0) if avg_entry > 0 else 0.0
+        signal = {
+            'symbol': symbol,
+            'qty': qty,
+            'avgEntry': round(avg_entry, 4),
+            'currentPrice': round(current_price, 4),
+            'pl': round(_pa_safe_float(position.get('unrealized_pl'), (current_price - avg_entry) * qty) or 0, 2),
+            'plPct': round(pl_pct, 2),
+            'positionSource': source,
+            'exitPlanSource': source,
+            'fallbackUsed': fallback_used,
+            'stopPrice': dynamic_plan.get('currentStop'),
+            'targetPrice': dynamic_plan.get('target1'),
+            'entryPlanStop': dynamic_plan.get('currentStop'),
+            'entryPlanTarget': dynamic_plan.get('target1'),
+            'triggerAction': trigger_action,
+            'action': trigger_action,
+            'exitDecision': (
+                'sell_now' if trigger_action == 'emergency_exit'
+                else 'place_target_limit' if trigger_action == 'target_reached'
+                else 'manual_review' if trigger_action in ('time_exit_review', 'thesis_review', 'event_review', 'concentration_review')
+                else 'hold'
+            ),
+            'reason': dynamic_plan.get('reason'),
+            'exitPlan': dynamic_plan,
+            'protection': protection,
+            'indicators': indicators,
+            'eventContext': event_context,
+            'marketRegime': market_regime,
+            'dataQuality': dynamic_plan.get('dataQuality'),
+            'dataFreshness': {
+                'quoteAgeSeconds': indicators.get('quoteAgeSeconds'),
+                'quoteTime': indicators.get('quoteTime'),
+                'barsAsOf': indicators.get('barsAsOf'),
+            },
+            'accountContext': {
+                'equity': round(account_equity, 2),
+                'buyingPower': round(account_buying_power, 2),
+                'allocationPct': dynamic_plan.get('allocationPct'),
+                'dayPnlPct': round(account_day_pl_pct, 2) if account_day_pl_pct is not None else None,
+                'tradingBlocked': account_trading_blocked,
+            },
+            'status': 'dry_run' if dry_run else 'monitoring',
+            'aiAuthority': 'challenge_soft_exit_only',
+        }
+
+        _pa_update_managed_position(
+            uid, normalized_trade_mode, symbol,
+            status='monitoring',
+            initialStop=dynamic_plan.get('initialStop'),
+            currentStop=dynamic_plan.get('currentStop'),
+            takeProfit1=dynamic_plan.get('target1'),
+            takeProfit2=dynamic_plan.get('target2'),
+            initialRiskPerShare=dynamic_plan.get('initialRiskPerShare'),
+            highWaterMark=dynamic_plan.get('highWaterMark'),
+            exitState=dynamic_plan.get('state'),
+            exitPolicyVersion=2,
+            planSource=source,
+            lastExitAction=trigger_action,
+            lastExitReason=dynamic_plan.get('reason'),
+            lastEvaluatedAt=dynamic_plan.get('evaluatedAt'),
+            lastReconciledAt=_pa_utc_iso(),
+            eventRisk=event_context.get('eventRisk'),
+            daysToEarnings=event_context.get('daysToEarnings'),
+            nextEarningsDate=event_context.get('nextEarningsDate'),
+            newsSentiment=event_context.get('newsSentiment'),
+            topNewsHeadline=event_context.get('topNewsHeadline'),
+            latestNewsTime=event_context.get('latestNewsTime'),
+            eventTags=event_context.get('eventTags') or [],
+            eventObservedAt=event_context.get('observedAt'),
+        )
+
+        if trigger_action == 'emergency_exit':
+            if protection.get('hasExternalOrders'):
+                signal['action'] = 'manual_intervention'
+                signal['status'] = 'blocked_external_order'
+                signal['reason'] += '; external sell order must be reconciled before automatic liquidation'
+            elif can_submit:
+                cleared, cancel_error = cancel_managed_orders(symbol, protection)
+                if not cleared:
+                    signal['status'] = 'blocked'
+                    signal['reason'] += '; ' + str(cancel_error)
+                else:
+                    order_response = submit_exit_order(symbol, qty, {
+                        'type': 'market',
+                        'time_in_force': 'day',
+                        'executionSource': 'exit_scan_hard_stop',
+                        'client_order_id': ('alphalab-%s-%s-risk-exit' % (scan_id[:16], symbol))[:48],
+                    })
+                    signal['status'] = order_response.get('status') or 'unknown'
+                    signal['orderId'] = (order_response.get('order') or {}).get('id')
+                    signal['exitOrderType'] = 'market'
+                    if order_response.get('success'):
+                        signal['action'] = 'emergency_exit_submitted'
+                        submitted.append(dict(signal))
+                        _pa_update_managed_position(
+                            uid, normalized_trade_mode, symbol,
+                            status='exit_submitted', exitOrderId=signal.get('orderId'),
+                        )
+                    else:
+                        signal['reason'] += '; broker submission failed: %s' % str(order_response.get('message') or order_response.get('code') or 'unknown')[:160]
+            else:
+                signal['status'] = 'exit_ready' if normalized_trade_mode == 'paper' or mode != 'ai' else 'blocked'
+                signal['reason'] += '; automatic order submission is not authorized'
+
+        elif trigger_action == 'target_reached':
+            if protection.get('hasTarget'):
+                signal['action'] = 'target_managed'
+                signal['status'] = 'protected' if protection.get('hasStop') else 'target_order_active'
+                signal['exitOrderType'] = 'limit'
+                signal['exitPrice'] = protection.get('targetPrice') or dynamic_plan.get('target1')
+                signal['reason'] = 'Broker target order is already active; no duplicate order submitted'
+            elif protection.get('hasExternalOrders'):
+                signal['action'] = 'review_open_orders'
+                signal['status'] = 'review'
+                signal['reason'] += '; external sell order prevents automatic target submission'
+            elif can_submit:
+                cleared, cancel_error = cancel_managed_orders(symbol, protection)
+                if not cleared:
+                    signal['status'] = 'blocked'
+                    signal['reason'] += '; ' + str(cancel_error)
+                else:
+                    target_price = dynamic_plan.get('target1')
+                    order_response = submit_exit_order(symbol, qty, {
+                        'type': 'limit',
+                        'limit_price': target_price,
+                        'time_in_force': 'day',
+                        'executionSource': 'exit_scan_target',
+                        'client_order_id': ('alphalab-%s-%s-target' % (scan_id[:18], symbol))[:48],
+                    })
+                    signal['status'] = order_response.get('status') or 'unknown'
+                    signal['orderId'] = (order_response.get('order') or {}).get('id')
+                    signal['exitOrderType'] = 'limit'
+                    signal['exitPrice'] = target_price
+                    if order_response.get('success'):
+                        signal['action'] = 'target_exit_submitted'
+                        submitted.append(dict(signal))
+                        _pa_update_managed_position(
+                            uid, normalized_trade_mode, symbol,
+                            status='exit_submitted', exitOrderId=signal.get('orderId'),
+                        )
+                    else:
+                        signal['reason'] += '; broker submission failed: %s' % str(order_response.get('message') or 'unknown')[:160]
+            else:
+                signal['status'] = 'target_ready'
+
+        else:
+            desired_stop = _pa_safe_float(dynamic_plan.get('currentStop'), None)
+            broker_stop = _pa_safe_float(protection.get('stopPrice'), None)
+            if protection.get('hasFullStopCoverage'):
+                signal['action'] = 'protected_review' if trigger_action != 'hold' else (
+                    'protected_hold' if protection.get('isComplete') else 'protected_stop_only'
+                )
+                signal['status'] = 'protected_review' if trigger_action != 'hold' else 'protected'
+                signal['exitOrderType'] = 'trailing_stop' if protection.get('hasTrailingStop') else (
+                    'oco' if protection.get('isComplete') else 'stop'
+                )
+                if (
+                    can_submit and protection.get('managedByAlphaLab')
+                    and not protection.get('hasTrailingStop') and desired_stop and broker_stop
+                    and desired_stop >= broker_stop + _entry_price_tick(desired_stop)
+                ):
+                    patch_failures = []
+                    for stop_order_id in protection.get('stopOrderIds') or []:
+                        try:
+                            response = requests.patch(
+                                f'{base_url}/v2/orders/{stop_order_id}', headers=headers,
+                                json={'stop_price': str(desired_stop)}, timeout=10,
+                            )
+                            if response.status_code not in (200, 201):
+                                patch_failures.append(str(stop_order_id))
+                        except Exception:
+                            patch_failures.append(str(stop_order_id))
+                    if patch_failures:
+                        signal['status'] = 'review'
+                        signal['reason'] += '; broker stop ratchet failed for %s' % ', '.join(patch_failures)
+                    else:
+                        signal['action'] = 'ratchet_stop'
+                        signal['reason'] = 'Broker stop ratcheted from %.2f to %.2f; target remains fixed' % (
+                            broker_stop, desired_stop,
+                        )
+                        _pa_update_managed_position(
+                            uid, normalized_trade_mode, symbol,
+                            status='protected', brokerStopPrice=desired_stop,
+                        )
+            elif protection.get('hasStop') and protection.get('hasExternalOrders'):
+                signal['action'] = 'review_open_orders'
+                signal['status'] = 'unprotected'
+                signal['reason'] = 'External stop covers only %.1f%% of the position; full downside coverage is required' % stop_coverage_pct
+            elif protection.get('hasTarget') and protection.get('hasExternalOrders'):
+                signal['action'] = 'review_open_orders'
+                signal['status'] = 'unprotected'
+                signal['reason'] = 'External target-only sell is active; downside stop coverage is missing'
+            else:
+                should_attach = not protection.get('orderCount') or protection.get('managedByAlphaLab')
+                if can_submit and should_attach:
+                    cleared, cancel_error = cancel_managed_orders(symbol, protection)
+                    if not cleared:
+                        signal['action'] = 'protection_required'
+                        signal['status'] = 'blocked'
+                        signal['reason'] = str(cancel_error)
+                    else:
+                        whole_qty = qty >= 1 and abs(qty - round(qty)) < 1e-6
+                        if whole_qty:
+                            order_response = submit_exit_order(symbol, int(round(qty)), {
+                                'type': 'limit',
+                                'order_class': 'oco',
+                                'take_profit': {'limit_price': dynamic_plan.get('target1')},
+                                'stop_loss': {'stop_price': desired_stop},
+                                'time_in_force': 'gtc',
+                                'executionSource': 'exit_scan_protection',
+                                'client_order_id': ('alphalab-%s-%s-oco' % (scan_id[:20], symbol))[:48],
+                            })
+                            order_type = 'oco'
+                            # If linked protection is unavailable, preserve downside first.
+                            if not order_response.get('success'):
+                                order_response = submit_exit_order(symbol, qty, {
+                                    'type': 'stop',
+                                    'stop_price': desired_stop,
+                                    'time_in_force': 'day',
+                                    'executionSource': 'exit_scan_stop_fallback',
+                                    'client_order_id': ('alphalab-%s-%s-stop' % (scan_id[:18], symbol))[:48],
+                                })
+                                order_type = 'stop'
+                        else:
+                            order_response = submit_exit_order(symbol, qty, {
+                                'type': 'stop',
+                                'stop_price': desired_stop,
+                                'time_in_force': 'day',
+                                'executionSource': 'exit_scan_fractional_stop',
+                                'client_order_id': ('alphalab-%s-%s-frac-stop' % (scan_id[:14], symbol))[:48],
+                            })
+                            order_type = 'stop'
+                        signal['status'] = order_response.get('status') or 'unknown'
+                        signal['orderId'] = (order_response.get('order') or {}).get('id')
+                        signal['exitOrderType'] = order_type
+                        if order_response.get('success'):
+                            signal['action'] = 'attach_protection'
+                            signal['reason'] = (
+                                'Submitted linked stop/target protection'
+                                if order_type == 'oco'
+                                else 'Submitted downside-first DAY stop; target remains monitored by Position Guard'
+                            )
+                            submitted.append(dict(signal))
+                            _pa_update_managed_position(
+                                uid, normalized_trade_mode, symbol,
+                                status='protected', protectionOrderId=signal.get('orderId'),
+                                protectionType=order_type,
+                            )
+                        else:
+                            signal['action'] = 'protection_required'
+                            signal['reason'] = 'Broker protection submission failed: %s' % str(order_response.get('message') or 'unknown')[:180]
+                else:
+                    signal['action'] = 'protection_required'
+                    signal['status'] = 'review' if not protection.get('hasExternalOrders') else 'unprotected'
+                    signal['reason'] = (
+                        'Position requires downside protection; automatic submission is not authorized'
+                        if not protection.get('hasExternalOrders')
+                        else 'External sell order must be reconciled before AlphaLab can manage protection'
+                    )
+
+        results.append(signal)
+
+    ai_stats = _pa_exit_ai_challenge(uid, results, enabled=ai_review and str(mode).lower() in ('ai', 'hybrid'))
+    return {
+        'holdingsScanned': len(results),
+        'signals': results,
+        'results': results,
+        'submitted': submitted,
+        'error': None,
+        'brokerErrors': broker_errors,
+        'sellNowCount': sum(1 for signal in results if signal.get('triggerAction') == 'emergency_exit'),
+        'targetLimitCount': sum(1 for signal in results if signal.get('triggerAction') == 'target_reached'),
+        'holdCount': sum(1 for signal in results if signal.get('triggerAction') == 'hold'),
+        'reviewCount': sum(1 for signal in results if signal.get('triggerAction') in ('time_exit_review', 'thesis_review', 'event_review', 'concentration_review', 'unsupported_short_position')),
+        'blockedCount': sum(1 for signal in results if str(signal.get('status') or '').startswith('blocked') or signal.get('status') == 'unprotected'),
+        'protectedCount': sum(1 for signal in results if str(signal.get('status') or '').startswith('protected')),
+        'protectionAttachedCount': sum(1 for signal in results if signal.get('action') == 'attach_protection'),
+        'ratchetedStopCount': sum(1 for signal in results if signal.get('action') == 'ratchet_stop'),
+        'withEntryPlanCount': sum(1 for signal in results if signal.get('exitPlanSource') in ('current_entry_plan', 'managed_plan')),
+        'fallbackPlanCount': sum(1 for signal in results if signal.get('exitPlanSource') == 'broker_reconstructed'),
+        'openSellOrderCount': sum(len(rows) for rows in orders_by_symbol.values()),
+        'liveAutoAuthorized': unattended_live_allowed,
+        'scanPolicy': {
+            'engine': 'position_lifecycle_v2',
+            'guardIntervalSeconds': _PA_POSITION_GUARD_INTERVAL_SECONDS,
+            'initialStop': 'fixed_at_entry',
+            'dynamicStop': 'ratchet_only',
+            'target': 'fixed_structural',
+            **policy,
+        },
+        'marketData': market_meta,
+        'marketRegime': market_regime,
+        'accountEquity': round(account_equity, 2),
+        'accountDayPnlPct': round(account_day_pl_pct, 2) if account_day_pl_pct is not None else None,
+        'accountTradingBlocked': account_trading_blocked,
+        'ai': ai_stats,
+        'evaluatedAt': _pa_utc_iso(),
+    }
+
+
+def _pa_maybe_start_position_guard(uid, config, now_et, mode, risk_profile,
+                                   time_horizon, trade_mode, market_open):
+    """Run the protection loop independently from the slower research pipeline."""
+    if not market_open or not config.get('enabled'):
+        return False
+    now_ts = time.time()
+    with _PA_POSITION_GUARD_LOCK:
+        state = _PA_POSITION_GUARD_STATE.get(uid, {})
+        if state.get('running'):
+            return False
+        if now_ts - float(state.get('lastStartedTs') or 0) < _PA_POSITION_GUARD_INTERVAL_SECONDS:
+            return False
+        _PA_POSITION_GUARD_STATE[uid] = {
+            **state,
+            'running': True,
+            'lastStartedTs': now_ts,
+            'lastStartedAt': now_et.isoformat(),
+            'tradeMode': trade_mode,
+            'mode': mode,
+        }
+    if not _pa_try_reserve_user_run(uid, 'position_guard'):
+        with _PA_POSITION_GUARD_LOCK:
+            _PA_POSITION_GUARD_STATE[uid]['running'] = False
+        return False
+
+    def _run_guard():
+        guard_id = 'position-guard-%s-%d' % (uid[:8], int(time.time()))
+        summary = None
+        error = None
+        try:
+            lifecycle = _pa_reconcile_order_lifecycle(uid, trade_mode, notify=True)
+            summary = _pa_exit_scan_headless(
+                uid,
+                [],
+                mode,
+                dry_run=False,
+                risk_profile=risk_profile,
+                time_horizon=time_horizon,
+                trade_mode=trade_mode,
+                run_id=guard_id,
+                ai_review=False,
+                suppress_discord=True,
+            )
+            summary['orderLifecycle'] = lifecycle
+            material_signals = [
+                signal for signal in (summary.get('signals') or [])
+                if signal.get('triggerAction') == 'emergency_exit'
+                or signal.get('action') in (
+                    'attach_protection', 'protection_required', 'review_open_orders',
+                    'manual_intervention'
+                ) or signal.get('status') in (
+                    'blocked', 'blocked_external_order', 'unprotected'
+                )
+            ]
+            if material_signals:
+                import hashlib
+                fingerprint = hashlib.sha256(json.dumps([
+                    {
+                        'symbol': signal.get('symbol'),
+                        'action': signal.get('action'),
+                        'status': signal.get('status'),
+                    } for signal in material_signals
+                ], sort_keys=True, default=str).encode('utf-8')).hexdigest()[:12]
+                durable_cfg = _pa_get_config(uid) or {}
+                with _PA_POSITION_GUARD_LOCK:
+                    live_state = _PA_POSITION_GUARD_STATE.get(uid, {})
+                    prior_fingerprint = (
+                        live_state.get('lastAlertFingerprint')
+                        or durable_cfg.get('position_guard_alert_fingerprint')
+                        or ''
+                    )
+                if fingerprint != prior_fingerprint:
+                    symbols = sorted({str(signal.get('symbol') or '').upper() for signal in material_signals if signal.get('symbol')})
+                    reasons = [
+                        '%s: %s' % (signal.get('symbol') or '?', str(signal.get('reason') or signal.get('action') or 'review required')[:150])
+                        for signal in material_signals[:5]
+                    ]
+                    notification = send_discord_notification(uid, 'risk_alert', {
+                        'event_id': 'position-guard-%s' % fingerprint,
+                        'fingerprint': fingerprint,
+                        'severity': 'critical' if summary.get('sellNowCount', 0) else 'high',
+                        'step': 'Position Protection',
+                        'status': 'action_submitted' if summary.get('submitted') else 'review_required',
+                        'symbol': ', '.join(symbols[:6]) or '-',
+                        'reason': '\n'.join(reasons),
+                        'action': 'Emergency orders are submitted automatically when authorized; otherwise review the protection gaps.',
+                        'source': 'Background Position Guard',
+                        'description': 'A material position protection condition changed.',
+                    })
+                    if notification.get('sent'):
+                        durable_cfg['position_guard_alert_fingerprint'] = fingerprint
+                        durable_cfg['position_guard_alerted_at'] = _pa_utc_iso()
+                        _pa_save_config(uid, durable_cfg)
+                        with _PA_POSITION_GUARD_LOCK:
+                            _PA_POSITION_GUARD_STATE.setdefault(uid, {})['lastAlertFingerprint'] = fingerprint
+            else:
+                durable_cfg = _pa_get_config(uid) or {}
+                if durable_cfg.get('position_guard_alert_fingerprint'):
+                    durable_cfg['position_guard_alert_fingerprint'] = ''
+                    durable_cfg['position_guard_cleared_at'] = _pa_utc_iso()
+                    _pa_save_config(uid, durable_cfg)
+                with _PA_POSITION_GUARD_LOCK:
+                    _PA_POSITION_GUARD_STATE.setdefault(uid, {})['lastAlertFingerprint'] = ''
+            _pa_log('[PositionGuard] completed user=%s holdings=%d submitted=%d blocked=%d' % (
+                uid[:8], summary.get('holdingsScanned', 0), len(summary.get('submitted') or []),
+                summary.get('blockedCount', 0)))
+        except Exception as exc:
+            error = str(exc)[:240]
+            _pa_log_error('[PositionGuard] failed user=%s error=%s' % (uid[:8], error))
+            send_discord_notification(uid, 'risk_alert', {
+                'event_id': 'position-guard-error-%s' % now_et.strftime('%Y%m%d%H'),
+                'fingerprint': 'position_guard:%s' % error,
+                'severity': 'high',
+                'step': 'Position Guard',
+                'status': 'failed',
+                'reason': error,
+                'action': 'Protection monitoring will retry automatically.',
+            })
+        finally:
+            with _PA_POSITION_GUARD_LOCK:
+                previous = _PA_POSITION_GUARD_STATE.get(uid, {})
+                _PA_POSITION_GUARD_STATE[uid] = {
+                    **previous,
+                    'running': False,
+                    'lastCompletedAt': datetime.now(timezone.utc).isoformat(),
+                    'lastError': error,
+                    'lastSummary': {
+                        'holdingsScanned': summary.get('holdingsScanned', 0) if summary else 0,
+                        'protectedCount': summary.get('protectedCount', 0) if summary else 0,
+                        'submittedCount': len(summary.get('submitted') or []) if summary else 0,
+                        'blockedCount': summary.get('blockedCount', 0) if summary else 0,
+                    },
+                }
+            _pa_release_user_run(uid)
+
+    try:
+        threading.Thread(target=_run_guard, daemon=True, name='position-guard-%s' % uid[:8]).start()
+    except Exception:
+        with _PA_POSITION_GUARD_LOCK:
+            _PA_POSITION_GUARD_STATE[uid]['running'] = False
+        _pa_release_user_run(uid)
+        raise
+    return True
 
 
 def _pa_pipeline_count_decisions(items, field, values):
@@ -30700,13 +41046,61 @@ def _pa_pipeline_count_decisions(items, field, values):
     return counts
 
 
+def _pa_send_cycle_digest(uid, run_id, trigger, mode, trade_mode, summary, run_context):
+    """Send one compact cycle result; scheduled no-op cycles intentionally stay quiet."""
+    if trigger in ('manual', 'headless_test') or not isinstance(summary, dict):
+        return {'sent': False, 'reason': 'manual_or_test'}
+    exit_summary = run_context.get('exit_results') if isinstance(run_context, dict) else {}
+    exit_summary = exit_summary if isinstance(exit_summary, dict) else {}
+    lifecycle_before = summary.get('order_lifecycle_before') if isinstance(summary.get('order_lifecycle_before'), dict) else {}
+    lifecycle_after = summary.get('order_lifecycle_after') if isinstance(summary.get('order_lifecycle_after'), dict) else {}
+    broker_fills = int(lifecycle_before.get('filled') or 0) + int(lifecycle_after.get('filled') or 0)
+    protection_actions = len(exit_summary.get('submitted') or [])
+    emergency_actions = int(exit_summary.get('sellNowCount') or 0)
+    orders_submitted = int(summary.get('orders_submitted') or 0)
+    material_action = bool(orders_submitted or protection_actions or emergency_actions or broker_fills)
+    if trigger != 'auto_run_now' and not material_action:
+        return {'sent': False, 'reason': 'scheduled_no_material_action'}
+
+    dv_results = run_context.get('validation_results') or []
+    dv_passed = sum(1 for row in dv_results if _pa_is_dv_confirmed(row))
+    need_data = int(summary.get('needData') or 0)
+    universe_scanned = int(summary.get('scannedTotal') or 0)
+    warning_parts = []
+    if universe_scanned and need_data / universe_scanned > 0.30:
+        warning_parts.append('%d/%d symbols had incomplete required data.' % (need_data, universe_scanned))
+    if exit_summary.get('error'):
+        warning_parts.append('Position protection scan was partial: %s.' % str(exit_summary.get('error'))[:180])
+    payload = {
+        'event_id': '%s:cycle_digest' % run_id,
+        'result': 'completed' if not summary.get('errors') else 'failed',
+        'durationSeconds': summary.get('durationSeconds'),
+        'mode': '%s / %s' % (str(mode).upper(), str(trade_mode).upper()),
+        'universeScanned': universe_scanned,
+        'rankedCandidates': int(summary.get('scanned') or 0),
+        'fineScanned': int(summary.get('fine_count') or 0),
+        'dvPassed': dv_passed,
+        'entryPlans': int(summary.get('entry_plan_count') or 0),
+        'ordersSubmitted': orders_submitted,
+        'brokerFills': broker_fills,
+        'holdingsScanned': int(exit_summary.get('holdingsScanned') or summary.get('exit_scan_count') or 0),
+        'protectionActions': protection_actions,
+        'warning': ' '.join(warning_parts),
+        'source': _pa_discord_source_prefix(trigger),
+        'description': 'One full seven-stage auto cycle finished%s.' % (' (dry run)' if summary.get('dryRun') else ''),
+    }
+    return _pa_discord_send_once(uid, run_id, 'cycle_digest', payload) or {'sent': False, 'reason': 'not_sent'}
+
+
 def _pa_build_pipeline_debug_dump(uid, run_id, trigger, mode, risk_profile, time_horizon,
                                   trade_mode, summary, run_context):
     market_results = run_context.get('market_results') or []
     continue_results = run_context.get('continue_candidates') or []
     fine_results = run_context.get('fine_results') or []
     dv_results = run_context.get('validation_results') or []
+    admission_results = run_context.get('admission_results') or []
     entry_plans = run_context.get('entry_plans') or []
+    execution_results = run_context.get('execution_results') or []
     exit_results = run_context.get('exit_results') or {}
     symbols = run_context.get('symbols') or [r.get('symbol') for r in market_results if r.get('symbol')]
     scanner_passed = [r.get('symbol') for r in market_results if r.get('symbol')]
@@ -30719,14 +41113,21 @@ def _pa_build_pipeline_debug_dump(uid, run_id, trigger, mode, risk_profile, time
         'riskProfile': risk_profile,
         'timeHorizon': time_horizon,
         'tradeMode': trade_mode,
+        'pipelineStages': [{'key': key, 'label': label} for key, label in _PA_PIPELINE_STAGES],
+        'aiAuthority': _PA_AI_AUTHORITY,
         'startedAt': (summary or {}).get('startedAt'),
         'finishedAt': (summary or {}).get('finishedAt'),
         'durationSeconds': (summary or {}).get('durationSeconds'),
         'summary': summary or {},
         'market_scanner': {
             'source': run_context.get('universe_source'),
+            'universe': 'alpaca_market',
+            'method': (run_context.get('market_scanner_stats') or {}).get('method'),
+            'scannerSummary': run_context.get('market_scanner_summary') or {},
+            'scannerStats': run_context.get('market_scanner_stats') or {},
             'symbols': symbols,
             'processed': (summary or {}).get('scannedTotal', len(symbols)),
+            'passedInvestability': (summary or {}).get('passedInvestability', len(market_results)),
             'aiSuccess': (summary or {}).get('aiSuccess', 0),
             'filtered': (summary or {}).get('filtered', 0),
             'needData': (summary or {}).get('needData', 0),
@@ -30739,7 +41140,7 @@ def _pa_build_pipeline_debug_dump(uid, run_id, trigger, mode, risk_profile, time
             )[:5] if r.get('symbol')],
             'results': market_results,
         },
-        'continue_scan': {
+        'market_shortlist': {
             'inputSymbols': [r.get('symbol') for r in market_results if r.get('symbol')],
             'outputCandidates': [r.get('symbol') for r in continue_results if r.get('symbol')],
             'selectedSymbols': [r.get('symbol') for r in continue_results if r.get('symbol')],
@@ -30760,12 +41161,24 @@ def _pa_build_pipeline_debug_dump(uid, run_id, trigger, mode, risk_profile, time
             ),
             'results': dv_results,
         },
+        'admission': {
+            'inputSymbols': [r.get('symbol') for r in dv_results if _pa_is_dv_confirmed(r)],
+            'decisions': _pa_pipeline_count_decisions(
+                admission_results, 'admissionDecision', ['ADMIT', 'HOLD', 'BLOCK']
+            ),
+            'results': admission_results,
+        },
         'entry_plan': {
-            'inputSymbols': [r.get('symbol') for r in dv_results if r.get('verdict') in ('Confirmed', 'Watch', 'Review', 'Pass')],
+            'inputSymbols': [r.get('symbol') for r in admission_results if r.get('admissionDecision') == 'ADMIT'],
             'decisions': _pa_pipeline_count_decisions(
                 entry_plans, 'finalAction', ['BUY_READY', 'READY_REVIEW', 'WAIT_FOR_ENTRY', 'SKIP', 'BLOCKED_BY_RISK']
             ),
             'results': entry_plans,
+        },
+        'execution': {
+            'inputSymbols': [r.get('symbol') for r in entry_plans if r.get('finalAction') == 'BUY_READY'],
+            'submittedCount': sum(1 for row in execution_results if row.get('action') == 'ORDER_SUBMITTED'),
+            'results': execution_results,
         },
         'exit_scan': {
             'holdingsScanned': exit_results.get('holdingsScanned', 0) if isinstance(exit_results, dict) else 0,
@@ -30805,20 +41218,21 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
     PIPELINE_TIMEOUT = 1800  # 30-minute hard timeout for the entire pipeline (50 symbols + AI)
     STAGE_TIMEOUTS = {
         'market_scanner': 900,  # 15 min for scanner with 50 symbols + AI analysis
-        'continue_scan': 30,
         'fine_scan': 120,
         'deeper_validation': 120,
+        'admission': 90,
         'entry_plan': 60,
         'execution': 60,
         'exit_scan': 60,
     }
     started = time.time()
+    stage_started_at = {}
     _now_et = _pa_now_et()
     summary = {
         'errors': 0, 'scanned': 0, 'continue_count': 0, 'fine_count': 0,
-        'validation_count': 0, 'entry_plan_count': 0, 'orders_submitted': 0,
+        'validation_count': 0, 'admission_count': 0, 'entry_plan_count': 0, 'orders_submitted': 0,
         'exit_scan_count': 0, 'dryRun': dry_run, 'trigger': trigger,
-        'startedAt': datetime.utcnow().isoformat(),
+        'startedAt': _pa_utc_iso(),
         'steps': [],
     }
     # run_context carries data between pipeline stages
@@ -30827,7 +41241,9 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         'continue_candidates': [],
         'fine_results': [],
         'validation_results': [],
+        'admission_results': [],
         'entry_plans': [],
+        'execution_results': [],
         'exit_results': [],
     }
 
@@ -30852,10 +41268,10 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
             raise _PipelineTimeout(stage or 'unknown', elapsed, PIPELINE_TIMEOUT)
         if stage and stage in STAGE_TIMEOUTS:
             stage_limit = STAGE_TIMEOUTS[stage]
-            if elapsed > stage_limit:
-                # Only enforce stage timeout if we're still on an early stage
-                # (later stages get more leeway from the pipeline timeout)
-                pass  # Stage timeouts are soft; pipeline timeout is the hard limit
+            stage_start = stage_started_at.setdefault(stage, time.time())
+            stage_elapsed = time.time() - stage_start
+            if stage_elapsed > stage_limit:
+                raise _PipelineTimeout(stage, stage_elapsed, stage_limit)
 
     _pa_log('[PipelineAuto] headless pipeline started user=%s trigger=%s dryRun=%s' % (uid[:8], trigger, dry_run))
 
@@ -30871,363 +41287,200 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
 
     # Initialize active run state for frontend visibility
     _run_id = run_id or ('headless-scan-%d' % int(started))
+    _pa_clear_active_run(uid)
     _pa_update_active_run(uid, runId=_run_id, trigger=trigger, status='running',
-                          startedAt=datetime.utcnow().isoformat(),
-                          lastError=None, finishedAt=None, stopRequested=False)
+                          startedAt=_pa_utc_iso(),
+                          lastError=None, finishedAt=None, stopRequested=False,
+                          currentStep='market_scanner', stepIndex=1, progressPct=0,
+                          totalSteps=_PA_PIPELINE_TOTAL_STEPS, steps=_pa_initial_steps())
 
-    # Send scan_started Discord notification at start (once per run)
-    # Manual pipeline and test runs: no Discord notifications at all
+    # Manual/test runs never notify. Automatic runs emit at most one cycle digest;
+    # broker-confirmed fills and material risk changes remain separate real-time alerts.
     is_manual = (trigger in ('manual', 'headless_test'))
     _discord_source = _pa_discord_source_prefix(trigger)
-    if not is_manual and trigger == 'auto_run_now':
-        _pa_discord_send_once(uid, _run_id, 'auto_scan_started', {
-            'event_id': f'auto-run-now-{int(started)}',
-            'trigger': 'Auto Run Now',
-            'mode': mode,
-            'riskProfile': risk_profile,
-            'timeHorizon': time_horizon,
-            'tradingMode': trade_mode,
-            'timeEt': _now_et.strftime('%H:%M ET'),
-            'source': _discord_source,
-            'description': 'Auto Run Now pipeline triggered from Market Auto Run panel.',
-        })
-    elif not is_manual:
-        _next_et = _now_et + timedelta(minutes=interval)
-        _pa_discord_send_once(uid, _run_id, 'auto_scan_started', {
-            'event_id': f'headless-scan-{int(started)}',
-            'trigger': trigger,
-            'mode': mode,
-            'intervalMinutes': interval,
-            'nextRunAt': _next_et.strftime('%H:%M ET'),
-            'timeEt': _now_et.strftime('%H:%M ET'),
-            'source': _discord_source,
-            'description': '%s pipeline scan started.' % _discord_source,
-        })
 
     if is_manual:
         _pa_log('[ManualPipeline] started user=%s mode=%s risk=%s horizon=%s tradeMode=%s runId=%s' % (
             uid[:8], mode, risk_profile, time_horizon, trade_mode, _run_id))
 
-    _pa_active_run_step(uid, 'market_scanner', 1, 6, 'running',
+    lifecycle_before = _pa_reconcile_order_lifecycle(uid, trade_mode, notify=not is_manual)
+    summary['order_lifecycle_before'] = lifecycle_before
+    _pa_log('[PipelineAuto] order lifecycle preflight checked=%d filled=%d partial=%d failed=%d' % (
+        lifecycle_before.get('checked', 0), lifecycle_before.get('filled', 0),
+        lifecycle_before.get('partial', 0), lifecycle_before.get('failed', 0),
+    ))
+
+    _pa_active_run_step(uid, 'market_scanner', 1, _PA_PIPELINE_TOTAL_STEPS, 'running',
                         message='Market Scanner starting...',
                         step_data={'total': 0})
 
     try:
         # ── Step 1: Market Scanner ──
-        symbols, _universe_src = _pa_default_symbols_for_user(uid)
-        run_context['symbols'] = symbols
-        run_context['universe_source'] = _universe_src
-        _pa_log('[AutoPipeline] universe source=%s count=%d' % (_universe_src, len(symbols)))
-        _pa_log('[AutoPipeline] stage=market_scanner start symbols=%d' % len(symbols))
-        _pa_active_run_step(uid, 'market_scanner', 1, 6, 'running',
-                            message='Scanning %d symbols...' % len(symbols),
-                            step_data={'total': len(symbols), 'processed': 0, 'processedSymbols': 0, 'totalSymbols': len(symbols), 'progressPct': 0})
-        _pa_log('[ManualPipelineProgress] uid=%s step=market_scanner processed=0/%d pct=0 initializing' % (uid[:8], len(symbols)))
+        # Manual and unattended runs share the exact institutional endpoint used
+        # by the AI Agent page: Alpaca whole-market universe -> 1500 daily-bar
+        # candidates -> top 100 cross-sectional results -> AI review.
+        scanner_settings = _PA_MARKET_SCANNER_SETTINGS
+        requested_symbols = int(scanner_settings['maxSymbols'])
+        _pa_log('[AutoPipeline] stage=market_scanner start universe=alpaca_market maxSymbols=%d maxResults=%d aiReview=%d' % (
+            requested_symbols,
+            scanner_settings['maxResults'],
+            scanner_settings['aiReviewTopN'],
+        ))
+        _pa_active_run_step(
+            uid,
+            'market_scanner',
+            1,
+            _PA_PIPELINE_TOTAL_STEPS,
+            'running',
+            message='Scanning Alpaca market universe (up to %d symbols)...' % requested_symbols,
+            step_data={
+                'total': requested_symbols,
+                'processed': 0,
+                'processedSymbols': 0,
+                'totalSymbols': requested_symbols,
+                'progressPct': 2,
+                'universe': 'alpaca_market',
+                'method': 'institutional_cross_section_v5',
+            },
+        )
+        _check_stopped()
         _check_timeout('market_scanner')
 
-        # Per-symbol scanner — same /api/ai/analyze/single endpoint as Manual Pipeline.
-        # Each symbol is processed independently; one failure does not block others.
-        scanner_results = []
-        _total = len(symbols)
-        _scanner_success = 0
-        _scanner_failed = 0
-        _scanner_unavailable = 0
-        SCANNER_BATCH_LOG_INTERVAL = 5
+        scanner_results, scanner_stage_summary, scanner_stage_stats = _pa_market_scanner_headless(
+            uid,
+            trade_mode=trade_mode,
+        )
+        _check_stopped()
+        _check_timeout('market_scanner')
 
-        for _i, _sym in enumerate(symbols):
-            _check_stopped()
-            _check_timeout('market_scanner')
-
-            _sym_upper = str(_sym).upper().strip()
-            if not _sym_upper:
-                continue
-
-            # Progress update every N symbols
-            if _i % SCANNER_BATCH_LOG_INTERVAL == 0 or _i == _total - 1:
-                _pct = round((_i + 1) / _total * 100)
-                _pa_log('[PipelineAuto] market_scanner progress %d/%d (%d%%) success=%d fail=%d unavail=%d' % (
-                    _i + 1, _total, _pct, _scanner_success, _scanner_failed, _scanner_unavailable))
-                _pa_active_run_step(uid, 'market_scanner', 1, 6, 'running',
-                                    message='Scanning %d/%d symbols...' % (_i + 1, _total),
-                                    step_data={'total': _total, 'processed': _i + 1, 'processedSymbols': _i + 1,
-                                               'totalSymbols': _total, 'progressPct': _pct})
-
-            _sym_resp = None
-            _sym_status = 0
-            try:
-                _sym_resp, _sym_status = _pa_call_endpoint(uid, '/api/ai/analyze/single', ai_analyze_single, {
-                    'symbol': _sym_upper,
-                })
-            except Exception as _se:
-                _pa_log('[PipelineAuto] market_scanner symbol=%s exception: %s' % (_sym_upper, str(_se)[:100]))
-                _sym_status = 500
-
-            if _sym_status >= 400 or not _sym_resp or not _sym_resp.get('success'):
-                _err = (_sym_resp or {}).get('error', 'unknown') if _sym_resp else 'no_response'
-                _pa_log('[PipelineAuto] market_scanner symbol=%s FAILED status=%d error=%s' % (
-                    _sym_upper, _sym_status, str(_err)[:80]))
-                _scanner_failed += 1
-                scanner_results.append({
-                    'symbol': _sym_upper,
-                    'companyName': '%s Inc.' % _sym_upper,
-                    'price': None, 'changePct': None, 'changePercent': None,
-                    'volume': None, 'dayHigh': None, 'dayLow': None,
-                    'hasValidVolume': False, 'dataSource': 'Error',
-                    'dataQuality': 'UNAVAILABLE',
-                    'dataQualityReasons': ['scanner_api_failed: %s' % str(_err)[:80]],
-                    'sector': None, 'industry': None,
-                    'newsSentiment': None, 'eventRisk': None, 'topCatalyst': None,
-                    'newsCount': 0, 'hasNews': False,
-                    'trendLabel': None, 'trendScore': None, 'trendScoreDetail': None,
-                    'trendConfidence': None,
-                    'momentumScore': None, 'volumeScore': None, 'volatilityScore': None,
-                    'structureScore': None, 'sentimentScore': None, 'newsScore': None,
-                    'volumeStatus': None, 'overallScore': None,
-                    'scannerReason': 'API failed: %s' % str(_err)[:80],
-                    'analysisSource': 'unavailable', 'aiSuccess': False, 'aiCalled': False,
-                    'aiSource': 'unavailable', 'aiModel': None, 'aiError': str(_err)[:100],
-                    'aiReasoning': None, 'analysisStatus': 'unavailable',
-                    'aiUsedNews': False, 'aiNewsItemCount': 0, 'aiNewsWindow': '7d',
-                    'sentimentScoreSource': 'NONE',
-                    'dataSources': {'marketData': 'Error', 'companyInfo': 'Not fetched',
-                                    'news': 'Not fetched', 'aiData': 'unavailable'},
-                    'provenance': {'marketData': 'Error', 'companyInfo': 'Not fetched',
-                                   'news': 'Not fetched', 'aiData': 'unavailable'},
-                    'timestamp': int(time.time()),
-                })
-                continue
-
-            # Success — normalize /ai/analyze/single response into scanner result schema
-            _sr = _sym_resp
-            _has_price = _sr.get('price') is not None and float(_sr.get('price') or 0) > 0
-            _has_vol = _sr.get('volume') is not None and float(_sr.get('volume') or 0) > 0
-            _has_change = _sr.get('changePercent') is not None
-            _dq_reasons = []
-            if not _has_price: _dq_reasons.append('missing_price')
-            if not _has_vol: _dq_reasons.append('missing_volume')
-            if not _has_change: _dq_reasons.append('missing_prev_close')
-            if _sr.get('aiError'): _dq_reasons.append('ai_error')
-
-            _ai_ok = bool(_sr.get('trendLabel') and not _sr.get('aiError'))
-
-            _sr_result = {
-                'symbol': _sym_upper,
-                'companyName': _sr.get('companyName') or ('%s Inc.' % _sym_upper),
-                'price': _sr.get('price'),
-                'changePct': _sr.get('changePercent'),
-                'changePercent': _sr.get('changePercent'),
-                'volume': _sr.get('volume'),
-                'dayHigh': _sr.get('dayHigh'),
-                'dayLow': _sr.get('dayLow'),
-                'previousClose': _sr.get('previousClose'),
-                'hasValidVolume': _has_vol,
-                'dataSource': _sr.get('dataSource') or _sr.get('source') or 'Alpaca',
-                'dataQuality': 'ok' if (_has_price and _has_vol and _has_change and _ai_ok)
-                               else ('need_data' if (_has_price and _has_vol and not _has_change) else 'PARTIAL'),
-                'dataQualityReasons': _dq_reasons,
-                'sector': _sr.get('sector'),
-                'industry': _sr.get('industry'),
-                'newsSentiment': _sr.get('newsSentiment'),
-                'eventRisk': _sr.get('eventRisk'),
-                'topCatalyst': _sr.get('topCatalyst'),
-                'newsCount': _sr.get('newsCount', 0),
-                'hasNews': _sr.get('hasNews', False),
-                'topNews': _sr.get('topNews'),
-                'allNews': _sr.get('allNews') or (_sr.get('headlines', [])[:5] if _sr.get('headlines') else None),
-                'trendLabel': _sr.get('trendLabel'),
-                'trendScore': _sr.get('trendScore') or _sr.get('overallScore'),
-                'trendScoreDetail': _sr.get('trendScore') or _sr.get('overallScore'),
-                'trendConfidence': _sr.get('trendConfidence') or _sr.get('confidence'),
-                'overallScore': _sr.get('overallScore') or _sr.get('trendScore'),
-                'momentumScore': _sr.get('momentumScore'),
-                'volumeScore': _sr.get('volumeScore'),
-                'volatilityScore': _sr.get('volatilityScore'),
-                'structureScore': _sr.get('structureScore'),
-                'sentimentScore': _sr.get('sentimentScore') or _sr.get('newsScore'),
-                'newsScore': _sr.get('newsScore') or _sr.get('sentimentScore'),
-                'volumeStatus': _sr.get('volumeStatus'),
-                'scannerReason': _sr.get('scannerReason') or _sr.get('conciseReasoning') or _sr.get('conciseReason'),
-                'aiReasoning': _sr.get('aiReasoning') or _sr.get('detailedReasoning'),
-                'aiSuccess': _ai_ok,
-                'aiCalled': _sr.get('aiCalled', True),
-                'aiSource': _sr.get('aiSource') or _sr.get('analysisSource') or 'ai',
-                'aiModel': _sr.get('aiModel'),
-                'aiError': _sr.get('aiError'),
-                'analysisStatus': 'completed' if _ai_ok else ('failed' if _sr.get('aiError') else 'unavailable'),
-                'analysisSource': 'ai' if _ai_ok else 'unavailable',
-                'aiUsedNews': _sr.get('aiUsedNews', bool(_sr.get('newsCount', 0) > 0)),
-                'aiNewsItemCount': _sr.get('aiNewsItemCount', _sr.get('newsCount', 0)),
-                'aiNewsWindow': _sr.get('aiNewsWindow', '7d'),
-                'sentimentScoreSource': _sr.get('sentimentScoreSource', 'AI'),
-                'dataSources': _sr.get('dataSources') or {
-                    'marketData': _sr.get('dataSource', 'Alpaca'),
-                    'companyInfo': 'Finnhub' if _sr.get('sector') else 'Not fetched',
-                    'news': 'Finnhub' if _sr.get('hasNews') else 'Not fetched',
-                    'aiData': 'ai' if _ai_ok else 'unavailable',
-                },
-                'provenance': _sr.get('provenance') or {
-                    'marketData': _sr.get('dataSource', 'Alpaca'),
-                    'companyInfo': 'Finnhub' if _sr.get('sector') else 'Not fetched',
-                    'news': 'Finnhub' if _sr.get('hasNews') else 'Not fetched',
-                    'aiData': 'ai' if _ai_ok else 'unavailable',
-                },
-                'timestamp': _sr.get('timestamp', int(time.time())),
-            }
-            scanner_results.append(_sr_result)
-            if _ai_ok:
-                _scanner_success += 1
-            else:
-                _scanner_unavailable += 1
-
-        _pa_log('[PipelineAuto] market_scanner per-symbol complete symbols=%d success=%d unavailable=%d failed=%d' % (
-            _total, _scanner_success, _scanner_unavailable, _scanner_failed))
-        run_context['market_results'] = scanner_results
-        _total_scanned = len(symbols)
+        _total_scanned = int(
+            scanner_stage_summary.get('universeScanned')
+            or scanner_stage_stats.get('total_symbols')
+            or requested_symbols
+        )
         _result_count = len(scanner_results)
-        # aiSuccess: results where AI returned a valid analysis (not dependent on trend direction)
-        _ai_success_count = len([r for r in scanner_results if r.get('aiSuccess') or r.get('analysisStatus') == 'completed'])
-        # needData: results with truly unusable data (unavailable or missing price), NOT counting PARTIAL
-        _need_data_count = len([r for r in scanner_results if r.get('dataQuality') in ('need_data', 'UNAVAILABLE') or (not r.get('price') and not r.get('changePct'))])
-        _filtered = _total_scanned - _result_count
+        _passed_investability = int(
+            scanner_stage_summary.get('passedInvestability')
+            or scanner_stage_stats.get('passed_investability')
+            or _result_count
+        )
+        _ai_success_count = int(
+            scanner_stage_summary.get('aiReviewedCount')
+            or scanner_stage_stats.get('ai_reviewed_symbols')
+            or 0
+        )
+        _need_data_count = int(
+            scanner_stage_summary.get('failedData')
+            or scanner_stage_stats.get('failed_count')
+            or 0
+        )
+        _filtered = int(
+            scanner_stage_summary.get('filteredOut')
+            or max(0, _total_scanned - _passed_investability)
+        )
+        _universe_src = scanner_stage_summary.get('universeSource') or 'Alpaca /v2/assets'
+        run_context['symbols'] = [row.get('symbol') for row in scanner_results if row.get('symbol')]
+        run_context['universe_source'] = _universe_src
+        run_context['market_scanner_summary'] = scanner_stage_summary
+        run_context['market_scanner_stats'] = scanner_stage_stats
+        run_context['market_results'] = scanner_results
+
         summary['scanned'] = _result_count
         summary['scannedTotal'] = _total_scanned
+        summary['passedInvestability'] = _passed_investability
         summary['aiSuccess'] = _ai_success_count
         summary['needData'] = _need_data_count
         summary['filtered'] = _filtered
-        summary['steps'].append({'step': 'market_scanner', 'status': 'completed', 'count': _result_count, 'total': _total_scanned, 'aiSuccess': _ai_success_count, 'filtered': _filtered, 'needData': _need_data_count})
-        _pa_log('[AutoPipeline] stage=market_scanner done processed=%d aiSuccess=%d passed=%d filtered=%d needData=%d' % (_total_scanned, _ai_success_count, _result_count, _filtered, _need_data_count))
-        _pa_active_run_step(uid, 'market_scanner', 1, 6, 'completed',
-                            message='Market Scanner: %d processed, %d AI success, %d results' % (_total_scanned, _ai_success_count, _result_count),
-                            step_data={
-                                'processed': _total_scanned, 'total': _total_scanned,
-                                'passed': _result_count, 'filtered': _filtered,
-                                'aiSuccess': _ai_success_count, 'needData': _need_data_count,
-                                'results': [{'symbol': r.get('symbol'), 'trendLabel': r.get('trendLabel'),
-                                             'overallScore': r.get('overallScore'), 'trendScore': r.get('trendScore'),
-                                             'price': r.get('price'), 'changePct': r.get('changePct'),
-                                             'volume': r.get('volume'), 'volumeStatus': r.get('volumeStatus'),
-                                             'dayHigh': r.get('dayHigh'), 'dayLow': r.get('dayLow'),
-                                             'companyName': r.get('companyName'),
-                                             'sector': r.get('sector'), 'industry': r.get('industry'),
-                                             'momentumScore': r.get('momentumScore'),
-                                             'volumeScore': r.get('volumeScore'),
-                                             'volatilityScore': r.get('volatilityScore'),
-                                             'structureScore': r.get('structureScore'),
-                                             'sentimentScore': r.get('sentimentScore'),
-                                             'newsSentiment': r.get('newsSentiment'), 'eventRisk': r.get('eventRisk'),
-                                             'analysisStatus': r.get('analysisStatus'),
-                                             'aiSuccess': r.get('aiSuccess'),
-                                             'dataQuality': r.get('dataQuality', ''),
-                                             'dataQualityReasons': (r.get('dataQualityReasons') or [])[:10],
-                                             'reasoning': (r.get('aiReasoning') or r.get('reasoning') or '')[:200]}
-                                            for r in (scanner_results or [])[:50]],
-                            })
-
-        # ── Step 2: Continue Scan ──
-        _check_stopped()
-        _check_timeout('continue_scan')
-        _pa_log('[AutoPipeline] stage=continue_scan start input=%d' % len(scanner_results))
-        _pa_active_run_step(uid, 'continue_scan', 2, 6, 'running',
-                            message='Continue Scan processing...',
-                            step_data={'total': len(scanner_results), 'processed': 0})
-        _cs_raw = _pa_continue_scan_headless(scanner_results,
-                                                risk_profile=risk_profile,
-                                                time_horizon=time_horizon,
-                                                pipeline_mode=mode,
-                                                trade_mode=trade_mode) if scanner_results else ([], {})
-        continue_results, _cs_stats = _cs_raw if isinstance(_cs_raw, tuple) else (_cs_raw or [], {})
-        continue_results = continue_results or []
-        run_context['continue_candidates'] = continue_results
-        summary['continue_count'] = len(continue_results)
-        # Preserve Continue Scan stats (includes skip reasons, tier counts, thresholds used)
-        _cs_step_entry = {'step': 'continue_scan', 'status': 'completed', 'count': len(continue_results)}
-        if isinstance(_cs_stats, dict):
-            _cs_step_entry['stats'] = _cs_stats
-            summary['continue_stats'] = _cs_stats
-        summary['steps'].append(_cs_step_entry)
-        _cs_msg = ('Continue Scan: %d candidates' % len(continue_results)) if continue_results else ('Continue Scan: AI analysis completed, but no symbols passed candidate thresholds (input=%d, aiSuccess=%d)' % (len(scanner_results or []), _ai_success_count))
-        _pa_log('[AutoPipeline] stage=continue_scan done candidates=%d input=%d aiSuccess=%d' % (len(continue_results), len(scanner_results or []), _ai_success_count))
-        if isinstance(_cs_stats, dict):
-            _pa_log('[AutoPipeline] continue_scan_stats input=%d base=%d bearish=%d bad=%d unavail=%d high_risk=%d eligible=%d pri=%d sec=%d fallback=%d top=%s' % (
-                _cs_stats.get('input_count', 0), _cs_stats.get('base_pool_count', 0),
-                _cs_stats.get('bearish', 0), _cs_stats.get('bad_data', 0),
-                _cs_stats.get('unavailable', 0), _cs_stats.get('high_risk_excluded', 0),
-                _cs_stats.get('eligible', 0), _cs_stats.get('primary_selected', 0),
-                _cs_stats.get('secondary_selected', 0), _cs_stats.get('fallback_selected', 0),
-                str(_cs_stats.get('top_selected', []))))
-        _pa_active_run_step(uid, 'continue_scan', 2, 6, 'completed',
-                            message=_cs_msg,
-                            step_data={
-                                'processed': len(continue_results), 'total': len(continue_results),
-                                'stats': _cs_stats if isinstance(_cs_stats, dict) else {},
-                                'candidates': [{'symbol': r.get('symbol'), 'trendLabel': r.get('trendLabel'),
-                                                'overallScore': r.get('overallScore'),
-                                                'reason': (r.get('overallReasoning') or '')[:200]}
-                                               for r in (continue_results or [])[:30]],
-                            })
-
-        # Send scan_summary Discord (once per run, after continue_scan for full stats)
-        if not is_manual:
-            _desc_prefix = _pa_discord_source_prefix(trigger)
-            _nd_pct = (_need_data_count / _total_scanned * 100) if _total_scanned > 0 else 0
-            _scan_warning_parts = []
-            if _nd_pct > 30:
-                _scan_warning_parts.append('Market data incomplete for %d/%d symbols (%.0f%%).' % (_need_data_count, _total_scanned, _nd_pct))
-            _cs_passed = len(continue_results)
-            _cs_bearish = _cs_stats.get('bearish', 0)
-            _cs_low = _cs_stats.get('low_score', 0)
-            if _cs_passed < 5 and _total_scanned > 10:
-                _scan_warning_parts.append('Only %d of %d passed Continue Scan prefilter (bearish=%d low_score=%d).' % (_cs_passed, _total_scanned, _cs_bearish, _cs_low))
-            _scan_warning = ' '.join(_scan_warning_parts)
-            # Top Candidates: sorted by overallScore descending
-            _sorted_results = sorted(
-                [r for r in (scanner_results or []) if r.get('symbol')],
-                key=lambda r: (float(r.get('overallScore') or r.get('trendScore') or 0), float(r.get('trendConfidence') or r.get('confidence') or 0)),
-                reverse=True
-            )
-            _top_candidates = _sorted_results[:5]
-            _top_formatted = [
-                '%s — Score %s, %s%s' % (
-                    r.get('symbol', '?'),
-                    str(r.get('overallScore') or r.get('trendScore') or '?'),
-                    r.get('trendLabel') or '?',
-                    ' [CONTINUE]' if r.get('symbol') in [c.get('symbol') for c in continue_results] else '',
-                )
-                for r in _top_candidates
-            ]
-            _pa_discord_send_once(uid, _run_id, 'scan_summary', {
+        summary['marketScanner'] = scanner_stage_summary
+        summary['steps'].append({
+            'step': 'market_scanner',
+            'status': 'completed',
+            'count': _result_count,
+            'total': _total_scanned,
+            'passedInvestability': _passed_investability,
+            'aiSuccess': _ai_success_count,
+            'filtered': _filtered,
+            'needData': _need_data_count,
+            'method': scanner_stage_stats.get('method') or scanner_stage_summary.get('scoreVersion'),
+        })
+        _pa_log('[AutoPipeline] stage=market_scanner done processed=%d investable=%d results=%d aiReviewed=%d filtered=%d needData=%d' % (
+            _total_scanned,
+            _passed_investability,
+            _result_count,
+            _ai_success_count,
+            _filtered,
+            _need_data_count,
+        ))
+        _pa_active_run_step(
+            uid,
+            'market_scanner',
+            1,
+            _PA_PIPELINE_TOTAL_STEPS,
+            'completed',
+            message='Market Scanner: %d scanned, %d investable, %d ranked, %d AI reviewed' % (
+                _total_scanned,
+                _passed_investability,
+                _result_count,
+                _ai_success_count,
+            ),
+            step_data={
                 'processed': _total_scanned,
+                'processedSymbols': _total_scanned,
+                'total': _total_scanned,
+                'totalSymbols': _total_scanned,
+                'progressPct': 100,
+                'passed': _result_count,
+                'passedInvestability': _passed_investability,
                 'filtered': _filtered,
                 'aiSuccess': _ai_success_count,
                 'needData': _need_data_count,
-                'needDataPct': round(_nd_pct, 0),
-                'passedCandidates': _cs_passed,
-                'bearishFiltered': _cs_bearish,
-                'lowScoreFiltered': _cs_low,
-                'warning': _scan_warning,
-                'topSymbols': [r.get('symbol', '?') for r in _top_candidates],
-                'topCandidates': _top_formatted,
-                'mode': mode,
-                'runTime': _now_et.strftime('%H:%M ET'),
-                'source': _desc_prefix,
-                'description': '%s Market Scanner completed.' % _desc_prefix,
-            })
+                'universe': 'alpaca_market',
+                'universeSource': _universe_src,
+                'method': scanner_stage_stats.get('method') or scanner_stage_summary.get('scoreVersion'),
+                'results': scanner_results[:100],
+            },
+        )
+
+        # ── Step 2: Fine Scan input ──
+        # Continue Scan was removed from the manual and headless pipeline. Fine Scan
+        # now receives the highest-ranked Market Scanner candidates directly.
+        _check_stopped()
+        _sorted_for_fine = sorted(
+            [r for r in (scanner_results or []) if r.get('symbol')],
+            key=lambda r: (
+                float(r.get('overallScore') or r.get('trendScore') or 0),
+                float(r.get('trendConfidence') or r.get('confidence') or 0),
+            ),
+            reverse=True
+        )
+        continue_results = _sorted_for_fine[:30]
+        _cs_stats = {
+            'stage_removed': True,
+            'input_count': len(scanner_results or []),
+            'selected_for_fine_scan': len(continue_results),
+        }
+        run_context['continue_candidates'] = continue_results
+        summary['continue_count'] = 0
+        summary['fine_input_count'] = len(continue_results)
+        _pa_log('[AutoPipeline] stage=continue_scan removed fine_input=%d scanner_input=%d' % (
+            len(continue_results), len(scanner_results or [])))
 
         # ── Step 3: Fine Scan ──
         _check_stopped()
         _check_timeout('fine_scan')
         if continue_results:
             _pa_log('[AutoPipeline] stage=fine_scan start input=%d' % len(continue_results))
-            _pa_active_run_step(uid, 'fine_scan', 3, 6, 'running',
+            _pa_active_run_step(uid, 'fine_scan', 2, _PA_PIPELINE_TOTAL_STEPS, 'running',
                                 message='Fine Scan running...',
                                 step_data={'total': len(continue_results), 'processed': 0})
             with headless_user_context(uid):
                 fine_results = _pa_fine_scan_headless(uid, continue_results,
                                                           risk_profile=risk_profile, time_horizon=time_horizon,
                                                           pipeline_mode=mode, trade_mode=trade_mode)
+            _check_timeout('fine_scan')
         else:
             _pa_log('[AutoPipeline] stage=fine_scan skipped reason=no_candidates')
-            _pa_active_run_step(uid, 'fine_scan', 3, 6, 'completed',
+            _pa_active_run_step(uid, 'fine_scan', 2, _PA_PIPELINE_TOTAL_STEPS, 'completed',
                                 message='Fine Scan: skipped (no continue candidates)',
                                 step_data={'total': 0, 'processed': 0, 'candidates': 0})
             fine_results = []
@@ -31268,7 +41521,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
             len(fine_results), _fs_decisions.get('Continue', 0), _fs_decisions.get('Watch', 0),
             _fs_decisions.get('Reject', 0), _fs_decisions.get('NeedMoreData', 0),
             _fs_failed, _fs_dq_blocked, str(_fs_top_continue[:5])))
-        _pa_active_run_step(uid, 'fine_scan', 3, 6, 'completed',
+        _pa_active_run_step(uid, 'fine_scan', 2, _PA_PIPELINE_TOTAL_STEPS, 'completed',
                             message='Fine Scan: %d results, %d candidates' % (len(fine_results), len(fine_candidates)),
                             step_data={
                                 'processed': len(fine_results), 'total': len(fine_results),
@@ -31287,7 +41540,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         _check_timeout('deeper_validation')
 
         # dataQuality gate: exclude candidates with insufficient data (mirrors Fine Scan Gate 1)
-        DV_MAX_CANDIDATES = 8  # match frontend _getValidationCandidatesFromStore
+        DV_MAX_CANDIDATES = 12  # match frontend _getValidationCandidatesFromStore
         _dv_dq_blocked = 0
         _dv_input_count = len(fine_candidates)
         _dv_eligible = []
@@ -31310,12 +41563,12 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         if _dv_candidates:
             _pa_log('[AutoPipeline] stage=deeper_validation start input=%d eligible=%d dq_blocked=%d capped=%d' % (
                 _dv_input_count, len(_dv_eligible), _dv_dq_blocked, len(_dv_candidates)))
-            _pa_active_run_step(uid, 'deeper_validation', 4, 6, 'running',
+            _pa_active_run_step(uid, 'deeper_validation', 3, _PA_PIPELINE_TOTAL_STEPS, 'running',
                                 message='Deeper Validation running... (%d candidates)' % len(_dv_candidates),
                                 step_data={'total': len(_dv_candidates), 'processed': 0})
             dv_resp, dv_status = _pa_call_endpoint(uid, '/api/ai/deeper-validation', deeper_validation, {
                 'candidates': _dv_candidates,
-                'period': '1y',
+                'period': '2y',
                 'initialCapital': 100000,
                 'riskProfile': risk_profile,
                 'timeHorizon': time_horizon,
@@ -31323,6 +41576,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                 'tradeMode': trade_mode,
             })
             _check_stopped()
+            _check_timeout('deeper_validation')
             if dv_status < 400 and dv_resp.get('success'):
                 dv_results = dv_resp.get('results') or []
             else:
@@ -31330,20 +41584,20 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         else:
             _skip_reason = 'no_fine_candidates' if _dv_input_count == 0 else ('all_dq_blocked' if _dv_dq_blocked > 0 else 'none_eligible')
             _pa_log('[AutoPipeline] stage=deeper_validation skipped reason=%s input=%d dq_blocked=%d' % (_skip_reason, _dv_input_count, _dv_dq_blocked))
-            _pa_active_run_step(uid, 'deeper_validation', 4, 6, 'completed',
+            _pa_active_run_step(uid, 'deeper_validation', 3, _PA_PIPELINE_TOTAL_STEPS, 'completed',
                                 message='Deeper Validation: skipped (%s)' % _skip_reason,
                                 step_data={'total': 0, 'processed': 0, 'input_count': _dv_input_count, 'dq_blocked': _dv_dq_blocked})
         dv_results = dv_results or []
         run_context['validation_results'] = dv_results
         # Verdict breakdown for stats
-        _dv_verdicts = {'Confirmed': 0, 'Watch': 0, 'Review': 0, 'Rejected': 0, 'Blocked': 0, 'Pass': 0}
+        _dv_verdicts = {'Confirmed': 0, 'Watch': 0, 'Review': 0, 'Rejected': 0, 'Reject': 0, 'Blocked': 0, 'Pass': 0}
         _dv_failed = 0
         _dv_top_confirmed = []
         for _vr in dv_results:
             _v = _vr.get('verdict', '')
             if _v in _dv_verdicts: _dv_verdicts[_v] += 1
             if _vr.get('error'): _dv_failed += 1
-            if _v == 'Confirmed': _dv_top_confirmed.append(_vr.get('symbol'))
+            if _v in ('Confirmed', 'Pass'): _dv_top_confirmed.append(_vr.get('symbol'))
         _dv_stats = {
             'input_count': _dv_input_count,
             'eligible_count': len(_dv_eligible),
@@ -31353,7 +41607,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
             'verdicts': _dv_verdicts,
             'failed': _dv_failed,
             'top_confirmed': _dv_top_confirmed[:10],
-            'top_candidates': [_fc.get('symbol') for _fc in (_dv_candidates or [])[:8]],
+            'top_candidates': [_fc.get('symbol') for _fc in (_dv_candidates or [])[:12]],
         }
         summary['validation_count'] = len(dv_results)
         summary['validation_stats'] = _dv_stats
@@ -31362,7 +41616,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
             len(dv_results), _dv_verdicts.get('Confirmed', 0), _dv_verdicts.get('Watch', 0),
             _dv_verdicts.get('Review', 0), _dv_verdicts.get('Rejected', 0),
             _dv_verdicts.get('Blocked', 0), _dv_failed, _dv_dq_blocked, str(_dv_top_confirmed[:5])))
-        _pa_active_run_step(uid, 'deeper_validation', 4, 6, 'completed',
+        _pa_active_run_step(uid, 'deeper_validation', 3, _PA_PIPELINE_TOTAL_STEPS, 'completed',
                             message='Deeper Validation: %d results (input=%d, dq_blocked=%d, capped=%d)' % (
                                 len(dv_results), _dv_input_count, _dv_dq_blocked, len(_dv_candidates)),
                             step_data={
@@ -31370,6 +41624,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                                 'input_count': _dv_input_count, 'dq_blocked': _dv_dq_blocked,
                                 'stats': _dv_stats,
                                 'results': [{'symbol': r.get('symbol'), 'verdict': r.get('verdict'),
+                                             'dvDecision': r.get('dvDecision'), 'score': r.get('validationScore'),
                                              'sharpe': r.get('sharpeRatio'), 'maxDrawdown': r.get('maxDrawdown'),
                                              'profitFactor': r.get('profitFactor'),
                                              'tradeCount': r.get('tradeCount'),
@@ -31377,15 +41632,26 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                                             for r in (dv_results or [])[:20]],
                             })
 
-        # ── Step 5: Entry Plan ──
+        # ── Step 4: Portfolio Admission ──
         _check_stopped()
-        _check_timeout('entry_plan')
-        # Fetch real Alpaca account data for position sizing (same pattern as ai_entry_plan)
+        _check_timeout('admission')
+        _pa_active_run_step(uid, 'admission', 4, _PA_PIPELINE_TOTAL_STEPS, 'running',
+                            message='Checking portfolio capacity and signal integrity...',
+                            step_data={'total': len(dv_results), 'processed': 0})
+        # Fetch account state once; Admission and Entry Plan share this snapshot.
         pipeline_account_size = 100000
         pipeline_live_buying_power = 0
         pipeline_account_fetched = False
         pipeline_holdings = []
         pipeline_open_orders = []
+        pipeline_position_rows = []
+        pipeline_account_state = {
+            'holdingSymbols': [],
+            'openBuySymbols': [],
+            'positionCount': 0,
+            'buyingPower': None,
+            'accountBlocked': False,
+        }
         try:
             alpaca_cfg = resolve_alpaca_config_for_user(uid, trade_mode)
             _pa_key = alpaca_cfg.get('api_key', '')
@@ -31402,41 +41668,130 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                     pipeline_live_buying_power = _bp
                     pipeline_account_size = int(_pv if _pv > 0 else (_eq if _eq > 0 else (_bp if _bp > 0 else 100000)))
                     pipeline_account_fetched = True
+                    pipeline_account_state.update({
+                        'buyingPower': _bp,
+                        'equity': _eq,
+                        'portfolioValue': _pv,
+                        'cash': _pa_safe_float(_acc.get('cash'), None),
+                        'accountBlocked': bool(
+                            _acc.get('trading_blocked') or _acc.get('account_blocked') or
+                            _acc.get('trade_suspended_by_user')
+                        ),
+                    })
                     _pa_log('[PipelineAuto] account fetched mode=%s portfolio=$%.0f equity=$%.0f bp=$%.0f accountSize=%d' % (
                         trade_mode, _pv, _eq, _bp, pipeline_account_size))
                     # Fetch open orders for duplicate prevention
                     try:
                         _ord_resp = requests.get(f'{_pa_url}/v2/orders?status=open&direction=buy', headers=_pa_headers, timeout=10)
                         if _ord_resp.status_code == 200:
-                            pipeline_open_orders = [o.get('symbol', '').upper() for o in (_ord_resp.json() or [])]
+                            _open_rows = _ord_resp.json() or []
+                            pipeline_open_orders = [
+                                o.get('symbol', '').upper() for o in _open_rows
+                                if str(o.get('side') or 'buy').lower() == 'buy'
+                            ]
                     except Exception:
                         pass
                     # Fetch current positions
                     try:
                         _pos_resp = requests.get(f'{_pa_url}/v2/positions', headers=_pa_headers, timeout=10)
                         if _pos_resp.status_code == 200:
-                            pipeline_holdings = [p.get('symbol', '').upper() for p in (_pos_resp.json() or [])]
+                            pipeline_position_rows = _pos_resp.json() or []
+                            pipeline_holdings = [p.get('symbol', '').upper() for p in pipeline_position_rows]
                     except Exception:
                         pass
         except Exception as _pa_acct_err:
             _pa_log('[PipelineAuto] account fetch failed: %s' % str(_pa_acct_err)[:100])
-        # Read finalVerdict first (AI overlay), fallback to verdict (local rules)
-        def _get_dv_eligible_verdict(r):
-            v = r.get('finalVerdict') or r.get('verdict') or r.get('aiValidationVerdict') or r.get('localVerdictBeforeAI') or ''
-            return str(v).strip()
-        # Shared cap: match frontend _getEntryPlanCandidatesFromStore max of 8
+        pipeline_account_state.update({
+            'holdingSymbols': pipeline_holdings,
+            'openBuySymbols': pipeline_open_orders,
+            'positionCount': len(pipeline_holdings),
+            'positions': pipeline_position_rows,
+            'accountFetched': pipeline_account_fetched,
+        })
+
+        admission_results, admission_stats = _pa_run_admission(
+            uid,
+            dv_results,
+            fine_results=fine_results,
+            market_results=scanner_results,
+            account_state=pipeline_account_state,
+            risk_profile=risk_profile,
+            time_horizon=time_horizon,
+            pipeline_mode=mode,
+            ai_enabled=True,
+        )
+        _check_timeout('admission')
+        run_context['admission_results'] = admission_results
+        summary['admission_count'] = admission_stats.get('counts', {}).get('ADMIT', 0)
+        summary['admission_stats'] = admission_stats
+        summary['steps'].append({
+            'step': 'admission',
+            'status': 'completed',
+            'count': len(admission_results),
+            'stats': admission_stats,
+        })
+        _pa_active_run_step(
+            uid, 'admission', 4, _PA_PIPELINE_TOTAL_STEPS, 'completed',
+            message='Admission: %d admitted, %d held, %d blocked' % (
+                admission_stats.get('counts', {}).get('ADMIT', 0),
+                admission_stats.get('counts', {}).get('HOLD', 0),
+                admission_stats.get('counts', {}).get('BLOCK', 0),
+            ),
+            step_data={
+                'processed': len(admission_results),
+                'total': len(admission_results),
+                'stats': admission_stats,
+                'results': [{
+                    'symbol': row.get('symbol'),
+                    'decision': row.get('admissionDecision'),
+                    'score': row.get('admissionScore'),
+                    'strategy': row.get('selectedStrategy'),
+                    'signalAgeSeconds': row.get('signalAgeSeconds'),
+                    'priceDriftAtr': row.get('priceDriftAtr'),
+                    'blockers': (row.get('blockers') or [])[:5],
+                    'warnings': (row.get('warnings') or [])[:5],
+                    'aiReview': row.get('aiAdmissionReview'),
+                } for row in admission_results[:12]],
+            },
+        )
+        _pa_log('[AutoPipeline] stage=admission done admit=%d hold=%d block=%d aiReviewed=%d' % (
+            admission_stats.get('counts', {}).get('ADMIT', 0),
+            admission_stats.get('counts', {}).get('HOLD', 0),
+            admission_stats.get('counts', {}).get('BLOCK', 0),
+            admission_stats.get('ai', {}).get('reviewedSymbols', 0),
+        ))
+
+        # ── Step 5: Entry Plan ──
+        _check_stopped()
+        _check_timeout('entry_plan')
         ENTRY_PLAN_MAX_CANDIDATES = 8
-        ep_candidates = [r for r in dv_results if _get_dv_eligible_verdict(r) in ('Confirmed', 'Watch', 'Review', 'Pass')]
+        ep_candidates = []
+        for admission in admission_results:
+            if admission.get('admissionDecision') != 'ADMIT':
+                continue
+            candidate = dict(admission.get('sourceCandidate') or {})
+            candidate['admission'] = {
+                key: value for key, value in admission.items() if key != 'sourceCandidate'
+            }
+            candidate['signalSnapshot'] = admission.get('signalSnapshot')
+            candidate['admissionDecision'] = 'ADMIT'
+            ep_candidates.append(candidate)
         ep_candidates = ep_candidates[:ENTRY_PLAN_MAX_CANDIDATES]
-        # Log input for debugging
+
         _ep_verdict_counts = {}
+        _ep_flow_counts = {
+            'confirmed_to_admission': len(admission_results),
+            'admitted_to_entry_plan': len(ep_candidates),
+            'held_for_revalidation': admission_stats.get('counts', {}).get('HOLD', 0),
+            'blocked': admission_stats.get('counts', {}).get('BLOCK', 0),
+        }
         for r in dv_results:
-            _v = _get_dv_eligible_verdict(r)
+            _v = _pa_dv_verdict(r)
             _ep_verdict_counts[_v] = _ep_verdict_counts.get(_v, 0) + 1
-        _pa_log('[EntryPlanInputDebug] dv_total=%d verdict_counts=%s qualified_count=%d qualified=%s excluded=%s' % (
-            len(dv_results), str(_ep_verdict_counts), len(ep_candidates),
+        _pa_log('[EntryPlanInputDebug] dv_total=%d verdict_counts=%s flow_counts=%s qualified_count=%d qualified=%s excluded=%s' % (
+            len(dv_results), str(_ep_verdict_counts), str(_ep_flow_counts), len(ep_candidates),
             [r.get('symbol') for r in ep_candidates],
-            [r.get('symbol') for r in dv_results if _get_dv_eligible_verdict(r) not in ('Confirmed', 'Watch', 'Review', 'Pass')]))
+            [r.get('symbol') for r in admission_results if r.get('admissionDecision') != 'ADMIT']))
         entry_plans = []
         # Derive riskPerTradePct from riskProfile: Low→0.5, Medium→1.0, High→1.5
         _ep_risk_pct = {'low': 0.5, 'medium': 1.0, 'high': 1.5}.get(risk_profile, 1.0)
@@ -31465,20 +41820,34 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                 'suppressDiscord': True,
             })
             _check_stopped()
+            _check_timeout('entry_plan')
             if ep_status < 400 and ep_resp.get('success'):
                 entry_plans = ep_resp.get('plans') or []
+                _admission_by_symbol = {
+                    row.get('symbol'): row for row in admission_results if row.get('symbol')
+                }
+                for plan in entry_plans:
+                    admission = _admission_by_symbol.get(str(plan.get('symbol') or '').upper())
+                    if not admission:
+                        continue
+                    plan['admissionDecision'] = admission.get('admissionDecision')
+                    plan['admissionScore'] = admission.get('admissionScore')
+                    plan['admissionSnapshot'] = admission.get('signalSnapshot')
+                    plan['admissionWarnings'] = admission.get('warnings') or []
+                    plan['admissionAiReview'] = admission.get('aiAdmissionReview')
             else:
                 raise Exception(ep_resp.get('message') or 'Entry Plan failed')
         else:
             _pa_log('[AutoPipeline] stage=entry_plan skipped reason=no_validation_candidates')
-            _pa_active_run_step(uid, 'entry_plan', 5, 6, 'completed',
+            _pa_active_run_step(uid, 'entry_plan', 5, _PA_PIPELINE_TOTAL_STEPS, 'completed',
                                 message='Entry Plan: skipped (no validation candidates — all symbols were filtered before DV)',
                                 step_data={'total': 0, 'processed': 0, 'buy': 0, 'watch': 0, 'skip': 0})
         entry_plans = entry_plans or []
         run_context['entry_plans'] = entry_plans
         # Comprehensive action counts
-        buy_count = sum(1 for p in entry_plans if p.get('finalAction') in ('BUY_READY', 'READY_REVIEW'))
-        watch_count = sum(1 for p in entry_plans if p.get('finalAction') in ('WAIT_FOR_ENTRY', 'WATCH'))
+        buy_count = sum(1 for p in entry_plans if p.get('finalAction') == 'BUY_READY')
+        review_count = sum(1 for p in entry_plans if p.get('finalAction') == 'READY_REVIEW')
+        watch_count = sum(1 for p in entry_plans if p.get('finalAction') in ('WAIT_FOR_ENTRY', 'WATCH')) + review_count
         skip_count = sum(1 for p in entry_plans if p.get('finalAction') in ('SKIP', 'BLOCKED_BY_RISK'))
         need_data_count = sum(1 for p in entry_plans if p.get('finalAction') in ('NEED_DATA', 'DATA_UNAVAILABLE'))
         _ep_empty_reason = ''
@@ -31490,14 +41859,14 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         summary['skip_count'] = skip_count
         summary['need_data_count'] = need_data_count
         summary['steps'].append({'step': 'entry_plan', 'status': 'completed' if entry_plans else 'completed_no_candidates',
-                                 'count': len(entry_plans), 'buy': buy_count, 'watch': watch_count, 'skip': skip_count,
+                                 'count': len(entry_plans), 'buy': buy_count, 'review': review_count, 'watch': watch_count, 'skip': skip_count,
                                  'need_data': need_data_count, 'empty_reason': _ep_empty_reason})
         _pa_log('[AutoPipeline] stage=entry_plan done buy=%d watch=%d skip=%d need_data=%d total=%d' % (buy_count, watch_count, skip_count, need_data_count, len(entry_plans)))
-        _pa_active_run_step(uid, 'entry_plan', 5, 6, 'completed',
+        _pa_active_run_step(uid, 'entry_plan', 5, _PA_PIPELINE_TOTAL_STEPS, 'completed',
                             message='Entry Plan: %d plans (buy=%d watch=%d skip=%d need_data=%d)' % (len(entry_plans), buy_count, watch_count, skip_count, need_data_count),
                             step_data={
                                 'processed': len(entry_plans), 'total': len(entry_plans),
-                                'buy': buy_count, 'watch': watch_count, 'skip': skip_count, 'need_data': need_data_count,
+                                'buy': buy_count, 'review': review_count, 'watch': watch_count, 'skip': skip_count, 'need_data': need_data_count,
                                 'empty_reason': _ep_empty_reason,
                                 'plans': [{'symbol': p.get('symbol'), 'finalAction': p.get('finalAction'),
                                            'entryZone': str(p.get('entryZone') or p.get('entryZoneDesc', ''))[:60],
@@ -31508,63 +41877,6 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                                            'reason': str(p.get('decisionReason', ''))[:200]}
                                           for p in (entry_plans or [])[:15]],
                             })
-
-        # Send entry_plan Discord notification (once per run) — manual never sends Discord
-        if not is_manual:
-            _ep_nd_count = summary.get('needData', 0)
-            _ep_nd_pct = (_ep_nd_count / max(summary.get('scannedTotal', 1), 1) * 100)
-            _ep_warning = ('Data quality warning: %d/%d symbols have incomplete market data. BUY candidates with incomplete data were BLOCKED.' % (_ep_nd_count, summary.get('scannedTotal', 0))) if _ep_nd_pct > 30 else ''
-            _ep_skipped = bool(not entry_plans and not ep_candidates)
-            # Build candidate flow for skipped case
-            _continue_names = [r.get('symbol', '?') for r in (continue_results or [])[:10]]
-            _fine_continue = sum(1 for r in (fine_results or []) if r.get('decision') == 'Continue')
-            _fine_watch = sum(1 for r in (fine_results or []) if r.get('decision') == 'Watch')
-            _fine_reject = sum(1 for r in (fine_results or []) if r.get('decision') in ('Reject', 'NeedMoreData'))
-            _dv_rejected = [r for r in (dv_results or []) if r.get('verdict') in ('Rejected', 'Reject', 'Blocked')]
-            _dv_reject_list = [
-                '%s — %s' % (
-                    r.get('symbol', '?'),
-                    r.get('reason', 'unknown')[:120],
-                ) for r in _dv_rejected[:8]
-            ]
-            _skip_reason = 'No candidates passed Deeper Validation.\n\n**Candidate Flow:**\nMarket Scanner: %d scanned → %d AI success → %d continue candidates (%s)\nFine Scan: %d scanned → %d continue / %d watch / %d reject\nDeeper Validation: %d tested → 0 confirmed / %d rejected' % (
-                summary.get('scanned', 0), summary.get('aiSuccess', 0),
-                len(continue_results or []), ', '.join(_continue_names) if _continue_names else 'none',
-                len(fine_results or []), _fine_continue, _fine_watch, _fine_reject,
-                len(dv_results or []), len(_dv_rejected),
-            )
-            _recommend_action = 'No entry order created. Review scanner thresholds or wait for stronger candidates.'
-            _pa_discord_send_once(uid, _run_id, 'entry_plan', {
-                'buyCount': buy_count,
-                'watchCount': watch_count,
-                'skipCount': skip_count,
-                'blockedCount': skip_count,
-                'needDataCount': _ep_nd_count,
-                'warning': _ep_warning,
-                'skipped': _ep_skipped,
-                'skipReason': _skip_reason if _ep_skipped else '',
-                'upstreamScanned': summary.get('scanned', 0),
-                'upstreamAiSuccess': summary.get('aiSuccess', 0),
-                'upstreamContinueCount': len(continue_results or []),
-                'upstreamValidationCount': len(dv_results or []),
-                'upstreamValidationPassed': len(ep_candidates),
-                'continueCandidateNames': ', '.join(_continue_names) if _continue_names else 'none',
-                'fineScanSummary': '%d continue / %d watch / %d reject' % (_fine_continue, _fine_watch, _fine_reject),
-                'dvRejectCount': len(_dv_rejected),
-                'dvRejectList': _dv_reject_list,
-                'recommendedAction': _recommend_action if _ep_skipped else '',
-                'source': _discord_source,
-                'description': ('%s Entry Plan skipped.' % _pa_discord_source_prefix(trigger)) if _ep_skipped else ('%s Entry Plan completed.' % _pa_discord_source_prefix(trigger)),
-                'buyCandidates': [{
-                    'symbol': p.get('symbol', '?'),
-                    'entryZone': str(p.get('entryZone') or p.get('entryZoneDesc') or p.get('suggestedEntry', '-'))[:60],
-                    'stop': str(p.get('stopLoss') or p.get('suggestedStop', '-'))[:60],
-                    'target': str(p.get('takeProfit') or p.get('takeProfit1') or p.get('suggestedTarget', '-'))[:60],
-                    'riskReward': str(p.get('riskReward') or p.get('riskReward1') or p.get('rrProfile', '-'))[:30],
-                    'positionSize': str(p.get('positionSize') or p.get('positionSizeDollars') or p.get('positionCapital', '-'))[:30],
-                    'reason': str(p.get('decisionReason') or p.get('reason') or p.get('alternativeReason', '-'))[:180],
-                } for p in (entry_plans or []) if p.get('finalAction') in ('BUY_READY', 'READY_REVIEW')],
-            })
 
         # ── Step 6: Execution ──
         _check_stopped()
@@ -31585,27 +41897,12 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                     _ep_float(plan.get('entryZoneHigh', plan.get('entryHigh', zone.get('high')))),
                 )
             for plan in (entry_plans or []):
+                _check_timeout('execution')
                 _sym = str(plan.get('symbol') or '').upper()
-                _raw_action = plan.get('finalAction', '')
-                _is_lev = plan.get('isLeveraged') or plan.get('isLeveragedAlternative')
-                # Leveraged ETF promotion: in AI mode, treat READY_REVIEW as BUY_READY
-                # when all gates pass — same rule as frontend auto-execution pipeline.
                 _use_plan = plan
-                if _is_lev and _raw_action == 'READY_REVIEW':
-                    # Patch finalAction and riskGate so entry_plan_execute passes
-                    _use_plan = dict(plan)
-                    _use_plan['finalAction'] = 'BUY_READY'
-                    _rg = _use_plan.get('hardRiskGate') or _use_plan.get('riskGate') or {}
-                    if _rg.get('status') == 'REVIEW' and not _rg.get('blockers'):
-                        _rg = dict(_rg)
-                        _rg['status'] = 'PASS'
-                        _use_plan['hardRiskGate'] = _rg
-                    _use_plan['tradeReadiness'] = 'READY'
-                    _pa_log('[PipelineAuto] leveraged promotion symbol=%s action=%s->BUY_READY' % (_sym, _raw_action))
                 if _use_plan.get('finalAction') != 'BUY_READY':
                     continue
                 _lo, _hi = _ep_zone(_use_plan)
-                _cur = _ep_float(_use_plan.get('currentPrice', _use_plan.get('price')))
                 _stop = _ep_float(_use_plan.get('stopLoss', _use_plan.get('stop')))
                 _target = _ep_float(_use_plan.get('takeProfit1', _use_plan.get('takeProfit', _use_plan.get('target'))))
                 _block_reason = ''
@@ -31619,10 +41916,6 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                     _block_reason = 'existing_open_buy_order'
                 elif _lo <= 0 or _hi <= 0:
                     _block_reason = 'entry_zone_unavailable'
-                elif _cur <= 0:
-                    _block_reason = 'current_price_unavailable'
-                elif not (_lo <= _cur <= _hi):
-                    _block_reason = 'price_outside_entry_zone'
                 elif _stop <= 0 or _target <= 0:
                     _block_reason = 'stop_or_target_unavailable'
                 if _block_reason:
@@ -31642,6 +41935,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                     'confirmText': '',
                     'clientOrderId': 'alphalab-%s-%s-buy' % (_run_id[:20], _sym),
                     'isAutoExecute': True,
+                    'suppressDiscord': True,
                 })
                 execution_results.append(exec_resp)
                 _seen_order_symbols.add(_sym)
@@ -31652,8 +41946,19 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                     # Discord notification is already sent inside entry_plan_execute — no duplicate here.
         else:
             _pa_log('[PipelineAuto] step completed step=execution count=0 reason=mode_not_ai')
+        run_context['execution_results'] = execution_results
+        _execution_by_symbol = {
+            str(row.get('symbol') or '').upper(): row
+            for row in execution_results if isinstance(row, dict) and row.get('symbol')
+        }
+        for _executed_plan in entry_plans:
+            _executed_plan['executionHandledByBackend'] = True
+            _executed_plan['pipelineRunId'] = _run_id
+            _executed_plan['pipelineExecution'] = _execution_by_symbol.get(
+                str(_executed_plan.get('symbol') or '').upper()
+            )
         summary['steps'].append({'step': 'execution', 'status': 'completed', 'count': len(execution_results), 'submitted': summary['orders_submitted']})
-        _pa_active_run_step(uid, 'execution', 5, 6, 'completed' if not summary['orders_submitted'] else 'completed',
+        _pa_active_run_step(uid, 'execution', 6, _PA_PIPELINE_TOTAL_STEPS, 'completed' if not summary['orders_submitted'] else 'completed',
                             message='Execution: %d submitted' % summary['orders_submitted'],
                             step_data={
                                 'processed': len(execution_results), 'total': len(entry_plans or []),
@@ -31668,11 +41973,13 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         _check_stopped()
         _check_timeout('exit_scan')
         _pa_log('[AutoPipeline] stage=exit_scan start holdings=%d entryPlans=%d' % (len(pipeline_holdings), len(entry_plans)))
-        _pa_active_run_step(uid, 'exit_scan', 6, 6, 'running',
+        _pa_active_run_step(uid, 'exit_scan', 7, _PA_PIPELINE_TOTAL_STEPS, 'running',
                             message='Exit Scan running...', step_data={'total': 0, 'processed': 0})
 
         exit_summary = _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=dry_run,
-                                               risk_profile=risk_profile, time_horizon=time_horizon, trade_mode=trade_mode, run_id=_run_id)
+                                               risk_profile=risk_profile, time_horizon=time_horizon, trade_mode=trade_mode, run_id=_run_id,
+                                               suppress_discord=True)
+        _check_timeout('exit_scan')
         run_context['exit_results'] = exit_summary
         summary['exit_scan_count'] = exit_summary.get('holdingsScanned', 0)
         _exit_signals = exit_summary.get('signals', []) or []
@@ -31682,29 +41989,9 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         _with_plan = exit_summary.get('withEntryPlanCount', 0)
         _with_fallback = exit_summary.get('fallbackPlanCount', 0)
         summary['steps'].append({'step': 'exit_scan', 'status': 'completed' if not exit_summary.get('error') else 'partial', 'count': summary['exit_scan_count']})
-        # Send exit_scan Discord notification (once per run) — manual never sends Discord
-        if not is_manual:
-            _ep_note = ''
-            if not entry_plans:
-                _ep_note = 'No new entry candidates passed validation in this run.'
-            elif buy_count > 0:
-                _ep_note = '%d BUY orders ready for execution.' % buy_count
-            _pa_discord_send_once(uid, _run_id, 'exit_scan', {
-                'holdingsScanned': exit_summary.get('holdingsScanned', 0),
-                'sellReduceCount': _sell_count,
-                'holdCount': _hold_count,
-                'blockedCount': _blocked_count,
-                'withEntryPlanCount': _with_plan,
-                'fallbackPlanCount': _with_fallback,
-                'signals': _exit_signals[:8],
-                'noEntryCandidates': bool(not entry_plans),
-                'entryPlanNote': _ep_note,
-                'source': _discord_source,
-                'description': '%s Exit Scan completed%s.' % (_pa_discord_source_prefix(trigger), ' (dry run)' if dry_run else ''),
-            })
         _pa_log('[AutoPipeline] stage=exit_scan done sell=%d hold=%d blocked=%d with_plan=%d fallback=%d' % (
             _sell_count, _hold_count, _blocked_count, _with_plan, _with_fallback))
-        _pa_active_run_step(uid, 'exit_scan', 6, 6, 'completed',
+        _pa_active_run_step(uid, 'exit_scan', 7, _PA_PIPELINE_TOTAL_STEPS, 'completed',
                             message='Exit Scan: %d holdings scanned' % summary['exit_scan_count'],
                             step_data={
                                 'processed': summary['exit_scan_count'], 'total': summary['exit_scan_count'],
@@ -31715,8 +42002,14 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                                 'withEntryPlan': _with_plan,
                                 'fallbackPlan': _with_fallback,
                                 'openSellOrders': exit_summary.get('openSellOrderCount', 0),
+                                'protected': exit_summary.get('protectedCount', 0),
+                                'protectionAttached': exit_summary.get('protectionAttachedCount', 0),
+                                'ai': exit_summary.get('ai') or {},
                                 'results': _exit_signals[:10],
                             })
+        summary['order_lifecycle_after'] = _pa_reconcile_order_lifecycle(
+            uid, trade_mode, notify=not is_manual
+        )
 
     except _PipelineStop:
         summary['stopped'] = True
@@ -31730,12 +42023,30 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         summary['timedOut'] = True
         summary['timedOutStage'] = e.stage
         _pa_log_error('[PipelineAuto] headless pipeline TIMEOUT user=%s stage=%s elapsed=%.0fs' % (uid[:8], e.stage, e.elapsed))
-        _pa_update_active_run(uid, status='failed', currentStep='error', progressPct=0,
-                              message='Pipeline timed out at %s' % e.stage,
-                              lastError=summary['lastError'], finishedAt=datetime.utcnow().isoformat(),
-                              steps={e.stage: {'status': 'failed', 'error': 'Timed out after %.0fs' % e.elapsed}})
+        failed_run = _pa_get_active_run(uid) or {}
+        failed_index = next(
+            (index for index, (key, _label) in enumerate(_PA_PIPELINE_STAGES, start=1) if key == e.stage),
+            int(failed_run.get('stepIndex') or 1),
+        )
+        _pa_active_run_step(
+            uid,
+            e.stage,
+            failed_index,
+            _PA_PIPELINE_TOTAL_STEPS,
+            'failed',
+            message='Pipeline timed out at %s' % e.stage,
+            step_data={'error': 'Timed out after %.0fs' % e.elapsed},
+        )
+        _pa_update_active_run(
+            uid,
+            status='failed',
+            lastError=summary['lastError'],
+            finishedAt=_pa_utc_iso(),
+        )
         if not is_manual:
-            _pa_discord_send_once(uid, _run_id, 'error', {
+            _pa_discord_send_once(uid, _run_id, 'risk_alert', {
+                'fingerprint': 'pipeline_timeout:%s' % e.stage,
+                'severity': 'high',
                 'step': 'Pipeline Timeout',
                 'status': 'timeout',
                 'reason': 'Timed out at stage: %s (%.0fs elapsed, %ds limit)' % (e.stage, e.elapsed, e.limit),
@@ -31751,10 +42062,24 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         summary['traceback'] = _tb[:2000]
         _pa_log_error('[PipelineAuto] headless pipeline failed user=%s error=%s' % (uid[:8], summary['lastError']))
         _pa_log_error('[PipelineAuto] full traceback:\n%s' % _tb)
-        _pa_update_active_run(uid, status='failed', currentStep='error', progressPct=0,
-                              message='Pipeline failed: %s' % summary['lastError'],
-                              lastError=summary['lastError'], finishedAt=datetime.utcnow().isoformat(),
-                              steps={'error': {'status': 'failed', 'error': summary['lastError']}})
+        failed_run = _pa_get_active_run(uid) or {}
+        failed_step = str(failed_run.get('currentStep') or 'market_scanner')
+        failed_index = int(failed_run.get('stepIndex') or 1)
+        _pa_active_run_step(
+            uid,
+            failed_step,
+            failed_index,
+            _PA_PIPELINE_TOTAL_STEPS,
+            'failed',
+            message='Pipeline failed: %s' % summary['lastError'],
+            step_data={'error': summary['lastError']},
+        )
+        _pa_update_active_run(
+            uid,
+            status='failed',
+            lastError=summary['lastError'],
+            finishedAt=_pa_utc_iso(),
+        )
         # Categorize the error for a more useful Discord message
         _err_str = str(e)
         if 'NoneType' in _err_str and 'not iterable' in _err_str:
@@ -31770,7 +42095,9 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         else:
             _discord_reason = summary['lastError']
         if not is_manual:
-            _pa_discord_send_once(uid, _run_id, 'error', {
+            _pa_discord_send_once(uid, _run_id, 'risk_alert', {
+                'fingerprint': 'pipeline_failure:%s' % _discord_reason[:120],
+                'severity': 'high',
                 'step': 'Headless Pipeline',
                 'status': 'failed',
                 'reason': _discord_reason,
@@ -31780,9 +42107,13 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
     else:
         _pa_update_active_run(uid, status='completed', progressPct=100,
                               message='Pipeline completed',
-                              finishedAt=datetime.utcnow().isoformat())
-    summary['finishedAt'] = datetime.utcnow().isoformat()
+                              finishedAt=_pa_utc_iso())
+    summary['finishedAt'] = _pa_utc_iso()
     summary['durationSeconds'] = round(time.time() - started, 2)
+    if not is_manual and summary.get('errors', 0) == 0 and not summary.get('stopped'):
+        summary['discordDigest'] = _pa_send_cycle_digest(
+            uid, _run_id, trigger, mode, trade_mode, summary, run_context
+        )
     _pa_log('[AutoPipeline] run completed runId=%s user=%s errors=%d stopped=%s duration=%.1fs' % (
         _run_id, uid[:8], summary['errors'], summary.get('stopped', False), summary['durationSeconds']))
     if is_manual:
@@ -31811,6 +42142,7 @@ def _pa_execute_and_save(uid, config, interval, mode, trigger,
     config['last_run_source'] = 'manual_run' if is_manual else 'backend_scheduler'
     config['last_run_trigger'] = trigger
     config['current_auto_run_id'] = run_id or ('%s-%s' % (trigger, int(time.time())))
+    summary = None
     with _PA_RUNNING_USERS_LOCK:
         _PA_RUNNING_USERS.add(uid)
     try:
@@ -31834,6 +42166,21 @@ def _pa_execute_and_save(uid, config, interval, mode, trigger,
         config['last_run_at'] = _run_started_at.isoformat()
         config['last_run_source'] = 'manual_run' if is_manual else 'backend_scheduler'
         config['last_run_trigger'] = trigger
+        if trigger in ('market_auto_run', 'toggle_on', 'auto_run_now'):
+            run_date_et = _run_completed_at.strftime('%Y-%m-%d')
+            previous_date_et = str(config.get('run_count_date_et') or '')
+            previous_count = int(config.get('run_count_today') or 0) if previous_date_et == run_date_et else 0
+            config['run_count_today'] = previous_count + 1
+            config['run_count_date_et'] = run_date_et
+        if success:
+            config['consecutive_failures'] = 0
+            config['circuit_breaker_until'] = ''
+        else:
+            failure_count = int(config.get('consecutive_failures') or 0) + 1
+            config['consecutive_failures'] = failure_count
+            if failure_count >= 3:
+                config['circuit_breaker_until'] = (_run_completed_at + timedelta(minutes=15)).isoformat()
+                config['last_decision'] = 'circuit_breaker_open'
         if disabled_during_run:
             config['enabled'] = False
             config['next_run_at'] = ''
@@ -31868,6 +42215,9 @@ def _pa_execute_and_save(uid, config, interval, mode, trigger,
         config['current_auto_run_id'] = ''
         config['last_summary'] = summary or {}
         config['last_error'] = None if success else (('%d errors' % summary['errors']) if summary else 'unknown error')
+        if not success and int(config.get('consecutive_failures') or 0) >= 3 and not disabled_during_run:
+            config['last_decision'] = 'circuit_breaker_open'
+            config['next_run_at'] = config.get('circuit_breaker_until') or config.get('next_run_at')
         _pa_save_config(uid, config)
         _pa_release_user_run(uid)
     return summary or {'errors': 1}
@@ -31901,7 +42251,8 @@ def _pa_scheduler_loop():
                 now_et = _pa_now_et()
                 now_iso = now_et.isoformat()
 
-                # Check market open via Alpaca clock (with fallback)
+                # Global tick uses the calendar fallback only. Each enabled user is
+                # checked again below with that user's selected Alpaca account.
                 is_open, mkt_status, mkt_source, next_open, next_close, market_stage_sched = _pa_check_market_open(None)
                 _pa_log('scheduler tick nowEt=%s stage=%s enabledUsersCheck=true marketOpen=%s' % (
                     now_et.isoformat(), market_stage_sched, is_open))
@@ -31935,6 +42286,39 @@ def _pa_scheduler_loop():
                     _sched_risk = _ctx['risk_profile']
                     _sched_horizon = _ctx['time_horizon']
                     _sched_trade = _ctx['trade_mode']
+
+                    # The broker clock is authoritative per user/mode. Position
+                    # protection runs before the research circuit breaker so a
+                    # failed scan cannot disable risk-reducing exits.
+                    is_open, mkt_status, mkt_source, next_open, next_close, market_stage_sched = _pa_check_market_open(
+                        uid, _sched_trade
+                    )
+                    _pa_maybe_start_position_guard(
+                        uid, config, now_et, mode, _sched_risk, _sched_horizon,
+                        _sched_trade, is_open,
+                    )
+
+                    breaker_until = config.get('circuit_breaker_until') or ''
+                    if breaker_until:
+                        try:
+                            breaker_dt = dateutil.parser.isoparse(breaker_until)
+                            if breaker_dt.tzinfo is None:
+                                breaker_dt = breaker_dt.replace(tzinfo=now_et.tzinfo)
+                            else:
+                                breaker_dt = breaker_dt.astimezone(now_et.tzinfo)
+                            if now_et < breaker_dt:
+                                with _PA_PER_USER_LAST_CHECK_LOCK:
+                                    _PA_PER_USER_LAST_CHECK[uid] = {
+                                        'time': now_iso,
+                                        'decision': 'circuit_breaker_open',
+                                    }
+                                _pa_log('skipped user=%s reason=circuit_breaker until=%s' % (uid[:8], breaker_dt.isoformat()))
+                                continue
+                            config['circuit_breaker_until'] = ''
+                            config['consecutive_failures'] = 0
+                            _pa_save_config(uid, config)
+                        except Exception:
+                            config['circuit_breaker_until'] = ''
 
                     with _PA_RUNNING_USERS_LOCK:
                         if uid in _PA_RUNNING_USERS:
@@ -32081,6 +42465,42 @@ def _pa_scheduler_loop():
     _pa_log('Scheduler loop stopped')
 
 # ── API Routes ──
+@app.route('/api/ai-agent/exit-scan', methods=['POST'])
+def pipeline_exit_scan():
+    """Run the same exit engine used by the unattended Position Guard."""
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    uid = user['id']
+    data = request.get_json(silent=True) or {}
+    pipeline_mode = str(data.get('pipelineMode') or data.get('mode') or 'hybrid').lower()
+    trade_mode = 'paper' if str(data.get('tradeMode') or 'paper').lower() == 'paper' else 'real'
+    auto_submit = bool(data.get('autoSubmit')) and pipeline_mode == 'ai'
+    if not _pa_try_reserve_user_run(uid, 'manual_exit_scan'):
+        return jsonify({
+            'success': False,
+            'status': 'already_running',
+            'message': 'A pipeline or position-protection run is already active. Retry shortly.',
+        }), 409
+    try:
+        summary = _pa_exit_scan_headless(
+            uid,
+            data.get('entryPlans') if isinstance(data.get('entryPlans'), list) else [],
+            pipeline_mode,
+            dry_run=not auto_submit,
+            risk_profile=data.get('riskProfile') or 'medium',
+            time_horizon=data.get('timeHorizon') or 'mid',
+            trade_mode=trade_mode,
+            run_id='manual-exit-%d' % int(time.time()),
+            ai_review=data.get('aiReview', True) is not False,
+            suppress_discord=bool(data.get('suppressDiscord', False)),
+        )
+        status_code = 200 if not summary.get('error') else 502
+        return jsonify({'success': not bool(summary.get('error')), **summary}), status_code
+    finally:
+        _pa_release_user_run(uid)
+
+
 @app.route('/api/ai-agent/pipeline-auto/status', methods=['GET'])
 def pipeline_auto_status():
     import pytz
@@ -32096,7 +42516,8 @@ def pipeline_auto_status():
     with _PA_SCHEDULER_LAST_HEARTBEAT_LOCK:
         hb = _PA_SCHEDULER_LAST_HEARTBEAT
     scheduler_running = (time.time() - hb) < 120 if hb > 0 else False
-    is_open, mkt_status, mkt_source, next_open, next_close, market_stage = _pa_check_market_open(uid)
+    _status_trade_mode = config.get('trade_mode') or config.get('tradeMode') or 'paper'
+    is_open, mkt_status, mkt_source, next_open, next_close, market_stage = _pa_check_market_open(uid, _status_trade_mode)
 
     with _PA_PER_USER_LAST_CHECK_LOCK:
         last_check = _PA_PER_USER_LAST_CHECK.get(uid, {})
@@ -32108,21 +42529,27 @@ def pipeline_auto_status():
         is_running = uid in _PA_RUNNING_USERS
     discord_cfg = get_discord_config(uid)
     discord_enabled = bool(discord_cfg.get('enabled') and discord_cfg.get('webhookUrl'))
+    with _PA_POSITION_GUARD_LOCK:
+        position_guard_state = dict(_PA_POSITION_GUARD_STATE.get(uid, {}))
+    if position_guard_state.get('running'):
+        is_running = False
 
-    # ── Phase 1: compute display next from last_run_at + interval ──
-    # Always computed, independent of market status. This is the single source
-    # of truth for nextAutoRunDisplay used by the frontend.
+    # Use the completed timestamp for display/fallback scheduling. The scheduler's
+    # persisted next_run_at remains authoritative because intervals start after a
+    # full cycle finishes, not when the cycle begins.
     next_from_last_et = None
     last_auto_run_display = ''
-    if enabled and interval_minutes > 0 and last_run_at:
+    last_completed_at = (last_summary or {}).get('finishedAt') or last_run_at
+    if last_completed_at:
         try:
-            _l = dateutil.parser.isoparse(last_run_at)
+            _l = dateutil.parser.isoparse(last_completed_at)
             if _l.tzinfo:
                 _l_et = _l.astimezone(pytz.timezone('America/New_York'))
             else:
                 _l_et = pytz.UTC.localize(_l).astimezone(pytz.timezone('America/New_York'))
             last_auto_run_display = _l_et.strftime('%H:%M')
-            next_from_last_et = _l_et + timedelta(minutes=interval_minutes)
+            if enabled and interval_minutes > 0:
+                next_from_last_et = _l_et + timedelta(minutes=interval_minutes)
         except:
             pass
 
@@ -32130,6 +42557,7 @@ def pipeline_auto_status():
     next_run_at = ''
     seconds_until_next = 0
     config_next_run = config.get('next_run_at', '') if config else ''
+    authoritative_next_et = None
     if enabled and interval_minutes > 0:
         if not is_open:
             # When market is closed, ALWAYS point to next market open, never use last_run+interval
@@ -32142,8 +42570,7 @@ def pipeline_auto_status():
                     parsed_et = parsed.astimezone(pytz.timezone('America/New_York'))
                 else:
                     parsed_et = pytz.UTC.localize(parsed).astimezone(pytz.timezone('America/New_York'))
-                if last_run_at and next_from_last_et and next_from_last_et > parsed_et:
-                    raise ValueError('config_next_run is stale')
+                authoritative_next_et = parsed_et
                 next_run_at = parsed_et.isoformat()
                 seconds_until_next = max(0, (parsed_et - now_et).total_seconds())
             except Exception:
@@ -32184,17 +42611,18 @@ def pipeline_auto_status():
 
     if is_open:
         # Market is open — use interval-based scheduling
-        if next_from_last_et:
-            next_auto_run_at = next_from_last_et.isoformat()
-            next_auto_run_display = next_from_last_et.strftime('%H:%M')
+        display_next_et = authoritative_next_et or next_from_last_et
+        if display_next_et:
+            next_auto_run_at = display_next_et.isoformat()
+            next_auto_run_display = display_next_et.strftime('%H:%M')
             # 16:00 ET cut-off: if computed next >= today 16:00, stop for today
-            _close_et = next_from_last_et.replace(hour=16, minute=0, second=0, microsecond=0)
-            if next_from_last_et >= _close_et:
+            _close_et = display_next_et.replace(hour=16, minute=0, second=0, microsecond=0)
+            if display_next_et >= _close_et:
                 stopped_for_today = True
                 next_run_basis = 'market_closed_after_1600'
                 next_market_open_at, next_market_open_display = _fmt_next_open(next_open)
             else:
-                next_run_basis = 'last_run_started_at_plus_interval'
+                next_run_basis = 'persisted_next_run_at' if authoritative_next_et else 'last_completed_at_plus_interval'
         elif enabled and interval_minutes > 0:
             next_auto_run_display = 'Ready'
             next_run_basis = 'first_run_today'
@@ -32241,6 +42669,7 @@ def pipeline_auto_status():
     progress_percent = 0
     progress_label = 'Auto pipeline off'
     auto_status = 'Off'
+    circuit_breaker_open = _pa_is_circuit_breaker_open(config)
 
     if enabled:
         if not scheduler_running:
@@ -32264,10 +42693,14 @@ def pipeline_auto_status():
                 progress_state = 'market_closed'
                 progress_label = 'Market closed — waiting for next open'
                 auto_status = 'Market Closed'
+        elif circuit_breaker_open:
+            progress_state = 'circuit_open'
+            progress_label = 'Circuit breaker open — research scans are temporarily paused'
+            auto_status = 'Circuit Open'
         elif is_running or last_decision == 'started_pipeline':
             progress_state = 'running'
             progress_label = 'Running AI pipeline...'
-            progress_percent = 50
+            progress_percent = int((_pa_get_active_run(uid) or {}).get('progressPct') or 0)
             auto_status = 'Running'
         else:
             progress_state = 'armed'
@@ -32292,26 +42725,42 @@ def pipeline_auto_status():
 
     # ── Phase 5: auto-run display fields ──
     _now_et = _pa_now_et()
+    _run_count_today = 0
+    if config and str(config.get('run_count_date_et') or '') == _now_et.strftime('%Y-%m-%d'):
+        try:
+            _run_count_today = max(0, int(config.get('run_count_today') or 0))
+        except (TypeError, ValueError):
+            _run_count_today = 0
     active_run = _pa_get_active_run(uid)
     # Stale detection: if activeRun hasn't been updated in 15+ minutes while "running", mark as stalled.
-    # Note: market_scanner with 50 symbols + AI analysis can take 5+ minutes, so 5 min is too short.
+    # The institutional 1500-symbol scan can spend several minutes on provider
+    # batches and AI review, so a short generic request threshold is misleading.
     STALE_THRESHOLD = 900  # 15 minutes
     stale_detected = False
     if active_run and active_run.get('status') == 'running' and active_run.get('updatedAt'):
         try:
             _updated = dateutil.parser.isoparse(active_run['updatedAt'])
-            _age = (datetime.utcnow().replace(tzinfo=_updated.tzinfo) - _updated).total_seconds() if _updated.tzinfo else (datetime.utcnow() - _updated).total_seconds()
+            _now_utc = datetime.now(timezone.utc)
+            _age = (_now_utc - _updated.astimezone(timezone.utc)).total_seconds() if _updated.tzinfo else (_now_utc.replace(tzinfo=None) - _updated).total_seconds()
             if _age > STALE_THRESHOLD:
                 stale_detected = True
                 _pa_log_error('[PipelineAuto] stale run detected user=%s age=%.0fs step=%s (threshold=%ds)' % (uid[:8], _age, active_run.get('currentStep', '?'), STALE_THRESHOLD))
+                _pa_update_active_run(
+                    uid,
+                    status='interrupted',
+                    message='No backend progress heartbeat for 15 minutes',
+                    lastError='stale_run_interrupted',
+                    finishedAt=_pa_utc_iso(),
+                )
+                active_run = _pa_get_active_run(uid)
         except Exception:
             pass
     is_auto_run_running = is_running and not stale_detected
     current_auto_step = active_run.get('currentStep', '') if active_run else ''
     current_auto_progress_pct = active_run.get('progressPct', 0) if active_run else 0
     if stale_detected:
-        current_auto_step = 'stale'
-        current_auto_progress_pct = 0
+        current_auto_step = active_run.get('currentStep', 'stale') if active_run else 'stale'
+        current_auto_progress_pct = active_run.get('progressPct', 0) if active_run else 0
     last_auto_summary = {}
     if last_summary:
         last_auto_summary = {
@@ -32319,9 +42768,10 @@ def pipeline_auto_status():
             'completedAt': last_summary.get('finishedAt', ''),
             'durationSeconds': last_summary.get('durationSeconds', 0),
             'scanned': last_summary.get('scanned', 0),
-            'aiSuccess': last_summary.get('continue_count', 0),
+            'aiSuccess': last_summary.get('aiSuccess', 0),
             'fineScanCount': last_summary.get('fine_count', 0),
             'validationCount': last_summary.get('validation_count', 0),
+            'admissionCount': last_summary.get('admission_count', 0),
             'entryPlanCount': last_summary.get('entry_plan_count', 0),
             'ordersSubmitted': last_summary.get('orders_submitted', 0),
             'exitScanCount': last_summary.get('exit_scan_count', 0),
@@ -32337,7 +42787,7 @@ def pipeline_auto_status():
         'intervalMinutes': interval_minutes,
         'mode': mode,
         'schedulerRunning': scheduler_running,
-        'schedulerLastHeartbeatAt': datetime.utcfromtimestamp(hb).isoformat() + 'Z' if hb > 0 else '',
+        'schedulerLastHeartbeatAt': datetime.fromtimestamp(hb, timezone.utc).isoformat().replace('+00:00', 'Z') if hb > 0 else '',
         'schedulerLastCheckAt': last_check.get('time', ''),
         'schedulerLoopIntervalSeconds': 30,
         'marketOpen': is_open,
@@ -32373,22 +42823,37 @@ def pipeline_auto_status():
         'nextMarketOpenAt': next_market_open_at,
         'lastSummary': last_summary,
         'lastError': last_error,
-        'runCountToday': config.get('run_count_today', 0) if config else 0,
-        # Backend headless capability — auto-run is fully headless, no frontend required
-        # Market Scanner (10 default symbols), not the full 6-stage pipeline.
-        # Full pipeline (Continue Scan, Fine Scan, Deeper Validation, Entry Plan, Exit Scan)
-        # requires the frontend page to be open for orchestration.
+        'consecutiveFailures': int(config.get('consecutive_failures') or 0) if config else 0,
+        'circuitBreakerUntil': config.get('circuit_breaker_until', '') if config else '',
+        'circuitBreakerOpen': circuit_breaker_open,
+        'runCountToday': _run_count_today,
+        # Backend headless capability: the same seven-stage pipeline runs without
+        # a browser and includes admission, execution, and protected exit scans.
         'backendHeadlessCapable': True,
         'browserOpenRequiredForFullPipeline': False,
+        'pipelineStages': [{'key': key, 'label': label} for key, label in _PA_PIPELINE_STAGES],
+        'aiAuthority': _PA_AI_AUTHORITY,
+        'positionGuard': {
+            'enabled': enabled,
+            'intervalSeconds': _PA_POSITION_GUARD_INTERVAL_SECONDS,
+            **position_guard_state,
+        },
         'discordEnabled': discord_enabled,
+        'discordPolicy': {
+            'tradeActivity': _discord_event_enabled(discord_cfg, 'order'),
+            'riskAlerts': _discord_event_enabled(discord_cfg, 'risk_alert'),
+            'cycleDigest': _discord_event_enabled(discord_cfg, 'cycle_digest'),
+            'quietMode': True,
+        },
         'discordLastSentAt': _discord_last_sent_at.get(uid, ''),
         'riskProfile': config.get('risk_profile') or config.get('riskProfile') or 'medium',
         'timeHorizon': config.get('time_horizon') or config.get('timeHorizon') or 'mid',
         'tradeMode': config.get('trade_mode') or config.get('tradeMode') or 'paper',
+        'liveAutoTradingEnabled': bool(config.get('live_auto_trading_enabled', False)),
         'contextSource': _pa_resolve_auto_run_context(uid, config)['contextSource'],
         'lastBackendRunAt': last_run_at,
-        'lastBackendRunStatus': 'success' if last_decision == 'pipeline_success' else
-                                'failed' if last_decision == 'pipeline_failed' else
+        'lastBackendRunStatus': 'success' if last_decision in ('pipeline_success', 'auto_run_now_success', 'manual_pipeline_success') else
+                                'failed' if last_decision in ('pipeline_failed', 'auto_run_now_failed', 'manual_pipeline_failed') else
                                 'blocked' if last_decision in ('blocked_real_order_submit',) else
                                 'running' if is_running or last_decision == 'started_pipeline' else
                                 '',
@@ -32448,6 +42913,16 @@ def pipeline_run():
     if is_manual_req:
         _pa_log('[ManualPipeline] endpoint received trigger=%s mode=%s risk=%s horizon=%s tradeMode=%s runId=%s uid=%s' % (
             trigger, mode, risk_profile, time_horizon, trade_mode, run_id, uid[:8]))
+    else:
+        auto_config = _pa_get_config(uid) or {}
+        if _pa_is_circuit_breaker_open(auto_config):
+            return jsonify({
+                'success': False,
+                'status': 'circuit_open',
+                'reason': 'circuit_breaker_open',
+                'message': 'Automated research is paused by the circuit breaker. Position protection remains active.',
+                'retryAt': auto_config.get('circuit_breaker_until', ''),
+            }), 409
 
     if not _pa_try_reserve_user_run(uid, 'pipeline_endpoint'):
         # Check if it's a background auto-run vs manual run
@@ -32489,6 +42964,29 @@ def pipeline_result():
     with _PA_LAST_PIPELINE_RESULTS_LOCK:
         result = _PA_LAST_PIPELINE_RESULTS.get(key)
     if not result:
+        filenames = []
+        if kind == 'manual':
+            filenames = ['debug_manual_pipeline_result.json']
+        elif kind == 'auto':
+            filenames = ['debug_auto_pipeline_result.json']
+        else:
+            filenames = ['debug_manual_pipeline_result.json', 'debug_auto_pipeline_result.json']
+        for filename in filenames:
+            try:
+                path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+                if not os.path.exists(path):
+                    continue
+                with open(path, 'r', encoding='utf-8') as handle:
+                    candidate = json.load(handle)
+                if not isinstance(candidate, dict) or candidate.get('userId') != uid:
+                    continue
+                if run_id and candidate.get('runId') != run_id:
+                    continue
+                result = candidate
+                break
+            except Exception:
+                continue
+    if not result:
         return jsonify({'success': False, 'message': 'Pipeline result not available yet'}), 404
     return jsonify({'success': True, 'runId': result.get('runId'), 'result': result})
 
@@ -32500,10 +42998,10 @@ def pipeline_stop():
     if not user:
         return jsonify({'success': False, 'message': 'Authentication required'}), 401
     uid = user['id']
-    with _PA_ACTIVE_RUNS_LOCK:
-        if uid in _PA_ACTIVE_RUNS:
-            _PA_ACTIVE_RUNS[uid]['stopRequested'] = True
-            return jsonify({'success': True, 'message': 'Stop requested at next step boundary'})
+    active_run = _pa_get_active_run(uid)
+    if active_run and active_run.get('status') == 'running':
+        _pa_update_active_run(uid, stopRequested=True, message='Stop requested by user')
+        return jsonify({'success': True, 'message': 'Stop requested at next step boundary'})
     return jsonify({'success': False, 'message': 'No active pipeline to stop'}), 404
 
 
@@ -32585,6 +43083,7 @@ def fine_scan_shared():
             if r.get('scanStatus') == 'failed': _failed_count += 1
             if r.get('decisionSource') == 'data_quality_gate': _dq_blocked += 1
             if d == 'Continue': _top_continue.append(r.get('symbol'))
+        _ai_stats = results[0].get('fineScanAiStats') if results and isinstance(results[0].get('fineScanAiStats'), dict) else {}
         return jsonify({
             'success': True,
             'results': results,
@@ -32594,6 +43093,15 @@ def fine_scan_shared():
                 'failed': _failed_count,
                 'data_quality_blocked': _dq_blocked,
                 'top_continue': _top_continue[:10],
+                'ai': {
+                    'status': _ai_stats.get('status', 'disabled'),
+                    'requested': _ai_stats.get('requestedSymbols', 0),
+                    'reviewed': _ai_stats.get('reviewedSymbols', 0),
+                    'challenged': _ai_stats.get('challengedSymbols', 0),
+                    'provider': _ai_stats.get('provider'),
+                    'model': _ai_stats.get('model'),
+                    'retryAttempts': _ai_stats.get('retryAttempts', 0),
+                },
             },
             'contextUsed': {'riskProfile': risk_profile, 'timeHorizon': time_horizon, 'pipelineMode': pipeline_mode, 'tradeMode': trade_mode},
         })
@@ -32604,116 +43112,121 @@ def fine_scan_shared():
 
 @app.route('/api/ai-agent/scanner-news/<symbol>', methods=['GET'])
 def scanner_news_lazy(symbol):
-    """Lazy-fetch Finnhub news for a single symbol (on-demand when user expands detail).
-    Used when the symbol was outside the scanner's top-10 bulk news fetch.
+    """Lazy-fetch Alpaca news for a single symbol when the user expands detail.
     Returns same topNews/newsSource/newsFetchReason shape as the scanner result.
     """
     user = require_auth()
     if not user:
         return jsonify({'success': False, 'message': 'Authentication required'}), 401
-    uid = user['id']
     symbol = (symbol or '').strip().upper()
     if not symbol:
         return jsonify({'success': False, 'message': 'Symbol is required'}), 400
 
-    # Resolve Finnhub config
-    fh_cfg, fh_src = resolve_finnhub_config(require_user_config=True)
-    api_key = fh_cfg.get('api_key', '')
-    if not api_key or not api_key.strip():
+    market_cfg, cfg_status = resolve_alpaca_config_strict_user('market_data')
+    if cfg_status != 'ok':
         return jsonify({
             'success': True,
             'symbol': symbol,
             'topNews': None,
             'newsCount': 0,
             'hasNews': False,
-            'newsSource': 'Finnhub not configured',
-            'newsFetchReason': 'finnhub_not_configured',
-            'dataSources': {'news': 'Finnhub not configured'},
-            'provenance': {'news': 'Finnhub not configured'},
+            'newsSource': 'Alpaca News not configured',
+            'newsFetchReason': 'alpaca_news_not_configured' if cfg_status == 'config_required' else 'auth_required',
+            'dataSources': {'news': 'Alpaca News not configured'},
+            'provenance': {'news': 'Alpaca News not configured'},
         })
 
     try:
-        news_items, err = fetch_finnhub_company_news(symbol, days_back=7, finnhub_cfg=fh_cfg)
+        news_by_symbol, errors, stats = _inst_fetch_alpaca_news(
+            [symbol],
+            market_cfg,
+            days_back=7,
+            batch_size=1,
+            page_limit=3,
+            max_retries=2,
+        )
+        err = errors.get(symbol)
         if err:
-            _pa_log('[ScannerNews] lazy fetch %s FAILED: %s' % (symbol, err))
+            _pa_log('[ScannerNews] Alpaca lazy fetch %s FAILED: %s' % (symbol, err))
+            retry_after = 65 if 'rate_limited' in str(err) or '429' in str(err) else None
             return jsonify({
                 'success': True,
                 'symbol': symbol,
                 'topNews': None,
                 'newsCount': 0,
                 'hasNews': False,
-                'newsSource': 'Finnhub error: %s' % str(err)[:80],
-                'newsFetchReason': 'finnhub_news_api_failed: %s' % str(err)[:100],
-                'dataSources': {'news': 'Finnhub error'},
-                'provenance': {'news': 'Finnhub error'},
+                'newsSource': 'Alpaca News error: %s' % str(err)[:80],
+                'newsFetchReason': str(err)[:140],
+                'retryAfterSeconds': retry_after,
+                'newsFetchStats': stats,
+                'dataSources': {'news': 'Alpaca /v1beta1/news'},
+                'provenance': {'news': 'Alpaca /v1beta1/news'},
             })
-        if news_items and len(news_items) > 0:
-            top_sorted = sorted(news_items, key=lambda n: n.get('datetime', 0) or 0, reverse=True)
+
+        news_items = news_by_symbol.get(symbol, []) or []
+        if news_items:
+            top_sorted = sorted(news_items, key=lambda n: str(n.get('createdAt') or n.get('updatedAt') or ''), reverse=True)
             best = top_sorted[0]
-            _scores = [n.get('sentiment_score') for n in news_items if n.get('sentiment_score') is not None]
-            if _scores:
-                _avg = sum(_scores) / len(_scores)
-                if _avg > 0.2:
-                    _sent_label = 'Positive'
-                elif _avg < -0.2:
-                    _sent_label = 'Negative'
-                else:
-                    _sent_label = 'Neutral'
-            else:
-                _sent_label = None
+            signal = _inst_news_signal(top_sorted)
+
+            def _shape_news(item):
+                return {
+                    'id': item.get('id'),
+                    'title': item.get('headline', ''),
+                    'headline': item.get('headline', ''),
+                    'source': item.get('source') or 'Alpaca News',
+                    'publisher': item.get('source') or 'Alpaca News',
+                    'published': item.get('createdAt') or item.get('updatedAt'),
+                    'publishedAt': item.get('createdAt') or item.get('updatedAt'),
+                    'url': item.get('url') or '',
+                    'summary': (item.get('summary') or '')[:300],
+                    'symbols': item.get('symbols') or [],
+                }
+
             return jsonify({
                 'success': True,
                 'symbol': symbol,
-                'topNews': {
-                    'title': best.get('headline', ''),
-                    'source': best.get('source', 'Unknown'),
-                    'publisher': best.get('source', 'Unknown'),
-                    'published': best.get('datetime', 0),
-                    'url': best.get('url', ''),
-                    'summary': (best.get('summary') or '')[:300],
-                    'sentiment': best.get('sentiment_score'),
-                },
-                'allNews': [{
-                    'title': n.get('headline', ''),
-                    'source': n.get('source', 'Unknown'),
-                    'published': n.get('datetime', 0),
-                    'url': n.get('url', ''),
-                    'summary': (n.get('summary') or '')[:300],
-                    'sentiment': n.get('sentiment_score'),
-                } for n in top_sorted[:5]],
+                'topNews': _shape_news(best),
+                'allNews': [_shape_news(n) for n in top_sorted[:5]],
                 'newsCount': len(news_items),
                 'hasNews': True,
-                'newsSentiment': _sent_label,
-                'newsSource': 'Finnhub',
+                'newsSentiment': signal.get('sentiment'),
+                'newsScore': signal.get('score'),
+                'sentimentScore': signal.get('score'),
+                'eventRisk': signal.get('eventRisk'),
+                'eventTags': signal.get('tags'),
+                'newsSource': 'Alpaca News',
                 'newsFetchReason': 'fetched: %d articles in 7d (lazy)' % len(news_items),
-                'dataSources': {'news': 'Finnhub'},
-                'provenance': {'news': 'Finnhub'},
+                'newsFetchStats': stats,
+                'dataSources': {'news': 'Alpaca /v1beta1/news'},
+                'provenance': {'news': 'Alpaca /v1beta1/news'},
             })
         else:
-            _pa_log('[ScannerNews] lazy fetch %s: no news in 7d' % symbol)
+            _pa_log('[ScannerNews] Alpaca lazy fetch %s: no news in 7d' % symbol)
             return jsonify({
                 'success': True,
                 'symbol': symbol,
                 'topNews': None,
                 'newsCount': 0,
                 'hasNews': False,
-                'newsSource': 'Finnhub: no news in 7d',
+                'newsSource': 'Alpaca News: no news in 7d',
                 'newsFetchReason': 'no_news_last_7d',
-                'dataSources': {'news': 'Finnhub: no news in 7d'},
-                'provenance': {'news': 'Finnhub: no news in 7d'},
+                'newsFetchStats': stats,
+                'dataSources': {'news': 'Alpaca /v1beta1/news'},
+                'provenance': {'news': 'Alpaca /v1beta1/news'},
             })
     except Exception as e:
-        _pa_log('[ScannerNews] lazy fetch %s exception: %s' % (symbol, e))
+        _pa_log('[ScannerNews] Alpaca lazy fetch %s exception: %s' % (symbol, e))
         return jsonify({
             'success': True,
             'symbol': symbol,
             'topNews': None,
             'newsCount': 0,
             'hasNews': False,
-            'newsSource': 'Finnhub error: %s' % str(e)[:80],
-            'newsFetchReason': 'finnhub_news_api_failed: %s' % str(e)[:100],
-            'dataSources': {'news': 'Finnhub error'},
-            'provenance': {'news': 'Finnhub error'},
+            'newsSource': 'Alpaca News error: %s' % str(e)[:80],
+            'newsFetchReason': 'alpaca_news_exception: %s' % str(e)[:100],
+            'dataSources': {'news': 'Alpaca /v1beta1/news'},
+            'provenance': {'news': 'Alpaca /v1beta1/news'},
         })
 
 
@@ -32768,6 +43281,16 @@ def pipeline_auto_run_now():
     uid = user['id']
     trigger = 'auto_run_now'
 
+    config = _pa_get_config(uid) or {}
+    if _pa_is_circuit_breaker_open(config):
+        return jsonify({
+            'success': False,
+            'status': 'circuit_open',
+            'reason': 'circuit_breaker_open',
+            'message': 'Automated research is paused by the circuit breaker. Position protection remains active.',
+            'retryAt': config.get('circuit_breaker_until', ''),
+        }), 409
+
     if not _pa_try_reserve_user_run(uid, 'auto_run_now'):
         active_run = _pa_get_active_run(uid)
         is_auto = active_run and active_run.get('trigger', '') in ('market_auto_run', 'headless_market_auto_run', 'toggle_on', 'auto_run_now')
@@ -32778,7 +43301,6 @@ def pipeline_auto_run_now():
             return jsonify({'success': False, 'error': 'manual_pipeline_running',
                             'message': 'Manual pipeline is running. Please wait for it to complete.'}), 409
 
-    config = _pa_get_config(uid) or {}
     _ctx = _pa_resolve_auto_run_context(uid, config)
     mode = _ctx['mode']
     interval = _ctx['interval']
@@ -32839,6 +43361,15 @@ def pipeline_auto_config():
     interval_minutes = data.get('intervalMinutes', None)
     mode = data.get('mode', 'hybrid')
     last_run_at = data.get('lastRunAt', None)
+    if enabled:
+        try:
+            interval_minutes = int(interval_minutes)
+        except (TypeError, ValueError):
+            interval_minutes = 0
+        if interval_minutes not in (15, 30, 60, 120):
+            return jsonify({'success': False, 'reason': 'invalid_interval', 'message': 'Schedule interval must be 15, 30, 60, or 120 minutes.'}), 400
+    if mode not in ('manual', 'hybrid', 'ai'):
+        return jsonify({'success': False, 'reason': 'invalid_mode', 'message': 'Pipeline mode is invalid.'}), 400
 
     config = _pa_get_config(uid)
     was_enabled = config.get('enabled', False)
@@ -32849,13 +43380,63 @@ def pipeline_auto_config():
     config['risk_profile'] = data.get('riskProfile') or data.get('risk_profile') or config.get('risk_profile') or 'medium'
     config['time_horizon'] = data.get('timeHorizon') or data.get('time_horizon') or config.get('time_horizon') or 'mid'
     config['trade_mode'] = data.get('tradeMode') or data.get('trade_mode') or config.get('trade_mode') or 'paper'
-    config['live_auto_trading_enabled'] = data.get('liveAutoTradingEnabled') if data.get('liveAutoTradingEnabled') is not None else config.get('live_auto_trading_enabled', False)
-    config['updated_at'] = datetime.utcnow().isoformat()
+    requested_live_auto = data.get('liveAutoTradingEnabled') if data.get('liveAutoTradingEnabled') is not None else config.get('live_auto_trading_enabled', False)
+    requested_live_auto = requested_live_auto is True or (
+        isinstance(requested_live_auto, str) and requested_live_auto.lower() == 'true'
+    )
+    if requested_live_auto:
+        if config['trade_mode'] != 'real' or mode != 'ai':
+            return jsonify({
+                'success': False,
+                'reason': 'live_auto_requires_real_ai_mode',
+                'message': 'Live Auto Trading requires Real trade mode and Full AI pipeline mode.',
+            }), 400
+        live_config = resolve_alpaca_config_for_user(uid, 'real')
+        if not live_config.get('api_key') or not live_config.get('api_secret'):
+            return jsonify({
+                'success': False,
+                'reason': 'live_broker_not_configured',
+                'message': 'Live Alpaca credentials must be configured before unattended real orders.',
+            }), 400
+        try:
+            live_headers = {
+                'APCA-API-KEY-ID': live_config['api_key'],
+                'APCA-API-SECRET-KEY': live_config['api_secret'],
+            }
+            account_check = requests.get(
+                (live_config.get('base_url') or 'https://api.alpaca.markets') + '/v2/account',
+                headers=live_headers,
+                timeout=8,
+            )
+            account_payload = account_check.json() if account_check.status_code == 200 else {}
+            if account_check.status_code != 200 or account_payload.get('trading_blocked') or account_payload.get('account_blocked'):
+                return jsonify({
+                    'success': False,
+                    'reason': 'live_account_not_ready',
+                    'message': 'The live Alpaca account could not be verified or is blocked.',
+                }), 400
+        except Exception:
+            return jsonify({
+                'success': False,
+                'reason': 'live_account_verification_failed',
+                'message': 'Live account verification failed; unattended orders remain disabled.',
+            }), 400
+    config['live_auto_trading_enabled'] = requested_live_auto
+    config['updated_at'] = datetime.now(timezone.utc).isoformat()
     if not enabled:
         config['next_run_at'] = ''
         config['stopRequested'] = True
         config['disabled_at'] = datetime.utcnow().isoformat()
         config['last_decision'] = 'disabled'
+        active_run = _pa_get_active_run(uid)
+        if active_run and active_run.get('status') == 'running':
+            _pa_update_active_run(
+                uid,
+                stopRequested=True,
+                message='Stop requested because automation was disabled',
+            )
+    else:
+        config['stopRequested'] = False
 
     # If frontend reports a completed run, update last_run_at so backend scheduler
     # calculates the next interval from this timestamp rather than triggering again
@@ -32891,8 +43472,22 @@ def pipeline_auto_config():
     _pa_ensure_scheduler()
     if enabled and not was_enabled and success:
         _pa_log('config enabled user=%s interval=%dm trigger_immediate=true' % (uid[:8], interval_minutes or 0))
+        if _pa_is_circuit_breaker_open(config):
+            config['last_decision'] = 'circuit_breaker_open'
+            config['next_run_at'] = config.get('circuit_breaker_until', '')
+            _pa_save_config(uid, config)
+            _pa_log('config armed user=%s immediate_run=false reason=circuit_breaker' % uid[:8])
+            return jsonify({
+                'success': True,
+                'enabled': True,
+                'status': 'circuit_open',
+                'reason': 'circuit_breaker_open',
+                'message': 'Configuration saved. Automated research will resume after the circuit breaker closes; position protection remains active.',
+                'retryAt': config.get('circuit_breaker_until', ''),
+            })
         if interval_minutes:
-            _immed_is_open, _immed_mkt_status, _immed_mkt_source, _, _, _immed_stage = _pa_check_market_open(uid)
+            _immed_trade_mode = config.get('trade_mode') or config.get('tradeMode') or 'paper'
+            _immed_is_open, _immed_mkt_status, _immed_mkt_source, _, _, _immed_stage = _pa_check_market_open(uid, _immed_trade_mode)
             _pa_log('[PipelineAutoConfig] toggle requested enabled=true marketStage=%s' % (_immed_stage or 'closed'))
             if _immed_is_open:
                 # Execute headless immediately — no claim window, no frontend involvement
@@ -32957,19 +43552,15 @@ def _pipeline_auto_get_market_schedule(uid=None, days=15):
 
     # Try Alpaca calendar API
     try:
-        alpaca_key = os.environ.get('ALPACA_API_KEY', '')
-        alpaca_secret = os.environ.get('ALPACA_SECRET_KEY', '')
-        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'alpaca_config.json')
-        if os.path.exists(config_path):
-            import json as _json
-            with open(config_path, 'r') as _f:
-                _cfg = _json.load(_f)
-            if not alpaca_key:
-                alpaca_key = _cfg.get('api_key', '')
-            if not alpaca_secret:
-                alpaca_secret = _cfg.get('secret_key', '')
+        auto_config = _pa_get_config(uid) if uid else {}
+        calendar_mode = (auto_config or {}).get('trade_mode') or 'paper'
+        alpaca_config = resolve_alpaca_config_for_user(uid, calendar_mode) if uid else {}
+        alpaca_key = alpaca_config.get('api_key', '')
+        alpaca_secret = alpaca_config.get('api_secret', '')
         if alpaca_key and alpaca_secret:
-            alpaca_base = 'https://paper-api.alpaca.markets'
+            alpaca_base = alpaca_config.get('base_url') or (
+                'https://paper-api.alpaca.markets' if calendar_mode == 'paper' else 'https://api.alpaca.markets'
+            )
             headers = {'Apca-Api-Key-Id': alpaca_key, 'Apca-Api-Secret-Key': alpaca_secret}
             url = '%s/v2/calendar?start=%s&end=%s' % (
                 alpaca_base,
@@ -33144,6 +43735,8 @@ def _pa_ensure_scheduler():
         _PA_SCHEDULER_THREAD.start()
         _pa_log('pipeline-auto scheduler started')
 
+_pa_load_managed_positions()
+_pa_restore_runtime_state()
 _pa_ensure_scheduler()
 
 
@@ -33155,4 +43748,11 @@ if __name__ == '__main__':
     print("================================================================================")
 
     print("\n启动服务器...")
-    app.run(host='127.0.0.1', port=8889, debug=True, use_reloader=False)
+    debug_enabled = os.environ.get('FLASK_DEBUG', '').strip().lower() in ('1', 'true', 'yes', 'on')
+    app.run(
+        host='127.0.0.1',
+        port=8889,
+        debug=debug_enabled,
+        use_reloader=False,
+        threaded=True,
+    )

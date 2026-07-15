@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { useAuth } from './AuthContext';
 
 export type TradeMode = 'paper' | 'real';
 
@@ -9,31 +10,25 @@ interface TradeModeContextType {
 
 const TradeModeContext = createContext<TradeModeContextType | undefined>(undefined);
 
-const STORAGE_KEY = 'tradeMode';
-
-const getStoredTradeMode = (): TradeMode => {
-  const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored === 'paper' || stored === 'real') return stored;
-  return 'paper'; // default to paper for safety
-};
-
 export const TradeModeProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [tradeMode, setTradeModeState] = useState<TradeMode>(getStoredTradeMode);
+  const { user } = useAuth();
+  const [tradeMode, setTradeModeState] = useState<TradeMode>('paper');
 
   const setTradeMode = (mode: TradeMode) => {
     setTradeModeState(mode);
-    localStorage.setItem(STORAGE_KEY, mode);
   };
 
-  // Sync across tabs
+  // A live environment is intentionally session-only. Signing out, changing
+  // accounts, or reloading the app always returns to paper mode so a previous
+  // user's authorization can never leak into a new session.
   useEffect(() => {
-    const handler = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEY && (e.newValue === 'paper' || e.newValue === 'real')) {
-        setTradeModeState(e.newValue);
-      }
-    };
-    window.addEventListener('storage', handler);
-    return () => window.removeEventListener('storage', handler);
+    setTradeModeState('paper');
+  }, [user?.id]);
+
+  useEffect(() => {
+    const resetToPaper = () => setTradeModeState('paper');
+    window.addEventListener('alphalab:auth-lost', resetToPaper);
+    return () => window.removeEventListener('alphalab:auth-lost', resetToPaper);
   }, []);
 
   return (

@@ -1,6 +1,5 @@
 import React from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import { ArrowLeftOutlined } from '@ant-design/icons';
+import PublicLegalDocument from '../components/public/PublicLegalDocument';
 import { useLanguage } from '../contexts/LanguageContext';
 
 const termsContentEN = [
@@ -10,7 +9,7 @@ const termsContentEN = [
   },
   {
     title: '2. Platform Description',
-    body: 'AlphaLab is an AI-powered quantitative trading research and automation platform. The platform may provide market scanning, strategy backtesting, portfolio analysis, AI-generated trading insights, entry planning, exit planning, paper trading workflows, and integrations with third-party services such as Alpaca, Finnhub, Supabase, and AI providers.\n\nAlphaLab is intended to support research, education, simulation, and user-directed trading workflows. AlphaLab does not guarantee profits, investment performance, trading outcomes, or uninterrupted service availability.',
+    body: 'AlphaLab is a quantitative research and workflow platform. It may provide market scanning, strategy backtesting, portfolio analysis, model-assisted research, entry and exit planning, paper trading workflows, and integrations with third-party services such as Alpaca, Finnhub, Supabase, and configured AI providers.\n\nAlphaLab is intended to support research, education, simulation, and user-directed trading workflows. AlphaLab does not guarantee profits, investment performance, trading outcomes, or uninterrupted service availability.',
   },
   {
     title: '3. No Investment Advice',
@@ -77,7 +76,7 @@ const termsContentZH: typeof termsContentEN = [
   },
   {
     title: '2. 平台说明',
-    body: 'AlphaLab 是一个 AI 驱动的量化交易研究与自动化平台。平台可能提供市场扫描、策略回测、投资组合分析、AI 交易洞察、入场计划、退出计划、模拟交易流程，以及与 Alpaca、Finnhub、Supabase 和 AI 提供商等第三方服务的集成。\n\nAlphaLab 主要用于研究、教育、模拟和用户自主交易流程支持。AlphaLab 不保证盈利、投资表现、交易结果或服务持续可用。',
+    body: 'AlphaLab 是一个量化研究与工作流平台。平台可能提供市场扫描、策略回测、投资组合分析、模型辅助研究、入场与退出计划、模拟交易流程，以及与 Alpaca、Finnhub、Supabase 和已配置 AI 提供商等第三方服务的集成。\n\nAlphaLab 主要用于研究、教育、模拟和用户自主交易流程支持。AlphaLab 不保证盈利、投资表现、交易结果或服务持续可用。',
   },
   {
     title: '3. 非投资建议',
@@ -138,214 +137,19 @@ const termsContentZH: typeof termsContentEN = [
 ];
 
 const Terms: React.FC = () => {
-  const navigate = useNavigate();
   const { t, language } = useLanguage();
   const isCN = language === 'zh-CN';
   const content = isCN ? termsContentZH : termsContentEN;
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        backgroundColor: '#020611',
-        color: '#e2e8f0',
-        fontFamily:
-          "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
-        position: 'relative',
-        overflow: 'hidden',
-      }}
-    >
-      {/* Background glow */}
-      <div
-        style={{
-          position: 'absolute',
-          top: '10%',
-          left: '15%',
-          width: '60vw',
-          height: '60vw',
-          maxWidth: 800,
-          maxHeight: 800,
-          background:
-            'radial-gradient(circle, rgba(24,144,255,0.1) 0%, rgba(3,8,22,0) 70%)',
-          filter: 'blur(80px)',
-          zIndex: 0,
-          pointerEvents: 'none',
-        }}
-      />
-      <div
-        style={{
-          position: 'absolute',
-          bottom: '10%',
-          right: '15%',
-          width: '50vw',
-          height: '50vw',
-          maxWidth: 700,
-          maxHeight: 700,
-          background:
-            'radial-gradient(circle, rgba(114,46,209,0.08) 0%, rgba(3,8,22,0) 70%)',
-          filter: 'blur(80px)',
-          zIndex: 0,
-          pointerEvents: 'none',
-        }}
-      />
-
-      {/* Content */}
-      <div style={{ position: 'relative', zIndex: 1, padding: '40px 24px 80px' }}>
-        {/* Top bar */}
-        <div
-          style={{
-            maxWidth: 900,
-            margin: '0 auto 40px',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            flexWrap: 'wrap',
-            gap: 16,
-          }}
-        >
-          <img
-            src="/brand/alphalab-logo.png"
-            alt="AlphaLab"
-            style={{
-              height: 40,
-              width: 'auto',
-              objectFit: 'contain',
-              cursor: 'pointer',
-            }}
-            onClick={() => navigate('/')}
-          />
-          <div style={{ display: 'flex', gap: 24 }}>
-            <Link
-              to="/signup"
-              style={{
-                color: '#94a3b8',
-                fontSize: '0.9rem',
-                fontWeight: 500,
-                textDecoration: 'none',
-                transition: 'color 0.2s',
-              }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = '#e2e8f0'; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = '#94a3b8'; }}
-            >
-              <ArrowLeftOutlined style={{ marginRight: 4 }} />
-              {t.legal.backToSignUp}
-            </Link>
-            <Link
-              to="/"
-              style={{
-                color: '#94a3b8',
-                fontSize: '0.9rem',
-                fontWeight: 500,
-                textDecoration: 'none',
-                transition: 'color 0.2s',
-              }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = '#e2e8f0'; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = '#94a3b8'; }}
-            >
-              {t.legal.backToHome}
-            </Link>
-          </div>
-        </div>
-
-        {/* Content card */}
-        <div
-          style={{
-            maxWidth: 900,
-            margin: '0 auto',
-            background: 'rgba(17,25,40,0.65)',
-            border: '1px solid rgba(255,255,255,0.08)',
-            borderRadius: 24,
-            backdropFilter: 'blur(24px)',
-            boxShadow: '0 30px 60px -12px rgba(0,0,0,0.8), 0 0 40px rgba(24,144,255,0.05)',
-            padding: '48px 48px',
-          }}
-        >
-          {/* Disclaimer */}
-          <div
-            style={{
-              padding: '12px 16px',
-              background: 'rgba(255, 193, 7, 0.12)',
-              border: '1px solid rgba(255, 193, 7, 0.3)',
-              borderRadius: 8,
-              color: '#fbbf24',
-              fontSize: 13,
-              marginBottom: 32,
-              textAlign: 'center',
-            }}
-          >
-            {t.legal.disclaimer}
-          </div>
-
-          {/* Title */}
-          <h1
-            style={{
-              color: '#fff',
-              fontSize: '2rem',
-              fontWeight: 700,
-              marginBottom: 8,
-              letterSpacing: '-0.02em',
-            }}
-          >
-            {t.legal.termsTitle}
-          </h1>
-          <p style={{ color: '#64748b', fontSize: '0.9rem', marginBottom: 40 }}>
-            {t.legal.termsLastUpdated}
-          </p>
-
-          {/* Sections */}
-          {content.map((section, i) => (
-            <div key={i} style={{ marginBottom: 32 }}>
-              <h2
-                style={{
-                  color: '#fff',
-                  fontSize: '1.15rem',
-                  fontWeight: 600,
-                  marginBottom: 10,
-                }}
-              >
-                {section.title}
-              </h2>
-              {section.body.split('\n\n').map((paragraph, j) => (
-                <p
-                  key={j}
-                  style={{
-                    color: '#cbd5e1',
-                    fontSize: '0.95rem',
-                    lineHeight: 1.7,
-                    marginBottom: 8,
-                    marginTop: 0,
-                  }}
-                >
-                  {paragraph.split('\n').map((line, k) => (
-                    <React.Fragment key={k}>
-                      {k > 0 && <br />}
-                      {line}
-                    </React.Fragment>
-                  ))}
-                </p>
-              ))}
-            </div>
-          ))}
-
-          {/* Important notice */}
-          <div
-            style={{
-              marginTop: 40,
-              padding: '14px 18px',
-              background: 'rgba(255, 77, 79, 0.1)',
-              border: '1px solid rgba(255, 77, 79, 0.25)',
-              borderRadius: 8,
-              color: '#ff7875',
-              fontSize: 13,
-              lineHeight: 1.6,
-            }}
-          >
-            <strong>{isCN ? '重要提示：' : 'Important: '}</strong>
-            {t.legal.importantNotice}
-          </div>
-        </div>
-      </div>
-    </div>
+    <PublicLegalDocument
+      kind="terms"
+      title={t.legal.termsTitle}
+      updated={t.legal.termsLastUpdated}
+      sections={content}
+      disclaimer={t.legal.disclaimer}
+      importantNotice={t.legal.importantNotice}
+    />
   );
 };
 

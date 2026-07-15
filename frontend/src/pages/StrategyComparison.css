@@ -1,0 +1,603 @@
+.strategy-comparison-shell {
+  --strategy-paper: var(--shell-paper, #f2efe7);
+  --strategy-surface: var(--shell-paper-bright, #faf8f2);
+  --strategy-surface-deep: var(--shell-paper-deep, #e8e3d8);
+  --strategy-ink: var(--shell-ink, #171a17);
+  --strategy-muted: var(--shell-muted, #626760);
+  --strategy-rule: var(--shell-rule, rgba(23, 26, 23, 0.22));
+  --strategy-rule-soft: var(--shell-rule-soft, rgba(23, 26, 23, 0.11));
+  --strategy-blue: var(--shell-blue, #245ca4);
+  --strategy-green: var(--shell-green, #345d3d);
+  --strategy-red: var(--shell-red, #a74730);
+  --app-card-bg: var(--strategy-surface);
+  --app-card-bg-soft: var(--strategy-surface-deep);
+  --app-table-header-bg: color-mix(in srgb, var(--strategy-surface-deep) 74%, transparent);
+  --app-text: var(--strategy-ink);
+  --app-text-strong: var(--strategy-ink);
+  --app-text-muted: var(--strategy-muted);
+  --app-border: var(--strategy-rule);
+  --app-border-soft: var(--strategy-rule-soft);
+  width: min(100%, 1660px);
+  min-width: 0;
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: clamp(28px, 3vw, 52px) clamp(20px, 3.2vw, 54px) 72px;
+  color: var(--strategy-ink);
+}
+
+.strategy-comparison-shell,
+.strategy-comparison-shell * {
+  box-sizing: border-box;
+}
+
+.strategy-comparison-shell button,
+.strategy-comparison-shell input {
+  font: inherit;
+}
+
+.strategy-lab-loading {
+  display: flex;
+  min-height: 62vh;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+  background: color-mix(in srgb, var(--strategy-surface) 64%, transparent);
+  border: 1px solid var(--strategy-rule);
+}
+
+.strategy-comparison-shell .header-section.strategy-lab-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 36px;
+  margin: 0 0 26px;
+  padding: 10px 0 34px;
+  border-bottom: 1px solid var(--strategy-rule);
+}
+
+.strategy-lab-kicker,
+.comparison-evidence-heading span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--strategy-green);
+  font: 750 12px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 1.05px;
+  text-transform: uppercase;
+}
+
+.strategy-lab-hero-copy .ant-typography.ant-typography {
+  display: block;
+  max-width: 900px;
+  margin: 14px 0 12px;
+}
+
+.strategy-lab-hero-copy h1.ant-typography {
+  color: var(--strategy-ink);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(36px, 3vw, 46px);
+  font-weight: 500;
+  letter-spacing: -0.05em;
+  line-height: 0.96;
+}
+
+.strategy-lab-hero-copy > span.ant-typography {
+  max-width: 820px;
+  color: var(--strategy-muted);
+  font-size: clamp(14px, 1.15vw, 17px);
+  line-height: 1.65;
+}
+
+.strategy-lab-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px 24px;
+  margin-top: 18px;
+  color: var(--strategy-muted);
+  font: 700 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+
+.strategy-lab-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.strategy-lab-meta i {
+  width: 7px;
+  height: 7px;
+  background: #4f8758;
+  border-radius: 50%;
+  box-shadow: 0 0 0 4px color-mix(in srgb, #4f8758 14%, transparent);
+}
+
+.strategy-lab-actions {
+  justify-content: flex-end;
+}
+
+.strategy-comparison-shell .action-btn,
+.strategy-comparison-shell .primary-cta-button {
+  min-height: 41px;
+  padding-inline: 17px;
+  color: var(--strategy-ink) !important;
+  background: color-mix(in srgb, var(--strategy-surface) 80%, transparent) !important;
+  border-color: var(--strategy-rule) !important;
+  border-radius: 2px !important;
+  box-shadow: none !important;
+  font-size: 13px !important;
+  font-weight: 680 !important;
+}
+
+.strategy-comparison-shell .action-btn:hover,
+.strategy-comparison-shell .primary-cta-button:hover:not(:disabled) {
+  color: var(--strategy-blue) !important;
+  border-color: var(--strategy-blue) !important;
+  transform: none !important;
+}
+
+.strategy-comparison-shell .action-btn.ant-btn-primary,
+.strategy-comparison-shell .primary-cta-button.ant-btn-primary {
+  color: var(--strategy-surface) !important;
+  background: var(--strategy-ink) !important;
+  border-color: var(--strategy-ink) !important;
+}
+
+.strategy-comparison-shell .premium-card {
+  overflow: hidden;
+  background: color-mix(in srgb, var(--app-card-bg) 88%, transparent) !important;
+  border: 1px solid var(--app-border) !important;
+  border-radius: 2px !important;
+  box-shadow: none !important;
+}
+
+.strategy-comparison-shell .premium-card .ant-card-head {
+  min-height: 58px;
+  padding-inline: 22px;
+  border-bottom: 1px solid var(--app-border-soft) !important;
+}
+
+.strategy-comparison-shell .premium-card .ant-card-head-title {
+  color: var(--app-text-strong) !important;
+  font-size: 15px;
+  letter-spacing: -0.01em;
+}
+
+.comparison-selector-card {
+  margin-top: 8px;
+}
+
+.comparison-selector-card > .ant-card-body > div:first-child {
+  min-height: 62px;
+}
+
+.selection-badge,
+.warning-pill {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border: 1px solid var(--strategy-rule);
+  border-radius: 2px;
+  font: 700 11px/1.25 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0.45px;
+  text-transform: uppercase;
+}
+
+.selection-badge {
+  color: var(--strategy-blue);
+  background: color-mix(in srgb, var(--strategy-blue) 7%, var(--strategy-surface));
+}
+
+.warning-pill {
+  color: #956426;
+  background: color-mix(in srgb, #b98039 8%, var(--strategy-surface));
+}
+
+.comparison-summary-ledger {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin: 26px 0;
+  background: color-mix(in srgb, var(--strategy-surface) 78%, transparent);
+  border: 1px solid var(--strategy-rule);
+}
+
+.strategy-comparison-shell .summary-card-hover {
+  min-width: 0 !important;
+  min-height: 126px;
+  padding: 20px 21px 17px !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-right: 1px solid var(--strategy-rule-soft) !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+.strategy-comparison-shell .summary-card-hover:last-child {
+  border-right: 0 !important;
+}
+
+.strategy-comparison-shell .summary-card-hover > div:first-child {
+  min-height: 28px;
+  margin-bottom: 8px !important;
+  color: var(--strategy-muted) !important;
+  font: 750 10px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  letter-spacing: 0.65px !important;
+}
+
+.strategy-comparison-shell .summary-card-hover > div:last-child {
+  overflow: hidden;
+  font-family: Inter, "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: clamp(27px, 2vw, 38px) !important;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-weight: 620 !important;
+  letter-spacing: -0.035em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comparison-session-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  gap: 14px;
+  margin-bottom: 26px;
+}
+
+.comparison-session-card {
+  min-width: 0;
+}
+
+.comparison-session-card .ant-card-body {
+  padding: 19px 18px 16px;
+}
+
+.comparison-session-card .ant-typography {
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.comparison-session-card .ant-divider {
+  border-color: var(--strategy-rule-soft) !important;
+}
+
+.comparison-ranking-card,
+.comparison-equity-card {
+  margin-bottom: 26px !important;
+}
+
+.strategy-comparison-shell .professional-table .ant-table,
+.strategy-comparison-shell .professional-table .ant-table-container,
+.strategy-comparison-shell .professional-table .ant-table-content,
+.strategy-comparison-shell .ant-table {
+  background: transparent !important;
+}
+
+.strategy-comparison-shell .professional-table .ant-table-thead > tr > th,
+.strategy-comparison-shell .comparison-matrix-card .ant-table-thead > tr > th {
+  height: 50px;
+  padding: 13px 14px !important;
+  color: var(--strategy-muted) !important;
+  background: color-mix(in srgb, var(--strategy-surface-deep) 74%, transparent) !important;
+  border-bottom: 1px solid var(--strategy-rule) !important;
+  font: 750 10.5px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  letter-spacing: 0.65px !important;
+  text-transform: uppercase;
+}
+
+.strategy-comparison-shell .professional-table .ant-table-tbody > tr > td,
+.strategy-comparison-shell .comparison-matrix-card .ant-table-tbody > tr > td {
+  height: 58px;
+  padding: 12px 14px !important;
+  color: var(--strategy-ink) !important;
+  background: transparent !important;
+  border-bottom: 1px solid var(--strategy-rule-soft) !important;
+  font-size: 13px;
+}
+
+.strategy-comparison-shell .professional-table .ant-table-tbody > tr:hover > td,
+.strategy-comparison-shell .comparison-matrix-card .ant-table-tbody > tr:hover > td {
+  background: color-mix(in srgb, var(--strategy-blue) 5%, transparent) !important;
+}
+
+.strategy-comparison-shell .professional-table .ant-table-tbody > tr.ant-table-row-selected > td {
+  background: color-mix(in srgb, var(--strategy-blue) 8%, transparent) !important;
+}
+
+.strategy-comparison-shell .strategy-pill {
+  min-height: 24px;
+  margin: 0;
+  padding: 1px 8px;
+  color: var(--strategy-blue);
+  background: color-mix(in srgb, var(--strategy-blue) 7%, var(--strategy-surface));
+  border: 1px solid color-mix(in srgb, var(--strategy-blue) 25%, transparent);
+  border-radius: 2px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.comparison-evidence-board {
+  --app-card-bg: #102019;
+  --app-card-bg-soft: #1a2c23;
+  --app-text: #f1efe7;
+  --app-text-strong: #f1efe7;
+  --app-text-muted: #aab4a9;
+  --app-border: rgba(229, 235, 226, 0.24);
+  --app-border-soft: rgba(229, 235, 226, 0.12);
+  margin-bottom: 26px;
+  padding: 29px;
+  color: var(--app-text);
+  background-color: #102019;
+  background-image:
+    linear-gradient(rgba(223, 231, 220, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(223, 231, 220, 0.035) 1px, transparent 1px);
+  background-size: 38px 38px;
+  border: 1px solid #20352a;
+}
+
+.comparison-evidence-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 430px);
+  align-items: end;
+  gap: 32px;
+  margin-bottom: 22px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--app-border-soft);
+}
+
+.comparison-evidence-heading span {
+  color: #98ad95;
+}
+
+.comparison-evidence-heading h2 {
+  max-width: 760px;
+  margin: 8px 0 0;
+  color: #f1efe7;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(27px, 2vw, 34px);
+  font-weight: 500;
+  letter-spacing: -0.035em;
+  line-height: 1.02;
+}
+
+.comparison-evidence-heading p {
+  margin: 0;
+  color: #aab4a9;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.comparison-analysis-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  background: var(--app-border-soft);
+  border: 1px solid var(--app-border-soft);
+}
+
+.strategy-comparison-shell .comparison-analysis-card {
+  background: #102019 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+}
+
+.strategy-comparison-shell .comparison-analysis-card .ant-card-head {
+  border-bottom-color: var(--app-border-soft) !important;
+}
+
+.strategy-comparison-shell .comparison-analysis-card .ant-card-body {
+  padding: 20px 16px 18px;
+}
+
+.comparison-analysis-chart {
+  width: 100%;
+  min-width: 0;
+  height: 330px;
+}
+
+.comparison-equity-card .ant-card-body {
+  padding: 22px 16px 18px;
+}
+
+.comparison-equity-chart {
+  width: 100%;
+  min-width: 0;
+  height: 340px;
+}
+
+.comparison-matrix-card .ant-card-body {
+  padding: 0 !important;
+}
+
+.comparison-matrix-card .ant-table-cell > div {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  padding: 10px 13px !important;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.comparison-matrix-card .ant-table-wrapper,
+.comparison-matrix-card .ant-table-content,
+.comparison-selector-card .ant-table-content {
+  max-width: 100%;
+  overflow-x: auto !important;
+  overscroll-behavior-inline: contain;
+}
+
+.strategy-comparison-shell .ant-empty {
+  padding: 54px 18px;
+}
+
+.strategy-comparison-shell .ant-empty-description,
+.strategy-comparison-shell .ant-empty-description .ant-typography {
+  color: var(--strategy-muted) !important;
+}
+
+.strategy-comparison-shell .ant-alert {
+  border-radius: 2px !important;
+  box-shadow: none !important;
+}
+
+@media (max-width: 1280px) {
+  .comparison-summary-ledger {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .strategy-comparison-shell .summary-card-hover:nth-child(3) {
+    border-right: 0 !important;
+  }
+
+  .strategy-comparison-shell .summary-card-hover:nth-child(-n + 3) {
+    border-bottom: 1px solid var(--strategy-rule-soft) !important;
+  }
+
+  .comparison-session-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .strategy-comparison-shell .header-section.strategy-lab-hero,
+  .comparison-evidence-heading {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .strategy-lab-actions {
+    justify-content: flex-start;
+  }
+
+  .comparison-analysis-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .comparison-evidence-board {
+    padding: 22px;
+  }
+}
+
+@media (max-width: 680px) {
+  .strategy-comparison-shell {
+    overflow-x: clip;
+    padding: 22px 14px 52px;
+  }
+
+  .strategy-comparison-shell .header-section.strategy-lab-hero {
+    gap: 23px;
+    padding: 5px 0 25px;
+  }
+
+  .strategy-lab-hero-copy h1.ant-typography {
+    font-size: clamp(28px, 9vw, 32px);
+  }
+
+  .strategy-lab-actions,
+  .strategy-lab-actions.ant-space {
+    display: grid;
+    width: 100%;
+    grid-template-columns: 1fr;
+  }
+
+  .strategy-lab-actions .ant-space-item,
+  .strategy-lab-actions .ant-btn {
+    width: 100%;
+  }
+
+  .comparison-summary-ledger {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .strategy-comparison-shell .summary-card-hover > div:last-child {
+    overflow: visible;
+    font-size: clamp(23px, 7vw, 28px) !important;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  .strategy-comparison-shell .summary-card-hover > div:last-child > span {
+    display: block;
+    margin: 5px 0 0 !important;
+    font-size: 10px !important;
+    letter-spacing: 0.04em;
+  }
+
+  .strategy-comparison-shell .summary-card-hover,
+  .strategy-comparison-shell .summary-card-hover:nth-child(3) {
+    min-height: 112px;
+    border-right: 1px solid var(--strategy-rule-soft) !important;
+    border-bottom: 1px solid var(--strategy-rule-soft) !important;
+  }
+
+  .strategy-comparison-shell .summary-card-hover:nth-child(2n) {
+    border-right: 0 !important;
+  }
+
+  .strategy-comparison-shell .summary-card-hover:last-child {
+    grid-column: 1 / -1;
+    border-right: 0 !important;
+    border-bottom: 0 !important;
+  }
+
+  .comparison-session-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .comparison-evidence-board {
+    margin-inline: -14px;
+    padding: 20px 14px;
+  }
+
+  .comparison-evidence-heading {
+    gap: 15px;
+  }
+
+  .comparison-evidence-heading h2 {
+    font-size: 28px;
+  }
+
+  .strategy-comparison-shell .comparison-analysis-card .ant-card-body,
+  .comparison-equity-card .ant-card-body {
+    padding: 16px 6px 14px;
+  }
+
+  .comparison-analysis-chart { height: 280px; }
+  .comparison-equity-chart { height: 270px; }
+
+  .comparison-selector-card > .ant-card-body > div:first-child,
+  .comparison-selector-card > .ant-card-body > div:first-child .ant-space {
+    flex-wrap: wrap;
+    gap: 8px !important;
+  }
+
+  .strategy-comparison-shell .ant-pagination {
+    justify-content: flex-start;
+    row-gap: 8px;
+  }
+
+  .strategy-comparison-shell .primary-cta-button {
+    width: calc(100% - 28px);
+    padding-inline: 12px;
+  }
+
+  .selection-badge,
+  .warning-pill {
+    white-space: normal;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .strategy-comparison-shell *,
+  .strategy-comparison-shell *::before,
+  .strategy-comparison-shell *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+.strategy-comparison-shell .summary-card-hover > div:first-child,
+.strategy-comparison-shell .summary-card-hover > div:last-child > span {
+  font-size: 10.5px !important;
+}

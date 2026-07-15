@@ -5,16 +5,33 @@ import { UserOutlined, LockOutlined, MailOutlined, ArrowLeftOutlined } from '@an
 import Turnstile, { BoundTurnstileObject } from 'react-turnstile';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
+import { useTheme } from '../contexts/ThemeContext';
 import { supabase } from '../lib/supabaseClient';
 import type { Provider } from '@supabase/supabase-js';
 import '../styles/Auth.css';
 
 const { Title, Text } = Typography;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const useCompactCaptcha = () => {
+  const [compact, setCompact] = useState(false);
+
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 360px)');
+    const update = () => setCompact(media.matches);
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+
+  return compact;
+};
 
 const SignUp: React.FC = () => {
   const navigate = useNavigate();
   const { signUp } = useAuth();
   const { t, language, setLanguage } = useLanguage();
+  const { resolvedTheme } = useTheme();
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
   const [oauthLoading, setOauthLoading] = useState<string | null>(null);
@@ -23,14 +40,21 @@ const SignUp: React.FC = () => {
   const [formValid, setFormValid] = useState(false);
   const [captchaToken, setCaptchaToken] = useState('');
   const turnstileRef = useRef<BoundTurnstileObject | null>(null);
+  const compactCaptcha = useCompactCaptcha();
 
   const turnstileSiteKey = process.env.REACT_APP_TURNSTILE_SITE_KEY;
   const isDev = process.env.NODE_ENV === 'development';
   const captchaConfigured = !!turnstileSiteKey;
+  const canSubmit = formValid && (captchaConfigured ? !!captchaToken : isDev);
 
   useEffect(() => {
     window.scrollTo(0, 0);
   }, []);
+
+  useEffect(() => {
+    setCaptchaToken('');
+    turnstileRef.current = null;
+  }, [language, resolvedTheme]);
 
   const [termsAccepted, setTermsAccepted] = useState(false);
 
@@ -42,6 +66,10 @@ const SignUp: React.FC = () => {
     terms?: boolean;
   }) => {
     setError('');
+    if (!values.terms) {
+      setError(t.auth.acceptTerms);
+      return;
+    }
     if (values.password !== values.confirmPassword) {
       setError(t.auth.passwordsDoNotMatchError);
       return;
@@ -56,18 +84,20 @@ const SignUp: React.FC = () => {
       setSubmitted(true);
     } else {
       const errMsg = (result.message || '').toLowerCase();
-      if (errMsg.includes('invalid login credentials') || errMsg.includes('invalid email')) {
-        setError(t.auth.invalidCredentials);
+      if (errMsg.includes('invalid email')) {
+        setError(t.auth.enterValidEmail);
+      } else if (errMsg.includes('invalid login credentials')) {
+        setError(t.auth.registrationFailed || t.auth.errorUnexpected);
       } else if (errMsg.includes('already') && errMsg.includes('registered')) {
         setError(t.auth.errorEmailExists);
       } else if (errMsg.includes('weak') || errMsg.includes('password')) {
         setError(t.auth.errorWeakPassword);
       } else if (errMsg.includes('captcha') || errMsg.includes('captcha_token')) {
-        setError(t.auth.captchaSignInError || t.auth.verifyHuman);
+        setError(t.auth.signUpHelperCaptcha || t.auth.verifyHuman);
       } else if (errMsg.includes('network') || errMsg.includes('fetch')) {
         setError(t.auth.errorNetworkIssue);
       } else {
-        setError(result.message || t.auth.errorUnexpected);
+        setError(t.auth.errorUnexpected);
       }
     }
   };
@@ -78,6 +108,11 @@ const SignUp: React.FC = () => {
 
   const handleOAuthLogin = async (provider: Provider) => {
     if (oauthLoading) return;
+    if (!termsAccepted) {
+      setError(t.auth.acceptTerms);
+      void form.validateFields(['terms']).catch(() => undefined);
+      return;
+    }
     setOauthLoading(provider);
     setError('');
     try {
@@ -88,19 +123,18 @@ const SignUp: React.FC = () => {
         },
       });
       if (error) {
-        setError(error.message);
+        setError(t.auth.oauthFailed || t.auth.errorUnexpected);
         setOauthLoading(null);
       }
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : (t.auth.oauthFailed || 'OAuth login failed');
-      setError(msg);
+    } catch {
+      setError(t.auth.oauthFailed || t.auth.errorUnexpected);
       setOauthLoading(null);
     }
   };
 
   const getButtonTip = () => {
     if (captchaConfigured && !captchaToken && !termsAccepted) {
-      return t.auth.signUpHelperAll || 'Complete verification and accept terms to continue';
+      return t.auth.signUpHelperAll;
     }
     if (captchaConfigured && !captchaToken) {
       return t.auth.signUpHelperCaptcha;
@@ -108,11 +142,20 @@ const SignUp: React.FC = () => {
     if (!termsAccepted) {
       return t.auth.signUpHelperTerms;
     }
-    return t.auth.buttonTip;
+    if (!formValid) {
+      const values = form.getFieldsValue();
+      if (values.password && values.confirmPassword && values.password !== values.confirmPassword) {
+        return t.auth.signUpHelperPasswordMismatch;
+      }
+      return t.auth.signUpHelperFields;
+    }
+    return '';
   };
 
+  const buttonTip = getButtonTip();
+
   return (
-    <div className="auth-shell">
+    <main className="auth-shell">
       <div className="auth-glow auth-glow-1" />
       <div className="auth-glow auth-glow-2" />
 
@@ -120,7 +163,7 @@ const SignUp: React.FC = () => {
         <Link to="/" className="auth-back-link-top">
           <ArrowLeftOutlined aria-hidden="true" /> {t.auth.backToHome}
         </Link>
-        <button type="button" onClick={toggleLang} className="lang-toggle-btn">
+        <button type="button" onClick={toggleLang} className="lang-toggle-btn" aria-label={language === 'zh-CN' ? 'Switch language to English' : '切换语言为中文'}>
           {language === 'zh-CN' ? 'EN' : '中文'}
         </button>
       </div>
@@ -128,20 +171,21 @@ const SignUp: React.FC = () => {
       <div className="auth-card-container">
         <div className="auth-card signup">
           <div className="auth-card-header">
-            <div className="auth-brand-logo-text" onClick={() => navigate('/')}>
+            <button type="button" className="auth-brand-logo-text" onClick={() => navigate('/')} aria-label={language === 'zh-CN' ? '返回 AlphaLab 首页' : 'Return to AlphaLab home'}>
               Alpha<span className="accent">Lab</span>
-            </div>
-            <Title level={2} className="auth-title">{t.auth.createAccount}</Title>
+            </button>
+            <span className="auth-card-eyebrow">{language === 'zh-CN' ? '02 / 研究账户' : '02 / RESEARCH ACCOUNT'}</span>
+            <Title level={1} className="auth-title">{t.auth.createAccount}</Title>
             <Text className="auth-subtitle">{t.auth.signUpSubtitle}</Text>
             <span className="auth-trust-microcopy">{t.auth.trustMicrocopy}</span>
           </div>
 
           <div className="auth-form-content">
             {submitted ? (
-              <div style={{ textAlign: 'center', padding: '20px 0' }}>
-                <div style={{ width: 64, height: 64, borderRadius: '50%', margin: '0 auto 24px', background: 'rgba(24, 144, 255, 0.1)', border: '2px solid #1890ff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, color: '#1890ff', boxShadow: '0 0 20px rgba(24,144,255,0.2)' }}>✓</div>
-                <Title level={3} style={{ color: '#fff', marginBottom: 12, fontWeight: 700 }}>{t.auth.accountCreated}</Title>
-                <Text style={{ color: '#94a3b8', fontSize: '1rem', display: 'block', marginBottom: 32, lineHeight: 1.5 }}>{t.auth.accountCreatedDesc}</Text>
+              <div className="auth-success-panel" role="status" aria-live="polite">
+                <div className="auth-status-mark is-success" aria-hidden="true">✓</div>
+                <Title level={3} className="auth-success-title">{t.auth.accountCreated}</Title>
+                <Text className="auth-success-copy">{t.auth.accountCreatedDesc}</Text>
                 <Button type="primary" size="large" onClick={() => navigate('/signin')} className="auth-btn" style={{ width: '100%', maxWidth: 300 }}>{t.auth.goToSignIn}</Button>
               </div>
             ) : (
@@ -154,27 +198,31 @@ const SignUp: React.FC = () => {
                   onFinish={handleFinish}
                   onValuesChange={() => {
                     const vals = form.getFieldsValue();
-                    const passwordsMatch = vals.password === vals.confirmPassword;
+                    const password = vals.password || '';
+                    const passwordsMatch = password.length >= 8 && password === vals.confirmPassword;
                     setTermsAccepted(!!vals.terms);
-                    const captchaOk = captchaConfigured ? !!captchaToken : isDev;
                     setFormValid(
-                      !!vals.fullName && !!vals.email && !!vals.password && !!vals.confirmPassword && passwordsMatch && !!vals.terms && captchaOk
+                      !!vals.fullName?.trim()
+                      && EMAIL_RE.test(vals.email || '')
+                      && passwordsMatch
+                      && !!vals.terms
                     );
                   }}
-                  autoComplete="off"
+                  autoComplete="on"
+                  aria-busy={submitting}
                 >
                   <div className="signup-form-grid">
                     <Form.Item name="fullName" label={t.auth.fullName} rules={[{ required: true, message: t.auth.enterFullName }]}>
-                      <Input prefix={<UserOutlined aria-hidden="true" />} placeholder={t.auth.fullNamePlaceholder} className="auth-input" />
+                      <Input autoComplete="name" prefix={<UserOutlined aria-hidden="true" />} placeholder={t.auth.fullNamePlaceholder} className="auth-input" />
                     </Form.Item>
                     <Form.Item name="email" label={t.auth.emailAddress} rules={[{ required: true, message: t.auth.enterValidEmail }, { type: 'email', message: t.auth.enterValidEmail }]}>
-                      <Input prefix={<MailOutlined aria-hidden="true" />} placeholder={t.auth.emailPlaceholder} className="auth-input" />
+                      <Input type="email" autoComplete="email" prefix={<MailOutlined aria-hidden="true" />} placeholder={t.auth.emailPlaceholder} className="auth-input" />
                     </Form.Item>
                   </div>
 
                   <div className="signup-form-grid">
-                    <Form.Item name="password" label={t.auth.password} rules={[{ required: true, message: t.auth.passwordMinLength }, { min: 8 }]}>
-                      <Input.Password prefix={<LockOutlined aria-hidden="true" />} placeholder={t.auth.passwordPlaceholder} className="auth-input" />
+                    <Form.Item name="password" label={t.auth.password} rules={[{ required: true, message: t.auth.passwordMinLength }, { min: 8, message: t.auth.passwordMinLength }]}>
+                      <Input.Password autoComplete="new-password" prefix={<LockOutlined aria-hidden="true" />} placeholder={t.auth.passwordPlaceholder} className="auth-input" />
                     </Form.Item>
                     <Form.Item
                       name="confirmPassword"
@@ -190,11 +238,11 @@ const SignUp: React.FC = () => {
                         }),
                       ]}
                     >
-                      <Input.Password prefix={<LockOutlined aria-hidden="true" />} placeholder={t.auth.confirmPasswordPlaceholder} className="auth-input" />
+                      <Input.Password autoComplete="new-password" prefix={<LockOutlined aria-hidden="true" />} placeholder={t.auth.confirmPasswordPlaceholder} className="auth-input" />
                     </Form.Item>
                   </div>
 
-                  <div style={{ marginTop: -12, marginBottom: 14, paddingLeft: 4, display: 'flex', gap: 16 }}>    
+                  <div className="auth-password-rules" aria-live="polite">
                     {[
                       { test: (v: string) => v.length >= 8, label: t.auth.passwordRuleLength },
                       { test: (v: string) => v === form.getFieldValue('confirmPassword') && v.length > 0, label: t.auth.passwordRuleMatch },
@@ -202,7 +250,7 @@ const SignUp: React.FC = () => {
                       const pw = form.getFieldValue('password') || '';
                       const met = pw ? rule.test(pw) : false;
                       return (
-                        <div key={i} style={{ color: met ? '#10b981' : '#475569', fontSize: 11, fontWeight: 500 }}>
+                        <div key={i} className={`auth-password-rule ${met ? 'is-met' : ''}`}>
                           <span style={{ marginRight: 6 }}>{met ? '✓' : '○'}</span>{rule.label}
                         </div>
                       );
@@ -221,16 +269,21 @@ const SignUp: React.FC = () => {
                   <div className="auth-captcha-wrapper" style={{ margin: '12px auto 16px' }}>
                     {captchaConfigured ? (
                       <Turnstile
+                        key={`${resolvedTheme}-${language}`}
                         sitekey={turnstileSiteKey || ''}
+                        className="auth-turnstile"
+                        size={compactCaptcha ? 'compact' : 'flexible'}
+                        fixedSize
                         onLoad={(_widgetId, bound) => { turnstileRef.current = bound; }}
                         onVerify={(token) => setCaptchaToken(token)}
                         onError={() => { setCaptchaToken(''); }}
                         onExpire={() => setCaptchaToken('')}
-                        theme="dark"
+                        theme={resolvedTheme}
+                        language={language === 'zh-CN' ? 'zh-CN' : 'en'}
                       />
                     ) : isDev ? (
-                      <div style={{ padding: '10px 14px', background: 'rgba(255,193,7,0.12)', border: '1px solid rgba(255,193,7,0.3)', borderRadius: 8, color: '#fbbf24', fontSize: 12, textAlign: 'center' }}>
-                        {t.auth.captchaNotConfigured} — {t.auth.captchaBypassDev || 'Bypassed in development'}
+                      <div className="auth-captcha-placeholder" role="status">
+                        {t.auth.captchaNotConfigured} · {t.auth.captchaBypassDev}
                       </div>
                     ) : (
                       <div className="auth-captcha-placeholder error">{t.auth.captchaNotConfigured}</div>
@@ -238,16 +291,14 @@ const SignUp: React.FC = () => {
                   </div>
 
                   <Form.Item style={{ marginBottom: 12 }}>
-                    <Button type="primary" htmlType="submit" loading={submitting} block disabled={!formValid || submitting} className="auth-btn">
+                    <Button type="primary" htmlType="submit" loading={submitting} block disabled={!canSubmit || submitting} className="auth-btn">
                       {submitting ? t.auth.creatingAccount : t.auth.createAccountBtn}
                     </Button>
-                    <div style={{ textAlign: 'center', marginTop: 10, color: 'rgba(148, 163, 184, 0.68)', fontSize: 13 }}>
-                      {getButtonTip()}
-                    </div>
+                    {buttonTip && <div className="auth-button-tip">{buttonTip}</div>}
                   </Form.Item>
                 </Form>
 
-                <div style={{ display: 'flex', justifyContent: 'center', gap: 14, margin: '8px 0 16px', fontSize: 11, color: 'rgba(148, 163, 184, 0.45)' }}>
+                <div className="auth-trust-summary">
                   <span>✓ {t.auth.trustSecureAuth}</span>
                   <span>✓ {t.auth.trustEncryptedConfigs}</span>
                   <span>✓ {t.auth.trustEmailReq}</span>
@@ -262,11 +313,11 @@ const SignUp: React.FC = () => {
                   <div className="auth-oauth-grid" style={{ gap: 16 }}>
                     {[
                       { provider: 'google' as Provider, label: 'Google', icon: (<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18A10.96 10.96 0 0 0 1 12c0 1.77.42 3.44 1.18 4.93l3.66-2.84z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>) },        
-                      { provider: 'github' as Provider, label: 'GitHub', icon: (<svg width="18" height="18" viewBox="0 0 24 24" fill="#e2e8f0" aria-hidden="true"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.87 8.17 6.84 9.5.5.08.66-.23.66-.5v-1.69c-2.77.6-3.36-1.34-3.36-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.87 1.52 2.34 1.07 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.92 0-1.11.38-2 1.03-2.71-.1-.25-.45-1.29.1-2.64 0 0 .84-.27 2.75 1.02.79-.22 1.65-.33 2.5-.33.85 0 1.71.11 2.5.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.35.2 2.39.1 2.64.65.71 1.03 1.6 1.03 2.71 0 3.82-2.34 4.66-4.57 4.91.36.31.69.92.69 1.85V21.5c0 .27.16.59.67.5C19.14 20.16 22 16.42 22 12A10 10 0 0 0 12 2z"/></svg>) },
+                      { provider: 'github' as Provider, label: 'GitHub', icon: (<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.87 8.17 6.84 9.5.5.08.66-.23.66-.5v-1.69c-2.77.6-3.36-1.34-3.36-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.87 1.52 2.34 1.07 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.92 0-1.11.38-2 1.03-2.71-.1-.25-.45-1.29.1-2.64 0 0 .84-.27 2.75 1.02.79-.22 1.65-.33 2.5-.33.85 0 1.71.11 2.5.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.35.2 2.39.1 2.64.65.71 1.03 1.6 1.03 2.71 0 3.82-2.34 4.66-4.57 4.91.36.31.69.92.69 1.85V21.5c0 .27.16.59.67.5C19.14 20.16 22 16.42 22 12A10 10 0 0 0 12 2z"/></svg>) },
                     ].map((btn) => {
                       const isLoading = oauthLoading === btn.provider;
                       return (
-                        <button key={btn.provider} type="button" onClick={() => handleOAuthLogin(btn.provider)} disabled={!!oauthLoading} className="oauth-btn" style={{ height: 42 }}>
+                        <button key={btn.provider} type="button" onClick={() => handleOAuthLogin(btn.provider)} disabled={!termsAccepted || !!oauthLoading} className="oauth-btn" style={{ height: 42 }}>
                           {isLoading ? <span className="spinner" /> : btn.icon}
                           {isLoading ? t.auth.oauthRedirecting : btn.label}
                         </button>
@@ -274,7 +325,7 @@ const SignUp: React.FC = () => {
                     })}
                   </div>
                   <div className="auth-oauth-footer">
-                    <span>{t.auth.oauthAttribution} · Secured by Supabase Auth</span>
+                    <span>{t.auth.oauthAttribution}</span>
                   </div>
                 </div>
 
@@ -297,7 +348,7 @@ const SignUp: React.FC = () => {
           <div className="proof-item">{t.auth.trustEncryptedConfigs}</div>
         </div>
       </div>
-    </div>
+    </main>
   );
 };
 
